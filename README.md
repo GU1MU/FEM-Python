@@ -11,13 +11,12 @@
 
 ## 安装和运行
 
-当前仓库没有`pyproject.toml`或`setup.py`，运行示例前需要把`src`加入`PYTHONPATH`。
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-$env:PYTHONPATH = "src"
+pip install -e .
 ```
 
 运行示例：
@@ -27,10 +26,9 @@ python examples\cantilever_beam_hex8.py
 python examples\cantilever_beam_hex8_abaqus.py
 ```
 
-运行 unittest 测试：
+运行unittest测试：
 
 ```powershell
-$env:PYTHONPATH = "src"
 python -m unittest discover tests
 python -m unittest tests.test_solvers
 python -m unittest tests.test_solvers.StaticLinearSolverTests.test_static_linear_solver_builds_step_boundary_and_solves_case
