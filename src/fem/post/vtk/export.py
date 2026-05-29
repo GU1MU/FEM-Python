@@ -112,19 +112,22 @@ def _default_result_paths(output_dir: Path, name: str) -> dict[str, Path]:
 
 
 def _supported_stress_paths(mesh, paths: dict[str, Path]) -> dict[str, Optional[Path]]:
-    """Return default stress paths supported by the mesh element type."""
+    """Return default stress paths supported by all mesh element types."""
     from ..stress import dispatch
 
     try:
-        type_key = dispatch.resolve_type_key(mesh, None)
+        type_keys = dispatch.resolve_type_keys(mesh, None)
+        dispatch.stress_group_for_keys(type_keys)
     except ValueError:
         return {"element_stress": None, "nodal_stress": None}
 
-    element_supported = type_key in {"truss2d", "tri3", "quad4", "quad8", "hex8", "tet4", "tet10"}
-    nodal_supported = type_key in {"tri3", "quad4", "quad8", "hex8", "tet4", "tet10"}
     return {
-        "element_stress": paths["element_stress"] if element_supported else None,
-        "nodal_stress": paths["nodal_stress"] if nodal_supported else None,
+        "element_stress": (
+            paths["element_stress"] if dispatch.element_stress_supported(type_keys) else None
+        ),
+        "nodal_stress": (
+            paths["nodal_stress"] if dispatch.nodal_stress_supported(type_keys) else None
+        ),
     }
 
 

@@ -6,6 +6,7 @@ from typing import Sequence
 
 from ...elements import get_element_kernel
 from ...core.mesh import HexMesh3D, Mesh3DProtocol, PlaneMesh2D, TrussMesh2D
+from . import dispatch
 from ._common import (
     PLANE_ELEMENT_HEADER,
     SOLID_HEADER,
@@ -42,6 +43,26 @@ def by_type(
         tet10(mesh, U, path)
     else:
         raise ValueError(f"Unsupported stress element type key: {type_key!r}")
+
+
+def mixed(
+    type_keys: Sequence[str],
+    mesh,
+    U: Sequence[float],
+    path: str,
+    gauss_order: int | None = None,
+) -> None:
+    """Export element stresses for compatible mixed stress groups."""
+    if not dispatch.element_stress_supported(type_keys):
+        raise ValueError(f"Element stress export is not available for {type_keys}")
+    group = dispatch.stress_group_for_keys(type_keys)
+    if group == "plane":
+        _plane_multi(mesh, U, path, set(type_keys), gauss_order)
+        return
+    if group == "solid":
+        _solid_multi(mesh, U, path, set(type_keys))
+        return
+    raise ValueError(f"Mixed element stress export is not available for group {group!r}")
 
 
 def truss2d(mesh: TrussMesh2D, U: Sequence[float], path: str) -> None:
@@ -165,6 +186,83 @@ def _solid(
         for elem in mesh.elements:
             if not matches(elem, type_key):
                 continue
+            stress = get_element_kernel(elem.type).stress_at(
+                mesh,
+                elem,
+                U,
+                *natural_coords,
+                lookup,
+            )
+            sig_x, sig_y, sig_z, tau_xy, tau_yz, tau_zx = stress
+            writer.writerow([
+                elem.id,
+                sig_x,
+                sig_y,
+                sig_z,
+                tau_xy,
+                tau_yz,
+                tau_zx,
+                von_mises_3d(sig_x, sig_y, sig_z, tau_xy, tau_yz, tau_zx),
+            ])
+
+
+def _plane_multi(
+    mesh: PlaneMesh2D,
+    U: Sequence[float],
+    path: str,
+    type_keys: set[str],
+    gauss_order: int | None = None,
+) -> None:
+    """Export mixed plane element-nodal stresses without averaging."""
+    U = validated_u(mesh, U)
+    lookup = node_lookup(mesh)
+
+    path = _prepare_path(path)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(PLANE_ELEMENT_HEADER)
+        for elem in mesh.elements:
+            type_key = dispatch.type_key_from_name(elem.type)
+            if type_key not in type_keys:
+                continue
+            order = (
+                gauss_order
+                if gauss_order is not None
+                else dispatch.default_gauss_order(type_key)
+            )
+            node_vals, plane_type, nu = nodal_stress(mesh, elem, U, lookup, order)
+            for local_idx, nid in enumerate(elem.node_ids, start=1):
+                sig_x, sig_y, tau_xy = node_vals[local_idx - 1].tolist()
+                writer.writerow([
+                    elem.id,
+                    nid,
+                    local_idx,
+                    sig_x,
+                    sig_y,
+                    tau_xy,
+                    von_mises_plane(sig_x, sig_y, tau_xy, plane_type, nu),
+                ])
+
+
+def _solid_multi(
+    mesh: Mesh3DProtocol,
+    U: Sequence[float],
+    path: str,
+    type_keys: set[str],
+) -> None:
+    """Export mixed solid element stresses at one representative point per element."""
+    U = validated_u(mesh, U)
+    lookup = node_lookup(mesh)
+
+    path = _prepare_path(path)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(SOLID_HEADER)
+        for elem in mesh.elements:
+            type_key = dispatch.type_key_from_name(elem.type)
+            if type_key not in type_keys:
+                continue
+            natural_coords = (0.0, 0.0, 0.0) if type_key == "hex8" else TET_CENTROID
             stress = get_element_kernel(elem.type).stress_at(
                 mesh,
                 elem,

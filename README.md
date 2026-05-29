@@ -24,6 +24,7 @@ pip install -e .
 ```powershell
 python examples\cantilever_beam_hex8.py
 python examples\cantilever_beam_hex8_abaqus.py
+python examples\mixed_hex8_tet4.py
 ```
 
 运行unittest测试：
@@ -59,6 +60,7 @@ Tests 已完成模块化迁移，常用测试位于 `tests/test_*.py`。旧入�
 
 - 稀疏全局刚度装配。
 - 线性静力分析流程。
+- 同一维度、同一节点自由度布局的混合单元模型，例如`Hex8`+`Tet4`和`Tri3Plane`+`Quad4Plane`。
 - `steps`声明入口支持位移约束、集中力、surface traction和surface pressure。
 - 低层`BoundaryCondition`和element kernel支持体力、重力、边力和面力组装。
 

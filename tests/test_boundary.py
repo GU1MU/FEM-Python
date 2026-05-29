@@ -3,8 +3,14 @@ import unittest
 import numpy as np
 
 from fem import boundary
+from fem.boundary.condition import BoundaryCondition
+from fem.boundary.loads import build_load_vector
 from fem.elements import get_element_kernel
-from tests.helpers.mesh_builders import make_quad4_boundary_mesh, make_tet4_stiffness_mesh
+from tests.helpers.mesh_builders import (
+    make_mixed_hex8_tet4_mesh,
+    make_quad4_boundary_mesh,
+    make_tet4_stiffness_mesh,
+)
 
 
 class BoundaryKernelTests(unittest.TestCase):
@@ -58,6 +64,34 @@ class BoundaryKernelTests(unittest.TestCase):
         F = boundary.loads.build_load_vector(mesh, bc)
 
         self.assertAlmostEqual(F[mesh.global_dof(1, 2)], -5.0)
+
+
+class MixedBoundaryLoadTests(unittest.TestCase):
+    def test_mixed_solid_surface_tractions_dispatch_by_element_type(self):
+        mesh = make_mixed_hex8_tet4_mesh()
+        bc = BoundaryCondition()
+        bc.add_surface_traction(1, 1, 0.0, 0.0, 1.0)
+        bc.add_surface_traction(2, 0, 1.0, 0.0, 0.0)
+
+        F = build_load_vector(mesh, bc)
+
+        self.assertEqual(F.shape, (mesh.num_dofs,))
+        self.assertGreater(float(np.linalg.norm(F)), 0.0)
+
+    def test_mixed_solid_body_forces_and_gravity_dispatch_by_element_type(self):
+        mesh = make_mixed_hex8_tet4_mesh()
+        mesh.elements[0].props["rho"] = 2.0
+        mesh.elements[1].props["rho"] = 3.0
+        bc = BoundaryCondition()
+        bc.add_body_force_element(1, 0.0, 0.0, -1.0)
+        bc.add_body_force_element(2, 1.0, 0.0, 0.0)
+        bc.set_gravity(0.0, 0.0, -9.81)
+
+        F = build_load_vector(mesh, bc)
+
+        self.assertEqual(F.shape, (mesh.num_dofs,))
+        self.assertTrue(np.all(np.isfinite(F)))
+        self.assertGreater(float(np.linalg.norm(F)), 0.0)
 
 
 if __name__ == "__main__":

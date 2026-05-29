@@ -67,7 +67,7 @@ def build(mesh):
             vtk_type = 12
 
         else:
-            continue
+            raise ValueError(f"Unsupported element type for VTK export: {elem.type}")
 
         cells.append(vtk_conn)
         cell_types.append(vtk_type)

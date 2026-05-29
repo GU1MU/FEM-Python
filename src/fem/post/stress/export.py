@@ -12,9 +12,12 @@ def element(
     element_type: str | None = None,
     gauss_order: int | None = None,
 ) -> None:
-    """Export element stresses to CSV. Element type is inferred for single-type meshes."""
-    type_key = dispatch.resolve_type_key(mesh, element_type)
-    element_export.by_type(type_key, mesh, U, path, gauss_order)
+    """Export element stresses to CSV. Element type is inferred when possible."""
+    type_keys = dispatch.resolve_type_keys(mesh, element_type)
+    if len(type_keys) == 1:
+        element_export.by_type(type_keys[0], mesh, U, path, gauss_order)
+        return
+    element_export.mixed(type_keys, mesh, U, path, gauss_order)
 
 
 def nodal(
@@ -24,6 +27,9 @@ def nodal(
     element_type: str | None = None,
     gauss_order: int | None = None,
 ) -> None:
-    """Export nodal stresses to CSV. Element type is inferred for single-type meshes."""
-    type_key = dispatch.resolve_type_key(mesh, element_type)
-    nodal_export.by_type(type_key, mesh, U, path, gauss_order)
+    """Export nodal stresses to CSV. Element type is inferred when possible."""
+    type_keys = dispatch.resolve_type_keys(mesh, element_type)
+    if len(type_keys) == 1:
+        nodal_export.by_type(type_keys[0], mesh, U, path, gauss_order)
+        return
+    nodal_export.mixed(type_keys, mesh, U, path, gauss_order)

@@ -25,6 +25,8 @@ from fem.core.model import (
 from tests.helpers.mesh_builders import (
     make_dof_order_meshes,
     make_minimal_hex_mesh,
+    make_mixed_hex8_tet4_mesh,
+    make_mixed_tri3_quad4_mesh,
     make_selection_hex_mesh,
     make_selection_mixed_plane_mesh,
     make_selection_quad_mesh,
@@ -235,6 +237,24 @@ class MaterialsTests(unittest.TestCase):
         self.assertTrue(np.allclose(plane_matrix, plane_stress))
         self.assertEqual(solid.shape, (6, 6))
         self.assertAlmostEqual(plane_stress[0, 1], E * nu / (1.0 - nu ** 2))
+
+
+class MixedMeshBuilderTests(unittest.TestCase):
+    def test_mixed_hex8_tet4_mesh_keeps_element_types_and_3d_dofs(self):
+        mesh = make_mixed_hex8_tet4_mesh()
+
+        self.assertEqual(mesh.dofs_per_node, 3)
+        self.assertEqual([elem.type for elem in mesh.elements], ["Hex8", "Tet4"])
+        self.assertEqual(mesh.elements[0].id, 1)
+        self.assertEqual(mesh.elements[1].id, 2)
+        self.assertEqual(mesh.num_dofs, 27)
+
+    def test_mixed_tri3_quad4_mesh_keeps_element_types_and_2d_dofs(self):
+        mesh = make_mixed_tri3_quad4_mesh()
+
+        self.assertEqual(mesh.dofs_per_node, 2)
+        self.assertEqual([elem.type for elem in mesh.elements], ["Tri3Plane", "Quad4Plane"])
+        self.assertEqual(mesh.num_dofs, 10)
 
 
 if __name__ == "__main__":

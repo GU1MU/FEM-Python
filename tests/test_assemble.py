@@ -5,9 +5,12 @@ import unittest
 import numpy as np
 
 from fem.assemble import assemble_global_stiffness, assemble_global_stiffness_sparse
+from fem.core.mesh import Element3D
 from tests.helpers.mesh_builders import (
     make_beam_stiffness_mesh,
     make_hex8_stiffness_mesh,
+    make_mixed_hex8_tet4_mesh,
+    make_mixed_tri3_quad4_mesh,
     make_quad4_stiffness_mesh,
     make_quad8_stiffness_mesh,
     make_tet4_stiffness_mesh,
@@ -131,6 +134,37 @@ class SolidAssemblyTests(unittest.TestCase):
                 K_sparse = assemble_global_stiffness_sparse(mesh)
 
                 self.assertTrue(np.allclose(K_dense, K_sparse.toarray()))
+
+
+class MixedAssemblyTests(unittest.TestCase):
+    def test_sparse_and_dense_assembly_accept_mixed_solid_mesh(self):
+        mesh = make_mixed_hex8_tet4_mesh()
+
+        K_dense = assemble_global_stiffness(mesh)
+        K_sparse = assemble_global_stiffness_sparse(mesh)
+
+        self.assertEqual(K_dense.shape, (mesh.num_dofs, mesh.num_dofs))
+        self.assertEqual(K_sparse.shape, (mesh.num_dofs, mesh.num_dofs))
+        self.assertTrue(np.allclose(K_dense, K_dense.T))
+        self.assertTrue(np.allclose(K_dense, K_sparse.toarray()))
+
+    def test_sparse_and_dense_assembly_accept_mixed_plane_mesh(self):
+        mesh = make_mixed_tri3_quad4_mesh()
+
+        K_dense = assemble_global_stiffness(mesh)
+        K_sparse = assemble_global_stiffness_sparse(mesh)
+
+        self.assertEqual(K_dense.shape, (mesh.num_dofs, mesh.num_dofs))
+        self.assertEqual(K_sparse.shape, (mesh.num_dofs, mesh.num_dofs))
+        self.assertTrue(np.allclose(K_dense, K_dense.T))
+        self.assertTrue(np.allclose(K_dense, K_sparse.toarray()))
+
+    def test_assembly_reports_unsupported_element_type_in_mixed_mesh(self):
+        mesh = make_mixed_hex8_tet4_mesh()
+        mesh.elements.append(Element3D(3, [1, 2, 3, 5], "UnsupportedSolid", {}))
+
+        with self.assertRaisesRegex(NotImplementedError, "Unsupported element type: UnsupportedSolid"):
+            assemble_global_stiffness_sparse(mesh)
 
 
 class StiffnessModuleRemovalTests(unittest.TestCase):
