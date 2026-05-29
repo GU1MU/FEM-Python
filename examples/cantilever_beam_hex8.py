@@ -7,8 +7,10 @@ from fem.core import ElementSet, FEMModel, NodeSet
 from fem.io import inp
 
 
+DATA_DIR = Path(__file__).resolve().parent / "examples_data"
+
 # Read only mesh topology and coordinates from Abaqus input.
-mesh = inp.read_hex8(r"examples\cantilever_beam_hex8.inp")
+mesh = inp.read_hex8(DATA_DIR / "cantilever_beam_hex8.inp")
 
 model = FEMModel(mesh=mesh, name="cantilever_beam_hex8")
 

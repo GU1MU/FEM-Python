@@ -4,8 +4,11 @@ from pathlib import Path
 
 from fem import abaqus, post, solvers
 
+
+DATA_DIR = Path(__file__).resolve().parent / "examples_data"
+
 # Read Abaqus model data and solve its first analysis step.
-model = abaqus.read(r"examples\cantilever_beam_hex8.inp")
+model = abaqus.read(DATA_DIR / "cantilever_beam_hex8.inp")
 model.name = "cantilever_beam_hex8_abaqus"
 step = solvers.static_linear.get_step(model)
 

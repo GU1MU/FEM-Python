@@ -295,6 +295,151 @@ def read_tri3(
     return PlaneMesh2D(nodes=nodes, elements=elements)
 
 
+def read_mixed3d(
+    mesh_path: str,
+    material_path: Optional[str] = None,
+) -> HexMesh3D:
+    """Read a mixed 3D mesh CSV with Hex8 and Tet4 elements."""
+
+    materials_dict: Dict[int, Dict[str, str]] = {}
+    if material_path is not None:
+        materials_dict = read(material_path)
+
+    nodes: List[Node3D] = []
+    elements: List[Element3D] = []
+
+    mode: Optional[str] = None
+    element_header: List[str] = []
+
+    with open(mesh_path, "r", encoding="utf-8") as f:
+        reader = csv_lib.reader(f)
+
+        for line_no, row in enumerate(reader, start=1):
+            row = [col.strip() for col in row]
+
+            if not row or all(col == "" for col in row):
+                continue
+
+            if row[0].startswith("#"):
+                continue
+
+            if row[0] == "node_id":
+                mode = "nodes"
+                continue
+
+            if row[0] == "elem_id":
+                mode = "elements"
+                element_header = row
+                continue
+
+            if mode == "nodes":
+                if len(row) < 4:
+                    raise ValueError(f"line {line_no} node row must contain node_id,x,y,z: {row!r}")
+                nodes.append(
+                    Node3D(
+                        id=int(row[0]),
+                        x=float(row[1]),
+                        y=float(row[2]),
+                        z=float(row[3]),
+                    )
+                )
+
+            elif mode == "elements":
+                values = _row_by_header(element_header, row)
+                elem_id = int(values["elem_id"])
+                elem_type = _canonical_mixed3d_element_type(values.get("type", ""))
+                node_count = _mixed3d_node_count(elem_type)
+                node_ids = _mixed3d_node_ids(values, elem_type, node_count, line_no)
+                props = _mixed3d_element_props(values, materials_dict)
+
+                elements.append(
+                    Element3D(
+                        id=elem_id,
+                        node_ids=node_ids,
+                        type=elem_type,
+                        props=props,
+                    )
+                )
+
+            else:
+                raise ValueError(f"data row before a recognized header at line {line_no}: {row!r}")
+
+    if not nodes:
+        raise ValueError("mixed 3D mesh csv has no nodes")
+    if not elements:
+        raise ValueError("mixed 3D mesh csv has no elements")
+
+    return HexMesh3D(nodes=nodes, elements=elements)
+
+
+def _row_by_header(header: List[str], row: List[str]) -> Dict[str, str]:
+    return {
+        name: row[index] if index < len(row) else ""
+        for index, name in enumerate(header)
+    }
+
+
+def _canonical_mixed3d_element_type(raw_type: str) -> str:
+    normalized = raw_type.strip().lower()
+    if normalized == "hex8":
+        return "Hex8"
+    if normalized == "tet4":
+        return "Tet4"
+    raise ValueError(f"unsupported mixed 3D element type: {raw_type!r}")
+
+
+def _mixed3d_node_count(elem_type: str) -> int:
+    if elem_type == "Hex8":
+        return 8
+    if elem_type == "Tet4":
+        return 4
+    raise ValueError(f"unsupported mixed 3D element type: {elem_type!r}")
+
+
+def _mixed3d_node_ids(
+    values: Dict[str, str],
+    elem_type: str,
+    node_count: int,
+    line_no: int,
+) -> List[int]:
+    node_ids: List[int] = []
+    for index in range(1, node_count + 1):
+        value = values.get(f"node{index}", "")
+        if value == "":
+            raise ValueError(f"line {line_no} {elem_type} row is missing node{index}")
+        node_ids.append(int(value))
+
+    for index in range(node_count + 1, 9):
+        if values.get(f"node{index}", "") != "":
+            raise ValueError(f"line {line_no} {elem_type} row has extra node{index}")
+
+    return node_ids
+
+
+def _mixed3d_element_props(
+    values: Dict[str, str],
+    materials_dict: Dict[int, Dict[str, str]],
+) -> Dict[str, object]:
+    raw_mid = values.get("material_id", "")
+    if raw_mid == "":
+        return {}
+
+    mid = int(raw_mid)
+    props: Dict[str, object] = {"material_id": mid}
+    mat_row = materials_dict.get(mid)
+    if mat_row is not None:
+        raw_E = _get_float_from_material(mat_row, ["E"])
+        raw_nu = _get_float_from_material(mat_row, ["nu", "poisson"])
+        raw_rho = _get_float_from_material(mat_row, ["rho"])
+        if raw_E is not None:
+            props["E"] = raw_E
+        if raw_nu is not None:
+            props["nu"] = raw_nu
+        if raw_rho is not None:
+            props["rho"] = raw_rho
+    return props
+
+
 def read_hex8(
     mesh_path: str,
     material_path: Optional[str] = None,

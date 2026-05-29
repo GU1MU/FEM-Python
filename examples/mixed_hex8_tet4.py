@@ -1,47 +1,17 @@
 # Example: mixed Hex8 and Tet4 linear static model.
 
-import csv
 import os
 from pathlib import Path
 
 from fem import materials, post, solvers, steps
-from fem.core import Element3D, ElementSet, FEMModel, Node3D, NodeSet, model_element_info
-from fem.core.mesh import HexMesh3D
+from fem.core import ElementSet, FEMModel, NodeSet, model_element_info
+from fem.io import csv as mesh_csv
 
 
-DATA_DIR = Path(__file__).resolve().parent / "geometry_data"
+DATA_DIR = Path(__file__).resolve().parent / "examples_data"
 
 
-def read_mixed_mesh(nodes_path, elements_path):
-    nodes = []
-    with Path(nodes_path).open("r", encoding="utf-8", newline="") as f:
-        for row in csv.DictReader(f):
-            nodes.append(
-                Node3D(
-                    int(row["node_id"]),
-                    float(row["x"]),
-                    float(row["y"]),
-                    float(row["z"]),
-                )
-            )
-
-    elements = []
-    with Path(elements_path).open("r", encoding="utf-8", newline="") as f:
-        for row in csv.DictReader(f):
-            node_ids = [
-                int(row[f"node{i}"])
-                for i in range(1, 9)
-                if row.get(f"node{i}", "").strip()
-            ]
-            elements.append(Element3D(int(row["elem_id"]), node_ids, row["type"]))
-
-    return HexMesh3D(nodes=nodes, elements=elements)
-
-
-mesh = read_mixed_mesh(
-    DATA_DIR / "mixed_hex8_tet4_nodes.csv",
-    DATA_DIR / "mixed_hex8_tet4_elements.csv",
-)
+mesh = mesh_csv.read_mixed3d(DATA_DIR / "mixed_hex8_tet4.csv")
 model = FEMModel(mesh=mesh, name="mixed_hex8_tet4")
 
 model.element_sets["hexes"] = ElementSet("hexes", (1,))

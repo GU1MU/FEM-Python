@@ -176,7 +176,7 @@ io.csv/io.inp
 
 这个脚本展示了：
 
-- 用`fem.io.inp.read_hex8()`读取`examples/cantilever_beam_hex8.inp`中的mesh。
+- 用`fem.io.inp.read_hex8()`读取`examples/examples_data/cantilever_beam_hex8.inp`中的mesh。
 - 创建`FEMModel`。
 - 用`selection`构造node set和element set。
 - 用`materials.linear_elastic`定义材料。

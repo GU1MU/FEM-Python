@@ -1336,6 +1336,7 @@ class IoPackageRefactorTests(unittest.TestCase):
         self.assertTrue(callable(materials_io.read))
         self.assertTrue(callable(csv_io.read_truss2d))
         self.assertTrue(callable(csv_io.read_hex8))
+        self.assertTrue(callable(csv_io.read_mixed3d))
         self.assertTrue(callable(inp.read_hex8))
         self.assertTrue(callable(inp.read_tet4))
         self.assertFalse(hasattr(inp, "read_hex8_3d_abaqus"))
