@@ -1,5 +1,7 @@
 # Example: hand-written model workflow built from an Abaqus Hex8 mesh.
 
+from pathlib import Path
+
 from fem import materials, post, selection, solvers, steps
 from fem.core import ElementSet, FEMModel, NodeSet
 from fem.io import inp
@@ -44,4 +46,4 @@ first_loaded_displacement = tuple(
 )
 print("First loaded node displacement:", first_loaded_displacement)
 
-post.vtk.export.from_result(result, output_dir=r"results")
+post.vtk.export.from_result(result, output_dir=Path("results") / model.name)

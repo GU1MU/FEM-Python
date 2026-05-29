@@ -3,6 +3,8 @@ import inspect
 import sys
 import unittest
 
+from tests.helpers.file_builders import write_inp
+from tests.helpers.paths import temporary_directory
 
 
 class IoPackageTests(unittest.TestCase):
@@ -45,7 +47,26 @@ class IoPackageTests(unittest.TestCase):
             self.assertNotIn("material_id", signature.parameters)
             self.assertNotIn("material_path", signature.parameters)
 
-        mesh = inp.read_hex8(r"examples\cantilever_beam_hex8.inp")
+        with temporary_directory() as tmp:
+            mesh_path = write_inp(
+                tmp,
+                "hex8_mesh_only.inp",
+                [
+                    "*Node",
+                    "1, 0., 0., 0.",
+                    "2, 1., 0., 0.",
+                    "3, 1., 1., 0.",
+                    "4, 0., 1., 0.",
+                    "5, 0., 0., 1.",
+                    "6, 1., 0., 1.",
+                    "7, 1., 1., 1.",
+                    "8, 0., 1., 1.",
+                    "*Element, type=C3D8",
+                    "1, 1,2,3,4,5,6,7,8",
+                ],
+            )
+            mesh = inp.read_hex8(mesh_path)
+
         self.assertEqual(mesh.elements[0].props, {})
 
 

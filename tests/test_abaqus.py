@@ -1,4 +1,3 @@
-import tempfile
 import unittest
 
 import numpy as np
@@ -13,6 +12,7 @@ from fem.core.model import (
 )
 from fem.solvers import static_linear
 from tests.helpers.file_builders import write_inp
+from tests.helpers.paths import temporary_directory
 
 
 def _assert_pressure_points_inward(test_case, model, bc):
@@ -41,7 +41,7 @@ def _assert_pressure_points_inward(test_case, model, bc):
 
 class AbaqusModelReaderTests(unittest.TestCase):
     def test_abaqus_read_builds_model_with_sets_surfaces_materials_and_steps(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             path = write_inp(
                 tmp,
                 "test_abaqus_model.inp",
@@ -107,7 +107,7 @@ class AbaqusModelReaderTests(unittest.TestCase):
         self.assertAlmostEqual(sum(bc.nodal_forces.values()), -200.0)
 
     def test_abaqus_read_hides_internal_element_sets_without_breaking_surfaces_or_sections(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             path = write_inp(
                 tmp,
                 "test_abaqus_internal_element_sets.inp",
@@ -153,8 +153,50 @@ class AbaqusModelReaderTests(unittest.TestCase):
         materials.apply_sections(model)
         self.assertEqual(model.mesh.elements[0].props["material"], "STEEL")
 
+    def test_abaqus_sections_use_part_element_ids_when_assembly_set_reuses_name(self):
+        with temporary_directory() as tmp:
+            path = write_inp(
+                tmp,
+                "test_abaqus_section_part_elset_scope.inp",
+                [
+                    "*Part, name=BLOCK",
+                    "*Node",
+                    "1, 0., 0., 0.",
+                    "2, 1., 0., 0.",
+                    "3, 1., 1., 0.",
+                    "4, 0., 1., 0.",
+                    "5, 0., 0., 1.",
+                    "6, 1., 0., 1.",
+                    "7, 1., 1., 1.",
+                    "8, 0., 1., 1.",
+                    "*Element, type=C3D8",
+                    "1, 1,2,3,4,5,6,7,8",
+                    "2, 1,2,3,4,5,6,7,8",
+                    "*Elset, elset=Set-1, generate",
+                    "1, 2, 1",
+                    "*Solid Section, elset=Set-1, material=STEEL",
+                    "*End Part",
+                    "*Assembly, name=Assembly",
+                    "*Instance, name=BLOCK-1, part=BLOCK",
+                    "*End Instance",
+                    "*Elset, elset=Set-1, instance=BLOCK-1",
+                    "1",
+                    "*End Assembly",
+                    "*Material, name=STEEL",
+                    "*Elastic",
+                    "210., 0.3",
+                ],
+            )
+
+            model = abaqus.read(path)
+
+        materials.apply_sections(model)
+
+        self.assertEqual([elem.props.get("material") for elem in model.mesh.elements], ["STEEL", "STEEL"])
+        self.assertEqual([elem.props.get("E") for elem in model.mesh.elements], [210.0, 210.0])
+
     def test_abaqus_read_inherits_initial_boundaries_across_steps(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             path = write_inp(
                 tmp,
                 "test_abaqus_initial_steps.inp",
@@ -198,7 +240,7 @@ class AbaqusModelReaderTests(unittest.TestCase):
         self.assertAlmostEqual(sum(step2_bc.nodal_forces.values()), 20.0)
 
     def test_abaqus_read_prefers_assembly_node_set_over_part_set_for_load_targets(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             path = write_inp(
                 tmp,
                 "test_abaqus_scoped_node_sets.inp",
@@ -246,7 +288,7 @@ class AbaqusModelReaderTests(unittest.TestCase):
         self.assertAlmostEqual(sum(bc.nodal_forces.values()), -1000.0)
 
     def test_abaqus_read_converts_dsload_and_dload_pressure_to_surface_tractions(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             path = write_inp(
                 tmp,
                 "test_abaqus_surface_loads.inp",
@@ -290,7 +332,7 @@ class AbaqusModelReaderTests(unittest.TestCase):
         self.assertTrue(np.allclose(bc.surface_tractions[1].vector, (-3.0, 0.0, 0.0)))
 
     def test_abaqus_read_projects_trshr_direction_to_surface_tangent(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             path = write_inp(
                 tmp,
                 "test_abaqus_trshr_surface_load.inp",
@@ -327,7 +369,7 @@ class AbaqusModelReaderTests(unittest.TestCase):
         self.assertTrue(np.allclose(bc.surface_tractions[0].vector, (10.0, 0.0, 0.0)))
 
     def test_abaqus_trshr_rejects_nonplanar_faces(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             path = write_inp(
                 tmp,
                 "test_abaqus_trshr_nonplanar_face.inp",
@@ -361,7 +403,7 @@ class AbaqusModelReaderTests(unittest.TestCase):
             static_linear.boundary_for_step(model, "LOAD")
 
     def test_abaqus_read_maps_tetra_face_labels_to_local_faces(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             path = write_inp(
                 tmp,
                 "test_abaqus_tet_face_labels.inp",
@@ -394,7 +436,7 @@ class AbaqusModelReaderTests(unittest.TestCase):
         self.assertEqual(model.surfaces["FACE_4"].faces[0], ElementFace(1, 1, (1, 3, 4)))
 
     def test_abaqus_read_maps_hex_face_labels_to_local_faces(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             path = write_inp(
                 tmp,
                 "test_abaqus_hex_face_labels.inp",
@@ -452,7 +494,7 @@ class AbaqusModelReaderTests(unittest.TestCase):
         _assert_pressure_points_inward(self, model, bc)
 
     def test_abaqus_read_maps_tet10_face_labels_and_pressure_direction(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             path = write_inp(
                 tmp,
                 "test_abaqus_tet10_face_labels.inp",
@@ -504,7 +546,7 @@ class AbaqusModelReaderTests(unittest.TestCase):
         _assert_pressure_points_inward(self, model, bc)
 
     def test_abaqus_pressure_points_into_tetra_element_for_all_faces(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             path = write_inp(
                 tmp,
                 "test_abaqus_tet_pressure_direction.inp",
@@ -541,7 +583,7 @@ class AbaqusModelReaderTests(unittest.TestCase):
         _assert_pressure_points_inward(self, model, bc)
 
     def test_abaqus_read_accumulates_repeated_sets_and_scales_trvec_loads(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             path = write_inp(
                 tmp,
                 "test_abaqus_sets_trvec.inp",
@@ -584,7 +626,7 @@ class AbaqusModelReaderTests(unittest.TestCase):
         self.assertEqual(bc.surface_tractions[0].vector, (0.0, 0.0, -10.0))
 
     def test_abaqus_read_stores_output_requests_on_steps(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             path = write_inp(
                 tmp,
                 "test_abaqus_output_requests.inp",

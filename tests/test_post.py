@@ -1,7 +1,6 @@
 import csv
 import importlib
 import sys
-import tempfile
 from pathlib import Path
 import unittest
 
@@ -21,6 +20,7 @@ from tests.helpers.mesh_builders import (
     make_unit_hex8_mesh,
 )
 from tests.helpers.model_builders import make_simple_truss_mesh
+from tests.helpers.paths import temporary_directory
 from tests.helpers.result_builders import make_zero_result
 
 
@@ -99,7 +99,7 @@ class PostPackageTests(unittest.TestCase):
     def test_stress_export_infers_single_element_type_from_mesh(self):
         mesh = make_unit_hex8_mesh()
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             output_dir = Path(tmp)
             elem_path = output_dir / "test_post_stress_element.csv"
             nodal_path = output_dir / "test_post_stress_nodal.csv"
@@ -120,7 +120,7 @@ class PostPackageTests(unittest.TestCase):
     def test_vtk_export_from_result_materializes_missing_csvs(self):
         result = make_zero_result(make_unit_hex8_mesh(), "vtk_auto")
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             output_dir = Path(tmp)
 
             vtk.export.from_result(result, output_dir=output_dir)
@@ -133,7 +133,7 @@ class PostPackageTests(unittest.TestCase):
     def test_vtk_export_from_result_overwrites_derived_csvs(self):
         result = make_zero_result(make_unit_hex8_mesh(), "vtk_overwrite")
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             output_dir = Path(tmp)
             stale_disp = output_dir / "vtk_overwrite_nodal_displacement.csv"
             stale_disp.write_text(
@@ -148,7 +148,7 @@ class PostPackageTests(unittest.TestCase):
     def test_vtk_export_from_result_skips_unsupported_nodal_stress(self):
         result = make_zero_result(make_simple_truss_mesh(E=100.0, area=1.0), "vtk_truss")
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             output_dir = Path(tmp)
 
             vtk.export.from_result(result, output_dir=output_dir)
@@ -161,7 +161,7 @@ class PostPackageTests(unittest.TestCase):
     def test_vtk_element_stress_reader_averages_repeated_element_rows(self):
         from fem.post.vtk import fields
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             csv_path = Path(tmp) / "test_vtk_element_stress_average.csv"
             csv_path.write_text(
                 "elem_id,node_id,local_node,sig_x,sig_y,tau_xy,mises_stress\n"
@@ -181,7 +181,7 @@ class PostPackageTests(unittest.TestCase):
             elements=[Element2D(1, [1, 2], "Beam2D")],
         )
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             output_path = Path(tmp) / "nested" / "beam_displacement.csv"
 
             displacement.export.nodal(mesh, np.zeros(mesh.num_dofs), output_path)
@@ -212,7 +212,7 @@ class MixedStressExportTests(unittest.TestCase):
     def test_element_stress_export_writes_mixed_solid_rows(self):
         mesh = make_mixed_hex8_tet4_mesh()
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             csv_path = Path(tmp) / "mixed_element_stress.csv"
             stress.export.element(mesh, np.zeros(mesh.num_dofs), csv_path)
             with csv_path.open("r", encoding="utf-8") as f:
@@ -225,7 +225,7 @@ class MixedStressExportTests(unittest.TestCase):
     def test_nodal_stress_export_writes_mixed_solid_nodes(self):
         mesh = make_mixed_hex8_tet4_mesh()
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             csv_path = Path(tmp) / "mixed_nodal_stress.csv"
             stress.export.nodal(mesh, np.zeros(mesh.num_dofs), csv_path)
             with csv_path.open("r", encoding="utf-8") as f:
@@ -238,7 +238,7 @@ class MixedStressExportTests(unittest.TestCase):
     def test_stress_exports_write_mixed_plane_rows_and_nodes(self):
         mesh = make_mixed_tri3_quad4_mesh()
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             output_dir = Path(tmp)
             elem_path = output_dir / "mixed_plane_element_stress.csv"
             nodal_path = output_dir / "mixed_plane_nodal_stress.csv"
@@ -258,7 +258,7 @@ class MixedStressExportTests(unittest.TestCase):
         solid_mesh = make_mixed_tet4_tet10_mesh()
         plane_mesh = make_mixed_quad4_quad8_mesh()
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             output_dir = Path(tmp)
             solid_elem = output_dir / "mixed_tet_element_stress.csv"
             solid_nodal = output_dir / "mixed_tet_nodal_stress.csv"
@@ -292,7 +292,7 @@ class MixedStressExportTests(unittest.TestCase):
     def test_vtk_export_from_result_materializes_mixed_stress_csvs(self):
         result = make_zero_result(make_mixed_hex8_tet4_mesh(), "mixed_vtk")
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             output_dir = Path(tmp)
             vtk.export.from_result(result, output_dir=output_dir)
 
@@ -310,7 +310,7 @@ class MixedStressExportTests(unittest.TestCase):
         mesh.elements[1].type = "UnsupportedSolid"
         result = make_zero_result(mesh, "unsupported_vtk")
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             with self.assertRaisesRegex(ValueError, "Unsupported element type for VTK export: UnsupportedSolid"):
                 vtk.export.from_result(result, output_dir=Path(tmp))
 

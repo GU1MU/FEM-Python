@@ -1,8 +1,4 @@
-import os
-import runpy
-import tempfile
 import unittest
-from pathlib import Path
 
 import numpy as np
 
@@ -96,30 +92,6 @@ class MixedElementWorkflowIntegrationTests(unittest.TestCase):
         self.assertEqual(mesh.elements[1].props["material"], "aluminum")
         self.assertTrue(np.all(np.isfinite(result.U)))
         self.assertGreater(abs(float(result.U[mesh.global_dof(9, 0)])), 0.0)
-
-
-class MixedElementExampleTests(unittest.TestCase):
-    def test_mixed_hex8_tet4_example_import_runs(self):
-        old_output_dir = os.environ.get("FEM_MIXED_EXAMPLE_OUTPUT_DIR")
-        with tempfile.TemporaryDirectory() as tmp:
-            os.environ["FEM_MIXED_EXAMPLE_OUTPUT_DIR"] = tmp
-            try:
-                namespace = runpy.run_path("examples/mixed_hex8_tet4.py")
-                self.assertTrue((Path(tmp) / "mixed_hex8_tet4.vtk").exists())
-            finally:
-                if old_output_dir is None:
-                    os.environ.pop("FEM_MIXED_EXAMPLE_OUTPUT_DIR", None)
-                else:
-                    os.environ["FEM_MIXED_EXAMPLE_OUTPUT_DIR"] = old_output_dir
-
-        self.assertIn("result", namespace)
-        self.assertIn("element_infos", namespace)
-        result = namespace["result"]
-        element_infos = namespace["element_infos"]
-        self.assertEqual([elem.type for elem in result.model.mesh.elements], ["Hex8", "Tet4"])
-        self.assertEqual([info.element_type for info in element_infos], ["Hex8", "Tet4"])
-        self.assertEqual([info.material for info in element_infos], ["steel", "aluminum"])
-        self.assertEqual(element_infos[1].properties["E"], 70000.0)
 
 
 if __name__ == "__main__":

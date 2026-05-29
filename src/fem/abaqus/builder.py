@@ -47,10 +47,24 @@ def build_model(deck: AbaqusDeck) -> FEMModel:
         name: MaterialDefinition(name, dict(material.properties))
         for name, material in deck.materials.items()
     }
-    sections = [
-        SectionAssignment(section.element_set, section.material, section.section_type)
-        for section in deck.sections
-    ]
+    sections: list[SectionAssignment] = []
+    for section_index, section in enumerate(deck.sections):
+        section_element_set = section.element_set
+        section_element_ids = _unique_ids(section.element_ids)
+        resolved_element_ids = _unique_ids(deck.element_sets.get(section.element_set, ()))
+        if section_element_ids and section_element_ids != resolved_element_ids:
+            section_element_set = f"_section_{section_index}_{section.element_set}"
+            internal_element_sets[section_element_set] = ElementSet(
+                section_element_set,
+                section_element_ids,
+            )
+        sections.append(
+            SectionAssignment(
+                section_element_set,
+                section.material,
+                section.section_type,
+            )
+        )
 
     surfaces = _build_surfaces(mesh, deck, element_sets)
     steps = [

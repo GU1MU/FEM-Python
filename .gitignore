@@ -1,4 +1,5 @@
 results/
+temp/
 __pycache__/
 *.egg-info/
 .vscode/
