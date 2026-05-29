@@ -3,7 +3,7 @@
 import os
 
 from fem import materials, post, solvers, steps
-from fem.core import Element3D, ElementSet, FEMModel, Node3D, NodeSet
+from fem.core import Element3D, ElementSet, FEMModel, Node3D, NodeSet, model_element_info
 from fem.core.mesh import HexMesh3D
 
 
@@ -43,10 +43,17 @@ steps.nodal_load(load_step, "tip", component=1, value=100.0)
 steps.add(model, load_step)
 
 result = solvers.static_linear.solve(model, "pull")
+element_infos = [model_element_info(model, elem.id) for elem in mesh.elements]
 
-print("Element types:", [elem.type for elem in mesh.elements])
-print("Element materials:", [elem.props["material"] for elem in mesh.elements])
+print("Element info:")
+for info in element_infos:
+    print(
+        f"  elem {info.elem_id}: "
+        f"type={info.element_type}, "
+        f"material={info.material}, "
+        f"E={info.properties.get('E')}, "
+        f"nu={info.properties.get('nu')}"
+    )
 print("Tip ux:", float(result.U[mesh.global_dof(9, 0)]))
 
-output_dir = os.environ.get("FEM_MIXED_EXAMPLE_OUTPUT_DIR", r"results")
-post.vtk.export.from_result(result, output_dir=output_dir)
+post.vtk.export.from_result(result, output_dir=r'results', name="mixed_hex8_tet4")

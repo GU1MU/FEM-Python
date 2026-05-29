@@ -59,6 +59,34 @@ class MaterialDefinition:
 
 
 @dataclass(frozen=True)
+class ElementInfo:
+    """Read-only effective model information for one element."""
+    elem_id: int
+    type: str
+    node_ids: Sequence[int]
+    material: str | None = None
+    properties: Mapping[str, Any] = field(default_factory=dict)
+    section_type: str | None = None
+    element_sets: Sequence[str] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "elem_id", int(self.elem_id))
+        object.__setattr__(self, "type", str(self.type))
+        object.__setattr__(self, "node_ids", tuple(int(node_id) for node_id in self.node_ids))
+        if self.material is not None:
+            object.__setattr__(self, "material", str(self.material))
+        object.__setattr__(self, "properties", dict(self.properties))
+        if self.section_type is not None:
+            object.__setattr__(self, "section_type", str(self.section_type))
+        object.__setattr__(self, "element_sets", tuple(str(name) for name in self.element_sets))
+
+    @property
+    def element_type(self) -> str:
+        """Element formulation name, such as Hex8, Tet4, or Quad4Plane."""
+        return self.type
+
+
+@dataclass(frozen=True)
 class SectionAssignment:
     """Assign a material to an element set."""
     element_set: str
@@ -157,3 +185,75 @@ class FEMModel:
     sections: list[SectionAssignment] = field(default_factory=list)
     steps: list[AnalysisStep] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def model_element_info(model: FEMModel, elem_id: int) -> ElementInfo:
+    """Return effective type, set, section, and material data for one element id."""
+    elem_id = int(elem_id)
+    elem = _model_element(model, elem_id)
+    properties = dict(getattr(elem, "props", {}))
+    section = _matching_section(model, elem_id)
+
+    material = properties.get("material")
+    section_type = None
+    if section is not None:
+        if section.material not in model.materials:
+            raise KeyError(f"material {section.material} is not defined")
+        effective = dict(model.materials[section.material].properties)
+        effective.update(section.properties)
+        effective["material"] = section.material
+        properties.update(effective)
+        material = section.material
+        section_type = section.section_type
+
+    return ElementInfo(
+        elem_id=elem.id,
+        type=elem.type,
+        node_ids=elem.node_ids,
+        material=material,
+        properties=properties,
+        section_type=section_type,
+        element_sets=_element_set_names(model, elem_id),
+    )
+
+
+def _model_element(model: FEMModel, elem_id: int) -> Any:
+    """Return a mesh element by id."""
+    for elem in model.mesh.elements:
+        if int(elem.id) == elem_id:
+            return elem
+    raise KeyError(f"element {elem_id} is not defined")
+
+
+def _matching_section(model: FEMModel, elem_id: int) -> SectionAssignment | None:
+    """Return the last section assignment covering an element."""
+    match = None
+    for section in model.sections:
+        element_set = _model_element_set(model, section.element_set)
+        if elem_id in element_set.element_ids:
+            match = section
+    return match
+
+
+def _element_set_names(model: FEMModel, elem_id: int) -> tuple[str, ...]:
+    """Return public and importer-internal element set names containing an element."""
+    names: list[str] = []
+    for name, element_set in _all_model_element_sets(model).items():
+        if elem_id in element_set.element_ids:
+            names.append(str(name))
+    return tuple(names)
+
+
+def _model_element_set(model: FEMModel, name: str) -> ElementSet:
+    """Return a public or importer-internal element set."""
+    element_sets = _all_model_element_sets(model)
+    if name in element_sets:
+        return element_sets[name]
+    raise KeyError(f"element set {name} is not defined")
+
+
+def _all_model_element_sets(model: FEMModel) -> dict[str, ElementSet]:
+    """Return public and importer-internal element sets."""
+    result = dict(model.element_sets)
+    result.update(model.metadata.get("_abaqus_internal_element_sets", {}))
+    return result

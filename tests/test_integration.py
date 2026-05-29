@@ -113,8 +113,13 @@ class MixedElementExampleTests(unittest.TestCase):
                     os.environ["FEM_MIXED_EXAMPLE_OUTPUT_DIR"] = old_output_dir
 
         self.assertIn("result", namespace)
+        self.assertIn("element_infos", namespace)
         result = namespace["result"]
+        element_infos = namespace["element_infos"]
         self.assertEqual([elem.type for elem in result.model.mesh.elements], ["Hex8", "Tet4"])
+        self.assertEqual([info.element_type for info in element_infos], ["Hex8", "Tet4"])
+        self.assertEqual([info.material for info in element_infos], ["steel", "aluminum"])
+        self.assertEqual(element_infos[1].properties["E"], 70000.0)
 
 
 if __name__ == "__main__":

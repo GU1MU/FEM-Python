@@ -18,6 +18,7 @@ from .mesh import (
 from .model import (
     AnalysisStep,
     DisplacementConstraint,
+    ElementInfo,
     ElementFace,
     ElementSet,
     FEMModel,
@@ -28,6 +29,7 @@ from .model import (
     SectionAssignment,
     Surface,
     SurfaceLoad,
+    model_element_info,
 )
 from .result import ModelResult, ModelResults
 
@@ -39,6 +41,7 @@ __all__ = [
     "Element2D",
     "Element3D",
     "ElementFace",
+    "ElementInfo",
     "ElementSet",
     "FEMModel",
     "HexMesh3D",
@@ -61,5 +64,6 @@ __all__ = [
     "dof",
     "mesh",
     "model",
+    "model_element_info",
     "result",
 ]

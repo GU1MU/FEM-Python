@@ -8,6 +8,7 @@ import numpy as np
 from fem import materials, selection
 from fem.core import mesh as core_mesh
 from fem.core import dof
+from fem.core import model as core_model
 from fem.core.dof import DofMap
 from fem.core.mesh import HexMesh3D, Node2D, Node3D, PlaneMesh2D
 from fem.core.model import (
@@ -120,6 +121,40 @@ class DofMapCoreTests(unittest.TestCase):
         self.assertEqual(model.steps[0].boundaries[0].target, "FIXED")
         self.assertEqual(model.steps[0].cloads[0].component, 3)
         self.assertEqual(model.steps[0].metadata["nlgeom"], "NO")
+
+    def test_model_element_info_returns_type_material_and_properties_by_element_id(self):
+        mesh = make_mixed_hex8_tet4_mesh()
+        model = FEMModel(mesh=mesh, name="mixed_info")
+        model.element_sets["hexes"] = ElementSet("hexes", (1,))
+        model.element_sets["tets"] = ElementSet("tets", (2,))
+        steel = materials.linear_elastic.material("steel", E=210.0, nu=0.3)
+        aluminum = materials.linear_elastic.material("aluminum", E=120.0, nu=0.25)
+        materials.add(model, steel)
+        materials.add(model, aluminum)
+        materials.assign(model, "steel", "hexes", rho=7.85)
+        materials.assign(model, "aluminum", "tets", rho=2.7)
+
+        info = core_model.model_element_info(model, 2)
+
+        self.assertIsInstance(info, core_model.ElementInfo)
+        self.assertEqual(info.elem_id, 2)
+        self.assertEqual(info.element_type, "Tet4")
+        self.assertEqual(info.type, "Tet4")
+        self.assertEqual(info.node_ids, (2, 9, 3, 6))
+        self.assertEqual(info.material, "aluminum")
+        self.assertEqual(info.section_type, "solid")
+        self.assertEqual(info.element_sets, ("tets",))
+        self.assertEqual(info.properties["material"], "aluminum")
+        self.assertEqual(info.properties["E"], 120.0)
+        self.assertEqual(info.properties["nu"], 0.25)
+        self.assertEqual(info.properties["rho"], 2.7)
+        self.assertNotIn("material", mesh.elements[1].props)
+
+    def test_model_element_info_raises_for_unknown_element_id(self):
+        model = FEMModel(mesh=make_mixed_hex8_tet4_mesh())
+
+        with self.assertRaisesRegex(KeyError, "element 99 is not defined"):
+            core_model.model_element_info(model, 99)
 
     def test_core_model_has_no_solver_or_boundary_pipeline_methods(self):
         forbidden = (
