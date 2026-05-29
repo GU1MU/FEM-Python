@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 from typing import Dict, List, Optional
 
+from ..materials import linear_elastic as linear_elastic_material
+
 
 def read(path: str) -> Dict[int, Dict[str, str]]:
     """Read material CSV into a dict keyed by material_id."""
@@ -23,6 +25,38 @@ def read(path: str) -> Dict[int, Dict[str, str]]:
             materials[mid] = {k: (v.strip() if v is not None else "") for k, v in row.items()}
 
     return materials
+
+
+def linear_elastic(path: str, name: str):
+    """Read one named linear elastic material definition from a CSV catalog."""
+
+    row = _get_material_by_name(read(path), name)
+    E = _require_float_from_material(row, ["E"], name)
+    nu = _require_float_from_material(row, ["nu", "poisson"], name)
+    rho = _get_float_from_material(row, ["rho"])
+    material_name = row.get("name", name) or name
+    return linear_elastic_material.material(material_name, E=E, nu=nu, rho=rho)
+
+
+def _get_material_by_name(
+    materials: Dict[int, Dict[str, str]],
+    name: str,
+) -> Dict[str, str]:
+    for row in materials.values():
+        if row.get("name", "").strip() == name:
+            return row
+    raise KeyError(f"material {name} is not defined")
+
+
+def _require_float_from_material(
+    mat_row: Dict[str, str],
+    keys: List[str],
+    name: str,
+) -> float:
+    value = _get_float_from_material(mat_row, keys)
+    if value is None:
+        raise KeyError(f"material {name} is missing {'/'.join(keys)}")
+    return value
 
 
 def _get_float_from_material(

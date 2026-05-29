@@ -4,10 +4,11 @@ from pathlib import Path
 
 from fem import materials, post, selection, solvers, steps
 from fem.core import ElementSet, FEMModel, NodeSet
-from fem.io import inp
+from fem.io import inp, materials as material_io
 
 
 DATA_DIR = Path(__file__).resolve().parent / "examples_data"
+MATERIALS_PATH = DATA_DIR / "examples_materials.csv"
 
 # Read only mesh topology and coordinates from Abaqus input.
 mesh = inp.read_hex8(DATA_DIR / "cantilever_beam_hex8.inp")
@@ -16,7 +17,7 @@ model = FEMModel(mesh=mesh, name="cantilever_beam_hex8")
 
 # Define element sets, material, and section data by hand.
 model.element_sets["solid"] = ElementSet("solid", selection.elements.all(mesh))
-steel = materials.linear_elastic.material("steel", E=220000.0, nu=0.3, rho=7800.0)
+steel = material_io.linear_elastic(MATERIALS_PATH, "steel")
 materials.add(model, steel)
 materials.assign(model, material="steel", element_set="solid")
 

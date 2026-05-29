@@ -5,6 +5,7 @@ import unittest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TESTS_ROOT = PROJECT_ROOT / "tests"
+EXAMPLES_ROOT = PROJECT_ROOT / "examples"
 
 
 def _string_literals(path):
@@ -36,6 +37,20 @@ class ProjectLayoutTests(unittest.TestCase):
         }
 
         self.assertIn("temp/", ignored)
+
+    def test_examples_use_shared_material_catalog_and_fixed_output_dirs(self):
+        self.assertTrue((EXAMPLES_ROOT / "examples_data" / "examples_materials.csv").exists())
+        self.assertFalse((EXAMPLES_ROOT / "examples_data" / "cantilever_beam_materials.csv").exists())
+
+        offenders = []
+        for path in EXAMPLES_ROOT.glob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            if "FEM_MIXED_EXAMPLE_OUTPUT_DIR" in text:
+                offenders.append(str(path.relative_to(PROJECT_ROOT)))
+            if "cantilever_beam_materials.csv" in text:
+                offenders.append(str(path.relative_to(PROJECT_ROOT)))
+
+        self.assertEqual([], offenders)
 
 
 if __name__ == "__main__":

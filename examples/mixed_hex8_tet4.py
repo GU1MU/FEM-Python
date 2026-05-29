@@ -1,14 +1,15 @@
 # Example: mixed Hex8 and Tet4 linear static model.
 
-import os
 from pathlib import Path
 
 from fem import materials, post, solvers, steps
 from fem.core import ElementSet, FEMModel, NodeSet, model_element_info
 from fem.io import csv as mesh_csv
+from fem.io import materials as material_io
 
 
 DATA_DIR = Path(__file__).resolve().parent / "examples_data"
+MATERIALS_PATH = DATA_DIR / "examples_materials.csv"
 
 
 mesh = mesh_csv.read_mixed3d(DATA_DIR / "mixed_hex8_tet4.csv")
@@ -19,8 +20,8 @@ model.element_sets["tets"] = ElementSet("tets", (2,))
 model.node_sets["fixed"] = NodeSet("fixed", (1, 4, 5, 8))
 model.node_sets["tip"] = NodeSet("tip", (9,))
 
-steel = materials.linear_elastic.material("steel", E=210000.0, nu=0.3)
-aluminum = materials.linear_elastic.material("aluminum", E=70000.0, nu=0.33)
+steel = material_io.linear_elastic(MATERIALS_PATH, "steel")
+aluminum = material_io.linear_elastic(MATERIALS_PATH, "aluminum")
 materials.add(model, steel)
 materials.add(model, aluminum)
 materials.assign(model, "steel", "hexes")
@@ -45,8 +46,5 @@ for info in element_infos:
     )
 print("Tip ux:", float(result.U[mesh.global_dof(9, 0)]))
 
-output_dir = os.environ.get(
-    "FEM_MIXED_EXAMPLE_OUTPUT_DIR",
-    str(Path("results") / "mixed_hex8_tet4"),
-)
+output_dir = Path("results") / "mixed_hex8_tet4"
 post.vtk.export.from_result(result, output_dir=output_dir, name="mixed_hex8_tet4")

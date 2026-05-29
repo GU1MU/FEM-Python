@@ -1334,6 +1334,7 @@ class IoPackageRefactorTests(unittest.TestCase):
         from fem.io import inp, materials as materials_io
 
         self.assertTrue(callable(materials_io.read))
+        self.assertTrue(callable(materials_io.linear_elastic))
         self.assertTrue(callable(csv_io.read_truss2d))
         self.assertTrue(callable(csv_io.read_hex8))
         self.assertTrue(callable(csv_io.read_mixed3d))

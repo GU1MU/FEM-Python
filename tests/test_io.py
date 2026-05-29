@@ -13,6 +13,7 @@ class IoPackageTests(unittest.TestCase):
         from fem.io import inp, materials as materials_io
 
         self.assertTrue(callable(materials_io.read))
+        self.assertTrue(callable(materials_io.linear_elastic))
         self.assertTrue(callable(csv_io.read_truss2d))
         self.assertTrue(callable(csv_io.read_hex8))
         self.assertTrue(callable(csv_io.read_mixed3d))
@@ -105,6 +106,32 @@ class IoPackageTests(unittest.TestCase):
         self.assertEqual(mesh.elements[0].node_ids, [1, 2, 3, 4, 5, 6, 7, 8])
         self.assertEqual(mesh.elements[1].node_ids, [2, 9, 3, 6])
         self.assertEqual(mesh.dofs_per_node, 3)
+
+    def test_material_csv_builds_named_linear_elastic_material(self):
+        from fem.io import materials as materials_io
+
+        with temporary_directory() as tmp:
+            material_path = write_inp(
+                tmp,
+                "materials.csv",
+                [
+                    "material_id,name,E,rho,nu",
+                    "1,steel,220e3,7800,0.3",
+                    "2,aluminum,70e3,2700,0.33",
+                ],
+            )
+
+            steel = materials_io.linear_elastic(material_path, "steel")
+            aluminum = materials_io.linear_elastic(material_path, "aluminum")
+
+        self.assertEqual(steel.name, "steel")
+        self.assertEqual(steel.properties["E"], 220000.0)
+        self.assertEqual(steel.properties["rho"], 7800.0)
+        self.assertEqual(steel.properties["nu"], 0.3)
+        self.assertEqual(aluminum.name, "aluminum")
+        self.assertEqual(aluminum.properties["E"], 70000.0)
+        self.assertEqual(aluminum.properties["rho"], 2700.0)
+        self.assertEqual(aluminum.properties["nu"], 0.33)
 
 
 if __name__ == "__main__":
