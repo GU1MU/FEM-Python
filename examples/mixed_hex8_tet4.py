@@ -56,4 +56,5 @@ for info in element_infos:
     )
 print("Tip ux:", float(result.U[mesh.global_dof(9, 0)]))
 
-post.vtk.export.from_result(result, output_dir=r'results', name="mixed_hex8_tet4")
+output_dir = os.environ.get("FEM_MIXED_EXAMPLE_OUTPUT_DIR", r"results")
+post.vtk.export.from_result(result, output_dir=output_dir, name="mixed_hex8_tet4")
