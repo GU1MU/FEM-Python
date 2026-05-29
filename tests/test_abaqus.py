@@ -3,7 +3,7 @@ import unittest
 
 import numpy as np
 
-from fem import abaqus
+from fem import abaqus, materials
 from fem.core.model import (
     DisplacementConstraint,
     ElementFace,
@@ -105,6 +105,53 @@ class AbaqusModelReaderTests(unittest.TestCase):
         bc = static_linear.boundary_for_step(model, "LOAD")
         self.assertEqual(len(bc.prescribed_displacements), 12)
         self.assertAlmostEqual(sum(bc.nodal_forces.values()), -200.0)
+
+    def test_abaqus_read_hides_internal_element_sets_without_breaking_surfaces_or_sections(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_inp(
+                tmp,
+                "test_abaqus_internal_element_sets.inp",
+                [
+                    "*Node",
+                    "1, 0., 0., 0.",
+                    "2, 1., 0., 0.",
+                    "3, 1., 1., 0.",
+                    "4, 0., 1., 0.",
+                    "5, 0., 0., 1.",
+                    "6, 1., 0., 1.",
+                    "7, 1., 1., 1.",
+                    "8, 0., 1., 1.",
+                    "*Element, type=C3D8, elset=_PickedSet7",
+                    "1, 1,2,3,4,5,6,7,8",
+                    "*Elset, elset=_Surface_Pressure_Load_1_Face_S4",
+                    "1",
+                    "*Surface, type=ELEMENT, name=Surface_Pressure_Load_1_Face",
+                    "_Surface_Pressure_Load_1_Face_S4, S4",
+                    "*Material, name=STEEL",
+                    "*Elastic",
+                    "210., 0.3",
+                    "*Solid Section, elset=_PickedSet7, material=STEEL",
+                    "*Step, name=LOAD",
+                    "*Static",
+                    "*Dsload",
+                    "Surface_Pressure_Load_1_Face, P, 2.",
+                    "*End Step",
+                ],
+            )
+
+            model = abaqus.read(path)
+
+        self.assertEqual(model.element_sets, {})
+        self.assertEqual(
+            model.surfaces["Surface_Pressure_Load_1_Face"].faces[0],
+            ElementFace(1, 5, (2, 3, 7, 6)),
+        )
+
+        bc = static_linear.boundary_for_step(model, "LOAD")
+        self.assertEqual(len(bc.surface_tractions), 1)
+
+        materials.apply_sections(model)
+        self.assertEqual(model.mesh.elements[0].props["material"], "STEEL")
 
     def test_abaqus_read_inherits_initial_boundaries_across_steps(self):
         with tempfile.TemporaryDirectory() as tmp:

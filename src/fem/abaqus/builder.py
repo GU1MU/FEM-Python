@@ -33,6 +33,16 @@ def build_model(deck: AbaqusDeck) -> FEMModel:
         name: ElementSet(name, _unique_ids(ids))
         for name, ids in deck.element_sets.items()
     }
+    visible_element_sets = {
+        name: element_set
+        for name, element_set in element_sets.items()
+        if not _is_internal_element_set(name)
+    }
+    internal_element_sets = {
+        name: element_set
+        for name, element_set in element_sets.items()
+        if _is_internal_element_set(name)
+    }
     materials = {
         name: MaterialDefinition(name, dict(material.properties))
         for name, material in deck.materials.items()
@@ -51,11 +61,12 @@ def build_model(deck: AbaqusDeck) -> FEMModel:
         mesh=mesh,
         name=deck.name,
         node_sets=node_sets,
-        element_sets=element_sets,
+        element_sets=visible_element_sets,
         surfaces=surfaces,
         materials=materials,
         sections=sections,
         steps=steps,
+        metadata={"_abaqus_internal_element_sets": internal_element_sets},
     )
     return model
 
@@ -411,3 +422,8 @@ def _unique_ids(ids: Any) -> tuple[int, ...]:
             seen.add(value)
             result.append(value)
     return tuple(result)
+
+
+def _is_internal_element_set(name: str) -> bool:
+    """Return whether an Abaqus element set should stay out of public model sets."""
+    return str(name).startswith("_")

@@ -39,14 +39,13 @@ def apply_sections(model: Any) -> None:
     for section in model.sections:
         if section.material not in model.materials:
             raise KeyError(f"material {section.material} is not defined")
-        if section.element_set not in model.element_sets:
-            raise KeyError(f"element set {section.element_set} is not defined")
+        element_set = _section_element_set(model, section.element_set)
 
         props = dict(model.materials[section.material].properties)
         props.update(section.properties)
         props["material"] = section.material
 
-        for element_id in model.element_sets[section.element_set].element_ids:
+        for element_id in element_set.element_ids:
             if element_id not in element_lookup:
                 raise KeyError(f"element {element_id} is not defined")
             elem = element_lookup[element_id]
@@ -54,3 +53,13 @@ def apply_sections(model: Any) -> None:
                 elem.props.pop(key, None)
             elem.props.update(props)
             section_keys[element_id] = tuple(props)
+
+
+def _section_element_set(model: Any, name: str) -> ElementSet:
+    """Return a public or importer-internal element set used by a section."""
+    if name in model.element_sets:
+        return model.element_sets[name]
+    internal_sets = model.metadata.get("_abaqus_internal_element_sets", {})
+    if name in internal_sets:
+        return internal_sets[name]
+    raise KeyError(f"element set {name} is not defined")
