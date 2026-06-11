@@ -6,6 +6,8 @@ from scipy.sparse import csr_matrix
 from fem import boundary, materials, post, selection, solvers
 from fem.assemble import assemble_global_stiffness, assemble_global_stiffness_sparse
 from fem.elements import get_element_kernel
+from fem.elements.hexahedron import hex8_shape_funcs_grads
+from fem.elements.tetrahedron import TET10_NATURAL_NODE_COORDS, tet10_gauss_points
 from fem.core.dof import DofMap
 from fem.core.mesh import BeamMesh2D, Element2D, Element3D, HexMesh3D, Node2D, Node3D, PlaneMesh2D, TetMesh3D, TrussMesh2D
 from fem.core.model import (
@@ -23,7 +25,11 @@ from fem.core.model import (
 )
 from fem.core.result import ModelResult, ModelResults
 from tests.helpers.file_builders import write_inp
-from tests.helpers.paths import fresh_test_output_dir, temporary_directory, test_output_path
+from tests.helpers.paths import (
+    fresh_test_output_dir,
+    temporary_directory,
+    test_output_path as output_path_for_test,
+)
 
 
 class DofMapRegressionTests(unittest.TestCase):
@@ -1239,18 +1245,6 @@ class SolidStressKernelRegressionTests(unittest.TestCase):
         hex8_mesh = self.make_hex8_mesh()
         tet4_mesh = self.make_tet4_mesh()
         tet10_mesh = self.make_tet10_mesh()
-        tet10_coords = [
-            (0.0, 0.0, 0.0),
-            (1.0, 0.0, 0.0),
-            (0.0, 1.0, 0.0),
-            (0.0, 0.0, 1.0),
-            (0.5, 0.0, 0.0),
-            (0.5, 0.5, 0.0),
-            (0.0, 0.5, 0.0),
-            (0.0, 0.0, 0.5),
-            (0.5, 0.0, 0.5),
-            (0.0, 0.5, 0.5),
-        ]
 
         for mesh in (hex8_mesh, tet4_mesh, tet10_mesh):
             elem = mesh.elements[0]
@@ -1260,7 +1254,7 @@ class SolidStressKernelRegressionTests(unittest.TestCase):
 
             if elem.type.lower() == "hex8":
                 a = 1.0 / np.sqrt(3.0)
-                gps = [
+                gauss_points = [
                     (-a, -a, -a),
                     (a, -a, -a),
                     (a, a, -a),
@@ -1270,21 +1264,33 @@ class SolidStressKernelRegressionTests(unittest.TestCase):
                     (a, a, a),
                     (-a, a, a),
                 ]
-                gp_stresses = [
+                gp_stresses = np.array([
                     kernel.stress_at(mesh, elem, U, *gp, node_lookup)
-                    for gp in gps
-                ]
-                expected = np.tile(np.mean(gp_stresses, axis=0), (8, 1))
+                    for gp in gauss_points
+                ], dtype=float)
+                n_gp = np.array([
+                    hex8_shape_funcs_grads(*gp)[0]
+                    for gp in gauss_points
+                ], dtype=float)
+                expected = np.linalg.solve(n_gp, gp_stresses)
                 node_vals = kernel.nodal_stress(mesh, elem, U, node_lookup)
             elif elem.type.lower() == "tet4":
                 stress = kernel.stress_at(mesh, elem, U, 0.25, 0.25, 0.25, node_lookup)
                 expected = np.tile(stress, (4, 1))
                 node_vals = kernel.nodal_stress(mesh, elem, U, node_lookup)
             else:
-                expected = np.array([
+                gauss_coords = [(xi, eta, zeta) for xi, eta, zeta, _ in tet10_gauss_points()]
+                gp_stresses = np.array([
                     kernel.stress_at(mesh, elem, U, *coords, node_lookup)
-                    for coords in tet10_coords
+                    for coords in gauss_coords
                 ], dtype=float)
+                a_gp = np.array([[1.0, *coords] for coords in gauss_coords], dtype=float)
+                coeffs = np.linalg.solve(a_gp, gp_stresses)
+                a_nodes = np.array([
+                    [1.0, *coords]
+                    for coords in TET10_NATURAL_NODE_COORDS
+                ], dtype=float)
+                expected = a_nodes @ coeffs
                 node_vals = kernel.nodal_stress(mesh, elem, U, node_lookup)
 
             self.assertTrue(np.allclose(node_vals, expected))
@@ -1398,7 +1404,7 @@ class AbaqusModelReaderTests(unittest.TestCase):
     def test_abaqus_read_builds_model_with_sets_surfaces_materials_and_steps(self):
         from fem import abaqus
 
-        path = test_output_path("test_abaqus_model.inp")
+        path = output_path_for_test("test_abaqus_model.inp")
         path.parent.mkdir(exist_ok=True)
         path.write_text(
             "\n".join(
@@ -1469,7 +1475,7 @@ class AbaqusModelReaderTests(unittest.TestCase):
     def test_abaqus_read_inherits_initial_boundaries_across_steps(self):
         from fem import abaqus
 
-        path = test_output_path("test_abaqus_initial_steps.inp")
+        path = output_path_for_test("test_abaqus_initial_steps.inp")
         path.parent.mkdir(exist_ok=True)
         path.write_text(
             "\n".join(
@@ -1519,7 +1525,7 @@ class AbaqusModelReaderTests(unittest.TestCase):
     def test_abaqus_read_prefers_assembly_node_set_over_part_set_for_load_targets(self):
         from fem import abaqus
 
-        path = test_output_path("test_abaqus_scoped_node_sets.inp")
+        path = output_path_for_test("test_abaqus_scoped_node_sets.inp")
         path.parent.mkdir(exist_ok=True)
         path.write_text(
             "\n".join(
@@ -1573,7 +1579,7 @@ class AbaqusModelReaderTests(unittest.TestCase):
     def test_abaqus_read_converts_dsload_and_dload_pressure_to_surface_tractions(self):
         from fem import abaqus
 
-        path = test_output_path("test_abaqus_surface_loads.inp")
+        path = output_path_for_test("test_abaqus_surface_loads.inp")
         path.parent.mkdir(exist_ok=True)
         path.write_text(
             "\n".join(
@@ -1623,7 +1629,7 @@ class AbaqusModelReaderTests(unittest.TestCase):
     def test_abaqus_read_projects_trshr_direction_to_surface_tangent(self):
         from fem import abaqus
 
-        path = test_output_path("test_abaqus_trshr_surface_load.inp")
+        path = output_path_for_test("test_abaqus_trshr_surface_load.inp")
         path.parent.mkdir(exist_ok=True)
         path.write_text(
             "\n".join(
@@ -1666,7 +1672,7 @@ class AbaqusModelReaderTests(unittest.TestCase):
     def test_abaqus_trshr_rejects_nonplanar_faces(self):
         from fem import abaqus
 
-        path = test_output_path("test_abaqus_trshr_nonplanar_face.inp")
+        path = output_path_for_test("test_abaqus_trshr_nonplanar_face.inp")
         path.parent.mkdir(exist_ok=True)
         path.write_text(
             "\n".join(
@@ -1705,7 +1711,7 @@ class AbaqusModelReaderTests(unittest.TestCase):
     def test_abaqus_read_maps_tetra_face_labels_to_local_faces(self):
         from fem import abaqus
 
-        path = test_output_path("test_abaqus_tet_face_labels.inp")
+        path = output_path_for_test("test_abaqus_tet_face_labels.inp")
         path.parent.mkdir(exist_ok=True)
         path.write_text(
             "\n".join(
@@ -1742,7 +1748,7 @@ class AbaqusModelReaderTests(unittest.TestCase):
     def test_abaqus_read_maps_hex_face_labels_to_local_faces(self):
         from fem import abaqus
 
-        path = test_output_path("test_abaqus_hex_face_labels.inp")
+        path = output_path_for_test("test_abaqus_hex_face_labels.inp")
         path.parent.mkdir(exist_ok=True)
         path.write_text(
             "\n".join(
@@ -1824,7 +1830,7 @@ class AbaqusModelReaderTests(unittest.TestCase):
         from fem import abaqus
         from fem.solvers import static_linear
 
-        path = test_output_path("test_abaqus_tet10_face_labels.inp")
+        path = output_path_for_test("test_abaqus_tet10_face_labels.inp")
         path.parent.mkdir(exist_ok=True)
         path.write_text(
             "\n".join(
@@ -1898,7 +1904,7 @@ class AbaqusModelReaderTests(unittest.TestCase):
         from fem import abaqus
         from fem.solvers import static_linear
 
-        path = test_output_path("test_abaqus_tet_pressure_direction.inp")
+        path = output_path_for_test("test_abaqus_tet_pressure_direction.inp")
         path.parent.mkdir(exist_ok=True)
         path.write_text(
             "\n".join(
@@ -1955,7 +1961,7 @@ class AbaqusModelReaderTests(unittest.TestCase):
     def test_abaqus_read_accumulates_repeated_sets_and_scales_trvec_loads(self):
         from fem import abaqus
 
-        path = test_output_path("test_abaqus_sets_trvec.inp")
+        path = output_path_for_test("test_abaqus_sets_trvec.inp")
         path.parent.mkdir(exist_ok=True)
         path.write_text(
             "\n".join(
@@ -2004,7 +2010,7 @@ class AbaqusModelReaderTests(unittest.TestCase):
     def test_abaqus_read_stores_output_requests_on_steps(self):
         from fem import abaqus
 
-        path = test_output_path("test_abaqus_output_requests.inp")
+        path = output_path_for_test("test_abaqus_output_requests.inp")
         path.parent.mkdir(exist_ok=True)
         path.write_text(
             "\n".join(
@@ -2115,8 +2121,8 @@ class PostPackageRefactorTests(unittest.TestCase):
             ],
         )
 
-        elem_path = test_output_path("test_post_stress_element.csv")
-        nodal_path = test_output_path("test_post_stress_nodal.csv")
+        elem_path = output_path_for_test("test_post_stress_element.csv")
+        nodal_path = output_path_for_test("test_post_stress_nodal.csv")
 
         stress.export.element(mesh, np.zeros(mesh.num_dofs), elem_path)
         stress.export.nodal(mesh, np.zeros(mesh.num_dofs), nodal_path)
@@ -2128,7 +2134,8 @@ class PostPackageRefactorTests(unittest.TestCase):
 
         self.assertEqual(elem_rows[0][0], "elem_id")
         self.assertEqual(len(elem_rows), 2)
-        self.assertEqual(nodal_rows[0][0], "node_id")
+        self.assertEqual(nodal_rows[0][0], "source_elem_id")
+        self.assertEqual(nodal_rows[0][2], "original_node_id")
         self.assertEqual(len(nodal_rows), 9)
 
     def test_vtk_export_from_result_materializes_missing_csvs(self):
@@ -2233,7 +2240,7 @@ class PostPackageRefactorTests(unittest.TestCase):
     def test_vtk_element_stress_reader_averages_repeated_element_rows(self):
         from fem.post.vtk import fields
 
-        path = test_output_path("test_vtk_element_stress_average.csv")
+        path = output_path_for_test("test_vtk_element_stress_average.csv")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             "elem_id,node_id,local_node,sig_x,sig_y,tau_xy,mises_stress\n"
@@ -2254,7 +2261,7 @@ class PostPackageRefactorTests(unittest.TestCase):
             nodes=[Node2D(1, 0.0, 0.0), Node2D(2, 1.0, 0.0)],
             elements=[Element2D(1, [1, 2], "Beam2D")],
         )
-        path = test_output_path("nested", "beam_displacement.csv")
+        path = output_path_for_test("nested", "beam_displacement.csv")
 
         displacement.export.nodal(mesh, np.zeros(mesh.num_dofs), path)
 

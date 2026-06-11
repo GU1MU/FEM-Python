@@ -26,10 +26,20 @@ def nodal(
     path: str,
     element_type: str | None = None,
     gauss_order: int | None = None,
+    model: Any | None = None,
+    averaging_policy: Any | None = None,
 ) -> None:
     """Export nodal stresses to CSV. Element type is inferred when possible."""
     type_keys = dispatch.resolve_type_keys(mesh, element_type)
     if len(type_keys) == 1:
-        nodal_export.by_type(type_keys[0], mesh, U, path, gauss_order)
+        nodal_export.by_type(
+            type_keys[0],
+            mesh,
+            U,
+            path,
+            gauss_order,
+            model,
+            averaging_policy,
+        )
         return
-    nodal_export.mixed(type_keys, mesh, U, path, gauss_order)
+    nodal_export.mixed(type_keys, mesh, U, path, gauss_order, model, averaging_policy)

@@ -1,5 +1,5 @@
 from __future__ import annotations
 
-from . import dispatch, element, export, invariants, nodal
+from . import averaging, dispatch, element, export, invariants, nodal
 
-__all__ = ["dispatch", "element", "export", "invariants", "nodal"]
+__all__ = ["averaging", "dispatch", "element", "export", "invariants", "nodal"]

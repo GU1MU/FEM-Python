@@ -7,9 +7,16 @@ import unittest
 import numpy as np
 
 import fem.post as post
-from fem.core.mesh import BeamMesh2D, Element2D, Node2D, PlaneMesh2D
+from fem.core.mesh import BeamMesh2D, Element2D, Element3D, Node2D, Node3D, PlaneMesh2D, TetMesh3D
+from fem.core.model import ElementSet, FEMModel, MaterialDefinition, SectionAssignment
 from fem.post import displacement, path, polar, stress, vtk
 from fem.post.stress import dispatch
+from fem.post.stress.averaging import (
+    ElementNodalContribution,
+    RegionKey,
+    StressAveragingPolicy,
+    average_solid_nodal_contributions,
+)
 from fem.post.polar import convert_nodal_solution_into_polar_coord
 from fem.post.vtk.polar import convert_nodal_displacement
 from tests.helpers.mesh_builders import (
@@ -114,7 +121,8 @@ class PostPackageTests(unittest.TestCase):
 
         self.assertEqual(elem_rows[0][0], "elem_id")
         self.assertEqual(len(elem_rows), 2)
-        self.assertEqual(nodal_rows[0][0], "node_id")
+        self.assertEqual(nodal_rows[0][0], "source_elem_id")
+        self.assertEqual(nodal_rows[0][2], "original_node_id")
         self.assertEqual(len(nodal_rows), 9)
 
     def test_vtk_export_from_result_materializes_missing_csvs(self):
@@ -192,6 +200,144 @@ class PostPackageTests(unittest.TestCase):
         self.assertNotIn("uz", header)
 
 
+class StressAveragingTests(unittest.TestCase):
+    def _contribution(
+        self,
+        elem_id,
+        stress,
+        *,
+        node_id=10,
+        local_node=1,
+        material="steel",
+        section="solid",
+        element_type="hex8",
+    ):
+        return ElementNodalContribution(
+            source_elem_id=elem_id,
+            source_local_node=local_node,
+            original_node_id=node_id,
+            region_key=RegionKey(material, section, element_type),
+            x=1.0,
+            y=2.0,
+            z=3.0,
+            stress=stress,
+        )
+
+    def test_averaging_keeps_same_region_below_mises_threshold_in_one_cluster(self):
+        rows = average_solid_nodal_contributions(
+            [
+                self._contribution(1, (100.0, 0.0, 0.0, 0.0, 0.0, 0.0)),
+                self._contribution(2, (110.0, 10.0, 0.0, 0.0, 0.0, 0.0), local_node=2),
+                self._contribution(
+                    3,
+                    (1000.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                    node_id=99,
+                ),
+            ],
+            StressAveragingPolicy(threshold=75.0),
+        )
+
+        node_rows = [row for row in rows if row.original_node_id == 10]
+        self.assertEqual({row.cluster_id for row in node_rows}, {0})
+        self.assertEqual(len(node_rows), 2)
+        for row in node_rows:
+            self.assertEqual(row.original_node_id, 10)
+            self.assertEqual(row.region_id, 1)
+            self.assertEqual(row.stress, (105.0, 5.0, 0.0, 0.0, 0.0, 0.0))
+
+    def test_averaging_splits_same_region_when_mises_threshold_is_exceeded(self):
+        rows = average_solid_nodal_contributions(
+            [
+                self._contribution(1, (100.0, 0.0, 0.0, 0.0, 0.0, 0.0)),
+                self._contribution(2, (105.0, 0.0, 0.0, 0.0, 0.0, 0.0), local_node=2),
+                self._contribution(3, (500.0, 0.0, 0.0, 0.0, 0.0, 0.0), local_node=3),
+            ],
+            StressAveragingPolicy(threshold=75.0),
+        )
+
+        self.assertEqual([row.cluster_id for row in rows], [0, 1, 2])
+        self.assertEqual(rows[0].stress[0], 100.0)
+        self.assertEqual(rows[1].stress[0], 105.0)
+        self.assertEqual(rows[2].stress[0], 500.0)
+
+    def test_averaging_uses_region_mises_range_for_threshold(self):
+        rows = average_solid_nodal_contributions(
+            [
+                self._contribution(1, (452.3077, 0.0, 0.0, 0.0, 0.0, 0.0)),
+                self._contribution(
+                    2,
+                    (735.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                    local_node=2,
+                ),
+                self._contribution(
+                    3,
+                    (662.3077, 0.0, 0.0, 0.0, 0.0, 0.0),
+                    local_node=3,
+                ),
+                self._contribution(
+                    4,
+                    (759.2308, 0.0, 0.0, 0.0, 0.0, 0.0),
+                    local_node=4,
+                ),
+                self._contribution(
+                    5,
+                    (476.5385, 0.0, 0.0, 0.0, 0.0, 0.0),
+                    local_node=5,
+                ),
+                self._contribution(
+                    6,
+                    (549.2308, 0.0, 0.0, 0.0, 0.0, 0.0),
+                    local_node=6,
+                ),
+            ],
+            StressAveragingPolicy(threshold=75.0),
+        )
+
+        self.assertEqual([row.cluster_id for row in rows], [0, 1, 2, 3, 4, 5])
+        self.assertEqual([round(row.stress[0], 4) for row in rows], [
+            452.3077,
+            735.0,
+            662.3077,
+            759.2308,
+            476.5385,
+            549.2308,
+        ])
+
+    def test_averaging_does_not_cross_material_regions(self):
+        rows = average_solid_nodal_contributions(
+            [
+                self._contribution(1, (100.0, 0.0, 0.0, 0.0, 0.0, 0.0), material="steel"),
+                self._contribution(
+                    2,
+                    (110.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                    local_node=2,
+                    material="aluminum",
+                ),
+            ],
+        )
+
+        self.assertEqual(len(rows), 2)
+        self.assertNotEqual(rows[0].region_id, rows[1].region_id)
+        self.assertEqual([row.stress[0] for row in rows], [110.0, 100.0])
+
+    def test_averaging_does_not_cross_element_type_regions(self):
+        rows = average_solid_nodal_contributions(
+            [
+                self._contribution(1, (100.0, 0.0, 0.0, 0.0, 0.0, 0.0), element_type="hex8"),
+                self._contribution(
+                    2,
+                    (110.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                    local_node=2,
+                    element_type="tet4",
+                ),
+            ],
+        )
+
+        self.assertEqual(len(rows), 2)
+        self.assertNotEqual(rows[0].region_id, rows[1].region_id)
+        self.assertEqual(sorted(row.element_type_id for row in rows), [1, 2])
+
+
 class MixedStressDispatchTests(unittest.TestCase):
     def test_dispatch_resolves_compatible_mixed_solid_type_keys(self):
         mesh = make_mixed_hex8_tet4_mesh()
@@ -231,9 +377,54 @@ class MixedStressExportTests(unittest.TestCase):
             with csv_path.open("r", encoding="utf-8") as f:
                 rows = list(csv.reader(f))
 
-        self.assertEqual(rows[0][0], "node_id")
-        self.assertEqual(len(rows), len(mesh.nodes) + 1)
-        self.assertEqual({row[0] for row in rows[1:]}, {str(node.id) for node in mesh.nodes})
+        self.assertEqual(rows[0][0], "source_elem_id")
+        self.assertEqual(rows[0][1], "source_local_node")
+        self.assertEqual(rows[0][2], "original_node_id")
+        self.assertEqual(len(rows), 13)
+        self.assertEqual({row[2] for row in rows[1:]}, {str(node.id) for node in mesh.nodes})
+        self.assertEqual([row[0] for row in rows[1:]].count("1"), 8)
+        self.assertEqual([row[0] for row in rows[1:]].count("2"), 4)
+
+    def test_nodal_stress_export_does_not_average_across_model_sections(self):
+        mesh = TetMesh3D(
+            nodes=[
+                Node3D(1, 0.0, 0.0, 0.0),
+                Node3D(2, 1.0, 0.0, 0.0),
+                Node3D(3, 0.0, 1.0, 0.0),
+                Node3D(4, 0.0, 0.0, 1.0),
+                Node3D(5, 2.0, 0.0, 0.0),
+                Node3D(6, 0.0, 2.0, 0.0),
+                Node3D(7, 0.0, 0.0, 2.0),
+            ],
+            elements=[
+                Element3D(1, [1, 2, 3, 4], "Tet4", {"E": 210.0, "nu": 0.3}),
+                Element3D(2, [1, 5, 6, 7], "Tet4", {"E": 210.0, "nu": 0.3}),
+            ],
+        )
+        model = FEMModel(
+            mesh=mesh,
+            element_sets={
+                "section_a": ElementSet("section_a", [1]),
+                "section_b": ElementSet("section_b", [2]),
+            },
+            materials={"steel": MaterialDefinition("steel", {"E": 210.0, "nu": 0.3})},
+            sections=[
+                SectionAssignment("section_a", "steel", "solid", {"name": "A"}),
+                SectionAssignment("section_b", "steel", "solid", {"name": "B"}),
+            ],
+        )
+
+        with temporary_directory() as tmp:
+            csv_path = Path(tmp) / "section_nodal_stress.csv"
+            stress.export.nodal(mesh, np.zeros(mesh.num_dofs), csv_path, model=model)
+            with csv_path.open("r", encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+
+        shared_rows = [row for row in rows if row["original_node_id"] == "1"]
+        self.assertEqual(len(shared_rows), 2)
+        self.assertEqual({row["material_id"] for row in shared_rows}, {"1"})
+        self.assertEqual(len({row["section_id"] for row in shared_rows}), 2)
+        self.assertEqual(len({row["region_id"] for row in shared_rows}), 2)
 
     def test_stress_exports_write_mixed_plane_rows_and_nodes(self):
         mesh = make_mixed_tri3_quad4_mesh()
@@ -290,7 +481,8 @@ class MixedStressExportTests(unittest.TestCase):
         self.assertIn("\n24\n", vtk_text)
 
     def test_vtk_export_from_result_materializes_mixed_stress_csvs(self):
-        result = make_zero_result(make_mixed_hex8_tet4_mesh(), "mixed_vtk")
+        mesh = make_mixed_hex8_tet4_mesh()
+        result = make_zero_result(mesh, "mixed_vtk")
 
         with temporary_directory() as tmp:
             output_dir = Path(tmp)
@@ -300,10 +492,23 @@ class MixedStressExportTests(unittest.TestCase):
             self.assertTrue((output_dir / "mixed_vtk_element_stress.csv").exists())
             self.assertTrue((output_dir / "mixed_vtk_nodal_stress.csv").exists())
             vtk_text = (output_dir / "mixed_vtk.vtk").read_text(encoding="utf-8")
+            region_rows = vtk.fields.read_region_nodal_stress(
+                output_dir / "mixed_vtk_nodal_stress.csv"
+            )
+            _, vtk_cells, _, _ = vtk.cells.build_region_aware(mesh, region_rows)
 
         self.assertIn("CELL_TYPES 2", vtk_text)
+        self.assertIn("POINTS 12 float", vtk_text)
+        self.assertIn("VECTORS displacement float", vtk_text)
+        self.assertIn("SCALARS sig_x float 1", vtk_text)
+        self.assertIn("SCALARS mises float 1", vtk_text)
+        self.assertNotIn("SCALARS original_node_id", vtk_text)
+        self.assertNotIn("SCALARS region_id", vtk_text)
+        self.assertNotIn("SCALARS cluster_id", vtk_text)
+        self.assertNotIn("SCALARS original_element_id", vtk_text)
         self.assertIn("\n12\n", vtk_text)
         self.assertIn("\n10\n", vtk_text)
+        self.assertNotEqual(vtk_cells[0][2], vtk_cells[1][1])
 
     def test_vtk_cells_report_unsupported_element_type(self):
         mesh = make_mixed_hex8_tet4_mesh()

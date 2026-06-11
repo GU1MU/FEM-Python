@@ -1,0 +1,69 @@
+** Case 6C-1: mixed element type, C3D8 and C3D4 sharing nodes
+** Full-node displacement boundary benchmark
+** FLAT input: no *Part/*Assembly/*Instance, so boundary node labels are plain integers.
+*Heading
+Case 6C-1: mixed element type, C3D8 and C3D4 sharing nodes
+** Same material, different element types. Shared original nodes between Hex8 and Tet4 should not be averaged across element_type regions.
+*Preprint, echo=NO, model=NO, history=NO, contact=NO
+*Node
+1, 0, 0, 0
+2, 1, 0, 0
+3, 1, 1, 0
+4, 0, 1, 0
+5, 0, 0, 1
+6, 1, 0, 1
+7, 1, 1, 1
+8, 0, 1, 1
+9, 2, 0.25, 0.25
+*Element, type=C3D8, elset=EHEX
+1, 1, 2, 3, 4, 5, 6, 7, 8
+*Element, type=C3D4, elset=ETET
+2, 2, 9, 3, 6
+*Material, name=MAT_A
+*Elastic
+210000, 0.3
+*Solid Section, elset=EHEX, material=MAT_A
+,
+*Solid Section, elset=ETET, material=MAT_A
+,
+*Nset, nset=ALLNODES
+1, 2, 3, 4, 5, 6, 7, 8, 9
+*Step, name=Step-1, nlgeom=NO
+*Static
+1., 1., 1e-05, 1.
+*Boundary, OP=NEW
+1, 1, 1, 0
+1, 2, 2, 0
+1, 3, 3, 0
+2, 1, 1, 0.001
+2, 2, 2, 0
+2, 3, 3, 0
+3, 1, 1, 0.002
+3, 2, 2, 0.0005
+3, 3, 3, 0
+4, 1, 1, 0
+4, 2, 2, 0.0005
+4, 3, 3, 0
+5, 1, 1, 0
+5, 2, 2, 0
+5, 3, 3, 0.0003
+6, 1, 1, 0.001
+6, 2, 2, 0
+6, 3, 3, 0.0009
+7, 1, 1, 0.002
+7, 2, 2, 0.0013
+7, 3, 3, 0.0009
+8, 1, 1, 0
+8, 2, 2, 0.0013
+8, 3, 3, 0.0003
+9, 1, 1, 0.0025
+9, 2, 2, 0.000175
+9, 3, 3, 0.000375
+** Abaqus normally stores S at integration points in the ODB.
+** For comparison, extrapolate in odbAccess/CAE to ELEMENT_NODAL, then average by your own region/cluster rules.
+*Output, field, frequency=1
+*Node Output
+U, RF
+*Element Output, directions=YES
+S, E
+*End Step

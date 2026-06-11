@@ -31,6 +31,7 @@ def from_result(
         polar_center=polar_center,
         U=result.U,
         overwrite=overwrite,
+        model=result.model,
     )
 
 
@@ -44,6 +45,7 @@ def from_csv(
     polar_center: Optional[Sequence[float]] = None,
     U: Optional[Sequence[float]] = None,
     overwrite: bool = False,
+    model: Any | None = None,
 ) -> None:
     """Convert displacement and stress CSV files to VTK."""
     disp_csv_path = Path(disp_csv_path)
@@ -63,6 +65,7 @@ def from_csv(
             elem_csv_path,
             nodal_stress_csv_path,
             overwrite,
+            model,
         )
 
     node_disp = fields.read_displacement(mesh, disp_csv_path)
@@ -72,17 +75,21 @@ def from_csv(
             raise ValueError("from_csv: polar_center required when polar=True")
         node_disp = polar_fields.convert_nodal_displacement(mesh, node_disp, polar_center)
 
-    nodal_fields = {}
-    if nodal_stress_csv_path is not None:
-        nodal_fields = fields.read_nodal_stress(nodal_stress_csv_path)
-    if polar and nodal_fields:
-        nodal_fields = polar_fields.convert_nodal_stress_fields(mesh, nodal_fields, polar_center)
-
     field_data = {}
     if elem_csv_path is not None:
         field_data = fields.read_element_stress(elem_csv_path)
     if polar and field_data:
         field_data = polar_fields.convert_element_stress_fields(mesh, field_data, polar_center)
+
+    nodal_fields = {}
+    if nodal_stress_csv_path is not None:
+        if fields.is_region_nodal_stress(nodal_stress_csv_path):
+            region_rows = fields.read_region_nodal_stress(nodal_stress_csv_path)
+            _write_region_aware_vtk(mesh, node_disp, region_rows, vtk_path)
+            return
+        nodal_fields = fields.read_nodal_stress(nodal_stress_csv_path)
+    if polar and nodal_fields:
+        nodal_fields = polar_fields.convert_nodal_stress_fields(mesh, nodal_fields, polar_center)
 
     vtk_path.parent.mkdir(parents=True, exist_ok=True)
     vtk_cells, cell_types, elems_for_cell = cells.build(mesh)
@@ -99,6 +106,63 @@ def from_csv(
         path=vtk_path,
         nodal_fields=nodal_fields,
     )
+
+
+def _write_region_aware_vtk(
+    mesh,
+    node_disp: dict[int, dict[str, float]],
+    region_rows: list[dict[str, float | int]],
+    vtk_path: Path,
+) -> None:
+    """Write region-aware nodal stress VTK using duplicated points."""
+    vtk_path.parent.mkdir(parents=True, exist_ok=True)
+    points, vtk_cells, cell_types, point_rows = cells.build_region_aware(mesh, region_rows)
+    if not vtk_cells:
+        raise ValueError("from_csv: no supported elements")
+
+    point_vectors = {
+        "displacement": [
+            _displacement_vector(node_disp, int(row["original_node_id"]))
+            for row in point_rows
+        ]
+    }
+    point_data = _region_point_data(point_rows)
+
+    writer.write_unstructured(
+        path=vtk_path,
+        points=points,
+        cells=vtk_cells,
+        cell_types=cell_types,
+        point_vectors=point_vectors,
+        point_data=point_data,
+    )
+
+
+def _displacement_vector(
+    node_disp: dict[int, dict[str, float]],
+    original_node_id: int,
+) -> tuple[float, float, float]:
+    disp = node_disp.get(original_node_id, {"ux": 0.0, "uy": 0.0, "uz": 0.0})
+    return (
+        float(disp.get("ux", 0.0)),
+        float(disp.get("uy", 0.0)),
+        float(disp.get("uz", 0.0)),
+    )
+
+
+def _region_point_data(
+    point_rows: list[dict[str, float | int]],
+) -> dict[str, list[float | int]]:
+    names = [
+        "sig_x",
+        "sig_y",
+        "sig_z",
+        "tau_xy",
+        "tau_yz",
+        "tau_zx",
+        "mises",
+    ]
+    return {name: [row[name] for row in point_rows] for name in names}
 
 
 def _default_result_paths(output_dir: Path, name: str) -> dict[str, Path]:
@@ -138,6 +202,7 @@ def _export_csvs(
     elem_csv_path: Optional[Path],
     nodal_stress_csv_path: Optional[Path],
     overwrite: bool,
+    model: Any | None = None,
 ) -> None:
     """Export CSV inputs needed by the VTK writer."""
     from .. import displacement, stress
@@ -152,4 +217,4 @@ def _export_csvs(
 
     if nodal_stress_csv_path is not None and (overwrite or not nodal_stress_csv_path.exists()):
         nodal_stress_csv_path.parent.mkdir(parents=True, exist_ok=True)
-        stress.export.nodal(mesh, U, nodal_stress_csv_path)
+        stress.export.nodal(mesh, U, nodal_stress_csv_path, model=model)

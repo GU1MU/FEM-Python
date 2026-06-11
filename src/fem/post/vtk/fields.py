@@ -4,6 +4,31 @@ import csv
 from typing import Dict
 
 
+REGION_NODAL_REQUIRED = {
+    "source_elem_id",
+    "source_local_node",
+    "original_node_id",
+    "region_id",
+    "cluster_id",
+    "material_id",
+    "section_id",
+    "element_type_id",
+    "x",
+    "y",
+    "z",
+}
+REGION_NODAL_INT_FIELDS = {
+    "source_elem_id",
+    "source_local_node",
+    "original_node_id",
+    "region_id",
+    "cluster_id",
+    "material_id",
+    "section_id",
+    "element_type_id",
+}
+
+
 def read_displacement(mesh, path: str) -> Dict[int, Dict[str, float]]:
     """Read nodal displacement CSV into a node keyed field dict."""
     node_disp: Dict[int, Dict[str, float]] = {}
@@ -39,17 +64,34 @@ def read_nodal_stress(path: str) -> Dict[str, Dict[int, float]]:
     nodal_fields: Dict[str, Dict[int, float]] = {}
     with open(path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        if "node_id" not in (reader.fieldnames or []):
-            raise ValueError(f"Nodal stress CSV requires 'node_id', got {reader.fieldnames}")
+        fieldnames = reader.fieldnames or []
+        node_id_field = "node_id" if "node_id" in fieldnames else "original_node_id"
+        if node_id_field not in fieldnames:
+            raise ValueError(
+                f"Nodal stress CSV requires 'node_id' or 'original_node_id', got {reader.fieldnames}"
+            )
 
-        ignore_exact = {"node_id", "x", "y", "z"}
-        field_names = [name for name in (reader.fieldnames or []) if name not in ignore_exact]
+        ignore_exact = {
+            "node_id",
+            "original_node_id",
+            "source_elem_id",
+            "source_local_node",
+            "region_id",
+            "cluster_id",
+            "material_id",
+            "section_id",
+            "element_type_id",
+            "x",
+            "y",
+            "z",
+        }
+        field_names = [name for name in fieldnames if name not in ignore_exact]
 
         for name in field_names:
             nodal_fields[name] = {}
 
         for row in reader:
-            nid = int(row["node_id"])
+            nid = int(row[node_id_field])
             for name in field_names:
                 val_str = row.get(name, "")
                 if val_str == "":
@@ -61,6 +103,43 @@ def read_nodal_stress(path: str) -> Dict[str, Dict[int, float]]:
                 nodal_fields[name][nid] = val
 
     return nodal_fields
+
+
+def is_region_nodal_stress(path: str) -> bool:
+    """Return whether a nodal stress CSV uses the region-aware row format."""
+    with open(path, "r", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        try:
+            header = next(reader)
+        except StopIteration:
+            return False
+    return REGION_NODAL_REQUIRED.issubset(set(header))
+
+
+def read_region_nodal_stress(path: str) -> list[dict[str, float | int]]:
+    """Read region-aware nodal stress CSV rows."""
+    rows: list[dict[str, float | int]] = []
+    with open(path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        fieldnames = set(reader.fieldnames or [])
+        if not REGION_NODAL_REQUIRED.issubset(fieldnames):
+            raise ValueError(
+                f"Region nodal stress CSV requires columns {sorted(REGION_NODAL_REQUIRED)}, "
+                f"got {reader.fieldnames}"
+            )
+
+        for row in reader:
+            parsed: dict[str, float | int] = {}
+            for name, value in row.items():
+                if value == "":
+                    continue
+                if name in REGION_NODAL_INT_FIELDS:
+                    parsed[name] = int(value)
+                else:
+                    parsed[name] = float(value)
+            rows.append(parsed)
+
+    return rows
 
 
 def read_element_stress(path: str) -> Dict[str, Dict[int, float]]:

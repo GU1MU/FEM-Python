@@ -14,7 +14,13 @@ from fem.elements.quadrilateral import (
     quad8_shape_funcs_grads,
 )
 from fem.elements.registry import register_element_kernel
-from fem.elements.tetrahedron import Tet4Kernel, Tet10Kernel, tet10_shape_funcs_grads
+from fem.elements.tetrahedron import (
+    TET10_NATURAL_NODE_COORDS,
+    Tet4Kernel,
+    Tet10Kernel,
+    tet10_gauss_points,
+    tet10_shape_funcs_grads,
+)
 from fem.elements.triangle import Tri3PlaneKernel
 from tests.helpers.mesh_builders import (
     make_beam_stiffness_mesh,
@@ -44,6 +50,61 @@ def _assert_kernel_matches_explicit_node_lookup(test_case, mesh):
     expected = kernel.stiffness(mesh, elem, _node_lookup(mesh))
 
     test_case.assertTrue(np.allclose(ke, expected))
+
+
+def _hex8_extrapolated_nodal_stress(mesh, elem, U, node_lookup):
+    kernel = get_element_kernel(elem.type)
+    a = 1.0 / np.sqrt(3.0)
+    gauss_points = [
+        (-a, -a, -a),
+        (a, -a, -a),
+        (a, a, -a),
+        (-a, a, -a),
+        (-a, -a, a),
+        (a, -a, a),
+        (a, a, a),
+        (-a, a, a),
+    ]
+    gp_stresses = np.array([
+        kernel.stress_at(mesh, elem, U, xi, eta, zeta, node_lookup)
+        for xi, eta, zeta in gauss_points
+    ], dtype=float)
+    n_gp = np.array([
+        hex8_shape_funcs_grads(xi, eta, zeta)[0]
+        for xi, eta, zeta in gauss_points
+    ], dtype=float)
+    return np.linalg.solve(n_gp, gp_stresses)
+
+
+def _tet10_hammer_fit_nodal_stress(mesh, elem, U, node_lookup):
+    kernel = get_element_kernel(elem.type)
+    gauss_coords = [(xi, eta, zeta) for xi, eta, zeta, _ in tet10_gauss_points()]
+    gp_stresses = np.array([
+        kernel.stress_at(mesh, elem, U, xi, eta, zeta, node_lookup)
+        for xi, eta, zeta in gauss_coords
+    ], dtype=float)
+    a_gp = np.array([[1.0, xi, eta, zeta] for xi, eta, zeta in gauss_coords], dtype=float)
+    coeffs = np.linalg.solve(a_gp, gp_stresses)
+    a_nodes = np.array(
+        [[1.0, xi, eta, zeta] for xi, eta, zeta in TET10_NATURAL_NODE_COORDS],
+        dtype=float,
+    )
+    return a_nodes @ coeffs
+
+
+def _tet10_direct_nodal_stress(mesh, elem, U, node_lookup):
+    kernel = get_element_kernel(elem.type)
+    return np.array([
+        kernel.stress_at(mesh, elem, U, xi, eta, zeta, node_lookup)
+        for xi, eta, zeta in TET10_NATURAL_NODE_COORDS
+    ], dtype=float)
+
+
+def _make_distorted_tet10_stress_mesh():
+    mesh = make_tet10_stiffness_mesh()
+    mesh.nodes[4].z = 0.08
+    mesh.nodes[5].z = -0.04
+    return mesh
 
 
 class LineElementKernelTests(unittest.TestCase):
@@ -203,19 +264,6 @@ class TetKernelTests(unittest.TestCase):
 
 class SolidStressKernelTests(unittest.TestCase):
     def test_solid_kernels_provide_nodal_stress_matching_post_helpers(self):
-        tet10_coords = [
-            (0.0, 0.0, 0.0),
-            (1.0, 0.0, 0.0),
-            (0.0, 1.0, 0.0),
-            (0.0, 0.0, 1.0),
-            (0.5, 0.0, 0.0),
-            (0.5, 0.5, 0.0),
-            (0.0, 0.5, 0.0),
-            (0.0, 0.0, 0.5),
-            (0.5, 0.0, 0.5),
-            (0.0, 0.5, 0.5),
-        ]
-
         for mesh in (
             make_hex8_solid_stress_mesh(),
             make_tet4_stiffness_mesh(),
@@ -228,38 +276,50 @@ class SolidStressKernelTests(unittest.TestCase):
                 kernel = get_element_kernel(elem.type)
 
                 if elem.type.lower() == "hex8":
-                    a = 1.0 / np.sqrt(3.0)
-                    gps = [
-                        (-a, -a, -a),
-                        (a, -a, -a),
-                        (a, a, -a),
-                        (-a, a, -a),
-                        (-a, -a, a),
-                        (a, -a, a),
-                        (a, a, a),
-                        (-a, a, a),
-                    ]
-                    gp_stresses = [
-                        kernel.stress_at(mesh, elem, U, *gp, node_lookup)
-                        for gp in gps
-                    ]
-                    expected = np.tile(np.mean(gp_stresses, axis=0), (8, 1))
+                    expected = _hex8_extrapolated_nodal_stress(
+                        mesh, elem, U, node_lookup
+                    )
                     node_vals = kernel.nodal_stress(mesh, elem, U, node_lookup)
                 elif elem.type.lower() == "tet4":
                     stress = kernel.stress_at(mesh, elem, U, 0.25, 0.25, 0.25, node_lookup)
                     expected = np.tile(stress, (4, 1))
                     node_vals = kernel.nodal_stress(mesh, elem, U, node_lookup)
                 else:
-                    expected = np.array(
-                        [
-                            kernel.stress_at(mesh, elem, U, *coords, node_lookup)
-                            for coords in tet10_coords
-                        ],
-                        dtype=float,
+                    expected = _tet10_hammer_fit_nodal_stress(
+                        mesh, elem, U, node_lookup
                     )
                     node_vals = kernel.nodal_stress(mesh, elem, U, node_lookup)
 
                 self.assertTrue(np.allclose(node_vals, expected))
+
+    def test_hex8_nodal_stress_extrapolates_gauss_stresses_to_nodes(self):
+        mesh = make_hex8_solid_stress_mesh()
+        elem = mesh.elements[0]
+        U = np.linspace(0.01, 0.01 * mesh.num_dofs, mesh.num_dofs)
+        node_lookup = _node_lookup(mesh)
+        kernel = get_element_kernel(elem.type)
+
+        node_vals = kernel.nodal_stress(mesh, elem, U, node_lookup)
+        expected = _hex8_extrapolated_nodal_stress(mesh, elem, U, node_lookup)
+
+        self.assertEqual(node_vals.shape, (8, 6))
+        self.assertFalse(np.allclose(expected, np.tile(expected.mean(axis=0), (8, 1))))
+        self.assertTrue(np.allclose(node_vals, expected))
+
+    def test_tet10_nodal_stress_uses_hammer_point_linear_fit(self):
+        mesh = _make_distorted_tet10_stress_mesh()
+        elem = mesh.elements[0]
+        U = np.linspace(0.01, 0.01 * mesh.num_dofs, mesh.num_dofs)
+        node_lookup = _node_lookup(mesh)
+        kernel = get_element_kernel(elem.type)
+
+        node_vals = kernel.nodal_stress(mesh, elem, U, node_lookup)
+        expected = _tet10_hammer_fit_nodal_stress(mesh, elem, U, node_lookup)
+        direct = _tet10_direct_nodal_stress(mesh, elem, U, node_lookup)
+
+        self.assertEqual(node_vals.shape, (10, 6))
+        self.assertFalse(np.allclose(expected, direct))
+        self.assertTrue(np.allclose(node_vals, expected))
 
 
 class ElementsPackageTests(unittest.TestCase):

@@ -1,0 +1,93 @@
+** Case 6C-2: mixed element type, C3D8 and C3D10 sharing corner nodes
+** Full-node displacement boundary benchmark
+** FLAT input: no *Part/*Assembly/*Instance, so boundary node labels are plain integers.
+*Heading
+Case 6C-2: mixed element type, C3D8 and C3D10 sharing corner nodes
+** Same material, different element types. Hex8 and Tet10 share corner nodes only; element_type should keep separate regions.
+*Preprint, echo=NO, model=NO, history=NO, contact=NO
+*Node
+1, 0, 0, 0
+2, 1, 0, 0
+3, 1, 1, 0
+4, 0, 1, 0
+5, 0, 0, 1
+6, 1, 0, 1
+7, 1, 1, 1
+8, 0, 1, 1
+9, 2, 0.25, 0.25
+10, 1.5, 0.125, 0.125
+11, 1.5, 0.625, 0.125
+12, 1, 0.5, 0
+13, 1, 0, 0.5
+14, 1.5, 0.125, 0.625
+15, 1, 0.5, 0.5
+*Element, type=C3D8, elset=EHEX
+1, 1, 2, 3, 4, 5, 6, 7, 8
+*Element, type=C3D10, elset=ETET10
+2, 2, 9, 3, 6, 10, 11, 12, 13, 14, 15
+*Material, name=MAT_A
+*Elastic
+210000, 0.3
+*Solid Section, elset=EHEX, material=MAT_A
+,
+*Solid Section, elset=ETET10, material=MAT_A
+,
+*Nset, nset=ALLNODES
+1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
+*Step, name=Step-1, nlgeom=NO
+*Static
+1., 1., 1e-05, 1.
+*Boundary, OP=NEW
+1, 1, 1, 0
+1, 2, 2, 0
+1, 3, 3, 0
+2, 1, 1, 0.001
+2, 2, 2, 0
+2, 3, 3, 0
+3, 1, 1, 0.0029
+3, 2, 2, -0.0006
+3, 3, 3, 0.0004
+4, 1, 1, 0.0004
+4, 2, 2, -0.0006
+4, 3, 3, 0
+5, 1, 1, 0
+5, 2, 2, 0.0005
+5, 3, 3, 0.0007
+6, 1, 1, 0.002
+6, 2, 2, 0.0005
+6, 3, 3, 0.0015
+7, 1, 1, 0.0039
+7, 2, 2, 0.0009
+7, 3, 3, 0.0019
+8, 1, 1, 0.0004
+8, 2, 2, 0.0009
+8, 3, 3, 0.0007
+9, 1, 1, 0.00335
+9, 2, 2, 3.75e-05
+9, 3, 3, 0.000775
+10, 1, 1, 0.00201875
+10, 2, 2, 3.125e-06
+10, 3, 3, 0.0003125
+11, 1, 1, 0.00334375
+11, 2, 2, -0.000234375
+11, 3, 3, 0.0006125
+12, 1, 1, 0.00195
+12, 2, 2, -0.0003
+12, 3, 3, 0.0002
+13, 1, 1, 0.0015
+13, 2, 2, 0.00025
+13, 3, 3, 0.00075
+14, 1, 1, 0.00276875
+14, 2, 2, 0.000315625
+14, 3, 3, 0.0012625
+15, 1, 1, 0.00245
+15, 2, 2, 0.0002
+15, 3, 3, 0.00095
+** Abaqus normally stores S at integration points in the ODB.
+** For comparison, extrapolate in odbAccess/CAE to ELEMENT_NODAL, then average by your own region/cluster rules.
+*Output, field, frequency=1
+*Node Output
+U, RF
+*Element Output, directions=YES
+S, E
+*End Step
