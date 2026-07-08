@@ -26,15 +26,14 @@ python examples\cantilever_beam_hex8_abaqus.py
 python examples\mixed_hex8_tet4.py
 ```
 
-运行unittest测试：
+运行pytest测试：
 
 ```powershell
-python -m unittest discover tests
-python -m unittest tests.test_solvers
-python -m unittest tests.test_solvers.StaticLinearSolverTests.test_static_linear_solver_builds_step_boundary_and_solves_case
+pip install -e ".[test]"
+python -m pytest -q
+python -m pytest -q tests/test_solvers.py
+python -m pytest -q tests/test_solvers.py::test_static_linear_solver_builds_step_boundary_and_solves_case
 ```
-
-Tests 已完成模块化迁移，常用测试位于 `tests/test_*.py`。旧入口 `tests/test_regressions.py` 暂时保留为兜底回归，因此 `discover tests` 会同时运行旧入口和新模块化测试；迁移对照表见 `docs/TEST_MIGRATION_MAP.md`
 
 ## 当前能力
 
