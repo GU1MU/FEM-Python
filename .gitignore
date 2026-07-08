@@ -1,6 +1,7 @@
 results/
 temp/
 __pycache__/
+.pytest_cache/
 *.egg-info/
 .vscode/
 .env
@@ -9,3 +10,4 @@ ex.py
 superpowers/
 data/
 scripts/
+docs/
