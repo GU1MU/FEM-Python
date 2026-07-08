@@ -11,6 +11,7 @@ from tests.helpers.mesh_builders import (
     make_hex8_stiffness_mesh,
     make_mixed_hex8_tet4_mesh,
     make_mixed_tri3_quad4_mesh,
+    make_mixed_tri6_quad8_mesh,
     make_quad4_stiffness_mesh,
     make_quad8_stiffness_mesh,
     make_tet4_stiffness_mesh,
@@ -147,6 +148,18 @@ def test_sparse_and_dense_assembly_accept_mixed_solid_mesh():
 
 def test_sparse_and_dense_assembly_accept_mixed_plane_mesh():
     mesh = make_mixed_tri3_quad4_mesh()
+
+    K_dense = assemble_global_stiffness(mesh)
+    K_sparse = assemble_global_stiffness_sparse(mesh)
+
+    assert K_dense.shape == (mesh.num_dofs, mesh.num_dofs)
+    assert K_sparse.shape == (mesh.num_dofs, mesh.num_dofs)
+    assert np.allclose(K_dense, K_dense.T)
+    assert np.allclose(K_dense, K_sparse.toarray())
+
+
+def test_sparse_and_dense_assembly_accept_mixed_quadratic_plane_mesh():
+    mesh = make_mixed_tri6_quad8_mesh()
 
     K_dense = assemble_global_stiffness(mesh)
     K_sparse = assemble_global_stiffness_sparse(mesh)

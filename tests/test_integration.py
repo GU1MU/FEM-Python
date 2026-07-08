@@ -4,7 +4,7 @@ import pytest
 from fem import materials, steps
 from fem.core.model import ElementSet, FEMModel, MaterialDefinition, NodeSet
 from fem.solvers import static_linear
-from tests.helpers.mesh_builders import make_mixed_hex8_tet4_mesh
+from tests.helpers.mesh_builders import make_mixed_hex8_tet4_mesh, make_mixed_tri6_quad8_mesh
 from tests.helpers.model_builders import make_truss_workflow_model
 
 
@@ -90,3 +90,33 @@ def test_mixed_solid_model_assigns_materials_by_element_set_and_solves():
     assert mesh.elements[1].props["material"] == "aluminum"
     assert np.all(np.isfinite(result.U))
     assert abs(float(result.U[mesh.global_dof(9, 0)])) > 0.0
+
+
+def test_mixed_quadratic_plane_model_assigns_materials_by_element_set_and_solves():
+    mesh = make_mixed_tri6_quad8_mesh()
+    model = FEMModel(mesh=mesh, name="mixed_tri6_quad8")
+    model.element_sets["triangles"] = ElementSet("triangles", (1,))
+    model.element_sets["quads"] = ElementSet("quads", (2,))
+    model.node_sets["fixed"] = NodeSet("fixed", (1, 3, 6, 7, 10, 14))
+    model.node_sets["tip"] = NodeSet("tip", (8,))
+
+    steel = materials.linear_elastic.material("steel", E=210.0, nu=0.3)
+    aluminum = materials.linear_elastic.material("aluminum", E=120.0, nu=0.25)
+    materials.add(model, steel)
+    materials.add(model, aluminum)
+    materials.assign(model, "steel", "triangles")
+    materials.assign(model, "aluminum", "quads")
+
+    step = steps.static("pull")
+    steps.displacement(step, "fixed", components=(1, 2))
+    steps.nodal_load(step, "tip", component=1, value=1.0)
+    steps.add(model, step)
+
+    result = static_linear.solve(model, "pull")
+
+    assert mesh.elements[0].type == "Tri6Plane"
+    assert mesh.elements[1].type == "Quad8Plane"
+    assert mesh.elements[0].props["material"] == "steel"
+    assert mesh.elements[1].props["material"] == "aluminum"
+    assert np.all(np.isfinite(result.U))
+    assert abs(float(result.U[mesh.global_dof(8, 0)])) > 0.0
