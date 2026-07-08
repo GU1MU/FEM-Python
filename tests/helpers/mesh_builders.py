@@ -227,6 +227,53 @@ def make_tri3_stiffness_mesh():
     )
 
 
+def make_tri6_stiffness_mesh():
+    return PlaneMesh2D(
+        nodes=[
+            Node2D(1, 0.0, 0.0),
+            Node2D(2, 2.0, 0.0),
+            Node2D(3, 0.0, 1.0),
+            Node2D(4, 1.0, 0.0),
+            Node2D(5, 1.0, 0.5),
+            Node2D(6, 0.0, 0.5),
+        ],
+        elements=[
+            Element2D(
+                id=1,
+                node_ids=[1, 2, 3, 4, 5, 6],
+                type="Tri6Plane",
+                props={
+                    "E": 210.0,
+                    "nu": 0.3,
+                    "thickness": 1.0,
+                    "plane_type": "stress",
+                },
+            )
+        ],
+    )
+
+
+def make_tri6_load_mesh():
+    return PlaneMesh2D(
+        nodes=[
+            Node2D(1, 0.0, 0.0),
+            Node2D(2, 2.0, 0.0),
+            Node2D(3, 0.0, 1.0),
+            Node2D(4, 1.0, 0.0),
+            Node2D(5, 1.0, 0.5),
+            Node2D(6, 0.0, 0.5),
+        ],
+        elements=[
+            Element2D(
+                id=1,
+                node_ids=[1, 2, 3, 4, 5, 6],
+                type="Tri6Plane",
+                props={"E": 210.0, "nu": 0.3, "thickness": 2.0},
+            )
+        ],
+    )
+
+
 def make_quad8_stiffness_mesh():
     return PlaneMesh2D(
         nodes=[

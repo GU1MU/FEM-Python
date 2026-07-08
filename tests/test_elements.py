@@ -15,7 +15,11 @@ from fem.elements.quadrilateral import (
 )
 from fem.elements.registry import register_element_kernel
 from fem.elements.tetrahedron import Tet4Kernel, Tet10Kernel, tet10_shape_funcs_grads
-from fem.elements.triangle import Tri3PlaneKernel
+from fem.elements.triangle import (
+    Tri3PlaneKernel,
+    Tri6PlaneKernel,
+    tri6_shape_funcs_grads,
+)
 from tests.helpers.mesh_builders import (
     make_beam_stiffness_mesh,
     make_hex8_solid_stress_mesh,
@@ -28,6 +32,8 @@ from tests.helpers.mesh_builders import (
     make_tet10_stiffness_mesh,
     make_tri3_load_mesh,
     make_tri3_stiffness_mesh,
+    make_tri6_load_mesh,
+    make_tri6_stiffness_mesh,
     make_truss_stiffness_mesh,
 )
 
@@ -52,6 +58,7 @@ def _assert_kernel_matches_explicit_node_lookup(mesh):
         make_truss_stiffness_mesh,
         make_beam_stiffness_mesh,
         make_tri3_stiffness_mesh,
+        make_tri6_stiffness_mesh,
         make_quad4_stiffness_mesh,
         make_quad8_stiffness_mesh,
         make_hex8_stiffness_mesh,
@@ -62,6 +69,7 @@ def _assert_kernel_matches_explicit_node_lookup(mesh):
         "truss2d",
         "beam2d",
         "tri3",
+        "tri6",
         "quad4",
         "quad8",
         "hex8",
@@ -93,6 +101,27 @@ def test_truss_kernel_provides_element_stress():
 # Plane element kernels
 
 
+def test_tri6_shape_functions_interpolate_nodes():
+    node_coords = [
+        (0.0, 0.0),
+        (1.0, 0.0),
+        (0.0, 1.0),
+        (0.5, 0.0),
+        (0.5, 0.5),
+        (0.0, 0.5),
+    ]
+
+    for i, (xi, eta) in enumerate(node_coords):
+        N, dN_dxi, dN_deta = tri6_shape_funcs_grads(xi, eta)
+
+        expected = np.zeros(6, dtype=float)
+        expected[i] = 1.0
+        assert np.allclose(N, expected)
+        assert np.isclose(float(np.sum(N)), 1.0)
+        assert np.isclose(float(np.sum(dN_dxi)), 0.0)
+        assert np.isclose(float(np.sum(dN_deta)), 0.0)
+
+
 def test_quad4_stiffness_builds_node_lookup_from_mesh_when_omitted():
     mesh = make_quad4_stiffness_mesh()
 
@@ -106,10 +135,11 @@ def test_quad4_stiffness_builds_node_lookup_from_mesh_when_omitted():
     ("builder", "edge", "body_measure", "edge_measure"),
     [
         (make_tri3_load_mesh, 0, 2.0, 4.0),
+        (make_tri6_load_mesh, 0, 2.0, 4.0),
         (make_quad4_boundary_mesh, 0, 4.0, 4.0),
         (make_quad8_load_mesh, 0, 6.0, 3.0),
     ],
-    ids=["tri3", "quad4", "quad8"],
+    ids=["tri3", "tri6", "quad4", "quad8"],
 )
 def test_plane_kernels_provide_body_force_and_edge_traction(
     builder, edge, body_measure, edge_measure
@@ -170,10 +200,11 @@ def test_plane_load_kernels_do_not_require_elastic_props(builder):
     ("builder", "gauss_order"),
     [
         (make_tri3_stiffness_mesh, None),
+        (make_tri6_stiffness_mesh, None),
         (make_quad4_stiffness_mesh, 2),
         (make_quad8_stiffness_mesh, 3),
     ],
-    ids=["tri3", "quad4", "quad8"],
+    ids=["tri3", "tri6", "quad4", "quad8"],
 )
 def test_plane_kernels_provide_stress_interfaces_without_post_helpers(
     builder, gauss_order
@@ -183,7 +214,7 @@ def test_plane_kernels_provide_stress_interfaces_without_post_helpers(
     U = np.linspace(0.01, 0.01 * mesh.num_dofs, mesh.num_dofs)
     kernel = get_element_kernel(elem.type)
 
-    if "tri3" in elem.type.lower():
+    if "tri" in elem.type.lower():
         node_vals, plane_type, nu = kernel.nodal_stress(
             mesh, elem, U, _node_lookup(mesh)
         )
@@ -291,11 +322,13 @@ def test_elements_use_family_modules_and_registry_module():
     assert type(get_element_kernel("Quad4Plane")) is Quad4PlaneKernel
     assert type(get_element_kernel("Quad8Plane")) is Quad8PlaneKernel
     assert type(get_element_kernel("Tri3Plane")) is Tri3PlaneKernel
+    assert type(get_element_kernel("Tri6Plane")) is Tri6PlaneKernel
     assert type(get_element_kernel("Hex8")) is Hex8Kernel
     assert type(get_element_kernel("Tet4")) is Tet4Kernel
     assert type(get_element_kernel("Tet10")) is Tet10Kernel
     assert callable(quad4_shape_grad_xi_eta)
     assert callable(quad8_shape_funcs_grads)
+    assert callable(tri6_shape_funcs_grads)
     assert callable(hex8_shape_funcs_grads)
     assert callable(tet10_shape_funcs_grads)
     assert callable(register_element_kernel)

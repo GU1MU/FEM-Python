@@ -173,3 +173,245 @@ class Tri3PlaneKernel:
             [c1, b1, c2, b2, c3, b3],
         ], dtype=float)
         return B, area
+
+
+def tri6_shape_funcs_grads(xi: float, eta: float):
+    """Return N, dN/dxi, and dN/deta for quadratic Tri6."""
+    l1 = 1.0 - xi - eta
+    l2 = xi
+    l3 = eta
+
+    N = np.array([
+        l1 * (2.0 * l1 - 1.0),
+        l2 * (2.0 * l2 - 1.0),
+        l3 * (2.0 * l3 - 1.0),
+        4.0 * l1 * l2,
+        4.0 * l2 * l3,
+        4.0 * l3 * l1,
+    ], dtype=float)
+
+    dN_dxi = np.array([
+        1.0 - 4.0 * l1,
+        4.0 * l2 - 1.0,
+        0.0,
+        4.0 * (l1 - l2),
+        4.0 * l3,
+        -4.0 * l3,
+    ], dtype=float)
+
+    dN_deta = np.array([
+        1.0 - 4.0 * l1,
+        0.0,
+        4.0 * l3 - 1.0,
+        -4.0 * l2,
+        4.0 * l2,
+        4.0 * (l1 - l3),
+    ], dtype=float)
+
+    return N, dN_dxi, dN_deta
+
+
+def tri6_gauss_points():
+    """Return reference-triangle Gauss points for Tri6."""
+    return [
+        (1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0),
+        (2.0 / 3.0, 1.0 / 6.0, 1.0 / 6.0),
+        (1.0 / 6.0, 2.0 / 3.0, 1.0 / 6.0),
+    ]
+
+
+def tri6_edge_gauss_points():
+    """Return 3-point Gauss rule on [-1, 1] for quadratic edges."""
+    r = np.sqrt(3.0 / 5.0)
+    return [(-r, 5.0 / 9.0), (0.0, 8.0 / 9.0), (r, 5.0 / 9.0)]
+
+
+class Tri6PlaneKernel:
+    """Tri6 plane stress/strain element kernel."""
+    type_names = ("Tri6Plane", "Tri6", "CPS6", "CPE6")
+
+    def stiffness(
+        self,
+        mesh: Any,
+        elem: Any,
+        node_lookup: dict[int, Any] | None = None,
+    ) -> np.ndarray:
+        """Return Tri6 plane element stiffness."""
+        if len(elem.node_ids) != 6:
+            raise ValueError(f"Tri6 needs 6 nodes, elem {elem.id} node_ids={elem.node_ids}")
+
+        D, t = self._material_data(elem)
+        Ke = np.zeros((12, 12), dtype=float)
+        for xi, eta, w in tri6_gauss_points():
+            B, detJ = self._B_matrix(mesh, elem, xi, eta, node_lookup)
+            Ke += (B.T @ D @ B) * (t * detJ * w)
+        return Ke
+
+    def stress_at(
+        self,
+        mesh: Any,
+        elem: Any,
+        U: np.ndarray,
+        xi: float,
+        eta: float,
+        node_lookup: dict[int, Any] | None = None,
+    ) -> np.ndarray:
+        """Return stress at one natural coordinate point."""
+        D, _ = self._material_data(elem)
+        B, _ = self._B_matrix(mesh, elem, xi, eta, node_lookup)
+        return D @ (B @ U[mesh.element_dofs(elem)])
+
+    def nodal_stress(
+        self,
+        mesh: Any,
+        elem: Any,
+        U: np.ndarray,
+        node_lookup: dict[int, Any] | None = None,
+    ):
+        """Return element-nodal stress, plane type, and nu."""
+        node_coords = [
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (0.0, 1.0),
+            (0.5, 0.0),
+            (0.5, 0.5),
+            (0.0, 0.5),
+        ]
+        node_vals = np.array(
+            [
+                self.stress_at(mesh, elem, U, xi, eta, node_lookup)
+                for xi, eta in node_coords
+            ],
+            dtype=float,
+        )
+        plane_type, nu = self._plane_data(elem)
+        return node_vals, plane_type, nu
+
+    def body_force(
+        self,
+        mesh: Any,
+        elem: Any,
+        vector: tuple[float, float],
+        node_lookup: dict[int, Any] | None = None,
+    ) -> np.ndarray:
+        """Return consistent Tri6 body force vector."""
+        if len(elem.node_ids) != 6:
+            raise ValueError(f"Tri6 needs 6 nodes, elem {elem.id} node_ids={elem.node_ids}")
+
+        t = self._thickness(elem)
+        bvec = np.array(vector, dtype=float)
+        fe = np.zeros(12, dtype=float)
+        for xi, eta, w in tri6_gauss_points():
+            N, _, _ = tri6_shape_funcs_grads(xi, eta)
+            _, detJ = self._B_matrix(mesh, elem, xi, eta, node_lookup)
+            for i in range(6):
+                fe[2 * i:2 * i + 2] += N[i] * bvec * (t * detJ * w)
+        return fe
+
+    def edge_traction(
+        self,
+        mesh: Any,
+        elem: Any,
+        local_edge: int,
+        traction: tuple[float, float],
+        node_lookup: dict[int, Any] | None = None,
+    ) -> np.ndarray:
+        """Return consistent Tri6 edge traction vector."""
+        edge_nodes = [(0, 3, 1), (1, 4, 2), (2, 5, 0)]
+        if local_edge < 0 or local_edge >= 3:
+            raise ValueError(f"Tri6 local_edge must be 0/1/2, got {local_edge}")
+        if node_lookup is None:
+            node_lookup = build_node_lookup(mesh)
+
+        local_ids = edge_nodes[local_edge]
+        nodes = [node_lookup[elem.node_ids[i]] for i in local_ids]
+        x = np.array([node.x for node in nodes], dtype=float)
+        y = np.array([node.y for node in nodes], dtype=float)
+        t = self._thickness(elem)
+        tvec = np.array(traction, dtype=float)
+        fe = np.zeros(12, dtype=float)
+
+        for s, w in tri6_edge_gauss_points():
+            N = np.array([
+                0.5 * s * (s - 1.0),
+                1.0 - s * s,
+                0.5 * s * (s + 1.0),
+            ], dtype=float)
+            dN_ds = np.array([s - 0.5, -2.0 * s, s + 0.5], dtype=float)
+            jac = float(np.hypot(np.dot(dN_ds, x), np.dot(dN_ds, y)))
+            if jac <= 0.0:
+                raise ValueError(f"Tri6 elem {elem.id} edge has zero Jacobian")
+            for edge_pos, local_i in enumerate(local_ids):
+                fe[2 * local_i:2 * local_i + 2] += N[edge_pos] * tvec * (t * jac * w)
+        return fe
+
+    def _material_data(self, elem: Any):
+        """Return D matrix and thickness from element props."""
+        try:
+            E = float(elem.props["E"])
+            nu = float(elem.props["nu"])
+        except KeyError as e:
+            raise KeyError(f"elem {elem.id} missing '{e.args[0]}' in props={elem.props}")
+
+        t = self._thickness(elem)
+        pt, _ = self._plane_data(elem)
+        D = linear_elastic.plane_matrix(E, nu, pt)
+        return D, t
+
+    def _plane_data(self, elem: Any):
+        """Return plane type tag and Poisson ratio."""
+        try:
+            nu = float(elem.props["nu"])
+        except KeyError as e:
+            raise KeyError(f"elem {elem.id} missing '{e.args[0]}' in props={elem.props}")
+        pt = str(elem.props.get("plane_type", "stress")).lower()
+        if pt.startswith("stress"):
+            return "stress", nu
+        if pt.startswith("strain"):
+            return "strain", nu
+        raise ValueError(f"elem {elem.id} invalid plane_type={elem.props.get('plane_type')}")
+
+    def _thickness(self, elem: Any) -> float:
+        """Return plane element thickness."""
+        return float(elem.props.get("thickness", 1.0))
+
+    def _B_matrix(
+        self,
+        mesh: Any,
+        elem: Any,
+        xi: float,
+        eta: float,
+        node_lookup: dict[int, Any] | None,
+    ):
+        """Return B matrix and detJ at one natural coordinate point."""
+        if node_lookup is None:
+            node_lookup = build_node_lookup(mesh)
+        nodes = [node_lookup[nid] for nid in elem.node_ids]
+        x = np.array([node.x for node in nodes], dtype=float)
+        y = np.array([node.y for node in nodes], dtype=float)
+
+        _, dN_dxi, dN_deta = tri6_shape_funcs_grads(xi, eta)
+        J = np.array(
+            [
+                [np.dot(dN_dxi, x), np.dot(dN_dxi, y)],
+                [np.dot(dN_deta, x), np.dot(dN_deta, y)],
+            ],
+            dtype=float,
+        )
+        detJ = float(np.linalg.det(J))
+        if detJ <= 0.0:
+            raise ValueError(
+                f"Tri6 elem {elem.id} has zero or negative Jacobian determinant"
+            )
+
+        dN_xy = np.linalg.inv(J) @ np.vstack([dN_dxi, dN_deta])
+        B = np.zeros((3, 12), dtype=float)
+        for a_i in range(6):
+            dN_dx = dN_xy[0, a_i]
+            dN_dy = dN_xy[1, a_i]
+            c = 2 * a_i
+            B[0, c] = dN_dx
+            B[1, c + 1] = dN_dy
+            B[2, c] = dN_dy
+            B[2, c + 1] = dN_dx
+        return B, detJ

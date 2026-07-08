@@ -5,7 +5,7 @@ from .hexahedron import Hex8Kernel
 from .line import Beam2DKernel, Truss2DKernel
 from .quadrilateral import Quad4PlaneKernel, Quad8PlaneKernel
 from .tetrahedron import Tet4Kernel, Tet10Kernel
-from .triangle import Tri3PlaneKernel
+from .triangle import Tri3PlaneKernel, Tri6PlaneKernel
 
 
 _KERNELS: dict[str, ElementKernel] = {}
@@ -32,6 +32,7 @@ def get_element_kernel(element_type: str) -> ElementKernel:
 
 register_element_kernel(Quad4PlaneKernel())
 register_element_kernel(Quad8PlaneKernel())
+register_element_kernel(Tri6PlaneKernel())
 register_element_kernel(Tri3PlaneKernel())
 register_element_kernel(Hex8Kernel())
 register_element_kernel(Tet4Kernel())
