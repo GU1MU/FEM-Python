@@ -513,6 +513,9 @@ def test_abaqus_trshr_rejects_nonplanar_faces(tmp_path):
         ("CPS3", "1, 1,2,3", "S1", ElementFace(1, 0, (1, 2))),
         ("CPS3", "1, 1,2,3", "S2", ElementFace(1, 1, (2, 3))),
         ("CPS3", "1, 1,2,3", "S3", ElementFace(1, 2, (3, 1))),
+        ("CPS6", "1, 1,2,3,4,5,6", "S1", ElementFace(1, 0, (1, 4, 2))),
+        ("CPS6", "1, 1,2,3,4,5,6", "S2", ElementFace(1, 1, (2, 5, 3))),
+        ("CPS6", "1, 1,2,3,4,5,6", "S3", ElementFace(1, 2, (3, 6, 1))),
         ("CPS4", "1, 1,2,3,4", "S1", ElementFace(1, 0, (1, 2))),
         ("CPS4", "1, 1,2,3,4", "S2", ElementFace(1, 1, (2, 3))),
         ("CPS4", "1, 1,2,3,4", "S3", ElementFace(1, 2, (3, 4))),
@@ -547,6 +550,47 @@ def test_abaqus_read_maps_2d_surface_labels_to_edges(
     model = abaqus.read(path)
 
     assert model.surfaces["EDGE_SURFACE"].faces[0] == expected_face
+
+
+def test_abaqus_read_cps6_model_solves(tmp_path):
+    path = write_inp(
+        tmp_path,
+        "test_abaqus_cps6_solve.inp",
+        [
+            "*Node",
+            "1, 0., 0.",
+            "2, 2., 0.",
+            "3, 0., 1.",
+            "4, 1., 0.",
+            "5, 1., 0.5",
+            "6, 0., 0.5",
+            "*Element, type=CPS6, elset=SOLID",
+            "1, 1,2,3,4,5,6",
+            "*Elset, elset=SOLID",
+            "1",
+            "*Nset, nset=FIXED",
+            "1,3,6",
+            "*Nset, nset=TIP",
+            "2",
+            "*Material, name=STEEL",
+            "*Elastic",
+            "210., 0.3",
+            "*Solid Section, elset=SOLID, material=STEEL",
+            "*Step, name=LOAD",
+            "*Static",
+            "*Boundary",
+            "FIXED, 1, 2, 0.",
+            "*Cload",
+            "TIP, 1, 1.",
+            "*End Step",
+        ],
+    )
+
+    model = abaqus.read(path)
+    result = static_linear.solve(model, "LOAD")
+
+    assert model.mesh.elements[0].type == "Tri6Plane"
+    assert np.all(np.isfinite(result.U))
 
 
 @pytest.mark.parametrize(

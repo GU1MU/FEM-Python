@@ -309,6 +309,8 @@ def _element_type(element: AbaqusElement) -> str:
     etype = element.type.upper()
     if etype in ("CPS3", "CPE3"):
         return "Tri3Plane"
+    if etype in ("CPS6", "CPE6"):
+        return "Tri6Plane"
     if etype in ("CPS4", "CPE4"):
         return "Quad4Plane"
     if etype in ("CPS8", "CPE8"):
