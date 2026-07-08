@@ -19,6 +19,14 @@ class SurfaceTraction:
     vector: tuple[float, ...]
 
 
+@dataclass(frozen=True)
+class EdgeTraction:
+    """Constant element edge traction."""
+    elem_id: int
+    local_index: int
+    vector: tuple[float, ...]
+
+
 @dataclass
 class BoundaryCondition:
     """Store Dirichlet conditions and loads by global DOF and element id."""
@@ -27,6 +35,7 @@ class BoundaryCondition:
     body_forces: list[ElementLoad] = field(default_factory=list)
     surface_tractions: list[SurfaceTraction] = field(default_factory=list)
     gravity: tuple[float, ...] | None = None
+    edge_tractions: list[EdgeTraction] = field(default_factory=list)
 
     def add_displacement_dof(self, dof_id: int, value: float = 0.0) -> None:
         """Add prescribed displacement on a global DOF."""
@@ -66,9 +75,20 @@ class BoundaryCondition:
         local_index: int,
         *components: float,
     ) -> None:
-        """Add constant traction on an element edge or face."""
+        """Add constant traction on an element face."""
         self.surface_tractions.append(
             SurfaceTraction(int(elem_id), int(local_index), _float_vector(components))
+        )
+
+    def add_edge_traction(
+        self,
+        elem_id: int,
+        local_index: int,
+        *components: float,
+    ) -> None:
+        """Add constant traction on an element edge."""
+        self.edge_tractions.append(
+            EdgeTraction(int(elem_id), int(local_index), _float_vector(components))
         )
 
     def set_gravity(self, *components: float) -> None:

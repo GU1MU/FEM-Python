@@ -6,6 +6,9 @@ from ..core.mesh import Element2D, Element3D, HexMesh3D, Node2D, Node3D, PlaneMe
 from ..core.model import (
     AnalysisStep,
     DisplacementConstraint,
+    Edge,
+    EdgeLoad,
+    ElementEdge,
     ElementFace,
     ElementSet,
     FEMModel,
@@ -17,6 +20,7 @@ from ..core.model import (
     Surface,
     SurfaceLoad,
 )
+from ..selection import edges as edge_selection
 from ..selection import faces as face_selection
 from .deck import AbaqusBoundary, AbaqusDeck, AbaqusDistributedLoad, AbaqusElement, AbaqusStep
 
@@ -66,9 +70,9 @@ def build_model(deck: AbaqusDeck) -> FEMModel:
             )
         )
 
-    surfaces = _build_surfaces(mesh, deck, element_sets)
+    surfaces, edges = _build_surfaces_and_edges(mesh, deck, element_sets)
     steps = [
-        _build_step(step, mesh, surfaces, element_sets, step_index)
+        _build_step(step, mesh, surfaces, edges, element_sets, step_index)
         for step_index, step in enumerate(deck.steps)
     ]
     model = FEMModel(
@@ -76,6 +80,7 @@ def build_model(deck: AbaqusDeck) -> FEMModel:
         name=deck.name,
         node_sets=node_sets,
         element_sets=visible_element_sets,
+        edges=edges,
         surfaces=surfaces,
         materials=materials,
         sections=sections,
@@ -127,6 +132,17 @@ def _build_mesh(deck: AbaqusDeck) -> Any:
     return HexMesh3D(nodes3d, elements3d)
 
 
+def _build_surfaces_and_edges(
+    mesh: Any,
+    deck: AbaqusDeck,
+    element_sets: dict[str, ElementSet],
+) -> tuple[dict[str, Surface], dict[str, Edge]]:
+    """Build named model surfaces and edges from deck surface entries."""
+    if mesh.dofs_per_node == 2:
+        return {}, _build_edges(mesh, deck, element_sets)
+    return _build_surfaces(mesh, deck, element_sets), {}
+
+
 def _build_surfaces(
     mesh: Any,
     deck: AbaqusDeck,
@@ -159,10 +175,43 @@ def _build_surfaces(
     return surfaces
 
 
+def _build_edges(
+    mesh: Any,
+    deck: AbaqusDeck,
+    element_sets: dict[str, ElementSet],
+) -> dict[str, Edge]:
+    """Build named model edges from 2D Abaqus surface entries."""
+    edge_lookup = {
+        (elem_id, local_index): node_ids
+        for elem_id, local_index, node_ids in edge_selection.all(mesh)
+    }
+    elem_lookup = {elem.id: elem for elem in mesh.elements}
+    edges: dict[str, Edge] = {}
+
+    for name, entries in deck.surfaces.items():
+        if deck.surface_scopes.get(name, "model") == "part":
+            continue
+        model_edges: list[ElementEdge] = []
+        for entry in entries:
+            for element_id in _resolve_element_target(entry.target, element_sets):
+                elem = _require_mesh_element(elem_lookup, element_id)
+                local_index = _face_label_to_index(entry.face_label, elem.type)
+                node_ids = edge_lookup.get((element_id, local_index))
+                if node_ids is None:
+                    raise ValueError(
+                        f"element {element_id} does not have Abaqus edge {entry.face_label}"
+                    )
+                model_edges.append(ElementEdge(element_id, local_index, node_ids))
+        edges[name] = Edge(name, model_edges)
+
+    return edges
+
+
 def _build_step(
     step: AbaqusStep,
     mesh: Any,
     surfaces: dict[str, Surface],
+    edges: dict[str, Edge],
     element_sets: dict[str, ElementSet],
     step_index: int,
 ) -> AnalysisStep:
@@ -178,9 +227,26 @@ def _build_step(
         NodalLoad(load.target, load.component, load.value)
         for load in step.cloads
     ]
-    surface_loads = [
-        _build_surface_load(load, mesh, surfaces, element_sets, step.name, step_index, load_index)
+    distributed_loads = [
+        _build_distributed_load(
+            load,
+            mesh,
+            surfaces,
+            edges,
+            element_sets,
+            step.name,
+            step_index,
+            load_index,
+        )
         for load_index, load in enumerate(step.distributed_loads)
+    ]
+    surface_loads = [
+        load for load in distributed_loads
+        if isinstance(load, SurfaceLoad)
+    ]
+    edge_loads = [
+        load for load in distributed_loads
+        if isinstance(load, EdgeLoad)
     ]
     outputs = [
         OutputRequest(output.kind, output.target, output.variables, output.metadata)
@@ -192,46 +258,67 @@ def _build_step(
         boundaries=boundaries,
         cloads=cloads,
         surface_loads=surface_loads,
+        edge_loads=edge_loads,
         outputs=outputs,
         metadata=dict(step.metadata),
     )
 
 
-def _build_surface_load(
+def _build_distributed_load(
     load: AbaqusDistributedLoad,
     mesh: Any,
     surfaces: dict[str, Surface],
+    edges: dict[str, Edge],
     element_sets: dict[str, ElementSet],
     step_name: str,
     step_index: int,
     load_index: int,
-) -> SurfaceLoad:
-    """Convert an Abaqus DLOAD/DSLOAD line to a model surface load."""
+) -> SurfaceLoad | EdgeLoad:
+    """Convert an Abaqus DLOAD/DSLOAD line to a model distributed load."""
     label = load.label.upper()
     if load.source == "dsload":
-        surface_name = str(load.target)
-        if surface_name not in surfaces:
-            raise KeyError(f"surface {surface_name} is not defined")
+        target_name = str(load.target)
+        if mesh.dofs_per_node == 2:
+            if target_name not in edges:
+                raise KeyError(f"edge {target_name} is not defined")
+        elif target_name not in surfaces:
+            raise KeyError(f"surface {target_name} is not defined")
     elif load.source == "dload":
         face_label = _dload_face_label(label)
-        surface_name = _generated_surface_name(step_name, step_index, load_index)
-        surfaces[surface_name] = _surface_from_element_target(
-            mesh,
-            surface_name,
-            load.target,
-            face_label,
-            element_sets,
-        )
+        target_name = _generated_surface_name(step_name, step_index, load_index)
+        if mesh.dofs_per_node == 2:
+            edges[target_name] = _edge_from_element_target(
+                mesh,
+                target_name,
+                load.target,
+                face_label,
+                element_sets,
+            )
+        else:
+            surfaces[target_name] = _surface_from_element_target(
+                mesh,
+                target_name,
+                load.target,
+                face_label,
+                element_sets,
+            )
     else:
         raise ValueError(f"unsupported distributed load source: {load.source}")
 
+    if mesh.dofs_per_node == 2:
+        if label == "P" or label.startswith("P"):
+            return EdgeLoad(target_name, magnitude=load.magnitude, load_type="pressure")
+        if label == "TRVEC":
+            return EdgeLoad(target_name, _scaled_traction_vector(load, mesh), load_type="traction")
+        raise ValueError(f"unsupported Abaqus 2D distributed load label: {load.label}")
+
     if label == "P" or label.startswith("P"):
-        return SurfaceLoad(surface_name, magnitude=load.magnitude, load_type="pressure")
+        return SurfaceLoad(target_name, magnitude=load.magnitude, load_type="pressure")
     if label == "TRVEC":
-        return SurfaceLoad(surface_name, _scaled_traction_vector(load, mesh), load_type="traction")
+        return SurfaceLoad(target_name, _scaled_traction_vector(load, mesh), load_type="traction")
     if label == "TRSHR":
         return SurfaceLoad(
-            surface_name,
+            target_name,
             _traction_direction(load, mesh, "TRSHR"),
             magnitude=load.magnitude,
             load_type="shear_traction",
@@ -261,6 +348,30 @@ def _surface_from_element_target(
             raise ValueError(f"element {element_id} does not have Abaqus face {face_label}")
         model_faces.append(ElementFace(element_id, local_index, node_ids))
     return Surface(name, model_faces)
+
+
+def _edge_from_element_target(
+    mesh: Any,
+    name: str,
+    target: str | int,
+    face_label: str,
+    element_sets: dict[str, ElementSet],
+) -> Edge:
+    """Build a generated edge collection from a 2D element target and face label."""
+    edge_lookup = {
+        (elem_id, edge_index): node_ids
+        for elem_id, edge_index, node_ids in edge_selection.all(mesh)
+    }
+    elem_lookup = {elem.id: elem for elem in mesh.elements}
+    model_edges = []
+    for element_id in _resolve_element_target(target, element_sets):
+        elem = _require_mesh_element(elem_lookup, element_id)
+        local_index = _face_label_to_index(face_label, elem.type)
+        node_ids = edge_lookup.get((element_id, local_index))
+        if node_ids is None:
+            raise ValueError(f"element {element_id} does not have Abaqus edge {face_label}")
+        model_edges.append(ElementEdge(element_id, local_index, node_ids))
+    return Edge(name, model_edges)
 
 
 def _scaled_traction_vector(load: AbaqusDistributedLoad, mesh: Any) -> tuple[float, ...]:

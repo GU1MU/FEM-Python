@@ -4,10 +4,13 @@ import pytest
 from fem import boundary
 from fem.boundary.condition import BoundaryCondition
 from fem.boundary.loads import build_load_vector
+from fem.boundary.step import boundary_for_step
+from fem.core.model import AnalysisStep, Edge, EdgeLoad, ElementEdge, ElementFace, FEMModel, Surface, SurfaceLoad
 from fem.elements import get_element_kernel
 from tests.helpers.mesh_builders import (
     make_mixed_hex8_tet4_mesh,
     make_quad4_boundary_mesh,
+    make_selection_hex_mesh,
     make_tet4_stiffness_mesh,
 )
 
@@ -17,7 +20,7 @@ def test_boundary_load_vector_matches_kernel_dispatch():
     elem = mesh.elements[0]
     bc = boundary.condition.BoundaryCondition()
     bc.add_body_force_element(elem.id, 4.0, -5.0)
-    bc.add_surface_traction(elem.id, 0, 7.0, -11.0)
+    bc.add_edge_traction(elem.id, 0, 7.0, -11.0)
 
     F = boundary.loads.build_load_vector(mesh, bc)
     kernel = get_element_kernel(elem.type)
@@ -53,6 +56,14 @@ def test_boundary_package_exposes_explicit_modules_only():
     assert not hasattr(boundary, "BoundaryCondition2D")
     assert not hasattr(boundary, "BoundaryCondition3D")
     assert not hasattr(boundary, "build_load_vector_3d")
+
+
+def test_boundary_condition_preserves_positional_order():
+    bc = BoundaryCondition({}, {}, [], [], (0.0, -9.81))
+
+    assert bc.surface_tractions == []
+    assert bc.gravity == (0.0, -9.81)
+    assert bc.edge_tractions == []
 
 
 def test_3d_nodal_forces_accumulate_like_2d():
@@ -92,3 +103,104 @@ def test_mixed_solid_body_forces_and_gravity_dispatch_by_element_type():
     assert F.shape == (mesh.num_dofs,)
     assert np.all(np.isfinite(F))
     assert float(np.linalg.norm(F)) > 0.0
+
+
+def test_boundary_step_builds_2d_edge_traction():
+    mesh = make_quad4_boundary_mesh()
+    model = FEMModel(
+        mesh=mesh,
+        edges={"LOAD_EDGE": Edge("LOAD_EDGE", [ElementEdge(1, 1, (2, 3))])},
+        steps=[
+            AnalysisStep(
+                "load",
+                edge_loads=[EdgeLoad("LOAD_EDGE", (7.0, -11.0), load_type="traction")],
+            )
+        ],
+    )
+
+    bc = boundary_for_step(model, "load")
+
+    assert len(bc.edge_tractions) == 1
+    assert bc.edge_tractions[0].elem_id == 1
+    assert bc.edge_tractions[0].local_index == 1
+    assert bc.edge_tractions[0].vector == (7.0, -11.0)
+
+
+def test_boundary_load_vector_assembles_2d_edge_traction():
+    mesh = make_quad4_boundary_mesh()
+    elem = mesh.elements[0]
+    bc = BoundaryCondition()
+    bc.add_edge_traction(elem.id, 0, 7.0, -11.0)
+
+    F = build_load_vector(mesh, bc)
+    kernel = get_element_kernel(elem.type)
+    expected = kernel.edge_traction(mesh, elem, 0, (7.0, -11.0))
+
+    assert np.allclose(F, expected)
+
+
+def test_boundary_step_builds_2d_edge_pressure():
+    mesh = make_quad4_boundary_mesh()
+    model = FEMModel(
+        mesh=mesh,
+        edges={"RIGHT": Edge("RIGHT", [ElementEdge(1, 1, (2, 3))])},
+        steps=[AnalysisStep("load", edge_loads=[EdgeLoad("RIGHT", magnitude=2.0, load_type="pressure")])],
+    )
+
+    bc = boundary_for_step(model, "load")
+
+    assert len(bc.edge_tractions) == 1
+    assert bc.edge_tractions[0].elem_id == 1
+    assert bc.edge_tractions[0].local_index == 1
+    assert np.allclose(bc.edge_tractions[0].vector, (-2.0, 0.0))
+
+
+def test_boundary_step_rejects_2d_surface_loads():
+    mesh = make_quad4_boundary_mesh()
+    model = FEMModel(
+        mesh=mesh,
+        surfaces={"RIGHT": Surface("RIGHT", [ElementFace(1, 1, (2, 3))])},
+        steps=[
+            AnalysisStep(
+                "load",
+                surface_loads=[SurfaceLoad("RIGHT", magnitude=2.0, load_type="pressure")],
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="2D surface loads are not supported"):
+        boundary_for_step(model, "load")
+
+
+def test_boundary_step_reports_3d_edge_loads_not_supported():
+    mesh = make_selection_hex_mesh()
+    model = FEMModel(
+        mesh=mesh,
+        edges={"TOP": Edge("TOP", [ElementEdge(1, 4, (5, 6))])},
+        steps=[AnalysisStep("load", edge_loads=[EdgeLoad("TOP", (0.0, 0.0, -1.0))])],
+    )
+
+    with pytest.raises(NotImplementedError, match="3D edge loads are not supported"):
+        boundary_for_step(model, "load")
+
+
+def test_3d_edge_traction_assembly_reports_not_supported():
+    mesh = make_selection_hex_mesh()
+    bc = BoundaryCondition()
+    bc.add_edge_traction(1, 4, 0.0, 0.0, -1.0)
+
+    with pytest.raises(NotImplementedError, match="3D edge loads are not supported"):
+        build_load_vector(mesh, bc)
+
+
+def test_3d_surface_traction_assembly_still_uses_face_traction():
+    mesh = make_tet4_stiffness_mesh()
+    elem = mesh.elements[0]
+    bc = BoundaryCondition()
+    bc.add_surface_traction(elem.id, 3, 0.0, 0.0, -2.0)
+
+    F = build_load_vector(mesh, bc)
+    kernel = get_element_kernel(elem.type)
+    expected = kernel.face_traction(mesh, elem, 3, (0.0, 0.0, -2.0))
+
+    assert np.allclose(F, expected)

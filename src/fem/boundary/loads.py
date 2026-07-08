@@ -21,6 +21,7 @@ def build_load_vector(mesh: Any, bc: BoundaryCondition) -> np.ndarray:
 
     body.add_forces(mesh, bc.body_forces, F, elem_lookup, node_lookup, dim)
     body.add_gravity(mesh, bc.gravity, F, node_lookup, dim)
-    traction.add_forces(mesh, bc.surface_tractions, F, elem_lookup, node_lookup, dim)
+    traction.add_surface_forces(mesh, bc.surface_tractions, F, elem_lookup, node_lookup, dim)
+    traction.add_edge_forces(mesh, bc.edge_tractions, F, elem_lookup, node_lookup, dim)
 
     return F

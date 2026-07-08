@@ -4,7 +4,7 @@ from typing import Any
 
 import numpy as np
 
-from ..core.model import AnalysisStep, ElementFace, SurfaceLoad
+from ..core.model import AnalysisStep, EdgeLoad, ElementEdge, ElementFace, SurfaceLoad
 from .condition import BoundaryCondition
 
 
@@ -57,6 +57,8 @@ def boundary_for_step(model: Any, step: str | int | AnalysisStep | None = None) 
             )
 
     for surface_load in selected_step.surface_loads:
+        if model.mesh.dofs_per_node == 2:
+            raise ValueError("2D surface loads are not supported; use edge loads")
         if surface_load.surface not in model.surfaces:
             raise KeyError(f"surface {surface_load.surface} is not defined")
         for face in model.surfaces[surface_load.surface].faces:
@@ -69,6 +71,20 @@ def boundary_for_step(model: Any, step: str | int | AnalysisStep | None = None) 
             else:
                 raise ValueError(f"unsupported surface load type: {surface_load.load_type}")
             boundary.add_surface_traction(face.elem_id, face.local_index, *vector)
+
+    for edge_load in selected_step.edge_loads:
+        if edge_load.edge not in model.edges:
+            raise KeyError(f"edge {edge_load.edge} is not defined")
+        if model.mesh.dofs_per_node == 3:
+            raise NotImplementedError("3D edge loads are not supported")
+        for edge in model.edges[edge_load.edge].edges:
+            if edge_load.load_type == "pressure":
+                vector = _edge_pressure_vector_2d(model, edge, edge_load)
+            elif edge_load.load_type == "traction":
+                vector = edge_load.vector
+            else:
+                raise ValueError(f"unsupported edge load type: {edge_load.load_type}")
+            boundary.add_edge_traction(edge.elem_id, edge.local_index, *vector)
 
     return boundary
 
@@ -98,40 +114,41 @@ def _pressure_vector(
     face: ElementFace,
     surface_load: SurfaceLoad,
 ) -> tuple[float, ...]:
-    """Return an inward pressure vector for one surface face or edge."""
+    """Return an inward pressure vector for one surface face."""
     if surface_load.magnitude is None:
         raise ValueError("pressure surface load requires a magnitude")
 
-    if model.mesh.dofs_per_node == 2:
-        return _pressure_vector_2d(model, face, surface_load)
     return _pressure_vector_3d(model, face, surface_load)
 
 
-def _pressure_vector_2d(
+def _edge_pressure_vector_2d(
     model: Any,
-    face: ElementFace,
-    surface_load: SurfaceLoad,
+    edge: ElementEdge,
+    edge_load: EdgeLoad,
 ) -> tuple[float, float]:
     """Return an inward pressure vector for one 2D element edge."""
-    node_lookup = {node.id: node for node in model.mesh.nodes}
-    if len(face.node_ids) < 2:
-        raise ValueError(f"surface edge {face} must contain at least 2 nodes for pressure")
+    if edge_load.magnitude is None:
+        raise ValueError("pressure edge load requires a magnitude")
 
-    first = node_lookup[face.node_ids[0]]
-    last = node_lookup[face.node_ids[-1]]
+    node_lookup = {node.id: node for node in model.mesh.nodes}
+    if len(edge.node_ids) < 2:
+        raise ValueError(f"edge {edge} must contain at least 2 nodes for pressure")
+
+    first = node_lookup[edge.node_ids[0]]
+    last = node_lookup[edge.node_ids[-1]]
     p0 = np.array([float(first.x), float(first.y)], dtype=float)
     p1 = np.array([float(last.x), float(last.y)], dtype=float)
     tangent = p1 - p0
     length = float(np.linalg.norm(tangent))
     if length <= 0.0:
-        raise ValueError(f"surface edge {face} has zero length")
+        raise ValueError(f"edge {edge} has zero length")
 
     normal = np.array([tangent[1], -tangent[0]], dtype=float) / length
 
     elem_lookup = {elem.id: elem for elem in model.mesh.elements}
-    elem = elem_lookup.get(face.elem_id)
+    elem = elem_lookup.get(edge.elem_id)
     if elem is None:
-        raise KeyError(f"element {face.elem_id} is not defined")
+        raise KeyError(f"element {edge.elem_id} is not defined")
     elem_coords = np.array(
         [
             [float(node_lookup[node_id].x), float(node_lookup[node_id].y)]
@@ -145,7 +162,7 @@ def _pressure_vector_2d(
     if float(np.dot(normal, inward)) < 0.0:
         normal = -normal
 
-    vector = float(surface_load.magnitude) * normal
+    vector = float(edge_load.magnitude) * normal
     return float(vector[0]), float(vector[1])
 
 

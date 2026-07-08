@@ -52,6 +52,7 @@ def surface_by_x(
     boundary_only: bool = True,
 ) -> Surface:
     """Return a named surface selected by x."""
+    _validate_surface_mesh(mesh)
     return _surface_from_faces(name, by_x(mesh, x_value, tol, boundary_only))
 
 
@@ -73,6 +74,7 @@ def surface_by_y(
     boundary_only: bool = True,
 ) -> Surface:
     """Return a named surface selected by y."""
+    _validate_surface_mesh(mesh)
     return _surface_from_faces(name, by_y(mesh, y_value, tol, boundary_only))
 
 
@@ -94,6 +96,7 @@ def surface_by_z(
     boundary_only: bool = True,
 ) -> Surface:
     """Return a named surface selected by z."""
+    _validate_surface_mesh(mesh)
     return _surface_from_faces(name, by_z(mesh, z_value, tol, boundary_only))
 
 
@@ -130,6 +133,7 @@ def surface_by_coord(
     boundary_only: bool = True,
 ) -> Surface:
     """Return a named surface selected by coordinates."""
+    _validate_surface_mesh(mesh)
     return _surface_from_faces(
         name,
         by_coord(mesh, x=x, y=y, z=z, tol=tol, boundary_only=boundary_only),
@@ -150,44 +154,18 @@ def _surface_from_faces(
     )
 
 
+def _validate_surface_mesh(mesh: Any) -> None:
+    """Reject named model surfaces for 2D meshes."""
+    if getattr(mesh, "dofs_per_node", None) == 2:
+        raise ValueError(
+            "2D meshes do not have model surfaces; use selection.edges.edge_by_*()"
+        )
+
+
 def _element_face_node_ids(elem: Any) -> list[list[int]]:
     """Return local Abaqus surface node id lists for common elements."""
     etype = str(elem.type).lower()
     node_ids = elem.node_ids
-
-    if ("tri3" in etype or "cps3" in etype or "cpe3" in etype) and len(node_ids) == 3:
-        return [
-            [node_ids[0], node_ids[1]],
-            [node_ids[1], node_ids[2]],
-            [node_ids[2], node_ids[0]],
-        ]
-
-    if ("tri6" in etype or "cps6" in etype or "cpe6" in etype) and len(node_ids) == 6:
-        return [
-            [node_ids[0], node_ids[3], node_ids[1]],
-            [node_ids[1], node_ids[4], node_ids[2]],
-            [node_ids[2], node_ids[5], node_ids[0]],
-        ]
-
-    if (
-        "quad4" in etype
-        or "cps4" in etype
-        or "cpe4" in etype
-    ) and len(node_ids) == 4:
-        return [
-            [node_ids[0], node_ids[1]],
-            [node_ids[1], node_ids[2]],
-            [node_ids[2], node_ids[3]],
-            [node_ids[3], node_ids[0]],
-        ]
-
-    if ("quad8" in etype or "cps8" in etype or "cpe8" in etype) and len(node_ids) == 8:
-        return [
-            [node_ids[0], node_ids[4], node_ids[1]],
-            [node_ids[1], node_ids[5], node_ids[2]],
-            [node_ids[2], node_ids[6], node_ids[3]],
-            [node_ids[3], node_ids[7], node_ids[0]],
-        ]
 
     if ("hex8" in etype or "c3d8" in etype) and len(node_ids) == 8:
         return [

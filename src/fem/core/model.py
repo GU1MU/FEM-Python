@@ -52,6 +52,29 @@ class Surface:
 
 
 @dataclass(frozen=True)
+class ElementEdge:
+    """Element edge identified by element id and local edge index."""
+    elem_id: int
+    local_index: int
+    node_ids: Sequence[int] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "elem_id", int(self.elem_id))
+        object.__setattr__(self, "local_index", int(self.local_index))
+        object.__setattr__(self, "node_ids", tuple(int(node_id) for node_id in self.node_ids))
+
+
+@dataclass(frozen=True)
+class Edge:
+    """Named collection of element edges."""
+    name: str
+    edges: Sequence[ElementEdge]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "edges", tuple(self.edges))
+
+
+@dataclass(frozen=True)
 class MaterialDefinition:
     """Named material properties."""
     name: str
@@ -140,6 +163,22 @@ class SurfaceLoad:
 
 
 @dataclass(frozen=True)
+class EdgeLoad:
+    """Line load attached to a named edge collection."""
+    edge: str
+    vector: Sequence[float] = ()
+    magnitude: float | None = None
+    load_type: str = "traction"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "edge", str(self.edge))
+        object.__setattr__(self, "vector", tuple(float(value) for value in self.vector))
+        if self.magnitude is not None:
+            object.__setattr__(self, "magnitude", float(self.magnitude))
+        object.__setattr__(self, "load_type", str(self.load_type).lower())
+
+
+@dataclass(frozen=True)
 class OutputRequest:
     """Output request attached to an analysis step."""
     kind: str
@@ -164,6 +203,7 @@ class AnalysisStep:
     surface_loads: Sequence[SurfaceLoad] = ()
     outputs: Sequence[OutputRequest] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    edge_loads: Sequence[EdgeLoad] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "boundaries", tuple(self.boundaries))
@@ -171,6 +211,7 @@ class AnalysisStep:
         object.__setattr__(self, "surface_loads", tuple(self.surface_loads))
         object.__setattr__(self, "outputs", tuple(self.outputs))
         object.__setattr__(self, "metadata", dict(self.metadata))
+        object.__setattr__(self, "edge_loads", tuple(self.edge_loads))
 
 
 @dataclass
@@ -185,6 +226,7 @@ class FEMModel:
     sections: list[SectionAssignment] = field(default_factory=list)
     steps: list[AnalysisStep] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    edges: dict[str, Edge] = field(default_factory=dict)
 
 
 def model_element_info(model: FEMModel, elem_id: int) -> ElementInfo:

@@ -5,7 +5,7 @@ import sys
 import numpy as np
 import pytest
 
-from fem import materials, selection
+from fem import materials, selection, steps
 from fem.core import mesh as core_mesh
 from fem.core import dof
 from fem.core import model as core_model
@@ -14,6 +14,9 @@ from fem.core.mesh import HexMesh3D, Node2D, Node3D, PlaneMesh2D
 from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
+    Edge,
+    EdgeLoad,
+    ElementEdge,
     ElementFace,
     ElementSet,
     FEMModel,
@@ -32,6 +35,9 @@ from tests.helpers.mesh_builders import (
     make_selection_hex_mesh,
     make_selection_mixed_plane_mesh,
     make_selection_quad_mesh,
+    make_tet10_stiffness_mesh,
+    make_tet4_stiffness_mesh,
+    make_tri6_load_mesh,
 )
 
 
@@ -108,6 +114,34 @@ def test_core_model_stores_sets_surfaces_materials_and_sections():
     assert model.sections[0].element_set == "SOLID"
 
 
+def test_core_model_stores_sets_edges_surfaces_materials_and_sections():
+    mesh = make_minimal_hex_mesh()
+    node_set = NodeSet("FIXED", [1, 2])
+    element_set = ElementSet("SOLID", [1])
+    edge = Edge("LINE_LOAD", [ElementEdge(1, 0, [1, 2])])
+    surface = Surface("FACE_LOAD", [ElementFace(1, 0, [1, 2])])
+    material = MaterialDefinition("STEEL", {"E": 210.0, "nu": 0.3})
+    section = SectionAssignment("SOLID", "STEEL")
+    model = FEMModel(
+        mesh=mesh,
+        node_sets={node_set.name: node_set},
+        element_sets={element_set.name: element_set},
+        edges={edge.name: edge},
+        surfaces={surface.name: surface},
+        materials={material.name: material},
+        sections=[section],
+        name="job",
+    )
+
+    assert model.name == "job"
+    assert model.node_sets["FIXED"].node_ids == (1, 2)
+    assert model.element_sets["SOLID"].element_ids == (1,)
+    assert model.edges["LINE_LOAD"].edges[0] == ElementEdge(1, 0, (1, 2))
+    assert model.surfaces["FACE_LOAD"].faces[0] == ElementFace(1, 0, (1, 2))
+    assert model.materials["STEEL"].properties["E"] == 210.0
+    assert model.sections[0].element_set == "SOLID"
+
+
 def test_core_model_stores_analysis_steps():
     step = AnalysisStep(
         "load",
@@ -122,6 +156,59 @@ def test_core_model_stores_analysis_steps():
     assert model.steps[0].boundaries[0].target == "FIXED"
     assert model.steps[0].cloads[0].component == 3
     assert model.steps[0].metadata["nlgeom"] == "NO"
+
+
+def test_core_model_stores_analysis_steps_with_edge_loads():
+    step = AnalysisStep(
+        "load",
+        procedure="static",
+        boundaries=[DisplacementConstraint("FIXED", 1, 3, 0.0)],
+        cloads=[NodalLoad("TIP", 3, -100.0)],
+        edge_loads=[EdgeLoad("LINE_LOAD", (1.0, 0.0), load_type="traction")],
+        metadata={"nlgeom": "NO"},
+    )
+    model = FEMModel(mesh=make_minimal_hex_mesh(), steps=[step])
+
+    assert model.steps[0].name == "load"
+    assert model.steps[0].edge_loads[0].edge == "LINE_LOAD"
+    assert model.steps[0].edge_loads[0].vector == (1.0, 0.0)
+    assert model.steps[0].edge_loads[0].load_type == "traction"
+
+
+def test_core_model_preserves_analysis_step_positional_order():
+    outputs = [core_model.OutputRequest("field", "node", ("U",))]
+    metadata = {"nlgeom": "NO"}
+
+    step = AnalysisStep("load", "static", (), (), (), outputs, metadata)
+
+    assert step.outputs == tuple(outputs)
+    assert step.metadata == metadata
+    assert step.edge_loads == ()
+
+
+def test_core_model_preserves_fem_model_positional_order():
+    mesh = make_minimal_hex_mesh()
+    surface = Surface("FACE_LOAD", [ElementFace(1, 0, [1, 2])])
+    material = MaterialDefinition("STEEL", {"E": 210.0, "nu": 0.3})
+    section = SectionAssignment("SOLID", "STEEL")
+
+    model = FEMModel(
+        mesh,
+        "job",
+        {},
+        {},
+        {surface.name: surface},
+        {material.name: material},
+        [section],
+        [],
+        {"source": "positional"},
+    )
+
+    assert model.surfaces["FACE_LOAD"] == surface
+    assert model.materials["STEEL"] == material
+    assert model.sections == [section]
+    assert model.metadata == {"source": "positional"}
+    assert model.edges == {}
 
 
 def test_model_element_info_returns_type_material_and_properties_by_element_id():
@@ -192,7 +279,29 @@ def test_selection_package_exposes_nodes_edges_and_faces_only():
     assert hasattr(selection, "edges")
     assert hasattr(selection, "elements")
     assert hasattr(selection, "faces")
+    assert callable(selection.edges.edge_by_x)
+    assert callable(selection.edges.edge_by_y)
+    assert callable(selection.edges.edge_by_coord)
     assert importlib.util.find_spec("fem.helper") is None
+
+
+def test_steps_add_edge_load_helpers():
+    step = AnalysisStep("load")
+    edge = Edge("TOP", [ElementEdge(1, 2, [3, 4])])
+
+    traction = steps.edge_traction(step, edge, (1.0, -2.0))
+    pressure = steps.edge_pressure(step, "TOP", 3.0)
+
+    assert traction == EdgeLoad("TOP", (1.0, -2.0), load_type="traction")
+    assert pressure == EdgeLoad("TOP", magnitude=3.0, load_type="pressure")
+    assert step.edge_loads == (traction, pressure)
+
+
+def test_steps_export_edge_load_helpers():
+    assert callable(steps.edge_traction)
+    assert callable(steps.edge_pressure)
+    assert callable(steps.surface_traction)
+    assert callable(steps.surface_pressure)
 
 
 def test_nodes_select_2d_and_3d_coordinates():
@@ -227,6 +336,24 @@ def test_edges_select_boundary_edges_by_coordinate():
     assert selection.edges.by_y(mesh, 1.0) == [(1, 2, [3, 4])]
 
 
+def test_edges_can_build_named_2d_edge_by_coordinate():
+    mesh = make_selection_quad_mesh()
+
+    load_edge = selection.edges.edge_by_y(mesh, "TOP_EDGE", 1.0)
+
+    assert isinstance(load_edge, Edge)
+    assert load_edge.edges == (ElementEdge(1, 2, (3, 4)),)
+
+
+def test_edges_select_tri6_quadratic_edges_with_mid_nodes():
+    mesh = make_tri6_load_mesh()
+
+    assert selection.edges.by_y(mesh, 0.0) == [(1, 0, [1, 4, 2])]
+    load_edge = selection.edges.edge_by_y(mesh, "BOTTOM", 0.0)
+
+    assert load_edge.edges == (ElementEdge(1, 0, (1, 4, 2)),)
+
+
 def test_elements_select_by_id_and_type_and_build_sets():
     mesh = make_selection_mixed_plane_mesh()
 
@@ -242,6 +369,82 @@ def test_faces_select_boundary_faces_by_coordinate():
     assert len(selection.faces.boundary(mesh)) == 6
     assert selection.faces.by_z(mesh, 4.0) == [(1, 1, [5, 6, 7, 8])]
     assert selection.faces.by_x(mesh, 2.0) == [(1, 5, [2, 3, 7, 6])]
+
+
+def test_edges_select_3d_boundary_edges_by_coordinate():
+    mesh = make_selection_hex_mesh()
+
+    assert selection.edges.by_x(mesh, 0.0) == [
+        (1, 3, [4, 1]),
+        (1, 7, [8, 5]),
+        (1, 8, [1, 5]),
+        (1, 11, [4, 8]),
+    ]
+    load_edge = selection.edges.edge_by_x(mesh, "LEFT_EDGES", 0.0)
+
+    assert isinstance(load_edge, Edge)
+    assert load_edge.edges[0] == ElementEdge(1, 3, (4, 1))
+
+
+def test_edges_can_build_named_3d_edges_by_z_and_coord():
+    mesh = make_selection_hex_mesh()
+
+    top_edges = selection.edges.edge_by_z(mesh, "TOP_EDGES", 4.0)
+    top_front_edge = selection.edges.edge_by_coord(
+        mesh,
+        "TOP_FRONT_EDGE",
+        y=0.0,
+        z=4.0,
+    )
+
+    assert top_edges.edges == (
+        ElementEdge(1, 4, (5, 6)),
+        ElementEdge(1, 5, (6, 7)),
+        ElementEdge(1, 6, (7, 8)),
+        ElementEdge(1, 7, (8, 5)),
+    )
+    assert top_front_edge.edges == (ElementEdge(1, 4, (5, 6)),)
+
+
+def test_edges_select_tet4_boundary_edges_by_coordinate():
+    mesh = make_tet4_stiffness_mesh()
+
+    assert selection.edges.by_z(mesh, 0.0) == [
+        (1, 0, [1, 2]),
+        (1, 1, [2, 3]),
+        (1, 2, [3, 1]),
+    ]
+    load_edge = selection.edges.edge_by_coord(mesh, "BOTTOM_LEFT", x=0.0, z=0.0)
+
+    assert load_edge.edges == (ElementEdge(1, 2, (3, 1)),)
+
+
+def test_edges_select_tet10_quadratic_edges_with_mid_nodes():
+    mesh = make_tet10_stiffness_mesh()
+
+    assert selection.edges.by_z(mesh, 0.0) == [
+        (1, 0, [1, 5, 2]),
+        (1, 1, [2, 6, 3]),
+        (1, 2, [3, 7, 1]),
+    ]
+    load_edge = selection.edges.edge_by_coord(mesh, "BOTTOM_LEFT", x=0.0, z=0.0)
+
+    assert load_edge.edges == (ElementEdge(1, 2, (3, 7, 1)),)
+
+
+def test_faces_do_not_treat_2d_edges_as_surfaces():
+    mesh = make_selection_quad_mesh()
+
+    assert selection.faces.all(mesh) == []
+    surface_calls = (
+        lambda: selection.faces.surface_by_x(mesh, "LEFT", 0.0),
+        lambda: selection.faces.surface_by_y(mesh, "TOP", 1.0),
+        lambda: selection.faces.surface_by_z(mesh, "Z", 0.0),
+        lambda: selection.faces.surface_by_coord(mesh, "TOP", y=1.0),
+    )
+    for surface_call in surface_calls:
+        with pytest.raises(ValueError, match="2D meshes do not have model surfaces"):
+            surface_call()
 
 
 def test_selection_can_build_model_sets_and_surfaces():
