@@ -267,8 +267,11 @@ class Tri6PlaneKernel:
         elem: Any,
         U: np.ndarray,
         node_lookup: dict[int, Any] | None = None,
+        gauss_order: int | None = None,
     ):
         """Return element-nodal stress, plane type, and nu."""
+        if gauss_order not in (None, 3):
+            raise ValueError("gauss_order must be 3 for Tri6 nodal stress")
         node_coords = [
             (0.0, 0.0),
             (1.0, 0.0),

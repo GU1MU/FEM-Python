@@ -28,6 +28,7 @@ from tests.helpers.mesh_builders import (
     make_minimal_hex_mesh,
     make_mixed_hex8_tet4_mesh,
     make_mixed_tri3_quad4_mesh,
+    make_mixed_tri6_quad8_mesh,
     make_selection_hex_mesh,
     make_selection_mixed_plane_mesh,
     make_selection_quad_mesh,
@@ -293,3 +294,11 @@ def test_mixed_tri3_quad4_mesh_keeps_element_types_and_2d_dofs():
     assert mesh.dofs_per_node == 2
     assert [elem.type for elem in mesh.elements] == ["Tri3Plane", "Quad4Plane"]
     assert mesh.num_dofs == 10
+
+
+def test_mixed_tri6_quad8_mesh_keeps_element_types_and_2d_dofs():
+    mesh = make_mixed_tri6_quad8_mesh()
+
+    assert mesh.dofs_per_node == 2
+    assert [elem.type for elem in mesh.elements] == ["Tri6Plane", "Quad8Plane"]
+    assert mesh.num_dofs == 28

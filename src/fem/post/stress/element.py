@@ -31,6 +31,8 @@ def by_type(
         truss2d(mesh, U, path)
     elif type_key == "tri3":
         tri3_plane(mesh, U, path)
+    elif type_key == "tri6":
+        tri6_plane(mesh, U, path, 3 if gauss_order is None else gauss_order)
     elif type_key == "quad4":
         quad4_plane(mesh, U, path, 2 if gauss_order is None else gauss_order)
     elif type_key == "quad8":
@@ -99,6 +101,16 @@ def truss2d(mesh: TrussMesh2D, U: Sequence[float], path: str) -> None:
 def tri3_plane(mesh: PlaneMesh2D, U: Sequence[float], path: str) -> None:
     """Export Tri3 element-nodal stresses without averaging."""
     _plane(mesh, U, path, "tri3")
+
+
+def tri6_plane(
+    mesh: PlaneMesh2D,
+    U: Sequence[float],
+    path: str,
+    gauss_order: int = 3,
+) -> None:
+    """Export Tri6 element-nodal stresses without averaging."""
+    _plane(mesh, U, path, "tri6", gauss_order)
 
 
 def quad4_plane(

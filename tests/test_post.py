@@ -16,6 +16,8 @@ from tests.helpers.mesh_builders import (
     make_mixed_quad4_quad8_mesh,
     make_mixed_tet4_tet10_mesh,
     make_mixed_tri3_quad4_mesh,
+    make_mixed_tri6_quad8_mesh,
+    make_tri6_stiffness_mesh,
     make_unit_hex8_mesh,
 )
 from tests.helpers.model_builders import make_simple_truss_mesh
@@ -194,6 +196,15 @@ def test_dispatch_resolves_compatible_mixed_plane_type_keys():
     assert dispatch.stress_group_for_keys(("tri3", "quad4")) == "plane"
 
 
+def test_dispatch_resolves_compatible_mixed_quadratic_plane_type_keys():
+    mesh = make_mixed_tri6_quad8_mesh()
+
+    assert dispatch.resolve_type_keys(mesh, None) == ("tri6", "quad8")
+    assert dispatch.stress_group_for_keys(("tri6", "quad8")) == "plane"
+    assert dispatch.element_stress_supported(("tri6", "quad8"))
+    assert dispatch.nodal_stress_supported(("tri6", "quad8"))
+
+
 def test_element_stress_export_writes_mixed_solid_rows(tmp_path):
     mesh = make_mixed_hex8_tet4_mesh()
     csv_path = tmp_path / "mixed_element_stress.csv"
@@ -240,7 +251,7 @@ def test_stress_exports_write_mixed_plane_rows_and_nodes(tmp_path):
 
 def test_stress_exports_cover_higher_order_mixed_types(tmp_path):
     solid_mesh = make_mixed_tet4_tet10_mesh()
-    plane_mesh = make_mixed_quad4_quad8_mesh()
+    plane_mesh = make_mixed_tri6_quad8_mesh()
     solid_elem = tmp_path / "mixed_tet_element_stress.csv"
     solid_nodal = tmp_path / "mixed_tet_nodal_stress.csv"
     solid_vtk = make_zero_result(solid_mesh, "mixed_tet_vtk")
@@ -265,10 +276,20 @@ def test_stress_exports_cover_higher_order_mixed_types(tmp_path):
 
     assert [row[0] for row in solid_elem_rows[1:]] == ["1", "2"]
     assert len(solid_nodal_rows) == len(solid_mesh.nodes) + 1
-    assert len(plane_elem_rows) == 13
+    assert len(plane_elem_rows) == 15
     assert len(plane_nodal_rows) == len(plane_mesh.nodes) + 1
     assert "\n10\n" in vtk_text
     assert "\n24\n" in vtk_text
+
+
+def test_vtk_cells_support_tri6_quadratic_triangle(tmp_path):
+    result = make_zero_result(make_tri6_stiffness_mesh(), "tri6_vtk")
+
+    vtk.export.from_result(result, output_dir=tmp_path)
+    vtk_text = (tmp_path / "tri6_vtk.vtk").read_text(encoding="utf-8")
+
+    assert "CELL_TYPES 1" in vtk_text
+    assert "\n22\n" in vtk_text
 
 
 def test_vtk_export_from_result_materializes_mixed_stress_csvs(tmp_path):

@@ -513,3 +513,37 @@ def make_mixed_quad4_quad8_mesh():
         ),
     ]
     return PlaneMesh2D(nodes=nodes, elements=elements)
+
+
+def make_mixed_tri6_quad8_mesh():
+    nodes = [
+        Node2D(1, 0.0, 0.0),
+        Node2D(2, 2.0, 0.0),
+        Node2D(3, 0.0, 1.0),
+        Node2D(4, 1.0, 0.0),
+        Node2D(5, 1.0, 0.5),
+        Node2D(6, 0.0, 0.5),
+        Node2D(7, 3.0, 0.0),
+        Node2D(8, 5.0, 0.0),
+        Node2D(9, 5.0, 2.0),
+        Node2D(10, 3.0, 2.0),
+        Node2D(11, 4.0, 0.0),
+        Node2D(12, 5.0, 1.0),
+        Node2D(13, 4.0, 2.0),
+        Node2D(14, 3.0, 1.0),
+    ]
+    elements = [
+        Element2D(
+            id=1,
+            node_ids=[1, 2, 3, 4, 5, 6],
+            type="Tri6Plane",
+            props={"E": 100.0, "nu": 0.25, "thickness": 1.0, "plane_type": "stress"},
+        ),
+        Element2D(
+            id=2,
+            node_ids=[7, 8, 9, 10, 11, 12, 13, 14],
+            type="Quad8Plane",
+            props={"E": 90.0, "nu": 0.3, "thickness": 1.0, "plane_type": "stress"},
+        ),
+    ]
+    return PlaneMesh2D(nodes=nodes, elements=elements)

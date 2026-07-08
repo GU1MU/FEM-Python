@@ -162,6 +162,13 @@ def _element_face_node_ids(elem: Any) -> list[list[int]]:
             [node_ids[2], node_ids[0]],
         ]
 
+    if ("tri6" in etype or "cps6" in etype or "cpe6" in etype) and len(node_ids) == 6:
+        return [
+            [node_ids[0], node_ids[3], node_ids[1]],
+            [node_ids[1], node_ids[4], node_ids[2]],
+            [node_ids[2], node_ids[5], node_ids[0]],
+        ]
+
     if (
         "quad4" in etype
         or "cps4" in etype
@@ -219,6 +226,8 @@ def _face_key(elem: Any, node_ids: list[int]) -> tuple[int, ...]:
 def _face_corner_ids(elem: Any, node_ids: list[int]) -> list[int]:
     """Return corner node ids for a face."""
     etype = str(elem.type).lower()
+    if ("tri6" in etype or "cps6" in etype or "cpe6" in etype) and len(node_ids) == 3:
+        return [node_ids[0], node_ids[2]]
     if ("tet10" in etype or "c3d10" in etype) and len(node_ids) == 6:
         return node_ids[:3]
     return node_ids

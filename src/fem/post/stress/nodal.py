@@ -33,6 +33,8 @@ def by_type(
         raise ValueError("Nodal stress export is not available for Truss2D elements")
     if type_key == "tri3":
         tri3(mesh, U, path)
+    elif type_key == "tri6":
+        tri6(mesh, U, path, 3 if gauss_order is None else gauss_order)
     elif type_key == "quad4":
         quad4(mesh, U, path, 2 if gauss_order is None else gauss_order)
     elif type_key == "quad8":
@@ -70,6 +72,16 @@ def mixed(
 def tri3(mesh: PlaneMesh2D, U: Sequence[float], path: str) -> None:
     """Export Tri3 nodal stresses averaged from elements."""
     _plane(mesh, U, path, "tri3")
+
+
+def tri6(
+    mesh: PlaneMesh2D,
+    U: Sequence[float],
+    path: str,
+    gauss_order: int = 3,
+) -> None:
+    """Export Tri6 nodal stresses averaged from elements."""
+    _plane(mesh, U, path, "tri6", gauss_order)
 
 
 def quad4(

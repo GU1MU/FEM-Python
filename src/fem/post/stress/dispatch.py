@@ -3,11 +3,12 @@ from __future__ import annotations
 from typing import Any, Iterable
 
 
-ELEMENT_STRESS_KEYS = {"truss2d", "tri3", "quad4", "quad8", "hex8", "tet4", "tet10"}
-NODAL_STRESS_KEYS = {"tri3", "quad4", "quad8", "hex8", "tet4", "tet10"}
+ELEMENT_STRESS_KEYS = {"truss2d", "tri3", "tri6", "quad4", "quad8", "hex8", "tet4", "tet10"}
+NODAL_STRESS_KEYS = {"tri3", "tri6", "quad4", "quad8", "hex8", "tet4", "tet10"}
 TYPE_GROUPS = {
     "truss2d": "line",
     "tri3": "plane",
+    "tri6": "plane",
     "quad4": "plane",
     "quad8": "plane",
     "hex8": "solid",
@@ -79,7 +80,7 @@ def default_gauss_order(type_key: str) -> int | None:
     """Return the default nodal stress extrapolation order for one type key."""
     if type_key in {"quad4", "hex8"}:
         return 2
-    if type_key == "quad8":
+    if type_key in {"tri6", "quad8"}:
         return 3
     return None
 
@@ -89,6 +90,8 @@ def type_key_from_name(element_type: Any) -> str | None:
     etype = str(element_type).lower()
     if "truss" in etype:
         return "truss2d"
+    if "tri6" in etype:
+        return "tri6"
     if "tri3" in etype:
         return "tri3"
     if "quad4" in etype:

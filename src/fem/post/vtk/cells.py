@@ -29,6 +29,13 @@ def build(mesh):
             vtk_conn = [3] + pt_ids
             vtk_type = 5
 
+        elif "tri6" in etype:
+            if len(elem.node_ids) != 6:
+                continue
+            pt_ids = [node_id_to_pt_idx[nid] for nid in elem.node_ids]
+            vtk_conn = [6] + pt_ids
+            vtk_type = 22
+
         elif "quad4" in etype:
             if len(elem.node_ids) != 4:
                 continue
