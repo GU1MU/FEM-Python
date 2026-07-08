@@ -98,10 +98,63 @@ def _pressure_vector(
     face: ElementFace,
     surface_load: SurfaceLoad,
 ) -> tuple[float, ...]:
-    """Return an inward pressure vector for one surface face."""
+    """Return an inward pressure vector for one surface face or edge."""
     if surface_load.magnitude is None:
         raise ValueError("pressure surface load requires a magnitude")
 
+    if model.mesh.dofs_per_node == 2:
+        return _pressure_vector_2d(model, face, surface_load)
+    return _pressure_vector_3d(model, face, surface_load)
+
+
+def _pressure_vector_2d(
+    model: Any,
+    face: ElementFace,
+    surface_load: SurfaceLoad,
+) -> tuple[float, float]:
+    """Return an inward pressure vector for one 2D element edge."""
+    node_lookup = {node.id: node for node in model.mesh.nodes}
+    if len(face.node_ids) < 2:
+        raise ValueError(f"surface edge {face} must contain at least 2 nodes for pressure")
+
+    first = node_lookup[face.node_ids[0]]
+    last = node_lookup[face.node_ids[-1]]
+    p0 = np.array([float(first.x), float(first.y)], dtype=float)
+    p1 = np.array([float(last.x), float(last.y)], dtype=float)
+    tangent = p1 - p0
+    length = float(np.linalg.norm(tangent))
+    if length <= 0.0:
+        raise ValueError(f"surface edge {face} has zero length")
+
+    normal = np.array([tangent[1], -tangent[0]], dtype=float) / length
+
+    elem_lookup = {elem.id: elem for elem in model.mesh.elements}
+    elem = elem_lookup.get(face.elem_id)
+    if elem is None:
+        raise KeyError(f"element {face.elem_id} is not defined")
+    elem_coords = np.array(
+        [
+            [float(node_lookup[node_id].x), float(node_lookup[node_id].y)]
+            for node_id in elem.node_ids
+        ],
+        dtype=float,
+    )
+    edge_center = 0.5 * (p0 + p1)
+    elem_center = np.mean(elem_coords, axis=0)
+    inward = elem_center - edge_center
+    if float(np.dot(normal, inward)) < 0.0:
+        normal = -normal
+
+    vector = float(surface_load.magnitude) * normal
+    return float(vector[0]), float(vector[1])
+
+
+def _pressure_vector_3d(
+    model: Any,
+    face: ElementFace,
+    surface_load: SurfaceLoad,
+) -> tuple[float, ...]:
+    """Return an inward pressure vector for one 3D surface face."""
     node_lookup = {node.id: node for node in model.mesh.nodes}
     coords = []
     for node_id in face.node_ids:

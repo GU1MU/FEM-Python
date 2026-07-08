@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from fem import abaqus, materials
+from fem import abaqus, materials, post
 from fem.core.model import (
     DisplacementConstraint,
     ElementFace,
@@ -10,6 +10,7 @@ from fem.core.model import (
     SectionAssignment,
 )
 from fem.solvers import static_linear
+from tests.helpers.abaqus_builders import write_perforated_plate_style_inp
 from tests.helpers.file_builders import write_inp
 
 
@@ -101,6 +102,75 @@ def test_abaqus_read_builds_model_with_sets_surfaces_materials_and_steps(tmp_pat
     bc = static_linear.boundary_for_step(model, "LOAD")
     assert len(bc.prescribed_displacements) == 12
     assert sum(bc.nodal_forces.values()) == pytest.approx(-200.0)
+
+
+@pytest.mark.parametrize(
+    ("filename", "step_lines"),
+    [
+        ("test_perforated_plate_pressure.inp", ("*Dsload", "Surf-right, P, 2.")),
+        ("test_perforated_plate_disp.inp", ("*Boundary", "Set-right, 1, 1, 0.05")),
+    ],
+)
+def test_abaqus_read_perforated_plate_style_inputs_without_data_files(
+    tmp_path,
+    filename,
+    step_lines,
+):
+    inp_path = write_perforated_plate_style_inp(tmp_path, filename, step_lines)
+    model = abaqus.read(inp_path)
+
+    assert model.mesh.num_nodes == 6
+    assert len(model.mesh.elements) == 2
+    assert "Surf-right" in model.surfaces
+    assert model.surfaces["Surf-right"].faces[0] == ElementFace(2, 1, (3, 6))
+
+
+@pytest.mark.parametrize(
+    ("filename", "step_lines", "expected_load_type"),
+    [
+        ("test_perforated_plate_pressure.inp", ("*Dsload", "Surf-right, P, 2."), "pressure"),
+        (
+            "test_perforated_plate_disp.inp",
+            ("*Boundary", "Set-right, 1, 1, 0.05"),
+            "displacement",
+        ),
+    ],
+)
+def test_abaqus_builds_boundary_for_perforated_plate_style_inputs_without_data_files(
+    tmp_path,
+    filename,
+    step_lines,
+    expected_load_type,
+):
+    inp_path = write_perforated_plate_style_inp(tmp_path, filename, step_lines)
+    model = abaqus.read(inp_path)
+    bc = static_linear.boundary_for_step(model)
+
+    assert len(bc.prescribed_displacements) > 0
+    if expected_load_type == "pressure":
+        assert len(bc.surface_tractions) > 0
+    else:
+        assert any(abs(value) > 1e-12 for value in bc.prescribed_displacements.values())
+
+
+def test_abaqus_solves_and_exports_perforated_plate_displacement_input_without_data_files(
+    tmp_path,
+):
+    path = write_perforated_plate_style_inp(
+        tmp_path,
+        "test_perforated_plate_disp.inp",
+        ("*Boundary", "Set-right, 1, 1, 0.05"),
+    )
+    model = abaqus.read(path)
+    model.name = "perforated_plate_disp"
+
+    result = static_linear.solve(model)
+    post.vtk.export.from_result(result, output_dir=tmp_path)
+
+    assert (tmp_path / "perforated_plate_disp_nodal_displacement.csv").exists()
+    assert (tmp_path / "perforated_plate_disp_element_stress.csv").exists()
+    assert (tmp_path / "perforated_plate_disp_nodal_stress.csv").exists()
+    assert (tmp_path / "perforated_plate_disp.vtk").exists()
 
 
 def test_abaqus_read_hides_internal_element_sets_without_breaking_surfaces_or_sections(tmp_path):
@@ -329,6 +399,43 @@ def test_abaqus_read_converts_dsload_and_dload_pressure_to_surface_tractions(tmp
     assert np.allclose(bc.surface_tractions[1].vector, (-3.0, 0.0, 0.0))
 
 
+def test_abaqus_2d_pressure_load_builds_edge_traction(tmp_path):
+    path = write_inp(
+        tmp_path,
+        "test_abaqus_2d_pressure_load.inp",
+        [
+            "*Node",
+            "1, 0., 0.",
+            "2, 1., 0.",
+            "3, 1., 1.",
+            "4, 0., 1.",
+            "*Element, type=CPS4, elset=SOLID",
+            "1, 1,2,3,4",
+            "*Elset, elset=SOLID",
+            "1",
+            "*Surface, type=ELEMENT, name=RIGHT_EDGE",
+            "SOLID, S2",
+            "*Material, name=STEEL",
+            "*Elastic",
+            "210., 0.3",
+            "*Solid Section, elset=SOLID, material=STEEL",
+            "*Step, name=LOAD",
+            "*Static",
+            "*Dsload",
+            "RIGHT_EDGE, P, 2.",
+            "*End Step",
+        ],
+    )
+
+    model = abaqus.read(path)
+    bc = static_linear.boundary_for_step(model, "LOAD")
+
+    assert len(bc.surface_tractions) == 1
+    assert bc.surface_tractions[0].elem_id == 1
+    assert bc.surface_tractions[0].local_index == 1
+    assert np.allclose(bc.surface_tractions[0].vector, (-2.0, 0.0))
+
+
 def test_abaqus_read_projects_trshr_direction_to_surface_tangent(tmp_path):
     path = write_inp(
         tmp_path,
@@ -398,6 +505,89 @@ def test_abaqus_trshr_rejects_nonplanar_faces(tmp_path):
 
     with pytest.raises(ValueError, match="non-planar"):
         static_linear.boundary_for_step(model, "LOAD")
+
+
+@pytest.mark.parametrize(
+    ("element_type", "node_line", "surface_label", "expected_face"),
+    [
+        ("CPS3", "1, 1,2,3", "S1", ElementFace(1, 0, (1, 2))),
+        ("CPS3", "1, 1,2,3", "S2", ElementFace(1, 1, (2, 3))),
+        ("CPS3", "1, 1,2,3", "S3", ElementFace(1, 2, (3, 1))),
+        ("CPS4", "1, 1,2,3,4", "S1", ElementFace(1, 0, (1, 2))),
+        ("CPS4", "1, 1,2,3,4", "S2", ElementFace(1, 1, (2, 3))),
+        ("CPS4", "1, 1,2,3,4", "S3", ElementFace(1, 2, (3, 4))),
+        ("CPS4", "1, 1,2,3,4", "S4", ElementFace(1, 3, (4, 1))),
+    ],
+)
+def test_abaqus_read_maps_2d_surface_labels_to_edges(
+    tmp_path,
+    element_type,
+    node_line,
+    surface_label,
+    expected_face,
+):
+    path = write_inp(
+        tmp_path,
+        "test_abaqus_2d_surface_labels.inp",
+        [
+            "*Node",
+            "1, 0., 0.",
+            "2, 1., 0.",
+            "3, 1., 1.",
+            "4, 0., 1.",
+            f"*Element, type={element_type}, elset=SOLID",
+            node_line,
+            "*Elset, elset=SOLID",
+            "1",
+            "*Surface, type=ELEMENT, name=EDGE_SURFACE",
+            f"SOLID, {surface_label}",
+        ],
+    )
+
+    model = abaqus.read(path)
+
+    assert model.surfaces["EDGE_SURFACE"].faces[0] == expected_face
+
+
+@pytest.mark.parametrize(
+    ("surface_label", "expected_face"),
+    [
+        ("S1", ElementFace(1, 0, (1, 5, 2))),
+        ("S2", ElementFace(1, 1, (2, 6, 3))),
+        ("S3", ElementFace(1, 2, (3, 7, 4))),
+        ("S4", ElementFace(1, 3, (4, 8, 1))),
+    ],
+)
+def test_abaqus_read_maps_cps8_surface_labels_to_edges(
+    tmp_path,
+    surface_label,
+    expected_face,
+):
+    path = write_inp(
+        tmp_path,
+        "test_abaqus_cps8_surface_labels.inp",
+        [
+            "*Node",
+            "1, 0., 0.",
+            "2, 2., 0.",
+            "3, 2., 2.",
+            "4, 0., 2.",
+            "5, 1., 0.",
+            "6, 2., 1.",
+            "7, 1., 2.",
+            "8, 0., 1.",
+            "*Element, type=CPS8, elset=SOLID",
+            "1, 1,2,3,4,5,6,7,8",
+            "*Elset, elset=SOLID",
+            "1",
+            "*Surface, type=ELEMENT, name=EDGE_SURFACE",
+            f"SOLID, {surface_label}",
+        ],
+    )
+
+    model = abaqus.read(path)
+
+    assert model.surfaces["EDGE_SURFACE"].faces[0] == expected_face
 
 
 @pytest.mark.parametrize(
