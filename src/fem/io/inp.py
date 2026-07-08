@@ -1,9 +1,76 @@
 from __future__ import annotations
 
 import numpy as np
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.mesh import Element2D, Element3D, HexMesh3D, Node2D, Node3D, PlaneMesh2D, TetMesh3D
+
+
+_MIXED2D_TYPES = {
+    "CPS3": ("Tri3Plane", 3, "linear"),
+    "CPE3": ("Tri3Plane", 3, "linear"),
+    "CPS4": ("Quad4Plane", 4, "linear"),
+    "CPE4": ("Quad4Plane", 4, "linear"),
+    "CPS4R": ("Quad4Plane", 4, "linear"),
+    "CPE4R": ("Quad4Plane", 4, "linear"),
+    "CPS6": ("Tri6Plane", 6, "quadratic"),
+    "CPE6": ("Tri6Plane", 6, "quadratic"),
+    "CPS8": ("Quad8Plane", 8, "quadratic"),
+    "CPE8": ("Quad8Plane", 8, "quadratic"),
+    "CPS8R": ("Quad8Plane", 8, "quadratic"),
+    "CPE8R": ("Quad8Plane", 8, "quadratic"),
+}
+
+
+def _split_nums(line: str) -> List[str]:
+    parts = [p.strip() for p in line.strip().split(",")]
+    return [p for p in parts if p]
+
+
+def _keyword_type(kw: str) -> str | None:
+    for part in [p.strip() for p in kw.split(",")]:
+        if part.startswith("TYPE="):
+            return part.split("=", 1)[1].strip().upper()
+    return None
+
+
+def _normalize_plane_type(plane_type: Optional[str], elem_type: str) -> str:
+    if plane_type is None:
+        return "strain" if elem_type.upper().startswith("CPE") else "stress"
+    pt = str(plane_type).lower()
+    if pt.startswith("stress"):
+        return "stress"
+    if pt.startswith("strain"):
+        return "strain"
+    raise ValueError("plane_type must be 'stress' or 'strain'")
+
+
+def _signed_area_2d(node_lookup: Dict[int, Node2D], node_ids: List[int]) -> float:
+    corners = node_ids[:3] if len(node_ids) in (3, 6) else node_ids[:4]
+    area = 0.0
+    for i, node_id in enumerate(corners):
+        current = node_lookup[node_id]
+        nxt = node_lookup[corners[(i + 1) % len(corners)]]
+        area += current.x * nxt.y - nxt.x * current.y
+    return 0.5 * area
+
+
+def _fix_plane_orientation(elem: Element2D, node_lookup: Dict[int, Node2D]) -> None:
+    area = _signed_area_2d(node_lookup, elem.node_ids)
+    if area >= 0.0:
+        return
+    if elem.type == "Tri3Plane":
+        n1, n2, n3 = elem.node_ids
+        elem.node_ids = [n1, n3, n2]
+    elif elem.type == "Tri6Plane":
+        n1, n2, n3, n4, n5, n6 = elem.node_ids
+        elem.node_ids = [n1, n3, n2, n6, n5, n4]
+    elif elem.type == "Quad4Plane":
+        n1, n2, n3, n4 = elem.node_ids
+        elem.node_ids = [n1, n4, n3, n2]
+    elif elem.type == "Quad8Plane":
+        n1, n2, n3, n4, n5, n6, n7, n8 = elem.node_ids
+        elem.node_ids = [n1, n4, n3, n2, n8, n7, n6, n5]
 
 
 def read_tri3(
@@ -121,6 +188,72 @@ def read_tri3(
     if not elements:
         raise ValueError(f"未在 {inp_path} 中解析到 CPS3/CPE3 的 *Element 数据")
 
+    return PlaneMesh2D(nodes=nodes, elements=elements)
+
+
+def read_tri6(
+    inp_path: str,
+    default_thickness: float = 1.0,
+    plane_type: Optional[str] = None,
+    fix_orientation: bool = True,
+) -> PlaneMesh2D:
+    """Read Tri6 plane mesh (CPS6/CPE6) from Abaqus INP file."""
+    nodes: List[Node2D] = []
+    elements: List[Element2D] = []
+    node_lookup: Dict[int, Node2D] = {}
+    in_node = False
+    in_elem = False
+    elem_abaqus_type: Optional[str] = None
+
+    with open(inp_path, "r", encoding="utf-8", errors="ignore") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("**"):
+                continue
+            if line.startswith("*"):
+                kw = line.strip().upper()
+                in_node = kw.startswith("*NODE")
+                if kw.startswith("*ELEMENT"):
+                    elem_abaqus_type = _keyword_type(kw)
+                    in_elem = elem_abaqus_type in ("CPS6", "CPE6")
+                else:
+                    in_elem = False
+                    elem_abaqus_type = None
+                continue
+
+            if in_node:
+                parts = _split_nums(line)
+                if len(parts) < 3:
+                    continue
+                node = Node2D(id=int(parts[0]), x=float(parts[1]), y=float(parts[2]))
+                nodes.append(node)
+                node_lookup[node.id] = node
+                continue
+
+            if in_elem and elem_abaqus_type is not None:
+                parts = _split_nums(line)
+                if len(parts) < 7:
+                    continue
+                props: Dict[str, Any] = {
+                    "thickness": float(default_thickness),
+                    "plane_type": _normalize_plane_type(plane_type, elem_abaqus_type),
+                }
+                elements.append(
+                    Element2D(
+                        id=int(parts[0]),
+                        node_ids=[int(value) for value in parts[1:7]],
+                        type="Tri6Plane",
+                        props=props,
+                    )
+                )
+
+    if not nodes:
+        raise ValueError(f"No *Node data found in {inp_path}")
+    if not elements:
+        raise ValueError(f"No CPS6/CPE6 *Element data found in {inp_path}")
+    if fix_orientation:
+        for elem in elements:
+            _fix_plane_orientation(elem, node_lookup)
     return PlaneMesh2D(nodes=nodes, elements=elements)
 
 
@@ -384,6 +517,85 @@ def read_quad8(
                 n1_id, n2_id, n3_id, n4_id, n5_id, n6_id, n7_id, n8_id = e.node_ids
                 e.node_ids = [n1_id, n4_id, n3_id, n2_id, n8_id, n7_id, n6_id, n5_id]
 
+    return PlaneMesh2D(nodes=nodes, elements=elements)
+
+
+def read_mixed2d(
+    inp_path: str,
+    default_thickness: float = 1.0,
+    plane_type: Optional[str] = None,
+    fix_orientation: bool = True,
+) -> PlaneMesh2D:
+    """Read a same-order mixed 2D plane mesh from Abaqus INP file."""
+    nodes: List[Node2D] = []
+    elements: List[Element2D] = []
+    node_lookup: Dict[int, Node2D] = {}
+    orders: set[str] = set()
+    in_node = False
+    in_elem = False
+    elem_abaqus_type: Optional[str] = None
+
+    with open(inp_path, "r", encoding="utf-8", errors="ignore") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("**"):
+                continue
+            if line.startswith("*"):
+                kw = line.strip().upper()
+                in_node = kw.startswith("*NODE")
+                if kw.startswith("*ELEMENT"):
+                    elem_abaqus_type = _keyword_type(kw)
+                    in_elem = elem_abaqus_type in _MIXED2D_TYPES
+                    if (
+                        elem_abaqus_type is not None
+                        and not in_elem
+                        and elem_abaqus_type.startswith(("CPS", "CPE"))
+                    ):
+                        raise ValueError(
+                            f"unsupported mixed 2D element type: {elem_abaqus_type}"
+                        )
+                else:
+                    in_elem = False
+                    elem_abaqus_type = None
+                continue
+
+            if in_node:
+                parts = _split_nums(line)
+                if len(parts) < 3:
+                    continue
+                node = Node2D(id=int(parts[0]), x=float(parts[1]), y=float(parts[2]))
+                nodes.append(node)
+                node_lookup[node.id] = node
+                continue
+
+            if in_elem and elem_abaqus_type is not None:
+                local_type, node_count, order = _MIXED2D_TYPES[elem_abaqus_type]
+                parts = _split_nums(line)
+                if len(parts) < node_count + 1:
+                    continue
+                orders.add(order)
+                props: Dict[str, Any] = {
+                    "thickness": float(default_thickness),
+                    "plane_type": _normalize_plane_type(plane_type, elem_abaqus_type),
+                }
+                elements.append(
+                    Element2D(
+                        id=int(parts[0]),
+                        node_ids=[int(value) for value in parts[1:node_count + 1]],
+                        type=local_type,
+                        props=props,
+                    )
+                )
+
+    if not nodes:
+        raise ValueError(f"No *Node data found in {inp_path}")
+    if not elements:
+        raise ValueError(f"No supported 2D *Element data found in {inp_path}")
+    if len(orders) > 1:
+        raise ValueError("read_mixed2d requires elements with the same polynomial order")
+    if fix_orientation:
+        for elem in elements:
+            _fix_plane_orientation(elem, node_lookup)
     return PlaneMesh2D(nodes=nodes, elements=elements)
 
 

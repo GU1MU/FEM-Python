@@ -16,6 +16,8 @@ def test_io_package_exposes_split_readers_without_legacy_facade():
     assert callable(csv_io.read_truss2d)
     assert callable(csv_io.read_hex8)
     assert callable(csv_io.read_mixed3d)
+    assert callable(inp.read_tri6)
+    assert callable(inp.read_mixed2d)
     assert callable(inp.read_hex8)
     assert callable(inp.read_tet4)
     assert not hasattr(inp, "read_hex8_3d_abaqus")
@@ -39,8 +41,10 @@ def test_inp_readers_only_read_mesh_without_material_coupling(tmp_path):
 
     for reader_name in (
         "read_tri3",
+        "read_tri6",
         "read_quad4",
         "read_quad8",
+        "read_mixed2d",
         "read_tet4",
         "read_tet10",
         "read_hex8",
@@ -69,6 +73,122 @@ def test_inp_readers_only_read_mesh_without_material_coupling(tmp_path):
     mesh = inp.read_hex8(mesh_path)
 
     assert mesh.elements[0].props == {}
+
+
+def test_inp_read_tri6_reads_cps6_mesh(tmp_path):
+    from fem.io import inp
+
+    mesh_path = write_inp(
+        tmp_path,
+        "tri6_mesh.inp",
+        [
+            "*Node",
+            "1, 0., 0.",
+            "2, 2., 0.",
+            "3, 0., 1.",
+            "4, 1., 0.",
+            "5, 1., 0.5",
+            "6, 0., 0.5",
+            "*Element, type=CPS6",
+            "1, 1,2,3,4,5,6",
+        ],
+    )
+
+    mesh = inp.read_tri6(mesh_path)
+
+    assert mesh.dofs_per_node == 2
+    assert mesh.elements[0].type == "Tri6Plane"
+    assert mesh.elements[0].node_ids == [1, 2, 3, 4, 5, 6]
+    assert mesh.elements[0].props["plane_type"] == "stress"
+    assert mesh.elements[0].props["thickness"] == 1.0
+
+
+def test_inp_read_mixed2d_reads_linear_tri3_and_quad4(tmp_path):
+    from fem.io import inp
+
+    mesh_path = write_inp(
+        tmp_path,
+        "mixed_linear_2d.inp",
+        [
+            "*Node",
+            "1, 0., 0.",
+            "2, 1., 0.",
+            "3, 1., 1.",
+            "4, 0., 1.",
+            "5, 2., 0.",
+            "*Element, type=CPS3",
+            "1, 1,2,4",
+            "*Element, type=CPS4",
+            "2, 2,5,3,4",
+        ],
+    )
+
+    mesh = inp.read_mixed2d(mesh_path)
+
+    assert [elem.type for elem in mesh.elements] == ["Tri3Plane", "Quad4Plane"]
+    assert [elem.node_ids for elem in mesh.elements] == [[1, 2, 4], [2, 5, 3, 4]]
+    assert all(elem.props["plane_type"] == "stress" for elem in mesh.elements)
+
+
+def test_inp_read_mixed2d_reads_quadratic_tri6_and_quad8(tmp_path):
+    from fem.io import inp
+
+    mesh_path = write_inp(
+        tmp_path,
+        "mixed_quadratic_2d.inp",
+        [
+            "*Node",
+            "1, 0., 0.",
+            "2, 2., 0.",
+            "3, 0., 1.",
+            "4, 1., 0.",
+            "5, 1., 0.5",
+            "6, 0., 0.5",
+            "7, 3., 0.",
+            "8, 5., 0.",
+            "9, 5., 2.",
+            "10, 3., 2.",
+            "11, 4., 0.",
+            "12, 5., 1.",
+            "13, 4., 2.",
+            "14, 3., 1.",
+            "*Element, type=CPS6",
+            "1, 1,2,3,4,5,6",
+            "*Element, type=CPS8",
+            "2, 7,8,9,10,11,12,13,14",
+        ],
+    )
+
+    mesh = inp.read_mixed2d(mesh_path)
+
+    assert [elem.type for elem in mesh.elements] == ["Tri6Plane", "Quad8Plane"]
+    assert mesh.elements[0].node_ids == [1, 2, 3, 4, 5, 6]
+    assert mesh.elements[1].node_ids == [7, 8, 9, 10, 11, 12, 13, 14]
+
+
+def test_inp_read_mixed2d_rejects_linear_and_quadratic_mix(tmp_path):
+    from fem.io import inp
+
+    mesh_path = write_inp(
+        tmp_path,
+        "mixed_order_2d.inp",
+        [
+            "*Node",
+            "1, 0., 0.",
+            "2, 1., 0.",
+            "3, 0., 1.",
+            "4, 0.5, 0.",
+            "5, 0.5, 0.5",
+            "6, 0., 0.5",
+            "*Element, type=CPS3",
+            "1, 1,2,3",
+            "*Element, type=CPS6",
+            "2, 1,2,3,4,5,6",
+        ],
+    )
+
+    with pytest.raises(ValueError, match="same polynomial order"):
+        inp.read_mixed2d(mesh_path)
 
 
 def test_csv_read_mixed3d_reads_hex8_and_tet4_from_sectioned_csv(tmp_path):
