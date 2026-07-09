@@ -6,7 +6,11 @@ import pytest
 
 from fem import boundary
 from fem.elements import get_element_kernel
-from fem.elements.hexahedron import Hex8Kernel, hex8_shape_funcs_grads
+from fem.elements.hexahedron import (
+    Hex8Kernel,
+    hex8_gauss_points,
+    hex8_shape_funcs_grads,
+)
 from fem.elements.quadrilateral import (
     Quad4PlaneKernel,
     Quad8PlaneKernel,
@@ -14,7 +18,13 @@ from fem.elements.quadrilateral import (
     quad8_shape_funcs_grads,
 )
 from fem.elements.registry import register_element_kernel
-from fem.elements.tetrahedron import Tet4Kernel, Tet10Kernel, tet10_shape_funcs_grads
+from fem.elements.tetrahedron import (
+    TET10_NATURAL_NODE_COORDS,
+    Tet4Kernel,
+    Tet10Kernel,
+    tet10_gauss_points,
+    tet10_shape_funcs_grads,
+)
 from fem.elements.triangle import (
     Tri3PlaneKernel,
     Tri6PlaneKernel,
@@ -264,52 +274,54 @@ def test_hex8_face_traction_uses_actual_face_area():
     ids=["hex8", "tet4", "tet10"],
 )
 def test_solid_kernels_provide_nodal_stress_matching_post_helpers(builder):
-    tet10_coords = [
-        (0.0, 0.0, 0.0),
-        (1.0, 0.0, 0.0),
-        (0.0, 1.0, 0.0),
-        (0.0, 0.0, 1.0),
-        (0.5, 0.0, 0.0),
-        (0.5, 0.5, 0.0),
-        (0.0, 0.5, 0.0),
-        (0.0, 0.0, 0.5),
-        (0.5, 0.0, 0.5),
-        (0.0, 0.5, 0.5),
-    ]
-
     mesh = builder()
     elem = mesh.elements[0]
+    if elem.type.lower() == "tet10":
+        # Keep the Tet10 expectation sensitive to the recovery rule, not only
+        # to straight-sided geometry where direct node evaluation is equivalent.
+        next(node for node in mesh.nodes if node.id == 5).z = 0.08
     U = np.linspace(0.01, 0.01 * mesh.num_dofs, mesh.num_dofs)
     node_lookup = _node_lookup(mesh)
     kernel = get_element_kernel(elem.type)
 
     if elem.type.lower() == "hex8":
-        a = 1.0 / np.sqrt(3.0)
-        gps = [
-            (-a, -a, -a),
-            (a, -a, -a),
-            (a, a, -a),
-            (-a, a, -a),
-            (-a, -a, a),
-            (a, -a, a),
-            (a, a, a),
-            (-a, a, a),
-        ]
-        gp_stresses = [kernel.stress_at(mesh, elem, U, *gp, node_lookup) for gp in gps]
-        expected = np.tile(np.mean(gp_stresses, axis=0), (8, 1))
+        gauss_points = [(xi, eta, zeta) for xi, eta, zeta, _ in hex8_gauss_points()]
+        gp_stresses = np.array(
+            [
+                kernel.stress_at(mesh, elem, U, xi, eta, zeta, node_lookup)
+                for xi, eta, zeta in gauss_points
+            ],
+            dtype=float,
+        )
+        n_gp = np.array(
+            [
+                hex8_shape_funcs_grads(xi, eta, zeta)[0]
+                for xi, eta, zeta in gauss_points
+            ],
+            dtype=float,
+        )
+        expected = np.linalg.solve(n_gp, gp_stresses)
         node_vals = kernel.nodal_stress(mesh, elem, U, node_lookup)
     elif elem.type.lower() == "tet4":
         stress = kernel.stress_at(mesh, elem, U, 0.25, 0.25, 0.25, node_lookup)
         expected = np.tile(stress, (4, 1))
         node_vals = kernel.nodal_stress(mesh, elem, U, node_lookup)
     else:
-        expected = np.array(
+        gauss_coords = [(xi, eta, zeta) for xi, eta, zeta, _ in tet10_gauss_points()]
+        gp_stresses = np.array(
             [
-                kernel.stress_at(mesh, elem, U, *coords, node_lookup)
-                for coords in tet10_coords
+                kernel.stress_at(mesh, elem, U, xi, eta, zeta, node_lookup)
+                for xi, eta, zeta in gauss_coords
             ],
             dtype=float,
         )
+        a_gp = np.array([[1.0, xi, eta, zeta] for xi, eta, zeta in gauss_coords], dtype=float)
+        coeffs = np.linalg.solve(a_gp, gp_stresses)
+        a_nodes = np.array(
+            [[1.0, xi, eta, zeta] for xi, eta, zeta in TET10_NATURAL_NODE_COORDS],
+            dtype=float,
+        )
+        expected = a_nodes @ coeffs
         node_vals = kernel.nodal_stress(mesh, elem, U, node_lookup)
 
     assert np.allclose(node_vals, expected)

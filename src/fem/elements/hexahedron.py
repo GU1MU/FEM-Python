@@ -71,6 +71,21 @@ def hex8_gauss_points(gauss_order: int = 2):
     ]
 
 
+def _hex8_extrapolation_matrix() -> np.ndarray:
+    """Return the constant 2x2x2 Gauss-to-node extrapolation matrix."""
+    n_gp = np.array(
+        [
+            hex8_shape_funcs_grads(xi, eta, zeta)[0]
+            for xi, eta, zeta, _ in hex8_gauss_points()
+        ],
+        dtype=float,
+    )
+    return np.linalg.solve(n_gp, np.eye(8, dtype=float))
+
+
+HEX8_EXTRAPOLATION_MATRIX = _hex8_extrapolation_matrix()
+
+
 class Hex8Kernel:
     """Hex8 solid element kernel."""
     type_names = ("Hex8", "C3D8")
@@ -193,12 +208,12 @@ class Hex8Kernel:
         node_lookup: dict[int, Any] | None = None,
         gauss_order: int = 2,
     ) -> np.ndarray:
-        """Return element-nodal stresses using the current Gauss average convention."""
+        """Return element-nodal stresses extrapolated from 2x2x2 Gauss stresses."""
         gp_vals = np.array([
             self.stress_at(mesh, elem, U, xi, eta, zeta, node_lookup)
             for xi, eta, zeta, _ in hex8_gauss_points(gauss_order)
         ], dtype=float)
-        return np.tile(np.mean(gp_vals, axis=0), (8, 1))
+        return HEX8_EXTRAPOLATION_MATRIX @ gp_vals
 
     def _material_matrix(self, elem: Any) -> np.ndarray:
         """Return 3D material matrix from element props."""

@@ -129,6 +129,20 @@ TET10_NATURAL_NODE_COORDS = [
 ]
 
 
+def _tet10_linear_extrapolation_matrix() -> np.ndarray:
+    """Return the constant Hammer-point linear-fit matrix for Tet10 nodes."""
+    gp_coords = [(xi, eta, zeta) for xi, eta, zeta, _ in tet10_gauss_points()]
+    a_gp = np.array([[1.0, xi, eta, zeta] for xi, eta, zeta in gp_coords], dtype=float)
+    a_nodes = np.array(
+        [[1.0, xi, eta, zeta] for xi, eta, zeta in TET10_NATURAL_NODE_COORDS],
+        dtype=float,
+    )
+    return a_nodes @ np.linalg.solve(a_gp, np.eye(4, dtype=float))
+
+
+TET10_LINEAR_EXTRAPOLATION_MATRIX = _tet10_linear_extrapolation_matrix()
+
+
 def tri6_gauss_points():
     """Return 3-point triangle rule for Tet10 faces."""
     return [
@@ -406,11 +420,12 @@ class Tet10Kernel(_TetKernelBase):
         U: np.ndarray,
         node_lookup: dict[int, Any] | None = None,
     ) -> np.ndarray:
-        """Return stresses evaluated at Tet10 natural node locations."""
-        return np.array([
+        """Return element-nodal stresses from Hammer-point linear extrapolation."""
+        gp_vals = np.array([
             self.stress_at(mesh, elem, U, xi, eta, zeta, node_lookup)
-            for xi, eta, zeta in TET10_NATURAL_NODE_COORDS
+            for xi, eta, zeta, _ in self.gauss_points()
         ], dtype=float)
+        return TET10_LINEAR_EXTRAPOLATION_MATRIX @ gp_vals
 
     def face_traction(
         self,
