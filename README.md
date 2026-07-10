@@ -39,9 +39,9 @@ python -m pytest -q tests/test_solvers.py::test_static_linear_solver_builds_step
 
 网格读取：
 
-- `fem.io.inp`读取Abaqus inp中的mesh拓扑和坐标
-- `fem.io.csv`读取CSV格式mesh
-- `fem.abaqus`读取Abaqus inp中的完整模型数据
+- `fem.io.inp`读取Abaqus inp中的mesh拓扑和坐标，`read_hex20()`支持单行和换行的`C3D20`单元记录
+- `fem.io.csv`读取CSV格式mesh，支持`Hex8`、`Hex20`、`Tet4`和`Tet10`混合实体网格并严格校验节点数
+- `fem.abaqus`读取Abaqus inp中的完整模型数据，包括`C3D20`的surface、材料、section、step和载荷
 
 单元：
 
@@ -51,12 +51,15 @@ python -m pytest -q tests/test_solvers.py::test_static_linear_solver_builds_step
 - `Quad4`
 - `Quad8`
 - `Hex8`
+- `Hex20 (C3D20, full integration)`
 - `Tet4`
 - `Tet10`
+- reduced-integration `C3D20R`当前不支持
 
 求解：
 
 - 稀疏全局刚度装配
+- 支持`Hex8`、`Hex20`、`Tet4`和`Tet10`混合实体网格装配
 - 支持各已注册单元 kernel 的一致体力与重力装配，包括 `Truss2D` 和 `Beam2D`
 - 线性静力分析流程
 
@@ -64,9 +67,9 @@ python -m pytest -q tests/test_solvers.py::test_static_linear_solver_builds_step
 后处理：
 
 - 节点位移CSV
-- 单元应力CSV
-- 节点平均应力CSV
-- VTK文件导出
+- 单元应力CSV，支持独立和混合`Hex20`实体网格
+- 节点平均应力CSV，支持独立和混合`Hex20`实体网格的27点到20节点应力恢复
+- VTK文件导出，`Hex20`按Abaqus节点顺序写为VTK quadratic hexahedron type `25`
 
 ## 模块职责
 

@@ -4,6 +4,7 @@ import builtins
 from typing import Any
 
 from ..core.model import ElementFace, Surface
+from ..elements.hexahedron import HEX20_FACE_NODE_INDICES
 from .nodes import _coord_matches
 
 
@@ -167,6 +168,15 @@ def _element_face_node_ids(elem: Any) -> list[list[int]]:
     etype = str(elem.type).lower()
     node_ids = elem.node_ids
 
+    if "c3d20r" in etype:
+        return []
+
+    if ("hex20" in etype or "c3d20" in etype) and len(node_ids) == 20:
+        return [
+            [node_ids[index] for index in face]
+            for face in HEX20_FACE_NODE_INDICES
+        ]
+
     if ("hex8" in etype or "c3d8" in etype) and len(node_ids) == 8:
         return [
             [node_ids[0], node_ids[3], node_ids[2], node_ids[1]],
@@ -204,6 +214,8 @@ def _face_key(elem: Any, node_ids: list[int]) -> tuple[int, ...]:
 def _face_corner_ids(elem: Any, node_ids: list[int]) -> list[int]:
     """Return corner node ids for a face."""
     etype = str(elem.type).lower()
+    if ("hex20" in etype or "c3d20" in etype) and len(node_ids) == 8:
+        return node_ids[:4]
     if ("tri6" in etype or "cps6" in etype or "cpe6" in etype) and len(node_ids) == 3:
         return [node_ids[0], node_ids[2]]
     if ("tet10" in etype or "c3d10" in etype) and len(node_ids) == 6:

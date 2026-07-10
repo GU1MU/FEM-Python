@@ -8,7 +8,11 @@ from fem import boundary
 from fem.core.mesh import Element2D, Node2D, TrussMesh2D
 from fem.elements import get_element_kernel
 from fem.elements.hexahedron import (
+    HEX20_EXTRAPOLATION_MATRIX,
+    HEX20_NATURAL_NODE_COORDS,
     Hex8Kernel,
+    hex20_gauss_points,
+    hex20_shape_funcs_grads,
     hex8_gauss_points,
     hex8_shape_funcs_grads,
 )
@@ -32,8 +36,10 @@ from fem.elements.triangle import (
     Tri6PlaneKernel,
     tri6_shape_funcs_grads,
 )
+from fem.materials import linear_elastic
 from tests.helpers.mesh_builders import (
     make_beam_stiffness_mesh,
+    make_hex20_stiffness_mesh,
     make_hex8_solid_stress_mesh,
     make_hex8_stiffness_mesh,
     make_quad4_boundary_mesh,
@@ -426,6 +432,94 @@ def test_plane_kernels_provide_stress_interfaces_without_post_helpers(
 # Solid element kernels
 
 
+def test_hex20_kernel_stiffness_and_body_force_contract():
+    mesh = make_hex20_stiffness_mesh()
+    elem = mesh.elements[0]
+    kernel = get_element_kernel("C3D20")
+
+    Ke = kernel.stiffness(mesh, elem)
+    fe = kernel.body_force(mesh, elem, (2.0, -3.0, 4.0))
+
+    assert Ke.shape == (60, 60)
+    assert fe.shape == (60,)
+    assert np.all(np.isfinite(Ke))
+    assert np.allclose(Ke, Ke.T)
+    assert fe[0::3].sum() == pytest.approx(2.0)
+    assert fe[1::3].sum() == pytest.approx(-3.0)
+    assert fe[2::3].sum() == pytest.approx(4.0)
+
+
+def test_hex20_body_force_reports_element_type_for_nonpositive_jacobian():
+    mesh = make_hex20_stiffness_mesh()
+    elem = mesh.elements[0]
+    for node in mesh.nodes:
+        node.z = 0.0
+    kernel = get_element_kernel(elem.type)
+
+    with pytest.raises(ValueError, match="Hex20 elem 1 has non-positive Jacobian"):
+        kernel.body_force(mesh, elem, (0.0, 0.0, -1.0))
+
+
+def test_hex20_affine_displacement_produces_constant_exact_stress():
+    mesh = make_hex20_stiffness_mesh()
+    elem = mesh.elements[0]
+    kernel = get_element_kernel(elem.type)
+    U = np.zeros(mesh.num_dofs)
+    for node in mesh.nodes:
+        U[mesh.global_dof(node.id, 0)] = 0.01 * node.x + 0.02 * node.y + 0.03 * node.z
+        U[mesh.global_dof(node.id, 1)] = -0.02 * node.x + 0.04 * node.y + 0.01 * node.z
+        U[mesh.global_dof(node.id, 2)] = 0.03 * node.x - 0.01 * node.y + 0.05 * node.z
+    strain = np.array([0.01, 0.04, 0.05, 0.0, 0.0, 0.06])
+    expected = linear_elastic.solid_3d_matrix(210.0, 0.3) @ strain
+
+    for xi, eta, zeta, _ in hex20_gauss_points():
+        assert np.allclose(kernel.stress_at(mesh, elem, U, xi, eta, zeta), expected)
+
+
+def test_hex20_nodal_stress_recovers_gauss_point_values():
+    mesh = make_hex20_stiffness_mesh(curved=True)
+    elem = mesh.elements[0]
+    kernel = get_element_kernel(elem.type)
+    U = np.linspace(0.01, 0.01 * mesh.num_dofs, mesh.num_dofs)
+    gp_vals = np.array([
+        kernel.stress_at(mesh, elem, U, xi, eta, zeta)
+        for xi, eta, zeta, _ in hex20_gauss_points()
+    ])
+    expected = HEX20_EXTRAPOLATION_MATRIX @ gp_vals
+
+    assert np.allclose(kernel.nodal_stress(mesh, elem, U), expected)
+
+
+def test_hex20_shape_functions_interpolate_all_nodes():
+    for local_index, coords in enumerate(HEX20_NATURAL_NODE_COORDS):
+        N, dN_dxi, dN_deta, dN_dzeta = hex20_shape_funcs_grads(*coords)
+        expected = np.zeros(20)
+        expected[local_index] = 1.0
+        assert np.allclose(N, expected)
+        assert np.isclose(dN_dxi.sum(), 0.0)
+        assert np.isclose(dN_deta.sum(), 0.0)
+        assert np.isclose(dN_dzeta.sum(), 0.0)
+
+
+def test_hex20_partition_of_unity_and_full_integration_weights():
+    for xi, eta, zeta in [(-0.3, 0.2, 0.4), (0.0, 0.0, 0.0), (0.7, -0.5, 0.1)]:
+        N, dN_dxi, dN_deta, dN_dzeta = hex20_shape_funcs_grads(xi, eta, zeta)
+        assert N.sum() == pytest.approx(1.0)
+        assert dN_dxi.sum() == pytest.approx(0.0)
+        assert dN_deta.sum() == pytest.approx(0.0)
+        assert dN_dzeta.sum() == pytest.approx(0.0)
+    assert sum(w for *_, w in hex20_gauss_points()) == pytest.approx(8.0)
+
+
+def test_hex20_recovery_matrix_is_left_inverse_of_gauss_shape_matrix():
+    n_gp = np.array([
+        hex20_shape_funcs_grads(xi, eta, zeta)[0]
+        for xi, eta, zeta, _ in hex20_gauss_points()
+    ])
+    assert n_gp.shape == (27, 20)
+    assert np.allclose(HEX20_EXTRAPOLATION_MATRIX @ n_gp, np.eye(20))
+
+
 def test_hex8_body_force_uses_actual_element_volume():
     mesh = make_hex8_stiffness_mesh()
     bc = boundary.condition.BoundaryCondition()
@@ -447,6 +541,33 @@ def test_hex8_face_traction_uses_actual_face_area():
     assert float(loads[2::3].sum()) == pytest.approx(-30.0)
     assert np.allclose(loads[2::3][:4], np.zeros(4))
     assert np.allclose(loads[2::3][4:], np.full(4, -7.5))
+
+
+def test_hex20_face_traction_uses_quadratic_face_and_actual_area():
+    mesh = make_hex20_stiffness_mesh()
+    elem = mesh.elements[0]
+    for node in mesh.nodes:
+        node.x *= 2.0
+        node.y *= 3.0
+
+    fe = get_element_kernel(elem.type).face_traction(
+        mesh,
+        elem,
+        1,
+        (0.0, 0.0, -5.0),
+    )
+
+    assert fe.shape == (60,)
+    assert fe[0::3].sum() == pytest.approx(0.0)
+    assert fe[1::3].sum() == pytest.approx(0.0)
+    assert fe[2::3].sum() == pytest.approx(-30.0)
+
+    expected_z = np.zeros(20)
+    expected_z[[4, 5, 6, 7]] = 2.5
+    expected_z[[12, 13, 14, 15]] = -10.0
+    assert np.allclose(fe[0::3], np.zeros(20))
+    assert np.allclose(fe[1::3], np.zeros(20))
+    assert np.allclose(fe[2::3], expected_z)
 
 
 @pytest.mark.parametrize(
@@ -540,3 +661,16 @@ def test_elements_use_family_modules_and_registry_module():
         sys.modules.pop(old_module, None)
         with pytest.raises(ModuleNotFoundError):
             importlib.import_module(old_module)
+
+
+@pytest.mark.parametrize("element_type", ["C3D20R", "c3D20r"])
+def test_registry_rejects_reduced_integration_hex20_alias(element_type):
+    with pytest.raises(
+        NotImplementedError,
+        match=rf"Unsupported element type: {element_type}",
+    ):
+        get_element_kernel(element_type)
+
+
+def test_registry_preserves_preexisting_variant_fallback():
+    assert type(get_element_kernel("C3D8R")) is Hex8Kernel

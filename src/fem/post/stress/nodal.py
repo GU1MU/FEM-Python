@@ -41,6 +41,8 @@ def by_type(
         quad8(mesh, U, path, 3 if gauss_order is None else gauss_order)
     elif type_key == "hex8":
         hex8(mesh, U, path, 2 if gauss_order is None else gauss_order)
+    elif type_key == "hex20":
+        hex20(mesh, U, path, 3 if gauss_order is None else gauss_order)
     elif type_key == "tet4":
         tet4(mesh, U, path)
     elif type_key == "tet10":
@@ -112,6 +114,16 @@ def hex8(
 ) -> None:
     """Export Hex8 nodal stresses averaged from connected elements."""
     _solid(mesh, U, path, "hex8", gauss_order=gauss_order)
+
+
+def hex20(
+    mesh: Mesh3DProtocol,
+    U: Sequence[float],
+    path: str,
+    gauss_order: int = 3,
+) -> None:
+    """Export Hex20 nodal stresses averaged from connected elements."""
+    _solid(mesh, U, path, "hex20", gauss_order=gauss_order)
 
 
 def tet4(mesh: Mesh3DProtocol, U: Sequence[float], path: str) -> None:
@@ -189,7 +201,10 @@ def _solid(
             stress_sum = np.zeros(6, dtype=float)
             weight_sum = 0.0
             for elem in mesh.elements:
-                if not matches(elem, type_key) or nid not in elem.node_ids:
+                if (
+                    dispatch.type_key_from_name(elem.type) != type_key
+                    or nid not in elem.node_ids
+                ):
                     continue
                 node_vals = nodal_stress(mesh, elem, U, lookup, gauss_order)
                 local_idx = elem.node_ids.index(nid)

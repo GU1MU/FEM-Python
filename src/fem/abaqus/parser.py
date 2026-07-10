@@ -18,6 +18,22 @@ from .deck import (
 )
 
 
+_SUPPORTED_ELEMENT_NODE_COUNTS = {
+    "CPS3": 3,
+    "CPE3": 3,
+    "CPS6": 6,
+    "CPE6": 6,
+    "CPS4": 4,
+    "CPE4": 4,
+    "CPS8": 8,
+    "CPE8": 8,
+    "C3D4": 4,
+    "C3D10": 10,
+    "C3D8": 8,
+    "C3D20": 20,
+}
+
+
 @dataclass(frozen=True)
 class Keyword:
     """Parsed Abaqus keyword line."""
@@ -42,6 +58,7 @@ def parse_file(path: str | Path) -> AbaqusDeck:
             else:
                 state.handle_data(_split_values(line))
 
+    state.finish()
     return deck
 
 
@@ -59,9 +76,13 @@ class _ParserState:
         self.scope = "model"
         self.current_set_accepts_data = True
         self.current_surface_accepts_data = True
+        self.pending_element_values: list[str] = []
 
     def handle_keyword(self, keyword: Keyword) -> None:
         """Dispatch a keyword line and update data mode."""
+        if self.mode == "element":
+            self.finish()
+            self.pending_element_values = []
         self.keyword = keyword
         self.mode = None
         self.current_set_accepts_data = True
@@ -188,7 +209,7 @@ class _ParserState:
         if self.mode == "node":
             self._add_node(values)
         elif self.mode == "element":
-            self._add_element(values)
+            self._consume_element_values(values)
         elif self.mode == "nset":
             self._extend_set(
                 self.deck.node_sets,
@@ -276,6 +297,28 @@ class _ParserState:
                 scope,
             ):
                 self.deck.element_sets[element_set].append(element.id)
+
+    def _consume_element_values(self, values: list[str]) -> None:
+        element_type = _required_param(self.keyword, "type").upper()
+        node_count = _SUPPORTED_ELEMENT_NODE_COUNTS.get(element_type)
+        if node_count is None:
+            self._add_element(values)
+            return
+        self.pending_element_values.extend(values)
+        record_size = node_count + 1
+        while len(self.pending_element_values) >= record_size:
+            record = self.pending_element_values[:record_size]
+            self.pending_element_values = self.pending_element_values[record_size:]
+            self._add_element(record)
+
+    def finish(self) -> None:
+        """Reject an incomplete wrapped element record."""
+        if self.pending_element_values:
+            element_type = _required_param(self.keyword, "type")
+            raise ValueError(
+                f"Incomplete {element_type} connectivity record: "
+                f"{self.pending_element_values}"
+            )
 
     def _add_surface(self, values: list[str]) -> None:
         if len(values) < 2 or not self.current_surface_accepts_data:

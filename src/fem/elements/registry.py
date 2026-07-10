@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .base import ElementKernel
-from .hexahedron import Hex8Kernel
+from .hexahedron import Hex8Kernel, Hex20Kernel
 from .line import Beam2DKernel, Truss2DKernel
 from .quadrilateral import Quad4PlaneKernel, Quad8PlaneKernel
 from .tetrahedron import Tet4Kernel, Tet10Kernel
@@ -20,6 +20,8 @@ def register_element_kernel(kernel: ElementKernel) -> None:
 def get_element_kernel(element_type: str) -> ElementKernel:
     """Return the registered element kernel for an element type."""
     key = str(element_type).lower()
+    if "c3d20r" in key:
+        raise NotImplementedError(f"Unsupported element type: {element_type}")
     if key in _KERNELS:
         return _KERNELS[key]
 
@@ -35,6 +37,7 @@ register_element_kernel(Quad8PlaneKernel())
 register_element_kernel(Tri6PlaneKernel())
 register_element_kernel(Tri3PlaneKernel())
 register_element_kernel(Hex8Kernel())
+register_element_kernel(Hex20Kernel())
 register_element_kernel(Tet4Kernel())
 register_element_kernel(Tet10Kernel())
 register_element_kernel(Truss2DKernel())

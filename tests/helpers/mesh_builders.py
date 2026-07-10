@@ -322,6 +322,29 @@ def make_hex8_stiffness_mesh():
     return HexMesh3D(nodes=nodes, elements=[elem])
 
 
+def make_hex20_stiffness_mesh(curved=False):
+    from fem.elements.hexahedron import HEX20_NATURAL_NODE_COORDS
+
+    nodes = [
+        Node3D(
+            i + 1,
+            (xi + 1.0) / 2.0,
+            (eta + 1.0) / 2.0,
+            (zeta + 1.0) / 2.0,
+        )
+        for i, (xi, eta, zeta) in enumerate(HEX20_NATURAL_NODE_COORDS)
+    ]
+    if curved:
+        nodes[8].z += 0.05
+    elem = Element3D(
+        1,
+        list(range(1, 21)),
+        "Hex20",
+        {"E": 210.0, "nu": 0.3},
+    )
+    return HexMesh3D(nodes=nodes, elements=[elem])
+
+
 def make_hex8_solid_stress_mesh():
     mesh = make_hex8_stiffness_mesh()
     mesh.elements[0].props = {"E": 210.0, "nu": 0.3}
@@ -422,6 +445,48 @@ def make_mixed_hex8_tet4_mesh():
         ),
     ]
     return HexMesh3D(nodes=nodes, elements=elements)
+
+
+def make_mixed_hex8_hex20_mesh():
+    hex8 = make_unit_hex8_mesh()
+    hex20 = make_hex20_stiffness_mesh()
+    shifted_nodes = [
+        Node3D(node.id + 8, node.x + 2.0, node.y, node.z)
+        for node in hex20.nodes
+    ]
+    return HexMesh3D(
+        nodes=list(hex8.nodes) + shifted_nodes,
+        elements=[
+            hex8.elements[0],
+            Element3D(
+                2,
+                [node_id + 8 for node_id in hex20.elements[0].node_ids],
+                "Hex20",
+                {"E": 120.0, "nu": 0.25},
+            ),
+        ],
+    )
+
+
+def make_mixed_hex20_tet10_mesh():
+    hex20 = make_hex20_stiffness_mesh()
+    tet10 = make_tet10_stiffness_mesh()
+    shifted_nodes = [
+        Node3D(node.id + 20, node.x + 2.0, node.y, node.z)
+        for node in tet10.nodes
+    ]
+    return HexMesh3D(
+        nodes=list(hex20.nodes) + shifted_nodes,
+        elements=[
+            hex20.elements[0],
+            Element3D(
+                2,
+                [node_id + 20 for node_id in tet10.elements[0].node_ids],
+                "Tet10",
+                {"E": 120.0, "nu": 0.25},
+            ),
+        ],
+    )
 
 
 def make_mixed_tri3_quad4_mesh():

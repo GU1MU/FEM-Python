@@ -10,7 +10,7 @@ from fem.core import mesh as core_mesh
 from fem.core import dof
 from fem.core import model as core_model
 from fem.core.dof import DofMap
-from fem.core.mesh import HexMesh3D, Node2D, Node3D, PlaneMesh2D
+from fem.core.mesh import Element3D, HexMesh3D, Node2D, Node3D, PlaneMesh2D
 from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
@@ -28,6 +28,7 @@ from fem.core.model import (
 )
 from tests.helpers.mesh_builders import (
     make_dof_order_meshes,
+    make_hex20_stiffness_mesh,
     make_minimal_hex_mesh,
     make_mixed_hex8_tet4_mesh,
     make_mixed_tri3_quad4_mesh,
@@ -369,6 +370,52 @@ def test_faces_select_boundary_faces_by_coordinate():
     assert len(selection.faces.boundary(mesh)) == 6
     assert selection.faces.by_z(mesh, 4.0) == [(1, 1, [5, 6, 7, 8])]
     assert selection.faces.by_x(mesh, 2.0) == [(1, 5, [2, 3, 7, 6])]
+
+
+def test_faces_select_all_hex20_faces_with_quadratic_nodes():
+    mesh = make_hex20_stiffness_mesh()
+
+    selected = selection.faces.all(mesh)
+
+    assert selected == [
+        (1, 0, [1, 4, 3, 2, 12, 11, 10, 9]),
+        (1, 1, [5, 6, 7, 8, 13, 14, 15, 16]),
+        (1, 2, [1, 2, 6, 5, 9, 18, 13, 17]),
+        (1, 3, [3, 4, 8, 7, 11, 20, 15, 19]),
+        (1, 4, [1, 5, 8, 4, 17, 16, 20, 12]),
+        (1, 5, [2, 3, 7, 6, 10, 19, 14, 18]),
+    ]
+
+
+@pytest.mark.parametrize("element_type", ["C3D20R", "c3D20r"])
+def test_faces_do_not_select_hex20_faces_for_reduced_integration_alias(element_type):
+    mesh = make_hex20_stiffness_mesh()
+    mesh.elements[0].type = element_type
+
+    assert selection.faces.all(mesh) == []
+
+
+def test_faces_use_hex20_corner_nodes_for_internal_interface_keys():
+    hex20_mesh = make_hex20_stiffness_mesh()
+    mesh = HexMesh3D(
+        nodes=[
+            *hex20_mesh.nodes,
+            Node3D(21, 0.0, 0.0, -1.0),
+            Node3D(22, 1.0, 0.0, -1.0),
+            Node3D(23, 1.0, 1.0, -1.0),
+            Node3D(24, 0.0, 1.0, -1.0),
+        ],
+        elements=[
+            hex20_mesh.elements[0],
+            Element3D(2, [21, 22, 23, 24, 1, 2, 3, 4], type="Hex8"),
+        ],
+    )
+
+    selected = selection.faces.boundary(mesh)
+
+    assert len(selected) == 10
+    assert not any(elem_id == 1 and local_face == 0 for elem_id, local_face, _ in selected)
+    assert not any(elem_id == 2 and local_face == 1 for elem_id, local_face, _ in selected)
 
 
 def test_edges_select_3d_boundary_edges_by_coordinate():

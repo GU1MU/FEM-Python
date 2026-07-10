@@ -5,6 +5,7 @@ from typing import Any
 import numpy as np
 
 from .base import build_node_lookup
+from .quadrilateral import quad8_gauss_points, quad8_shape_funcs_grads
 from ..materials import linear_elastic
 
 
@@ -86,7 +87,172 @@ def _hex8_extrapolation_matrix() -> np.ndarray:
 HEX8_EXTRAPOLATION_MATRIX = _hex8_extrapolation_matrix()
 
 
-class Hex8Kernel:
+HEX20_NATURAL_NODE_COORDS = np.array([
+    [-1.0, -1.0, -1.0],
+    [1.0, -1.0, -1.0],
+    [1.0, 1.0, -1.0],
+    [-1.0, 1.0, -1.0],
+    [-1.0, -1.0, 1.0],
+    [1.0, -1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [-1.0, 1.0, 1.0],
+    [0.0, -1.0, -1.0],
+    [1.0, 0.0, -1.0],
+    [0.0, 1.0, -1.0],
+    [-1.0, 0.0, -1.0],
+    [0.0, -1.0, 1.0],
+    [1.0, 0.0, 1.0],
+    [0.0, 1.0, 1.0],
+    [-1.0, 0.0, 1.0],
+    [-1.0, -1.0, 0.0],
+    [1.0, -1.0, 0.0],
+    [1.0, 1.0, 0.0],
+    [-1.0, 1.0, 0.0],
+], dtype=float)
+
+HEX20_FACE_NODE_INDICES = [
+    [0, 3, 2, 1, 11, 10, 9, 8],
+    [4, 5, 6, 7, 12, 13, 14, 15],
+    [0, 1, 5, 4, 8, 17, 12, 16],
+    [2, 3, 7, 6, 10, 19, 14, 18],
+    [0, 4, 7, 3, 16, 15, 19, 11],
+    [1, 2, 6, 5, 9, 18, 13, 17],
+]
+
+
+def hex20_shape_funcs_grads(xi: float, eta: float, zeta: float):
+    """Return Hex20 shape functions and natural-coordinate gradients."""
+    N = np.zeros(20, dtype=float)
+    dN_dxi = np.zeros(20, dtype=float)
+    dN_deta = np.zeros(20, dtype=float)
+    dN_dzeta = np.zeros(20, dtype=float)
+
+    for i, (a, b, c) in enumerate(HEX20_NATURAL_NODE_COORDS):
+        if a != 0.0 and b != 0.0 and c != 0.0:
+            N[i] = (
+                (1.0 + a * xi)
+                * (1.0 + b * eta)
+                * (1.0 + c * zeta)
+                * (a * xi + b * eta + c * zeta - 2.0)
+                / 8.0
+            )
+            dN_dxi[i] = (
+                a
+                * (1.0 + b * eta)
+                * (1.0 + c * zeta)
+                * (2.0 * a * xi + b * eta + c * zeta - 1.0)
+                / 8.0
+            )
+            dN_deta[i] = (
+                b
+                * (1.0 + a * xi)
+                * (1.0 + c * zeta)
+                * (a * xi + 2.0 * b * eta + c * zeta - 1.0)
+                / 8.0
+            )
+            dN_dzeta[i] = (
+                c
+                * (1.0 + a * xi)
+                * (1.0 + b * eta)
+                * (a * xi + b * eta + 2.0 * c * zeta - 1.0)
+                / 8.0
+            )
+        elif a == 0.0:
+            N[i] = (1.0 - xi**2) * (1.0 + b * eta) * (1.0 + c * zeta) / 4.0
+            dN_dxi[i] = -xi * (1.0 + b * eta) * (1.0 + c * zeta) / 2.0
+            dN_deta[i] = b * (1.0 - xi**2) * (1.0 + c * zeta) / 4.0
+            dN_dzeta[i] = c * (1.0 - xi**2) * (1.0 + b * eta) / 4.0
+        elif b == 0.0:
+            N[i] = (1.0 - eta**2) * (1.0 + a * xi) * (1.0 + c * zeta) / 4.0
+            dN_dxi[i] = a * (1.0 - eta**2) * (1.0 + c * zeta) / 4.0
+            dN_deta[i] = -eta * (1.0 + a * xi) * (1.0 + c * zeta) / 2.0
+            dN_dzeta[i] = c * (1.0 - eta**2) * (1.0 + a * xi) / 4.0
+        else:
+            N[i] = (1.0 - zeta**2) * (1.0 + a * xi) * (1.0 + b * eta) / 4.0
+            dN_dxi[i] = a * (1.0 - zeta**2) * (1.0 + b * eta) / 4.0
+            dN_deta[i] = b * (1.0 - zeta**2) * (1.0 + a * xi) / 4.0
+            dN_dzeta[i] = -zeta * (1.0 + a * xi) * (1.0 + b * eta) / 2.0
+
+    return N, dN_dxi, dN_deta, dN_dzeta
+
+
+def hex20_gauss_points(gauss_order: int = 3):
+    """Return the 3x3x3 full-integration rule for Hex20."""
+    if gauss_order != 3:
+        raise ValueError("gauss_order must be 3 for Hex20")
+    r = np.sqrt(3.0 / 5.0)
+    one_d = [(-r, 5.0 / 9.0), (0.0, 8.0 / 9.0), (r, 5.0 / 9.0)]
+    return [
+        (xi, eta, zeta, wx * wy * wz)
+        for xi, wx in one_d
+        for eta, wy in one_d
+        for zeta, wz in one_d
+    ]
+
+
+def _hex20_extrapolation_matrix() -> np.ndarray:
+    """Return the 27-Gauss-point-to-20-node least-squares matrix."""
+    n_gp = np.array(
+        [
+            hex20_shape_funcs_grads(xi, eta, zeta)[0]
+            for xi, eta, zeta, _ in hex20_gauss_points()
+        ],
+        dtype=float,
+    )
+    return np.linalg.pinv(n_gp)
+
+
+HEX20_EXTRAPOLATION_MATRIX = _hex20_extrapolation_matrix()
+
+
+class _HexKernelBase:
+    """Shared material and geometry helpers for hexahedral kernels."""
+
+    def _material_matrix(self, elem: Any) -> np.ndarray:
+        """Return 3D material matrix from element props."""
+        try:
+            E = float(elem.props["E"])
+            nu = float(elem.props["nu"])
+        except KeyError as e:
+            raise KeyError(f"Element {elem.id} missing property {e.args[0]}, props={elem.props}")
+        return linear_elastic.solid_3d_matrix(E, nu)
+
+    def _nodes(self, mesh: Any, elem: Any, node_lookup: dict[int, Any] | None):
+        """Return element nodes in element order."""
+        if node_lookup is None:
+            node_lookup = build_node_lookup(mesh)
+        return [node_lookup[nid] for nid in elem.node_ids]
+
+    def _coords(self, nodes: list[Any]):
+        """Return coordinate arrays for element nodes."""
+        x = np.array([n.x for n in nodes], dtype=float)
+        y = np.array([n.y for n in nodes], dtype=float)
+        z = np.array([n.z for n in nodes], dtype=float)
+        return x, y, z
+
+    def _det_jacobian(
+        self,
+        elem: Any,
+        x: np.ndarray,
+        y: np.ndarray,
+        z: np.ndarray,
+        dN_dxi: np.ndarray,
+        dN_deta: np.ndarray,
+        dN_dzeta: np.ndarray,
+    ) -> float:
+        """Return detJ from natural shape gradients."""
+        J = np.array([
+            [np.sum(dN_dxi * x), np.sum(dN_dxi * y), np.sum(dN_dxi * z)],
+            [np.sum(dN_deta * x), np.sum(dN_deta * y), np.sum(dN_deta * z)],
+            [np.sum(dN_dzeta * x), np.sum(dN_dzeta * y), np.sum(dN_dzeta * z)],
+        ], dtype=float)
+        detJ = float(np.linalg.det(J))
+        if detJ <= 0.0:
+            raise ValueError(f"{elem.type} elem {elem.id} has non-positive Jacobian")
+        return detJ
+
+
+class Hex8Kernel(_HexKernelBase):
     """Hex8 solid element kernel."""
     type_names = ("Hex8", "C3D8")
     face_nodes = [
@@ -215,28 +381,6 @@ class Hex8Kernel:
         ], dtype=float)
         return HEX8_EXTRAPOLATION_MATRIX @ gp_vals
 
-    def _material_matrix(self, elem: Any) -> np.ndarray:
-        """Return 3D material matrix from element props."""
-        try:
-            E = float(elem.props["E"])
-            nu = float(elem.props["nu"])
-        except KeyError as e:
-            raise KeyError(f"Element {elem.id} missing property {e.args[0]}, props={elem.props}")
-        return linear_elastic.solid_3d_matrix(E, nu)
-
-    def _nodes(self, mesh: Any, elem: Any, node_lookup: dict[int, Any] | None):
-        """Return element nodes in element order."""
-        if node_lookup is None:
-            node_lookup = build_node_lookup(mesh)
-        return [node_lookup[nid] for nid in elem.node_ids]
-
-    def _coords(self, nodes: list[Any]):
-        """Return coordinate arrays for element nodes."""
-        x = np.array([n.x for n in nodes], dtype=float)
-        y = np.array([n.y for n in nodes], dtype=float)
-        z = np.array([n.z for n in nodes], dtype=float)
-        return x, y, z
-
     def _B_matrix(
         self,
         mesh: Any,
@@ -280,23 +424,132 @@ class Hex8Kernel:
 
         return B, detJ
 
-    def _det_jacobian(
+
+class Hex20Kernel(_HexKernelBase):
+    """Twenty-node quadratic serendipity hexahedron kernel."""
+    type_names = ("Hex20", "C3D20")
+    face_nodes = HEX20_FACE_NODE_INDICES
+
+    def stiffness(
         self,
+        mesh: Any,
         elem: Any,
-        x: np.ndarray,
-        y: np.ndarray,
-        z: np.ndarray,
-        dN_dxi: np.ndarray,
-        dN_deta: np.ndarray,
-        dN_dzeta: np.ndarray,
-    ) -> float:
-        """Return detJ from natural shape gradients."""
+        node_lookup: dict[int, Any] | None = None,
+        gauss_order: int = 3,
+    ) -> np.ndarray:
+        if len(elem.node_ids) != 20:
+            raise ValueError(f"Hex20 element must have 20 nodes, got {len(elem.node_ids)}")
+        D = self._material_matrix(elem)
+        Ke = np.zeros((60, 60), dtype=float)
+        for xi, eta, zeta, w in hex20_gauss_points(gauss_order):
+            B, detJ = self._B_matrix(mesh, elem, xi, eta, zeta, node_lookup)
+            Ke += (B.T @ D @ B) * detJ * w
+        return Ke
+
+    def body_force(
+        self,
+        mesh: Any,
+        elem: Any,
+        vector: tuple[float, float, float],
+        node_lookup: dict[int, Any] | None = None,
+    ) -> np.ndarray:
+        nodes = self._nodes(mesh, elem, node_lookup)
+        x, y, z = self._coords(nodes)
+        bvec = np.asarray(vector, dtype=float)
+        if bvec.shape != (3,):
+            raise ValueError(f"Hex20 body force must have 3 components, got {bvec.shape}")
+        fe = np.zeros(60, dtype=float)
+        for xi, eta, zeta, w in hex20_gauss_points():
+            N, dN_dxi, dN_deta, dN_dzeta = hex20_shape_funcs_grads(xi, eta, zeta)
+            detJ = self._det_jacobian(elem, x, y, z, dN_dxi, dN_deta, dN_dzeta)
+            for i in range(20):
+                fe[3 * i:3 * i + 3] += N[i] * bvec * detJ * w
+        return fe
+
+    def face_traction(
+        self,
+        mesh: Any,
+        elem: Any,
+        local_face: int,
+        traction: tuple[float, float, float],
+        node_lookup: dict[int, Any] | None = None,
+    ) -> np.ndarray:
+        if local_face < 0 or local_face >= 6:
+            raise ValueError(f"Invalid local_face {local_face}, must be 0-5")
+        if node_lookup is None:
+            node_lookup = build_node_lookup(mesh)
+        face_local = self.face_nodes[local_face]
+        xyz = np.array([
+            [
+                node_lookup[elem.node_ids[i]].x,
+                node_lookup[elem.node_ids[i]].y,
+                node_lookup[elem.node_ids[i]].z,
+            ]
+            for i in face_local
+        ])
+        tvec = np.asarray(traction, dtype=float)
+        fe = np.zeros(60, dtype=float)
+        for xi, eta, w in quad8_gauss_points(3):
+            N, dN_dxi, dN_deta = quad8_shape_funcs_grads(xi, eta)
+            area_scale = float(np.linalg.norm(np.cross(dN_dxi @ xyz, dN_deta @ xyz)))
+            if area_scale <= 0.0:
+                raise ValueError(f"Hex20 element {elem.id} face {local_face} has zero area")
+            for face_i, parent_i in enumerate(face_local):
+                fe[3 * parent_i:3 * parent_i + 3] += (
+                    N[face_i] * tvec * area_scale * w
+                )
+        return fe
+
+    def stress_at(
+        self,
+        mesh: Any,
+        elem: Any,
+        U: np.ndarray,
+        xi: float,
+        eta: float,
+        zeta: float,
+        node_lookup: dict[int, Any] | None = None,
+    ) -> tuple[float, float, float, float, float, float]:
+        D = self._material_matrix(elem)
+        B, _ = self._B_matrix(mesh, elem, xi, eta, zeta, node_lookup)
+        sigma = D @ (B @ U[mesh.element_dofs(elem)])
+        return tuple(float(value) for value in sigma)
+
+    def nodal_stress(
+        self,
+        mesh: Any,
+        elem: Any,
+        U: np.ndarray,
+        node_lookup: dict[int, Any] | None = None,
+        gauss_order: int = 3,
+    ) -> np.ndarray:
+        gp_vals = np.array([
+            self.stress_at(mesh, elem, U, xi, eta, zeta, node_lookup)
+            for xi, eta, zeta, _ in hex20_gauss_points(gauss_order)
+        ])
+        return HEX20_EXTRAPOLATION_MATRIX @ gp_vals
+
+    def _B_matrix(self, mesh, elem, xi, eta, zeta, node_lookup):
+        nodes = self._nodes(mesh, elem, node_lookup)
+        x, y, z = self._coords(nodes)
+        _, dN_dxi, dN_deta, dN_dzeta = hex20_shape_funcs_grads(xi, eta, zeta)
         J = np.array([
-            [np.sum(dN_dxi * x), np.sum(dN_dxi * y), np.sum(dN_dxi * z)],
-            [np.sum(dN_deta * x), np.sum(dN_deta * y), np.sum(dN_deta * z)],
-            [np.sum(dN_dzeta * x), np.sum(dN_dzeta * y), np.sum(dN_dzeta * z)],
+            [dN_dxi @ x, dN_dxi @ y, dN_dxi @ z],
+            [dN_deta @ x, dN_deta @ y, dN_deta @ z],
+            [dN_dzeta @ x, dN_dzeta @ y, dN_dzeta @ z],
         ], dtype=float)
         detJ = float(np.linalg.det(J))
         if detJ <= 0.0:
-            raise ValueError(f"Hex8 elem {elem.id} has non-positive Jacobian")
-        return detJ
+            raise ValueError(f"Hex20 element {elem.id} has non-positive Jacobian")
+        gradients = np.linalg.inv(J) @ np.vstack([dN_dxi, dN_deta, dN_dzeta])
+        dN_dx, dN_dy, dN_dz = gradients
+        B = np.zeros((6, 60), dtype=float)
+        for i in range(20):
+            j = 3 * i
+            B[0, j] = dN_dx[i]
+            B[1, j + 1] = dN_dy[i]
+            B[2, j + 2] = dN_dz[i]
+            B[3, j:j + 2] = [dN_dy[i], dN_dx[i]]
+            B[4, j + 1:j + 3] = [dN_dz[i], dN_dy[i]]
+            B[5, [j, j + 2]] = [dN_dz[i], dN_dx[i]]
+        return B, detJ

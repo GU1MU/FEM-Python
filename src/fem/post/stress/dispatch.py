@@ -3,8 +3,27 @@ from __future__ import annotations
 from typing import Any, Iterable
 
 
-ELEMENT_STRESS_KEYS = {"truss2d", "tri3", "tri6", "quad4", "quad8", "hex8", "tet4", "tet10"}
-NODAL_STRESS_KEYS = {"tri3", "tri6", "quad4", "quad8", "hex8", "tet4", "tet10"}
+ELEMENT_STRESS_KEYS = {
+    "truss2d",
+    "tri3",
+    "tri6",
+    "quad4",
+    "quad8",
+    "hex8",
+    "hex20",
+    "tet4",
+    "tet10",
+}
+NODAL_STRESS_KEYS = {
+    "tri3",
+    "tri6",
+    "quad4",
+    "quad8",
+    "hex8",
+    "hex20",
+    "tet4",
+    "tet10",
+}
 TYPE_GROUPS = {
     "truss2d": "line",
     "tri3": "plane",
@@ -12,6 +31,7 @@ TYPE_GROUPS = {
     "quad4": "plane",
     "quad8": "plane",
     "hex8": "solid",
+    "hex20": "solid",
     "tet4": "solid",
     "tet10": "solid",
 }
@@ -80,7 +100,7 @@ def default_gauss_order(type_key: str) -> int | None:
     """Return the default nodal stress extrapolation order for one type key."""
     if type_key in {"quad4", "hex8"}:
         return 2
-    if type_key in {"tri6", "quad8"}:
+    if type_key in {"tri6", "quad8", "hex20"}:
         return 3
     return None
 
@@ -88,6 +108,8 @@ def default_gauss_order(type_key: str) -> int | None:
 def type_key_from_name(element_type: Any) -> str | None:
     """Normalize mesh element type names to stress exporter keys."""
     etype = str(element_type).lower()
+    if "c3d20r" in etype:
+        return None
     if "truss" in etype:
         return "truss2d"
     if "tri6" in etype:
@@ -98,6 +120,8 @@ def type_key_from_name(element_type: Any) -> str | None:
         return "quad4"
     if "quad8" in etype:
         return "quad8"
+    if "hex20" in etype or "c3d20" in etype:
+        return "hex20"
     if "hex8" in etype:
         return "hex8"
     if "tet10" in etype:

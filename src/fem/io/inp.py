@@ -883,3 +883,90 @@ def read_hex8(inp_path: str) -> HexMesh3D:
         raise ValueError(f"No C3D8 *Element data found in {inp_path}")
 
     return HexMesh3D(nodes=nodes, elements=elements)
+
+
+def read_hex20(inp_path: str) -> HexMesh3D:
+    """Read a Hex20 mesh from Abaqus C3D20 input data."""
+    from ..elements.hexahedron import hex20_gauss_points, hex20_shape_funcs_grads
+
+    nodes: List[Node3D] = []
+    elements: List[Element3D] = []
+    node_lookup: Dict[int, Node3D] = {}
+    in_node = False
+    in_elem = False
+    pending_elem_parts: List[str] = []
+
+    with open(inp_path, "r", encoding="utf-8", errors="ignore") as handle:
+        for raw in handle:
+            line = raw.strip()
+            if not line or line.startswith("**"):
+                continue
+            if line.startswith("*"):
+                if in_elem and pending_elem_parts:
+                    raise ValueError(
+                        f"Incomplete C3D20 connectivity record in {inp_path}: "
+                        f"{pending_elem_parts}"
+                    )
+                keyword = line.upper()
+                if keyword.startswith("*ASSEMBLY"):
+                    break
+                in_node = keyword.startswith("*NODE")
+                in_elem = (
+                    keyword.startswith("*ELEMENT")
+                    and _keyword_type(keyword) == "C3D20"
+                )
+                if keyword.startswith("*ELEMENT"):
+                    pending_elem_parts = []
+                continue
+
+            values = _split_nums(line)
+            if in_node:
+                if len(values) >= 4:
+                    node = Node3D(
+                        int(values[0]),
+                        float(values[1]),
+                        float(values[2]),
+                        float(values[3]),
+                    )
+                    nodes.append(node)
+                    node_lookup[node.id] = node
+                continue
+
+            if in_elem:
+                pending_elem_parts.extend(values)
+                while len(pending_elem_parts) >= 21:
+                    record = pending_elem_parts[:21]
+                    pending_elem_parts = pending_elem_parts[21:]
+                    elements.append(
+                        Element3D(
+                            id=int(record[0]),
+                            node_ids=[int(value) for value in record[1:]],
+                            type="Hex20",
+                        )
+                    )
+
+    if not nodes:
+        raise ValueError(f"No *Node data found in {inp_path}")
+    if pending_elem_parts:
+        raise ValueError(
+            f"Incomplete C3D20 connectivity record at end of file {inp_path}: "
+            f"{pending_elem_parts}"
+        )
+    if not elements:
+        raise ValueError(f"No C3D20 *Element data found in {inp_path}")
+
+    for elem in elements:
+        coords = [node_lookup[node_id] for node_id in elem.node_ids]
+        xyz = np.array([[node.x, node.y, node.z] for node in coords])
+        for xi, eta, zeta, _ in hex20_gauss_points():
+            _, dN_dxi, dN_deta, dN_dzeta = hex20_shape_funcs_grads(
+                xi, eta, zeta
+            )
+            J = np.vstack([dN_dxi, dN_deta, dN_dzeta]) @ xyz
+            if np.linalg.det(J) <= 0.0:
+                raise ValueError(
+                    f"Element {elem.id} has zero or negative Jacobian determinant. "
+                    "Check node ordering."
+                )
+
+    return HexMesh3D(nodes=nodes, elements=elements)

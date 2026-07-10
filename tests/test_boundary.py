@@ -9,6 +9,7 @@ from fem.core.model import AnalysisStep, Edge, EdgeLoad, ElementEdge, ElementFac
 from fem.elements import get_element_kernel
 from tests.helpers.mesh_builders import (
     make_beam_stiffness_mesh,
+    make_hex20_stiffness_mesh,
     make_mixed_hex8_tet4_mesh,
     make_quad4_boundary_mesh,
     make_selection_hex_mesh,
@@ -229,5 +230,22 @@ def test_3d_surface_traction_assembly_still_uses_face_traction():
     F = build_load_vector(mesh, bc)
     kernel = get_element_kernel(elem.type)
     expected = kernel.face_traction(mesh, elem, 3, (0.0, 0.0, -2.0))
+
+    assert np.allclose(F, expected)
+
+
+def test_hex20_surface_traction_dispatches_through_element_kernel():
+    mesh = make_hex20_stiffness_mesh()
+    elem = mesh.elements[0]
+    bc = BoundaryCondition()
+    bc.add_surface_traction(elem.id, 1, 0.0, 0.0, -5.0)
+
+    F = build_load_vector(mesh, bc)
+    expected = get_element_kernel(elem.type).face_traction(
+        mesh,
+        elem,
+        1,
+        (0.0, 0.0, -5.0),
+    )
 
     assert np.allclose(F, expected)

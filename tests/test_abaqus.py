@@ -10,6 +10,7 @@ from fem.core.model import (
     OutputRequest,
     SectionAssignment,
 )
+from fem.core.mesh import HexMesh3D
 from fem.solvers import static_linear
 from tests.helpers.abaqus_builders import write_perforated_plate_style_inp
 from tests.helpers.file_builders import write_inp
@@ -1058,3 +1059,219 @@ def test_abaqus_read_stores_output_requests_on_steps(tmp_path):
     assert outputs[1] == OutputRequest("field", "node", ("U", "RF"), {})
     assert outputs[2] == OutputRequest("field", "element", ("S", "E"), {"directions": "YES"})
     assert outputs[3] == OutputRequest("history", "preselect", ("PRESELECT",), {"variable": "PRESELECT"})
+
+
+def test_abaqus_parse_accumulates_wrapped_c3d20_connectivity(tmp_path):
+    path = write_inp(
+        tmp_path,
+        "test_abaqus_wrapped_c3d20.inp",
+        [
+            "*Element, type=C3D20, elset=SOLID",
+            "1, 1,2,3,4,5,6,7,8,9,10",
+            "11,12,13,14,15,16,17,18,19,20",
+        ],
+    )
+
+    deck = abaqus.parse_file(path)
+
+    assert len(deck.elements) == 1
+    assert deck.elements[0].id == 1
+    assert deck.elements[0].type == "C3D20"
+    assert deck.elements[0].node_ids == tuple(range(1, 21))
+    assert deck.element_sets["SOLID"] == [1]
+
+
+def test_abaqus_parse_rejects_incomplete_wrapped_c3d20_connectivity(tmp_path):
+    path = write_inp(
+        tmp_path,
+        "test_abaqus_incomplete_c3d20.inp",
+        [
+            "*Element, type=C3D20",
+            "1, 1,2,3,4,5,6,7,8,9,10",
+        ],
+    )
+
+    with pytest.raises(ValueError, match="Incomplete C3D20 connectivity record"):
+        abaqus.parse_file(path)
+
+
+def test_abaqus_parse_rejects_incomplete_c3d20_before_next_keyword(tmp_path):
+    path = write_inp(
+        tmp_path,
+        "test_abaqus_incomplete_c3d20_before_keyword.inp",
+        [
+            "*Element, type=C3D20",
+            "1, 1,2,3,4,5,6,7,8,9,10",
+            "*Nset, nset=AFTER_ELEMENT",
+            "1",
+        ],
+    )
+
+    with pytest.raises(ValueError, match="Incomplete C3D20 connectivity record"):
+        abaqus.parse_file(path)
+
+
+def test_abaqus_parse_consumes_two_wrapped_c3d20_records_from_one_block(tmp_path):
+    path = write_inp(
+        tmp_path,
+        "test_abaqus_two_wrapped_c3d20_records.inp",
+        [
+            "*Element, type=C3D20, elset=SOLID",
+            "1, 1,2,3,4,5,6,7,8,9,10",
+            "11,12,13,14,15,16,17,18,19,20",
+            "2, 21,22,23,24,25,26,27,28,29,30",
+            "31,32,33,34,35,36,37,38,39,40",
+        ],
+    )
+
+    deck = abaqus.parse_file(path)
+
+    assert [(element.id, element.node_ids) for element in deck.elements] == [
+        (1, tuple(range(1, 21))),
+        (2, tuple(range(21, 41))),
+    ]
+    assert deck.element_sets["SOLID"] == [1, 2]
+
+
+def test_abaqus_parse_clears_pending_values_between_supported_element_blocks(tmp_path):
+    path = write_inp(
+        tmp_path,
+        "test_abaqus_adjacent_supported_element_blocks.inp",
+        [
+            "*Element, type=C3D4, elset=TETS",
+            "1, 1,2,3,4",
+            "*Element, type=C3D8, elset=HEXES",
+            "2, 5,6,7,8,9,10,11,12",
+        ],
+    )
+
+    deck = abaqus.parse_file(path)
+
+    assert [(element.id, element.type, element.node_ids) for element in deck.elements] == [
+        (1, "C3D4", (1, 2, 3, 4)),
+        (2, "C3D8", (5, 6, 7, 8, 9, 10, 11, 12)),
+    ]
+    assert deck.element_sets["TETS"] == [1]
+    assert deck.element_sets["HEXES"] == [2]
+
+
+def test_abaqus_parse_keeps_unsupported_element_type_records_independent(tmp_path):
+    path = write_inp(
+        tmp_path,
+        "test_abaqus_unsupported_element_type_records.inp",
+        [
+            "*Element, type=U99, elset=CUSTOM",
+            "1, 10,11,12",
+            "2, 20,21,22,23",
+        ],
+    )
+
+    deck = abaqus.parse_file(path)
+
+    assert [(element.id, element.node_ids) for element in deck.elements] == [
+        (1, (10, 11, 12)),
+        (2, (20, 21, 22, 23)),
+    ]
+    assert deck.element_sets["CUSTOM"] == [1, 2]
+
+
+def test_abaqus_read_builds_and_solves_full_c3d20_model(tmp_path):
+    path = write_inp(
+        tmp_path,
+        "test_abaqus_full_c3d20.inp",
+        [
+            "*Heading",
+            "** one quadratic unit-cube element",
+            "*Node",
+            "1, 0., 0., 0.",
+            "2, 1., 0., 0.",
+            "3, 1., 1., 0.",
+            "4, 0., 1., 0.",
+            "5, 0., 0., 1.",
+            "6, 1., 0., 1.",
+            "7, 1., 1., 1.",
+            "8, 0., 1., 1.",
+            "9, 0.5, 0., 0.",
+            "10, 1., 0.5, 0.",
+            "11, 0.5, 1., 0.",
+            "12, 0., 0.5, 0.",
+            "13, 0.5, 0., 1.",
+            "14, 1., 0.5, 1.",
+            "15, 0.5, 1., 1.",
+            "16, 0., 0.5, 1.",
+            "17, 0., 0., 0.5",
+            "18, 1., 0., 0.5",
+            "19, 1., 1., 0.5",
+            "20, 0., 1., 0.5",
+            "*Element, type=C3D20, elset=SOLID",
+            "1, 1,2,3,4,5,6,7,8,9,10",
+            "11,12,13,14,15,16,17,18,19,20",
+            "*Nset, nset=FIXED",
+            "1,4,5,8,12,16,17,20",
+            "*Elset, elset=SOLID",
+            "1",
+            "*Surface, type=ELEMENT, name=FACE_1",
+            "SOLID, S1",
+            "*Surface, type=ELEMENT, name=FACE_2",
+            "SOLID, S2",
+            "*Surface, type=ELEMENT, name=FACE_3",
+            "SOLID, S3",
+            "*Surface, type=ELEMENT, name=FACE_4",
+            "SOLID, S4",
+            "*Surface, type=ELEMENT, name=FACE_5",
+            "SOLID, S5",
+            "*Surface, type=ELEMENT, name=FACE_6",
+            "SOLID, S6",
+            "*Material, name=STEEL",
+            "*Elastic",
+            "210., 0.3",
+            "*Solid Section, elset=SOLID, material=STEEL",
+            "*Step, name=LOAD",
+            "*Static",
+            "*Boundary",
+            "FIXED, ENCASTRE",
+            "*Dsload",
+            "FACE_2, P, 1.",
+            "*End Step",
+        ],
+    )
+
+    model = abaqus.read(path)
+
+    assert isinstance(model.mesh, HexMesh3D)
+    assert model.mesh.elements[0].type == "Hex20"
+    assert model.mesh.elements[0].node_ids == list(range(1, 21))
+    assert model.node_sets["FIXED"].node_ids == (1, 4, 5, 8, 12, 16, 17, 20)
+    assert model.element_sets["SOLID"].element_ids == (1,)
+    assert model.sections == [SectionAssignment("SOLID", "STEEL")]
+    expected_faces = {
+        "FACE_1": ElementFace(1, 0, (1, 4, 3, 2, 12, 11, 10, 9)),
+        "FACE_2": ElementFace(1, 1, (5, 6, 7, 8, 13, 14, 15, 16)),
+        "FACE_3": ElementFace(1, 2, (1, 2, 6, 5, 9, 18, 13, 17)),
+        "FACE_4": ElementFace(1, 5, (2, 3, 7, 6, 10, 19, 14, 18)),
+        "FACE_5": ElementFace(1, 3, (3, 4, 8, 7, 11, 20, 15, 19)),
+        "FACE_6": ElementFace(1, 4, (1, 5, 8, 4, 17, 16, 20, 12)),
+    }
+    assert {
+        name: surface.faces[0]
+        for name, surface in model.surfaces.items()
+    } == expected_faces
+    assert all(
+        len(surface.faces) == 1 and len(surface.faces[0].node_ids) == 8
+        for surface in model.surfaces.values()
+    )
+    step = model.steps[0]
+    assert step.name == "LOAD"
+    assert step.procedure == "static"
+    assert step.boundaries == (DisplacementConstraint("FIXED", 1, 3, 0.0),)
+    assert step.surface_loads[0].surface == "FACE_2"
+    assert step.surface_loads[0].load_type == "pressure"
+    assert step.surface_loads[0].magnitude == pytest.approx(1.0)
+
+    materials.apply_sections(model)
+    assert model.mesh.elements[0].props["material"] == "STEEL"
+    assert model.mesh.elements[0].props["E"] == 210.0
+    assert model.mesh.elements[0].props["nu"] == 0.3
+
+    result = static_linear.solve(model, "LOAD")
+    assert np.all(np.isfinite(result.U))

@@ -299,7 +299,7 @@ def read_mixed3d(
     mesh_path: str,
     material_path: Optional[str] = None,
 ) -> HexMesh3D:
-    """Read a mixed 3D mesh CSV with Hex8 and Tet4 elements."""
+    """Read a mixed 3D mesh CSV with Hex8, Hex20, Tet4, and Tet10 elements."""
 
     materials_dict: Dict[int, Dict[str, str]] = {}
     if material_path is not None:
@@ -345,6 +345,10 @@ def read_mixed3d(
                 )
 
             elif mode == "elements":
+                if any(value != "" for value in row[len(element_header):]):
+                    raise ValueError(
+                        f"line {line_no} element row has nonempty trailing field beyond header"
+                    )
                 values = _row_by_header(element_header, row)
                 elem_id = int(values["elem_id"])
                 elem_type = _canonical_mixed3d_element_type(values.get("type", ""))
@@ -380,20 +384,23 @@ def _row_by_header(header: List[str], row: List[str]) -> Dict[str, str]:
 
 
 def _canonical_mixed3d_element_type(raw_type: str) -> str:
+    mapping = {
+        "hex8": "Hex8",
+        "hex20": "Hex20",
+        "tet4": "Tet4",
+        "tet10": "Tet10",
+    }
     normalized = raw_type.strip().lower()
-    if normalized == "hex8":
-        return "Hex8"
-    if normalized == "tet4":
-        return "Tet4"
-    raise ValueError(f"unsupported mixed 3D element type: {raw_type!r}")
+    if normalized not in mapping:
+        raise ValueError(f"unsupported mixed 3D element type: {raw_type!r}")
+    return mapping[normalized]
 
 
 def _mixed3d_node_count(elem_type: str) -> int:
-    if elem_type == "Hex8":
-        return 8
-    if elem_type == "Tet4":
-        return 4
-    raise ValueError(f"unsupported mixed 3D element type: {elem_type!r}")
+    counts = {"Hex8": 8, "Hex20": 20, "Tet4": 4, "Tet10": 10}
+    if elem_type not in counts:
+        raise ValueError(f"unsupported mixed 3D element type: {elem_type!r}")
+    return counts[elem_type]
 
 
 def _mixed3d_node_ids(
@@ -409,9 +416,19 @@ def _mixed3d_node_ids(
             raise ValueError(f"line {line_no} {elem_type} row is missing node{index}")
         node_ids.append(int(value))
 
-    for index in range(node_count + 1, 9):
+    for index in range(node_count + 1, 21):
         if values.get(f"node{index}", "") != "":
             raise ValueError(f"line {line_no} {elem_type} row has extra node{index}")
+
+    for name, value in values.items():
+        node_index = name[4:]
+        if (
+            name.startswith("node")
+            and node_index.isdigit()
+            and int(node_index) > 20
+            and value != ""
+        ):
+            raise ValueError(f"line {line_no} {elem_type} row has extra node{node_index}")
 
     return node_ids
 

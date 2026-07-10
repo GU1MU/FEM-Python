@@ -432,6 +432,8 @@ def _element_type(element: AbaqusElement) -> str:
         return "Tet10"
     if etype == "C3D8":
         return "Hex8"
+    if etype == "C3D20":
+        return "Hex20"
     raise ValueError(f"unsupported Abaqus element type: {element.type}")
 
 
@@ -495,7 +497,7 @@ def _face_label_to_index(face_label: str, element_type: str | None = None) -> in
     etype = element_type.upper()
     if "TET" in etype or etype.startswith("C3D4") or etype.startswith("C3D10"):
         return _mapped_face_index(face_number, {1: 3, 2: 2, 3: 0, 4: 1}, face_label, element_type)
-    if "HEX8" in etype or etype.startswith("C3D8"):
+    if "HEX8" in etype or "HEX20" in etype or etype.startswith(("C3D8", "C3D20")):
         return _mapped_face_index(
             face_number,
             {1: 0, 2: 1, 3: 2, 4: 5, 5: 3, 6: 4},

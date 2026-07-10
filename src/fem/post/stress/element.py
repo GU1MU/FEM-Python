@@ -39,6 +39,8 @@ def by_type(
         quad8_plane(mesh, U, path, 3 if gauss_order is None else gauss_order)
     elif type_key == "hex8":
         hex8(mesh, U, path)
+    elif type_key == "hex20":
+        hex20(mesh, U, path)
     elif type_key == "tet4":
         tet4(mesh, U, path)
     elif type_key == "tet10":
@@ -138,6 +140,11 @@ def hex8(mesh: HexMesh3D, U: Sequence[float], path: str) -> None:
     _solid(mesh, U, path, "hex8", (0.0, 0.0, 0.0))
 
 
+def hex20(mesh: Mesh3DProtocol, U: Sequence[float], path: str) -> None:
+    """Export Hex20 centroid stress to CSV."""
+    _solid(mesh, U, path, "hex20", (0.0, 0.0, 0.0))
+
+
 def tet4(mesh: Mesh3DProtocol, U: Sequence[float], path: str) -> None:
     """Export Tet4 centroid stresses to CSV."""
     _solid(mesh, U, path, "tet4", TET_CENTROID)
@@ -196,7 +203,7 @@ def _solid(
         writer = csv.writer(f)
         writer.writerow(SOLID_HEADER)
         for elem in mesh.elements:
-            if not matches(elem, type_key):
+            if dispatch.type_key_from_name(elem.type) != type_key:
                 continue
             stress = get_element_kernel(elem.type).stress_at(
                 mesh,
@@ -274,7 +281,11 @@ def _solid_multi(
             type_key = dispatch.type_key_from_name(elem.type)
             if type_key not in type_keys:
                 continue
-            natural_coords = (0.0, 0.0, 0.0) if type_key == "hex8" else TET_CENTROID
+            natural_coords = (
+                (0.0, 0.0, 0.0)
+                if type_key in {"hex8", "hex20"}
+                else TET_CENTROID
+            )
             stress = get_element_kernel(elem.type).stress_at(
                 mesh,
                 elem,

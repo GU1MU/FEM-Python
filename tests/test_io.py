@@ -7,6 +7,25 @@ import pytest
 from tests.helpers.file_builders import write_inp
 
 
+def _hex20_node_lines():
+    from fem.elements.hexahedron import HEX20_NATURAL_NODE_COORDS
+
+    return [
+        f"{node_id}, {(xi + 1.0) / 2.0}, {(eta + 1.0) / 2.0}, {(zeta + 1.0) / 2.0}"
+        for node_id, (xi, eta, zeta) in enumerate(
+            HEX20_NATURAL_NODE_COORDS,
+            start=1,
+        )
+    ]
+
+
+def _mixed3d_element_row(elem_id, elem_type, node_ids):
+    node_values = [str(node_id) for node_id in node_ids]
+    return ",".join(
+        [str(elem_id), elem_type, *node_values, *("" for _ in range(20 - len(node_values)))]
+    )
+
+
 def test_io_package_exposes_split_readers_without_legacy_facade():
     from fem.io import csv as csv_io
     from fem.io import inp, materials as materials_io
@@ -19,6 +38,7 @@ def test_io_package_exposes_split_readers_without_legacy_facade():
     assert callable(inp.read_tri6)
     assert callable(inp.read_mixed2d)
     assert callable(inp.read_hex8)
+    assert callable(inp.read_hex20)
     assert callable(inp.read_tet4)
     assert not hasattr(inp, "read_hex8_3d_abaqus")
     assert not hasattr(csv_io, "read_hex8_csv")
@@ -48,6 +68,7 @@ def test_inp_readers_only_read_mesh_without_material_coupling(tmp_path):
         "read_tet4",
         "read_tet10",
         "read_hex8",
+        "read_hex20",
     ):
         signature = inspect.signature(getattr(inp, reader_name))
         assert "material_id" not in signature.parameters
@@ -73,6 +94,93 @@ def test_inp_readers_only_read_mesh_without_material_coupling(tmp_path):
     mesh = inp.read_hex8(mesh_path)
 
     assert mesh.elements[0].props == {}
+
+
+def test_inp_read_hex20_reads_one_line_c3d20_connectivity(tmp_path):
+    from fem.io import inp
+
+    mesh_path = write_inp(
+        tmp_path,
+        "hex20_one_line.inp",
+        [
+            "*Node",
+            *_hex20_node_lines(),
+            "*Element, type=C3D20",
+            "1, " + ",".join(str(node_id) for node_id in range(1, 21)),
+        ],
+    )
+
+    mesh = inp.read_hex20(mesh_path)
+
+    assert mesh.num_nodes == 20
+    assert mesh.num_elements == 1
+    assert mesh.elements[0].type == "Hex20"
+    assert mesh.elements[0].node_ids == list(range(1, 21))
+    assert mesh.elements[0].props == {}
+
+
+def test_inp_read_hex20_reads_connectivity_split_after_node15(tmp_path):
+    from fem.io import inp
+
+    mesh_path = write_inp(
+        tmp_path,
+        "hex20_wrapped.inp",
+        [
+            "*Node",
+            *_hex20_node_lines(),
+            "*Element, type=C3D20",
+            "7, " + ",".join(str(node_id) for node_id in range(1, 16)),
+            ",".join(str(node_id) for node_id in range(16, 21)),
+        ],
+    )
+
+    mesh = inp.read_hex20(mesh_path)
+
+    assert mesh.elements[0].id == 7
+    assert mesh.elements[0].node_ids == list(range(1, 21))
+
+
+def test_inp_read_hex20_rejects_incomplete_connectivity(tmp_path):
+    from fem.io import inp
+
+    mesh_path = write_inp(
+        tmp_path,
+        "hex20_incomplete.inp",
+        [
+            "*Node",
+            *_hex20_node_lines(),
+            "*Element, type=C3D20",
+            "1, " + ",".join(str(node_id) for node_id in range(1, 20)),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="Incomplete C3D20 connectivity record"):
+        inp.read_hex20(mesh_path)
+
+
+def test_inp_read_hex20_rejects_wrong_node_order(tmp_path):
+    from fem.io import inp
+
+    reflected_node_order = [
+        2, 1, 4, 3, 6, 5, 8, 7, 9, 12,
+        11, 10, 13, 16, 15, 14, 18, 17, 20, 19,
+    ]
+    mesh_path = write_inp(
+        tmp_path,
+        "hex20_wrong_order.inp",
+        [
+            "*Node",
+            *_hex20_node_lines(),
+            "*Element, type=C3D20",
+            "1, " + ",".join(str(node_id) for node_id in reflected_node_order),
+        ],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="zero or negative Jacobian determinant.*node ordering",
+    ):
+        inp.read_hex20(mesh_path)
 
 
 def test_inp_read_tri6_reads_cps6_mesh(tmp_path):
@@ -225,6 +333,124 @@ def test_csv_read_mixed3d_reads_hex8_and_tet4_from_sectioned_csv(tmp_path):
     assert mesh.elements[0].node_ids == [1, 2, 3, 4, 5, 6, 7, 8]
     assert mesh.elements[1].node_ids == [2, 9, 3, 6]
     assert mesh.dofs_per_node == 3
+
+
+def test_csv_read_mixed3d_reads_four_supported_element_types(tmp_path):
+    from fem.io import csv as csv_io
+
+    element_header = ",".join(
+        ["elem_id", "type", *(f"node{index}" for index in range(1, 21))]
+    )
+    mesh_path = write_inp(
+        tmp_path,
+        "mixed_four_types.csv",
+        [
+            "# NODES",
+            "node_id,x,y,z",
+            *_hex20_node_lines(),
+            "",
+            "# ELEMENTS",
+            element_header,
+            _mixed3d_element_row(1, "Hex8", range(1, 9)),
+            _mixed3d_element_row(2, "Hex20", range(1, 21)),
+            _mixed3d_element_row(3, "Tet4", range(1, 5)),
+            _mixed3d_element_row(4, "Tet10", range(1, 11)),
+        ],
+    )
+
+    mesh = csv_io.read_mixed3d(mesh_path)
+
+    assert [elem.type for elem in mesh.elements] == ["Hex8", "Hex20", "Tet4", "Tet10"]
+    assert [elem.node_ids for elem in mesh.elements] == [
+        list(range(1, 9)),
+        list(range(1, 21)),
+        list(range(1, 5)),
+        list(range(1, 11)),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("elem_type", "node_ids", "message"),
+    [
+        ("Hex20", range(1, 20), "Hex20 row is missing node20"),
+        ("Tet10", range(1, 12), "Tet10 row has extra node11"),
+    ],
+)
+def test_csv_read_mixed3d_validates_missing_and_extra_nodes(
+    tmp_path,
+    elem_type,
+    node_ids,
+    message,
+):
+    from fem.io import csv as csv_io
+
+    element_header = ",".join(
+        ["elem_id", "type", *(f"node{index}" for index in range(1, 21))]
+    )
+    mesh_path = write_inp(
+        tmp_path,
+        f"mixed_{elem_type.lower()}_invalid.csv",
+        [
+            "# NODES",
+            "node_id,x,y,z",
+            *_hex20_node_lines(),
+            "# ELEMENTS",
+            element_header,
+            _mixed3d_element_row(1, elem_type, node_ids),
+        ],
+    )
+
+    with pytest.raises(ValueError, match=message):
+        csv_io.read_mixed3d(mesh_path)
+
+
+def test_csv_read_mixed3d_rejects_populated_node21_header_column_for_hex20(tmp_path):
+    from fem.io import csv as csv_io
+
+    element_header = ",".join(
+        ["elem_id", "type", *(f"node{index}" for index in range(1, 22))]
+    )
+    mesh_path = write_inp(
+        tmp_path,
+        "mixed_hex20_node21.csv",
+        [
+            "# NODES",
+            "node_id,x,y,z",
+            *_hex20_node_lines(),
+            "# ELEMENTS",
+            element_header,
+            f"{_mixed3d_element_row(1, 'Hex20', range(1, 21))},21",
+        ],
+    )
+
+    with pytest.raises(ValueError, match="line 25 Hex20 row has extra node21"):
+        csv_io.read_mixed3d(mesh_path)
+
+
+def test_csv_read_mixed3d_rejects_nonempty_physical_field_beyond_header(tmp_path):
+    from fem.io import csv as csv_io
+
+    element_header = ",".join(
+        ["elem_id", "type", *(f"node{index}" for index in range(1, 21))]
+    )
+    mesh_path = write_inp(
+        tmp_path,
+        "mixed_hex20_trailing_field.csv",
+        [
+            "# NODES",
+            "node_id,x,y,z",
+            *_hex20_node_lines(),
+            "# ELEMENTS",
+            element_header,
+            f"{_mixed3d_element_row(1, 'Hex20', range(1, 21))},21",
+        ],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="line 25 element row has nonempty trailing field beyond header",
+    ):
+        csv_io.read_mixed3d(mesh_path)
 
 
 def test_material_csv_builds_named_linear_elastic_material(tmp_path):

@@ -4,7 +4,11 @@ import pytest
 from fem import materials, steps
 from fem.core.model import ElementSet, FEMModel, MaterialDefinition, NodeSet
 from fem.solvers import static_linear
-from tests.helpers.mesh_builders import make_mixed_hex8_tet4_mesh, make_mixed_tri6_quad8_mesh
+from tests.helpers.mesh_builders import (
+    make_hex20_stiffness_mesh,
+    make_mixed_hex8_tet4_mesh,
+    make_mixed_tri6_quad8_mesh,
+)
 from tests.helpers.model_builders import make_truss_workflow_model
 
 
@@ -90,6 +94,26 @@ def test_mixed_solid_model_assigns_materials_by_element_set_and_solves():
     assert mesh.elements[1].props["material"] == "aluminum"
     assert np.all(np.isfinite(result.U))
     assert abs(float(result.U[mesh.global_dof(9, 0)])) > 0.0
+
+
+def test_fully_constrained_hex20_model_solves_with_nonzero_displacement():
+    mesh = make_hex20_stiffness_mesh()
+    model = FEMModel(mesh=mesh, name="hex20_static")
+    model.node_sets["fixed"] = NodeSet("fixed", tuple(range(1, 20)))
+    model.node_sets["loaded"] = NodeSet("loaded", (20,))
+
+    step = steps.static("pull")
+    steps.displacement(step, "fixed", components=(1, 2, 3))
+    steps.displacement(step, "loaded", components=(2, 3))
+    steps.nodal_load(step, "loaded", component=1, value=1.0e-3)
+    steps.add(model, step)
+
+    result = static_linear.solve(model, "pull")
+    loaded_displacement = result.U[mesh.global_dof(20, 0)]
+
+    assert np.all(np.isfinite(result.U))
+    assert np.isfinite(loaded_displacement)
+    assert abs(float(loaded_displacement)) > 0.0
 
 
 def test_mixed_quadratic_plane_model_assigns_materials_by_element_set_and_solves():

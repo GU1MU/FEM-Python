@@ -15,6 +15,9 @@ def build(mesh):
         vtk_conn = None
         vtk_type = None
 
+        if "c3d20r" in etype:
+            raise ValueError(f"Unsupported element type for VTK export: {elem.type}")
+
         if "truss" in etype or "beam" in etype:
             if len(elem.node_ids) != 2:
                 continue
@@ -65,6 +68,13 @@ def build(mesh):
             pt_ids = [node_id_to_pt_idx[elem.node_ids[i]] for i in vtk_order]
             vtk_conn = [10] + pt_ids
             vtk_type = 24
+
+        elif "hex20" in etype or "c3d20" in etype:
+            if len(elem.node_ids) != 20:
+                continue
+            pt_ids = [node_id_to_pt_idx[nid] for nid in elem.node_ids]
+            vtk_conn = [20] + pt_ids
+            vtk_type = 25
 
         elif "hex8" in etype:
             if len(elem.node_ids) != 8:

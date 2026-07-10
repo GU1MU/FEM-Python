@@ -8,7 +8,10 @@ from fem.assemble import assemble_global_stiffness, assemble_global_stiffness_sp
 from fem.core.mesh import Element3D
 from tests.helpers.mesh_builders import (
     make_beam_stiffness_mesh,
+    make_hex20_stiffness_mesh,
     make_hex8_stiffness_mesh,
+    make_mixed_hex20_tet10_mesh,
+    make_mixed_hex8_hex20_mesh,
     make_mixed_hex8_tet4_mesh,
     make_mixed_tri3_quad4_mesh,
     make_mixed_tri6_quad8_mesh,
@@ -118,6 +121,18 @@ def test_dense_assembly_matches_sparse_for_hex8():
     assert np.allclose(K_dense, K_sparse.toarray())
 
 
+def test_dense_and_sparse_assembly_accept_hex20():
+    mesh = make_hex20_stiffness_mesh()
+
+    K_dense = assemble_global_stiffness(mesh)
+    K_sparse = assemble_global_stiffness_sparse(mesh)
+
+    assert K_dense.shape == (60, 60)
+    assert K_sparse.shape == (60, 60)
+    assert np.allclose(K_dense, K_dense.T)
+    assert np.allclose(K_dense, K_sparse.toarray())
+
+
 def test_sparse_assembly_accepts_mesh_for_tet4_and_tet10():
     for mesh in (make_tet4_stiffness_mesh(), make_tet10_stiffness_mesh()):
         K = assemble_global_stiffness_sparse(mesh)
@@ -156,6 +171,24 @@ def test_sparse_and_dense_assembly_accept_mixed_plane_mesh():
     assert K_sparse.shape == (mesh.num_dofs, mesh.num_dofs)
     assert np.allclose(K_dense, K_dense.T)
     assert np.allclose(K_dense, K_sparse.toarray())
+
+
+def test_dense_and_sparse_assembly_accept_mixed_hex20_solid_meshes():
+    for mesh in (make_mixed_hex8_hex20_mesh(), make_mixed_hex20_tet10_mesh()):
+        K_dense = assemble_global_stiffness(mesh)
+        K_sparse = assemble_global_stiffness_sparse(mesh)
+        K_sparse_dense = K_sparse.toarray()
+
+        first_node_ids = set(mesh.elements[0].node_ids)
+        second_node_ids = set(mesh.elements[1].node_ids)
+        assert first_node_ids.isdisjoint(second_node_ids)
+        assert K_dense.shape == (mesh.num_dofs, mesh.num_dofs)
+        assert K_sparse.shape == (mesh.num_dofs, mesh.num_dofs)
+        assert np.all(np.isfinite(K_dense))
+        assert np.all(np.isfinite(K_sparse_dense))
+        assert np.allclose(K_dense, K_dense.T)
+        assert np.allclose(K_sparse_dense, K_sparse_dense.T)
+        assert np.allclose(K_dense, K_sparse_dense)
 
 
 def test_sparse_and_dense_assembly_accept_mixed_quadratic_plane_mesh():
