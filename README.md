@@ -57,7 +57,7 @@ python -m pytest -q tests/test_solvers.py::test_static_linear_solver_builds_step
 求解：
 
 - 稀疏全局刚度装配
-- 支持体力、重力、边力和面力组装
+- 支持各已注册单元 kernel 的一致体力与重力装配，包括 `Truss2D` 和 `Beam2D`
 - 线性静力分析流程
 
 
@@ -111,6 +111,7 @@ python -m pytest -q tests/test_solvers.py::test_static_linear_solver_builds_step
 
 - 每类单元提供刚度矩阵、等效载荷和应力计算
 - `elements.registry`负责按单元类型查找kernel
+- `Truss2D`提供轴向应变/应力；`Beam2D`当前提供位移和刚度响应，截面力与弯曲应力导出仍需单独实现
 
 `assemble`是全局装配层
 
