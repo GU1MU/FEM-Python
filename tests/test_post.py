@@ -45,6 +45,387 @@ def _affine_solid_displacement(mesh):
     return U
 
 
+def test_nodal_stress_field_collects_ordered_element_contributions():
+    mesh = make_mixed_tri3_quad4_mesh()
+
+    assert hasattr(stress, "field")
+    raw = stress.field.collect(mesh, np.zeros(mesh.num_dofs))
+
+    assert raw.component_names == ("sig_x", "sig_y", "tau_xy")
+    assert tuple(raw.contributions_by_node) == tuple(mesh.node_ids)
+    assert [
+        (item.elem_id, item.local_node, item.weight)
+        for item in raw.contributions_by_node[2]
+    ] == [(1, 2, 1.0), (2, 1, 1.0)]
+    assert raw.contributions_by_node[2][0].plane_type == "stress"
+    assert raw.contributions_by_node[2][0].poisson_ratio == pytest.approx(0.25)
+    assert raw.contributions_by_node[5][0].components == pytest.approx((0.0, 0.0, 0.0))
+
+
+def _stress_contribution(node_id, elem_id, components, region=None, weight=1.0):
+    if region is None:
+        region = stress.field.StressRegionKey(("material", "steel"), ("solid",))
+    return stress.field.ElementNodalStressContribution(
+        node_id=node_id,
+        elem_id=elem_id,
+        local_node=1,
+        components=tuple(components),
+        weight=weight,
+        region_key=region,
+    )
+
+
+def test_nodal_stress_resolution_uses_inclusive_component_threshold():
+    contributions = {
+        1: (
+            _stress_contribution(1, 1, (10.0, 0.0, 0.0)),
+            _stress_contribution(1, 2, (20.0, 0.0, 0.0)),
+        ),
+        2: (_stress_contribution(2, 1, (0.0, 0.0, 0.0)),),
+        3: (_stress_contribution(3, 2, (40.0, 0.0, 0.0)),),
+    }
+    raw = stress.field.NodalStressField(
+        component_names=("sig_x", "sig_y", "tau_xy"),
+        contributions_by_node=contributions,
+        node_ids=(1, 2, 3),
+    )
+
+    assert hasattr(stress.field, "resolve")
+    exact = stress.field.resolve(raw, threshold=25.0)
+    below = stress.field.resolve(raw, threshold=24.9)
+
+    exact_rows = [row for row in exact.rows if row.node_id == 1]
+    below_rows = [row for row in below.rows if row.node_id == 1]
+    assert len(exact_rows) == 1
+    assert exact_rows[0].components == pytest.approx((15.0, 0.0, 0.0))
+    assert exact_rows[0].elem_id is None
+    assert exact_rows[0].local_node is None
+    assert exact_rows[0].averaged is True
+    assert [row.components for row in below_rows] == [
+        (10.0, 0.0, 0.0),
+        (20.0, 0.0, 0.0),
+    ]
+
+
+@pytest.mark.parametrize(
+    "threshold",
+    [-0.1, 100.1, np.nan, np.inf, -np.inf, "75", None, True],
+)
+def test_nodal_stress_resolution_rejects_invalid_thresholds(threshold):
+    raw = stress.field.NodalStressField(
+        component_names=("sig_x", "sig_y", "tau_xy"),
+        contributions_by_node={1: ()},
+        node_ids=(1,),
+    )
+
+    with pytest.raises(ValueError, match="threshold"):
+        stress.field.resolve(raw, threshold=threshold)
+
+
+def test_nodal_stress_resolution_handles_zero_and_full_thresholds():
+    raw = stress.field.NodalStressField(
+        component_names=("sig_x", "sig_y", "tau_xy"),
+        contributions_by_node={
+            1: (
+                _stress_contribution(1, 1, (5.0, 2.0, 1.0)),
+                _stress_contribution(1, 2, (5.0, 2.0, 1.0)),
+            ),
+            2: (_stress_contribution(2, 1, (0.0, 0.0, 0.0)),),
+            3: (_stress_contribution(3, 2, (10.0, 4.0, 2.0)),),
+        },
+        node_ids=(1, 2, 3),
+    )
+
+    zero_rows = [row for row in stress.field.resolve(raw, 0.0).rows if row.node_id == 1]
+    full_rows = [row for row in stress.field.resolve(raw, 100.0).rows if row.node_id == 1]
+
+    assert len(zero_rows) == 2
+    assert all(not row.averaged for row in zero_rows)
+    assert len(full_rows) == 1
+    assert full_rows[0].averaged
+
+
+@pytest.mark.parametrize(
+    "second_region",
+    [
+        stress.field.StressRegionKey(("material", "aluminum"), ("solid",)),
+        stress.field.StressRegionKey(("material", "steel"), ("shell",)),
+    ],
+)
+def test_nodal_stress_resolution_preserves_region_boundaries(second_region):
+    first_region = stress.field.StressRegionKey(("material", "steel"), ("solid",))
+    raw = stress.field.NodalStressField(
+        component_names=("sig_x", "sig_y", "tau_xy"),
+        contributions_by_node={
+            1: (
+                _stress_contribution(1, 1, (1.0, 2.0, 3.0), first_region),
+                _stress_contribution(1, 2, (1.0, 2.0, 3.0), second_region),
+            )
+        },
+        node_ids=(1,),
+    )
+
+    rows = stress.field.resolve(raw, 100.0).rows
+
+    assert [(row.elem_id, row.averaged) for row in rows] == [(1, False), (2, False)]
+
+
+def test_nodal_stress_resolution_requires_every_component_to_pass():
+    raw = stress.field.NodalStressField(
+        component_names=("sig_x", "sig_y", "tau_xy"),
+        contributions_by_node={
+            1: (
+                _stress_contribution(1, 1, (10.0, 0.0, 0.0)),
+                _stress_contribution(1, 2, (20.0, 10.0, 0.0)),
+            ),
+            2: (_stress_contribution(2, 1, (0.0, 0.0, 0.0)),),
+            3: (_stress_contribution(3, 2, (100.0, 10.0, 0.0)),),
+        },
+        node_ids=(1, 2, 3),
+    )
+
+    rows = [row for row in stress.field.resolve(raw, 20.0).rows if row.node_id == 1]
+
+    assert [row.elem_id for row in rows] == [1, 2]
+
+
+def test_nodal_stress_resolution_uses_weights_and_emits_unconnected_zero():
+    raw = stress.field.NodalStressField(
+        component_names=("sig_x", "sig_y", "tau_xy"),
+        contributions_by_node={
+            1: (
+                _stress_contribution(1, 1, (10.0, 0.0, 0.0), weight=1.0),
+                _stress_contribution(1, 2, (20.0, 0.0, 0.0), weight=3.0),
+            ),
+            2: (),
+        },
+        node_ids=(1, 2),
+    )
+
+    rows = stress.field.resolve(raw, 100.0).rows
+
+    assert rows[0].components == pytest.approx((17.5, 0.0, 0.0))
+    assert rows[1].components == (0.0, 0.0, 0.0)
+    assert rows[1].elem_id is None
+    assert rows[1].averaged is False
+
+
+def test_nodal_stress_csv_preserves_material_boundary_contributions(tmp_path):
+    mesh = PlaneMesh2D(
+        nodes=[
+            Node2D(1, 0.0, 0.0),
+            Node2D(2, 1.0, 0.0),
+            Node2D(3, 0.0, 1.0),
+            Node2D(4, -1.0, 0.0),
+            Node2D(5, 0.0, -1.0),
+        ],
+        elements=[
+            Element2D(
+                1,
+                [1, 2, 3],
+                "Tri3Plane",
+                {"E": 100.0, "nu": 0.25, "plane_type": "stress", "thickness": 1.0},
+            ),
+            Element2D(
+                2,
+                [3, 4, 5],
+                "Tri3Plane",
+                {"E": 200.0, "nu": 0.3, "plane_type": "stress", "thickness": 1.0},
+            ),
+        ],
+    )
+    csv_path = tmp_path / "material_boundary.csv"
+
+    stress.export.nodal(mesh, np.zeros(mesh.num_dofs), csv_path, threshold=100.0)
+
+    with csv_path.open("r", encoding="utf-8") as stream:
+        assert list(csv.reader(stream)) == [
+            ["node_id", "x", "y", "elem_id", "local_node", "averaged", "sig_x", "sig_y", "tau_xy", "mises"],
+            ["1", "0.0", "0.0", "1", "1", "false", "0.0", "0.0", "0.0", "0.0"],
+            ["2", "1.0", "0.0", "1", "2", "false", "0.0", "0.0", "0.0", "0.0"],
+            ["3", "0.0", "1.0", "1", "3", "false", "0.0", "0.0", "0.0", "0.0"],
+            ["3", "0.0", "1.0", "2", "1", "false", "0.0", "0.0", "0.0", "0.0"],
+            ["4", "-1.0", "0.0", "2", "2", "false", "0.0", "0.0", "0.0", "0.0"],
+            ["5", "0.0", "-1.0", "2", "3", "false", "0.0", "0.0", "0.0", "0.0"],
+        ]
+
+
+def test_vtk_duplicates_points_for_unaveraged_nodal_stress_rows(tmp_path):
+    mesh = PlaneMesh2D(
+        nodes=[
+            Node2D(1, 0.0, 0.0),
+            Node2D(2, 1.0, 0.0),
+            Node2D(3, 0.0, 1.0),
+            Node2D(4, -1.0, 0.0),
+            Node2D(5, 0.0, -1.0),
+        ],
+        elements=[
+            Element2D(1, [1, 2, 3], "Tri3Plane"),
+            Element2D(2, [3, 4, 5], "Tri3Plane"),
+        ],
+    )
+    displacement_path = tmp_path / "displacement.csv"
+    nodal_stress_path = tmp_path / "nodal_stress.csv"
+    vtk_path = tmp_path / "split.vtk"
+    displacement_path.write_text(
+        "node_id,x,y,ux,uy\n"
+        "1,0,0,0,0\n2,1,0,0,0\n3,0,1,3,4\n4,-1,0,0,0\n5,0,-1,0,0\n",
+        encoding="utf-8",
+    )
+    nodal_stress_path.write_text(
+        "node_id,x,y,elem_id,local_node,averaged,sig_x,sig_y,tau_xy,mises\n"
+        "1,0,0,1,1,false,0,0,0,0\n"
+        "2,1,0,1,2,false,0,0,0,0\n"
+        "3,0,1,1,3,false,10,0,0,10\n"
+        "3,0,1,2,1,false,20,0,0,20\n"
+        "4,-1,0,2,2,false,0,0,0,0\n"
+        "5,0,-1,2,3,false,0,0,0,0\n",
+        encoding="utf-8",
+    )
+
+    vtk.export.from_csv(
+        mesh,
+        displacement_path,
+        None,
+        vtk_path,
+        nodal_stress_path,
+    )
+
+    lines = vtk_path.read_text(encoding="utf-8").splitlines()
+    cells_index = lines.index("CELLS 2 8")
+    displacement_index = lines.index("VECTORS displacement float")
+    sig_x_index = lines.index("SCALARS sig_x float 1")
+    assert "POINTS 6 float" in lines
+    assert "POINT_DATA 6" in lines
+    assert lines[cells_index + 1 : cells_index + 3] == ["3 0 1 2", "3 3 4 5"]
+    assert lines[displacement_index + 1 : displacement_index + 7] == [
+        "0.0 0.0 0.0",
+        "0.0 0.0 0.0",
+        "3.0 4.0 0.0",
+        "3.0 4.0 0.0",
+        "0.0 0.0 0.0",
+        "0.0 0.0 0.0",
+    ]
+    assert lines[sig_x_index + 2 : sig_x_index + 8] == [
+        "0.0", "0.0", "10.0", "20.0", "0.0", "0.0"
+    ]
+
+
+def test_vtk_from_result_uses_threshold_for_csv_and_topology(tmp_path):
+    props = {"E": 100.0, "nu": 0.25, "plane_type": "stress", "thickness": 1.0}
+    mesh = PlaneMesh2D(
+        nodes=[
+            Node2D(1, 0.0, 0.0),
+            Node2D(2, 1.0, 0.0),
+            Node2D(3, 0.0, 1.0),
+            Node2D(4, -1.0, 0.0),
+            Node2D(5, 0.0, -1.0),
+        ],
+        elements=[
+            Element2D(1, [1, 2, 3], "Tri3Plane", dict(props)),
+            Element2D(2, [3, 4, 5], "Tri3Plane", dict(props)),
+        ],
+    )
+
+    vtk.export.from_result(
+        make_zero_result(mesh, "threshold_zero"),
+        output_dir=tmp_path,
+        threshold=0.0,
+    )
+
+    csv_rows = list(
+        csv.DictReader(
+            (tmp_path / "threshold_zero_nodal_stress.csv").open(
+                "r", encoding="utf-8"
+            )
+        )
+    )
+    shared_rows = [row for row in csv_rows if row["node_id"] == "3"]
+    vtk_lines = (tmp_path / "threshold_zero.vtk").read_text(encoding="utf-8").splitlines()
+    assert [(row["elem_id"], row["averaged"]) for row in shared_rows] == [
+        ("1", "false"),
+        ("2", "false"),
+    ]
+    assert "POINTS 6 float" in vtk_lines
+
+
+def test_vtk_accepts_legacy_single_row_nodal_stress_csv(tmp_path):
+    mesh = PlaneMesh2D(
+        nodes=[Node2D(1, 0.0, 0.0), Node2D(2, 1.0, 0.0), Node2D(3, 0.0, 1.0)],
+        elements=[Element2D(1, [1, 2, 3], "Tri3Plane")],
+    )
+    displacement_path = tmp_path / "legacy_displacement.csv"
+    stress_path = tmp_path / "legacy_nodal_stress.csv"
+    vtk_path = tmp_path / "legacy.vtk"
+    displacement_path.write_text(
+        "node_id,x,y,ux,uy\n1,0,0,0,0\n2,1,0,0,0\n3,0,1,0,0\n",
+        encoding="utf-8",
+    )
+    stress_path.write_text(
+        "node_id,x,y,sig_x,sig_y,tau_xy,mises\n"
+        "1,0,0,1,0,0,1\n2,1,0,2,0,0,2\n3,0,1,3,0,0,3\n",
+        encoding="utf-8",
+    )
+
+    vtk.export.from_csv(mesh, displacement_path, None, vtk_path, stress_path)
+
+    lines = vtk_path.read_text(encoding="utf-8").splitlines()
+    sig_x_index = lines.index("SCALARS sig_x float 1")
+    assert "POINTS 3 float" in lines
+    assert lines[sig_x_index + 2 : sig_x_index + 5] == ["1.0", "2.0", "3.0"]
+    assert vtk.fields.read_nodal_stress(stress_path)["sig_x"] == {
+        1: 1.0,
+        2: 2.0,
+        3: 3.0,
+    }
+
+
+def test_vtk_rejects_ambiguous_repeated_nodal_stress_rows(tmp_path):
+    stress_path = tmp_path / "repeated_nodal_stress.csv"
+    stress_path.write_text(
+        "node_id,x,y,elem_id,local_node,averaged,sig_x\n"
+        "1,0,0,1,1,false,10\n1,0,0,2,1,false,20\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="repeated node_id 1"):
+        vtk.fields.read_nodal_stress(stress_path)
+
+    mesh = PlaneMesh2D(
+        nodes=[Node2D(1, 0.0, 0.0), Node2D(2, 1.0, 0.0), Node2D(3, 0.0, 1.0)],
+        elements=[Element2D(1, [1, 2, 3], "Tri3Plane")],
+    )
+    rows = (
+        vtk.fields.NodalStressCsvRow(1, 1, 1, False, {"sig_x": 10.0}),
+        vtk.fields.NodalStressCsvRow(1, None, None, False, {"sig_x": 20.0}),
+    )
+    with pytest.raises(ValueError, match="requires.*provenance"):
+        vtk.cells.build_result(mesh, rows)
+
+
+def test_polar_conversion_preserves_distinct_repeated_nodal_rows():
+    mesh = PlaneMesh2D(
+        nodes=[Node2D(1, 0.0, 1.0)],
+        elements=[],
+    )
+    data = vtk.fields.NodalStressCsv(
+        ("sig_x", "sig_y", "tau_xy", "mises"),
+        (
+            vtk.fields.NodalStressCsvRow(
+                1, 1, 1, False, {"sig_x": 10.0, "sig_y": 0.0, "tau_xy": 0.0, "mises": 10.0}
+            ),
+            vtk.fields.NodalStressCsvRow(
+                1, 2, 1, False, {"sig_x": 20.0, "sig_y": 0.0, "tau_xy": 0.0, "mises": 20.0}
+            ),
+        ),
+    )
+
+    converted = vtk.polar.convert_nodal_stress_rows(mesh, data, (0.0, 0.0))
+
+    assert [row.values["sig_t"] for row in converted.rows] == pytest.approx([10.0, 20.0])
+    assert [(row.elem_id, row.local_node) for row in converted.rows] == [(1, 1), (2, 1)]
+
+
 def test_vtk_export_lives_inside_post_package():
     mesh = PlaneMesh2D(
         nodes=[Node2D(1, 1.0, 0.0), Node2D(2, 0.0, 1.0)],
@@ -184,7 +565,7 @@ def test_hex20_stress_exports_write_one_element_and_twenty_nodes(tmp_path):
     )
     for local_index in (0, 8):
         node_id = mesh.elements[0].node_ids[local_index]
-        exported = np.array([float(value) for value in rows_by_node[node_id][4:10]])
+        exported = np.array([float(value) for value in rows_by_node[node_id][7:13]])
         assert not np.allclose(expected[local_index], 0.0)
         assert np.allclose(exported, expected[local_index])
 
@@ -378,7 +759,7 @@ def test_nodal_stress_export_writes_mixed_solid_nodes(tmp_path):
         rows = list(csv.reader(f))
 
     assert rows[0][0] == "node_id"
-    assert len(rows) == len(mesh.nodes) + 1
+    assert len(rows) == sum(len(elem.node_ids) for elem in mesh.elements) + 1
     assert {row[0] for row in rows[1:]} == {str(node.id) for node in mesh.nodes}
 
 
@@ -397,7 +778,7 @@ def test_stress_exports_write_mixed_plane_rows_and_nodes(tmp_path):
     assert elem_rows[0][0] == "elem_id"
     assert len(elem_rows) == 8
     assert nodal_rows[0][0] == "node_id"
-    assert len(nodal_rows) == len(mesh.nodes) + 1
+    assert len(nodal_rows) == sum(len(elem.node_ids) for elem in mesh.elements) + 1
 
 
 def test_stress_exports_cover_higher_order_mixed_types(tmp_path):
@@ -476,7 +857,7 @@ def test_mixed_hex20_stress_and_vtk_exports_have_exact_rows_and_cell_types(
     expected = get_element_kernel(hex20_elem.type).nodal_stress(mesh, hex20_elem, U)
     for local_index in (0, 8):
         node_id = hex20_elem.node_ids[local_index]
-        exported = np.array([float(value) for value in rows_by_node[node_id][4:10]])
+        exported = np.array([float(value) for value in rows_by_node[node_id][7:13]])
         assert not np.allclose(expected[local_index], 0.0)
         assert np.allclose(exported, expected[local_index])
 

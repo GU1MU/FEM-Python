@@ -1,7 +1,28 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import dataclass
 from typing import Dict
+
+
+@dataclass(frozen=True)
+class NodalStressCsvRow:
+    """One already-resolved nodal stress CSV row."""
+
+    node_id: int
+    elem_id: int | None
+    local_node: int | None
+    averaged: bool
+    values: dict[str, float]
+    legacy: bool = False
+
+
+@dataclass(frozen=True)
+class NodalStressCsv:
+    """Ordered resolved rows and their scalar field names."""
+
+    field_names: tuple[str, ...]
+    rows: tuple[NodalStressCsvRow, ...]
 
 
 def read_displacement(mesh, path: str) -> Dict[int, Dict[str, float]]:
@@ -35,32 +56,96 @@ def read_displacement(mesh, path: str) -> Dict[int, Dict[str, float]]:
 
 
 def read_nodal_stress(path: str) -> Dict[str, Dict[int, float]]:
-    """Read nodal stress CSV into field dictionaries."""
-    nodal_fields: Dict[str, Dict[int, float]] = {}
+    """Read unique nodal stress rows into compatibility field dictionaries."""
+    data = read_nodal_stress_rows(path)
+    nodal_fields: Dict[str, Dict[int, float]] = {
+        name: {} for name in data.field_names
+    }
+    seen: set[int] = set()
+    for row in data.rows:
+        if row.node_id in seen:
+            raise ValueError(
+                f"Nodal stress CSV contains repeated node_id {row.node_id}; "
+                "use read_nodal_stress_rows() to preserve contributions"
+            )
+        seen.add(row.node_id)
+        for name, value in row.values.items():
+            nodal_fields[name][row.node_id] = value
+    return nodal_fields
+
+
+def read_nodal_stress_rows(path: str) -> NodalStressCsv:
+    """Read resolved nodal rows without collapsing repeated node ids."""
+    rows: list[NodalStressCsvRow] = []
     with open(path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        if "node_id" not in (reader.fieldnames or []):
+        fieldnames = tuple(reader.fieldnames or ())
+        if "node_id" not in fieldnames:
             raise ValueError(f"Nodal stress CSV requires 'node_id', got {reader.fieldnames}")
 
-        ignore_exact = {"node_id", "x", "y", "z"}
-        field_names = [name for name in (reader.fieldnames or []) if name not in ignore_exact]
-
-        for name in field_names:
-            nodal_fields[name] = {}
+        metadata = {"elem_id", "local_node", "averaged"}
+        present_metadata = metadata.intersection(fieldnames)
+        if present_metadata and present_metadata != metadata:
+            raise ValueError(
+                "Nodal stress CSV metadata requires elem_id, local_node, and averaged"
+            )
+        is_legacy = not present_metadata
+        ignore_exact = {"node_id", "x", "y", "z", *metadata}
+        stress_names = tuple(name for name in fieldnames if name not in ignore_exact)
 
         for row in reader:
             nid = int(row["node_id"])
-            for name in field_names:
+            values: dict[str, float] = {}
+            for name in stress_names:
                 val_str = row.get(name, "")
                 if val_str == "":
                     continue
                 try:
-                    val = float(val_str)
+                    values[name] = float(val_str)
                 except ValueError:
-                    val = 0.0
-                nodal_fields[name][nid] = val
+                    values[name] = 0.0
+            if is_legacy:
+                elem_id = None
+                local_node = None
+                averaged = True
+            else:
+                elem_value = row.get("elem_id", "").strip()
+                local_value = row.get("local_node", "").strip()
+                elem_id = int(elem_value) if elem_value else None
+                local_node = int(local_value) if local_value else None
+                averaged_value = row.get("averaged", "").strip().lower()
+                if averaged_value not in {"true", "false"}:
+                    raise ValueError(
+                        f"Nodal stress CSV node {nid} has invalid averaged value "
+                        f"{row.get('averaged')!r}"
+                    )
+                averaged = averaged_value == "true"
+            rows.append(
+                NodalStressCsvRow(
+                    node_id=nid,
+                    elem_id=elem_id,
+                    local_node=local_node,
+                    averaged=averaged,
+                    values=values,
+                    legacy=is_legacy,
+                )
+            )
 
-    return nodal_fields
+    return NodalStressCsv(stress_names, tuple(rows))
+
+
+def point_fields(
+    data: NodalStressCsv,
+    point_rows: tuple[NodalStressCsvRow | None, ...],
+) -> Dict[str, list[float]]:
+    """Expand ordered CSV values to match result-topology points."""
+    return {
+        name: [
+            0.0 if row is None else float(row.values.get(name, 0.0))
+            for row in point_rows
+        ]
+        for name in data.field_names
+    }
 
 
 def read_element_stress(path: str) -> Dict[str, Dict[int, float]]:

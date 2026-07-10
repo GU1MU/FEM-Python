@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from ..core.model import ElementSet, MaterialDefinition, SectionAssignment
@@ -44,6 +45,16 @@ def apply_sections(model: Any) -> None:
         props = dict(model.materials[section.material].properties)
         props.update(section.properties)
         props["material"] = section.material
+        props["_stress_material_signature"] = (
+            "material",
+            section.material,
+            _freeze_signature(model.materials[section.material].properties),
+        )
+        props["_stress_section_signature"] = (
+            "section",
+            section.section_type,
+            _freeze_signature(section.properties),
+        )
 
         for element_id in element_set.element_ids:
             if element_id not in element_lookup:
@@ -63,3 +74,21 @@ def _section_element_set(model: Any, name: str) -> ElementSet:
     if name in internal_sets:
         return internal_sets[name]
     raise KeyError(f"element set {name} is not defined")
+
+
+def _freeze_signature(value: Any) -> Any:
+    """Recursively freeze material and section data for region comparisons."""
+    if isinstance(value, Mapping):
+        return tuple(
+            (str(key), _freeze_signature(item))
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_signature(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return tuple(sorted((_freeze_signature(item) for item in value), key=repr))
+    try:
+        hash(value)
+    except TypeError:
+        return repr(value)
+    return value

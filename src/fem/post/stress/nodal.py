@@ -2,22 +2,16 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
-from typing import Dict, Sequence
-
-import numpy as np
+from typing import Sequence
 
 from ...core.mesh import HexMesh3D, Mesh3DProtocol, PlaneMesh2D
 from . import dispatch
 from ._common import (
     PLANE_NODAL_HEADER,
     SOLID_NODAL_HEADER,
-    element_volume,
-    matches,
-    nodal_stress,
     node_lookup,
-    validated_u,
-    write_zero_solid_node,
 )
+from .field import ResolvedNodalStressField, collect, resolve
 from .invariants import von_mises_3d, von_mises_plane
 
 
@@ -27,28 +21,14 @@ def by_type(
     U: Sequence[float],
     path: str,
     gauss_order: int | None = None,
+    threshold: float = 75.0,
 ) -> None:
-    """Export nodal stresses by normalized element type key."""
+    """Export resolved nodal stresses by normalized element type key."""
     if type_key == "truss2d":
         raise ValueError("Nodal stress export is not available for Truss2D elements")
-    if type_key == "tri3":
-        tri3(mesh, U, path)
-    elif type_key == "tri6":
-        tri6(mesh, U, path, 3 if gauss_order is None else gauss_order)
-    elif type_key == "quad4":
-        quad4(mesh, U, path, 2 if gauss_order is None else gauss_order)
-    elif type_key == "quad8":
-        quad8(mesh, U, path, 3 if gauss_order is None else gauss_order)
-    elif type_key == "hex8":
-        hex8(mesh, U, path, 2 if gauss_order is None else gauss_order)
-    elif type_key == "hex20":
-        hex20(mesh, U, path, 3 if gauss_order is None else gauss_order)
-    elif type_key == "tet4":
-        tet4(mesh, U, path)
-    elif type_key == "tet10":
-        tet10(mesh, U, path)
-    else:
+    if type_key not in dispatch.NODAL_STRESS_KEYS:
         raise ValueError(f"Unsupported stress element type key: {type_key!r}")
+    _resolved(mesh, U, path, type_key, gauss_order, threshold)
 
 
 def mixed(
@@ -57,23 +37,23 @@ def mixed(
     U: Sequence[float],
     path: str,
     gauss_order: int | None = None,
+    threshold: float = 75.0,
 ) -> None:
-    """Export mixed nodal stresses for compatible stress groups."""
+    """Export resolved mixed nodal stresses for compatible stress groups."""
     if not dispatch.nodal_stress_supported(type_keys):
         raise ValueError(f"Nodal stress export is not available for {type_keys}")
-    group = dispatch.stress_group_for_keys(type_keys)
-    if group == "plane":
-        _plane_multi(mesh, U, path, set(type_keys), gauss_order)
-        return
-    if group == "solid":
-        _solid_multi(mesh, U, path, set(type_keys), gauss_order)
-        return
-    raise ValueError(f"Mixed nodal stress export is not available for group {group!r}")
+    dispatch.stress_group_for_keys(type_keys)
+    _resolved(mesh, U, path, None, gauss_order, threshold)
 
 
-def tri3(mesh: PlaneMesh2D, U: Sequence[float], path: str) -> None:
-    """Export Tri3 nodal stresses averaged from elements."""
-    _plane(mesh, U, path, "tri3")
+def tri3(
+    mesh: PlaneMesh2D,
+    U: Sequence[float],
+    path: str,
+    threshold: float = 75.0,
+) -> None:
+    """Export resolved Tri3 nodal stresses."""
+    _resolved(mesh, U, path, "tri3", None, threshold)
 
 
 def tri6(
@@ -81,9 +61,10 @@ def tri6(
     U: Sequence[float],
     path: str,
     gauss_order: int = 3,
+    threshold: float = 75.0,
 ) -> None:
-    """Export Tri6 nodal stresses averaged from elements."""
-    _plane(mesh, U, path, "tri6", gauss_order)
+    """Export resolved Tri6 nodal stresses."""
+    _resolved(mesh, U, path, "tri6", gauss_order, threshold)
 
 
 def quad4(
@@ -91,9 +72,10 @@ def quad4(
     U: Sequence[float],
     path: str,
     gauss_order: int = 2,
+    threshold: float = 75.0,
 ) -> None:
-    """Export Quad4 nodal stresses averaged from elements."""
-    _plane(mesh, U, path, "quad4", gauss_order)
+    """Export resolved Quad4 nodal stresses."""
+    _resolved(mesh, U, path, "quad4", gauss_order, threshold)
 
 
 def quad8(
@@ -101,9 +83,10 @@ def quad8(
     U: Sequence[float],
     path: str,
     gauss_order: int = 3,
+    threshold: float = 75.0,
 ) -> None:
-    """Export Quad8 nodal stresses averaged from elements."""
-    _plane(mesh, U, path, "quad8", gauss_order)
+    """Export resolved Quad8 nodal stresses."""
+    _resolved(mesh, U, path, "quad8", gauss_order, threshold)
 
 
 def hex8(
@@ -111,9 +94,10 @@ def hex8(
     U: Sequence[float],
     path: str,
     gauss_order: int = 2,
+    threshold: float = 75.0,
 ) -> None:
-    """Export Hex8 nodal stresses averaged from connected elements."""
-    _solid(mesh, U, path, "hex8", gauss_order=gauss_order)
+    """Export resolved Hex8 nodal stresses."""
+    _resolved(mesh, U, path, "hex8", gauss_order, threshold)
 
 
 def hex20(
@@ -121,215 +105,87 @@ def hex20(
     U: Sequence[float],
     path: str,
     gauss_order: int = 3,
+    threshold: float = 75.0,
 ) -> None:
-    """Export Hex20 nodal stresses averaged from connected elements."""
-    _solid(mesh, U, path, "hex20", gauss_order=gauss_order)
+    """Export resolved Hex20 nodal stresses."""
+    _resolved(mesh, U, path, "hex20", gauss_order, threshold)
 
 
-def tet4(mesh: Mesh3DProtocol, U: Sequence[float], path: str) -> None:
-    """Export Tet4 nodal stresses averaged from connected elements."""
-    _solid(mesh, U, path, "tet4", weighted=True)
-
-
-def tet10(mesh: Mesh3DProtocol, U: Sequence[float], path: str) -> None:
-    """Export Tet10 nodal stresses averaged from connected elements."""
-    _solid(mesh, U, path, "tet10", weighted=True)
-
-
-def _plane(
-    mesh: PlaneMesh2D,
-    U: Sequence[float],
-    path: str,
-    type_key: str,
-    gauss_order: int | None = None,
-) -> None:
-    """Export plane nodal stresses averaged from element nodal stresses."""
-    U = validated_u(mesh, U)
-    lookup = node_lookup(mesh)
-    sums: Dict[int, np.ndarray] = {}
-    counts: Dict[int, int] = {}
-    plane_type = "stress"
-    nu_ref = 0.0
-
-    for elem in mesh.elements:
-        if not matches(elem, type_key):
-            continue
-        node_vals, plane_type, nu_ref = nodal_stress(mesh, elem, U, lookup, gauss_order)
-        for i, nid in enumerate(elem.node_ids):
-            sums[nid] = sums.get(nid, np.zeros(3, dtype=float)) + node_vals[i]
-            counts[nid] = counts.get(nid, 0) + 1
-
-    path = _prepare_path(path)
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(PLANE_NODAL_HEADER)
-        for nid in mesh.node_ids:
-            node = lookup[nid]
-            if counts.get(nid, 0) == 0:
-                sig_x = sig_y = tau_xy = 0.0
-            else:
-                sig_x, sig_y, tau_xy = (sums[nid] / counts[nid]).tolist()
-            writer.writerow([
-                nid,
-                node.x,
-                node.y,
-                sig_x,
-                sig_y,
-                tau_xy,
-                von_mises_plane(sig_x, sig_y, tau_xy, plane_type, nu_ref),
-            ])
-
-
-def _solid(
+def tet4(
     mesh: Mesh3DProtocol,
     U: Sequence[float],
     path: str,
-    type_key: str,
-    gauss_order: int | None = None,
-    weighted: bool = False,
+    threshold: float = 75.0,
 ) -> None:
-    """Export solid nodal stresses averaged from connected element nodes."""
-    U = validated_u(mesh, U)
-    lookup = node_lookup(mesh)
-
-    path = _prepare_path(path)
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(SOLID_NODAL_HEADER)
-        for nid in mesh.node_ids:
-            node = lookup[nid]
-            stress_sum = np.zeros(6, dtype=float)
-            weight_sum = 0.0
-            for elem in mesh.elements:
-                if (
-                    dispatch.type_key_from_name(elem.type) != type_key
-                    or nid not in elem.node_ids
-                ):
-                    continue
-                node_vals = nodal_stress(mesh, elem, U, lookup, gauss_order)
-                local_idx = elem.node_ids.index(nid)
-                weight = element_volume(mesh, elem, lookup) if weighted else 1.0
-                stress_sum += weight * np.asarray(node_vals[local_idx], dtype=float)
-                weight_sum += weight
-
-            if weight_sum == 0.0:
-                write_zero_solid_node(writer, nid, node)
-                continue
-
-            sig_x, sig_y, sig_z, tau_xy, tau_yz, tau_zx = stress_sum / weight_sum
-            writer.writerow([
-                nid,
-                node.x,
-                node.y,
-                node.z,
-                sig_x,
-                sig_y,
-                sig_z,
-                tau_xy,
-                tau_yz,
-                tau_zx,
-                von_mises_3d(sig_x, sig_y, sig_z, tau_xy, tau_yz, tau_zx),
-            ])
+    """Export resolved Tet4 nodal stresses."""
+    _resolved(mesh, U, path, "tet4", None, threshold)
 
 
-def _plane_multi(
-    mesh: PlaneMesh2D,
-    U: Sequence[float],
-    path: str,
-    type_keys: set[str],
-    gauss_order: int | None = None,
-) -> None:
-    """Export mixed plane nodal stresses averaged from connected elements."""
-    U = validated_u(mesh, U)
-    lookup = node_lookup(mesh)
-    sums: Dict[int, np.ndarray] = {}
-    counts: Dict[int, int] = {}
-    plane_type = "stress"
-    nu_ref = 0.0
-
-    for elem in mesh.elements:
-        type_key = dispatch.type_key_from_name(elem.type)
-        if type_key not in type_keys:
-            continue
-        order = (
-            gauss_order
-            if gauss_order is not None
-            else dispatch.default_gauss_order(type_key)
-        )
-        node_vals, plane_type, nu_ref = nodal_stress(mesh, elem, U, lookup, order)
-        for i, nid in enumerate(elem.node_ids):
-            sums[nid] = sums.get(nid, np.zeros(3, dtype=float)) + node_vals[i]
-            counts[nid] = counts.get(nid, 0) + 1
-
-    path = _prepare_path(path)
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(PLANE_NODAL_HEADER)
-        for nid in mesh.node_ids:
-            node = lookup[nid]
-            if counts.get(nid, 0) == 0:
-                sig_x = sig_y = tau_xy = 0.0
-            else:
-                sig_x, sig_y, tau_xy = (sums[nid] / counts[nid]).tolist()
-            writer.writerow([
-                nid,
-                node.x,
-                node.y,
-                sig_x,
-                sig_y,
-                tau_xy,
-                von_mises_plane(sig_x, sig_y, tau_xy, plane_type, nu_ref),
-            ])
-
-
-def _solid_multi(
+def tet10(
     mesh: Mesh3DProtocol,
     U: Sequence[float],
     path: str,
-    type_keys: set[str],
-    gauss_order: int | None = None,
+    threshold: float = 75.0,
 ) -> None:
-    """Export mixed solid nodal stresses averaged from connected element nodes."""
-    U = validated_u(mesh, U)
+    """Export resolved Tet10 nodal stresses."""
+    _resolved(mesh, U, path, "tet10", None, threshold)
+
+
+def _resolved(
+    mesh,
+    U: Sequence[float],
+    path: str,
+    element_type: str | None,
+    gauss_order: int | None,
+    threshold: float,
+) -> None:
+    """Collect, resolve, and write a nodal stress field."""
+    raw = collect(mesh, U, element_type=element_type, gauss_order=gauss_order)
+    resolved = resolve(raw, threshold=threshold)
+    _write_resolved(mesh, resolved, path)
+
+
+def _write_resolved(mesh, resolved: ResolvedNodalStressField, path: str) -> None:
+    """Write resolved plane or solid rows with provenance metadata."""
     lookup = node_lookup(mesh)
-
-    path = _prepare_path(path)
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(SOLID_NODAL_HEADER)
-        for nid in mesh.node_ids:
-            node = lookup[nid]
-            stress_sum = np.zeros(6, dtype=float)
-            weight_sum = 0.0
-            for elem in mesh.elements:
-                type_key = dispatch.type_key_from_name(elem.type)
-                if type_key not in type_keys or nid not in elem.node_ids:
-                    continue
-                order = (
-                    gauss_order
-                    if gauss_order is not None
-                    else dispatch.default_gauss_order(type_key)
-                )
-                node_vals = nodal_stress(mesh, elem, U, lookup, order)
-                local_idx = elem.node_ids.index(nid)
-                weight = (
-                    element_volume(mesh, elem, lookup)
-                    if type_key in {"tet4", "tet10"}
-                    else 1.0
-                )
-                stress_sum += weight * np.asarray(node_vals[local_idx], dtype=float)
-                weight_sum += weight
-
-            if weight_sum == 0.0:
-                write_zero_solid_node(writer, nid, node)
+    is_plane = resolved.component_names == ("sig_x", "sig_y", "tau_xy")
+    output_path = _prepare_path(path)
+    with open(output_path, "w", newline="", encoding="utf-8") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(PLANE_NODAL_HEADER if is_plane else SOLID_NODAL_HEADER)
+        for row in resolved.rows:
+            node = lookup[row.node_id]
+            provenance = [
+                "" if row.elem_id is None else row.elem_id,
+                "" if row.local_node is None else row.local_node,
+                "true" if row.averaged else "false",
+            ]
+            if is_plane:
+                sig_x, sig_y, tau_xy = row.components
+                writer.writerow([
+                    row.node_id,
+                    node.x,
+                    node.y,
+                    *provenance,
+                    sig_x,
+                    sig_y,
+                    tau_xy,
+                    von_mises_plane(
+                        sig_x,
+                        sig_y,
+                        tau_xy,
+                        row.plane_type or "stress",
+                        row.poisson_ratio or 0.0,
+                    ),
+                ])
                 continue
-
-            sig_x, sig_y, sig_z, tau_xy, tau_yz, tau_zx = stress_sum / weight_sum
+            sig_x, sig_y, sig_z, tau_xy, tau_yz, tau_zx = row.components
             writer.writerow([
-                nid,
+                row.node_id,
                 node.x,
                 node.y,
                 node.z,
+                *provenance,
                 sig_x,
                 sig_y,
                 sig_z,

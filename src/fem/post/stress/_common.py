@@ -13,10 +13,14 @@ TET_CENTROID = (0.25, 0.25, 0.25)
 SOLID_HEADER = ["elem_id", "sig_x", "sig_y", "sig_z", "tau_xy", "tau_yz", "tau_zx", "mises"]
 SOLID_NODAL_HEADER = [
     "node_id", "x", "y", "z",
+    "elem_id", "local_node", "averaged",
     "sig_x", "sig_y", "sig_z", "tau_xy", "tau_yz", "tau_zx", "mises",
 ]
 PLANE_ELEMENT_HEADER = ["elem_id", "node_id", "local_node", "sig_x", "sig_y", "tau_xy", "mises"]
-PLANE_NODAL_HEADER = ["node_id", "x", "y", "sig_x", "sig_y", "tau_xy", "mises"]
+PLANE_NODAL_HEADER = [
+    "node_id", "x", "y", "elem_id", "local_node", "averaged",
+    "sig_x", "sig_y", "tau_xy", "mises",
+]
 
 
 def validated_u(mesh: Any, U: Sequence[float]) -> np.ndarray:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Dict, Sequence
 
 from ...core.mesh import Mesh2DProtocol
+from .fields import NodalStressCsv, NodalStressCsvRow
 
 
 def basis(x: float, y: float, center: Sequence[float]):
@@ -108,6 +109,51 @@ def convert_nodal_stress_fields(
     new_fields["sig_t"] = sig_t
     new_fields["tau_rt"] = tau_rt
     return new_fields
+
+
+def convert_nodal_stress_rows(
+    mesh: Mesh2DProtocol,
+    data: NodalStressCsv,
+    center: Sequence[float],
+) -> NodalStressCsv:
+    """Convert every resolved CSV row while preserving duplicate provenance."""
+    required = {"sig_x", "sig_y", "tau_xy"}
+    polar_names = {"sig_r", "sig_t", "tau_rt"}
+    if not required.issubset(data.field_names) or polar_names.intersection(data.field_names):
+        return data
+    if len(center) != 2:
+        raise ValueError("center must have 2 values")
+
+    node_lookup = {node.id: node for node in mesh.nodes}
+    field_names = tuple(
+        name for name in data.field_names if name not in required
+    ) + ("sig_r", "sig_t", "tau_rt")
+    converted: list[NodalStressCsvRow] = []
+    for row in data.rows:
+        node = node_lookup.get(row.node_id)
+        if node is None:
+            continue
+        values = {name: value for name, value in row.values.items() if name not in required}
+        c, s = basis(node.x, node.y, center)
+        sig_r, sig_t, tau_rt = stress(
+            c,
+            s,
+            float(row.values.get("sig_x", 0.0)),
+            float(row.values.get("sig_y", 0.0)),
+            float(row.values.get("tau_xy", 0.0)),
+        )
+        values.update(sig_r=sig_r, sig_t=sig_t, tau_rt=tau_rt)
+        converted.append(
+            NodalStressCsvRow(
+                node_id=row.node_id,
+                elem_id=row.elem_id,
+                local_node=row.local_node,
+                averaged=row.averaged,
+                values=values,
+                legacy=row.legacy,
+            )
+        )
+    return NodalStressCsv(field_names, tuple(converted))
 
 
 def convert_element_stress_fields(

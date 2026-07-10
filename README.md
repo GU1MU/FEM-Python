@@ -2,12 +2,6 @@
 
 这是一个面向教学、实验和逐步扩展的有限元项目。项目保留清晰的有限元主流程：读取mesh，构建model，定义材料和分析步，装配刚度，施加载荷和约束，求解，导出后处理结果
 
-项目有两种使用流程：
-
-- 一般流程：用`io.csv`或`io.inp`只读取mesh，然后显式组装`FEMModel`、材料、set、surface和step
-- Abaqus流程：用`abaqus.read()`读取inp中的节点、单元、set、surface、材料、section、step和载荷，直接构建`FEMModel`后求解
-
-
 ## 安装和运行
 
 
@@ -39,9 +33,9 @@ python -m pytest -q tests/test_solvers.py::test_static_linear_solver_builds_step
 
 网格读取：
 
-- `fem.io.inp`读取Abaqus inp中的mesh拓扑和坐标，`read_hex20()`支持单行和换行的`C3D20`单元记录
-- `fem.io.csv`读取CSV格式mesh，支持`Hex8`、`Hex20`、`Tet4`和`Tet10`混合实体网格并严格校验节点数
-- `fem.abaqus`读取Abaqus inp中的完整模型数据，包括`C3D20`的surface、材料、section、step和载荷
+- `fem.io.inp`读取Abaqus inp中的mesh拓扑和坐标
+- `fem.io.csv`读取CSV格式mesh
+- `fem.abaqus`读取Abaqus inp中的完整模型数据
 
 单元：
 
@@ -51,25 +45,24 @@ python -m pytest -q tests/test_solvers.py::test_static_linear_solver_builds_step
 - `Quad4`
 - `Quad8`
 - `Hex8`
-- `Hex20 (C3D20, full integration)`
+- `Hex20
 - `Tet4`
 - `Tet10`
-- reduced-integration `C3D20R`当前不支持
 
 求解：
 
 - 稀疏全局刚度装配
 - 支持`Hex8`、`Hex20`、`Tet4`和`Tet10`混合实体网格装配
-- 支持各已注册单元 kernel 的一致体力与重力装配，包括 `Truss2D` 和 `Beam2D`
+- 支持各单元的节点力、边力、体力、重力装配
 - 线性静力分析流程
 
 
 后处理：
 
 - 节点位移CSV
-- 单元应力CSV，支持独立和混合`Hex20`实体网格
-- 节点平均应力CSV，支持独立和混合`Hex20`实体网格的27点到20节点应力恢复
-- VTK文件导出，`Hex20`按Abaqus节点顺序写为VTK quadratic hexahedron type `25`
+- 单元应力CSV
+- 节点平均应力CSV
+- VTK文件导出
 
 ## 模块职责
 
@@ -82,7 +75,7 @@ python -m pytest -q tests/test_solvers.py::test_static_linear_solver_builds_step
 
 `io`是mesh读取层
 
-- `io.inp`只读取Abaqus inp中的网格数据
+- `io.inp`读取Abaqus inp中的网格数据
 - `io.csv`读取CSV网格
 - `io.materials`读取独立材料表
 
@@ -129,7 +122,7 @@ python -m pytest -q tests/test_solvers.py::test_static_linear_solver_builds_step
 
 - `post.displacement.export.nodal()`导出节点位移
 - `post.stress.export.element()`导出单元应力
-- `post.stress.export.nodal()`导出节点平均应力
+- `post.stress.export.nodal()`导出带阈值判断的节点应力
 - `post.vtk.export.from_result()`从`ModelResult`导出CSV和VTK
 - `post.vtk.export.from_csv()`从已有CSV导出VTK
 
@@ -197,140 +190,3 @@ Abaqus流程示例在`examples/cantilever_beam_hex8_abaqus.py`
 - 从模型中取得分析步
 - 用`solvers.static_linear.solve()`求解
 - 用`post.vtk.export.from_result()`导出结果
-
-Abaqus流程适合复用已有inp文件。它的目标是把Abaqus文件转换为项目内部的`FEMModel`，求解和后处理继续使用相同核心模块
-
-当前`abaqus`模块只支持项目已有kernel能正确表达的单元和载荷语义
-
-## 如何增加新的element类型
-
-新增单元的核心工作是增加element kernel。reader、装配、载荷和后处理只通过kernel或registry接入
-
-首先确认：
-
-- mesh维度：2D单元使用`Element2D`和2D mesh，3D单元使用`Element3D`和3D mesh
-- 单元类型名：reader写入`elem.type`，registry用`type_names`匹配这个名字
-- 单元属性：材料、厚度、截面、面积等数据统一从`elem.props`读取
-
-必须完成：
-
-1. 在`src/fem/elements/`中选择族模块。例如线单元放`line.py`，四边形放`quadrilateral.py`，四面体放`tetrahedron.py`，六面体放`hexahedron.py`
-2. 实现kernel类，提供`type_names`和`stiffness(mesh, elem, node_lookup=None)`
-3. 在`elements.registry`中调用`register_element_kernel(...)`注册kernel
-4. 更新`io.csv`或`io.inp`，让reader能创建对应`Element2D`或`Element3D`，并写入正确`elem.type`和`elem.props`
-5. 增加测试，至少覆盖刚度矩阵尺寸、自由度顺序、关键数值和异常输入
-
-按能力继续补充：
-
-1. 支持体力时，在kernel中增加`body_force(mesh, elem, vector, node_lookup=None)`
-2. 支持2D边力时，增加`edge_traction(mesh, elem, local_index, vector, node_lookup=None)`
-3. 支持3D面力时，增加`face_traction(mesh, elem, local_index, vector, node_lookup=None)`
-4. 支持单元应力时，增加`element_stress(...)`或`stress_at(...)`
-5. 支持节点应力时，增加`nodal_stress(...)`或在`post.stress`中增加外推逻辑
-
-后处理接入点：
-
-1. VTK需要新增单元类型映射时，更新`post.vtk.cells`
-2. 应力导出需要识别新类型时，更新`post.stress.dispatch`
-3. 若现有`post.stress.export.element()`或`post.stress.export.nodal()`无法直接使用新kernel，补充`post.stress.element`或`post.stress.nodal`中的分发逻辑
-
-Abaqus适配在一般流程可用之后再做。新增Abaqus单元时，更新`abaqus.parser`/`abaqus.builder`，把Abaqus类型名转换到项目内部`elem.type`
-
-## 如何增加新的boundary类型
-
-新增边界时先明确它属于声明层还是求解输入层。
-
-声明层面向用户和输入文件，写入`AnalysisStep`：
-
-1. 在`core.model`中增加轻量数据结构，或扩展已有`DisplacementConstraint`、`NodalLoad`、`SurfaceLoad`
-2. 在`steps`包中增加便捷函数。函数实现放在`constraints.py`、`loads.py`或新的清晰模块中，`steps/__init__.py`只导出公共入口
-3. 如果条件依赖set或surface，声明里保存set名或surface名，不直接保存解析后的DOF
-4. 在`boundary.step`中解析`AnalysisStep`，把set、surface和component转换成`BoundaryCondition`
-
-求解输入层面向装配和线性求解，写入`BoundaryCondition`：
-
-1. 在`boundary.condition`中增加求解器需要的数据结构
-2. 在`boundary.loads`或`boundary.constraints`中增加组装或约束处理
-3. 如果载荷需要单元积分，把积分公式放进对应element kernel
-4. 如果载荷依赖几何选择，优先复用`selection.nodes`、`selection.edges`和`selection.faces`生成set或surface
-
-Abaqus适配作为独立入口处理：
-
-1. 在`abaqus.parser`中解析关键字
-2. 在`abaqus.builder`中把Abaqus对象转成`core.model`中的声明
-3. 复用`boundary.step`进入求解流程
-
-
-## 如何增加新的materials类型
-
-材料扩展要同时考虑材料定义、section赋值和kernel使用方式
-
-必须完成：
-
-1. 在`src/fem/materials/`中新增材料模块，例如`orthotropic.py`或`plasticity.py`
-2. 提供材料定义函数，返回`MaterialDefinition(name, properties)`
-3. 设计清晰的`properties`键名，element kernel只读取这些约定字段
-4. 在`materials/__init__.py`中导出新模块或便捷函数
-5. 用`materials.add(model, material)`把材料放入`model.materials`
-6. 用`materials.assign(model, material=..., element_set=...)`把材料赋给element set
-7. 确认`materials.apply_sections(model)`能把section信息写入目标单元的`elem.props`
-
-如果材料需要本构矩阵：
-
-1. 在线性材料模块中提供矩阵函数
-2. 在需要该材料的element kernel中显式调用它
-
-如果材料来自文件：
-
-1. 独立CSV材料表更新`io.materials`
-2. Abaqus材料更新`abaqus.parser`和`abaqus.builder`
-
-当前线弹性材料入口在`src/fem/materials/linear_elastic.py`，调用示例见`examples/cantilever_beam_hex8.py`
-
-## 如何增加新的后处理方式
-
-后处理按结果类型分包。公共调用风格保持`post.<result_type>.export.<function>()`
-
-现有入口：
-
-- `post.displacement.export.nodal(mesh, U, path)`
-- `post.stress.export.element(mesh, U, path)`
-- `post.stress.export.nodal(mesh, U, path)`
-- `post.vtk.export.from_result(result, output_dir)`
-- `post.vtk.export.from_csv(mesh, disp_csv_path, elem_csv_path, vtk_path, nodal_stress_csv_path=None)`
-
-新增一种结果类型：
-
-1. 创建`src/fem/post/<name>/`包
-2. 新增`export.py`，把文件导出函数放在这里
-3. 在`post/<name>/__init__.py`中导出`export`
-4. 在`post/__init__.py`中导出新子包
-5. 函数输入优先使用`mesh`、`U`、`ModelResult`或已有CSV
-
-扩展VTK：
-
-1. 新字段读取或转换放在`post.vtk.fields`
-2. 新VTK单元拓扑放在`post.vtk.cells`
-3. 写文件细节放在`post.vtk.writer`
-4. 从结果自动生成CSV和VTK的流程放在`post.vtk.export`
-
-
-## 推荐开发顺序
-
-
-1. 明确它属于哪个层：core数据、element kernel、material、boundary、solver还是post
-2. 先补最小测试，固定期望行为
-3. 新增或修改数据结构
-4. 实现底层计算逻辑
-5. 接入registry或dispatch
-6. 更新reader或builder
-7. 更新example或README
-
-
-## 重要约定
-
-- `core`只放数据结构，不放装配、求解、导出方法
-- `steps`包负责创建和填充`AnalysisStep`，`AnalysisStep`保存分析步声明
-- `boundary`保存求解器输入解析逻辑
-- `abaqus`只负责适配输入文件，不承担核心求解职责
-- `solvers`不直接实现单元积分或set/surface选择

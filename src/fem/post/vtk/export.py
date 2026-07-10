@@ -13,6 +13,7 @@ def from_result(
     polar: bool = False,
     polar_center: Optional[Sequence[float]] = None,
     overwrite: bool = True,
+    threshold: float = 75.0,
 ) -> None:
     """Export result data to VTK, creating missing CSV files first."""
     mesh = result.model.mesh
@@ -31,6 +32,7 @@ def from_result(
         polar_center=polar_center,
         U=result.U,
         overwrite=overwrite,
+        threshold=threshold,
     )
 
 
@@ -44,6 +46,7 @@ def from_csv(
     polar_center: Optional[Sequence[float]] = None,
     U: Optional[Sequence[float]] = None,
     overwrite: bool = False,
+    threshold: float = 75.0,
 ) -> None:
     """Convert displacement and stress CSV files to VTK."""
     disp_csv_path = Path(disp_csv_path)
@@ -63,6 +66,7 @@ def from_csv(
             elem_csv_path,
             nodal_stress_csv_path,
             overwrite,
+            threshold,
         )
 
     node_disp = fields.read_displacement(mesh, disp_csv_path)
@@ -72,11 +76,11 @@ def from_csv(
             raise ValueError("from_csv: polar_center required when polar=True")
         node_disp = polar_fields.convert_nodal_displacement(mesh, node_disp, polar_center)
 
-    nodal_fields = {}
+    nodal_data = None
     if nodal_stress_csv_path is not None:
-        nodal_fields = fields.read_nodal_stress(nodal_stress_csv_path)
-    if polar and nodal_fields:
-        nodal_fields = polar_fields.convert_nodal_stress_fields(mesh, nodal_fields, polar_center)
+        nodal_data = fields.read_nodal_stress_rows(nodal_stress_csv_path)
+    if polar and nodal_data is not None:
+        nodal_data = polar_fields.convert_nodal_stress_rows(mesh, nodal_data, polar_center)
 
     field_data = {}
     if elem_csv_path is not None:
@@ -85,19 +89,24 @@ def from_csv(
         field_data = polar_fields.convert_element_stress_fields(mesh, field_data, polar_center)
 
     vtk_path.parent.mkdir(parents=True, exist_ok=True)
-    vtk_cells, cell_types, elems_for_cell = cells.build(mesh)
-    if not vtk_cells:
+    topology = cells.build_result(mesh, () if nodal_data is None else nodal_data.rows)
+    if not topology.cells:
         raise ValueError("from_csv: no supported elements")
+    nodal_point_fields = (
+        {} if nodal_data is None else fields.point_fields(nodal_data, topology.point_rows)
+    )
 
     writer.write(
         mesh=mesh,
-        cells=vtk_cells,
-        cell_types=cell_types,
-        elems_for_cell=elems_for_cell,
+        cells=topology.cells,
+        cell_types=topology.cell_types,
+        elems_for_cell=topology.elems_for_cell,
         node_disp=node_disp,
         field_data=field_data,
         path=vtk_path,
-        nodal_fields=nodal_fields,
+        points=topology.points,
+        point_node_ids=topology.point_node_ids,
+        nodal_point_fields=nodal_point_fields,
     )
 
 
@@ -138,6 +147,7 @@ def _export_csvs(
     elem_csv_path: Optional[Path],
     nodal_stress_csv_path: Optional[Path],
     overwrite: bool,
+    threshold: float,
 ) -> None:
     """Export CSV inputs needed by the VTK writer."""
     from .. import displacement, stress
@@ -152,4 +162,4 @@ def _export_csvs(
 
     if nodal_stress_csv_path is not None and (overwrite or not nodal_stress_csv_path.exists()):
         nodal_stress_csv_path.parent.mkdir(parents=True, exist_ok=True)
-        stress.export.nodal(mesh, U, nodal_stress_csv_path)
+        stress.export.nodal(mesh, U, nodal_stress_csv_path, threshold=threshold)

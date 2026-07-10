@@ -241,6 +241,49 @@ def test_model_element_info_returns_type_material_and_properties_by_element_id()
     assert "material" not in mesh.elements[1].props
 
 
+def test_apply_sections_stamps_stable_stress_region_signatures():
+    mesh = make_mixed_tri3_quad4_mesh()
+    model = FEMModel(mesh=mesh)
+    model.element_sets["triangles"] = ElementSet("triangles", (1,))
+    model.element_sets["quadrilaterals"] = ElementSet("quadrilaterals", (2,))
+    materials.add(
+        model,
+        MaterialDefinition(
+            "steel",
+            {"E": 210.0, "nu": 0.3, "metadata": {"grade": "A"}},
+        ),
+    )
+    materials.assign(
+        model,
+        "steel",
+        "triangles",
+        section_type="plane",
+        plane_type="stress",
+        thickness=1.5,
+    )
+    materials.assign(
+        model,
+        "steel",
+        "quadrilaterals",
+        section_type="plane",
+        plane_type="stress",
+        thickness=1.5,
+    )
+
+    materials.apply_sections(model)
+
+    first, second = mesh.elements
+    assert first.props["_stress_material_signature"] == second.props[
+        "_stress_material_signature"
+    ]
+    assert first.props["_stress_section_signature"] == second.props[
+        "_stress_section_signature"
+    ]
+    assert hash(first.props["_stress_material_signature"])
+    assert hash(first.props["_stress_section_signature"])
+    assert "triangles" not in repr(first.props["_stress_section_signature"])
+
+
 def test_model_element_info_raises_for_unknown_element_id():
     model = FEMModel(mesh=make_mixed_hex8_tet4_mesh())
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 import numpy as np
 
@@ -14,9 +14,17 @@ def write(
     field_data,
     path: str,
     nodal_fields: Optional[Dict[str, Dict[int, float]]] = None,
+    points: Optional[Sequence] = None,
+    point_node_ids: Optional[Sequence[int]] = None,
+    nodal_point_fields: Optional[Dict[str, Sequence[float]]] = None,
 ):
     """Write VTK file from displacement and field dictionaries."""
-    nodes = mesh.nodes
+    nodes = list(mesh.nodes if points is None else points)
+    result_node_ids = list(
+        (node.id for node in nodes) if point_node_ids is None else point_node_ids
+    )
+    if len(result_node_ids) != len(nodes):
+        raise ValueError("point_node_ids length must match points length")
     num_points = len(nodes)
     num_cells = len(cells)
 
@@ -54,8 +62,8 @@ def write(
 
         f.write(f"\nPOINT_DATA {num_points}\n")
         f.write("VECTORS displacement float\n")
-        for node in nodes:
-            disp = node_disp.get(node.id, {"ux": 0.0, "uy": 0.0, "uz": 0.0, "rz": 0.0})
+        for node_id in result_node_ids:
+            disp = node_disp.get(node_id, {"ux": 0.0, "uy": 0.0, "uz": 0.0, "rz": 0.0})
             if is_3d:
                 f.write(f"{disp.get('ux', 0.0)} {disp.get('uy', 0.0)} {disp.get('uz', 0.0)}\n")
             else:
@@ -66,15 +74,27 @@ def write(
             if has_any_rz:
                 f.write("\nSCALARS rotz float 1\n")
                 f.write("LOOKUP_TABLE default\n")
-                for node in nodes:
-                    f.write(f"{node_disp.get(node.id, {}).get('rz', 0.0)}\n")
+                for node_id in result_node_ids:
+                    f.write(f"{node_disp.get(node_id, {}).get('rz', 0.0)}\n")
 
         if nodal_fields:
             for field_name, field_dict in nodal_fields.items():
                 f.write(f"\nSCALARS {field_name} float 1\n")
                 f.write("LOOKUP_TABLE default\n")
-                for node in nodes:
-                    f.write(f"{float(field_dict.get(node.id, 0.0))}\n")
+                for node_id in result_node_ids:
+                    f.write(f"{float(field_dict.get(node_id, 0.0))}\n")
+
+        if nodal_point_fields:
+            for field_name, values in nodal_point_fields.items():
+                if len(values) != num_points:
+                    raise ValueError(
+                        f"Nodal point field {field_name!r} length {len(values)} "
+                        f"does not match point count {num_points}"
+                    )
+                f.write(f"\nSCALARS {field_name} float 1\n")
+                f.write("LOOKUP_TABLE default\n")
+                for value in values:
+                    f.write(f"{float(value)}\n")
 
         if cell_field_arrays:
             f.write(f"\nCELL_DATA {num_cells}\n")

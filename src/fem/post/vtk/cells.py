@@ -1,6 +1,20 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Any
 from typing import Dict
+
+
+@dataclass(frozen=True)
+class ResultTopology:
+    """VTK topology expanded for element-local nodal result rows."""
+
+    points: tuple[Any, ...]
+    point_node_ids: tuple[int, ...]
+    point_rows: tuple[Any | None, ...]
+    cells: tuple[list[int], ...]
+    cell_types: tuple[int, ...]
+    elems_for_cell: tuple[Any, ...]
 
 
 def build(mesh):
@@ -91,3 +105,90 @@ def build(mesh):
         elems_for_cell.append(elem)
 
     return cells, cell_types, elems_for_cell
+
+
+def build_result(mesh, nodal_rows=()) -> ResultTopology:
+    """Build point/cell topology while preserving repeated raw nodal rows."""
+    base_cells, cell_types, elems_for_cell = build(mesh)
+    rows_by_node: dict[int, list[Any]] = {}
+    for row in nodal_rows:
+        rows_by_node.setdefault(int(row.node_id), []).append(row)
+
+    node_lookup = {int(node.id): node for node in mesh.nodes}
+    elem_lookup = {int(elem.id): elem for elem in mesh.elements}
+    shared_point_index: dict[int, int] = {}
+    local_point_index: dict[tuple[int, int], int] = {}
+    points: list[Any] = []
+    point_node_ids: list[int] = []
+    point_rows: list[Any | None] = []
+
+    for node in mesh.nodes:
+        node_id = int(node.id)
+        node_rows = rows_by_node.get(node_id, [])
+        if len(node_rows) <= 1:
+            shared_point_index[node_id] = len(points)
+            points.append(node)
+            point_node_ids.append(node_id)
+            point_rows.append(node_rows[0] if node_rows else None)
+            continue
+
+        for row in node_rows:
+            if row.averaged or row.elem_id is None or row.local_node is None:
+                raise ValueError(
+                    f"Repeated nodal stress row for node {node_id} requires "
+                    "averaged=false with elem_id and local_node provenance"
+                )
+            elem = elem_lookup.get(int(row.elem_id))
+            local_node = int(row.local_node)
+            if (
+                elem is None
+                or local_node < 1
+                or local_node > len(elem.node_ids)
+                or int(elem.node_ids[local_node - 1]) != node_id
+            ):
+                raise ValueError(
+                    f"Nodal stress row for node {node_id} with element {row.elem_id} "
+                    f"local node {row.local_node} cannot be matched to mesh connectivity"
+                )
+            key = (int(row.elem_id), local_node)
+            if key in local_point_index:
+                raise ValueError(
+                    f"Duplicate nodal stress provenance for element {row.elem_id} "
+                    f"local node {row.local_node}"
+                )
+            local_point_index[key] = len(points)
+            points.append(node_lookup[node_id])
+            point_node_ids.append(node_id)
+            point_rows.append(row)
+
+    expanded_cells: list[list[int]] = []
+    for base_cell, elem in zip(base_cells, elems_for_cell):
+        point_ids: list[int] = []
+        for local_node, node_id in enumerate(elem.node_ids, start=1):
+            node_id = int(node_id)
+            if len(rows_by_node.get(node_id, [])) > 1:
+                key = (int(elem.id), local_node)
+                if key not in local_point_index:
+                    raise ValueError(
+                        f"Repeated nodal stress rows for node {node_id} cannot be "
+                        f"matched to element {elem.id} local node {local_node}"
+                    )
+                point_ids.append(local_point_index[key])
+            else:
+                point_ids.append(shared_point_index[node_id])
+        expanded_cells.append([base_cell[0], *point_ids])
+
+    unknown_nodes = set(rows_by_node).difference(node_lookup)
+    if unknown_nodes:
+        raise ValueError(
+            f"Nodal stress CSV contains node ids missing from mesh: {sorted(unknown_nodes)}"
+        )
+
+    return ResultTopology(
+        points=tuple(points),
+        point_node_ids=tuple(point_node_ids),
+        point_rows=tuple(point_rows),
+        cells=tuple(expanded_cells),
+        cell_types=tuple(cell_types),
+        elems_for_cell=tuple(elems_for_cell),
+    )
