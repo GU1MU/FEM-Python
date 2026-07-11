@@ -34,6 +34,86 @@ def _keyword_type(kw: str) -> str | None:
     return None
 
 
+def _integer_token(
+    raw_value: object,
+    inp_path: str,
+    line_no: int,
+    field: str,
+    record_position: int,
+) -> int:
+    """Parse one INP integer token with source context."""
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Abaqus INP {inp_path} line {line_no} field {field} "
+            f"at record position {record_position} has raw value {raw_value!r}; "
+            "expected an integer"
+        ) from exc
+
+
+def _numeric_token(
+    raw_value: object,
+    inp_path: str,
+    line_no: int,
+    field: str,
+    record_position: int,
+) -> float:
+    """Parse one INP numeric token with source context."""
+    try:
+        return float(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Abaqus INP {inp_path} line {line_no} field {field} "
+            f"at record position {record_position} has raw value {raw_value!r}; "
+            "expected a numeric value"
+        ) from exc
+
+
+def _node_2d(parts: List[str], inp_path: str, line_no: int) -> Node2D:
+    """Parse one already-split 2D node record."""
+    return Node2D(
+        id=_integer_token(parts[0], inp_path, line_no, "node_id", 1),
+        x=_numeric_token(parts[1], inp_path, line_no, "x", 2),
+        y=_numeric_token(parts[2], inp_path, line_no, "y", 3),
+    )
+
+
+def _node_3d(parts: List[str], inp_path: str, line_no: int) -> Node3D:
+    """Parse one already-split 3D node record."""
+    return Node3D(
+        id=_integer_token(parts[0], inp_path, line_no, "node_id", 1),
+        x=_numeric_token(parts[1], inp_path, line_no, "x", 2),
+        y=_numeric_token(parts[2], inp_path, line_no, "y", 3),
+        z=_numeric_token(parts[3], inp_path, line_no, "z", 4),
+    )
+
+
+def _fixed_connectivity(
+    parts: List[str],
+    node_count: int,
+    inp_path: str,
+    line_no: int,
+    token_line_numbers: Optional[List[int]] = None,
+) -> tuple[int, List[int]] | None:
+    """Parse a fixed-width element record, or return ``None`` when incomplete."""
+    if len(parts) < node_count + 1:
+        return None
+    source_lines = token_line_numbers or [line_no] * (node_count + 1)
+    elem_id = _integer_token(parts[0], inp_path, source_lines[0], "elem_id", 1)
+    node_ids = [
+        _integer_token(
+            value,
+            inp_path,
+            source_lines[local_node],
+            f"node{local_node}",
+            local_node + 1,
+        )
+        for local_node, value in enumerate(parts[1:node_count + 1], start=1)
+    ]
+    return elem_id, node_ids
+
+
 def _normalize_plane_type(plane_type: Optional[str], elem_type: str) -> str:
     if plane_type is None:
         return "strain" if elem_type.upper().startswith("CPE") else "stress"
@@ -42,7 +122,9 @@ def _normalize_plane_type(plane_type: Optional[str], elem_type: str) -> str:
         return "stress"
     if pt.startswith("strain"):
         return "strain"
-    raise ValueError("plane_type must be 'stress' or 'strain'")
+    raise ValueError(
+        f"plane_type {plane_type!r} is invalid; expected 'stress' or 'strain'"
+    )
 
 
 def _signed_area_2d(node_lookup: Dict[int, Node2D], node_ids: List[int]) -> float:
@@ -88,14 +170,6 @@ def read_tri3(
     in_elem_block = False
     elem_abaqus_type: Optional[str] = None  # "CPS3" or "CPE3"
 
-    def _parse_keyword(line: str) -> str:
-        return line.strip()
-
-    def _parse_csv_like_numbers(line: str) -> List[str]:
-        parts = [p.strip() for p in line.strip().split(",")]
-        parts = [p for p in parts if p != ""]
-        return parts
-
     def _infer_plane_type_from_elem_type(et: str) -> str:
         etu = et.upper()
         if etu.startswith("CPS3"):
@@ -105,29 +179,23 @@ def read_tri3(
         return "stress"
 
     with open(inp_path, "r", encoding="utf-8", errors="ignore") as f:
-        for raw_line in f:
+        for line_no, raw_line in enumerate(f, start=1):
             line = raw_line.strip()
             if line == "" or line.startswith("**"):
                 continue
 
             if line.startswith("*"):
-                kw = _parse_keyword(line).upper()
+                kw = line.upper()
 
                 in_node_block = kw.startswith("*NODE")
                 if kw.startswith("*ELEMENT"):
                     in_elem_block = False
                     elem_abaqus_type = None
 
-                    if "TYPE=" in kw:
-                        parts = [p.strip() for p in kw.split(",")]
-                        etype = None
-                        for p in parts:
-                            if p.startswith("TYPE="):
-                                etype = p.split("=", 1)[1].strip()
-                                break
-                        if etype in ("CPS3", "CPE3"):
-                            in_elem_block = True
-                            elem_abaqus_type = etype
+                    etype = _keyword_type(kw)
+                    if etype in ("CPS3", "CPE3"):
+                        in_elem_block = True
+                        elem_abaqus_type = etype
                     continue
 
                 if not in_node_block:
@@ -140,24 +208,18 @@ def read_tri3(
 
             # 数据行
             if in_node_block:
-                parts = _parse_csv_like_numbers(line)
+                parts = _split_nums(line)
                 if len(parts) < 3:
                     continue
-                nid = int(parts[0])
-                x = float(parts[1])
-                y = float(parts[2])
-                node = Node2D(id=nid, x=x, y=y)
+                node = _node_2d(parts, inp_path, line_no)
                 nodes.append(node)
-                node_lookup[nid] = node
+                node_lookup[node.id] = node
 
             elif in_elem_block and elem_abaqus_type is not None:
-                parts = _parse_csv_like_numbers(line)
-                if len(parts) < 4:
+                record = _fixed_connectivity(_split_nums(line), 3, inp_path, line_no)
+                if record is None:
                     continue
-                eid = int(parts[0])
-                n1 = int(parts[1])
-                n2 = int(parts[2])
-                n3 = int(parts[3])
+                elem_id, node_ids = record
 
                 if plane_type is None:
                     pt = _infer_plane_type_from_elem_type(elem_abaqus_type)
@@ -168,7 +230,10 @@ def read_tri3(
                     elif pt.startswith("strain"):
                         pt = "strain"
                     else:
-                        raise ValueError("plane_type 必须是 'stress' 或 'strain'")
+                        raise ValueError(
+                            f"plane_type {plane_type!r} is invalid for {elem_abaqus_type}; "
+                            "expected 'stress' or 'strain'"
+                        )
 
                 props: Dict[str, any] = {
                     "thickness": float(default_thickness),
@@ -176,17 +241,19 @@ def read_tri3(
                 }
 
                 elem = Element2D(
-                    id=eid,
-                    node_ids=[n1, n2, n3],
+                    id=elem_id,
+                    node_ids=node_ids,
                     type="Tri3Plane",
                     props=props,
                 )
                 elements.append(elem)
 
     if not nodes:
-        raise ValueError(f"未在 {inp_path} 中解析到 *Node 数据")
+        raise ValueError(f"No *Node data found in Abaqus input file {inp_path!r}")
     if not elements:
-        raise ValueError(f"未在 {inp_path} 中解析到 CPS3/CPE3 的 *Element 数据")
+        raise ValueError(
+            f"No CPS3/CPE3 *Element data found in Abaqus input file {inp_path!r}"
+        )
 
     return PlaneMesh2D(nodes=nodes, elements=elements)
 
@@ -206,7 +273,7 @@ def read_tri6(
     elem_abaqus_type: Optional[str] = None
 
     with open(inp_path, "r", encoding="utf-8", errors="ignore") as f:
-        for raw in f:
+        for line_no, raw in enumerate(f, start=1):
             line = raw.strip()
             if not line or line.startswith("**"):
                 continue
@@ -225,23 +292,24 @@ def read_tri6(
                 parts = _split_nums(line)
                 if len(parts) < 3:
                     continue
-                node = Node2D(id=int(parts[0]), x=float(parts[1]), y=float(parts[2]))
+                node = _node_2d(parts, inp_path, line_no)
                 nodes.append(node)
                 node_lookup[node.id] = node
                 continue
 
             if in_elem and elem_abaqus_type is not None:
-                parts = _split_nums(line)
-                if len(parts) < 7:
+                record = _fixed_connectivity(_split_nums(line), 6, inp_path, line_no)
+                if record is None:
                     continue
+                elem_id, node_ids = record
                 props: Dict[str, Any] = {
                     "thickness": float(default_thickness),
                     "plane_type": _normalize_plane_type(plane_type, elem_abaqus_type),
                 }
                 elements.append(
                     Element2D(
-                        id=int(parts[0]),
-                        node_ids=[int(value) for value in parts[1:7]],
+                        id=elem_id,
+                        node_ids=node_ids,
                         type="Tri6Plane",
                         props=props,
                     )
@@ -274,10 +342,6 @@ def read_quad4(
     in_elem = False
     elem_abaqus_type: Optional[str] = None
 
-    def split_nums(line: str) -> List[str]:
-        parts = [p.strip() for p in line.strip().split(",")]
-        return [p for p in parts if p]
-
     def infer_plane_type(et: str) -> str:
         etu = et.upper()
         if etu.startswith("CPS4"):
@@ -307,7 +371,7 @@ def read_quad4(
         return (d1[0] * d1[0] + d1[1] * d1[1]) <= tol
 
     with open(inp_path, "r", encoding="utf-8", errors="ignore") as f:
-        for raw in f:
+        for line_no, raw in enumerate(f, start=1):
             line = raw.strip()
             if not line or line.startswith("**"):
                 continue
@@ -318,12 +382,7 @@ def read_quad4(
                 if kw.startswith("*ELEMENT"):
                     in_elem = False
                     elem_abaqus_type = None
-                    parts = [p.strip() for p in kw.split(",")]
-                    et = None
-                    for p in parts:
-                        if p.startswith("TYPE="):
-                            et = p.split("=", 1)[1].strip()
-                            break
+                    et = _keyword_type(kw)
                     if et in ("CPS4", "CPE4", "CPS4R", "CPE4R"):
                         in_elem = True
                         elem_abaqus_type = et
@@ -333,23 +392,19 @@ def read_quad4(
                 continue
 
             if in_node:
-                parts = split_nums(line)
+                parts = _split_nums(line)
                 if len(parts) < 3:
                     continue
-                nid = int(parts[0])
-                x = float(parts[1])
-                y = float(parts[2])
-                n = Node2D(id=nid, x=x, y=y)
-                nodes.append(n)
-                node_lookup[nid] = n
+                node = _node_2d(parts, inp_path, line_no)
+                nodes.append(node)
+                node_lookup[node.id] = node
                 continue
 
             if in_elem and elem_abaqus_type is not None:
-                parts = split_nums(line)
-                if len(parts) < 5:
+                record = _fixed_connectivity(_split_nums(line), 4, inp_path, line_no)
+                if record is None:
                     continue
-                eid = int(parts[0])
-                n1, n2, n3, n4 = int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4])
+                elem_id, node_ids = record
 
                 pt = infer_plane_type(elem_abaqus_type) if plane_type is None else str(plane_type).lower()
                 if pt.startswith("stress"):
@@ -357,7 +412,10 @@ def read_quad4(
                 elif pt.startswith("strain"):
                     pt = "strain"
                 else:
-                    raise ValueError("plane_type must be 'stress' or 'strain'")
+                    raise ValueError(
+                        f"plane_type {plane_type!r} is invalid for {elem_abaqus_type}; "
+                        "expected 'stress' or 'strain'"
+                    )
 
                 props: Dict[str, any] = {
                     "thickness": float(default_thickness),
@@ -366,8 +424,8 @@ def read_quad4(
 
                 elements.append(
                     Element2D(
-                        id=eid,
-                        node_ids=[n1, n2, n3, n4],
+                        id=elem_id,
+                        node_ids=node_ids,
                         type="Quad4Plane",
                         props=props,
                     )
@@ -415,10 +473,6 @@ def read_quad8(
     in_elem = False
     elem_abaqus_type: Optional[str] = None
 
-    def split_nums(line: str) -> List[str]:
-        parts = [p.strip() for p in line.strip().split(",")]
-        return [p for p in parts if p]
-
     def infer_plane_type(et: str) -> str:
         etu = et.upper()
         if etu.startswith("CPS8"):
@@ -428,7 +482,7 @@ def read_quad8(
         return "stress"
 
     with open(inp_path, "r", encoding="utf-8", errors="ignore") as f:
-        for raw in f:
+        for line_no, raw in enumerate(f, start=1):
             line = raw.strip()
             if not line or line.startswith("**"):
                 continue
@@ -439,12 +493,7 @@ def read_quad8(
                 if kw.startswith("*ELEMENT"):
                     in_elem = False
                     elem_abaqus_type = None
-                    parts = [p.strip() for p in kw.split(",")]
-                    et = None
-                    for p in parts:
-                        if p.startswith("TYPE="):
-                            et = p.split("=", 1)[1].strip()
-                            break
+                    et = _keyword_type(kw)
                     if et in ("CPS8", "CPE8", "CPS8R", "CPE8R"):
                         in_elem = True
                         elem_abaqus_type = et
@@ -454,23 +503,19 @@ def read_quad8(
                 continue
 
             if in_node:
-                parts = split_nums(line)
+                parts = _split_nums(line)
                 if len(parts) < 3:
                     continue
-                nid = int(parts[0])
-                x = float(parts[1])
-                y = float(parts[2])
-                n = Node2D(id=nid, x=x, y=y)
-                nodes.append(n)
-                node_lookup[nid] = n
+                node = _node_2d(parts, inp_path, line_no)
+                nodes.append(node)
+                node_lookup[node.id] = node
                 continue
 
             if in_elem and elem_abaqus_type is not None:
-                parts = split_nums(line)
-                if len(parts) < 9:
+                record = _fixed_connectivity(_split_nums(line), 8, inp_path, line_no)
+                if record is None:
                     continue
-                eid = int(parts[0])
-                nids = [int(p) for p in parts[1:9]]
+                elem_id, node_ids = record
 
                 pt = infer_plane_type(elem_abaqus_type) if plane_type is None else str(plane_type).lower()
                 if pt.startswith("stress"):
@@ -478,7 +523,10 @@ def read_quad8(
                 elif pt.startswith("strain"):
                     pt = "strain"
                 else:
-                    raise ValueError("plane_type must be 'stress' or 'strain'")
+                    raise ValueError(
+                        f"plane_type {plane_type!r} is invalid for {elem_abaqus_type}; "
+                        "expected 'stress' or 'strain'"
+                    )
 
                 props: Dict[str, any] = {
                     "thickness": float(default_thickness),
@@ -487,8 +535,8 @@ def read_quad8(
 
                 elements.append(
                     Element2D(
-                        id=eid,
-                        node_ids=nids,
+                        id=elem_id,
+                        node_ids=node_ids,
                         type="Quad8Plane",
                         props=props,
                     )
@@ -536,7 +584,7 @@ def read_mixed2d(
     elem_abaqus_type: Optional[str] = None
 
     with open(inp_path, "r", encoding="utf-8", errors="ignore") as f:
-        for raw in f:
+        for line_no, raw in enumerate(f, start=1):
             line = raw.strip()
             if not line or line.startswith("**"):
                 continue
@@ -563,16 +611,19 @@ def read_mixed2d(
                 parts = _split_nums(line)
                 if len(parts) < 3:
                     continue
-                node = Node2D(id=int(parts[0]), x=float(parts[1]), y=float(parts[2]))
+                node = _node_2d(parts, inp_path, line_no)
                 nodes.append(node)
                 node_lookup[node.id] = node
                 continue
 
             if in_elem and elem_abaqus_type is not None:
                 local_type, node_count, order = _MIXED2D_TYPES[elem_abaqus_type]
-                parts = _split_nums(line)
-                if len(parts) < node_count + 1:
+                record = _fixed_connectivity(
+                    _split_nums(line), node_count, inp_path, line_no
+                )
+                if record is None:
                     continue
+                elem_id, node_ids = record
                 orders.add(order)
                 props: Dict[str, Any] = {
                     "thickness": float(default_thickness),
@@ -580,8 +631,8 @@ def read_mixed2d(
                 }
                 elements.append(
                     Element2D(
-                        id=int(parts[0]),
-                        node_ids=[int(value) for value in parts[1:node_count + 1]],
+                        id=elem_id,
+                        node_ids=node_ids,
                         type=local_type,
                         props=props,
                     )
@@ -604,8 +655,8 @@ def read_tet10(inp_path: str) -> TetMesh3D:
 
     Node ordering (Abaqus convention):
         Corner nodes:  1-4
-        Edge midnodes: 5=edge(1,2), 6=edge(3,4), 7=edge(1,4),
-                       8=edge(1,3), 9=edge(2,4), 10=edge(2,3)
+        Edge midnodes: 5=edge(1,2), 6=edge(2,3), 7=edge(3,1),
+                       8=edge(1,4), 9=edge(2,4), 10=edge(3,4)
     """
     nodes: List[Node3D] = []
     elements: List[Element3D] = []
@@ -615,13 +666,10 @@ def read_tet10(inp_path: str) -> TetMesh3D:
     in_elem = False
     elem_abaqus_type: Optional[str] = None
     pending_elem_parts: List[str] = []
-
-    def split_nums(line: str) -> List[str]:
-        parts = [p.strip() for p in line.strip().split(",")]
-        return [p for p in parts if p]
+    pending_elem_line_numbers: List[int] = []
 
     with open(inp_path, "r", encoding="utf-8", errors="ignore") as f:
-        for raw in f:
+        for line_no, raw in enumerate(f, start=1):
             line = raw.strip()
             if not line or line.startswith("**"):
                 continue
@@ -641,12 +689,8 @@ def read_tet10(inp_path: str) -> TetMesh3D:
                     in_elem = False
                     elem_abaqus_type = None
                     pending_elem_parts = []
-                    parts = [p.strip() for p in kw.split(",")]
-                    et = None
-                    for p in parts:
-                        if p.startswith("TYPE="):
-                            et = p.split("=", 1)[1].strip()
-                            break
+                    pending_elem_line_numbers = []
+                    et = _keyword_type(kw)
                     if et in ("C3D10", "C3D10T"):
                         in_elem = True
                         elem_abaqus_type = et
@@ -656,29 +700,35 @@ def read_tet10(inp_path: str) -> TetMesh3D:
                 continue
 
             if in_node:
-                parts = split_nums(line)
+                parts = _split_nums(line)
                 if len(parts) < 4:
                     continue
-                nid = int(parts[0])
-                x = float(parts[1])
-                y = float(parts[2])
-                z = float(parts[3])
-                n = Node3D(id=nid, x=x, y=y, z=z)
-                nodes.append(n)
-                node_lookup[nid] = n
+                node = _node_3d(parts, inp_path, line_no)
+                nodes.append(node)
+                node_lookup[node.id] = node
                 continue
 
             if in_elem and elem_abaqus_type is not None:
-                pending_elem_parts.extend(split_nums(line))
+                values = _split_nums(line)
+                pending_elem_parts.extend(values)
+                pending_elem_line_numbers.extend([line_no] * len(values))
                 while len(pending_elem_parts) >= 11:
-                    eid = int(pending_elem_parts[0])
-                    nids = [int(p) for p in pending_elem_parts[1:11]]
+                    record = _fixed_connectivity(
+                        pending_elem_parts[:11],
+                        10,
+                        inp_path,
+                        line_no,
+                        pending_elem_line_numbers[:11],
+                    )
+                    assert record is not None
+                    elem_id, node_ids = record
                     pending_elem_parts = pending_elem_parts[11:]
+                    pending_elem_line_numbers = pending_elem_line_numbers[11:]
 
                     elements.append(
                         Element3D(
-                            id=eid,
-                            node_ids=nids,
+                            id=elem_id,
+                            node_ids=node_ids,
                             type="Tet10",
                         )
                     )
@@ -695,7 +745,7 @@ def read_tet10(inp_path: str) -> TetMesh3D:
     from ..elements.tetrahedron import tet10_gauss_points, tet10_shape_funcs_grads
 
     for e in elements:
-        coords = [node_lookup[nid] for nid in e.node_ids]
+        coords = [node_lookup[node_id] for node_id in e.node_ids]
         x = np.array([n.x for n in coords], dtype=float)
         y = np.array([n.y for n in coords], dtype=float)
         z = np.array([n.z for n in coords], dtype=float)
@@ -725,12 +775,8 @@ def read_tet4(inp_path: str) -> TetMesh3D:
     in_elem = False
     elem_abaqus_type: Optional[str] = None
 
-    def split_nums(line: str) -> List[str]:
-        parts = [p.strip() for p in line.strip().split(",")]
-        return [p for p in parts if p]
-
     with open(inp_path, "r", encoding="utf-8", errors="ignore") as f:
-        for raw in f:
+        for line_no, raw in enumerate(f, start=1):
             line = raw.strip()
             if not line or line.startswith("**"):
                 continue
@@ -745,12 +791,7 @@ def read_tet4(inp_path: str) -> TetMesh3D:
                 if kw.startswith("*ELEMENT"):
                     in_elem = False
                     elem_abaqus_type = None
-                    parts = [p.strip() for p in kw.split(",")]
-                    et = None
-                    for p in parts:
-                        if p.startswith("TYPE="):
-                            et = p.split("=", 1)[1].strip()
-                            break
+                    et = _keyword_type(kw)
                     if et in ("C3D4", "C3D4T"):
                         in_elem = True
                         elem_abaqus_type = et
@@ -760,29 +801,24 @@ def read_tet4(inp_path: str) -> TetMesh3D:
                 continue
 
             if in_node:
-                parts = split_nums(line)
+                parts = _split_nums(line)
                 if len(parts) < 4:
                     continue
-                nid = int(parts[0])
-                x = float(parts[1])
-                y = float(parts[2])
-                z = float(parts[3])
-                n = Node3D(id=nid, x=x, y=y, z=z)
-                nodes.append(n)
-                node_lookup[nid] = n
+                node = _node_3d(parts, inp_path, line_no)
+                nodes.append(node)
+                node_lookup[node.id] = node
                 continue
 
             if in_elem and elem_abaqus_type is not None:
-                parts = split_nums(line)
-                if len(parts) < 5:
+                record = _fixed_connectivity(_split_nums(line), 4, inp_path, line_no)
+                if record is None:
                     continue
-                eid = int(parts[0])
-                n1, n2, n3, n4 = int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4])
+                elem_id, node_ids = record
 
                 elements.append(
                     Element3D(
-                        id=eid,
-                        node_ids=[n1, n2, n3, n4],
+                        id=elem_id,
+                        node_ids=node_ids,
                         type="Tet4",
                     )
                 )
@@ -794,7 +830,7 @@ def read_tet4(inp_path: str) -> TetMesh3D:
 
     # Check volume (Jacobian determinant) for each element
     for e in elements:
-        n1, n2, n3, n4 = (node_lookup[nid] for nid in e.node_ids)
+        n1, n2, n3, n4 = (node_lookup[node_id] for node_id in e.node_ids)
         # Volume = det(J)/6 where J columns are (x2-x1, x3-x1, x4-x1)
         v1 = np.array([n2.x - n1.x, n2.y - n1.y, n2.z - n1.z])
         v2 = np.array([n3.x - n1.x, n3.y - n1.y, n3.z - n1.z])
@@ -819,12 +855,8 @@ def read_hex8(inp_path: str) -> HexMesh3D:
     in_elem = False
     elem_abaqus_type: Optional[str] = None
 
-    def split_nums(line: str) -> List[str]:
-        parts = [p.strip() for p in line.strip().split(",")]
-        return [p for p in parts if p]
-
     with open(inp_path, "r", encoding="utf-8", errors="ignore") as f:
-        for raw in f:
+        for line_no, raw in enumerate(f, start=1):
             line = raw.strip()
             if not line or line.startswith("**"):
                 continue
@@ -835,12 +867,7 @@ def read_hex8(inp_path: str) -> HexMesh3D:
                 if kw.startswith("*ELEMENT"):
                     in_elem = False
                     elem_abaqus_type = None
-                    parts = [p.strip() for p in kw.split(",")]
-                    et = None
-                    for p in parts:
-                        if p.startswith("TYPE="):
-                            et = p.split("=", 1)[1].strip()
-                            break
+                    et = _keyword_type(kw)
                     if et == "C3D8":
                         in_elem = True
                         elem_abaqus_type = et
@@ -850,29 +877,24 @@ def read_hex8(inp_path: str) -> HexMesh3D:
                 continue
 
             if in_node:
-                parts = split_nums(line)
+                parts = _split_nums(line)
                 if len(parts) < 4:
                     continue
-                nid = int(parts[0])
-                x = float(parts[1])
-                y = float(parts[2])
-                z = float(parts[3])
-                n = Node3D(id=nid, x=x, y=y, z=z)
-                nodes.append(n)
-                node_lookup[nid] = n
+                node = _node_3d(parts, inp_path, line_no)
+                nodes.append(node)
+                node_lookup[node.id] = node
                 continue
 
             if in_elem and elem_abaqus_type is not None:
-                parts = split_nums(line)
-                if len(parts) < 9:
+                record = _fixed_connectivity(_split_nums(line), 8, inp_path, line_no)
+                if record is None:
                     continue
-                eid = int(parts[0])
-                nids = [int(p) for p in parts[1:9]]
+                elem_id, node_ids = record
 
                 elements.append(
                     Element3D(
-                        id=eid,
-                        node_ids=nids,
+                        id=elem_id,
+                        node_ids=node_ids,
                         type="Hex8",
                     )
                 )
@@ -895,9 +917,10 @@ def read_hex20(inp_path: str) -> HexMesh3D:
     in_node = False
     in_elem = False
     pending_elem_parts: List[str] = []
+    pending_elem_line_numbers: List[int] = []
 
     with open(inp_path, "r", encoding="utf-8", errors="ignore") as handle:
-        for raw in handle:
+        for line_no, raw in enumerate(handle, start=1):
             line = raw.strip()
             if not line or line.startswith("**"):
                 continue
@@ -917,30 +940,34 @@ def read_hex20(inp_path: str) -> HexMesh3D:
                 )
                 if keyword.startswith("*ELEMENT"):
                     pending_elem_parts = []
+                    pending_elem_line_numbers = []
                 continue
 
             values = _split_nums(line)
             if in_node:
                 if len(values) >= 4:
-                    node = Node3D(
-                        int(values[0]),
-                        float(values[1]),
-                        float(values[2]),
-                        float(values[3]),
-                    )
+                    node = _node_3d(values, inp_path, line_no)
                     nodes.append(node)
                     node_lookup[node.id] = node
                 continue
 
             if in_elem:
                 pending_elem_parts.extend(values)
+                pending_elem_line_numbers.extend([line_no] * len(values))
                 while len(pending_elem_parts) >= 21:
                     record = pending_elem_parts[:21]
+                    record_line_numbers = pending_elem_line_numbers[:21]
                     pending_elem_parts = pending_elem_parts[21:]
+                    pending_elem_line_numbers = pending_elem_line_numbers[21:]
+                    connectivity = _fixed_connectivity(
+                        record, 20, inp_path, line_no, record_line_numbers
+                    )
+                    assert connectivity is not None
+                    elem_id, node_ids = connectivity
                     elements.append(
                         Element3D(
-                            id=int(record[0]),
-                            node_ids=[int(value) for value in record[1:]],
+                            id=elem_id,
+                            node_ids=node_ids,
                             type="Hex20",
                         )
                     )

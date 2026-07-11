@@ -102,7 +102,7 @@ def resolve(
                     components=(0.0,) * len(field.component_names),
                     elem_id=None,
                     local_node=None,
-                    averaged=False,
+                    averaged=True,
                 )
             )
             continue

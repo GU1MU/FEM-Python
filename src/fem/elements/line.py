@@ -35,7 +35,8 @@ def line2_geometry(
     """Return length and direction cosines for a 2-node line element."""
     if len(elem.node_ids) != 2:
         raise ValueError(
-            f"Line2 element must have 2 nodes, elem {elem.id} node_ids={elem.node_ids}"
+            f"Line2 element {elem.id} requires 2 nodes, got {len(elem.node_ids)}; "
+            f"node_ids={elem.node_ids}"
         )
     if node_lookup is None:
         node_lookup = build_node_lookup(mesh)
@@ -140,13 +141,13 @@ class Beam2DKernel:
         node_lookup: dict[int, Any] | None = None,
     ) -> np.ndarray:
         """Return Beam2D element stiffness."""
-        E, area, I = _required_float_props(elem, "E", "area", "Izz")
+        E, area, Izz = _required_float_props(elem, "E", "area", "Izz")
 
         L, c, s = line2_geometry(mesh, elem, node_lookup)
         EA_L = E * area / L
-        EI_L3 = E * I / (L**3)
-        EI_L2 = E * I / (L**2)
-        EI_L = E * I / L
+        EI_L3 = E * Izz / (L**3)
+        EI_L2 = E * Izz / (L**2)
+        EI_L = E * Izz / L
 
         k_local = np.array([
             [EA_L, 0.0, 0.0, -EA_L, 0.0, 0.0],

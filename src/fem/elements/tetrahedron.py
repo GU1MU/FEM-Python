@@ -5,6 +5,7 @@ from typing import Any
 import numpy as np
 
 from .base import build_node_lookup
+from .triangle import tri6_gauss_points, tri6_shape_funcs_grads
 from ..materials import linear_elastic
 
 
@@ -143,47 +144,6 @@ def _tet10_linear_extrapolation_matrix() -> np.ndarray:
 TET10_LINEAR_EXTRAPOLATION_MATRIX = _tet10_linear_extrapolation_matrix()
 
 
-def tri6_gauss_points():
-    """Return 3-point triangle rule for Tet10 faces."""
-    return [
-        (1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0),
-        (2.0 / 3.0, 1.0 / 6.0, 1.0 / 6.0),
-        (1.0 / 6.0, 2.0 / 3.0, 1.0 / 6.0),
-    ]
-
-
-def tri6_shape_funcs_grads(xi: float, eta: float):
-    """Return N and natural gradients for Tri6."""
-    L1 = 1.0 - xi - eta
-    L2 = xi
-    L3 = eta
-    N = np.array([
-        L1 * (2.0 * L1 - 1.0),
-        L2 * (2.0 * L2 - 1.0),
-        L3 * (2.0 * L3 - 1.0),
-        4.0 * L1 * L2,
-        4.0 * L2 * L3,
-        4.0 * L3 * L1,
-    ], dtype=float)
-    dN_dxi = np.array([
-        -(4.0 * L1 - 1.0),
-        4.0 * L2 - 1.0,
-        0.0,
-        4.0 * (L1 - L2),
-        4.0 * L3,
-        -4.0 * L3,
-    ], dtype=float)
-    dN_deta = np.array([
-        -(4.0 * L1 - 1.0),
-        0.0,
-        4.0 * L3 - 1.0,
-        -4.0 * L2,
-        4.0 * L2,
-        4.0 * (L1 - L3),
-    ], dtype=float)
-    return N, dN_dxi, dN_deta
-
-
 def tet_physical_shape_gradients(
     elem: Any,
     x: np.ndarray,
@@ -202,7 +162,10 @@ def tet_physical_shape_gradients(
 
     detJ = float(np.linalg.det(J))
     if detJ <= 0.0:
-        raise ValueError(f"Element {elem.id} has negative or zero Jacobian determinant")
+        raise ValueError(
+            f"Element {elem.id} has non-positive Jacobian determinant {detJ}; "
+            "expected > 0"
+        )
 
     invJ = np.linalg.inv(J)
     dN_dx = invJ[0, 0] * dN_dxi + invJ[0, 1] * dN_deta + invJ[0, 2] * dN_dzeta
@@ -215,17 +178,17 @@ def build_tet_B_matrix(dN_dx: np.ndarray, dN_dy: np.ndarray, dN_dz: np.ndarray) 
     """Return 3D strain-displacement matrix for tetra nodes."""
     node_count = len(dN_dx)
     B = np.zeros((6, node_count * 3), dtype=float)
-    for i in range(node_count):
-        idx = 3 * i
-        B[0, idx] = dN_dx[i]
-        B[1, idx + 1] = dN_dy[i]
-        B[2, idx + 2] = dN_dz[i]
-        B[3, idx] = dN_dy[i]
-        B[3, idx + 1] = dN_dx[i]
-        B[4, idx + 1] = dN_dz[i]
-        B[4, idx + 2] = dN_dy[i]
-        B[5, idx] = dN_dz[i]
-        B[5, idx + 2] = dN_dx[i]
+    for local_node in range(node_count):
+        dof_offset = 3 * local_node
+        B[0, dof_offset] = dN_dx[local_node]
+        B[1, dof_offset + 1] = dN_dy[local_node]
+        B[2, dof_offset + 2] = dN_dz[local_node]
+        B[3, dof_offset] = dN_dy[local_node]
+        B[3, dof_offset + 1] = dN_dx[local_node]
+        B[4, dof_offset + 1] = dN_dz[local_node]
+        B[4, dof_offset + 2] = dN_dy[local_node]
+        B[5, dof_offset] = dN_dz[local_node]
+        B[5, dof_offset + 2] = dN_dx[local_node]
     return B
 
 
@@ -244,7 +207,8 @@ class _TetKernelBase:
         """Return tetrahedral element stiffness."""
         if len(elem.node_ids) != self.node_count:
             raise ValueError(
-                f"{self.type_names[0]} element must have {self.node_count} nodes, got {len(elem.node_ids)}"
+                f"{self.type_names[0]} element {elem.id} requires {self.node_count} "
+                f"nodes, got {len(elem.node_ids)}; node_ids={elem.node_ids}"
             )
 
         D = self._material_matrix(elem)
@@ -318,7 +282,7 @@ class _TetKernelBase:
         """Return element nodes in element order."""
         if node_lookup is None:
             node_lookup = build_node_lookup(mesh)
-        return [node_lookup[nid] for nid in elem.node_ids]
+        return [node_lookup[node_id] for node_id in elem.node_ids]
 
     def _coords(self, nodes: list[Any]):
         """Return coordinate arrays for element nodes."""
@@ -391,7 +355,9 @@ class Tet4Kernel(_TetKernelBase):
         p3 = np.array([face_nodes[2].x, face_nodes[2].y, face_nodes[2].z], dtype=float)
         area = 0.5 * float(np.linalg.norm(np.cross(p2 - p1, p3 - p1)))
         if area <= 0.0:
-            raise ValueError(f"Tet4 elem {elem.id} face {local_face} has zero area")
+            raise ValueError(
+                f"Tet4 element {elem.id} face {local_face} has zero area; expected > 0"
+            )
 
         tvec = np.array(traction, dtype=float)
         fe = np.zeros(12, dtype=float)
@@ -451,7 +417,9 @@ class Tet10Kernel(_TetKernelBase):
             N, dN_dxi, dN_deta = tri6_shape_funcs_grads(xi, eta)
             area_scale = float(np.linalg.norm(np.cross(dN_dxi @ face_xyz, dN_deta @ face_xyz)))
             if area_scale <= 0.0:
-                raise ValueError(f"Tet10 elem {elem.id} face {local_face} has zero area")
+                raise ValueError(
+                    f"Tet10 element {elem.id} face {local_face} has zero area; expected > 0"
+                )
             for i, parent_local in enumerate(face_local):
                 fe[3 * parent_local:3 * parent_local + 3] += N[i] * tvec * (area_scale * w)
         return fe

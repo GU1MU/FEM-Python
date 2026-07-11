@@ -54,7 +54,9 @@ def plane_matrix(E: float, nu: float, plane_type: str) -> np.ndarray:
         return plane_stress_matrix(E, nu)
     if pt.startswith("strain"):
         return plane_strain_matrix(E, nu)
-    raise ValueError(f"invalid plane_type={plane_type}")
+    raise ValueError(
+        f"plane_type {plane_type!r} is invalid; expected 'stress' or 'strain'"
+    )
 
 
 def solid_3d_matrix(E: float, nu: float) -> np.ndarray:

@@ -4,6 +4,60 @@ from typing import Dict, List, Optional, Sequence
 import numpy as np
 
 from ..core.mesh import Mesh2DProtocol
+from ._csv import (
+    _NODAL_STRESS_METADATA_FIELDS,
+    parse_csv_integer,
+    validate_nodal_stress_header,
+    validate_nodal_stress_row,
+)
+
+
+def _read_nodal_fields(csv_path: str, *, require_stress_metadata: bool = False):
+    with open(csv_path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        if require_stress_metadata:
+            validate_nodal_stress_header(reader.fieldnames, csv_path)
+        elif "node_id" not in (reader.fieldnames or []):
+            raise ValueError(f"CSV requires node_id column, got {reader.fieldnames}")
+
+        ignored_fields = {"node_id", "x", "y"}
+        if require_stress_metadata:
+            ignored_fields.update(_NODAL_STRESS_METADATA_FIELDS)
+        field_names = [
+            name for name in (reader.fieldnames or []) if name not in ignored_fields
+        ]
+        data: Dict[int, Dict[str, float]] = {}
+
+        for row in reader:
+            if require_stress_metadata:
+                node_id, _elem_id, _local_node, _averaged = (
+                    validate_nodal_stress_row(row, csv_path, reader.line_num)
+                )
+            else:
+                node_id = parse_csv_integer(
+                    row.get("node_id"),
+                    csv_path,
+                    reader.line_num,
+                    "node_id",
+                    source="Nodal fields CSV",
+                )
+            if require_stress_metadata and node_id in data:
+                raise ValueError(
+                    f"Nodal stress CSV {str(csv_path)} has multiple element-nodal "
+                    f"contributions for node_id {node_id}; explicit selection or "
+                    "averaging is required"
+                )
+            values: Dict[str, float] = {}
+            for name in field_names:
+                val_str = row.get(name, "")
+                if val_str == "":
+                    continue
+                try:
+                    values[name] = float(val_str)
+                except ValueError:
+                    values[name] = 0.0
+            data[node_id] = values
+        return field_names, data
 
 
 def extract_path_data(
@@ -35,32 +89,6 @@ def extract_path_data(
         raise ValueError("start_id and end_id define zero length path")
     direction = vec / length
 
-    def _read_nodal_fields(csv_path: str):
-        with open(csv_path, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            if "node_id" not in (reader.fieldnames or []):
-                raise ValueError(f"CSV requires node_id column, got {reader.fieldnames}")
-
-            field_names = [
-                name for name in (reader.fieldnames or [])
-                if name not in {"node_id", "x", "y"}
-            ]
-            data: Dict[int, Dict[str, float]] = {}
-
-            for row in reader:
-                nid = int(row["node_id"])
-                values: Dict[str, float] = {}
-                for name in field_names:
-                    val_str = row.get(name, "")
-                    if val_str == "":
-                        continue
-                    try:
-                        values[name] = float(val_str)
-                    except ValueError:
-                        values[name] = 0.0
-                data[nid] = values
-            return field_names, data
-
     disp_fields: List[str] = []
     disp_data: Dict[int, Dict[str, float]] = {}
     if disp_csv_path is not None:
@@ -69,7 +97,10 @@ def extract_path_data(
     stress_fields: List[str] = []
     stress_data: Dict[int, Dict[str, float]] = {}
     if stress_csv_path is not None:
-        stress_fields, stress_data = _read_nodal_fields(stress_csv_path)
+        stress_fields, stress_data = _read_nodal_fields(
+            stress_csv_path,
+            require_stress_metadata=True,
+        )
 
     source_data = None
     if disp_csv_path is not None and target in disp_fields:
@@ -108,11 +139,11 @@ def extract_path_data(
         writer = csv.writer(f)
         writer.writerow(["distance", "x", "y", target])
 
-        for nid in selected_ids:
-            node = node_lookup[nid]
-            val = source_data[nid].get(target)
+        for node_id in selected_ids:
+            node = node_lookup[node_id]
+            val = source_data[node_id].get(target)
             if val is None:
-                raise ValueError(f"node {nid} missing target {target}")
+                raise ValueError(f"node {node_id} missing target {target}")
 
             proj = np.dot(np.array([node.x, node.y], dtype=float) - start, direction)
             dist = proj / length if normalized else proj
@@ -201,35 +232,9 @@ def extract_nodes_data(
         raise ValueError("provide stress_csv_path or disp_csv_path")
 
     node_lookup = {node.id: node for node in mesh.nodes}
-    for nid in node_ids:
-        if nid not in node_lookup:
-            raise ValueError(f"node_id {nid} not in mesh")
-
-    def _read_nodal_fields(csv_path: str):
-        with open(csv_path, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            if "node_id" not in (reader.fieldnames or []):
-                raise ValueError(f"CSV requires node_id column, got {reader.fieldnames}")
-
-            field_names = [
-                name for name in (reader.fieldnames or [])
-                if name not in {"node_id", "x", "y"}
-            ]
-            data: Dict[int, Dict[str, float]] = {}
-
-            for row in reader:
-                nid = int(row["node_id"])
-                values: Dict[str, float] = {}
-                for name in field_names:
-                    val_str = row.get(name, "")
-                    if val_str == "":
-                        continue
-                    try:
-                        values[name] = float(val_str)
-                    except ValueError:
-                        values[name] = 0.0
-                data[nid] = values
-            return field_names, data
+    for node_id in node_ids:
+        if node_id not in node_lookup:
+            raise ValueError(f"node_id {node_id} not in mesh")
 
     disp_fields: List[str] = []
     disp_data: Dict[int, Dict[str, float]] = {}
@@ -239,7 +244,10 @@ def extract_nodes_data(
     stress_fields: List[str] = []
     stress_data: Dict[int, Dict[str, float]] = {}
     if stress_csv_path is not None:
-        stress_fields, stress_data = _read_nodal_fields(stress_csv_path)
+        stress_fields, stress_data = _read_nodal_fields(
+            stress_csv_path,
+            require_stress_metadata=True,
+        )
 
     target_sources: Dict[str, Dict[int, Dict[str, float]]] = {}
     for target in targets:
@@ -254,12 +262,12 @@ def extract_nodes_data(
         writer = csv.writer(f)
         writer.writerow(["node_id", "x", "y"] + list(targets))
 
-        for nid in node_ids:
-            node = node_lookup[nid]
-            row = [nid, node.x, node.y]
+        for node_id in node_ids:
+            node = node_lookup[node_id]
+            row = [node_id, node.x, node.y]
             for target in targets:
                 source = target_sources[target]
-                if nid not in source or target not in source[nid]:
-                    raise ValueError(f"node {nid} missing target {target}")
-                row.append(source[nid][target])
+                if node_id not in source or target not in source[node_id]:
+                    raise ValueError(f"node {node_id} missing target {target}")
+                row.append(source[node_id][target])
             writer.writerow(row)

@@ -19,9 +19,9 @@ def assemble_global_stiffness(mesh: Any) -> np.ndarray:
         dofs = list(mesh.element_dofs(elem))
         _validate_element_stiffness(Ke, dofs, mesh.num_dofs, elem)
 
-        for a, I in enumerate(dofs):
-            for b, J in enumerate(dofs):
-                K[I, J] += Ke[a, b]
+        for local_i, global_i in enumerate(dofs):
+            for local_j, global_j in enumerate(dofs):
+                K[global_i, global_j] += Ke[local_i, local_j]
 
     return K
 
@@ -39,11 +39,11 @@ def assemble_global_stiffness_sparse(mesh: Any) -> csr_matrix:
         dofs = list(mesh.element_dofs(elem))
         _validate_element_stiffness(Ke, dofs, mesh.num_dofs, elem)
 
-        for a, I in enumerate(dofs):
-            for b, J in enumerate(dofs):
-                rows.append(I)
-                cols.append(J)
-                data.append(float(Ke[a, b]))
+        for local_i, global_i in enumerate(dofs):
+            for local_j, global_j in enumerate(dofs):
+                rows.append(global_i)
+                cols.append(global_j)
+                data.append(float(Ke[local_i, local_j]))
 
     return coo_matrix((data, (rows, cols)), shape=(mesh.num_dofs, mesh.num_dofs)).tocsr()
 

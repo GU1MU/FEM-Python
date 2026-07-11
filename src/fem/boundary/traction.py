@@ -8,18 +8,6 @@ from ._common import add_kernel_load, require_element, validate_vector
 from .condition import EdgeTraction, SurfaceTraction
 
 
-def add_forces(
-    mesh: Any,
-    tractions: list[SurfaceTraction],
-    F: np.ndarray,
-    elem_lookup: Dict[int, Any],
-    node_lookup: Dict[int, Any],
-    spatial_dim: int,
-) -> None:
-    """Assemble surface tractions for backward-compatible callers."""
-    add_surface_forces(mesh, tractions, F, elem_lookup, node_lookup, spatial_dim)
-
-
 def add_surface_forces(
     mesh: Any,
     tractions: list[SurfaceTraction],

@@ -148,8 +148,10 @@ class Quad4PlaneKernel:
             E = float(elem.props["E"])
             nu = float(elem.props["nu"])
             t = float(elem.props.get("thickness", 1.0))
-        except KeyError as e:
-            raise KeyError(f"elem {elem.id} missing '{e.args[0]}' in props={elem.props}")
+        except KeyError as exc:
+            raise KeyError(
+                f"Element {elem.id} missing property {exc.args[0]}, props={elem.props}"
+            ) from exc
 
         pt, _ = self._plane_data(elem)
         D = linear_elastic.plane_matrix(E, nu, pt)
@@ -159,14 +161,19 @@ class Quad4PlaneKernel:
         """Return plane type tag and Poisson ratio."""
         try:
             nu = float(elem.props["nu"])
-        except KeyError as e:
-            raise KeyError(f"elem {elem.id} missing '{e.args[0]}' in props={elem.props}")
+        except KeyError as exc:
+            raise KeyError(
+                f"Element {elem.id} missing property {exc.args[0]}, props={elem.props}"
+            ) from exc
         pt = str(elem.props.get("plane_type", "stress")).lower()
         if pt.startswith("stress"):
             return "stress", nu
         if pt.startswith("strain"):
             return "strain", nu
-        raise ValueError(f"elem {elem.id} invalid plane_type={elem.props.get('plane_type')}")
+        raise ValueError(
+            f"Element {elem.id} has plane_type {elem.props.get('plane_type')!r}; "
+            "expected 'stress' or 'strain'"
+        )
 
     def _thickness(self, elem: Any) -> float:
         """Return plane element thickness."""
@@ -176,7 +183,7 @@ class Quad4PlaneKernel:
         """Return element nodes in element order."""
         if node_lookup is None:
             node_lookup = build_node_lookup(mesh)
-        return [node_lookup[i] for i in elem.node_ids]
+        return [node_lookup[node_id] for node_id in elem.node_ids]
 
     def _coords(self, nodes: list[Any]):
         """Return x and y coordinate arrays."""
@@ -194,7 +201,10 @@ class Quad4PlaneKernel:
     ):
         """Return B, detJ, and weight at integration points."""
         if len(elem.node_ids) != 4:
-            raise ValueError(f"Quad4 needs 4 nodes, elem {elem.id} node_ids={elem.node_ids}")
+            raise ValueError(
+                f"Quad4 element {elem.id} requires 4 nodes, got {len(elem.node_ids)}; "
+                f"node_ids={elem.node_ids}"
+            )
         return [
             (*self._B_matrix(mesh, elem, xi, eta, node_lookup), w)
             for xi, eta, w in quad4_gauss_points(gauss_order)
@@ -253,7 +263,9 @@ class Quad4PlaneKernel:
         """Return detJ and reject singular elements."""
         detJ = float(np.linalg.det(J))
         if detJ == 0.0:
-            raise ValueError(f"elem {elem.id} singular Jacobian")
+            raise ValueError(
+                f"Quad4 element {elem.id} has zero Jacobian determinant; expected nonzero"
+            )
         return detJ
 
     def _det_jacobian(self, elem: Any, x: np.ndarray, y: np.ndarray, dN: np.ndarray) -> float:
@@ -289,7 +301,9 @@ class Quad4PlaneKernel:
             dy_dxi * dxi_ds + dy_deta * deta_ds,
         ))
         if jac == 0.0:
-            raise ValueError(f"Quad4 elem {elem.id} edge has zero Jacobian")
+            raise ValueError(
+                f"Quad4 element {elem.id} edge has zero Jacobian; expected > 0"
+            )
         return jac
 
 
@@ -358,7 +372,10 @@ class Quad8PlaneKernel:
     ) -> np.ndarray:
         """Return Quad8 plane element stiffness."""
         if len(elem.node_ids) != 8:
-            raise ValueError(f"Quad8 needs 8 nodes, elem {elem.id} node_ids={elem.node_ids}")
+            raise ValueError(
+                f"Quad8 element {elem.id} requires 8 nodes, got {len(elem.node_ids)}; "
+                f"node_ids={elem.node_ids}"
+            )
 
         D, t = self._material_data(elem)
         Ke = np.zeros((16, 16), dtype=float)
@@ -469,8 +486,10 @@ class Quad8PlaneKernel:
             E = float(elem.props["E"])
             nu = float(elem.props["nu"])
             t = float(elem.props.get("thickness", 1.0))
-        except KeyError as e:
-            raise KeyError(f"elem {elem.id} missing '{e.args[0]}' in props={elem.props}")
+        except KeyError as exc:
+            raise KeyError(
+                f"Element {elem.id} missing property {exc.args[0]}, props={elem.props}"
+            ) from exc
 
         pt, _ = self._plane_data(elem)
         D = linear_elastic.plane_matrix(E, nu, pt)
@@ -480,14 +499,19 @@ class Quad8PlaneKernel:
         """Return plane type tag and Poisson ratio."""
         try:
             nu = float(elem.props["nu"])
-        except KeyError as e:
-            raise KeyError(f"elem {elem.id} missing '{e.args[0]}' in props={elem.props}")
+        except KeyError as exc:
+            raise KeyError(
+                f"Element {elem.id} missing property {exc.args[0]}, props={elem.props}"
+            ) from exc
         pt = str(elem.props.get("plane_type", "stress")).lower()
         if pt.startswith("stress"):
             return "stress", nu
         if pt.startswith("strain"):
             return "strain", nu
-        raise ValueError(f"elem {elem.id} invalid plane_type={elem.props.get('plane_type')}")
+        raise ValueError(
+            f"Element {elem.id} has plane_type {elem.props.get('plane_type')!r}; "
+            "expected 'stress' or 'strain'"
+        )
 
     def _thickness(self, elem: Any) -> float:
         """Return plane element thickness."""
@@ -497,7 +521,7 @@ class Quad8PlaneKernel:
         """Return element nodes in element order."""
         if node_lookup is None:
             node_lookup = build_node_lookup(mesh)
-        return [node_lookup[i] for i in elem.node_ids]
+        return [node_lookup[node_id] for node_id in elem.node_ids]
 
     def _coords(self, nodes: list[Any]):
         """Return x and y coordinate arrays."""
@@ -553,7 +577,9 @@ class Quad8PlaneKernel:
         """Return detJ and reject singular elements."""
         detJ = float(np.linalg.det(J))
         if detJ == 0.0:
-            raise ValueError(f"elem {elem.id} singular Jacobian")
+            raise ValueError(
+                f"Quad8 element {elem.id} has zero Jacobian determinant; expected nonzero"
+            )
         return detJ
 
     def _det_jacobian(
@@ -597,5 +623,7 @@ class Quad8PlaneKernel:
             dy_dxi * dxi_ds + dy_deta * deta_ds,
         ))
         if jac == 0.0:
-            raise ValueError(f"Quad8 elem {elem.id} edge has zero Jacobian")
+            raise ValueError(
+                f"Quad8 element {elem.id} edge has zero Jacobian; expected > 0"
+            )
         return jac

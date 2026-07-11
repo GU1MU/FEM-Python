@@ -183,6 +183,81 @@ def test_inp_read_hex20_rejects_wrong_node_order(tmp_path):
         inp.read_hex20(mesh_path)
 
 
+def test_inp_tet10_order_matches_shape_functions_and_vtk_connectivity(tmp_path):
+    from fem.elements.tetrahedron import TET10_NATURAL_NODE_COORDS, tet10_shape_funcs_grads
+    from fem.io import inp
+    from fem.post.vtk import cells
+
+    node_ids = list(range(101, 111))
+    mesh_path = write_inp(
+        tmp_path,
+        "tet10_ordering.inp",
+        [
+            "*Node",
+            *(
+                f"{node_id},{xi},{eta},{zeta}"
+                for node_id, (xi, eta, zeta) in zip(
+                    node_ids, TET10_NATURAL_NODE_COORDS
+                )
+            ),
+            "*Element, type=C3D10",
+            "7," + ",".join(str(node_id) for node_id in node_ids),
+        ],
+    )
+
+    mesh = inp.read_tet10(mesh_path)
+
+    assert mesh.elements[0].node_ids == node_ids
+    for local_index, natural_coords in enumerate(
+        TET10_NATURAL_NODE_COORDS[4:], start=4
+    ):
+        N, _, _, _ = tet10_shape_funcs_grads(*natural_coords)
+        interpolated_marker = sum(
+            float(weight) * node_id for weight, node_id in zip(N, node_ids)
+        )
+        assert interpolated_marker == pytest.approx(node_ids[local_index])
+
+    vtk_cells, vtk_types, vtk_elements = cells.build(mesh)
+    connected_node_ids = [mesh.nodes[index].id for index in vtk_cells[0][1:]]
+    assert vtk_types == [24]
+    assert vtk_elements == [mesh.elements[0]]
+    assert connected_node_ids == node_ids
+
+
+def test_inp_tet10_wrapped_connectivity_reports_original_invalid_token_line(tmp_path):
+    from fem.elements.tetrahedron import TET10_NATURAL_NODE_COORDS
+    from fem.io import inp
+
+    node_ids = list(range(101, 111))
+    mesh_path = write_inp(
+        tmp_path,
+        "tet10_invalid_wrapped_connectivity.inp",
+        [
+            "*Node",
+            *(
+                f"{node_id},{xi},{eta},{zeta}"
+                for node_id, (xi, eta, zeta) in zip(
+                    node_ids, TET10_NATURAL_NODE_COORDS
+                )
+            ),
+            "*Element, type=C3D10",
+            "7,101,bad,103,104,105,106",
+            "107,108,109,110",
+        ],
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        inp.read_tet10(mesh_path)
+
+    message = str(exc_info.value)
+    assert str(mesh_path) in message
+    assert "line 13" in message
+    assert "field node2" in message
+    assert "record position 3" in message
+    assert "raw value 'bad'" in message
+    assert "expected an integer" in message
+
+
 def test_inp_read_tri6_reads_cps6_mesh(tmp_path):
     from fem.io import inp
 
@@ -332,6 +407,7 @@ def test_csv_read_mixed3d_reads_hex8_and_tet4_from_sectioned_csv(tmp_path):
     assert [elem.type for elem in mesh.elements] == ["Hex8", "Tet4"]
     assert mesh.elements[0].node_ids == [1, 2, 3, 4, 5, 6, 7, 8]
     assert mesh.elements[1].node_ids == [2, 9, 3, 6]
+    assert all(elem.props == {} for elem in mesh.elements)
     assert mesh.dofs_per_node == 3
 
 
@@ -367,6 +443,123 @@ def test_csv_read_mixed3d_reads_four_supported_element_types(tmp_path):
         list(range(1, 5)),
         list(range(1, 11)),
     ]
+    assert all(elem.props == {} for elem in mesh.elements)
+
+
+def test_csv_read_mixed3d_material_props_include_only_available_values(tmp_path):
+    from fem.io import csv as csv_io
+
+    element_header = ",".join(
+        ["elem_id", "type", *(f"node{index}" for index in range(1, 21)), "material_id"]
+    )
+    mesh_path = write_inp(
+        tmp_path,
+        "mixed_material.csv",
+        [
+            "node_id,x,y,z",
+            *_hex20_node_lines(),
+            element_header,
+            f"{_mixed3d_element_row(1, 'Hex8', range(1, 9))},1",
+        ],
+    )
+    material_path = write_inp(
+        tmp_path,
+        "solid_materials.csv",
+        ["material_id,E", "1,210000"],
+    )
+
+    mesh = csv_io.read_mixed3d(mesh_path, material_path)
+
+    assert mesh.elements[0].props == {"material_id": 1, "E": 210000.0}
+
+
+def test_csv_read_mixed3d_keeps_material_id_without_material_table(tmp_path):
+    from fem.io import csv as csv_io
+
+    element_header = ",".join(
+        ["elem_id", "type", *(f"node{index}" for index in range(1, 21)), "material_id"]
+    )
+    mesh_path = write_inp(
+        tmp_path,
+        "mixed_material_id_without_table.csv",
+        [
+            "node_id,x,y,z",
+            *_hex20_node_lines(),
+            element_header,
+            f"{_mixed3d_element_row(1, 'Hex8', range(1, 9))},7",
+        ],
+    )
+
+    mesh = csv_io.read_mixed3d(mesh_path)
+
+    assert mesh.elements[0].props == {"material_id": 7}
+
+
+def test_csv_read_hex8_keeps_material_id_without_material_table(tmp_path):
+    from fem.io import csv as csv_io
+
+    mesh_path = write_inp(
+        tmp_path,
+        "hex8_material_id_without_table.csv",
+        [
+            "node_id,x,y,z",
+            *_hex20_node_lines(),
+            "elem_id,node1,node2,node3,node4,node5,node6,node7,node8,material_id",
+            "1,1,2,3,4,5,6,7,8,17",
+        ],
+    )
+
+    mesh = csv_io.read_hex8(mesh_path)
+
+    assert mesh.elements[0].props == {"material_id": 17}
+
+
+def test_csv_read_tet4_keeps_material_id_without_material_table(tmp_path):
+    from fem.io import csv as csv_io
+
+    mesh_path = write_inp(
+        tmp_path,
+        "tet4_material_id_without_table.csv",
+        [
+            "node_id,x,y,z",
+            *_hex20_node_lines(),
+            "elem_id,node1,node2,node3,node4,material_id",
+            "1,1,2,3,4,23",
+        ],
+    )
+
+    mesh = csv_io.read_tet4(mesh_path)
+
+    assert mesh.elements[0].props == {"material_id": 23}
+
+
+def test_csv_read_mixed3d_validates_material_id_without_material_table(tmp_path):
+    from fem.io import csv as csv_io
+
+    element_header = ",".join(
+        ["elem_id", "type", *(f"node{index}" for index in range(1, 21)), "material_id"]
+    )
+    mesh_path = write_inp(
+        tmp_path,
+        "mixed_invalid_material_id.csv",
+        [
+            "node_id,x,y,z",
+            *_hex20_node_lines(),
+            element_header,
+            f"{_mixed3d_element_row(1, 'Hex8', range(1, 9))},steel",
+        ],
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        csv_io.read_mixed3d(mesh_path)
+
+    message = str(exc_info.value)
+    assert "read_mixed3d" in message
+    assert str(mesh_path) in message
+    assert "line 23" in message
+    assert "field material_id" in message
+    assert "raw value 'steel'" in message
+    assert "expected an integer" in message
 
 
 @pytest.mark.parametrize(
@@ -451,6 +644,156 @@ def test_csv_read_mixed3d_rejects_nonempty_physical_field_beyond_header(tmp_path
         match="line 25 element row has nonempty trailing field beyond header",
     ):
         csv_io.read_mixed3d(mesh_path)
+
+
+@pytest.mark.parametrize(
+    ("reader_name", "lines", "field", "raw_value", "expected_condition"),
+    (
+        ("read_truss2d", ["node_id,x,y", "bad,0,0"], "node_id", "bad", "integer"),
+        (
+            "read_beam2d",
+            ["elem_id,node_i,node_j,area,Izz,material_id", "1,1,2,1,bad,1"],
+            "Izz",
+            "bad",
+            "numeric value",
+        ),
+        (
+            "read_tri3",
+            ["elem_id,node1,node2,node3,thickness,material_id", "1,1,2,3,bad,1"],
+            "thickness",
+            "bad",
+            "numeric value",
+        ),
+        ("read_mixed3d", ["node_id,x,y,z", "1,bad,0,0"], "x", "bad", "numeric value"),
+        (
+            "read_hex8",
+            [
+                "elem_id,node1,node2,node3,node4,node5,node6,node7,node8,material_id",
+                "1,1,2,3,4,5,6,bad,8,1",
+            ],
+            "node7",
+            "bad",
+            "integer",
+        ),
+        ("read_tet4", ["node_id,x,y,z", "1,0,bad,0"], "y", "bad", "numeric value"),
+    ),
+)
+def test_csv_public_readers_report_invalid_numeric_fields_with_context(
+    tmp_path,
+    reader_name,
+    lines,
+    field,
+    raw_value,
+    expected_condition,
+):
+    from fem.io import csv as csv_io
+
+    mesh_path = write_inp(tmp_path, f"{reader_name}_invalid.csv", lines)
+
+    with pytest.raises(ValueError) as exc_info:
+        getattr(csv_io, reader_name)(mesh_path)
+
+    message = str(exc_info.value)
+    assert reader_name in message
+    assert str(mesh_path) in message
+    assert "line 2" in message
+    assert f"field {field}" in message
+    assert f"raw value {raw_value!r}" in message
+    assert f"expected a{ 'n' if expected_condition == 'integer' else ''} {expected_condition}" in message
+
+
+@pytest.mark.parametrize(
+    ("lines", "line_no", "field", "record_position", "raw_value", "expected"),
+    (
+        (["*Node", "bad,0,0"], 2, "node_id", 1, "bad", "an integer"),
+        (["*Node", "1,bad,0"], 2, "x", 2, "bad", "a numeric value"),
+        (
+            [
+                "*Node",
+                "1,0,0",
+                "2,1,0",
+                "3,0,1",
+                "*Element, type=CPS3",
+                "bad,1,2,3",
+            ],
+            6,
+            "elem_id",
+            1,
+            "bad",
+            "an integer",
+        ),
+        (
+            [
+                "*Node",
+                "1,0,0",
+                "2,1,0",
+                "3,0,1",
+                "*Element, type=CPS3",
+                "1,1,bad,3",
+            ],
+            6,
+            "node2",
+            3,
+            "bad",
+            "an integer",
+        ),
+    ),
+)
+def test_inp_leaf_parsers_report_invalid_numeric_tokens_with_context(
+    tmp_path,
+    lines,
+    line_no,
+    field,
+    record_position,
+    raw_value,
+    expected,
+):
+    from fem.io import inp
+
+    mesh_path = write_inp(tmp_path, f"invalid_{field}.inp", lines)
+
+    with pytest.raises(ValueError) as exc_info:
+        inp.read_tri3(mesh_path)
+
+    message = str(exc_info.value)
+    assert str(mesh_path) in message
+    assert f"line {line_no}" in message
+    assert f"field {field}" in message
+    assert f"record position {record_position}" in message
+    assert f"raw value {raw_value!r}" in message
+    assert f"expected {expected}" in message
+
+
+@pytest.mark.parametrize(
+    ("reader_name", "element_type", "node_count"),
+    (("read_quad4", "CPS4", 4), ("read_quad8", "CPS8", 8)),
+)
+def test_inp_quad_readers_report_invalid_plane_type_with_context(
+    tmp_path,
+    reader_name,
+    element_type,
+    node_count,
+):
+    from fem.io import inp
+
+    mesh_path = write_inp(
+        tmp_path,
+        f"{reader_name}_plane_type.inp",
+        [
+            "*Node",
+            *(f"{node_id},0,0" for node_id in range(1, node_count + 1)),
+            f"*Element, type={element_type}",
+            "1," + ",".join(str(node_id) for node_id in range(1, node_count + 1)),
+        ],
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        getattr(inp, reader_name)(mesh_path, plane_type="invalid-plane")
+
+    message = str(exc_info.value)
+    assert "plane_type 'invalid-plane'" in message
+    assert element_type in message
+    assert "expected 'stress' or 'strain'" in message
 
 
 def test_material_csv_builds_named_linear_elastic_material(tmp_path):

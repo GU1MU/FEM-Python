@@ -1,10 +1,10 @@
 import csv
-from pathlib import Path
 from typing import List, Optional, Sequence
 
 import numpy as np
 
 from ...core.mesh import Mesh2DProtocol, Mesh3DProtocol, Node2D, Node3D
+from .._paths import prepare_output_path
 
 
 def _export_nodal_displacement_2d(
@@ -36,16 +36,16 @@ def _export_nodal_displacement_2d(
     node_lookup = {node.id: node for node in mesh.nodes}
     header = ["node_id", "x", "y"] + component_names
 
-    path = _prepare_path(path)
+    path = prepare_output_path(path)
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(header)
 
-        for nid in mesh.node_ids:
-            node: Node2D = node_lookup[nid]
-            dofs = mesh.node_dofs(nid)
+        for node_id in mesh.node_ids:
+            node: Node2D = node_lookup[node_id]
+            dofs = mesh.node_dofs(node_id)
             disp_vals = [U[dof] for dof in dofs]
-            writer.writerow([nid, node.x, node.y] + disp_vals)
+            writer.writerow([node_id, node.x, node.y] + disp_vals)
 
 
 def _export_nodal_displacement_3d(
@@ -75,16 +75,16 @@ def _export_nodal_displacement_3d(
     node_lookup = {node.id: node for node in mesh.nodes}
     header = ["node_id", "x", "y", "z"] + component_names
 
-    path = _prepare_path(path)
+    path = prepare_output_path(path)
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(header)
 
-        for nid in mesh.node_ids:
-            node: Node3D = node_lookup[nid]
-            dofs = mesh.node_dofs(nid)
+        for node_id in mesh.node_ids:
+            node: Node3D = node_lookup[node_id]
+            dofs = mesh.node_dofs(node_id)
             disp_vals = [U[dof] for dof in dofs]
-            writer.writerow([nid, node.x, node.y, node.z] + disp_vals)
+            writer.writerow([node_id, node.x, node.y, node.z] + disp_vals)
 
 
 def nodal(
@@ -98,10 +98,3 @@ def nodal(
         _export_nodal_displacement_3d(mesh, U, path, component_names)
     else:
         _export_nodal_displacement_2d(mesh, U, path, component_names)
-
-
-def _prepare_path(path: str | Path) -> Path:
-    """Create output parent directory and return a Path."""
-    output_path = Path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    return output_path

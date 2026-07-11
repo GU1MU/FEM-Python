@@ -107,6 +107,42 @@ def build(mesh):
     return cells, cell_types, elems_for_cell
 
 
+def _validate_nonaveraged_row(
+    row: Any,
+    node_id: int,
+    elem_lookup: dict[int, Any],
+) -> tuple[int, int] | None:
+    """Validate element-local provenance and return its connectivity key."""
+    if row.averaged:
+        return None
+    missing = []
+    if row.elem_id is None:
+        missing.append("elem_id")
+    if row.local_node is None:
+        missing.append("local_node")
+    if missing:
+        raise ValueError(
+            f"Nodal stress row for node {node_id} with averaged=false requires "
+            "elem_id and one-based local_node provenance; "
+            f"missing {', '.join(missing)}"
+        )
+
+    elem_id = int(row.elem_id)
+    local_node = int(row.local_node)
+    elem = elem_lookup.get(elem_id)
+    if (
+        elem is None
+        or local_node < 1
+        or local_node > len(elem.node_ids)
+        or int(elem.node_ids[local_node - 1]) != node_id
+    ):
+        raise ValueError(
+            f"Nodal stress row for node {node_id} with element {row.elem_id} "
+            f"local node {row.local_node} cannot be matched to mesh connectivity"
+        )
+    return elem_id, local_node
+
+
 def build_result(mesh, nodal_rows=()) -> ResultTopology:
     """Build point/cell topology while preserving repeated raw nodal rows."""
     base_cells, cell_types, elems_for_cell = build(mesh)
@@ -116,6 +152,12 @@ def build_result(mesh, nodal_rows=()) -> ResultTopology:
 
     node_lookup = {int(node.id): node for node in mesh.nodes}
     elem_lookup = {int(elem.id): elem for elem in mesh.elements}
+    incident_keys_by_node: dict[int, set[tuple[int, int]]] = {}
+    for elem in elems_for_cell:
+        for local_node, node_id in enumerate(elem.node_ids, start=1):
+            incident_keys_by_node.setdefault(int(node_id), set()).add(
+                (int(elem.id), local_node)
+            )
     shared_point_index: dict[int, int] = {}
     local_point_index: dict[tuple[int, int], int] = {}
     points: list[Any] = []
@@ -125,56 +167,54 @@ def build_result(mesh, nodal_rows=()) -> ResultTopology:
     for node in mesh.nodes:
         node_id = int(node.id)
         node_rows = rows_by_node.get(node_id, [])
-        if len(node_rows) <= 1:
+        if not node_rows or (len(node_rows) == 1 and node_rows[0].averaged):
             shared_point_index[node_id] = len(points)
             points.append(node)
             point_node_ids.append(node_id)
             point_rows.append(node_rows[0] if node_rows else None)
             continue
 
+        raw_keys: set[tuple[int, int]] = set()
         for row in node_rows:
-            if row.averaged or row.elem_id is None or row.local_node is None:
+            if row.averaged:
                 raise ValueError(
                     f"Repeated nodal stress row for node {node_id} requires "
                     "averaged=false with elem_id and local_node provenance"
                 )
-            elem = elem_lookup.get(int(row.elem_id))
-            local_node = int(row.local_node)
-            if (
-                elem is None
-                or local_node < 1
-                or local_node > len(elem.node_ids)
-                or int(elem.node_ids[local_node - 1]) != node_id
-            ):
-                raise ValueError(
-                    f"Nodal stress row for node {node_id} with element {row.elem_id} "
-                    f"local node {row.local_node} cannot be matched to mesh connectivity"
-                )
-            key = (int(row.elem_id), local_node)
+            key = _validate_nonaveraged_row(row, node_id, elem_lookup)
+            assert key is not None
             if key in local_point_index:
                 raise ValueError(
                     f"Duplicate nodal stress provenance for element {row.elem_id} "
                     f"local node {row.local_node}"
                 )
+            raw_keys.add(key)
             local_point_index[key] = len(points)
             points.append(node_lookup[node_id])
             point_node_ids.append(node_id)
             point_rows.append(row)
+
+        missing_keys = incident_keys_by_node.get(node_id, set()).difference(raw_keys)
+        if missing_keys:
+            shared_point_index[node_id] = len(points)
+            points.append(node_lookup[node_id])
+            point_node_ids.append(node_id)
+            point_rows.append(None)
 
     expanded_cells: list[list[int]] = []
     for base_cell, elem in zip(base_cells, elems_for_cell):
         point_ids: list[int] = []
         for local_node, node_id in enumerate(elem.node_ids, start=1):
             node_id = int(node_id)
-            if len(rows_by_node.get(node_id, [])) > 1:
-                key = (int(elem.id), local_node)
-                if key not in local_point_index:
-                    raise ValueError(
-                        f"Repeated nodal stress rows for node {node_id} cannot be "
-                        f"matched to element {elem.id} local node {local_node}"
-                    )
+            key = (int(elem.id), local_node)
+            if key in local_point_index:
                 point_ids.append(local_point_index[key])
             else:
+                if node_id not in shared_point_index:
+                    raise ValueError(
+                        f"Nodal stress topology for node {node_id} has no point for "
+                        f"element {elem.id} local node {local_node}"
+                    )
                 point_ids.append(shared_point_index[node_id])
         expanded_cells.append([base_cell[0], *point_ids])
 

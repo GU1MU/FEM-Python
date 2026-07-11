@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import csv
 from typing import Any, Sequence
 
 import numpy as np
 
 from ...elements import get_element_kernel
-from ...core.mesh import Mesh3DProtocol, Node3D
+from ...core.mesh import Mesh3DProtocol
 
 
 TET_CENTROID = (0.25, 0.25, 0.25)
@@ -62,8 +61,3 @@ def element_volume(
 ) -> float:
     """Return element volume through the element kernel."""
     return float(get_element_kernel(elem.type).volume(mesh, elem, node_lookup_))
-
-
-def write_zero_solid_node(writer: csv.writer, nid: int, node: Node3D) -> None:
-    """Write a zero stress row for an unconnected solid node."""
-    writer.writerow([nid, node.x, node.y, node.z, 0, 0, 0, 0, 0, 0, 0])

@@ -221,7 +221,7 @@ class _HexKernelBase:
         """Return element nodes in element order."""
         if node_lookup is None:
             node_lookup = build_node_lookup(mesh)
-        return [node_lookup[nid] for nid in elem.node_ids]
+        return [node_lookup[node_id] for node_id in elem.node_ids]
 
     def _coords(self, nodes: list[Any]):
         """Return coordinate arrays for element nodes."""
@@ -248,7 +248,10 @@ class _HexKernelBase:
         ], dtype=float)
         detJ = float(np.linalg.det(J))
         if detJ <= 0.0:
-            raise ValueError(f"{elem.type} elem {elem.id} has non-positive Jacobian")
+            raise ValueError(
+                f"{elem.type} element {elem.id} has non-positive Jacobian "
+                f"determinant {detJ}; expected > 0"
+            )
         return detJ
 
 
@@ -273,7 +276,10 @@ class Hex8Kernel(_HexKernelBase):
     ) -> np.ndarray:
         """Return Hex8 element stiffness."""
         if len(elem.node_ids) != 8:
-            raise ValueError(f"Hex8 element must have 8 nodes, got {len(elem.node_ids)}")
+            raise ValueError(
+                f"Hex8 element {elem.id} requires 8 nodes, got {len(elem.node_ids)}; "
+                f"node_ids={elem.node_ids}"
+            )
 
         D = self._material_matrix(elem)
         Ke = np.zeros((24, 24), dtype=float)
@@ -343,7 +349,9 @@ class Hex8Kernel(_HexKernelBase):
             )
             area_scale = float(np.linalg.norm(np.cross(dN_dxi @ xyz, dN_deta @ xyz)))
             if area_scale <= 0.0:
-                raise ValueError(f"Hex8 elem {elem.id} face {local_face} has zero area")
+                raise ValueError(
+                    f"Hex8 element {elem.id} face {local_face} has zero area; expected > 0"
+                )
 
             for i, parent_local in enumerate(face_local):
                 fe[3 * parent_local:3 * parent_local + 3] += N_face[i] * tvec * (area_scale * w)
@@ -402,7 +410,10 @@ class Hex8Kernel(_HexKernelBase):
         ], dtype=float)
         detJ = float(np.linalg.det(J))
         if detJ <= 0.0:
-            raise ValueError(f"Element {elem.id} has negative or zero Jacobian determinant")
+            raise ValueError(
+                f"Hex8 element {elem.id} has non-positive Jacobian determinant "
+                f"{detJ}; expected > 0"
+            )
 
         invJ = np.linalg.inv(J)
         dN_dx = invJ[0, 0] * dN_dxi + invJ[0, 1] * dN_deta + invJ[0, 2] * dN_dzeta
@@ -410,17 +421,17 @@ class Hex8Kernel(_HexKernelBase):
         dN_dz = invJ[2, 0] * dN_dxi + invJ[2, 1] * dN_deta + invJ[2, 2] * dN_dzeta
 
         B = np.zeros((6, 24), dtype=float)
-        for i in range(8):
-            idx = 3 * i
-            B[0, idx] = dN_dx[i]
-            B[1, idx + 1] = dN_dy[i]
-            B[2, idx + 2] = dN_dz[i]
-            B[3, idx] = dN_dy[i]
-            B[3, idx + 1] = dN_dx[i]
-            B[4, idx + 1] = dN_dz[i]
-            B[4, idx + 2] = dN_dy[i]
-            B[5, idx] = dN_dz[i]
-            B[5, idx + 2] = dN_dx[i]
+        for local_node in range(8):
+            dof_offset = 3 * local_node
+            B[0, dof_offset] = dN_dx[local_node]
+            B[1, dof_offset + 1] = dN_dy[local_node]
+            B[2, dof_offset + 2] = dN_dz[local_node]
+            B[3, dof_offset] = dN_dy[local_node]
+            B[3, dof_offset + 1] = dN_dx[local_node]
+            B[4, dof_offset + 1] = dN_dz[local_node]
+            B[4, dof_offset + 2] = dN_dy[local_node]
+            B[5, dof_offset] = dN_dz[local_node]
+            B[5, dof_offset + 2] = dN_dx[local_node]
 
         return B, detJ
 
@@ -438,7 +449,10 @@ class Hex20Kernel(_HexKernelBase):
         gauss_order: int = 3,
     ) -> np.ndarray:
         if len(elem.node_ids) != 20:
-            raise ValueError(f"Hex20 element must have 20 nodes, got {len(elem.node_ids)}")
+            raise ValueError(
+                f"Hex20 element {elem.id} requires 20 nodes, got {len(elem.node_ids)}; "
+                f"node_ids={elem.node_ids}"
+            )
         D = self._material_matrix(elem)
         Ke = np.zeros((60, 60), dtype=float)
         for xi, eta, zeta, w in hex20_gauss_points(gauss_order):
@@ -493,7 +507,9 @@ class Hex20Kernel(_HexKernelBase):
             N, dN_dxi, dN_deta = quad8_shape_funcs_grads(xi, eta)
             area_scale = float(np.linalg.norm(np.cross(dN_dxi @ xyz, dN_deta @ xyz)))
             if area_scale <= 0.0:
-                raise ValueError(f"Hex20 element {elem.id} face {local_face} has zero area")
+                raise ValueError(
+                    f"Hex20 element {elem.id} face {local_face} has zero area; expected > 0"
+                )
             for face_i, parent_i in enumerate(face_local):
                 fe[3 * parent_i:3 * parent_i + 3] += (
                     N[face_i] * tvec * area_scale * w
@@ -540,7 +556,10 @@ class Hex20Kernel(_HexKernelBase):
         ], dtype=float)
         detJ = float(np.linalg.det(J))
         if detJ <= 0.0:
-            raise ValueError(f"Hex20 element {elem.id} has non-positive Jacobian")
+            raise ValueError(
+                f"Hex20 element {elem.id} has non-positive Jacobian determinant "
+                f"{detJ}; expected > 0"
+            )
         gradients = np.linalg.inv(J) @ np.vstack([dN_dxi, dN_deta, dN_dzeta])
         dN_dx, dN_dy, dN_dz = gradients
         B = np.zeros((6, 60), dtype=float)

@@ -26,11 +26,13 @@ class DofMap:
     @classmethod
     def from_nodes(cls, nodes: List[Any], dofs_per_node: int):
         """Build a DOF map from mesh nodes."""
-        raw_node_ids = [int(n.id) for n in nodes]
+        raw_node_ids = [int(node.id) for node in nodes]
         if len(set(raw_node_ids)) != len(raw_node_ids):
             raise ValueError("node ids must be unique")
         node_ids = sorted(raw_node_ids)
-        node_id_to_index = {nid: i for i, nid in enumerate(node_ids)}
+        node_id_to_index = {
+            node_id: node_index for node_index, node_id in enumerate(node_ids)
+        }
         return cls(dofs_per_node, node_ids, node_id_to_index)
 
     @property
@@ -50,8 +52,8 @@ class DofMap:
             raise IndexError(
                 f"component {component} out of range for {self.dofs_per_node} DOFs per node"
             )
-        idx = self.node_id_to_index[node_id]
-        return idx * self.dofs_per_node + component
+        node_index = self.node_id_to_index[node_id]
+        return node_index * self.dofs_per_node + component
 
     def node_dofs(self, node_id: int) -> List[int]:
         """Return global DOF indices for a node."""
@@ -61,14 +63,16 @@ class DofMap:
     def element_dofs(self, node_ids: List[int]) -> List[int]:
         """Return global DOF indices for element nodes."""
         dofs = []
-        for nid in node_ids:
-            dofs.extend(self.node_dofs(nid))
+        for node_id in node_ids:
+            dofs.extend(self.node_dofs(node_id))
         return dofs
 
     def generate_global_dof_sequence(self) -> List[Tuple[int, int, int]]:
         """Generate (node_id, component, dof_id) tuples."""
         seq = []
-        for nid in self.node_ids:
-            for comp in range(self.dofs_per_node):
-                seq.append((nid, comp, self.global_dof(nid, comp)))
+        for node_id in self.node_ids:
+            for component in range(self.dofs_per_node):
+                seq.append(
+                    (node_id, component, self.global_dof(node_id, component))
+                )
         return seq

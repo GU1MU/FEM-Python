@@ -37,16 +37,6 @@ TYPE_GROUPS = {
 }
 
 
-def resolve_type_key(mesh: Any, element_type: str | None) -> str:
-    """Resolve a normalized stress exporter key for legacy single-type callers."""
-    type_keys = resolve_type_keys(mesh, element_type)
-    if len(type_keys) > 1:
-        raise ValueError(
-            "Mixed element meshes require automatic mixed export or an explicit element_type"
-        )
-    return type_keys[0]
-
-
 def resolve_type_keys(mesh: Any, element_type: str | None) -> tuple[str, ...]:
     """Resolve normalized stress exporter keys while preserving mesh element order."""
     if element_type is not None:

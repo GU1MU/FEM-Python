@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import csv
-from pathlib import Path
 from typing import Sequence
 
 from ...elements import get_element_kernel
 from ...core.mesh import HexMesh3D, Mesh3DProtocol, PlaneMesh2D, TrussMesh2D
+from .._paths import prepare_output_path
 from . import dispatch
 from ._common import (
     PLANE_ELEMENT_HEADER,
@@ -74,7 +74,7 @@ def truss2d(mesh: TrussMesh2D, U: Sequence[float], path: str) -> None:
     U = validated_u(mesh, U)
     lookup = node_lookup(mesh)
 
-    path = _prepare_path(path)
+    path = prepare_output_path(path)
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow([
@@ -83,11 +83,11 @@ def truss2d(mesh: TrussMesh2D, U: Sequence[float], path: str) -> None:
             "node_j",
             "axial_strain",
             "axial_stress",
-            "mises_stress",
+            "mises",
         ])
         for elem in mesh.elements:
             ni_id, nj_id = elem.node_ids
-            axial_strain, axial_stress, mises_stress = get_element_kernel(
+            axial_strain, axial_stress, mises = get_element_kernel(
                 elem.type
             ).element_stress(mesh, elem, U, lookup)
             writer.writerow([
@@ -96,7 +96,7 @@ def truss2d(mesh: TrussMesh2D, U: Sequence[float], path: str) -> None:
                 nj_id,
                 axial_strain,
                 axial_stress,
-                mises_stress,
+                mises,
             ])
 
 
@@ -166,7 +166,7 @@ def _plane(
     U = validated_u(mesh, U)
     lookup = node_lookup(mesh)
 
-    path = _prepare_path(path)
+    path = prepare_output_path(path)
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(PLANE_ELEMENT_HEADER)
@@ -174,12 +174,12 @@ def _plane(
             if not matches(elem, type_key):
                 continue
             node_vals, plane_type, nu = nodal_stress(mesh, elem, U, lookup, gauss_order)
-            for local_idx, nid in enumerate(elem.node_ids, start=1):
-                sig_x, sig_y, tau_xy = node_vals[local_idx - 1].tolist()
+            for local_node, node_id in enumerate(elem.node_ids, start=1):
+                sig_x, sig_y, tau_xy = node_vals[local_node - 1].tolist()
                 writer.writerow([
                     elem.id,
-                    nid,
-                    local_idx,
+                    node_id,
+                    local_node,
                     sig_x,
                     sig_y,
                     tau_xy,
@@ -198,7 +198,7 @@ def _solid(
     U = validated_u(mesh, U)
     lookup = node_lookup(mesh)
 
-    path = _prepare_path(path)
+    path = prepare_output_path(path)
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(SOLID_HEADER)
@@ -236,7 +236,7 @@ def _plane_multi(
     U = validated_u(mesh, U)
     lookup = node_lookup(mesh)
 
-    path = _prepare_path(path)
+    path = prepare_output_path(path)
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(PLANE_ELEMENT_HEADER)
@@ -250,12 +250,12 @@ def _plane_multi(
                 else dispatch.default_gauss_order(type_key)
             )
             node_vals, plane_type, nu = nodal_stress(mesh, elem, U, lookup, order)
-            for local_idx, nid in enumerate(elem.node_ids, start=1):
-                sig_x, sig_y, tau_xy = node_vals[local_idx - 1].tolist()
+            for local_node, node_id in enumerate(elem.node_ids, start=1):
+                sig_x, sig_y, tau_xy = node_vals[local_node - 1].tolist()
                 writer.writerow([
                     elem.id,
-                    nid,
-                    local_idx,
+                    node_id,
+                    local_node,
                     sig_x,
                     sig_y,
                     tau_xy,
@@ -273,7 +273,7 @@ def _solid_multi(
     U = validated_u(mesh, U)
     lookup = node_lookup(mesh)
 
-    path = _prepare_path(path)
+    path = prepare_output_path(path)
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(SOLID_HEADER)
@@ -304,10 +304,3 @@ def _solid_multi(
                 tau_zx,
                 von_mises_3d(sig_x, sig_y, sig_z, tau_xy, tau_yz, tau_zx),
             ])
-
-
-def _prepare_path(path: str | Path) -> Path:
-    """Create output parent directory and return a Path."""
-    output_path = Path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    return output_path

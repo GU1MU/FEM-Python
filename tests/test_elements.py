@@ -175,18 +175,18 @@ def test_inclined_beam_cantilever_matches_euler_bernoulli_tip_response():
     Ke = kernel.stiffness(mesh, elem)
     L, c, s = line2_geometry(mesh, elem)
     E = float(elem.props["E"])
-    I = float(elem.props["Izz"])
+    Izz = float(elem.props["Izz"])
     free = mesh.node_dofs(elem.node_ids[1])
     F = np.zeros(mesh.num_dofs, dtype=float)
     F[free[0]] = -s
     F[free[1]] = c
 
     U_tip = np.linalg.solve(Ke[np.ix_(free, free)], F[free])
-    v_local = L**3 / (3.0 * E * I)
+    v_local = L**3 / (3.0 * E * Izz)
     expected = np.array([
         -s * v_local,
         c * v_local,
-        L**2 / (2.0 * E * I),
+        L**2 / (2.0 * E * Izz),
     ])
 
     assert np.allclose(U_tip, expected)
@@ -297,6 +297,34 @@ def test_line_element_reports_missing_required_property(builder, missing_propert
         match=rf"Element {elem.id} missing property {missing_property}",
     ):
         get_element_kernel(elem.type).stiffness(mesh, elem)
+
+
+@pytest.mark.parametrize(
+    ("builder", "expected_count"),
+    (
+        (make_hex8_stiffness_mesh, 8),
+        (make_hex20_stiffness_mesh, 20),
+        (make_tet4_stiffness_mesh, 4),
+        (make_tet10_stiffness_mesh, 10),
+    ),
+    ids=["hex8", "hex20", "tet4", "tet10"],
+)
+def test_solid_stiffness_reports_invalid_node_count_with_context(
+    builder,
+    expected_count,
+):
+    mesh = builder()
+    elem = mesh.elements[0]
+    elem.node_ids = elem.node_ids[:-1]
+
+    with pytest.raises(ValueError) as exc_info:
+        get_element_kernel(elem.type).stiffness(mesh, elem)
+
+    message = str(exc_info.value)
+    assert f"{elem.type} element {elem.id}" in message
+    assert f"requires {expected_count} nodes" in message
+    assert f"got {expected_count - 1}" in message
+    assert f"node_ids={elem.node_ids}" in message
 
 
 # Plane element kernels
@@ -456,7 +484,10 @@ def test_hex20_body_force_reports_element_type_for_nonpositive_jacobian():
         node.z = 0.0
     kernel = get_element_kernel(elem.type)
 
-    with pytest.raises(ValueError, match="Hex20 elem 1 has non-positive Jacobian"):
+    with pytest.raises(
+        ValueError,
+        match=r"Hex20 element 1 has non-positive Jacobian determinant.*expected > 0",
+    ):
         kernel.body_force(mesh, elem, (0.0, 0.0, -1.0))
 
 

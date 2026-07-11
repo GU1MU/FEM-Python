@@ -1,6 +1,7 @@
 # FEM Python
 
-这是一个面向教学、实验和逐步扩展的有限元项目。项目保留清晰的有限元主流程：读取mesh，构建model，定义材料和分析步，装配刚度，施加载荷和约束，求解，导出后处理结果
+这是一个面向教学、实验和逐步扩展的有限元项目
+项目保留清晰的有限元主流程：读取 mesh，构建 model，定义材料和分析步，装配刚度，施加载荷和约束，求解，导出后处理结果
 
 ## 安装和运行
 
@@ -45,7 +46,7 @@ python -m pytest -q tests/test_solvers.py::test_static_linear_solver_builds_step
 - `Quad4`
 - `Quad8`
 - `Hex8`
-- `Hex20
+- `Hex20`
 - `Tet4`
 - `Tet10`
 
@@ -98,11 +99,6 @@ python -m pytest -q tests/test_solvers.py::test_static_linear_solver_builds_step
 
 `boundary`是求解边界解析层
 
-- `boundary.step`把`AnalysisStep`中的声明解析为求解器使用的`BoundaryCondition`
-- `boundary.loads`从`BoundaryCondition`构造全局载荷向量
-- `boundary.constraints`施加Dirichlet约束
-- `boundary.body`、`boundary.nodal`、`boundary.traction`分别处理体力、节点力和边/面力
-
 `elements`是单元kernel层
 
 - 每类单元提供刚度矩阵、等效载荷和应力计算
@@ -143,14 +139,10 @@ io.csv/io.inp
     -> FEMModel(mesh=mesh)
     -> node_sets/element_sets/surfaces
     -> materials + sections
-    -> AnalysisStep
-    -> boundary.step.boundary_for_step(model, step)
-    -> BoundaryCondition
-    -> assemble.stiffness
-    -> boundary.loads + boundary.constraints
-    -> solvers.linear
+    -> steps
+    -> solvers.static_linear.solve()
     -> ModelResult
-    -> post
+    -> post.vtk.export
 ```
 
 这条链路中，各层职责如下：

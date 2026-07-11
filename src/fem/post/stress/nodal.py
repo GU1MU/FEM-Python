@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import csv
-from pathlib import Path
 from typing import Sequence
 
-from ...core.mesh import HexMesh3D, Mesh3DProtocol, PlaneMesh2D
+from .._paths import prepare_output_path
 from . import dispatch
 from ._common import (
     PLANE_NODAL_HEADER,
@@ -46,91 +45,6 @@ def mixed(
     _resolved(mesh, U, path, None, gauss_order, threshold)
 
 
-def tri3(
-    mesh: PlaneMesh2D,
-    U: Sequence[float],
-    path: str,
-    threshold: float = 75.0,
-) -> None:
-    """Export resolved Tri3 nodal stresses."""
-    _resolved(mesh, U, path, "tri3", None, threshold)
-
-
-def tri6(
-    mesh: PlaneMesh2D,
-    U: Sequence[float],
-    path: str,
-    gauss_order: int = 3,
-    threshold: float = 75.0,
-) -> None:
-    """Export resolved Tri6 nodal stresses."""
-    _resolved(mesh, U, path, "tri6", gauss_order, threshold)
-
-
-def quad4(
-    mesh: PlaneMesh2D,
-    U: Sequence[float],
-    path: str,
-    gauss_order: int = 2,
-    threshold: float = 75.0,
-) -> None:
-    """Export resolved Quad4 nodal stresses."""
-    _resolved(mesh, U, path, "quad4", gauss_order, threshold)
-
-
-def quad8(
-    mesh: PlaneMesh2D,
-    U: Sequence[float],
-    path: str,
-    gauss_order: int = 3,
-    threshold: float = 75.0,
-) -> None:
-    """Export resolved Quad8 nodal stresses."""
-    _resolved(mesh, U, path, "quad8", gauss_order, threshold)
-
-
-def hex8(
-    mesh: HexMesh3D,
-    U: Sequence[float],
-    path: str,
-    gauss_order: int = 2,
-    threshold: float = 75.0,
-) -> None:
-    """Export resolved Hex8 nodal stresses."""
-    _resolved(mesh, U, path, "hex8", gauss_order, threshold)
-
-
-def hex20(
-    mesh: Mesh3DProtocol,
-    U: Sequence[float],
-    path: str,
-    gauss_order: int = 3,
-    threshold: float = 75.0,
-) -> None:
-    """Export resolved Hex20 nodal stresses."""
-    _resolved(mesh, U, path, "hex20", gauss_order, threshold)
-
-
-def tet4(
-    mesh: Mesh3DProtocol,
-    U: Sequence[float],
-    path: str,
-    threshold: float = 75.0,
-) -> None:
-    """Export resolved Tet4 nodal stresses."""
-    _resolved(mesh, U, path, "tet4", None, threshold)
-
-
-def tet10(
-    mesh: Mesh3DProtocol,
-    U: Sequence[float],
-    path: str,
-    threshold: float = 75.0,
-) -> None:
-    """Export resolved Tet10 nodal stresses."""
-    _resolved(mesh, U, path, "tet10", None, threshold)
-
-
 def _resolved(
     mesh,
     U: Sequence[float],
@@ -149,7 +63,7 @@ def _write_resolved(mesh, resolved: ResolvedNodalStressField, path: str) -> None
     """Write resolved plane or solid rows with provenance metadata."""
     lookup = node_lookup(mesh)
     is_plane = resolved.component_names == ("sig_x", "sig_y", "tau_xy")
-    output_path = _prepare_path(path)
+    output_path = prepare_output_path(path)
     with open(output_path, "w", newline="", encoding="utf-8") as stream:
         writer = csv.writer(stream)
         writer.writerow(PLANE_NODAL_HEADER if is_plane else SOLID_NODAL_HEADER)
@@ -194,10 +108,3 @@ def _write_resolved(mesh, resolved: ResolvedNodalStressField, path: str) -> None
                 tau_zx,
                 von_mises_3d(sig_x, sig_y, sig_z, tau_xy, tau_yz, tau_zx),
             ])
-
-
-def _prepare_path(path: str | Path) -> Path:
-    """Create output parent directory and return a Path."""
-    output_path = Path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    return output_path

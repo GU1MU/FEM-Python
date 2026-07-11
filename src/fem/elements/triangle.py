@@ -83,7 +83,7 @@ class Tri3PlaneKernel:
         nj = node_lookup[elem.node_ids[j]]
         length = float(np.hypot(nj.x - ni.x, nj.y - ni.y))
         if length <= 0.0:
-            raise ValueError(f"Tri3 elem {elem.id} edge length is zero")
+            raise ValueError(f"Tri3 element {elem.id} edge length is zero; expected > 0")
 
         t = self._thickness(elem)
         tvec = np.array(traction, dtype=float)
@@ -97,10 +97,10 @@ class Tri3PlaneKernel:
         try:
             E = float(elem.props["E"])
             nu = float(elem.props["nu"])
-        except KeyError as e:
+        except KeyError as exc:
             raise KeyError(
-                f"元素 {elem.id} 的 props 缺少 {e.args[0]}，当前 props={elem.props}"
-            )
+                f"Element {elem.id} missing property {exc.args[0]}, props={elem.props}"
+            ) from exc
 
         t = self._thickness(elem)
         pt, _ = self._plane_data(elem)
@@ -111,16 +111,19 @@ class Tri3PlaneKernel:
         """Return plane type tag and Poisson ratio."""
         try:
             nu = float(elem.props["nu"])
-        except KeyError as e:
+        except KeyError as exc:
             raise KeyError(
-                f"元素 {elem.id} 的 props 缺少 {e.args[0]}，当前 props={elem.props}"
-            )
+                f"Element {elem.id} missing property {exc.args[0]}, props={elem.props}"
+            ) from exc
         pt = str(elem.props.get("plane_type", "stress")).lower()
         if pt.startswith("stress"):
             return "stress", nu
         if pt.startswith("strain"):
             return "strain", nu
-        raise ValueError(f"elem {elem.id} invalid plane_type")
+        raise ValueError(
+            f"Element {elem.id} has plane_type {elem.props.get('plane_type')!r}; "
+            "expected 'stress' or 'strain'"
+        )
 
     def _thickness(self, elem: Any) -> float:
         """Return plane element thickness."""
@@ -135,15 +138,18 @@ class Tri3PlaneKernel:
         """Return B matrix and area for Tri3."""
         if len(elem.node_ids) != 3:
             raise ValueError(
-                f"Tri3 单元必须有 3 个节点，elem {elem.id} node_ids={elem.node_ids}"
+                f"Tri3 element {elem.id} requires 3 nodes, got {len(elem.node_ids)}; "
+                f"node_ids={elem.node_ids}"
             )
         if node_lookup is None:
             node_lookup = build_node_lookup(mesh)
 
         try:
-            n1, n2, n3 = (node_lookup[nid] for nid in elem.node_ids)
-        except KeyError as e:
-            raise KeyError(f"在 mesh.nodes 中找不到 id={e.args[0]} 的节点")
+            n1, n2, n3 = (node_lookup[node_id] for node_id in elem.node_ids)
+        except KeyError as exc:
+            raise KeyError(
+                f"Element {elem.id} references missing node {exc.args[0]}"
+            ) from exc
 
         x1, y1 = n1.x, n1.y
         x2, y2 = n2.x, n2.y
@@ -157,7 +163,8 @@ class Tri3PlaneKernel:
         area = 0.5 * detJ
         if area <= 0.0:
             raise ValueError(
-                f"元素 {elem.id} 的面积 A={area} <= 0，请检查节点顺序或是否退化"
+                f"Tri3 element {elem.id} has non-positive signed area {area}; "
+                "expected counter-clockwise, non-degenerate node ordering"
             )
 
         b1 = y2 - y3
@@ -238,7 +245,10 @@ class Tri6PlaneKernel:
     ) -> np.ndarray:
         """Return Tri6 plane element stiffness."""
         if len(elem.node_ids) != 6:
-            raise ValueError(f"Tri6 needs 6 nodes, elem {elem.id} node_ids={elem.node_ids}")
+            raise ValueError(
+                f"Tri6 element {elem.id} requires 6 nodes, got {len(elem.node_ids)}; "
+                f"node_ids={elem.node_ids}"
+            )
 
         D, t = self._material_data(elem)
         Ke = np.zeros((12, 12), dtype=float)
@@ -299,7 +309,10 @@ class Tri6PlaneKernel:
     ) -> np.ndarray:
         """Return consistent Tri6 body force vector."""
         if len(elem.node_ids) != 6:
-            raise ValueError(f"Tri6 needs 6 nodes, elem {elem.id} node_ids={elem.node_ids}")
+            raise ValueError(
+                f"Tri6 element {elem.id} requires 6 nodes, got {len(elem.node_ids)}; "
+                f"node_ids={elem.node_ids}"
+            )
 
         t = self._thickness(elem)
         bvec = np.array(vector, dtype=float)
@@ -343,7 +356,9 @@ class Tri6PlaneKernel:
             dN_ds = np.array([s - 0.5, -2.0 * s, s + 0.5], dtype=float)
             jac = float(np.hypot(np.dot(dN_ds, x), np.dot(dN_ds, y)))
             if jac <= 0.0:
-                raise ValueError(f"Tri6 elem {elem.id} edge has zero Jacobian")
+                raise ValueError(
+                    f"Tri6 element {elem.id} edge has zero Jacobian; expected > 0"
+                )
             for edge_pos, local_i in enumerate(local_ids):
                 fe[2 * local_i:2 * local_i + 2] += N[edge_pos] * tvec * (t * jac * w)
         return fe
@@ -353,8 +368,10 @@ class Tri6PlaneKernel:
         try:
             E = float(elem.props["E"])
             nu = float(elem.props["nu"])
-        except KeyError as e:
-            raise KeyError(f"elem {elem.id} missing '{e.args[0]}' in props={elem.props}")
+        except KeyError as exc:
+            raise KeyError(
+                f"Element {elem.id} missing property {exc.args[0]}, props={elem.props}"
+            ) from exc
 
         t = self._thickness(elem)
         pt, _ = self._plane_data(elem)
@@ -365,14 +382,19 @@ class Tri6PlaneKernel:
         """Return plane type tag and Poisson ratio."""
         try:
             nu = float(elem.props["nu"])
-        except KeyError as e:
-            raise KeyError(f"elem {elem.id} missing '{e.args[0]}' in props={elem.props}")
+        except KeyError as exc:
+            raise KeyError(
+                f"Element {elem.id} missing property {exc.args[0]}, props={elem.props}"
+            ) from exc
         pt = str(elem.props.get("plane_type", "stress")).lower()
         if pt.startswith("stress"):
             return "stress", nu
         if pt.startswith("strain"):
             return "strain", nu
-        raise ValueError(f"elem {elem.id} invalid plane_type={elem.props.get('plane_type')}")
+        raise ValueError(
+            f"Element {elem.id} has plane_type {elem.props.get('plane_type')!r}; "
+            "expected 'stress' or 'strain'"
+        )
 
     def _thickness(self, elem: Any) -> float:
         """Return plane element thickness."""
@@ -389,7 +411,7 @@ class Tri6PlaneKernel:
         """Return B matrix and detJ at one natural coordinate point."""
         if node_lookup is None:
             node_lookup = build_node_lookup(mesh)
-        nodes = [node_lookup[nid] for nid in elem.node_ids]
+        nodes = [node_lookup[node_id] for node_id in elem.node_ids]
         x = np.array([node.x for node in nodes], dtype=float)
         y = np.array([node.y for node in nodes], dtype=float)
 
@@ -404,7 +426,8 @@ class Tri6PlaneKernel:
         detJ = float(np.linalg.det(J))
         if detJ <= 0.0:
             raise ValueError(
-                f"Tri6 elem {elem.id} has zero or negative Jacobian determinant"
+                f"Tri6 element {elem.id} has non-positive Jacobian determinant "
+                f"{detJ}; expected > 0"
             )
 
         dN_xy = np.linalg.inv(J) @ np.vstack([dN_dxi, dN_deta])
