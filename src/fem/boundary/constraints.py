@@ -18,11 +18,21 @@ def apply_dirichlet(
         raise TypeError(f"K must be csr_matrix, got {type(K)}")
     if K.shape[0] != K.shape[1]:
         raise ValueError(f"K must be square, got {K.shape}")
+    if not np.all(np.isfinite(K.data)):
+        raise ValueError("K must contain only finite values")
 
     n = K.shape[0]
-    F = np.asarray(F, dtype=float).ravel()
+    F = np.asarray(F, dtype=float)
+    if F.ndim == 2 and F.shape[1] == 1:
+        F = F[:, 0]
+    elif F.ndim != 1:
+        raise ValueError(
+            f"F must be one-dimensional or a column vector, got shape {F.shape}"
+        )
     if F.shape[0] != n:
         raise ValueError(f"F must have length {n}, got {F.shape}")
+    if not np.all(np.isfinite(F)):
+        raise ValueError("F must contain only finite values")
 
     K_mod = K.copy().tolil()
     F_mod = F.copy()
@@ -31,6 +41,10 @@ def apply_dirichlet(
         if dof_id < 0 or dof_id >= n:
             raise IndexError(f"DOF index {dof_id} out of bounds [0, {n})")
         value = float(value)
+        if not np.isfinite(value):
+            raise ValueError(
+                f"prescribed displacement at DOF {dof_id} must be finite, got {value!r}"
+            )
         if value != 0.0:
             F_mod -= value * K_mod[:, dof_id].toarray().ravel()
         K_mod[dof_id, :] = 0.0

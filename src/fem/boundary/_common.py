@@ -23,11 +23,17 @@ def spatial_dim(mesh: Any) -> int:
 
 
 def validate_vector(vector: tuple[float, ...], expected_size: int, name: str) -> None:
-    """Validate a load vector size against mesh coordinates."""
-    if len(vector) != expected_size:
+    """Validate a load vector size and numeric values."""
+    try:
+        values = np.asarray(vector, dtype=float)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} vector components must be finite numbers") from exc
+    if values.shape != (expected_size,):
         raise ValueError(
-            f"{name} vector must have {expected_size} components, got {len(vector)}"
+            f"{name} vector must have {expected_size} components, got {values.shape}"
         )
+    if not np.all(np.isfinite(values)):
+        raise ValueError(f"{name} vector components must be finite numbers")
 
 
 def add_kernel_load(
@@ -51,4 +57,15 @@ def add_kernel_load(
         fe = method(mesh, elem, vector, node_lookup)
     else:
         fe = method(mesh, elem, local_index, vector, node_lookup)
-    F[mesh.element_dofs(elem)] += fe
+    dofs = list(mesh.element_dofs(elem))
+    fe = np.asarray(fe, dtype=float)
+    if fe.shape != (len(dofs),):
+        raise ValueError(
+            f"Element {elem.id} {method_name} vector shape {fe.shape} "
+            f"does not match {len(dofs)} element DOFs"
+        )
+    if not np.all(np.isfinite(fe)):
+        raise ValueError(
+            f"Element {elem.id} {method_name} vector contains non-finite values"
+        )
+    F[dofs] += fe

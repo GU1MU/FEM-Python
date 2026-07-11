@@ -8,6 +8,21 @@ from ._common import add_kernel_load, require_element, validate_vector
 from .condition import ElementLoad
 
 
+def _validate_finite_vector(
+    vector: tuple[float, ...],
+    expected_size: int,
+    name: str,
+) -> None:
+    """Validate the size and finiteness of a body-load vector."""
+    validate_vector(vector, expected_size, name)
+    try:
+        values = np.asarray(vector, dtype=float)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} vector components must be finite numbers") from exc
+    if not np.all(np.isfinite(values)):
+        raise ValueError(f"{name} vector components must be finite numbers")
+
+
 def add_forces(
     mesh: Any,
     loads: list[ElementLoad],
@@ -19,7 +34,7 @@ def add_forces(
     """Assemble constant element body forces."""
     for load in loads:
         elem = require_element(elem_lookup, load.elem_id)
-        validate_vector(load.vector, spatial_dim, "body force")
+        _validate_finite_vector(load.vector, spatial_dim, "body force")
         add_kernel_load(mesh, elem, node_lookup, F, "body_force", load.vector)
 
 
@@ -34,9 +49,20 @@ def add_gravity(
     if gravity is None:
         return
 
-    validate_vector(gravity, spatial_dim, "gravity")
+    _validate_finite_vector(gravity, spatial_dim, "gravity")
     for elem in mesh.elements:
         rho = elem.props.get("rho")
         if rho is not None:
-            vector = tuple(float(rho) * value for value in gravity)
+            try:
+                rho_value = float(rho)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Element {elem.id} rho must be a finite non-negative number, "
+                    f"got {rho!r}"
+                ) from exc
+            if not np.isfinite(rho_value) or rho_value < 0.0:
+                raise ValueError(
+                    f"Element {elem.id} rho must be finite and >= 0, got {rho!r}"
+                )
+            vector = tuple(rho_value * value for value in gravity)
             add_kernel_load(mesh, elem, node_lookup, F, "body_force", vector)

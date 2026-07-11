@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable
 
+import math
+
 
 @dataclass(frozen=True)
 class ElementLoad:
@@ -39,7 +41,9 @@ class BoundaryCondition:
 
     def add_displacement_dof(self, dof_id: int, value: float = 0.0) -> None:
         """Add prescribed displacement on a global DOF."""
-        self.prescribed_displacements[int(dof_id)] = float(value)
+        self.prescribed_displacements[int(dof_id)] = _finite_float(
+            value, "prescribed displacement"
+        )
 
     def add_displacement(self, node_id: int, component: int, value: float, mesh: Any) -> None:
         """Add prescribed displacement by node and component."""
@@ -99,11 +103,23 @@ class BoundaryCondition:
 def _accumulate_dof_value(values: Dict[int, float], dof_id: int, value: float) -> None:
     """Accumulate a scalar value on a DOF map."""
     dof_id = int(dof_id)
-    values[dof_id] = values.get(dof_id, 0.0) + float(value)
+    value = _finite_float(value, "nodal force")
+    total = values.get(dof_id, 0.0) + value
+    if not math.isfinite(total):
+        raise ValueError(f"accumulated nodal force at DOF {dof_id} must be finite")
+    values[dof_id] = total
 
 
 def _float_vector(components: tuple[float, ...]) -> tuple[float, ...]:
     """Normalize a non-empty numeric vector."""
     if not components:
         raise ValueError("load vector must contain at least one component")
-    return tuple(float(value) for value in components)
+    return tuple(_finite_float(value, "load vector component") for value in components)
+
+
+def _finite_float(value: float, name: str) -> float:
+    """Return a finite scalar value."""
+    converted = float(value)
+    if not math.isfinite(converted):
+        raise ValueError(f"{name} must be finite, got {value!r}")
+    return converted

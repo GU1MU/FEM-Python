@@ -8,13 +8,23 @@ from .base import build_node_lookup
 
 
 def _required_float_props(elem: Any, *names: str) -> tuple[float, ...]:
-    """Return required element properties as floats."""
+    """Return required, physically admissible element properties."""
     try:
-        return tuple(float(elem.props[name]) for name in names)
+        values = tuple(float(elem.props[name]) for name in names)
     except KeyError as exc:
         raise KeyError(
             f"Element {elem.id} missing property {exc.args[0]}, props={elem.props}"
         ) from exc
+
+    for name, value in zip(names, values):
+        if name in {"E", "area", "Izz"} and (
+            not np.isfinite(value) or value <= 0.0
+        ):
+            raise ValueError(
+                f"Element {elem.id} property {name} must be finite and > 0, "
+                f"got {elem.props[name]!r}"
+            )
+    return values
 
 
 def _body_vector_2d(vector: tuple[float, float], element_type: str) -> np.ndarray:
@@ -24,6 +34,8 @@ def _body_vector_2d(vector: tuple[float, float], element_type: str) -> np.ndarra
         raise ValueError(
             f"{element_type} body force must have 2 components, got {bvec.shape}"
         )
+    if not np.all(np.isfinite(bvec)):
+        raise ValueError(f"{element_type} body force components must be finite")
     return bvec
 
 
@@ -72,6 +84,7 @@ def _beam2d_transformation(c: float, s: float) -> np.ndarray:
 class Truss2DKernel:
     """Two-node planar truss element kernel."""
     type_names = ("Truss2D",)
+    edge_node_indices = ((0, 1),)
 
     def stiffness(
         self,
@@ -133,6 +146,7 @@ class Truss2DKernel:
 class Beam2DKernel:
     """Two-node Euler-Bernoulli beam element kernel."""
     type_names = ("Beam2D",)
+    edge_node_indices = ((0, 1),)
 
     def stiffness(
         self,

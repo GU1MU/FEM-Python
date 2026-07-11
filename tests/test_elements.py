@@ -703,5 +703,9 @@ def test_registry_rejects_reduced_integration_hex20_alias(element_type):
         get_element_kernel(element_type)
 
 
-def test_registry_preserves_preexisting_variant_fallback():
-    assert type(get_element_kernel("C3D8R")) is Hex8Kernel
+def test_registry_rejects_unimplemented_reduced_integration_hex8_alias():
+    with pytest.raises(
+        NotImplementedError,
+        match=r"Unsupported element type: C3D8R; reduced integration is not implemented",
+    ):
+        get_element_kernel("C3D8R")

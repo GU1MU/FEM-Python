@@ -24,4 +24,7 @@ def build_load_vector(mesh: Any, bc: BoundaryCondition) -> np.ndarray:
     traction.add_surface_forces(mesh, bc.surface_tractions, F, elem_lookup, node_lookup, dim)
     traction.add_edge_forces(mesh, bc.edge_tractions, F, elem_lookup, node_lookup, dim)
 
+    if not np.all(np.isfinite(F)):
+        raise ValueError("assembled load vector contains non-finite values")
+
     return F

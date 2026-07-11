@@ -1,9 +1,20 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from collections.abc import Mapping
 from typing import Any
 
 from ..core.model import ElementSet, MaterialDefinition, SectionAssignment
+
+
+_SECTION_KEYS_METADATA = "_section_property_keys_by_element"
+_SECTION_ORIGINALS_METADATA = "_section_original_properties_by_element"
+_SECTION_IDENTITIES_METADATA = "_section_property_element_identity_by_element"
+_SECTION_METADATA_KEYS = (
+    _SECTION_KEYS_METADATA,
+    _SECTION_ORIGINALS_METADATA,
+    _SECTION_IDENTITIES_METADATA,
+)
 
 
 def add(model: Any, material: MaterialDefinition) -> MaterialDefinition:
@@ -34,9 +45,61 @@ def assign(
 
 def apply_sections(model: Any) -> None:
     """Copy assigned material and section data onto element props."""
-    element_lookup = {elem.id: elem for elem in model.mesh.elements}
-    section_keys = model.metadata.setdefault("_section_property_keys_by_element", {})
+    element_lookup = _element_lookup(model)
+    resolved_sections = _resolve_sections(model, element_lookup)
+    props_snapshot = {
+        element_id: (elem.props, deepcopy(elem.props))
+        for element_id, elem in element_lookup.items()
+    }
+    metadata_snapshot = {
+        key: (
+            key in model.metadata,
+            model.metadata.get(key),
+            deepcopy(model.metadata.get(key)),
+        )
+        for key in _SECTION_METADATA_KEYS
+    }
 
+    try:
+        section_keys = model.metadata.setdefault(_SECTION_KEYS_METADATA, {})
+        original_values = model.metadata.setdefault(_SECTION_ORIGINALS_METADATA, {})
+        element_identities = model.metadata.setdefault(_SECTION_IDENTITIES_METADATA, {})
+        _restore_section_properties(
+            element_lookup,
+            section_keys,
+            original_values,
+            element_identities,
+        )
+
+        for element_set, props in resolved_sections:
+            for element_id in element_set.element_ids:
+                elem = element_lookup[element_id]
+                baseline = original_values.setdefault(element_id, {})
+                _restore_tracked_keys(
+                    elem,
+                    section_keys.get(element_id, ()),
+                    baseline,
+                )
+                for key in props:
+                    if key not in baseline:
+                        baseline[key] = (
+                            key in elem.props,
+                            deepcopy(elem.props.get(key)),
+                        )
+                elem.props.update(props)
+                section_keys[element_id] = tuple(props)
+                element_identities[element_id] = id(elem)
+    except Exception:
+        _restore_apply_sections_state(model, props_snapshot, metadata_snapshot)
+        raise
+
+
+def _resolve_sections(
+    model: Any,
+    element_lookup: dict[int, Any],
+) -> list[tuple[ElementSet, dict[str, Any]]]:
+    """Resolve and validate every section without mutating model state."""
+    resolved_sections: list[tuple[ElementSet, dict[str, Any]]] = []
     for section in model.sections:
         if section.material not in model.materials:
             raise KeyError(f"material {section.material} is not defined")
@@ -55,15 +118,83 @@ def apply_sections(model: Any) -> None:
             section.section_type,
             _freeze_signature(section.properties),
         )
-
         for element_id in element_set.element_ids:
             if element_id not in element_lookup:
                 raise KeyError(f"element {element_id} is not defined")
-            elem = element_lookup[element_id]
-            for key in section_keys.get(element_id, ()):
-                elem.props.pop(key, None)
-            elem.props.update(props)
-            section_keys[element_id] = tuple(props)
+        resolved_sections.append((element_set, props))
+    return resolved_sections
+
+
+def _restore_apply_sections_state(
+    model: Any,
+    props_snapshot: dict[int, tuple[dict[str, Any], dict[str, Any]]],
+    metadata_snapshot: dict[str, tuple[bool, Any, Any]],
+) -> None:
+    """Roll back element props and section tracking metadata after a failure."""
+    for original_props, values in props_snapshot.values():
+        original_props.clear()
+        original_props.update(deepcopy(values))
+
+    for key, (existed, original_value, values) in metadata_snapshot.items():
+        if not existed:
+            model.metadata.pop(key, None)
+            continue
+        if isinstance(original_value, dict) and isinstance(values, dict):
+            original_value.clear()
+            original_value.update(deepcopy(values))
+            model.metadata[key] = original_value
+        else:
+            model.metadata[key] = original_value
+
+
+def _element_lookup(model: Any) -> dict[int, Any]:
+    """Return elements by unique id for section application."""
+    lookup: dict[int, Any] = {}
+    for elem in model.mesh.elements:
+        element_id = int(elem.id)
+        if element_id in lookup:
+            raise ValueError("element ids must be unique")
+        lookup[element_id] = elem
+    return lookup
+
+
+def _restore_section_properties(
+    element_lookup: dict[int, Any],
+    section_keys: dict[int, tuple[str, ...]],
+    original_values: dict[int, dict[str, tuple[bool, Any]]],
+    element_identities: dict[int, int],
+) -> None:
+    """Restore element properties that a previous section application replaced."""
+    for raw_element_id, keys in tuple(section_keys.items()):
+        element_id = int(raw_element_id)
+        elem = element_lookup.get(element_id)
+        if elem is None:
+            continue
+        expected_identity = element_identities.get(
+            raw_element_id,
+            element_identities.get(element_id),
+        )
+        if expected_identity is not None and expected_identity != id(elem):
+            continue
+        baseline = original_values.get(raw_element_id, original_values.get(element_id, {}))
+        _restore_tracked_keys(elem, keys, baseline)
+    section_keys.clear()
+    original_values.clear()
+    element_identities.clear()
+
+
+def _restore_tracked_keys(
+    elem: Any,
+    keys: tuple[str, ...],
+    baseline: dict[str, tuple[bool, Any]],
+) -> None:
+    """Restore one element's currently derived section keys."""
+    for key in keys:
+        existed, value = baseline.get(key, (False, None))
+        if existed:
+            elem.props[key] = deepcopy(value)
+        else:
+            elem.props.pop(key, None)
 
 
 def _section_element_set(model: Any, name: str) -> ElementSet:

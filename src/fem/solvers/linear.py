@@ -13,6 +13,8 @@ def solve(K: csr_matrix, F: np.ndarray) -> np.ndarray:
         raise TypeError(f"K must be csr_matrix, got {type(K)}")
     if K.shape[0] != K.shape[1]:
         raise ValueError(f"K must be square, got {K.shape}")
+    if not np.all(np.isfinite(K.data)):
+        raise ValueError("K must contain only finite values")
 
     n = K.shape[0]
     F = np.asarray(F, dtype=float)
@@ -20,6 +22,8 @@ def solve(K: csr_matrix, F: np.ndarray) -> np.ndarray:
         F = F.ravel()
     if F.ndim != 1 or F.shape[0] != n:
         raise ValueError(f"F must have length {n}, got {F.shape}")
+    if not np.all(np.isfinite(F)):
+        raise ValueError("F must contain only finite values")
 
     try:
         with warnings.catch_warnings():

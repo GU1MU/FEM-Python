@@ -11,15 +11,16 @@ _MIXED2D_TYPES = {
     "CPE3": ("Tri3Plane", 3, "linear"),
     "CPS4": ("Quad4Plane", 4, "linear"),
     "CPE4": ("Quad4Plane", 4, "linear"),
-    "CPS4R": ("Quad4Plane", 4, "linear"),
-    "CPE4R": ("Quad4Plane", 4, "linear"),
     "CPS6": ("Tri6Plane", 6, "quadratic"),
     "CPE6": ("Tri6Plane", 6, "quadratic"),
     "CPS8": ("Quad8Plane", 8, "quadratic"),
     "CPE8": ("Quad8Plane", 8, "quadratic"),
-    "CPS8R": ("Quad8Plane", 8, "quadratic"),
-    "CPE8R": ("Quad8Plane", 8, "quadratic"),
 }
+
+_UNSUPPORTED_REDUCED_INTEGRATION_TYPES = frozenset(
+    {"C3D8R", "CPS4R", "CPE4R", "CPS8R", "CPE8R", "C3D20R"}
+)
+_UNSUPPORTED_COUPLED_ELEMENT_TYPES = frozenset({"C3D4T", "C3D10T"})
 
 
 def _split_nums(line: str) -> List[str]:
@@ -32,6 +33,24 @@ def _keyword_type(kw: str) -> str | None:
         if part.startswith("TYPE="):
             return part.split("=", 1)[1].strip().upper()
     return None
+
+
+def _reject_unsupported_reduced_integration(element_type: str | None) -> None:
+    """Reject reduced-integration aliases that have no local formulation."""
+    if element_type in _UNSUPPORTED_REDUCED_INTEGRATION_TYPES:
+        raise NotImplementedError(
+            f"Unsupported element type: {element_type}; "
+            "reduced integration is not implemented"
+        )
+
+
+def _reject_unsupported_coupled_element(element_type: str | None) -> None:
+    """Reject coupled formulations that require unsupported extra DOFs."""
+    if element_type in _UNSUPPORTED_COUPLED_ELEMENT_TYPES:
+        raise NotImplementedError(
+            f"Unsupported element type: {element_type}; "
+            "coupled temperature-displacement elements are not implemented"
+        )
 
 
 def _integer_token(
@@ -383,7 +402,8 @@ def read_quad4(
                     in_elem = False
                     elem_abaqus_type = None
                     et = _keyword_type(kw)
-                    if et in ("CPS4", "CPE4", "CPS4R", "CPE4R"):
+                    _reject_unsupported_reduced_integration(et)
+                    if et in ("CPS4", "CPE4"):
                         in_elem = True
                         elem_abaqus_type = et
                 else:
@@ -494,7 +514,8 @@ def read_quad8(
                     in_elem = False
                     elem_abaqus_type = None
                     et = _keyword_type(kw)
-                    if et in ("CPS8", "CPE8", "CPS8R", "CPE8R"):
+                    _reject_unsupported_reduced_integration(et)
+                    if et in ("CPS8", "CPE8"):
                         in_elem = True
                         elem_abaqus_type = et
                 else:
@@ -593,6 +614,7 @@ def read_mixed2d(
                 in_node = kw.startswith("*NODE")
                 if kw.startswith("*ELEMENT"):
                     elem_abaqus_type = _keyword_type(kw)
+                    _reject_unsupported_reduced_integration(elem_abaqus_type)
                     in_elem = elem_abaqus_type in _MIXED2D_TYPES
                     if (
                         elem_abaqus_type is not None
@@ -691,7 +713,8 @@ def read_tet10(inp_path: str) -> TetMesh3D:
                     pending_elem_parts = []
                     pending_elem_line_numbers = []
                     et = _keyword_type(kw)
-                    if et in ("C3D10", "C3D10T"):
+                    _reject_unsupported_coupled_element(et)
+                    if et == "C3D10":
                         in_elem = True
                         elem_abaqus_type = et
                 else:
@@ -766,7 +789,7 @@ def read_tet10(inp_path: str) -> TetMesh3D:
 
 
 def read_tet4(inp_path: str) -> TetMesh3D:
-    """Read a Tet4 3D mesh from Abaqus .inp file (C3D4 / C3D4T elements)."""
+    """Read a Tet4 3D mesh from Abaqus C3D4 input data."""
     nodes: List[Node3D] = []
     elements: List[Element3D] = []
     node_lookup: Dict[int, Node3D] = {}
@@ -792,7 +815,8 @@ def read_tet4(inp_path: str) -> TetMesh3D:
                     in_elem = False
                     elem_abaqus_type = None
                     et = _keyword_type(kw)
-                    if et in ("C3D4", "C3D4T"):
+                    _reject_unsupported_coupled_element(et)
+                    if et == "C3D4":
                         in_elem = True
                         elem_abaqus_type = et
                 else:
@@ -826,7 +850,7 @@ def read_tet4(inp_path: str) -> TetMesh3D:
     if not nodes:
         raise ValueError(f"No *Node data found in {inp_path}")
     if not elements:
-        raise ValueError(f"No C3D4/C3D4T *Element data found in {inp_path}")
+        raise ValueError(f"No C3D4 *Element data found in {inp_path}")
 
     # Check volume (Jacobian determinant) for each element
     for e in elements:
@@ -868,6 +892,7 @@ def read_hex8(inp_path: str) -> HexMesh3D:
                     in_elem = False
                     elem_abaqus_type = None
                     et = _keyword_type(kw)
+                    _reject_unsupported_reduced_integration(et)
                     if et == "C3D8":
                         in_elem = True
                         elem_abaqus_type = et
@@ -934,9 +959,15 @@ def read_hex20(inp_path: str) -> HexMesh3D:
                 if keyword.startswith("*ASSEMBLY"):
                     break
                 in_node = keyword.startswith("*NODE")
+                elem_abaqus_type = (
+                    _keyword_type(keyword)
+                    if keyword.startswith("*ELEMENT")
+                    else None
+                )
+                _reject_unsupported_reduced_integration(elem_abaqus_type)
                 in_elem = (
                     keyword.startswith("*ELEMENT")
-                    and _keyword_type(keyword) == "C3D20"
+                    and elem_abaqus_type == "C3D20"
                 )
                 if keyword.startswith("*ELEMENT"):
                     pending_elem_parts = []

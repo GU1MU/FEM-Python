@@ -9,6 +9,7 @@ from ..boundary.loads import build_load_vector
 from ..boundary.step import boundary_for_step, get_step
 from ..core.model import AnalysisStep
 from ..core.result import ModelResult, ModelResults
+from ..core.validation import validate_model
 from . import linear
 
 
@@ -18,8 +19,10 @@ def solve(
     name: str | None = None,
 ) -> ModelResult:
     """Solve one linear static model step."""
-    materials.apply_sections(model)
     selected_step = get_step(model, step)
+    validate_model(model, selected_step)
+    _validate_static_step(selected_step)
+    materials.apply_sections(model)
     boundary = boundary_for_step(model, selected_step)
     K = assemble_global_stiffness_sparse(model.mesh)
     F = build_load_vector(model.mesh, boundary)
@@ -33,6 +36,39 @@ def solve(
         reactions,
         name=name,
     )
+
+
+def _validate_static_step(step: AnalysisStep | None) -> None:
+    """Reject procedures and geometric nonlinearity unsupported by this solver."""
+    if step is None:
+        return
+    if str(step.procedure).strip().lower() != "static":
+        raise ValueError(
+            f"static_linear solver requires procedure 'static', got {step.procedure!r}"
+        )
+    nlgeom = next(
+        (
+            value
+            for key, value in step.metadata.items()
+            if str(key).strip().lower() == "nlgeom"
+        ),
+        None,
+    )
+    if _truthy_option(nlgeom):
+        raise ValueError("static_linear solver does not support nlgeom")
+
+
+def _truthy_option(value: Any) -> bool:
+    """Return semantic truth for common bool-like analysis options."""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"", "0", "false", "no", "off"}:
+            return False
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+    return bool(value)
 
 
 def solve_all(

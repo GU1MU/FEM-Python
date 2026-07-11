@@ -5,6 +5,7 @@ from typing import Any
 import numpy as np
 
 from ..core.model import AnalysisStep, EdgeLoad, ElementEdge, ElementFace, SurfaceLoad
+from ._common import spatial_dim
 from .condition import BoundaryCondition
 
 
@@ -57,7 +58,7 @@ def boundary_for_step(model: Any, step: str | int | AnalysisStep | None = None) 
             )
 
     for surface_load in selected_step.surface_loads:
-        if model.mesh.dofs_per_node == 2:
+        if spatial_dim(model.mesh) == 2:
             raise ValueError("2D surface loads are not supported; use edge loads")
         if surface_load.surface not in model.surfaces:
             raise KeyError(f"surface {surface_load.surface} is not defined")
@@ -75,7 +76,7 @@ def boundary_for_step(model: Any, step: str | int | AnalysisStep | None = None) 
     for edge_load in selected_step.edge_loads:
         if edge_load.edge not in model.edges:
             raise KeyError(f"edge {edge_load.edge} is not defined")
-        if model.mesh.dofs_per_node == 3:
+        if spatial_dim(model.mesh) == 3:
             raise NotImplementedError("3D edge loads are not supported")
         for edge in model.edges[edge_load.edge].edges:
             if edge_load.load_type == "pressure":

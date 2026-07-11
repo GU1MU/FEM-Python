@@ -8,9 +8,38 @@ from .base import build_node_lookup
 from ..materials import linear_elastic
 
 
+def _plane_type(elem: Any) -> str:
+    """Return the plane formulation, inferring standard Abaqus aliases."""
+    raw_value = elem.props.get("plane_type")
+    if raw_value is None:
+        raw_value = "strain" if str(elem.type).upper().startswith("CPE") else "stress"
+    plane_type = str(raw_value).lower()
+    if plane_type.startswith("stress"):
+        return "stress"
+    if plane_type.startswith("strain"):
+        return "strain"
+    raise ValueError(
+        f"Element {elem.id} has plane_type {raw_value!r}; "
+        "expected 'stress' or 'strain'"
+    )
+
+
+def _positive_thickness(elem: Any) -> float:
+    """Return a finite positive plane-element thickness."""
+    raw_value = elem.props.get("thickness", 1.0)
+    thickness = float(raw_value)
+    if not np.isfinite(thickness) or thickness <= 0.0:
+        raise ValueError(
+            f"Element {elem.id} property thickness must be finite and > 0, "
+            f"got {raw_value!r}"
+        )
+    return thickness
+
+
 class Tri3PlaneKernel:
     """Tri3 plane stress/strain element kernel."""
     type_names = ("Tri3Plane", "Tri3", "CPS3", "CPE3")
+    edge_node_indices = ((0, 1), (1, 2), (2, 0))
 
     def stiffness(
         self,
@@ -72,13 +101,12 @@ class Tri3PlaneKernel:
         node_lookup: dict[int, Any] | None = None,
     ) -> np.ndarray:
         """Return consistent Tri3 edge traction vector."""
-        edge_nodes = [(0, 1), (1, 2), (2, 0)]
         if local_edge < 0 or local_edge >= 3:
             raise ValueError(f"Tri3 local_edge must be 0/1/2, got {local_edge}")
         if node_lookup is None:
             node_lookup = build_node_lookup(mesh)
 
-        i, j = edge_nodes[local_edge]
+        i, j = self.edge_node_indices[local_edge]
         ni = node_lookup[elem.node_ids[i]]
         nj = node_lookup[elem.node_ids[j]]
         length = float(np.hypot(nj.x - ni.x, nj.y - ni.y))
@@ -115,19 +143,11 @@ class Tri3PlaneKernel:
             raise KeyError(
                 f"Element {elem.id} missing property {exc.args[0]}, props={elem.props}"
             ) from exc
-        pt = str(elem.props.get("plane_type", "stress")).lower()
-        if pt.startswith("stress"):
-            return "stress", nu
-        if pt.startswith("strain"):
-            return "strain", nu
-        raise ValueError(
-            f"Element {elem.id} has plane_type {elem.props.get('plane_type')!r}; "
-            "expected 'stress' or 'strain'"
-        )
+        return _plane_type(elem), nu
 
     def _thickness(self, elem: Any) -> float:
         """Return plane element thickness."""
-        return float(elem.props.get("thickness", 1.0))
+        return _positive_thickness(elem)
 
     def _B_matrix(
         self,
@@ -236,6 +256,7 @@ def tri6_edge_gauss_points():
 class Tri6PlaneKernel:
     """Tri6 plane stress/strain element kernel."""
     type_names = ("Tri6Plane", "Tri6", "CPS6", "CPE6")
+    edge_node_indices = ((0, 3, 1), (1, 4, 2), (2, 5, 0))
 
     def stiffness(
         self,
@@ -333,13 +354,12 @@ class Tri6PlaneKernel:
         node_lookup: dict[int, Any] | None = None,
     ) -> np.ndarray:
         """Return consistent Tri6 edge traction vector."""
-        edge_nodes = [(0, 3, 1), (1, 4, 2), (2, 5, 0)]
         if local_edge < 0 or local_edge >= 3:
             raise ValueError(f"Tri6 local_edge must be 0/1/2, got {local_edge}")
         if node_lookup is None:
             node_lookup = build_node_lookup(mesh)
 
-        local_ids = edge_nodes[local_edge]
+        local_ids = self.edge_node_indices[local_edge]
         nodes = [node_lookup[elem.node_ids[i]] for i in local_ids]
         x = np.array([node.x for node in nodes], dtype=float)
         y = np.array([node.y for node in nodes], dtype=float)
@@ -386,19 +406,11 @@ class Tri6PlaneKernel:
             raise KeyError(
                 f"Element {elem.id} missing property {exc.args[0]}, props={elem.props}"
             ) from exc
-        pt = str(elem.props.get("plane_type", "stress")).lower()
-        if pt.startswith("stress"):
-            return "stress", nu
-        if pt.startswith("strain"):
-            return "strain", nu
-        raise ValueError(
-            f"Element {elem.id} has plane_type {elem.props.get('plane_type')!r}; "
-            "expected 'stress' or 'strain'"
-        )
+        return _plane_type(elem), nu
 
     def _thickness(self, elem: Any) -> float:
         """Return plane element thickness."""
-        return float(elem.props.get("thickness", 1.0))
+        return _positive_thickness(elem)
 
     def _B_matrix(
         self,

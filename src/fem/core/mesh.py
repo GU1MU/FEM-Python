@@ -31,17 +31,24 @@ class Mesh2DProtocol(Protocol):
     node_ids: Sequence[int]
     nodes: List
     elements: List
+    dof_map: DofMap
 
     def global_dof(self, node_id: int, component: int) -> int: ...
     def node_dofs(self, node_id: int) -> Sequence[int]: ...
     def element_dofs(self, elem) -> Sequence[int]: ...
+    def rebuild_dof_map(self) -> DofMap: ...
 
 
 class _DofMappedMeshMixin:
     """Shared DOF access for mesh containers."""
 
     def __post_init__(self):
+        self.rebuild_dof_map()
+
+    def rebuild_dof_map(self) -> DofMap:
+        """Rebuild cached node-to-DOF state after an explicit mesh edit."""
         self.dof_map = DofMap.from_nodes(self.nodes, self.dofs_per_node)
+        return self.dof_map
 
     @property
     def node_ids(self):
@@ -133,10 +140,12 @@ class Mesh3DProtocol(Protocol):
     node_ids: Sequence[int]
     nodes: List
     elements: List
+    dof_map: DofMap
 
     def global_dof(self, node_id: int, component: int) -> int: ...
     def node_dofs(self, node_id: int) -> Sequence[int]: ...
     def element_dofs(self, elem) -> Sequence[int]: ...
+    def rebuild_dof_map(self) -> DofMap: ...
 
 
 @dataclass

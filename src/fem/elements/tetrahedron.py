@@ -312,7 +312,7 @@ class _TetKernelBase:
 
 class Tet4Kernel(_TetKernelBase):
     """Tet4 solid element kernel."""
-    type_names = ("Tet4", "C3D4", "C3D4T")
+    type_names = ("Tet4", "C3D4")
     node_count = 4
     gauss_points = staticmethod(tet4_gauss_points)
     shape_funcs_grads = staticmethod(tet4_shape_funcs_grads)

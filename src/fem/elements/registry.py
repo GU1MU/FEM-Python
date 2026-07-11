@@ -9,6 +9,17 @@ from .triangle import Tri3PlaneKernel, Tri6PlaneKernel
 
 
 _KERNELS: dict[str, ElementKernel] = {}
+_UNSUPPORTED_REDUCED_INTEGRATION_TYPES = frozenset(
+    {
+        "c3d8r",
+        "cps4r",
+        "cpe4r",
+        "cps8r",
+        "cpe8r",
+        "c3d20r",
+    }
+)
+_UNSUPPORTED_COUPLED_ELEMENT_TYPES = frozenset({"c3d4t", "c3d10t"})
 
 
 def register_element_kernel(kernel: ElementKernel) -> None:
@@ -20,14 +31,18 @@ def register_element_kernel(kernel: ElementKernel) -> None:
 def get_element_kernel(element_type: str) -> ElementKernel:
     """Return the registered element kernel for an element type."""
     key = str(element_type).lower()
-    if "c3d20r" in key:
-        raise NotImplementedError(f"Unsupported element type: {element_type}")
+    if key in _UNSUPPORTED_REDUCED_INTEGRATION_TYPES:
+        raise NotImplementedError(
+            f"Unsupported element type: {element_type}; "
+            "reduced integration is not implemented"
+        )
+    if key in _UNSUPPORTED_COUPLED_ELEMENT_TYPES:
+        raise NotImplementedError(
+            f"Unsupported element type: {element_type}; "
+            "coupled temperature-displacement elements are not implemented"
+        )
     if key in _KERNELS:
         return _KERNELS[key]
-
-    for name, kernel in _KERNELS.items():
-        if name in key:
-            return kernel
 
     raise NotImplementedError(f"Unsupported element type: {element_type}")
 

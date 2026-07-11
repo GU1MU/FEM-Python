@@ -33,7 +33,8 @@ def quad4_gauss_points(gauss_order: int):
 
 class Quad4PlaneKernel:
     """Quad4 plane stress/strain element kernel."""
-    type_names = ("Quad4Plane", "Quad4", "CPS4", "CPE4", "CPS4R", "CPE4R")
+    type_names = ("Quad4Plane", "Quad4", "CPS4", "CPE4")
+    edge_node_indices = ((0, 1), (1, 2), (2, 3), (3, 0))
 
     def stiffness(
         self,
@@ -147,12 +148,12 @@ class Quad4PlaneKernel:
         try:
             E = float(elem.props["E"])
             nu = float(elem.props["nu"])
-            t = float(elem.props.get("thickness", 1.0))
         except KeyError as exc:
             raise KeyError(
                 f"Element {elem.id} missing property {exc.args[0]}, props={elem.props}"
             ) from exc
 
+        t = self._thickness(elem)
         pt, _ = self._plane_data(elem)
         D = linear_elastic.plane_matrix(E, nu, pt)
         return D, t
@@ -165,7 +166,12 @@ class Quad4PlaneKernel:
             raise KeyError(
                 f"Element {elem.id} missing property {exc.args[0]}, props={elem.props}"
             ) from exc
-        pt = str(elem.props.get("plane_type", "stress")).lower()
+        if "plane_type" in elem.props:
+            pt = str(elem.props["plane_type"]).lower()
+        elif str(elem.type).upper().startswith("CPE"):
+            pt = "strain"
+        else:
+            pt = "stress"
         if pt.startswith("stress"):
             return "stress", nu
         if pt.startswith("strain"):
@@ -177,7 +183,13 @@ class Quad4PlaneKernel:
 
     def _thickness(self, elem: Any) -> float:
         """Return plane element thickness."""
-        return float(elem.props.get("thickness", 1.0))
+        thickness = float(elem.props.get("thickness", 1.0))
+        if not np.isfinite(thickness) or thickness <= 0.0:
+            raise ValueError(
+                f"Quad4 element {elem.id} thickness must be finite and > 0, "
+                f"got {elem.props.get('thickness', 1.0)!r}"
+            )
+        return thickness
 
     def _nodes(self, mesh: Any, elem: Any, node_lookup: dict[int, Any] | None):
         """Return element nodes in element order."""
@@ -260,11 +272,12 @@ class Quad4PlaneKernel:
         )
 
     def _checked_det_jacobian(self, elem: Any, J: np.ndarray) -> float:
-        """Return detJ and reject singular elements."""
+        """Return detJ and reject singular or inverted elements."""
         detJ = float(np.linalg.det(J))
-        if detJ == 0.0:
+        if detJ <= 0.0:
             raise ValueError(
-                f"Quad4 element {elem.id} has zero Jacobian determinant; expected nonzero"
+                f"Quad4 element {elem.id} has non-positive Jacobian determinant "
+                f"{detJ}; expected > 0"
             )
         return detJ
 
@@ -362,6 +375,12 @@ def quad8_gauss_points(gauss_order: int):
 class Quad8PlaneKernel:
     """Quad8 plane stress/strain element kernel."""
     type_names = ("Quad8Plane", "Quad8", "CPS8", "CPE8")
+    edge_node_indices = (
+        (0, 4, 1),
+        (1, 5, 2),
+        (2, 6, 3),
+        (3, 7, 0),
+    )
 
     def stiffness(
         self,
@@ -485,12 +504,12 @@ class Quad8PlaneKernel:
         try:
             E = float(elem.props["E"])
             nu = float(elem.props["nu"])
-            t = float(elem.props.get("thickness", 1.0))
         except KeyError as exc:
             raise KeyError(
                 f"Element {elem.id} missing property {exc.args[0]}, props={elem.props}"
             ) from exc
 
+        t = self._thickness(elem)
         pt, _ = self._plane_data(elem)
         D = linear_elastic.plane_matrix(E, nu, pt)
         return D, t
@@ -503,7 +522,12 @@ class Quad8PlaneKernel:
             raise KeyError(
                 f"Element {elem.id} missing property {exc.args[0]}, props={elem.props}"
             ) from exc
-        pt = str(elem.props.get("plane_type", "stress")).lower()
+        if "plane_type" in elem.props:
+            pt = str(elem.props["plane_type"]).lower()
+        elif str(elem.type).upper().startswith("CPE"):
+            pt = "strain"
+        else:
+            pt = "stress"
         if pt.startswith("stress"):
             return "stress", nu
         if pt.startswith("strain"):
@@ -515,7 +539,13 @@ class Quad8PlaneKernel:
 
     def _thickness(self, elem: Any) -> float:
         """Return plane element thickness."""
-        return float(elem.props.get("thickness", 1.0))
+        thickness = float(elem.props.get("thickness", 1.0))
+        if not np.isfinite(thickness) or thickness <= 0.0:
+            raise ValueError(
+                f"Quad8 element {elem.id} thickness must be finite and > 0, "
+                f"got {elem.props.get('thickness', 1.0)!r}"
+            )
+        return thickness
 
     def _nodes(self, mesh: Any, elem: Any, node_lookup: dict[int, Any] | None):
         """Return element nodes in element order."""
@@ -574,11 +604,12 @@ class Quad8PlaneKernel:
         )
 
     def _checked_det_jacobian(self, elem: Any, J: np.ndarray) -> float:
-        """Return detJ and reject singular elements."""
+        """Return detJ and reject singular or inverted elements."""
         detJ = float(np.linalg.det(J))
-        if detJ == 0.0:
+        if detJ <= 0.0:
             raise ValueError(
-                f"Quad8 element {elem.id} has zero Jacobian determinant; expected nonzero"
+                f"Quad8 element {elem.id} has non-positive Jacobian determinant "
+                f"{detJ}; expected > 0"
             )
         return detJ
 
