@@ -10,7 +10,7 @@ from fem.core.model import AnalysisStep, FEMModel
 from fem.core.result import ModelResult
 from fem.elements import get_element_kernel
 from fem.io import csv as csv_io
-from fem.post import displacement, vtk
+from fem.post import displacement, stress, vtk
 
 
 def _write(path, lines):
@@ -57,8 +57,8 @@ def test_read_beam2_reads_section_orientation_and_material_properties(tmp_path):
             "node_id,x,y,z",
             "1,0,0,0",
             "2,4,0,0",
-            "elem_id,node_i,node_j,area,Iyy,Izz,J,local_y_x,local_y_y,local_y_z,material_id",
-            "10,1,2,3,5,7,2,0,1,0,1",
+            "elem_id,node_i,node_j,section_type,radius,outer_radius,inner_radius,size_y,size_z,local_y_x,local_y_y,local_y_z,material_id",
+            "10,1,2,rectangle,,,,3,2,0,1,0,1",
         ],
     )
 
@@ -67,16 +67,62 @@ def test_read_beam2_reads_section_orientation_and_material_properties(tmp_path):
     assert isinstance(mesh, BeamMesh3D)
     assert mesh.elements[0].type == "Beam2"
     assert mesh.elements[0].props == {
-        "area": 3.0,
-        "Iyy": 5.0,
-        "Izz": 7.0,
-        "J": 2.0,
+        "section_type": "rectangle",
+        "size_y": 3.0,
+        "size_z": 2.0,
         "local_y": (0.0, 1.0, 0.0),
         "material_id": 1,
         "E": 210.0,
         "nu": 0.25,
         "rho": 7.8,
     }
+
+
+def test_read_beam2_preserves_shape_specific_circle_dimensions(tmp_path):
+    mesh_path = _write(
+        tmp_path / "circles.csv",
+        [
+            "node_id,x,y,z",
+            "1,0,0,0",
+            "2,1,0,0",
+            "3,2,0,0",
+            "elem_id,node_i,node_j,section_type,radius,outer_radius,inner_radius,size_y,size_z,local_y_x,local_y_y,local_y_z,material_id",
+            "1,1,2,solid_circle,0.5,,,,,0,1,0,1",
+            "2,2,3,hollow_circle,,0.6,0.4,,,0,1,0,1",
+        ],
+    )
+
+    mesh = csv_io.read_beam2(mesh_path)
+
+    assert mesh.elements[0].props == {
+        "section_type": "solid_circle",
+        "radius": 0.5,
+        "local_y": (0.0, 1.0, 0.0),
+        "material_id": 1,
+    }
+    assert mesh.elements[1].props == {
+        "section_type": "hollow_circle",
+        "outer_radius": 0.6,
+        "inner_radius": 0.4,
+        "local_y": (0.0, 1.0, 0.0),
+        "material_id": 1,
+    }
+
+
+def test_read_beam2_rejects_nonempty_irrelevant_section_dimension(tmp_path):
+    mesh_path = _write(
+        tmp_path / "irrelevant_dimension.csv",
+        [
+            "node_id,x,y,z",
+            "1,0,0,0",
+            "2,1,0,0",
+            "elem_id,node_i,node_j,section_type,radius,outer_radius,inner_radius,size_y,size_z,local_y_x,local_y_y,local_y_z,material_id",
+            "1,1,2,solid_circle,0.5,0.6,,,,0,1,0,1",
+        ],
+    )
+
+    with pytest.raises(ValueError, match="solid_circle.*outer_radius"):
+        csv_io.read_beam2(mesh_path)
 
 
 @pytest.mark.parametrize(
@@ -87,13 +133,13 @@ def test_read_beam2_reads_section_orientation_and_material_properties(tmp_path):
         ("read_truss2", "elem_id,node_i,node_j,area,material_id,extra", "1,1,2,3,1,9"),
         (
             "read_beam2",
-            "elem_id,node_i,node_j,area,Izz,Iyy,J,local_y_x,local_y_y,local_y_z,material_id",
+            "elem_id,node_i,node_j,area,Iyy,Izz,J,local_y_x,local_y_y,local_y_z,material_id",
             "1,1,2,3,5,7,2,0,1,0,1",
         ),
         (
             "read_beam2",
-            "elem_id,node_i,node_j,area,Iyy,Izz,J,local_y_x,local_y_y,local_y_z,material,extra",
-            "1,1,2,3,5,7,2,0,1,0,1,9",
+            "elem_id,node_i,node_j,section_type,radius,outer_radius,inner_radius,size_y,size_z,local_y_x,local_y_y,local_y_z,material,extra",
+            "1,1,2,solid_circle,1,,,,,0,1,0,1,9",
         ),
     ],
 )
@@ -150,7 +196,7 @@ def test_truss2_result_export_writes_3d_displacement_element_stress_and_vtk(tmp_
     assert not (tmp_path / "line_result_nodal_stress.csv").exists()
 
 
-def test_beam2_result_export_writes_six_components_rotation_vector_and_no_stress(tmp_path):
+def test_beam2_result_export_writes_six_components_rotation_vector_and_no_element_stress(tmp_path):
     mesh = BeamMesh3D(
         nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 2.0, 0.0, 0.0)],
         elements=[
@@ -158,7 +204,14 @@ def test_beam2_result_export_writes_six_components_rotation_vector_and_no_stress
                 1,
                 [1, 2],
                 "Beam2",
-                {"E": 100.0, "nu": 0.25, "area": 2.0, "Iyy": 3.0, "Izz": 4.0, "J": 1.0, "local_y": (0, 1, 0)},
+                {
+                    "E": 100.0,
+                    "nu": 0.25,
+                    "section_type": "rectangle",
+                    "size_y": 2.0,
+                    "size_z": 1.0,
+                    "local_y": (0, 1, 0),
+                },
             )
         ],
     )
@@ -174,7 +227,88 @@ def test_beam2_result_export_writes_six_components_rotation_vector_and_no_stress
     assert "VECTORS rotation float" in vtk_text
     assert "0.1 0.2 0.3" in vtk_text
     assert not (tmp_path / "line_result_element_stress.csv").exists()
-    assert not (tmp_path / "line_result_nodal_stress.csv").exists()
+    stress_path = tmp_path / "line_result_nodal_stress.csv"
+    stress_rows = list(csv.reader(stress_path.open(encoding="utf-8")))
+    assert stress_rows[0] == [
+        "node_id",
+        "x",
+        "y",
+        "z",
+        "axial_stress_max",
+        "axial_stress_min",
+        "axial_stress_abs_max",
+    ]
+    assert [int(row[0]) for row in stress_rows[1:]] == [1, 2]
+    for scalar in (
+        "axial_stress_max",
+        "axial_stress_min",
+        "axial_stress_abs_max",
+    ):
+        assert f"SCALARS {scalar} float 1" in vtk_text
+    assert "VECTORS axial_stress" not in vtk_text
+
+
+def test_beam2_direct_nodal_export_requires_result_load_context(tmp_path):
+    mesh = BeamMesh3D(
+        nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 2.0, 0.0, 0.0)],
+        elements=[
+            Element3D(
+                1,
+                [1, 2],
+                "Beam2",
+                {
+                    "E": 100.0,
+                    "nu": 0.25,
+                    "section_type": "solid_circle",
+                    "radius": 1.0,
+                    "local_y": (0.0, 1.0, 0.0),
+                },
+            )
+        ],
+    )
+    result = _result(mesh, np.zeros(mesh.num_dofs))
+    path = tmp_path / "beam_nodal_stress.csv"
+
+    with pytest.raises(ValueError, match="ModelResult.*load context"):
+        stress.export.nodal(mesh, result.U, path)
+
+    stress.export.nodal_from_result(result, path)
+
+    assert path.exists()
+
+
+def test_beam2_nodal_stress_csv_contains_every_mesh_node_once(tmp_path):
+    mesh = BeamMesh3D(
+        nodes=[
+            Node3D(1, 0.0, 0.0, 0.0),
+            Node3D(2, 1.0, 0.0, 0.0),
+            Node3D(3, 2.0, 0.0, 0.0),
+        ],
+        elements=[
+            Element3D(
+                1,
+                [1, 2],
+                "Beam2",
+                {
+                    "E": 100.0,
+                    "nu": 0.25,
+                    "section_type": "solid_circle",
+                    "radius": 1.0,
+                    "local_y": (0.0, 1.0, 0.0),
+                },
+            )
+        ],
+    )
+
+    vtk.export.from_result(_result(mesh, np.zeros(mesh.num_dofs)), tmp_path)
+
+    rows = list(
+        csv.DictReader(
+            (tmp_path / "line_result_nodal_stress.csv").open(encoding="utf-8")
+        )
+    )
+    assert [int(row["node_id"]) for row in rows] == [1, 2, 3]
+    assert float(rows[2]["axial_stress_abs_max"]) == pytest.approx(0.0)
 
 
 def test_old_planar_line_apis_are_removed_and_plane_elements_remain_available():
@@ -209,5 +343,23 @@ def test_active_source_and_examples_contain_no_legacy_line_api_names():
             if path.is_file() and path.suffix in {".py", ".csv"}:
                 text = path.read_text(encoding="utf-8")
                 if any(name in text for name in legacy_names):
+                    offenders.append(path.relative_to(project_root).as_posix())
+    assert offenders == []
+
+
+def test_active_source_and_examples_contain_no_old_beam2_input_contract():
+    project_root = Path(__file__).resolve().parents[1]
+    old_header = "elem_id,node_i,node_j,area,Iyy,Izz,J"
+    old_property_reads = (
+        'elem.props["Iyy"]',
+        'elem.props["Izz"]',
+        'elem.props["J"]',
+    )
+    offenders = []
+    for root_name in ("src", "exam" + "ples"):
+        for path in (project_root / root_name).rglob("*"):
+            if path.is_file() and path.suffix in {".py", ".csv"}:
+                text = path.read_text(encoding="utf-8")
+                if old_header in text or any(value in text for value in old_property_reads):
                     offenders.append(path.relative_to(project_root).as_posix())
     assert offenders == []

@@ -7,6 +7,7 @@ import pytest
 from fem import boundary
 from fem.core.mesh import Element3D, Node3D, TrussMesh3D
 from fem.elements import get_element_kernel
+from fem.elements.beam_section import parse_beam2_section
 from fem.elements.hexahedron import (
     HEX20_EXTRAPOLATION_MATRIX,
     HEX20_NATURAL_NODE_COORDS,
@@ -175,7 +176,7 @@ def test_inclined_beam_cantilever_matches_euler_bernoulli_tip_response():
     Ke = kernel.stiffness(mesh, elem)
     L, rotation = beam3_geometry(mesh, elem)
     E = float(elem.props["E"])
-    Izz = float(elem.props["Izz"])
+    Izz = parse_beam2_section(elem.props).Izz
     free = mesh.node_dofs(elem.node_ids[1])
     F = np.zeros(mesh.num_dofs, dtype=float)
     F[free[:3]] = rotation[1]
@@ -201,7 +202,11 @@ def test_line_element_body_force_preserves_global_resultant(builder):
     kernel = get_element_kernel(elem.type)
     vector = np.array([4.0, -5.0, 2.0])
     length, _ = line3_geometry(mesh, elem)
-    area = float(elem.props["area"])
+    area = (
+        parse_beam2_section(elem.props).area
+        if str(elem.type).casefold() == "beam2"
+        else float(elem.props["area"])
+    )
 
     fe = kernel.body_force(mesh, elem, tuple(vector))
     stride = mesh.dofs_per_node
@@ -217,7 +222,7 @@ def test_beam_body_force_preserves_global_moment():
     vector = np.array([4.0, -5.0, 2.0])
     fe = get_element_kernel(elem.type).body_force(mesh, elem, tuple(vector))
     length, _ = line3_geometry(mesh, elem)
-    area = float(elem.props["area"])
+    area = parse_beam2_section(elem.props).area
     node_lookup = _node_lookup(mesh)
     ni = node_lookup[elem.node_ids[0]]
     nj = node_lookup[elem.node_ids[1]]
@@ -287,7 +292,7 @@ def test_line_element_reports_missing_node(builder):
     ("builder", "missing_property"),
     [
         (make_truss_stiffness_mesh, "area"),
-        (make_beam_stiffness_mesh, "Izz"),
+        (make_beam_stiffness_mesh, "size_z"),
     ],
     ids=["truss2", "beam2"],
 )
@@ -298,7 +303,7 @@ def test_line_element_reports_missing_required_property(builder, missing_propert
 
     with pytest.raises(
         KeyError,
-        match=rf"Element {elem.id} missing property {missing_property}",
+        match=rf"missing property {missing_property}",
     ):
         get_element_kernel(elem.type).stiffness(mesh, elem)
 

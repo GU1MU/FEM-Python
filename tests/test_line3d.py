@@ -4,8 +4,12 @@ import pytest
 from fem.boundary.condition import BoundaryCondition
 from fem.boundary.loads import build_load_vector
 from fem.core.mesh import BeamMesh3D, Element3D, Node3D, TrussMesh3D
+from fem.core.model import AnalysisStep, FEMModel
+from fem.core.result import ModelResult
 from fem.elements import get_element_kernel
+from fem.elements.beam_section import axial_stress_extrema, parse_beam2_section
 from fem.elements.line import beam3_geometry
+from fem.post.stress import beam as beam_stress
 
 
 def _truss_mesh(*, reversed_nodes=False, props=None):
@@ -108,10 +112,9 @@ def _beam_mesh(*, end=(4.0, 0.0, 0.0), local_y=(0.0, 1.0, 0.0), props=None):
     properties = {
         "E": 210.0,
         "nu": 0.25,
-        "area": 3.0,
-        "Iyy": 5.0,
-        "Izz": 7.0,
-        "J": 2.0,
+        "section_type": "rectangle",
+        "size_y": 3.0,
+        "size_z": 2.0,
         "local_y": local_y,
         "rho": 4.0,
     }
@@ -120,6 +123,222 @@ def _beam_mesh(*, end=(4.0, 0.0, 0.0), local_y=(0.0, 1.0, 0.0), props=None):
     return BeamMesh3D(
         nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, *end)],
         elements=[Element3D(1, [1, 2], "Beam2", properties)],
+    )
+
+
+@pytest.mark.parametrize(
+    ("props", "expected"),
+    [
+        (
+            {"section_type": "solid_circle", "radius": 2.0},
+            (4.0 * np.pi, 4.0 * np.pi, 4.0 * np.pi, 8.0 * np.pi),
+        ),
+        (
+            {
+                "section_type": "hollow_circle",
+                "outer_radius": 2.0,
+                "inner_radius": 1.0,
+            },
+            (3.0 * np.pi, 15.0 * np.pi / 4.0, 15.0 * np.pi / 4.0, 15.0 * np.pi / 2.0),
+        ),
+        (
+            {"section_type": "rectangle", "size_y": 4.0, "size_z": 1.0},
+            (4.0, 1.0 / 3.0, 16.0 / 3.0, 1.1232518332307355),
+        ),
+    ],
+)
+def test_beam2_standard_sections_derive_stiffness_properties(props, expected):
+    section = parse_beam2_section(props)
+
+    assert (section.area, section.Iyy, section.Izz, section.J) == pytest.approx(expected)
+
+
+def test_beam2_square_section_torsion_matches_saint_venant_coefficient():
+    section = parse_beam2_section(
+        {"section_type": "rectangle", "size_y": 2.0, "size_z": 2.0}
+    )
+
+    assert section.J == pytest.approx(0.14057701495517982 * 2.0**4)
+
+
+@pytest.mark.parametrize(
+    ("props", "message"),
+    [
+        ({}, "section_type"),
+        ({"section_type": "general"}, "section_type"),
+        ({"section_type": "solid_circle"}, "radius"),
+        ({"section_type": "solid_circle", "radius": 0.0}, "radius"),
+        ({"section_type": "solid_circle", "radius": np.inf}, "radius"),
+        (
+            {"section_type": "hollow_circle", "outer_radius": 1.0, "inner_radius": 1.0},
+            "outer_radius",
+        ),
+        (
+            {"section_type": "rectangle", "size_y": 1.0, "size_z": -1.0},
+            "size_z",
+        ),
+        (
+            {"section_type": "rectangle", "size_y": 1.0, "size_z": 2.0, "radius": 3.0},
+            "radius",
+        ),
+    ],
+)
+def test_beam2_standard_sections_reject_invalid_contracts(props, message):
+    with pytest.raises((KeyError, ValueError), match=message):
+        parse_beam2_section(props)
+
+
+@pytest.mark.parametrize(
+    ("props", "forces", "expected"),
+    [
+        (
+            {"section_type": "solid_circle", "radius": 2.0},
+            (10.0, 3.0, 4.0),
+            (5.0 / np.pi, 0.0, 5.0 / np.pi),
+        ),
+        (
+            {"section_type": "rectangle", "size_y": 4.0, "size_z": 2.0},
+            (16.0, 8.0 / 3.0, 32.0 / 3.0),
+            (5.0, -1.0, 5.0),
+        ),
+    ],
+)
+def test_beam2_section_axial_stress_extrema_include_axial_and_biaxial_bending(
+    props, forces, expected
+):
+    section = parse_beam2_section(props)
+
+    assert axial_stress_extrema(section, *forces) == pytest.approx(expected)
+
+
+def _beam_result(mesh, U, step=None):
+    model = FEMModel(mesh=mesh)
+    selected_step = step or AnalysisStep("result")
+    return ModelResult(
+        model,
+        selected_step,
+        np.asarray(U, dtype=float),
+        np.zeros(mesh.num_dofs),
+    )
+
+
+def test_beam2_rigid_motion_recovers_zero_nodal_axial_stress():
+    mesh = _beam_mesh(end=(2.0, 3.0, 6.0), local_y=(1.0, 1.0, 0.0))
+    rigid = np.tile([0.4, -0.2, 0.7, 0.0, 0.0, 0.0], 2)
+
+    rows = beam_stress.nodal_envelope(_beam_result(mesh, rigid))
+
+    assert [(row.maximum, row.minimum, row.absolute_maximum) for row in rows] == pytest.approx(
+        [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0)], abs=1e-10
+    )
+
+
+def test_beam2_pure_tension_recovers_positive_stress_at_both_ends():
+    mesh = _beam_mesh()
+    U = np.zeros(mesh.num_dofs)
+    U[mesh.global_dof(2, 0)] = 0.04
+
+    rows = beam_stress.nodal_envelope(_beam_result(mesh, U))
+
+    expected = 210.0 * 0.04 / 4.0
+    assert [(row.maximum, row.minimum, row.absolute_maximum) for row in rows] == pytest.approx(
+        [(expected, expected, expected), (expected, expected, expected)]
+    )
+
+
+def test_beam2_pure_bending_recovers_same_extrema_at_both_ends():
+    mesh = _beam_mesh()
+    section = parse_beam2_section(mesh.elements[0].props)
+    curvature = 0.03
+    length = 4.0
+    U = np.zeros(mesh.num_dofs)
+    U[mesh.global_dof(2, 1)] = 0.5 * curvature * length**2
+    U[mesh.global_dof(2, 5)] = curvature * length
+
+    rows = beam_stress.nodal_envelope(_beam_result(mesh, U))
+
+    moment = 210.0 * section.Izz * curvature
+    increment = abs(moment / section.Izz) * section.size_y / 2.0
+    assert np.allclose(
+        [(row.maximum, row.minimum, row.absolute_maximum) for row in rows],
+        [(increment, -increment, increment), (increment, -increment, increment)],
+    )
+
+
+def test_beam2_pure_bending_about_local_y_recovers_section_extrema():
+    mesh = _beam_mesh()
+    section = parse_beam2_section(mesh.elements[0].props)
+    curvature = 0.02
+    length = 4.0
+    U = np.zeros(mesh.num_dofs)
+    U[mesh.global_dof(2, 2)] = -0.5 * curvature * length**2
+    U[mesh.global_dof(2, 4)] = curvature * length
+
+    rows = beam_stress.nodal_envelope(_beam_result(mesh, U))
+
+    moment = 210.0 * section.Iyy * curvature
+    increment = abs(moment / section.Iyy) * section.size_z / 2.0
+    assert np.allclose(
+        [(row.maximum, row.minimum, row.absolute_maximum) for row in rows],
+        [(increment, -increment, increment), (increment, -increment, increment)],
+    )
+
+
+def test_beam2_inclined_and_reversed_elements_preserve_physical_extrema():
+    inclined = _beam_mesh(end=(2.0, 3.0, 6.0), local_y=(1.0, 1.0, 0.0))
+    _, rotation = beam3_geometry(inclined, inclined.elements[0])
+    local_displacement = np.zeros(12)
+    local_displacement[6] = 0.07
+    local_displacement[7] = 0.02
+    local_displacement[11] = 0.01
+    global_displacement = np.zeros(12)
+    for start in (0, 3, 6, 9):
+        global_displacement[start : start + 3] = rotation.T @ local_displacement[start : start + 3]
+
+    forward = beam_stress.nodal_envelope(_beam_result(inclined, global_displacement))
+    reversed_mesh = _beam_mesh(end=(2.0, 3.0, 6.0), local_y=(1.0, 1.0, 0.0))
+    reversed_mesh.elements[0].node_ids = [2, 1]
+    reversed_rows = beam_stress.nodal_envelope(
+        _beam_result(reversed_mesh, global_displacement)
+    )
+
+    forward_by_node = {row.node_id: row for row in forward}
+    reversed_by_node = {row.node_id: row for row in reversed_rows}
+    for node_id in inclined.node_ids:
+        assert (
+            reversed_by_node[node_id].maximum,
+            reversed_by_node[node_id].minimum,
+            reversed_by_node[node_id].absolute_maximum,
+        ) == pytest.approx(
+            (
+                forward_by_node[node_id].maximum,
+                forward_by_node[node_id].minimum,
+                forward_by_node[node_id].absolute_maximum,
+            )
+        )
+
+
+def test_beam2_shared_node_uses_maximum_minimum_envelope_without_averaging():
+    props = dict(_beam_mesh().elements[0].props)
+    mesh = BeamMesh3D(
+        nodes=[
+            Node3D(1, 0.0, 0.0, 0.0),
+            Node3D(2, 1.0, 0.0, 0.0),
+            Node3D(3, 2.0, 0.0, 0.0),
+        ],
+        elements=[
+            Element3D(1, [1, 2], "Beam2", dict(props)),
+            Element3D(2, [2, 3], "Beam2", dict(props)),
+        ],
+    )
+    U = np.zeros(mesh.num_dofs)
+    U[mesh.global_dof(2, 0)] = 0.1
+
+    rows = beam_stress.nodal_envelope(_beam_result(mesh, U))
+
+    assert [row.node_id for row in rows] == [1, 2, 3]
+    assert [(row.maximum, row.minimum, row.absolute_maximum) for row in rows] == pytest.approx(
+        [(21.0, 21.0, 21.0), (21.0, -21.0, 21.0), (-21.0, -21.0, 21.0)]
     )
 
 
@@ -171,23 +390,34 @@ def test_beam2_six_rigid_body_modes_have_zero_internal_force(mode):
 
 
 @pytest.mark.parametrize(
-    ("dof", "load", "expected"),
+    ("dof", "section_property"),
     [
-        (0, 12.0, 12.0 * 4.0 / (210.0 * 3.0)),
-        (1, 12.0, 12.0 * 4.0**3 / (3.0 * 210.0 * 7.0)),
-        (2, 12.0, 12.0 * 4.0**3 / (3.0 * 210.0 * 5.0)),
-        (3, 12.0, 12.0 * 4.0 / ((210.0 / 2.5) * 2.0)),
+        (0, "area"),
+        (1, "Izz"),
+        (2, "Iyy"),
+        (3, "J"),
     ],
     ids=["axial", "bend-local-y", "bend-local-z", "torsion"],
 )
-def test_beam2_cantilever_matches_closed_form_tip_response(dof, load, expected):
+def test_beam2_cantilever_matches_closed_form_tip_response(dof, section_property):
     mesh = _beam_mesh()
+    section = parse_beam2_section(mesh.elements[0].props)
     stiffness = get_element_kernel("Beam2").stiffness(mesh, mesh.elements[0])
     free_stiffness = stiffness[6:12, 6:12]
+    load = 12.0
     force = np.zeros(6)
     force[dof] = load
 
     tip = np.linalg.solve(free_stiffness, force)
+
+    if dof == 0:
+        expected = load * 4.0 / (210.0 * section.area)
+    elif dof in (1, 2):
+        expected = load * 4.0**3 / (
+            3.0 * 210.0 * getattr(section, section_property)
+        )
+    else:
+        expected = load * 4.0 / ((210.0 / 2.5) * section.J)
 
     assert tip[dof] == pytest.approx(expected)
 
@@ -216,7 +446,7 @@ def test_beam2_body_force_preserves_resultant_and_moment():
     element_force = get_element_kernel("Beam2").body_force(
         mesh, elem, tuple(body_vector)
     )
-    total_force = body_vector * elem.props["area"] * 7.0
+    total_force = body_vector * parse_beam2_section(elem.props).area * 7.0
     end = np.array([2.0, 3.0, 6.0])
     assembled_moment = (
         np.cross(np.zeros(3), element_force[:3])

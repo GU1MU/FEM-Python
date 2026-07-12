@@ -13,8 +13,11 @@ from fem.core.model import (
     FEMModel,
     LineLoad,
 )
+from fem.core.result import ModelResult
 from fem.elements import get_element_kernel
+from fem.elements.beam_section import parse_beam2_section
 from fem.elements.line import beam3_geometry
+from fem.post.stress import beam as beam_stress
 from fem.solvers import static_linear
 
 
@@ -31,10 +34,9 @@ def _beam_model(*, inclined=False):
                 {
                     "E": 210.0,
                     "nu": 0.25,
-                    "area": 3.0,
-                    "Iyy": 5.0,
-                    "Izz": 7.0,
-                    "J": 2.0,
+                    "section_type": "rectangle",
+                    "size_y": 3.0,
+                    "size_z": 2.0,
                     "local_y": local_y,
                     "rho": 99.0,
                 },
@@ -154,12 +156,36 @@ def test_uniform_transverse_line_load_cantilever_matches_closed_form_and_reactio
     mesh = model.mesh
     length = 4.0
     E = model.mesh.elements[0].props["E"]
-    Izz = model.mesh.elements[0].props["Izz"]
+    Izz = parse_beam2_section(model.mesh.elements[0].props).Izz
 
     assert result.U[mesh.global_dof(2, 1)] == pytest.approx(q * length**4 / (8.0 * E * Izz))
     assert result.U[mesh.global_dof(2, 5)] == pytest.approx(q * length**3 / (6.0 * E * Izz))
     assert result.reactions[mesh.global_dof(1, 1)] == pytest.approx(-q * length)
     assert result.reactions[mesh.global_dof(1, 5)] == pytest.approx(-q * length**2 / 2.0)
+
+
+def test_fixed_beam_uniform_line_load_recovers_bending_stress_with_zero_displacement():
+    model = _beam_model()
+    q = 12.0
+    step = AnalysisStep(
+        "fixed",
+        line_loads=(LineLoad(10, (0.0, q, 0.0), "local"),),
+    )
+    result = ModelResult(
+        model,
+        step,
+        np.zeros(model.mesh.num_dofs),
+        np.zeros(model.mesh.num_dofs),
+    )
+
+    rows = beam_stress.nodal_envelope(result)
+
+    section = parse_beam2_section(model.mesh.elements[0].props)
+    moment = q * 4.0**2 / 12.0
+    increment = abs(moment / section.Izz) * section.size_y / 2.0
+    assert [(row.maximum, row.minimum, row.absolute_maximum) for row in rows] == pytest.approx(
+        [(increment, -increment, increment), (increment, -increment, increment)]
+    )
 
 
 @pytest.mark.parametrize("coordinate_system", ["GLOBAL ", "cylindrical", ""])

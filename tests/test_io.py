@@ -654,10 +654,10 @@ def test_csv_read_mixed3d_rejects_nonempty_physical_field_beyond_header(tmp_path
         (
             "read_beam2",
             [
-                "elem_id,node_i,node_j,area,Iyy,Izz,J,local_y_x,local_y_y,local_y_z,material_id",
-                "1,1,2,1,2,bad,3,0,1,0,1",
+                "elem_id,node_i,node_j,section_type,radius,outer_radius,inner_radius,size_y,size_z,local_y_x,local_y_y,local_y_z,material_id",
+                "1,1,2,rectangle,,,,bad,2,0,1,0,1",
             ],
-            "Izz",
+            "size_y",
             "bad",
             "numeric value",
         ),

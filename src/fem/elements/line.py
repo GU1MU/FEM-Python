@@ -5,6 +5,7 @@ from typing import Any
 import numpy as np
 
 from .base import build_node_lookup
+from .beam_section import Beam2Section, parse_beam2_section
 
 
 def _required_float_props(elem: Any, *names: str) -> tuple[float, ...]:
@@ -17,7 +18,7 @@ def _required_float_props(elem: Any, *names: str) -> tuple[float, ...]:
         ) from exc
 
     for name, value in zip(names, values):
-        if name in {"E", "area", "Iyy", "Izz", "J"} and (
+        if name in {"E", "area"} and (
             not np.isfinite(value) or value <= 0.0
         ):
             raise ValueError(
@@ -170,11 +171,9 @@ def _beam2_local_stiffness(
     return stiffness
 
 
-def _beam_properties(elem: Any) -> tuple[float, float, float, float, float, float]:
+def _beam_properties(elem: Any) -> tuple[float, float, Beam2Section]:
     """Return validated Beam2 elastic and section properties."""
-    E, area, Iyy, Izz, J = _required_float_props(
-        elem, "E", "area", "Iyy", "Izz", "J"
-    )
+    (E,) = _required_float_props(elem, "E")
     try:
         nu = float(elem.props["nu"])
     except KeyError as exc:
@@ -184,7 +183,7 @@ def _beam_properties(elem: Any) -> tuple[float, float, float, float, float, floa
             f"Element {elem.id} property nu must be finite and satisfy -1 < nu < 0.5, "
             f"got {elem.props['nu']!r}"
         )
-    return E, nu, area, Iyy, Izz, J
+    return E, nu, parse_beam2_section(elem.props)
 
 
 class Truss2Kernel:
@@ -248,11 +247,19 @@ class Beam2Kernel:
         node_lookup: dict[int, Any] | None = None,
     ) -> np.ndarray:
         """Return the transformed 12-by-12 Beam2 stiffness matrix."""
-        E, nu, area, Iyy, Izz, J = _beam_properties(elem)
+        E, nu, section = _beam_properties(elem)
         _validate_optional_rho(elem)
         length, rotation = beam3_geometry(mesh, elem, node_lookup)
         G = E / (2.0 * (1.0 + nu))
-        local = _beam2_local_stiffness(length, E, area, Iyy, Izz, G, J)
+        local = _beam2_local_stiffness(
+            length,
+            E,
+            section.area,
+            section.Iyy,
+            section.Izz,
+            G,
+            section.J,
+        )
         transformation = _beam3_transformation(rotation)
         return transformation.T @ local @ transformation
 
@@ -264,10 +271,10 @@ class Beam2Kernel:
         node_lookup: dict[int, Any] | None = None,
     ) -> np.ndarray:
         """Return the consistent Beam2 body-force vector."""
-        (area,) = _required_float_props(elem, "area")
+        section = parse_beam2_section(elem.props)
         length, rotation = beam3_geometry(mesh, elem, node_lookup)
         global_vector = _body_vector_3d(vector, "Beam2")
-        local_line_load = area * (rotation @ global_vector)
+        local_line_load = section.area * (rotation @ global_vector)
         local_force = _beam2_consistent_line_load(length, local_line_load)
         return _beam3_transformation(rotation).T @ local_force
 
@@ -280,6 +287,25 @@ class Beam2Kernel:
         node_lookup: dict[int, Any] | None = None,
     ) -> np.ndarray:
         """Return the consistent Beam2 force for a constant line load."""
+        length, rotation = beam3_geometry(mesh, elem, node_lookup)
+        local_force = self.local_line_load(
+            mesh,
+            elem,
+            vector,
+            coordinate_system,
+            node_lookup,
+        )
+        return _beam3_transformation(rotation).T @ local_force
+
+    def local_line_load(
+        self,
+        mesh: Any,
+        elem: Any,
+        vector: tuple[float, float, float],
+        coordinate_system: str = "global",
+        node_lookup: dict[int, Any] | None = None,
+    ) -> np.ndarray:
+        """Return the local consistent vector used by assembly and recovery."""
         line_vector = _body_vector_3d(vector, "line load")
         if coordinate_system not in {"global", "local"}:
             raise ValueError(
@@ -287,9 +313,57 @@ class Beam2Kernel:
                 f"got {coordinate_system!r}"
             )
         length, rotation = beam3_geometry(mesh, elem, node_lookup)
-        local_vector = rotation @ line_vector if coordinate_system == "global" else line_vector
-        local_force = _beam2_consistent_line_load(length, local_vector)
-        return _beam3_transformation(rotation).T @ local_force
+        local_vector = (
+            rotation @ line_vector
+            if coordinate_system == "global"
+            else line_vector
+        )
+        return _beam2_consistent_line_load(length, local_vector)
+
+    def local_end_actions(
+        self,
+        mesh: Any,
+        elem: Any,
+        U: np.ndarray,
+        equivalent_local_load: np.ndarray | None = None,
+        node_lookup: dict[int, Any] | None = None,
+    ) -> np.ndarray:
+        """Return tension-positive (N, My, Mz) at both Beam2 ends."""
+        E, nu, section = _beam_properties(elem)
+        length, rotation = beam3_geometry(mesh, elem, node_lookup)
+        G = E / (2.0 * (1.0 + nu))
+        local_stiffness = _beam2_local_stiffness(
+            length,
+            E,
+            section.area,
+            section.Iyy,
+            section.Izz,
+            G,
+            section.J,
+        )
+        element_displacement = np.asarray(U, dtype=float)[list(mesh.element_dofs(elem))]
+        if element_displacement.shape != (12,):
+            raise ValueError(
+                f"Beam2 element {elem.id} displacement requires 12 values"
+            )
+        local_displacement = _beam3_transformation(rotation) @ element_displacement
+        local_load = (
+            np.zeros(12, dtype=float)
+            if equivalent_local_load is None
+            else np.asarray(equivalent_local_load, dtype=float)
+        )
+        if local_load.shape != (12,) or not np.all(np.isfinite(local_load)):
+            raise ValueError(
+                f"Beam2 element {elem.id} equivalent local load must have 12 finite values"
+            )
+        action = local_stiffness @ local_displacement - local_load
+        return np.array(
+            [
+                [-action[0], -action[4], -action[5]],
+                [action[6], action[10], action[11]],
+            ],
+            dtype=float,
+        )
 
 
 def _beam2_consistent_line_load(length: float, vector: np.ndarray) -> np.ndarray:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+from math import isfinite
 from typing import Dict
 
 from .._csv import (
@@ -11,6 +12,7 @@ from .._csv import (
     validate_nodal_stress_header,
     validate_nodal_stress_row,
 )
+from ..stress.beam import BEAM2_NODAL_STRESS_HEADER
 
 
 @dataclass(frozen=True)
@@ -118,6 +120,8 @@ def read_nodal_stress_rows(path: str) -> NodalStressCsv:
     with open(path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         fieldnames = tuple(reader.fieldnames or ())
+        if fieldnames == BEAM2_NODAL_STRESS_HEADER:
+            return _read_beam2_nodal_stress_rows(reader, path)
         validate_nodal_stress_header(fieldnames, path)
         ignore_exact = {"node_id", "x", "y", "z", *_NODAL_STRESS_METADATA_FIELDS}
         stress_names = tuple(name for name in fieldnames if name not in ignore_exact)
@@ -146,6 +150,56 @@ def read_nodal_stress_rows(path: str) -> NodalStressCsv:
             )
 
     return NodalStressCsv(stress_names, tuple(rows))
+
+
+def _read_beam2_nodal_stress_rows(
+    reader: csv.DictReader,
+    path: str,
+) -> NodalStressCsv:
+    """Read the strict Beam2 nodal envelope CSV contract."""
+    stress_names = BEAM2_NODAL_STRESS_HEADER[4:]
+    rows: list[NodalStressCsvRow] = []
+    for row in reader:
+        node_id = parse_csv_integer(
+            row.get("node_id"),
+            path,
+            reader.line_num,
+            "node_id",
+            source="Beam2 nodal stress CSV",
+        )
+        for coordinate in ("x", "y", "z"):
+            parse_csv_number(
+                row.get(coordinate),
+                path,
+                reader.line_num,
+                coordinate,
+                source="Beam2 nodal stress CSV",
+            )
+        values = {
+            name: parse_csv_number(
+                row.get(name),
+                path,
+                reader.line_num,
+                name,
+                source="Beam2 nodal stress CSV",
+            )
+            for name in stress_names
+        }
+        if not all(isfinite(value) for value in values.values()):
+            raise ValueError(
+                f"Beam2 nodal stress CSV {str(path)} line {reader.line_num} "
+                "stress values must be finite"
+            )
+        rows.append(
+            NodalStressCsvRow(
+                node_id=node_id,
+                elem_id=None,
+                local_node=None,
+                averaged=True,
+                values=values,
+            )
+        )
+    return NodalStressCsv(tuple(stress_names), tuple(rows))
 
 
 def point_fields(

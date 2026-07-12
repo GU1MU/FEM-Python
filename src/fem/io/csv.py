@@ -4,6 +4,7 @@ import csv as csv_lib
 from typing import Dict, List, Optional
 
 from ..core.mesh import BeamMesh3D, Element2D, Element3D, HexMesh3D, Node2D, Node3D, PlaneMesh2D, TetMesh3D, TrussMesh3D
+from ..elements.beam_section import parse_beam2_section
 from .materials import _get_float_from_material, read
 
 
@@ -11,8 +12,9 @@ _TRUSS2_NODE_HEADER = ["node_id", "x", "y", "z"]
 _TRUSS2_ELEMENT_HEADER = ["elem_id", "node_i", "node_j", "area", "material_id"]
 _BEAM2_NODE_HEADER = ["node_id", "x", "y", "z"]
 _BEAM2_ELEMENT_HEADER = [
-    "elem_id", "node_i", "node_j", "area", "Iyy", "Izz", "J",
-    "local_y_x", "local_y_y", "local_y_z", "material_id",
+    "elem_id", "node_i", "node_j", "section_type", "radius",
+    "outer_radius", "inner_radius", "size_y", "size_z", "local_y_x",
+    "local_y_y", "local_y_z", "material_id",
 ]
 
 
@@ -254,11 +256,10 @@ def read_beam2(
                 nodes.append(Node3D(id=node_id, x=x, y=y, z=z))
 
             elif mode == "elements":
-                if len(row) < 11:
+                if len(row) != len(_BEAM2_ELEMENT_HEADER):
                     raise ValueError(
                         f"Beam2 mesh CSV {mesh_path!r} line {line_no} element row "
-                        "requires elem_id,node_i,node_j,area,Iyy,Izz,J,"
-                        f"local_y_x,local_y_y,local_y_z,material_id; got {row!r}"
+                        f"requires {','.join(_BEAM2_ELEMENT_HEADER)}; got {row!r}"
                     )
                 elem_id = _integer_field(
                     row[0], reader_name="read_beam2", mesh_path=mesh_path,
@@ -272,41 +273,33 @@ def read_beam2(
                     row[2], reader_name="read_beam2", mesh_path=mesh_path,
                     line_no=line_no, field="node_j",
                 )
-                area = _numeric_field(
-                    row[3], reader_name="read_beam2", mesh_path=mesh_path,
-                    line_no=line_no, field="area",
-                )
-                Iyy = _numeric_field(
-                    row[4], reader_name="read_beam2", mesh_path=mesh_path,
-                    line_no=line_no, field="Iyy",
-                )
-                Izz = _numeric_field(
-                    row[5], reader_name="read_beam2", mesh_path=mesh_path,
-                    line_no=line_no, field="Izz",
-                )
-                J = _numeric_field(
-                    row[6], reader_name="read_beam2", mesh_path=mesh_path,
-                    line_no=line_no, field="J",
-                )
+                section_props: Dict[str, object] = {"section_type": row[3]}
+                for index, field in zip(
+                    (4, 5, 6, 7, 8),
+                    ("radius", "outer_radius", "inner_radius", "size_y", "size_z"),
+                ):
+                    if row[index] != "":
+                        section_props[field] = _numeric_field(
+                            row[index], reader_name="read_beam2", mesh_path=mesh_path,
+                            line_no=line_no, field=field,
+                        )
                 local_y = tuple(
                     _numeric_field(
                         row[index], reader_name="read_beam2", mesh_path=mesh_path,
                         line_no=line_no, field=field,
                     )
                     for index, field in zip(
-                        (7, 8, 9), ("local_y_x", "local_y_y", "local_y_z")
+                        (9, 10, 11), ("local_y_x", "local_y_y", "local_y_z")
                     )
                 )
                 mid = _integer_field(
-                    row[10], reader_name="read_beam2", mesh_path=mesh_path,
+                    row[12], reader_name="read_beam2", mesh_path=mesh_path,
                     line_no=line_no, field="material_id",
                 )
 
+                parse_beam2_section(section_props)
                 props: Dict[str, object] = {
-                    "area": area,        # A
-                    "Iyy": Iyy,
-                    "Izz": Izz,
-                    "J": J,
+                    **section_props,
                     "local_y": local_y,
                     "material_id": mid,
                 }

@@ -17,15 +17,17 @@ ELASTIC_MATRIX_BUILDERS = (
 
 def _line_mesh(element_type="Truss2", **properties):
     mesh_type = BeamMesh3D if element_type == "Beam2" else TrussMesh3D
-    defaults = {"E": 210.0, "area": 0.5}
+    defaults = {"E": 210.0}
     if element_type == "Beam2":
         defaults.update({
             "nu": 0.3,
-            "Iyy": 0.2,
-            "Izz": 0.25,
-            "J": 0.1,
+            "section_type": "rectangle",
+            "size_y": 1.0,
+            "size_z": 0.5,
             "local_y": (0.0, 1.0, 0.0),
         })
+    else:
+        defaults["area"] = 0.5
     defaults.update(properties)
     return mesh_type(
         nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 2.0, 0.0, 0.0)],
@@ -85,10 +87,9 @@ def test_material_accepts_admissible_boundary_nearby_values():
     [
         ("Truss2", "E"),
         ("Truss2", "area"),
-        ("Beam2", "area"),
-        ("Beam2", "Iyy"),
-        ("Beam2", "Izz"),
-        ("Beam2", "J"),
+        ("Beam2", "E"),
+        ("Beam2", "size_y"),
+        ("Beam2", "size_z"),
     ],
 )
 @pytest.mark.parametrize("value", [0.0, -1.0, np.nan, np.inf, -np.inf])
@@ -102,7 +103,7 @@ def test_line_stiffness_rejects_invalid_positive_properties(
 
     with pytest.raises(
         ValueError,
-        match=rf"property {property_name} must be finite and > 0",
+        match=rf"{property_name}.*finite and > 0",
     ):
         get_element_kernel(element_type).stiffness(mesh, elem)
 
