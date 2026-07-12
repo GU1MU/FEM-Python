@@ -179,6 +179,18 @@ class EdgeLoad:
 
 
 @dataclass(frozen=True)
+class LineLoad:
+    """Constant Beam2 line load per undeformed length."""
+    target: str | int
+    vector: Sequence[float]
+    coordinate_system: str = "global"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "vector", tuple(float(value) for value in self.vector))
+        object.__setattr__(self, "coordinate_system", str(self.coordinate_system))
+
+
+@dataclass(frozen=True)
 class OutputRequest:
     """Output request attached to an analysis step."""
     kind: str
@@ -204,6 +216,7 @@ class AnalysisStep:
     outputs: Sequence[OutputRequest] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
     edge_loads: Sequence[EdgeLoad] = ()
+    line_loads: Sequence[LineLoad] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "boundaries", tuple(self.boundaries))
@@ -212,6 +225,7 @@ class AnalysisStep:
         object.__setattr__(self, "outputs", tuple(self.outputs))
         object.__setattr__(self, "metadata", dict(self.metadata))
         object.__setattr__(self, "edge_loads", tuple(self.edge_loads))
+        object.__setattr__(self, "line_loads", tuple(self.line_loads))
 
 
 @dataclass

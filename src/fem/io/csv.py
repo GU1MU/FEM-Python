@@ -3,8 +3,17 @@ from __future__ import annotations
 import csv as csv_lib
 from typing import Dict, List, Optional
 
-from ..core.mesh import BeamMesh2D, Element2D, Element3D, HexMesh3D, Node2D, Node3D, PlaneMesh2D, TetMesh3D, TrussMesh2D
+from ..core.mesh import BeamMesh3D, Element2D, Element3D, HexMesh3D, Node2D, Node3D, PlaneMesh2D, TetMesh3D, TrussMesh3D
 from .materials import _get_float_from_material, read
+
+
+_TRUSS2_NODE_HEADER = ["node_id", "x", "y", "z"]
+_TRUSS2_ELEMENT_HEADER = ["elem_id", "node_i", "node_j", "area", "material_id"]
+_BEAM2_NODE_HEADER = ["node_id", "x", "y", "z"]
+_BEAM2_ELEMENT_HEADER = [
+    "elem_id", "node_i", "node_j", "area", "Iyy", "Izz", "J",
+    "local_y_x", "local_y_y", "local_y_z", "material_id",
+]
 
 
 def _integer_field(
@@ -43,18 +52,18 @@ def _numeric_field(
         ) from exc
 
 
-def read_truss2d(
+def read_truss2(
     mesh_path: str,
     material_path: Optional[str] = None,
-) -> TrussMesh2D:
-    """Read a Truss2D mesh CSV with optional materials."""
+) -> TrussMesh3D:
+    """Read a spatial Truss2 mesh CSV with optional materials."""
 
     materials_dict: Dict[int, Dict[str, str]] = {}
     if material_path is not None:
         materials_dict = read(material_path)
 
-    nodes: List[Node2D] = []
-    elements: List[Element2D] = []
+    nodes: List[Node3D] = []
+    elements: List[Element3D] = []
 
     mode: Optional[str] = None
 
@@ -72,58 +81,69 @@ def read_truss2d(
 
             # 节点表头
             if row[0] == "node_id":
+                if row != _TRUSS2_NODE_HEADER:
+                    raise ValueError("Truss2 node header must be node_id,x,y,z")
                 mode = "nodes"
                 continue
 
             # 单元表头
             if row[0] == "elem_id":
+                if row != _TRUSS2_ELEMENT_HEADER:
+                    raise ValueError(
+                        "Truss2 element header must be "
+                        + ",".join(_TRUSS2_ELEMENT_HEADER)
+                    )
                 mode = "elements"
                 continue
 
             if mode == "nodes":
-                if len(row) < 3:
+                if len(row) < 4:
                     raise ValueError(
-                        f"Truss2D mesh CSV {mesh_path!r} line {line_no} node row "
-                        f"requires node_id,x,y; got {row!r}"
+                        f"Truss2 mesh CSV {mesh_path!r} line {line_no} node row "
+                        f"requires node_id,x,y,z; got {row!r}"
                     )
                 node_id = _integer_field(
-                    row[0], reader_name="read_truss2d", mesh_path=mesh_path,
+                    row[0], reader_name="read_truss2", mesh_path=mesh_path,
                     line_no=line_no, field="node_id",
                 )
                 x = _numeric_field(
-                    row[1], reader_name="read_truss2d", mesh_path=mesh_path,
+                    row[1], reader_name="read_truss2", mesh_path=mesh_path,
                     line_no=line_no, field="x",
                 )
                 y = _numeric_field(
-                    row[2], reader_name="read_truss2d", mesh_path=mesh_path,
+                    row[2], reader_name="read_truss2", mesh_path=mesh_path,
                     line_no=line_no, field="y",
                 )
-                nodes.append(Node2D(id=node_id, x=x, y=y))
+                z = _numeric_field(
+                    row[3], reader_name="read_truss2", mesh_path=mesh_path,
+                    line_no=line_no, field="z",
+                )
+                nodes.append(Node3D(id=node_id, x=x, y=y, z=z))
 
             elif mode == "elements":
                 if len(row) < 5:
                     raise ValueError(
-                        f"Truss2D mesh CSV {mesh_path!r} line {line_no} element row "
+                        f"Truss2 mesh CSV {mesh_path!r} line {line_no} element row "
                         f"requires elem_id,node_i,node_j,area,material_id; got {row!r}"
                     )
                 elem_id = _integer_field(
-                    row[0], reader_name="read_truss2d", mesh_path=mesh_path,
+                    row[0], reader_name="read_truss2", mesh_path=mesh_path,
                     line_no=line_no, field="elem_id",
                 )
                 node_i = _integer_field(
-                    row[1], reader_name="read_truss2d", mesh_path=mesh_path,
+                    row[1], reader_name="read_truss2", mesh_path=mesh_path,
                     line_no=line_no, field="node_i",
                 )
                 node_j = _integer_field(
-                    row[2], reader_name="read_truss2d", mesh_path=mesh_path,
+                    row[2], reader_name="read_truss2", mesh_path=mesh_path,
                     line_no=line_no, field="node_j",
                 )
                 area = _numeric_field(
-                    row[3], reader_name="read_truss2d", mesh_path=mesh_path,
+                    row[3], reader_name="read_truss2", mesh_path=mesh_path,
                     line_no=line_no, field="area",
                 )
                 mid = _integer_field(
-                    row[4], reader_name="read_truss2d", mesh_path=mesh_path,
+                    row[4], reader_name="read_truss2", mesh_path=mesh_path,
                     line_no=line_no, field="material_id",
                 )
 
@@ -143,40 +163,40 @@ def read_truss2d(
                             props["rho"] = raw_rho
 
                 elements.append(
-                    Element2D(
+                    Element3D(
                         id=elem_id,
                         node_ids=[node_i, node_j],
-                        type="Truss2D",
+                        type="Truss2",
                         props=props,
                     )
                 )
 
             else:
                 raise ValueError(
-                    f"Truss2D mesh CSV {mesh_path!r} line {line_no} has data before "
+                    f"Truss2 mesh CSV {mesh_path!r} line {line_no} has data before "
                     f"a recognized node_id or elem_id header: {row!r}"
                 )
 
     if not nodes:
-        raise ValueError(f"Truss2D mesh CSV {mesh_path!r} contains no node rows")
+        raise ValueError(f"Truss2 mesh CSV {mesh_path!r} contains no node rows")
     if not elements:
-        raise ValueError(f"Truss2D mesh CSV {mesh_path!r} contains no element rows")
+        raise ValueError(f"Truss2 mesh CSV {mesh_path!r} contains no element rows")
 
-    return TrussMesh2D(nodes=nodes, elements=elements)
+    return TrussMesh3D(nodes=nodes, elements=elements)
 
 
-def read_beam2d(
+def read_beam2(
     mesh_path: str,
     material_path: Optional[str] = None,
-) -> BeamMesh2D:
-    """Read a Beam2D mesh CSV with optional materials."""
+) -> BeamMesh3D:
+    """Read a spatial Beam2 mesh CSV with optional materials."""
 
     materials_dict: Dict[int, Dict[str, str]] = {}
     if material_path is not None:
         materials_dict = read(material_path)
 
-    nodes: List[Node2D] = []
-    elements: List[Element2D] = []
+    nodes: List[Node3D] = []
+    elements: List[Element3D] = []
 
     mode: Optional[str] = None
 
@@ -194,69 +214,100 @@ def read_beam2d(
 
             # 表头：节点
             if row[0] == "node_id":
+                if row != _BEAM2_NODE_HEADER:
+                    raise ValueError("Beam2 node header must be node_id,x,y,z")
                 mode = "nodes"
                 continue
 
             # 表头：单元
             if row[0] == "elem_id":
+                if row != _BEAM2_ELEMENT_HEADER:
+                    raise ValueError(
+                        "Beam2 element header must be "
+                        + ",".join(_BEAM2_ELEMENT_HEADER)
+                    )
                 mode = "elements"
                 continue
 
             if mode == "nodes":
-                if len(row) < 3:
+                if len(row) < 4:
                     raise ValueError(
-                        f"Beam2D mesh CSV {mesh_path!r} line {line_no} node row "
-                        f"requires node_id,x,y; got {row!r}"
+                        f"Beam2 mesh CSV {mesh_path!r} line {line_no} node row "
+                        f"requires node_id,x,y,z; got {row!r}"
                     )
                 node_id = _integer_field(
-                    row[0], reader_name="read_beam2d", mesh_path=mesh_path,
+                    row[0], reader_name="read_beam2", mesh_path=mesh_path,
                     line_no=line_no, field="node_id",
                 )
                 x = _numeric_field(
-                    row[1], reader_name="read_beam2d", mesh_path=mesh_path,
+                    row[1], reader_name="read_beam2", mesh_path=mesh_path,
                     line_no=line_no, field="x",
                 )
                 y = _numeric_field(
-                    row[2], reader_name="read_beam2d", mesh_path=mesh_path,
+                    row[2], reader_name="read_beam2", mesh_path=mesh_path,
                     line_no=line_no, field="y",
                 )
-                nodes.append(Node2D(id=node_id, x=x, y=y))
+                z = _numeric_field(
+                    row[3], reader_name="read_beam2", mesh_path=mesh_path,
+                    line_no=line_no, field="z",
+                )
+                nodes.append(Node3D(id=node_id, x=x, y=y, z=z))
 
             elif mode == "elements":
-                # elem_id,node_i,node_j,area,Izz,material_id
-                if len(row) < 6:
+                if len(row) < 11:
                     raise ValueError(
-                        f"Beam2D mesh CSV {mesh_path!r} line {line_no} element row "
-                        f"requires elem_id,node_i,node_j,area,Izz,material_id; got {row!r}"
+                        f"Beam2 mesh CSV {mesh_path!r} line {line_no} element row "
+                        "requires elem_id,node_i,node_j,area,Iyy,Izz,J,"
+                        f"local_y_x,local_y_y,local_y_z,material_id; got {row!r}"
                     )
                 elem_id = _integer_field(
-                    row[0], reader_name="read_beam2d", mesh_path=mesh_path,
+                    row[0], reader_name="read_beam2", mesh_path=mesh_path,
                     line_no=line_no, field="elem_id",
                 )
                 node_i = _integer_field(
-                    row[1], reader_name="read_beam2d", mesh_path=mesh_path,
+                    row[1], reader_name="read_beam2", mesh_path=mesh_path,
                     line_no=line_no, field="node_i",
                 )
                 node_j = _integer_field(
-                    row[2], reader_name="read_beam2d", mesh_path=mesh_path,
+                    row[2], reader_name="read_beam2", mesh_path=mesh_path,
                     line_no=line_no, field="node_j",
                 )
                 area = _numeric_field(
-                    row[3], reader_name="read_beam2d", mesh_path=mesh_path,
+                    row[3], reader_name="read_beam2", mesh_path=mesh_path,
                     line_no=line_no, field="area",
                 )
+                Iyy = _numeric_field(
+                    row[4], reader_name="read_beam2", mesh_path=mesh_path,
+                    line_no=line_no, field="Iyy",
+                )
                 Izz = _numeric_field(
-                    row[4], reader_name="read_beam2d", mesh_path=mesh_path,
+                    row[5], reader_name="read_beam2", mesh_path=mesh_path,
                     line_no=line_no, field="Izz",
                 )
+                J = _numeric_field(
+                    row[6], reader_name="read_beam2", mesh_path=mesh_path,
+                    line_no=line_no, field="J",
+                )
+                local_y = tuple(
+                    _numeric_field(
+                        row[index], reader_name="read_beam2", mesh_path=mesh_path,
+                        line_no=line_no, field=field,
+                    )
+                    for index, field in zip(
+                        (7, 8, 9), ("local_y_x", "local_y_y", "local_y_z")
+                    )
+                )
                 mid = _integer_field(
-                    row[5], reader_name="read_beam2d", mesh_path=mesh_path,
+                    row[10], reader_name="read_beam2", mesh_path=mesh_path,
                     line_no=line_no, field="material_id",
                 )
 
                 props: Dict[str, object] = {
                     "area": area,        # A
-                    "Izz": Izz,          # section second moment
+                    "Iyy": Iyy,
+                    "Izz": Izz,
+                    "J": J,
+                    "local_y": local_y,
                     "material_id": mid,
                 }
 
@@ -264,33 +315,36 @@ def read_beam2d(
                     mat_row = materials_dict.get(mid)
                     if mat_row is not None:
                         raw_E = _get_float_from_material(mat_row, ["E"])
+                        raw_nu = _get_float_from_material(mat_row, ["nu", "poisson"])
                         raw_rho = _get_float_from_material(mat_row, ["rho"])
                         if raw_E is not None:
                             props["E"] = raw_E
+                        if raw_nu is not None:
+                            props["nu"] = raw_nu
                         if raw_rho is not None:
                             props["rho"] = raw_rho
 
                 elements.append(
-                    Element2D(
+                    Element3D(
                         id=elem_id,
                         node_ids=[node_i, node_j],
-                        type="Beam2D",
+                        type="Beam2",
                         props=props,
                     )
                 )
 
             else:
                 raise ValueError(
-                    f"Beam2D mesh CSV {mesh_path!r} line {line_no} has data before "
+                    f"Beam2 mesh CSV {mesh_path!r} line {line_no} has data before "
                     f"a recognized node_id or elem_id header: {row!r}"
                 )
 
     if not nodes:
-        raise ValueError(f"Beam2D mesh CSV {mesh_path!r} contains no node rows")
+        raise ValueError(f"Beam2 mesh CSV {mesh_path!r} contains no node rows")
     if not elements:
-        raise ValueError(f"Beam2D mesh CSV {mesh_path!r} contains no element rows")
+        raise ValueError(f"Beam2 mesh CSV {mesh_path!r} contains no element rows")
 
-    return BeamMesh2D(nodes=nodes, elements=elements)
+    return BeamMesh3D(nodes=nodes, elements=elements)
 
 
 def read_tri3(

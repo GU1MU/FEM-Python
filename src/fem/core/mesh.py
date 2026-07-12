@@ -19,7 +19,7 @@ class Element2D:
     """2D element with node list, type, and properties."""
     id: int
     node_ids: List[int]
-    type: str = "Truss2D"
+    type: str
     props: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -88,24 +88,6 @@ class _DofMappedMeshMixin:
 
 
 @dataclass
-class TrussMesh2D(_DofMappedMeshMixin):
-    """Truss2D mesh container (ux, uy)."""
-    nodes: List[Node2D]
-    elements: List[Element2D]
-    dofs_per_node: int = 2
-    dof_map: DofMap = field(init=False)
-
-
-@dataclass
-class BeamMesh2D(_DofMappedMeshMixin):
-    """Beam2D mesh container (ux, uy, rz)."""
-    nodes: List[Node2D]
-    elements: List[Element2D]
-    dofs_per_node: int = 3
-    dof_map: DofMap = field(init=False)
-
-
-@dataclass
 class PlaneMesh2D(_DofMappedMeshMixin):
     """Plane mesh container (ux, uy)."""
     nodes: List[Node2D]
@@ -163,4 +145,22 @@ class TetMesh3D(_DofMappedMeshMixin):
     nodes: List[Node3D]
     elements: List[Element3D]
     dofs_per_node: int = 3
+    dof_map: DofMap = field(init=False)
+
+
+@dataclass
+class TrussMesh3D(_DofMappedMeshMixin):
+    """Spatial truss mesh container (ux, uy, uz)."""
+    nodes: List[Node3D]
+    elements: List[Element3D]
+    dofs_per_node: int = 3
+    dof_map: DofMap = field(init=False)
+
+
+@dataclass
+class BeamMesh3D(_DofMappedMeshMixin):
+    """Spatial beam mesh container (ux, uy, uz, rx, ry, rz)."""
+    nodes: List[Node3D]
+    elements: List[Element3D]
+    dofs_per_node: int = 6
     dof_map: DofMap = field(init=False)

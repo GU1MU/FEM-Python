@@ -69,6 +69,15 @@ def write(
             else:
                 f.write(f"{disp.get('ux', 0.0)} {disp.get('uy', 0.0)} 0.0\n")
 
+        if is_3d and getattr(mesh, "dofs_per_node", 0) == 6:
+            f.write("\nVECTORS rotation float\n")
+            for node_id in result_node_ids:
+                rotation = node_disp.get(node_id, {})
+                f.write(
+                    f"{rotation.get('rx', 0.0)} {rotation.get('ry', 0.0)} "
+                    f"{rotation.get('rz', 0.0)}\n"
+                )
+
         if not is_3d and getattr(mesh, "dofs_per_node", 0) >= 3:
             has_any_rz = any(abs(d.get("rz", 0.0)) > 0.0 for d in node_disp.values())
             if has_any_rz:

@@ -110,14 +110,14 @@ def test_mixed_solid_body_forces_and_gravity_dispatch_by_element_type():
 @pytest.mark.parametrize(
     "builder",
     [make_truss_stiffness_mesh, make_beam_stiffness_mesh],
-    ids=["truss2d", "beam2d"],
+    ids=["truss2", "beam2"],
 )
 def test_line_element_gravity_dispatches_through_body_force(builder):
     mesh = builder()
     elem = mesh.elements[0]
     elem.props["rho"] = 3.0
     bc = BoundaryCondition()
-    bc.set_gravity(0.0, -2.0)
+    bc.set_gravity(0.0, -2.0, 0.0)
 
     F = build_load_vector(mesh, bc)
     node_lookup = {node.id: node for node in mesh.nodes}

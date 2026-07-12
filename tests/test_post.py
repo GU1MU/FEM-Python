@@ -7,7 +7,7 @@ import pytest
 
 import fem.post as post
 from fem.core.mesh import (
-    BeamMesh2D,
+    BeamMesh3D,
     Element2D,
     Element3D,
     HexMesh3D,
@@ -1402,18 +1402,18 @@ def test_vtk_element_stress_reader_keeps_invalid_scalar_zero_in_average(tmp_path
     assert fields_by_name["sig_x"][1] == pytest.approx(2.0)
 
 
-def test_direct_post_exports_create_parent_dirs_and_beam_uses_rz(tmp_path):
-    mesh = BeamMesh2D(
-        nodes=[Node2D(1, 0.0, 0.0), Node2D(2, 1.0, 0.0)],
-        elements=[Element2D(1, [1, 2], "Beam2D")],
+def test_direct_post_exports_create_parent_dirs_and_beam_uses_six_components(tmp_path):
+    mesh = BeamMesh3D(
+        nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 1.0, 0.0, 0.0)],
+        elements=[Element3D(1, [1, 2], "Beam2")],
     )
     output_path = tmp_path / "nested" / "beam_displacement.csv"
 
     displacement.export.nodal(mesh, np.zeros(mesh.num_dofs), output_path)
 
     header = output_path.read_text(encoding="utf-8").splitlines()[0]
-    assert "rz" in header
-    assert "uz" not in header
+    for component in ("ux", "uy", "uz", "rx", "ry", "rz"):
+        assert component in header
 
 
 def test_dispatch_resolves_compatible_mixed_solid_type_keys():

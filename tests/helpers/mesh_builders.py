@@ -1,5 +1,5 @@
 from fem.core.mesh import (
-    BeamMesh2D,
+    BeamMesh3D,
     Element2D,
     Element3D,
     HexMesh3D,
@@ -7,7 +7,7 @@ from fem.core.mesh import (
     Node3D,
     PlaneMesh2D,
     TetMesh3D,
-    TrussMesh2D,
+    TrussMesh3D,
 )
 
 
@@ -20,13 +20,13 @@ def make_minimal_hex_mesh():
 
 def make_dof_order_meshes():
     return [
-        TrussMesh2D(
-            nodes=[Node2D(20, 0.0, 0.0), Node2D(10, 1.0, 0.0)],
-            elements=[Element2D(1, [20, 10], type="Truss2D")],
+        TrussMesh3D(
+            nodes=[Node3D(20, 0.0, 0.0, 0.0), Node3D(10, 1.0, 0.0, 0.0)],
+            elements=[Element3D(1, [20, 10], type="Truss2")],
         ),
-        BeamMesh2D(
-            nodes=[Node2D(20, 0.0, 0.0), Node2D(10, 1.0, 0.0)],
-            elements=[Element2D(1, [20, 10], type="Beam2D")],
+        BeamMesh3D(
+            nodes=[Node3D(20, 0.0, 0.0, 0.0), Node3D(10, 1.0, 0.0, 0.0)],
+            elements=[Element3D(1, [20, 10], type="Beam2")],
         ),
         PlaneMesh2D(
             nodes=[Node2D(20, 0.0, 0.0), Node2D(10, 1.0, 0.0)],
@@ -87,16 +87,16 @@ def make_selection_hex_mesh():
 
 
 def make_truss_stiffness_mesh():
-    return TrussMesh2D(
+    return TrussMesh3D(
         nodes=[
-            Node2D(1, 0.0, 0.0),
-            Node2D(2, 2.0, 0.0),
+            Node3D(1, 0.0, 0.0, 0.0),
+            Node3D(2, 2.0, 0.0, 0.0),
         ],
         elements=[
-            Element2D(
+            Element3D(
                 id=1,
                 node_ids=[1, 2],
-                type="Truss2D",
+                type="Truss2",
                 props={"E": 210.0, "area": 0.5},
             )
         ],
@@ -104,17 +104,25 @@ def make_truss_stiffness_mesh():
 
 
 def make_beam_stiffness_mesh():
-    return BeamMesh2D(
+    return BeamMesh3D(
         nodes=[
-            Node2D(1, 0.0, 0.0),
-            Node2D(2, 2.0, 1.0),
+            Node3D(1, 0.0, 0.0, 0.0),
+            Node3D(2, 2.0, 1.0, 0.0),
         ],
         elements=[
-            Element2D(
+            Element3D(
                 id=1,
                 node_ids=[1, 2],
-                type="Beam2D",
-                props={"E": 210.0, "area": 0.5, "Izz": 0.25},
+                type="Beam2",
+                props={
+                    "E": 210.0,
+                    "nu": 0.3,
+                    "area": 0.5,
+                    "Iyy": 0.25,
+                    "Izz": 0.25,
+                    "J": 0.25,
+                    "local_y": (-1.0, 2.0, 0.0),
+                },
             )
         ],
     )

@@ -382,7 +382,7 @@ def test_unused_hex8_named_edge_does_not_block_validation_or_solve():
     assert np.all(np.isfinite(result.U))
 
 
-def test_beam2d_edge_load_uses_coordinate_dimension_then_reports_kernel_limit():
+def test_beam2_rejects_generic_3d_edge_loads_in_favor_of_line_loads():
     mesh = make_beam_stiffness_mesh()
     model = FEMModel(
         mesh=mesh,
@@ -390,22 +390,16 @@ def test_beam2d_edge_load_uses_coordinate_dimension_then_reports_kernel_limit():
         steps=[
             AnalysisStep(
                 "load",
-                edge_loads=[EdgeLoad("LINE", (0.0, -2.0), load_type="traction")],
+                edge_loads=[EdgeLoad("LINE", (0.0, -2.0, 0.0), load_type="traction")],
             )
         ],
     )
 
-    boundary = boundary_for_step(model, "load")
-
-    assert boundary.edge_tractions[0].vector == (0.0, -2.0)
-    with pytest.raises(
-        NotImplementedError,
-        match=r"Unsupported element type for edge_traction assembly: Beam2D",
-    ):
-        build_load_vector(mesh, boundary)
+    with pytest.raises(NotImplementedError, match=r"3D edge loads are not supported"):
+        boundary_for_step(model, "load")
 
 
-def test_beam2d_surface_load_is_still_rejected_as_two_dimensional():
+def test_beam2_rejects_generic_surface_traction_assembly():
     mesh = make_beam_stiffness_mesh()
     model = FEMModel(
         mesh=mesh,
@@ -414,11 +408,15 @@ def test_beam2d_surface_load_is_still_rejected_as_two_dimensional():
             AnalysisStep(
                 "load",
                 surface_loads=[
-                    SurfaceLoad("LINE", (0.0, -2.0), load_type="traction")
+                    SurfaceLoad("LINE", (0.0, -2.0, 0.0), load_type="traction")
                 ],
             )
         ],
     )
 
-    with pytest.raises(ValueError, match=r"2D surface loads are not supported"):
-        boundary_for_step(model, "load")
+    boundary = boundary_for_step(model, "load")
+    with pytest.raises(
+        NotImplementedError,
+        match=r"Unsupported element type for face_traction assembly: Beam2",
+    ):
+        build_load_vector(mesh, boundary)

@@ -87,6 +87,26 @@ def boundary_for_step(model: Any, step: str | int | AnalysisStep | None = None) 
                 raise ValueError(f"unsupported edge load type: {edge_load.load_type}")
             boundary.add_edge_traction(edge.elem_id, edge.local_index, *vector)
 
+    elem_lookup = {int(elem.id): elem for elem in model.mesh.elements}
+    for line_load in selected_step.line_loads:
+        vector = _validated_line_load_vector(line_load.vector)
+        if line_load.coordinate_system not in {"global", "local"}:
+            raise ValueError(
+                "line load coordinate_system must be 'global' or 'local', "
+                f"got {line_load.coordinate_system!r}"
+            )
+        for elem_id in _resolve_element_target(model, line_load.target):
+            elem = elem_lookup.get(elem_id)
+            if elem is None:
+                raise KeyError(f"element {elem_id} is not defined")
+            if str(elem.type).casefold() != "beam2":
+                raise ValueError("line loads may target only Beam2 elements")
+            boundary.add_line_load(
+                elem_id,
+                vector,
+                line_load.coordinate_system,
+            )
+
     return boundary
 
 
@@ -97,6 +117,26 @@ def _resolve_node_target(model: Any, target: str | int) -> tuple[int, ...]:
     if target not in model.node_sets:
         raise KeyError(f"node set {target} is not defined")
     return model.node_sets[target].node_ids
+
+
+def _resolve_element_target(model: Any, target: str | int) -> tuple[int, ...]:
+    """Resolve an element id or named element set."""
+    if isinstance(target, int):
+        return (target,)
+    if target not in model.element_sets:
+        raise KeyError(f"element set {target} is not defined")
+    return tuple(model.element_sets[target].element_ids)
+
+
+def _validated_line_load_vector(vector: Any) -> tuple[float, float, float]:
+    """Return a finite three-component line-load vector."""
+    try:
+        values = np.asarray(vector, dtype=float)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("line load vector must contain three finite numbers") from exc
+    if values.shape != (3,) or not np.all(np.isfinite(values)):
+        raise ValueError("line load vector must contain three finite numbers")
+    return tuple(float(value) for value in values)
 
 
 def _step_boundaries(model: Any, step: AnalysisStep) -> tuple:

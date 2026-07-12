@@ -1,4 +1,4 @@
-from fem.core.mesh import Element2D, Node2D, TrussMesh2D
+from fem.core.mesh import Element3D, Node3D, TrussMesh3D
 from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
@@ -10,16 +10,16 @@ from fem.core.model import (
 
 
 def make_simple_truss_mesh(E=100.0, area=2.0, length=1.0):
-    return TrussMesh2D(
-        nodes=[Node2D(1, 0.0, 0.0), Node2D(2, length, 0.0)],
-        elements=[Element2D(1, [1, 2], type="Truss2D", props={"E": E, "area": area})],
+    return TrussMesh3D(
+        nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, length, 0.0, 0.0)],
+        elements=[Element3D(1, [1, 2], type="Truss2", props={"E": E, "area": area})],
     )
 
 
 def make_bare_truss_mesh(length=1.0, props=None):
-    return TrussMesh2D(
-        nodes=[Node2D(1, 0.0, 0.0), Node2D(2, length, 0.0)],
-        elements=[Element2D(1, [1, 2], type="Truss2D", props=props or {})],
+    return TrussMesh3D(
+        nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, length, 0.0, 0.0)],
+        elements=[Element3D(1, [1, 2], type="Truss2", props=props or {})],
     )
 
 
@@ -41,8 +41,8 @@ def make_static_pull_truss_model(load=100.0):
     step = AnalysisStep(
         "pull",
         boundaries=[
-            DisplacementConstraint("FIXED", 1, 2, 0.0),
-            DisplacementConstraint(2, 2, 2, 0.0),
+            DisplacementConstraint("FIXED", 1, 3, 0.0),
+            DisplacementConstraint(2, 2, 3, 0.0),
         ],
         cloads=[NodalLoad("TIP", 1, load)],
     )
@@ -68,8 +68,8 @@ def make_two_step_static_pull_truss_model():
             AnalysisStep(
                 "Initial",
                 boundaries=[
-                    DisplacementConstraint("FIXED", 1, 2, 0.0),
-                    DisplacementConstraint(2, 2, 2, 0.0),
+                    DisplacementConstraint("FIXED", 1, 3, 0.0),
+                    DisplacementConstraint(2, 2, 3, 0.0),
                 ],
             ),
             AnalysisStep("pull1", cloads=[NodalLoad("TIP", 1, 100.0)]),

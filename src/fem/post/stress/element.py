@@ -4,7 +4,7 @@ import csv
 from typing import Sequence
 
 from ...elements import get_element_kernel
-from ...core.mesh import HexMesh3D, Mesh3DProtocol, PlaneMesh2D, TrussMesh2D
+from ...core.mesh import HexMesh3D, Mesh3DProtocol, PlaneMesh2D
 from .._paths import prepare_output_path
 from . import dispatch
 from ._common import (
@@ -27,8 +27,8 @@ def by_type(
     gauss_order: int | None = None,
 ) -> None:
     """Export element stresses by normalized element type key."""
-    if type_key == "truss2d":
-        truss2d(mesh, U, path)
+    if type_key == "truss2":
+        truss2(mesh, U, path)
     elif type_key == "tri3":
         tri3_plane(mesh, U, path)
     elif type_key == "tri6":
@@ -69,8 +69,8 @@ def mixed(
     raise ValueError(f"Mixed element stress export is not available for group {group!r}")
 
 
-def truss2d(mesh: TrussMesh2D, U: Sequence[float], path: str) -> None:
-    """Export Truss2D element axial strain/stress and mises to CSV."""
+def truss2(mesh: Mesh3DProtocol, U: Sequence[float], path: str) -> None:
+    """Export Truss2 element axial strain/stress and mises to CSV."""
     U = validated_u(mesh, U)
     lookup = node_lookup(mesh)
 

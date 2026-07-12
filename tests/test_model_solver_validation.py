@@ -10,7 +10,7 @@ from fem.materials import assignment as material_assignment
 from fem.assemble import assemble_global_stiffness_sparse
 from fem.assemble import stiffness as stiffness_module
 from fem.core import validate_mesh, validate_model
-from fem.core.mesh import Element2D, Node2D, TrussMesh2D
+from fem.core.mesh import Element3D, Node3D, TrussMesh3D
 from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
@@ -29,7 +29,7 @@ from tests.helpers.model_builders import (
 
 def test_validate_mesh_rejects_stale_dof_map_until_explicit_rebuild():
     mesh = make_truss_stiffness_mesh()
-    mesh.nodes.append(Node2D(3, 3.0, 0.0))
+    mesh.nodes.append(Node3D(3, 3.0, 0.0, 0.0))
 
     with pytest.raises(ValueError, match=r"DofMap.*rebuild_dof_map"):
         validate_mesh(mesh)
@@ -38,22 +38,22 @@ def test_validate_mesh_rejects_stale_dof_map_until_explicit_rebuild():
 
     validate_mesh(mesh)
     assert mesh.node_ids == [1, 2, 3]
-    assert mesh.num_dofs == 6
+    assert mesh.num_dofs == 9
 
 
 def test_validate_mesh_rejects_empty_nodes_and_elements_before_assembly():
-    no_nodes = TrussMesh2D(nodes=[], elements=[])
+    no_nodes = TrussMesh3D(nodes=[], elements=[])
     with pytest.raises(ValueError, match="at least one node"):
         assemble_global_stiffness_sparse(no_nodes)
 
-    no_elements = TrussMesh2D(nodes=[Node2D(1, 0.0, 0.0)], elements=[])
+    no_elements = TrussMesh3D(nodes=[Node3D(1, 0.0, 0.0, 0.0)], elements=[])
     with pytest.raises(ValueError, match="at least one element"):
         assemble_global_stiffness_sparse(no_elements)
 
 
 def test_validate_mesh_rejects_duplicate_node_and_element_ids():
     duplicate_node_mesh = make_truss_stiffness_mesh()
-    duplicate_node_mesh.nodes.append(Node2D(1, 3.0, 0.0))
+    duplicate_node_mesh.nodes.append(Node3D(1, 3.0, 0.0, 0.0))
     with pytest.raises(ValueError, match="node ids must be unique"):
         validate_mesh(duplicate_node_mesh)
 
@@ -154,7 +154,7 @@ def test_static_solver_accepts_explicit_false_nlgeom():
 
 @pytest.mark.parametrize(
     ("first", "last"),
-    [(0, 1), (2, 1), (1, 3)],
+    [(0, 1), (2, 1), (1, 4)],
 )
 def test_validate_model_rejects_invalid_constraint_component_ranges(first, last):
     model = make_static_pull_truss_model()
@@ -166,12 +166,12 @@ def test_validate_model_rejects_invalid_constraint_component_ranges(first, last)
         validate_model(model)
 
 
-@pytest.mark.parametrize("component", [0, 3])
+@pytest.mark.parametrize("component", [0, 4])
 def test_validate_model_rejects_invalid_load_components(component):
     model = make_static_pull_truss_model()
     model.steps[0].cloads = (NodalLoad("TIP", component, 1.0),)
 
-    with pytest.raises(ValueError, match="load component must be from 1 through 2"):
+    with pytest.raises(ValueError, match="load component must be from 1 through 3"):
         validate_model(model)
 
 
@@ -254,10 +254,10 @@ def test_apply_sections_does_not_restore_old_baseline_into_replaced_element():
     materials.assign(model, "steel", "bar")
     materials.apply_sections(model)
 
-    replacement = Element2D(
+    replacement = Element3D(
         1,
         [1, 2],
-        "Truss2D",
+        "Truss2",
         {"E": 9.0, "area": 9.0, "replacement": True},
     )
     model.mesh.elements[0] = replacement
@@ -376,7 +376,7 @@ def test_model_result_rejects_invalid_vectors():
 @pytest.mark.parametrize("failure", ["nonfinite", "asymmetric"])
 def test_assembly_rejects_invalid_element_stiffness(monkeypatch, failure):
     mesh = make_truss_stiffness_mesh()
-    Ke = np.eye(4)
+    Ke = np.eye(6)
     if failure == "nonfinite":
         Ke[0, 0] = np.nan
         message = "contains non-finite values"

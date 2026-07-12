@@ -23,8 +23,8 @@ def by_type(
     threshold: float = 75.0,
 ) -> None:
     """Export resolved nodal stresses by normalized element type key."""
-    if type_key == "truss2d":
-        raise ValueError("Nodal stress export is not available for Truss2D elements")
+    if type_key == "truss2":
+        raise ValueError("Nodal stress export is not available for Truss2 elements")
     if type_key not in dispatch.NODAL_STRESS_KEYS:
         raise ValueError(f"Unsupported stress element type key: {type_key!r}")
     _resolved(mesh, U, path, type_key, gauss_order, threshold)

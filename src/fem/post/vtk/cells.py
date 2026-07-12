@@ -29,52 +29,52 @@ def build(mesh):
         vtk_conn = None
         vtk_type = None
 
-        if "c3d20r" in etype:
+        if etype == "c3d20r":
             raise ValueError(f"Unsupported element type for VTK export: {elem.type}")
 
-        if "truss" in etype or "beam" in etype:
+        if etype in {"truss2", "beam2"}:
             if len(elem.node_ids) != 2:
                 continue
             pt_ids = [node_id_to_pt_idx[nid] for nid in elem.node_ids]
             vtk_conn = [2] + pt_ids
             vtk_type = 3
 
-        elif "tri3" in etype:
+        elif etype in {"tri3plane", "tri3", "cps3", "cpe3"}:
             if len(elem.node_ids) != 3:
                 continue
             pt_ids = [node_id_to_pt_idx[nid] for nid in elem.node_ids]
             vtk_conn = [3] + pt_ids
             vtk_type = 5
 
-        elif "tri6" in etype:
+        elif etype in {"tri6plane", "tri6", "cps6", "cpe6"}:
             if len(elem.node_ids) != 6:
                 continue
             pt_ids = [node_id_to_pt_idx[nid] for nid in elem.node_ids]
             vtk_conn = [6] + pt_ids
             vtk_type = 22
 
-        elif "quad4" in etype:
+        elif etype in {"quad4plane", "quad4", "cps4", "cpe4"}:
             if len(elem.node_ids) != 4:
                 continue
             pt_ids = [node_id_to_pt_idx[nid] for nid in elem.node_ids]
             vtk_conn = [4] + pt_ids
             vtk_type = 9
 
-        elif "quad8" in etype:
+        elif etype in {"quad8plane", "quad8", "cps8", "cpe8"}:
             if len(elem.node_ids) != 8:
                 continue
             pt_ids = [node_id_to_pt_idx[nid] for nid in elem.node_ids]
             vtk_conn = [8] + pt_ids
             vtk_type = 23
 
-        elif "tet4" in etype:
+        elif etype in {"tet4", "c3d4"}:
             if len(elem.node_ids) != 4:
                 continue
             pt_ids = [node_id_to_pt_idx[nid] for nid in elem.node_ids]
             vtk_conn = [4] + pt_ids
             vtk_type = 10
 
-        elif "tet10" in etype:
+        elif etype in {"tet10", "c3d10"}:
             if len(elem.node_ids) != 10:
                 continue
             # Abaqus C3D10 and VTK quadratic tetrahedra use the same edge order.
@@ -83,14 +83,14 @@ def build(mesh):
             vtk_conn = [10] + pt_ids
             vtk_type = 24
 
-        elif "hex20" in etype or "c3d20" in etype:
+        elif etype in {"hex20", "c3d20"}:
             if len(elem.node_ids) != 20:
                 continue
             pt_ids = [node_id_to_pt_idx[nid] for nid in elem.node_ids]
             vtk_conn = [20] + pt_ids
             vtk_type = 25
 
-        elif "hex8" in etype:
+        elif etype in {"hex8", "c3d8"}:
             if len(elem.node_ids) != 8:
                 continue
             pt_ids = [node_id_to_pt_idx[nid] for nid in elem.node_ids]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from ..core.model import AnalysisStep, Edge, EdgeLoad, NodalLoad, Surface, SurfaceLoad
+from ..core.model import AnalysisStep, Edge, EdgeLoad, LineLoad, NodalLoad, Surface, SurfaceLoad
 
 
 def nodal_load(
@@ -62,4 +62,16 @@ def edge_pressure(
     edge_name = edge.name if isinstance(edge, Edge) else str(edge)
     load = EdgeLoad(edge_name, magnitude=magnitude, load_type="pressure")
     step.edge_loads = tuple(step.edge_loads) + (load,)
+    return load
+
+
+def line_load(
+    step: AnalysisStep,
+    target: str | int,
+    vector: Sequence[float],
+    coordinate_system: str = "global",
+) -> LineLoad:
+    """Add a constant Beam2 line load to a step."""
+    load = LineLoad(target, vector, coordinate_system)
+    step.line_loads = tuple(step.line_loads) + (load,)
     return load

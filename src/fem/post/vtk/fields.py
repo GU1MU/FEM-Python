@@ -44,6 +44,8 @@ def read_displacement(mesh, path: str) -> Dict[int, Dict[str, float]]:
         if not required_cols.issubset(reader.fieldnames or []):
             raise ValueError(f"Disp CSV requires columns {required_cols}, got {reader.fieldnames}")
 
+        has_rx = "rx" in reader.fieldnames
+        has_ry = "ry" in reader.fieldnames
         has_rz = "rz" in reader.fieldnames
         has_uz = "uz" in reader.fieldnames
 
@@ -72,6 +74,20 @@ def read_displacement(mesh, path: str) -> Dict[int, Dict[str, float]]:
                 if has_rz and row.get("rz", "") != ""
                 else 0.0
             )
+            rx = (
+                parse_csv_number(
+                    row.get("rx"), path, reader.line_num, "rx", source="Displacement CSV"
+                )
+                if has_rx and row.get("rx", "") != ""
+                else 0.0
+            )
+            ry = (
+                parse_csv_number(
+                    row.get("ry"), path, reader.line_num, "ry", source="Displacement CSV"
+                )
+                if has_ry and row.get("ry", "") != ""
+                else 0.0
+            )
             uz = (
                 parse_csv_number(
                     row.get("uz"),
@@ -83,11 +99,15 @@ def read_displacement(mesh, path: str) -> Dict[int, Dict[str, float]]:
                 if has_uz and row.get("uz", "") != ""
                 else 0.0
             )
-            node_disp[node_id] = {"ux": ux, "uy": uy, "uz": uz, "rz": rz}
+            node_disp[node_id] = {
+                "ux": ux, "uy": uy, "uz": uz, "rx": rx, "ry": ry, "rz": rz
+            }
 
     for node in mesh.nodes:
         if node.id not in node_disp:
-            node_disp[node.id] = {"ux": 0.0, "uy": 0.0, "rz": 0.0}
+            node_disp[node.id] = {
+                "ux": 0.0, "uy": 0.0, "uz": 0.0, "rx": 0.0, "ry": 0.0, "rz": 0.0
+            }
 
     return node_disp
 

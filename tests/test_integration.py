@@ -20,8 +20,8 @@ def test_core_model_supports_hand_written_mesh_model_solve_result_flow():
     materials.add(model, material)
     section = materials.assign(model, "steel", "bar", area=2.0)
     step = steps.static("pull")
-    steps.displacement(step, "fixed", components=(1, 2))
-    steps.displacement(step, 2, components=2)
+    steps.displacement(step, "fixed", components=(1, 2, 3))
+    steps.displacement(step, 2, components=(2, 3))
     steps.nodal_load(step, "tip", component=1, value=100.0)
     steps.add(model, step)
 
@@ -55,8 +55,8 @@ def test_manual_workflow_uses_materials_steps_and_static_solver():
     materials.assign(model, material="steel", element_set="bar")
 
     step = steps.static("pull")
-    steps.displacement(step, target="fixed", components=(1, 2))
-    steps.displacement(step, target="loaded", components=2)
+    steps.displacement(step, target="fixed", components=(1, 2, 3))
+    steps.displacement(step, target="loaded", components=(2, 3))
     steps.nodal_load(step, target="loaded", component=1, value=10.0)
     steps.add(model, step)
 

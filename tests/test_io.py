@@ -32,7 +32,8 @@ def test_io_package_exposes_split_readers_without_legacy_facade():
 
     assert callable(materials_io.read)
     assert callable(materials_io.linear_elastic)
-    assert callable(csv_io.read_truss2d)
+    assert callable(csv_io.read_truss2)
+    assert callable(csv_io.read_beam2)
     assert callable(csv_io.read_hex8)
     assert callable(csv_io.read_mixed3d)
     assert callable(inp.read_tri6)
@@ -649,10 +650,13 @@ def test_csv_read_mixed3d_rejects_nonempty_physical_field_beyond_header(tmp_path
 @pytest.mark.parametrize(
     ("reader_name", "lines", "field", "raw_value", "expected_condition"),
     (
-        ("read_truss2d", ["node_id,x,y", "bad,0,0"], "node_id", "bad", "integer"),
+        ("read_truss2", ["node_id,x,y,z", "bad,0,0,0"], "node_id", "bad", "integer"),
         (
-            "read_beam2d",
-            ["elem_id,node_i,node_j,area,Izz,material_id", "1,1,2,1,bad,1"],
+            "read_beam2",
+            [
+                "elem_id,node_i,node_j,area,Iyy,Izz,J,local_y_x,local_y_y,local_y_z,material_id",
+                "1,1,2,1,2,bad,3,0,1,0,1",
+            ],
             "Izz",
             "bad",
             "numeric value",

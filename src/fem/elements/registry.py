@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from .base import ElementKernel
 from .hexahedron import Hex8Kernel, Hex20Kernel
-from .line import Beam2DKernel, Truss2DKernel
+from .line import Beam2Kernel, Truss2Kernel
 from .quadrilateral import Quad4PlaneKernel, Quad8PlaneKernel
 from .tetrahedron import Tet4Kernel, Tet10Kernel
 from .triangle import Tri3PlaneKernel, Tri6PlaneKernel
@@ -55,5 +55,5 @@ register_element_kernel(Hex8Kernel())
 register_element_kernel(Hex20Kernel())
 register_element_kernel(Tet4Kernel())
 register_element_kernel(Tet10Kernel())
-register_element_kernel(Truss2DKernel())
-register_element_kernel(Beam2DKernel())
+register_element_kernel(Truss2Kernel())
+register_element_kernel(Beam2Kernel())
