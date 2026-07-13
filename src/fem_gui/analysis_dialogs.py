@@ -109,6 +109,7 @@ class JobManagerDialog(QDialog):
         self.log_view.setObjectName("jobLogView")
         self.log_view.setReadOnly(True)
         self.log_view.setMinimumHeight(125)
+        self._displayed_job_name: str | None = None
         layout.addWidget(self.log_view)
         buttons = QHBoxLayout()
         self.resubmit_button = QPushButton("重新提交", self)
@@ -166,7 +167,17 @@ class JobManagerDialog(QDialog):
 
     def _update_selection(self) -> None:
         job = self._selected_job()
-        self.log_view.setPlainText("\n".join(job.messages) if job else "尚无作业记录")
+        job_name = job.name if job else None
+        log_text = "\n".join(job.messages) if job else "尚无作业记录"
+        if job_name != self._displayed_job_name or log_text != self.log_view.toPlainText():
+            same_job = job_name == self._displayed_job_name
+            scroll_bar = self.log_view.verticalScrollBar()
+            scroll_value = scroll_bar.value()
+            was_at_bottom = scroll_value == scroll_bar.maximum()
+            self.log_view.setPlainText(log_text)
+            if same_job:
+                scroll_bar.setValue(scroll_bar.maximum() if was_at_bottom else scroll_value)
+            self._displayed_job_name = job_name
         self.resubmit_button.setEnabled(
             job is not None and job.status in {JobStatus.COMPLETED, JobStatus.FAILED}
         )

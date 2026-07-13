@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication, QToolButton
 
 from fem.abaqus import read
 from fem.solvers import static_linear
+from fem_gui.analysis_dialogs import JobManagerDialog
 from fem_gui.analysis_jobs import AnalysisJob, JobStatus
 from fem_gui.document import FEMDocument
 from fem_gui.main_window import FEMMainWindow
@@ -292,3 +293,30 @@ def test_job_manager_shows_memory_log_and_history_actions(gui_inp_path):
     assert window.show_job_manager() is manager
     manager.close()
     window.close()
+
+
+def test_job_manager_refresh_preserves_manual_log_scroll_position():
+    _application()
+    job = AnalysisJob("Job-1", "Static-1", JobStatus.RUNNING)
+    job.messages = [f"日志行 {index}" for index in range(100)]
+    manager = JobManagerDialog([job])
+    manager.show()
+    QApplication.processEvents()
+
+    scroll_bar = manager.log_view.verticalScrollBar()
+    assert scroll_bar.maximum() > 0
+    scroll_bar.setValue(scroll_bar.maximum() // 2)
+    manual_position = scroll_bar.value()
+
+    manager.refresh()
+    assert scroll_bar.value() == manual_position
+
+    job.messages.append("新增日志")
+    manager.refresh()
+    assert scroll_bar.value() == manual_position
+
+    scroll_bar.setValue(scroll_bar.maximum())
+    job.messages.append("继续新增日志")
+    manager.refresh()
+    assert scroll_bar.value() == scroll_bar.maximum()
+    manager.close()
