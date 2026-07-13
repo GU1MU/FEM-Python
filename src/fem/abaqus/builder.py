@@ -70,9 +70,14 @@ def build_model(deck: AbaqusDeck) -> FEMModel:
             )
         )
 
-    surfaces, edges = _build_surfaces_and_edges(mesh, deck, element_sets)
+    topology: dict[str, Any] = {
+        "elements": {elem.id: elem for elem in mesh.elements},
+    }
+    surfaces, edges = _build_surfaces_and_edges(mesh, deck, element_sets, topology)
     steps = [
-        _build_step(step, mesh, surfaces, edges, element_sets, step_index)
+        _build_step(
+            step, mesh, surfaces, edges, element_sets, step_index, topology
+        )
         for step_index, step in enumerate(deck.steps)
     ]
     model = FEMModel(
@@ -136,24 +141,28 @@ def _build_surfaces_and_edges(
     mesh: Any,
     deck: AbaqusDeck,
     element_sets: dict[str, ElementSet],
+    topology: dict[str, Any],
 ) -> tuple[dict[str, Surface], dict[str, Edge]]:
     """Build named model surfaces and edges from deck surface entries."""
     if mesh.dofs_per_node == 2:
-        return {}, _build_edges(mesh, deck, element_sets)
-    return _build_surfaces(mesh, deck, element_sets), {}
+        return {}, _build_edges(mesh, deck, element_sets, topology)
+    return _build_surfaces(mesh, deck, element_sets, topology), {}
 
 
 def _build_surfaces(
     mesh: Any,
     deck: AbaqusDeck,
     element_sets: dict[str, ElementSet],
+    topology: dict[str, Any],
 ) -> dict[str, Surface]:
     """Build named model surfaces from deck surface entries."""
-    face_lookup = {
-        (elem_id, local_index): node_ids
-        for elem_id, local_index, node_ids in face_selection.all(mesh)
-    }
-    elem_lookup = {elem.id: elem for elem in mesh.elements}
+    if not any(
+        deck.surface_scopes.get(name, "model") != "part"
+        for name in deck.surfaces
+    ):
+        return {}
+    face_lookup = _face_lookup(mesh, topology)
+    elem_lookup = topology["elements"]
     surfaces: dict[str, Surface] = {}
 
     for name, entries in deck.surfaces.items():
@@ -179,13 +188,16 @@ def _build_edges(
     mesh: Any,
     deck: AbaqusDeck,
     element_sets: dict[str, ElementSet],
+    topology: dict[str, Any],
 ) -> dict[str, Edge]:
     """Build named model edges from 2D Abaqus surface entries."""
-    edge_lookup = {
-        (elem_id, local_index): node_ids
-        for elem_id, local_index, node_ids in edge_selection.all(mesh)
-    }
-    elem_lookup = {elem.id: elem for elem in mesh.elements}
+    if not any(
+        deck.surface_scopes.get(name, "model") != "part"
+        for name in deck.surfaces
+    ):
+        return {}
+    edge_lookup = _edge_lookup(mesh, topology)
+    elem_lookup = topology["elements"]
     edges: dict[str, Edge] = {}
 
     for name, entries in deck.surfaces.items():
@@ -214,6 +226,7 @@ def _build_step(
     edges: dict[str, Edge],
     element_sets: dict[str, ElementSet],
     step_index: int,
+    topology: dict[str, Any],
 ) -> AnalysisStep:
     """Convert raw Abaqus step data to core step data."""
     boundaries: list[DisplacementConstraint] = []
@@ -237,6 +250,7 @@ def _build_step(
             step.name,
             step_index,
             load_index,
+            topology,
         )
         for load_index, load in enumerate(step.distributed_loads)
     ]
@@ -273,6 +287,7 @@ def _build_distributed_load(
     step_name: str,
     step_index: int,
     load_index: int,
+    topology: dict[str, Any],
 ) -> SurfaceLoad | EdgeLoad:
     """Convert an Abaqus DLOAD/DSLOAD line to a model distributed load."""
     label = load.label.upper()
@@ -293,6 +308,7 @@ def _build_distributed_load(
                 load.target,
                 face_label,
                 element_sets,
+                topology,
             )
         else:
             surfaces[target_name] = _surface_from_element_target(
@@ -301,6 +317,7 @@ def _build_distributed_load(
                 load.target,
                 face_label,
                 element_sets,
+                topology,
             )
     else:
         raise ValueError(f"unsupported distributed load source: {load.source}")
@@ -332,13 +349,11 @@ def _surface_from_element_target(
     target: str | int,
     face_label: str,
     element_sets: dict[str, ElementSet],
+    topology: dict[str, Any],
 ) -> Surface:
     """Build a generated surface from an element target and face label."""
-    face_lookup = {
-        (elem_id, face_index): node_ids
-        for elem_id, face_index, node_ids in face_selection.all(mesh)
-    }
-    elem_lookup = {elem.id: elem for elem in mesh.elements}
+    face_lookup = _face_lookup(mesh, topology)
+    elem_lookup = topology["elements"]
     model_faces = []
     for element_id in _resolve_element_target(target, element_sets):
         elem = _require_mesh_element(elem_lookup, element_id)
@@ -356,13 +371,11 @@ def _edge_from_element_target(
     target: str | int,
     face_label: str,
     element_sets: dict[str, ElementSet],
+    topology: dict[str, Any],
 ) -> Edge:
     """Build a generated edge collection from a 2D element target and face label."""
-    edge_lookup = {
-        (elem_id, edge_index): node_ids
-        for elem_id, edge_index, node_ids in edge_selection.all(mesh)
-    }
-    elem_lookup = {elem.id: elem for elem in mesh.elements}
+    edge_lookup = _edge_lookup(mesh, topology)
+    elem_lookup = topology["elements"]
     model_edges = []
     for element_id in _resolve_element_target(target, element_sets):
         elem = _require_mesh_element(elem_lookup, element_id)
@@ -372,6 +385,28 @@ def _edge_from_element_target(
             raise ValueError(f"element {element_id} does not have Abaqus edge {face_label}")
         model_edges.append(ElementEdge(element_id, local_index, node_ids))
     return Edge(name, model_edges)
+
+
+def _face_lookup(mesh: Any, topology: dict[str, Any]) -> dict[tuple[int, int], tuple[int, ...]]:
+    lookup = topology.get("faces")
+    if lookup is None:
+        lookup = {
+            (elem_id, face_index): node_ids
+            for elem_id, face_index, node_ids in face_selection.all(mesh)
+        }
+        topology["faces"] = lookup
+    return lookup
+
+
+def _edge_lookup(mesh: Any, topology: dict[str, Any]) -> dict[tuple[int, int], tuple[int, ...]]:
+    lookup = topology.get("edges")
+    if lookup is None:
+        lookup = {
+            (elem_id, edge_index): node_ids
+            for elem_id, edge_index, node_ids in edge_selection.all(mesh)
+        }
+        topology["edges"] = lookup
+    return lookup
 
 
 def _scaled_traction_vector(load: AbaqusDistributedLoad, mesh: Any) -> tuple[float, ...]:

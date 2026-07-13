@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from time import perf_counter
 from typing import Any
 
 from .. import materials
@@ -17,25 +18,68 @@ def solve(
     model: Any,
     step: str | int | AnalysisStep | None = None,
     name: str | None = None,
+    *,
+    _validated_step: AnalysisStep | None | object = ...,
+    timings: dict[str, float] | None = None,
 ) -> ModelResult:
     """Solve one linear static model step."""
-    selected_step = get_step(model, step)
-    validate_model(model, selected_step)
-    _validate_static_step(selected_step)
+    if _validated_step is ...:
+        started = perf_counter()
+        selected_step = validate_problem(model, step)
+        _record_timing(timings, "模型验证", started)
+    else:
+        selected_step = _validated_step
+
+    started = perf_counter()
     materials.apply_sections(model)
     boundary = boundary_for_step(model, selected_step)
+    _record_timing(timings, "分析准备", started)
+
+    started = perf_counter()
     K = assemble_global_stiffness_sparse(model.mesh)
+    _record_timing(timings, "刚度矩阵装配", started)
+
+    started = perf_counter()
     F = build_load_vector(model.mesh, boundary)
     K_mod, F_mod = apply_dirichlet(K, F, boundary)
+    _record_timing(timings, "载荷与边界条件", started)
+
+    started = perf_counter()
     U = linear.solve(K_mod, F_mod)
+    _record_timing(timings, "线性方程求解", started)
+
+    started = perf_counter()
     reactions = K @ U - F
-    return ModelResult(
+    result = ModelResult(
         model,
         selected_step,
         U,
         reactions,
         name=name,
     )
+    _record_timing(timings, "反力与结果封装", started)
+    return result
+
+
+def _record_timing(
+    timings: dict[str, float] | None,
+    name: str,
+    started: float,
+) -> None:
+    """Record one optional solver stage without coupling the solver to the GUI."""
+    if timings is not None:
+        timings[name] = perf_counter() - started
+
+
+def validate_problem(
+    model: Any,
+    step: str | int | AnalysisStep | None = None,
+) -> AnalysisStep | None:
+    """使用与线性静力求解完全一致的规则验证模型和分析步。"""
+    selected_step = get_step(model, step)
+    validate_model(model, selected_step)
+    _validate_static_step(selected_step)
+    return selected_step
 
 
 def _validate_static_step(step: AnalysisStep | None) -> None:

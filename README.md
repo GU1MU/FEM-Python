@@ -21,6 +21,19 @@ python examples\cantilever_beam_hex8_abaqus.py
 python examples\mixed_hex8_tet4.py
 ```
 
+启动中文图形界面：
+
+```powershell
+python -m pip install -e ".[gui]"
+python -m fem_gui.app
+# 或在仓库根目录直接运行
+python main.py
+```
+
+图形界面支持打开 Abaqus INP、网格和模型树浏览、节点/单元选择、约束与
+载荷显示、后台线性静力求解、位移与应力查看、结果查询和 VTK 导出。
+模型编辑、几何建模、自动网格划分与非线性分析不在第一版界面中显示。
+
 运行pytest测试：
 
 ```powershell

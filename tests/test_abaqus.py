@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from fem import abaqus, materials, post
+from fem.abaqus import builder as abaqus_builder
 from fem.core.model import (
     DisplacementConstraint,
     ElementEdge,
@@ -14,6 +15,36 @@ from fem.core.mesh import HexMesh3D
 from fem.solvers import static_linear
 from tests.helpers.abaqus_builders import write_perforated_plate_style_inp
 from tests.helpers.file_builders import write_inp
+
+
+def test_dloads_reuse_one_face_topology_lookup(monkeypatch, tmp_path):
+    path = write_inp(
+        tmp_path,
+        "cached_dloads.inp",
+        [
+            "*Node",
+            "1,0,0,0", "2,1,0,0", "3,1,1,0", "4,0,1,0",
+            "5,0,0,1", "6,1,0,1", "7,1,1,1", "8,0,1,1",
+            "*Element, type=C3D8, elset=SOLID",
+            "1,1,2,3,4,5,6,7,8",
+            "*Elset, elset=SOLID", "1",
+            "*Step, name=LOAD", "*Static", "*Dload",
+            "SOLID, P1, 2", "SOLID, P2, 3", "*End Step",
+        ],
+    )
+    calls = 0
+    original = abaqus_builder.face_selection.all
+
+    def counted(mesh):
+        nonlocal calls
+        calls += 1
+        return original(mesh)
+
+    monkeypatch.setattr(abaqus_builder.face_selection, "all", counted)
+    model = abaqus.read(path)
+
+    assert len(model.steps[0].surface_loads) == 2
+    assert calls == 1
 
 
 def _assert_pressure_points_inward(model, bc):

@@ -33,6 +33,8 @@ def boundary_for_step(model: Any, step: str | int | AnalysisStep | None = None) 
         return BoundaryCondition()
 
     boundary = BoundaryCondition()
+    node_lookup = {node.id: node for node in model.mesh.nodes}
+    element_lookup = {elem.id: elem for elem in model.mesh.elements}
     for constraint in _step_boundaries(model, selected_step):
         for node_id in _resolve_node_target(model, constraint.target):
             for component in range(
@@ -64,11 +66,11 @@ def boundary_for_step(model: Any, step: str | int | AnalysisStep | None = None) 
             raise KeyError(f"surface {surface_load.surface} is not defined")
         for face in model.surfaces[surface_load.surface].faces:
             if surface_load.load_type == "pressure":
-                vector = _pressure_vector(model, face, surface_load)
+                vector = _pressure_vector(model, face, surface_load, node_lookup, element_lookup)
             elif surface_load.load_type == "traction":
                 vector = surface_load.vector
             elif surface_load.load_type == "shear_traction":
-                vector = _shear_traction_vector(model, face, surface_load)
+                vector = _shear_traction_vector(model, face, surface_load, node_lookup)
             else:
                 raise ValueError(f"unsupported surface load type: {surface_load.load_type}")
             boundary.add_surface_traction(face.elem_id, face.local_index, *vector)
@@ -80,7 +82,9 @@ def boundary_for_step(model: Any, step: str | int | AnalysisStep | None = None) 
             raise NotImplementedError("3D edge loads are not supported")
         for edge in model.edges[edge_load.edge].edges:
             if edge_load.load_type == "pressure":
-                vector = _edge_pressure_vector_2d(model, edge, edge_load)
+                vector = _edge_pressure_vector_2d(
+                    model, edge, edge_load, node_lookup, element_lookup
+                )
             elif edge_load.load_type == "traction":
                 vector = edge_load.vector
             else:
@@ -114,24 +118,29 @@ def _pressure_vector(
     model: Any,
     face: ElementFace,
     surface_load: SurfaceLoad,
+    node_lookup: dict[int, Any],
+    element_lookup: dict[int, Any],
 ) -> tuple[float, ...]:
     """Return an inward pressure vector for one surface face."""
     if surface_load.magnitude is None:
         raise ValueError("pressure surface load requires a magnitude")
 
-    return _pressure_vector_3d(model, face, surface_load)
+    return _pressure_vector_3d(
+        model, face, surface_load, node_lookup, element_lookup
+    )
 
 
 def _edge_pressure_vector_2d(
     model: Any,
     edge: ElementEdge,
     edge_load: EdgeLoad,
+    node_lookup: dict[int, Any],
+    element_lookup: dict[int, Any],
 ) -> tuple[float, float]:
     """Return an inward pressure vector for one 2D element edge."""
     if edge_load.magnitude is None:
         raise ValueError("pressure edge load requires a magnitude")
 
-    node_lookup = {node.id: node for node in model.mesh.nodes}
     if len(edge.node_ids) < 2:
         raise ValueError(f"edge {edge} must contain at least 2 nodes for pressure")
 
@@ -146,8 +155,7 @@ def _edge_pressure_vector_2d(
 
     normal = np.array([tangent[1], -tangent[0]], dtype=float) / length
 
-    elem_lookup = {elem.id: elem for elem in model.mesh.elements}
-    elem = elem_lookup.get(edge.elem_id)
+    elem = element_lookup.get(edge.elem_id)
     if elem is None:
         raise KeyError(f"element {edge.elem_id} is not defined")
     elem_coords = np.array(
@@ -171,9 +179,10 @@ def _pressure_vector_3d(
     model: Any,
     face: ElementFace,
     surface_load: SurfaceLoad,
+    node_lookup: dict[int, Any],
+    element_lookup: dict[int, Any],
 ) -> tuple[float, ...]:
     """Return an inward pressure vector for one 3D surface face."""
-    node_lookup = {node.id: node for node in model.mesh.nodes}
     coords = []
     for node_id in face.node_ids:
         node = node_lookup[node_id]
@@ -189,8 +198,7 @@ def _pressure_vector_3d(
     if norm <= 0.0:
         raise ValueError(f"surface face {face} has zero normal")
 
-    elem_lookup = {elem.id: elem for elem in model.mesh.elements}
-    elem = elem_lookup.get(face.elem_id)
+    elem = element_lookup.get(face.elem_id)
     if elem is None:
         raise KeyError(f"element {face.elem_id} is not defined")
     elem_coords = []
@@ -210,6 +218,7 @@ def _shear_traction_vector(
     model: Any,
     face: ElementFace,
     surface_load: SurfaceLoad,
+    node_lookup: dict[int, Any],
 ) -> tuple[float, ...]:
     """Return a surface shear traction projected onto one face tangent plane."""
     if surface_load.magnitude is None:
@@ -217,7 +226,7 @@ def _shear_traction_vector(
     if not surface_load.vector:
         raise ValueError("shear traction surface load requires a direction vector")
 
-    normal = _face_unit_normal(model, face)
+    normal = _face_unit_normal(model, face, node_lookup)
     direction = np.array(surface_load.vector, dtype=float)
     if direction.shape[0] != normal.shape[0]:
         raise ValueError(
@@ -232,9 +241,12 @@ def _shear_traction_vector(
     return tuple(float(value) for value in vector)
 
 
-def _face_unit_normal(model: Any, face: ElementFace) -> np.ndarray:
+def _face_unit_normal(
+    model: Any,
+    face: ElementFace,
+    node_lookup: dict[int, Any],
+) -> np.ndarray:
     """Return a unit normal for a 3D surface face."""
-    node_lookup = {node.id: node for node in model.mesh.nodes}
     coords = []
     for node_id in face.node_ids:
         node = node_lookup[node_id]

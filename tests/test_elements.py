@@ -664,6 +664,46 @@ def test_solid_kernels_provide_nodal_stress_matching_post_helpers(builder):
     assert np.allclose(node_vals, expected)
 
 
+def test_hex8_bbar_stress_matches_abaqus_c3d8_reference():
+    """固定 Abaqus C3D8 基准，防止退回未修正的常规 B 矩阵。"""
+    mesh = make_hex8_solid_stress_mesh()
+    coordinates = (
+        (1.25, 10.0, 200.0), (1.25, 0.0, 200.0),
+        (1.25, 0.0, 192.0), (1.25, 10.0, 192.0),
+        (11.25, 10.0, 200.0), (11.25, 0.0, 200.0),
+        (11.25, 0.0, 192.0), (11.25, 10.0, 192.0),
+    )
+    for node, (x, y, z) in zip(mesh.nodes, coordinates):
+        node.x, node.y, node.z = x, y, z
+    mesh.elements[0].props = {"E": 220000.0, "nu": 0.3}
+    nodal_displacements = (
+        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+        (0.0029052102537830754, -0.011516803538312588, 0.014116381956906784),
+        (-0.0029052102536912526, -0.011516803538289972, -0.014116381957019121),
+        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+        (-0.0029052102536925393, -0.011516803538290809, 0.014116381957018316),
+        (0.002905210253783908, -0.011516803538313872, -0.014116381956907585),
+    )
+    displacement = np.asarray(nodal_displacements, dtype=float).ravel()
+    kernel = get_element_kernel("Hex8")
+    a = 1.0 / np.sqrt(3.0)
+
+    integration_stress = kernel.stress_at(
+        mesh, mesh.elements[0], displacement, -a, -a, -a
+    )
+    nodal_stress = kernel.nodal_stress(mesh, mesh.elements[0], displacement)
+
+    assert integration_stress == pytest.approx(
+        [-49.4706, -61.4677, 110.938, -5.99856, 71.3284, 10.2427],
+        rel=2.0e-5,
+    )
+    assert nodal_stress[0] == pytest.approx(
+        [-99.5386, -99.5386, 199.077, 0.0, 121.812, 30.7282],
+        rel=2.0e-5,
+        abs=1.0e-8,
+    )
+
+
 # Elements package
 
 

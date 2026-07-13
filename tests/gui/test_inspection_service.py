@@ -1,0 +1,91 @@
+from __future__ import annotations
+
+from fem.abaqus import read
+from fem.solvers.static_linear import solve
+from fem_gui.inspection_service import InspectionService
+from fem_gui.visualization.model_adapter import build_model_geometry
+from fem_gui.visualization.result_adapter import build_result_data
+
+
+def _page(inspection, title):
+    return next(page for page in inspection.pages if page.title == title)
+
+
+def _fields(page):
+    return dict(page.fields)
+
+
+def test_service_builds_node_element_and_assignment_indexes_once(gui_inp_path):
+    model = read(gui_inp_path)
+    service = InspectionService(model)
+
+    assert not hasattr(service, "_element_records")
+    assert service._element_record_cached.cache_info().currsize == 0
+
+    assert service.node_sets_by_node[2] == ["RIGHT"]
+    assert service.adjacent_elements[2] == [1]
+    node = service.inspect("node", 2)
+    basic = _page(node, "基本信息")
+    assert _fields(basic)["坐标"] == "1, 0"
+    assert _fields(basic)["所属节点集"] == "RIGHT"
+    assert basic.tables[0].rows == (("1", "Quad4Plane"),)
+    assert _page(node, "分析定义").tables[0].rows[0][:3] == ("Static-1", "节点载荷", "U1")
+    assert all(page.title != "结果" for page in node.pages)
+
+    record = service.element_record(1)
+    assert service._element_record_cached.cache_info().currsize == 1
+    assert record["abaqus_type"] == "CPS4"
+    assert record["material"] == "STEEL"
+    assert record["section_index"] == 0
+    assert record["properties"]["E"] == 210000.0
+    assert record["properties"]["nu"] == 0.3
+    assert record["properties"]["plane_type"] == "stress"
+
+
+def test_collection_material_section_and_step_information_is_structured(gui_inp_path):
+    service = InspectionService(read(gui_inp_path))
+
+    node_set = service.inspect("node_set", "LEFT")
+    assert _fields(node_set.pages[0])["节点数量"] == "2"
+    assert len(node_set.pages[0].tables[0].rows) == 2
+    assert "边界条件" in _fields(node_set.pages[0])["边界条件引用"]
+
+    element_set = service.inspect("element_set", "SOLID")
+    assert _fields(element_set.pages[0])["使用的材料"] == "STEEL"
+    assert element_set.pages[0].tables[0].rows[0][:3] == ("1", "Quad4Plane", "STEEL")
+
+    material = _fields(service.inspect("material", "STEEL").pages[0])
+    assert material["弹性模量 E"] == "210000"
+    assert material["泊松比 ν"] == "0.3"
+    assert material["作用单元数量"] == "1"
+    section = _fields(service.inspect("section", 0).pages[0])
+    assert section["材料"] == "STEEL"
+    assert section["平面类型"] == "平面应力"
+    assert section["厚度"] == "1"
+
+    step_index = next(index for index, step in enumerate(service.model.steps) if step.name == "Static-1")
+    step = service.inspect("step", step_index)
+    assert [page.title for page in step.pages] == ["概况", "载荷", "输出请求"]
+    assert _page(step, "载荷").tables[0].rows[0][1:] == ("节点载荷", "RIGHT", "U1", "10")
+    assert _page(step, "输出请求").tables[0].rows[0][1:] == ("场输出", "节点", "U, RF")
+
+
+def test_result_pages_use_existing_result_data_and_hide_missing_3d_components(gui_inp_path):
+    model = read(gui_inp_path)
+    geometry = build_model_geometry(model)
+    result = solve(model)
+    data = build_result_data(result, geometry)
+    service = InspectionService(model, data)
+
+    node_fields = _fields(_page(service.inspect("node", 2), "结果"))
+    assert "U1" in node_fields and "U2" in node_fields and "位移模" in node_fields
+    assert "RF1" in node_fields and "RF2" in node_fields and "反力模" in node_fields
+    assert "U3" not in node_fields and "RF3" not in node_fields
+    assert "Mises" in node_fields
+
+    element_result = _page(service.inspect("element", 1), "结果")
+    assert _fields(element_result)["结果位置"] == "单元中心"
+    values = dict(element_result.tables[0].rows)
+    assert "Mises" in values
+    assert "最大主应力" in values
+    assert "最小主应力" in values

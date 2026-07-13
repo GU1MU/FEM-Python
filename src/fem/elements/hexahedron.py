@@ -283,10 +283,14 @@ class Hex8Kernel(_HexKernelBase):
 
         D = self._material_matrix(elem)
         Ke = np.zeros((24, 24), dtype=float)
-
-        for xi, eta, zeta, w in hex8_gauss_points(gauss_order):
-            B, detJ = self._B_matrix(mesh, elem, xi, eta, zeta, node_lookup)
-            Ke += (B.T @ D @ B) * detJ * w
+        integration = [
+            (*self._B_matrix(mesh, elem, xi, eta, zeta, node_lookup), w)
+            for xi, eta, zeta, w in hex8_gauss_points(gauss_order)
+        ]
+        b_volume = self._average_volumetric_operator(integration)
+        for B, detJ, w in integration:
+            B_bar = self._apply_bbar(B, b_volume)
+            Ke += (B_bar.T @ D @ B_bar) * detJ * w
 
         return Ke
 
@@ -371,7 +375,12 @@ class Hex8Kernel(_HexKernelBase):
         """Return stress at one natural coordinate point."""
         D = self._material_matrix(elem)
         B, _ = self._B_matrix(mesh, elem, xi, eta, zeta, node_lookup)
-        sigma = D @ (B @ U[mesh.element_dofs(elem)])
+        integration = [
+            (*self._B_matrix(mesh, elem, gx, gy, gz, node_lookup), weight)
+            for gx, gy, gz, weight in hex8_gauss_points()
+        ]
+        B_bar = self._apply_bbar(B, self._average_volumetric_operator(integration))
+        sigma = D @ (B_bar @ U[mesh.element_dofs(elem)])
         return tuple(float(v) for v in sigma)
 
     def nodal_stress(
@@ -383,11 +392,39 @@ class Hex8Kernel(_HexKernelBase):
         gauss_order: int = 2,
     ) -> np.ndarray:
         """Return element-nodal stresses extrapolated from 2x2x2 Gauss stresses."""
+        D = self._material_matrix(elem)
+        integration = [
+            (*self._B_matrix(mesh, elem, xi, eta, zeta, node_lookup), w)
+            for xi, eta, zeta, w in hex8_gauss_points(gauss_order)
+        ]
+        b_volume = self._average_volumetric_operator(integration)
+        element_u = U[mesh.element_dofs(elem)]
         gp_vals = np.array([
-            self.stress_at(mesh, elem, U, xi, eta, zeta, node_lookup)
-            for xi, eta, zeta, _ in hex8_gauss_points(gauss_order)
+            D @ (self._apply_bbar(B, b_volume) @ element_u)
+            for B, _detJ, _weight in integration
         ], dtype=float)
         return HEX8_EXTRAPOLATION_MATRIX @ gp_vals
+
+    @staticmethod
+    def _average_volumetric_operator(integration) -> np.ndarray:
+        """Return the element-average volumetric strain operator for C3D8 B-bar."""
+        volume = sum(detJ * weight for _B, detJ, weight in integration)
+        if volume <= 0.0:
+            raise ValueError("Hex8 element integration volume must be positive")
+        return sum(
+            (B[0] + B[1] + B[2]) * detJ * weight
+            for B, detJ, weight in integration
+        ) / volume
+
+    @staticmethod
+    def _apply_bbar(B: np.ndarray, average_volume: np.ndarray) -> np.ndarray:
+        """Replace the pointwise volumetric operator while preserving deviatoric strain."""
+        B_bar = B.copy()
+        correction = (average_volume - (B[0] + B[1] + B[2])) / 3.0
+        B_bar[0] += correction
+        B_bar[1] += correction
+        B_bar[2] += correction
+        return B_bar
 
     def _B_matrix(
         self,
