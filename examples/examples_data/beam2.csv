@@ -17,13 +17,16 @@ node_id,x,y,z
 
 # ELEMENTS
 elem_id,node_i,node_j,section_type,radius,outer_radius,inner_radius,size_y,size_z,local_y_x,local_y_y,local_y_z,material_id
-1,1,2,solid_circle,0.02,,,,,0,0,1,2
-2,2,3,solid_circle,0.02,,,,,0,0,1,2
-3,3,4,solid_circle,0.02,,,,,0,0,1,2
-4,4,5,solid_circle,0.02,,,,,0,0,1,2
-5,5,6,solid_circle,0.02,,,,,0,0,1,2
-6,6,7,solid_circle,0.02,,,,,0,0,1,2
-7,7,8,solid_circle,0.02,,,,,0,0,1,2
+# Mast: hollow circular section
+1,1,2,hollow_circle,,0.025,0.015,,,0,0,1,2
+2,2,3,hollow_circle,,0.025,0.015,,,0,0,1,2
+# Right arm: rectangular section aligned with the local y-z axes
+3,3,4,rectangle,,,,0.04,0.03,0,0,1,2
+4,4,5,rectangle,,,,0.04,0.03,0,0,1,2
+5,5,6,rectangle,,,,0.04,0.03,0,0,1,2
+6,6,7,rectangle,,,,0.04,0.03,0,0,1,2
+7,7,8,rectangle,,,,0.04,0.03,0,0,1,2
+# Left arm: solid circular section
 8,3,9,solid_circle,0.02,,,,,0,0,1,2
 9,9,10,solid_circle,0.02,,,,,0,0,1,2
 10,10,11,solid_circle,0.02,,,,,0,0,1,2
