@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 
 from fem import boundary
-from fem.core.mesh import Element3D, Node3D, TrussMesh3D
-from fem.elements import get_element_kernel
+from fem.core.mesh import Element3D, Mesh3D, Node3D
+from fem.elements import canonical_element_type, get_element_kernel, register_element_kernel
 from fem.elements.beam_section import parse_beam2_section
 from fem.elements.hexahedron import (
     HEX20_EXTRAPOLATION_MATRIX,
@@ -54,6 +54,40 @@ def _assert_kernel_matches_explicit_node_lookup(mesh):
 
 
 @pytest.mark.parametrize(
+    ("element_type", "canonical_type"),
+    [
+        ("Truss2", "Truss2"),
+        ("Beam2", "Beam2"),
+        ("cps3", "Tri3"),
+        ("CPE6", "Tri6"),
+        ("cps4", "Quad4"),
+        ("CPE8", "Quad8"),
+        ("c3d4", "Tet4"),
+        ("C3D10", "Tet10"),
+        ("c3d8", "Hex8"),
+        ("C3D20", "Hex20"),
+    ],
+)
+def test_registry_exposes_explicit_canonical_element_identity(element_type, canonical_type):
+    kernel = get_element_kernel(element_type)
+
+    assert kernel.canonical_type == canonical_type
+    assert canonical_element_type(element_type) == canonical_type
+
+
+def test_registry_rejects_conflicting_aliases_without_partial_registration():
+    class ConflictingKernel:
+        canonical_type = "UniqueTestType"
+        aliases = ("hEx8",)
+
+    with pytest.raises(ValueError, match="already registered"):
+        register_element_kernel(ConflictingKernel())
+
+    with pytest.raises(NotImplementedError, match="Unsupported element type: UniqueTestType"):
+        get_element_kernel("UniqueTestType")
+
+
+@pytest.mark.parametrize(
     "builder",
     [
         make_truss_stiffness_mesh,
@@ -100,7 +134,7 @@ def test_truss_kernel_provides_element_stress():
 
 
 def test_inclined_truss_matches_closed_form_axial_response():
-    mesh = TrussMesh3D(
+    mesh = Mesh3D(
         nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 3.0, 4.0, 0.0)],
         elements=[
             Element3D(
@@ -345,7 +379,7 @@ def test_tri6_shape_functions_interpolate_nodes():
 def test_quad4_stiffness_builds_node_lookup_from_mesh_when_omitted():
     mesh = make_quad4_stiffness_mesh()
 
-    ke = get_element_kernel("Quad4Plane").stiffness(mesh, mesh.elements[0])
+    ke = get_element_kernel("Quad4").stiffness(mesh, mesh.elements[0])
 
     assert ke.shape == (8, 8)
     assert np.allclose(ke, ke.T)

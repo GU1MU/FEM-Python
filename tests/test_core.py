@@ -4,7 +4,7 @@ import pytest
 from fem import materials, selection, steps
 from fem.core import model as core_model
 from fem.core.dof import DofMap
-from fem.core.mesh import Element3D, HexMesh3D, Node2D, Node3D, PlaneMesh2D
+from fem.core.mesh import Element3D, Mesh2D, Mesh3D, MeshProtocol, Node2D, Node3D
 from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
@@ -62,9 +62,30 @@ def test_dof_map_rejects_duplicate_nodes_and_invalid_components():
 
 def test_meshes_expose_current_dof_interface():
     for mesh in make_dof_order_meshes():
+        assert isinstance(mesh, MeshProtocol)
         assert mesh.node_ids == [10, 20]
         assert mesh.node_dofs(10) == list(range(mesh.dofs_per_node))
         assert mesh.element_dofs(mesh.elements[0])[:mesh.dofs_per_node] == mesh.node_dofs(20)
+
+
+def test_generic_mesh_defaults_and_explicit_beam_layout():
+    mesh2d = Mesh2D([Node2D(2, 0.0, 0.0), Node2D(1, 1.0, 0.0)], [])
+    mesh3d = Mesh3D([Node3D(2, 0.0, 0.0, 0.0), Node3D(1, 1.0, 0.0, 0.0)], [])
+    beam_mesh = Mesh3D(mesh3d.nodes, [], dofs_per_node=6)
+
+    assert mesh2d.dofs_per_node == 2
+    assert mesh2d.node_ids == [1, 2]
+    assert mesh3d.dofs_per_node == 3
+    assert beam_mesh.dofs_per_node == 6
+    assert beam_mesh.num_dofs == 12
+
+    with pytest.raises(ValueError, match="dofs_per_node must be positive"):
+        Mesh3D([], [], dofs_per_node=0)
+
+
+def test_element3d_requires_an_explicit_type():
+    with pytest.raises(TypeError):
+        Element3D(1, [1, 2])
 
 
 def test_core_model_stores_sets_edges_surfaces_materials_and_sections():
@@ -209,7 +230,7 @@ def test_steps_add_edge_load_helpers():
 
 
 def test_nodes_select_2d_and_3d_coordinates():
-    mesh2d = PlaneMesh2D(
+    mesh2d = Mesh2D(
         nodes=[
             Node2D(1, 0.0, 0.0),
             Node2D(2, 1.0, 0.0),
@@ -217,7 +238,7 @@ def test_nodes_select_2d_and_3d_coordinates():
         ],
         elements=[],
     )
-    mesh3d = HexMesh3D(
+    mesh3d = Mesh3D(
         nodes=[
             Node3D(1, 0.0, 0.0, 0.0),
             Node3D(2, 1.0, 0.0, 0.0),
@@ -268,7 +289,7 @@ def test_elements_select_by_id_and_type_and_build_sets():
 
 
 def test_elements_select_by_node_membership_for_mixed_element_types():
-    mesh = HexMesh3D(
+    mesh = Mesh3D(
         nodes=[Node3D(node_id, float(node_id), 0.0, 0.0) for node_id in range(1, 9)],
         elements=[
             Element3D(30, [1, 2], "unregistered_line"),
@@ -296,7 +317,7 @@ def test_elements_select_by_nodes_rejects_unknown_mode():
 
 
 def test_element_type_selection_uses_exact_registered_kernel_identity():
-    mesh = HexMesh3D(
+    mesh = Mesh3D(
         nodes=[],
         elements=[
             Element3D(1, [], "Truss2"),
@@ -346,7 +367,7 @@ def test_faces_do_not_select_reduced_integration_hex20():
 
 def test_faces_use_hex20_corner_nodes_for_internal_interface_keys():
     hex20_mesh = make_hex20_stiffness_mesh()
-    mesh = HexMesh3D(
+    mesh = Mesh3D(
         nodes=[
             *hex20_mesh.nodes,
             Node3D(21, 0.0, 0.0, -1.0),
@@ -472,6 +493,7 @@ def test_linear_elastic_constitutive_matrices():
 def test_mixed_hex8_tet4_mesh_keeps_element_types_and_3d_dofs():
     mesh = make_mixed_hex8_tet4_mesh()
 
+    assert isinstance(mesh, Mesh3D)
     assert mesh.dofs_per_node == 3
     assert [elem.type for elem in mesh.elements] == ["Hex8", "Tet4"]
     assert mesh.elements[0].id == 1
@@ -482,8 +504,9 @@ def test_mixed_hex8_tet4_mesh_keeps_element_types_and_3d_dofs():
 def test_mixed_tri3_quad4_mesh_keeps_element_types_and_2d_dofs():
     mesh = make_mixed_tri3_quad4_mesh()
 
+    assert isinstance(mesh, Mesh2D)
     assert mesh.dofs_per_node == 2
-    assert [elem.type for elem in mesh.elements] == ["Tri3Plane", "Quad4Plane"]
+    assert [elem.type for elem in mesh.elements] == ["Tri3", "Quad4"]
     assert mesh.num_dofs == 10
 
 
@@ -491,5 +514,5 @@ def test_mixed_tri6_quad8_mesh_keeps_element_types_and_2d_dofs():
     mesh = make_mixed_tri6_quad8_mesh()
 
     assert mesh.dofs_per_node == 2
-    assert [elem.type for elem in mesh.elements] == ["Tri6Plane", "Quad8Plane"]
+    assert [elem.type for elem in mesh.elements] == ["Tri6", "Quad8"]
     assert mesh.num_dofs == 28

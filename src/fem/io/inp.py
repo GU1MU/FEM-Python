@@ -3,18 +3,18 @@ from __future__ import annotations
 import numpy as np
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..core.mesh import Element2D, Element3D, HexMesh3D, Node2D, Node3D, PlaneMesh2D, TetMesh3D
+from ..core.mesh import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
 
 
 _MIXED2D_TYPES = {
-    "CPS3": ("Tri3Plane", 3, "linear"),
-    "CPE3": ("Tri3Plane", 3, "linear"),
-    "CPS4": ("Quad4Plane", 4, "linear"),
-    "CPE4": ("Quad4Plane", 4, "linear"),
-    "CPS6": ("Tri6Plane", 6, "quadratic"),
-    "CPE6": ("Tri6Plane", 6, "quadratic"),
-    "CPS8": ("Quad8Plane", 8, "quadratic"),
-    "CPE8": ("Quad8Plane", 8, "quadratic"),
+    "CPS3": ("Tri3", 3, "linear"),
+    "CPE3": ("Tri3", 3, "linear"),
+    "CPS4": ("Quad4", 4, "linear"),
+    "CPE4": ("Quad4", 4, "linear"),
+    "CPS6": ("Tri6", 6, "quadratic"),
+    "CPE6": ("Tri6", 6, "quadratic"),
+    "CPS8": ("Quad8", 8, "quadratic"),
+    "CPE8": ("Quad8", 8, "quadratic"),
 }
 
 _UNSUPPORTED_REDUCED_INTEGRATION_TYPES = frozenset(
@@ -160,16 +160,16 @@ def _fix_plane_orientation(elem: Element2D, node_lookup: Dict[int, Node2D]) -> N
     area = _signed_area_2d(node_lookup, elem.node_ids)
     if area >= 0.0:
         return
-    if elem.type == "Tri3Plane":
+    if elem.type == "Tri3":
         n1, n2, n3 = elem.node_ids
         elem.node_ids = [n1, n3, n2]
-    elif elem.type == "Tri6Plane":
+    elif elem.type == "Tri6":
         n1, n2, n3, n4, n5, n6 = elem.node_ids
         elem.node_ids = [n1, n3, n2, n6, n5, n4]
-    elif elem.type == "Quad4Plane":
+    elif elem.type == "Quad4":
         n1, n2, n3, n4 = elem.node_ids
         elem.node_ids = [n1, n4, n3, n2]
-    elif elem.type == "Quad8Plane":
+    elif elem.type == "Quad8":
         n1, n2, n3, n4, n5, n6, n7, n8 = elem.node_ids
         elem.node_ids = [n1, n4, n3, n2, n8, n7, n6, n5]
 
@@ -178,7 +178,7 @@ def read_tri3(
     inp_path: str,
     default_thickness: float = 1.0,
     plane_type: Optional[str] = None,
-) -> PlaneMesh2D:
+) -> Mesh2D:
     """Read a Tri3 plane mesh from Abaqus .inp files."""
     nodes: List[Node2D] = []
     elements: List[Element2D] = []
@@ -262,7 +262,7 @@ def read_tri3(
                 elem = Element2D(
                     id=elem_id,
                     node_ids=node_ids,
-                    type="Tri3Plane",
+                    type="Tri3",
                     props=props,
                 )
                 elements.append(elem)
@@ -274,7 +274,7 @@ def read_tri3(
             f"No CPS3/CPE3 *Element data found in Abaqus input file {inp_path!r}"
         )
 
-    return PlaneMesh2D(nodes=nodes, elements=elements)
+    return Mesh2D(nodes=nodes, elements=elements)
 
 
 def read_tri6(
@@ -282,7 +282,7 @@ def read_tri6(
     default_thickness: float = 1.0,
     plane_type: Optional[str] = None,
     fix_orientation: bool = True,
-) -> PlaneMesh2D:
+) -> Mesh2D:
     """Read Tri6 plane mesh (CPS6/CPE6) from Abaqus INP file."""
     nodes: List[Node2D] = []
     elements: List[Element2D] = []
@@ -329,7 +329,7 @@ def read_tri6(
                     Element2D(
                         id=elem_id,
                         node_ids=node_ids,
-                        type="Tri6Plane",
+                        type="Tri6",
                         props=props,
                     )
                 )
@@ -341,7 +341,7 @@ def read_tri6(
     if fix_orientation:
         for elem in elements:
             _fix_plane_orientation(elem, node_lookup)
-    return PlaneMesh2D(nodes=nodes, elements=elements)
+    return Mesh2D(nodes=nodes, elements=elements)
 
 
 def read_quad4(
@@ -351,7 +351,7 @@ def read_quad4(
     fix_orientation: bool = True,
     enforce_parallelogram: bool = False,
     tol: float = 1e-10,
-) -> PlaneMesh2D:
+) -> Mesh2D:
     """Read Quad4 plane mesh (CPS4/CPE4) from Abaqus INP file."""
     nodes: List[Node2D] = []
     elements: List[Element2D] = []
@@ -446,7 +446,7 @@ def read_quad4(
                     Element2D(
                         id=elem_id,
                         node_ids=node_ids,
-                        type="Quad4Plane",
+                        type="Quad4",
                         props=props,
                     )
                 )
@@ -475,7 +475,7 @@ def read_quad4(
                 if A < 0.0:
                     e.node_ids = [n1, n4, n3, n2]
 
-    return PlaneMesh2D(nodes=nodes, elements=elements)
+    return Mesh2D(nodes=nodes, elements=elements)
 
 
 def read_quad8(
@@ -483,7 +483,7 @@ def read_quad8(
     default_thickness: float = 1.0,
     plane_type: Optional[str] = None,
     fix_orientation: bool = True,
-) -> PlaneMesh2D:
+) -> Mesh2D:
     """Read Quad8 plane mesh (CPS8/CPE8) from Abaqus INP file."""
     nodes: List[Node2D] = []
     elements: List[Element2D] = []
@@ -558,7 +558,7 @@ def read_quad8(
                     Element2D(
                         id=elem_id,
                         node_ids=node_ids,
-                        type="Quad8Plane",
+                        type="Quad8",
                         props=props,
                     )
                 )
@@ -586,7 +586,7 @@ def read_quad8(
                 n1_id, n2_id, n3_id, n4_id, n5_id, n6_id, n7_id, n8_id = e.node_ids
                 e.node_ids = [n1_id, n4_id, n3_id, n2_id, n8_id, n7_id, n6_id, n5_id]
 
-    return PlaneMesh2D(nodes=nodes, elements=elements)
+    return Mesh2D(nodes=nodes, elements=elements)
 
 
 def read_mixed2d(
@@ -594,7 +594,7 @@ def read_mixed2d(
     default_thickness: float = 1.0,
     plane_type: Optional[str] = None,
     fix_orientation: bool = True,
-) -> PlaneMesh2D:
+) -> Mesh2D:
     """Read a same-order mixed 2D plane mesh from Abaqus INP file."""
     nodes: List[Node2D] = []
     elements: List[Element2D] = []
@@ -669,10 +669,10 @@ def read_mixed2d(
     if fix_orientation:
         for elem in elements:
             _fix_plane_orientation(elem, node_lookup)
-    return PlaneMesh2D(nodes=nodes, elements=elements)
+    return Mesh2D(nodes=nodes, elements=elements)
 
 
-def read_tet10(inp_path: str) -> TetMesh3D:
+def read_tet10(inp_path: str) -> Mesh3D:
     """Read a Tet10 3D mesh from Abaqus .inp file (C3D10 elements).
 
     Node ordering (Abaqus convention):
@@ -785,10 +785,10 @@ def read_tet10(inp_path: str) -> TetMesh3D:
                     f"Element {e.id} has zero or negative Jacobian determinant. Check node ordering."
                 )
 
-    return TetMesh3D(nodes=nodes, elements=elements)
+    return Mesh3D(nodes=nodes, elements=elements)
 
 
-def read_tet4(inp_path: str) -> TetMesh3D:
+def read_tet4(inp_path: str) -> Mesh3D:
     """Read a Tet4 3D mesh from Abaqus C3D4 input data."""
     nodes: List[Node3D] = []
     elements: List[Element3D] = []
@@ -866,10 +866,10 @@ def read_tet4(inp_path: str) -> TetMesh3D:
                 f"(nodes: {e.node_ids}). Check node ordering."
             )
 
-    return TetMesh3D(nodes=nodes, elements=elements)
+    return Mesh3D(nodes=nodes, elements=elements)
 
 
-def read_hex8(inp_path: str) -> HexMesh3D:
+def read_hex8(inp_path: str) -> Mesh3D:
     """Read a Hex8 3D mesh from Abaqus .inp file (C3D8 elements)."""
     nodes: List[Node3D] = []
     elements: List[Element3D] = []
@@ -929,10 +929,10 @@ def read_hex8(inp_path: str) -> HexMesh3D:
     if not elements:
         raise ValueError(f"No C3D8 *Element data found in {inp_path}")
 
-    return HexMesh3D(nodes=nodes, elements=elements)
+    return Mesh3D(nodes=nodes, elements=elements)
 
 
-def read_hex20(inp_path: str) -> HexMesh3D:
+def read_hex20(inp_path: str) -> Mesh3D:
     """Read a Hex20 mesh from Abaqus C3D20 input data."""
     from ..elements.hexahedron import hex20_gauss_points, hex20_shape_funcs_grads
 
@@ -1027,4 +1027,4 @@ def read_hex20(inp_path: str) -> HexMesh3D:
                     "Check node ordering."
                 )
 
-    return HexMesh3D(nodes=nodes, elements=elements)
+    return Mesh3D(nodes=nodes, elements=elements)

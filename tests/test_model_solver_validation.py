@@ -10,7 +10,7 @@ from fem.materials import assignment as material_assignment
 from fem.assemble import assemble_global_stiffness_sparse
 from fem.assemble import stiffness as stiffness_module
 from fem.core import validate_mesh, validate_model
-from fem.core.mesh import BeamMesh3D, Element3D, Node3D, TrussMesh3D
+from fem.core.mesh import Element3D, Mesh3D, Node3D
 from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
@@ -43,11 +43,11 @@ def test_validate_mesh_rejects_stale_dof_map_until_explicit_rebuild():
 
 
 def test_validate_mesh_rejects_empty_nodes_and_elements_before_assembly():
-    no_nodes = TrussMesh3D(nodes=[], elements=[])
+    no_nodes = Mesh3D(nodes=[], elements=[])
     with pytest.raises(ValueError, match="at least one node"):
         assemble_global_stiffness_sparse(no_nodes)
 
-    no_elements = TrussMesh3D(nodes=[Node3D(1, 0.0, 0.0, 0.0)], elements=[])
+    no_elements = Mesh3D(nodes=[Node3D(1, 0.0, 0.0, 0.0)], elements=[])
     with pytest.raises(ValueError, match="at least one element"):
         assemble_global_stiffness_sparse(no_elements)
 
@@ -225,9 +225,10 @@ def test_apply_sections_restores_original_properties_after_change_and_removal():
 
 
 def _beam_assignment_model():
-    mesh = BeamMesh3D(
+    mesh = Mesh3D(
         nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 2.0, 0.0, 0.0)],
         elements=[Element3D(1, [1, 2], "Beam2")],
+        dofs_per_node=6,
     )
     model = FEMModel(mesh=mesh)
     model.element_sets["beam"] = ElementSet("beam", (1,))

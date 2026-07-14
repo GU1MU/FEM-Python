@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+from ...elements import canonical_element_type
+
 
 ELEMENT_STRESS_KEYS = {
     "truss2",
@@ -99,15 +101,7 @@ def default_gauss_order(type_key: str) -> int | None:
 
 def type_key_from_name(element_type: Any) -> str | None:
     """Normalize mesh element type names to stress exporter keys."""
-    return {
-        "truss2": "truss2",
-        "beam2": "beam2",
-        "tri6plane": "tri6", "tri6": "tri6", "cps6": "tri6", "cpe6": "tri6",
-        "tri3plane": "tri3", "tri3": "tri3", "cps3": "tri3", "cpe3": "tri3",
-        "quad4plane": "quad4", "quad4": "quad4", "cps4": "quad4", "cpe4": "quad4",
-        "quad8plane": "quad8", "quad8": "quad8", "cps8": "quad8", "cpe8": "quad8",
-        "hex20": "hex20", "c3d20": "hex20",
-        "hex8": "hex8", "c3d8": "hex8",
-        "tet10": "tet10", "c3d10": "tet10",
-        "tet4": "tet4", "c3d4": "tet4",
-    }.get(str(element_type).casefold())
+    try:
+        return canonical_element_type(str(element_type)).casefold()
+    except NotImplementedError:
+        return None

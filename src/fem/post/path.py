@@ -3,7 +3,7 @@ from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 
-from ..core.mesh import Mesh2DProtocol
+from ..core.mesh import Mesh2D
 from ._csv import (
     _NODAL_STRESS_METADATA_FIELDS,
     parse_csv_integer,
@@ -61,7 +61,7 @@ def _read_nodal_fields(csv_path: str, *, require_stress_metadata: bool = False):
 
 
 def extract_path_data(
-    mesh: Mesh2DProtocol,
+    mesh: Mesh2D,
     start_id: int,
     end_id: int,
     points: int,
@@ -216,7 +216,7 @@ def extract_circle_data(
 
 
 def extract_nodes_data(
-    mesh: Mesh2DProtocol,
+    mesh: Mesh2D,
     node_ids: Sequence[int],
     targets: Sequence[str],
     path: str = "nodes_data.csv",

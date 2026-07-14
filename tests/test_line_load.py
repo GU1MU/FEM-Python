@@ -4,7 +4,7 @@ import pytest
 from fem import steps
 from fem.boundary.loads import build_load_vector
 from fem.boundary.step import boundary_for_step
-from fem.core.mesh import BeamMesh3D, Element3D, Node3D
+from fem.core.mesh import Element3D, Mesh3D, Node3D
 from fem.core import validate_model
 from fem.core.model import (
     AnalysisStep,
@@ -24,7 +24,7 @@ from fem.solvers import static_linear
 
 def _beam_model(*, inclined=False):
     end = (2.0, 3.0, 6.0) if inclined else (4.0, 0.0, 0.0)
-    mesh = BeamMesh3D(
+    mesh = Mesh3D(
         nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, *end)],
         elements=[
             Element3D(
@@ -41,6 +41,7 @@ def _beam_model(*, inclined=False):
                 },
             )
         ],
+        dofs_per_node=6,
     )
     return FEMModel(
         mesh=mesh,

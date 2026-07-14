@@ -207,7 +207,7 @@ class _TetKernelBase:
         """Return tetrahedral element stiffness."""
         if len(elem.node_ids) != self.node_count:
             raise ValueError(
-                f"{self.type_names[0]} element {elem.id} requires {self.node_count} "
+                f"{self.canonical_type} element {elem.id} requires {self.node_count} "
                 f"nodes, got {len(elem.node_ids)}; node_ids={elem.node_ids}"
             )
 
@@ -312,7 +312,8 @@ class _TetKernelBase:
 
 class Tet4Kernel(_TetKernelBase):
     """Tet4 solid element kernel."""
-    type_names = ("Tet4", "C3D4")
+    canonical_type = "Tet4"
+    aliases = ("C3D4",)
     node_count = 4
     gauss_points = staticmethod(tet4_gauss_points)
     shape_funcs_grads = staticmethod(tet4_shape_funcs_grads)
@@ -368,7 +369,8 @@ class Tet4Kernel(_TetKernelBase):
 
 class Tet10Kernel(_TetKernelBase):
     """Tet10 solid element kernel."""
-    type_names = ("Tet10", "C3D10")
+    canonical_type = "Tet10"
+    aliases = ("C3D10",)
     node_count = 10
     gauss_points = staticmethod(tet10_gauss_points)
     shape_funcs_grads = staticmethod(tet10_shape_funcs_grads)

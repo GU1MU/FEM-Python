@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from fem.core.mesh import BeamMesh3D, Element3D, Node2D, Node3D, TrussMesh3D
+from fem.core.mesh import Element3D, Mesh3D, Node2D, Node3D
 from fem.core.model import AnalysisStep, FEMModel
 from fem.core.result import ModelResult
 from fem.io import csv as csv_io
@@ -37,7 +37,8 @@ def test_read_truss2_requires_and_preserves_three_dimensional_contract(tmp_path)
 
     mesh = csv_io.read_truss2(mesh_path, _materials(tmp_path))
 
-    assert isinstance(mesh, TrussMesh3D)
+    assert isinstance(mesh, Mesh3D)
+    assert mesh.dofs_per_node == 3
     assert mesh.nodes == [Node3D(10, 0.0, 0.0, 0.0), Node3D(20, 2.0, 3.0, 6.0)]
     assert mesh.elements[0].type == "Truss2"
     assert mesh.elements[0].props == {
@@ -62,7 +63,8 @@ def test_read_beam2_reads_topology_only(tmp_path):
 
     mesh = csv_io.read_beam2(mesh_path)
 
-    assert isinstance(mesh, BeamMesh3D)
+    assert isinstance(mesh, Mesh3D)
+    assert mesh.dofs_per_node == 6
     assert mesh.elements[0].type == "Beam2"
     assert mesh.elements[0].node_ids == [1, 2]
     assert mesh.elements[0].props == {}
@@ -166,7 +168,7 @@ def _result(mesh, displacement_values):
 
 
 def test_truss2_result_export_writes_3d_displacement_element_stress_and_vtk(tmp_path):
-    mesh = TrussMesh3D(
+    mesh = Mesh3D(
         nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 2.0, 0.0, 0.0)],
         elements=[Element3D(1, [1, 2], "Truss2", {"E": 100.0, "area": 2.0})],
     )
@@ -186,7 +188,7 @@ def test_truss2_result_export_writes_3d_displacement_element_stress_and_vtk(tmp_
 
 
 def test_beam2_result_export_writes_six_components_rotation_vector_and_no_element_stress(tmp_path):
-    mesh = BeamMesh3D(
+    mesh = Mesh3D(
         nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 2.0, 0.0, 0.0)],
         elements=[
             Element3D(
@@ -202,6 +204,7 @@ def test_beam2_result_export_writes_six_components_rotation_vector_and_no_elemen
                 },
             )
         ],
+        dofs_per_node=6,
     )
     values = np.array([0, 0, 0, 0.1, 0.2, 0.3, 1, 2, 3, 0.4, 0.5, 0.6])
     result = _result(mesh, values)
@@ -237,7 +240,7 @@ def test_beam2_result_export_writes_six_components_rotation_vector_and_no_elemen
 
 
 def test_beam2_direct_nodal_export_requires_result_load_context(tmp_path):
-    mesh = BeamMesh3D(
+    mesh = Mesh3D(
         nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 2.0, 0.0, 0.0)],
         elements=[
             Element3D(
@@ -252,6 +255,7 @@ def test_beam2_direct_nodal_export_requires_result_load_context(tmp_path):
                 },
             )
         ],
+        dofs_per_node=6,
     )
     result = _result(mesh, np.zeros(mesh.num_dofs))
     path = tmp_path / "beam_nodal_stress.csv"
@@ -265,12 +269,13 @@ def test_beam2_direct_nodal_export_requires_result_load_context(tmp_path):
 
 
 def test_beam2_nodal_stress_csv_contains_every_mesh_node_once(tmp_path):
-    mesh = BeamMesh3D(
+    mesh = Mesh3D(
         nodes=[
             Node3D(1, 0.0, 0.0, 0.0),
             Node3D(2, 1.0, 0.0, 0.0),
             Node3D(3, 2.0, 0.0, 0.0),
         ],
+        dofs_per_node=6,
         elements=[
             Element3D(
                 1,

@@ -3,12 +3,12 @@ from typing import List, Optional, Sequence
 
 import numpy as np
 
-from ...core.mesh import Mesh2DProtocol, Mesh3DProtocol, Node2D, Node3D
+from ...core.mesh import Mesh2D, Mesh3D, Node2D, Node3D
 from .._paths import prepare_output_path
 
 
 def _export_nodal_displacement_2d(
-    mesh: Mesh2DProtocol,
+    mesh: Mesh2D,
     U: Sequence[float],
     path: str,
     component_names: Optional[List[str]] = None,
@@ -49,7 +49,7 @@ def _export_nodal_displacement_2d(
 
 
 def _export_nodal_displacement_3d(
-    mesh: Mesh3DProtocol,
+    mesh: Mesh3D,
     U: Sequence[float],
     path: str,
     component_names: Optional[List[str]] = None,

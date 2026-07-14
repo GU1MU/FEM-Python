@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Iterable
 
 from ..core.model import ElementSet
-from ..elements import get_element_kernel
+from ..elements import canonical_element_type
 
 
 def all(mesh: Any) -> list[int]:
@@ -26,10 +26,10 @@ def by_type(mesh: Any, element_type: str) -> list[int]:
 def _kernel_type_identity(element_type: Any) -> str | None:
     """Return a canonical registered type name without substring matching."""
     try:
-        kernel = get_element_kernel(str(element_type))
+        canonical = canonical_element_type(str(element_type))
     except NotImplementedError:
         return None
-    return str(kernel.type_names[0]).casefold()
+    return canonical.casefold()
 
 
 def by_ids(mesh: Any, element_ids: Iterable[int]) -> list[int]:

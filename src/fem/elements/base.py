@@ -7,7 +7,8 @@ import numpy as np
 
 class ElementKernel(Protocol):
     """Element type adapter for stiffness, loads, and stress."""
-    type_names: tuple[str, ...]
+    canonical_type: str
+    aliases: tuple[str, ...]
 
     def stiffness(
         self,

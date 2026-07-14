@@ -98,10 +98,10 @@ def test_quad_load_consumers_reject_invalid_shared_thickness(operation):
     [
         (make_quad4_stiffness_mesh, "CPE4", "strain"),
         (make_quad4_stiffness_mesh, "CPS4", "stress"),
-        (make_quad4_stiffness_mesh, "Quad4Plane", "stress"),
+        (make_quad4_stiffness_mesh, "Quad4", "stress"),
         (make_quad8_stiffness_mesh, "CPE8", "strain"),
         (make_quad8_stiffness_mesh, "CPS8", "stress"),
-        (make_quad8_stiffness_mesh, "Quad8Plane", "stress"),
+        (make_quad8_stiffness_mesh, "Quad8", "stress"),
     ],
 )
 def test_quad_plane_type_default_follows_explicit_element_family(
@@ -135,9 +135,9 @@ def test_registry_rejects_unimplemented_reduced_integration(element_type):
 def test_registry_does_not_dispatch_arbitrary_substring_matches():
     with pytest.raises(
         NotImplementedError,
-        match=r"Unsupported element type: wrapped-Quad4Plane-variant",
+        match=r"Unsupported element type: wrapped-Quad4-variant",
     ):
-        get_element_kernel("wrapped-Quad4Plane-variant")
+        get_element_kernel("wrapped-Quad4-variant")
 
 
 @pytest.mark.parametrize(

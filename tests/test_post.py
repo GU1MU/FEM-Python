@@ -4,13 +4,12 @@ import numpy as np
 import pytest
 
 from fem.core.mesh import (
-    BeamMesh3D,
     Element2D,
     Element3D,
-    HexMesh3D,
+    Mesh2D,
+    Mesh3D,
     Node2D,
     Node3D,
-    PlaneMesh2D,
 )
 from fem.elements import get_element_kernel
 from fem.post import displacement, path, stress, vtk
@@ -42,9 +41,10 @@ def _affine_solid_displacement(mesh):
 
 
 def _make_beam_dispatch_mesh():
-    return BeamMesh3D(
+    return Mesh3D(
         nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 1.0, 0.0, 0.0)],
         elements=[Element3D(1, [1, 2], "Beam2")],
+        dofs_per_node=6,
     )
 
 
@@ -215,7 +215,7 @@ def test_nodal_stress_resolution_uses_weights_and_emits_unconnected_zero():
 
 
 def test_nodal_stress_csv_preserves_material_boundary_contributions(tmp_path):
-    mesh = PlaneMesh2D(
+    mesh = Mesh2D(
         nodes=[
             Node2D(1, 0.0, 0.0),
             Node2D(2, 1.0, 0.0),
@@ -227,13 +227,13 @@ def test_nodal_stress_csv_preserves_material_boundary_contributions(tmp_path):
             Element2D(
                 1,
                 [1, 2, 3],
-                "Tri3Plane",
+                "Tri3",
                 {"E": 100.0, "nu": 0.25, "plane_type": "stress", "thickness": 1.0},
             ),
             Element2D(
                 2,
                 [3, 4, 5],
-                "Tri3Plane",
+                "Tri3",
                 {"E": 200.0, "nu": 0.3, "plane_type": "stress", "thickness": 1.0},
             ),
         ],
@@ -255,7 +255,7 @@ def test_nodal_stress_csv_preserves_material_boundary_contributions(tmp_path):
 
 
 def test_vtk_duplicates_points_for_unaveraged_nodal_stress_rows(tmp_path):
-    mesh = PlaneMesh2D(
+    mesh = Mesh2D(
         nodes=[
             Node2D(1, 0.0, 0.0),
             Node2D(2, 1.0, 0.0),
@@ -264,8 +264,8 @@ def test_vtk_duplicates_points_for_unaveraged_nodal_stress_rows(tmp_path):
             Node2D(5, 0.0, -1.0),
         ],
         elements=[
-            Element2D(1, [1, 2, 3], "Tri3Plane"),
-            Element2D(2, [3, 4, 5], "Tri3Plane"),
+            Element2D(1, [1, 2, 3], "Tri3"),
+            Element2D(2, [3, 4, 5], "Tri3"),
         ],
     )
     displacement_path = tmp_path / "displacement.csv"
@@ -317,7 +317,7 @@ def test_vtk_duplicates_points_for_unaveraged_nodal_stress_rows(tmp_path):
 
 def test_vtk_from_result_uses_threshold_for_csv_and_topology(tmp_path):
     props = {"E": 100.0, "nu": 0.25, "plane_type": "stress", "thickness": 1.0}
-    mesh = PlaneMesh2D(
+    mesh = Mesh2D(
         nodes=[
             Node2D(1, 0.0, 0.0),
             Node2D(2, 1.0, 0.0),
@@ -326,8 +326,8 @@ def test_vtk_from_result_uses_threshold_for_csv_and_topology(tmp_path):
             Node2D(5, 0.0, -1.0),
         ],
         elements=[
-            Element2D(1, [1, 2, 3], "Tri3Plane", dict(props)),
-            Element2D(2, [3, 4, 5], "Tri3Plane", dict(props)),
+            Element2D(1, [1, 2, 3], "Tri3", dict(props)),
+            Element2D(2, [3, 4, 5], "Tri3", dict(props)),
         ],
     )
 
@@ -433,7 +433,7 @@ def test_nodal_stress_reader_accepts_averaged_rows_without_provenance(tmp_path):
     ("vtk", "path", "polar"),
 )
 def test_nodal_stress_consumers_reject_malformed_current_rows(tmp_path, consumer):
-    mesh = PlaneMesh2D(
+    mesh = Mesh2D(
         nodes=[Node2D(1, 0.0, 0.0), Node2D(2, 1.0, 0.0)],
         elements=[],
     )
@@ -481,9 +481,9 @@ def test_nodal_stress_consumers_reject_malformed_current_rows(tmp_path, consumer
     ),
 )
 def test_vtk_validates_single_nonaveraged_row_provenance(row, message):
-    mesh = PlaneMesh2D(
+    mesh = Mesh2D(
         nodes=[Node2D(1, 0.0, 0.0), Node2D(2, 1.0, 0.0), Node2D(3, 0.0, 1.0)],
-        elements=[Element2D(1, [1, 2, 3], "Tri3Plane")],
+        elements=[Element2D(1, [1, 2, 3], "Tri3")],
     )
 
     with pytest.raises(ValueError, match=message):
@@ -491,7 +491,7 @@ def test_vtk_validates_single_nonaveraged_row_provenance(row, message):
 
 
 def test_vtk_uses_shared_zero_fallback_for_incident_element_without_raw_row():
-    mesh = PlaneMesh2D(
+    mesh = Mesh2D(
         nodes=[
             Node2D(1, 0.0, 0.0),
             Node2D(2, 1.0, 0.0),
@@ -500,8 +500,8 @@ def test_vtk_uses_shared_zero_fallback_for_incident_element_without_raw_row():
             Node2D(5, 0.0, -1.0),
         ],
         elements=[
-            Element2D(1, [1, 2, 3], "Tri3Plane"),
-            Element2D(2, [3, 4, 5], "Tri3Plane"),
+            Element2D(1, [1, 2, 3], "Tri3"),
+            Element2D(2, [3, 4, 5], "Tri3"),
         ],
     )
     row = vtk.fields.NodalStressCsvRow(3, 1, 3, False, {"sig_x": 10.0})
@@ -525,9 +525,9 @@ def test_vtk_uses_shared_zero_fallback_for_incident_element_without_raw_row():
 
 
 def test_vtk_uses_single_boundary_raw_row_for_its_element_local_point():
-    mesh = PlaneMesh2D(
+    mesh = Mesh2D(
         nodes=[Node2D(1, 0.0, 0.0), Node2D(2, 1.0, 0.0), Node2D(3, 0.0, 1.0)],
-        elements=[Element2D(1, [1, 2, 3], "Tri3Plane")],
+        elements=[Element2D(1, [1, 2, 3], "Tri3")],
     )
     row = vtk.fields.NodalStressCsvRow(2, 1, 2, False, {"sig_x": 10.0})
 
@@ -539,9 +539,9 @@ def test_vtk_uses_single_boundary_raw_row_for_its_element_local_point():
 
 
 def test_vtk_rejects_repeated_nodal_stress_rows_without_provenance():
-    mesh = PlaneMesh2D(
+    mesh = Mesh2D(
         nodes=[Node2D(1, 0.0, 0.0), Node2D(2, 1.0, 0.0), Node2D(3, 0.0, 1.0)],
-        elements=[Element2D(1, [1, 2, 3], "Tri3Plane")],
+        elements=[Element2D(1, [1, 2, 3], "Tri3")],
     )
     rows = (
         vtk.fields.NodalStressCsvRow(1, 1, 1, False, {"sig_x": 10.0}),
@@ -552,7 +552,7 @@ def test_vtk_rejects_repeated_nodal_stress_rows_without_provenance():
 
 
 def test_polar_conversion_preserves_distinct_repeated_nodal_rows():
-    mesh = PlaneMesh2D(
+    mesh = Mesh2D(
         nodes=[Node2D(1, 0.0, 1.0)],
         elements=[],
     )
@@ -614,7 +614,7 @@ def test_polar_csv_conversion_reports_missing_numeric_value_with_context(tmp_pat
 
 
 def test_path_stress_entrypoint_accepts_current_metadata(tmp_path):
-    mesh = PlaneMesh2D(
+    mesh = Mesh2D(
         nodes=[Node2D(1, 0.0, 0.0), Node2D(2, 1.0, 0.0)],
         elements=[],
     )
@@ -642,7 +642,7 @@ def test_path_stress_entrypoint_accepts_current_metadata(tmp_path):
 
 @pytest.mark.parametrize("target", ("elem_id", "local_node", "averaged"))
 def test_path_stress_entrypoints_reject_metadata_targets(tmp_path, target):
-    mesh = PlaneMesh2D(
+    mesh = Mesh2D(
         nodes=[Node2D(1, 0.0, 0.0), Node2D(2, 1.0, 0.0)],
         elements=[],
     )
@@ -678,7 +678,7 @@ def test_path_stress_entrypoints_reject_metadata_targets(tmp_path, target):
 
 
 def test_path_stress_reader_rejects_duplicate_node_rows(tmp_path):
-    mesh = PlaneMesh2D(nodes=[Node2D(1, 0.0, 0.0)], elements=[])
+    mesh = Mesh2D(nodes=[Node2D(1, 0.0, 0.0)], elements=[])
     stress_path = tmp_path / "duplicate_nodal_stress.csv"
     stress_path.write_text(
         "node_id,x,y,elem_id,local_node,averaged,sig_x\n"
@@ -704,7 +704,7 @@ def test_path_stress_reader_rejects_duplicate_node_rows(tmp_path):
 
 
 def test_path_general_reader_keeps_last_duplicate_row_and_invalid_scalar_zero(tmp_path):
-    mesh = PlaneMesh2D(nodes=[Node2D(1, 0.0, 0.0)], elements=[])
+    mesh = Mesh2D(nodes=[Node2D(1, 0.0, 0.0)], elements=[])
     disp_path = tmp_path / "duplicate_nodal_displacement.csv"
     out_path = tmp_path / "nodes.csv"
     disp_path.write_text(
@@ -727,7 +727,7 @@ def test_path_general_reader_keeps_last_duplicate_row_and_invalid_scalar_zero(tm
 
 
 def test_path_nodal_reader_reports_invalid_node_id_with_context(tmp_path):
-    mesh = PlaneMesh2D(nodes=[Node2D(1, 0.0, 0.0)], elements=[])
+    mesh = Mesh2D(nodes=[Node2D(1, 0.0, 0.0)], elements=[])
     csv_path = tmp_path / "invalid_node_id.csv"
     csv_path.write_text(
         "node_id,x,y,ux,uy\nbad,0,0,1,2\n",
@@ -769,7 +769,7 @@ def test_polar_csv_conversion_accepts_current_stress_metadata(tmp_path):
 
 
 def test_averaged_whitespace_provenance_is_accepted_across_stress_entries(tmp_path):
-    mesh = PlaneMesh2D(nodes=[Node2D(1, 1.0, 0.0)], elements=[])
+    mesh = Mesh2D(nodes=[Node2D(1, 1.0, 0.0)], elements=[])
     stress_path = tmp_path / "averaged_whitespace_nodal_stress.csv"
     stress_path.write_text(
         "node_id,x,y,elem_id,local_node,averaged,sig_x,sig_y,tau_xy\n"
@@ -833,7 +833,7 @@ def test_polar_csv_conversion_keeps_displacement_schema_unchanged(tmp_path):
 
 
 def test_isolated_node_export_uses_averaged_zero_row_and_reaches_vtk(tmp_path):
-    mesh = PlaneMesh2D(
+    mesh = Mesh2D(
         nodes=[
             Node2D(1, 0.0, 0.0),
             Node2D(2, 1.0, 0.0),
@@ -844,7 +844,7 @@ def test_isolated_node_export_uses_averaged_zero_row_and_reaches_vtk(tmp_path):
             Element2D(
                 1,
                 [1, 2, 3],
-                "Tri3Plane",
+                "Tri3",
                 {"E": 100.0, "nu": 0.25, "thickness": 1.0, "plane_type": "stress"},
             )
         ],
@@ -868,7 +868,7 @@ def test_isolated_node_export_uses_averaged_zero_row_and_reaches_vtk(tmp_path):
 
 
 def test_polar_displacement_fills_mesh_nodes_and_ignores_unknown_ids():
-    mesh = PlaneMesh2D(
+    mesh = Mesh2D(
         nodes=[
             Node2D(1, 1.0, 0.0),
             Node2D(2, 0.0, 1.0),
@@ -998,7 +998,7 @@ def test_hex20_stress_exports_write_one_element_and_twenty_nodes(tmp_path):
 
 def test_mixed_solid_element_export_uses_hex20_and_tet4_centroids(tmp_path):
     hex20_mesh = make_hex20_stiffness_mesh(curved=True)
-    mesh = HexMesh3D(
+    mesh = Mesh3D(
         nodes=[*hex20_mesh.nodes, Node3D(21, 2.0, 0.0, 0.0)],
         elements=[
             hex20_mesh.elements[0],
@@ -1129,7 +1129,7 @@ def test_vtk_displacement_reader_reports_invalid_leaf_with_context(
     row,
     expected,
 ):
-    mesh = HexMesh3D(nodes=[Node3D(1, 0.0, 0.0, 0.0)], elements=[])
+    mesh = Mesh3D(nodes=[Node3D(1, 0.0, 0.0, 0.0)], elements=[])
     csv_path = tmp_path / f"invalid_displacement_{field}.csv"
     csv_path.write_text(
         "node_id,ux,uy,uz,rz\n" + row + "\n",
@@ -1178,9 +1178,10 @@ def test_vtk_element_stress_reader_keeps_invalid_scalar_zero_in_average(tmp_path
 
 
 def test_direct_post_exports_create_parent_dirs_and_beam_uses_six_components(tmp_path):
-    mesh = BeamMesh3D(
+    mesh = Mesh3D(
         nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 1.0, 0.0, 0.0)],
         elements=[Element3D(1, [1, 2], "Beam2")],
+        dofs_per_node=6,
     )
     output_path = tmp_path / "nested" / "beam_displacement.csv"
 
@@ -1373,6 +1374,22 @@ def test_vtk_cells_support_tri6_quadratic_triangle(tmp_path):
 
     assert "CELL_TYPES 1" in vtk_text
     assert "\n22\n" in vtk_text
+
+
+def test_vtk_cells_support_mixed_tri3_quad4_topology(tmp_path):
+    result = make_zero_result(make_mixed_tri3_quad4_mesh(), "mixed_plane_vtk")
+
+    vtk.export.from_result(result, output_dir=tmp_path)
+
+    vtk_lines = (tmp_path / "mixed_plane_vtk.vtk").read_text(
+        encoding="utf-8"
+    ).splitlines()
+    cell_types_index = vtk_lines.index("CELL_TYPES 2")
+
+    assert [int(value) for value in vtk_lines[cell_types_index + 1 : cell_types_index + 3]] == [
+        5,
+        9,
+    ]
 
 
 def test_vtk_export_from_result_materializes_mixed_stress_csvs(tmp_path):

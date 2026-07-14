@@ -231,7 +231,7 @@ def test_inp_read_tri6_reads_cps6_mesh(tmp_path):
     mesh = inp.read_tri6(mesh_path)
 
     assert mesh.dofs_per_node == 2
-    assert mesh.elements[0].type == "Tri6Plane"
+    assert mesh.elements[0].type == "Tri6"
     assert mesh.elements[0].node_ids == [1, 2, 3, 4, 5, 6]
     assert mesh.elements[0].props["plane_type"] == "stress"
     assert mesh.elements[0].props["thickness"] == 1.0
@@ -259,7 +259,7 @@ def test_inp_read_mixed2d_reads_linear_tri3_and_quad4(tmp_path):
 
     mesh = inp.read_mixed2d(mesh_path)
 
-    assert [elem.type for elem in mesh.elements] == ["Tri3Plane", "Quad4Plane"]
+    assert [elem.type for elem in mesh.elements] == ["Tri3", "Quad4"]
     assert [elem.node_ids for elem in mesh.elements] == [[1, 2, 4], [2, 5, 3, 4]]
     assert all(elem.props["plane_type"] == "stress" for elem in mesh.elements)
 
@@ -295,7 +295,7 @@ def test_inp_read_mixed2d_reads_quadratic_tri6_and_quad8(tmp_path):
 
     mesh = inp.read_mixed2d(mesh_path)
 
-    assert [elem.type for elem in mesh.elements] == ["Tri6Plane", "Quad8Plane"]
+    assert [elem.type for elem in mesh.elements] == ["Tri6", "Quad8"]
     assert mesh.elements[0].node_ids == [1, 2, 3, 4, 5, 6]
     assert mesh.elements[1].node_ids == [7, 8, 9, 10, 11, 12, 13, 14]
 
@@ -360,6 +360,58 @@ def test_csv_read_mixed3d_reads_hex8_and_tet4_from_sectioned_csv(tmp_path):
     assert mesh.elements[1].node_ids == [2, 9, 3, 6]
     assert all(elem.props == {} for elem in mesh.elements)
     assert mesh.dofs_per_node == 3
+
+
+def test_csv_read_mixed3d_flows_through_model_and_vtk_post(tmp_path):
+    from fem.io import csv as csv_io
+    from fem.post import vtk
+    from tests.helpers.result_builders import make_zero_result
+
+    element_header = ",".join(
+        ["elem_id", "type", *(f"node{index}" for index in range(1, 21)), "material_id"]
+    )
+    mesh_path = write_inp(
+        tmp_path,
+        "mixed_reader_to_post.csv",
+        [
+            "node_id,x,y,z",
+            "1,0.0,0.0,0.0",
+            "2,1.0,0.0,0.0",
+            "3,1.0,1.0,0.0",
+            "4,0.0,1.0,0.0",
+            "5,0.0,0.0,1.0",
+            "6,1.0,0.0,1.0",
+            "7,1.0,1.0,1.0",
+            "8,0.0,1.0,1.0",
+            "9,2.0,0.0,0.0",
+            element_header,
+            f"{_mixed3d_element_row(1, 'Hex8', range(1, 9))},1",
+            f"{_mixed3d_element_row(2, 'Tet4', (2, 9, 3, 6))},1",
+        ],
+    )
+    material_path = write_inp(
+        tmp_path,
+        "mixed_reader_to_post_materials.csv",
+        ["material_id,E,nu", "1,210000,0.3"],
+    )
+
+    mesh = csv_io.read_mixed3d(mesh_path, material_path)
+    result = make_zero_result(mesh, "mixed_reader_to_post")
+    vtk.export.from_result(result, output_dir=tmp_path)
+
+    vtk_lines = (tmp_path / "mixed_reader_to_post.vtk").read_text(
+        encoding="utf-8"
+    ).splitlines()
+    cell_types_index = vtk_lines.index("CELL_TYPES 2")
+
+    assert result.model.mesh is mesh
+    assert [int(value) for value in vtk_lines[cell_types_index + 1 : cell_types_index + 3]] == [
+        12,
+        10,
+    ]
+    assert (tmp_path / "mixed_reader_to_post_nodal_displacement.csv").exists()
+    assert (tmp_path / "mixed_reader_to_post_element_stress.csv").exists()
+    assert (tmp_path / "mixed_reader_to_post_nodal_stress.csv").exists()
 
 
 def test_csv_read_mixed3d_reads_four_supported_element_types(tmp_path):

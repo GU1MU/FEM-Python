@@ -3,7 +3,7 @@ import pytest
 
 from fem.boundary.condition import BoundaryCondition, ElementLoad
 from fem.boundary.loads import build_load_vector
-from fem.core.mesh import BeamMesh3D, Element3D, Node3D, TrussMesh3D
+from fem.core.mesh import Element3D, Mesh3D, Node3D
 from fem.elements import get_element_kernel
 from fem.materials import linear_elastic
 
@@ -16,7 +16,6 @@ ELASTIC_MATRIX_BUILDERS = (
 
 
 def _line_mesh(element_type="Truss2", **properties):
-    mesh_type = BeamMesh3D if element_type == "Beam2" else TrussMesh3D
     defaults = {"E": 210.0}
     if element_type == "Beam2":
         defaults.update({
@@ -28,9 +27,10 @@ def _line_mesh(element_type="Truss2", **properties):
     else:
         defaults["area"] = 0.5
     defaults.update(properties)
-    return mesh_type(
+    return Mesh3D(
         nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 2.0, 0.0, 0.0)],
         elements=[Element3D(1, [1, 2], element_type, defaults)],
+        dofs_per_node=6 if element_type == "Beam2" else 3,
     )
 
 

@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from typing import Dict, Sequence
 
-from ...core.mesh import Mesh2DProtocol
+from ...core.mesh import Mesh2D
 from .. import polar as _polar
 from .fields import NodalStressCsv, NodalStressCsvRow
 
 
 def convert_nodal_displacement(
-    mesh: Mesh2DProtocol,
+    mesh: Mesh2D,
     node_disp: Dict[int, Dict[str, float]],
     center: Sequence[float],
 ) -> Dict[int, Dict[str, float]]:
@@ -33,7 +33,7 @@ def convert_nodal_displacement(
 
 
 def convert_nodal_stress_rows(
-    mesh: Mesh2DProtocol,
+    mesh: Mesh2D,
     data: NodalStressCsv,
     center: Sequence[float],
 ) -> NodalStressCsv:
@@ -77,7 +77,7 @@ def convert_nodal_stress_rows(
 
 
 def convert_element_stress_fields(
-    mesh: Mesh2DProtocol,
+    mesh: Mesh2D,
     field_data: Dict[str, Dict[int, float]],
     center: Sequence[float],
 ) -> Dict[str, Dict[int, float]]:

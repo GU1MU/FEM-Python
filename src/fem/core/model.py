@@ -105,7 +105,7 @@ class ElementInfo:
 
     @property
     def element_type(self) -> str:
-        """Element formulation name, such as Hex8, Tet4, or Quad4Plane."""
+        """Element formulation name, such as Hex8, Tet4, or Quad4."""
         return self.type
 
 

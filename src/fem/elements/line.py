@@ -175,7 +175,8 @@ def _beam_properties(elem: Any) -> tuple[float, float, Beam2Section]:
 
 class Truss2Kernel:
     """Two-node spatial truss element kernel."""
-    type_names = ("Truss2",)
+    canonical_type = "Truss2"
+    aliases = ()
     edge_node_indices = ((0, 1),)
 
     def stiffness(
@@ -224,7 +225,8 @@ class Truss2Kernel:
 
 class Beam2Kernel:
     """Two-node spatial Euler-Bernoulli beam element kernel."""
-    type_names = ("Beam2",)
+    canonical_type = "Beam2"
+    aliases = ()
     edge_node_indices = ((0, 1),)
 
     def stiffness(

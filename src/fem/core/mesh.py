@@ -24,10 +24,12 @@ class Element2D:
 
 
 @runtime_checkable
-class Mesh2DProtocol(Protocol):
-    """Protocol for 2D FEM meshes."""
+class MeshProtocol(Protocol):
+    """Shared protocol for FEM mesh containers."""
     dofs_per_node: int
     num_dofs: int
+    num_nodes: int
+    num_elements: int
     node_ids: Sequence[int]
     nodes: List
     elements: List
@@ -37,6 +39,7 @@ class Mesh2DProtocol(Protocol):
     def node_dofs(self, node_id: int) -> Sequence[int]: ...
     def element_dofs(self, elem) -> Sequence[int]: ...
     def rebuild_dof_map(self) -> DofMap: ...
+    def generate_global_dof_sequence(self) -> Sequence[tuple[int, int, int]]: ...
 
 
 class _DofMappedMeshMixin:
@@ -88,8 +91,8 @@ class _DofMappedMeshMixin:
 
 
 @dataclass
-class PlaneMesh2D(_DofMappedMeshMixin):
-    """Plane mesh container (ux, uy)."""
+class Mesh2D(_DofMappedMeshMixin):
+    """Topology-agnostic 2D mesh container."""
     nodes: List[Node2D]
     elements: List[Element2D]
     dofs_per_node: int = 2
@@ -110,57 +113,14 @@ class Element3D:
     """3D element with node list, type, and properties."""
     id: int
     node_ids: List[int]
-    type: str = "Hex8"
+    type: str
     props: Dict[str, Any] = field(default_factory=dict)
 
 
-@runtime_checkable
-class Mesh3DProtocol(Protocol):
-    """Protocol for 3D FEM meshes."""
-    dofs_per_node: int
-    num_dofs: int
-    node_ids: Sequence[int]
-    nodes: List
-    elements: List
-    dof_map: DofMap
-
-    def global_dof(self, node_id: int, component: int) -> int: ...
-    def node_dofs(self, node_id: int) -> Sequence[int]: ...
-    def element_dofs(self, elem) -> Sequence[int]: ...
-    def rebuild_dof_map(self) -> DofMap: ...
-
-
 @dataclass
-class HexMesh3D(_DofMappedMeshMixin):
-    """Hexahedral 3D mesh container (ux, uy, uz)."""
+class Mesh3D(_DofMappedMeshMixin):
+    """Topology-agnostic 3D mesh container."""
     nodes: List[Node3D]
     elements: List[Element3D]
     dofs_per_node: int = 3
-    dof_map: DofMap = field(init=False)
-
-
-@dataclass
-class TetMesh3D(_DofMappedMeshMixin):
-    """Tetrahedral 3D mesh container (ux, uy, uz)."""
-    nodes: List[Node3D]
-    elements: List[Element3D]
-    dofs_per_node: int = 3
-    dof_map: DofMap = field(init=False)
-
-
-@dataclass
-class TrussMesh3D(_DofMappedMeshMixin):
-    """Spatial truss mesh container (ux, uy, uz)."""
-    nodes: List[Node3D]
-    elements: List[Element3D]
-    dofs_per_node: int = 3
-    dof_map: DofMap = field(init=False)
-
-
-@dataclass
-class BeamMesh3D(_DofMappedMeshMixin):
-    """Spatial beam mesh container (ux, uy, uz, rx, ry, rz)."""
-    nodes: List[Node3D]
-    elements: List[Element3D]
-    dofs_per_node: int = 6
     dof_map: DofMap = field(init=False)

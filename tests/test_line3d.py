@@ -3,7 +3,7 @@ import pytest
 
 from fem.boundary.condition import BoundaryCondition
 from fem.boundary.loads import build_load_vector
-from fem.core.mesh import BeamMesh3D, Element3D, Node3D, TrussMesh3D
+from fem.core.mesh import Element3D, Mesh3D, Node3D
 from fem.core.model import AnalysisStep, FEMModel
 from fem.core.result import ModelResult
 from fem.elements import get_element_kernel
@@ -15,7 +15,7 @@ from fem.post.stress import beam as beam_stress
 def _truss_mesh(*, reversed_nodes=False, props=None):
     nodes = [Node3D(10, 1.0, -2.0, 0.5), Node3D(20, 3.0, 1.0, 6.5)]
     node_ids = [20, 10] if reversed_nodes else [10, 20]
-    return TrussMesh3D(
+    return Mesh3D(
         nodes=nodes,
         elements=[
             Element3D(
@@ -119,9 +119,10 @@ def _beam_mesh(*, end=(4.0, 0.0, 0.0), props=None):
     }
     if props:
         properties.update(props)
-    return BeamMesh3D(
+    return Mesh3D(
         nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, *end)],
         elements=[Element3D(1, [1, 2], "Beam2", properties)],
+        dofs_per_node=6,
     )
 
 
@@ -354,7 +355,7 @@ def test_beam2_inclined_and_reversed_elements_preserve_physical_extrema():
 
 def test_beam2_shared_node_uses_maximum_minimum_envelope_without_averaging():
     props = dict(_beam_mesh().elements[0].props)
-    mesh = BeamMesh3D(
+    mesh = Mesh3D(
         nodes=[
             Node3D(1, 0.0, 0.0, 0.0),
             Node3D(2, 1.0, 0.0, 0.0),
@@ -364,6 +365,7 @@ def test_beam2_shared_node_uses_maximum_minimum_envelope_without_averaging():
             Element3D(1, [1, 2], "Beam2", dict(props)),
             Element3D(2, [2, 3], "Beam2", dict(props)),
         ],
+        dofs_per_node=6,
     )
     U = np.zeros(mesh.num_dofs)
     U[mesh.global_dof(2, 0)] = 0.1
@@ -402,9 +404,10 @@ def test_beam2_local_axes_are_orthonormal_and_right_handed():
     ],
 )
 def test_beam2_automatic_local_frame_for_global_axes(end, expected):
-    mesh = BeamMesh3D(
+    mesh = Mesh3D(
         nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, *end)],
         elements=[Element3D(1, [1, 2], "Beam2")],
+        dofs_per_node=6,
     )
 
     _, rotation = beam3_geometry(mesh, mesh.elements[0])
@@ -414,9 +417,10 @@ def test_beam2_automatic_local_frame_for_global_axes(end, expected):
 
 
 def test_beam2_automatic_local_frame_uses_y_fallback_near_global_z():
-    mesh = BeamMesh3D(
+    mesh = Mesh3D(
         nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 1e-14, 0.0, 1.0)],
         elements=[Element3D(1, [1, 2], "Beam2")],
+        dofs_per_node=6,
     )
 
     _, rotation = beam3_geometry(mesh, mesh.elements[0])
