@@ -97,29 +97,16 @@ def beam3_geometry(
 ) -> tuple[float, np.ndarray]:
     """Return Beam2 length and global-to-local right-handed rotation."""
     length, e_x = line3_geometry(mesh, elem, node_lookup)
-    try:
-        raw_local_y = elem.props["local_y"]
-    except KeyError as exc:
-        raise KeyError(f"Element {elem.id} missing property local_y") from exc
-    try:
-        reference = np.asarray(raw_local_y, dtype=float)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"Element {elem.id} local_y must contain three finite components"
-        ) from exc
-    if reference.shape != (3,) or not np.all(np.isfinite(reference)):
-        raise ValueError(
-            f"Element {elem.id} local_y must contain three finite components"
-        )
-    reference_norm = float(np.linalg.norm(reference))
-    if reference_norm <= 0.0:
-        raise ValueError(f"Element {elem.id} local_y must be nonzero")
+    reference = np.array([0.0, 0.0, 1.0])
     projected = reference - float(reference @ e_x) * e_x
     projected_norm = float(np.linalg.norm(projected))
-    if projected_norm <= 1e-12 * reference_norm:
-        raise ValueError(f"Element {elem.id} local_y is parallel to the beam axis")
-    e_y = projected / projected_norm
-    e_z = np.cross(e_x, e_y)
+    if projected_norm <= 1e-12:
+        reference = np.array([0.0, 1.0, 0.0])
+        projected = reference - float(reference @ e_x) * e_x
+        projected_norm = float(np.linalg.norm(projected))
+    e_z = projected / projected_norm
+    e_y = np.cross(e_z, e_x)
+    e_y /= np.linalg.norm(e_y)
     return length, np.vstack([e_x, e_y, e_z])
 
 

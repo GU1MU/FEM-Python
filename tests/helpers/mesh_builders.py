@@ -118,9 +118,8 @@ def make_beam_stiffness_mesh():
                     "E": 210.0,
                     "nu": 0.3,
                     "section_type": "rectangle",
-                    "size_y": 1.0,
-                    "size_z": 0.5,
-                    "local_y": (-1.0, 2.0, 0.0),
+                    "height": 1.0,
+                    "width": 0.5,
                 },
             )
         ],

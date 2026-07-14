@@ -111,7 +111,7 @@ class ElementInfo:
 
 @dataclass(frozen=True)
 class SectionAssignment:
-    """Assign a material to an element set."""
+    """Assign a material and section definition to an element set."""
     element_set: str
     material: str
     section_type: str = "solid"

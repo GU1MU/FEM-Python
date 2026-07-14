@@ -50,79 +50,40 @@ def test_read_truss2_requires_and_preserves_three_dimensional_contract(tmp_path)
     }
 
 
-def test_read_beam2_reads_section_orientation_and_material_properties(tmp_path):
+def test_read_beam2_reads_topology_only(tmp_path):
     mesh_path = _write(
         tmp_path / "beam.csv",
         [
             "node_id,x,y,z",
             "1,0,0,0",
             "2,4,0,0",
-            "elem_id,node_i,node_j,section_type,radius,outer_radius,inner_radius,size_y,size_z,local_y_x,local_y_y,local_y_z,material_id",
-            "10,1,2,rectangle,,,,3,2,0,1,0,1",
-        ],
-    )
-
-    mesh = csv_io.read_beam2(mesh_path, _materials(tmp_path))
-
-    assert isinstance(mesh, BeamMesh3D)
-    assert mesh.elements[0].type == "Beam2"
-    assert mesh.elements[0].props == {
-        "section_type": "rectangle",
-        "size_y": 3.0,
-        "size_z": 2.0,
-        "local_y": (0.0, 1.0, 0.0),
-        "material_id": 1,
-        "E": 210.0,
-        "nu": 0.25,
-        "rho": 7.8,
-    }
-
-
-def test_read_beam2_preserves_shape_specific_circle_dimensions(tmp_path):
-    mesh_path = _write(
-        tmp_path / "circles.csv",
-        [
-            "node_id,x,y,z",
-            "1,0,0,0",
-            "2,1,0,0",
-            "3,2,0,0",
-            "elem_id,node_i,node_j,section_type,radius,outer_radius,inner_radius,size_y,size_z,local_y_x,local_y_y,local_y_z,material_id",
-            "1,1,2,solid_circle,0.5,,,,,0,1,0,1",
-            "2,2,3,hollow_circle,,0.6,0.4,,,0,1,0,1",
+            "elem_id,node_i,node_j",
+            "10,1,2",
         ],
     )
 
     mesh = csv_io.read_beam2(mesh_path)
 
-    assert mesh.elements[0].props == {
-        "section_type": "solid_circle",
-        "radius": 0.5,
-        "local_y": (0.0, 1.0, 0.0),
-        "material_id": 1,
-    }
-    assert mesh.elements[1].props == {
-        "section_type": "hollow_circle",
-        "outer_radius": 0.6,
-        "inner_radius": 0.4,
-        "local_y": (0.0, 1.0, 0.0),
-        "material_id": 1,
-    }
+    assert isinstance(mesh, BeamMesh3D)
+    assert mesh.elements[0].type == "Beam2"
+    assert mesh.elements[0].node_ids == [1, 2]
+    assert mesh.elements[0].props == {}
 
 
-def test_read_beam2_rejects_nonempty_irrelevant_section_dimension(tmp_path):
+def test_read_beam2_rejects_removed_material_path_argument(tmp_path):
     mesh_path = _write(
-        tmp_path / "irrelevant_dimension.csv",
+        tmp_path / "beam.csv",
         [
             "node_id,x,y,z",
             "1,0,0,0",
-            "2,1,0,0",
-            "elem_id,node_i,node_j,section_type,radius,outer_radius,inner_radius,size_y,size_z,local_y_x,local_y_y,local_y_z,material_id",
-            "1,1,2,solid_circle,0.5,0.6,,,,0,1,0,1",
+            "2,4,0,0",
+            "elem_id,node_i,node_j",
+            "10,1,2",
         ],
     )
 
-    with pytest.raises(ValueError, match="solid_circle.*outer_radius"):
-        csv_io.read_beam2(mesh_path)
+    with pytest.raises(TypeError, match="positional argument"):
+        csv_io.read_beam2(mesh_path, _materials(tmp_path))
 
 
 @pytest.mark.parametrize(
@@ -208,9 +169,8 @@ def test_beam2_result_export_writes_six_components_rotation_vector_and_no_elemen
                     "E": 100.0,
                     "nu": 0.25,
                     "section_type": "rectangle",
-                    "size_y": 2.0,
-                    "size_z": 1.0,
-                    "local_y": (0, 1, 0),
+                    "height": 2.0,
+                    "width": 1.0,
                 },
             )
         ],
@@ -261,7 +221,6 @@ def test_beam2_direct_nodal_export_requires_result_load_context(tmp_path):
                     "nu": 0.25,
                     "section_type": "solid_circle",
                     "radius": 1.0,
-                    "local_y": (0.0, 1.0, 0.0),
                 },
             )
         ],
@@ -294,7 +253,6 @@ def test_beam2_nodal_stress_csv_contains_every_mesh_node_once(tmp_path):
                     "nu": 0.25,
                     "section_type": "solid_circle",
                     "radius": 1.0,
-                    "local_y": (0.0, 1.0, 0.0),
                 },
             )
         ],
@@ -363,3 +321,24 @@ def test_active_source_and_examples_contain_no_old_beam2_input_contract():
                 if old_header in text or any(value in text for value in old_property_reads):
                     offenders.append(path.relative_to(project_root).as_posix())
     assert offenders == []
+
+
+def test_beam2_example_uses_topology_csv_and_programmatic_section_assignments():
+    project_root = Path(__file__).resolve().parents[1]
+    example_root = project_root / ("exam" + "ples")
+    script = (example_root / "beam2_frame.py").read_text(encoding="utf-8")
+    rows = [
+        row
+        for row in csv.reader(
+            (example_root / "examples_data" / "beam2.csv").open(encoding="utf-8")
+        )
+        if row and not row[0].lstrip().startswith("#")
+    ]
+    element_header_index = rows.index(["elem_id", "node_i", "node_j"])
+
+    assert all(len(row) == 3 for row in rows[element_header_index + 1 :])
+    assert 'mesh_csv.read_beam2(DATA_DIR / "beam2.csv")' in script
+    assert script.count("selection.elements.set_by_nodes") == 3
+    assert script.count("materials.assign(") == 3
+    for section_type in ("hollow_circle", "rectangle", "solid_circle"):
+        assert f'section_type="{section_type}"' in script

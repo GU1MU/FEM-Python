@@ -292,7 +292,7 @@ def test_line_element_reports_missing_node(builder):
     ("builder", "missing_property"),
     [
         (make_truss_stiffness_mesh, "area"),
-        (make_beam_stiffness_mesh, "size_z"),
+        (make_beam_stiffness_mesh, "width"),
     ],
     ids=["truss2", "beam2"],
 )

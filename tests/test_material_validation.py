@@ -22,9 +22,8 @@ def _line_mesh(element_type="Truss2", **properties):
         defaults.update({
             "nu": 0.3,
             "section_type": "rectangle",
-            "size_y": 1.0,
-            "size_z": 0.5,
-            "local_y": (0.0, 1.0, 0.0),
+            "height": 1.0,
+            "width": 0.5,
         })
     else:
         defaults["area"] = 0.5
@@ -88,8 +87,8 @@ def test_material_accepts_admissible_boundary_nearby_values():
         ("Truss2", "E"),
         ("Truss2", "area"),
         ("Beam2", "E"),
-        ("Beam2", "size_y"),
-        ("Beam2", "size_z"),
+        ("Beam2", "height"),
+        ("Beam2", "width"),
     ],
 )
 @pytest.mark.parametrize("value", [0.0, -1.0, np.nan, np.inf, -np.inf])

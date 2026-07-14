@@ -407,6 +407,34 @@ def test_elements_select_by_id_and_type_and_build_sets():
     assert selection.elements.set_by_type(mesh, "QUADS", "quad4") == ElementSet("QUADS", (2,))
 
 
+def test_elements_select_by_node_membership_for_mixed_element_types():
+    mesh = HexMesh3D(
+        nodes=[Node3D(node_id, float(node_id), 0.0, 0.0) for node_id in range(1, 9)],
+        elements=[
+            Element3D(30, [1, 2], "unregistered_line"),
+            Element3D(10, [2, 3, 4], "unregistered_plane"),
+            Element3D(20, [4, 5, 6, 7], "unregistered_solid"),
+        ],
+    )
+    original_elements = list(mesh.elements)
+
+    assert selection.elements.by_nodes(mesh, [1, 2, 2, 3, 4], mode="all") == [30, 10]
+    assert selection.elements.by_nodes(mesh, [2, 4], mode="any") == [30, 10, 20]
+    assert selection.elements.by_nodes(mesh, [], mode="all") == []
+    assert selection.elements.by_nodes(mesh, [], mode="any") == []
+    assert selection.elements.set_by_nodes(mesh, "REGION", [1, 2], mode="all") == ElementSet(
+        "REGION", (30,)
+    )
+    assert mesh.elements == original_elements
+
+
+def test_elements_select_by_nodes_rejects_unknown_mode():
+    mesh = make_selection_mixed_plane_mesh()
+
+    with pytest.raises(ValueError, match="mode must be 'all' or 'any'"):
+        selection.elements.by_nodes(mesh, [1], mode="some")
+
+
 def test_element_type_selection_uses_kernel_identity_without_legacy_substrings():
     mesh = HexMesh3D(
         nodes=[],

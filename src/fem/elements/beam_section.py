@@ -9,14 +9,15 @@ _DIMENSION_FIELDS = (
     "radius",
     "outer_radius",
     "inner_radius",
-    "size_y",
-    "size_z",
+    "height",
+    "width",
 )
 _SECTION_FIELDS = {
     "solid_circle": ("radius",),
     "hollow_circle": ("outer_radius", "inner_radius"),
-    "rectangle": ("size_y", "size_z"),
+    "rectangle": ("height", "width"),
 }
+_REMOVED_FIELDS = ("size_y", "size_z", "local_y")
 
 
 @dataclass(frozen=True)
@@ -31,12 +32,15 @@ class Beam2Section:
     radius: float | None = None
     outer_radius: float | None = None
     inner_radius: float | None = None
-    size_y: float | None = None
-    size_z: float | None = None
+    height: float | None = None
+    width: float | None = None
 
 
 def parse_beam2_section(props: Mapping[str, Any]) -> Beam2Section:
     """Validate a standard Beam2 section and derive its stiffness properties."""
+    for name in _REMOVED_FIELDS:
+        if name in props:
+            raise ValueError(f"Beam2 section does not use removed property {name}")
     if "section_type" not in props:
         raise KeyError("Beam2 section missing property section_type")
     section_type = props["section_type"]
@@ -67,16 +71,16 @@ def parse_beam2_section(props: Mapping[str, Any]) -> Beam2Section:
             )
         return _circle_section(section_type, outer_radius, inner_radius)
 
-    size_y = dimensions["size_y"]
-    size_z = dimensions["size_z"]
+    height = dimensions["height"]
+    width = dimensions["width"]
     return Beam2Section(
         section_type=section_type,
-        area=size_y * size_z,
-        Iyy=size_y * size_z**3 / 12.0,
-        Izz=size_z * size_y**3 / 12.0,
-        J=_rectangle_torsion_constant(size_y, size_z),
-        size_y=size_y,
-        size_z=size_z,
+        area=height * width,
+        Iyy=height * width**3 / 12.0,
+        Izz=width * height**3 / 12.0,
+        J=_rectangle_torsion_constant(height, width),
+        height=height,
+        width=width,
     )
 
 
@@ -103,10 +107,10 @@ def axial_stress_extrema(
             forces[2] / section.Izz,
         )
     else:
-        assert section.size_y is not None and section.size_z is not None
+        assert section.height is not None and section.width is not None
         increment = (
-            abs(forces[1] / section.Iyy) * section.size_z / 2.0
-            + abs(forces[2] / section.Izz) * section.size_y / 2.0
+            abs(forces[1] / section.Iyy) * section.width / 2.0
+            + abs(forces[2] / section.Izz) * section.height / 2.0
         )
     maximum = axial + increment
     minimum = axial - increment
@@ -153,10 +157,10 @@ def _circle_section(
     return Beam2Section(**kwargs)
 
 
-def _rectangle_torsion_constant(size_y: float, size_z: float) -> float:
+def _rectangle_torsion_constant(height: float, width: float) -> float:
     """Return the Saint-Venant torsion constant from the convergent odd series."""
-    long_side = max(size_y, size_z)
-    short_side = min(size_y, size_z)
+    long_side = max(height, width)
+    short_side = min(height, width)
     series = 0.0
     for odd in range(1, 10000, 2):
         term = tanh(odd * pi * long_side / (2.0 * short_side)) / odd**5

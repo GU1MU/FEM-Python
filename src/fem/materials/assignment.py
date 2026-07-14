@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..core.model import ElementSet, MaterialDefinition, SectionAssignment
+from ..elements.beam_section import parse_beam2_section
 
 
 _SECTION_KEYS_METADATA = "_section_property_keys_by_element"
@@ -30,7 +31,7 @@ def assign(
     section_type: str = "solid",
     **properties: Any,
 ) -> SectionAssignment:
-    """Assign a material to an element set."""
+    """Assign material and section properties to an element set."""
     material_name = material.name if isinstance(material, MaterialDefinition) else str(material)
     element_set_name = element_set.name if isinstance(element_set, ElementSet) else str(element_set)
     section = SectionAssignment(
@@ -47,6 +48,7 @@ def apply_sections(model: Any) -> None:
     """Copy assigned material and section data onto element props."""
     element_lookup = _element_lookup(model)
     resolved_sections = _resolve_sections(model, element_lookup)
+    _validate_effective_beam2_sections(model, element_lookup, resolved_sections)
     props_snapshot = {
         element_id: (elem.props, deepcopy(elem.props))
         for element_id, elem in element_lookup.items()
@@ -108,6 +110,7 @@ def _resolve_sections(
         props = dict(model.materials[section.material].properties)
         props.update(section.properties)
         props["material"] = section.material
+        props["section_type"] = section.section_type
         props["_stress_material_signature"] = (
             "material",
             section.material,
@@ -123,6 +126,55 @@ def _resolve_sections(
                 raise KeyError(f"element {element_id} is not defined")
         resolved_sections.append((element_set, props))
     return resolved_sections
+
+
+def _validate_effective_beam2_sections(
+    model: Any,
+    element_lookup: dict[int, Any],
+    resolved_sections: list[tuple[ElementSet, dict[str, Any]]],
+) -> None:
+    """Validate the final Beam2 properties without mutating model state."""
+    effective = {
+        element_id: _restored_properties(model, element_id, elem)
+        for element_id, elem in element_lookup.items()
+    }
+    last_assignment: dict[int, dict[str, Any]] = {}
+    for element_set, props in resolved_sections:
+        for element_id in element_set.element_ids:
+            last_assignment[element_id] = props
+    for element_id, props in last_assignment.items():
+        effective[element_id].update(props)
+
+    for element_id, elem in element_lookup.items():
+        if str(elem.type).casefold() != "beam2":
+            continue
+        try:
+            parse_beam2_section(effective[element_id])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Element {element_id} has invalid Beam2 section: {exc}"
+            ) from exc
+
+
+def _restored_properties(model: Any, element_id: int, elem: Any) -> dict[str, Any]:
+    """Return element properties with prior assignment-derived keys restored."""
+    props = deepcopy(elem.props)
+    section_keys = model.metadata.get(_SECTION_KEYS_METADATA, {})
+    original_values = model.metadata.get(_SECTION_ORIGINALS_METADATA, {})
+    element_identities = model.metadata.get(_SECTION_IDENTITIES_METADATA, {})
+    keys = section_keys.get(element_id, ())
+    expected_identity = element_identities.get(element_id)
+    if expected_identity is not None and expected_identity != id(elem):
+        return props
+
+    baseline = original_values.get(element_id, {})
+    for key in keys:
+        existed, value = baseline.get(key, (False, None))
+        if existed:
+            props[key] = deepcopy(value)
+        else:
+            props.pop(key, None)
+    return props
 
 
 def _restore_apply_sections_state(
