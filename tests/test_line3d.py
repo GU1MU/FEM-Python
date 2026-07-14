@@ -197,6 +197,15 @@ def test_beam2_standard_sections_reject_invalid_contracts(props, message):
             (5.0 / np.pi, 0.0, 5.0 / np.pi),
         ),
         (
+            {
+                "section_type": "hollow_circle",
+                "outer_radius": 2.0,
+                "inner_radius": 1.0,
+            },
+            (6.0 * np.pi, 45.0 * np.pi / 4.0, 15.0 * np.pi),
+            (12.0, -8.0, 12.0),
+        ),
+        (
             {"section_type": "rectangle", "size_y": 4.0, "size_z": 2.0},
             (16.0, 8.0 / 3.0, 32.0 / 3.0),
             (5.0, -1.0, 5.0),
