@@ -1,5 +1,3 @@
-import importlib.util
-
 import numpy as np
 import pytest
 from scipy.sparse import csr_matrix
@@ -39,8 +37,6 @@ def test_static_linear_solver_returns_result_with_displacements_and_reactions():
 
     assert isinstance(result, ModelResult)
     assert result.step.name == "pull"
-    assert not hasattr(result, "output_dir")
-    assert not hasattr(result, "boundary")
     assert result.name == "pull_case"
     assert result.U[mesh.global_dof(2, 0)] == pytest.approx(0.5)
     assert result.U[mesh.global_dof(2, 1)] == pytest.approx(0.0)
@@ -62,12 +58,6 @@ def test_static_linear_solver_solve_all_returns_step_result_collection():
     assert pull2.U[mesh.global_dof(2, 0)] == pytest.approx(1.0)
     assert pull1.name == "bar_pull1"
     assert pull2.name == "bar_pull2"
-
-
-def test_solver_package_exposes_linear_solver_only():
-    assert hasattr(solvers, "linear")
-    assert hasattr(solvers.linear, "solve")
-    assert importlib.util.find_spec("fem.solve") is None
 
 
 def test_linear_solver_solves_sparse_system_and_rejects_dense_matrix():

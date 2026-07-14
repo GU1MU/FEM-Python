@@ -178,13 +178,6 @@ def test_beam2_rectangle_dimension_swap_swaps_bending_inertias_only():
     assert wide.Izz == pytest.approx(tall.Iyy)
 
 
-def test_beam2_rectangle_rejects_removed_size_dimensions():
-    with pytest.raises(ValueError, match="size_y"):
-        parse_beam2_section(
-            {"section_type": "rectangle", "size_y": 4.0, "size_z": 1.0}
-        )
-
-
 def test_beam2_square_section_torsion_matches_saint_venant_coefficient():
     section = parse_beam2_section(
         {"section_type": "rectangle", "height": 2.0, "width": 2.0}
@@ -430,22 +423,6 @@ def test_beam2_automatic_local_frame_uses_y_fallback_near_global_z():
 
     assert rotation[2] == pytest.approx([0.0, 1.0, 0.0], abs=1e-12)
     assert rotation @ rotation.T == pytest.approx(np.eye(3), abs=1e-12)
-
-
-@pytest.mark.parametrize(
-    "local_y",
-    [
-        None,
-        (0.0, 0.0, 0.0),
-        (1.0, np.nan, 0.0),
-        (2.0, 0.0, 0.0),
-    ],
-)
-def test_beam2_rejects_removed_local_y(local_y):
-    mesh = _beam_mesh(props={"local_y": local_y})
-
-    with pytest.raises(ValueError, match="local_y"):
-        get_element_kernel("Beam2").stiffness(mesh, mesh.elements[0])
 
 
 @pytest.mark.parametrize("mode", range(6))

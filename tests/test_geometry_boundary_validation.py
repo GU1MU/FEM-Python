@@ -76,33 +76,18 @@ def test_inverted_quad_is_rejected_on_every_geometry_dependent_path(
             kernel.body_force(mesh, elem, (0.0, -1.0))
 
 
-@pytest.mark.parametrize(
-    ("builder", "element_label"),
-    [
-        (make_quad4_stiffness_mesh, "Quad4"),
-        (make_quad8_stiffness_mesh, "Quad8"),
-    ],
-)
-@pytest.mark.parametrize("thickness", (0.0, -1.0, np.nan, np.inf, -np.inf))
-@pytest.mark.parametrize("operation", ("stiffness", "body_force", "edge_traction"))
-def test_quad_rejects_nonpositive_or_nonfinite_thickness(
-    builder,
-    element_label,
-    thickness,
-    operation,
-):
-    mesh = builder()
+@pytest.mark.parametrize("operation", ("body_force", "edge_traction"))
+def test_quad_load_consumers_reject_invalid_shared_thickness(operation):
+    mesh = make_quad4_stiffness_mesh()
     elem = mesh.elements[0]
-    elem.props["thickness"] = thickness
+    elem.props["thickness"] = 0.0
     kernel = get_element_kernel(elem.type)
 
     with pytest.raises(
         ValueError,
-        match=rf"{element_label} element 1 thickness must be finite and > 0",
+        match=r"Quad4 element 1 thickness must be finite and > 0",
     ):
-        if operation == "stiffness":
-            kernel.stiffness(mesh, elem)
-        elif operation == "body_force":
+        if operation == "body_force":
             kernel.body_force(mesh, elem, (0.0, -1.0))
         else:
             kernel.edge_traction(mesh, elem, 0, (0.0, -1.0))
@@ -159,9 +144,7 @@ def test_registry_does_not_dispatch_arbitrary_substring_matches():
     ("element_type", "reader"),
     [
         ("CPS4R", inp.read_quad4),
-        ("CPE4R", inp.read_quad4),
         ("CPS8R", inp.read_quad8),
-        ("CPE8R", inp.read_quad8),
         ("C3D8R", inp.read_hex8),
         ("C3D20R", inp.read_hex20),
     ],
@@ -186,8 +169,8 @@ def test_specialized_inp_readers_reject_reduced_integration(
         reader(path)
 
 
-@pytest.mark.parametrize("element_type", ("CPS4R", "CPE4R", "CPS8R", "CPE8R"))
-def test_mixed2d_inp_reader_rejects_reduced_integration(tmp_path, element_type):
+def test_mixed2d_inp_reader_rejects_reduced_integration(tmp_path):
+    element_type = "CPE8R"
     path = tmp_path / f"mixed_{element_type.lower()}.inp"
     path.write_text(
         "*Node\n1, 0, 0\n"

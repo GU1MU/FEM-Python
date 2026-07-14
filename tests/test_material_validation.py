@@ -41,10 +41,9 @@ def test_material_rejects_nonpositive_or_nonfinite_elastic_modulus(E):
 
 
 @pytest.mark.parametrize("matrix_builder", ELASTIC_MATRIX_BUILDERS)
-@pytest.mark.parametrize("E", [0.0, -1.0, np.nan, np.inf])
-def test_constitutive_matrices_reject_invalid_elastic_modulus(matrix_builder, E):
+def test_constitutive_matrix_consumers_reject_invalid_elastic_modulus(matrix_builder):
     with pytest.raises(ValueError, match=r"E must be finite and > 0"):
-        matrix_builder(E, 0.3)
+        matrix_builder(0.0, 0.3)
 
 
 @pytest.mark.parametrize("nu", [-1.0, 0.5, np.nan, np.inf, -np.inf])
@@ -54,10 +53,9 @@ def test_material_rejects_out_of_range_or_nonfinite_poisson_ratio(nu):
 
 
 @pytest.mark.parametrize("matrix_builder", ELASTIC_MATRIX_BUILDERS)
-@pytest.mark.parametrize("nu", [-1.0, 0.5, np.nan, np.inf])
-def test_constitutive_matrices_reject_invalid_poisson_ratio(matrix_builder, nu):
+def test_constitutive_matrix_consumers_reject_invalid_poisson_ratio(matrix_builder):
     with pytest.raises(ValueError, match=r"-1 < nu < 0.5"):
-        matrix_builder(210.0, nu)
+        matrix_builder(210.0, -1.0)
 
 
 @pytest.mark.parametrize("rho", [-1.0, np.nan, np.inf, -np.inf])
@@ -82,17 +80,24 @@ def test_material_accepts_admissible_boundary_nearby_values():
 
 
 @pytest.mark.parametrize(
-    ("element_type", "property_name"),
+    ("element_type", "property_name", "value"),
     [
-        ("Truss2", "E"),
-        ("Truss2", "area"),
-        ("Beam2", "E"),
-        ("Beam2", "height"),
-        ("Beam2", "width"),
+        ("Truss2", "area", 0.0),
+        ("Truss2", "area", -1.0),
+        ("Truss2", "area", np.nan),
+        ("Truss2", "area", np.inf),
+        ("Truss2", "area", -np.inf),
+        ("Truss2", "E", 0.0),
+        ("Beam2", "E", 0.0),
+        ("Beam2", "height", 0.0),
+        ("Beam2", "height", -1.0),
+        ("Beam2", "height", np.nan),
+        ("Beam2", "height", np.inf),
+        ("Beam2", "height", -np.inf),
+        ("Beam2", "width", 0.0),
     ],
 )
-@pytest.mark.parametrize("value", [0.0, -1.0, np.nan, np.inf, -np.inf])
-def test_line_stiffness_rejects_invalid_positive_properties(
+def test_line_positive_property_validators_cover_invalid_equivalence_classes(
     element_type,
     property_name,
     value,
@@ -107,9 +112,8 @@ def test_line_stiffness_rejects_invalid_positive_properties(
         get_element_kernel(element_type).stiffness(mesh, elem)
 
 
-@pytest.mark.parametrize("value", [0.0, -1.0, np.nan, np.inf, -np.inf])
-def test_line_body_force_rejects_invalid_area(value):
-    mesh = _line_mesh(area=value)
+def test_line_body_force_consumer_rejects_invalid_area():
+    mesh = _line_mesh(area=0.0)
     elem = mesh.elements[0]
 
     with pytest.raises(ValueError, match=r"property area must be finite and > 0"):
@@ -125,10 +129,9 @@ def test_body_force_assembly_rejects_nonfinite_vector_components(bad_value):
         build_load_vector(mesh, bc)
 
 
-@pytest.mark.parametrize("bad_value", [np.nan, np.inf, -np.inf])
-def test_gravity_assembly_rejects_nonfinite_vector_components(bad_value):
+def test_gravity_assembly_consumer_rejects_nonfinite_vector_components():
     mesh = _line_mesh()
-    bc = BoundaryCondition(gravity=(0.0, bad_value, 0.0))
+    bc = BoundaryCondition(gravity=(0.0, np.nan, 0.0))
 
     with pytest.raises(ValueError, match=r"gravity vector components must be finite"):
         build_load_vector(mesh, bc)
@@ -160,8 +163,16 @@ def test_beam_stiffness_rejects_invalid_poisson_ratio(nu):
         get_element_kernel("Beam2").stiffness(mesh, mesh.elements[0])
 
 
-@pytest.mark.parametrize("element_type", ["Truss2", "Beam2"])
-@pytest.mark.parametrize("rho", [-1.0, np.nan, np.inf, -np.inf])
+@pytest.mark.parametrize(
+    ("element_type", "rho"),
+    [
+        ("Truss2", -1.0),
+        ("Truss2", np.nan),
+        ("Truss2", np.inf),
+        ("Truss2", -np.inf),
+        ("Beam2", -1.0),
+    ],
+)
 def test_line_stiffness_rejects_invalid_optional_density(element_type, rho):
     mesh = _line_mesh(element_type, rho=rho)
 

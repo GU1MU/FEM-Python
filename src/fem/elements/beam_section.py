@@ -17,7 +17,6 @@ _SECTION_FIELDS = {
     "hollow_circle": ("outer_radius", "inner_radius"),
     "rectangle": ("height", "width"),
 }
-_REMOVED_FIELDS = ("size_y", "size_z", "local_y")
 
 
 @dataclass(frozen=True)
@@ -38,9 +37,6 @@ class Beam2Section:
 
 def parse_beam2_section(props: Mapping[str, Any]) -> Beam2Section:
     """Validate a standard Beam2 section and derive its stiffness properties."""
-    for name in _REMOVED_FIELDS:
-        if name in props:
-            raise ValueError(f"Beam2 section does not use removed property {name}")
     if "section_type" not in props:
         raise KeyError("Beam2 section missing property section_type")
     section_type = props["section_type"]

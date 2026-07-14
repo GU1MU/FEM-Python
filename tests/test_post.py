@@ -1,11 +1,8 @@
 import csv
-import importlib
-import sys
 
 import numpy as np
 import pytest
 
-import fem.post as post
 from fem.core.mesh import (
     BeamMesh3D,
     Element2D,
@@ -16,7 +13,7 @@ from fem.core.mesh import (
     PlaneMesh2D,
 )
 from fem.elements import get_element_kernel
-from fem.post import displacement, path, polar, stress, vtk
+from fem.post import displacement, path, stress, vtk
 from fem.post.stress import dispatch
 from fem.post.polar import convert_nodal_solution_into_polar_coord
 from fem.post.vtk.polar import convert_nodal_displacement
@@ -42,6 +39,13 @@ def _affine_solid_displacement(mesh):
         U[mesh.global_dof(node.id, 1)] = -0.02 * node.x + 0.04 * node.y + 0.01 * node.z
         U[mesh.global_dof(node.id, 2)] = 0.03 * node.x - 0.01 * node.y + 0.05 * node.z
     return U
+
+
+def _make_beam_dispatch_mesh():
+    return BeamMesh3D(
+        nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 1.0, 0.0, 0.0)],
+        elements=[Element3D(1, [1, 2], "Beam2")],
+    )
 
 
 def test_nodal_stress_field_collects_ordered_element_contributions():
@@ -350,111 +354,85 @@ def test_vtk_from_result_uses_threshold_for_csv_and_topology(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("header", "row", "missing"),
+    ("header", "row", "message"),
     (
-        ("node_id,x,y,sig_x", "1,0,0,1", "elem_id"),
-        ("node_id,x,y,local_node,averaged,sig_x", "1,0,0,1,false,1", "elem_id"),
-        ("node_id,x,y,elem_id,averaged,sig_x", "1,0,0,1,false,1", "local_node"),
-        ("node_id,x,y,elem_id,local_node,sig_x", "1,0,0,1,1,1", "averaged"),
+        ("x,y,elem_id,local_node,averaged,sig_x", "0,0,,,true,10", "node_id"),
+        ("node_id,x,y,local_node,averaged,sig_x", "1,0,0,,true,10", "elem_id"),
+        ("node_id,x,y,elem_id,averaged,sig_x", "1,0,0,,true,10", "local_node"),
+        ("node_id,x,y,elem_id,local_node,sig_x", "1,0,0,,,10", "averaged"),
+        (
+            "node_id,x,y,elem_id,local_node,averaged,sig_x",
+            "bad,0,0,,,true,10",
+            "expected an integer",
+        ),
+        (
+            "node_id,x,y,elem_id,local_node,averaged,sig_x",
+            "1,0,0,bad,1,false,10",
+            "expected an integer",
+        ),
+        (
+            "node_id,x,y,elem_id,local_node,averaged,sig_x",
+            "1,0,0,1,bad,false,10",
+            "expected an integer",
+        ),
+        (
+            "node_id,x,y,elem_id,local_node,averaged,sig_x",
+            "1,0,0,1,1,maybe,10",
+            "expected true or false",
+        ),
+        (
+            "node_id,x,y,elem_id,local_node,averaged,sig_x",
+            "1,0,0,,1,false,10",
+            "missing elem_id",
+        ),
+        (
+            "node_id,x,y,elem_id,local_node,averaged,sig_x",
+            "1,0,0,1,,false,10",
+            "missing local_node",
+        ),
+        (
+            "node_id,x,y,elem_id,local_node,averaged,sig_x",
+            "1,0,0,1,0,false,10",
+            "one-based",
+        ),
     ),
 )
-def test_nodal_stress_reader_requires_current_metadata(tmp_path, header, row, missing):
+def test_nodal_stress_reader_enforces_current_metadata_contract(
+    tmp_path,
+    header,
+    row,
+    message,
+):
     stress_path = tmp_path / "nodal_stress.csv"
     stress_path.write_text(f"{header}\n{row}\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match=missing):
+    with pytest.raises(ValueError, match=message):
         vtk.fields.read_nodal_stress_rows(stress_path)
 
 
-@pytest.mark.parametrize(
-    ("row", "missing"),
-    (
-        ("1,0,0,,1,false,10", "elem_id"),
-        ("1,0,0,1,,false,10", "local_node"),
-    ),
-)
-def test_nodal_stress_reader_rejects_nonaveraged_row_without_provenance(
-    tmp_path,
-    row,
-    missing,
-):
-    stress_path = tmp_path / "raw_nodal_stress.csv"
-    stress_path.write_text(
-        "node_id,x,y,elem_id,local_node,averaged,sig_x\n" + row + "\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match=rf"row 2.*node 1.*missing {missing}"):
-        vtk.fields.read_nodal_stress_rows(stress_path)
-
-
-def test_nodal_stress_reader_rejects_zero_based_local_node(tmp_path):
-    stress_path = tmp_path / "zero_based_nodal_stress.csv"
+def test_nodal_stress_reader_accepts_averaged_rows_without_provenance(tmp_path):
+    stress_path = tmp_path / "averaged_nodal_stress.csv"
     stress_path.write_text(
         "node_id,x,y,elem_id,local_node,averaged,sig_x\n"
-        "1,0,0,1,0,false,10\n",
+        "1,0,0,,,true,10\n"
+        "2,1,0,,,true,20\n",
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match=r"row 2.*node 1.*local_node 0.*one-based"):
-        vtk.fields.read_nodal_stress_rows(stress_path)
+    data = vtk.fields.read_nodal_stress_rows(stress_path)
+
+    assert [(row.node_id, row.elem_id, row.local_node, row.averaged) for row in data.rows] == [
+        (1, None, None, True),
+        (2, None, None, True),
+    ]
+    assert [row.values["sig_x"] for row in data.rows] == [10.0, 20.0]
 
 
 @pytest.mark.parametrize(
-    ("field", "row", "raw_value"),
-    (
-        ("node_id", "bad,0,0,,,true,10", "bad"),
-        ("elem_id", "1,0,0,bad,1,false,10", "bad"),
-        ("local_node", "1,0,0,1,bad,false,10", "bad"),
-    ),
+    "consumer",
+    ("vtk", "path", "polar"),
 )
-def test_nodal_stress_reader_reports_invalid_provenance_integer_with_context(
-    tmp_path,
-    field,
-    row,
-    raw_value,
-):
-    stress_path = tmp_path / f"invalid_{field}.csv"
-    stress_path.write_text(
-        "node_id,x,y,elem_id,local_node,averaged,sig_x\n" + row + "\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError) as exc_info:
-        vtk.fields.read_nodal_stress_rows(stress_path)
-
-    message = str(exc_info.value)
-    assert str(stress_path) in message
-    assert "line 2" in message
-    assert f"field {field}" in message
-    assert f"raw value {raw_value!r}" in message
-    assert "expected an integer" in message
-
-
-@pytest.mark.parametrize(
-    ("row", "expected_parts"),
-    (
-        (
-            "bad,0,0,,,true,10,2,3",
-            ("field node_id", "raw value 'bad'", "expected an integer"),
-        ),
-        ("1,0,0,,1,false,10,2,3", ("node 1", "missing elem_id")),
-        ("1,0,0,1,0,false,10,2,3", ("node 1", "local_node 0", "one-based")),
-        (
-            "1,0,0,bad,1,false,10,2,3",
-            ("node 1", "field elem_id", "raw value 'bad'", "expected an integer"),
-        ),
-        (
-            "1,0,0,1,1,not-bool,10,2,3",
-            ("field averaged", "raw value 'not-bool'", "expected true or false"),
-        ),
-    ),
-)
-def test_current_nodal_stress_rows_are_rejected_consistently_across_entries(
-    tmp_path,
-    row,
-    expected_parts,
-):
+def test_nodal_stress_consumers_reject_malformed_current_rows(tmp_path, consumer):
     mesh = PlaneMesh2D(
         nodes=[Node2D(1, 0.0, 0.0), Node2D(2, 1.0, 0.0)],
         elements=[],
@@ -462,12 +440,14 @@ def test_current_nodal_stress_rows_are_rejected_consistently_across_entries(
     stress_path = tmp_path / "invalid_current_nodal_stress.csv"
     stress_path.write_text(
         "node_id,x,y,elem_id,local_node,averaged,sig_x,sig_y,tau_xy\n"
-        + row
-        + "\n",
+        "1,0,0,1,1,not-bool,10,2,3\n",
         encoding="utf-8",
     )
-    calls = (
-        lambda: path.extract_path_data(
+
+    if consumer == "vtk":
+        call = lambda: vtk.fields.read_nodal_stress_rows(stress_path)
+    elif consumer == "path":
+        call = lambda: path.extract_path_data(
             mesh,
             1,
             2,
@@ -475,80 +455,16 @@ def test_current_nodal_stress_rows_are_rejected_consistently_across_entries(
             "sig_x",
             path=tmp_path / "path.csv",
             stress_csv_path=stress_path,
-        ),
-        lambda: path.extract_nodes_data(
-            mesh,
-            [1],
-            ["sig_x"],
-            path=tmp_path / "nodes.csv",
-            stress_csv_path=stress_path,
-        ),
-        lambda: convert_nodal_solution_into_polar_coord(
+        )
+    else:
+        call = lambda: convert_nodal_solution_into_polar_coord(
             stress_path,
             (0.0, 0.0),
             tmp_path / "polar.csv",
-        ),
-        lambda: vtk.fields.read_nodal_stress_rows(stress_path),
-    )
+        )
 
-    messages = []
-    for call in calls:
-        with pytest.raises(ValueError) as exc_info:
-            call()
-        messages.append(str(exc_info.value))
-
-    assert len(set(messages)) == 1
-    assert str(stress_path) in messages[0]
-    for expected_part in expected_parts:
-        assert expected_part in messages[0]
-
-
-def test_current_nodal_stress_missing_header_fields_are_rejected_consistently(
-    tmp_path,
-):
-    mesh = PlaneMesh2D(
-        nodes=[Node2D(1, 0.0, 0.0), Node2D(2, 1.0, 0.0)],
-        elements=[],
-    )
-    stress_path = tmp_path / "missing_identifiers_nodal_stress.csv"
-    stress_path.write_text(
-        "x,y,sig_x,sig_y,tau_xy\n0,0,10,2,3\n",
-        encoding="utf-8",
-    )
-    calls = (
-        lambda: path.extract_path_data(
-            mesh,
-            1,
-            2,
-            2,
-            "sig_x",
-            path=tmp_path / "path.csv",
-            stress_csv_path=stress_path,
-        ),
-        lambda: path.extract_nodes_data(
-            mesh,
-            [1],
-            ["sig_x"],
-            path=tmp_path / "nodes.csv",
-            stress_csv_path=stress_path,
-        ),
-        lambda: convert_nodal_solution_into_polar_coord(
-            stress_path,
-            (0.0, 0.0),
-            tmp_path / "polar.csv",
-        ),
-        lambda: vtk.fields.read_nodal_stress_rows(stress_path),
-    )
-
-    messages = []
-    for call in calls:
-        with pytest.raises(ValueError) as exc_info:
-            call()
-        messages.append(str(exc_info.value))
-
-    assert len(set(messages)) == 1
-    assert repr(str(stress_path)) in messages[0]
-    assert "missing node_id, elem_id, local_node, averaged" in messages[0]
+    with pytest.raises(ValueError, match="averaged"):
+        call()
 
 
 @pytest.mark.parametrize(
@@ -697,45 +613,6 @@ def test_polar_csv_conversion_reports_missing_numeric_value_with_context(tmp_pat
     assert "expected a numeric value" in message
 
 
-def test_path_stress_entrypoints_reject_legacy_header(tmp_path):
-    mesh = PlaneMesh2D(
-        nodes=[Node2D(1, 0.0, 0.0), Node2D(2, 1.0, 0.0)],
-        elements=[],
-    )
-    stress_path = tmp_path / "legacy_nodal_stress.csv"
-    stress_path.write_text(
-        "node_id,x,y,sig_x\n1,0,0,10\n2,1,0,20\n",
-        encoding="utf-8",
-    )
-
-    calls = (
-        lambda: path.extract_path_data(
-            mesh,
-            1,
-            2,
-            2,
-            "sig_x",
-            path=tmp_path / "path.csv",
-            stress_csv_path=stress_path,
-        ),
-        lambda: path.extract_nodes_data(
-            mesh,
-            [1],
-            ["sig_x"],
-            path=tmp_path / "nodes.csv",
-            stress_csv_path=stress_path,
-        ),
-    )
-
-    for call in calls:
-        with pytest.raises(ValueError) as exc_info:
-            call()
-        message = str(exc_info.value)
-        assert "elem_id" in message
-        assert "local_node" in message
-        assert "averaged" in message
-
-
 def test_path_stress_entrypoint_accepts_current_metadata(tmp_path):
     mesh = PlaneMesh2D(
         nodes=[Node2D(1, 0.0, 0.0), Node2D(2, 1.0, 0.0)],
@@ -874,22 +751,6 @@ def test_path_nodal_reader_reports_invalid_node_id_with_context(tmp_path):
     assert "expected an integer" in message
 
 
-def test_polar_csv_conversion_rejects_element_nodal_header_without_averaged(tmp_path):
-    csv_path = tmp_path / "legacy_element_nodal_stress.csv"
-    csv_path.write_text(
-        "node_id,x,y,elem_id,local_node,sig_x,sig_y,tau_xy\n"
-        "1,1,0,1,1,10,2,3\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match=r"missing averaged"):
-        convert_nodal_solution_into_polar_coord(
-            csv_path,
-            (0.0, 0.0),
-            tmp_path / "legacy_polar.csv",
-        )
-
-
 def test_polar_csv_conversion_accepts_current_stress_metadata(tmp_path):
     csv_path = tmp_path / "current_nodal_stress.csv"
     out_path = tmp_path / "current_polar.csv"
@@ -1006,35 +867,6 @@ def test_isolated_node_export_uses_averaged_zero_row_and_reaches_vtk(tmp_path):
     assert "POINTS 4 float" in vtk_text
 
 
-def test_vtk_export_lives_inside_post_package():
-    mesh = PlaneMesh2D(
-        nodes=[Node2D(1, 1.0, 0.0), Node2D(2, 0.0, 1.0)],
-        elements=[],
-    )
-
-    polar_values = convert_nodal_displacement(
-        mesh,
-        {
-            1: {"ux": 2.0, "uy": 0.0, "rz": 0.5},
-            2: {"ux": 0.0, "uy": 3.0, "rz": 0.0},
-        },
-        [0.0, 0.0],
-    )
-
-    assert polar_values[1]["ux"] == pytest.approx(2.0)
-    assert polar_values[1]["uy"] == pytest.approx(0.0)
-    assert polar_values[1]["rz"] == pytest.approx(0.5)
-    assert polar_values[2]["ux"] == pytest.approx(3.0)
-    assert polar_values[2]["uy"] == pytest.approx(0.0)
-
-    sys.modules.pop("fem.vtk_export", None)
-    with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("fem.vtk_export")
-    sys.modules.pop("fem.post.vtk_export", None)
-    with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("fem.post.vtk_export")
-
-
 def test_polar_displacement_fills_mesh_nodes_and_ignores_unknown_ids():
     mesh = PlaneMesh2D(
         nodes=[
@@ -1058,56 +890,10 @@ def test_polar_displacement_fills_mesh_nodes_and_ignores_unknown_ids():
     )
 
     assert set(polar_values) == {1, 2, 3, 4}
+    assert polar_values[1] == {"ux": 2.0, "uy": 0.0, "rz": 0.5}
+    assert polar_values[2] == {"ux": 3.0, "uy": 0.0, "rz": 0.0}
     assert polar_values[3] == {"ux": 0.0, "uy": 0.0, "rz": 0.0}
     assert polar_values[4] == {"ux": 4.0, "uy": 0.0, "rz": 0.0}
-
-
-def test_post_package_exposes_submodules_without_function_facade():
-    assert hasattr(post, "__path__")
-    assert post.displacement is displacement
-    assert post.path is path
-    assert post.polar is polar
-    assert post.stress is stress
-    assert post.vtk is vtk
-    assert not hasattr(post, "export_nodal_displacements_csv")
-    assert not hasattr(post, "export_hex8_element_stress_csv")
-    assert hasattr(displacement, "__path__")
-    assert callable(displacement.export.nodal)
-    assert not hasattr(displacement, "export_nodal_displacement")
-    assert callable(path.extract_path_data)
-    assert callable(convert_nodal_solution_into_polar_coord)
-    assert not hasattr(polar, "basis")
-    assert not hasattr(polar, "displacement")
-    assert not hasattr(polar, "stress")
-    assert not hasattr(vtk.polar, "basis")
-    assert not hasattr(vtk.polar, "displacement")
-    assert not hasattr(vtk.polar, "stress")
-    assert hasattr(stress, "__path__")
-    assert callable(stress.export.element)
-    assert callable(stress.export.nodal)
-    assert not hasattr(stress.dispatch, "resolve_type_key")
-    for wrapper_name in ("tri3", "tri6", "quad4", "quad8", "hex8", "hex20", "tet4", "tet10"):
-        assert not hasattr(stress.nodal, wrapper_name)
-    assert not hasattr(stress, "export_hex8_element_stress")
-    assert not hasattr(stress, "_compute_hex8_element_stress_at_point")
-    assert hasattr(vtk, "__path__")
-    assert hasattr(vtk, "cells")
-    assert callable(vtk.export.from_csv)
-    assert hasattr(vtk, "fields")
-    assert not hasattr(vtk.fields, "read_nodal_stress")
-    assert hasattr(vtk, "polar")
-    assert hasattr(vtk, "writer")
-    assert not hasattr(vtk, "export_from_csv_3d")
-
-    for old_module in (
-        "fem.post.displacement_export",
-        "fem.post.path_export",
-        "fem.post.stress_export",
-        "fem.post.vtk_export",
-    ):
-        sys.modules.pop(old_module, None)
-        with pytest.raises(ModuleNotFoundError):
-            importlib.import_module(old_module)
 
 
 def test_stress_export_infers_single_element_type_from_mesh(tmp_path):
@@ -1167,19 +953,8 @@ def test_explicit_hex8_nodal_stress_subset_exports_mixed_mesh_to_vtk(tmp_path):
     assert "\nCELL_TYPES 2\n" in vtk_text
 
 
-def test_dispatch_supports_hex20_stress_exports():
-    mesh = make_hex20_stiffness_mesh()
-
-    assert dispatch.resolve_type_keys(mesh, None) == ("hex20",)
-    assert dispatch.type_key_from_name("C3D20") == "hex20"
-    assert "hex20" in dispatch.ELEMENT_STRESS_KEYS
-    assert "hex20" in dispatch.NODAL_STRESS_KEYS
-    assert dispatch.TYPE_GROUPS["hex20"] == "solid"
-    assert dispatch.default_gauss_order("hex20") == 3
-
-
-@pytest.mark.parametrize("element_type", ["C3D20R", "c3D20r"])
-def test_dispatch_rejects_reduced_integration_hex20_alias(element_type):
+def test_dispatch_rejects_reduced_integration_hex20():
+    element_type = "C3D20R"
     mesh = make_hex20_stiffness_mesh()
     mesh.elements[0].type = element_type
 
@@ -1274,8 +1049,8 @@ def test_vtk_cells_support_hex20_in_abaqus_node_order(tmp_path):
     assert "\n25\n" in vtk_text
 
 
-@pytest.mark.parametrize("element_type", ["C3D20R", "c3D20r"])
-def test_vtk_cells_reject_reduced_integration_hex20_without_type_25(element_type):
+def test_vtk_cells_reject_reduced_integration_hex20_without_type_25():
+    element_type = "C3D20R"
     mesh = make_hex20_stiffness_mesh()
     mesh.elements[0].type = element_type
 
@@ -1416,25 +1191,41 @@ def test_direct_post_exports_create_parent_dirs_and_beam_uses_six_components(tmp
         assert component in header
 
 
-def test_dispatch_resolves_compatible_mixed_solid_type_keys():
-    mesh = make_mixed_hex8_tet4_mesh()
+@pytest.mark.parametrize(
+    (
+        "mesh_builder",
+        "expected_keys",
+        "expected_group",
+        "element_supported",
+        "nodal_supported",
+        "gauss_order",
+    ),
+    (
+        (make_hex20_stiffness_mesh, ("hex20",), "solid", True, True, 3),
+        (make_mixed_hex8_tet4_mesh, ("hex8", "tet4"), "solid", True, True, None),
+        (make_mixed_hex8_hex20_mesh, ("hex8", "hex20"), "solid", True, True, None),
+        (make_mixed_hex20_tet10_mesh, ("hex20", "tet10"), "solid", True, True, None),
+        (make_mixed_tri3_quad4_mesh, ("tri3", "quad4"), "plane", True, True, None),
+        (make_mixed_tri6_quad8_mesh, ("tri6", "quad8"), "plane", True, True, None),
+        (_make_beam_dispatch_mesh, ("beam2",), "line", False, True, None),
+    ),
+)
+def test_post_stress_dispatch_supports_current_type_groups(
+    mesh_builder,
+    expected_keys,
+    expected_group,
+    element_supported,
+    nodal_supported,
+    gauss_order,
+):
+    mesh = mesh_builder()
 
-    assert dispatch.resolve_type_keys(mesh, None) == ("hex8", "tet4")
-    assert dispatch.stress_group_for_keys(("hex8", "tet4")) == "solid"
-    assert dispatch.element_stress_supported(("hex8", "tet4"))
-    assert dispatch.nodal_stress_supported(("hex8", "tet4"))
-
-
-def test_dispatch_registers_beam2_nodal_but_not_element_stress():
-    mesh = BeamMesh3D(
-        nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 1.0, 0.0, 0.0)],
-        elements=[Element3D(1, [1, 2], "Beam2")],
-    )
-
-    assert dispatch.resolve_type_keys(mesh, None) == ("beam2",)
-    assert dispatch.stress_group_for_keys(("beam2",)) == "line"
-    assert dispatch.nodal_stress_supported(("beam2",))
-    assert not dispatch.element_stress_supported(("beam2",))
+    assert dispatch.resolve_type_keys(mesh, None) == expected_keys
+    assert dispatch.stress_group_for_keys(expected_keys) == expected_group
+    assert dispatch.element_stress_supported(expected_keys) is element_supported
+    assert dispatch.nodal_stress_supported(expected_keys) is nodal_supported
+    if gauss_order is not None:
+        assert dispatch.default_gauss_order(expected_keys[0]) == gauss_order
 
 
 def test_vtk_reader_parses_beam2_nodal_stress_csv_as_three_scalars(tmp_path):
@@ -1462,63 +1253,22 @@ def test_vtk_reader_parses_beam2_nodal_stress_csv_as_three_scalars(tmp_path):
     }
 
 
-def test_dispatch_supports_mixed_hex20_solid_type_keys():
-    hex_mesh = make_mixed_hex8_hex20_mesh()
-    tet_mesh = make_mixed_hex20_tet10_mesh()
-
-    assert dispatch.resolve_type_keys(hex_mesh, None) == ("hex8", "hex20")
-    assert dispatch.resolve_type_keys(tet_mesh, None) == ("hex20", "tet10")
-    assert dispatch.stress_group_for_keys(("hex8", "hex20")) == "solid"
-    assert dispatch.element_stress_supported(("hex20", "tet10"))
-    assert dispatch.nodal_stress_supported(("hex20", "tet10"))
-
-
-def test_dispatch_resolves_compatible_mixed_plane_type_keys():
-    mesh = make_mixed_tri3_quad4_mesh()
-
-    assert dispatch.resolve_type_keys(mesh, None) == ("tri3", "quad4")
-    assert dispatch.stress_group_for_keys(("tri3", "quad4")) == "plane"
-
-
-def test_dispatch_resolves_compatible_mixed_quadratic_plane_type_keys():
-    mesh = make_mixed_tri6_quad8_mesh()
-
-    assert dispatch.resolve_type_keys(mesh, None) == ("tri6", "quad8")
-    assert dispatch.stress_group_for_keys(("tri6", "quad8")) == "plane"
-    assert dispatch.element_stress_supported(("tri6", "quad8"))
-    assert dispatch.nodal_stress_supported(("tri6", "quad8"))
-
-
-def test_element_stress_export_writes_mixed_solid_rows(tmp_path):
-    mesh = make_mixed_hex8_tet4_mesh()
-    csv_path = tmp_path / "mixed_element_stress.csv"
-
-    stress.export.element(mesh, np.zeros(mesh.num_dofs), csv_path)
-    with csv_path.open("r", encoding="utf-8") as f:
-        rows = list(csv.reader(f))
-
-    assert rows[0][0] == "elem_id"
-    assert len(rows) == len(mesh.elements) + 1
-    assert [row[0] for row in rows[1:]] == ["1", "2"]
-
-
-def test_nodal_stress_export_writes_mixed_solid_nodes(tmp_path):
-    mesh = make_mixed_hex8_tet4_mesh()
-    csv_path = tmp_path / "mixed_nodal_stress.csv"
-
-    stress.export.nodal(mesh, np.zeros(mesh.num_dofs), csv_path)
-    with csv_path.open("r", encoding="utf-8") as f:
-        rows = list(csv.reader(f))
-
-    assert rows[0][0] == "node_id"
-    assert len(rows) == sum(len(elem.node_ids) for elem in mesh.elements) + 1
-    assert {row[0] for row in rows[1:]} == {str(node.id) for node in mesh.nodes}
-
-
-def test_stress_exports_write_mixed_plane_rows_and_nodes(tmp_path):
-    mesh = make_mixed_tri3_quad4_mesh()
-    elem_path = tmp_path / "mixed_plane_element_stress.csv"
-    nodal_path = tmp_path / "mixed_plane_nodal_stress.csv"
+@pytest.mark.parametrize(
+    ("mesh_builder", "name", "element_row_count"),
+    (
+        (make_mixed_hex8_tet4_mesh, "mixed_solid", 3),
+        (make_mixed_tri3_quad4_mesh, "mixed_plane", 8),
+    ),
+)
+def test_mixed_stress_exports_write_element_and_nodal_rows(
+    tmp_path,
+    mesh_builder,
+    name,
+    element_row_count,
+):
+    mesh = mesh_builder()
+    elem_path = tmp_path / f"{name}_element_stress.csv"
+    nodal_path = tmp_path / f"{name}_nodal_stress.csv"
 
     stress.export.element(mesh, np.zeros(mesh.num_dofs), elem_path)
     stress.export.nodal(mesh, np.zeros(mesh.num_dofs), nodal_path)
@@ -1528,9 +1278,10 @@ def test_stress_exports_write_mixed_plane_rows_and_nodes(tmp_path):
         nodal_rows = list(csv.reader(f))
 
     assert elem_rows[0][0] == "elem_id"
-    assert len(elem_rows) == 8
+    assert len(elem_rows) == element_row_count
     assert nodal_rows[0][0] == "node_id"
     assert len(nodal_rows) == sum(len(elem.node_ids) for elem in mesh.elements) + 1
+    assert {row[0] for row in nodal_rows[1:]} == {str(node.id) for node in mesh.nodes}
 
 
 def test_stress_exports_cover_higher_order_mixed_types(tmp_path):

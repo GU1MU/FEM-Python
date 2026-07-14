@@ -99,7 +99,6 @@ def test_abaqus_read_builds_model_with_sets_surfaces_materials_and_steps(tmp_pat
     assert model.steps[0].name == "LOAD"
     assert model.steps[0].boundaries[0] == DisplacementConstraint("FIXED", 1, 3, 0.0)
     assert model.steps[0].cloads[0] == NodalLoad("TIP", 3, -50.0)
-    assert not hasattr(model, "boundary")
 
     bc = static_linear.boundary_for_step(model, "LOAD")
     assert len(bc.prescribed_displacements) == 12

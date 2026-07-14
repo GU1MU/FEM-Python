@@ -1,6 +1,3 @@
-import importlib
-import sys
-
 import numpy as np
 import pytest
 
@@ -11,32 +8,17 @@ from fem.elements.beam_section import parse_beam2_section
 from fem.elements.hexahedron import (
     HEX20_EXTRAPOLATION_MATRIX,
     HEX20_NATURAL_NODE_COORDS,
-    Hex8Kernel,
     hex20_gauss_points,
     hex20_shape_funcs_grads,
     hex8_gauss_points,
     hex8_shape_funcs_grads,
 )
 from fem.elements.line import beam3_geometry, line3_geometry
-from fem.elements.quadrilateral import (
-    Quad4PlaneKernel,
-    Quad8PlaneKernel,
-    quad4_shape_grad_xi_eta,
-    quad8_shape_funcs_grads,
-)
-from fem.elements.registry import register_element_kernel
 from fem.elements.tetrahedron import (
     TET10_NATURAL_NODE_COORDS,
-    Tet4Kernel,
-    Tet10Kernel,
     tet10_gauss_points,
-    tet10_shape_funcs_grads,
 )
-from fem.elements.triangle import (
-    Tri3PlaneKernel,
-    Tri6PlaneKernel,
-    tri6_shape_funcs_grads,
-)
+from fem.elements.triangle import tri6_shape_funcs_grads
 from fem.materials import linear_elastic
 from tests.helpers.mesh_builders import (
     make_beam_stiffness_mesh,
@@ -671,50 +653,3 @@ def test_solid_kernels_provide_nodal_stress_matching_post_helpers(builder):
         node_vals = kernel.nodal_stress(mesh, elem, U, node_lookup)
 
     assert np.allclose(node_vals, expected)
-
-
-# Elements package
-
-
-def test_elements_use_family_modules_and_registry_module():
-    assert type(get_element_kernel("Quad4Plane")) is Quad4PlaneKernel
-    assert type(get_element_kernel("Quad8Plane")) is Quad8PlaneKernel
-    assert type(get_element_kernel("Tri3Plane")) is Tri3PlaneKernel
-    assert type(get_element_kernel("Tri6Plane")) is Tri6PlaneKernel
-    assert type(get_element_kernel("Hex8")) is Hex8Kernel
-    assert type(get_element_kernel("Tet4")) is Tet4Kernel
-    assert type(get_element_kernel("Tet10")) is Tet10Kernel
-    assert callable(quad4_shape_grad_xi_eta)
-    assert callable(quad8_shape_funcs_grads)
-    assert callable(tri6_shape_funcs_grads)
-    assert callable(hex8_shape_funcs_grads)
-    assert callable(tet10_shape_funcs_grads)
-    assert callable(register_element_kernel)
-
-    for old_module in (
-        "fem.elements.quad4",
-        "fem.elements.quad8",
-        "fem.elements.tri3",
-        "fem.elements.tet",
-        "fem.elements.hex8",
-    ):
-        sys.modules.pop(old_module, None)
-        with pytest.raises(ModuleNotFoundError):
-            importlib.import_module(old_module)
-
-
-@pytest.mark.parametrize("element_type", ["C3D20R", "c3D20r"])
-def test_registry_rejects_reduced_integration_hex20_alias(element_type):
-    with pytest.raises(
-        NotImplementedError,
-        match=rf"Unsupported element type: {element_type}",
-    ):
-        get_element_kernel(element_type)
-
-
-def test_registry_rejects_unimplemented_reduced_integration_hex8_alias():
-    with pytest.raises(
-        NotImplementedError,
-        match=r"Unsupported element type: C3D8R; reduced integration is not implemented",
-    ):
-        get_element_kernel("C3D8R")

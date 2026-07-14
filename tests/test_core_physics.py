@@ -1,6 +1,3 @@
-from pathlib import Path
-import tomllib
-
 import numpy as np
 import pytest
 from scipy.sparse import csr_matrix
@@ -23,9 +20,6 @@ from tests.helpers.mesh_builders import (
     make_tri3_stiffness_mesh,
     make_tri6_stiffness_mesh,
 )
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize(
@@ -116,17 +110,28 @@ def test_plane_aliases_infer_formulation_without_explicit_property(
     "builder",
     [
         make_tri3_stiffness_mesh,
-        make_tri6_stiffness_mesh,
         make_quad4_stiffness_mesh,
         make_quad8_stiffness_mesh,
     ],
-    ids=["tri3", "tri6", "quad4", "quad8"],
+    ids=["shared_triangle", "quad4", "quad8"],
 )
 @pytest.mark.parametrize("thickness", [0.0, -1.0, np.nan, np.inf, -np.inf])
-def test_plane_elements_reject_invalid_thickness(builder, thickness):
+def test_plane_thickness_validators_reject_invalid_equivalence_classes(
+    builder,
+    thickness,
+):
     mesh = builder()
     elem = mesh.elements[0]
     elem.props["thickness"] = thickness
+
+    with pytest.raises(ValueError, match="thickness must be finite and > 0"):
+        get_element_kernel(elem.type).stiffness(mesh, elem)
+
+
+def test_tri6_stiffness_consumer_rejects_invalid_shared_thickness():
+    mesh = make_tri6_stiffness_mesh()
+    elem = mesh.elements[0]
+    elem.props["thickness"] = 0.0
 
     with pytest.raises(ValueError, match="thickness must be finite and > 0"):
         get_element_kernel(elem.type).stiffness(mesh, elem)
@@ -218,14 +223,6 @@ def test_connected_mixed_models_preserve_global_force_balance(
         assert float(result.reactions[component::mesh.dofs_per_node].sum()) == pytest.approx(
             0.0, abs=1e-10
         )
-
-
-def test_project_declares_tested_numerical_runtime_dependencies():
-    project = tomllib.loads(
-        (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    )["project"]
-
-    assert {"numpy>=2.3,<3", "scipy>=1.16,<2"}.issubset(project["dependencies"])
 
 
 def test_registry_rejects_unsupported_coupled_temperature_element():

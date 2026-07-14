@@ -47,28 +47,6 @@ def test_boundary_load_vector_matches_kernel_dispatch():
     assert np.allclose(F3d, expected3d)
 
 
-def test_boundary_package_exposes_explicit_modules_only():
-    assert hasattr(boundary, "body")
-    assert hasattr(boundary, "condition")
-    assert hasattr(boundary, "loads")
-    assert hasattr(boundary, "nodal")
-    assert hasattr(boundary, "constraints")
-    assert hasattr(boundary, "traction")
-    assert callable(boundary.loads.build_load_vector)
-    assert not hasattr(boundary.traction, "add_forces")
-    assert not hasattr(boundary, "BoundaryCondition2D")
-    assert not hasattr(boundary, "BoundaryCondition3D")
-    assert not hasattr(boundary, "build_load_vector_3d")
-
-
-def test_boundary_condition_preserves_positional_order():
-    bc = BoundaryCondition({}, {}, [], [], (0.0, -9.81))
-
-    assert bc.surface_tractions == []
-    assert bc.gravity == (0.0, -9.81)
-    assert bc.edge_tractions == []
-
-
 def test_3d_nodal_forces_accumulate_like_2d():
     mesh = make_tet4_stiffness_mesh()
     bc = boundary.condition.BoundaryCondition()
