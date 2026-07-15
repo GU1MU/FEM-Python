@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+import inspect
 from pathlib import Path
 import subprocess
 import sys
@@ -10,11 +11,26 @@ import numpy as np
 import pytest
 
 from fem import materials, post, steps
-from fem.core import ElementSet, Mesh2D, Mesh3D, Node2D, NodeSet
+from fem.boundary.loads import build_load_vector
+from fem.boundary.step import boundary_for_step
+from fem.core import (
+    Edge,
+    ElementEdge,
+    ElementFace,
+    ElementSet,
+    Mesh2D,
+    Mesh3D,
+    Node2D,
+    NodeSet,
+    Surface,
+    validate_model,
+)
 from fem.elements import get_element_kernel
 from fem.elements.hexahedron import HEX20_NATURAL_NODE_COORDS
 from fem.elements.tetrahedron import TET10_NATURAL_NODE_COORDS
 from fem.io import gmsh as gmsh_io
+from fem.selection import edges as edge_selection
+from fem.selection import faces as face_selection
 from fem.solvers import static_linear
 
 
@@ -28,11 +44,13 @@ class _UnreadableModel:
 
 
 _ELEMENT_PROPERTIES = {
+    1: ("Line 2", 1, 1, 2, [], 2),
     2: ("Triangle 3", 2, 1, 3, [], 3),
     3: ("Quadrilateral 4", 2, 1, 4, [], 4),
     4: ("Tetrahedron 4", 3, 1, 4, [], 4),
     5: ("Hexahedron 8", 3, 1, 8, [], 8),
     6: ("Prism 6", 3, 1, 6, [], 6),
+    8: ("Line 3", 1, 2, 3, [], 2),
     9: ("Triangle 6", 2, 2, 6, [], 3),
     10: ("Quadrilateral 9", 2, 2, 9, [], 4),
     11: ("Tetrahedron 10", 3, 2, 10, [], 4),
@@ -117,6 +135,78 @@ def _fake_model(*, node_coordinates, elements, **mesh_kwargs):
             elements=elements,
             **mesh_kwargs,
         )
+    )
+
+
+def _physical_curve_model(
+    *,
+    node_coordinates,
+    top_elements,
+    boundary_entities,
+    physical_nodes,
+    group_entities=None,
+    group_tag=7,
+    name="BOUNDARY",
+):
+    mesh = _FakeMesh(
+        node_tags=list(node_coordinates),
+        coordinates=[
+            coordinate
+            for node_tag in node_coordinates
+            for coordinate in node_coordinates[node_tag]
+        ],
+        elements=top_elements,
+        entity_elements={
+            (1, entity_tag): blocks
+            for entity_tag, blocks in boundary_entities.items()
+        },
+        physical_nodes={(1, group_tag): physical_nodes},
+    )
+    return _FakeModel(
+        mesh,
+        physical_groups=[(1, group_tag)],
+        physical_names={(1, group_tag): name},
+        entities={
+            (1, group_tag): (
+                list(boundary_entities) if group_entities is None else group_entities
+            )
+        },
+    )
+
+
+def _physical_surface_model(
+    *,
+    node_coordinates,
+    top_elements,
+    boundary_entities,
+    physical_nodes,
+    group_entities=None,
+    group_tag=7,
+    name="BOUNDARY",
+):
+    mesh = _FakeMesh(
+        node_tags=list(node_coordinates),
+        coordinates=[
+            coordinate
+            for node_tag in node_coordinates
+            for coordinate in node_coordinates[node_tag]
+        ],
+        elements=top_elements,
+        entity_elements={
+            (2, entity_tag): blocks
+            for entity_tag, blocks in boundary_entities.items()
+        },
+        physical_nodes={(2, group_tag): physical_nodes},
+    )
+    return _FakeModel(
+        mesh,
+        physical_groups=[(2, group_tag)],
+        physical_names={(2, group_tag): name},
+        entities={
+            (2, group_tag): (
+                list(boundary_entities) if group_entities is None else group_entities
+            )
+        },
     )
 
 
@@ -227,12 +317,16 @@ def test_import_result_to_fem_model_copies_sets_and_metadata():
     mesh = Mesh2D(nodes=[Node2D(10, 0.0, 0.0)], elements=[])
     node_sets = {"LEFT": NodeSet("LEFT", [10])}
     element_sets = {"DOMAIN": ElementSet("DOMAIN", [20])}
+    edges = {"BOTTOM": Edge("BOTTOM", [ElementEdge(20, 0, [10, 30])])}
+    surfaces = {"FRONT": Surface("FRONT", [ElementFace(20, 0, [10, 30, 40])])}
     metadata = {"source": "gmsh", "dimension": 2}
     imported = gmsh_io.GmshImportResult(
         mesh=mesh,
         node_sets=node_sets,
         element_sets=element_sets,
         metadata=metadata,
+        edges=edges,
+        surfaces=surfaces,
     )
 
     model = imported.to_fem_model("plate")
@@ -248,15 +342,697 @@ def test_import_result_to_fem_model_copies_sets_and_metadata():
     assert model.materials == {}
     assert model.sections == []
     assert model.steps == []
-    assert model.edges == {}
-    assert model.surfaces == {}
+    assert model.edges == edges
+    assert model.edges is not edges
+    assert model.surfaces == surfaces
+    assert model.surfaces is not surfaces
 
     model.node_sets.clear()
     model.element_sets.clear()
     model.metadata.clear()
+    model.edges.clear()
+    model.surfaces.clear()
     assert imported.node_sets == node_sets
     assert imported.element_sets == element_sets
     assert imported.metadata == metadata
+    assert imported.edges == edges
+    assert imported.surfaces == surfaces
+
+
+def test_import_result_four_argument_boundary_defaults_are_independent():
+    mesh = Mesh2D(nodes=[Node2D(1, 0.0, 0.0)], elements=[])
+
+    first = gmsh_io.GmshImportResult(mesh, {}, {}, {})
+    second = gmsh_io.GmshImportResult(mesh, {}, {}, {})
+
+    assert first.edges == {}
+    assert first.surfaces == {}
+    assert first.edges is not second.edges
+    assert first.surfaces is not second.surfaces
+
+
+def test_from_model_public_signature_is_unchanged():
+    signature = inspect.signature(gmsh_io.from_model)
+
+    assert tuple(signature.parameters) == (
+        "dimension",
+        "gmsh_model",
+        "plane_type",
+        "thickness",
+        "z_tolerance",
+    )
+    assert all(
+        parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        for parameter in signature.parameters.values()
+    )
+
+
+@pytest.mark.parametrize(
+    ("gmsh_type", "expected"),
+    [
+        (1, ("Line 2", 1, 1, 2, 2, "line")),
+        (8, ("Line 3", 1, 2, 3, 2, "line")),
+        (2, ("Triangle 3", 2, 1, 3, 3, "triangle")),
+        (9, ("Triangle 6", 2, 2, 6, 3, "triangle")),
+        (3, ("Quadrilateral 4", 2, 1, 4, 4, "quadrilateral")),
+        (16, ("Quadrilateral 8", 2, 2, 8, 4, "quadrilateral")),
+    ],
+)
+def test_boundary_specs_define_supported_matching_contract(gmsh_type, expected):
+    spec = gmsh_io._BOUNDARY_ELEMENT_SPECS[gmsh_type]
+
+    assert (
+        spec.gmsh_name,
+        spec.dimension,
+        spec.order,
+        spec.node_count,
+        spec.primary_node_count,
+        spec.shape,
+    ) == expected
+
+
+@pytest.mark.parametrize(
+    (
+        "element_type",
+        "node_coordinates",
+        "top_node_ids",
+        "boundary_type",
+        "boundary_node_ids",
+        "expected_local_index",
+        "expected_node_ids",
+    ),
+    [
+        (
+            2,
+            {
+                1: (0.0, 0.0, 0.0),
+                2: (1.0, 0.0, 0.0),
+                3: (0.0, 1.0, 0.0),
+            },
+            [1, 2, 3],
+            1,
+            [2, 1],
+            0,
+            (1, 2),
+        ),
+        (
+            3,
+            {
+                1: (0.0, 0.0, 0.0),
+                2: (1.0, 0.0, 0.0),
+                3: (1.0, 1.0, 0.0),
+                4: (0.0, 1.0, 0.0),
+            },
+            [1, 2, 3, 4],
+            1,
+            [3, 2],
+            1,
+            (2, 3),
+        ),
+        (
+            9,
+            {
+                1: (0.0, 0.0, 0.0),
+                2: (1.0, 0.0, 0.0),
+                3: (0.0, 1.0, 0.0),
+                4: (0.5, 0.0, 0.0),
+                5: (0.5, 0.5, 0.0),
+                6: (0.0, 0.5, 0.0),
+            },
+            [1, 2, 3, 4, 5, 6],
+            8,
+            [2, 1, 4],
+            0,
+            (1, 4, 2),
+        ),
+        (
+            16,
+            {
+                1: (0.0, 0.0, 0.0),
+                2: (1.0, 0.0, 0.0),
+                3: (1.0, 1.0, 0.0),
+                4: (0.0, 1.0, 0.0),
+                5: (0.5, 0.0, 0.0),
+                6: (1.0, 0.5, 0.0),
+                7: (0.5, 1.0, 0.0),
+                8: (0.0, 0.5, 0.0),
+            },
+            [1, 2, 3, 4, 5, 6, 7, 8],
+            8,
+            [4, 3, 7],
+            2,
+            (3, 7, 4),
+        ),
+    ],
+    ids=["tri3-line2", "quad4-line2", "tri6-line3", "quad8-line3"],
+)
+def test_physical_curve_maps_to_edge_in_fem_owner_order(
+    element_type,
+    node_coordinates,
+    top_node_ids,
+    boundary_type,
+    boundary_node_ids,
+    expected_local_index,
+    expected_node_ids,
+):
+    model = _physical_curve_model(
+        node_coordinates=node_coordinates,
+        top_elements=([element_type], [[101]], [top_node_ids]),
+        boundary_entities={
+            71: ([boundary_type], [[901]], [boundary_node_ids]),
+        },
+        physical_nodes=boundary_node_ids,
+    )
+
+    result = gmsh_io.from_model(dimension=2, gmsh_model=model)
+
+    assert result.node_sets["BOUNDARY"] == NodeSet(
+        "BOUNDARY",
+        sorted(set(boundary_node_ids)),
+    )
+    assert result.edges["BOUNDARY"] == Edge(
+        "BOUNDARY",
+        [ElementEdge(101, expected_local_index, expected_node_ids)],
+    )
+    assert result.surfaces == {}
+    assert result.metadata["physical_groups"]["BOUNDARY"] == {
+        "dimension": 1,
+        "tag": 7,
+        "kind": "node_set",
+        "boundary_kind": "edge",
+        "boundary_entry_count": 1,
+    }
+    validate_model(result.to_fem_model("edge_owner"))
+
+
+def test_physical_curve_combines_entities_and_sorts_noncontiguous_owners():
+    model = _physical_curve_model(
+        node_coordinates={
+            1: (0.0, 0.0, 0.0),
+            2: (1.0, 0.0, 0.0),
+            3: (0.0, 1.0, 0.0),
+            4: (2.0, 0.0, 0.0),
+            5: (3.0, 0.0, 0.0),
+            6: (2.0, 1.0, 0.0),
+        },
+        top_elements=([2], [[205, 101]], [[4, 5, 6, 1, 2, 3]]),
+        boundary_entities={
+            72: ([1], [[990]], [[5, 4]]),
+            71: ([1], [[870]], [[2, 1]]),
+        },
+        group_entities=[72, 71],
+        physical_nodes=[5, 4, 2, 1],
+    )
+
+    result = gmsh_io.from_model(dimension=2, gmsh_model=model)
+
+    assert result.edges["BOUNDARY"].edges == (
+        ElementEdge(101, 0, [1, 2]),
+        ElementEdge(205, 0, [4, 5]),
+    )
+
+
+def test_multiple_physical_curves_scan_fem_edge_topology_once(monkeypatch):
+    mesh = _FakeMesh(
+        node_tags=[1, 2, 3],
+        coordinates=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        elements=([2], [[101]], [[1, 2, 3]]),
+        entity_elements={
+            (1, 71): ([1], [[901]], [[1, 2]]),
+            (1, 72): ([1], [[902]], [[2, 3]]),
+        },
+        physical_nodes={(1, 7): [1, 2], (1, 8): [2, 3]},
+    )
+    model = _FakeModel(
+        mesh,
+        physical_groups=[(1, 7), (1, 8)],
+        physical_names={(1, 7): "BOTTOM", (1, 8): "DIAGONAL"},
+        entities={(1, 7): [71], (1, 8): [72]},
+    )
+    real_all = edge_selection.all
+    calls = 0
+
+    def counted_all(imported_mesh):
+        nonlocal calls
+        calls += 1
+        return real_all(imported_mesh)
+
+    monkeypatch.setattr(edge_selection, "all", counted_all)
+
+    result = gmsh_io.from_model(dimension=2, gmsh_model=model)
+
+    assert set(result.edges) == {"BOTTOM", "DIAGONAL"}
+    assert calls == 1
+
+
+def test_physical_point_remains_node_set_only():
+    mesh = _FakeMesh(
+        node_tags=[1, 2, 3],
+        coordinates=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        elements=([2], [[101]], [[1, 2, 3]]),
+        physical_nodes={(0, 7): [1]},
+    )
+    model = _FakeModel(
+        mesh,
+        physical_groups=[(0, 7)],
+        physical_names={(0, 7): "POINT"},
+    )
+
+    result = gmsh_io.from_model(dimension=2, gmsh_model=model)
+
+    assert result.node_sets == {"POINT": NodeSet("POINT", [1])}
+    assert result.edges == {}
+
+
+def test_physical_curve_rejects_boundary_without_fem_owner():
+    model = _physical_curve_model(
+        node_coordinates={
+            1: (0.0, 0.0, 0.0),
+            2: (1.0, 0.0, 0.0),
+            3: (1.0, 1.0, 0.0),
+            4: (0.0, 1.0, 0.0),
+        },
+        top_elements=([3], [[101]], [[1, 2, 3, 4]]),
+        boundary_entities={71: ([1], [[901]], [[1, 3]])},
+        physical_nodes=[1, 3],
+    )
+
+    with pytest.raises(ValueError, match=r"BOUNDARY.*901.*no FEM owner"):
+        gmsh_io.from_model(dimension=2, gmsh_model=model)
+
+
+def test_physical_curve_rejects_internal_edge_with_all_candidate_owners():
+    model = _physical_curve_model(
+        node_coordinates={
+            1: (0.0, 0.0, 0.0),
+            2: (1.0, 0.0, 0.0),
+            3: (0.0, 1.0, 0.0),
+            4: (1.0, 1.0, 0.0),
+        },
+        top_elements=([2], [[101, 205]], [[1, 2, 3, 2, 4, 3]]),
+        boundary_entities={71: ([1], [[901]], [[3, 2]])},
+        physical_nodes=[2, 3],
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        gmsh_io.from_model(dimension=2, gmsh_model=model)
+
+    message = str(exc_info.value)
+    assert "BOUNDARY" in message
+    assert "901" in message
+    assert "multiple FEM owners" in message
+    assert "(101, 1)" in message
+    assert "(205, 2)" in message
+
+
+def test_physical_curve_rejects_partial_retained_node_membership():
+    model = _physical_curve_model(
+        node_coordinates={
+            1: (0.0, 0.0, 0.0),
+            2: (1.0, 0.0, 0.0),
+            3: (0.0, 1.0, 0.0),
+            99: (2.0, 0.0, 0.0),
+        },
+        top_elements=([2], [[101]], [[1, 2, 3]]),
+        boundary_entities={71: ([1], [[901]], [[1, 99]])},
+        physical_nodes=[1, 99],
+    )
+
+    with pytest.raises(ValueError, match=r"BOUNDARY.*901.*partial retained-node"):
+        gmsh_io.from_model(dimension=2, gmsh_model=model)
+
+
+def test_physical_curve_rejects_linear_boundary_for_high_order_owner():
+    model = _physical_curve_model(
+        node_coordinates={
+            1: (0.0, 0.0, 0.0),
+            2: (1.0, 0.0, 0.0),
+            3: (0.0, 1.0, 0.0),
+            4: (0.5, 0.0, 0.0),
+            5: (0.5, 0.5, 0.0),
+            6: (0.0, 0.5, 0.0),
+        },
+        top_elements=([9], [[101]], [[1, 2, 3, 4, 5, 6]]),
+        boundary_entities={71: ([1], [[901]], [[1, 2]])},
+        physical_nodes=[1, 2],
+    )
+
+    with pytest.raises(ValueError, match=r"BOUNDARY.*901.*full node set"):
+        gmsh_io.from_model(dimension=2, gmsh_model=model)
+
+
+@pytest.mark.parametrize(
+    ("boundary_tags", "boundary_node_ids", "message"),
+    [
+        ([901], [1, 1], r"BOUNDARY.*901.*repeated node tags"),
+        ([901, 901], [1, 2, 2, 3], r"BOUNDARY.*duplicate boundary element tag 901"),
+        ([901, 902], [1, 2, 2, 1], r"BOUNDARY.*duplicate FEM owner \(101, 0\)"),
+    ],
+)
+def test_physical_curve_rejects_duplicate_source_or_owner_data(
+    boundary_tags,
+    boundary_node_ids,
+    message,
+):
+    model = _physical_curve_model(
+        node_coordinates={
+            1: (0.0, 0.0, 0.0),
+            2: (1.0, 0.0, 0.0),
+            3: (0.0, 1.0, 0.0),
+        },
+        top_elements=([2], [[101]], [[1, 2, 3]]),
+        boundary_entities={71: ([1], [boundary_tags], [boundary_node_ids])},
+        physical_nodes=[1, 2, 3],
+    )
+
+    with pytest.raises(ValueError, match=message):
+        gmsh_io.from_model(dimension=2, gmsh_model=model)
+
+
+def test_physical_curve_rejects_retained_nodes_without_retained_elements():
+    model = _physical_curve_model(
+        node_coordinates={
+            1: (0.0, 0.0, 0.0),
+            2: (1.0, 0.0, 0.0),
+            3: (0.0, 1.0, 0.0),
+            99: (2.0, 0.0, 0.0),
+            100: (3.0, 0.0, 0.0),
+        },
+        top_elements=([2], [[101]], [[1, 2, 3]]),
+        boundary_entities={71: ([1], [[901]], [[99, 100]])},
+        physical_nodes=[1, 99, 100],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"BOUNDARY.*retained nodes.*no retained boundary elements",
+    ):
+        gmsh_io.from_model(dimension=2, gmsh_model=model)
+
+
+def _three_dimensional_coordinates(node_ids):
+    return {
+        node_id: (
+            float(node_id),
+            float(node_id % 3),
+            float(node_id % 5),
+        )
+        for node_id in node_ids
+    }
+
+
+@pytest.mark.parametrize(
+    (
+        "element_type",
+        "raw_top_node_ids",
+        "boundary_type",
+        "boundary_node_ids",
+        "expected_local_index",
+        "expected_node_ids",
+    ),
+    [
+        (4, [1, 2, 3, 4], 2, [3, 1, 2], 3, (1, 2, 3)),
+        (
+            11,
+            [1, 2, 3, 4, 5, 6, 7, 8, 10, 9],
+            9,
+            [3, 1, 2, 7, 5, 6],
+            3,
+            (1, 2, 3, 5, 6, 7),
+        ),
+        (5, list(range(1, 9)), 3, [2, 3, 4, 1], 0, (1, 4, 3, 2)),
+        (
+            17,
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 17, 10, 18, 11, 19, 20, 13, 16, 14, 15],
+            16,
+            [2, 3, 4, 1, 10, 11, 12, 9],
+            0,
+            (1, 4, 3, 2, 12, 11, 10, 9),
+        ),
+    ],
+    ids=["tet4-triangle3", "tet10-triangle6", "hex8-quad4", "hex20-quad8"],
+)
+def test_physical_surface_maps_to_face_in_fem_owner_order(
+    element_type,
+    raw_top_node_ids,
+    boundary_type,
+    boundary_node_ids,
+    expected_local_index,
+    expected_node_ids,
+):
+    model = _physical_surface_model(
+        node_coordinates=_three_dimensional_coordinates(raw_top_node_ids),
+        top_elements=([element_type], [[101]], [raw_top_node_ids]),
+        boundary_entities={
+            71: ([boundary_type], [[901]], [boundary_node_ids]),
+        },
+        physical_nodes=boundary_node_ids,
+    )
+
+    result = gmsh_io.from_model(dimension=3, gmsh_model=model)
+
+    assert result.node_sets["BOUNDARY"] == NodeSet(
+        "BOUNDARY",
+        sorted(set(boundary_node_ids)),
+    )
+    assert result.surfaces["BOUNDARY"] == Surface(
+        "BOUNDARY",
+        [ElementFace(101, expected_local_index, expected_node_ids)],
+    )
+    assert result.edges == {}
+    assert result.metadata["physical_groups"]["BOUNDARY"] == {
+        "dimension": 2,
+        "tag": 7,
+        "kind": "node_set",
+        "boundary_kind": "surface",
+        "boundary_entry_count": 1,
+    }
+    validate_model(result.to_fem_model("surface_owner"))
+
+
+def test_physical_surface_supports_mixed_triangle_and_quadrilateral_blocks():
+    node_ids = [1, 2, 3, 4, *range(11, 19)]
+    model = _physical_surface_model(
+        node_coordinates=_three_dimensional_coordinates(node_ids),
+        top_elements=(
+            [4, 5],
+            [[205], [101]],
+            [[1, 2, 3, 4], list(range(11, 19))],
+        ),
+        boundary_entities={
+            71: (
+                [2, 3],
+                [[901], [902]],
+                [[3, 1, 2], [12, 13, 14, 11]],
+            ),
+        },
+        physical_nodes=[1, 2, 3, 11, 12, 13, 14],
+    )
+
+    result = gmsh_io.from_model(dimension=3, gmsh_model=model)
+
+    assert result.surfaces["BOUNDARY"].faces == (
+        ElementFace(101, 0, [11, 14, 13, 12]),
+        ElementFace(205, 3, [1, 2, 3]),
+    )
+
+
+def test_multiple_physical_surfaces_scan_fem_face_topology_once(monkeypatch):
+    mesh = _FakeMesh(
+        node_tags=[1, 2, 3, 4],
+        coordinates=[
+            coordinate
+            for node_id in [1, 2, 3, 4]
+            for coordinate in _three_dimensional_coordinates([node_id])[node_id]
+        ],
+        elements=([4], [[101]], [[1, 2, 3, 4]]),
+        entity_elements={
+            (2, 71): ([2], [[901]], [[1, 2, 3]]),
+            (2, 72): ([2], [[902]], [[2, 3, 4]]),
+        },
+        physical_nodes={(2, 7): [1, 2, 3], (2, 8): [2, 3, 4]},
+    )
+    model = _FakeModel(
+        mesh,
+        physical_groups=[(2, 7), (2, 8)],
+        physical_names={(2, 7): "BASE", (2, 8): "SIDE"},
+        entities={(2, 7): [71], (2, 8): [72]},
+    )
+    real_all = face_selection.all
+    calls = 0
+
+    def counted_all(imported_mesh):
+        nonlocal calls
+        calls += 1
+        return real_all(imported_mesh)
+
+    monkeypatch.setattr(face_selection, "all", counted_all)
+
+    result = gmsh_io.from_model(dimension=3, gmsh_model=model)
+
+    assert set(result.surfaces) == {"BASE", "SIDE"}
+    assert calls == 1
+
+
+def test_physical_curve_and_point_in_3d_remain_node_sets_only():
+    coordinates = _three_dimensional_coordinates([1, 2, 3, 4])
+    mesh = _FakeMesh(
+        node_tags=list(coordinates),
+        coordinates=[
+            coordinate
+            for node_id in coordinates
+            for coordinate in coordinates[node_id]
+        ],
+        elements=([4], [[101]], [[1, 2, 3, 4]]),
+        physical_nodes={(1, 7): [1, 2], (0, 8): [1]},
+    )
+    model = _FakeModel(
+        mesh,
+        physical_groups=[(1, 7), (0, 8)],
+        physical_names={(1, 7): "CURVE", (0, 8): "POINT"},
+    )
+
+    result = gmsh_io.from_model(dimension=3, gmsh_model=model)
+
+    assert result.node_sets == {
+        "CURVE": NodeSet("CURVE", [1, 2]),
+        "POINT": NodeSet("POINT", [1]),
+    }
+    assert result.edges == {}
+    assert result.surfaces == {}
+
+
+def test_physical_surface_rejects_triangle_shape_for_hex_owner():
+    model = _physical_surface_model(
+        node_coordinates=_three_dimensional_coordinates(range(1, 9)),
+        top_elements=([5], [[101]], [list(range(1, 9))]),
+        boundary_entities={71: ([2], [[901]], [[1, 2, 3]])},
+        physical_nodes=[1, 2, 3],
+    )
+
+    with pytest.raises(ValueError, match=r"BOUNDARY.*901.*no FEM owner"):
+        gmsh_io.from_model(dimension=3, gmsh_model=model)
+
+
+def test_physical_surface_rejects_internal_face_with_all_candidate_owners():
+    model = _physical_surface_model(
+        node_coordinates=_three_dimensional_coordinates([1, 2, 3, 4, 5]),
+        top_elements=([4], [[101, 205]], [[1, 2, 3, 4, 1, 3, 2, 5]]),
+        boundary_entities={71: ([2], [[901]], [[3, 1, 2]])},
+        physical_nodes=[1, 2, 3],
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        gmsh_io.from_model(dimension=3, gmsh_model=model)
+
+    message = str(exc_info.value)
+    assert "BOUNDARY" in message
+    assert "901" in message
+    assert "multiple FEM owners" in message
+    assert "(101, 3)" in message
+    assert "(205, 3)" in message
+
+
+def test_physical_surface_rejects_partial_high_order_node_membership():
+    raw_top_node_ids = [1, 2, 3, 4, 5, 6, 7, 8, 10, 9]
+    model = _physical_surface_model(
+        node_coordinates=_three_dimensional_coordinates([*raw_top_node_ids, 99]),
+        top_elements=([11], [[101]], [raw_top_node_ids]),
+        boundary_entities={71: ([9], [[901]], [[1, 2, 3, 5, 6, 99]])},
+        physical_nodes=[1, 2, 3, 5, 6, 99],
+    )
+
+    with pytest.raises(ValueError, match=r"BOUNDARY.*901.*partial retained-node"):
+        gmsh_io.from_model(dimension=3, gmsh_model=model)
+
+
+def test_physical_surface_rejects_linear_boundary_for_high_order_owner():
+    raw_top_node_ids = [1, 2, 3, 4, 5, 6, 7, 8, 10, 9]
+    model = _physical_surface_model(
+        node_coordinates=_three_dimensional_coordinates(raw_top_node_ids),
+        top_elements=([11], [[101]], [raw_top_node_ids]),
+        boundary_entities={71: ([2], [[901]], [[1, 2, 3]])},
+        physical_nodes=[1, 2, 3],
+    )
+
+    with pytest.raises(ValueError, match=r"BOUNDARY.*901.*full node set"):
+        gmsh_io.from_model(dimension=3, gmsh_model=model)
+
+
+def test_physical_surface_rejects_unsupported_face_type():
+    model = _physical_surface_model(
+        node_coordinates=_three_dimensional_coordinates(range(1, 10)),
+        top_elements=([5], [[101]], [list(range(1, 9))]),
+        boundary_entities={
+            71: ([10], [[901]], [[1, 2, 3, 4, 5, 6, 7, 8, 9]]),
+        },
+        physical_nodes=list(range(1, 10)),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"BOUNDARY.*unsupported codimension-one Gmsh element type 10",
+    ) as exc_info:
+        gmsh_io.from_model(dimension=3, gmsh_model=model)
+
+    assert "901" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("boundary_blocks", "message"),
+    [
+        (([2], [[901]], []), r"BOUNDARY.*inconsistent boundary element block counts"),
+        (([2], [[901]], [[1, 2]]), r"BOUNDARY.*flattened connectivity.*expected 3"),
+        (([2], [[0]], [[1, 2, 3]]), r"BOUNDARY.*boundary element tags.*positive"),
+        (([2], [[901]], [[1, 2, 0]]), r"BOUNDARY.*boundary node tags.*positive"),
+        (([2], [None], [[1, 2, 3]]), r"BOUNDARY.*malformed boundary element-tag block"),
+        (([2], [[901]], [None]), r"BOUNDARY.*malformed boundary connectivity block"),
+    ],
+)
+def test_physical_surface_rejects_malformed_boundary_blocks(
+    boundary_blocks,
+    message,
+):
+    model = _physical_surface_model(
+        node_coordinates=_three_dimensional_coordinates([1, 2, 3, 4]),
+        top_elements=([4], [[101]], [[1, 2, 3, 4]]),
+        boundary_entities={71: boundary_blocks},
+        physical_nodes=[1, 2, 3],
+    )
+
+    with pytest.raises(ValueError, match=message):
+        gmsh_io.from_model(dimension=3, gmsh_model=model)
+
+
+def test_physical_surface_rejects_boundary_property_mismatch():
+    model = _physical_surface_model(
+        node_coordinates=_three_dimensional_coordinates([1, 2, 3, 4]),
+        top_elements=([4], [[101]], [[1, 2, 3, 4]]),
+        boundary_entities={71: ([2], [[901]], [[1, 2, 3]])},
+        physical_nodes=[1, 2, 3],
+    )
+    model.mesh.properties[2] = ("Triangle 3", 2, 2, 3, [], 3)
+
+    with pytest.raises(
+        ValueError,
+        match=r"BOUNDARY.*properties do not match the adapter contract",
+    ) as exc_info:
+        gmsh_io.from_model(dimension=3, gmsh_model=model)
+
+    assert "901" in str(exc_info.value)
+
+
+def test_physical_surface_rejects_malformed_entity_tags():
+    model = _physical_surface_model(
+        node_coordinates=_three_dimensional_coordinates([1, 2, 3, 4]),
+        top_elements=([4], [[101]], [[1, 2, 3, 4]]),
+        boundary_entities={71: ([2], [[901]], [[1, 2, 3]])},
+        physical_nodes=[1, 2, 3],
+    )
+    model.entities[(2, 7)] = None
+
+    with pytest.raises(ValueError, match=r"BOUNDARY.*entity tags.*malformed"):
+        gmsh_io.from_model(dimension=3, gmsh_model=model)
 
 
 @pytest.mark.parametrize(
@@ -1031,17 +1807,23 @@ def test_from_model_keeps_quadratic_midsides_in_physical_boundary_node_sets():
             0.0,
         ],
         elements=([9], [[501]], [[10, 20, 30, 40, 50, 60]]),
-        physical_nodes={(1, 7): [20, 40, 999]},
+        entity_elements={(1, 71): ([8], [[701]], [[20, 10, 40]])},
+        physical_nodes={(1, 7): [10, 20, 40, 999]},
     )
     model = _FakeModel(
         mesh,
         physical_groups=[(1, 7)],
         physical_names={(1, 7): "BOTTOM"},
+        entities={(1, 7): [71]},
     )
 
     result = gmsh_io.from_model(dimension=2, gmsh_model=model)
 
-    assert result.node_sets["BOTTOM"] == NodeSet("BOTTOM", [20, 40])
+    assert result.node_sets["BOTTOM"] == NodeSet("BOTTOM", [10, 20, 40])
+    assert result.edges["BOTTOM"] == Edge(
+        "BOTTOM",
+        [ElementEdge(501, 0, [10, 40, 20])],
+    )
 
 
 def _physical_group_model():
@@ -1066,6 +1848,7 @@ def _physical_group_model():
         ],
         elements=([2], [[502, 501]], [[10, 30, 40, 10, 20, 30]]),
         entity_elements={
+            (1, 201): ([1], [[701]], [[40, 10]]),
             (2, 101): ([2], [[502, 900]], [[10, 30, 40, 10, 20, 30]]),
             (2, 102): ([2], [[501]], [[10, 20, 30]]),
             (2, 103): ([2], [[999]], [[10, 20, 30]]),
@@ -1087,7 +1870,7 @@ def _physical_group_model():
             (2, 5): "EMPTY_DOMAIN",
             (3, 6): "OUTSIDE_SUBMODEL",
         },
-        entities={(2, 1): [101, 102], (2, 5): [103]},
+        entities={(1, 2): [201], (2, 1): [101, 102], (2, 5): [103]},
     )
 
 
@@ -1106,7 +1889,13 @@ def test_from_model_converts_named_unnamed_and_skipped_physical_groups():
         "dimension": 2,
         "physical_groups": {
             "DOMAIN": {"dimension": 2, "tag": 1, "kind": "element_set"},
-            "LEFT": {"dimension": 1, "tag": 2, "kind": "node_set"},
+            "LEFT": {
+                "dimension": 1,
+                "tag": 2,
+                "kind": "node_set",
+                "boundary_kind": "edge",
+                "boundary_entry_count": 1,
+            },
             "physical_0_3": {"dimension": 0, "tag": 3, "kind": "node_set"},
         },
         "skipped_physical_groups": (
@@ -1152,9 +1941,9 @@ def test_from_model_records_live_gmsh_version_in_metadata(monkeypatch):
         (
             [(1, 1), (0, 2)],
             {(1, 1): "DUPLICATE", (0, 2): "DUPLICATE"},
-            {(1, 1): [1], (0, 2): [2]},
-            {},
-            {},
+            {(1, 1): [1, 2], (0, 2): [2]},
+            {(1, 1): [201]},
+            {(1, 201): ([1], [[301]], [[1, 2]])},
             "duplicate physical-group name 'DUPLICATE' in node-set namespace",
         ),
         (
@@ -1196,23 +1985,32 @@ def test_same_physical_name_is_allowed_once_in_each_set_namespace():
         node_tags=[1, 2, 3],
         coordinates=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
         elements=([2], [[11]], [[1, 2, 3]]),
-        physical_nodes={(1, 1): [2]},
-        entity_elements={(2, 101): ([2], [[11]], [[1, 2, 3]])},
+        physical_nodes={(1, 1): [1, 2]},
+        entity_elements={
+            (1, 201): ([1], [[301]], [[1, 2]]),
+            (2, 101): ([2], [[11]], [[1, 2, 3]]),
+        },
     )
     model = _FakeModel(
         mesh,
         physical_groups=[(1, 1), (2, 2)],
         physical_names={(1, 1): "SHARED", (2, 2): "SHARED"},
-        entities={(2, 2): [101]},
+        entities={(1, 1): [201], (2, 2): [101]},
     )
 
     result = gmsh_io.from_model(dimension=2, gmsh_model=model)
 
-    assert result.node_sets == {"SHARED": NodeSet("SHARED", [2])}
+    assert result.node_sets == {"SHARED": NodeSet("SHARED", [1, 2])}
     assert result.element_sets == {"SHARED": ElementSet("SHARED", [11])}
     assert result.metadata["physical_groups"] == {
         "SHARED": (
-            {"dimension": 1, "tag": 1, "kind": "node_set"},
+            {
+                "dimension": 1,
+                "tag": 1,
+                "kind": "node_set",
+                "boundary_kind": "edge",
+                "boundary_entry_count": 1,
+            },
             {"dimension": 2, "tag": 2, "kind": "element_set"},
         )
     }
@@ -1223,8 +2021,11 @@ def test_cross_namespace_metadata_does_not_overwrite_literal_prefixed_name():
         node_tags=[1, 2, 3],
         coordinates=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
         elements=([2], [[11]], [[1, 2, 3]]),
-        physical_nodes={(1, 1): [1], (0, 2): [2]},
-        entity_elements={(2, 101): ([2], [[11]], [[1, 2, 3]])},
+        physical_nodes={(1, 1): [1, 2], (0, 2): [2]},
+        entity_elements={
+            (1, 201): ([1], [[301]], [[1, 2]]),
+            (2, 101): ([2], [[11]], [[1, 2, 3]]),
+        },
     )
     model = _FakeModel(
         mesh,
@@ -1234,13 +2035,19 @@ def test_cross_namespace_metadata_does_not_overwrite_literal_prefixed_name():
             (0, 2): "SHARED",
             (2, 3): "SHARED",
         },
-        entities={(2, 3): [101]},
+        entities={(1, 1): [201], (2, 3): [101]},
     )
 
     result = gmsh_io.from_model(dimension=2, gmsh_model=model)
 
     assert result.metadata["physical_groups"] == {
-        "node_set:SHARED": {"dimension": 1, "tag": 1, "kind": "node_set"},
+        "node_set:SHARED": {
+            "dimension": 1,
+            "tag": 1,
+            "kind": "node_set",
+            "boundary_kind": "edge",
+            "boundary_entry_count": 1,
+        },
         "SHARED": (
             {"dimension": 0, "tag": 2, "kind": "node_set"},
             {"dimension": 2, "tag": 3, "kind": "element_set"},
@@ -1290,6 +2097,28 @@ def live_gmsh():
             gmsh.option.setNumber(name, value)
         if owns_session:
             gmsh.finalize()
+
+
+@pytest.mark.parametrize(
+    "element_type",
+    sorted(gmsh_io._BOUNDARY_ELEMENT_SPECS),
+)
+def test_real_gmsh_boundary_element_properties_match_adapter_contract(
+    live_gmsh,
+    element_type,
+):
+    spec = gmsh_io._BOUNDARY_ELEMENT_SPECS[element_type]
+
+    assert gmsh_io._reported_element_properties(
+        live_gmsh.model.mesh,
+        element_type,
+    ) == (
+        spec.gmsh_name,
+        spec.dimension,
+        spec.order,
+        spec.node_count,
+        spec.primary_node_count,
+    )
 
 
 @pytest.mark.parametrize(
@@ -1395,6 +2224,15 @@ def _vertical_boundary_tags(gmsh, owner, x):
     return tags
 
 
+def _entity_tags_at_x(gmsh, dimension, x):
+    tags = []
+    for _, tag in gmsh.model.getEntities(dimension):
+        x_min, _, _, x_max, _, _ = gmsh.model.getBoundingBox(dimension, tag)
+        if abs(x_min - x) <= 1e-6 and abs(x_max - x) <= 1e-6:
+            tags.append(tag)
+    return tags
+
+
 def _assert_kernel_accepts_imported_order(mesh):
     for element in mesh.elements:
         element.props.update({"E": 1000.0, "nu": 0.3})
@@ -1449,6 +2287,22 @@ def _assert_edge_midsides_are_geometric_midpoints(mesh, edge_node_indices):
             )
 
 
+def _assembled_resultant(model, step):
+    load_vector = build_load_vector(
+        model.mesh,
+        boundary_for_step(model, step),
+    )
+    return np.asarray(
+        [
+            sum(
+                load_vector[model.mesh.global_dof(node.id, component)]
+                for node in model.mesh.nodes
+            )
+            for component in range(model.mesh.dofs_per_node)
+        ]
+    )
+
+
 def _solve_imported_plate(imported, name):
     model = imported.to_fem_model(name)
     material_name = f"{name}_elastic"
@@ -1457,8 +2311,11 @@ def _solve_imported_plate(imported, name):
     materials.assign(model, material_name, "DOMAIN")
     load_step = steps.static("pull")
     steps.displacement(load_step, "LEFT", components=(1, 2))
-    steps.nodal_load(load_step, "RIGHT", component=1, value=1.0)
+    steps.edge_traction(load_step, "RIGHT", vector=(2.0, 0.0))
     steps.add(model, load_step)
+
+    validate_model(model)
+    np.testing.assert_allclose(_assembled_resultant(model, load_step), (2.0, 0.0))
 
     result = static_linear.solve(model, "pull")
     right_displacements = [
@@ -1500,6 +2357,8 @@ def test_real_gmsh_rectangle_reaches_solver_and_vtk(live_gmsh, tmp_path):
     }
     assert imported.node_sets["LEFT"].node_ids
     assert imported.node_sets["RIGHT"].node_ids
+    assert imported.edges["LEFT"].edges
+    assert imported.edges["RIGHT"].edges
     assert imported.metadata["gmsh_version"] == gmsh.__version__
 
     coordinates = {node.id: (node.x, node.y) for node in imported.mesh.nodes}
@@ -1518,8 +2377,11 @@ def test_real_gmsh_rectangle_reaches_solver_and_vtk(live_gmsh, tmp_path):
     materials.assign(model, "steel", "DOMAIN")
     load_step = steps.static("pull")
     steps.displacement(load_step, "LEFT", components=(1, 2))
-    steps.nodal_load(load_step, "RIGHT", component=1, value=1.0)
+    steps.edge_traction(load_step, "RIGHT", vector=(2.0, 0.0))
     steps.add(model, load_step)
+
+    validate_model(model)
+    np.testing.assert_allclose(_assembled_resultant(model, load_step), (2.0, 0.0))
 
     result = static_linear.solve(model, "pull")
     right_displacements = [
@@ -1537,17 +2399,23 @@ def test_real_gmsh_rectangle_reaches_solver_and_vtk(live_gmsh, tmp_path):
     assert (tmp_path / "gmsh_rectangle.vtk").is_file()
 
 
-def test_real_gmsh_tetrahedral_box_reaches_model_and_vtk_topology(live_gmsh):
+def test_real_gmsh_tetrahedral_box_reaches_surface_load_solver_and_vtk(
+    live_gmsh,
+    tmp_path,
+):
     gmsh = live_gmsh
     volume = gmsh.model.occ.addBox(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
     gmsh.model.occ.synchronize()
     left_faces = _vertical_boundary_tags(gmsh, (3, volume), 0.0)
-    assert left_faces
+    right_faces = _vertical_boundary_tags(gmsh, (3, volume), 1.0)
+    assert left_faces and right_faces
 
     volume_group = gmsh.model.addPhysicalGroup(3, [volume])
     gmsh.model.setPhysicalName(3, volume_group, "VOLUME")
     left_group = gmsh.model.addPhysicalGroup(2, left_faces)
     gmsh.model.setPhysicalName(2, left_group, "LEFT")
+    right_group = gmsh.model.addPhysicalGroup(2, right_faces)
+    gmsh.model.setPhysicalName(2, right_group, "RIGHT")
     gmsh.model.mesh.setSize(gmsh.model.getEntities(0), 0.6)
     gmsh.option.setNumber("Mesh.ElementOrder", 1)
     gmsh.option.setNumber("Mesh.RecombineAll", 0)
@@ -1559,8 +2427,40 @@ def test_real_gmsh_tetrahedral_box_reaches_model_and_vtk_topology(live_gmsh):
     assert {element.type for element in imported.mesh.elements} == {"Tet4"}
     assert imported.element_sets["VOLUME"].element_ids
     assert imported.node_sets["LEFT"].node_ids
-    assert imported.to_fem_model("gmsh_box").mesh is imported.mesh
+    assert imported.node_sets["RIGHT"].node_ids
+    assert imported.surfaces["LEFT"].faces
+    assert imported.surfaces["RIGHT"].faces
     _assert_kernel_accepts_imported_order(imported.mesh)
+
+    model = imported.to_fem_model("gmsh_box")
+    steel = materials.linear_elastic.material("steel", E=1000.0, nu=0.3)
+    materials.add(model, steel)
+    materials.assign(model, "steel", "VOLUME")
+    load_step = steps.static("pull")
+    steps.displacement(load_step, "LEFT", components=(1, 2, 3))
+    steps.surface_traction(load_step, "RIGHT", vector=(1.5, 0.0, 0.0))
+    steps.add(model, load_step)
+
+    validate_model(model)
+    np.testing.assert_allclose(
+        _assembled_resultant(model, load_step),
+        (1.5, 0.0, 0.0),
+        atol=1e-12,
+    )
+    result = static_linear.solve(model, "pull")
+    right_displacements = [
+        result.U[model.mesh.global_dof(node_id, 0)]
+        for node_id in model.node_sets["RIGHT"].node_ids
+    ]
+    assert np.all(np.isfinite(result.U))
+    assert np.mean(right_displacements) > 0.0
+
+    post.vtk.export.from_result(
+        result,
+        output_dir=tmp_path,
+        name="gmsh_box",
+    )
+    assert (tmp_path / "gmsh_box.vtk").is_file()
 
     cells, cell_types, elements = post.vtk.cells.build(imported.mesh)
     assert len(cells) == len(imported.mesh.elements)
@@ -1635,6 +2535,16 @@ def test_real_gmsh_tri6_rectangle_reaches_solver_and_vtk(live_gmsh):
     assert right_midsides
     assert left_midsides <= set(imported.node_sets["LEFT"].node_ids)
     assert right_midsides <= set(imported.node_sets["RIGHT"].node_ids)
+    assert left_midsides <= {
+        node_id
+        for edge in imported.edges["LEFT"].edges
+        for node_id in edge.node_ids
+    }
+    assert right_midsides <= {
+        node_id
+        for edge in imported.edges["RIGHT"].edges
+        for node_id in edge.node_ids
+    }
 
     _solve_imported_plate(imported, "gmsh_tri6_rectangle")
     _, cell_types, _ = post.vtk.cells.build(imported.mesh)
@@ -1684,6 +2594,16 @@ def test_real_gmsh_quad8_rectangle_reaches_solver_and_vtk(live_gmsh):
     right_midsides = _quadratic_boundary_midside_ids(gmsh, [lines[1]])
     assert left_midsides <= set(imported.node_sets["LEFT"].node_ids)
     assert right_midsides <= set(imported.node_sets["RIGHT"].node_ids)
+    assert left_midsides <= {
+        node_id
+        for edge in imported.edges["LEFT"].edges
+        for node_id in edge.node_ids
+    }
+    assert right_midsides <= {
+        node_id
+        for edge in imported.edges["RIGHT"].edges
+        for node_id in edge.node_ids
+    }
 
     _solve_imported_plate(imported, "gmsh_quad8_rectangle")
     _, cell_types, _ = post.vtk.cells.build(imported.mesh)
@@ -1764,12 +2684,15 @@ def test_real_gmsh_hex20_extrusion_reaches_kernel_sets_and_vtk(live_gmsh):
     gmsh.model.geo.synchronize()
     volume = next(tag for dimension, tag in extruded if dimension == 3)
     left_faces = _vertical_boundary_tags(gmsh, (3, volume), 0.0)
-    assert left_faces
+    right_faces = _vertical_boundary_tags(gmsh, (3, volume), 1.0)
+    assert left_faces and right_faces
 
     volume_group = gmsh.model.addPhysicalGroup(3, [volume])
     gmsh.model.setPhysicalName(3, volume_group, "VOLUME")
     left_group = gmsh.model.addPhysicalGroup(2, left_faces)
     gmsh.model.setPhysicalName(2, left_group, "LEFT")
+    right_group = gmsh.model.addPhysicalGroup(2, right_faces)
+    gmsh.model.setPhysicalName(2, right_group, "RIGHT")
     gmsh.option.setNumber("Mesh.ElementOrder", 2)
     gmsh.option.setNumber("Mesh.SecondOrderIncomplete", 1)
     gmsh.option.setNumber("Mesh.RecombineAll", 1)
@@ -1798,10 +2721,75 @@ def test_real_gmsh_hex20_extrusion_reaches_kernel_sets_and_vtk(live_gmsh):
     )
     assert imported.element_sets["VOLUME"].element_ids
     assert imported.node_sets["LEFT"].node_ids
+    assert imported.node_sets["RIGHT"].node_ids
+    assert imported.surfaces["LEFT"].faces
+    assert imported.surfaces["RIGHT"].faces
+    assert all(len(face.node_ids) == 8 for face in imported.surfaces["RIGHT"].faces)
     model = imported.to_fem_model("gmsh_hex20_extrusion")
     assert model.mesh is imported.mesh
     assert model.element_sets["VOLUME"].element_ids
     assert model.node_sets["LEFT"].node_ids
+    load_step = steps.static("traction")
+    steps.surface_traction(load_step, "RIGHT", vector=(2.0, 0.0, 0.0))
+    steps.add(model, load_step)
+    validate_model(model)
+    np.testing.assert_allclose(
+        _assembled_resultant(model, load_step),
+        (2.0, 0.0, 0.0),
+        atol=1e-12,
+    )
     _assert_kernel_accepts_imported_order(imported.mesh)
     _, cell_types, _ = post.vtk.cells.build(imported.mesh)
     assert cell_types == [25] * len(imported.mesh.elements)
+
+
+def test_real_gmsh_internal_curve_reports_all_owners(live_gmsh):
+    gmsh = live_gmsh
+    left = gmsh.model.occ.addRectangle(0.0, 0.0, 0.0, 1.0, 1.0)
+    right = gmsh.model.occ.addRectangle(1.0, 0.0, 0.0, 1.0, 1.0)
+    gmsh.model.occ.fragment([(2, left)], [(2, right)])
+    gmsh.model.occ.synchronize()
+
+    surfaces = [tag for _, tag in gmsh.model.getEntities(2)]
+    interfaces = _entity_tags_at_x(gmsh, 1, 1.0)
+    assert len(surfaces) == 2
+    assert interfaces
+    domain_group = gmsh.model.addPhysicalGroup(2, surfaces)
+    gmsh.model.setPhysicalName(2, domain_group, "DOMAIN")
+    interface_group = gmsh.model.addPhysicalGroup(1, interfaces)
+    gmsh.model.setPhysicalName(1, interface_group, "INTERFACE")
+    gmsh.model.mesh.setSize(gmsh.model.getEntities(0), 0.4)
+    gmsh.model.mesh.generate(2)
+
+    with pytest.raises(ValueError) as exc_info:
+        gmsh_io.from_model(dimension=2)
+
+    message = str(exc_info.value)
+    assert "INTERFACE" in message
+    assert "multiple FEM owners" in message
+
+
+def test_real_gmsh_internal_surface_reports_all_owners(live_gmsh):
+    gmsh = live_gmsh
+    left = gmsh.model.occ.addBox(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+    right = gmsh.model.occ.addBox(1.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+    gmsh.model.occ.fragment([(3, left)], [(3, right)])
+    gmsh.model.occ.synchronize()
+
+    volumes = [tag for _, tag in gmsh.model.getEntities(3)]
+    interfaces = _entity_tags_at_x(gmsh, 2, 1.0)
+    assert len(volumes) == 2
+    assert interfaces
+    volume_group = gmsh.model.addPhysicalGroup(3, volumes)
+    gmsh.model.setPhysicalName(3, volume_group, "VOLUME")
+    interface_group = gmsh.model.addPhysicalGroup(2, interfaces)
+    gmsh.model.setPhysicalName(2, interface_group, "INTERFACE")
+    gmsh.model.mesh.setSize(gmsh.model.getEntities(0), 0.7)
+    gmsh.model.mesh.generate(3)
+
+    with pytest.raises(ValueError) as exc_info:
+        gmsh_io.from_model(dimension=3)
+
+    message = str(exc_info.value)
+    assert "INTERFACE" in message
+    assert "multiple FEM owners" in message

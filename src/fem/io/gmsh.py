@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 import operator
 from typing import Any, Literal
 
 from fem.core import (
+    Edge,
     Element2D,
     Element3D,
+    ElementEdge,
+    ElementFace,
     ElementSet,
     FEMModel,
     Mesh2D,
@@ -16,7 +19,10 @@ from fem.core import (
     Node2D,
     Node3D,
     NodeSet,
+    Surface,
 )
+from fem.selection import edges as edge_selection
+from fem.selection import faces as face_selection
 
 
 @dataclass(frozen=True)
@@ -36,6 +42,35 @@ class _ElementRecord:
     element_id: int
     spec: _ElementSpec
     node_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class _BoundaryElementSpec:
+    gmsh_type: int
+    gmsh_name: str
+    dimension: Literal[1, 2]
+    order: int
+    node_count: int
+    primary_node_count: int
+    shape: Literal["line", "triangle", "quadrilateral"]
+
+
+@dataclass(frozen=True)
+class _BoundaryElementRecord:
+    element_tag: int
+    spec: _BoundaryElementSpec
+    node_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class _BoundaryOwner:
+    elem_id: int
+    local_index: int
+    node_ids: tuple[int, ...]
+
+
+_BoundaryKey = tuple[str, tuple[int, ...]]
+_BoundaryOwnerLookup = dict[_BoundaryKey, list[_BoundaryOwner]]
 
 
 def _validated_element_specs(specs: tuple[_ElementSpec, ...]) -> dict[int, _ElementSpec]:
@@ -131,6 +166,63 @@ _ELEMENT_SPECS = _validated_element_specs(
     )
 )
 
+
+def _validated_boundary_element_specs(
+    specs: tuple[_BoundaryElementSpec, ...],
+) -> dict[int, _BoundaryElementSpec]:
+    validated: dict[int, _BoundaryElementSpec] = {}
+    shape_contract = {
+        "line": (1, 2),
+        "triangle": (2, 3),
+        "quadrilateral": (2, 4),
+    }
+    for spec in specs:
+        if spec.gmsh_type in validated:
+            raise RuntimeError(
+                f"duplicate Gmsh boundary element specification {spec.gmsh_type}"
+            )
+        expected_dimension, expected_primary_nodes = shape_contract[spec.shape]
+        if (
+            spec.dimension != expected_dimension
+            or spec.primary_node_count != expected_primary_nodes
+            or spec.node_count < spec.primary_node_count
+            or spec.order <= 0
+        ):
+            raise RuntimeError(
+                f"invalid Gmsh boundary element specification {spec.gmsh_type}: "
+                f"{spec!r}"
+            )
+        validated[spec.gmsh_type] = spec
+    return validated
+
+
+_BOUNDARY_ELEMENT_SPECS = _validated_boundary_element_specs(
+    (
+        _BoundaryElementSpec(1, "Line 2", 1, 1, 2, 2, "line"),
+        _BoundaryElementSpec(8, "Line 3", 1, 2, 3, 2, "line"),
+        _BoundaryElementSpec(2, "Triangle 3", 2, 1, 3, 3, "triangle"),
+        _BoundaryElementSpec(9, "Triangle 6", 2, 2, 6, 3, "triangle"),
+        _BoundaryElementSpec(
+            3,
+            "Quadrilateral 4",
+            2,
+            1,
+            4,
+            4,
+            "quadrilateral",
+        ),
+        _BoundaryElementSpec(
+            16,
+            "Quadrilateral 8",
+            2,
+            2,
+            8,
+            4,
+            "quadrilateral",
+        ),
+    )
+)
+
 _CLOCKWISE_TO_COUNTERCLOCKWISE = {
     "Tri3": (0, 2, 1),
     "Tri6": (0, 2, 1, 5, 4, 3),
@@ -158,14 +250,18 @@ class GmshImportResult:
     node_sets: dict[str, NodeSet]
     element_sets: dict[str, ElementSet]
     metadata: dict[str, Any]
+    edges: dict[str, Edge] = field(default_factory=dict)
+    surfaces: dict[str, Surface] = field(default_factory=dict)
 
     def to_fem_model(self, name: str | None = None) -> FEMModel:
-        """Return an analysis model without inventing physics or boundaries."""
+        """Return an analysis model without inventing material or load semantics."""
         return FEMModel(
             mesh=self.mesh,
             name=name,
             node_sets=dict(self.node_sets),
             element_sets=dict(self.element_sets),
+            edges=dict(self.edges),
+            surfaces=dict(self.surfaces),
             metadata=deepcopy(self.metadata),
         )
 
@@ -286,9 +382,10 @@ def _from_backend(
     else:
         mesh = Mesh3D(nodes=nodes, elements=elements, dofs_per_node=3)
 
-    node_sets, element_sets, physical_groups, skipped_groups = (
+    node_sets, element_sets, edges, surfaces, physical_groups, skipped_groups = (
         _read_physical_groups(
             gmsh_model,
+            mesh=mesh,
             dimension=dimension,
             retained_node_ids={node.id for node in nodes},
             retained_element_ids={element.id for element in elements},
@@ -308,26 +405,40 @@ def _from_backend(
         node_sets=node_sets,
         element_sets=element_sets,
         metadata=metadata,
+        edges=edges,
+        surfaces=surfaces,
     )
 
 
 def _read_physical_groups(
     gmsh_model: Any,
     *,
+    mesh: Mesh2D | Mesh3D,
     dimension: Literal[2, 3],
     retained_node_ids: set[int],
     retained_element_ids: set[int],
 ) -> tuple[
     dict[str, NodeSet],
     dict[str, ElementSet],
+    dict[str, Edge],
+    dict[str, Surface],
     _PhysicalGroupMetadata,
     tuple[dict[str, Any], ...],
 ]:
     node_sets: dict[str, NodeSet] = {}
     element_sets: dict[str, ElementSet] = {}
+    edges: dict[str, Edge] = {}
+    surfaces: dict[str, Surface] = {}
     metadata_groups: _PhysicalGroupMetadata = {}
     skipped_groups: list[dict[str, Any]] = []
-    seen_names = {"node_set": set(), "element_set": set()}
+    seen_names = {
+        "node_set": set(),
+        "element_set": set(),
+        "edge": set(),
+        "surface": set(),
+    }
+    edge_owner_lookup: _BoundaryOwnerLookup | None = None
+    face_owner_lookup: _BoundaryOwnerLookup | None = None
 
     for raw_group in list(gmsh_model.getPhysicalGroups()):
         try:
@@ -356,6 +467,17 @@ def _read_physical_groups(
             )
         seen_names[kind].add(name)
 
+        boundary_kind = None
+        if group_dimension == dimension - 1:
+            boundary_kind = "edge" if dimension == 2 else "surface"
+        if boundary_kind is not None:
+            if name in seen_names[boundary_kind]:
+                raise ValueError(
+                    f"duplicate physical-group name {name!r} in "
+                    f"{boundary_kind} namespace"
+                )
+            seen_names[boundary_kind].add(name)
+
         record = {
             "dimension": group_dimension,
             "tag": group_tag,
@@ -383,9 +505,66 @@ def _read_physical_groups(
             node_sets[name] = NodeSet(name, member_ids)
         else:
             element_sets[name] = ElementSet(name, member_ids)
+
+        if boundary_kind is not None:
+            boundary_records = _read_boundary_element_records(
+                gmsh_model,
+                group_name=name,
+                group_dimension=group_dimension,
+                group_tag=group_tag,
+            )
+            retained_records = _retained_boundary_element_records(
+                boundary_records,
+                retained_node_ids,
+                group_name=name,
+                group_dimension=group_dimension,
+                group_tag=group_tag,
+            )
+            if not retained_records:
+                context = _physical_group_context(
+                    name,
+                    group_dimension,
+                    group_tag,
+                )
+                raise ValueError(
+                    f"{context} has retained nodes but no retained boundary elements"
+                )
+            if boundary_kind == "edge":
+                if edge_owner_lookup is None:
+                    edge_owner_lookup = _build_edge_owner_lookup(mesh)
+                owner_lookup = edge_owner_lookup
+            else:
+                if face_owner_lookup is None:
+                    face_owner_lookup = _build_face_owner_lookup(mesh)
+                owner_lookup = face_owner_lookup
+            matched_entries = _match_boundary_elements(
+                retained_records,
+                owner_lookup,
+                group_name=name,
+                group_dimension=group_dimension,
+                group_tag=group_tag,
+                boundary_kind=boundary_kind,
+            )
+            if boundary_kind == "edge":
+                edges[name] = Edge(name, matched_entries)
+            else:
+                surfaces[name] = Surface(name, matched_entries)
+            record.update(
+                {
+                    "boundary_kind": boundary_kind,
+                    "boundary_entry_count": len(matched_entries),
+                }
+            )
         _store_physical_group_metadata(metadata_groups, name, record)
 
-    return node_sets, element_sets, metadata_groups, tuple(skipped_groups)
+    return (
+        node_sets,
+        element_sets,
+        edges,
+        surfaces,
+        metadata_groups,
+        tuple(skipped_groups),
+    )
 
 
 def _physical_node_ids(
@@ -409,6 +588,292 @@ def _physical_node_ids(
     return sorted(node_ids.intersection(retained_node_ids))
 
 
+def _physical_group_context(name: str, dimension: int, tag: int) -> str:
+    return f"physical group {name!r} (dimension={dimension}, tag={tag})"
+
+
+def _entity_element_blocks(
+    gmsh_mesh: Any,
+    dimension: int,
+    entity_tag: int,
+    *,
+    block_label: str,
+    context: str | None = None,
+) -> tuple[list[Any], list[Any], list[Any]]:
+    raw_blocks = gmsh_mesh.getElements(dimension, entity_tag)
+    call = f"getElements({dimension}, {entity_tag})"
+    if context is not None:
+        call += f" for {context}"
+    try:
+        raw_types, raw_element_tags, raw_connectivity = raw_blocks
+        element_types = list(raw_types)
+        element_tag_blocks = list(raw_element_tags)
+        connectivity_blocks = list(raw_connectivity)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{call} returned malformed data") from exc
+    if (
+        len(element_tag_blocks) != len(element_types)
+        or len(connectivity_blocks) != len(element_types)
+    ):
+        raise ValueError(
+            f"{call} returned inconsistent {block_label} element block counts"
+        )
+    return element_types, element_tag_blocks, connectivity_blocks
+
+
+def _read_boundary_element_records(
+    gmsh_model: Any,
+    *,
+    group_name: str,
+    group_dimension: int,
+    group_tag: int,
+) -> list[_BoundaryElementRecord]:
+    context = _physical_group_context(group_name, group_dimension, group_tag)
+    records: list[_BoundaryElementRecord] = []
+    seen_element_tags: set[int] = set()
+    raw_entity_tags = gmsh_model.getEntitiesForPhysicalGroup(
+        group_dimension,
+        group_tag,
+    )
+    try:
+        entity_tags = list(raw_entity_tags)
+    except TypeError as exc:
+        raise ValueError(f"{context} entity tags returned malformed data") from exc
+    for raw_entity_tag in entity_tags:
+        entity_tag = _positive_tag(
+            raw_entity_tag,
+            f"{context} entity tags",
+        )
+        element_types, element_tag_blocks, connectivity_blocks = (
+            _entity_element_blocks(
+                gmsh_model.mesh,
+                group_dimension,
+                entity_tag,
+                block_label="boundary",
+                context=context,
+            )
+        )
+        for block_index, (raw_type, raw_tags, raw_nodes) in enumerate(
+            zip(
+                element_types,
+                element_tag_blocks,
+                connectivity_blocks,
+                strict=True,
+            )
+        ):
+            element_type = _integer_value(
+                raw_type,
+                f"{context} boundary element types must be integers",
+            )
+            try:
+                raw_element_tag_values = list(raw_tags)
+            except TypeError as exc:
+                raise ValueError(
+                    f"{context} block {block_index} has a malformed boundary "
+                    "element-tag block"
+                ) from exc
+            element_tags = [
+                _positive_tag(value, f"{context} boundary element tags")
+                for value in raw_element_tag_values
+            ]
+            reported = _reported_element_properties(gmsh_model.mesh, element_type)
+            spec = _BOUNDARY_ELEMENT_SPECS.get(element_type)
+            if spec is None or spec.dimension != group_dimension:
+                (
+                    gmsh_name,
+                    reported_dimension,
+                    order,
+                    node_count,
+                    primary_node_count,
+                ) = reported
+                raise ValueError(
+                    f"{context} entity {entity_tag} boundary element tags "
+                    f"{element_tags!r} use unsupported codimension-one Gmsh "
+                    f"element type {element_type} ({gmsh_name!r}, "
+                    f"dimension={reported_dimension}, order={order}, "
+                    f"nodes={node_count}, primary_nodes={primary_node_count})"
+                )
+            expected = (
+                spec.gmsh_name,
+                spec.dimension,
+                spec.order,
+                spec.node_count,
+                spec.primary_node_count,
+            )
+            if reported != expected:
+                raise ValueError(
+                    f"{context} boundary element tags {element_tags!r} type "
+                    f"{element_type} properties do not match the adapter contract: "
+                    f"reported {reported!r}, expected {expected!r}"
+                )
+
+            try:
+                raw_node_values = list(raw_nodes)
+            except TypeError as exc:
+                raise ValueError(
+                    f"{context} block {block_index} has a malformed boundary "
+                    "connectivity block"
+                ) from exc
+            flat_node_ids = [
+                _positive_tag(value, f"{context} boundary node tags")
+                for value in raw_node_values
+            ]
+            expected_connectivity_count = len(element_tags) * spec.node_count
+            if len(flat_node_ids) != expected_connectivity_count:
+                raise ValueError(
+                    f"{context} boundary block {block_index} type {element_type} "
+                    f"flattened connectivity has length {len(flat_node_ids)}; "
+                    f"expected {expected_connectivity_count} for "
+                    f"{len(element_tags)} elements with {spec.node_count} nodes each"
+                )
+
+            for local_index, element_tag in enumerate(element_tags):
+                if element_tag in seen_element_tags:
+                    raise ValueError(
+                        f"{context} has duplicate boundary element tag {element_tag}"
+                    )
+                seen_element_tags.add(element_tag)
+                start = local_index * spec.node_count
+                node_ids = tuple(
+                    flat_node_ids[start : start + spec.node_count]
+                )
+                if len(set(node_ids)) != len(node_ids):
+                    raise ValueError(
+                        f"{context} Gmsh boundary element {element_tag} type "
+                        f"{element_type} has repeated node tags {node_ids!r}"
+                    )
+                records.append(_BoundaryElementRecord(element_tag, spec, node_ids))
+    return records
+
+
+def _retained_boundary_element_records(
+    records: list[_BoundaryElementRecord],
+    retained_node_ids: set[int],
+    *,
+    group_name: str,
+    group_dimension: int,
+    group_tag: int,
+) -> list[_BoundaryElementRecord]:
+    context = _physical_group_context(group_name, group_dimension, group_tag)
+    retained_records: list[_BoundaryElementRecord] = []
+    for record in records:
+        retained_ids = set(record.node_ids).intersection(retained_node_ids)
+        if not retained_ids:
+            continue
+        if len(retained_ids) != len(record.node_ids):
+            raise ValueError(
+                f"{context} Gmsh boundary element {record.element_tag} type "
+                f"{record.spec.gmsh_type} has partial retained-node membership: "
+                f"retained {sorted(retained_ids)!r} from source "
+                f"{sorted(record.node_ids)!r}"
+            )
+        retained_records.append(record)
+    return retained_records
+
+
+def _build_edge_owner_lookup(mesh: Mesh2D | Mesh3D) -> _BoundaryOwnerLookup:
+    lookup: _BoundaryOwnerLookup = {}
+    for elem_id, local_index, raw_node_ids in edge_selection.all(mesh):
+        node_ids = tuple(int(node_id) for node_id in raw_node_ids)
+        if len(node_ids) < 2:
+            raise ValueError(
+                f"FEM edge owner ({elem_id}, {local_index}) has fewer than two nodes"
+            )
+        key = ("line", tuple(sorted((node_ids[0], node_ids[-1]))))
+        lookup.setdefault(key, []).append(
+            _BoundaryOwner(int(elem_id), int(local_index), node_ids)
+        )
+    return lookup
+
+
+def _build_face_owner_lookup(mesh: Mesh2D | Mesh3D) -> _BoundaryOwnerLookup:
+    lookup: _BoundaryOwnerLookup = {}
+    elements_by_id = {int(element.id): element for element in mesh.elements}
+    face_contract = {
+        "tet4": ("triangle", 3),
+        "tet10": ("triangle", 3),
+        "hex8": ("quadrilateral", 4),
+        "hex20": ("quadrilateral", 4),
+    }
+    for elem_id, local_index, raw_node_ids in face_selection.all(mesh):
+        normalized_elem_id = int(elem_id)
+        element = elements_by_id[normalized_elem_id]
+        shape, corner_count = face_contract[str(element.type).casefold()]
+        node_ids = tuple(int(node_id) for node_id in raw_node_ids)
+        if len(node_ids) < corner_count:
+            raise ValueError(
+                f"FEM face owner ({elem_id}, {local_index}) has fewer than "
+                f"{corner_count} corner nodes"
+            )
+        key = (shape, tuple(sorted(node_ids[:corner_count])))
+        lookup.setdefault(key, []).append(
+            _BoundaryOwner(normalized_elem_id, int(local_index), node_ids)
+        )
+    return lookup
+
+
+def _match_boundary_elements(
+    records: list[_BoundaryElementRecord],
+    owner_lookup: _BoundaryOwnerLookup,
+    *,
+    group_name: str,
+    group_dimension: int,
+    group_tag: int,
+    boundary_kind: Literal["edge", "surface"],
+) -> list[ElementEdge] | list[ElementFace]:
+    context = _physical_group_context(group_name, group_dimension, group_tag)
+    entries: list[ElementEdge] | list[ElementFace] = []
+    seen_owner_pairs: set[tuple[int, int]] = set()
+    for record in records:
+        primary_corner_ids = record.node_ids[: record.spec.primary_node_count]
+        key = (record.spec.shape, tuple(sorted(primary_corner_ids)))
+        candidates = owner_lookup.get(key, [])
+        if not candidates:
+            raise ValueError(
+                f"{context} Gmsh boundary element {record.element_tag} type "
+                f"{record.spec.gmsh_type} has no FEM owner for key {key!r}"
+            )
+        if len(candidates) > 1:
+            candidate_pairs = [
+                (candidate.elem_id, candidate.local_index)
+                for candidate in candidates
+            ]
+            raise ValueError(
+                f"{context} Gmsh boundary element {record.element_tag} type "
+                f"{record.spec.gmsh_type} has multiple FEM owners "
+                f"{candidate_pairs!r}; internal interfaces and nonmanifold "
+                "boundaries are unsupported"
+            )
+
+        owner = candidates[0]
+        if set(record.node_ids) != set(owner.node_ids):
+            raise ValueError(
+                f"{context} Gmsh boundary element {record.element_tag} type "
+                f"{record.spec.gmsh_type} full node set "
+                f"{sorted(record.node_ids)!r} does not match FEM owner "
+                f"({owner.elem_id}, {owner.local_index}) full node set "
+                f"{sorted(owner.node_ids)!r}"
+            )
+        owner_pair = (owner.elem_id, owner.local_index)
+        if owner_pair in seen_owner_pairs:
+            raise ValueError(
+                f"{context} Gmsh boundary element {record.element_tag} type "
+                f"{record.spec.gmsh_type} has duplicate FEM owner "
+                f"{owner_pair!r} match"
+            )
+        seen_owner_pairs.add(owner_pair)
+        if boundary_kind == "edge":
+            entries.append(
+                ElementEdge(owner.elem_id, owner.local_index, owner.node_ids)
+            )
+        else:
+            entries.append(
+                ElementFace(owner.elem_id, owner.local_index, owner.node_ids)
+            )
+    entries.sort(key=lambda entry: (entry.elem_id, entry.local_index))
+    return entries
+
+
 def _physical_element_ids(
     gmsh_model: Any,
     group_dimension: int,
@@ -422,24 +887,12 @@ def _physical_element_ids(
     )
     for raw_entity_tag in list(raw_entity_tags):
         entity_tag = _positive_tag(raw_entity_tag, "physical-group entity tags")
-        raw_blocks = gmsh_model.mesh.getElements(group_dimension, entity_tag)
-        try:
-            raw_types, raw_element_tags, raw_connectivity = raw_blocks
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"getElements({group_dimension}, {entity_tag}) returned malformed data"
-            ) from exc
-        element_types = list(raw_types)
-        element_tag_blocks = list(raw_element_tags)
-        connectivity_blocks = list(raw_connectivity)
-        if (
-            len(element_tag_blocks) != len(element_types)
-            or len(connectivity_blocks) != len(element_types)
-        ):
-            raise ValueError(
-                f"getElements({group_dimension}, {entity_tag}) returned inconsistent "
-                "physical-group element block counts"
-            )
+        _, element_tag_blocks, _ = _entity_element_blocks(
+            gmsh_model.mesh,
+            group_dimension,
+            entity_tag,
+            block_label="physical-group",
+        )
         for raw_ids in element_tag_blocks:
             member_ids.update(
                 _positive_tag(value, "physical-group element tags")
