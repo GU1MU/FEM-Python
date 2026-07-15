@@ -26,6 +26,7 @@ class _ElementSpec:
     dimension: Literal[2, 3]
     order: int
     node_count: int
+    primary_node_count: int
     fem_type: str
     connectivity_permutation: tuple[int, ...]
 
@@ -37,27 +38,109 @@ class _ElementRecord:
     node_ids: tuple[int, ...]
 
 
-_ELEMENT_SPECS = {
-    spec.gmsh_type: spec
-    for spec in (
-        _ElementSpec(2, "Triangle 3", 2, 1, 3, "Tri3", (0, 1, 2)),
-        _ElementSpec(3, "Quadrilateral 4", 2, 1, 4, "Quad4", (0, 1, 2, 3)),
-        _ElementSpec(4, "Tetrahedron 4", 3, 1, 4, "Tet4", (0, 1, 2, 3)),
+def _validated_element_specs(specs: tuple[_ElementSpec, ...]) -> dict[int, _ElementSpec]:
+    validated: dict[int, _ElementSpec] = {}
+    for spec in specs:
+        if spec.gmsh_type in validated:
+            raise RuntimeError(f"duplicate Gmsh element specification {spec.gmsh_type}")
+        if sorted(spec.connectivity_permutation) != list(range(spec.node_count)):
+            raise RuntimeError(
+                f"invalid connectivity permutation for Gmsh element type "
+                f"{spec.gmsh_type}: {spec.connectivity_permutation!r}"
+            )
+        validated[spec.gmsh_type] = spec
+    return validated
+
+
+_ELEMENT_SPECS = _validated_element_specs(
+    (
+        _ElementSpec(2, "Triangle 3", 2, 1, 3, 3, "Tri3", (0, 1, 2)),
+        _ElementSpec(
+            3,
+            "Quadrilateral 4",
+            2,
+            1,
+            4,
+            4,
+            "Quad4",
+            (0, 1, 2, 3),
+        ),
+        _ElementSpec(4, "Tetrahedron 4", 3, 1, 4, 4, "Tet4", (0, 1, 2, 3)),
         _ElementSpec(
             5,
             "Hexahedron 8",
             3,
             1,
             8,
+            8,
             "Hex8",
             (0, 1, 2, 3, 4, 5, 6, 7),
         ),
+        _ElementSpec(9, "Triangle 6", 2, 2, 6, 3, "Tri6", (0, 1, 2, 3, 4, 5)),
+        _ElementSpec(
+            16,
+            "Quadrilateral 8",
+            2,
+            2,
+            8,
+            4,
+            "Quad8",
+            (0, 1, 2, 3, 4, 5, 6, 7),
+        ),
+        _ElementSpec(
+            11,
+            "Tetrahedron 10",
+            3,
+            2,
+            10,
+            4,
+            "Tet10",
+            (0, 1, 2, 3, 4, 5, 6, 7, 9, 8),
+        ),
+        _ElementSpec(
+            17,
+            "Hexahedron 20",
+            3,
+            2,
+            20,
+            8,
+            "Hex20",
+            (
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                11,
+                13,
+                9,
+                16,
+                18,
+                19,
+                17,
+                10,
+                12,
+                14,
+                15,
+            ),
+        ),
     )
-}
+)
 
 _CLOCKWISE_TO_COUNTERCLOCKWISE = {
     "Tri3": (0, 2, 1),
+    "Tri6": (0, 2, 1, 5, 4, 3),
     "Quad4": (0, 3, 2, 1),
+    "Quad8": (0, 3, 2, 1, 7, 6, 5, 4),
+}
+
+_INCOMPLETE_SECOND_ORDER_ALTERNATIVES = {
+    10: ("Quadrilateral 9", "Quad8"),
+    12: ("Hexahedron 27", "Hex20"),
 }
 
 _PhysicalGroupRecord = dict[str, Any]
@@ -414,12 +497,27 @@ def _read_element_records(
         reported = _reported_element_properties(gmsh_mesh, element_type)
         spec = _ELEMENT_SPECS.get(element_type)
         if spec is None:
-            name, reported_dimension, order, node_count = reported
-            raise ValueError(
+            name, reported_dimension, order, node_count, primary_node_count = reported
+            message = (
                 f"unsupported Gmsh element type {element_type} ({name!r}, "
-                f"dimension={reported_dimension}, order={order}, nodes={node_count})"
+                f"dimension={reported_dimension}, order={order}, nodes={node_count}, "
+                f"primary_nodes={primary_node_count})"
             )
-        expected = (spec.gmsh_name, spec.dimension, spec.order, spec.node_count)
+            alternative = _INCOMPLETE_SECOND_ORDER_ALTERNATIVES.get(element_type)
+            if alternative is not None and name == alternative[0]:
+                message += (
+                    f". {name} is unsupported because FEM-Python provides "
+                    f"{alternative[1]}. Generate an incomplete second-order mesh "
+                    f"with Mesh.SecondOrderIncomplete = 1."
+                )
+            raise ValueError(message)
+        expected = (
+            spec.gmsh_name,
+            spec.dimension,
+            spec.order,
+            spec.node_count,
+            spec.primary_node_count,
+        )
         if reported != expected:
             raise ValueError(
                 f"Gmsh element type {element_type} properties do not match the "
@@ -468,11 +566,12 @@ def _read_element_records(
 def _reported_element_properties(
     gmsh_mesh: Any,
     element_type: int,
-) -> tuple[str, int, int, int]:
+) -> tuple[str, int, int, int, int]:
     properties = gmsh_mesh.getElementProperties(element_type)
     try:
         name, dimension, order, node_count = properties[:4]
-    except (TypeError, ValueError) as exc:
+        primary_node_count = properties[5]
+    except (IndexError, TypeError, ValueError) as exc:
         raise ValueError(
             f"getElementProperties({element_type}) returned malformed data"
         ) from exc
@@ -481,6 +580,10 @@ def _reported_element_properties(
         _integer_value(dimension, "reported element dimension must be an integer"),
         _integer_value(order, "reported element order must be an integer"),
         _integer_value(node_count, "reported element node count must be an integer"),
+        _integer_value(
+            primary_node_count,
+            "reported primary node count must be an integer",
+        ),
     )
 
 
@@ -573,7 +676,8 @@ def _build_elements(
     props = {"plane_type": plane_type, "thickness": thickness}
     for record in records:
         node_ids = list(record.node_ids)
-        if _signed_twice_area(node_ids, coordinates) < 0.0:
+        corner_node_ids = node_ids[: record.spec.primary_node_count]
+        if _signed_twice_area(corner_node_ids, coordinates) < 0.0:
             permutation = _CLOCKWISE_TO_COUNTERCLOCKWISE[record.spec.fem_type]
             node_ids = [node_ids[index] for index in permutation]
         elements_2d.append(
