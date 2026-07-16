@@ -58,7 +58,7 @@ def _body_vector_3d(vector: tuple[float, float, float], element_type: str) -> np
     return bvec
 
 
-def line3_geometry(
+def line3d_geometry(
     mesh: Any,
     elem: Any,
     node_lookup: dict[int, Any] | None = None,
@@ -90,13 +90,13 @@ def line3_geometry(
     return length, delta / length
 
 
-def beam3_geometry(
+def beam3d_geometry(
     mesh: Any,
     elem: Any,
     node_lookup: dict[int, Any] | None = None,
 ) -> tuple[float, np.ndarray]:
     """Return Beam2 length and global-to-local right-handed rotation."""
-    length, e_x = line3_geometry(mesh, elem, node_lookup)
+    length, e_x = line3d_geometry(mesh, elem, node_lookup)
     reference = np.array([0.0, 0.0, 1.0])
     projected = reference - float(reference @ e_x) * e_x
     projected_norm = float(np.linalg.norm(projected))
@@ -188,7 +188,7 @@ class Truss2Kernel:
         """Return the 6-by-6 spatial truss stiffness matrix."""
         area, E = _required_float_props(elem, "area", "E")
         _validate_optional_rho(elem)
-        length, direction = line3_geometry(mesh, elem, node_lookup)
+        length, direction = line3d_geometry(mesh, elem, node_lookup)
         block = np.outer(direction, direction)
         return E * area / length * np.block([[block, -block], [-block, block]])
 
@@ -201,7 +201,7 @@ class Truss2Kernel:
     ) -> np.ndarray:
         """Return the consistent spatial truss body-force vector."""
         (area,) = _required_float_props(elem, "area")
-        length, _ = line3_geometry(mesh, elem, node_lookup)
+        length, _ = line3d_geometry(mesh, elem, node_lookup)
         nodal = _body_vector_3d(vector, "Truss2") * (area * length / 2.0)
         return np.tile(nodal, 2)
 
@@ -214,7 +214,7 @@ class Truss2Kernel:
     ) -> tuple[float, float, float]:
         """Return axial strain, axial stress, and equivalent stress."""
         (E,) = _required_float_props(elem, "E")
-        length, direction = line3_geometry(mesh, elem, node_lookup)
+        length, direction = line3d_geometry(mesh, elem, node_lookup)
         ni_id, nj_id = elem.node_ids
         displacement_i = np.asarray(U[mesh.node_dofs(ni_id)], dtype=float)
         displacement_j = np.asarray(U[mesh.node_dofs(nj_id)], dtype=float)
@@ -238,7 +238,7 @@ class Beam2Kernel:
         """Return the transformed 12-by-12 Beam2 stiffness matrix."""
         E, nu, section = _beam_properties(elem)
         _validate_optional_rho(elem)
-        length, rotation = beam3_geometry(mesh, elem, node_lookup)
+        length, rotation = beam3d_geometry(mesh, elem, node_lookup)
         G = E / (2.0 * (1.0 + nu))
         local = _beam2_local_stiffness(
             length,
@@ -261,7 +261,7 @@ class Beam2Kernel:
     ) -> np.ndarray:
         """Return the consistent Beam2 body-force vector."""
         section = parse_beam2_section(elem.props)
-        length, rotation = beam3_geometry(mesh, elem, node_lookup)
+        length, rotation = beam3d_geometry(mesh, elem, node_lookup)
         global_vector = _body_vector_3d(vector, "Beam2")
         local_line_load = section.area * (rotation @ global_vector)
         local_force = _beam2_consistent_line_load(length, local_line_load)
@@ -276,7 +276,7 @@ class Beam2Kernel:
         node_lookup: dict[int, Any] | None = None,
     ) -> np.ndarray:
         """Return the consistent Beam2 force for a constant line load."""
-        length, rotation = beam3_geometry(mesh, elem, node_lookup)
+        length, rotation = beam3d_geometry(mesh, elem, node_lookup)
         local_force = self.local_line_load(
             mesh,
             elem,
@@ -301,7 +301,7 @@ class Beam2Kernel:
                 "line load coordinate_system must be 'global' or 'local', "
                 f"got {coordinate_system!r}"
             )
-        length, rotation = beam3_geometry(mesh, elem, node_lookup)
+        length, rotation = beam3d_geometry(mesh, elem, node_lookup)
         local_vector = (
             rotation @ line_vector
             if coordinate_system == "global"
@@ -319,7 +319,7 @@ class Beam2Kernel:
     ) -> np.ndarray:
         """Return tension-positive (N, My, Mz) at both Beam2 ends."""
         E, nu, section = _beam_properties(elem)
-        length, rotation = beam3_geometry(mesh, elem, node_lookup)
+        length, rotation = beam3d_geometry(mesh, elem, node_lookup)
         G = E / (2.0 * (1.0 + nu))
         local_stiffness = _beam2_local_stiffness(
             length,

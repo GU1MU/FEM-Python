@@ -8,7 +8,7 @@ from fem.core.model import AnalysisStep, FEMModel
 from fem.core.result import ModelResult
 from fem.elements import get_element_kernel
 from fem.elements.beam_section import axial_stress_extrema, parse_beam2_section
-from fem.elements.line import beam3_geometry
+from fem.elements.line import beam3d_geometry
 from fem.post.stress import beam as beam_stress
 
 
@@ -321,7 +321,7 @@ def test_beam2_pure_bending_about_local_y_recovers_section_extrema():
 
 def test_beam2_inclined_and_reversed_elements_preserve_physical_extrema():
     inclined = _beam_mesh(end=(2.0, 3.0, 6.0))
-    _, rotation = beam3_geometry(inclined, inclined.elements[0])
+    _, rotation = beam3d_geometry(inclined, inclined.elements[0])
     local_displacement = np.zeros(12)
     local_displacement[6] = 0.07
     local_displacement[7] = 0.02
@@ -381,7 +381,7 @@ def test_beam2_shared_node_uses_maximum_minimum_envelope_without_averaging():
 def test_beam2_local_axes_are_orthonormal_and_right_handed():
     mesh = _beam_mesh(end=(2.0, 3.0, 6.0))
 
-    length, rotation = beam3_geometry(mesh, mesh.elements[0])
+    length, rotation = beam3d_geometry(mesh, mesh.elements[0])
 
     assert length == pytest.approx(7.0)
     assert rotation @ rotation.T == pytest.approx(np.eye(3), abs=1e-12)
@@ -410,7 +410,7 @@ def test_beam2_automatic_local_frame_for_global_axes(end, expected):
         dofs_per_node=6,
     )
 
-    _, rotation = beam3_geometry(mesh, mesh.elements[0])
+    _, rotation = beam3d_geometry(mesh, mesh.elements[0])
 
     assert rotation == pytest.approx(expected, abs=1e-12)
     assert np.cross(rotation[0], rotation[1]) == pytest.approx(rotation[2], abs=1e-12)
@@ -423,7 +423,7 @@ def test_beam2_automatic_local_frame_uses_y_fallback_near_global_z():
         dofs_per_node=6,
     )
 
-    _, rotation = beam3_geometry(mesh, mesh.elements[0])
+    _, rotation = beam3d_geometry(mesh, mesh.elements[0])
 
     assert rotation[2] == pytest.approx([0.0, 1.0, 0.0], abs=1e-12)
     assert rotation @ rotation.T == pytest.approx(np.eye(3), abs=1e-12)

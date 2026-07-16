@@ -13,7 +13,7 @@ from fem.elements.hexahedron import (
     hex8_gauss_points,
     hex8_shape_funcs_grads,
 )
-from fem.elements.line import beam3_geometry, line3_geometry
+from fem.elements.line import beam3d_geometry, line3d_geometry
 from fem.elements.tetrahedron import (
     TET10_NATURAL_NODE_COORDS,
     tet10_gauss_points,
@@ -190,7 +190,7 @@ def test_inclined_beam_cantilever_matches_euler_bernoulli_tip_response():
     elem = mesh.elements[0]
     kernel = get_element_kernel(elem.type)
     Ke = kernel.stiffness(mesh, elem)
-    L, rotation = beam3_geometry(mesh, elem)
+    L, rotation = beam3d_geometry(mesh, elem)
     E = float(elem.props["E"])
     Izz = parse_beam2_section(elem.props).Izz
     free = mesh.node_dofs(elem.node_ids[1])
@@ -217,7 +217,7 @@ def test_line_element_body_force_preserves_global_resultant(builder):
     elem = mesh.elements[0]
     kernel = get_element_kernel(elem.type)
     vector = np.array([4.0, -5.0, 2.0])
-    length, _ = line3_geometry(mesh, elem)
+    length, _ = line3d_geometry(mesh, elem)
     area = (
         parse_beam2_section(elem.props).area
         if str(elem.type).casefold() == "beam2"
@@ -237,7 +237,7 @@ def test_beam_body_force_preserves_global_moment():
     elem = mesh.elements[0]
     vector = np.array([4.0, -5.0, 2.0])
     fe = get_element_kernel(elem.type).body_force(mesh, elem, tuple(vector))
-    length, _ = line3_geometry(mesh, elem)
+    length, _ = line3d_geometry(mesh, elem)
     area = parse_beam2_section(elem.props).area
     node_lookup = _node_lookup(mesh)
     ni = node_lookup[elem.node_ids[0]]

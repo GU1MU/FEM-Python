@@ -17,7 +17,7 @@ from fem.core.model import (
 from fem.core.result import ModelResult
 from fem.elements import get_element_kernel
 from fem.elements.beam_section import parse_beam2_section
-from fem.elements.line import beam3_geometry
+from fem.elements.line import beam3d_geometry
 from fem.post.stress import beam as beam_stress
 from fem.solvers import static_linear
 
@@ -91,7 +91,7 @@ def test_line_load_three_local_directions_match_consistent_nodal_vector(vector, 
 def test_global_and_equivalent_local_line_loads_match_on_inclined_beam():
     model = _beam_model(inclined=True)
     global_vector = np.array([1.5, -2.0, 0.25])
-    _, rotation = beam3_geometry(model.mesh, model.mesh.elements[0])
+    _, rotation = beam3d_geometry(model.mesh, model.mesh.elements[0])
     local_vector = rotation @ global_vector
     global_step = AnalysisStep(
         "global", line_loads=(LineLoad(10, global_vector, "global"),)
@@ -123,7 +123,7 @@ def test_inclined_global_line_loads_accumulate_in_recovered_stress_envelope():
     model = _beam_model(inclined=True)
     mesh = model.mesh
     elem = mesh.elements[0]
-    length, rotation = beam3_geometry(mesh, elem)
+    length, rotation = beam3d_geometry(mesh, elem)
     first_local = np.array([2.0, 3.0, 4.0])
     second_local = np.array([-1.0, 2.0, -2.0])
     combined_local = first_local + second_local
@@ -224,7 +224,7 @@ def test_inclined_cantilever_solution_recovers_combined_axial_and_biaxial_bendin
     model = _beam_model(inclined=True)
     mesh = model.mesh
     elem = mesh.elements[0]
-    length, rotation = beam3_geometry(mesh, elem)
+    length, rotation = beam3d_geometry(mesh, elem)
     axial_force = 12.0
     force_y = 5.0
     force_z = -3.0
