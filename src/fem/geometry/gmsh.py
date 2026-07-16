@@ -97,6 +97,7 @@ class _State(Enum):
 
 
 _QUERY_STATES = frozenset({_State.BUILDING, _State.LABELED, _State.MESH_FAILED})
+_MESH_CONTROL_STATES = frozenset({_State.BUILDING, _State.LABELED})
 
 
 def _load_gmsh() -> Any:
@@ -798,6 +799,106 @@ class GeometryModel:
         self._state = _State.LABELED
         return reference
 
+    def transfinite_curve(
+        self,
+        curve: EntityRef,
+        *,
+        num_nodes: int,
+    ) -> None:
+        """Set Gmsh's primary-node count, not an element count, on one curve."""
+        operation = "transfinite_curve"
+        self._check_state(operation, _MESH_CONTROL_STATES)
+        node_count = _integer_at_least(num_nodes, "num_nodes", minimum=2)
+        target = self._prepare_mesh_control_target(
+            curve,
+            dimension=1,
+            operation=operation,
+        )
+        self._gmsh.model.mesh.setTransfiniteCurve(target.tag, node_count)
+
+    def transfinite_surface(
+        self,
+        surface: EntityRef,
+        *,
+        corners: Sequence[EntityRef] = (),
+    ) -> None:
+        """Mark one surface as transfinite with optional boundary corners.
+
+        Gmsh remains responsible for topology suitability. Call ``recombine``
+        separately when quadrilateral output is desired.
+        """
+        operation = "transfinite_surface"
+        self._check_state(operation, _MESH_CONTROL_STATES)
+        normalized_corners = self._normalize_mesh_control_corners(
+            corners,
+            allowed_counts=(0, 3, 4),
+            operation=operation,
+        )
+        target = self._prepare_mesh_control_target(
+            surface,
+            dimension=2,
+            operation=operation,
+            related_entities=normalized_corners,
+        )
+        self._assert_mesh_control_corners_on_boundary(
+            target,
+            normalized_corners,
+            operation=operation,
+        )
+        self._gmsh.model.mesh.setTransfiniteSurface(
+            target.tag,
+            cornerTags=[corner.tag for corner in normalized_corners],
+        )
+
+    def transfinite_volume(
+        self,
+        volume: EntityRef,
+        *,
+        corners: Sequence[EntityRef] = (),
+    ) -> None:
+        """Mark one volume as transfinite without configuring its boundary.
+
+        The caller must constrain suitable boundary curves and surfaces; Gmsh
+        remains responsible for rejecting incompatible or unsuitable topology.
+        """
+        operation = "transfinite_volume"
+        self._check_state(operation, _MESH_CONTROL_STATES)
+        normalized_corners = self._normalize_mesh_control_corners(
+            corners,
+            allowed_counts=(0, 6, 8),
+            operation=operation,
+        )
+        target = self._prepare_mesh_control_target(
+            volume,
+            dimension=3,
+            operation=operation,
+            related_entities=normalized_corners,
+        )
+        self._assert_mesh_control_corners_on_boundary(
+            target,
+            normalized_corners,
+            operation=operation,
+        )
+        self._gmsh.model.mesh.setTransfiniteVolume(
+            target.tag,
+            cornerTags=[corner.tag for corner in normalized_corners],
+        )
+
+    def recombine(self, surface: EntityRef) -> None:
+        """Request native Gmsh recombination on one surface.
+
+        The entity-local request retains Gmsh's default angle and does not
+        guarantee an all-quadrilateral mesh for unsuitable topology.
+        """
+        operation = "recombine"
+        self._check_state(operation, _MESH_CONTROL_STATES)
+        target = self._prepare_mesh_control_target(
+            surface,
+            dimension=2,
+            operation=operation,
+        )
+        self._gmsh.model.mesh.setRecombine(2, target.tag)
+
     def generate_mesh(
         self,
         *,
@@ -1114,6 +1215,81 @@ class GeometryModel:
             seen.add(entity)
         return normalized
 
+    def _prepare_mesh_control_target(
+        self,
+        entity: EntityRef,
+        *,
+        dimension: int,
+        operation: str,
+        related_entities: Iterable[EntityRef] = (),
+    ) -> EntityRef:
+        target = self._normalize_entities((entity,), operation=operation)[0]
+        if target.dimension != dimension:
+            raise ValueError(
+                f"{operation} target must be a dimension-{dimension} entity"
+            )
+        if dimension > self.dimension:
+            raise ValueError(
+                f"{operation} target dimension exceeds the facade dimension"
+            )
+        self._activate(operation)
+        self._gmsh.model.occ.synchronize()
+        self._assert_occ_liveness((target, *related_entities), operation)
+        return target
+
+    def _normalize_mesh_control_corners(
+        self,
+        corners: Sequence[EntityRef],
+        *,
+        allowed_counts: tuple[int, ...],
+        operation: str,
+    ) -> tuple[EntityRef, ...]:
+        try:
+            materialized = tuple(corners)
+        except TypeError as exc:
+            raise TypeError(f"{operation} corners must be iterable") from exc
+        if len(materialized) not in allowed_counts:
+            allowed_text = ", ".join(str(count) for count in allowed_counts)
+            raise ValueError(
+                f"{operation} requires {allowed_text} corners, got "
+                f"{len(materialized)}"
+            )
+        if not materialized:
+            return ()
+        normalized = self._normalize_entities(
+            materialized,
+            operation=f"{operation} corners",
+        )
+        if any(corner.dimension != 0 for corner in normalized):
+            raise ValueError(
+                f"{operation} corners must be dimension-zero point references"
+            )
+        return normalized
+
+    def _assert_mesh_control_corners_on_boundary(
+        self,
+        target: EntityRef,
+        corners: tuple[EntityRef, ...],
+        *,
+        operation: str,
+    ) -> None:
+        if not corners:
+            return
+        boundary_keys = self._entity_boundary_closure_keys(
+            (target,),
+            synchronize=False,
+        )
+        missing = [
+            corner
+            for corner in corners
+            if (corner.dimension, corner.tag) not in boundary_keys
+        ]
+        if missing:
+            raise ValueError(
+                f"{operation} corners must belong to the target's recursive "
+                "boundary closure"
+            )
+
     def _assert_occ_liveness(
         self,
         entities: Iterable[EntityRef],
@@ -1135,13 +1311,16 @@ class GeometryModel:
     def _entity_boundary_closure_keys(
         self,
         entities: Iterable[EntityRef],
+        *,
+        synchronize: bool = True,
     ) -> set[tuple[int, int]]:
         keys = {(entity.dimension, entity.tag) for entity in entities}
         frontier = set(keys)
         if not frontier:
             return keys
 
-        self._gmsh.model.occ.synchronize()
+        if synchronize:
+            self._gmsh.model.occ.synchronize()
         while frontier:
             next_frontier: set[tuple[int, int]] = set()
             dimensions = sorted(
@@ -1399,6 +1578,20 @@ def _positive_integer_sequence(values: Sequence[int], label: str) -> tuple[int, 
             raise ValueError(f"{label} values must be positive integers")
         result.append(normalized)
     return tuple(result)
+
+
+def _integer_at_least(value: Any, label: str, *, minimum: int) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be an integer >= {minimum}, got {value!r}")
+    try:
+        normalized = int(operator.index(value))
+    except TypeError as exc:
+        raise ValueError(
+            f"{label} must be an integer >= {minimum}, got {value!r}"
+        ) from exc
+    if normalized < minimum:
+        raise ValueError(f"{label} must be an integer >= {minimum}, got {value!r}")
+    return normalized
 
 
 def _dim_tags(entities: Iterable[EntityRef]) -> list[tuple[int, int]]:

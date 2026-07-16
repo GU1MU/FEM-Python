@@ -283,8 +283,41 @@ class _FakeMesh:
         self._model = model
         self.generate_calls: list[int] = []
         self.calls: list[tuple[Any, ...]] = []
+        self.fail_next: set[str] = set()
         self.fail_generate = False
         self.fail_set_size = False
+
+    def setTransfiniteCurve(self, tag: int, num_nodes: int) -> None:
+        self._record_control("setTransfiniteCurve", tag, num_nodes)
+
+    def setTransfiniteSurface(
+        self,
+        tag: int,
+        arrangement: str = "Left",
+        cornerTags: Sequence[int] = (),
+    ) -> None:
+        self._record_control(
+            "setTransfiniteSurface",
+            tag,
+            arrangement,
+            tuple(cornerTags),
+        )
+
+    def setTransfiniteVolume(
+        self,
+        tag: int,
+        cornerTags: Sequence[int] = (),
+    ) -> None:
+        self._record_control("setTransfiniteVolume", tag, tuple(cornerTags))
+
+    def setRecombine(self, dimension: int, tag: int) -> None:
+        self._record_control("setRecombine", dimension, tag)
+
+    def _record_control(self, operation: str, *args: Any) -> None:
+        self.calls.append((operation, *args, self._model.current))
+        if operation in self.fail_next:
+            self.fail_next.remove(operation)
+            raise RuntimeError(f"fake {operation} failure")
 
     def setSize(
         self,
@@ -1694,6 +1727,628 @@ def test_additional_physical_groups_are_allowed_after_topology_freezes(
     assert [call[4] for call in physical_calls] == ["DOMAIN", "LEFT", "RIGHT"]
 
 
+def test_transfinite_curve_and_recombine_forward_typed_targets_in_both_states(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("controls", dimension=2) as cad:
+        surface = cad.rectangle(0, 0, 1, 1)
+        backend.model._current_data()["entities"].add((1, 7))
+        curve = cad.entity(1, 7)
+
+        assert cad.transfinite_curve(curve, num_nodes=np.int64(5)) is None
+        assert cad.recombine(surface) is None
+        cad.physical("DOMAIN", [surface])
+        assert cad.transfinite_curve(curve, num_nodes=3) is None
+        assert cad.recombine(surface) is None
+        cad.physical("EDGE", [curve])
+
+    assert backend.model.mesh.calls == [
+        ("setTransfiniteCurve", 7, 5, "controls"),
+        ("setRecombine", 2, 1, "controls"),
+        ("setTransfiniteCurve", 7, 3, "controls"),
+        ("setRecombine", 2, 1, "controls"),
+    ]
+    assert backend.option.calls == []
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda cad, surface, curve: cad.transfinite_curve(
+            surface, num_nodes=3
+        ),
+        lambda cad, surface, curve: cad.transfinite_curve(1, num_nodes=3),
+        lambda cad, surface, curve: cad.transfinite_curve(
+            curve, num_nodes=True
+        ),
+        lambda cad, surface, curve: cad.transfinite_curve(curve, num_nodes=1),
+        lambda cad, surface, curve: cad.transfinite_curve(
+            curve, num_nodes=2.5
+        ),
+        lambda cad, surface, curve: cad.recombine(curve),
+        lambda cad, surface, curve: cad.recombine((2, 1)),
+    ],
+)
+def test_invalid_curve_and_recombine_controls_fail_before_backend_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: Any,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("invalid-controls", dimension=2) as cad:
+        surface = cad.rectangle(0, 0, 1, 1)
+        backend.model._current_data()["entities"].add((1, 1))
+        curve = cad.entity(1, 1)
+        synchronize_calls = backend.model.occ.synchronize_calls
+
+        with pytest.raises((TypeError, ValueError)):
+            operation(cad, surface, curve)
+
+        assert backend.model.mesh.calls == []
+        assert backend.model.occ.synchronize_calls == synchronize_calls
+
+
+def test_mesh_controls_reject_cross_model_and_stale_targets_before_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("outer-controls", dimension=2) as outer:
+        outer_surface = outer.rectangle(0, 0, 1, 1)
+        with geometry.model("inner-controls", dimension=2) as inner:
+            inner_surface = inner.rectangle(0, 0, 1, 1)
+            synchronize_calls = backend.model.occ.synchronize_calls
+            with pytest.raises(geometry.EntityOwnershipError):
+                inner.recombine(outer_surface)
+            assert backend.model.occ.synchronize_calls == synchronize_calls
+
+            _ = inner.raw_model
+            with pytest.raises(geometry.StaleEntityError):
+                inner.recombine(inner_surface)
+            assert backend.model.occ.synchronize_calls == synchronize_calls
+
+    assert backend.model.mesh.calls == []
+
+
+def test_native_mesh_control_failure_preserves_state_and_mesh_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+    imported = _FakeImportResult()
+    monkeypatch.setattr(
+        geometry,
+        "gmsh_io",
+        SimpleNamespace(from_model=lambda **kwargs: imported),
+        raising=False,
+    )
+
+    with geometry.model("retry-controls", dimension=2) as cad:
+        surface = cad.rectangle(0, 0, 1, 1)
+        backend.model.mesh.fail_next.add("setRecombine")
+        with pytest.raises(RuntimeError, match="fake setRecombine failure"):
+            cad.recombine(surface)
+
+        cad.physical("DOMAIN", [surface])
+        assert cad.generate_mesh(recombine=False) is imported
+
+
+def test_transfinite_surface_forwards_automatic_and_explicit_corners_in_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("surface-controls", dimension=2) as cad:
+        surface = cad.rectangle(0, 0, 1, 1)
+        backend.model._current_data()["entities"].update(
+            (0, tag) for tag in range(1, 5)
+        )
+        points = tuple(cad.entity(0, tag) for tag in range(1, 5))
+        backend.model.boundary_result = [
+            (0, point.tag) for point in points
+        ]
+
+        assert cad.transfinite_surface(surface) is None
+        assert (
+            cad.transfinite_surface(
+                surface,
+                corners=(points[3], points[1], points[0], points[2]),
+            )
+            is None
+        )
+        cad.physical("DOMAIN", [surface])
+        assert cad.transfinite_surface(surface, corners=points[:3]) is None
+        cad.physical("CORNERS", points)  # References remain live after controls.
+
+    assert backend.model.mesh.calls == [
+        ("setTransfiniteSurface", 1, "Left", (), "surface-controls"),
+        (
+            "setTransfiniteSurface",
+            1,
+            "Left",
+            (4, 2, 1, 3),
+            "surface-controls",
+        ),
+        (
+            "setTransfiniteSurface",
+            1,
+            "Left",
+            (1, 2, 3),
+            "surface-controls",
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "corners",
+    [
+        None,
+        lambda points, curve: points[:2],
+        lambda points, curve: (*points, points[0]),
+        lambda points, curve: (points[0], points[0], points[1]),
+        lambda points, curve: (points[0], points[1], curve),
+    ],
+)
+def test_invalid_surface_corner_shape_fails_before_native_control(
+    monkeypatch: pytest.MonkeyPatch,
+    corners: Any,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("invalid-surface-corners", dimension=2) as cad:
+        surface = cad.rectangle(0, 0, 1, 1)
+        backend.model._current_data()["entities"].update(
+            {(0, 1), (0, 2), (0, 3), (0, 4), (1, 1)}
+        )
+        points = tuple(cad.entity(0, tag) for tag in range(1, 5))
+        curve = cad.entity(1, 1)
+        supplied = corners(points, curve) if callable(corners) else corners
+        synchronize_calls = backend.model.occ.synchronize_calls
+
+        with pytest.raises((TypeError, ValueError)):
+            cad.transfinite_surface(surface, corners=supplied)
+
+        assert backend.model.mesh.calls == []
+        assert backend.model.occ.synchronize_calls == synchronize_calls
+
+
+def test_transfinite_surface_rejects_nonboundary_corner_before_native_control(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("surface-membership", dimension=2) as cad:
+        surface = cad.rectangle(0, 0, 1, 1)
+        backend.model._current_data()["entities"].update(
+            (0, tag) for tag in range(1, 5)
+        )
+        points = tuple(cad.entity(0, tag) for tag in range(1, 5))
+        backend.model.boundary_result = [(0, 1), (0, 2), (0, 3)]
+
+        with pytest.raises(ValueError, match="boundary"):
+            cad.transfinite_surface(
+                surface,
+                corners=(points[0], points[1], points[3]),
+            )
+
+    assert backend.model.mesh.calls == []
+
+
+def test_transfinite_surface_rejects_cross_model_and_stale_corners_pre_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("outer-surface", dimension=2) as outer:
+        backend.model._current_data()["entities"].add((0, 1))
+        foreign = outer.entity(0, 1)
+        with geometry.model("inner-surface", dimension=2) as inner:
+            surface = inner.rectangle(0, 0, 1, 1)
+            backend.model._current_data()["entities"].update(
+                (0, tag) for tag in range(1, 4)
+            )
+            points = tuple(inner.entity(0, tag) for tag in range(1, 4))
+            synchronize_calls = backend.model.occ.synchronize_calls
+
+            with pytest.raises(geometry.EntityOwnershipError):
+                inner.transfinite_surface(
+                    surface,
+                    corners=(points[0], points[1], foreign),
+                )
+            assert backend.model.occ.synchronize_calls == synchronize_calls
+
+            inner._entity_tokens.pop((0, points[2].tag))
+            with pytest.raises(geometry.StaleEntityError):
+                inner.transfinite_surface(surface, corners=points)
+            assert backend.model.occ.synchronize_calls == synchronize_calls
+
+    assert backend.model.mesh.calls == []
+
+
+def test_transfinite_volume_forwards_automatic_six_and_eight_corners_in_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("volume-controls", dimension=3) as cad:
+        volume = cad.box(0, 0, 0, 1, 1, 1)
+        backend.model._current_data()["entities"].update(
+            (0, tag) for tag in range(1, 9)
+        )
+        points = tuple(cad.entity(0, tag) for tag in range(1, 9))
+        backend.model.boundary_result = [
+            (0, point.tag) for point in points
+        ]
+
+        assert cad.transfinite_volume(volume) is None
+        assert (
+            cad.transfinite_volume(
+                volume,
+                corners=(
+                    points[5],
+                    points[2],
+                    points[0],
+                    points[4],
+                    points[1],
+                    points[3],
+                ),
+            )
+            is None
+        )
+        cad.physical("DOMAIN", [volume])
+        assert cad.transfinite_volume(volume, corners=tuple(reversed(points))) is None
+
+    assert backend.model.mesh.calls == [
+        ("setTransfiniteVolume", 1, (), "volume-controls"),
+        ("setTransfiniteVolume", 1, (6, 3, 1, 5, 2, 4), "volume-controls"),
+        ("setTransfiniteVolume", 1, (8, 7, 6, 5, 4, 3, 2, 1), "volume-controls"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "corners",
+    [
+        None,
+        lambda points, surface: points[:5],
+        lambda points, surface: points[:7],
+        lambda points, surface: (*points, points[0]),
+        lambda points, surface: (*points[:5], points[0]),
+        lambda points, surface: (*points[:5], surface),
+    ],
+)
+def test_invalid_volume_corner_shape_fails_before_native_control(
+    monkeypatch: pytest.MonkeyPatch,
+    corners: Any,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("invalid-volume-corners", dimension=3) as cad:
+        volume = cad.box(0, 0, 0, 1, 1, 1)
+        surface = cad.rectangle(0, 0, 1, 1)
+        backend.model._current_data()["entities"].update(
+            (0, tag) for tag in range(1, 9)
+        )
+        points = tuple(cad.entity(0, tag) for tag in range(1, 9))
+        supplied = corners(points, surface) if callable(corners) else corners
+        synchronize_calls = backend.model.occ.synchronize_calls
+
+        with pytest.raises((TypeError, ValueError)):
+            cad.transfinite_volume(volume, corners=supplied)
+
+        assert backend.model.mesh.calls == []
+        assert backend.model.occ.synchronize_calls == synchronize_calls
+
+
+def test_transfinite_volume_requires_3d_facade_and_recursive_boundary_corners(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("two-dimensional-volume", dimension=2) as cad:
+        backend.model._current_data()["entities"].add((3, 1))
+        raw_volume = cad.entity(3, 1)
+        synchronize_calls = backend.model.occ.synchronize_calls
+        with pytest.raises(ValueError, match="facade dimension"):
+            cad.transfinite_volume(raw_volume)
+        assert backend.model.occ.synchronize_calls == synchronize_calls
+
+    with geometry.model("volume-membership", dimension=3) as cad:
+        volume = cad.box(0, 0, 0, 1, 1, 1)
+        backend.model._current_data()["entities"].update(
+            (0, tag) for tag in range(1, 9)
+        )
+        points = tuple(cad.entity(0, tag) for tag in range(1, 9))
+        backend.model.boundary_result = [(0, tag) for tag in range(1, 8)]
+
+        with pytest.raises(ValueError, match="boundary"):
+            cad.transfinite_volume(volume, corners=points)
+
+    assert backend.model.mesh.calls == []
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda cad: cad.transfinite_curve(None, num_nodes=3),
+        lambda cad: cad.transfinite_surface(None),
+        lambda cad: cad.transfinite_volume(None),
+        lambda cad: cad.recombine(None),
+    ],
+)
+def test_mesh_controls_reject_new_and_closed_states_contextually(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: Any,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+    cad = geometry.GeometryModel("control-states", dimension=3)
+
+    with pytest.raises(geometry.GeometryStateError, match="NEW"):
+        operation(cad)
+    with cad:
+        pass
+    with pytest.raises(geometry.GeometryStateError, match="CLOSED"):
+        operation(cad)
+
+
+def test_mesh_controls_reject_meshed_and_mesh_failed_states_contextually(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+    imported = _FakeImportResult()
+    monkeypatch.setattr(
+        geometry,
+        "gmsh_io",
+        SimpleNamespace(from_model=lambda **kwargs: imported),
+        raising=False,
+    )
+    operations = (
+        lambda cad: cad.transfinite_curve(None, num_nodes=3),
+        lambda cad: cad.transfinite_surface(None),
+        lambda cad: cad.transfinite_volume(None),
+        lambda cad: cad.recombine(None),
+    )
+
+    with geometry.model("meshed-controls", dimension=3) as cad:
+        cad.box(0, 0, 0, 1, 1, 1)
+        cad.generate_mesh()
+        for operation in operations:
+            with pytest.raises(geometry.GeometryStateError, match="MESHED"):
+                operation(cad)
+
+    with geometry.model("failed-controls", dimension=3) as cad:
+        cad.box(0, 0, 0, 1, 1, 1)
+        backend.model.mesh.fail_generate = True
+        with pytest.raises(RuntimeError, match="fake mesh failure"):
+            cad.generate_mesh()
+        for operation in operations:
+            with pytest.raises(geometry.GeometryStateError, match="MESH_FAILED"):
+                operation(cad)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda cad, curve, surface, volume: cad.transfinite_curve(
+            surface, num_nodes=3
+        ),
+        lambda cad, curve, surface, volume: cad.transfinite_surface(curve),
+        lambda cad, curve, surface, volume: cad.transfinite_surface(2),
+        lambda cad, curve, surface, volume: cad.transfinite_volume(surface),
+        lambda cad, curve, surface, volume: cad.transfinite_volume((3, 1)),
+        lambda cad, curve, surface, volume: cad.recombine(volume),
+    ],
+)
+def test_every_mesh_control_rejects_invalid_target_before_backend_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: Any,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("invalid-control-targets", dimension=3) as cad:
+        volume = cad.box(0, 0, 0, 1, 1, 1)
+        surface = cad.rectangle(2, 0, 1, 1)
+        backend.model._current_data()["entities"].add((1, 1))
+        curve = cad.entity(1, 1)
+        synchronize_calls = backend.model.occ.synchronize_calls
+
+        with pytest.raises((TypeError, ValueError)):
+            operation(cad, curve, surface, volume)
+
+        assert backend.model.mesh.calls == []
+        assert backend.model.occ.synchronize_calls == synchronize_calls
+
+
+@pytest.mark.parametrize(
+    ("dimension", "operation"),
+    [
+        (1, lambda cad, target: cad.transfinite_curve(target, num_nodes=3)),
+        (2, lambda cad, target: cad.transfinite_surface(target)),
+        (3, lambda cad, target: cad.transfinite_volume(target)),
+        (2, lambda cad, target: cad.recombine(target)),
+    ],
+)
+def test_every_mesh_control_rejects_foreign_and_stale_targets_pre_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    dimension: int,
+    operation: Any,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("outer-control-target", dimension=3) as outer:
+        backend.model._current_data()["entities"].add((dimension, 9))
+        foreign = outer.entity(dimension, 9)
+        with geometry.model("inner-control-target", dimension=3) as inner:
+            backend.model._current_data()["entities"].add((dimension, 9))
+            local = inner.entity(dimension, 9)
+            synchronize_calls = backend.model.occ.synchronize_calls
+
+            with pytest.raises(geometry.EntityOwnershipError):
+                operation(inner, foreign)
+            assert backend.model.occ.synchronize_calls == synchronize_calls
+
+            inner._entity_tokens.pop((dimension, 9))
+            with pytest.raises(geometry.StaleEntityError):
+                operation(inner, local)
+            assert backend.model.occ.synchronize_calls == synchronize_calls
+
+    assert backend.model.mesh.calls == []
+
+
+def test_transfinite_volume_rejects_foreign_and_stale_corner_tokens_pre_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("outer-volume-corner", dimension=3) as outer:
+        backend.model._current_data()["entities"].add((0, 1))
+        foreign = outer.entity(0, 1)
+        with geometry.model("inner-volume-corner", dimension=3) as inner:
+            volume = inner.box(0, 0, 0, 1, 1, 1)
+            backend.model._current_data()["entities"].update(
+                (0, tag) for tag in range(1, 7)
+            )
+            points = tuple(inner.entity(0, tag) for tag in range(1, 7))
+            synchronize_calls = backend.model.occ.synchronize_calls
+
+            with pytest.raises(geometry.EntityOwnershipError):
+                inner.transfinite_volume(
+                    volume,
+                    corners=(*points[:5], foreign),
+                )
+            assert backend.model.occ.synchronize_calls == synchronize_calls
+
+            inner._entity_tokens.pop((0, points[5].tag))
+            with pytest.raises(geometry.StaleEntityError):
+                inner.transfinite_volume(volume, corners=points)
+            assert backend.model.occ.synchronize_calls == synchronize_calls
+
+    assert backend.model.mesh.calls == []
+
+
+@pytest.mark.parametrize(
+    ("native_operation", "target_name", "operation"),
+    [
+        (
+            "setTransfiniteCurve",
+            "curve",
+            lambda cad, target: cad.transfinite_curve(target, num_nodes=3),
+        ),
+        (
+            "setTransfiniteSurface",
+            "surface",
+            lambda cad, target: cad.transfinite_surface(target),
+        ),
+        (
+            "setTransfiniteVolume",
+            "volume",
+            lambda cad, target: cad.transfinite_volume(target),
+        ),
+        ("setRecombine", "surface", lambda cad, target: cad.recombine(target)),
+    ],
+)
+def test_native_control_failures_preserve_exception_state_and_generation_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+    native_operation: str,
+    target_name: str,
+    operation: Any,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+    imported = _FakeImportResult()
+    monkeypatch.setattr(
+        geometry,
+        "gmsh_io",
+        SimpleNamespace(from_model=lambda **kwargs: imported),
+        raising=False,
+    )
+
+    with geometry.model(f"failed-{native_operation}", dimension=3) as cad:
+        targets = {
+            "volume": cad.box(0, 0, 0, 1, 1, 1),
+            "surface": cad.rectangle(2, 0, 1, 1),
+        }
+        backend.model._current_data()["entities"].add((1, 1))
+        targets["curve"] = cad.entity(1, 1)
+        target = targets[target_name]
+        backend.model.mesh.fail_next.add(native_operation)
+
+        with pytest.raises(RuntimeError, match=f"fake {native_operation} failure"):
+            operation(cad, target)
+
+        cad.physical("TARGET", [target])
+        assert cad.generate_mesh(recombine=False) is imported
+
+
+def test_mesh_controls_reactivate_owned_model_and_stay_nested_model_local(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh(
+        initialized=True,
+        names=("external",),
+        current="external",
+    )
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("outer-mesh-controls", dimension=3) as outer:
+        outer_volume = outer.box(0, 0, 0, 1, 1, 1)
+        outer_surface = outer.rectangle(2, 0, 1, 1)
+        backend.model._current_data()["entities"].add((1, 1))
+        outer_curve = outer.entity(1, 1)
+        outer_operations = (
+            lambda: outer.transfinite_curve(outer_curve, num_nodes=3),
+            lambda: outer.transfinite_surface(outer_surface),
+            lambda: outer.transfinite_volume(outer_volume),
+            lambda: outer.recombine(outer_surface),
+        )
+        for operation in outer_operations:
+            backend.model.setCurrent("external")
+            operation()
+
+        with geometry.model("inner-mesh-controls", dimension=3) as inner:
+            inner_volume = inner.box(0, 0, 0, 1, 1, 1)
+            inner.transfinite_volume(inner_volume)
+
+        outer.transfinite_volume(outer_volume)
+
+    control_calls = [
+        call
+        for call in backend.model.mesh.calls
+        if call[0]
+        in {
+            "setTransfiniteCurve",
+            "setTransfiniteSurface",
+            "setTransfiniteVolume",
+            "setRecombine",
+        }
+    ]
+    assert [call[-1] for call in control_calls] == [
+        "outer-mesh-controls",
+        "outer-mesh-controls",
+        "outer-mesh-controls",
+        "outer-mesh-controls",
+        "inner-mesh-controls",
+        "outer-mesh-controls",
+    ]
+    assert backend.model.current == "external"
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [
@@ -2606,29 +3261,88 @@ def test_real_size_control_overrides_and_restores_external_point_size_option(
     assert fine.mesh.num_elements > coarse.mesh.num_elements
 
 
+def test_real_transfinite_line_creates_exact_truss2_mesh(real_gmsh: Any) -> None:
+    with geometry.model("facade_transfinite_line", dimension=1) as cad:
+        start = cad.point(0.0, 0.0, 0.0)
+        end = cad.point(2.0, 0.0, 0.0)
+        member = cad.line(start, end)
+        cad.physical("MEMBERS", [member])
+        cad.physical("ENDS", [start, end])
+        cad.transfinite_curve(member, num_nodes=5)
+        imported = cad.generate_mesh(line_element_type="Truss2")
+
+    assert isinstance(imported.mesh, Mesh3D)
+    assert imported.mesh.num_nodes == 5
+    assert imported.mesh.num_elements == 4
+    assert {element.type for element in imported.mesh.elements} == {"Truss2"}
+    assert len(imported.element_sets["MEMBERS"].element_ids) == 4
+    assert len(imported.node_sets["ENDS"].node_ids) == 2
+    _assert_vtk_cell_type(imported.mesh, 3)
+
+
 def test_real_facade_structured_rectangle_creates_quad8(real_gmsh: Any) -> None:
     with geometry.model("facade_quad8", dimension=2) as cad:
         surface = cad.rectangle(0.0, 0.0, 2.0, 1.0)
         curves = cad.boundary([surface])
-        surface_tag = surface.tag
-        curve_tags = tuple(curve.tag for curve in curves)
+        for curve in curves:
+            cad.transfinite_curve(curve, num_nodes=3)
+        cad.transfinite_surface(surface)
+        cad.recombine(surface)
 
-        raw_model = cad.raw_model
-        raw_model.occ.synchronize()
-        for curve_tag in curve_tags:
-            raw_model.mesh.setTransfiniteCurve(curve_tag, 3)
-        raw_model.mesh.setTransfiniteSurface(surface_tag)
-        raw_model.mesh.setRecombine(2, surface_tag)
-
-        surface = cad.entity(2, surface_tag)
+        left = cad.select(curves, x=0.0)
+        assert len(left) == 1
         cad.physical("DOMAIN", [surface])
-        imported = cad.generate_mesh(order=2, recombine=True)
+        cad.physical("LEFT", left)
+        imported = cad.generate_mesh(order=2, recombine=False)
         _assert_positive_top_dimensional_jacobians(real_gmsh, 2)
 
     assert isinstance(imported.mesh, Mesh2D)
+    assert imported.mesh.num_elements == 4
     assert {element.type for element in imported.mesh.elements} == {"Quad8"}
     assert all(len(element.node_ids) == 8 for element in imported.mesh.elements)
+    assert len(imported.element_sets["DOMAIN"].element_ids) == 4
+    assert imported.node_sets["LEFT"].node_ids
+    assert imported.edges["LEFT"].edges
     _assert_vtk_cell_type(imported.mesh, 23)
+
+
+def test_real_entity_recombine_leaves_unselected_surface_triangular(
+    real_gmsh: Any,
+) -> None:
+    real_gmsh.option.setNumber("Mesh.RecombineAll", 1.0)
+    with geometry.model("facade_selective_recombine", dimension=2) as cad:
+        structured = cad.rectangle(0.0, 0.0, 1.0, 1.0)
+        unselected = cad.rectangle(2.0, 0.0, 1.0, 1.0)
+        structured_curves = cad.boundary([structured])
+        for curve in structured_curves:
+            cad.transfinite_curve(curve, num_nodes=3)
+        cad.transfinite_surface(structured)
+        cad.recombine(structured)
+
+        structured_left = cad.select(structured_curves, x=0.0)
+        assert len(structured_left) == 1
+        cad.physical("STRUCTURED", [structured])
+        cad.physical("UNSELECTED", [unselected])
+        cad.physical("STRUCTURED_LEFT", structured_left)
+        imported = cad.generate_mesh(size=0.3, recombine=False)
+        assert real_gmsh.option.getNumber("Mesh.RecombineAll") == 1.0
+
+    elements_by_id = {
+        element.id: element for element in imported.mesh.elements
+    }
+    structured_elements = [
+        elements_by_id[element_id]
+        for element_id in imported.element_sets["STRUCTURED"].element_ids
+    ]
+    unselected_elements = [
+        elements_by_id[element_id]
+        for element_id in imported.element_sets["UNSELECTED"].element_ids
+    ]
+    assert len(structured_elements) == 4
+    assert {element.type for element in structured_elements} == {"Quad4"}
+    assert unselected_elements
+    assert {element.type for element in unselected_elements} == {"Tri3"}
+    assert imported.edges["STRUCTURED_LEFT"].edges
 
 
 def test_real_facade_box_creates_tet10_and_named_surface(real_gmsh: Any) -> None:
@@ -2648,6 +3362,40 @@ def test_real_facade_box_creates_tet10_and_named_surface(real_gmsh: Any) -> None
     assert imported.node_sets["LEFT"].node_ids
     assert imported.surfaces["LEFT"].faces
     _assert_vtk_cell_type(imported.mesh, 24)
+
+
+def test_real_facade_transfinite_box_creates_exact_hex20_mesh(
+    real_gmsh: Any,
+) -> None:
+    with geometry.model("facade_transfinite_hex20", dimension=3) as cad:
+        volume = cad.box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+        faces = cad.boundary([volume])
+        edges = cad.boundary(faces, combined=False)
+        assert len(faces) == 6
+        assert len(edges) == 12
+
+        for edge in edges:
+            cad.transfinite_curve(edge, num_nodes=3)
+        for face in faces:
+            cad.transfinite_surface(face)
+            cad.recombine(face)
+        cad.transfinite_volume(volume)
+
+        left = cad.select(faces, x=0.0)
+        assert len(left) == 1
+        cad.physical("VOLUME", [volume])
+        cad.physical("LEFT", left)
+        imported = cad.generate_mesh(order=2, recombine=False)
+        _assert_positive_top_dimensional_jacobians(real_gmsh, 3)
+
+    assert isinstance(imported.mesh, Mesh3D)
+    assert imported.mesh.num_elements == 8
+    assert {element.type for element in imported.mesh.elements} == {"Hex20"}
+    assert all(len(element.node_ids) == 20 for element in imported.mesh.elements)
+    assert len(imported.element_sets["VOLUME"].element_ids) == 8
+    assert imported.node_sets["LEFT"].node_ids
+    assert imported.surfaces["LEFT"].faces
+    _assert_vtk_cell_type(imported.mesh, 25)
 
 
 def test_real_facade_structured_extrusion_creates_hex20(real_gmsh: Any) -> None:
