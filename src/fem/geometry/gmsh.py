@@ -116,7 +116,7 @@ class GeometryModel:
     supports same-thread nested contexts but is not thread-safe.
     """
 
-    def __init__(self, name: str, *, dimension: Literal[2, 3]) -> None:
+    def __init__(self, name: str, *, dimension: Literal[1, 2, 3]) -> None:
         self._name = name
         self._dimension = _validate_mesh_dimension(dimension)
         self._state = _State.NEW
@@ -137,7 +137,7 @@ class GeometryModel:
         return self._name
 
     @property
-    def dimension(self) -> Literal[2, 3]:
+    def dimension(self) -> Literal[1, 2, 3]:
         """Return the immutable topological mesh dimension."""
         return self._dimension
 
@@ -261,6 +261,44 @@ class GeometryModel:
             )
         )
 
+    def point(
+        self,
+        x: float,
+        y: float,
+        z: float = 0.0,
+    ) -> EntityRef:
+        """Create an OCC point in a one-dimensional facade."""
+        operation = "point"
+        self._check_state(operation, frozenset({_State.BUILDING}))
+        if self.dimension != 1:
+            raise ValueError("point requires a one-dimensional geometry model")
+        coordinates = (
+            _finite_float(x, "x"),
+            _finite_float(y, "y"),
+            _finite_float(z, "z"),
+        )
+        self._activate(operation)
+        tag = self._gmsh.model.occ.addPoint(*coordinates)
+        return self._wrap_entity((0, tag))
+
+    def line(
+        self,
+        start: EntityRef,
+        end: EntityRef,
+    ) -> EntityRef:
+        """Create a straight OCC line between two facade-owned points."""
+        operation = "line"
+        self._check_state(operation, frozenset({_State.BUILDING}))
+        if self.dimension != 1:
+            raise ValueError("line requires a one-dimensional geometry model")
+        endpoints = self._normalize_entities((start, end), operation=operation)
+        if any(endpoint.dimension != 0 for endpoint in endpoints):
+            raise ValueError("line endpoints must be dimension-zero point references")
+        self._activate(operation)
+        self._assert_occ_liveness(endpoints, operation)
+        tag = self._gmsh.model.occ.addLine(endpoints[0].tag, endpoints[1].tag)
+        return self._wrap_entity((1, tag))
+
     def rectangle(
         self,
         x: float,
@@ -273,6 +311,10 @@ class GeometryModel:
     ) -> EntityRef:
         """Create a rectangular OCC surface."""
         self._check_state("rectangle", frozenset({_State.BUILDING}))
+        if self.dimension == 1:
+            raise ValueError(
+                "rectangle requires a two- or three-dimensional geometry model"
+            )
         x_value = _finite_float(x, "x")
         y_value = _finite_float(y, "y")
         z_value = _finite_float(z, "z")
@@ -308,6 +350,8 @@ class GeometryModel:
     ) -> EntityRef:
         """Create an elliptical or circular OCC disk surface."""
         self._check_state("disk", frozenset({_State.BUILDING}))
+        if self.dimension == 1:
+            raise ValueError("disk requires a two- or three-dimensional geometry model")
         x_value = _finite_float(x, "x")
         y_value = _finite_float(y, "y")
         z_value = _finite_float(z, "z")
@@ -538,6 +582,8 @@ class GeometryModel:
         """Extrude OCC entities with optional structured layer controls."""
         operation = "extrude"
         self._check_state(operation, frozenset({_State.BUILDING}))
+        if self.dimension == 1:
+            raise ValueError("extrude is unavailable in a one-dimensional geometry model")
         normalized = self._normalize_entities(entities, operation=operation)
         dimensions = {entity.dimension for entity in normalized}
         if len(dimensions) != 1:
@@ -758,6 +804,7 @@ class GeometryModel:
         size: float | None = None,
         order: Literal[1, 2] = 1,
         recombine: bool = False,
+        line_element_type: Literal["Truss2", "Beam2"] | None = None,
         plane_type: Literal["stress", "strain"] = "stress",
         thickness: float = 1.0,
         z_tolerance: float = 1.0e-10,
@@ -768,6 +815,7 @@ class GeometryModel:
             size=size,
             order=order,
             recombine=recombine,
+            line_element_type=line_element_type,
             plane_type=plane_type,
             thickness=thickness,
             z_tolerance=z_tolerance,
@@ -782,6 +830,7 @@ class GeometryModel:
         size: float | None = None,
         order: Literal[1, 2] = 1,
         recombine: bool = False,
+        line_element_type: Literal["Truss2", "Beam2"] | None = None,
         plane_type: Literal["stress", "strain"] = "stress",
         thickness: float = 1.0,
         z_tolerance: float = 1.0e-10,
@@ -792,6 +841,7 @@ class GeometryModel:
             size=size,
             order=order,
             recombine=recombine,
+            line_element_type=line_element_type,
             plane_type=plane_type,
             thickness=thickness,
             z_tolerance=z_tolerance,
@@ -814,6 +864,7 @@ class GeometryModel:
         size: float | None,
         order: Literal[1, 2],
         recombine: bool,
+        line_element_type: Literal["Truss2", "Beam2"] | None,
         plane_type: Literal["stress", "strain"],
         thickness: float,
         z_tolerance: float,
@@ -829,6 +880,14 @@ class GeometryModel:
             raise ValueError(f"order must be integer 1 or 2, got {order!r}")
         if not isinstance(recombine, bool):
             raise TypeError(f"recombine must be a boolean, got {recombine!r}")
+        normalized_line_element_type = _validate_line_element_type(
+            self.dimension,
+            line_element_type,
+        )
+        if self.dimension == 1 and order != 1:
+            raise ValueError("order must be 1 for a one-dimensional geometry model")
+        if self.dimension == 1 and recombine:
+            raise ValueError("recombine must be False for a one-dimensional geometry model")
         if not isinstance(plane_type, str) or plane_type.lower() not in {
             "stress",
             "strain",
@@ -876,6 +935,7 @@ class GeometryModel:
             imported = gmsh_io.from_model(
                 dimension=self.dimension,
                 gmsh_model=self._gmsh.model,
+                line_element_type=normalized_line_element_type,
                 plane_type=normalized_plane_type,
                 thickness=thickness_value,
                 z_tolerance=tolerance_value,
@@ -1237,15 +1297,34 @@ class GeometryModel:
         )
 
 
-def model(name: str, *, dimension: Literal[2, 3]) -> GeometryModel:
+def model(name: str, *, dimension: Literal[1, 2, 3]) -> GeometryModel:
     """Return a context manager for one scripted Gmsh OCC model."""
     return GeometryModel(name, dimension=dimension)
 
 
-def _validate_mesh_dimension(value: Any) -> Literal[2, 3]:
-    if isinstance(value, bool) or not isinstance(value, int) or value not in (2, 3):
-        raise ValueError(f"dimension must be 2 or 3, got {value!r}")
+def _validate_mesh_dimension(value: Any) -> Literal[1, 2, 3]:
+    if isinstance(value, bool) or not isinstance(value, int) or value not in (1, 2, 3):
+        raise ValueError(f"dimension must be 1, 2, or 3, got {value!r}")
     return value
+
+
+def _validate_line_element_type(
+    dimension: Literal[1, 2, 3],
+    value: Any,
+) -> Literal["Truss2", "Beam2"] | None:
+    if dimension == 1:
+        if value not in ("Truss2", "Beam2"):
+            raise ValueError(
+                "line_element_type must be exactly 'Truss2' or 'Beam2' for "
+                f"dimension 1, got {value!r}"
+            )
+        return value
+    if value is not None:
+        raise ValueError(
+            "line_element_type is only valid for dimension 1, "
+            f"got {value!r} for dimension {dimension}"
+        )
+    return None
 
 
 def _validate_entity_dimension(value: Any) -> int:

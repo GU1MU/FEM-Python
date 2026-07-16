@@ -444,20 +444,20 @@ def test_nodal_stress_consumers_reject_malformed_current_rows(tmp_path, consumer
         encoding="utf-8",
     )
 
-    if consumer == "vtk":
-        call = lambda: vtk.fields.read_nodal_stress_rows(stress_path)
-    elif consumer == "path":
-        call = lambda: path.extract_path_data(
-            mesh,
-            1,
-            2,
-            2,
-            "sig_x",
-            path=tmp_path / "path.csv",
-            stress_csv_path=stress_path,
-        )
-    else:
-        call = lambda: convert_nodal_solution_into_polar_coord(
+    def call():
+        if consumer == "vtk":
+            return vtk.fields.read_nodal_stress_rows(stress_path)
+        if consumer == "path":
+            return path.extract_path_data(
+                mesh,
+                1,
+                2,
+                2,
+                "sig_x",
+                path=tmp_path / "path.csv",
+                stress_csv_path=stress_path,
+            )
+        return convert_nodal_solution_into_polar_coord(
             stress_path,
             (0.0, 0.0),
             tmp_path / "polar.csv",

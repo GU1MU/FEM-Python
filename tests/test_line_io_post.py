@@ -4,11 +4,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from fem.core.mesh import Element3D, Mesh3D, Node2D, Node3D
+from fem.core.mesh import Element3D, Mesh3D, Node3D
 from fem.core.model import AnalysisStep, FEMModel
 from fem.core.result import ModelResult
 from fem.io import csv as csv_io
-from fem.post import displacement, stress, vtk
+from fem.post import stress, vtk
 
 
 def _write(path, lines):

@@ -12,6 +12,8 @@ import pytest
 
 from fem import materials, post, steps
 from fem.core import Mesh2D, Mesh3D, validate_model
+from fem.elements import get_element_kernel
+from fem.elements.beam_section import parse_beam2_section
 from fem.geometry import gmsh as geometry
 from fem.solvers import static_linear
 
@@ -45,6 +47,21 @@ class _FakeOcc:
         next_tags[dimension] = tag + 1
         data["entities"].add((dimension, tag))
         return tag
+
+    def addPoint(
+        self,
+        x: float,
+        y: float,
+        z: float,
+        meshSize: float = 0.0,
+        tag: int = -1,
+    ) -> int:
+        self.calls.append(("addPoint", x, y, z, meshSize, tag))
+        return self._allocate(0)
+
+    def addLine(self, start_tag: int, end_tag: int, tag: int = -1) -> int:
+        self.calls.append(("addLine", start_tag, end_tag, tag))
+        return self._allocate(1)
 
     def addRectangle(
         self,
@@ -549,9 +566,9 @@ def test_public_reference_types_are_immutable_and_boolean_filter_is_typed() -> N
         result.of_dimension(4)
 
 
-@pytest.mark.parametrize("dimension", [0, 1, 4, True, "2", None])
+@pytest.mark.parametrize("dimension", [0, 4, True, "2", None])
 def test_model_rejects_invalid_mesh_dimension(dimension: Any) -> None:
-    with pytest.raises(ValueError, match="dimension must be 2 or 3"):
+    with pytest.raises(ValueError, match="dimension must be 1, 2, or 3"):
         geometry.model("part", dimension=dimension)
 
 
@@ -847,6 +864,127 @@ def test_occ_primitives_forward_normalized_arguments_and_return_typed_refs(
         -1,
         (0.0, 0.0, 1.0),
         (0.0, 1.0, 0.0),
+    ) in backend.model.occ.calls
+
+
+def test_line_primitives_forward_spatial_coordinates_and_return_typed_refs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("members", dimension=1) as cad:
+        start = cad.point(1, 2, 3)
+        end = cad.point(4, 5)
+        member = cad.line(start, end)
+
+    assert (start.dimension, start.tag) == (0, 1)
+    assert (end.dimension, end.tag) == (0, 2)
+    assert (member.dimension, member.tag) == (1, 1)
+    assert ("addPoint", 1.0, 2.0, 3.0, 0.0, -1) in backend.model.occ.calls
+    assert ("addPoint", 4.0, 5.0, 0.0, 0.0, -1) in backend.model.occ.calls
+    assert ("addLine", 1, 2, -1) in backend.model.occ.calls
+
+
+def test_line_requires_distinct_live_point_references_before_add_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("members", dimension=1) as cad:
+        start = cad.point(0, 0, 0)
+        end = cad.point(1, 0, 0)
+        other_at_end = cad.point(1, 0, 0)
+        assert end != other_at_end
+        member = cad.line(start, end)
+
+        before = list(backend.model.occ.calls)
+        with pytest.raises(ValueError, match="distinct|duplicate"):
+            cad.line(start, start)
+        with pytest.raises(TypeError, match="EntityRef"):
+            cad.line(start, object())  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="dimension-zero|point"):
+            cad.line(start, member)
+        assert backend.model.occ.calls == before
+
+        backend.model._current_data()["entities"].remove((0, end.tag))
+        with pytest.raises(geometry.StaleEntityError, match="no longer exists"):
+            cad.line(start, end)
+        assert not any(call[0] == "addLine" for call in backend.model.occ.calls[len(before) :])
+
+
+def test_line_rejects_cross_model_endpoint_before_add_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("outer", dimension=1) as outer:
+        outer_point = outer.point(0, 0, 0)
+        with geometry.model("inner", dimension=1) as inner:
+            inner_point = inner.point(1, 0, 0)
+            before = list(backend.model.occ.calls)
+            with pytest.raises(geometry.EntityOwnershipError, match="inner"):
+                inner.line(outer_point, inner_point)
+            assert backend.model.occ.calls == before
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda cad, point: cad.point(float("nan"), 0, 0),
+        lambda cad, point: cad.rectangle(0, 0, 1, 1),
+        lambda cad, point: cad.disk(0, 0, 1),
+        lambda cad, point: cad.box(0, 0, 0, 1, 1, 1),
+        lambda cad, point: cad.cylinder(0, 0, 0, 1, 0, 0, 1),
+        lambda cad, point: cad.extrude([point], 1, 0, 0),
+    ],
+)
+def test_1d_facade_rejects_invalid_or_higher_dimensional_primitives_pre_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: Any,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("members", dimension=1) as cad:
+        point = cad.point(0, 0, 0)
+        before = list(backend.model.occ.calls)
+        with pytest.raises(ValueError):
+            operation(cad, point)
+        assert backend.model.occ.calls == before
+
+
+def test_1d_transform_is_spatial_and_topology_freezes_after_physical_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("members", dimension=1) as cad:
+        start = cad.point(0, 0, 0)
+        end = cad.point(1, 0, 0)
+        member = cad.line(start, end)
+        assert cad.translate([member], 1, 2, 3) == (member,)
+        assert cad.rotate([member], 0, 0, 0, 1, 1, 0, 0.5) == (member,)
+        cad.physical("MEMBERS", [member])
+        with pytest.raises(geometry.GeometryStateError, match="LABELED"):
+            cad.point(2, 0, 0)
+        with pytest.raises(geometry.GeometryStateError, match="LABELED"):
+            cad.line(start, end)
+
+    assert ("translate", ((1, 1),), 1.0, 2.0, 3.0) in backend.model.occ.calls
+    assert (
+        "rotate",
+        ((1, 1),),
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        1.0,
+        0.0,
+        0.5,
     ) in backend.model.occ.calls
 
 
@@ -1676,6 +1814,7 @@ def test_generate_mesh_assigns_size_isolates_options_and_delegates_adapter(
             {
                 "dimension": 2,
                 "gmsh_model": backend.model,
+                "line_element_type": None,
                 "plane_type": "strain",
                 "thickness": 2.0,
                 "z_tolerance": 0.1,
@@ -1690,6 +1829,172 @@ def test_generate_mesh_assigns_size_isolates_options_and_delegates_adapter(
         ("setNumber", "Mesh.RecombineAll", 1.0),
         ("setNumber", "Mesh.MeshSizeFromPoints", 1.0),
     ]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({}, "line_element_type"),
+        ({"line_element_type": "truss2"}, "line_element_type"),
+        ({"line_element_type": "Line2"}, "line_element_type"),
+        ({"line_element_type": "Truss2", "order": 2}, "order"),
+        ({"line_element_type": "Beam2", "recombine": True}, "recombine"),
+    ],
+)
+def test_1d_mesh_contract_is_validated_before_mesh_or_option_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    kwargs: dict[str, Any],
+    message: str,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("members", dimension=1) as cad:
+        start = cad.point(0, 0, 0)
+        end = cad.point(1, 0, 0)
+        cad.line(start, end)
+        with pytest.raises(ValueError, match=message):
+            cad.generate_mesh(**kwargs)
+        assert backend.model.mesh.calls == []
+        assert backend.option.calls == []
+
+
+@pytest.mark.parametrize("dimension", [2, 3])
+def test_other_dimensions_reject_line_formulation_before_backend_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    dimension: int,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("part", dimension=dimension) as cad:
+        if dimension == 2:
+            cad.rectangle(0, 0, 1, 1)
+        else:
+            cad.box(0, 0, 0, 1, 1, 1)
+        with pytest.raises(ValueError, match="line_element_type.*dimension 1"):
+            cad.generate_mesh(line_element_type="Truss2")
+        assert backend.model.mesh.calls == []
+        assert backend.option.calls == []
+
+
+def test_1d_generate_mesh_forwards_formulation_once_and_restores_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    backend.option.values.update(
+        {
+            "Mesh.ElementOrder": 7.0,
+            "Mesh.SecondOrderIncomplete": 0.25,
+            "Mesh.RecombineAll": 0.75,
+            "Mesh.MeshSizeFromPoints": 0.0,
+        }
+    )
+    _install_backend(monkeypatch, backend)
+    imported = _FakeImportResult()
+    importer_calls: list[dict[str, Any]] = []
+
+    def from_model(**kwargs: Any) -> _FakeImportResult:
+        importer_calls.append(kwargs)
+        return imported
+
+    monkeypatch.setattr(
+        geometry,
+        "gmsh_io",
+        SimpleNamespace(from_model=from_model),
+        raising=False,
+    )
+
+    with geometry.model("members", dimension=1) as cad:
+        start = cad.point(0, 0, 1)
+        end = cad.point(2, 3, 4)
+        member = cad.line(start, end)
+        cad.physical("MEMBERS", [member])
+        result = cad.generate_mesh(
+            size=0.25,
+            line_element_type="Beam2",
+        )
+        assert result is imported
+
+    assert backend.model.mesh.calls == [
+        ("setSize", ((0, 1), (0, 2)), 0.25, "members"),
+        ("generate", 1, "members"),
+    ]
+    assert importer_calls == [
+        {
+            "dimension": 1,
+            "gmsh_model": backend.model,
+            "line_element_type": "Beam2",
+            "plane_type": "stress",
+            "thickness": 1.0,
+            "z_tolerance": 1.0e-10,
+        }
+    ]
+    assert backend.option.values == {
+        "Mesh.ElementOrder": 7.0,
+        "Mesh.SecondOrderIncomplete": 0.25,
+        "Mesh.RecombineAll": 0.75,
+        "Mesh.MeshSizeFromPoints": 0.0,
+    }
+
+
+def test_1d_missing_curve_is_retryable_before_mesh_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+    imported = _FakeImportResult()
+    monkeypatch.setattr(
+        geometry,
+        "gmsh_io",
+        SimpleNamespace(from_model=lambda **kwargs: imported),
+        raising=False,
+    )
+
+    with geometry.model("members", dimension=1) as cad:
+        start = cad.point(0, 0, 0)
+        with pytest.raises(ValueError, match="top-dimensional"):
+            cad.generate_mesh(line_element_type="Truss2")
+        assert backend.model.mesh.calls == []
+        assert backend.option.calls == []
+
+        end = cad.point(1, 0, 0)
+        cad.line(start, end)
+        assert cad.generate_mesh(line_element_type="Truss2") is imported
+
+
+def test_1d_generate_fem_model_forwards_formulation_and_converts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+    sentinel_model = object()
+    imported = _FakeImportResult(sentinel_model)
+    importer_calls: list[dict[str, Any]] = []
+
+    def from_model(**kwargs: Any) -> _FakeImportResult:
+        importer_calls.append(kwargs)
+        return imported
+
+    monkeypatch.setattr(
+        geometry,
+        "gmsh_io",
+        SimpleNamespace(from_model=from_model),
+        raising=False,
+    )
+
+    with geometry.model("members", dimension=1) as cad:
+        start = cad.point(0, 0, 0)
+        end = cad.point(1, 0, 0)
+        cad.line(start, end)
+        result = cad.generate_fem_model(
+            "beam",
+            line_element_type="Beam2",
+        )
+
+    assert result is sentinel_model
+    assert imported.to_fem_model_calls == ["beam"]
+    assert [call["line_element_type"] for call in importer_calls] == ["Beam2"]
 
 
 def test_generate_fem_model_delegates_to_import_result_and_is_mutually_exclusive(
@@ -1940,6 +2245,221 @@ def _assert_vtk_cell_type(mesh: Mesh2D | Mesh3D, expected: int) -> None:
     assert len(cells) == mesh.num_elements
     assert cell_types == [expected] * mesh.num_elements
     assert len(elements) == mesh.num_elements
+
+
+def test_real_1d_facade_reuses_shared_point_in_connected_spatial_mesh(
+    real_gmsh: Any,
+) -> None:
+    middle_coordinates = (1.0, 0.5, 0.75)
+    with geometry.model("facade_connected_lines", dimension=1) as cad:
+        start = cad.point(0.0, 0.0, 0.25)
+        middle = cad.point(*middle_coordinates)
+        end = cad.point(2.0, -0.5, 1.25)
+        first = cad.line(start, middle)
+        second = cad.line(middle, end)
+        cad.physical("MEMBERS", [first, second])
+        cad.physical("FIXED", [start])
+        cad.physical("TIP", [end])
+        imported = cad.generate_mesh(
+            size=0.4,
+            line_element_type="Truss2",
+        )
+
+    assert isinstance(imported.mesh, Mesh3D)
+    assert imported.mesh.dofs_per_node == 3
+    assert {element.type for element in imported.mesh.elements} == {"Truss2"}
+    assert all(len(element.node_ids) == 2 for element in imported.mesh.elements)
+    middle_node = next(
+        node
+        for node in imported.mesh.nodes
+        if (node.x, node.y, node.z) == pytest.approx(middle_coordinates)
+    )
+    assert sum(
+        middle_node.id in element.node_ids for element in imported.mesh.elements
+    ) == 2
+    assert imported.element_sets["MEMBERS"].element_ids
+    assert len(imported.node_sets["FIXED"].node_ids) == 1
+    assert len(imported.node_sets["TIP"].node_ids) == 1
+    assert imported.edges == {}
+    assert imported.surfaces == {}
+    _assert_vtk_cell_type(imported.mesh, 3)
+
+
+def test_real_1d_fragment_splits_intersections_into_shared_mesh_node(
+    real_gmsh: Any,
+) -> None:
+    with geometry.model("facade_fragmented_lines", dimension=1) as cad:
+        left = cad.point(-1.0, 0.0, 0.0)
+        right = cad.point(1.0, 0.0, 0.0)
+        bottom = cad.point(0.0, -1.0, 0.0)
+        top = cad.point(0.0, 1.0, 0.0)
+        horizontal = cad.line(left, right)
+        vertical = cad.line(bottom, top)
+
+        fragmented = cad.fragment([horizontal], [vertical])
+        members = fragmented.of_dimension(1)
+        assert len(members) == 4
+        assert tuple(len(group) for group in fragmented.input_map) == (2, 2)
+        with pytest.raises(geometry.StaleEntityError):
+            cad.translate([horizontal], 0.0, 0.0, 0.0)
+
+        center = cad.select(cad.entities(0), x=0.0, y=0.0, z=0.0)
+        assert len(center) == 1
+        cad.physical("MEMBERS", members)
+        cad.physical("CENTER", center)
+        imported = cad.generate_mesh(
+            size=0.4,
+            line_element_type="Truss2",
+        )
+
+    center_node_id = imported.node_sets["CENTER"].node_ids[0]
+    assert sum(
+        center_node_id in element.node_ids for element in imported.mesh.elements
+    ) == 4
+    assert set(imported.element_sets["MEMBERS"].element_ids) == {
+        element.id for element in imported.mesh.elements
+    }
+
+
+def test_real_truss2_vertical_slice_matches_bar_solution_and_exports_vtk(
+    real_gmsh: Any,
+    tmp_path: Path,
+) -> None:
+    length = 2.0
+    elastic_modulus = 210.0e9
+    area = 1.0e-4
+    force = 1.0e4
+    with geometry.model("truss_vertical_slice", dimension=1) as cad:
+        start = cad.point(0.0, 0.5, -0.25)
+        end = cad.point(length, 0.5, -0.25)
+        member = cad.line(start, end)
+        cad.physical("MEMBERS", [member])
+        cad.physical("FIXED", [start])
+        cad.physical("TIP", [end])
+        model = cad.generate_fem_model(
+            "truss_vertical_slice",
+            size=0.5,
+            line_element_type="Truss2",
+        )
+
+    steel = materials.linear_elastic.material(
+        "steel",
+        E=elastic_modulus,
+        nu=0.3,
+    )
+    materials.add(model, steel)
+    materials.assign(model, steel, "MEMBERS", area=area)
+    load_step = steps.static("pull")
+    steps.displacement(load_step, "FIXED", components=(1, 2, 3))
+    fixed_id = model.node_sets["FIXED"].node_ids[0]
+    for node_id in model.mesh.node_ids:
+        if node_id != fixed_id:
+            steps.displacement(load_step, node_id, components=(2, 3))
+    steps.nodal_load(load_step, "TIP", component=1, value=force)
+    steps.add(model, load_step)
+
+    result = static_linear.solve(model, load_step)
+    tip_id = model.node_sets["TIP"].node_ids[0]
+    assert result.U[model.mesh.global_dof(tip_id, 0)] == pytest.approx(
+        force * length / (elastic_modulus * area)
+    )
+    stresses = [
+        get_element_kernel(element.type).element_stress(
+            model.mesh,
+            element,
+            result.U,
+        )[1]
+        for element in model.mesh.elements
+    ]
+    assert stresses == pytest.approx([force / area] * model.mesh.num_elements)
+
+    post.vtk.export.from_result(result, output_dir=tmp_path, name="truss_slice")
+    vtk_path = tmp_path / "truss_slice.vtk"
+    vtk_text = vtk_path.read_text(encoding="utf-8")
+    assert f"CELL_TYPES {model.mesh.num_elements}" in vtk_text
+    assert "\n3\n" in vtk_text
+    assert "VECTORS displacement float" in vtk_text
+    assert "SCALARS axial_stress float 1" in vtk_text
+
+
+def test_real_beam2_vertical_slice_uses_fixed_rectangle_axes_and_line_load(
+    real_gmsh: Any,
+    tmp_path: Path,
+) -> None:
+    length = 2.0
+    elastic_modulus = 210.0e9
+    tip_force = 1.0e3
+    line_load = 5.0e2
+    with geometry.model("beam_vertical_slice", dimension=1) as cad:
+        root = cad.point(0.0, 0.0, 0.0)
+        tip = cad.point(length, 0.0, 0.0)
+        member = cad.line(root, tip)
+        cad.physical("MEMBERS", [member])
+        cad.physical("FIXED", [root])
+        cad.physical("TIP", [tip])
+        model = cad.generate_fem_model(
+            "beam_vertical_slice",
+            size=0.5,
+            line_element_type="Beam2",
+        )
+
+    steel = materials.linear_elastic.material(
+        "steel",
+        E=elastic_modulus,
+        nu=0.3,
+    )
+    materials.add(model, steel)
+    materials.assign(
+        model,
+        steel,
+        "MEMBERS",
+        section_type="rectangle",
+        height=0.2,
+        width=0.1,
+    )
+
+    def fixed_step(name: str):
+        step = steps.static(name)
+        steps.displacement(step, "FIXED", components=(1, 2, 3, 4, 5, 6))
+        steps.add(model, step)
+        return step
+
+    tip_y_step = fixed_step("tip_y")
+    steps.nodal_load(tip_y_step, "TIP", component=2, value=tip_force)
+    tip_z_step = fixed_step("tip_z")
+    steps.nodal_load(tip_z_step, "TIP", component=3, value=tip_force)
+    distributed_step = fixed_step("distributed_y")
+    steps.line_load(distributed_step, "MEMBERS", (0.0, line_load, 0.0))
+
+    tip_y_result = static_linear.solve(model, tip_y_step)
+    section = parse_beam2_section(model.mesh.elements[0].props)
+    tip_z_result = static_linear.solve(model, tip_z_step)
+    distributed_result = static_linear.solve(model, distributed_step)
+    tip_id = model.node_sets["TIP"].node_ids[0]
+    assert tip_y_result.U[model.mesh.global_dof(tip_id, 1)] == pytest.approx(
+        tip_force * length**3 / (3.0 * elastic_modulus * section.Izz)
+    )
+    assert tip_z_result.U[model.mesh.global_dof(tip_id, 2)] == pytest.approx(
+        tip_force * length**3 / (3.0 * elastic_modulus * section.Iyy)
+    )
+    assert distributed_result.U[model.mesh.global_dof(tip_id, 1)] == pytest.approx(
+        line_load * length**4 / (8.0 * elastic_modulus * section.Izz)
+    )
+    envelope = post.stress.beam.nodal_envelope(distributed_result)
+    assert max(row.absolute_maximum for row in envelope) > 0.0
+
+    post.vtk.export.from_result(
+        distributed_result,
+        output_dir=tmp_path,
+        name="beam_slice",
+    )
+    vtk_text = (tmp_path / "beam_slice.vtk").read_text(encoding="utf-8")
+    assert "\n3\n" in vtk_text
+    assert "VECTORS displacement float" in vtk_text
+    assert "VECTORS rotation float" in vtk_text
+    assert "SCALARS axial_stress_max float 1" in vtk_text
+    assert "SCALARS axial_stress_min float 1" in vtk_text
+    assert "SCALARS axial_stress_abs_max float 1" in vtk_text
 
 
 def test_real_facade_rectangle_labels_solve_vtk_and_survive_cleanup(

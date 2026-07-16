@@ -29,11 +29,11 @@ from fem.selection import faces as face_selection
 class _ElementSpec:
     gmsh_type: int
     gmsh_name: str
-    dimension: Literal[2, 3]
+    dimension: Literal[1, 2, 3]
     order: int
     node_count: int
     primary_node_count: int
-    fem_type: str
+    fem_type: str | None
     connectivity_permutation: tuple[int, ...]
 
 
@@ -89,6 +89,7 @@ def _validated_element_specs(specs: tuple[_ElementSpec, ...]) -> dict[int, _Elem
 
 _ELEMENT_SPECS = _validated_element_specs(
     (
+        _ElementSpec(1, "Line 2", 1, 1, 2, 2, None, (0, 1)),
         _ElementSpec(2, "Triangle 3", 2, 1, 3, 3, "Tri3", (0, 1, 2)),
         _ElementSpec(
             3,
@@ -268,14 +269,19 @@ class GmshImportResult:
 
 def from_model(
     *,
-    dimension: Literal[2, 3],
+    dimension: Literal[1, 2, 3],
     gmsh_model: Any | None = None,
+    line_element_type: Literal["Truss2", "Beam2"] | None = None,
     plane_type: str = "stress",
     thickness: float = 1.0,
     z_tolerance: float = 1e-10,
 ) -> GmshImportResult:
     """Import the generated mesh from a caller-owned active Gmsh model."""
     normalized_dimension = _validate_dimension(dimension)
+    normalized_line_element_type = _validate_line_element_type(
+        normalized_dimension,
+        line_element_type,
+    )
     normalized_plane_type = _validate_plane_type(plane_type)
     normalized_thickness = _validate_thickness(thickness)
     normalized_z_tolerance = _validate_z_tolerance(z_tolerance)
@@ -287,6 +293,7 @@ def from_model(
     return _from_backend(
         gmsh_model,
         dimension=normalized_dimension,
+        line_element_type=normalized_line_element_type,
         plane_type=normalized_plane_type,
         thickness=normalized_thickness,
         z_tolerance=normalized_z_tolerance,
@@ -315,10 +322,29 @@ def _resolve_live_backend() -> tuple[Any, str | None]:
     return gmsh.model, None if version is None else str(version)
 
 
-def _validate_dimension(value: Any) -> Literal[2, 3]:
-    if isinstance(value, bool) or not isinstance(value, int) or value not in (2, 3):
-        raise ValueError(f"dimension must be 2 or 3, got {value!r}")
+def _validate_dimension(value: Any) -> Literal[1, 2, 3]:
+    if isinstance(value, bool) or not isinstance(value, int) or value not in (1, 2, 3):
+        raise ValueError(f"dimension must be 1, 2, or 3, got {value!r}")
     return value
+
+
+def _validate_line_element_type(
+    dimension: Literal[1, 2, 3],
+    value: Any,
+) -> Literal["Truss2", "Beam2"] | None:
+    if dimension == 1:
+        if value not in ("Truss2", "Beam2"):
+            raise ValueError(
+                "line_element_type must be exactly 'Truss2' or 'Beam2' for "
+                f"dimension 1, got {value!r}"
+            )
+        return value
+    if value is not None:
+        raise ValueError(
+            "line_element_type is only valid for dimension 1, "
+            f"got {value!r} for dimension {dimension}"
+        )
+    return None
 
 
 def _validate_plane_type(value: Any) -> str:
@@ -354,7 +380,8 @@ def _validate_z_tolerance(value: Any) -> float:
 def _from_backend(
     gmsh_model: Any,
     *,
-    dimension: Literal[2, 3],
+    dimension: Literal[1, 2, 3],
+    line_element_type: Literal["Truss2", "Beam2"] | None,
     plane_type: str,
     thickness: float,
     z_tolerance: float,
@@ -374,11 +401,15 @@ def _from_backend(
         records,
         coordinates,
         dimension=dimension,
+        line_element_type=line_element_type,
         plane_type=plane_type,
         thickness=thickness,
     )
     if dimension == 2:
         mesh = Mesh2D(nodes=nodes, elements=elements, dofs_per_node=2)
+    elif dimension == 1:
+        dofs_per_node = 3 if line_element_type == "Truss2" else 6
+        mesh = Mesh3D(nodes=nodes, elements=elements, dofs_per_node=dofs_per_node)
     else:
         mesh = Mesh3D(nodes=nodes, elements=elements, dofs_per_node=3)
 
@@ -398,6 +429,8 @@ def _from_backend(
         "physical_groups": physical_groups,
         "skipped_physical_groups": skipped_groups,
     }
+    if dimension == 1:
+        metadata["line_element_type"] = line_element_type
     if gmsh_version is not None:
         metadata["gmsh_version"] = gmsh_version
     return GmshImportResult(
@@ -414,7 +447,7 @@ def _read_physical_groups(
     gmsh_model: Any,
     *,
     mesh: Mesh2D | Mesh3D,
-    dimension: Literal[2, 3],
+    dimension: Literal[1, 2, 3],
     retained_node_ids: set[int],
     retained_element_ids: set[int],
 ) -> tuple[
@@ -468,7 +501,7 @@ def _read_physical_groups(
         seen_names[kind].add(name)
 
         boundary_kind = None
-        if group_dimension == dimension - 1:
+        if group_dimension == dimension - 1 and dimension in (2, 3):
             boundary_kind = "edge" if dimension == 2 else "surface"
         if boundary_kind is not None:
             if name in seen_names[boundary_kind]:
@@ -919,7 +952,7 @@ def _store_physical_group_metadata(
 
 def _read_element_records(
     gmsh_mesh: Any,
-    dimension: Literal[2, 3],
+    dimension: Literal[1, 2, 3],
 ) -> list[_ElementRecord]:
     raw_blocks = gmsh_mesh.getElements(dimension, -1)
     try:
@@ -962,6 +995,11 @@ def _read_element_records(
                     f". {name} is unsupported because FEM-Python provides "
                     f"{alternative[1]}. Generate an incomplete second-order mesh "
                     f"with Mesh.SecondOrderIncomplete = 1."
+                )
+            if dimension == 1 and element_type == 8 and name == "Line 3":
+                message += (
+                    ". FEM-Python's current Truss2 and Beam2 formulations "
+                    "support only first-order, two-node line elements."
                 )
             raise ValueError(message)
         expected = (
@@ -1007,6 +1045,11 @@ def _read_element_records(
             node_ids = tuple(
                 raw_node_ids[index] for index in spec.connectivity_permutation
             )
+            if len(set(node_ids)) != len(node_ids):
+                raise ValueError(
+                    f"Gmsh element {element_id} type {element_type} has repeated "
+                    f"node tags {node_ids!r}"
+                )
             records.append(_ElementRecord(element_id, spec, node_ids))
 
     if not records:
@@ -1044,7 +1087,7 @@ def _read_nodes(
     gmsh_mesh: Any,
     referenced_node_ids: set[int],
     *,
-    dimension: Literal[2, 3],
+    dimension: Literal[1, 2, 3],
     z_tolerance: float,
 ) -> tuple[list[Node2D] | list[Node3D], dict[int, tuple[float, float, float]]]:
     raw_nodes = gmsh_mesh.getNodes()
@@ -1110,19 +1153,26 @@ def _build_elements(
     records: list[_ElementRecord],
     coordinates: dict[int, tuple[float, float, float]],
     *,
-    dimension: Literal[2, 3],
+    dimension: Literal[1, 2, 3],
+    line_element_type: Literal["Truss2", "Beam2"] | None,
     plane_type: str,
     thickness: float,
 ) -> list[Element2D] | list[Element3D]:
-    if dimension == 3:
+    if dimension in (1, 3):
+        fem_types = [
+            line_element_type if dimension == 1 else record.spec.fem_type
+            for record in records
+        ]
+        if any(fem_type is None for fem_type in fem_types):
+            raise RuntimeError("Gmsh element specification has no FEM element type")
         return [
             Element3D(
                 record.element_id,
                 list(record.node_ids),
-                record.spec.fem_type,
+                fem_type,
                 {},
             )
-            for record in records
+            for record, fem_type in zip(records, fem_types, strict=True)
         ]
 
     elements_2d: list[Element2D] = []

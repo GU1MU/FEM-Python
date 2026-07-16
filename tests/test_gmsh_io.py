@@ -245,10 +245,36 @@ assert gmsh_io.__name__ == "fem.io.gmsh"
     assert completed.returncode == 0, completed.stderr
 
 
-@pytest.mark.parametrize("dimension", [0, 1, 4, "2", None])
+@pytest.mark.parametrize("dimension", [0, 4, "2", None])
 def test_from_model_rejects_invalid_dimension_before_reading_backend(dimension):
-    with pytest.raises(ValueError, match="dimension must be 2 or 3"):
+    with pytest.raises(ValueError, match="dimension must be 1, 2, or 3"):
         gmsh_io.from_model(dimension=dimension, gmsh_model=_UnreadableModel())
+
+
+@pytest.mark.parametrize("line_element_type", [None, "", "truss2", "Beam3", 1])
+def test_from_model_requires_canonical_line_element_type_before_reading_backend(
+    line_element_type,
+):
+    with pytest.raises(ValueError, match="line_element_type.*Truss2.*Beam2"):
+        gmsh_io.from_model(
+            dimension=1,
+            line_element_type=line_element_type,
+            gmsh_model=_UnreadableModel(),
+        )
+
+
+@pytest.mark.parametrize("dimension", [2, 3])
+@pytest.mark.parametrize("line_element_type", ["Truss2", "Beam2", "Line2"])
+def test_from_model_rejects_line_element_type_for_other_dimensions_before_backend(
+    dimension,
+    line_element_type,
+):
+    with pytest.raises(ValueError, match="line_element_type.*dimension 1"):
+        gmsh_io.from_model(
+            dimension=dimension,
+            line_element_type=line_element_type,
+            gmsh_model=_UnreadableModel(),
+        )
 
 
 @pytest.mark.parametrize("plane_type", ["", "plane", None, 3])
@@ -371,12 +397,13 @@ def test_import_result_four_argument_boundary_defaults_are_independent():
     assert first.surfaces is not second.surfaces
 
 
-def test_from_model_public_signature_is_unchanged():
+def test_from_model_public_signature_exposes_line_element_type():
     signature = inspect.signature(gmsh_io.from_model)
 
     assert tuple(signature.parameters) == (
         "dimension",
         "gmsh_model",
+        "line_element_type",
         "plane_type",
         "thickness",
         "z_tolerance",
@@ -1038,6 +1065,7 @@ def test_physical_surface_rejects_malformed_entity_tags():
 @pytest.mark.parametrize(
     ("gmsh_type", "expected"),
     [
+        (1, ("Line 2", 1, 1, 2, 2, None, (0, 1))),
         (2, ("Triangle 3", 2, 1, 3, 3, "Tri3", (0, 1, 2))),
         (3, ("Quadrilateral 4", 2, 1, 4, 4, "Quad4", (0, 1, 2, 3))),
         (4, ("Tetrahedron 4", 3, 1, 4, 4, "Tet4", (0, 1, 2, 3))),
@@ -1072,6 +1100,132 @@ def test_element_specs_define_complete_supported_ordering_contract(gmsh_type, ex
         spec.connectivity_permutation,
     ) == expected
     assert sorted(spec.connectivity_permutation) == list(range(spec.node_count))
+
+
+@pytest.mark.parametrize(
+    ("line_element_type", "expected_dofs"),
+    [("Truss2", 3), ("Beam2", 6)],
+)
+def test_from_model_imports_spatial_line2_with_explicit_formulation(
+    line_element_type,
+    expected_dofs,
+):
+    model = _fake_model(
+        node_coordinates={
+            31: (3.5, -2.0, 8.25),
+            17: (-1.0, 4.0, -0.5),
+            999: (100.0, 100.0, 100.0),
+        },
+        elements=([1], [[901]], [[31, 17]]),
+    )
+
+    result = gmsh_io.from_model(
+        dimension=1,
+        line_element_type=line_element_type,
+        gmsh_model=model,
+    )
+
+    assert isinstance(result.mesh, Mesh3D)
+    assert result.mesh.dofs_per_node == expected_dofs
+    assert [(node.id, node.x, node.y, node.z) for node in result.mesh.nodes] == [
+        (31, 3.5, -2.0, 8.25),
+        (17, -1.0, 4.0, -0.5),
+    ]
+    assert result.mesh.elements[0].id == 901
+    assert result.mesh.elements[0].node_ids == [31, 17]
+    assert result.mesh.elements[0].type == line_element_type
+    assert result.mesh.elements[0].props == {}
+    assert result.edges == {}
+    assert result.surfaces == {}
+    assert result.metadata == {
+        "source": "gmsh",
+        "dimension": 1,
+        "line_element_type": line_element_type,
+        "physical_groups": {},
+        "skipped_physical_groups": (),
+    }
+    assert model.mesh.element_calls == [(1, -1)]
+    assert model.mesh.property_calls == [1]
+    assert model.mesh.node_calls == 1
+
+
+def test_from_model_maps_1d_physical_curves_and_points_without_boundary_topology():
+    mesh = _FakeMesh(
+        node_tags=[10, 20],
+        coordinates=[0.0, 0.0, 1.0, 2.0, 3.0, 4.0],
+        elements=([1], [[501]], [[10, 20]]),
+        entity_elements={(1, 101): ([1], [[501]], [[10, 20]])},
+        physical_nodes={(0, 2): [10], (0, 3): [20]},
+    )
+    model = _FakeModel(
+        mesh,
+        physical_groups=[(1, 1), (0, 2), (0, 3)],
+        physical_names={(1, 1): "MEMBERS", (0, 2): "FIXED", (0, 3): "TIP"},
+        entities={(1, 1): [101]},
+    )
+
+    result = gmsh_io.from_model(
+        dimension=1,
+        line_element_type="Truss2",
+        gmsh_model=model,
+    )
+
+    assert result.element_sets == {"MEMBERS": ElementSet("MEMBERS", [501])}
+    assert result.node_sets == {
+        "FIXED": NodeSet("FIXED", [10]),
+        "TIP": NodeSet("TIP", [20]),
+    }
+    assert result.edges == {}
+    assert result.surfaces == {}
+    assert result.metadata["physical_groups"] == {
+        "MEMBERS": {"dimension": 1, "tag": 1, "kind": "element_set"},
+        "FIXED": {"dimension": 0, "tag": 2, "kind": "node_set"},
+        "TIP": {"dimension": 0, "tag": 3, "kind": "node_set"},
+    }
+    assert mesh.element_calls == [(1, -1), (1, 101)]
+
+
+def test_from_model_rejects_line3_with_first_order_two_node_guidance_atomically():
+    model = _fake_model(
+        node_coordinates={
+            1: (0.0, 0.0, 0.0),
+            2: (1.0, 0.0, 0.0),
+            3: (0.5, 0.0, 0.0),
+        },
+        elements=([8], [[71]], [[1, 2, 3]]),
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        gmsh_io.from_model(
+            dimension=1,
+            line_element_type="Beam2",
+            gmsh_model=model,
+        )
+
+    message = str(exc_info.value)
+    assert "unsupported Gmsh element type 8" in message
+    assert "Line 3" in message
+    assert "first-order" in message
+    assert "two-node" in message
+    assert model.mesh.node_calls == 0
+    assert model.physical_group_calls == 0
+
+
+def test_from_model_rejects_repeated_line2_connectivity_before_reading_nodes():
+    model = _fake_model(
+        node_coordinates={1: (0.0, 0.0, 0.0)},
+        elements=([1], [[71]], [[1, 1]]),
+    )
+
+    with pytest.raises(ValueError, match="element 71.*type 1.*repeated node tags"):
+        gmsh_io.from_model(
+            dimension=1,
+            line_element_type="Truss2",
+            gmsh_model=model,
+        )
+
+    assert model.mesh.node_calls == 0
+    assert model.physical_group_calls == 0
 
 
 @pytest.mark.parametrize(
