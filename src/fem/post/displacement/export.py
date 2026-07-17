@@ -64,6 +64,8 @@ def _export_nodal_displacement_3d(
     if component_names is None:
         if dofs_per_node == 3:
             component_names = ["ux", "uy", "uz"]
+        elif dofs_per_node == 6:
+            component_names = ["ux", "uy", "uz", "rx", "ry", "rz"]
         else:
             component_names = [f"u{c}" for c in range(dofs_per_node)]
     else:

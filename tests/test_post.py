@@ -7,7 +7,7 @@ import pytest
 
 import fem.post as post
 from fem.core.mesh import (
-    BeamMesh2D,
+    BeamMesh3D,
     Element2D,
     Element3D,
     HexMesh3D,
@@ -1402,18 +1402,18 @@ def test_vtk_element_stress_reader_keeps_invalid_scalar_zero_in_average(tmp_path
     assert fields_by_name["sig_x"][1] == pytest.approx(2.0)
 
 
-def test_direct_post_exports_create_parent_dirs_and_beam_uses_rz(tmp_path):
-    mesh = BeamMesh2D(
-        nodes=[Node2D(1, 0.0, 0.0), Node2D(2, 1.0, 0.0)],
-        elements=[Element2D(1, [1, 2], "Beam2D")],
+def test_direct_post_exports_create_parent_dirs_and_beam_uses_six_components(tmp_path):
+    mesh = BeamMesh3D(
+        nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 1.0, 0.0, 0.0)],
+        elements=[Element3D(1, [1, 2], "Beam2")],
     )
     output_path = tmp_path / "nested" / "beam_displacement.csv"
 
     displacement.export.nodal(mesh, np.zeros(mesh.num_dofs), output_path)
 
     header = output_path.read_text(encoding="utf-8").splitlines()[0]
-    assert "rz" in header
-    assert "uz" not in header
+    for component in ("ux", "uy", "uz", "rx", "ry", "rz"):
+        assert component in header
 
 
 def test_dispatch_resolves_compatible_mixed_solid_type_keys():
@@ -1423,6 +1423,43 @@ def test_dispatch_resolves_compatible_mixed_solid_type_keys():
     assert dispatch.stress_group_for_keys(("hex8", "tet4")) == "solid"
     assert dispatch.element_stress_supported(("hex8", "tet4"))
     assert dispatch.nodal_stress_supported(("hex8", "tet4"))
+
+
+def test_dispatch_registers_beam2_nodal_but_not_element_stress():
+    mesh = BeamMesh3D(
+        nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 1.0, 0.0, 0.0)],
+        elements=[Element3D(1, [1, 2], "Beam2")],
+    )
+
+    assert dispatch.resolve_type_keys(mesh, None) == ("beam2",)
+    assert dispatch.stress_group_for_keys(("beam2",)) == "line"
+    assert dispatch.nodal_stress_supported(("beam2",))
+    assert not dispatch.element_stress_supported(("beam2",))
+
+
+def test_vtk_reader_parses_beam2_nodal_stress_csv_as_three_scalars(tmp_path):
+    path = tmp_path / "beam_nodal_stress.csv"
+    path.write_text(
+        "node_id,x,y,z,axial_stress_max,axial_stress_min,axial_stress_abs_max\n"
+        "1,0,0,0,12,-4,12\n"
+        "2,1,0,0,8,-6,8\n",
+        encoding="utf-8",
+    )
+
+    data = vtk.fields.read_nodal_stress_rows(path)
+
+    assert data.field_names == (
+        "axial_stress_max",
+        "axial_stress_min",
+        "axial_stress_abs_max",
+    )
+    assert [row.node_id for row in data.rows] == [1, 2]
+    assert all(row.averaged for row in data.rows)
+    assert data.rows[0].values == {
+        "axial_stress_max": 12.0,
+        "axial_stress_min": -4.0,
+        "axial_stress_abs_max": 12.0,
+    }
 
 
 def test_dispatch_supports_mixed_hex20_solid_type_keys():

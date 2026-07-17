@@ -29,6 +29,14 @@ class EdgeTraction:
     vector: tuple[float, ...]
 
 
+@dataclass(frozen=True)
+class LineElementLoad:
+    """Resolved constant Beam2 line load."""
+    elem_id: int
+    vector: tuple[float, ...]
+    coordinate_system: str
+
+
 @dataclass
 class BoundaryCondition:
     """Store Dirichlet conditions and loads by global DOF and element id."""
@@ -38,6 +46,7 @@ class BoundaryCondition:
     surface_tractions: list[SurfaceTraction] = field(default_factory=list)
     gravity: tuple[float, ...] | None = None
     edge_tractions: list[EdgeTraction] = field(default_factory=list)
+    line_loads: list[LineElementLoad] = field(default_factory=list)
 
     def add_displacement_dof(self, dof_id: int, value: float = 0.0) -> None:
         """Add prescribed displacement on a global DOF."""
@@ -98,6 +107,21 @@ class BoundaryCondition:
     def set_gravity(self, *components: float) -> None:
         """Set global gravity acceleration."""
         self.gravity = _float_vector(components)
+
+    def add_line_load(
+        self,
+        elem_id: int,
+        vector: Iterable[float],
+        coordinate_system: str,
+    ) -> None:
+        """Add a resolved constant Beam2 line load."""
+        self.line_loads.append(
+            LineElementLoad(
+                int(elem_id),
+                _float_vector(tuple(vector)),
+                str(coordinate_system),
+            )
+        )
 
 
 def _accumulate_dof_value(values: Dict[int, float], dof_id: int, value: float) -> None:

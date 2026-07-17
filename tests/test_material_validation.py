@@ -3,7 +3,7 @@ import pytest
 
 from fem.boundary.condition import BoundaryCondition, ElementLoad
 from fem.boundary.loads import build_load_vector
-from fem.core.mesh import BeamMesh2D, Element2D, Node2D, TrussMesh2D
+from fem.core.mesh import BeamMesh3D, Element3D, Node3D, TrussMesh3D
 from fem.elements import get_element_kernel
 from fem.materials import linear_elastic
 
@@ -15,15 +15,23 @@ ELASTIC_MATRIX_BUILDERS = (
 )
 
 
-def _line_mesh(element_type="Truss2D", **properties):
-    mesh_type = BeamMesh2D if element_type == "Beam2D" else TrussMesh2D
-    defaults = {"E": 210.0, "area": 0.5}
-    if element_type == "Beam2D":
-        defaults["Izz"] = 0.25
+def _line_mesh(element_type="Truss2", **properties):
+    mesh_type = BeamMesh3D if element_type == "Beam2" else TrussMesh3D
+    defaults = {"E": 210.0}
+    if element_type == "Beam2":
+        defaults.update({
+            "nu": 0.3,
+            "section_type": "rectangle",
+            "size_y": 1.0,
+            "size_z": 0.5,
+            "local_y": (0.0, 1.0, 0.0),
+        })
+    else:
+        defaults["area"] = 0.5
     defaults.update(properties)
     return mesh_type(
-        nodes=[Node2D(1, 0.0, 0.0), Node2D(2, 2.0, 0.0)],
-        elements=[Element2D(1, [1, 2], element_type, defaults)],
+        nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 2.0, 0.0, 0.0)],
+        elements=[Element3D(1, [1, 2], element_type, defaults)],
     )
 
 
@@ -77,10 +85,11 @@ def test_material_accepts_admissible_boundary_nearby_values():
 @pytest.mark.parametrize(
     ("element_type", "property_name"),
     [
-        ("Truss2D", "E"),
-        ("Truss2D", "area"),
-        ("Beam2D", "area"),
-        ("Beam2D", "Izz"),
+        ("Truss2", "E"),
+        ("Truss2", "area"),
+        ("Beam2", "E"),
+        ("Beam2", "size_y"),
+        ("Beam2", "size_z"),
     ],
 )
 @pytest.mark.parametrize("value", [0.0, -1.0, np.nan, np.inf, -np.inf])
@@ -94,7 +103,7 @@ def test_line_stiffness_rejects_invalid_positive_properties(
 
     with pytest.raises(
         ValueError,
-        match=rf"property {property_name} must be finite and > 0",
+        match=rf"{property_name}.*finite and > 0",
     ):
         get_element_kernel(element_type).stiffness(mesh, elem)
 
@@ -105,13 +114,13 @@ def test_line_body_force_rejects_invalid_area(value):
     elem = mesh.elements[0]
 
     with pytest.raises(ValueError, match=r"property area must be finite and > 0"):
-        get_element_kernel(elem.type).body_force(mesh, elem, (0.0, -9.81))
+        get_element_kernel(elem.type).body_force(mesh, elem, (0.0, -9.81, 0.0))
 
 
 @pytest.mark.parametrize("bad_value", [np.nan, np.inf, -np.inf])
 def test_body_force_assembly_rejects_nonfinite_vector_components(bad_value):
     mesh = _line_mesh()
-    bc = BoundaryCondition(body_forces=[ElementLoad(1, (bad_value, 0.0))])
+    bc = BoundaryCondition(body_forces=[ElementLoad(1, (bad_value, 0.0, 0.0))])
 
     with pytest.raises(ValueError, match=r"body force vector components must be finite"):
         build_load_vector(mesh, bc)
@@ -120,7 +129,7 @@ def test_body_force_assembly_rejects_nonfinite_vector_components(bad_value):
 @pytest.mark.parametrize("bad_value", [np.nan, np.inf, -np.inf])
 def test_gravity_assembly_rejects_nonfinite_vector_components(bad_value):
     mesh = _line_mesh()
-    bc = BoundaryCondition(gravity=(0.0, bad_value))
+    bc = BoundaryCondition(gravity=(0.0, bad_value, 0.0))
 
     with pytest.raises(ValueError, match=r"gravity vector components must be finite"):
         build_load_vector(mesh, bc)
@@ -130,7 +139,7 @@ def test_gravity_assembly_rejects_nonfinite_vector_components(bad_value):
 def test_gravity_rejects_invalid_density_stored_directly_on_element(rho):
     mesh = _line_mesh(rho=rho)
     bc = BoundaryCondition()
-    bc.set_gravity(0.0, -9.81)
+    bc.set_gravity(0.0, -9.81, 0.0)
 
     with pytest.raises(ValueError, match=r"Element 1 rho must be finite and >= 0"):
         build_load_vector(mesh, bc)
@@ -141,4 +150,21 @@ def test_line_kernel_rejects_nonfinite_body_vector_when_called_directly():
     elem = mesh.elements[0]
 
     with pytest.raises(ValueError, match=r"body force components must be finite"):
-        get_element_kernel(elem.type).body_force(mesh, elem, (np.nan, 0.0))
+        get_element_kernel(elem.type).body_force(mesh, elem, (np.nan, 0.0, 0.0))
+
+
+@pytest.mark.parametrize("nu", [-1.0, 0.5, np.nan, np.inf, -np.inf])
+def test_beam_stiffness_rejects_invalid_poisson_ratio(nu):
+    mesh = _line_mesh("Beam2", nu=nu)
+
+    with pytest.raises(ValueError, match=r"-1 < nu < 0.5"):
+        get_element_kernel("Beam2").stiffness(mesh, mesh.elements[0])
+
+
+@pytest.mark.parametrize("element_type", ["Truss2", "Beam2"])
+@pytest.mark.parametrize("rho", [-1.0, np.nan, np.inf, -np.inf])
+def test_line_stiffness_rejects_invalid_optional_density(element_type, rho):
+    mesh = _line_mesh(element_type, rho=rho)
+
+    with pytest.raises(ValueError, match=r"rho must be finite and >= 0"):
+        get_element_kernel(element_type).stiffness(mesh, mesh.elements[0])

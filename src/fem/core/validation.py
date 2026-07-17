@@ -115,6 +115,8 @@ def validate_model(model: Any, step: Any | None = None) -> None:
             candidate,
             node_ids,
             node_sets,
+            element_lookup,
+            element_sets,
             model.surfaces,
             model.edges,
             int(model.mesh.dofs_per_node),
@@ -402,6 +404,8 @@ def _validate_step_references(
     step: Any,
     node_ids: set[int],
     node_sets: Mapping[Any, Any],
+    element_lookup: Mapping[int, Any],
+    element_sets: Mapping[Any, Any],
     surfaces: Mapping[Any, Any],
     edges: Mapping[Any, Any],
     dofs_per_node: int,
@@ -447,6 +451,57 @@ def _validate_step_references(
             raise KeyError(
                 f"analysis step {step.name} references missing edge {load.edge}"
             )
+    for load in getattr(step, "line_loads", ()):
+        element_ids = _line_load_element_ids(
+            load.target,
+            element_lookup,
+            element_sets,
+            step.name,
+        )
+        for element_id in element_ids:
+            if str(element_lookup[element_id].type).casefold() != "beam2":
+                raise ValueError("line loads may target only Beam2 elements")
+        vector = getattr(load, "vector", None)
+        if not isinstance(vector, Sequence) or isinstance(vector, (str, bytes)):
+            raise ValueError("line load vector must contain three finite numbers")
+        if len(vector) != 3:
+            raise ValueError("line load vector must contain three finite numbers")
+        for value in vector:
+            try:
+                _finite_scalar(value, "line load vector component")
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "line load vector must contain three finite numbers"
+                ) from exc
+        if getattr(load, "coordinate_system", None) not in {"global", "local"}:
+            raise ValueError(
+                "line load coordinate_system must be 'global' or 'local', "
+                f"got {getattr(load, 'coordinate_system', None)!r}"
+            )
+
+
+def _line_load_element_ids(
+    target: Any,
+    element_lookup: Mapping[int, Any],
+    element_sets: Mapping[Any, Any],
+    step_name: str,
+) -> tuple[int, ...]:
+    """Resolve and validate one line-load element target."""
+    if isinstance(target, str):
+        if target not in element_sets:
+            raise KeyError(
+                f"analysis step {step_name} references missing element set {target}"
+            )
+        return tuple(
+            _integer_id(value, f"analysis step {step_name} line load element id")
+            for value in element_sets[target].element_ids
+        )
+    element_id = _integer_id(target, f"analysis step {step_name} line load target")
+    if element_id not in element_lookup:
+        raise KeyError(
+            f"analysis step {step_name} references missing element {element_id}"
+        )
+    return (element_id,)
 
 
 def _validate_unique_step_names(steps: Sequence[Any]) -> None:

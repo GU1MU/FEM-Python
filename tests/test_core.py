@@ -407,6 +407,27 @@ def test_elements_select_by_id_and_type_and_build_sets():
     assert selection.elements.set_by_type(mesh, "QUADS", "quad4") == ElementSet("QUADS", (2,))
 
 
+def test_element_type_selection_uses_kernel_identity_without_legacy_substrings():
+    mesh = HexMesh3D(
+        nodes=[],
+        elements=[
+            Element3D(1, [], "Truss2"),
+            Element3D(2, [], "Truss2D"),
+            Element3D(3, [], "Truss2Legacy"),
+            Element3D(4, [], "CPS4"),
+            Element3D(5, [], "Beam2"),
+            Element3D(6, [], "Beam2D"),
+            Element3D(7, [], "Beam2Legacy"),
+        ],
+    )
+
+    assert selection.elements.by_type(mesh, "Truss2") == [1]
+    assert selection.elements.by_type(mesh, "Beam2") == [5]
+    assert selection.elements.by_type(mesh, "Quad4") == [4]
+    for legacy_name in ("Truss2D", "Beam2D", "Truss2Legacy", "Beam2Legacy"):
+        assert selection.elements.by_type(mesh, legacy_name) == []
+
+
 def test_faces_select_boundary_faces_by_coordinate():
     mesh = make_selection_hex_mesh()
 

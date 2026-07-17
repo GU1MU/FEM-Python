@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Iterable
 
 from ..core.model import ElementSet
+from ..elements import get_element_kernel
 
 
 def all(mesh: Any) -> list[int]:
@@ -11,9 +12,24 @@ def all(mesh: Any) -> list[int]:
 
 
 def by_type(mesh: Any, element_type: str) -> list[int]:
-    """Return element ids whose type contains the requested name."""
-    type_key = str(element_type).lower()
-    return [elem.id for elem in mesh.elements if type_key in str(elem.type).lower()]
+    """Return element ids sharing the requested registered kernel type."""
+    requested = _kernel_type_identity(element_type)
+    if requested is None:
+        return []
+    return [
+        elem.id
+        for elem in mesh.elements
+        if _kernel_type_identity(elem.type) == requested
+    ]
+
+
+def _kernel_type_identity(element_type: Any) -> str | None:
+    """Return a canonical registered type name without substring matching."""
+    try:
+        kernel = get_element_kernel(str(element_type))
+    except NotImplementedError:
+        return None
+    return str(kernel.type_names[0]).casefold()
 
 
 def by_ids(mesh: Any, element_ids: Iterable[int]) -> list[int]:

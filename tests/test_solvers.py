@@ -18,7 +18,7 @@ def test_static_linear_solver_builds_step_boundary_and_solves_case():
     mesh = model.mesh
 
     bc = static_linear.boundary_for_step(model, "pull")
-    assert len(bc.prescribed_displacements) == 3
+    assert len(bc.prescribed_displacements) == 5
     assert sum(bc.nodal_forces.values()) == pytest.approx(100.0)
 
     U = static_linear.solve(model, "pull").U

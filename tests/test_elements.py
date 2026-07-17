@@ -5,8 +5,9 @@ import numpy as np
 import pytest
 
 from fem import boundary
-from fem.core.mesh import Element2D, Node2D, TrussMesh2D
+from fem.core.mesh import Element3D, Node3D, TrussMesh3D
 from fem.elements import get_element_kernel
+from fem.elements.beam_section import parse_beam2_section
 from fem.elements.hexahedron import (
     HEX20_EXTRAPOLATION_MATRIX,
     HEX20_NATURAL_NODE_COORDS,
@@ -16,7 +17,7 @@ from fem.elements.hexahedron import (
     hex8_gauss_points,
     hex8_shape_funcs_grads,
 )
-from fem.elements.line import line2_geometry
+from fem.elements.line import beam3_geometry, line3_geometry
 from fem.elements.quadrilateral import (
     Quad4PlaneKernel,
     Quad8PlaneKernel,
@@ -84,8 +85,8 @@ def _assert_kernel_matches_explicit_node_lookup(mesh):
         make_tet10_stiffness_mesh,
     ],
     ids=[
-        "truss2d",
-        "beam2d",
+        "truss2",
+        "beam2",
         "tri3",
         "tri6",
         "quad4",
@@ -105,9 +106,9 @@ def test_kernels_match_explicit_node_lookup(builder):
 def test_truss_kernel_provides_element_stress():
     mesh = make_truss_stiffness_mesh()
     elem = mesh.elements[0]
-    U = np.array([0.0, 0.0, 0.02, 0.0], dtype=float)
+    U = np.array([0.0, 0.0, 0.0, 0.02, 0.0, 0.0], dtype=float)
 
-    axial_strain, axial_stress, mises = get_element_kernel("Truss2D").element_stress(
+    axial_strain, axial_stress, mises = get_element_kernel("Truss2").element_stress(
         mesh, elem, U
     )
 
@@ -117,25 +118,25 @@ def test_truss_kernel_provides_element_stress():
 
 
 def test_inclined_truss_matches_closed_form_axial_response():
-    mesh = TrussMesh2D(
-        nodes=[Node2D(1, 0.0, 0.0), Node2D(2, 3.0, 4.0)],
+    mesh = TrussMesh3D(
+        nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 3.0, 4.0, 0.0)],
         elements=[
-            Element2D(
+            Element3D(
                 1,
                 [1, 2],
-                "Truss2D",
+                "Truss2",
                 {"E": 200.0, "area": 2.0},
             )
         ],
     )
     elem = mesh.elements[0]
     kernel = get_element_kernel(elem.type)
-    U = np.array([0.0, 0.0, 0.6, 0.8])
+    U = np.array([0.0, 0.0, 0.0, 0.6, 0.8, 0.0])
 
     internal_force = kernel.stiffness(mesh, elem) @ U
     strain, stress, mises = kernel.element_stress(mesh, elem, U)
 
-    assert np.allclose(internal_force, [-48.0, -64.0, 48.0, 64.0])
+    assert np.allclose(internal_force, [-48.0, -64.0, 0.0, 48.0, 64.0, 0.0])
     assert strain == pytest.approx(0.2)
     assert stress == pytest.approx(40.0)
     assert mises == pytest.approx(40.0)
@@ -159,12 +160,12 @@ def test_inclined_beam_rigid_body_mode_has_zero_internal_force(mode):
         else:
             U[mesh.global_dof(node.id, 0)] = -node.y
             U[mesh.global_dof(node.id, 1)] = node.x
-            U[mesh.global_dof(node.id, 2)] = 1.0
+            U[mesh.global_dof(node.id, 5)] = 1.0
 
     Ke = kernel.stiffness(mesh, elem)
     Ue = U[mesh.element_dofs(elem)]
 
-    assert np.allclose(Ke @ Ue, np.zeros(6), atol=1e-12)
+    assert np.allclose(Ke @ Ue, np.zeros(12), atol=1e-12)
     assert float(Ue @ Ke @ Ue) == pytest.approx(0.0, abs=1e-12)
 
 
@@ -173,20 +174,18 @@ def test_inclined_beam_cantilever_matches_euler_bernoulli_tip_response():
     elem = mesh.elements[0]
     kernel = get_element_kernel(elem.type)
     Ke = kernel.stiffness(mesh, elem)
-    L, c, s = line2_geometry(mesh, elem)
+    L, rotation = beam3_geometry(mesh, elem)
     E = float(elem.props["E"])
-    Izz = float(elem.props["Izz"])
+    Izz = parse_beam2_section(elem.props).Izz
     free = mesh.node_dofs(elem.node_ids[1])
     F = np.zeros(mesh.num_dofs, dtype=float)
-    F[free[0]] = -s
-    F[free[1]] = c
+    F[free[:3]] = rotation[1]
 
     U_tip = np.linalg.solve(Ke[np.ix_(free, free)], F[free])
     v_local = L**3 / (3.0 * E * Izz)
-    expected = np.array([
-        -s * v_local,
-        c * v_local,
-        L**2 / (2.0 * E * Izz),
+    expected = np.concatenate([
+        rotation[1] * v_local,
+        rotation[2] * (L**2 / (2.0 * E * Izz)),
     ])
 
     assert np.allclose(U_tip, expected)
@@ -195,41 +194,50 @@ def test_inclined_beam_cantilever_matches_euler_bernoulli_tip_response():
 @pytest.mark.parametrize(
     "builder",
     [make_truss_stiffness_mesh, make_beam_stiffness_mesh],
-    ids=["truss2d", "beam2d"],
+    ids=["truss2", "beam2"],
 )
 def test_line_element_body_force_preserves_global_resultant(builder):
     mesh = builder()
     elem = mesh.elements[0]
     kernel = get_element_kernel(elem.type)
-    vector = np.array([4.0, -5.0])
-    length, _, _ = line2_geometry(mesh, elem)
-    area = float(elem.props["area"])
+    vector = np.array([4.0, -5.0, 2.0])
+    length, _ = line3_geometry(mesh, elem)
+    area = (
+        parse_beam2_section(elem.props).area
+        if str(elem.type).casefold() == "beam2"
+        else float(elem.props["area"])
+    )
 
     fe = kernel.body_force(mesh, elem, tuple(vector))
     stride = mesh.dofs_per_node
 
     assert float(fe[0::stride].sum()) == pytest.approx(area * length * vector[0])
     assert float(fe[1::stride].sum()) == pytest.approx(area * length * vector[1])
+    assert float(fe[2::stride].sum()) == pytest.approx(area * length * vector[2])
 
 
 def test_beam_body_force_preserves_global_moment():
     mesh = make_beam_stiffness_mesh()
     elem = mesh.elements[0]
-    vector = np.array([4.0, -5.0])
+    vector = np.array([4.0, -5.0, 2.0])
     fe = get_element_kernel(elem.type).body_force(mesh, elem, tuple(vector))
-    length, _, _ = line2_geometry(mesh, elem)
-    area = float(elem.props["area"])
+    length, _ = line3_geometry(mesh, elem)
+    area = parse_beam2_section(elem.props).area
     node_lookup = _node_lookup(mesh)
     ni = node_lookup[elem.node_ids[0]]
     nj = node_lookup[elem.node_ids[1]]
     total_force = area * length * vector
-    midpoint = np.array([(ni.x + nj.x) / 2.0, (ni.y + nj.y) / 2.0])
+    midpoint = np.array([
+        (ni.x + nj.x) / 2.0,
+        (ni.y + nj.y) / 2.0,
+        (ni.z + nj.z) / 2.0,
+    ])
 
     assembled_moment = (
-        ni.x * fe[1] - ni.y * fe[0] + fe[2]
-        + nj.x * fe[4] - nj.y * fe[3] + fe[5]
+        np.cross([ni.x, ni.y, ni.z], fe[:3]) + fe[3:6]
+        + np.cross([nj.x, nj.y, nj.z], fe[6:9]) + fe[9:12]
     )
-    expected_moment = midpoint[0] * total_force[1] - midpoint[1] * total_force[0]
+    expected_moment = np.cross(midpoint, total_force)
 
     assert assembled_moment == pytest.approx(expected_moment)
 
@@ -242,7 +250,7 @@ def test_beam_stiffness_is_invariant_to_element_node_order():
 
     elem.node_ids = list(reversed(elem.node_ids))
     K_reverse = kernel.stiffness(mesh, elem)
-    swap = np.array([3, 4, 5, 0, 1, 2])
+    swap = np.array([6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5])
 
     assert np.allclose(K_forward, K_reverse[np.ix_(swap, swap)])
 
@@ -250,7 +258,7 @@ def test_beam_stiffness_is_invariant_to_element_node_order():
 @pytest.mark.parametrize(
     "builder",
     [make_truss_stiffness_mesh, make_beam_stiffness_mesh],
-    ids=["truss2d", "beam2d"],
+    ids=["truss2", "beam2"],
 )
 def test_line_element_rejects_zero_length(builder):
     mesh = builder()
@@ -260,6 +268,7 @@ def test_line_element_rejects_zero_length(builder):
     nj = node_lookup[elem.node_ids[1]]
     nj.x = ni.x
     nj.y = ni.y
+    nj.z = ni.z
 
     with pytest.raises(ValueError, match="zero length"):
         get_element_kernel(elem.type).stiffness(mesh, elem)
@@ -268,7 +277,7 @@ def test_line_element_rejects_zero_length(builder):
 @pytest.mark.parametrize(
     "builder",
     [make_truss_stiffness_mesh, make_beam_stiffness_mesh],
-    ids=["truss2d", "beam2d"],
+    ids=["truss2", "beam2"],
 )
 def test_line_element_reports_missing_node(builder):
     mesh = builder()
@@ -283,9 +292,9 @@ def test_line_element_reports_missing_node(builder):
     ("builder", "missing_property"),
     [
         (make_truss_stiffness_mesh, "area"),
-        (make_beam_stiffness_mesh, "Izz"),
+        (make_beam_stiffness_mesh, "size_z"),
     ],
-    ids=["truss2d", "beam2d"],
+    ids=["truss2", "beam2"],
 )
 def test_line_element_reports_missing_required_property(builder, missing_property):
     mesh = builder()
@@ -294,7 +303,7 @@ def test_line_element_reports_missing_required_property(builder, missing_propert
 
     with pytest.raises(
         KeyError,
-        match=rf"Element {elem.id} missing property {missing_property}",
+        match=rf"missing property {missing_property}",
     ):
         get_element_kernel(elem.type).stiffness(mesh, elem)
 

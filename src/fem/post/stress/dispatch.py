@@ -4,7 +4,7 @@ from typing import Any, Iterable
 
 
 ELEMENT_STRESS_KEYS = {
-    "truss2d",
+    "truss2",
     "tri3",
     "tri6",
     "quad4",
@@ -15,6 +15,7 @@ ELEMENT_STRESS_KEYS = {
     "tet10",
 }
 NODAL_STRESS_KEYS = {
+    "beam2",
     "tri3",
     "tri6",
     "quad4",
@@ -25,7 +26,8 @@ NODAL_STRESS_KEYS = {
     "tet10",
 }
 TYPE_GROUPS = {
-    "truss2d": "line",
+    "truss2": "line",
+    "beam2": "line",
     "tri3": "plane",
     "tri6": "plane",
     "quad4": "plane",
@@ -97,25 +99,15 @@ def default_gauss_order(type_key: str) -> int | None:
 
 def type_key_from_name(element_type: Any) -> str | None:
     """Normalize mesh element type names to stress exporter keys."""
-    etype = str(element_type).lower()
-    if "c3d20r" in etype:
-        return None
-    if "truss" in etype:
-        return "truss2d"
-    if "tri6" in etype:
-        return "tri6"
-    if "tri3" in etype:
-        return "tri3"
-    if "quad4" in etype:
-        return "quad4"
-    if "quad8" in etype:
-        return "quad8"
-    if "hex20" in etype or "c3d20" in etype:
-        return "hex20"
-    if "hex8" in etype:
-        return "hex8"
-    if "tet10" in etype:
-        return "tet10"
-    if "tet4" in etype:
-        return "tet4"
-    return None
+    return {
+        "truss2": "truss2",
+        "beam2": "beam2",
+        "tri6plane": "tri6", "tri6": "tri6", "cps6": "tri6", "cpe6": "tri6",
+        "tri3plane": "tri3", "tri3": "tri3", "cps3": "tri3", "cpe3": "tri3",
+        "quad4plane": "quad4", "quad4": "quad4", "cps4": "quad4", "cpe4": "quad4",
+        "quad8plane": "quad8", "quad8": "quad8", "cps8": "quad8", "cpe8": "quad8",
+        "hex20": "hex20", "c3d20": "hex20",
+        "hex8": "hex8", "c3d8": "hex8",
+        "tet10": "tet10", "c3d10": "tet10",
+        "tet4": "tet4", "c3d4": "tet4",
+    }.get(str(element_type).casefold())

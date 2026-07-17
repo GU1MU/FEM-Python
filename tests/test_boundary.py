@@ -8,6 +8,7 @@ from fem.boundary.step import boundary_for_step
 from fem.boundary import step as boundary_step
 from fem.core.model import AnalysisStep, Edge, EdgeLoad, ElementEdge, ElementFace, FEMModel, Surface, SurfaceLoad
 from fem.elements import get_element_kernel
+from fem.elements.beam_section import parse_beam2_section
 from tests.helpers.mesh_builders import (
     make_beam_stiffness_mesh,
     make_hex20_stiffness_mesh,
@@ -111,21 +112,26 @@ def test_mixed_solid_body_forces_and_gravity_dispatch_by_element_type():
 @pytest.mark.parametrize(
     "builder",
     [make_truss_stiffness_mesh, make_beam_stiffness_mesh],
-    ids=["truss2d", "beam2d"],
+    ids=["truss2", "beam2"],
 )
 def test_line_element_gravity_dispatches_through_body_force(builder):
     mesh = builder()
     elem = mesh.elements[0]
     elem.props["rho"] = 3.0
     bc = BoundaryCondition()
-    bc.set_gravity(0.0, -2.0)
+    bc.set_gravity(0.0, -2.0, 0.0)
 
     F = build_load_vector(mesh, bc)
     node_lookup = {node.id: node for node in mesh.nodes}
     ni = node_lookup[elem.node_ids[0]]
     nj = node_lookup[elem.node_ids[1]]
     length = float(np.hypot(nj.x - ni.x, nj.y - ni.y))
-    expected_y = -2.0 * 3.0 * float(elem.props["area"]) * length
+    area = (
+        parse_beam2_section(elem.props).area
+        if str(elem.type).casefold() == "beam2"
+        else float(elem.props["area"])
+    )
+    expected_y = -2.0 * 3.0 * area * length
     y_dofs = [mesh.global_dof(node.id, 1) for node in mesh.nodes]
 
     assert F.shape == (mesh.num_dofs,)

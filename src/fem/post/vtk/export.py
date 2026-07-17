@@ -33,6 +33,7 @@ def from_result(
         U=result.U,
         overwrite=overwrite,
         threshold=threshold,
+        result=result,
     )
 
 
@@ -47,6 +48,7 @@ def from_csv(
     U: Optional[Sequence[float]] = None,
     overwrite: bool = False,
     threshold: float = 75.0,
+    result: Any | None = None,
 ) -> None:
     """Convert displacement and stress CSV files to VTK."""
     disp_csv_path = Path(disp_csv_path)
@@ -67,6 +69,7 @@ def from_csv(
             nodal_stress_csv_path,
             overwrite,
             threshold,
+            result,
         )
 
     node_disp = fields.read_displacement(mesh, disp_csv_path)
@@ -148,6 +151,7 @@ def _export_csvs(
     nodal_stress_csv_path: Optional[Path],
     overwrite: bool,
     threshold: float,
+    result: Any | None = None,
 ) -> None:
     """Export CSV inputs needed by the VTK writer."""
     from .. import displacement, stress
@@ -162,4 +166,11 @@ def _export_csvs(
 
     if nodal_stress_csv_path is not None and (overwrite or not nodal_stress_csv_path.exists()):
         nodal_stress_csv_path.parent.mkdir(parents=True, exist_ok=True)
-        stress.export.nodal(mesh, U, nodal_stress_csv_path, threshold=threshold)
+        if result is None:
+            stress.export.nodal(mesh, U, nodal_stress_csv_path, threshold=threshold)
+        else:
+            stress.export.nodal_from_result(
+                result,
+                nodal_stress_csv_path,
+                threshold=threshold,
+            )
