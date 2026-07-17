@@ -26,6 +26,15 @@ _MESH_OPTION_NAMES = (
     "Mesh.RecombineAll",
 )
 _POINT_SIZE_OPTION_NAME = "Mesh.MeshSizeFromPoints"
+_TYPED_SIZE_OPTION_NAMES = (
+    _POINT_SIZE_OPTION_NAME,
+    "Mesh.MeshSizeFromCurvature",
+    "Mesh.MeshSizeExtendFromBoundary",
+    "Mesh.MeshSizeMin",
+    "Mesh.MeshSizeMax",
+    "Mesh.MeshSizeFactor",
+)
+_MESH_FIELD_TYPES = frozenset({"Distance", "Threshold", "Min"})
 
 
 class GeometryError(RuntimeError):
@@ -44,6 +53,14 @@ class StaleEntityError(GeometryError):
     """Raised when an entity reference no longer denotes a live OCC entity."""
 
 
+class MeshFieldOwnershipError(GeometryError):
+    """Raised when a mesh field belongs to a different geometry model."""
+
+
+class StaleMeshFieldError(GeometryError):
+    """Raised when a mesh-field reference no longer denotes a live field."""
+
+
 @dataclass(frozen=True, slots=True)
 class EntityRef:
     """Immutable reference to one entity owned by a geometry model."""
@@ -56,6 +73,20 @@ class EntityRef:
     def __post_init__(self) -> None:
         _validate_entity_dimension(self.dimension)
         _validate_positive_tag(self.tag, "entity tag")
+
+
+@dataclass(frozen=True, slots=True)
+class MeshFieldRef:
+    """Immutable reference to one mesh field owned by a geometry model."""
+
+    tag: int
+    field_type: Literal["Distance", "Threshold", "Min"]
+    _owner_token: object = field(repr=False)
+    _field_token: object = field(repr=False)
+
+    def __post_init__(self) -> None:
+        _validate_positive_tag(self.tag, "mesh field tag")
+        _validate_mesh_field_type(self.field_type)
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,7 +145,9 @@ class GeometryModel:
     """Context-managed owner of one scripted OCC model and its mesh attempt.
 
     Gmsh model, session, and option state is process-global. This facade
-    supports same-thread nested contexts but is not thread-safe.
+    supports same-thread nested contexts but is not thread-safe. Successful
+    entity-dependent mesh controls protect their referenced topology from
+    typed removal and from OCC transforms that would discard native controls.
     """
 
     def __init__(self, name: str, *, dimension: Literal[1, 2, 3]) -> None:
@@ -123,6 +156,16 @@ class GeometryModel:
         self._state = _State.NEW
         self._owner_token = object()
         self._entity_tokens: dict[tuple[int, int], object] = {}
+        self._mesh_field_tokens: dict[int, object] = {}
+        self._mesh_field_types: dict[
+            int,
+            Literal["Distance", "Threshold", "Min"],
+        ] = {}
+        self._mesh_size_mode: Literal["none", "point", "background"] = "none"
+        self._background_field: MeshFieldRef | None = None
+        self._entity_control_dependencies: set[tuple[int, int]] = set()
+        self._transform_unsafe_control_dependencies: set[tuple[int, int]] = set()
+        self._control_dependency_scope_unknown = False
         self._gmsh: Any | None = None
         self._owns_session = False
         self._created_model = False
@@ -175,6 +218,13 @@ class GeometryModel:
             self._created_model = True
             self._gmsh.model.setCurrent(self.name)
             self._entity_tokens.clear()
+            self._mesh_field_tokens.clear()
+            self._mesh_field_types.clear()
+            self._mesh_size_mode = "none"
+            self._background_field = None
+            self._entity_control_dependencies.clear()
+            self._transform_unsafe_control_dependencies.clear()
+            self._control_dependency_scope_unknown = False
             self._element_group_names.clear()
             self._node_group_names.clear()
             self._mesh_attempted = False
@@ -218,6 +268,12 @@ class GeometryModel:
                 )
         finally:
             self._entity_tokens.clear()
+            self._mesh_field_tokens.clear()
+            self._mesh_field_types.clear()
+            self._background_field = None
+            self._entity_control_dependencies.clear()
+            self._transform_unsafe_control_dependencies.clear()
+            self._control_dependency_scope_unknown = False
             self._state = _State.CLOSED
             if gmsh is not None and self._owns_session:
                 if bool(gmsh.isInitialized()):
@@ -522,8 +578,10 @@ class GeometryModel:
         )
         if self.dimension == 2 and vector[2] != 0.0:
             raise ValueError("2D translation must remain in the global XY plane")
+        self._check_control_dependency_scope_known(operation)
         self._activate(operation)
         self._assert_occ_liveness(normalized, operation)
+        self._check_controlled_transform_allowed(operation, normalized)
         self._gmsh.model.occ.translate(_dim_tags(normalized), *vector)
         return normalized
 
@@ -559,8 +617,10 @@ class GeometryModel:
             raise ValueError(
                 "2D rotation axis must be parallel to the global Z axis"
             )
+        self._check_control_dependency_scope_known(operation)
         self._activate(operation)
         self._assert_occ_liveness(normalized, operation)
+        self._check_controlled_transform_allowed(operation, normalized)
         self._gmsh.model.occ.rotate(
             _dim_tags(normalized),
             *center,
@@ -640,8 +700,42 @@ class GeometryModel:
             list(normalized_heights),
             recombine,
         )
+        controlled = bool(layer_counts or recombine)
+        prior_unknown_scope = self._control_dependency_scope_unknown
+        if controlled:
+            self._control_dependency_scope_unknown = True
         validated_pairs = tuple(_normalize_dim_tag(pair) for pair in output_pairs)
-        return tuple(self._wrap_entity(pair) for pair in validated_pairs)
+        if not validated_pairs:
+            raise GeometryError(
+                f"geometry model {self.name!r}: extrude returned no entities"
+            )
+        allowed_output_dimensions = {input_dimension, input_dimension + 1}
+        if any(
+            dimension not in allowed_output_dimensions
+            for dimension, _ in validated_pairs
+        ):
+            raise GeometryError(
+                f"geometry model {self.name!r}: extrude returned an entity with "
+                "an unexpected dimension"
+            )
+        if not any(
+            dimension == input_dimension + 1 for dimension, _ in validated_pairs
+        ):
+            raise GeometryError(
+                f"geometry model {self.name!r}: extrude returned no "
+                f"dimension-{input_dimension + 1} entity"
+            )
+        outputs = tuple(self._wrap_entity(pair) for pair in validated_pairs)
+        if controlled:
+            dependency_keys = self._entity_boundary_closure_keys(
+                (*normalized, *outputs)
+            )
+            self._register_control_dependencies(
+                dependency_keys,
+                transform_unsafe=True,
+            )
+            self._control_dependency_scope_unknown = prior_unknown_scope
+        return outputs
 
     def entity(self, dimension: int, tag: int) -> EntityRef:
         """Acquire a typed reference for an existing raw OCC entity."""
@@ -814,7 +908,12 @@ class GeometryModel:
             dimension=1,
             operation=operation,
         )
+        dependency_keys = self._entity_boundary_closure_keys(
+            (target,),
+            synchronize=False,
+        )
         self._gmsh.model.mesh.setTransfiniteCurve(target.tag, node_count)
+        self._register_control_dependencies(dependency_keys, transform_unsafe=True)
 
     def transfinite_surface(
         self,
@@ -845,10 +944,15 @@ class GeometryModel:
             normalized_corners,
             operation=operation,
         )
+        dependency_keys = self._entity_boundary_closure_keys(
+            (target, *normalized_corners),
+            synchronize=False,
+        )
         self._gmsh.model.mesh.setTransfiniteSurface(
             target.tag,
             cornerTags=[corner.tag for corner in normalized_corners],
         )
+        self._register_control_dependencies(dependency_keys, transform_unsafe=True)
 
     def transfinite_volume(
         self,
@@ -879,10 +983,15 @@ class GeometryModel:
             normalized_corners,
             operation=operation,
         )
+        dependency_keys = self._entity_boundary_closure_keys(
+            (target, *normalized_corners),
+            synchronize=False,
+        )
         self._gmsh.model.mesh.setTransfiniteVolume(
             target.tag,
             cornerTags=[corner.tag for corner in normalized_corners],
         )
+        self._register_control_dependencies(dependency_keys, transform_unsafe=True)
 
     def recombine(self, surface: EntityRef) -> None:
         """Request native Gmsh recombination on one surface.
@@ -897,7 +1006,225 @@ class GeometryModel:
             dimension=2,
             operation=operation,
         )
+        dependency_keys = self._entity_boundary_closure_keys(
+            (target,),
+            synchronize=False,
+        )
         self._gmsh.model.mesh.setRecombine(2, target.tag)
+        self._register_control_dependencies(dependency_keys, transform_unsafe=True)
+
+    def mesh_size(
+        self,
+        points: Iterable[EntityRef],
+        *,
+        size: float,
+    ) -> None:
+        """Assign one mesh size to selected live OCC points."""
+        operation = "mesh_size"
+        self._check_state(operation, _MESH_CONTROL_STATES)
+        if self._mesh_size_mode == "background":
+            raise ValueError(
+                "mesh_size cannot be combined with a selected background field"
+            )
+        size_value = _positive_float(size, "size")
+        normalized = self._normalize_entities(points, operation=operation)
+        if any(point.dimension != 0 for point in normalized):
+            raise ValueError("mesh_size requires dimension-zero point references")
+
+        self._activate(operation)
+        self._gmsh.model.occ.synchronize()
+        self._assert_occ_liveness(normalized, operation)
+        self._gmsh.model.mesh.setSize(_dim_tags(normalized), size_value)
+        self._mesh_size_mode = "point"
+        self._register_control_dependencies(
+            _dim_tags(normalized),
+            transform_unsafe=True,
+        )
+
+    def distance_field(
+        self,
+        *,
+        points: Iterable[EntityRef] = (),
+        curves: Iterable[EntityRef] = (),
+        surfaces: Iterable[EntityRef] = (),
+        sampling: int = 20,
+    ) -> MeshFieldRef:
+        """Create a field measuring distance from selected OCC entities."""
+        operation = "distance_field"
+        self._check_state(operation, _MESH_CONTROL_STATES)
+        normalized_points = self._normalize_optional_entities(
+            points,
+            operation=operation,
+            label="points",
+        )
+        normalized_curves = self._normalize_optional_entities(
+            curves,
+            operation=operation,
+            label="curves",
+        )
+        normalized_surfaces = self._normalize_optional_entities(
+            surfaces,
+            operation=operation,
+            label="surfaces",
+        )
+        source_groups = (
+            ("points", 0, normalized_points),
+            ("curves", 1, normalized_curves),
+            ("surfaces", 2, normalized_surfaces),
+        )
+        all_sources = tuple(
+            entity
+            for _, _, group in source_groups
+            for entity in group
+        )
+        if not all_sources:
+            raise ValueError("distance_field requires at least one source entity")
+        for label, dimension, group in source_groups:
+            if any(entity.dimension != dimension for entity in group):
+                raise ValueError(
+                    f"distance_field {label} must be dimension-{dimension} "
+                    "entity references"
+                )
+        source_keys = [(entity.dimension, entity.tag) for entity in all_sources]
+        if len(set(source_keys)) != len(source_keys):
+            raise ValueError("distance_field source entities must be duplicate-free")
+        sampling_value = _integer_at_least(sampling, "sampling", minimum=2)
+
+        self._activate(operation)
+        self._gmsh.model.occ.synchronize()
+        self._assert_occ_liveness(all_sources, operation)
+        dependency_keys = self._entity_boundary_closure_keys(
+            all_sources,
+            synchronize=False,
+        )
+
+        def configure(field_tag: int) -> None:
+            manager = self._gmsh.model.mesh.field
+            if normalized_points:
+                manager.setNumbers(
+                    field_tag,
+                    "PointsList",
+                    [point.tag for point in normalized_points],
+                )
+            if normalized_curves:
+                manager.setNumbers(
+                    field_tag,
+                    "CurvesList",
+                    [curve.tag for curve in normalized_curves],
+                )
+            if normalized_surfaces:
+                manager.setNumbers(
+                    field_tag,
+                    "SurfacesList",
+                    [surface.tag for surface in normalized_surfaces],
+                )
+            manager.setNumber(field_tag, "Sampling", sampling_value)
+
+        mesh_field = self._construct_mesh_field("Distance", configure)
+        self._register_control_dependencies(
+            dependency_keys,
+            transform_unsafe=False,
+        )
+        return mesh_field
+
+    def threshold_field(
+        self,
+        distance: MeshFieldRef,
+        *,
+        size_min: float,
+        size_max: float,
+        dist_min: float,
+        dist_max: float,
+    ) -> MeshFieldRef:
+        """Map one distance field to near- and far-field mesh sizes."""
+        operation = "threshold_field"
+        self._check_state(operation, _MESH_CONTROL_STATES)
+        normalized_distance = self._normalize_mesh_fields(
+            (distance,),
+            operation=operation,
+        )[0]
+        if normalized_distance.field_type != "Distance":
+            raise ValueError("threshold_field requires a Distance field")
+        size_min_value = _positive_float(size_min, "size_min")
+        size_max_value = _positive_float(size_max, "size_max")
+        if size_min_value >= size_max_value:
+            raise ValueError("size_min must be less than size_max")
+        dist_min_value = _nonnegative_float(dist_min, "dist_min")
+        dist_max_value = _finite_float(dist_max, "dist_max")
+        if dist_max_value <= dist_min_value:
+            raise ValueError("dist_max must be greater than dist_min")
+
+        self._activate(operation)
+        self._gmsh.model.occ.synchronize()
+        self._assert_mesh_field_liveness((normalized_distance,), operation)
+
+        def configure(field_tag: int) -> None:
+            manager = self._gmsh.model.mesh.field
+            manager.setNumber(field_tag, "InField", normalized_distance.tag)
+            manager.setNumber(field_tag, "SizeMin", size_min_value)
+            manager.setNumber(field_tag, "SizeMax", size_max_value)
+            manager.setNumber(field_tag, "DistMin", dist_min_value)
+            manager.setNumber(field_tag, "DistMax", dist_max_value)
+
+        return self._construct_mesh_field("Threshold", configure)
+
+    def min_field(self, fields: Sequence[MeshFieldRef]) -> MeshFieldRef:
+        """Create the pointwise minimum of two or more size fields."""
+        operation = "min_field"
+        self._check_state(operation, _MESH_CONTROL_STATES)
+        try:
+            materialized = tuple(fields)
+        except TypeError as exc:
+            raise TypeError("min_field fields must be iterable") from exc
+        if len(materialized) < 2:
+            raise ValueError("min_field requires at least two fields")
+        normalized = self._normalize_mesh_fields(
+            materialized,
+            operation=operation,
+        )
+        if any(field.field_type not in {"Threshold", "Min"} for field in normalized):
+            raise ValueError(
+                "min_field accepts only Threshold and Min size fields"
+            )
+
+        self._activate(operation)
+        self._gmsh.model.occ.synchronize()
+        self._assert_mesh_field_liveness(normalized, operation)
+
+        def configure(field_tag: int) -> None:
+            self._gmsh.model.mesh.field.setNumbers(
+                field_tag,
+                "FieldsList",
+                [item.tag for item in normalized],
+            )
+
+        return self._construct_mesh_field("Min", configure)
+
+    def background_field(self, field: MeshFieldRef) -> None:
+        """Select exactly one size-producing field as the background field."""
+        operation = "background_field"
+        self._check_state(operation, _MESH_CONTROL_STATES)
+        if self._background_field is not None:
+            raise ValueError("background_field may be selected only once")
+        if self._mesh_size_mode == "point":
+            raise ValueError(
+                "background_field cannot be combined with typed point sizes"
+            )
+        normalized = self._normalize_mesh_fields(
+            (field,),
+            operation=operation,
+        )[0]
+        if normalized.field_type not in {"Threshold", "Min"}:
+            raise ValueError(
+                "background_field requires a Threshold or Min size field"
+            )
+
+        self._activate(operation)
+        self._gmsh.model.occ.synchronize()
+        self._assert_mesh_field_liveness((normalized,), operation)
+        self._gmsh.model.mesh.field.setAsBackgroundMesh(normalized.tag)
+        self._background_field = normalized
+        self._mesh_size_mode = "background"
 
     def generate_mesh(
         self,
@@ -977,6 +1304,11 @@ class GeometryModel:
         if self._mesh_attempted:
             raise self._state_error(operation, "the one mesh attempt was already used")
         size_value = None if size is None else _positive_float(size, "size")
+        if size_value is not None and self._mesh_size_mode != "none":
+            raise ValueError(
+                "size cannot be supplied after typed point sizes or a typed "
+                "background field has been configured"
+            )
         if isinstance(order, bool) or not isinstance(order, int) or order not in (1, 2):
             raise ValueError(f"order must be integer 1 or 2, got {order!r}")
         if not isinstance(recombine, bool):
@@ -1014,7 +1346,14 @@ class GeometryModel:
 
         self._mesh_attempted = True
         try:
+            generation_size_mode: Literal[
+                "none",
+                "uniform",
+                "point",
+                "background",
+            ] = self._mesh_size_mode
             if size_value is not None:
+                generation_size_mode = "uniform"
                 points = sorted(
                     _normalize_dim_tag(pair)
                     for pair in self._gmsh.model.getEntities(0)
@@ -1029,7 +1368,7 @@ class GeometryModel:
             self._snapshot_and_set_mesh_options(
                 order,
                 recombine,
-                use_point_sizes=size_value is not None,
+                size_mode=generation_size_mode,
             )
             self._gmsh.model.mesh.generate(self.dimension)
             self._gmsh.model.occ.synchronize()
@@ -1070,7 +1409,7 @@ class GeometryModel:
         order: Literal[1, 2],
         recombine: bool,
         *,
-        use_point_sizes: bool,
+        size_mode: Literal["none", "uniform", "point", "background"],
     ) -> None:
         if self._pending_options:
             raise GeometryStateError(
@@ -1083,9 +1422,23 @@ class GeometryModel:
             "Mesh.RecombineAll": 1.0 if recombine else 0.0,
         }
         option_names = _MESH_OPTION_NAMES
-        if use_point_sizes:
+        if size_mode == "uniform":
             requested[_POINT_SIZE_OPTION_NAME] = 1.0
             option_names = (*option_names, _POINT_SIZE_OPTION_NAME)
+        elif size_mode in {"point", "background"}:
+            requested.update(
+                {
+                    _POINT_SIZE_OPTION_NAME: 1.0 if size_mode == "point" else 0.0,
+                    "Mesh.MeshSizeFromCurvature": 0.0,
+                    "Mesh.MeshSizeExtendFromBoundary": (
+                        1.0 if size_mode == "point" else 0.0
+                    ),
+                    "Mesh.MeshSizeMin": 0.0,
+                    "Mesh.MeshSizeMax": 1.0e22,
+                    "Mesh.MeshSizeFactor": 1.0,
+                }
+            )
+            option_names = (*option_names, *_TYPED_SIZE_OPTION_NAMES)
         for option_name in option_names:
             self._pending_options[option_name] = float(
                 self._gmsh.option.getNumber(option_name)
@@ -1095,18 +1448,30 @@ class GeometryModel:
 
     @property
     def raw_model(self) -> Any:
-        """Return the active raw Gmsh model after invalidating typed refs."""
+        """Return the raw model and transfer size-precedence ownership to caller.
+
+        Access invalidates typed entity and mesh-field references. Any already
+        committed typed size mode or entity-control guard remains committed.
+        """
         return self._raw_handle("raw_model", "model")
 
     @property
     def raw_occ(self) -> Any:
-        """Return the active raw OCC handle after invalidating typed refs."""
+        """Return raw OCC and transfer size-precedence ownership to caller.
+
+        Access invalidates typed entity and mesh-field references. Any already
+        committed typed size mode or entity-control guard remains committed.
+        """
         return self._raw_handle("raw_occ", "occ")
 
     def _raw_handle(self, operation: str, kind: Literal["model", "occ"]) -> Any:
         self._check_state(operation, frozenset({_State.BUILDING}))
         self._activate(operation)
+        if self._entity_control_dependencies:
+            self._control_dependency_scope_unknown = True
         self._entity_tokens.clear()
+        self._mesh_field_tokens.clear()
+        self._mesh_field_types.clear()
         if kind == "model":
             return self._gmsh.model
         return self._gmsh.model.occ
@@ -1136,6 +1501,8 @@ class GeometryModel:
             )
         if not isinstance(remove_tools, bool):
             raise TypeError(f"remove_tools must be a boolean, got {remove_tools!r}")
+        if remove_objects or remove_tools:
+            self._check_control_dependency_scope_known(operation)
         all_inputs = (*normalized_objects, *normalized_tools)
         self._activate(operation)
         self._assert_occ_liveness(all_inputs, operation)
@@ -1144,6 +1511,7 @@ class GeometryModel:
             *(normalized_tools if remove_tools else ()),
         )
         invalidated_keys = self._entity_boundary_closure_keys(removed_inputs)
+        self._check_controlled_removal_allowed(operation, invalidated_keys)
         backend_operation = getattr(self._gmsh.model.occ, operation)
         raw_outputs, raw_map = backend_operation(
             _dim_tags(normalized_objects),
@@ -1214,6 +1582,136 @@ class GeometryModel:
                 raise ValueError(f"{operation} entity inputs must be duplicate-free")
             seen.add(entity)
         return normalized
+
+    def _normalize_optional_entities(
+        self,
+        entities: Iterable[EntityRef],
+        *,
+        operation: str,
+        label: str,
+    ) -> tuple[EntityRef, ...]:
+        try:
+            materialized = tuple(entities)
+        except TypeError as exc:
+            raise TypeError(f"{operation} {label} must be iterable") from exc
+        if not materialized:
+            return ()
+        return self._normalize_entities(
+            materialized,
+            operation=f"{operation} {label}",
+        )
+
+    def _normalize_mesh_fields(
+        self,
+        fields: Iterable[MeshFieldRef],
+        *,
+        operation: str,
+    ) -> tuple[MeshFieldRef, ...]:
+        try:
+            normalized = tuple(fields)
+        except TypeError as exc:
+            raise TypeError(f"{operation} fields must be iterable") from exc
+        seen_tags: set[int] = set()
+        for mesh_field in normalized:
+            if not isinstance(mesh_field, MeshFieldRef):
+                raise TypeError(
+                    f"{operation} requires MeshFieldRef values, got "
+                    f"{mesh_field!r}"
+                )
+            if mesh_field._owner_token is not self._owner_token:
+                raise MeshFieldOwnershipError(
+                    f"geometry model {self.name!r}: {operation} received a "
+                    "mesh field owned by another geometry model"
+                )
+            current_token = self._mesh_field_tokens.get(mesh_field.tag)
+            registered_type = self._mesh_field_types.get(mesh_field.tag)
+            if (
+                current_token is not mesh_field._field_token
+                or registered_type != mesh_field.field_type
+            ):
+                raise StaleMeshFieldError(
+                    f"geometry model {self.name!r}: {operation} received stale "
+                    f"mesh field {mesh_field.tag}"
+                )
+            if mesh_field.tag in seen_tags:
+                raise ValueError(f"{operation} field inputs must be duplicate-free")
+            seen_tags.add(mesh_field.tag)
+        return normalized
+
+    def _active_mesh_field_tags(self) -> set[int]:
+        try:
+            return {
+                _validate_positive_tag(tag, "mesh field tag")
+                for tag in self._gmsh.model.mesh.field.list()
+            }
+        except (TypeError, ValueError) as exc:
+            raise GeometryError(
+                f"geometry model {self.name!r}: Gmsh returned an invalid mesh "
+                "field list"
+            ) from exc
+
+    def _assert_mesh_field_liveness(
+        self,
+        fields: Iterable[MeshFieldRef],
+        operation: str,
+    ) -> None:
+        active_tags = self._active_mesh_field_tags()
+        for mesh_field in fields:
+            token = self._mesh_field_tokens.get(mesh_field.tag)
+            registered_type = self._mesh_field_types.get(mesh_field.tag)
+            if (
+                token is not mesh_field._field_token
+                or registered_type != mesh_field.field_type
+                or mesh_field.tag not in active_tags
+            ):
+                self._mesh_field_tokens.pop(mesh_field.tag, None)
+                self._mesh_field_types.pop(mesh_field.tag, None)
+                raise StaleMeshFieldError(
+                    f"geometry model {self.name!r}: {operation} mesh field "
+                    f"{mesh_field.tag} no longer exists"
+                )
+
+    def _construct_mesh_field(
+        self,
+        field_type: Literal["Distance", "Threshold", "Min"],
+        configure: Any,
+    ) -> MeshFieldRef:
+        manager = self._gmsh.model.mesh.field
+        allocated_tag: int | None = None
+        try:
+            allocated_tag = _validate_positive_tag(
+                manager.add(field_type, tag=-1),
+                "mesh field tag",
+            )
+            configure(allocated_tag)
+            if allocated_tag not in self._active_mesh_field_tags():
+                raise GeometryError(
+                    f"geometry model {self.name!r}: newly allocated "
+                    f"{field_type} field {allocated_tag} is not active"
+                )
+            token = object()
+            reference = MeshFieldRef(
+                allocated_tag,
+                field_type,
+                self._owner_token,
+                token,
+            )
+            self._mesh_field_tokens[allocated_tag] = token
+            self._mesh_field_types[allocated_tag] = field_type
+        except BaseException as error:
+            if allocated_tag is not None:
+                self._mesh_field_tokens.pop(allocated_tag, None)
+                self._mesh_field_types.pop(allocated_tag, None)
+                try:
+                    manager.remove(allocated_tag)
+                except BaseException as rollback_error:
+                    error.add_note(
+                        f"geometry model {self.name!r}: mesh-field rollback "
+                        f"also failed while removing field {allocated_tag}: "
+                        f"{rollback_error}"
+                    )
+            raise
+        return reference
 
     def _prepare_mesh_control_target(
         self,
@@ -1360,6 +1858,71 @@ class GeometryModel:
                 f"{operation} in a 2D facade must lie in the global XY plane"
             )
 
+    def _check_controlled_removal_allowed(
+        self,
+        operation: str,
+        removed_keys: set[tuple[int, int]],
+    ) -> None:
+        if not removed_keys:
+            return
+        if self._control_dependency_scope_unknown:
+            raise self._state_error(
+                operation,
+                "raw access or a failed controlled topology operation made "
+                "mesh-control dependencies unknown",
+            )
+        conflicts = removed_keys & self._entity_control_dependencies
+        if conflicts:
+            dimension, tag = min(conflicts)
+            raise self._state_error(
+                operation,
+                "destructive topology replacement would invalidate an "
+                "entity-dependent mesh control on topology "
+                f"({dimension}, {tag})",
+            )
+
+    def _check_control_dependency_scope_known(self, operation: str) -> None:
+        if self._control_dependency_scope_unknown:
+            raise self._state_error(
+                operation,
+                "raw access or a failed controlled topology operation made "
+                "mesh-control dependencies unknown",
+            )
+
+    def _check_controlled_transform_allowed(
+        self,
+        operation: str,
+        entities: tuple[EntityRef, ...],
+    ) -> None:
+        if self._control_dependency_scope_unknown:
+            raise self._state_error(
+                operation,
+                "raw access or a failed controlled topology operation made "
+                "mesh-control dependencies unknown",
+            )
+        if not self._transform_unsafe_control_dependencies:
+            return
+        transformed_keys = self._entity_boundary_closure_keys(entities)
+        conflicts = transformed_keys & self._transform_unsafe_control_dependencies
+        if conflicts:
+            dimension, tag = min(conflicts)
+            raise self._state_error(
+                operation,
+                "the OCC transform would discard an entity-dependent mesh "
+                f"control on topology ({dimension}, {tag})",
+            )
+
+    def _register_control_dependencies(
+        self,
+        keys: Iterable[tuple[int, int]],
+        *,
+        transform_unsafe: bool,
+    ) -> None:
+        materialized = set(keys)
+        self._entity_control_dependencies.update(materialized)
+        if transform_unsafe:
+            self._transform_unsafe_control_dependencies.update(materialized)
+
     def _check_state(
         self,
         operation: str,
@@ -1396,6 +1959,14 @@ class GeometryModel:
     def _cleanup_after_failed_entry(
         self,
     ) -> tuple[tuple[str, BaseException], ...]:
+        self._entity_tokens.clear()
+        self._mesh_field_tokens.clear()
+        self._mesh_field_types.clear()
+        self._mesh_size_mode = "none"
+        self._background_field = None
+        self._entity_control_dependencies.clear()
+        self._transform_unsafe_control_dependencies.clear()
+        self._control_dependency_scope_unknown = False
         gmsh = self._gmsh
         if gmsh is None:
             return ()
@@ -1512,6 +2083,17 @@ def _validate_entity_dimension(value: Any) -> int:
     return value
 
 
+def _validate_mesh_field_type(
+    value: Any,
+) -> Literal["Distance", "Threshold", "Min"]:
+    if not isinstance(value, str) or value not in _MESH_FIELD_TYPES:
+        raise ValueError(
+            "mesh field type must be 'Distance', 'Threshold', or 'Min', "
+            f"got {value!r}"
+        )
+    return value
+
+
 def _validate_positive_tag(value: Any, label: str) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{label} must be a positive integer, got {value!r}")
@@ -1605,7 +2187,10 @@ __all__ = [
     "GeometryError",
     "GeometryModel",
     "GeometryStateError",
+    "MeshFieldOwnershipError",
+    "MeshFieldRef",
     "PhysicalGroupRef",
     "StaleEntityError",
+    "StaleMeshFieldError",
     "model",
 ]
