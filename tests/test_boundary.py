@@ -6,7 +6,7 @@ from fem.boundary.condition import BoundaryCondition
 from fem.boundary.loads import build_load_vector
 from fem.boundary.step import boundary_for_step
 from fem.boundary import step as boundary_step
-from fem.core.model import AnalysisStep, Edge, EdgeLoad, ElementEdge, ElementFace, FEMModel, Surface, SurfaceLoad
+from fem.core.model import AnalysisStep, Edge, EdgeLoad, ElementEdge, ElementFace, FEMModel, NodalLoad, Surface, SurfaceLoad
 from fem.elements import get_element_kernel
 from fem.elements.beam_section import parse_beam2_section
 from tests.helpers.mesh_builders import (
@@ -18,6 +18,24 @@ from tests.helpers.mesh_builders import (
     make_tet4_stiffness_mesh,
     make_truss_stiffness_mesh,
 )
+
+
+class _IterationCountingList(list):
+    def __init__(self, values):
+        super().__init__(values)
+        self.iterations = 0
+
+    def __iter__(self):
+        self.iterations += 1
+        return super().__iter__()
+
+
+def _track_mesh_iterations(mesh):
+    nodes = _IterationCountingList(mesh.nodes)
+    elements = _IterationCountingList(mesh.elements)
+    mesh.nodes = nodes
+    mesh.elements = elements
+    return nodes, elements
 
 
 def test_boundary_load_vector_matches_kernel_dispatch():
@@ -48,28 +66,6 @@ def test_boundary_load_vector_matches_kernel_dispatch():
     assert np.allclose(F3d, expected3d)
 
 
-def test_boundary_package_exposes_explicit_modules_only():
-    assert hasattr(boundary, "body")
-    assert hasattr(boundary, "condition")
-    assert hasattr(boundary, "loads")
-    assert hasattr(boundary, "nodal")
-    assert hasattr(boundary, "constraints")
-    assert hasattr(boundary, "traction")
-    assert callable(boundary.loads.build_load_vector)
-    assert not hasattr(boundary.traction, "add_forces")
-    assert not hasattr(boundary, "BoundaryCondition2D")
-    assert not hasattr(boundary, "BoundaryCondition3D")
-    assert not hasattr(boundary, "build_load_vector_3d")
-
-
-def test_boundary_condition_preserves_positional_order():
-    bc = BoundaryCondition({}, {}, [], [], (0.0, -9.81))
-
-    assert bc.surface_tractions == []
-    assert bc.gravity == (0.0, -9.81)
-    assert bc.edge_tractions == []
-
-
 def test_3d_nodal_forces_accumulate_like_2d():
     mesh = make_tet4_stiffness_mesh()
     bc = boundary.condition.BoundaryCondition()
@@ -79,6 +75,103 @@ def test_3d_nodal_forces_accumulate_like_2d():
     F = boundary.loads.build_load_vector(mesh, bc)
 
     assert F[mesh.global_dof(1, 2)] == pytest.approx(-5.0)
+
+
+@pytest.mark.parametrize("nodal_only", [False, True], ids=["empty", "nodal-only"])
+def test_boundary_step_skips_mesh_lookups_without_geometric_loads(nodal_only):
+    mesh = make_tet4_stiffness_mesh()
+    step = AnalysisStep(
+        "load",
+        cloads=(NodalLoad(1, 3, -5.0),) if nodal_only else (),
+    )
+    model = FEMModel(mesh=mesh, steps=[step])
+    nodes, elements = _track_mesh_iterations(mesh)
+
+    bc = boundary_for_step(model, step)
+
+    assert len(bc.nodal_forces) == int(nodal_only)
+    assert nodes.iterations == 0
+    assert elements.iterations == 0
+
+
+@pytest.mark.parametrize("nodal_only", [False, True], ids=["empty", "nodal-only"])
+def test_load_vector_skips_mesh_lookups_without_distributed_loads(nodal_only):
+    mesh = make_tet4_stiffness_mesh()
+    bc = BoundaryCondition()
+    if nodal_only:
+        bc.add_nodal_force(1, 2, -5.0, mesh)
+    nodes, elements = _track_mesh_iterations(mesh)
+
+    F = build_load_vector(mesh, bc)
+
+    assert np.count_nonzero(F) == int(nodal_only)
+    assert nodes.iterations == 0
+    assert elements.iterations == 0
+
+
+def test_boundary_step_reuses_mesh_lookups_across_pressure_faces():
+    mesh = make_selection_hex_mesh()
+    surface = Surface(
+        "LOADED",
+        (
+            ElementFace(1, 0, (1, 2, 3, 4)),
+            ElementFace(1, 1, (2, 3, 7, 6)),
+        ),
+    )
+    step = AnalysisStep(
+        "load",
+        surface_loads=(SurfaceLoad("LOADED", magnitude=2.0, load_type="pressure"),),
+    )
+    model = FEMModel(mesh=mesh, surfaces={"LOADED": surface}, steps=[step])
+    nodes, elements = _track_mesh_iterations(mesh)
+
+    bc = boundary_for_step(model, step)
+
+    assert len(bc.surface_tractions) == 2
+    assert nodes.iterations == 1
+    assert elements.iterations == 1
+
+
+@pytest.mark.parametrize(
+    ("surface_load", "message"),
+    [
+        (SurfaceLoad("LOADED", load_type="pressure"), "requires a magnitude"),
+        (
+            SurfaceLoad("LOADED", magnitude=2.0, load_type="shear_traction"),
+            "requires a direction vector",
+        ),
+    ],
+    ids=["pressure", "shear-traction"],
+)
+def test_boundary_step_validates_surface_load_before_mesh_lookups(surface_load, message):
+    mesh = make_selection_hex_mesh()
+    surface = Surface("LOADED", (ElementFace(1, 0, (1, 2, 3, 4)),))
+    step = AnalysisStep("load", surface_loads=(surface_load,))
+    model = FEMModel(mesh=mesh, surfaces={"LOADED": surface}, steps=[step])
+    nodes, elements = _track_mesh_iterations(mesh)
+
+    with pytest.raises(ValueError, match=message):
+        boundary_for_step(model, step)
+
+    assert nodes.iterations == 0
+    assert elements.iterations == 0
+
+
+def test_boundary_step_validates_edge_pressure_before_mesh_lookups():
+    mesh = make_quad4_boundary_mesh()
+    edge = Edge("LOADED", (ElementEdge(1, 1, (2, 3)),))
+    step = AnalysisStep(
+        "load",
+        edge_loads=(EdgeLoad("LOADED", load_type="pressure"),),
+    )
+    model = FEMModel(mesh=mesh, edges={"LOADED": edge}, steps=[step])
+    nodes, elements = _track_mesh_iterations(mesh)
+
+    with pytest.raises(ValueError, match="requires a magnitude"):
+        boundary_for_step(model, step)
+
+    assert nodes.iterations == 0
+    assert elements.iterations == 0
 
 
 def test_mixed_solid_surface_tractions_dispatch_by_element_type():

@@ -4,6 +4,22 @@ from dataclasses import dataclass
 from typing import Any
 from typing import Dict
 
+from ...elements import canonical_element_type
+
+
+_VTK_CELL_TYPES = {
+    "Truss2": (2, 3),
+    "Beam2": (2, 3),
+    "Tri3": (3, 5),
+    "Tri6": (6, 22),
+    "Quad4": (4, 9),
+    "Quad8": (8, 23),
+    "Tet4": (4, 10),
+    "Tet10": (10, 24),
+    "Hex8": (8, 12),
+    "Hex20": (20, 25),
+}
+
 
 @dataclass(frozen=True)
 class ResultTopology:
@@ -25,80 +41,17 @@ def build(mesh):
     elems_for_cell = []
 
     for elem in mesh.elements:
-        etype = str(elem.type).lower()
-        vtk_conn = None
-        vtk_type = None
-
-        if etype == "c3d20r":
+        try:
+            canonical_type = canonical_element_type(elem.type)
+        except NotImplementedError:
             raise ValueError(f"Unsupported element type for VTK export: {elem.type}")
-
-        if etype in {"truss2", "beam2"}:
-            if len(elem.node_ids) != 2:
-                continue
-            pt_ids = [node_id_to_pt_idx[nid] for nid in elem.node_ids]
-            vtk_conn = [2] + pt_ids
-            vtk_type = 3
-
-        elif etype in {"tri3plane", "tri3", "cps3", "cpe3"}:
-            if len(elem.node_ids) != 3:
-                continue
-            pt_ids = [node_id_to_pt_idx[nid] for nid in elem.node_ids]
-            vtk_conn = [3] + pt_ids
-            vtk_type = 5
-
-        elif etype in {"tri6plane", "tri6", "cps6", "cpe6"}:
-            if len(elem.node_ids) != 6:
-                continue
-            pt_ids = [node_id_to_pt_idx[nid] for nid in elem.node_ids]
-            vtk_conn = [6] + pt_ids
-            vtk_type = 22
-
-        elif etype in {"quad4plane", "quad4", "cps4", "cpe4"}:
-            if len(elem.node_ids) != 4:
-                continue
-            pt_ids = [node_id_to_pt_idx[nid] for nid in elem.node_ids]
-            vtk_conn = [4] + pt_ids
-            vtk_type = 9
-
-        elif etype in {"quad8plane", "quad8", "cps8", "cpe8"}:
-            if len(elem.node_ids) != 8:
-                continue
-            pt_ids = [node_id_to_pt_idx[nid] for nid in elem.node_ids]
-            vtk_conn = [8] + pt_ids
-            vtk_type = 23
-
-        elif etype in {"tet4", "c3d4"}:
-            if len(elem.node_ids) != 4:
-                continue
-            pt_ids = [node_id_to_pt_idx[nid] for nid in elem.node_ids]
-            vtk_conn = [4] + pt_ids
-            vtk_type = 10
-
-        elif etype in {"tet10", "c3d10"}:
-            if len(elem.node_ids) != 10:
-                continue
-            # Abaqus C3D10 and VTK quadratic tetrahedra use the same edge order.
-            vtk_order = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-            pt_ids = [node_id_to_pt_idx[elem.node_ids[i]] for i in vtk_order]
-            vtk_conn = [10] + pt_ids
-            vtk_type = 24
-
-        elif etype in {"hex20", "c3d20"}:
-            if len(elem.node_ids) != 20:
-                continue
-            pt_ids = [node_id_to_pt_idx[nid] for nid in elem.node_ids]
-            vtk_conn = [20] + pt_ids
-            vtk_type = 25
-
-        elif etype in {"hex8", "c3d8"}:
-            if len(elem.node_ids) != 8:
-                continue
-            pt_ids = [node_id_to_pt_idx[nid] for nid in elem.node_ids]
-            vtk_conn = [8] + pt_ids
-            vtk_type = 12
-
-        else:
+        if canonical_type not in _VTK_CELL_TYPES:
             raise ValueError(f"Unsupported element type for VTK export: {elem.type}")
+        node_count, vtk_type = _VTK_CELL_TYPES[canonical_type]
+        if len(elem.node_ids) != node_count:
+            continue
+        pt_ids = [node_id_to_pt_idx[nid] for nid in elem.node_ids]
+        vtk_conn = [node_count] + pt_ids
 
         cells.append(vtk_conn)
         cell_types.append(vtk_type)

@@ -3,19 +3,19 @@ import pytest
 
 from fem.boundary.condition import BoundaryCondition
 from fem.boundary.loads import build_load_vector
-from fem.core.mesh import BeamMesh3D, Element3D, Node3D, TrussMesh3D
+from fem.core.mesh import Element3D, Mesh3D, Node3D
 from fem.core.model import AnalysisStep, FEMModel
 from fem.core.result import ModelResult
 from fem.elements import get_element_kernel
 from fem.elements.beam_section import axial_stress_extrema, parse_beam2_section
-from fem.elements.line import beam3_geometry
+from fem.elements.line import beam3d_geometry
 from fem.post.stress import beam as beam_stress
 
 
 def _truss_mesh(*, reversed_nodes=False, props=None):
     nodes = [Node3D(10, 1.0, -2.0, 0.5), Node3D(20, 3.0, 1.0, 6.5)]
     node_ids = [20, 10] if reversed_nodes else [10, 20]
-    return TrussMesh3D(
+    return Mesh3D(
         nodes=nodes,
         elements=[
             Element3D(
@@ -108,21 +108,21 @@ def test_truss2_rejects_invalid_body_force_vectors(vector):
         get_element_kernel("Truss2").body_force(mesh, mesh.elements[0], vector)
 
 
-def _beam_mesh(*, end=(4.0, 0.0, 0.0), local_y=(0.0, 1.0, 0.0), props=None):
+def _beam_mesh(*, end=(4.0, 0.0, 0.0), props=None):
     properties = {
         "E": 210.0,
         "nu": 0.25,
         "section_type": "rectangle",
-        "size_y": 3.0,
-        "size_z": 2.0,
-        "local_y": local_y,
+        "height": 3.0,
+        "width": 2.0,
         "rho": 4.0,
     }
     if props:
         properties.update(props)
-    return BeamMesh3D(
+    return Mesh3D(
         nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, *end)],
         elements=[Element3D(1, [1, 2], "Beam2", properties)],
+        dofs_per_node=6,
     )
 
 
@@ -142,7 +142,7 @@ def _beam_mesh(*, end=(4.0, 0.0, 0.0), local_y=(0.0, 1.0, 0.0), props=None):
             (3.0 * np.pi, 15.0 * np.pi / 4.0, 15.0 * np.pi / 4.0, 15.0 * np.pi / 2.0),
         ),
         (
-            {"section_type": "rectangle", "size_y": 4.0, "size_z": 1.0},
+            {"section_type": "rectangle", "height": 4.0, "width": 1.0},
             (4.0, 1.0 / 3.0, 16.0 / 3.0, 1.1232518332307355),
         ),
     ],
@@ -153,9 +153,35 @@ def test_beam2_standard_sections_derive_stiffness_properties(props, expected):
     assert (section.area, section.Iyy, section.Izz, section.J) == pytest.approx(expected)
 
 
+def test_beam2_rectangle_uses_height_and_width_dimensions():
+    section = parse_beam2_section(
+        {"section_type": "rectangle", "height": 4.0, "width": 1.0}
+    )
+
+    assert section.height == 4.0
+    assert section.width == 1.0
+    assert (section.area, section.Iyy, section.Izz) == pytest.approx(
+        (4.0, 1.0 / 3.0, 16.0 / 3.0)
+    )
+
+
+def test_beam2_rectangle_dimension_swap_swaps_bending_inertias_only():
+    tall = parse_beam2_section(
+        {"section_type": "rectangle", "height": 4.0, "width": 1.0}
+    )
+    wide = parse_beam2_section(
+        {"section_type": "rectangle", "height": 1.0, "width": 4.0}
+    )
+
+    assert wide.area == pytest.approx(tall.area)
+    assert wide.J == pytest.approx(tall.J)
+    assert wide.Iyy == pytest.approx(tall.Izz)
+    assert wide.Izz == pytest.approx(tall.Iyy)
+
+
 def test_beam2_square_section_torsion_matches_saint_venant_coefficient():
     section = parse_beam2_section(
-        {"section_type": "rectangle", "size_y": 2.0, "size_z": 2.0}
+        {"section_type": "rectangle", "height": 2.0, "width": 2.0}
     )
 
     assert section.J == pytest.approx(0.14057701495517982 * 2.0**4)
@@ -174,11 +200,11 @@ def test_beam2_square_section_torsion_matches_saint_venant_coefficient():
             "outer_radius",
         ),
         (
-            {"section_type": "rectangle", "size_y": 1.0, "size_z": -1.0},
-            "size_z",
+            {"section_type": "rectangle", "height": 1.0, "width": -1.0},
+            "width",
         ),
         (
-            {"section_type": "rectangle", "size_y": 1.0, "size_z": 2.0, "radius": 3.0},
+            {"section_type": "rectangle", "height": 1.0, "width": 2.0, "radius": 3.0},
             "radius",
         ),
     ],
@@ -197,7 +223,16 @@ def test_beam2_standard_sections_reject_invalid_contracts(props, message):
             (5.0 / np.pi, 0.0, 5.0 / np.pi),
         ),
         (
-            {"section_type": "rectangle", "size_y": 4.0, "size_z": 2.0},
+            {
+                "section_type": "hollow_circle",
+                "outer_radius": 2.0,
+                "inner_radius": 1.0,
+            },
+            (6.0 * np.pi, 45.0 * np.pi / 4.0, 15.0 * np.pi),
+            (12.0, -8.0, 12.0),
+        ),
+        (
+            {"section_type": "rectangle", "height": 4.0, "width": 2.0},
             (16.0, 8.0 / 3.0, 32.0 / 3.0),
             (5.0, -1.0, 5.0),
         ),
@@ -223,7 +258,7 @@ def _beam_result(mesh, U, step=None):
 
 
 def test_beam2_rigid_motion_recovers_zero_nodal_axial_stress():
-    mesh = _beam_mesh(end=(2.0, 3.0, 6.0), local_y=(1.0, 1.0, 0.0))
+    mesh = _beam_mesh(end=(2.0, 3.0, 6.0))
     rigid = np.tile([0.4, -0.2, 0.7, 0.0, 0.0, 0.0], 2)
 
     rows = beam_stress.nodal_envelope(_beam_result(mesh, rigid))
@@ -258,7 +293,7 @@ def test_beam2_pure_bending_recovers_same_extrema_at_both_ends():
     rows = beam_stress.nodal_envelope(_beam_result(mesh, U))
 
     moment = 210.0 * section.Izz * curvature
-    increment = abs(moment / section.Izz) * section.size_y / 2.0
+    increment = abs(moment / section.Izz) * section.height / 2.0
     assert np.allclose(
         [(row.maximum, row.minimum, row.absolute_maximum) for row in rows],
         [(increment, -increment, increment), (increment, -increment, increment)],
@@ -277,7 +312,7 @@ def test_beam2_pure_bending_about_local_y_recovers_section_extrema():
     rows = beam_stress.nodal_envelope(_beam_result(mesh, U))
 
     moment = 210.0 * section.Iyy * curvature
-    increment = abs(moment / section.Iyy) * section.size_z / 2.0
+    increment = abs(moment / section.Iyy) * section.width / 2.0
     assert np.allclose(
         [(row.maximum, row.minimum, row.absolute_maximum) for row in rows],
         [(increment, -increment, increment), (increment, -increment, increment)],
@@ -285,8 +320,8 @@ def test_beam2_pure_bending_about_local_y_recovers_section_extrema():
 
 
 def test_beam2_inclined_and_reversed_elements_preserve_physical_extrema():
-    inclined = _beam_mesh(end=(2.0, 3.0, 6.0), local_y=(1.0, 1.0, 0.0))
-    _, rotation = beam3_geometry(inclined, inclined.elements[0])
+    inclined = _beam_mesh(end=(2.0, 3.0, 6.0))
+    _, rotation = beam3d_geometry(inclined, inclined.elements[0])
     local_displacement = np.zeros(12)
     local_displacement[6] = 0.07
     local_displacement[7] = 0.02
@@ -296,7 +331,7 @@ def test_beam2_inclined_and_reversed_elements_preserve_physical_extrema():
         global_displacement[start : start + 3] = rotation.T @ local_displacement[start : start + 3]
 
     forward = beam_stress.nodal_envelope(_beam_result(inclined, global_displacement))
-    reversed_mesh = _beam_mesh(end=(2.0, 3.0, 6.0), local_y=(1.0, 1.0, 0.0))
+    reversed_mesh = _beam_mesh(end=(2.0, 3.0, 6.0))
     reversed_mesh.elements[0].node_ids = [2, 1]
     reversed_rows = beam_stress.nodal_envelope(
         _beam_result(reversed_mesh, global_displacement)
@@ -320,7 +355,7 @@ def test_beam2_inclined_and_reversed_elements_preserve_physical_extrema():
 
 def test_beam2_shared_node_uses_maximum_minimum_envelope_without_averaging():
     props = dict(_beam_mesh().elements[0].props)
-    mesh = BeamMesh3D(
+    mesh = Mesh3D(
         nodes=[
             Node3D(1, 0.0, 0.0, 0.0),
             Node3D(2, 1.0, 0.0, 0.0),
@@ -330,6 +365,7 @@ def test_beam2_shared_node_uses_maximum_minimum_envelope_without_averaging():
             Element3D(1, [1, 2], "Beam2", dict(props)),
             Element3D(2, [2, 3], "Beam2", dict(props)),
         ],
+        dofs_per_node=6,
     )
     U = np.zeros(mesh.num_dofs)
     U[mesh.global_dof(2, 0)] = 0.1
@@ -343,9 +379,9 @@ def test_beam2_shared_node_uses_maximum_minimum_envelope_without_averaging():
 
 
 def test_beam2_local_axes_are_orthonormal_and_right_handed():
-    mesh = _beam_mesh(end=(2.0, 3.0, 6.0), local_y=(1.0, 1.0, 0.0))
+    mesh = _beam_mesh(end=(2.0, 3.0, 6.0))
 
-    length, rotation = beam3_geometry(mesh, mesh.elements[0])
+    length, rotation = beam3d_geometry(mesh, mesh.elements[0])
 
     assert length == pytest.approx(7.0)
     assert rotation @ rotation.T == pytest.approx(np.eye(3), abs=1e-12)
@@ -354,24 +390,48 @@ def test_beam2_local_axes_are_orthonormal_and_right_handed():
 
 
 @pytest.mark.parametrize(
-    ("properties", "message"),
+    ("end", "expected"),
     [
-        ({"local_y": None}, "local_y"),
-        ({"local_y": (0.0, 0.0, 0.0)}, "local_y"),
-        ({"local_y": (1.0, np.nan, 0.0)}, "local_y"),
-        ({"local_y": (2.0, 0.0, 0.0)}, "parallel"),
+        ((1.0, 0.0, 0.0), np.eye(3)),
+        (
+            (0.0, 1.0, 0.0),
+            np.array([[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]),
+        ),
+        (
+            (0.0, 0.0, 1.0),
+            np.array([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+        ),
     ],
 )
-def test_beam2_rejects_invalid_local_y(properties, message):
-    mesh = _beam_mesh(props=properties)
+def test_beam2_automatic_local_frame_for_global_axes(end, expected):
+    mesh = Mesh3D(
+        nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, *end)],
+        elements=[Element3D(1, [1, 2], "Beam2")],
+        dofs_per_node=6,
+    )
 
-    with pytest.raises((KeyError, ValueError), match=message):
-        get_element_kernel("Beam2").stiffness(mesh, mesh.elements[0])
+    _, rotation = beam3d_geometry(mesh, mesh.elements[0])
+
+    assert rotation == pytest.approx(expected, abs=1e-12)
+    assert np.cross(rotation[0], rotation[1]) == pytest.approx(rotation[2], abs=1e-12)
+
+
+def test_beam2_automatic_local_frame_uses_y_fallback_near_global_z():
+    mesh = Mesh3D(
+        nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 1e-14, 0.0, 1.0)],
+        elements=[Element3D(1, [1, 2], "Beam2")],
+        dofs_per_node=6,
+    )
+
+    _, rotation = beam3d_geometry(mesh, mesh.elements[0])
+
+    assert rotation[2] == pytest.approx([0.0, 1.0, 0.0], abs=1e-12)
+    assert rotation @ rotation.T == pytest.approx(np.eye(3), abs=1e-12)
 
 
 @pytest.mark.parametrize("mode", range(6))
 def test_beam2_six_rigid_body_modes_have_zero_internal_force(mode):
-    mesh = _beam_mesh(end=(2.0, 3.0, 6.0), local_y=(1.0, 1.0, 0.0))
+    mesh = _beam_mesh(end=(2.0, 3.0, 6.0))
     elem = mesh.elements[0]
     stiffness = get_element_kernel("Beam2").stiffness(mesh, elem)
     displacement = np.zeros(12)
@@ -422,9 +482,48 @@ def test_beam2_cantilever_matches_closed_form_tip_response(dof, section_property
     assert tip[dof] == pytest.approx(expected)
 
 
+def test_beam2_rectangle_dimension_swap_exchanges_cantilever_bending_response():
+    tall = _beam_mesh(props={"height": 4.0, "width": 1.0})
+    wide = _beam_mesh(props={"height": 1.0, "width": 4.0})
+    kernel = get_element_kernel("Beam2")
+
+    tall_compliance = np.linalg.inv(kernel.stiffness(tall, tall.elements[0])[6:, 6:])
+    wide_compliance = np.linalg.inv(kernel.stiffness(wide, wide.elements[0])[6:, 6:])
+
+    assert tall_compliance[1, 1] == pytest.approx(wide_compliance[2, 2])
+    assert tall_compliance[2, 2] == pytest.approx(wide_compliance[1, 1])
+    assert tall_compliance[1, 1] < tall_compliance[2, 2]
+
+
+def test_beam2_circular_stiffness_is_invariant_to_roll_about_beam_axis():
+    mesh = _beam_mesh()
+    elem = mesh.elements[0]
+    elem.props.pop("height")
+    elem.props.pop("width")
+    elem.props.update({"section_type": "solid_circle", "radius": 1.5})
+    stiffness = get_element_kernel("Beam2").stiffness(mesh, elem)
+    angle = np.deg2rad(37.0)
+    cosine = np.cos(angle)
+    sine = np.sin(angle)
+    roll = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, cosine, -sine],
+            [0.0, sine, cosine],
+        ]
+    )
+    transformation = np.zeros((12, 12))
+    for start in (0, 3, 6, 9):
+        transformation[start : start + 3, start : start + 3] = roll
+
+    assert transformation.T @ stiffness @ transformation == pytest.approx(
+        stiffness, abs=1e-10
+    )
+
+
 def test_beam2_inclined_stiffness_is_symmetric_and_reversal_invariant():
-    mesh = _beam_mesh(end=(2.0, 3.0, 6.0), local_y=(1.0, 1.0, 0.0))
-    reversed_mesh = _beam_mesh(end=(2.0, 3.0, 6.0), local_y=(1.0, 1.0, 0.0))
+    mesh = _beam_mesh(end=(2.0, 3.0, 6.0))
+    reversed_mesh = _beam_mesh(end=(2.0, 3.0, 6.0))
     reversed_mesh.elements[0].node_ids = [2, 1]
     kernel = get_element_kernel("Beam2")
     permutation = np.eye(12)[[6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5]]
@@ -439,8 +538,25 @@ def test_beam2_inclined_stiffness_is_symmetric_and_reversal_invariant():
     )
 
 
+@pytest.mark.parametrize("end", [(0.0, 0.0, 4.0), (1e-14, 0.0, 4.0)])
+def test_beam2_global_z_fallback_is_reversal_invariant(end):
+    mesh = _beam_mesh(end=end)
+    reversed_mesh = _beam_mesh(end=end)
+    reversed_mesh.elements[0].node_ids = [2, 1]
+    kernel = get_element_kernel("Beam2")
+    permutation = np.eye(12)[[6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5]]
+
+    stiffness = kernel.stiffness(mesh, mesh.elements[0])
+    reversed_stiffness = kernel.stiffness(reversed_mesh, reversed_mesh.elements[0])
+
+    assert reversed_stiffness == pytest.approx(
+        permutation @ stiffness @ permutation.T,
+        abs=1e-10,
+    )
+
+
 def test_beam2_body_force_preserves_resultant_and_moment():
-    mesh = _beam_mesh(end=(2.0, 3.0, 6.0), local_y=(1.0, 1.0, 0.0))
+    mesh = _beam_mesh(end=(2.0, 3.0, 6.0))
     elem = mesh.elements[0]
     body_vector = np.array([1.5, -2.0, 0.25])
     element_force = get_element_kernel("Beam2").body_force(

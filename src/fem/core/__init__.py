@@ -3,17 +3,13 @@ from __future__ import annotations
 from . import dof, mesh, model, result
 from .dof import DofMap
 from .mesh import (
-    BeamMesh3D,
     Element2D,
     Element3D,
-    HexMesh3D,
-    Mesh2DProtocol,
-    Mesh3DProtocol,
+    Mesh2D,
+    Mesh3D,
+    MeshProtocol,
     Node2D,
     Node3D,
-    PlaneMesh2D,
-    TetMesh3D,
-    TrussMesh3D,
 )
 from .model import (
     AnalysisStep,
@@ -40,7 +36,6 @@ from .validation import validate_mesh, validate_model
 
 __all__ = [
     "AnalysisStep",
-    "BeamMesh3D",
     "DisplacementConstraint",
     "DofMap",
     "Edge",
@@ -52,11 +47,11 @@ __all__ = [
     "ElementInfo",
     "ElementSet",
     "FEMModel",
-    "HexMesh3D",
     "MaterialDefinition",
     "LineLoad",
-    "Mesh2DProtocol",
-    "Mesh3DProtocol",
+    "Mesh2D",
+    "Mesh3D",
+    "MeshProtocol",
     "ModelResult",
     "ModelResults",
     "NodalLoad",
@@ -64,12 +59,9 @@ __all__ = [
     "Node3D",
     "NodeSet",
     "OutputRequest",
-    "PlaneMesh2D",
     "SectionAssignment",
     "Surface",
     "SurfaceLoad",
-    "TetMesh3D",
-    "TrussMesh3D",
     "dof",
     "mesh",
     "model",

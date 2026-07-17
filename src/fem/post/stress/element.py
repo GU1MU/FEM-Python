@@ -4,7 +4,7 @@ import csv
 from typing import Sequence
 
 from ...elements import get_element_kernel
-from ...core.mesh import HexMesh3D, Mesh3DProtocol, PlaneMesh2D
+from ...core.mesh import Mesh2D, Mesh3D
 from .._paths import prepare_output_path
 from . import dispatch
 from ._common import (
@@ -30,13 +30,13 @@ def by_type(
     if type_key == "truss2":
         truss2(mesh, U, path)
     elif type_key == "tri3":
-        tri3_plane(mesh, U, path)
+        tri3(mesh, U, path)
     elif type_key == "tri6":
-        tri6_plane(mesh, U, path, 3 if gauss_order is None else gauss_order)
+        tri6(mesh, U, path, 3 if gauss_order is None else gauss_order)
     elif type_key == "quad4":
-        quad4_plane(mesh, U, path, 2 if gauss_order is None else gauss_order)
+        quad4(mesh, U, path, 2 if gauss_order is None else gauss_order)
     elif type_key == "quad8":
-        quad8_plane(mesh, U, path, 3 if gauss_order is None else gauss_order)
+        quad8(mesh, U, path, 3 if gauss_order is None else gauss_order)
     elif type_key == "hex8":
         hex8(mesh, U, path)
     elif type_key == "hex20":
@@ -69,7 +69,7 @@ def mixed(
     raise ValueError(f"Mixed element stress export is not available for group {group!r}")
 
 
-def truss2(mesh: Mesh3DProtocol, U: Sequence[float], path: str) -> None:
+def truss2(mesh: Mesh3D, U: Sequence[float], path: str) -> None:
     """Export Truss2 element axial strain/stress and mises to CSV."""
     U = validated_u(mesh, U)
     lookup = node_lookup(mesh)
@@ -100,13 +100,13 @@ def truss2(mesh: Mesh3DProtocol, U: Sequence[float], path: str) -> None:
             ])
 
 
-def tri3_plane(mesh: PlaneMesh2D, U: Sequence[float], path: str) -> None:
+def tri3(mesh: Mesh2D, U: Sequence[float], path: str) -> None:
     """Export Tri3 element-nodal stresses without averaging."""
     _plane(mesh, U, path, "tri3")
 
 
-def tri6_plane(
-    mesh: PlaneMesh2D,
+def tri6(
+    mesh: Mesh2D,
     U: Sequence[float],
     path: str,
     gauss_order: int = 3,
@@ -115,8 +115,8 @@ def tri6_plane(
     _plane(mesh, U, path, "tri6", gauss_order)
 
 
-def quad4_plane(
-    mesh: PlaneMesh2D,
+def quad4(
+    mesh: Mesh2D,
     U: Sequence[float],
     path: str,
     gauss_order: int = 2,
@@ -125,8 +125,8 @@ def quad4_plane(
     _plane(mesh, U, path, "quad4", gauss_order)
 
 
-def quad8_plane(
-    mesh: PlaneMesh2D,
+def quad8(
+    mesh: Mesh2D,
     U: Sequence[float],
     path: str,
     gauss_order: int = 3,
@@ -135,28 +135,28 @@ def quad8_plane(
     _plane(mesh, U, path, "quad8", gauss_order)
 
 
-def hex8(mesh: HexMesh3D, U: Sequence[float], path: str) -> None:
+def hex8(mesh: Mesh3D, U: Sequence[float], path: str) -> None:
     """Export Hex8 centroid stresses to CSV."""
     _solid(mesh, U, path, "hex8", (0.0, 0.0, 0.0))
 
 
-def hex20(mesh: Mesh3DProtocol, U: Sequence[float], path: str) -> None:
+def hex20(mesh: Mesh3D, U: Sequence[float], path: str) -> None:
     """Export Hex20 centroid stress to CSV."""
     _solid(mesh, U, path, "hex20", (0.0, 0.0, 0.0))
 
 
-def tet4(mesh: Mesh3DProtocol, U: Sequence[float], path: str) -> None:
+def tet4(mesh: Mesh3D, U: Sequence[float], path: str) -> None:
     """Export Tet4 centroid stresses to CSV."""
     _solid(mesh, U, path, "tet4", TET_CENTROID)
 
 
-def tet10(mesh: Mesh3DProtocol, U: Sequence[float], path: str) -> None:
+def tet10(mesh: Mesh3D, U: Sequence[float], path: str) -> None:
     """Export Tet10 centroid stresses to CSV."""
     _solid(mesh, U, path, "tet10", TET_CENTROID)
 
 
 def _plane(
-    mesh: PlaneMesh2D,
+    mesh: Mesh2D,
     U: Sequence[float],
     path: str,
     type_key: str,
@@ -188,7 +188,7 @@ def _plane(
 
 
 def _solid(
-    mesh: Mesh3DProtocol,
+    mesh: Mesh3D,
     U: Sequence[float],
     path: str,
     type_key: str,
@@ -226,7 +226,7 @@ def _solid(
 
 
 def _plane_multi(
-    mesh: PlaneMesh2D,
+    mesh: Mesh2D,
     U: Sequence[float],
     path: str,
     type_keys: set[str],
@@ -264,7 +264,7 @@ def _plane_multi(
 
 
 def _solid_multi(
-    mesh: Mesh3DProtocol,
+    mesh: Mesh3D,
     U: Sequence[float],
     path: str,
     type_keys: set[str],

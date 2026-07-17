@@ -10,11 +10,12 @@ from fem.materials import assignment as material_assignment
 from fem.assemble import assemble_global_stiffness_sparse
 from fem.assemble import stiffness as stiffness_module
 from fem.core import validate_mesh, validate_model
-from fem.core.mesh import Element3D, Node3D, TrussMesh3D
+from fem.core.mesh import Element3D, Mesh3D, Node3D
 from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
     ElementSet,
+    FEMModel,
     NodalLoad,
     SectionAssignment,
 )
@@ -42,11 +43,11 @@ def test_validate_mesh_rejects_stale_dof_map_until_explicit_rebuild():
 
 
 def test_validate_mesh_rejects_empty_nodes_and_elements_before_assembly():
-    no_nodes = TrussMesh3D(nodes=[], elements=[])
+    no_nodes = Mesh3D(nodes=[], elements=[])
     with pytest.raises(ValueError, match="at least one node"):
         assemble_global_stiffness_sparse(no_nodes)
 
-    no_elements = TrussMesh3D(nodes=[Node3D(1, 0.0, 0.0, 0.0)], elements=[])
+    no_elements = Mesh3D(nodes=[Node3D(1, 0.0, 0.0, 0.0)], elements=[])
     with pytest.raises(ValueError, match="at least one element"):
         assemble_global_stiffness_sparse(no_elements)
 
@@ -221,6 +222,79 @@ def test_apply_sections_restores_original_properties_after_change_and_removal():
     materials.apply_sections(model)
 
     assert elem.props == original_props
+
+
+def _beam_assignment_model():
+    mesh = Mesh3D(
+        nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 2.0, 0.0, 0.0)],
+        elements=[Element3D(1, [1, 2], "Beam2")],
+        dofs_per_node=6,
+    )
+    model = FEMModel(mesh=mesh)
+    model.element_sets["beam"] = ElementSet("beam", (1,))
+    aluminum = materials.linear_elastic.material(
+        "aluminum", E=70.0, nu=0.33, rho=2.7
+    )
+    materials.add(model, aluminum)
+    return model, aluminum
+
+
+def test_apply_sections_assigns_effective_beam2_material_and_section_properties():
+    model, aluminum = _beam_assignment_model()
+    materials.assign(
+        model,
+        aluminum,
+        model.element_sets["beam"],
+        section_type="solid_circle",
+        radius=0.02,
+    )
+
+    materials.apply_sections(model)
+
+    elem = model.mesh.elements[0]
+    assert elem.props["material"] == "aluminum"
+    assert elem.props["E"] == 70.0
+    assert elem.props["nu"] == 0.33
+    assert elem.props["rho"] == 2.7
+    assert elem.props["section_type"] == "solid_circle"
+    assert elem.props["radius"] == 0.02
+
+
+def test_apply_sections_rejects_invalid_beam2_section_transactionally():
+    model, aluminum = _beam_assignment_model()
+    materials.assign(
+        model,
+        aluminum,
+        "beam",
+        section_type="solid_circle",
+        radius=0.02,
+    )
+    materials.apply_sections(model)
+    elem = model.mesh.elements[0]
+    props_before = deepcopy(elem.props)
+    metadata_before = deepcopy(model.metadata)
+
+    model.sections.clear()
+    materials.assign(
+        model,
+        aluminum,
+        "beam",
+        section_type="solid_circle",
+        radius=-1.0,
+    )
+
+    with pytest.raises(ValueError, match=r"Element 1.*radius"):
+        materials.apply_sections(model)
+
+    assert elem.props == props_before
+    assert model.metadata == metadata_before
+
+
+def test_apply_sections_rejects_missing_effective_beam2_section():
+    model, _ = _beam_assignment_model()
+
+    with pytest.raises(ValueError, match=r"Element 1.*section_type"):
+        materials.apply_sections(model)
 
 
 def test_apply_sections_preserves_last_matching_section_semantics():

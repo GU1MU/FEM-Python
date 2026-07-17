@@ -3,19 +3,14 @@ from __future__ import annotations
 import csv as csv_lib
 from typing import Dict, List, Optional
 
-from ..core.mesh import BeamMesh3D, Element2D, Element3D, HexMesh3D, Node2D, Node3D, PlaneMesh2D, TetMesh3D, TrussMesh3D
-from ..elements.beam_section import parse_beam2_section
+from ..core.mesh import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
 from .materials import _get_float_from_material, read
 
 
 _TRUSS2_NODE_HEADER = ["node_id", "x", "y", "z"]
 _TRUSS2_ELEMENT_HEADER = ["elem_id", "node_i", "node_j", "area", "material_id"]
 _BEAM2_NODE_HEADER = ["node_id", "x", "y", "z"]
-_BEAM2_ELEMENT_HEADER = [
-    "elem_id", "node_i", "node_j", "section_type", "radius",
-    "outer_radius", "inner_radius", "size_y", "size_z", "local_y_x",
-    "local_y_y", "local_y_z", "material_id",
-]
+_BEAM2_ELEMENT_HEADER = ["elem_id", "node_i", "node_j"]
 
 
 def _integer_field(
@@ -57,7 +52,7 @@ def _numeric_field(
 def read_truss2(
     mesh_path: str,
     material_path: Optional[str] = None,
-) -> TrussMesh3D:
+) -> Mesh3D:
     """Read a spatial Truss2 mesh CSV with optional materials."""
 
     materials_dict: Dict[int, Dict[str, str]] = {}
@@ -184,19 +179,11 @@ def read_truss2(
     if not elements:
         raise ValueError(f"Truss2 mesh CSV {mesh_path!r} contains no element rows")
 
-    return TrussMesh3D(nodes=nodes, elements=elements)
+    return Mesh3D(nodes=nodes, elements=elements)
 
 
-def read_beam2(
-    mesh_path: str,
-    material_path: Optional[str] = None,
-) -> BeamMesh3D:
-    """Read a spatial Beam2 mesh CSV with optional materials."""
-
-    materials_dict: Dict[int, Dict[str, str]] = {}
-    if material_path is not None:
-        materials_dict = read(material_path)
-
+def read_beam2(mesh_path: str) -> Mesh3D:
+    """Read a topology-only spatial Beam2 mesh CSV."""
     nodes: List[Node3D] = []
     elements: List[Element3D] = []
 
@@ -273,56 +260,11 @@ def read_beam2(
                     row[2], reader_name="read_beam2", mesh_path=mesh_path,
                     line_no=line_no, field="node_j",
                 )
-                section_props: Dict[str, object] = {"section_type": row[3]}
-                for index, field in zip(
-                    (4, 5, 6, 7, 8),
-                    ("radius", "outer_radius", "inner_radius", "size_y", "size_z"),
-                ):
-                    if row[index] != "":
-                        section_props[field] = _numeric_field(
-                            row[index], reader_name="read_beam2", mesh_path=mesh_path,
-                            line_no=line_no, field=field,
-                        )
-                local_y = tuple(
-                    _numeric_field(
-                        row[index], reader_name="read_beam2", mesh_path=mesh_path,
-                        line_no=line_no, field=field,
-                    )
-                    for index, field in zip(
-                        (9, 10, 11), ("local_y_x", "local_y_y", "local_y_z")
-                    )
-                )
-                mid = _integer_field(
-                    row[12], reader_name="read_beam2", mesh_path=mesh_path,
-                    line_no=line_no, field="material_id",
-                )
-
-                parse_beam2_section(section_props)
-                props: Dict[str, object] = {
-                    **section_props,
-                    "local_y": local_y,
-                    "material_id": mid,
-                }
-
-                if materials_dict:
-                    mat_row = materials_dict.get(mid)
-                    if mat_row is not None:
-                        raw_E = _get_float_from_material(mat_row, ["E"])
-                        raw_nu = _get_float_from_material(mat_row, ["nu", "poisson"])
-                        raw_rho = _get_float_from_material(mat_row, ["rho"])
-                        if raw_E is not None:
-                            props["E"] = raw_E
-                        if raw_nu is not None:
-                            props["nu"] = raw_nu
-                        if raw_rho is not None:
-                            props["rho"] = raw_rho
-
                 elements.append(
                     Element3D(
                         id=elem_id,
                         node_ids=[node_i, node_j],
                         type="Beam2",
-                        props=props,
                     )
                 )
 
@@ -337,14 +279,14 @@ def read_beam2(
     if not elements:
         raise ValueError(f"Beam2 mesh CSV {mesh_path!r} contains no element rows")
 
-    return BeamMesh3D(nodes=nodes, elements=elements)
+    return Mesh3D(nodes=nodes, elements=elements, dofs_per_node=6)
 
 
 def read_tri3(
     mesh_path: str,
     material_path: Optional[str] = None,
     plane_type: str = "stress",
-) -> PlaneMesh2D:
+) -> Mesh2D:
     """Read a Tri3 plane mesh CSV with optional materials."""
 
     materials_dict: Dict[int, Dict[str, str]] = {}
@@ -459,7 +401,7 @@ def read_tri3(
                     Element2D(
                         id=elem_id,
                         node_ids=[n1, n2, n3],
-                        type="Tri3Plane",
+                        type="Tri3",
                         props=props,
                     )
                 )
@@ -475,13 +417,13 @@ def read_tri3(
     if not elements:
         raise ValueError(f"Tri3 mesh CSV {mesh_path!r} contains no element rows")
 
-    return PlaneMesh2D(nodes=nodes, elements=elements)
+    return Mesh2D(nodes=nodes, elements=elements)
 
 
 def read_mixed3d(
     mesh_path: str,
     material_path: Optional[str] = None,
-) -> HexMesh3D:
+) -> Mesh3D:
     """Read a mixed 3D mesh CSV with Hex8, Hex20, Tet4, and Tet10 elements."""
 
     materials_dict: Dict[int, Dict[str, str]] = {}
@@ -575,7 +517,7 @@ def read_mixed3d(
     if not elements:
         raise ValueError("mixed 3D mesh csv has no elements")
 
-    return HexMesh3D(nodes=nodes, elements=elements)
+    return Mesh3D(nodes=nodes, elements=elements)
 
 
 def _row_by_header(header: List[str], row: List[str]) -> Dict[str, str]:
@@ -696,7 +638,7 @@ def _solid_material_props(
 def read_hex8(
     mesh_path: str,
     material_path: Optional[str] = None,
-) -> HexMesh3D:
+) -> Mesh3D:
     """Read a Hex8 mesh CSV with optional materials."""
 
     materials_dict: Dict[int, Dict[str, str]] = {}
@@ -798,13 +740,13 @@ def read_hex8(
     if not elements:
         raise ValueError(f"Hex8 mesh CSV {mesh_path!r} contains no element rows")
 
-    return HexMesh3D(nodes=nodes, elements=elements)
+    return Mesh3D(nodes=nodes, elements=elements)
 
 
 def read_tet4(
     mesh_path: str,
     material_path: Optional[str] = None,
-) -> TetMesh3D:
+) -> Mesh3D:
     """Read a Tet4 mesh CSV with optional materials."""
     materials_dict: Dict[int, Dict[str, str]] = {}
     if material_path is not None:
@@ -903,4 +845,4 @@ def read_tet4(
     if not elements:
         raise ValueError(f"Tet4 mesh CSV {mesh_path!r} contains no element rows")
 
-    return TetMesh3D(nodes=nodes, elements=elements)
+    return Mesh3D(nodes=nodes, elements=elements)

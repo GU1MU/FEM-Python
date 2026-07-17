@@ -1,16 +1,14 @@
 import csv
-import importlib
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from fem.core.mesh import BeamMesh3D, Element2D, Element3D, Node2D, Node3D, TrussMesh3D
+from fem.core.mesh import Element3D, Mesh3D, Node3D
 from fem.core.model import AnalysisStep, FEMModel
 from fem.core.result import ModelResult
-from fem.elements import get_element_kernel
 from fem.io import csv as csv_io
-from fem.post import displacement, stress, vtk
+from fem.post import stress, vtk
 
 
 def _write(path, lines):
@@ -39,7 +37,8 @@ def test_read_truss2_requires_and_preserves_three_dimensional_contract(tmp_path)
 
     mesh = csv_io.read_truss2(mesh_path, _materials(tmp_path))
 
-    assert isinstance(mesh, TrussMesh3D)
+    assert isinstance(mesh, Mesh3D)
+    assert mesh.dofs_per_node == 3
     assert mesh.nodes == [Node3D(10, 0.0, 0.0, 0.0), Node3D(20, 2.0, 3.0, 6.0)]
     assert mesh.elements[0].type == "Truss2"
     assert mesh.elements[0].props == {
@@ -50,119 +49,111 @@ def test_read_truss2_requires_and_preserves_three_dimensional_contract(tmp_path)
     }
 
 
-def test_read_beam2_reads_section_orientation_and_material_properties(tmp_path):
+def test_read_beam2_reads_topology_only(tmp_path):
     mesh_path = _write(
         tmp_path / "beam.csv",
         [
             "node_id,x,y,z",
             "1,0,0,0",
             "2,4,0,0",
-            "elem_id,node_i,node_j,section_type,radius,outer_radius,inner_radius,size_y,size_z,local_y_x,local_y_y,local_y_z,material_id",
-            "10,1,2,rectangle,,,,3,2,0,1,0,1",
-        ],
-    )
-
-    mesh = csv_io.read_beam2(mesh_path, _materials(tmp_path))
-
-    assert isinstance(mesh, BeamMesh3D)
-    assert mesh.elements[0].type == "Beam2"
-    assert mesh.elements[0].props == {
-        "section_type": "rectangle",
-        "size_y": 3.0,
-        "size_z": 2.0,
-        "local_y": (0.0, 1.0, 0.0),
-        "material_id": 1,
-        "E": 210.0,
-        "nu": 0.25,
-        "rho": 7.8,
-    }
-
-
-def test_read_beam2_preserves_shape_specific_circle_dimensions(tmp_path):
-    mesh_path = _write(
-        tmp_path / "circles.csv",
-        [
-            "node_id,x,y,z",
-            "1,0,0,0",
-            "2,1,0,0",
-            "3,2,0,0",
-            "elem_id,node_i,node_j,section_type,radius,outer_radius,inner_radius,size_y,size_z,local_y_x,local_y_y,local_y_z,material_id",
-            "1,1,2,solid_circle,0.5,,,,,0,1,0,1",
-            "2,2,3,hollow_circle,,0.6,0.4,,,0,1,0,1",
+            "elem_id,node_i,node_j",
+            "10,1,2",
         ],
     )
 
     mesh = csv_io.read_beam2(mesh_path)
 
-    assert mesh.elements[0].props == {
-        "section_type": "solid_circle",
-        "radius": 0.5,
-        "local_y": (0.0, 1.0, 0.0),
-        "material_id": 1,
-    }
-    assert mesh.elements[1].props == {
-        "section_type": "hollow_circle",
-        "outer_radius": 0.6,
-        "inner_radius": 0.4,
-        "local_y": (0.0, 1.0, 0.0),
-        "material_id": 1,
-    }
-
-
-def test_read_beam2_rejects_nonempty_irrelevant_section_dimension(tmp_path):
-    mesh_path = _write(
-        tmp_path / "irrelevant_dimension.csv",
-        [
-            "node_id,x,y,z",
-            "1,0,0,0",
-            "2,1,0,0",
-            "elem_id,node_i,node_j,section_type,radius,outer_radius,inner_radius,size_y,size_z,local_y_x,local_y_y,local_y_z,material_id",
-            "1,1,2,solid_circle,0.5,0.6,,,,0,1,0,1",
-        ],
-    )
-
-    with pytest.raises(ValueError, match="solid_circle.*outer_radius"):
-        csv_io.read_beam2(mesh_path)
+    assert isinstance(mesh, Mesh3D)
+    assert mesh.dofs_per_node == 6
+    assert mesh.elements[0].type == "Beam2"
+    assert mesh.elements[0].node_ids == [1, 2]
+    assert mesh.elements[0].props == {}
 
 
 @pytest.mark.parametrize(
-    ("reader_name", "header", "row"),
+    ("reader_name", "node_header", "node_rows", "element_header", "element_row", "message"),
     [
-        ("read_truss2", "elem_id,node_i,node_j,section_area,material_id", "1,1,2,3,1"),
-        ("read_truss2", "elem_id,node_j,node_i,area,material_id", "1,1,2,3,1"),
-        ("read_truss2", "elem_id,node_i,node_j,area,material_id,extra", "1,1,2,3,1,9"),
         (
-            "read_beam2",
-            "elem_id,node_i,node_j,area,Iyy,Izz,J,local_y_x,local_y_y,local_y_z,material_id",
-            "1,1,2,3,5,7,2,0,1,0,1",
+            "read_truss2",
+            "node_id,x,y,z",
+            ["1,0,0,0", "2,1,0,0"],
+            "elem_id,node_i,node_j,material_id",
+            "1,1,2,1",
+            "element header",
+        ),
+        (
+            "read_truss2",
+            "node_id,x,y,z",
+            ["1,0,0,0", "2,1,0,0"],
+            "elem_id,node_j,node_i,area,material_id",
+            "1,1,2,3,1",
+            "element header",
+        ),
+        (
+            "read_truss2",
+            "node_id,x,y,z",
+            ["1,0,0,0", "2,1,0,0"],
+            "elem_id,node_i,node_j,area,material_id,note",
+            "1,1,2,3,1,unexpected",
+            "element header",
         ),
         (
             "read_beam2",
-            "elem_id,node_i,node_j,section_type,radius,outer_radius,inner_radius,size_y,size_z,local_y_x,local_y_y,local_y_z,material,extra",
-            "1,1,2,solid_circle,1,,,,,0,1,0,1,9",
+            "node_id,x,y,z",
+            ["1,0,0,0", "2,1,0,0"],
+            "elem_id,node_i",
+            "1,1",
+            "element header",
+        ),
+        (
+            "read_beam2",
+            "node_id,x,y,z",
+            ["1,0,0,0", "2,1,0,0"],
+            "elem_id,node_j,node_i",
+            "1,2,1",
+            "element header",
+        ),
+        (
+            "read_beam2",
+            "node_id,x,y,z",
+            ["1,0,0,0", "2,1,0,0"],
+            "elem_id,node_i,node_j,note",
+            "1,1,2,unexpected",
+            "element header",
+        ),
+        (
+            "read_truss2",
+            "node_id,x,y",
+            ["1,0,0", "2,1,0"],
+            "elem_id,node_i,node_j,area,material_id",
+            "1,1,2,1,1",
+            "node_id,x,y,z",
+        ),
+        (
+            "read_beam2",
+            "node_id,x,y",
+            ["1,0,0", "2,1,0"],
+            "elem_id,node_i,node_j",
+            "1,1,2",
+            "node_id,x,y,z",
         ),
     ],
 )
-def test_line_csv_readers_reject_noncanonical_element_headers(
-    tmp_path, reader_name, header, row
+def test_line_csv_readers_require_current_node_and_element_headers(
+    tmp_path,
+    reader_name,
+    node_header,
+    node_rows,
+    element_header,
+    element_row,
+    message,
 ):
     mesh_path = _write(
         tmp_path / "bad_header.csv",
-        ["node_id,x,y,z", "1,0,0,0", "2,1,0,0", header, row],
+        [node_header, *node_rows, element_header, element_row],
     )
 
-    with pytest.raises(ValueError, match="element header"):
-        getattr(csv_io, reader_name)(mesh_path)
-
-
-@pytest.mark.parametrize("reader_name", ["read_truss2", "read_beam2"])
-def test_line_csv_readers_reject_legacy_two_dimensional_nodes(tmp_path, reader_name):
-    mesh_path = _write(
-        tmp_path / "legacy.csv",
-        ["node_id,x,y", "1,0,0", "2,1,0", "elem_id,node_i,node_j,area,material_id", "1,1,2,1,1"],
-    )
-
-    with pytest.raises(ValueError, match="node_id,x,y,z"):
+    with pytest.raises(ValueError, match=message):
         getattr(csv_io, reader_name)(mesh_path)
 
 
@@ -177,7 +168,7 @@ def _result(mesh, displacement_values):
 
 
 def test_truss2_result_export_writes_3d_displacement_element_stress_and_vtk(tmp_path):
-    mesh = TrussMesh3D(
+    mesh = Mesh3D(
         nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 2.0, 0.0, 0.0)],
         elements=[Element3D(1, [1, 2], "Truss2", {"E": 100.0, "area": 2.0})],
     )
@@ -197,7 +188,7 @@ def test_truss2_result_export_writes_3d_displacement_element_stress_and_vtk(tmp_
 
 
 def test_beam2_result_export_writes_six_components_rotation_vector_and_no_element_stress(tmp_path):
-    mesh = BeamMesh3D(
+    mesh = Mesh3D(
         nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 2.0, 0.0, 0.0)],
         elements=[
             Element3D(
@@ -208,12 +199,12 @@ def test_beam2_result_export_writes_six_components_rotation_vector_and_no_elemen
                     "E": 100.0,
                     "nu": 0.25,
                     "section_type": "rectangle",
-                    "size_y": 2.0,
-                    "size_z": 1.0,
-                    "local_y": (0, 1, 0),
+                    "height": 2.0,
+                    "width": 1.0,
                 },
             )
         ],
+        dofs_per_node=6,
     )
     values = np.array([0, 0, 0, 0.1, 0.2, 0.3, 1, 2, 3, 0.4, 0.5, 0.6])
     result = _result(mesh, values)
@@ -249,7 +240,7 @@ def test_beam2_result_export_writes_six_components_rotation_vector_and_no_elemen
 
 
 def test_beam2_direct_nodal_export_requires_result_load_context(tmp_path):
-    mesh = BeamMesh3D(
+    mesh = Mesh3D(
         nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 2.0, 0.0, 0.0)],
         elements=[
             Element3D(
@@ -261,10 +252,10 @@ def test_beam2_direct_nodal_export_requires_result_load_context(tmp_path):
                     "nu": 0.25,
                     "section_type": "solid_circle",
                     "radius": 1.0,
-                    "local_y": (0.0, 1.0, 0.0),
                 },
             )
         ],
+        dofs_per_node=6,
     )
     result = _result(mesh, np.zeros(mesh.num_dofs))
     path = tmp_path / "beam_nodal_stress.csv"
@@ -278,12 +269,13 @@ def test_beam2_direct_nodal_export_requires_result_load_context(tmp_path):
 
 
 def test_beam2_nodal_stress_csv_contains_every_mesh_node_once(tmp_path):
-    mesh = BeamMesh3D(
+    mesh = Mesh3D(
         nodes=[
             Node3D(1, 0.0, 0.0, 0.0),
             Node3D(2, 1.0, 0.0, 0.0),
             Node3D(3, 2.0, 0.0, 0.0),
         ],
+        dofs_per_node=6,
         elements=[
             Element3D(
                 1,
@@ -294,7 +286,6 @@ def test_beam2_nodal_stress_csv_contains_every_mesh_node_once(tmp_path):
                     "nu": 0.25,
                     "section_type": "solid_circle",
                     "radius": 1.0,
-                    "local_y": (0.0, 1.0, 0.0),
                 },
             )
         ],
@@ -311,55 +302,22 @@ def test_beam2_nodal_stress_csv_contains_every_mesh_node_once(tmp_path):
     assert float(rows[2]["axial_stress_abs_max"]) == pytest.approx(0.0)
 
 
-def test_old_planar_line_apis_are_removed_and_plane_elements_remain_available():
-    mesh_module = importlib.import_module("fem.core.mesh")
-    line_module = importlib.import_module("fem.elements.line")
-
-    for name in ("TrussMesh2D", "BeamMesh2D"):
-        assert not hasattr(mesh_module, name)
-    for name in ("Truss2DKernel", "Beam2DKernel"):
-        assert not hasattr(line_module, name)
-    for name in ("read_truss2d", "read_beam2d"):
-        assert not hasattr(csv_io, name)
-    for element_type in ("Truss2D", "Beam2D", "Truss2DLegacy"):
-        with pytest.raises(NotImplementedError, match="Unsupported element type"):
-            get_element_kernel(element_type)
-
-    with pytest.raises(TypeError):
-        Element2D(1, [1, 2])
-    plane = Element2D(1, [1, 2, 3], "Tri3Plane")
-    assert plane.type == "Tri3Plane"
-
-
-def test_active_source_and_examples_contain_no_legacy_line_api_names():
+def test_beam2_example_uses_topology_csv_and_programmatic_section_assignments():
     project_root = Path(__file__).resolve().parents[1]
-    legacy_names = (
-        "Truss2D", "Beam2D", "Truss2DKernel", "Beam2DKernel",
-        "TrussMesh2D", "BeamMesh2D", "read_truss2d", "read_beam2d",
-    )
-    offenders = []
-    for root_name in ("src", "exam" + "ples"):
-        for path in (project_root / root_name).rglob("*"):
-            if path.is_file() and path.suffix in {".py", ".csv"}:
-                text = path.read_text(encoding="utf-8")
-                if any(name in text for name in legacy_names):
-                    offenders.append(path.relative_to(project_root).as_posix())
-    assert offenders == []
+    example_root = project_root / ("exam" + "ples")
+    script = (example_root / "beam2_frame.py").read_text(encoding="utf-8")
+    rows = [
+        row
+        for row in csv.reader(
+            (example_root / "examples_data" / "beam2.csv").open(encoding="utf-8")
+        )
+        if row and not row[0].lstrip().startswith("#")
+    ]
+    element_header_index = rows.index(["elem_id", "node_i", "node_j"])
 
-
-def test_active_source_and_examples_contain_no_old_beam2_input_contract():
-    project_root = Path(__file__).resolve().parents[1]
-    old_header = "elem_id,node_i,node_j,area,Iyy,Izz,J"
-    old_property_reads = (
-        'elem.props["Iyy"]',
-        'elem.props["Izz"]',
-        'elem.props["J"]',
-    )
-    offenders = []
-    for root_name in ("src", "exam" + "ples"):
-        for path in (project_root / root_name).rglob("*"):
-            if path.is_file() and path.suffix in {".py", ".csv"}:
-                text = path.read_text(encoding="utf-8")
-                if old_header in text or any(value in text for value in old_property_reads):
-                    offenders.append(path.relative_to(project_root).as_posix())
-    assert offenders == []
+    assert all(len(row) == 3 for row in rows[element_header_index + 1 :])
+    assert 'mesh_csv.read_beam2(DATA_DIR / "beam2.csv")' in script
+    assert script.count("selection.elements.set_by_nodes") == 3
+    assert script.count("materials.assign(") == 3
+    for section_type in ("hollow_circle", "rectangle", "solid_circle"):
+        assert f'section_type="{section_type}"' in script

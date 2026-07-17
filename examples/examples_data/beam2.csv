@@ -16,16 +16,16 @@ node_id,x,y,z
 
 
 # ELEMENTS
-elem_id,node_i,node_j,section_type,radius,outer_radius,inner_radius,size_y,size_z,local_y_x,local_y_y,local_y_z,material_id
-1,1,2,solid_circle,0.02,,,,,0,0,1,2
-2,2,3,solid_circle,0.02,,,,,0,0,1,2
-3,3,4,solid_circle,0.02,,,,,0,0,1,2
-4,4,5,solid_circle,0.02,,,,,0,0,1,2
-5,5,6,solid_circle,0.02,,,,,0,0,1,2
-6,6,7,solid_circle,0.02,,,,,0,0,1,2
-7,7,8,solid_circle,0.02,,,,,0,0,1,2
-8,3,9,solid_circle,0.02,,,,,0,0,1,2
-9,9,10,solid_circle,0.02,,,,,0,0,1,2
-10,10,11,solid_circle,0.02,,,,,0,0,1,2
-11,11,12,solid_circle,0.02,,,,,0,0,1,2
-12,12,13,solid_circle,0.02,,,,,0,0,1,2
+elem_id,node_i,node_j
+1,1,2
+2,2,3
+3,3,4
+4,4,5
+5,5,6
+6,6,7
+7,7,8
+8,3,9
+9,9,10
+10,10,11
+11,11,12
+12,12,13

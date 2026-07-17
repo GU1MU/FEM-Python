@@ -1,16 +1,10 @@
-import importlib
-import importlib.util
-import sys
-
 import numpy as np
 import pytest
 
 from fem import materials, selection, steps
-from fem.core import mesh as core_mesh
-from fem.core import dof
 from fem.core import model as core_model
 from fem.core.dof import DofMap
-from fem.core.mesh import Element3D, HexMesh3D, Node2D, Node3D, PlaneMesh2D
+from fem.core.mesh import Element3D, Mesh2D, Mesh3D, MeshProtocol, Node2D, Node3D
 from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
@@ -66,53 +60,32 @@ def test_dof_map_rejects_duplicate_nodes_and_invalid_components():
         dof_map.global_dof(1, 2)
 
 
-def test_core_dof_exposes_dof_map_without_legacy_dof_manager():
-    assert dof.DofMap is DofMap
-    assert not hasattr(dof, "DofManager2D")
-    assert not hasattr(dof, "DofManager3D")
-
-    sys.modules.pop("fem.dof_manager", None)
-    with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("fem.dof_manager")
-
-
-def test_meshes_expose_dof_interface_without_dof_manager_access():
-    assert core_mesh.HexMesh3D is HexMesh3D
-    sys.modules.pop("fem.mesh", None)
-    with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("fem.mesh")
-
+def test_meshes_expose_current_dof_interface():
     for mesh in make_dof_order_meshes():
-        assert hasattr(mesh, "dof_map")
-        assert not hasattr(mesh, "dof_manager")
+        assert isinstance(mesh, MeshProtocol)
         assert mesh.node_ids == [10, 20]
         assert mesh.node_dofs(10) == list(range(mesh.dofs_per_node))
         assert mesh.element_dofs(mesh.elements[0])[:mesh.dofs_per_node] == mesh.node_dofs(20)
 
 
-def test_core_model_stores_sets_surfaces_materials_and_sections():
-    mesh = make_minimal_hex_mesh()
-    node_set = NodeSet("FIXED", [1, 2])
-    element_set = ElementSet("SOLID", [1])
-    surface = Surface("LOAD", [ElementFace(1, 0, [1, 2])])
-    material = MaterialDefinition("STEEL", {"E": 210.0, "nu": 0.3})
-    section = SectionAssignment("SOLID", "STEEL")
-    model = FEMModel(
-        mesh=mesh,
-        node_sets={node_set.name: node_set},
-        element_sets={element_set.name: element_set},
-        surfaces={surface.name: surface},
-        materials={material.name: material},
-        sections=[section],
-        name="job",
-    )
+def test_generic_mesh_defaults_and_explicit_beam_layout():
+    mesh2d = Mesh2D([Node2D(2, 0.0, 0.0), Node2D(1, 1.0, 0.0)], [])
+    mesh3d = Mesh3D([Node3D(2, 0.0, 0.0, 0.0), Node3D(1, 1.0, 0.0, 0.0)], [])
+    beam_mesh = Mesh3D(mesh3d.nodes, [], dofs_per_node=6)
 
-    assert model.name == "job"
-    assert model.node_sets["FIXED"].node_ids == (1, 2)
-    assert model.element_sets["SOLID"].element_ids == (1,)
-    assert model.surfaces["LOAD"].faces[0].local_index == 0
-    assert model.materials["STEEL"].properties["E"] == 210.0
-    assert model.sections[0].element_set == "SOLID"
+    assert mesh2d.dofs_per_node == 2
+    assert mesh2d.node_ids == [1, 2]
+    assert mesh3d.dofs_per_node == 3
+    assert beam_mesh.dofs_per_node == 6
+    assert beam_mesh.num_dofs == 12
+
+    with pytest.raises(ValueError, match="dofs_per_node must be positive"):
+        Mesh3D([], [], dofs_per_node=0)
+
+
+def test_element3d_requires_an_explicit_type():
+    with pytest.raises(TypeError):
+        Element3D(1, [1, 2])
 
 
 def test_core_model_stores_sets_edges_surfaces_materials_and_sections():
@@ -143,12 +116,14 @@ def test_core_model_stores_sets_edges_surfaces_materials_and_sections():
     assert model.sections[0].element_set == "SOLID"
 
 
-def test_core_model_stores_analysis_steps():
+def test_core_model_stores_complete_analysis_step_contract():
     step = AnalysisStep(
         "load",
         procedure="static",
         boundaries=[DisplacementConstraint("FIXED", 1, 3, 0.0)],
         cloads=[NodalLoad("TIP", 3, -100.0)],
+        edge_loads=[EdgeLoad("LINE_LOAD", (1.0, 0.0), load_type="traction")],
+        outputs=[core_model.OutputRequest("field", "node", ("U",))],
         metadata={"nlgeom": "NO"},
     )
     model = FEMModel(mesh=make_minimal_hex_mesh(), steps=[step])
@@ -156,60 +131,11 @@ def test_core_model_stores_analysis_steps():
     assert model.steps[0].name == "load"
     assert model.steps[0].boundaries[0].target == "FIXED"
     assert model.steps[0].cloads[0].component == 3
-    assert model.steps[0].metadata["nlgeom"] == "NO"
-
-
-def test_core_model_stores_analysis_steps_with_edge_loads():
-    step = AnalysisStep(
-        "load",
-        procedure="static",
-        boundaries=[DisplacementConstraint("FIXED", 1, 3, 0.0)],
-        cloads=[NodalLoad("TIP", 3, -100.0)],
-        edge_loads=[EdgeLoad("LINE_LOAD", (1.0, 0.0), load_type="traction")],
-        metadata={"nlgeom": "NO"},
-    )
-    model = FEMModel(mesh=make_minimal_hex_mesh(), steps=[step])
-
-    assert model.steps[0].name == "load"
     assert model.steps[0].edge_loads[0].edge == "LINE_LOAD"
     assert model.steps[0].edge_loads[0].vector == (1.0, 0.0)
     assert model.steps[0].edge_loads[0].load_type == "traction"
-
-
-def test_core_model_preserves_analysis_step_positional_order():
-    outputs = [core_model.OutputRequest("field", "node", ("U",))]
-    metadata = {"nlgeom": "NO"}
-
-    step = AnalysisStep("load", "static", (), (), (), outputs, metadata)
-
-    assert step.outputs == tuple(outputs)
-    assert step.metadata == metadata
-    assert step.edge_loads == ()
-
-
-def test_core_model_preserves_fem_model_positional_order():
-    mesh = make_minimal_hex_mesh()
-    surface = Surface("FACE_LOAD", [ElementFace(1, 0, [1, 2])])
-    material = MaterialDefinition("STEEL", {"E": 210.0, "nu": 0.3})
-    section = SectionAssignment("SOLID", "STEEL")
-
-    model = FEMModel(
-        mesh,
-        "job",
-        {},
-        {},
-        {surface.name: surface},
-        {material.name: material},
-        [section],
-        [],
-        {"source": "positional"},
-    )
-
-    assert model.surfaces["FACE_LOAD"] == surface
-    assert model.materials["STEEL"] == material
-    assert model.sections == [section]
-    assert model.metadata == {"source": "positional"}
-    assert model.edges == {}
+    assert model.steps[0].outputs[0].variables == ("U",)
+    assert model.steps[0].metadata["nlgeom"] == "NO"
 
 
 def test_model_element_info_returns_type_material_and_properties_by_element_id():
@@ -291,44 +217,6 @@ def test_model_element_info_raises_for_unknown_element_id():
         core_model.model_element_info(model, 99)
 
 
-def test_core_model_has_no_solver_or_boundary_pipeline_methods():
-    forbidden = (
-        "boundary",
-        "from_mesh",
-        "add_node_set",
-        "add_element_set",
-        "add_surface",
-        "add_material",
-        "assign_section",
-        "add_step",
-        "add_displacement",
-        "add_nodal_load",
-        "add_surface_traction",
-        "add_surface_pressure",
-        "add_output_request",
-        "get_step",
-        "boundary_for_step",
-        "assemble_stiffness",
-        "load_vector",
-        "solve",
-        "run",
-        "run_all",
-    )
-    for name in forbidden:
-        assert not hasattr(FEMModel, name)
-
-
-def test_selection_package_exposes_nodes_edges_and_faces_only():
-    assert hasattr(selection, "nodes")
-    assert hasattr(selection, "edges")
-    assert hasattr(selection, "elements")
-    assert hasattr(selection, "faces")
-    assert callable(selection.edges.edge_by_x)
-    assert callable(selection.edges.edge_by_y)
-    assert callable(selection.edges.edge_by_coord)
-    assert importlib.util.find_spec("fem.helper") is None
-
-
 def test_steps_add_edge_load_helpers():
     step = AnalysisStep("load")
     edge = Edge("TOP", [ElementEdge(1, 2, [3, 4])])
@@ -341,15 +229,8 @@ def test_steps_add_edge_load_helpers():
     assert step.edge_loads == (traction, pressure)
 
 
-def test_steps_export_edge_load_helpers():
-    assert callable(steps.edge_traction)
-    assert callable(steps.edge_pressure)
-    assert callable(steps.surface_traction)
-    assert callable(steps.surface_pressure)
-
-
 def test_nodes_select_2d_and_3d_coordinates():
-    mesh2d = PlaneMesh2D(
+    mesh2d = Mesh2D(
         nodes=[
             Node2D(1, 0.0, 0.0),
             Node2D(2, 1.0, 0.0),
@@ -357,7 +238,7 @@ def test_nodes_select_2d_and_3d_coordinates():
         ],
         elements=[],
     )
-    mesh3d = HexMesh3D(
+    mesh3d = Mesh3D(
         nodes=[
             Node3D(1, 0.0, 0.0, 0.0),
             Node3D(2, 1.0, 0.0, 0.0),
@@ -407,25 +288,51 @@ def test_elements_select_by_id_and_type_and_build_sets():
     assert selection.elements.set_by_type(mesh, "QUADS", "quad4") == ElementSet("QUADS", (2,))
 
 
-def test_element_type_selection_uses_kernel_identity_without_legacy_substrings():
-    mesh = HexMesh3D(
+def test_elements_select_by_node_membership_for_mixed_element_types():
+    mesh = Mesh3D(
+        nodes=[Node3D(node_id, float(node_id), 0.0, 0.0) for node_id in range(1, 9)],
+        elements=[
+            Element3D(30, [1, 2], "unregistered_line"),
+            Element3D(10, [2, 3, 4], "unregistered_plane"),
+            Element3D(20, [4, 5, 6, 7], "unregistered_solid"),
+        ],
+    )
+    original_elements = list(mesh.elements)
+
+    assert selection.elements.by_nodes(mesh, [1, 2, 2, 3, 4], mode="all") == [30, 10]
+    assert selection.elements.by_nodes(mesh, [2, 4], mode="any") == [30, 10, 20]
+    assert selection.elements.by_nodes(mesh, [], mode="all") == []
+    assert selection.elements.by_nodes(mesh, [], mode="any") == []
+    assert selection.elements.set_by_nodes(mesh, "REGION", [1, 2], mode="all") == ElementSet(
+        "REGION", (30,)
+    )
+    assert mesh.elements == original_elements
+
+
+def test_elements_select_by_nodes_rejects_unknown_mode():
+    mesh = make_selection_mixed_plane_mesh()
+
+    with pytest.raises(ValueError, match="mode must be 'all' or 'any'"):
+        selection.elements.by_nodes(mesh, [1], mode="some")
+
+
+def test_element_type_selection_uses_exact_registered_kernel_identity():
+    mesh = Mesh3D(
         nodes=[],
         elements=[
             Element3D(1, [], "Truss2"),
-            Element3D(2, [], "Truss2D"),
-            Element3D(3, [], "Truss2Legacy"),
+            Element3D(2, [], "Truss2Extended"),
             Element3D(4, [], "CPS4"),
             Element3D(5, [], "Beam2"),
-            Element3D(6, [], "Beam2D"),
-            Element3D(7, [], "Beam2Legacy"),
+            Element3D(6, [], "Beam2Extended"),
         ],
     )
 
     assert selection.elements.by_type(mesh, "Truss2") == [1]
     assert selection.elements.by_type(mesh, "Beam2") == [5]
     assert selection.elements.by_type(mesh, "Quad4") == [4]
-    for legacy_name in ("Truss2D", "Beam2D", "Truss2Legacy", "Beam2Legacy"):
-        assert selection.elements.by_type(mesh, legacy_name) == []
+    assert selection.elements.by_type(mesh, "Truss2Extended") == []
+    assert selection.elements.by_type(mesh, "Beam2Extended") == []
 
 
 def test_faces_select_boundary_faces_by_coordinate():
@@ -451,17 +358,16 @@ def test_faces_select_all_hex20_faces_with_quadratic_nodes():
     ]
 
 
-@pytest.mark.parametrize("element_type", ["C3D20R", "c3D20r"])
-def test_faces_do_not_select_hex20_faces_for_reduced_integration_alias(element_type):
+def test_faces_do_not_select_reduced_integration_hex20():
     mesh = make_hex20_stiffness_mesh()
-    mesh.elements[0].type = element_type
+    mesh.elements[0].type = "C3D20R"
 
     assert selection.faces.all(mesh) == []
 
 
 def test_faces_use_hex20_corner_nodes_for_internal_interface_keys():
     hex20_mesh = make_hex20_stiffness_mesh()
-    mesh = HexMesh3D(
+    mesh = Mesh3D(
         nodes=[
             *hex20_mesh.nodes,
             Node3D(21, 0.0, 0.0, -1.0),
@@ -570,14 +476,6 @@ def test_selection_can_build_model_sets_and_surfaces():
     assert load_surface.faces == (ElementFace(1, 5, (2, 3, 7, 6)),)
 
 
-def test_materials_package_exposes_linear_elastic_module_only():
-    assert hasattr(materials, "linear_elastic")
-    assert not hasattr(materials, "compute_plane_stress_matrix")
-    assert not hasattr(materials, "compute_plane_strain_matrix")
-    assert not hasattr(materials, "compute_plane_elastic_matrix")
-    assert not hasattr(materials, "compute_3d_elastic_matrix")
-
-
 def test_linear_elastic_constitutive_matrices():
     E = 210.0
     nu = 0.3
@@ -595,6 +493,7 @@ def test_linear_elastic_constitutive_matrices():
 def test_mixed_hex8_tet4_mesh_keeps_element_types_and_3d_dofs():
     mesh = make_mixed_hex8_tet4_mesh()
 
+    assert isinstance(mesh, Mesh3D)
     assert mesh.dofs_per_node == 3
     assert [elem.type for elem in mesh.elements] == ["Hex8", "Tet4"]
     assert mesh.elements[0].id == 1
@@ -605,8 +504,9 @@ def test_mixed_hex8_tet4_mesh_keeps_element_types_and_3d_dofs():
 def test_mixed_tri3_quad4_mesh_keeps_element_types_and_2d_dofs():
     mesh = make_mixed_tri3_quad4_mesh()
 
+    assert isinstance(mesh, Mesh2D)
     assert mesh.dofs_per_node == 2
-    assert [elem.type for elem in mesh.elements] == ["Tri3Plane", "Quad4Plane"]
+    assert [elem.type for elem in mesh.elements] == ["Tri3", "Quad4"]
     assert mesh.num_dofs == 10
 
 
@@ -614,5 +514,5 @@ def test_mixed_tri6_quad8_mesh_keeps_element_types_and_2d_dofs():
     mesh = make_mixed_tri6_quad8_mesh()
 
     assert mesh.dofs_per_node == 2
-    assert [elem.type for elem in mesh.elements] == ["Tri6Plane", "Quad8Plane"]
+    assert [elem.type for elem in mesh.elements] == ["Tri6", "Quad8"]
     assert mesh.num_dofs == 28

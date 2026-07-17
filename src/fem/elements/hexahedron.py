@@ -257,7 +257,8 @@ class _HexKernelBase:
 
 class Hex8Kernel(_HexKernelBase):
     """Hex8 solid element kernel."""
-    type_names = ("Hex8", "C3D8")
+    canonical_type = "Hex8"
+    aliases = ("C3D8",)
     face_nodes = [
         [0, 3, 2, 1],
         [4, 5, 6, 7],
@@ -475,7 +476,8 @@ class Hex8Kernel(_HexKernelBase):
 
 class Hex20Kernel(_HexKernelBase):
     """Twenty-node quadratic serendipity hexahedron kernel."""
-    type_names = ("Hex20", "C3D20")
+    canonical_type = "Hex20"
+    aliases = ("C3D20",)
     face_nodes = HEX20_FACE_NODE_INDICES
 
     def stiffness(

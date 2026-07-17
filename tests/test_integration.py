@@ -138,8 +138,8 @@ def test_mixed_quadratic_plane_model_assigns_materials_by_element_set_and_solves
 
     result = static_linear.solve(model, "pull")
 
-    assert mesh.elements[0].type == "Tri6Plane"
-    assert mesh.elements[1].type == "Quad8Plane"
+    assert mesh.elements[0].type == "Tri6"
+    assert mesh.elements[1].type == "Quad8"
     assert mesh.elements[0].props["material"] == "steel"
     assert mesh.elements[1].props["material"] == "aluminum"
     assert np.all(np.isfinite(result.U))

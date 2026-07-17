@@ -4,8 +4,8 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from ...elements import get_element_kernel
-from ...core.mesh import Mesh3DProtocol
+from ...elements import canonical_element_type, get_element_kernel
+from ...core.mesh import Mesh3D
 
 
 TET_CENTROID = (0.25, 0.25, 0.25)
@@ -37,7 +37,10 @@ def node_lookup(mesh: Any) -> dict[int, Any]:
 
 def matches(elem: Any, type_key: str) -> bool:
     """Return whether an element type matches a stress exporter key."""
-    return type_key in str(elem.type).lower()
+    try:
+        return canonical_element_type(elem.type).casefold() == type_key.casefold()
+    except NotImplementedError:
+        return False
 
 
 def nodal_stress(
@@ -55,7 +58,7 @@ def nodal_stress(
 
 
 def element_volume(
-    mesh: Mesh3DProtocol,
+    mesh: Mesh3D,
     elem: Any,
     node_lookup_: dict[int, Any],
 ) -> float:

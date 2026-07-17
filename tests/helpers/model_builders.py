@@ -1,4 +1,4 @@
-from fem.core.mesh import Element3D, Node3D, TrussMesh3D
+from fem.core.mesh import Element3D, Mesh3D, Node3D
 from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
@@ -10,14 +10,14 @@ from fem.core.model import (
 
 
 def make_simple_truss_mesh(E=100.0, area=2.0, length=1.0):
-    return TrussMesh3D(
+    return Mesh3D(
         nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, length, 0.0, 0.0)],
         elements=[Element3D(1, [1, 2], type="Truss2", props={"E": E, "area": area})],
     )
 
 
 def make_bare_truss_mesh(length=1.0, props=None):
-    return TrussMesh3D(
+    return Mesh3D(
         nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, length, 0.0, 0.0)],
         elements=[Element3D(1, [1, 2], type="Truss2", props=props or {})],
     )

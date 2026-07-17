@@ -31,9 +31,10 @@ def quad4_gauss_points(gauss_order: int):
     raise ValueError("gauss_order must be 1 or 2")
 
 
-class Quad4PlaneKernel:
+class Quad4Kernel:
     """Quad4 plane stress/strain element kernel."""
-    type_names = ("Quad4Plane", "Quad4", "CPS4", "CPE4")
+    canonical_type = "Quad4"
+    aliases = ("CPS4", "CPE4")
     edge_node_indices = ((0, 1), (1, 2), (2, 3), (3, 0))
 
     def stiffness(
@@ -372,9 +373,10 @@ def quad8_gauss_points(gauss_order: int):
     raise ValueError("gauss_order must be 2 or 3 for Quad8")
 
 
-class Quad8PlaneKernel:
+class Quad8Kernel:
     """Quad8 plane stress/strain element kernel."""
-    type_names = ("Quad8Plane", "Quad8", "CPS8", "CPE8")
+    canonical_type = "Quad8"
+    aliases = ("CPS8", "CPE8")
     edge_node_indices = (
         (0, 4, 1),
         (1, 5, 2),

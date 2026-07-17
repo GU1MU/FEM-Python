@@ -36,9 +36,10 @@ def _positive_thickness(elem: Any) -> float:
     return thickness
 
 
-class Tri3PlaneKernel:
+class Tri3Kernel:
     """Tri3 plane stress/strain element kernel."""
-    type_names = ("Tri3Plane", "Tri3", "CPS3", "CPE3")
+    canonical_type = "Tri3"
+    aliases = ("CPS3", "CPE3")
     edge_node_indices = ((0, 1), (1, 2), (2, 0))
 
     def stiffness(
@@ -253,9 +254,10 @@ def tri6_edge_gauss_points():
     return [(-r, 5.0 / 9.0), (0.0, 8.0 / 9.0), (r, 5.0 / 9.0)]
 
 
-class Tri6PlaneKernel:
+class Tri6Kernel:
     """Tri6 plane stress/strain element kernel."""
-    type_names = ("Tri6Plane", "Tri6", "CPS6", "CPE6")
+    canonical_type = "Tri6"
+    aliases = ("CPS6", "CPE6")
     edge_node_indices = ((0, 3, 1), (1, 4, 2), (2, 5, 0))
 
     def stiffness(

@@ -11,7 +11,7 @@ from fem.core.model import (
     OutputRequest,
     SectionAssignment,
 )
-from fem.core.mesh import HexMesh3D
+from fem.core.mesh import Mesh3D
 from fem.solvers import static_linear
 from tests.helpers.abaqus_builders import write_perforated_plate_style_inp
 from tests.helpers.file_builders import write_inp
@@ -130,7 +130,6 @@ def test_abaqus_read_builds_model_with_sets_surfaces_materials_and_steps(tmp_pat
     assert model.steps[0].name == "LOAD"
     assert model.steps[0].boundaries[0] == DisplacementConstraint("FIXED", 1, 3, 0.0)
     assert model.steps[0].cloads[0] == NodalLoad("TIP", 3, -50.0)
-    assert not hasattr(model, "boundary")
 
     bc = static_linear.boundary_for_step(model, "LOAD")
     assert len(bc.prescribed_displacements) == 12
@@ -721,7 +720,7 @@ def test_abaqus_read_cps6_model_solves(tmp_path):
     model = abaqus.read(path)
     result = static_linear.solve(model, "LOAD")
 
-    assert model.mesh.elements[0].type == "Tri6Plane"
+    assert model.mesh.elements[0].type == "Tri6"
     assert np.all(np.isfinite(result.U))
 
 
@@ -1269,7 +1268,7 @@ def test_abaqus_read_builds_and_solves_full_c3d20_model(tmp_path):
 
     model = abaqus.read(path)
 
-    assert isinstance(model.mesh, HexMesh3D)
+    assert isinstance(model.mesh, Mesh3D)
     assert model.mesh.elements[0].type == "Hex20"
     assert model.mesh.elements[0].node_ids == list(range(1, 21))
     assert model.node_sets["FIXED"].node_ids == (1, 4, 5, 8, 12, 16, 17, 20)

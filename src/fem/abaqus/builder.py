@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..core.mesh import Element2D, Element3D, HexMesh3D, Node2D, Node3D, PlaneMesh2D, TetMesh3D
+from ..core.mesh import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
 from ..core.model import (
     AnalysisStep,
     DisplacementConstraint,
@@ -20,6 +20,7 @@ from ..core.model import (
     Surface,
     SurfaceLoad,
 )
+from ..elements import canonical_element_type
 from ..selection import edges as edge_selection
 from ..selection import faces as face_selection
 from .deck import AbaqusBoundary, AbaqusDeck, AbaqusDistributedLoad, AbaqusElement, AbaqusStep
@@ -117,7 +118,7 @@ def _build_mesh(deck: AbaqusDeck) -> Any:
             )
             for element in deck.elements
         ]
-        return PlaneMesh2D(nodes2d, elements2d)
+        return Mesh2D(nodes2d, elements2d)
 
     nodes3d = [
         Node3D(node_id, coords[0], coords[1], coords[2])
@@ -132,9 +133,7 @@ def _build_mesh(deck: AbaqusDeck) -> Any:
         )
         for element in deck.elements
     ]
-    if all("tet" in elem.type.lower() for elem in elements3d):
-        return TetMesh3D(nodes3d, elements3d)
-    return HexMesh3D(nodes3d, elements3d)
+    return Mesh3D(nodes3d, elements3d)
 
 
 def _build_surfaces_and_edges(
@@ -452,24 +451,10 @@ def _element_dimension(element_type: str) -> int:
 
 def _element_type(element: AbaqusElement) -> str:
     """Map Abaqus element type to local element type."""
-    etype = element.type.upper()
-    if etype in ("CPS3", "CPE3"):
-        return "Tri3Plane"
-    if etype in ("CPS6", "CPE6"):
-        return "Tri6Plane"
-    if etype in ("CPS4", "CPE4"):
-        return "Quad4Plane"
-    if etype in ("CPS8", "CPE8"):
-        return "Quad8Plane"
-    if etype == "C3D4":
-        return "Tet4"
-    if etype == "C3D10":
-        return "Tet10"
-    if etype == "C3D8":
-        return "Hex8"
-    if etype == "C3D20":
-        return "Hex20"
-    raise ValueError(f"unsupported Abaqus element type: {element.type}")
+    try:
+        return canonical_element_type(element.type)
+    except NotImplementedError as exc:
+        raise ValueError(f"unsupported Abaqus element type: {element.type}") from exc
 
 
 def _element_props(element: AbaqusElement) -> dict[str, Any]:

@@ -1,7 +1,3 @@
-import importlib
-import inspect
-import sys
-
 import pytest
 
 from tests.helpers.file_builders import write_inp
@@ -26,54 +22,8 @@ def _mixed3d_element_row(elem_id, elem_type, node_ids):
     )
 
 
-def test_io_package_exposes_split_readers_without_legacy_facade():
-    from fem.io import csv as csv_io
-    from fem.io import inp, materials as materials_io
-
-    assert callable(materials_io.read)
-    assert callable(materials_io.linear_elastic)
-    assert callable(csv_io.read_truss2)
-    assert callable(csv_io.read_beam2)
-    assert callable(csv_io.read_hex8)
-    assert callable(csv_io.read_mixed3d)
-    assert callable(inp.read_tri6)
-    assert callable(inp.read_mixed2d)
-    assert callable(inp.read_hex8)
-    assert callable(inp.read_hex20)
-    assert callable(inp.read_tet4)
-    assert not hasattr(inp, "read_hex8_3d_abaqus")
-    assert not hasattr(csv_io, "read_hex8_csv")
-
-    sys.modules.pop("fem.mesh_io", None)
-    with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("fem.mesh_io")
-    for old_module in (
-        "fem.io.materials_io",
-        "fem.io.mesh_io_csv",
-        "fem.io.mesh_io_inp",
-    ):
-        sys.modules.pop(old_module, None)
-        with pytest.raises(ModuleNotFoundError):
-            importlib.import_module(old_module)
-
-
-def test_inp_readers_only_read_mesh_without_material_coupling(tmp_path):
+def test_inp_reader_returns_mesh_without_material_properties(tmp_path):
     from fem.io import inp
-
-    for reader_name in (
-        "read_tri3",
-        "read_tri6",
-        "read_quad4",
-        "read_quad8",
-        "read_mixed2d",
-        "read_tet4",
-        "read_tet10",
-        "read_hex8",
-        "read_hex20",
-    ):
-        signature = inspect.signature(getattr(inp, reader_name))
-        assert "material_id" not in signature.parameters
-        assert "material_path" not in signature.parameters
 
     mesh_path = write_inp(
         tmp_path,
@@ -281,7 +231,7 @@ def test_inp_read_tri6_reads_cps6_mesh(tmp_path):
     mesh = inp.read_tri6(mesh_path)
 
     assert mesh.dofs_per_node == 2
-    assert mesh.elements[0].type == "Tri6Plane"
+    assert mesh.elements[0].type == "Tri6"
     assert mesh.elements[0].node_ids == [1, 2, 3, 4, 5, 6]
     assert mesh.elements[0].props["plane_type"] == "stress"
     assert mesh.elements[0].props["thickness"] == 1.0
@@ -309,7 +259,7 @@ def test_inp_read_mixed2d_reads_linear_tri3_and_quad4(tmp_path):
 
     mesh = inp.read_mixed2d(mesh_path)
 
-    assert [elem.type for elem in mesh.elements] == ["Tri3Plane", "Quad4Plane"]
+    assert [elem.type for elem in mesh.elements] == ["Tri3", "Quad4"]
     assert [elem.node_ids for elem in mesh.elements] == [[1, 2, 4], [2, 5, 3, 4]]
     assert all(elem.props["plane_type"] == "stress" for elem in mesh.elements)
 
@@ -345,7 +295,7 @@ def test_inp_read_mixed2d_reads_quadratic_tri6_and_quad8(tmp_path):
 
     mesh = inp.read_mixed2d(mesh_path)
 
-    assert [elem.type for elem in mesh.elements] == ["Tri6Plane", "Quad8Plane"]
+    assert [elem.type for elem in mesh.elements] == ["Tri6", "Quad8"]
     assert mesh.elements[0].node_ids == [1, 2, 3, 4, 5, 6]
     assert mesh.elements[1].node_ids == [7, 8, 9, 10, 11, 12, 13, 14]
 
@@ -412,6 +362,58 @@ def test_csv_read_mixed3d_reads_hex8_and_tet4_from_sectioned_csv(tmp_path):
     assert mesh.dofs_per_node == 3
 
 
+def test_csv_read_mixed3d_flows_through_model_and_vtk_post(tmp_path):
+    from fem.io import csv as csv_io
+    from fem.post import vtk
+    from tests.helpers.result_builders import make_zero_result
+
+    element_header = ",".join(
+        ["elem_id", "type", *(f"node{index}" for index in range(1, 21)), "material_id"]
+    )
+    mesh_path = write_inp(
+        tmp_path,
+        "mixed_reader_to_post.csv",
+        [
+            "node_id,x,y,z",
+            "1,0.0,0.0,0.0",
+            "2,1.0,0.0,0.0",
+            "3,1.0,1.0,0.0",
+            "4,0.0,1.0,0.0",
+            "5,0.0,0.0,1.0",
+            "6,1.0,0.0,1.0",
+            "7,1.0,1.0,1.0",
+            "8,0.0,1.0,1.0",
+            "9,2.0,0.0,0.0",
+            element_header,
+            f"{_mixed3d_element_row(1, 'Hex8', range(1, 9))},1",
+            f"{_mixed3d_element_row(2, 'Tet4', (2, 9, 3, 6))},1",
+        ],
+    )
+    material_path = write_inp(
+        tmp_path,
+        "mixed_reader_to_post_materials.csv",
+        ["material_id,E,nu", "1,210000,0.3"],
+    )
+
+    mesh = csv_io.read_mixed3d(mesh_path, material_path)
+    result = make_zero_result(mesh, "mixed_reader_to_post")
+    vtk.export.from_result(result, output_dir=tmp_path)
+
+    vtk_lines = (tmp_path / "mixed_reader_to_post.vtk").read_text(
+        encoding="utf-8"
+    ).splitlines()
+    cell_types_index = vtk_lines.index("CELL_TYPES 2")
+
+    assert result.model.mesh is mesh
+    assert [int(value) for value in vtk_lines[cell_types_index + 1 : cell_types_index + 3]] == [
+        12,
+        10,
+    ]
+    assert (tmp_path / "mixed_reader_to_post_nodal_displacement.csv").exists()
+    assert (tmp_path / "mixed_reader_to_post_element_stress.csv").exists()
+    assert (tmp_path / "mixed_reader_to_post_nodal_stress.csv").exists()
+
+
 def test_csv_read_mixed3d_reads_four_supported_element_types(tmp_path):
     from fem.io import csv as csv_io
 
@@ -474,64 +476,59 @@ def test_csv_read_mixed3d_material_props_include_only_available_values(tmp_path)
     assert mesh.elements[0].props == {"material_id": 1, "E": 210000.0}
 
 
-def test_csv_read_mixed3d_keeps_material_id_without_material_table(tmp_path):
+@pytest.mark.parametrize(
+    ("reader_name", "element_header", "element_row", "material_id"),
+    (
+        (
+            "read_mixed3d",
+            ",".join(
+                [
+                    "elem_id",
+                    "type",
+                    *(f"node{index}" for index in range(1, 21)),
+                    "material_id",
+                ]
+            ),
+            f"{_mixed3d_element_row(1, 'Hex8', range(1, 9))},7",
+            7,
+        ),
+        (
+            "read_hex8",
+            "elem_id,node1,node2,node3,node4,node5,node6,node7,node8,material_id",
+            "1,1,2,3,4,5,6,7,8,17",
+            17,
+        ),
+        (
+            "read_tet4",
+            "elem_id,node1,node2,node3,node4,material_id",
+            "1,1,2,3,4,23",
+            23,
+        ),
+    ),
+)
+def test_csv_readers_keep_material_id_without_material_table(
+    tmp_path,
+    reader_name,
+    element_header,
+    element_row,
+    material_id,
+):
     from fem.io import csv as csv_io
 
-    element_header = ",".join(
-        ["elem_id", "type", *(f"node{index}" for index in range(1, 21)), "material_id"]
-    )
     mesh_path = write_inp(
         tmp_path,
-        "mixed_material_id_without_table.csv",
+        f"{reader_name}_material_id_without_table.csv",
         [
             "node_id,x,y,z",
             *_hex20_node_lines(),
             element_header,
-            f"{_mixed3d_element_row(1, 'Hex8', range(1, 9))},7",
+            element_row,
         ],
     )
 
-    mesh = csv_io.read_mixed3d(mesh_path)
+    mesh = getattr(csv_io, reader_name)(mesh_path)
 
-    assert mesh.elements[0].props == {"material_id": 7}
-
-
-def test_csv_read_hex8_keeps_material_id_without_material_table(tmp_path):
-    from fem.io import csv as csv_io
-
-    mesh_path = write_inp(
-        tmp_path,
-        "hex8_material_id_without_table.csv",
-        [
-            "node_id,x,y,z",
-            *_hex20_node_lines(),
-            "elem_id,node1,node2,node3,node4,node5,node6,node7,node8,material_id",
-            "1,1,2,3,4,5,6,7,8,17",
-        ],
-    )
-
-    mesh = csv_io.read_hex8(mesh_path)
-
-    assert mesh.elements[0].props == {"material_id": 17}
-
-
-def test_csv_read_tet4_keeps_material_id_without_material_table(tmp_path):
-    from fem.io import csv as csv_io
-
-    mesh_path = write_inp(
-        tmp_path,
-        "tet4_material_id_without_table.csv",
-        [
-            "node_id,x,y,z",
-            *_hex20_node_lines(),
-            "elem_id,node1,node2,node3,node4,material_id",
-            "1,1,2,3,4,23",
-        ],
-    )
-
-    mesh = csv_io.read_tet4(mesh_path)
-
-    assert mesh.elements[0].props == {"material_id": 23}
+    assert mesh.elements[0].props == {"material_id": material_id}
 
 
 def test_csv_read_mixed3d_validates_material_id_without_material_table(tmp_path):
@@ -654,12 +651,12 @@ def test_csv_read_mixed3d_rejects_nonempty_physical_field_beyond_header(tmp_path
         (
             "read_beam2",
             [
-                "elem_id,node_i,node_j,section_type,radius,outer_radius,inner_radius,size_y,size_z,local_y_x,local_y_y,local_y_z,material_id",
-                "1,1,2,rectangle,,,,bad,2,0,1,0,1",
+                "elem_id,node_i,node_j",
+                "bad,1,2",
             ],
-            "size_y",
+            "elem_id",
             "bad",
-            "numeric value",
+            "integer",
         ),
         (
             "read_tri3",

@@ -1,18 +1,15 @@
 from fem.core.mesh import (
-    BeamMesh3D,
     Element2D,
     Element3D,
-    HexMesh3D,
+    Mesh2D,
+    Mesh3D,
     Node2D,
     Node3D,
-    PlaneMesh2D,
-    TetMesh3D,
-    TrussMesh3D,
 )
 
 
 def make_minimal_hex_mesh():
-    return HexMesh3D(
+    return Mesh3D(
         nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 1.0, 0.0, 0.0)],
         elements=[Element3D(1, [1, 2], type="Hex8")],
     )
@@ -20,23 +17,24 @@ def make_minimal_hex_mesh():
 
 def make_dof_order_meshes():
     return [
-        TrussMesh3D(
+        Mesh3D(
             nodes=[Node3D(20, 0.0, 0.0, 0.0), Node3D(10, 1.0, 0.0, 0.0)],
             elements=[Element3D(1, [20, 10], type="Truss2")],
         ),
-        BeamMesh3D(
+        Mesh3D(
             nodes=[Node3D(20, 0.0, 0.0, 0.0), Node3D(10, 1.0, 0.0, 0.0)],
             elements=[Element3D(1, [20, 10], type="Beam2")],
+            dofs_per_node=6,
         ),
-        PlaneMesh2D(
+        Mesh2D(
             nodes=[Node2D(20, 0.0, 0.0), Node2D(10, 1.0, 0.0)],
-            elements=[Element2D(1, [20, 10], type="Tri3Plane")],
+            elements=[Element2D(1, [20, 10], type="Tri3")],
         ),
-        HexMesh3D(
+        Mesh3D(
             nodes=[Node3D(20, 0.0, 0.0, 0.0), Node3D(10, 1.0, 0.0, 0.0)],
             elements=[Element3D(1, [20, 10], type="Hex8")],
         ),
-        TetMesh3D(
+        Mesh3D(
             nodes=[Node3D(20, 0.0, 0.0, 0.0), Node3D(10, 1.0, 0.0, 0.0)],
             elements=[Element3D(1, [20, 10], type="Tet4")],
         ),
@@ -44,7 +42,7 @@ def make_dof_order_meshes():
 
 
 def make_selection_quad_mesh():
-    return PlaneMesh2D(
+    return Mesh2D(
         nodes=[
             Node2D(1, 0.0, 0.0),
             Node2D(2, 1.0, 0.0),
@@ -56,7 +54,7 @@ def make_selection_quad_mesh():
 
 
 def make_selection_mixed_plane_mesh():
-    return PlaneMesh2D(
+    return Mesh2D(
         nodes=[
             Node2D(1, 0.0, 0.0),
             Node2D(2, 1.0, 0.0),
@@ -71,7 +69,7 @@ def make_selection_mixed_plane_mesh():
 
 
 def make_selection_hex_mesh():
-    return HexMesh3D(
+    return Mesh3D(
         nodes=[
             Node3D(1, 0.0, 0.0, 0.0),
             Node3D(2, 2.0, 0.0, 0.0),
@@ -87,7 +85,7 @@ def make_selection_hex_mesh():
 
 
 def make_truss_stiffness_mesh():
-    return TrussMesh3D(
+    return Mesh3D(
         nodes=[
             Node3D(1, 0.0, 0.0, 0.0),
             Node3D(2, 2.0, 0.0, 0.0),
@@ -104,7 +102,7 @@ def make_truss_stiffness_mesh():
 
 
 def make_beam_stiffness_mesh():
-    return BeamMesh3D(
+    return Mesh3D(
         nodes=[
             Node3D(1, 0.0, 0.0, 0.0),
             Node3D(2, 2.0, 1.0, 0.0),
@@ -118,17 +116,17 @@ def make_beam_stiffness_mesh():
                     "E": 210.0,
                     "nu": 0.3,
                     "section_type": "rectangle",
-                    "size_y": 1.0,
-                    "size_z": 0.5,
-                    "local_y": (-1.0, 2.0, 0.0),
+                    "height": 1.0,
+                    "width": 0.5,
                 },
             )
         ],
+        dofs_per_node=6,
     )
 
 
 def make_quad4_stiffness_mesh():
-    return PlaneMesh2D(
+    return Mesh2D(
         nodes=[
             Node2D(1, 0.0, 0.0),
             Node2D(2, 2.0, 0.0),
@@ -139,7 +137,7 @@ def make_quad4_stiffness_mesh():
             Element2D(
                 id=1,
                 node_ids=[1, 2, 3, 4],
-                type="Quad4Plane",
+                type="Quad4",
                 props={
                     "E": 210.0,
                     "nu": 0.3,
@@ -152,7 +150,7 @@ def make_quad4_stiffness_mesh():
 
 
 def make_quad4_boundary_mesh():
-    return PlaneMesh2D(
+    return Mesh2D(
         nodes=[
             Node2D(1, 0.0, 0.0),
             Node2D(2, 2.0, 0.0),
@@ -163,7 +161,7 @@ def make_quad4_boundary_mesh():
             Element2D(
                 id=1,
                 node_ids=[1, 2, 3, 4],
-                type="Quad4Plane",
+                type="Quad4",
                 props={"E": 210.0, "nu": 0.3, "thickness": 2.0},
             )
         ],
@@ -171,7 +169,7 @@ def make_quad4_boundary_mesh():
 
 
 def make_tri3_load_mesh():
-    return PlaneMesh2D(
+    return Mesh2D(
         nodes=[
             Node2D(1, 0.0, 0.0),
             Node2D(2, 2.0, 0.0),
@@ -181,7 +179,7 @@ def make_tri3_load_mesh():
             Element2D(
                 id=1,
                 node_ids=[1, 2, 3],
-                type="Tri3Plane",
+                type="Tri3",
                 props={"E": 210.0, "nu": 0.3, "thickness": 2.0},
             )
         ],
@@ -189,7 +187,7 @@ def make_tri3_load_mesh():
 
 
 def make_quad8_load_mesh():
-    return PlaneMesh2D(
+    return Mesh2D(
         nodes=[
             Node2D(1, 0.0, 0.0),
             Node2D(2, 2.0, 0.0),
@@ -204,7 +202,7 @@ def make_quad8_load_mesh():
             Element2D(
                 id=1,
                 node_ids=[1, 2, 3, 4, 5, 6, 7, 8],
-                type="Quad8Plane",
+                type="Quad8",
                 props={"E": 210.0, "nu": 0.3, "thickness": 1.5},
             )
         ],
@@ -212,7 +210,7 @@ def make_quad8_load_mesh():
 
 
 def make_tri3_stiffness_mesh():
-    return PlaneMesh2D(
+    return Mesh2D(
         nodes=[
             Node2D(1, 0.0, 0.0),
             Node2D(2, 2.0, 0.0),
@@ -222,7 +220,7 @@ def make_tri3_stiffness_mesh():
             Element2D(
                 id=1,
                 node_ids=[1, 2, 3],
-                type="Tri3Plane",
+                type="Tri3",
                 props={
                     "E": 210.0,
                     "nu": 0.3,
@@ -235,7 +233,7 @@ def make_tri3_stiffness_mesh():
 
 
 def make_tri6_stiffness_mesh():
-    return PlaneMesh2D(
+    return Mesh2D(
         nodes=[
             Node2D(1, 0.0, 0.0),
             Node2D(2, 2.0, 0.0),
@@ -248,7 +246,7 @@ def make_tri6_stiffness_mesh():
             Element2D(
                 id=1,
                 node_ids=[1, 2, 3, 4, 5, 6],
-                type="Tri6Plane",
+                type="Tri6",
                 props={
                     "E": 210.0,
                     "nu": 0.3,
@@ -261,7 +259,7 @@ def make_tri6_stiffness_mesh():
 
 
 def make_tri6_load_mesh():
-    return PlaneMesh2D(
+    return Mesh2D(
         nodes=[
             Node2D(1, 0.0, 0.0),
             Node2D(2, 2.0, 0.0),
@@ -274,7 +272,7 @@ def make_tri6_load_mesh():
             Element2D(
                 id=1,
                 node_ids=[1, 2, 3, 4, 5, 6],
-                type="Tri6Plane",
+                type="Tri6",
                 props={"E": 210.0, "nu": 0.3, "thickness": 2.0},
             )
         ],
@@ -282,7 +280,7 @@ def make_tri6_load_mesh():
 
 
 def make_quad8_stiffness_mesh():
-    return PlaneMesh2D(
+    return Mesh2D(
         nodes=[
             Node2D(1, 0.0, 0.0),
             Node2D(2, 2.0, 0.0),
@@ -297,7 +295,7 @@ def make_quad8_stiffness_mesh():
             Element2D(
                 id=1,
                 node_ids=[1, 2, 3, 4, 5, 6, 7, 8],
-                type="Quad8Plane",
+                type="Quad8",
                 props={
                     "E": 210.0,
                     "nu": 0.3,
@@ -326,7 +324,7 @@ def make_hex8_stiffness_mesh():
         type="Hex8",
         props={"E": 1.0, "nu": 0.25},
     )
-    return HexMesh3D(nodes=nodes, elements=[elem])
+    return Mesh3D(nodes=nodes, elements=[elem])
 
 
 def make_hex20_stiffness_mesh(curved=False):
@@ -349,7 +347,7 @@ def make_hex20_stiffness_mesh(curved=False):
         "Hex20",
         {"E": 210.0, "nu": 0.3},
     )
-    return HexMesh3D(nodes=nodes, elements=[elem])
+    return Mesh3D(nodes=nodes, elements=[elem])
 
 
 def make_hex8_solid_stress_mesh():
@@ -359,7 +357,7 @@ def make_hex8_solid_stress_mesh():
 
 
 def make_unit_hex8_mesh():
-    return HexMesh3D(
+    return Mesh3D(
         nodes=[
             Node3D(1, 0.0, 0.0, 0.0),
             Node3D(2, 1.0, 0.0, 0.0),
@@ -382,7 +380,7 @@ def make_unit_hex8_mesh():
 
 
 def make_tet4_stiffness_mesh():
-    return TetMesh3D(
+    return Mesh3D(
         nodes=[
             Node3D(1, 0.0, 0.0, 0.0),
             Node3D(2, 1.0, 0.0, 0.0),
@@ -401,7 +399,7 @@ def make_tet4_stiffness_mesh():
 
 
 def make_tet10_stiffness_mesh():
-    return TetMesh3D(
+    return Mesh3D(
         nodes=[
             Node3D(1, 0.0, 0.0, 0.0),
             Node3D(2, 1.0, 0.0, 0.0),
@@ -451,7 +449,7 @@ def make_mixed_hex8_tet4_mesh():
             props={"E": 120.0, "nu": 0.25},
         ),
     ]
-    return HexMesh3D(nodes=nodes, elements=elements)
+    return Mesh3D(nodes=nodes, elements=elements)
 
 
 def make_mixed_hex8_hex20_mesh():
@@ -461,7 +459,7 @@ def make_mixed_hex8_hex20_mesh():
         Node3D(node.id + 8, node.x + 2.0, node.y, node.z)
         for node in hex20.nodes
     ]
-    return HexMesh3D(
+    return Mesh3D(
         nodes=list(hex8.nodes) + shifted_nodes,
         elements=[
             hex8.elements[0],
@@ -482,7 +480,7 @@ def make_mixed_hex20_tet10_mesh():
         Node3D(node.id + 20, node.x + 2.0, node.y, node.z)
         for node in tet10.nodes
     ]
-    return HexMesh3D(
+    return Mesh3D(
         nodes=list(hex20.nodes) + shifted_nodes,
         elements=[
             hex20.elements[0],
@@ -508,17 +506,17 @@ def make_mixed_tri3_quad4_mesh():
         Element2D(
             id=1,
             node_ids=[1, 2, 4],
-            type="Tri3Plane",
+            type="Tri3",
             props={"E": 100.0, "nu": 0.25, "thickness": 1.0, "plane_type": "stress"},
         ),
         Element2D(
             id=2,
             node_ids=[2, 5, 3, 4],
-            type="Quad4Plane",
+            type="Quad4",
             props={"E": 90.0, "nu": 0.3, "thickness": 1.0, "plane_type": "stress"},
         ),
     ]
-    return PlaneMesh2D(nodes=nodes, elements=elements)
+    return Mesh2D(nodes=nodes, elements=elements)
 
 
 def make_mixed_tet4_tet10_mesh():
@@ -552,7 +550,7 @@ def make_mixed_tet4_tet10_mesh():
             props={"E": 120.0, "nu": 0.25},
         ),
     ]
-    return TetMesh3D(nodes=nodes, elements=elements)
+    return Mesh3D(nodes=nodes, elements=elements)
 
 
 def make_mixed_quad4_quad8_mesh():
@@ -574,17 +572,17 @@ def make_mixed_quad4_quad8_mesh():
         Element2D(
             id=1,
             node_ids=[1, 2, 3, 4],
-            type="Quad4Plane",
+            type="Quad4",
             props={"E": 100.0, "nu": 0.25, "thickness": 1.0, "plane_type": "stress"},
         ),
         Element2D(
             id=2,
             node_ids=[5, 6, 7, 8, 9, 10, 11, 12],
-            type="Quad8Plane",
+            type="Quad8",
             props={"E": 90.0, "nu": 0.3, "thickness": 1.0, "plane_type": "stress"},
         ),
     ]
-    return PlaneMesh2D(nodes=nodes, elements=elements)
+    return Mesh2D(nodes=nodes, elements=elements)
 
 
 def make_mixed_tri6_quad8_mesh():
@@ -608,14 +606,14 @@ def make_mixed_tri6_quad8_mesh():
         Element2D(
             id=1,
             node_ids=[1, 2, 3, 4, 5, 6],
-            type="Tri6Plane",
+            type="Tri6",
             props={"E": 100.0, "nu": 0.25, "thickness": 1.0, "plane_type": "stress"},
         ),
         Element2D(
             id=2,
             node_ids=[7, 8, 9, 10, 11, 12, 13, 14],
-            type="Quad8Plane",
+            type="Quad8",
             props={"E": 90.0, "nu": 0.3, "thickness": 1.0, "plane_type": "stress"},
         ),
     ]
-    return PlaneMesh2D(nodes=nodes, elements=elements)
+    return Mesh2D(nodes=nodes, elements=elements)

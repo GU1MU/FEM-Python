@@ -105,13 +105,13 @@ class ElementInfo:
 
     @property
     def element_type(self) -> str:
-        """Element formulation name, such as Hex8, Tet4, or Quad4Plane."""
+        """Element formulation name, such as Hex8, Tet4, or Quad4."""
         return self.type
 
 
 @dataclass(frozen=True)
 class SectionAssignment:
-    """Assign a material to an element set."""
+    """Assign a material and section definition to an element set."""
     element_set: str
     material: str
     section_type: str = "solid"
