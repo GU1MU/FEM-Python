@@ -20,21 +20,28 @@ _CAD_DEPENDENCY_MESSAGE = (
 _PLANAR_TOLERANCE = 1.0e-10
 # OpenCASCADE expands Gmsh bounding boxes by this numerical safety gap.
 _OCC_BOUNDING_BOX_PADDING = 1.0e-7
-_MESH_OPTION_NAMES = (
-    "Mesh.ElementOrder",
-    "Mesh.SecondOrderIncomplete",
-    "Mesh.RecombineAll",
-)
 _POINT_SIZE_OPTION_NAME = "Mesh.MeshSizeFromPoints"
-_TYPED_SIZE_OPTION_NAMES = (
-    _POINT_SIZE_OPTION_NAME,
-    "Mesh.MeshSizeFromCurvature",
-    "Mesh.MeshSizeExtendFromBoundary",
-    "Mesh.MeshSizeMin",
-    "Mesh.MeshSizeMax",
-    "Mesh.MeshSizeFactor",
-)
 _MESH_FIELD_TYPES = frozenset({"Distance", "Threshold", "Min"})
+_GMSH_TOP_CELL_TYPE_NAMES = {
+    1: "Line 2",
+    2: "Triangle 3",
+    3: "Quadrilateral 4",
+    4: "Tetrahedron 4",
+    5: "Hexahedron 8",
+    9: "Triangle 6",
+    11: "Tetrahedron 10",
+    16: "Quadrilateral 8",
+    17: "Hexahedron 20",
+}
+
+_AutoCellShape = Literal["tri", "tri-quad", "quad", "tet", "hex"]
+_AutoMeshMode = Literal["line", "tri", "tri-quad", "quad", "tet", "hex"]
+_GenerationOperation = Literal[
+    "generate_mesh",
+    "generate_fem_model",
+    "generate_auto_mesh",
+]
+_GenerationSizeMode = Literal["none", "uniform", "point", "background"]
 
 
 class GeometryError(RuntimeError):
@@ -43,6 +50,14 @@ class GeometryError(RuntimeError):
 
 class GeometryStateError(GeometryError):
     """Raised when a geometry operation is invalid in the current state."""
+
+
+class MeshCellShapeError(GeometryError):
+    """Raised when an automatic mesh violates its top-cell contract."""
+
+
+class MeshControlConflictError(GeometryError):
+    """Raised when explicit topology controls conflict with automatic meshing."""
 
 
 class EntityOwnershipError(GeometryError):
@@ -59,6 +74,104 @@ class MeshFieldOwnershipError(GeometryError):
 
 class StaleMeshFieldError(GeometryError):
     """Raised when a mesh-field reference no longer denotes a live field."""
+
+
+@dataclass(frozen=True, slots=True)
+class _AutoMeshPolicy:
+    mode: _AutoMeshMode
+    option_overrides: tuple[tuple[str, float], ...]
+    order_one_types: frozenset[int]
+    order_two_types: frozenset[int] | None
+
+    def allowed_types(self, order: Literal[1, 2]) -> frozenset[int]:
+        if order == 1:
+            return self.order_one_types
+        if self.order_two_types is None:
+            raise ValueError(
+                f"order must be 1 for automatic {self.mode!r} mesh generation"
+            )
+        return self.order_two_types
+
+
+@dataclass(frozen=True, slots=True)
+class _MeshGenerationPolicy:
+    operation: _GenerationOperation
+    order: Literal[1, 2]
+    option_overrides: tuple[tuple[str, float], ...]
+    mesh_size_factor: float | None = None
+    requested_cell_shape: _AutoCellShape | None = None
+    resolved_cell_shape: _AutoMeshMode | None = None
+    allowed_top_cell_types: frozenset[int] | None = None
+    strict_cell_shape: bool = False
+
+
+_AUTO_MESH_POLICIES = {
+    "line": _AutoMeshPolicy(
+        "line",
+        (
+            ("Mesh.RecombineAll", 0.0),
+            ("Mesh.SubdivisionAlgorithm", 0.0),
+        ),
+        frozenset({1}),
+        None,
+    ),
+    "tri": _AutoMeshPolicy(
+        "tri",
+        (
+            ("Mesh.RecombineAll", 0.0),
+            ("Mesh.Algorithm", 6.0),
+            ("Mesh.SubdivisionAlgorithm", 0.0),
+        ),
+        frozenset({2}),
+        frozenset({9}),
+    ),
+    "tri-quad": _AutoMeshPolicy(
+        "tri-quad",
+        (
+            ("Mesh.RecombineAll", 1.0),
+            ("Mesh.Algorithm", 6.0),
+            ("Mesh.RecombinationAlgorithm", 1.0),
+            ("Mesh.SubdivisionAlgorithm", 0.0),
+        ),
+        frozenset({2, 3}),
+        frozenset({9, 16}),
+    ),
+    "quad": _AutoMeshPolicy(
+        "quad",
+        (
+            ("Mesh.RecombineAll", 1.0),
+            ("Mesh.Algorithm", 6.0),
+            ("Mesh.RecombinationAlgorithm", 3.0),
+            ("Mesh.SubdivisionAlgorithm", 0.0),
+        ),
+        frozenset({3}),
+        frozenset({16}),
+    ),
+    "tet": _AutoMeshPolicy(
+        "tet",
+        (
+            ("Mesh.RecombineAll", 0.0),
+            ("Mesh.Algorithm", 6.0),
+            ("Mesh.Algorithm3D", 1.0),
+            ("Mesh.Recombine3DAll", 0.0),
+            ("Mesh.SubdivisionAlgorithm", 0.0),
+        ),
+        frozenset({4}),
+        frozenset({11}),
+    ),
+    "hex": _AutoMeshPolicy(
+        "hex",
+        (
+            ("Mesh.RecombineAll", 0.0),
+            ("Mesh.Algorithm", 6.0),
+            ("Mesh.Algorithm3D", 1.0),
+            ("Mesh.Recombine3DAll", 0.0),
+            ("Mesh.SubdivisionAlgorithm", 2.0),
+        ),
+        frozenset({5}),
+        frozenset({17}),
+    ),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +279,8 @@ class GeometryModel:
         self._entity_control_dependencies: set[tuple[int, int]] = set()
         self._transform_unsafe_control_dependencies: set[tuple[int, int]] = set()
         self._control_dependency_scope_unknown = False
+        self._auto_mesh_blockers: set[str] = set()
+        self._auto_mesh_scope_unknown = False
         self._gmsh: Any | None = None
         self._owns_session = False
         self._created_model = False
@@ -225,6 +340,8 @@ class GeometryModel:
             self._entity_control_dependencies.clear()
             self._transform_unsafe_control_dependencies.clear()
             self._control_dependency_scope_unknown = False
+            self._auto_mesh_blockers.clear()
+            self._auto_mesh_scope_unknown = False
             self._element_group_names.clear()
             self._node_group_names.clear()
             self._mesh_attempted = False
@@ -274,6 +391,8 @@ class GeometryModel:
             self._entity_control_dependencies.clear()
             self._transform_unsafe_control_dependencies.clear()
             self._control_dependency_scope_unknown = False
+            self._auto_mesh_blockers.clear()
+            self._auto_mesh_scope_unknown = False
             self._state = _State.CLOSED
             if gmsh is not None and self._owns_session:
                 if bool(gmsh.isInitialized()):
@@ -700,10 +819,12 @@ class GeometryModel:
             list(normalized_heights),
             recombine,
         )
-        controlled = bool(layer_counts or recombine)
+        controlled = bool(layer_counts or normalized_heights or recombine)
         prior_unknown_scope = self._control_dependency_scope_unknown
+        prior_auto_mesh_scope_unknown = self._auto_mesh_scope_unknown
         if controlled:
             self._control_dependency_scope_unknown = True
+            self._auto_mesh_scope_unknown = True
         validated_pairs = tuple(_normalize_dim_tag(pair) for pair in output_pairs)
         if not validated_pairs:
             raise GeometryError(
@@ -734,7 +855,9 @@ class GeometryModel:
                 dependency_keys,
                 transform_unsafe=True,
             )
+            self._auto_mesh_blockers.add(operation)
             self._control_dependency_scope_unknown = prior_unknown_scope
+            self._auto_mesh_scope_unknown = prior_auto_mesh_scope_unknown
         return outputs
 
     def entity(self, dimension: int, tag: int) -> EntityRef:
@@ -914,6 +1037,7 @@ class GeometryModel:
         )
         self._gmsh.model.mesh.setTransfiniteCurve(target.tag, node_count)
         self._register_control_dependencies(dependency_keys, transform_unsafe=True)
+        self._auto_mesh_blockers.add(operation)
 
     def transfinite_surface(
         self,
@@ -953,6 +1077,7 @@ class GeometryModel:
             cornerTags=[corner.tag for corner in normalized_corners],
         )
         self._register_control_dependencies(dependency_keys, transform_unsafe=True)
+        self._auto_mesh_blockers.add(operation)
 
     def transfinite_volume(
         self,
@@ -992,6 +1117,7 @@ class GeometryModel:
             cornerTags=[corner.tag for corner in normalized_corners],
         )
         self._register_control_dependencies(dependency_keys, transform_unsafe=True)
+        self._auto_mesh_blockers.add(operation)
 
     def recombine(self, surface: EntityRef) -> None:
         """Request native Gmsh recombination on one surface.
@@ -1012,6 +1138,7 @@ class GeometryModel:
         )
         self._gmsh.model.mesh.setRecombine(2, target.tag)
         self._register_control_dependencies(dependency_keys, transform_unsafe=True)
+        self._auto_mesh_blockers.add(operation)
 
     def mesh_size(
         self,
@@ -1251,6 +1378,37 @@ class GeometryModel:
         self._state = _State.MESHED
         return imported
 
+    def generate_auto_mesh(
+        self,
+        *,
+        level: Literal[1, 2, 3, 4, 5] = 3,
+        cell_shape: Literal[
+            "tri",
+            "tri-quad",
+            "quad",
+            "tet",
+            "hex",
+        ]
+        | None = None,
+        order: Literal[1, 2] = 1,
+        line_element_type: Literal["Truss2", "Beam2"] | None = None,
+        plane_type: Literal["stress", "strain"] = "stress",
+        thickness: float = 1.0,
+        z_tolerance: float = 1.0e-10,
+    ) -> gmsh_io.GmshImportResult:
+        """Generate and import one level-scaled, strict-shape mesh."""
+        imported = self._generate_auto_mesh(
+            level=level,
+            cell_shape=cell_shape,
+            order=order,
+            line_element_type=line_element_type,
+            plane_type=plane_type,
+            thickness=thickness,
+            z_tolerance=z_tolerance,
+        )
+        self._state = _State.MESHED
+        return imported
+
     def generate_fem_model(
         self,
         name: str | None = None,
@@ -1332,6 +1490,111 @@ class GeometryModel:
         thickness_value = _positive_float(thickness, "thickness")
         tolerance_value = _nonnegative_float(z_tolerance, "z_tolerance")
 
+        policy = _MeshGenerationPolicy(
+            operation=operation,
+            order=order,
+            option_overrides=(
+                ("Mesh.ElementOrder", float(order)),
+                (
+                    "Mesh.SecondOrderIncomplete",
+                    1.0 if order == 2 else 0.0,
+                ),
+                ("Mesh.RecombineAll", 1.0 if recombine else 0.0),
+            ),
+        )
+        return self._generate_and_import_mesh(
+            policy=policy,
+            size_value=size_value,
+            line_element_type=normalized_line_element_type,
+            plane_type=normalized_plane_type,
+            thickness=thickness_value,
+            z_tolerance=tolerance_value,
+        )
+
+    def _generate_auto_mesh(
+        self,
+        *,
+        level: Literal[1, 2, 3, 4, 5],
+        cell_shape: _AutoCellShape | None,
+        order: Literal[1, 2],
+        line_element_type: Literal["Truss2", "Beam2"] | None,
+        plane_type: Literal["stress", "strain"],
+        thickness: float,
+        z_tolerance: float,
+    ) -> gmsh_io.GmshImportResult:
+        operation = "generate_auto_mesh"
+        self._check_state(
+            operation,
+            frozenset({_State.BUILDING, _State.LABELED}),
+        )
+        if self._mesh_attempted:
+            raise self._state_error(operation, "the one mesh attempt was already used")
+
+        normalized_level = _validate_auto_mesh_level(level)
+        resolved_cell_shape = _resolve_auto_mesh_mode(
+            self.dimension,
+            cell_shape,
+        )
+        if isinstance(order, bool) or not isinstance(order, int) or order not in (1, 2):
+            raise ValueError(f"order must be integer 1 or 2, got {order!r}")
+        if self.dimension == 1 and order != 1:
+            raise ValueError("order must be 1 for a one-dimensional geometry model")
+        normalized_line_element_type = _validate_line_element_type(
+            self.dimension,
+            line_element_type,
+        )
+        if not isinstance(plane_type, str) or plane_type.lower() not in {
+            "stress",
+            "strain",
+        }:
+            raise ValueError(
+                f"plane_type must be 'stress' or 'strain', got {plane_type!r}"
+            )
+        normalized_plane_type = plane_type.lower()
+        thickness_value = _positive_float(thickness, "thickness")
+        tolerance_value = _nonnegative_float(z_tolerance, "z_tolerance")
+        self._check_auto_mesh_controls()
+
+        auto_policy = _AUTO_MESH_POLICIES[resolved_cell_shape]
+        size_factor = 2.0 ** ((3 - normalized_level) / self.dimension)
+        policy = _MeshGenerationPolicy(
+            operation=operation,
+            order=order,
+            option_overrides=(
+                ("Mesh.ElementOrder", float(order)),
+                (
+                    "Mesh.SecondOrderIncomplete",
+                    1.0 if order == 2 else 0.0,
+                ),
+                *auto_policy.option_overrides,
+            ),
+            mesh_size_factor=size_factor,
+            requested_cell_shape=cell_shape,
+            resolved_cell_shape=resolved_cell_shape,
+            allowed_top_cell_types=auto_policy.allowed_types(order),
+            strict_cell_shape=True,
+        )
+        return self._generate_and_import_mesh(
+            policy=policy,
+            size_value=None,
+            line_element_type=normalized_line_element_type,
+            plane_type=normalized_plane_type,
+            thickness=thickness_value,
+            z_tolerance=tolerance_value,
+        )
+
+    def _generate_and_import_mesh(
+        self,
+        *,
+        policy: _MeshGenerationPolicy,
+        size_value: float | None,
+        line_element_type: Literal["Truss2", "Beam2"] | None,
+        plane_type: Literal["stress", "strain"],
+        thickness: float,
+        z_tolerance: float,
+    ) -> gmsh_io.GmshImportResult:
+        operation = policy.operation
+
         self._activate(operation)
         self._gmsh.model.occ.synchronize()
         top_entities = sorted(
@@ -1346,12 +1609,7 @@ class GeometryModel:
 
         self._mesh_attempted = True
         try:
-            generation_size_mode: Literal[
-                "none",
-                "uniform",
-                "point",
-                "background",
-            ] = self._mesh_size_mode
+            generation_size_mode: _GenerationSizeMode = self._mesh_size_mode
             if size_value is not None:
                 generation_size_mode = "uniform"
                 points = sorted(
@@ -1366,19 +1624,20 @@ class GeometryModel:
                 self._gmsh.model.mesh.setSize(points, size_value)
 
             self._snapshot_and_set_mesh_options(
-                order,
-                recombine,
+                policy,
                 size_mode=generation_size_mode,
             )
             self._gmsh.model.mesh.generate(self.dimension)
             self._gmsh.model.occ.synchronize()
+            if policy.strict_cell_shape:
+                self._validate_generated_top_cell_shape(policy)
             imported = gmsh_io.from_model(
                 dimension=self.dimension,
                 gmsh_model=self._gmsh.model,
-                line_element_type=normalized_line_element_type,
-                plane_type=normalized_plane_type,
-                thickness=thickness_value,
-                z_tolerance=tolerance_value,
+                line_element_type=line_element_type,
+                plane_type=plane_type,
+                thickness=thickness,
+                z_tolerance=z_tolerance,
             )
         except BaseException as error:
             self._state = _State.MESH_FAILED
@@ -1406,25 +1665,26 @@ class GeometryModel:
 
     def _snapshot_and_set_mesh_options(
         self,
-        order: Literal[1, 2],
-        recombine: bool,
+        policy: _MeshGenerationPolicy,
         *,
-        size_mode: Literal["none", "uniform", "point", "background"],
+        size_mode: _GenerationSizeMode,
     ) -> None:
         if self._pending_options:
             raise GeometryStateError(
                 f"geometry model {self.name!r}: mesh options already have a "
                 "pending restoration"
             )
-        requested = {
-            "Mesh.ElementOrder": float(order),
-            "Mesh.SecondOrderIncomplete": 1.0 if order == 2 else 0.0,
-            "Mesh.RecombineAll": 1.0 if recombine else 0.0,
-        }
-        option_names = _MESH_OPTION_NAMES
+        requested: dict[str, float] = {}
+        for option_name, option_value in policy.option_overrides:
+            if option_name in requested:
+                raise GeometryStateError(
+                    f"geometry model {self.name!r}: generation policy contains "
+                    f"duplicate Gmsh option {option_name!r}"
+                )
+            requested[option_name] = float(option_value)
+
         if size_mode == "uniform":
             requested[_POINT_SIZE_OPTION_NAME] = 1.0
-            option_names = (*option_names, _POINT_SIZE_OPTION_NAME)
         elif size_mode in {"point", "background"}:
             requested.update(
                 {
@@ -1435,16 +1695,127 @@ class GeometryModel:
                     ),
                     "Mesh.MeshSizeMin": 0.0,
                     "Mesh.MeshSizeMax": 1.0e22,
-                    "Mesh.MeshSizeFactor": 1.0,
                 }
             )
-            option_names = (*option_names, *_TYPED_SIZE_OPTION_NAMES)
+        if policy.mesh_size_factor is not None:
+            requested["Mesh.MeshSizeFactor"] = policy.mesh_size_factor
+        elif size_mode in {"point", "background"}:
+            requested["Mesh.MeshSizeFactor"] = 1.0
+
+        option_names = tuple(requested)
         for option_name in option_names:
             self._pending_options[option_name] = float(
                 self._gmsh.option.getNumber(option_name)
             )
         for option_name in option_names:
             self._gmsh.option.setNumber(option_name, requested[option_name])
+
+    def _validate_generated_top_cell_shape(
+        self,
+        policy: _MeshGenerationPolicy,
+    ) -> None:
+        allowed_types = policy.allowed_top_cell_types
+        if allowed_types is None or policy.resolved_cell_shape is None:
+            raise GeometryStateError(
+                f"geometry model {self.name!r}: strict mesh policy is incomplete"
+            )
+
+        raw_blocks = self._gmsh.model.mesh.getElements(self.dimension)
+        try:
+            raw_types, raw_element_tags, _ = raw_blocks
+            element_types = list(raw_types)
+            element_tag_blocks = list(raw_element_tags)
+        except Exception as exc:
+            raise self._mesh_cell_shape_error(
+                policy,
+                "generated malformed top-dimensional element blocks",
+            ) from exc
+
+        if len(element_types) != len(element_tag_blocks):
+            raise self._mesh_cell_shape_error(
+                policy,
+                "generated malformed top-dimensional element blocks "
+                f"({len(element_types)} type blocks and "
+                f"{len(element_tag_blocks)} element-tag blocks)",
+            )
+
+        counts: dict[int, int] = {}
+        for block_index, (raw_type, raw_tags) in enumerate(
+            zip(element_types, element_tag_blocks, strict=True)
+        ):
+            if isinstance(raw_type, bool):
+                raise self._mesh_cell_shape_error(
+                    policy,
+                    f"generated a non-integer element type in block {block_index}",
+                )
+            try:
+                element_type = int(operator.index(raw_type))
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise self._mesh_cell_shape_error(
+                    policy,
+                    f"generated a non-integer element type in block {block_index}",
+                ) from exc
+            try:
+                element_count = len(raw_tags)
+            except Exception as exc:
+                raise self._mesh_cell_shape_error(
+                    policy,
+                    "generated malformed element tags in top-dimensional "
+                    f"block {block_index}",
+                ) from exc
+            if element_count:
+                counts[element_type] = counts.get(element_type, 0) + element_count
+
+        if not counts:
+            raise self._mesh_cell_shape_error(
+                policy,
+                "generated no top-dimensional cells",
+            )
+        if set(counts).issubset(allowed_types):
+            return
+
+        actual = " and ".join(
+            f"{self._element_type_diagnostic_name(element_type)}={counts[element_type]}"
+            for element_type in sorted(counts)
+        )
+        raise self._mesh_cell_shape_error(
+            policy,
+            f"generated {actual}",
+        )
+
+    def _mesh_cell_shape_error(
+        self,
+        policy: _MeshGenerationPolicy,
+        actual_detail: str,
+    ) -> MeshCellShapeError:
+        allowed_types = policy.allowed_top_cell_types or frozenset()
+        expected_names = [
+            _GMSH_TOP_CELL_TYPE_NAMES.get(
+                element_type,
+                f"Gmsh type {element_type}",
+            )
+            for element_type in sorted(allowed_types)
+        ]
+        expected = " or ".join(expected_names) if expected_names else "no cell type"
+        requested = f"cell_shape={policy.requested_cell_shape!r}"
+        if policy.requested_cell_shape is None:
+            requested += f" (resolved to {policy.resolved_cell_shape!r})"
+        return MeshCellShapeError(
+            f"geometry model {self.name!r}: generate_auto_mesh requested "
+            f"{requested} for dimension={self.dimension} and order={policy.order}; "
+            f"expected only {expected}, but {actual_detail}; automatic fallback "
+            "is disabled"
+        )
+
+    def _element_type_diagnostic_name(self, element_type: int) -> str:
+        try:
+            properties = self._gmsh.model.mesh.getElementProperties(element_type)
+            name = properties[0]
+            if not isinstance(name, str) or not name:
+                raise ValueError("element name is unavailable")
+        except BaseException:
+            return f"Gmsh type {element_type}"
+        return name
 
     @property
     def raw_model(self) -> Any:
@@ -1467,6 +1838,7 @@ class GeometryModel:
     def _raw_handle(self, operation: str, kind: Literal["model", "occ"]) -> Any:
         self._check_state(operation, frozenset({_State.BUILDING}))
         self._activate(operation)
+        self._auto_mesh_scope_unknown = True
         if self._entity_control_dependencies:
             self._control_dependency_scope_unknown = True
         self._entity_tokens.clear()
@@ -1889,6 +2261,22 @@ class GeometryModel:
                 "mesh-control dependencies unknown",
             )
 
+    def _check_auto_mesh_controls(self) -> None:
+        if self._auto_mesh_scope_unknown:
+            raise MeshControlConflictError(
+                f"geometry model {self.name!r}: generate_auto_mesh cannot own "
+                "the mesh topology because raw access or a failed controlled "
+                "topology operation made the automatic topology scope unknown; "
+                "use generate_mesh() for this model"
+            )
+        if self._auto_mesh_blockers:
+            blockers = ", ".join(sorted(self._auto_mesh_blockers))
+            raise MeshControlConflictError(
+                f"geometry model {self.name!r}: generate_auto_mesh conflicts "
+                f"with explicit topology controls: {blockers}; use "
+                "generate_mesh() for this model"
+            )
+
     def _check_controlled_transform_allowed(
         self,
         operation: str,
@@ -1967,6 +2355,8 @@ class GeometryModel:
         self._entity_control_dependencies.clear()
         self._transform_unsafe_control_dependencies.clear()
         self._control_dependency_scope_unknown = False
+        self._auto_mesh_blockers.clear()
+        self._auto_mesh_scope_unknown = False
         gmsh = self._gmsh
         if gmsh is None:
             return ()
@@ -2056,6 +2446,51 @@ def _validate_mesh_dimension(value: Any) -> Literal[1, 2, 3]:
     if isinstance(value, bool) or not isinstance(value, int) or value not in (1, 2, 3):
         raise ValueError(f"dimension must be 1, 2, or 3, got {value!r}")
     return value
+
+
+def _validate_auto_mesh_level(value: Any) -> Literal[1, 2, 3, 4, 5]:
+    if isinstance(value, bool) or not isinstance(value, int) or value not in range(1, 6):
+        raise ValueError(
+            "generate_auto_mesh level must be a Python integer from 1 through "
+            f"5, got {value!r}"
+        )
+    return value
+
+
+def _resolve_auto_mesh_mode(
+    dimension: Literal[1, 2, 3],
+    cell_shape: Any,
+) -> _AutoMeshMode:
+    if dimension == 1:
+        if cell_shape is not None:
+            raise ValueError(
+                "generate_auto_mesh cell_shape must be None for dimension 1, "
+                f"got {cell_shape!r}"
+            )
+        return "line"
+
+    if dimension == 2:
+        if cell_shape is None:
+            return "tri-quad"
+        if not isinstance(cell_shape, str) or cell_shape not in {
+            "tri",
+            "tri-quad",
+            "quad",
+        }:
+            raise ValueError(
+                "generate_auto_mesh cell_shape for dimension 2 must be exactly "
+                f"'tri', 'tri-quad', or 'quad', got {cell_shape!r}"
+            )
+        return cell_shape
+
+    if cell_shape is None:
+        return "tet"
+    if not isinstance(cell_shape, str) or cell_shape not in {"tet", "hex"}:
+        raise ValueError(
+            "generate_auto_mesh cell_shape for dimension 3 must be exactly "
+            f"'tet' or 'hex', got {cell_shape!r}"
+        )
+    return cell_shape
 
 
 def _validate_line_element_type(
@@ -2187,6 +2622,8 @@ __all__ = [
     "GeometryError",
     "GeometryModel",
     "GeometryStateError",
+    "MeshCellShapeError",
+    "MeshControlConflictError",
     "MeshFieldOwnershipError",
     "MeshFieldRef",
     "PhysicalGroupRef",
