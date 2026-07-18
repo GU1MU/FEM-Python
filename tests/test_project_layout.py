@@ -41,10 +41,6 @@ def _resolved_import_targets(path, module_name):
             yield target, node.lineno
 
 
-def _is_module_or_child(target, module_name):
-    return target == module_name or target.startswith(f"{module_name}.")
-
-
 def test_tests_do_not_reference_example_data_or_results_outputs():
     offenders = []
     for path in TESTS_ROOT.rglob("test_*.py"):
@@ -59,15 +55,11 @@ def test_tests_do_not_reference_example_data_or_results_outputs():
     assert offenders == []
 
 
-def test_gmsh_geometry_does_not_import_fem_core_or_io():
+def test_gmsh_geometry_has_no_fem_runtime_dependencies():
     path = SRC_ROOT / "fem" / "geometry" / "gmsh.py"
     offenders = []
     for target, lineno in _resolved_import_targets(path, "fem.geometry.gmsh"):
-        if (
-            _is_module_or_child(target, "fem.core")
-            or _is_module_or_child(target, "fem.io")
-            or target.rsplit(".", 1)[-1] == "FEMModel"
-        ):
+        if target == "fem" or target.startswith("fem."):
             offenders.append(f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}")
 
     assert offenders == []
@@ -75,23 +67,23 @@ def test_gmsh_geometry_does_not_import_fem_core_or_io():
 
 def test_gmsh_io_imports_only_mesh_level_fem_core_types():
     path = SRC_ROOT / "fem" / "io" / "gmsh.py"
-    forbidden_names = {
-        "Edge",
-        "ElementEdge",
-        "ElementFace",
-        "ElementSet",
-        "FEMModel",
-        "NodeSet",
-        "Surface",
+    allowed_fem_targets = {
+        "fem.core.Element2D",
+        "fem.core.Element3D",
+        "fem.core.Mesh2D",
+        "fem.core.Mesh3D",
+        "fem.core.Node2D",
+        "fem.core.Node3D",
+        "fem.geometry.gmsh.GmshMeshRef",
     }
     offenders = []
     for target, lineno in _resolved_import_targets(path, "fem.io.gmsh"):
-        imported_name = target.rsplit(".", 1)[-1]
         if (
-            _is_module_or_child(target, "fem.selection")
-            or target == "fem.core"
-            or _is_module_or_child(target, "fem.core.model")
-            or imported_name in forbidden_names
+            target == "fem"
+            or (
+                target.startswith("fem.")
+                and target not in allowed_fem_targets
+            )
         ):
             offenders.append(f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}")
 

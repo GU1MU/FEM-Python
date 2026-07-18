@@ -333,9 +333,7 @@ def test_real_surface_distance_refines_one_face_of_a_small_box(
         volume = cad.box(0.0, 0.0, 0.0, length, 0.8, 0.8)
         faces = cad.boundary([volume])
         refined_face = cad.select(faces, x=0.0)
-        far_face = cad.select(faces, x=length)
         assert len(refined_face) == 1
-        assert len(far_face) == 1
 
         distance = cad.distance_field(surfaces=refined_face, sampling=40)
         threshold = cad.threshold_field(

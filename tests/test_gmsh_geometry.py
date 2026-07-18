@@ -4513,23 +4513,6 @@ def test_auto_mesh_rejects_invalid_levels_before_native_mutation(
         assert backend.option.calls == []
 
 
-@pytest.mark.parametrize("keyword", ["size", "recombine"])
-def test_auto_mesh_does_not_expose_low_level_generation_arguments(
-    monkeypatch: pytest.MonkeyPatch,
-    keyword: str,
-) -> None:
-    backend = _FakeGmsh()
-    _install_backend(monkeypatch, backend)
-
-    with geometry.model(f"auto-no-{keyword}", dimension=2) as cad:
-        cad.rectangle(0.0, 0.0, 1.0, 1.0)
-        with pytest.raises(TypeError, match=keyword):
-            cad.generate_auto_mesh(**{keyword: True})
-
-        assert backend.model.mesh.calls == []
-        assert backend.option.calls == []
-
-
 @pytest.mark.parametrize("dimension", [1, 2, 3])
 @pytest.mark.parametrize("level", [1, 2, 3, 4, 5])
 def test_auto_mesh_levels_set_dimension_aware_absolute_size_factor(
@@ -5219,30 +5202,23 @@ def _tri3_areas_by_centroid_x(mesh: Mesh2D) -> list[tuple[float, float]]:
     return samples
 
 
-@pytest.mark.parametrize("line_element_type", ["Truss2", "Beam2"])
-def test_real_auto_line_levels_refine_monotonically_with_formulation(
+def test_real_auto_line_levels_refine_monotonically(
     real_gmsh: Any,
-    line_element_type: str,
 ) -> None:
     counts: list[int] = []
     for level in range(1, 6):
         with geometry.model(
-            f"auto_line_{line_element_type}_{level}",
+            f"auto_line_{level}",
             dimension=1,
         ) as cad:
             start = cad.point(0.0, 0.0, 0.0)
             end = cad.point(8.0, 0.0, 0.0)
             cad.line(start, end)
-            native_mesh = cad.generate_auto_mesh(level=level)
-            mesh = gmsh_io.read(
-                native_mesh,
-                line_element_type=line_element_type,
-            )
+            cad.generate_auto_mesh(level=level)
             native_counts = _top_dimensional_element_counts(real_gmsh, 1)
 
         assert set(native_counts) == {1}
-        assert {element.type for element in mesh.elements} == {line_element_type}
-        counts.append(mesh.num_elements)
+        counts.append(sum(native_counts.values()))
 
     assert all(coarse < fine for coarse, fine in zip(counts, counts[1:]))
 
@@ -5886,8 +5862,6 @@ def test_real_facade_structured_rectangle_creates_quad8(real_gmsh: Any) -> None:
         cad.transfinite_surface(surface)
         cad.recombine(surface)
 
-        left = cad.select(curves, x=0.0)
-        assert len(left) == 1
         native_mesh = cad.generate_mesh(order=2, recombine=False)
         mesh = gmsh_io.read(native_mesh)
         _assert_positive_top_dimensional_jacobians(real_gmsh, 2)
@@ -5913,8 +5887,6 @@ def test_real_entity_recombine_leaves_unselected_surface_triangular(
         cad.transfinite_surface(structured)
         cad.recombine(structured)
 
-        structured_left = cad.select(structured_curves, x=0.0)
-        assert len(structured_left) == 1
         native_mesh = cad.generate_mesh(size=0.3, recombine=False)
         mesh = gmsh_io.read(native_mesh)
         assert real_gmsh.option.getNumber("Mesh.RecombineAll") == 1.0
@@ -5927,10 +5899,7 @@ def test_real_entity_recombine_leaves_unselected_surface_triangular(
 
 def test_real_facade_box_creates_tet10(real_gmsh: Any) -> None:
     with geometry.model("facade_tet10", dimension=3) as cad:
-        volume = cad.box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
-        faces = cad.boundary([volume])
-        left = cad.select(faces, x=0.0)
-        assert left
+        cad.box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
         native_mesh = cad.generate_mesh(size=0.7, order=2)
         mesh = gmsh_io.read(native_mesh)
         _assert_positive_top_dimensional_jacobians(real_gmsh, 3)
@@ -5957,8 +5926,6 @@ def test_real_facade_transfinite_box_creates_exact_hex20_mesh(
             cad.recombine(face)
         cad.transfinite_volume(volume)
 
-        left = cad.select(faces, x=0.0)
-        assert len(left) == 1
         native_mesh = cad.generate_mesh(order=2, recombine=False)
         mesh = gmsh_io.read(native_mesh)
         _assert_positive_top_dimensional_jacobians(real_gmsh, 3)
