@@ -5,9 +5,11 @@ from pathlib import Path
 import numpy as np
 
 from fem import materials, post, steps
-from fem.core import validate_model
+from fem.core import FEMModel, validate_model
 from fem.elements import get_element_kernel
 from fem.geometry import gmsh as geometry
+from fem.io import gmsh as gmsh_io
+from fem.selection import elements, nodes
 from fem.solvers import static_linear
 
 
@@ -23,15 +25,20 @@ def main() -> None:
     with geometry.model(MODEL_NAME, dimension=1) as cad:
         start = cad.point(0.0, 0.5, -0.25)
         end = cad.point(LENGTH, 0.5, -0.25)
-        member = cad.line(start, end)
-        cad.physical("MEMBERS", [member])
-        cad.physical("FIXED", [start])
-        cad.physical("TIP", [end])
-        model = cad.generate_fem_model(
-            MODEL_NAME,
-            size=0.5,
+        cad.line(start, end)
+        native_mesh = cad.generate_mesh(size=0.5)
+        mesh = gmsh_io.read(
+            native_mesh,
             line_element_type="Truss2",
         )
+
+    model = FEMModel(mesh=mesh, name=MODEL_NAME)
+    members = elements.set_all(mesh, "MEMBERS")
+    fixed = nodes.set_by_x(mesh, "FIXED", 0.0)
+    tip_nodes = nodes.set_by_x(mesh, "TIP", LENGTH)
+    model.element_sets[members.name] = members
+    model.node_sets[fixed.name] = fixed
+    model.node_sets[tip_nodes.name] = tip_nodes
 
     steel = materials.linear_elastic.material(
         "steel",

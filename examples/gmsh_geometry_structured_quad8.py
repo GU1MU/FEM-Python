@@ -5,8 +5,10 @@ from pathlib import Path
 import numpy as np
 
 from fem import materials, post, steps
-from fem.core import validate_model
+from fem.core import FEMModel, validate_model
 from fem.geometry import gmsh as geometry
+from fem.io import gmsh as gmsh_io
+from fem.selection import edges, elements, nodes
 from fem.solvers import static_linear
 
 
@@ -27,22 +29,27 @@ def main() -> None:
         cad.transfinite_surface(surface)
         cad.recombine(surface)
 
-        fixed = cad.select(curves, x=0.0)
-        traction = cad.select(curves, x=2.0)
-        cad.physical("DOMAIN", [surface])
-        cad.physical("FIXED", fixed)
-        cad.physical("TRACTION", traction)
-        imported = cad.generate_mesh(order=2, recombine=False)
+        native_mesh = cad.generate_mesh(order=2, recombine=False)
+        mesh = gmsh_io.read(native_mesh)
 
-    if imported.mesh.num_elements != 8:
+    if mesh.num_elements != 8:
         raise RuntimeError(
-            f"expected 8 structured cells, imported {imported.mesh.num_elements}"
+            f"expected 8 structured cells, imported {mesh.num_elements}"
         )
-    element_types = {element.type for element in imported.mesh.elements}
+    element_types = {element.type for element in mesh.elements}
     if element_types != {"Quad8"}:
         raise RuntimeError(f"expected only Quad8 elements, imported {element_types!r}")
 
-    model = imported.to_fem_model("gmsh_geometry_structured_quad8")
+    model = FEMModel(mesh=mesh, name="gmsh_geometry_structured_quad8")
+    domain_elements = elements.set_all(mesh, "DOMAIN")
+    fixed_nodes = nodes.set_by_x(mesh, "FIXED", 0.0)
+    traction_nodes = nodes.set_by_x(mesh, "TRACTION", 2.0)
+    traction_edges = edges.edge_by_x(mesh, "TRACTION", 2.0)
+    model.element_sets[domain_elements.name] = domain_elements
+    model.node_sets[fixed_nodes.name] = fixed_nodes
+    model.node_sets[traction_nodes.name] = traction_nodes
+    model.edges[traction_edges.name] = traction_edges
+
     elastic = materials.linear_elastic.material("elastic", E=1000.0, nu=0.3)
     materials.add(model, elastic)
     materials.assign(model, "elastic", "DOMAIN")

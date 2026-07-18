@@ -5,8 +5,10 @@ from pathlib import Path
 import numpy as np
 
 from fem import materials, post, steps
-from fem.core import validate_model
+from fem.core import FEMModel, validate_model
 from fem.geometry import gmsh as geometry
+from fem.io import gmsh as gmsh_io
+from fem.selection import edges, elements, nodes
 from fem.solvers import static_linear
 
 
@@ -40,11 +42,6 @@ def main() -> None:
         if not hole_curves:
             raise RuntimeError("expected at least one circular hole boundary")
 
-        cad.physical("DOMAIN", domain)
-        cad.physical("FIXED", fixed)
-        cad.physical("TRACTION", traction)
-        cad.physical("HOLE", hole_curves)
-
         hole_distance = cad.distance_field(curves=hole_curves, sampling=100)
         hole_refinement = cad.threshold_field(
             hole_distance,
@@ -54,26 +51,28 @@ def main() -> None:
             dist_max=0.35,
         )
         cad.background_field(hole_refinement)
-        imported = cad.generate_mesh(
-            order=1,
+        native_mesh = cad.generate_mesh(order=1)
+        mesh = gmsh_io.read(
+            native_mesh,
             plane_type="stress",
             thickness=1.0,
         )
 
-    element_types = {element.type for element in imported.mesh.elements}
+    element_types = {element.type for element in mesh.elements}
     if element_types != {"Tri3"}:
         raise RuntimeError(
             f"expected only first-order triangles, imported {element_types!r}"
         )
-    if "DOMAIN" not in imported.element_sets:
-        raise RuntimeError("expected the DOMAIN element set to be imported")
-    expected_boundaries = {"FIXED", "TRACTION", "HOLE"}
-    if not expected_boundaries.issubset(imported.node_sets):
-        raise RuntimeError("expected all boundary node sets to be imported")
-    if not expected_boundaries.issubset(imported.edges):
-        raise RuntimeError("expected all boundary edge collections to be imported")
+    model = FEMModel(mesh=mesh, name=MODEL_NAME)
+    domain_elements = elements.set_all(mesh, "DOMAIN")
+    fixed_nodes = nodes.set_by_x(mesh, "FIXED", 0.0)
+    traction_nodes = nodes.set_by_x(mesh, "TRACTION", 2.0)
+    traction_edges = edges.edge_by_x(mesh, "TRACTION", 2.0)
+    model.element_sets[domain_elements.name] = domain_elements
+    model.node_sets[fixed_nodes.name] = fixed_nodes
+    model.node_sets[traction_nodes.name] = traction_nodes
+    model.edges[traction_edges.name] = traction_edges
 
-    model = imported.to_fem_model(MODEL_NAME)
     elastic = materials.linear_elastic.material(
         "elastic",
         E=1000.0,

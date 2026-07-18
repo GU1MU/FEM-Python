@@ -5,8 +5,10 @@ from pathlib import Path
 import numpy as np
 
 from fem import materials, post, steps
-from fem.core import validate_model
+from fem.core import FEMModel, validate_model
 from fem.geometry import gmsh as geometry
+from fem.io import gmsh as gmsh_io
+from fem.selection import edges, elements, nodes
 from fem.solvers import static_linear
 
 
@@ -23,12 +25,19 @@ def main() -> None:
         if not fixed or not traction:
             raise RuntimeError("expected left and right plate boundaries")
 
-        cad.physical("DOMAIN", domain)
-        cad.physical("FIXED", fixed)
-        cad.physical("TRACTION", traction)
-        imported = cad.generate_mesh(size=0.2, order=2)
+        native_mesh = cad.generate_mesh(size=0.2, order=2)
+        mesh = gmsh_io.read(native_mesh)
 
-    model = imported.to_fem_model("gmsh_geometry_plate")
+    model = FEMModel(mesh=mesh, name="gmsh_geometry_plate")
+    domain_elements = elements.set_all(mesh, "DOMAIN")
+    fixed_nodes = nodes.set_by_x(mesh, "FIXED", 0.0)
+    traction_nodes = nodes.set_by_x(mesh, "TRACTION", 2.0)
+    traction_edges = edges.edge_by_x(mesh, "TRACTION", 2.0)
+    model.element_sets[domain_elements.name] = domain_elements
+    model.node_sets[fixed_nodes.name] = fixed_nodes
+    model.node_sets[traction_nodes.name] = traction_nodes
+    model.edges[traction_edges.name] = traction_edges
+
     elastic = materials.linear_elastic.material(
         "elastic",
         E=1000.0,

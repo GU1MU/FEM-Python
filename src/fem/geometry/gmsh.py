@@ -9,9 +9,6 @@ import operator
 from collections.abc import Iterable, Sequence
 from typing import Any, Literal
 
-from fem.core import FEMModel
-from fem.io import gmsh as gmsh_io
-
 
 _CAD_DEPENDENCY_MESSAGE = (
     "Gmsh geometry support requires the optional 'cad' dependencies. "
@@ -36,11 +33,7 @@ _GMSH_TOP_CELL_TYPE_NAMES = {
 
 _AutoCellShape = Literal["tri", "tri-quad", "quad", "tet", "hex"]
 _AutoMeshMode = Literal["line", "tri", "tri-quad", "quad", "tet", "hex"]
-_GenerationOperation = Literal[
-    "generate_mesh",
-    "generate_fem_model",
-    "generate_auto_mesh",
-]
+_GenerationOperation = Literal["generate_mesh", "generate_auto_mesh"]
 _GenerationSizeMode = Literal["none", "uniform", "point", "background"]
 
 
@@ -74,6 +67,17 @@ class MeshFieldOwnershipError(GeometryError):
 
 class StaleMeshFieldError(GeometryError):
     """Raised when a mesh-field reference no longer denotes a live field."""
+
+
+class StaleGmshMeshError(GeometryError):
+    """Raised when a generated native mesh is no longer available to import."""
+
+
+def _stale_gmsh_mesh_error(model_name: str) -> StaleGmshMeshError:
+    return StaleGmshMeshError(
+        f"generated Gmsh mesh for model {model_name!r} is stale; import it "
+        "with fem.io.gmsh.read() inside the owning geometry model context"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +207,28 @@ class MeshFieldRef:
 
 
 @dataclass(frozen=True, slots=True)
+class GmshMeshRef:
+    """Read-only reference to a generated mesh in a live Gmsh model context."""
+
+    dimension: Literal[1, 2, 3]
+    model_name: str
+    _owner: GeometryModel = field(repr=False)
+    _owner_token: object = field(repr=False)
+    _generation_token: object = field(repr=False)
+
+    def __post_init__(self) -> None:
+        _validate_mesh_dimension(self.dimension)
+        if not isinstance(self.model_name, str) or not self.model_name.strip():
+            raise ValueError("model_name must be a nonempty string")
+
+    def _borrow_model(self) -> Any:
+        """Return the live owning Gmsh model for the FEM IO adapter."""
+        if not isinstance(self._owner, GeometryModel):
+            raise _stale_gmsh_mesh_error(self.model_name)
+        return GeometryModel._borrow_generated_mesh(self._owner, self)
+
+
+@dataclass(frozen=True, slots=True)
 class BooleanResult:
     """Typed outputs and input-to-output mapping from an OCC boolean."""
 
@@ -217,31 +243,16 @@ class BooleanResult:
         )
 
 
-@dataclass(frozen=True, slots=True)
-class PhysicalGroupRef:
-    """Immutable reference to a named Gmsh physical group."""
-
-    dimension: int
-    tag: int
-    name: str
-    _owner_token: object = field(repr=False)
-
-    def __post_init__(self) -> None:
-        _validate_entity_dimension(self.dimension)
-        _validate_positive_tag(self.tag, "physical group tag")
-
-
 class _State(Enum):
     NEW = auto()
     BUILDING = auto()
-    LABELED = auto()
     MESHED = auto()
     MESH_FAILED = auto()
     CLOSED = auto()
 
 
-_QUERY_STATES = frozenset({_State.BUILDING, _State.LABELED, _State.MESH_FAILED})
-_MESH_CONTROL_STATES = frozenset({_State.BUILDING, _State.LABELED})
+_QUERY_STATES = frozenset({_State.BUILDING, _State.MESH_FAILED})
+_MESH_CONTROL_STATES = frozenset({_State.BUILDING})
 
 
 def _load_gmsh() -> Any:
@@ -286,9 +297,8 @@ class GeometryModel:
         self._created_model = False
         self._prior_current: str | None = None
         self._pending_options: dict[str, float] = {}
-        self._element_group_names: set[str] = set()
-        self._node_group_names: set[str] = set()
         self._mesh_attempted = False
+        self._generation_token: object | None = None
 
     @property
     def name(self) -> str:
@@ -342,9 +352,8 @@ class GeometryModel:
             self._control_dependency_scope_unknown = False
             self._auto_mesh_blockers.clear()
             self._auto_mesh_scope_unknown = False
-            self._element_group_names.clear()
-            self._node_group_names.clear()
             self._mesh_attempted = False
+            self._generation_token = None
             self._state = _State.BUILDING
             return self
         except BaseException as error:
@@ -393,6 +402,7 @@ class GeometryModel:
             self._control_dependency_scope_unknown = False
             self._auto_mesh_blockers.clear()
             self._auto_mesh_scope_unknown = False
+            self._generation_token = None
             self._state = _State.CLOSED
             if gmsh is not None and self._owns_session:
                 if bool(gmsh.isInitialized()):
@@ -960,62 +970,6 @@ class GeometryModel:
                 matches.append(entity)
         return tuple(sorted(matches, key=lambda item: (item.dimension, item.tag)))
 
-    def physical(
-        self,
-        name: str,
-        entities: Iterable[EntityRef],
-    ) -> PhysicalGroupRef:
-        """Create a named physical group and freeze topology after success."""
-        operation = "physical"
-        self._check_state(
-            operation,
-            frozenset({_State.BUILDING, _State.LABELED}),
-        )
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError("physical group name must be a nonempty string")
-        normalized_name = name.strip()
-        normalized = self._normalize_entities(entities, operation=operation)
-        dimensions = {entity.dimension for entity in normalized}
-        if len(dimensions) != 1:
-            raise ValueError("physical group entities must have one common dimension")
-        dimension = next(iter(dimensions))
-        if dimension > self.dimension:
-            raise ValueError(
-                "physical group entity dimension exceeds the facade dimension"
-            )
-        namespace = (
-            self._element_group_names
-            if dimension == self.dimension
-            else self._node_group_names
-        )
-        namespace_label = (
-            "element-set namespace"
-            if dimension == self.dimension
-            else "node-set namespace"
-        )
-        if normalized_name in namespace:
-            raise ValueError(
-                f"physical name {normalized_name!r} already exists in the "
-                f"{namespace_label}"
-            )
-        self._activate(operation)
-        self._assert_occ_liveness(normalized, operation)
-        self._gmsh.model.occ.synchronize()
-        tag = self._gmsh.model.addPhysicalGroup(
-            dimension,
-            [entity.tag for entity in normalized],
-            name=normalized_name,
-        )
-        reference = PhysicalGroupRef(
-            dimension,
-            _validate_positive_tag(tag, "physical group tag"),
-            normalized_name,
-            self._owner_token,
-        )
-        namespace.add(normalized_name)
-        self._state = _State.LABELED
-        return reference
-
     def transfinite_curve(
         self,
         curve: EntityRef,
@@ -1359,24 +1313,13 @@ class GeometryModel:
         size: float | None = None,
         order: Literal[1, 2] = 1,
         recombine: bool = False,
-        line_element_type: Literal["Truss2", "Beam2"] | None = None,
-        plane_type: Literal["stress", "strain"] = "stress",
-        thickness: float = 1.0,
-        z_tolerance: float = 1.0e-10,
-    ) -> gmsh_io.GmshImportResult:
-        """Generate and import the one mesh permitted for this facade model."""
-        imported = self._generate_mesh(
-            operation="generate_mesh",
+    ) -> GmshMeshRef:
+        """Generate the one native mesh permitted for this facade model."""
+        return self._generate_mesh(
             size=size,
             order=order,
             recombine=recombine,
-            line_element_type=line_element_type,
-            plane_type=plane_type,
-            thickness=thickness,
-            z_tolerance=z_tolerance,
         )
-        self._state = _State.MESHED
-        return imported
 
     def generate_auto_mesh(
         self,
@@ -1391,73 +1334,25 @@ class GeometryModel:
         ]
         | None = None,
         order: Literal[1, 2] = 1,
-        line_element_type: Literal["Truss2", "Beam2"] | None = None,
-        plane_type: Literal["stress", "strain"] = "stress",
-        thickness: float = 1.0,
-        z_tolerance: float = 1.0e-10,
-    ) -> gmsh_io.GmshImportResult:
-        """Generate and import one level-scaled, strict-shape mesh."""
-        imported = self._generate_auto_mesh(
+    ) -> GmshMeshRef:
+        """Generate one level-scaled, strict-shape native mesh."""
+        return self._generate_auto_mesh(
             level=level,
             cell_shape=cell_shape,
             order=order,
-            line_element_type=line_element_type,
-            plane_type=plane_type,
-            thickness=thickness,
-            z_tolerance=z_tolerance,
         )
-        self._state = _State.MESHED
-        return imported
-
-    def generate_fem_model(
-        self,
-        name: str | None = None,
-        *,
-        size: float | None = None,
-        order: Literal[1, 2] = 1,
-        recombine: bool = False,
-        line_element_type: Literal["Truss2", "Beam2"] | None = None,
-        plane_type: Literal["stress", "strain"] = "stress",
-        thickness: float = 1.0,
-        z_tolerance: float = 1.0e-10,
-    ) -> FEMModel:
-        """Generate, import, and convert the mesh through ``to_fem_model``."""
-        imported = self._generate_mesh(
-            operation="generate_fem_model",
-            size=size,
-            order=order,
-            recombine=recombine,
-            line_element_type=line_element_type,
-            plane_type=plane_type,
-            thickness=thickness,
-            z_tolerance=z_tolerance,
-        )
-        try:
-            fem_model = imported.to_fem_model(name)
-        except BaseException as error:
-            self._state = _State.MESH_FAILED
-            error.add_note(
-                f"geometry model {self.name!r}: FEM model conversion failed"
-            )
-            raise
-        self._state = _State.MESHED
-        return fem_model
 
     def _generate_mesh(
         self,
         *,
-        operation: Literal["generate_mesh", "generate_fem_model"],
         size: float | None,
         order: Literal[1, 2],
         recombine: bool,
-        line_element_type: Literal["Truss2", "Beam2"] | None,
-        plane_type: Literal["stress", "strain"],
-        thickness: float,
-        z_tolerance: float,
-    ) -> gmsh_io.GmshImportResult:
+    ) -> GmshMeshRef:
+        operation = "generate_mesh"
         self._check_state(
             operation,
-            frozenset({_State.BUILDING, _State.LABELED}),
+            frozenset({_State.BUILDING}),
         )
         if self._mesh_attempted:
             raise self._state_error(operation, "the one mesh attempt was already used")
@@ -1471,24 +1366,10 @@ class GeometryModel:
             raise ValueError(f"order must be integer 1 or 2, got {order!r}")
         if not isinstance(recombine, bool):
             raise TypeError(f"recombine must be a boolean, got {recombine!r}")
-        normalized_line_element_type = _validate_line_element_type(
-            self.dimension,
-            line_element_type,
-        )
         if self.dimension == 1 and order != 1:
             raise ValueError("order must be 1 for a one-dimensional geometry model")
         if self.dimension == 1 and recombine:
             raise ValueError("recombine must be False for a one-dimensional geometry model")
-        if not isinstance(plane_type, str) or plane_type.lower() not in {
-            "stress",
-            "strain",
-        }:
-            raise ValueError(
-                f"plane_type must be 'stress' or 'strain', got {plane_type!r}"
-            )
-        normalized_plane_type = plane_type.lower()
-        thickness_value = _positive_float(thickness, "thickness")
-        tolerance_value = _nonnegative_float(z_tolerance, "z_tolerance")
 
         policy = _MeshGenerationPolicy(
             operation=operation,
@@ -1502,13 +1383,9 @@ class GeometryModel:
                 ("Mesh.RecombineAll", 1.0 if recombine else 0.0),
             ),
         )
-        return self._generate_and_import_mesh(
+        return self._generate_native_mesh(
             policy=policy,
             size_value=size_value,
-            line_element_type=normalized_line_element_type,
-            plane_type=normalized_plane_type,
-            thickness=thickness_value,
-            z_tolerance=tolerance_value,
         )
 
     def _generate_auto_mesh(
@@ -1517,15 +1394,11 @@ class GeometryModel:
         level: Literal[1, 2, 3, 4, 5],
         cell_shape: _AutoCellShape | None,
         order: Literal[1, 2],
-        line_element_type: Literal["Truss2", "Beam2"] | None,
-        plane_type: Literal["stress", "strain"],
-        thickness: float,
-        z_tolerance: float,
-    ) -> gmsh_io.GmshImportResult:
+    ) -> GmshMeshRef:
         operation = "generate_auto_mesh"
         self._check_state(
             operation,
-            frozenset({_State.BUILDING, _State.LABELED}),
+            frozenset({_State.BUILDING}),
         )
         if self._mesh_attempted:
             raise self._state_error(operation, "the one mesh attempt was already used")
@@ -1539,20 +1412,6 @@ class GeometryModel:
             raise ValueError(f"order must be integer 1 or 2, got {order!r}")
         if self.dimension == 1 and order != 1:
             raise ValueError("order must be 1 for a one-dimensional geometry model")
-        normalized_line_element_type = _validate_line_element_type(
-            self.dimension,
-            line_element_type,
-        )
-        if not isinstance(plane_type, str) or plane_type.lower() not in {
-            "stress",
-            "strain",
-        }:
-            raise ValueError(
-                f"plane_type must be 'stress' or 'strain', got {plane_type!r}"
-            )
-        normalized_plane_type = plane_type.lower()
-        thickness_value = _positive_float(thickness, "thickness")
-        tolerance_value = _nonnegative_float(z_tolerance, "z_tolerance")
         self._check_auto_mesh_controls()
 
         auto_policy = _AUTO_MESH_POLICIES[resolved_cell_shape]
@@ -1574,25 +1433,17 @@ class GeometryModel:
             allowed_top_cell_types=auto_policy.allowed_types(order),
             strict_cell_shape=True,
         )
-        return self._generate_and_import_mesh(
+        return self._generate_native_mesh(
             policy=policy,
             size_value=None,
-            line_element_type=normalized_line_element_type,
-            plane_type=normalized_plane_type,
-            thickness=thickness_value,
-            z_tolerance=tolerance_value,
         )
 
-    def _generate_and_import_mesh(
+    def _generate_native_mesh(
         self,
         *,
         policy: _MeshGenerationPolicy,
         size_value: float | None,
-        line_element_type: Literal["Truss2", "Beam2"] | None,
-        plane_type: Literal["stress", "strain"],
-        thickness: float,
-        z_tolerance: float,
-    ) -> gmsh_io.GmshImportResult:
+    ) -> GmshMeshRef:
         operation = policy.operation
 
         self._activate(operation)
@@ -1631,14 +1482,6 @@ class GeometryModel:
             self._gmsh.model.occ.synchronize()
             if policy.strict_cell_shape:
                 self._validate_generated_top_cell_shape(policy)
-            imported = gmsh_io.from_model(
-                dimension=self.dimension,
-                gmsh_model=self._gmsh.model,
-                line_element_type=line_element_type,
-                plane_type=plane_type,
-                thickness=thickness,
-                z_tolerance=z_tolerance,
-            )
         except BaseException as error:
             self._state = _State.MESH_FAILED
             try:
@@ -1649,7 +1492,7 @@ class GeometryModel:
                     f"restore Gmsh mesh options: {restore_error}"
                 )
             error.add_note(
-                f"geometry model {self.name!r}: mesh generation/import failed"
+                f"geometry model {self.name!r}: mesh generation failed"
             )
             raise
 
@@ -1661,7 +1504,16 @@ class GeometryModel:
                 f"geometry model {self.name!r}: mesh generation succeeded but "
                 "restoring global Gmsh options failed"
             ) from error
-        return imported
+        generation_token = object()
+        self._generation_token = generation_token
+        self._state = _State.MESHED
+        return GmshMeshRef(
+            self.dimension,
+            self.name,
+            self,
+            self._owner_token,
+            generation_token,
+        )
 
     def _snapshot_and_set_mesh_options(
         self,
@@ -2335,6 +2187,36 @@ class GeometryModel:
         if str(self._gmsh.model.getCurrent()) != self.name:
             self._gmsh.model.setCurrent(self.name)
 
+    def _borrow_generated_mesh(self, source: GmshMeshRef) -> Any:
+        """Validate and reactivate one live generated mesh for the IO layer."""
+        stale_error = _stale_gmsh_mesh_error(source.model_name)
+        if (
+            source._owner is not self
+            or source._owner_token is not self._owner_token
+            or source.dimension != self.dimension
+            or source.model_name != self.name
+            or self._state is not _State.MESHED
+            or self._generation_token is None
+            or source._generation_token is not self._generation_token
+            or not self._created_model
+        ):
+            raise stale_error
+
+        gmsh = self._gmsh
+        try:
+            if gmsh is None or not bool(gmsh.isInitialized()):
+                raise stale_error
+            model_names = tuple(str(item) for item in gmsh.model.list())
+            if self.name not in model_names:
+                raise stale_error
+            if str(gmsh.model.getCurrent()) != self.name:
+                gmsh.model.setCurrent(self.name)
+        except StaleGmshMeshError:
+            raise
+        except BaseException as error:
+            raise stale_error from error
+        return gmsh.model
+
     def _wrap_entity(self, pair: Any) -> EntityRef:
         dimension, tag = _normalize_dim_tag(pair)
         key = (dimension, tag)
@@ -2493,25 +2375,6 @@ def _resolve_auto_mesh_mode(
     return cell_shape
 
 
-def _validate_line_element_type(
-    dimension: Literal[1, 2, 3],
-    value: Any,
-) -> Literal["Truss2", "Beam2"] | None:
-    if dimension == 1:
-        if value not in ("Truss2", "Beam2"):
-            raise ValueError(
-                "line_element_type must be exactly 'Truss2' or 'Beam2' for "
-                f"dimension 1, got {value!r}"
-            )
-        return value
-    if value is not None:
-        raise ValueError(
-            "line_element_type is only valid for dimension 1, "
-            f"got {value!r} for dimension {dimension}"
-        )
-    return None
-
-
 def _validate_entity_dimension(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value not in range(4):
         raise ValueError(f"entity dimension must be an integer from 0 through 3, got {value!r}")
@@ -2619,6 +2482,7 @@ __all__ = [
     "BooleanResult",
     "EntityOwnershipError",
     "EntityRef",
+    "GmshMeshRef",
     "GeometryError",
     "GeometryModel",
     "GeometryStateError",
@@ -2626,8 +2490,8 @@ __all__ = [
     "MeshControlConflictError",
     "MeshFieldOwnershipError",
     "MeshFieldRef",
-    "PhysicalGroupRef",
     "StaleEntityError",
+    "StaleGmshMeshError",
     "StaleMeshFieldError",
     "model",
 ]

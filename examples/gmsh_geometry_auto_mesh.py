@@ -1,6 +1,7 @@
 """Generate and inspect a typed automatic full-quad mesh."""
 
 from fem.geometry import gmsh as geometry
+from fem.io import gmsh as gmsh_io
 
 
 MODEL_NAME = "gmsh_geometry_auto_mesh"
@@ -14,33 +15,22 @@ def main() -> None:
         if not boundary:
             raise RuntimeError("expected a disk boundary")
 
-        cad.physical("DOMAIN", [surface])
-        cad.physical("BOUNDARY", boundary)
-        imported = cad.generate_auto_mesh(
+        native_mesh = cad.generate_auto_mesh(
             level=3,
             cell_shape="quad",
             order=2,
         )
+        mesh = gmsh_io.read(native_mesh)
 
-    element_types = {element.type for element in imported.mesh.elements}
+    element_types = {element.type for element in mesh.elements}
     if element_types != {"Quad8"}:
         raise RuntimeError(
             f"expected only Quad8 elements, imported {sorted(element_types)!r}"
         )
-    if "DOMAIN" not in imported.element_sets:
-        raise RuntimeError("expected the DOMAIN element set to be imported")
-    if "BOUNDARY" not in imported.node_sets:
-        raise RuntimeError("expected the BOUNDARY node set to be imported")
-    if "BOUNDARY" not in imported.edges:
-        raise RuntimeError("expected the BOUNDARY edge collection to be imported")
-
     print(
         "Generated level-3 automatic Quad8 mesh: "
-        f"{imported.mesh.num_nodes} nodes, "
-        f"{imported.mesh.num_elements} elements, "
-        f"node sets={sorted(imported.node_sets)}, "
-        f"element sets={sorted(imported.element_sets)}, "
-        f"edges={sorted(imported.edges)}"
+        f"{mesh.num_nodes} nodes, "
+        f"{mesh.num_elements} elements"
     )
 
 

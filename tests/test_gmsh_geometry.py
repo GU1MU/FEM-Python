@@ -1,20 +1,22 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+import inspect
 from pathlib import Path
 import subprocess
 import sys
-from types import SimpleNamespace
 from typing import Any, Sequence
 
 import numpy as np
 import pytest
 
 from fem import materials, post, steps
-from fem.core import Mesh2D, Mesh3D, validate_model
+from fem.core import FEMModel, Mesh2D, Mesh3D, validate_model
 from fem.elements import get_element_kernel
 from fem.elements.beam_section import parse_beam2_section
 from fem.geometry import gmsh as geometry
+from fem.io import gmsh as gmsh_io
+from fem.selection import edges, elements, nodes
 from fem.solvers import static_linear
 
 
@@ -502,7 +504,6 @@ class _FakeModel:
         self.occ = _FakeOcc(self)
         self.mesh = _FakeMesh(self)
         self.boundary_result: list[tuple[int, int]] = []
-        self.fail_next_physical = False
         self.fail_remove = False
         self.fail_set_current_names: set[str] = set()
 
@@ -512,8 +513,6 @@ class _FakeModel:
             "entities": set(),
             "next_tags": {},
             "boxes": {},
-            "physical_groups": {},
-            "next_physical_tags": {},
             "mesh_fields": {},
             "background_mesh_field": None,
             "element_blocks": {},
@@ -592,34 +591,6 @@ class _FakeModel:
         self.calls.append(("getBoundingBox", dimension, tag, self.current))
         return self._current_data()["boxes"][(dimension, tag)]
 
-    def addPhysicalGroup(
-        self,
-        dimension: int,
-        tags: list[int],
-        tag: int = -1,
-        name: str = "",
-    ) -> int:
-        self.calls.append(
-            (
-                "addPhysicalGroup",
-                dimension,
-                tuple(tags),
-                tag,
-                name,
-                self.current,
-            )
-        )
-        if self.fail_next_physical:
-            self.fail_next_physical = False
-            raise RuntimeError("fake physical failure")
-        data = self._current_data()
-        next_tags = data["next_physical_tags"]
-        physical_tag = next_tags.get(dimension, 1) if tag == -1 else tag
-        next_tags[dimension] = max(physical_tag + 1, next_tags.get(dimension, 1))
-        data["physical_groups"][(dimension, physical_tag)] = (name, tuple(tags))
-        return physical_tag
-
-
 class _FakeOption:
     def __init__(self) -> None:
         self.values: dict[str, float] = {}
@@ -681,24 +652,6 @@ class _FakeGmsh:
             self.fail_finalize = False
             raise RuntimeError("fake finalize failure")
         self.initialized = False
-
-
-class _FakeImportResult:
-    def __init__(
-        self,
-        model_result: Any = None,
-        *,
-        conversion_error: BaseException | None = None,
-    ) -> None:
-        self.model_result = model_result
-        self.conversion_error = conversion_error
-        self.to_fem_model_calls: list[str | None] = []
-
-    def to_fem_model(self, name: str | None = None) -> Any:
-        self.to_fem_model_calls.append(name)
-        if self.conversion_error is not None:
-            raise self.conversion_error
-        return self.model_result
 
 
 def _install_backend(monkeypatch: pytest.MonkeyPatch, backend: _FakeGmsh) -> None:
@@ -883,30 +836,6 @@ def _set_fake_element_blocks(
     )
 
 
-def _auto_mesh_kwargs(dimension: int) -> dict[str, Any]:
-    return {"line_element_type": "Truss2"} if dimension == 1 else {}
-
-
-def _install_fake_importer(
-    monkeypatch: pytest.MonkeyPatch,
-    imported: _FakeImportResult | None = None,
-) -> tuple[_FakeImportResult, list[dict[str, Any]]]:
-    result = _FakeImportResult() if imported is None else imported
-    calls: list[dict[str, Any]] = []
-
-    def from_model(**kwargs: Any) -> _FakeImportResult:
-        calls.append(kwargs)
-        return result
-
-    monkeypatch.setattr(
-        geometry,
-        "gmsh_io",
-        SimpleNamespace(from_model=from_model),
-        raising=False,
-    )
-    return result, calls
-
-
 def _first_requested_options(backend: _FakeGmsh) -> dict[str, float]:
     requested: dict[str, float] = {}
     for operation, name, *values in backend.option.calls:
@@ -983,19 +912,20 @@ def test_public_reference_types_are_immutable_and_boolean_filter_is_typed() -> N
     surface = geometry.EntityRef(2, 8, owner, object())
     curve = geometry.EntityRef(1, 3, owner, object())
     result = geometry.BooleanResult((surface, curve), ((surface,), (curve,)))
-    group = geometry.PhysicalGroupRef(2, 4, "DOMAIN", owner)
     mesh_field = geometry.MeshFieldRef(5, "Distance", owner, object())
 
     assert result.of_dimension(2) == (surface,)
-    assert group.name == "DOMAIN"
     assert "object" not in repr(surface)
     assert (mesh_field.tag, mesh_field.field_type) == (5, "Distance")
     assert "object" not in repr(mesh_field)
     assert issubclass(geometry.MeshFieldOwnershipError, geometry.GeometryError)
     assert issubclass(geometry.StaleMeshFieldError, geometry.GeometryError)
+    assert issubclass(geometry.StaleGmshMeshError, geometry.GeometryError)
     assert {
+        "GmshMeshRef",
         "MeshFieldRef",
         "MeshFieldOwnershipError",
+        "StaleGmshMeshError",
         "StaleMeshFieldError",
     }.issubset(geometry.__all__)
     with pytest.raises(FrozenInstanceError):
@@ -1398,7 +1328,7 @@ def test_1d_facade_rejects_invalid_or_higher_dimensional_primitives_pre_backend(
         assert backend.model.occ.calls == before
 
 
-def test_1d_transform_is_spatial_and_topology_freezes_after_physical_group(
+def test_1d_transform_is_spatial_and_topology_remains_editable_before_meshing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = _FakeGmsh()
@@ -1410,11 +1340,8 @@ def test_1d_transform_is_spatial_and_topology_freezes_after_physical_group(
         member = cad.line(start, end)
         assert cad.translate([member], 1, 2, 3) == (member,)
         assert cad.rotate([member], 0, 0, 0, 1, 1, 0, 0.5) == (member,)
-        cad.physical("MEMBERS", [member])
-        with pytest.raises(geometry.GeometryStateError, match="LABELED"):
-            cad.point(2, 0, 0)
-        with pytest.raises(geometry.GeometryStateError, match="LABELED"):
-            cad.line(start, end)
+        third = cad.point(2, 0, 0)
+        assert cad.line(end, third).dimension == 1
 
     assert ("translate", ((1, 1),), 1.0, 2.0, 3.0) in backend.model.occ.calls
     assert (
@@ -2020,123 +1947,7 @@ def test_invalid_query_inputs_fail_before_model_level_call(
         assert backend.model.occ.synchronize_calls == synchronize_calls
 
 
-def test_physical_group_is_named_trimmed_and_freezes_topology(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    backend = _FakeGmsh()
-    _install_backend(monkeypatch, backend)
-
-    with geometry.model("labels", dimension=2) as cad:
-        surface = cad.rectangle(0, 0, 1, 1)
-        group = cad.physical("  DOMAIN  ", [surface])
-
-        assert (group.dimension, group.tag, group.name) == (2, 1, "DOMAIN")
-        assert cad.entities(2) == (surface,)
-        with pytest.raises(geometry.GeometryStateError, match="LABELED"):
-            cad.rectangle(2, 0, 1, 1)
-        with pytest.raises(geometry.GeometryStateError, match="LABELED"):
-            cad.translate([surface], 1, 0, 0)
-        with pytest.raises(geometry.GeometryStateError, match="LABELED"):
-            _ = cad.raw_occ
-
-    assert (
-        "addPhysicalGroup",
-        2,
-        (1,),
-        -1,
-        "DOMAIN",
-        "labels",
-    ) in backend.model.calls
-
-
-def test_physical_names_follow_adapter_element_and_node_set_namespaces(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    backend = _FakeGmsh()
-    _install_backend(monkeypatch, backend)
-
-    with geometry.model("namespaces", dimension=2) as cad:
-        surface = cad.rectangle(0, 0, 1, 1)
-        backend.model._current_data()["entities"].update({(1, 1), (0, 1)})
-        curve = cad.entity(1, 1)
-        point = cad.entity(0, 1)
-
-        top = cad.physical("SHARED", [surface])
-        lower = cad.physical("SHARED", [curve])
-        assert top.name == lower.name == "SHARED"
-        with pytest.raises(ValueError, match="node-set namespace"):
-            cad.physical("SHARED", [point])
-        with pytest.raises(ValueError, match="element-set namespace"):
-            cad.physical("SHARED", [surface])
-
-
-@pytest.mark.parametrize(
-    "operation",
-    [
-        lambda cad, surface, curve: cad.physical("", [surface]),
-        lambda cad, surface, curve: cad.physical("NAME", []),
-        lambda cad, surface, curve: cad.physical("NAME", [surface, surface]),
-        lambda cad, surface, curve: cad.physical("NAME", [surface, curve]),
-    ],
-)
-def test_invalid_physical_inputs_fail_before_backend_call(
-    monkeypatch: pytest.MonkeyPatch,
-    operation: Any,
-) -> None:
-    backend = _FakeGmsh()
-    _install_backend(monkeypatch, backend)
-
-    with geometry.model("labels", dimension=2) as cad:
-        surface = cad.rectangle(0, 0, 1, 1)
-        backend.model._current_data()["entities"].add((1, 1))
-        curve = cad.entity(1, 1)
-        before = list(backend.model.calls)
-        synchronize_calls = backend.model.occ.synchronize_calls
-        with pytest.raises((TypeError, ValueError)):
-            operation(cad, surface, curve)
-        assert backend.model.calls == before
-        assert backend.model.occ.synchronize_calls == synchronize_calls
-
-
-def test_failed_physical_group_does_not_reserve_name_or_freeze_topology(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    backend = _FakeGmsh()
-    _install_backend(monkeypatch, backend)
-
-    with geometry.model("labels", dimension=2) as cad:
-        surface = cad.rectangle(0, 0, 1, 1)
-        backend.model.fail_next_physical = True
-        with pytest.raises(RuntimeError, match="fake physical failure"):
-            cad.physical("DOMAIN", [surface])
-
-        second = cad.rectangle(2, 0, 1, 1)
-        group = cad.physical("DOMAIN", [surface, second])
-        assert group.name == "DOMAIN"
-
-
-def test_additional_physical_groups_are_allowed_after_topology_freezes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    backend = _FakeGmsh()
-    _install_backend(monkeypatch, backend)
-
-    with geometry.model("labels", dimension=2) as cad:
-        surface = cad.rectangle(0, 0, 1, 1)
-        backend.model._current_data()["entities"].update({(1, 1), (1, 2)})
-        first = cad.entity(1, 1)
-        second = cad.entity(1, 2)
-        cad.physical("DOMAIN", [surface])
-        cad.physical("LEFT", [first])
-        cad.physical("RIGHT", [second])
-
-    physical_calls = [
-        call for call in backend.model.calls if call[0] == "addPhysicalGroup"
-    ]
-    assert [call[4] for call in physical_calls] == ["DOMAIN", "LEFT", "RIGHT"]
-
-
-def test_transfinite_curve_and_recombine_forward_typed_targets_in_both_states(
+def test_transfinite_curve_and_recombine_forward_typed_targets_while_building(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = _FakeGmsh()
@@ -2149,10 +1960,8 @@ def test_transfinite_curve_and_recombine_forward_typed_targets_in_both_states(
 
         assert cad.transfinite_curve(curve, num_nodes=np.int64(5)) is None
         assert cad.recombine(surface) is None
-        cad.physical("DOMAIN", [surface])
         assert cad.transfinite_curve(curve, num_nodes=3) is None
         assert cad.recombine(surface) is None
-        cad.physical("EDGE", [curve])
 
     assert backend.model.mesh.calls == [
         ("setTransfiniteCurve", 7, 5, "controls"),
@@ -2229,13 +2038,6 @@ def test_native_mesh_control_failure_preserves_state_and_mesh_attempt(
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
-    imported = _FakeImportResult()
-    monkeypatch.setattr(
-        geometry,
-        "gmsh_io",
-        SimpleNamespace(from_model=lambda **kwargs: imported),
-        raising=False,
-    )
 
     with geometry.model("retry-controls", dimension=2) as cad:
         surface = cad.rectangle(0, 0, 1, 1)
@@ -2243,8 +2045,8 @@ def test_native_mesh_control_failure_preserves_state_and_mesh_attempt(
         with pytest.raises(RuntimeError, match="fake setRecombine failure"):
             cad.recombine(surface)
 
-        cad.physical("DOMAIN", [surface])
-        assert cad.generate_mesh(recombine=False) is imported
+        native_mesh = cad.generate_mesh(recombine=False)
+        assert isinstance(native_mesh, geometry.GmshMeshRef)
 
 
 def test_transfinite_surface_forwards_automatic_and_explicit_corners_in_order(
@@ -2271,9 +2073,8 @@ def test_transfinite_surface_forwards_automatic_and_explicit_corners_in_order(
             )
             is None
         )
-        cad.physical("DOMAIN", [surface])
         assert cad.transfinite_surface(surface, corners=points[:3]) is None
-        cad.physical("CORNERS", points)  # References remain live after controls.
+        assert cad.entity(0, points[0].tag) == points[0]
 
     assert backend.model.mesh.calls == [
         ("setTransfiniteSurface", 1, "Left", (), "surface-controls"),
@@ -2414,7 +2215,6 @@ def test_transfinite_volume_forwards_automatic_six_and_eight_corners_in_order(
             )
             is None
         )
-        cad.physical("DOMAIN", [volume])
         assert cad.transfinite_volume(volume, corners=tuple(reversed(points))) is None
 
     assert backend.model.mesh.calls == [
@@ -2528,13 +2328,6 @@ def test_mesh_controls_reject_meshed_and_mesh_failed_states_contextually(
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
-    imported = _FakeImportResult()
-    monkeypatch.setattr(
-        geometry,
-        "gmsh_io",
-        SimpleNamespace(from_model=lambda **kwargs: imported),
-        raising=False,
-    )
     operations = (
         lambda cad: cad.transfinite_curve(None, num_nodes=3),
         lambda cad: cad.transfinite_surface(None),
@@ -2702,13 +2495,6 @@ def test_native_control_failures_preserve_exception_state_and_generation_attempt
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
-    imported = _FakeImportResult()
-    monkeypatch.setattr(
-        geometry,
-        "gmsh_io",
-        SimpleNamespace(from_model=lambda **kwargs: imported),
-        raising=False,
-    )
 
     with geometry.model(f"failed-{native_operation}", dimension=3) as cad:
         targets = {
@@ -2723,8 +2509,8 @@ def test_native_control_failures_preserve_exception_state_and_generation_attempt
         with pytest.raises(RuntimeError, match=f"fake {native_operation} failure"):
             operation(cad, target)
 
-        cad.physical("TARGET", [target])
-        assert cad.generate_mesh(recombine=False) is imported
+        native_mesh = cad.generate_mesh(recombine=False)
+        assert isinstance(native_mesh, geometry.GmshMeshRef)
 
 
 @pytest.mark.parametrize("operation", ["fuse", "cut", "fragment"])
@@ -3117,18 +2903,11 @@ def test_guarded_boolean_validates_remove_flags_before_dependency_check(
         assert _occ_operation_call_count(backend, "fuse") == fuse_calls
 
 
-def test_entity_dependency_guard_allows_labels_more_controls_and_generation(
+def test_entity_dependency_guard_allows_more_controls_and_generation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
-    imported = _FakeImportResult()
-    monkeypatch.setattr(
-        geometry,
-        "gmsh_io",
-        SimpleNamespace(from_model=lambda **kwargs: imported),
-        raising=False,
-    )
 
     with geometry.model("guarded-mesh-workflow", dimension=2) as cad:
         surface = cad.rectangle(0, 0, 1, 1)
@@ -3136,10 +2915,9 @@ def test_entity_dependency_guard_allows_labels_more_controls_and_generation(
         backend.model.boundary_result = []
         cad.mesh_size([point], size=0.1)
 
-        assert cad.physical("DOMAIN", [surface]).name == "DOMAIN"
         backend.model.boundary_result = []
         assert cad.recombine(surface) is None
-        assert cad.generate_mesh() is imported
+        assert isinstance(cad.generate_mesh(), geometry.GmshMeshRef)
 
 
 @pytest.mark.parametrize("raw_access", ["raw_model", "raw_occ"])
@@ -3278,14 +3056,14 @@ def test_mesh_controls_reactivate_owned_model_and_stay_nested_model_local(
     assert backend.model.current == "external"
 
 
-def test_mesh_size_forwards_ordered_batches_in_building_and_labeled_states(
+def test_mesh_size_forwards_ordered_batches_while_building(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
 
     with geometry.model("point-sizes", dimension=2) as cad:
-        surface = cad.rectangle(0, 0, 1, 1)
+        cad.rectangle(0, 0, 1, 1)
         point_3, point_1 = _fake_entities(cad, backend, 0, 3, 1)
 
         synchronize_calls = backend.model.occ.synchronize_calls
@@ -3298,11 +3076,9 @@ def test_mesh_size_forwards_ordered_batches_in_building_and_labeled_states(
         )
         assert backend.model.occ.synchronize_calls == synchronize_calls + 1
 
-        cad.physical("DOMAIN", [surface])
         synchronize_calls = backend.model.occ.synchronize_calls
         assert cad.mesh_size([point_1], size=0.025) is None
         assert backend.model.occ.synchronize_calls == synchronize_calls + 1
-        cad.physical("SIZED_POINTS", [point_3, point_1])
 
     assert backend.model.mesh.calls == [
         ("setSize", ((0, 3), (0, 1)), 0.2, "point-sizes"),
@@ -3414,7 +3190,6 @@ def test_distance_field_forwards_dimension_specific_lists_in_source_order(
             kwargs = {"surfaces": [surface]}
             expected_options = [("setNumbers", 1, "SurfacesList", (1,))]
         else:
-            cad.physical("DOMAIN", [surface])
             kwargs = {
                 "points": [point_2, point_1],
                 "curves": (curve for curve in (curve_4, curve_3)),
@@ -3431,7 +3206,6 @@ def test_distance_field_forwards_dimension_specific_lists_in_source_order(
         distance = cad.distance_field(**kwargs)
         assert backend.model.occ.synchronize_calls == synchronize_calls + 1
         assert (distance.tag, distance.field_type) == (1, "Distance")
-        cad.physical("SOURCES", [point_2, point_1])
 
     model_name = f"distance-{source_case}"
     sampling = 40.0 if source_case == "mixed" else 20.0
@@ -3514,13 +3288,12 @@ def test_threshold_min_and_background_build_an_ordered_inert_field_graph(
     _install_backend(monkeypatch, backend)
 
     with geometry.model("field-graph", dimension=2) as cad:
-        surface = cad.rectangle(0, 0, 1, 1)
+        cad.rectangle(0, 0, 1, 1)
         curve = _fake_entities(cad, backend, 1, 7)[0]
         distance = cad.distance_field(curves=[curve], sampling=30)
         first = _fake_threshold(cad, distance)
         assert backend.model._current_data()["background_mesh_field"] is None
 
-        cad.physical("DOMAIN", [surface])
         second = _fake_threshold(
             cad,
             distance,
@@ -3532,7 +3305,6 @@ def test_threshold_min_and_background_build_an_ordered_inert_field_graph(
         minimum = cad.min_field((field for field in (second, first)))
         nested = cad.min_field([minimum, second])
         assert cad.background_field(nested) is None
-        cad.physical("SOURCE", [curve])
 
         fields = backend.model._current_data()["mesh_fields"]
         assert fields[distance.tag]["type"] == "Distance"
@@ -3910,13 +3682,6 @@ def test_field_rollback_failure_preserves_primary_error_note_and_mesh_attempt(
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
-    imported = _FakeImportResult()
-    monkeypatch.setattr(
-        geometry,
-        "gmsh_io",
-        SimpleNamespace(from_model=lambda **kwargs: imported),
-        raising=False,
-    )
 
     with geometry.model("rollback-note", dimension=2) as cad:
         cad.rectangle(0, 0, 1, 1)
@@ -3935,7 +3700,7 @@ def test_field_rollback_failure_preserves_primary_error_note_and_mesh_attempt(
 
         replacement = cad.distance_field(points=[point])
         assert replacement.tag == 2
-        assert cad.generate_mesh(size=0.2) is imported
+        assert isinstance(cad.generate_mesh(size=0.2), geometry.GmshMeshRef)
 
 
 def test_background_selection_failure_is_retryable_and_keeps_fields_inert(
@@ -3996,23 +3761,14 @@ def test_background_rejects_non_size_fields_and_repeated_selection_pre_mutation(
 
 
 @pytest.mark.parametrize("mode", ["point", "background"])
-@pytest.mark.parametrize("generation_operation", ["mesh", "fem"])
 def test_typed_size_mode_conflicts_are_retryable_before_native_generation(
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
-    generation_operation: str,
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
-    imported = _FakeImportResult(object())
-    monkeypatch.setattr(
-        geometry,
-        "gmsh_io",
-        SimpleNamespace(from_model=lambda **kwargs: imported),
-        raising=False,
-    )
 
-    with geometry.model(f"{mode}-{generation_operation}-conflict", dimension=2) as cad:
+    with geometry.model(f"{mode}-mesh-conflict", dimension=2) as cad:
         cad.rectangle(0, 0, 1, 1)
         point = _fake_entities(cad, backend, 0, 1)[0]
         distance = cad.distance_field(points=[point])
@@ -4033,14 +3789,11 @@ def test_typed_size_mode_conflicts_are_retryable_before_native_generation(
         mesh_calls = list(backend.model.mesh.calls)
         option_calls = list(backend.option.calls)
         with pytest.raises(ValueError, match="size cannot be supplied"):
-            if generation_operation == "mesh":
-                cad.generate_mesh(size=0.2)
-            else:
-                cad.generate_fem_model("conflict", size=0.2)
+            cad.generate_mesh(size=0.2)
         assert backend.model.mesh.calls == mesh_calls
         assert backend.option.calls == option_calls
 
-        assert cad.generate_mesh() is imported
+        assert isinstance(cad.generate_mesh(), geometry.GmshMeshRef)
 
 
 @pytest.mark.parametrize("mode", ["point", "background"])
@@ -4062,13 +3815,6 @@ def test_typed_size_modes_request_and_restore_all_deterministic_options(
     }
     backend.option.values.update(original)
     _install_backend(monkeypatch, backend)
-    imported = _FakeImportResult()
-    monkeypatch.setattr(
-        geometry,
-        "gmsh_io",
-        SimpleNamespace(from_model=lambda **kwargs: imported),
-        raising=False,
-    )
 
     with geometry.model(f"{mode}-options", dimension=2) as cad:
         cad.rectangle(0, 0, 1, 1)
@@ -4080,7 +3826,10 @@ def test_typed_size_modes_request_and_restore_all_deterministic_options(
             cad.background_field(_fake_threshold(cad, distance))
         backend.option.calls.clear()
 
-        assert cad.generate_mesh(order=2, recombine=True) is imported
+        assert isinstance(
+            cad.generate_mesh(order=2, recombine=True),
+            geometry.GmshMeshRef,
+        )
 
     assert backend.option.values == original
     requested = [
@@ -4109,7 +3858,7 @@ def test_typed_size_modes_request_and_restore_all_deterministic_options(
 
 @pytest.mark.parametrize(
     ("failure", "mode"),
-    [("mesh", "background"), ("adapter", "point"), ("option", "background")],
+    [("mesh", "background"), ("option", "point")],
 )
 def test_typed_size_generation_failures_restore_every_external_option(
     monkeypatch: pytest.MonkeyPatch,
@@ -4134,18 +3883,6 @@ def test_typed_size_generation_failures_restore_every_external_option(
         backend.option.fail_set_names.add("Mesh.MeshSizeMax")
     _install_backend(monkeypatch, backend)
 
-    def from_model(**kwargs: Any) -> _FakeImportResult:
-        if failure == "adapter":
-            raise RuntimeError("fake adapter failure")
-        return _FakeImportResult()
-
-    monkeypatch.setattr(
-        geometry,
-        "gmsh_io",
-        SimpleNamespace(from_model=from_model),
-        raising=False,
-    )
-
     with geometry.model(f"{mode}-{failure}-restore", dimension=2) as cad:
         cad.rectangle(0, 0, 1, 1)
         point = _fake_entities(cad, backend, 0, 1)[0]
@@ -4157,7 +3894,6 @@ def test_typed_size_generation_failures_restore_every_external_option(
 
         expected = {
             "mesh": "fake mesh failure",
-            "adapter": "fake adapter failure",
             "option": "Mesh.MeshSizeMax",
         }[failure]
         with pytest.raises(RuntimeError, match=expected):
@@ -4189,12 +3925,6 @@ def test_nested_typed_size_modes_keep_fields_model_local_and_restore_options(
     }
     backend.option.values.update(original)
     _install_backend(monkeypatch, backend)
-    monkeypatch.setattr(
-        geometry,
-        "gmsh_io",
-        SimpleNamespace(from_model=lambda **kwargs: _FakeImportResult()),
-        raising=False,
-    )
 
     with geometry.model("outer-size-mode", dimension=2) as outer:
         outer.rectangle(0, 0, 1, 1)
@@ -4233,9 +3963,6 @@ def test_nested_typed_size_modes_keep_fields_model_local_and_restore_options(
         {"order": True},
         {"order": 3},
         {"recombine": 1},
-        {"plane_type": "plane"},
-        {"thickness": 0},
-        {"z_tolerance": -1},
     ],
 )
 def test_invalid_mesh_arguments_fail_before_mesh_or_option_mutation(
@@ -4253,24 +3980,23 @@ def test_invalid_mesh_arguments_fail_before_mesh_or_option_mutation(
         assert backend.option.calls == []
 
 
+def test_generation_signatures_expose_only_native_meshing_arguments() -> None:
+    assert tuple(inspect.signature(geometry.GeometryModel.generate_mesh).parameters) == (
+        "self",
+        "size",
+        "order",
+        "recombine",
+    )
+    assert tuple(
+        inspect.signature(geometry.GeometryModel.generate_auto_mesh).parameters
+    ) == ("self", "level", "cell_shape", "order")
+
+
 def test_missing_top_dimensional_entity_is_retryable_validation_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
-    imported = _FakeImportResult()
-    importer_calls: list[dict[str, Any]] = []
-
-    def from_model(**kwargs: Any) -> _FakeImportResult:
-        importer_calls.append(kwargs)
-        return imported
-
-    monkeypatch.setattr(
-        geometry,
-        "gmsh_io",
-        SimpleNamespace(from_model=from_model),
-        raising=False,
-    )
 
     with geometry.model("mesh", dimension=2) as cad:
         with pytest.raises(ValueError, match="top-dimensional"):
@@ -4279,12 +4005,10 @@ def test_missing_top_dimensional_entity_is_retryable_validation_failure(
         assert backend.option.calls == []
 
         cad.rectangle(0, 0, 1, 1)
-        assert cad.generate_mesh() is imported
-
-    assert len(importer_calls) == 1
+        assert isinstance(cad.generate_mesh(), geometry.GmshMeshRef)
 
 
-def test_generate_mesh_assigns_size_isolates_options_and_delegates_adapter(
+def test_generate_mesh_assigns_size_isolates_options_and_returns_live_handle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = _FakeGmsh()
@@ -4297,38 +4021,34 @@ def test_generate_mesh_assigns_size_isolates_options_and_delegates_adapter(
         }
     )
     _install_backend(monkeypatch, backend)
-    imported = _FakeImportResult()
-    importer_calls: list[tuple[dict[str, Any], str]] = []
-
-    def from_model(**kwargs: Any) -> _FakeImportResult:
-        importer_calls.append((kwargs, backend.model.current))
-        return imported
-
-    monkeypatch.setattr(
-        geometry,
-        "gmsh_io",
-        SimpleNamespace(from_model=from_model),
-        raising=False,
-    )
 
     with geometry.model("mesh", dimension=2) as cad:
-        surface = cad.rectangle(0, 0, 1, 1)
+        cad.rectangle(0, 0, 1, 1)
         backend.model._current_data()["entities"].update({(0, 3), (0, 1)})
-        cad.physical("DOMAIN", [surface])
         result = cad.generate_mesh(
             size=0.2,
             order=2,
             recombine=True,
-            plane_type="STRAIN",
-            thickness=2,
-            z_tolerance=0.1,
         )
 
-        assert result is imported
+        assert isinstance(result, geometry.GmshMeshRef)
+        assert (result.dimension, result.model_name) == (2, "mesh")
+        assert "GeometryModel" not in repr(result)
+        assert "object" not in repr(result)
+        assert result._borrow_model() is backend.model
+        assert result._borrow_model() is backend.model
+        with pytest.raises(FrozenInstanceError):
+            result.model_name = "renamed"  # type: ignore[misc]
         with pytest.raises(geometry.GeometryStateError, match="MESHED"):
             cad.generate_mesh()
         with pytest.raises(geometry.GeometryStateError, match="MESHED"):
             cad.entities(2)
+
+    with pytest.raises(
+        geometry.StaleGmshMeshError,
+        match="mesh.*inside the owning geometry model context",
+    ):
+        result._borrow_model()
 
     assert backend.model.mesh.calls == [
         ("setSize", ((0, 1), (0, 3)), 0.2, "mesh"),
@@ -4340,19 +4060,6 @@ def test_generate_mesh_assigns_size_isolates_options_and_delegates_adapter(
         "Mesh.RecombineAll": 0.75,
         "Mesh.MeshSizeFromPoints": 0.0,
     }
-    assert importer_calls == [
-        (
-            {
-                "dimension": 2,
-                "gmsh_model": backend.model,
-                "line_element_type": None,
-                "plane_type": "strain",
-                "thickness": 2.0,
-                "z_tolerance": 0.1,
-            },
-            "mesh",
-        )
-    ]
     set_calls = [call for call in backend.option.calls if call[0] == "setNumber"]
     assert set_calls[:4] == [
         ("setNumber", "Mesh.ElementOrder", 2.0),
@@ -4362,14 +4069,94 @@ def test_generate_mesh_assigns_size_isolates_options_and_delegates_adapter(
     ]
 
 
+def test_generated_handle_reactivates_owner_across_nested_contexts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh(
+        initialized=True,
+        names=("external",),
+        current="external",
+    )
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("outer-native-mesh", dimension=2) as outer:
+        outer.rectangle(0.0, 0.0, 1.0, 1.0)
+        outer_mesh = outer.generate_mesh()
+
+        with geometry.model("inner-native-mesh", dimension=3) as inner:
+            inner.box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+            assert backend.model.current == "inner-native-mesh"
+
+            assert outer_mesh._borrow_model() is backend.model
+            assert backend.model.current == "outer-native-mesh"
+            assert len(inner.entities(3)) == 1
+            assert backend.model.current == "inner-native-mesh"
+
+        assert outer_mesh._borrow_model() is backend.model
+        assert backend.model.current == "outer-native-mesh"
+
+    assert backend.model.current == "external"
+    with pytest.raises(geometry.StaleGmshMeshError, match="outer-native-mesh"):
+        outer_mesh._borrow_model()
+
+
+def test_generated_handle_rejects_forged_generation_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("native-identity", dimension=2) as cad:
+        cad.rectangle(0.0, 0.0, 1.0, 1.0)
+        native_mesh = cad.generate_mesh()
+        forged = geometry.GmshMeshRef(
+            native_mesh.dimension,
+            native_mesh.model_name,
+            cad,
+            object(),
+            object(),
+        )
+
+        with pytest.raises(geometry.StaleGmshMeshError, match="native-identity"):
+            forged._borrow_model()
+
+
+def test_generated_handle_rejects_malformed_owner_before_dispatch() -> None:
+    malformed = geometry.GmshMeshRef(
+        2,
+        "malformed-owner",
+        object(),  # type: ignore[arg-type]
+        object(),
+        object(),
+    )
+
+    with pytest.raises(geometry.StaleGmshMeshError, match="malformed-owner"):
+        malformed._borrow_model()
+
+
+def test_generated_handle_detects_missing_native_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("missing-native-model", dimension=2) as cad:
+        cad.rectangle(0.0, 0.0, 1.0, 1.0)
+        native_mesh = cad.generate_mesh()
+        del backend.model.models["missing-native-model"]
+
+        with pytest.raises(
+            geometry.StaleGmshMeshError,
+            match="missing-native-model",
+        ):
+            native_mesh._borrow_model()
+
+
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        ({}, "line_element_type"),
-        ({"line_element_type": "truss2"}, "line_element_type"),
-        ({"line_element_type": "Line2"}, "line_element_type"),
-        ({"line_element_type": "Truss2", "order": 2}, "order"),
-        ({"line_element_type": "Beam2", "recombine": True}, "recombine"),
+        ({"order": 2}, "order"),
+        ({"recombine": True}, "recombine"),
     ],
 )
 def test_1d_mesh_contract_is_validated_before_mesh_or_option_mutation(
@@ -4389,27 +4176,7 @@ def test_1d_mesh_contract_is_validated_before_mesh_or_option_mutation(
         assert backend.model.mesh.calls == []
         assert backend.option.calls == []
 
-
-@pytest.mark.parametrize("dimension", [2, 3])
-def test_other_dimensions_reject_line_formulation_before_backend_mutation(
-    monkeypatch: pytest.MonkeyPatch,
-    dimension: int,
-) -> None:
-    backend = _FakeGmsh()
-    _install_backend(monkeypatch, backend)
-
-    with geometry.model("part", dimension=dimension) as cad:
-        if dimension == 2:
-            cad.rectangle(0, 0, 1, 1)
-        else:
-            cad.box(0, 0, 0, 1, 1, 1)
-        with pytest.raises(ValueError, match="line_element_type.*dimension 1"):
-            cad.generate_mesh(line_element_type="Truss2")
-        assert backend.model.mesh.calls == []
-        assert backend.option.calls == []
-
-
-def test_1d_generate_mesh_forwards_formulation_once_and_restores_options(
+def test_1d_generate_mesh_returns_native_handle_and_restores_options(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = _FakeGmsh()
@@ -4422,44 +4189,18 @@ def test_1d_generate_mesh_forwards_formulation_once_and_restores_options(
         }
     )
     _install_backend(monkeypatch, backend)
-    imported = _FakeImportResult()
-    importer_calls: list[dict[str, Any]] = []
-
-    def from_model(**kwargs: Any) -> _FakeImportResult:
-        importer_calls.append(kwargs)
-        return imported
-
-    monkeypatch.setattr(
-        geometry,
-        "gmsh_io",
-        SimpleNamespace(from_model=from_model),
-        raising=False,
-    )
 
     with geometry.model("members", dimension=1) as cad:
         start = cad.point(0, 0, 1)
         end = cad.point(2, 3, 4)
-        member = cad.line(start, end)
-        cad.physical("MEMBERS", [member])
-        result = cad.generate_mesh(
-            size=0.25,
-            line_element_type="Beam2",
-        )
-        assert result is imported
+        cad.line(start, end)
+        result = cad.generate_mesh(size=0.25)
+        assert isinstance(result, geometry.GmshMeshRef)
+        assert (result.dimension, result.model_name) == (1, "members")
 
     assert backend.model.mesh.calls == [
         ("setSize", ((0, 1), (0, 2)), 0.25, "members"),
         ("generate", 1, "members"),
-    ]
-    assert importer_calls == [
-        {
-            "dimension": 1,
-            "gmsh_model": backend.model,
-            "line_element_type": "Beam2",
-            "plane_type": "stress",
-            "thickness": 1.0,
-            "z_tolerance": 1.0e-10,
-        }
     ]
     assert backend.option.values == {
         "Mesh.ElementOrder": 7.0,
@@ -4474,155 +4215,21 @@ def test_1d_missing_curve_is_retryable_before_mesh_attempt(
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
-    imported = _FakeImportResult()
-    monkeypatch.setattr(
-        geometry,
-        "gmsh_io",
-        SimpleNamespace(from_model=lambda **kwargs: imported),
-        raising=False,
-    )
 
     with geometry.model("members", dimension=1) as cad:
         start = cad.point(0, 0, 0)
         with pytest.raises(ValueError, match="top-dimensional"):
-            cad.generate_mesh(line_element_type="Truss2")
+            cad.generate_mesh()
         assert backend.model.mesh.calls == []
         assert backend.option.calls == []
 
         end = cad.point(1, 0, 0)
         cad.line(start, end)
-        assert cad.generate_mesh(line_element_type="Truss2") is imported
+        assert isinstance(cad.generate_mesh(), geometry.GmshMeshRef)
 
 
-def test_1d_generate_fem_model_forwards_formulation_and_converts(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    backend = _FakeGmsh()
-    _install_backend(monkeypatch, backend)
-    sentinel_model = object()
-    imported = _FakeImportResult(sentinel_model)
-    importer_calls: list[dict[str, Any]] = []
-
-    def from_model(**kwargs: Any) -> _FakeImportResult:
-        importer_calls.append(kwargs)
-        return imported
-
-    monkeypatch.setattr(
-        geometry,
-        "gmsh_io",
-        SimpleNamespace(from_model=from_model),
-        raising=False,
-    )
-
-    with geometry.model("members", dimension=1) as cad:
-        start = cad.point(0, 0, 0)
-        end = cad.point(1, 0, 0)
-        cad.line(start, end)
-        result = cad.generate_fem_model(
-            "beam",
-            line_element_type="Beam2",
-        )
-
-    assert result is sentinel_model
-    assert imported.to_fem_model_calls == ["beam"]
-    assert [call["line_element_type"] for call in importer_calls] == ["Beam2"]
-
-
-def test_generate_fem_model_delegates_to_import_result_and_is_mutually_exclusive(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    backend = _FakeGmsh()
-    _install_backend(monkeypatch, backend)
-    sentinel_model = object()
-    imported = _FakeImportResult(sentinel_model)
-    monkeypatch.setattr(
-        geometry,
-        "gmsh_io",
-        SimpleNamespace(from_model=lambda **kwargs: imported),
-        raising=False,
-    )
-
-    with geometry.model("mesh", dimension=3) as cad:
-        cad.box(0, 0, 0, 1, 1, 1)
-        assert cad.generate_fem_model("solid", order=1) is sentinel_model
-        with pytest.raises(geometry.GeometryStateError, match="MESHED"):
-            cad.generate_mesh()
-
-    assert imported.to_fem_model_calls == ["solid"]
-    assert all(
-        call[1] != "Mesh.MeshSizeFromPoints"
-        for call in backend.option.calls
-    )
-
-
-def test_generate_fem_model_state_errors_name_the_public_operation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    backend = _FakeGmsh()
-    _install_backend(monkeypatch, backend)
-    imported = _FakeImportResult(object())
-    monkeypatch.setattr(
-        geometry,
-        "gmsh_io",
-        SimpleNamespace(from_model=lambda **kwargs: imported),
-        raising=False,
-    )
-    cad = geometry.model("fem-state", dimension=2)
-
-    with pytest.raises(
-        geometry.GeometryStateError,
-        match="fem-state.*generate_fem_model",
-    ):
-        cad.generate_fem_model()
-    with cad:
-        cad.rectangle(0, 0, 1, 1)
-        cad.generate_fem_model()
-        with pytest.raises(
-            geometry.GeometryStateError,
-            match="fem-state.*generate_fem_model.*MESHED",
-        ):
-            cad.generate_fem_model()
-    with pytest.raises(
-        geometry.GeometryStateError,
-        match="fem-state.*generate_fem_model.*CLOSED",
-    ):
-        cad.generate_fem_model()
-
-
-def test_generate_fem_model_conversion_failure_marks_mesh_failed_and_allows_queries(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    backend = _FakeGmsh()
-    _install_backend(monkeypatch, backend)
-    imported = _FakeImportResult(
-        conversion_error=RuntimeError("fake FEM conversion failure")
-    )
-    monkeypatch.setattr(
-        geometry,
-        "gmsh_io",
-        SimpleNamespace(from_model=lambda **kwargs: imported),
-        raising=False,
-    )
-
-    with geometry.model("fem-conversion", dimension=2) as cad:
-        cad.rectangle(0, 0, 1, 1)
-        with pytest.raises(RuntimeError, match="FEM conversion") as captured:
-            cad.generate_fem_model("invalid")
-
-        assert any(
-            "FEM model conversion failed" in note
-            for note in getattr(captured.value, "__notes__", ())
-        )
-        assert len(cad.entities(2)) == 1
-        with pytest.raises(geometry.GeometryStateError, match="MESH_FAILED"):
-            cad.generate_fem_model()
-    assert imported.to_fem_model_calls == ["invalid"]
-
-
-@pytest.mark.parametrize("failure", ["mesh", "adapter"])
 def test_failed_generation_restores_options_and_disallows_retry(
     monkeypatch: pytest.MonkeyPatch,
-    failure: str,
 ) -> None:
     backend = _FakeGmsh()
     backend.option.values.update(
@@ -4633,27 +4240,19 @@ def test_failed_generation_restores_options_and_disallows_retry(
             "Mesh.MeshSizeFromPoints": 0.0,
         }
     )
-    backend.model.mesh.fail_generate = failure == "mesh"
+    backend.model.mesh.fail_generate = True
     _install_backend(monkeypatch, backend)
-
-    def from_model(**kwargs: Any) -> _FakeImportResult:
-        if failure == "adapter":
-            raise RuntimeError("fake adapter failure")
-        return _FakeImportResult()
-
-    monkeypatch.setattr(
-        geometry,
-        "gmsh_io",
-        SimpleNamespace(from_model=from_model),
-        raising=False,
-    )
 
     with geometry.model("mesh", dimension=2) as cad:
         cad.rectangle(0, 0, 1, 1)
         backend.model._current_data()["entities"].add((0, 1))
-        expected = "fake mesh failure" if failure == "mesh" else "fake adapter failure"
-        with pytest.raises(RuntimeError, match=expected):
+        with pytest.raises(RuntimeError, match="fake mesh failure") as captured:
             cad.generate_mesh(size=0.2, order=2, recombine=True)
+
+        assert any(
+            "mesh generation failed" in note
+            for note in getattr(captured.value, "__notes__", ())
+        )
 
         assert backend.option.values == {
             "Mesh.ElementOrder": 4.0,
@@ -4664,8 +4263,6 @@ def test_failed_generation_restores_options_and_disallows_retry(
         assert len(cad.entities(2)) == 1
         with pytest.raises(geometry.GeometryStateError, match="MESH_FAILED"):
             cad.generate_mesh()
-        with pytest.raises(geometry.GeometryStateError, match="MESH_FAILED"):
-            cad.physical("DOMAIN", cad.entities(2))
 
 
 def test_size_assignment_without_points_consumes_mesh_attempt(
@@ -4673,12 +4270,6 @@ def test_size_assignment_without_points_consumes_mesh_attempt(
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
-    monkeypatch.setattr(
-        geometry,
-        "gmsh_io",
-        SimpleNamespace(from_model=lambda **kwargs: _FakeImportResult()),
-        raising=False,
-    )
 
     with geometry.model("mesh", dimension=2) as cad:
         cad.rectangle(0, 0, 1, 1)
@@ -4701,12 +4292,6 @@ def test_option_set_failure_restores_snapshot_and_marks_mesh_failed(
     backend.option.values.update(original)
     backend.option.fail_set_names.add("Mesh.RecombineAll")
     _install_backend(monkeypatch, backend)
-    monkeypatch.setattr(
-        geometry,
-        "gmsh_io",
-        SimpleNamespace(from_model=lambda **kwargs: _FakeImportResult()),
-        raising=False,
-    )
 
     with geometry.model("mesh", dimension=2) as cad:
         cad.rectangle(0, 0, 1, 1)
@@ -4835,7 +4420,6 @@ def test_auto_mesh_legal_shape_matrix_uses_exact_fixed_policy(
     backend = _FakeGmsh()
     backend.option.values.update(_AUTO_OPTION_ORIGINALS)
     _install_backend(monkeypatch, backend)
-    imported, importer_calls = _install_fake_importer(monkeypatch)
 
     with geometry.model(
         f"auto-policy-{dimension}-{cell_shape}-{order}",
@@ -4846,7 +4430,6 @@ def test_auto_mesh_legal_shape_matrix_uses_exact_fixed_policy(
         result = cad.generate_auto_mesh(
             cell_shape=cell_shape,
             order=order,
-            **_auto_mesh_kwargs(dimension),
         )
 
     expected_options = {
@@ -4855,7 +4438,8 @@ def test_auto_mesh_legal_shape_matrix_uses_exact_fixed_policy(
         "Mesh.MeshSizeFactor": 1.0,
         **policy_options,
     }
-    assert result is imported
+    assert isinstance(result, geometry.GmshMeshRef)
+    assert result.dimension == dimension
     assert _first_requested_options(backend) == expected_options
     assert backend.option.values == _AUTO_OPTION_ORIGINALS
     assert backend.model.mesh.generate_calls == [dimension]
@@ -4868,7 +4452,6 @@ def test_auto_mesh_legal_shape_matrix_uses_exact_fixed_policy(
             f"auto-policy-{dimension}-{cell_shape}-{order}",
         )
     ]
-    assert len(importer_calls) == 1
 
 
 @pytest.mark.parametrize(
@@ -4900,10 +4483,7 @@ def test_auto_mesh_rejects_invalid_shape_matrix_before_native_mutation(
         _build_fake_topology(cad)
         synchronize_calls = backend.model.occ.synchronize_calls
         with pytest.raises((TypeError, ValueError)) as captured:
-            cad.generate_auto_mesh(
-                cell_shape=cell_shape,
-                **_auto_mesh_kwargs(dimension),
-            )
+            cad.generate_auto_mesh(cell_shape=cell_shape)
 
         assert "generate_auto_mesh" in str(captured.value)
         assert "cell_shape" in str(captured.value)
@@ -4960,16 +4540,12 @@ def test_auto_mesh_levels_set_dimension_aware_absolute_size_factor(
     backend = _FakeGmsh()
     backend.option.values.update(_AUTO_OPTION_ORIGINALS)
     _install_backend(monkeypatch, backend)
-    _install_fake_importer(monkeypatch)
     default_type = {1: 1, 2: 2, 3: 4}[dimension]
 
     with geometry.model(f"auto-level-{dimension}-{level}", dimension=dimension) as cad:
         _build_fake_topology(cad)
         _set_fake_element_blocks(backend, dimension, (default_type, (1,)))
-        cad.generate_auto_mesh(
-            level=level,
-            **_auto_mesh_kwargs(dimension),
-        )
+        cad.generate_auto_mesh(level=level)
 
     assert _first_requested_options(backend)["Mesh.MeshSizeFactor"] == pytest.approx(
         2.0 ** ((3 - level) / dimension)
@@ -4982,7 +4558,6 @@ def test_auto_mesh_preflight_validation_is_retryable(
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
-    imported, _ = _install_fake_importer(monkeypatch)
 
     with geometry.model("auto-validation-retry", dimension=2) as cad:
         cad.rectangle(0.0, 0.0, 1.0, 1.0)
@@ -4990,7 +4565,7 @@ def test_auto_mesh_preflight_validation_is_retryable(
             cad.generate_auto_mesh(level=True)
 
         _set_fake_element_blocks(backend, 2, (2, (1,)))
-        assert cad.generate_auto_mesh(level=3) is imported
+        assert isinstance(cad.generate_auto_mesh(level=3), geometry.GmshMeshRef)
 
 
 @pytest.mark.parametrize(
@@ -5007,7 +4582,7 @@ def test_auto_mesh_preflight_validation_is_retryable(
         (3, "hex", 2, 17),
     ],
 )
-def test_auto_mesh_strict_pure_families_reach_adapter_once(
+def test_auto_mesh_strict_pure_families_return_native_handles(
     monkeypatch: pytest.MonkeyPatch,
     dimension: int,
     cell_shape: Any,
@@ -5016,7 +4591,6 @@ def test_auto_mesh_strict_pure_families_reach_adapter_once(
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
-    imported, importer_calls = _install_fake_importer(monkeypatch)
 
     with geometry.model(
         f"strict-pure-{dimension}-{cell_shape}-{order}",
@@ -5027,11 +4601,10 @@ def test_auto_mesh_strict_pure_families_reach_adapter_once(
         result = cad.generate_auto_mesh(
             cell_shape=cell_shape,
             order=order,
-            **_auto_mesh_kwargs(dimension),
         )
 
-    assert result is imported
-    assert len(importer_calls) == 1
+    assert isinstance(result, geometry.GmshMeshRef)
+    assert result.dimension == dimension
     assert backend.model.mesh.generate_calls == [dimension]
     assert backend.model.mesh.refine_calls == 0
 
@@ -5054,15 +4627,13 @@ def test_auto_mesh_tri_quad_accepts_each_permitted_family_union(
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
-    imported, importer_calls = _install_fake_importer(monkeypatch)
 
     with geometry.model(f"strict-mixed-{order}-{len(blocks)}", dimension=2) as cad:
         cad.rectangle(0.0, 0.0, 1.0, 1.0)
         _set_fake_element_blocks(backend, 2, *blocks)
         result = cad.generate_auto_mesh(cell_shape="tri-quad", order=order)
 
-    assert result is imported
-    assert len(importer_calls) == 1
+    assert isinstance(result, geometry.GmshMeshRef)
     assert backend.model.mesh.generate_calls == [2]
     assert backend.model.mesh.refine_calls == 0
 
@@ -5088,7 +4659,6 @@ def test_auto_mesh_strict_validation_rejects_empty_and_malformed_output(
     backend = _FakeGmsh()
     backend.option.values.update(_AUTO_OPTION_ORIGINALS)
     _install_backend(monkeypatch, backend)
-    _, importer_calls = _install_fake_importer(monkeypatch)
 
     with geometry.model(f"strict-malformed-{message}", dimension=2) as cad:
         cad.rectangle(0.0, 0.0, 1.0, 1.0)
@@ -5100,7 +4670,6 @@ def test_auto_mesh_strict_validation_rejects_empty_and_malformed_output(
         with pytest.raises(geometry.GeometryStateError, match="MESH_FAILED"):
             cad.generate_auto_mesh(cell_shape="quad")
 
-    assert importer_calls == []
     assert backend.model.mesh.generate_calls == [2]
     assert backend.option.values == _AUTO_OPTION_ORIGINALS
 
@@ -5111,7 +4680,6 @@ def test_auto_mesh_shape_error_reports_aggregated_named_actual_cells(
     backend = _FakeGmsh()
     backend.option.values.update(_AUTO_OPTION_ORIGINALS)
     _install_backend(monkeypatch, backend)
-    _, importer_calls = _install_fake_importer(monkeypatch)
 
     with geometry.model("strict-named-diagnostic", dimension=2) as cad:
         cad.rectangle(0.0, 0.0, 1.0, 1.0)
@@ -5138,7 +4706,6 @@ def test_auto_mesh_shape_error_reports_aggregated_named_actual_cells(
         "automatic fallback is disabled",
     ):
         assert fragment in message
-    assert importer_calls == []
     assert [
         call[1]
         for call in backend.model.mesh.calls
@@ -5152,7 +4719,6 @@ def test_auto_mesh_shape_diagnostic_falls_back_to_unknown_numeric_type(
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
-    _, importer_calls = _install_fake_importer(monkeypatch)
 
     with geometry.model("strict-unknown-diagnostic", dimension=3) as cad:
         cad.box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
@@ -5164,7 +4730,6 @@ def test_auto_mesh_shape_diagnostic_falls_back_to_unknown_numeric_type(
         ):
             cad.generate_auto_mesh(cell_shape="hex")
 
-    assert importer_calls == []
     assert 99 not in backend.model.mesh.fail_element_properties
 
 
@@ -5175,7 +4740,6 @@ def test_auto_mesh_get_elements_failure_preserves_native_error_and_attempt(
     backend.option.values.update(_AUTO_OPTION_ORIGINALS)
     backend.model.mesh.fail_get_elements_dimensions.add(2)
     _install_backend(monkeypatch, backend)
-    _, importer_calls = _install_fake_importer(monkeypatch)
 
     with geometry.model("strict-query-failure", dimension=2) as cad:
         cad.rectangle(0.0, 0.0, 1.0, 1.0)
@@ -5184,7 +4748,6 @@ def test_auto_mesh_get_elements_failure_preserves_native_error_and_attempt(
         with pytest.raises(geometry.GeometryStateError, match="MESH_FAILED"):
             cad.generate_mesh()
 
-    assert importer_calls == []
     assert backend.model.mesh.generate_calls == [2]
     assert backend.option.values == _AUTO_OPTION_ORIGINALS
 
@@ -5194,7 +4757,6 @@ def test_auto_mesh_strict_validation_ignores_lower_dimensional_blocks(
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
-    imported, _ = _install_fake_importer(monkeypatch)
 
     with geometry.model("strict-top-dimension-only", dimension=3) as cad:
         cad.box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
@@ -5202,60 +4764,10 @@ def test_auto_mesh_strict_validation_ignores_lower_dimensional_blocks(
         _set_fake_element_blocks(backend, 3, (17, (30, 31)))
         result = cad.generate_auto_mesh(cell_shape="hex", order=2)
 
-    assert result is imported
+    assert isinstance(result, geometry.GmshMeshRef)
     assert [
         call[1] for call in backend.model.mesh.calls if call[0] == "getElements"
     ] == [3]
-
-
-def test_auto_mesh_forwards_adapter_arguments_after_strict_validation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    backend = _FakeGmsh()
-    _install_backend(monkeypatch, backend)
-    imported, importer_calls = _install_fake_importer(monkeypatch)
-
-    with geometry.model("auto-adapter-forwarding", dimension=2) as cad:
-        cad.rectangle(0.0, 0.0, 1.0, 1.0)
-        _set_fake_element_blocks(backend, 2, (9, (1, 2)))
-        result = cad.generate_auto_mesh(
-            level=4,
-            cell_shape="tri",
-            order=2,
-            plane_type="STRAIN",
-            thickness=2,
-            z_tolerance=0.1,
-        )
-
-    assert result is imported
-    assert importer_calls == [
-        {
-            "dimension": 2,
-            "gmsh_model": backend.model,
-            "line_element_type": None,
-            "plane_type": "strain",
-            "thickness": 2.0,
-            "z_tolerance": 0.1,
-        }
-    ]
-    mesh_operations = [call[0] for call in backend.model.mesh.calls]
-    assert mesh_operations.index("generate") < mesh_operations.index("getElements")
-
-
-def test_1d_auto_mesh_forwards_required_line_formulation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    backend = _FakeGmsh()
-    _install_backend(monkeypatch, backend)
-    imported, importer_calls = _install_fake_importer(monkeypatch)
-
-    with geometry.model("auto-beam-forwarding", dimension=1) as cad:
-        _build_fake_topology(cad)
-        _set_fake_element_blocks(backend, 1, (1, (1, 2)))
-        result = cad.generate_auto_mesh(line_element_type="Beam2")
-
-    assert result is imported
-    assert [call["line_element_type"] for call in importer_calls] == ["Beam2"]
 
 
 @pytest.mark.parametrize("mode", ["point", "background"])
@@ -5266,7 +4778,6 @@ def test_auto_mesh_typed_size_modes_compose_factor_once_and_restore_options(
     backend = _FakeGmsh()
     backend.option.values.update(_AUTO_OPTION_ORIGINALS)
     _install_backend(monkeypatch, backend)
-    imported, _ = _install_fake_importer(monkeypatch)
 
     with geometry.model(f"auto-typed-size-{mode}", dimension=2) as cad:
         cad.rectangle(0.0, 0.0, 1.0, 1.0)
@@ -5279,13 +4790,9 @@ def test_auto_mesh_typed_size_modes_compose_factor_once_and_restore_options(
         _set_fake_element_blocks(backend, 2, (16, (1, 2)))
         backend.option.calls.clear()
 
-        assert (
-            cad.generate_auto_mesh(
-                level=4,
-                cell_shape="quad",
-                order=2,
-            )
-            is imported
+        assert isinstance(
+            cad.generate_auto_mesh(level=4, cell_shape="quad", order=2),
+            geometry.GmshMeshRef,
         )
 
     requested = _first_requested_options(backend)
@@ -5313,7 +4820,7 @@ def test_auto_mesh_typed_size_modes_compose_factor_once_and_restore_options(
 
 @pytest.mark.parametrize(
     "failure",
-    ["option_get", "option_set", "generate", "strict", "adapter"],
+    ["option_get", "option_set", "generate", "strict"],
 )
 def test_auto_mesh_failures_restore_every_external_option_and_consume_attempt(
     monkeypatch: pytest.MonkeyPatch,
@@ -5328,20 +4835,6 @@ def test_auto_mesh_failures_restore_every_external_option_and_consume_attempt(
     elif failure == "generate":
         backend.model.mesh.fail_generate = True
     _install_backend(monkeypatch, backend)
-    importer_calls: list[dict[str, Any]] = []
-
-    def from_model(**kwargs: Any) -> _FakeImportResult:
-        importer_calls.append(kwargs)
-        if failure == "adapter":
-            raise RuntimeError("fake automatic adapter failure")
-        return _FakeImportResult()
-
-    monkeypatch.setattr(
-        geometry,
-        "gmsh_io",
-        SimpleNamespace(from_model=from_model),
-        raising=False,
-    )
 
     with geometry.model(f"auto-failure-{failure}", dimension=2) as cad:
         cad.rectangle(0.0, 0.0, 1.0, 1.0)
@@ -5356,7 +4849,6 @@ def test_auto_mesh_failures_restore_every_external_option_and_consume_attempt(
                 "option_get": "option get failure",
                 "option_set": "Mesh.RecombinationAlgorithm",
                 "generate": "fake mesh failure",
-                "adapter": "automatic adapter failure",
             }[failure]
 
         with pytest.raises(expected_error, match=expected_message):
@@ -5367,17 +4859,13 @@ def test_auto_mesh_failures_restore_every_external_option_and_consume_attempt(
         with pytest.raises(geometry.GeometryStateError, match="MESH_FAILED"):
             cad.generate_auto_mesh(cell_shape="quad")
 
-    assert len(importer_calls) == (1 if failure == "adapter" else 0)
-
-
-def test_auto_mesh_successful_import_restoration_failure_is_retried_on_exit(
+def test_auto_mesh_successful_generation_restoration_failure_is_retried_on_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = _FakeGmsh()
     backend.option.values.update(_AUTO_OPTION_ORIGINALS)
     backend.option.fail_set_after["Mesh.Algorithm"] = 1
     _install_backend(monkeypatch, backend)
-    _, importer_calls = _install_fake_importer(monkeypatch)
 
     with geometry.model("auto-restore-failure", dimension=2) as cad:
         cad.rectangle(0.0, 0.0, 1.0, 1.0)
@@ -5392,7 +4880,6 @@ def test_auto_mesh_successful_import_restoration_failure_is_retried_on_exit(
         with pytest.raises(geometry.GeometryStateError, match="MESH_FAILED"):
             cad.generate_auto_mesh(cell_shape="quad")
 
-    assert len(importer_calls) == 1
     assert backend.option.values == _AUTO_OPTION_ORIGINALS
 
 
@@ -5403,7 +4890,6 @@ def test_auto_mesh_shape_failure_preserves_error_when_restoration_also_fails(
     backend.option.values.update(_AUTO_OPTION_ORIGINALS)
     backend.option.fail_set_after["Mesh.Algorithm"] = 1
     _install_backend(monkeypatch, backend)
-    _, importer_calls = _install_fake_importer(monkeypatch)
 
     with geometry.model("auto-shape-and-restore-failure", dimension=2) as cad:
         cad.rectangle(0.0, 0.0, 1.0, 1.0)
@@ -5416,7 +4902,6 @@ def test_auto_mesh_shape_failure_preserves_error_when_restoration_also_fails(
             for note in getattr(captured.value, "__notes__", ())
         )
 
-    assert importer_calls == []
     assert backend.option.values == _AUTO_OPTION_ORIGINALS
 
 
@@ -5439,7 +4924,6 @@ def test_auto_mesh_rejects_every_explicit_topology_control_retryably(
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
-    imported, _ = _install_fake_importer(monkeypatch)
 
     with geometry.model(f"auto-blocker-{control}", dimension=3) as cad:
         point, curve, surface, volume = _fake_mesh_control_targets(cad, backend)
@@ -5483,7 +4967,7 @@ def test_auto_mesh_rejects_every_explicit_topology_control_retryably(
         assert backend.model.mesh.calls == mesh_calls
         assert backend.option.calls == option_calls
         assert backend.model.occ.synchronize_calls == synchronize_calls
-        assert cad.generate_mesh() is imported
+        assert isinstance(cad.generate_mesh(), geometry.GmshMeshRef)
 
 
 @pytest.mark.parametrize("raw_access", ["raw_model", "raw_occ"])
@@ -5493,7 +4977,6 @@ def test_auto_mesh_raw_access_conflict_is_retryable_through_low_level_path(
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
-    imported, _ = _install_fake_importer(monkeypatch)
 
     with geometry.model(f"auto-raw-{raw_access}", dimension=2) as cad:
         cad.rectangle(0.0, 0.0, 1.0, 1.0)
@@ -5511,7 +4994,7 @@ def test_auto_mesh_raw_access_conflict_is_retryable_through_low_level_path(
         assert backend.model.mesh.calls == mesh_calls
         assert backend.option.calls == option_calls
         assert backend.model.occ.synchronize_calls == synchronize_calls
-        assert cad.generate_mesh() is imported
+        assert isinstance(cad.generate_mesh(), geometry.GmshMeshRef)
 
 
 @pytest.mark.parametrize("control", ["point", "background", "plain_extrude"])
@@ -5521,7 +5004,6 @@ def test_auto_mesh_accepts_compatible_typed_size_and_plain_topology_controls(
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
-    imported, _ = _install_fake_importer(monkeypatch)
     dimension = 3 if control == "plain_extrude" else 2
 
     with geometry.model(f"auto-compatible-{control}", dimension=dimension) as cad:
@@ -5541,7 +5023,7 @@ def test_auto_mesh_accepts_compatible_typed_size_and_plain_topology_controls(
             element_type = 2
         _set_fake_element_blocks(backend, dimension, (element_type, (1, 2)))
 
-        assert cad.generate_auto_mesh() is imported
+        assert isinstance(cad.generate_auto_mesh(), geometry.GmshMeshRef)
 
 
 @pytest.mark.parametrize("failure", ["transfinite", "extrude"])
@@ -5551,7 +5033,6 @@ def test_failed_precommit_topology_control_does_not_block_auto_mesh(
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
-    imported, _ = _install_fake_importer(monkeypatch)
 
     with geometry.model(f"auto-precommit-{failure}", dimension=3) as cad:
         volume = cad.box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
@@ -5567,7 +5048,7 @@ def test_failed_precommit_topology_control_does_not_block_auto_mesh(
                 cad.extrude([surface], 0.0, 0.0, 1.0, num_elements=[1])
 
         _set_fake_element_blocks(backend, 3, (4, (1, 2)))
-        assert cad.generate_auto_mesh() is imported
+        assert isinstance(cad.generate_auto_mesh(), geometry.GmshMeshRef)
 
 
 def test_malformed_controlled_extrusion_makes_auto_mesh_scope_unknown(
@@ -5575,7 +5056,6 @@ def test_malformed_controlled_extrusion_makes_auto_mesh_scope_unknown(
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
-    imported, _ = _install_fake_importer(monkeypatch)
 
     with geometry.model("auto-malformed-controlled-extrude", dimension=3) as cad:
         surface = cad.rectangle(0.0, 0.0, 1.0, 1.0)
@@ -5590,7 +5070,7 @@ def test_malformed_controlled_extrusion_makes_auto_mesh_scope_unknown(
         ):
             cad.generate_auto_mesh()
         assert backend.model.mesh.generate_calls == []
-        assert cad.generate_mesh() is imported
+        assert isinstance(cad.generate_mesh(), geometry.GmshMeshRef)
 
 
 def test_auto_mesh_missing_top_entity_is_retryable_without_option_mutation(
@@ -5598,7 +5078,6 @@ def test_auto_mesh_missing_top_entity_is_retryable_without_option_mutation(
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
-    imported, _ = _install_fake_importer(monkeypatch)
 
     with geometry.model("auto-missing-topology", dimension=2) as cad:
         with pytest.raises(ValueError, match="top-dimensional"):
@@ -5608,7 +5087,7 @@ def test_auto_mesh_missing_top_entity_is_retryable_without_option_mutation(
 
         cad.rectangle(0.0, 0.0, 1.0, 1.0)
         _set_fake_element_blocks(backend, 2, (2, (1,)))
-        assert cad.generate_auto_mesh() is imported
+        assert isinstance(cad.generate_auto_mesh(), geometry.GmshMeshRef)
 
 
 def test_nested_auto_mesh_models_isolate_current_model_policy_and_level(
@@ -5621,18 +5100,6 @@ def test_nested_auto_mesh_models_isolate_current_model_policy_and_level(
     )
     backend.option.values.update(_AUTO_OPTION_ORIGINALS)
     _install_backend(monkeypatch, backend)
-    importer_snapshots: list[tuple[str, dict[str, float]]] = []
-
-    def from_model(**kwargs: Any) -> _FakeImportResult:
-        importer_snapshots.append((backend.model.current, dict(backend.option.values)))
-        return _FakeImportResult()
-
-    monkeypatch.setattr(
-        geometry,
-        "gmsh_io",
-        SimpleNamespace(from_model=from_model),
-        raising=False,
-    )
 
     with geometry.model("outer-auto", dimension=2) as outer:
         outer.rectangle(0.0, 0.0, 1.0, 1.0)
@@ -5650,16 +5117,6 @@ def test_nested_auto_mesh_models_isolate_current_model_policy_and_level(
 
     assert backend.model.current == "external"
     assert backend.model.mesh.generate_calls == [3, 2]
-    assert [name for name, _ in importer_snapshots] == [
-        "inner-auto",
-        "outer-auto",
-    ]
-    inner_options = importer_snapshots[0][1]
-    outer_options = importer_snapshots[1][1]
-    assert inner_options["Mesh.MeshSizeFactor"] == pytest.approx(2.0 ** (2.0 / 3.0))
-    assert inner_options["Mesh.Algorithm3D"] == 1.0
-    assert outer_options["Mesh.MeshSizeFactor"] == pytest.approx(0.5)
-    assert outer_options["Mesh.RecombinationAlgorithm"] == 3.0
 
 
 @pytest.fixture
@@ -5775,20 +5232,17 @@ def test_real_auto_line_levels_refine_monotonically_with_formulation(
         ) as cad:
             start = cad.point(0.0, 0.0, 0.0)
             end = cad.point(8.0, 0.0, 0.0)
-            member = cad.line(start, end)
-            cad.physical("MEMBER", [member])
-            imported = cad.generate_auto_mesh(
-                level=level,
+            cad.line(start, end)
+            native_mesh = cad.generate_auto_mesh(level=level)
+            mesh = gmsh_io.read(
+                native_mesh,
                 line_element_type=line_element_type,
             )
             native_counts = _top_dimensional_element_counts(real_gmsh, 1)
 
         assert set(native_counts) == {1}
-        assert {element.type for element in imported.mesh.elements} == {
-            line_element_type
-        }
-        assert imported.element_sets["MEMBER"].element_ids
-        counts.append(imported.mesh.num_elements)
+        assert {element.type for element in mesh.elements} == {line_element_type}
+        counts.append(mesh.num_elements)
 
     assert all(coarse < fine for coarse, fine in zip(counts, counts[1:]))
 
@@ -5810,7 +5264,7 @@ def test_real_auto_line_levels_refine_monotonically_with_formulation(
         ("quad", 2, {16}, {"Quad8"}, {23}),
     ],
 )
-def test_real_auto_2d_policies_preserve_strict_families_and_physical_edges(
+def test_real_auto_2d_policies_preserve_strict_native_and_fem_families(
     real_gmsh: Any,
     cell_shape: str,
     order: int,
@@ -5822,24 +5276,21 @@ def test_real_auto_2d_policies_preserve_strict_families_and_physical_edges(
         f"auto_2d_{cell_shape}_{order}",
         dimension=2,
     ) as cad:
-        surface = (
+        if cell_shape == "quad":
             cad.disk(0.0, 0.0, 1.0)
-            if cell_shape == "quad"
-            else cad.rectangle(0.0, 0.0, 2.0, 1.0)
-        )
-        boundary = cad.boundary([surface])
-        cad.physical("DOMAIN", [surface])
-        cad.physical("BOUNDARY", boundary)
-        imported = cad.generate_auto_mesh(
+        else:
+            cad.rectangle(0.0, 0.0, 2.0, 1.0)
+        native_mesh = cad.generate_auto_mesh(
             level=2,
             cell_shape=cell_shape,
             order=order,
         )
+        mesh = gmsh_io.read(native_mesh)
         native_counts = _top_dimensional_element_counts(real_gmsh, 2)
         _assert_positive_top_dimensional_jacobians(real_gmsh, 2)
 
     actual_native_types = set(native_counts)
-    actual_fem_types = {element.type for element in imported.mesh.elements}
+    actual_fem_types = {element.type for element in mesh.elements}
     assert actual_native_types
     assert actual_native_types <= expected_native_types
     assert actual_fem_types
@@ -5847,10 +5298,7 @@ def test_real_auto_2d_policies_preserve_strict_families_and_physical_edges(
     if cell_shape != "tri-quad":
         assert actual_native_types == expected_native_types
         assert actual_fem_types == expected_fem_types
-    assert imported.element_sets["DOMAIN"].element_ids
-    assert imported.node_sets["BOUNDARY"].node_ids
-    assert imported.edges["BOUNDARY"].edges
-    _, vtk_types, _ = post.vtk.cells.build(imported.mesh)
+    _, vtk_types, _ = post.vtk.cells.build(mesh)
     assert set(vtk_types) <= expected_vtk_types
 
 
@@ -5869,7 +5317,7 @@ def test_real_auto_2d_policies_preserve_strict_families_and_physical_edges(
         ("hex", 2, 17, "Hex20", 25),
     ],
 )
-def test_real_auto_3d_policies_preserve_strict_families_and_physical_surfaces(
+def test_real_auto_3d_policies_preserve_strict_native_and_fem_families(
     real_gmsh: Any,
     cell_shape: str,
     order: int,
@@ -5881,29 +5329,20 @@ def test_real_auto_3d_policies_preserve_strict_families_and_physical_surfaces(
         f"auto_3d_{cell_shape}_{order}",
         dimension=3,
     ) as cad:
-        volume = cad.box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
-        faces = cad.boundary([volume])
-        left = cad.select(faces, x=0.0)
-        assert len(left) == 1
-        cad.physical("VOLUME", [volume])
-        cad.physical("LEFT", left)
-        imported = cad.generate_auto_mesh(
+        cad.box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+        native_mesh = cad.generate_auto_mesh(
             level=1 if cell_shape == "hex" else 2,
             cell_shape=cell_shape,
             order=order,
         )
+        mesh = gmsh_io.read(native_mesh)
         native_counts = _top_dimensional_element_counts(real_gmsh, 3)
         _assert_positive_top_dimensional_jacobians(real_gmsh, 3)
 
     assert set(native_counts) == {expected_native_type}
     assert not {6, 7, 13, 14, 18, 19}.intersection(native_counts)
-    assert {element.type for element in imported.mesh.elements} == {
-        expected_fem_type
-    }
-    assert imported.element_sets["VOLUME"].element_ids
-    assert imported.node_sets["LEFT"].node_ids
-    assert imported.surfaces["LEFT"].faces
-    _assert_vtk_cell_type(imported.mesh, expected_vtk_type)
+    assert {element.type for element in mesh.elements} == {expected_fem_type}
+    _assert_vtk_cell_type(mesh, expected_vtk_type)
 
 
 @pytest.mark.parametrize("cell_shape", ["tri", "quad"])
@@ -5919,15 +5358,14 @@ def test_real_auto_2d_all_levels_refine_monotonically(
             dimension=2,
         ) as cad:
             cad.disk(0.0, 0.0, 1.0)
-            imported = cad.generate_auto_mesh(
+            native_mesh = cad.generate_auto_mesh(
                 level=level,
                 cell_shape=cell_shape,
             )
+            mesh = gmsh_io.read(native_mesh)
 
-        assert {element.type for element in imported.mesh.elements} == {
-            expected_type
-        }
-        counts.append(imported.mesh.num_elements)
+        assert {element.type for element in mesh.elements} == {expected_type}
+        counts.append(mesh.num_elements)
 
     assert all(coarse < fine for coarse, fine in zip(counts, counts[1:]))
 
@@ -5945,15 +5383,14 @@ def test_real_auto_3d_selected_levels_refine_monotonically(
             dimension=3,
         ) as cad:
             cad.box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
-            imported = cad.generate_auto_mesh(
+            native_mesh = cad.generate_auto_mesh(
                 level=level,
                 cell_shape=cell_shape,
             )
+            mesh = gmsh_io.read(native_mesh)
 
-        assert {element.type for element in imported.mesh.elements} == {
-            expected_type
-        }
-        counts.append(imported.mesh.num_elements)
+        assert {element.type for element in mesh.elements} == {expected_type}
+        counts.append(mesh.num_elements)
 
     assert all(coarse < fine for coarse, fine in zip(counts, counts[1:]))
 
@@ -5988,20 +5425,21 @@ def test_real_auto_typed_size_controls_preserve_near_far_refinement(
                     dist_max=1.5,
                 )
                 cad.background_field(threshold)
-            imported = cad.generate_auto_mesh(
+            native_mesh = cad.generate_auto_mesh(
                 level=level,
                 cell_shape="tri",
             )
+            mesh = gmsh_io.read(native_mesh)
             _assert_positive_top_dimensional_jacobians(real_gmsh, 2)
 
-        assert isinstance(imported.mesh, Mesh2D)
-        samples = _tri3_areas_by_centroid_x(imported.mesh)
+        assert isinstance(mesh, Mesh2D)
+        samples = _tri3_areas_by_centroid_x(mesh)
         near_areas = [area for x, area in samples if x < 0.75]
         far_areas = [area for x, area in samples if x > 3.25]
         assert near_areas
         assert far_areas
         assert np.median(near_areas) < np.median(far_areas)
-        counts.append(imported.mesh.num_elements)
+        counts.append(mesh.num_elements)
 
     assert counts[0] < counts[1]
 
@@ -6027,22 +5465,24 @@ def test_real_auto_mesh_restores_external_algorithm_and_size_options(
 
         with geometry.model("auto_restore_quad", dimension=2) as cad:
             cad.disk(0.0, 0.0, 1.0)
-            quad = cad.generate_auto_mesh(
+            native_mesh = cad.generate_auto_mesh(
                 level=2,
                 cell_shape="quad",
             )
-        assert {element.type for element in quad.mesh.elements} == {"Quad4"}
+            quad = gmsh_io.read(native_mesh)
+        assert {element.type for element in quad.elements} == {"Quad4"}
         assert {
             name: real_gmsh.option.getNumber(name) for name in external_values
         } == external_values
 
         with geometry.model("auto_restore_hex", dimension=3) as cad:
             cad.box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
-            hexahedra = cad.generate_auto_mesh(
+            native_mesh = cad.generate_auto_mesh(
                 level=1,
                 cell_shape="hex",
             )
-        assert {element.type for element in hexahedra.mesh.elements} == {"Hex8"}
+            hexahedra = gmsh_io.read(native_mesh)
+        assert {element.type for element in hexahedra.elements} == {"Hex8"}
         assert {
             name: real_gmsh.option.getNumber(name) for name in external_values
         } == external_values
@@ -6059,34 +5499,27 @@ def test_real_1d_facade_reuses_shared_point_in_connected_spatial_mesh(
         start = cad.point(0.0, 0.0, 0.25)
         middle = cad.point(*middle_coordinates)
         end = cad.point(2.0, -0.5, 1.25)
-        first = cad.line(start, middle)
-        second = cad.line(middle, end)
-        cad.physical("MEMBERS", [first, second])
-        cad.physical("FIXED", [start])
-        cad.physical("TIP", [end])
-        imported = cad.generate_mesh(
-            size=0.4,
+        cad.line(start, middle)
+        cad.line(middle, end)
+        native_mesh = cad.generate_mesh(size=0.4)
+        mesh = gmsh_io.read(
+            native_mesh,
             line_element_type="Truss2",
         )
 
-    assert isinstance(imported.mesh, Mesh3D)
-    assert imported.mesh.dofs_per_node == 3
-    assert {element.type for element in imported.mesh.elements} == {"Truss2"}
-    assert all(len(element.node_ids) == 2 for element in imported.mesh.elements)
+    assert isinstance(mesh, Mesh3D)
+    assert mesh.dofs_per_node == 3
+    assert {element.type for element in mesh.elements} == {"Truss2"}
+    assert all(len(element.node_ids) == 2 for element in mesh.elements)
     middle_node = next(
         node
-        for node in imported.mesh.nodes
+        for node in mesh.nodes
         if (node.x, node.y, node.z) == pytest.approx(middle_coordinates)
     )
     assert sum(
-        middle_node.id in element.node_ids for element in imported.mesh.elements
+        middle_node.id in element.node_ids for element in mesh.elements
     ) == 2
-    assert imported.element_sets["MEMBERS"].element_ids
-    assert len(imported.node_sets["FIXED"].node_ids) == 1
-    assert len(imported.node_sets["TIP"].node_ids) == 1
-    assert imported.edges == {}
-    assert imported.surfaces == {}
-    _assert_vtk_cell_type(imported.mesh, 3)
+    _assert_vtk_cell_type(mesh, 3)
 
 
 def test_real_1d_fragment_splits_intersections_into_shared_mesh_node(
@@ -6109,20 +5542,17 @@ def test_real_1d_fragment_splits_intersections_into_shared_mesh_node(
 
         center = cad.select(cad.entities(0), x=0.0, y=0.0, z=0.0)
         assert len(center) == 1
-        cad.physical("MEMBERS", members)
-        cad.physical("CENTER", center)
-        imported = cad.generate_mesh(
-            size=0.4,
+        native_mesh = cad.generate_mesh(size=0.4)
+        mesh = gmsh_io.read(
+            native_mesh,
             line_element_type="Truss2",
         )
 
-    center_node_id = imported.node_sets["CENTER"].node_ids[0]
+    center_node_id = nodes.by_coord(mesh, x=0.0, y=0.0, z=0.0)[0]
     assert sum(
-        center_node_id in element.node_ids for element in imported.mesh.elements
+        center_node_id in element.node_ids for element in mesh.elements
     ) == 4
-    assert set(imported.element_sets["MEMBERS"].element_ids) == {
-        element.id for element in imported.mesh.elements
-    }
+    assert mesh.num_elements >= len(members)
 
 
 def test_real_truss2_vertical_slice_matches_bar_solution_and_exports_vtk(
@@ -6136,15 +5566,32 @@ def test_real_truss2_vertical_slice_matches_bar_solution_and_exports_vtk(
     with geometry.model("truss_vertical_slice", dimension=1) as cad:
         start = cad.point(0.0, 0.5, -0.25)
         end = cad.point(length, 0.5, -0.25)
-        member = cad.line(start, end)
-        cad.physical("MEMBERS", [member])
-        cad.physical("FIXED", [start])
-        cad.physical("TIP", [end])
-        model = cad.generate_fem_model(
-            "truss_vertical_slice",
-            size=0.5,
+        cad.line(start, end)
+        native_mesh = cad.generate_mesh(size=0.5)
+        mesh = gmsh_io.read(
+            native_mesh,
             line_element_type="Truss2",
         )
+
+    model = FEMModel(mesh=mesh, name="truss_vertical_slice")
+    member_set = elements.set_all(mesh, "MEMBERS")
+    fixed_set = nodes.set_by_coord(
+        mesh,
+        "FIXED",
+        x=0.0,
+        y=0.5,
+        z=-0.25,
+    )
+    tip_set = nodes.set_by_coord(
+        mesh,
+        "TIP",
+        x=length,
+        y=0.5,
+        z=-0.25,
+    )
+    model.element_sets[member_set.name] = member_set
+    model.node_sets[fixed_set.name] = fixed_set
+    model.node_sets[tip_set.name] = tip_set
 
     steel = materials.linear_elastic.material(
         "steel",
@@ -6197,15 +5644,20 @@ def test_real_beam2_vertical_slice_uses_fixed_rectangle_axes_and_line_load(
     with geometry.model("beam_vertical_slice", dimension=1) as cad:
         root = cad.point(0.0, 0.0, 0.0)
         tip = cad.point(length, 0.0, 0.0)
-        member = cad.line(root, tip)
-        cad.physical("MEMBERS", [member])
-        cad.physical("FIXED", [root])
-        cad.physical("TIP", [tip])
-        model = cad.generate_fem_model(
-            "beam_vertical_slice",
-            size=0.5,
+        cad.line(root, tip)
+        native_mesh = cad.generate_mesh(size=0.5)
+        mesh = gmsh_io.read(
+            native_mesh,
             line_element_type="Beam2",
         )
+
+    model = FEMModel(mesh=mesh, name="beam_vertical_slice")
+    member_set = elements.set_all(mesh, "MEMBERS")
+    fixed_set = nodes.set_by_coord(mesh, "FIXED", x=0.0, y=0.0, z=0.0)
+    tip_set = nodes.set_by_coord(mesh, "TIP", x=length, y=0.0, z=0.0)
+    model.element_sets[member_set.name] = member_set
+    model.node_sets[fixed_set.name] = fixed_set
+    model.node_sets[tip_set.name] = tip_set
 
     steel = materials.linear_elastic.material(
         "steel",
@@ -6266,34 +5718,31 @@ def test_real_beam2_vertical_slice_uses_fixed_rectangle_axes_and_line_load(
     assert "SCALARS axial_stress_abs_max float 1" in vtk_text
 
 
-def test_real_facade_rectangle_labels_solve_vtk_and_survive_cleanup(
+def test_real_facade_rectangle_selects_regions_solves_and_survives_cleanup(
     real_gmsh: Any,
     tmp_path: Path,
 ) -> None:
     with geometry.model("facade_rectangle", dimension=2) as cad:
-        surface = cad.rectangle(0.0, 0.0, 2.0, 1.0)
-        boundary = cad.boundary([surface])
-        left = cad.select(boundary, x=0.0)
-        right = cad.select(boundary, x=2.0)
-        assert left and right
-        cad.physical("DOMAIN", [surface])
-        cad.physical("LEFT", left)
-        cad.physical("RIGHT", right)
-        imported = cad.generate_mesh(size=0.35)
+        cad.rectangle(0.0, 0.0, 2.0, 1.0)
+        native_mesh = cad.generate_mesh(size=0.35)
+        mesh = gmsh_io.read(native_mesh)
         _assert_positive_top_dimensional_jacobians(real_gmsh, 2)
 
     assert real_gmsh.isInitialized()
     assert "facade_rectangle" not in real_gmsh.model.list()
-    assert isinstance(imported.mesh, Mesh2D)
-    assert {element.type for element in imported.mesh.elements} == {"Tri3"}
-    assert imported.element_sets["DOMAIN"].element_ids
-    assert imported.node_sets["LEFT"].node_ids
-    assert imported.node_sets["RIGHT"].node_ids
-    assert imported.edges["LEFT"].edges
-    assert imported.edges["RIGHT"].edges
-    _assert_vtk_cell_type(imported.mesh, 5)
+    assert isinstance(mesh, Mesh2D)
+    assert {element.type for element in mesh.elements} == {"Tri3"}
+    _assert_vtk_cell_type(mesh, 5)
 
-    model = imported.to_fem_model("facade_rectangle")
+    model = FEMModel(mesh=mesh, name="facade_rectangle")
+    domain = elements.set_all(mesh, "DOMAIN")
+    left = nodes.set_by_x(mesh, "LEFT", 0.0)
+    right = nodes.set_by_x(mesh, "RIGHT", 2.0)
+    right_edge = edges.edge_by_x(mesh, "RIGHT", 2.0)
+    model.element_sets[domain.name] = domain
+    model.node_sets[left.name] = left
+    model.node_sets[right.name] = right
+    model.edges[right_edge.name] = right_edge
     elastic = materials.linear_elastic.material("elastic", E=1000.0, nu=0.3)
     materials.add(model, elastic)
     materials.assign(model, "elastic", "DOMAIN")
@@ -6339,14 +5788,14 @@ def test_real_facade_cut_creates_quadratic_tri6_hole_mesh(real_gmsh: Any) -> Non
         domain = cut.of_dimension(2)
         assert len(domain) == 1
         assert len(cad.boundary(domain)) == 5
-        cad.physical("DOMAIN", domain)
-        imported = cad.generate_mesh(size=0.25, order=2)
+        native_mesh = cad.generate_mesh(size=0.25, order=2)
+        mesh = gmsh_io.read(native_mesh)
         _assert_positive_top_dimensional_jacobians(real_gmsh, 2)
 
-    assert isinstance(imported.mesh, Mesh2D)
-    assert {element.type for element in imported.mesh.elements} == {"Tri6"}
-    assert all(len(element.node_ids) == 6 for element in imported.mesh.elements)
-    _assert_vtk_cell_type(imported.mesh, 22)
+    assert isinstance(mesh, Mesh2D)
+    assert {element.type for element in mesh.elements} == {"Tri6"}
+    assert all(len(element.node_ids) == 6 for element in mesh.elements)
+    _assert_vtk_cell_type(mesh, 22)
 
 
 def test_real_destructive_fragment_invalidates_old_boundary_references(
@@ -6397,17 +5846,19 @@ def test_real_size_control_overrides_and_restores_external_point_size_option(
     try:
         with geometry.model("facade_size_fine", dimension=2) as cad:
             cad.rectangle(0.0, 0.0, 1.0, 1.0)
-            fine = cad.generate_mesh(size=0.1)
+            native_mesh = cad.generate_mesh(size=0.1)
+            fine = gmsh_io.read(native_mesh)
             assert real_gmsh.option.getNumber(option_name) == 0.0
 
         with geometry.model("facade_size_coarse", dimension=2) as cad:
             cad.rectangle(0.0, 0.0, 1.0, 1.0)
-            coarse = cad.generate_mesh(size=0.5)
+            native_mesh = cad.generate_mesh(size=0.5)
+            coarse = gmsh_io.read(native_mesh)
             assert real_gmsh.option.getNumber(option_name) == 0.0
     finally:
         real_gmsh.option.setNumber(option_name, original)
 
-    assert fine.mesh.num_elements > coarse.mesh.num_elements
+    assert fine.num_elements > coarse.num_elements
 
 
 def test_real_transfinite_line_creates_exact_truss2_mesh(real_gmsh: Any) -> None:
@@ -6415,18 +5866,15 @@ def test_real_transfinite_line_creates_exact_truss2_mesh(real_gmsh: Any) -> None
         start = cad.point(0.0, 0.0, 0.0)
         end = cad.point(2.0, 0.0, 0.0)
         member = cad.line(start, end)
-        cad.physical("MEMBERS", [member])
-        cad.physical("ENDS", [start, end])
         cad.transfinite_curve(member, num_nodes=5)
-        imported = cad.generate_mesh(line_element_type="Truss2")
+        native_mesh = cad.generate_mesh()
+        mesh = gmsh_io.read(native_mesh, line_element_type="Truss2")
 
-    assert isinstance(imported.mesh, Mesh3D)
-    assert imported.mesh.num_nodes == 5
-    assert imported.mesh.num_elements == 4
-    assert {element.type for element in imported.mesh.elements} == {"Truss2"}
-    assert len(imported.element_sets["MEMBERS"].element_ids) == 4
-    assert len(imported.node_sets["ENDS"].node_ids) == 2
-    _assert_vtk_cell_type(imported.mesh, 3)
+    assert isinstance(mesh, Mesh3D)
+    assert mesh.num_nodes == 5
+    assert mesh.num_elements == 4
+    assert {element.type for element in mesh.elements} == {"Truss2"}
+    _assert_vtk_cell_type(mesh, 3)
 
 
 def test_real_facade_structured_rectangle_creates_quad8(real_gmsh: Any) -> None:
@@ -6440,19 +5888,16 @@ def test_real_facade_structured_rectangle_creates_quad8(real_gmsh: Any) -> None:
 
         left = cad.select(curves, x=0.0)
         assert len(left) == 1
-        cad.physical("DOMAIN", [surface])
-        cad.physical("LEFT", left)
-        imported = cad.generate_mesh(order=2, recombine=False)
+        native_mesh = cad.generate_mesh(order=2, recombine=False)
+        mesh = gmsh_io.read(native_mesh)
         _assert_positive_top_dimensional_jacobians(real_gmsh, 2)
 
-    assert isinstance(imported.mesh, Mesh2D)
-    assert imported.mesh.num_elements == 4
-    assert {element.type for element in imported.mesh.elements} == {"Quad8"}
-    assert all(len(element.node_ids) == 8 for element in imported.mesh.elements)
-    assert len(imported.element_sets["DOMAIN"].element_ids) == 4
-    assert imported.node_sets["LEFT"].node_ids
-    assert imported.edges["LEFT"].edges
-    _assert_vtk_cell_type(imported.mesh, 23)
+    assert isinstance(mesh, Mesh2D)
+    assert mesh.num_elements == 4
+    assert {element.type for element in mesh.elements} == {"Quad8"}
+    assert all(len(element.node_ids) == 8 for element in mesh.elements)
+    assert edges.edge_by_x(mesh, "LEFT", 0.0).edges
+    _assert_vtk_cell_type(mesh, 23)
 
 
 def test_real_entity_recombine_leaves_unselected_surface_triangular(
@@ -6461,7 +5906,7 @@ def test_real_entity_recombine_leaves_unselected_surface_triangular(
     real_gmsh.option.setNumber("Mesh.RecombineAll", 1.0)
     with geometry.model("facade_selective_recombine", dimension=2) as cad:
         structured = cad.rectangle(0.0, 0.0, 1.0, 1.0)
-        unselected = cad.rectangle(2.0, 0.0, 1.0, 1.0)
+        cad.rectangle(2.0, 0.0, 1.0, 1.0)
         structured_curves = cad.boundary([structured])
         for curve in structured_curves:
             cad.transfinite_curve(curve, num_nodes=3)
@@ -6470,47 +5915,29 @@ def test_real_entity_recombine_leaves_unselected_surface_triangular(
 
         structured_left = cad.select(structured_curves, x=0.0)
         assert len(structured_left) == 1
-        cad.physical("STRUCTURED", [structured])
-        cad.physical("UNSELECTED", [unselected])
-        cad.physical("STRUCTURED_LEFT", structured_left)
-        imported = cad.generate_mesh(size=0.3, recombine=False)
+        native_mesh = cad.generate_mesh(size=0.3, recombine=False)
+        mesh = gmsh_io.read(native_mesh)
         assert real_gmsh.option.getNumber("Mesh.RecombineAll") == 1.0
 
-    elements_by_id = {
-        element.id: element for element in imported.mesh.elements
-    }
-    structured_elements = [
-        elements_by_id[element_id]
-        for element_id in imported.element_sets["STRUCTURED"].element_ids
-    ]
-    unselected_elements = [
-        elements_by_id[element_id]
-        for element_id in imported.element_sets["UNSELECTED"].element_ids
-    ]
-    assert len(structured_elements) == 4
-    assert {element.type for element in structured_elements} == {"Quad4"}
-    assert unselected_elements
-    assert {element.type for element in unselected_elements} == {"Tri3"}
-    assert imported.edges["STRUCTURED_LEFT"].edges
+    element_types = [element.type for element in mesh.elements]
+    assert element_types.count("Quad4") == 4
+    assert "Tri3" in element_types
+    assert edges.edge_by_x(mesh, "STRUCTURED_LEFT", 0.0).edges
 
 
-def test_real_facade_box_creates_tet10_and_named_surface(real_gmsh: Any) -> None:
+def test_real_facade_box_creates_tet10(real_gmsh: Any) -> None:
     with geometry.model("facade_tet10", dimension=3) as cad:
         volume = cad.box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
         faces = cad.boundary([volume])
         left = cad.select(faces, x=0.0)
         assert left
-        cad.physical("VOLUME", [volume])
-        cad.physical("LEFT", left)
-        imported = cad.generate_mesh(size=0.7, order=2)
+        native_mesh = cad.generate_mesh(size=0.7, order=2)
+        mesh = gmsh_io.read(native_mesh)
         _assert_positive_top_dimensional_jacobians(real_gmsh, 3)
 
-    assert isinstance(imported.mesh, Mesh3D)
-    assert {element.type for element in imported.mesh.elements} == {"Tet10"}
-    assert imported.element_sets["VOLUME"].element_ids
-    assert imported.node_sets["LEFT"].node_ids
-    assert imported.surfaces["LEFT"].faces
-    _assert_vtk_cell_type(imported.mesh, 24)
+    assert isinstance(mesh, Mesh3D)
+    assert {element.type for element in mesh.elements} == {"Tet10"}
+    _assert_vtk_cell_type(mesh, 24)
 
 
 def test_real_facade_transfinite_box_creates_exact_hex20_mesh(
@@ -6532,19 +5959,15 @@ def test_real_facade_transfinite_box_creates_exact_hex20_mesh(
 
         left = cad.select(faces, x=0.0)
         assert len(left) == 1
-        cad.physical("VOLUME", [volume])
-        cad.physical("LEFT", left)
-        imported = cad.generate_mesh(order=2, recombine=False)
+        native_mesh = cad.generate_mesh(order=2, recombine=False)
+        mesh = gmsh_io.read(native_mesh)
         _assert_positive_top_dimensional_jacobians(real_gmsh, 3)
 
-    assert isinstance(imported.mesh, Mesh3D)
-    assert imported.mesh.num_elements == 8
-    assert {element.type for element in imported.mesh.elements} == {"Hex20"}
-    assert all(len(element.node_ids) == 20 for element in imported.mesh.elements)
-    assert len(imported.element_sets["VOLUME"].element_ids) == 8
-    assert imported.node_sets["LEFT"].node_ids
-    assert imported.surfaces["LEFT"].faces
-    _assert_vtk_cell_type(imported.mesh, 25)
+    assert isinstance(mesh, Mesh3D)
+    assert mesh.num_elements == 8
+    assert {element.type for element in mesh.elements} == {"Hex20"}
+    assert all(len(element.node_ids) == 20 for element in mesh.elements)
+    _assert_vtk_cell_type(mesh, 25)
 
 
 def test_real_facade_structured_extrusion_creates_hex20(real_gmsh: Any) -> None:
@@ -6562,11 +5985,11 @@ def test_real_facade_structured_extrusion_creates_hex20(real_gmsh: Any) -> None:
             entity for entity in extruded if entity.dimension == 3
         )
         assert len(volumes) == 1
-        cad.physical("VOLUME", volumes)
-        imported = cad.generate_mesh(size=0.5, order=2, recombine=True)
+        native_mesh = cad.generate_mesh(size=0.5, order=2, recombine=True)
+        mesh = gmsh_io.read(native_mesh)
         _assert_positive_top_dimensional_jacobians(real_gmsh, 3)
 
-    assert isinstance(imported.mesh, Mesh3D)
-    assert {element.type for element in imported.mesh.elements} == {"Hex20"}
-    assert all(len(element.node_ids) == 20 for element in imported.mesh.elements)
-    _assert_vtk_cell_type(imported.mesh, 25)
+    assert isinstance(mesh, Mesh3D)
+    assert {element.type for element in mesh.elements} == {"Hex20"}
+    assert all(len(element.node_ids) == 20 for element in mesh.elements)
+    _assert_vtk_cell_type(mesh, 25)

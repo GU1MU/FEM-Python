@@ -8,6 +8,7 @@ import pytest
 
 from fem.core import Mesh2D, Mesh3D
 from fem.geometry import gmsh as geometry
+from fem.io import gmsh as gmsh_io
 
 
 _GLOBAL_OPTIONS = (
@@ -181,14 +182,13 @@ def test_real_selected_point_mesh_size_refines_one_rectangle_corner(
 
         cad.mesh_size(points, size=0.45)
         cad.mesh_size(refined_point, size=0.05)
-        cad.physical("DOMAIN", [domain])
-        cad.physical("REFINED_POINT", refined_point)
-        imported = cad.generate_mesh(order=2)
+        native_mesh = cad.generate_mesh(order=2)
+        mesh = gmsh_io.read(native_mesh)
 
         for name, value in external_options.items():
             assert real_gmsh.option.getNumber(name) == pytest.approx(value)
 
-    records = _element_geometry(imported.mesh)
+    records = _element_geometry(mesh)
     near = _regional_median(
         records,
         lambda centroid: centroid[0] < 0.32 and centroid[1] < 0.32,
@@ -201,15 +201,11 @@ def test_real_selected_point_mesh_size_refines_one_rectangle_corner(
     )
 
     assert near < 0.55 * far
-    assert {element.type for element in imported.mesh.elements} == {"Tri6"}
-    assert set(imported.element_sets["DOMAIN"].element_ids) == {
-        element.id for element in imported.mesh.elements
-    }
-    assert len(imported.node_sets["REFINED_POINT"].node_ids) == 1
-    _assert_positive_primary_jacobians(imported.mesh)
+    assert {element.type for element in mesh.elements} == {"Tri6"}
+    _assert_positive_primary_jacobians(mesh)
 
 
-def test_real_curve_threshold_refines_a_circular_hole_and_preserves_mappings(
+def test_real_curve_threshold_refines_a_circular_hole_with_valid_cells(
     real_gmsh: Any,
 ) -> None:
     center = np.asarray((1.2, 1.0), dtype=float)
@@ -234,9 +230,6 @@ def test_real_curve_threshold_refines_a_circular_hole_and_preserves_mappings(
         assert len(outer) == 4
         assert len(hole) == 1
 
-        cad.physical("DOMAIN", domain)
-        cad.physical("OUTER", outer)
-        cad.physical("HOLE", hole)
         distance = cad.distance_field(curves=hole, sampling=100)
         threshold = cad.threshold_field(
             distance,
@@ -246,9 +239,10 @@ def test_real_curve_threshold_refines_a_circular_hole_and_preserves_mappings(
             dist_max=0.65,
         )
         cad.background_field(threshold)
-        imported = cad.generate_mesh(order=1)
+        native_mesh = cad.generate_mesh(order=1)
+        mesh = gmsh_io.read(native_mesh)
 
-    records = _element_geometry(imported.mesh)
+    records = _element_geometry(mesh)
     near = _regional_median(
         records,
         lambda centroid: np.linalg.norm(centroid[:2] - center) - radius < 0.16,
@@ -263,15 +257,8 @@ def test_real_curve_threshold_refines_a_circular_hole_and_preserves_mappings(
     )
 
     assert near < 0.5 * far
-    assert {element.type for element in imported.mesh.elements} == {"Tri3"}
-    assert set(imported.element_sets["DOMAIN"].element_ids) == {
-        element.id for element in imported.mesh.elements
-    }
-    assert imported.node_sets["OUTER"].node_ids
-    assert imported.node_sets["HOLE"].node_ids
-    assert imported.edges["OUTER"].edges
-    assert imported.edges["HOLE"].edges
-    _assert_positive_primary_jacobians(imported.mesh)
+    assert {element.type for element in mesh.elements} == {"Tri3"}
+    _assert_positive_primary_jacobians(mesh)
 
 
 def test_real_min_field_refines_two_regions_with_entity_recombination(
@@ -305,12 +292,10 @@ def test_real_min_field_refines_two_regions_with_entity_recombination(
         combined = cad.min_field([left_threshold, right_threshold])
         cad.background_field(combined)
         cad.recombine(domain)
-        cad.physical("DOMAIN", [domain])
-        cad.physical("LEFT", left)
-        cad.physical("RIGHT", right)
-        imported = cad.generate_mesh(recombine=False)
+        native_mesh = cad.generate_mesh(recombine=False)
+        mesh = gmsh_io.read(native_mesh)
 
-    records = _element_geometry(imported.mesh)
+    records = _element_geometry(mesh)
     near_left = _regional_median(
         records,
         lambda centroid: centroid[0] < 0.32,
@@ -332,14 +317,12 @@ def test_real_min_field_refines_two_regions_with_entity_recombination(
 
     assert near_left < 0.6 * far
     assert near_right < 0.6 * far
-    assert {element.type for element in imported.mesh.elements} <= {
+    assert {element.type for element in mesh.elements} <= {
         "Tri3",
         "Quad4",
     }
-    assert "Quad4" in {element.type for element in imported.mesh.elements}
-    assert imported.edges["LEFT"].edges
-    assert imported.edges["RIGHT"].edges
-    _assert_positive_primary_jacobians(imported.mesh)
+    assert "Quad4" in {element.type for element in mesh.elements}
+    _assert_positive_primary_jacobians(mesh)
 
 
 def test_real_surface_distance_refines_one_face_of_a_small_box(
@@ -354,9 +337,6 @@ def test_real_surface_distance_refines_one_face_of_a_small_box(
         assert len(refined_face) == 1
         assert len(far_face) == 1
 
-        cad.physical("VOLUME", [volume])
-        cad.physical("REFINED_FACE", refined_face)
-        cad.physical("FAR_FACE", far_face)
         distance = cad.distance_field(surfaces=refined_face, sampling=40)
         threshold = cad.threshold_field(
             distance,
@@ -366,9 +346,10 @@ def test_real_surface_distance_refines_one_face_of_a_small_box(
             dist_max=0.75,
         )
         cad.background_field(threshold)
-        imported = cad.generate_mesh(order=1)
+        native_mesh = cad.generate_mesh(order=1)
+        mesh = gmsh_io.read(native_mesh)
 
-    records = _element_geometry(imported.mesh)
+    records = _element_geometry(mesh)
     near = _regional_median(
         records,
         lambda centroid: centroid[0] < 0.3,
@@ -383,15 +364,8 @@ def test_real_surface_distance_refines_one_face_of_a_small_box(
     )
 
     assert near < 0.65 * far
-    assert {element.type for element in imported.mesh.elements} == {"Tet4"}
-    assert set(imported.element_sets["VOLUME"].element_ids) == {
-        element.id for element in imported.mesh.elements
-    }
-    assert imported.node_sets["REFINED_FACE"].node_ids
-    assert imported.node_sets["FAR_FACE"].node_ids
-    assert imported.surfaces["REFINED_FACE"].faces
-    assert imported.surfaces["FAR_FACE"].faces
-    _assert_positive_primary_jacobians(imported.mesh)
+    assert {element.type for element in mesh.elements} == {"Tet4"}
+    _assert_positive_primary_jacobians(mesh)
 
 
 def test_real_entity_dependent_controls_protect_only_referenced_topology(
@@ -418,10 +392,11 @@ def test_real_entity_dependent_controls_protect_only_referenced_topology(
             dist_max=0.6,
         )
         cad.background_field(threshold)
-        field_mesh = cad.generate_mesh()
+        native_mesh = cad.generate_mesh()
+        field_mesh = gmsh_io.read(native_mesh)
 
-    assert {element.type for element in field_mesh.mesh.elements} == {"Tri3"}
-    _assert_positive_primary_jacobians(field_mesh.mesh)
+    assert {element.type for element in field_mesh.elements} == {"Tri3"}
+    _assert_positive_primary_jacobians(field_mesh)
 
     with geometry.model("point_size_topology_dependency_guard", dimension=2) as cad:
         left = cad.rectangle(0.0, 0.0, 1.0, 1.0)
@@ -445,10 +420,11 @@ def test_real_entity_dependent_controls_protect_only_referenced_topology(
         ):
             cad.fuse([left], [right])
 
-        point_mesh = cad.generate_mesh()
+        native_mesh = cad.generate_mesh()
+        point_mesh = gmsh_io.read(native_mesh)
 
-    assert {element.type for element in point_mesh.mesh.elements} == {"Tri3"}
-    _assert_positive_primary_jacobians(point_mesh.mesh)
+    assert {element.type for element in point_mesh.elements} == {"Tri3"}
+    _assert_positive_primary_jacobians(point_mesh)
 
 
 def test_real_recombine_rejects_transform_that_would_discard_control(
@@ -464,10 +440,11 @@ def test_real_recombine_rejects_transform_that_would_discard_control(
         ):
             cad.rotate([surface], 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.25)
 
-        imported = cad.generate_mesh(size=0.2)
+        native_mesh = cad.generate_mesh(size=0.2)
+        mesh = gmsh_io.read(native_mesh)
 
-    assert {element.type for element in imported.mesh.elements} == {"Quad4"}
-    _assert_positive_primary_jacobians(imported.mesh)
+    assert {element.type for element in mesh.elements} == {"Quad4"}
+    _assert_positive_primary_jacobians(mesh)
 
 
 def test_real_consecutive_controlled_extrusions_allow_preserving_topology(
@@ -506,16 +483,12 @@ def test_real_consecutive_controlled_extrusions_allow_preserving_topology(
         )
         assert len(second_volumes) == 1
 
-        volumes = (*first_volumes, *second_volumes)
-        cad.physical("VOLUMES", volumes)
-        imported = cad.generate_mesh(size=0.5, order=1, recombine=True)
+        native_mesh = cad.generate_mesh(size=0.5, order=1, recombine=True)
+        mesh = gmsh_io.read(native_mesh)
 
-    assert isinstance(imported.mesh, Mesh3D)
-    assert imported.mesh.num_elements > 0
-    assert {element.type for element in imported.mesh.elements} == {"Hex8"}
-    assert set(imported.element_sets["VOLUMES"].element_ids) == {
-        element.id for element in imported.mesh.elements
-    }
+    assert isinstance(mesh, Mesh3D)
+    assert mesh.num_elements > 0
+    assert {element.type for element in mesh.elements} == {"Hex8"}
 
 
 def test_real_controlled_extrusion_accepts_repeated_shared_output(

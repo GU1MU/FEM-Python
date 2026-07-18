@@ -3,6 +3,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = PROJECT_ROOT / "src"
 TESTS_ROOT = PROJECT_ROOT / "tests"
 
 
@@ -11,6 +12,37 @@ def _string_literals(path):
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             yield node.value.replace("\\", "/")
+
+
+def _resolved_import_targets(path, module_name):
+    """Yield resolved import targets and source lines for a project module."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    package_parts = module_name.split(".")[:-1]
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                yield alias.name, node.lineno
+            continue
+        if not isinstance(node, ast.ImportFrom):
+            continue
+
+        if node.level:
+            parent_count = node.level - 1
+            base_parts = package_parts[: len(package_parts) - parent_count]
+            if node.module:
+                base_parts += node.module.split(".")
+            base = ".".join(base_parts)
+        else:
+            base = node.module or ""
+
+        for alias in node.names:
+            target = f"{base}.{alias.name}" if base else alias.name
+            yield target, node.lineno
+
+
+def _is_module_or_child(target, module_name):
+    return target == module_name or target.startswith(f"{module_name}.")
 
 
 def test_tests_do_not_reference_example_data_or_results_outputs():
@@ -23,5 +55,44 @@ def test_tests_do_not_reference_example_data_or_results_outputs():
                 offenders.append(f"{path.relative_to(PROJECT_ROOT)} -> {literal}")
             if literal == "results" or literal.startswith("results/"):
                 offenders.append(f"{path.relative_to(PROJECT_ROOT)} -> {literal}")
+
+    assert offenders == []
+
+
+def test_gmsh_geometry_does_not_import_fem_core_or_io():
+    path = SRC_ROOT / "fem" / "geometry" / "gmsh.py"
+    offenders = []
+    for target, lineno in _resolved_import_targets(path, "fem.geometry.gmsh"):
+        if (
+            _is_module_or_child(target, "fem.core")
+            or _is_module_or_child(target, "fem.io")
+            or target.rsplit(".", 1)[-1] == "FEMModel"
+        ):
+            offenders.append(f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}")
+
+    assert offenders == []
+
+
+def test_gmsh_io_imports_only_mesh_level_fem_core_types():
+    path = SRC_ROOT / "fem" / "io" / "gmsh.py"
+    forbidden_names = {
+        "Edge",
+        "ElementEdge",
+        "ElementFace",
+        "ElementSet",
+        "FEMModel",
+        "NodeSet",
+        "Surface",
+    }
+    offenders = []
+    for target, lineno in _resolved_import_targets(path, "fem.io.gmsh"):
+        imported_name = target.rsplit(".", 1)[-1]
+        if (
+            _is_module_or_child(target, "fem.selection")
+            or target == "fem.core"
+            or _is_module_or_child(target, "fem.core.model")
+            or imported_name in forbidden_names
+        ):
+            offenders.append(f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}")
 
     assert offenders == []
