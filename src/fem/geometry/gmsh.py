@@ -285,6 +285,137 @@ class BooleanResult:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class FeatureResult:
+    """Typed topology produced by one geometry feature operation.
+
+    The references describe the current geometry model state; they are not
+    persistent topological names and remain subject to the owning model's
+    liveness checks.
+    """
+
+    operation: str
+    inputs: tuple[EntityRef, ...]
+    outputs: tuple[EntityRef, ...]
+    primary: tuple[EntityRef, ...]
+    ends: tuple[EntityRef, ...] = ()
+    sides: tuple[EntityRef, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.operation, str) or not self.operation.strip():
+            raise ValueError("operation must be a nonempty string")
+
+        for field_name in ("inputs", "outputs", "primary", "ends", "sides"):
+            raw_entities = getattr(self, field_name)
+            try:
+                entities = tuple(raw_entities)
+            except TypeError as exc:
+                raise TypeError(
+                    f"{field_name} must be an iterable of EntityRef values"
+                ) from exc
+            if any(not isinstance(entity, EntityRef) for entity in entities):
+                raise TypeError(
+                    f"{field_name} must contain only EntityRef values"
+                )
+            object.__setattr__(self, field_name, entities)
+
+        if not self.inputs:
+            raise ValueError("inputs must contain at least one EntityRef")
+        if len(set(self.inputs)) != len(self.inputs):
+            raise ValueError("inputs must be duplicate-free")
+        if not self.outputs:
+            raise ValueError("outputs must contain at least one EntityRef")
+        if not self.primary:
+            raise ValueError("primary must contain at least one EntityRef")
+
+        all_entities = (
+            *self.inputs,
+            *self.outputs,
+            *self.primary,
+            *self.ends,
+            *self.sides,
+        )
+        owner_token = self.inputs[0]._owner_token
+        if any(entity._owner_token is not owner_token for entity in all_entities):
+            raise EntityOwnershipError(
+                "feature result references must belong to one geometry model"
+            )
+
+        input_dimensions = {entity.dimension for entity in self.inputs}
+        if len(input_dimensions) != 1:
+            raise ValueError("feature result inputs must have one common dimension")
+        input_dimension = next(iter(input_dimensions))
+        primary_dimension = input_dimension + 1
+        if primary_dimension > 3:
+            raise ValueError(
+                "feature result primary dimension exceeds the supported range"
+            )
+        if any(
+            entity.dimension not in {input_dimension, primary_dimension}
+            for entity in self.outputs
+        ):
+            raise ValueError(
+                "feature result outputs must have the input or primary dimension"
+            )
+        if any(entity.dimension != primary_dimension for entity in self.primary):
+            raise ValueError(
+                "primary entities must be one dimension above the inputs"
+            )
+        if any(
+            entity.dimension != input_dimension
+            for entity in (*self.ends, *self.sides)
+        ):
+            raise ValueError("end and side entities must match the input dimension")
+
+        partitions = (self.primary, self.ends, self.sides)
+        if any(len(set(partition)) != len(partition) for partition in partitions):
+            raise ValueError("feature result semantic fields must be duplicate-free")
+        partition_sets = tuple(set(partition) for partition in partitions)
+        if any(
+            left & right
+            for index, left in enumerate(partition_sets)
+            for right in partition_sets[index + 1 :]
+        ):
+            raise ValueError("primary, ends, and sides must be disjoint")
+
+        unique_outputs = _unique_first_seen(self.outputs)
+        semantic_entities = set().union(*partition_sets)
+        if semantic_entities != set(unique_outputs):
+            raise ValueError(
+                "primary, ends, and sides must partition the unique outputs"
+            )
+        for field_name, partition, partition_set in zip(
+            ("primary", "ends", "sides"),
+            partitions,
+            partition_sets,
+            strict=True,
+        ):
+            expected_order = tuple(
+                entity for entity in unique_outputs if entity in partition_set
+            )
+            if partition != expected_order:
+                raise ValueError(
+                    f"{field_name} must preserve first-seen output order"
+                )
+
+    def of_dimension(self, dimension: int) -> tuple[EntityRef, ...]:
+        """Return outputs having the requested dimension, preserving repeats."""
+        normalized = _validate_entity_dimension(dimension)
+        return tuple(
+            entity for entity in self.outputs if entity.dimension == normalized
+        )
+
+
+def _unique_first_seen(entities: Iterable[EntityRef]) -> tuple[EntityRef, ...]:
+    seen: set[EntityRef] = set()
+    unique: list[EntityRef] = []
+    for entity in entities:
+        if entity not in seen:
+            seen.add(entity)
+            unique.append(entity)
+    return tuple(unique)
+
+
 class _State(Enum):
     NEW = auto()
     BUILDING_GEOMETRY = auto()
@@ -976,6 +1107,23 @@ class GeometryModel:
             remove_tools=remove_tools,
         )
 
+    def intersect(
+        self,
+        objects: Iterable[EntityRef],
+        tools: Iterable[EntityRef],
+        *,
+        remove_objects: bool = True,
+        remove_tools: bool = True,
+    ) -> BooleanResult:
+        """Intersect internally homogeneous OCC input groups."""
+        return self._boolean(
+            "intersect",
+            objects,
+            tools,
+            remove_objects=remove_objects,
+            remove_tools=remove_tools,
+        )
+
     def fragment(
         self,
         objects: Iterable[EntityRef],
@@ -984,7 +1132,7 @@ class GeometryModel:
         remove_objects: bool = True,
         remove_tools: bool = True,
     ) -> BooleanResult:
-        """Fragment same-dimensional OCC entities and retain the input map."""
+        """Fragment or imprint OCC entities of same or mixed dimensions."""
         return self._boolean(
             "fragment",
             objects,
@@ -992,6 +1140,93 @@ class GeometryModel:
             remove_objects=remove_objects,
             remove_tools=remove_tools,
         )
+
+    def copy(
+        self,
+        entities: Iterable[EntityRef],
+    ) -> tuple[EntityRef, ...]:
+        """Copy OCC entities and return fresh references in caller order."""
+        operation = "copy"
+        self._check_state(operation, _GEOMETRY_MUTATION_STATES)
+        normalized = self._normalize_entities(entities, operation=operation)
+        self._activate(operation)
+        self._assert_occ_liveness(normalized, operation)
+        existing_pairs = {
+            _normalize_dim_tag(pair) for pair in self._gmsh.model.occ.getEntities()
+        }
+        native_started = False
+        try:
+            grouped: dict[int, list[tuple[int, EntityRef]]] = {}
+            for index, entity in enumerate(normalized):
+                grouped.setdefault(entity.dimension, []).append((index, entity))
+            reordered_pairs: list[tuple[int, int] | None] = [None] * len(normalized)
+            for dimension_group in grouped.values():
+                native_started = True
+                raw_outputs = self._gmsh.model.occ.copy(
+                    _dim_tags(entity for _, entity in dimension_group)
+                )
+                try:
+                    batch_pairs = tuple(
+                        _normalize_dim_tag(pair) for pair in raw_outputs
+                    )
+                except (TypeError, ValueError, GeometryError) as exc:
+                    raise GeometryError(
+                        f"geometry model {self.name!r}: copy returned invalid "
+                        "entity data"
+                    ) from exc
+                if len(batch_pairs) != len(dimension_group):
+                    raise GeometryError(
+                        f"geometry model {self.name!r}: copy returned an "
+                        "unexpected entity count"
+                    )
+                for (index, source), output in zip(
+                    dimension_group,
+                    batch_pairs,
+                    strict=True,
+                ):
+                    if output[0] != source.dimension:
+                        raise GeometryError(
+                            f"geometry model {self.name!r}: copy returned an "
+                            "entity with an unexpected dimension"
+                        )
+                    reordered_pairs[index] = output
+
+            if any(pair is None for pair in reordered_pairs):
+                raise GeometryError(
+                    f"geometry model {self.name!r}: copy returned incomplete "
+                    "entity data"
+                )
+            output_pairs = tuple(
+                pair for pair in reordered_pairs if pair is not None
+            )
+            if len(set(output_pairs)) != len(output_pairs):
+                raise GeometryError(
+                    f"geometry model {self.name!r}: copy returned duplicate entities"
+                )
+            if any(pair in existing_pairs for pair in output_pairs):
+                raise GeometryError(
+                    f"geometry model {self.name!r}: copy did not return fresh entities"
+                )
+            current_pairs = {
+                _normalize_dim_tag(pair)
+                for pair in self._gmsh.model.occ.getEntities()
+            }
+            if any(pair not in current_pairs for pair in output_pairs):
+                raise GeometryError(
+                    f"geometry model {self.name!r}: copy returned a missing entity"
+                )
+            if any(
+                (source.dimension, source.tag) not in current_pairs
+                for source in normalized
+            ):
+                raise GeometryError(
+                    f"geometry model {self.name!r}: copy removed a source entity"
+                )
+            return tuple(self._wrap_entity(pair) for pair in output_pairs)
+        except BaseException:
+            if native_started:
+                self._fail_closed_after_unknown_occ_mutation()
+            raise
 
     def translate(
         self,
@@ -1066,13 +1301,124 @@ class GeometryModel:
         self._invalidate_curve_loops_for_keys(transformed_keys)
         return normalized
 
+    def mirror(
+        self,
+        entities: Iterable[EntityRef],
+        a: float,
+        b: float,
+        c: float,
+        d: float,
+    ) -> tuple[EntityRef, ...]:
+        """Mirror entities in place about ``a*x + b*y + c*z + d = 0``."""
+        operation = "mirror"
+        self._check_state(operation, _GEOMETRY_MUTATION_STATES)
+        normalized = self._normalize_entities(entities, operation=operation)
+        plane = (
+            _finite_float(a, "a"),
+            _finite_float(b, "b"),
+            _finite_float(c, "c"),
+            _finite_float(d, "d"),
+        )
+        if not any(coefficient != 0.0 for coefficient in plane[:3]):
+            raise ValueError("mirror plane normal must be nonzero")
+        if self.dimension == 2 and not (
+            plane[2] == 0.0
+            or (plane[0] == 0.0 and plane[1] == 0.0 and plane[3] == 0.0)
+        ):
+            raise ValueError("2D mirror plane must preserve the global XY plane")
+        self._check_control_dependency_scope_known(operation)
+        self._activate(operation)
+        self._assert_occ_liveness(normalized, operation)
+        self._check_controlled_transform_allowed(operation, normalized)
+        transformed_keys = self._entity_boundary_closure_keys(normalized)
+        input_keys = {(entity.dimension, entity.tag) for entity in normalized}
+        native_started = False
+        try:
+            native_started = True
+            self._gmsh.model.occ.mirror(_dim_tags(normalized), *plane)
+            self._assert_occ_liveness(normalized, operation)
+            self._assert_planar_entities(normalized, operation)
+            self._invalidate_entity_keys(transformed_keys - input_keys)
+            self._invalidate_curve_loops_for_keys(input_keys)
+            return normalized
+        except BaseException:
+            if native_started:
+                self._fail_closed_after_unknown_occ_mutation()
+            raise
+
+    def scale(
+        self,
+        entities: Iterable[EntityRef],
+        x: float,
+        y: float,
+        z: float,
+        factor_x: float,
+        factor_y: float,
+        factor_z: float,
+    ) -> tuple[EntityRef, ...]:
+        """Scale entities in place about a center using nonzero factors.
+
+        Negative factors are supported by Gmsh 4.15.2 and reverse the
+        corresponding scaling direction without exposing oriented tags.
+        """
+        operation = "scale"
+        self._check_state(operation, _GEOMETRY_MUTATION_STATES)
+        normalized = self._normalize_entities(entities, operation=operation)
+        center = (
+            _finite_float(x, "x"),
+            _finite_float(y, "y"),
+            _finite_float(z, "z"),
+        )
+        factors = (
+            _finite_float(factor_x, "factor_x"),
+            _finite_float(factor_y, "factor_y"),
+            _finite_float(factor_z, "factor_z"),
+        )
+        if any(factor == 0.0 for factor in factors):
+            raise ValueError("scale factors must be nonzero")
+        if (
+            self.dimension == 2
+            and abs(center[2] * (1.0 - factors[2])) > _PLANAR_TOLERANCE
+        ):
+            raise ValueError("2D scaling must preserve the global XY plane")
+        self._check_control_dependency_scope_known(operation)
+        self._activate(operation)
+        self._assert_occ_liveness(normalized, operation)
+        self._check_controlled_transform_allowed(operation, normalized)
+        transformed_keys = self._entity_boundary_closure_keys(normalized)
+        input_keys = {(entity.dimension, entity.tag) for entity in normalized}
+        native_started = False
+        try:
+            native_started = True
+            self._gmsh.model.occ.dilate(
+                _dim_tags(normalized),
+                *center,
+                *factors,
+            )
+            self._assert_occ_liveness(normalized, operation)
+            self._assert_planar_entities(
+                normalized,
+                operation,
+                bounding_box_padding_scale=max(
+                    1.0,
+                    *(abs(factor) for factor in factors),
+                ),
+            )
+            self._invalidate_entity_keys(transformed_keys - input_keys)
+            self._invalidate_curve_loops_for_keys(input_keys)
+            return normalized
+        except BaseException:
+            if native_started:
+                self._fail_closed_after_unknown_occ_mutation()
+            raise
+
     def extrude(
         self,
         entities: Iterable[EntityRef],
         dx: float,
         dy: float,
         dz: float,
-    ) -> tuple[EntityRef, ...]:
+    ) -> FeatureResult:
         """Extrude OCC entities without applying native mesh-layer controls."""
         self._check_state("extrude", _GEOMETRY_MUTATION_STATES)
         return self._extrude(
@@ -1098,7 +1444,7 @@ class GeometryModel:
         num_elements: Sequence[int],
         heights: Sequence[float],
         recombine: bool,
-    ) -> tuple[EntityRef, ...]:
+    ) -> FeatureResult:
         operation = "structured_extrude"
         self._assert_mesher_authority(mesher_token, operation)
         if not self._structured_extrusion_open:
@@ -1146,7 +1492,7 @@ class GeometryModel:
         normalized_heights: tuple[float, ...],
         recombine: bool,
         structured: bool,
-    ) -> tuple[EntityRef, ...]:
+    ) -> FeatureResult:
         if self.dimension == 1:
             raise ValueError("extrude is unavailable in a one-dimensional geometry model")
         normalized = self._normalize_entities(entities, operation=operation)
@@ -1191,6 +1537,15 @@ class GeometryModel:
                 raise ValueError("the final normalized height must be 1.0")
         self._activate(operation)
         self._assert_occ_liveness(normalized, operation)
+        self._gmsh.model.occ.synchronize()
+        source_signatures = tuple(
+            self._entity_geometry_signature(entity, operation)
+            for entity in normalized
+        )
+        source_boundaries = tuple(
+            self._immediate_boundary_keys(entity, operation)
+            for entity in normalized
+        )
         native_started = False
         prior_unknown_scope = self._control_dependency_scope_unknown
         prior_auto_mesh_scope_unknown = self._auto_mesh_scope_unknown
@@ -1231,6 +1586,14 @@ class GeometryModel:
                     f"dimension-{input_dimension + 1} entity"
                 )
             outputs = tuple(self._wrap_entity(pair) for pair in validated_pairs)
+            result = self._classify_extrusion_result(
+                operation=operation,
+                inputs=normalized,
+                outputs=outputs,
+                vector=vector,
+                source_signatures=source_signatures,
+                source_boundaries=source_boundaries,
+            )
             if structured:
                 dependency_keys = self._entity_boundary_closure_keys(
                     (*normalized, *outputs)
@@ -1242,15 +1605,17 @@ class GeometryModel:
                 self._auto_mesh_blockers.add(operation)
                 self._control_dependency_scope_unknown = prior_unknown_scope
                 self._auto_mesh_scope_unknown = prior_auto_mesh_scope_unknown
-            return outputs
+            return result
         except BaseException as error:
-            if structured and native_started:
-                self._state = _State.MESH_FAILED
-                self._structured_extrusion_open = False
-                error.add_note(
-                    f"geometry model {self.name!r}: structured extrusion failed "
-                    "after native OCC mutation began"
-                )
+            if native_started:
+                self._fail_closed_after_unknown_occ_mutation()
+                if structured:
+                    self._state = _State.MESH_FAILED
+                    self._structured_extrusion_open = False
+                    error.add_note(
+                        f"geometry model {self.name!r}: structured extrusion failed "
+                        "after native OCC mutation began"
+                    )
             raise
 
     def entity(self, dimension: int, tag: int) -> EntityRef:
@@ -2660,9 +3025,15 @@ class GeometryModel:
         self,
         entities: Iterable[EntityRef],
         operation: str,
+        *,
+        bounding_box_padding_scale: float = 1.0,
     ) -> None:
         if self.dimension != 2:
             return
+        z_tolerance = (
+            _OCC_BOUNDING_BOX_PADDING * bounding_box_padding_scale
+            + _PLANAR_TOLERANCE
+        )
         for entity in entities:
             bounds = tuple(
                 _finite_float(value, "bounding box coordinate")
@@ -2677,8 +3048,8 @@ class GeometryModel:
                     "entity with an invalid bounding box"
                 )
             if (
-                bounds[2] < -(_OCC_BOUNDING_BOX_PADDING + _PLANAR_TOLERANCE)
-                or bounds[5] > _OCC_BOUNDING_BOX_PADDING + _PLANAR_TOLERANCE
+                bounds[2] < -z_tolerance
+                or bounds[5] > z_tolerance
             ):
                 raise ValueError(
                     f"{operation} in a 2D facade must lie in the global XY plane"
@@ -2706,9 +3077,289 @@ class GeometryModel:
             result.append(values)  # type: ignore[arg-type]
         return tuple(result)
 
+    def _entity_geometry_signature(
+        self,
+        entity: EntityRef,
+        operation: str,
+    ) -> tuple[
+        tuple[float, float, float, float, float, float],
+        tuple[float, float, float],
+        float,
+    ]:
+        try:
+            bounds = tuple(
+                _finite_float(value, "bounding box coordinate")
+                for value in self._gmsh.model.occ.getBoundingBox(
+                    entity.dimension,
+                    entity.tag,
+                )
+            )
+        except GeometryError:
+            raise
+        except Exception as exc:
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} could not read a "
+                f"finite bounding box for entity ({entity.dimension}, {entity.tag})"
+            ) from exc
+        if len(bounds) != 6 or any(
+            bounds[axis] > bounds[axis + 3] for axis in range(3)
+        ):
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} received an invalid "
+                f"bounding box for entity ({entity.dimension}, {entity.tag})"
+            )
+
+        if entity.dimension == 0:
+            center = tuple(
+                0.5 * (bounds[axis] + bounds[axis + 3]) for axis in range(3)
+            )
+            measure = 0.0
+        else:
+            try:
+                center = tuple(
+                    _finite_float(value, "center-of-mass coordinate")
+                    for value in self._gmsh.model.occ.getCenterOfMass(
+                        entity.dimension,
+                        entity.tag,
+                    )
+                )
+                measure = _nonnegative_float(
+                    self._gmsh.model.occ.getMass(entity.dimension, entity.tag),
+                    "entity measure",
+                )
+            except GeometryError:
+                raise
+            except Exception as exc:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} could not read "
+                    f"finite geometric invariants for entity "
+                    f"({entity.dimension}, {entity.tag})"
+                ) from exc
+            if len(center) != 3:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} received an "
+                    f"invalid center of mass for entity "
+                    f"({entity.dimension}, {entity.tag})"
+                )
+        return bounds, center, measure  # type: ignore[return-value]
+
+    def _immediate_boundary_keys(
+        self,
+        entity: EntityRef,
+        operation: str,
+    ) -> frozenset[tuple[int, int]]:
+        if entity.dimension == 0:
+            return frozenset()
+        try:
+            pairs = tuple(
+                _normalize_dim_tag(pair)
+                for pair in self._gmsh.model.getBoundary(
+                    [(entity.dimension, entity.tag)],
+                    combined=False,
+                    oriented=False,
+                    recursive=False,
+                )
+            )
+        except GeometryError:
+            raise
+        except Exception as exc:
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} received invalid "
+                f"boundary topology for entity ({entity.dimension}, {entity.tag})"
+            ) from exc
+        if any(dimension != entity.dimension - 1 for dimension, _ in pairs):
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} received unexpected "
+                f"boundary topology for entity ({entity.dimension}, {entity.tag})"
+            )
+        return frozenset(pairs)
+
+    def _classify_extrusion_result(
+        self,
+        *,
+        operation: str,
+        inputs: tuple[EntityRef, ...],
+        outputs: tuple[EntityRef, ...],
+        vector: tuple[float, float, float],
+        source_signatures: tuple[
+            tuple[
+                tuple[float, float, float, float, float, float],
+                tuple[float, float, float],
+                float,
+            ],
+            ...,
+        ],
+        source_boundaries: tuple[frozenset[tuple[int, int]], ...],
+    ) -> FeatureResult:
+        input_dimension = inputs[0].dimension
+        primary_dimension = input_dimension + 1
+        unique_outputs = _unique_first_seen(outputs)
+        input_keys = {(entity.dimension, entity.tag) for entity in inputs}
+        if any(
+            (entity.dimension, entity.tag) in input_keys
+            for entity in unique_outputs
+        ):
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} reported a source "
+                "entity as generated topology"
+            )
+        primary = tuple(
+            entity
+            for entity in unique_outputs
+            if entity.dimension == primary_dimension
+        )
+        same_dimension = tuple(
+            entity
+            for entity in unique_outputs
+            if entity.dimension == input_dimension
+        )
+        if not primary:
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} could not classify "
+                "a primary generated entity"
+            )
+
+        self._gmsh.model.occ.synchronize()
+        primary_boundaries = {
+            (entity.dimension, entity.tag): self._immediate_boundary_keys(
+                entity,
+                operation,
+            )
+            for entity in primary
+        }
+        primary_boundary_union = frozenset().union(*primary_boundaries.values())
+        same_keys = {(entity.dimension, entity.tag) for entity in same_dimension}
+        generated_boundary_keys = primary_boundary_union - input_keys
+        if generated_boundary_keys != same_keys:
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} could not classify "
+                "same-dimensional output topology completely"
+            )
+
+        candidate_signatures = {
+            (entity.dimension, entity.tag): self._entity_geometry_signature(
+                entity,
+                operation,
+            )
+            for entity in same_dimension
+        }
+        end_keys: set[tuple[int, int]] = set()
+        assigned_primary_keys: list[tuple[int, int]] = []
+        for source, source_signature in zip(
+            inputs,
+            source_signatures,
+            strict=True,
+        ):
+            matches = [
+                key
+                for key, candidate_signature in candidate_signatures.items()
+                if _matches_translated_signature(
+                    source_signature,
+                    candidate_signature,
+                    vector,
+                )
+            ]
+            if len(matches) != 1:
+                detail = "ambiguous" if len(matches) > 1 else "incomplete"
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} terminal-entity "
+                    f"classification is {detail}"
+                )
+            end_key = matches[0]
+            source_key = (source.dimension, source.tag)
+            containing_primaries = [
+                primary_key
+                for primary_key, boundary_keys in primary_boundaries.items()
+                if source_key in boundary_keys and end_key in boundary_keys
+            ]
+            if len(containing_primaries) != 1:
+                detail = (
+                    "ambiguous" if len(containing_primaries) > 1 else "incomplete"
+                )
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} source-to-primary "
+                    f"topology classification is {detail}"
+                )
+            if end_key in end_keys:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} terminal-entity "
+                    "classification is ambiguous"
+                )
+            end_keys.add(end_key)
+            assigned_primary_keys.append(containing_primaries[0])
+
+        primary_keys = set(primary_boundaries)
+        if (
+            len(set(assigned_primary_keys)) != len(assigned_primary_keys)
+            or set(assigned_primary_keys) != primary_keys
+        ):
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} primary-entity "
+                "classification is incomplete or ambiguous"
+            )
+
+        side_keys = same_keys - end_keys
+        if input_dimension == 0 and side_keys:
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} returned unexpected "
+                "point-extrusion side entities"
+            )
+        source_boundary_union = frozenset().union(*source_boundaries)
+        side_entities = {
+            (entity.dimension, entity.tag): entity
+            for entity in same_dimension
+            if (entity.dimension, entity.tag) in side_keys
+        }
+        assigned_source_boundary_keys: list[tuple[int, int]] = []
+        for side_key, side in side_entities.items():
+            if side_key not in primary_boundary_union:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} side topology "
+                    "classification is incomplete"
+                )
+            source_contacts = (
+                self._immediate_boundary_keys(side, operation)
+                & source_boundary_union
+            )
+            if len(source_contacts) != 1:
+                detail = "ambiguous" if len(source_contacts) > 1 else "incomplete"
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} side topology "
+                    f"classification is {detail}"
+                )
+            assigned_source_boundary_keys.append(next(iter(source_contacts)))
+        if (
+            len(set(assigned_source_boundary_keys))
+            != len(assigned_source_boundary_keys)
+            or set(assigned_source_boundary_keys) != source_boundary_union
+        ):
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} side topology "
+                "classification is incomplete or ambiguous"
+            )
+
+        ends = tuple(
+            entity
+            for entity in unique_outputs
+            if (entity.dimension, entity.tag) in end_keys
+        )
+        sides = tuple(
+            entity
+            for entity in unique_outputs
+            if (entity.dimension, entity.tag) in side_keys
+        )
+        return FeatureResult(operation, inputs, outputs, primary, ends, sides)
+
+    def _fail_closed_after_unknown_occ_mutation(self) -> None:
+        self._entity_tokens.clear()
+        self._curve_loop_tokens.clear()
+        self._curve_loop_dependencies.clear()
+        self._control_dependency_scope_unknown = True
+        self._auto_mesh_scope_unknown = True
+
     def _boolean(
         self,
-        operation: Literal["fuse", "cut", "fragment"],
+        operation: Literal["fuse", "cut", "intersect", "fragment"],
         objects: Iterable[EntityRef],
         tools: Iterable[EntityRef],
         *,
@@ -2720,11 +3371,17 @@ class GeometryModel:
         normalized_tools = self._normalize_entities(tools, operation=operation)
         if set(normalized_objects) & set(normalized_tools):
             raise ValueError(f"{operation} inputs must not overlap")
-        dimensions = {
-            entity.dimension for entity in (*normalized_objects, *normalized_tools)
-        }
-        if len(dimensions) != 1:
+        object_dimensions = {entity.dimension for entity in normalized_objects}
+        tool_dimensions = {entity.dimension for entity in normalized_tools}
+        dimensions = object_dimensions | tool_dimensions
+        if operation in {"fuse", "cut"} and len(dimensions) != 1:
             raise ValueError(f"{operation} inputs must have one common dimension")
+        if operation == "intersect" and (
+            len(object_dimensions) != 1 or len(tool_dimensions) != 1
+        ):
+            raise ValueError(
+                "intersect objects and tools must each have one common dimension"
+            )
         if not isinstance(remove_objects, bool):
             raise TypeError(
                 f"remove_objects must be a boolean, got {remove_objects!r}"
@@ -2740,10 +3397,16 @@ class GeometryModel:
             *(normalized_objects if remove_objects else ()),
             *(normalized_tools if remove_tools else ()),
         )
-        invalidated_keys = self._entity_boundary_closure_keys(removed_inputs)
+        preserved_inputs = (
+            *(normalized_objects if not remove_objects else ()),
+            *(normalized_tools if not remove_tools else ()),
+        )
+        removed_closure = self._entity_boundary_closure_keys(removed_inputs)
+        preserved_closure = self._entity_boundary_closure_keys(preserved_inputs)
+        invalidated_keys = removed_closure - preserved_closure
         self._check_controlled_removal_allowed(operation, invalidated_keys)
         backend_operation = getattr(self._gmsh.model.occ, operation)
-        raw_outputs, raw_map = backend_operation(
+        raw_result = backend_operation(
             _dim_tags(normalized_objects),
             _dim_tags(normalized_tools),
             -1,
@@ -2752,6 +3415,7 @@ class GeometryModel:
         )
         self._invalidate_entity_keys(invalidated_keys)
         try:
+            raw_outputs, raw_map = raw_result
             output_pairs = tuple(_normalize_dim_tag(pair) for pair in raw_outputs)
             map_pairs = tuple(
                 tuple(_normalize_dim_tag(pair) for pair in group)
@@ -2762,11 +3426,60 @@ class GeometryModel:
                     f"geometry model {self.name!r}: {operation} returned "
                     "an invalid input map"
                 )
-        except BaseException as error:
-            if invalidated_keys:
+            if operation == "fragment":
+                maximum_input_dimension = max(dimensions)
+                seen_outputs = set(output_pairs)
+                map_only_outputs: list[tuple[int, int]] = []
+                for group in map_pairs:
+                    for pair in group:
+                        if (
+                            pair[0] < maximum_input_dimension
+                            and pair not in seen_outputs
+                        ):
+                            seen_outputs.add(pair)
+                            map_only_outputs.append(pair)
+                output_pairs = (*output_pairs, *map_only_outputs)
+
+            existing_pairs = {
+                _normalize_dim_tag(pair)
+                for pair in self._gmsh.model.occ.getEntities()
+            }
+            represented_pairs = set(output_pairs)
+            represented_pairs.update(
+                pair for group in map_pairs for pair in group
+            )
+            if any(
+                dimension > self.dimension
+                for dimension, _ in represented_pairs
+            ):
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} returned an "
+                    "entity above the facade dimension"
+                )
+            missing_pairs = represented_pairs - existing_pairs
+            if missing_pairs:
+                dimension, tag = min(missing_pairs)
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} returned a "
+                    f"missing entity ({dimension}, {tag})"
+                )
+            missing_preserved = [
+                entity
+                for entity in preserved_inputs
+                if (entity.dimension, entity.tag) not in existing_pairs
+            ]
+            if missing_preserved:
                 self._entity_tokens.clear()
                 self._curve_loop_tokens.clear()
                 self._curve_loop_dependencies.clear()
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} removed an input "
+                    "whose remove flag was false"
+                )
+        except BaseException as error:
+            self._entity_tokens.clear()
+            self._curve_loop_tokens.clear()
+            self._curve_loop_dependencies.clear()
             if isinstance(error, GeometryError) or not isinstance(error, Exception):
                 raise
             raise GeometryError(
@@ -3486,6 +4199,64 @@ def _nonnegative_float(value: Any, label: str) -> float:
     return normalized
 
 
+def _matches_translated_signature(
+    source: tuple[
+        tuple[float, float, float, float, float, float],
+        tuple[float, float, float],
+        float,
+    ],
+    candidate: tuple[
+        tuple[float, float, float, float, float, float],
+        tuple[float, float, float],
+        float,
+    ],
+    vector: tuple[float, float, float],
+) -> bool:
+    source_bounds, source_center, source_measure = source
+    candidate_bounds, candidate_center, candidate_measure = candidate
+    expected_bounds = tuple(
+        value + vector[axis % 3]
+        for axis, value in enumerate(source_bounds)
+    )
+    if any(
+        not math.isclose(
+            actual,
+            expected,
+            rel_tol=_PLANAR_TOLERANCE,
+            abs_tol=_OCC_BOUNDING_BOX_PADDING + _PLANAR_TOLERANCE,
+        )
+        for actual, expected in zip(
+            candidate_bounds,
+            expected_bounds,
+            strict=True,
+        )
+    ):
+        return False
+
+    source_extent = max(
+        source_bounds[axis + 3] - source_bounds[axis] for axis in range(3)
+    )
+    expected_center = tuple(
+        value + vector[axis] for axis, value in enumerate(source_center)
+    )
+    if any(
+        abs(actual - expected)
+        > _PLANAR_TOLERANCE
+        * max(1.0, abs(actual), abs(expected), source_extent)
+        for actual, expected in zip(
+            candidate_center,
+            expected_center,
+            strict=True,
+        )
+    ):
+        return False
+    return abs(candidate_measure - source_measure) <= _PLANAR_TOLERANCE * max(
+        1.0,
+        abs(candidate_measure),
+        abs(source_measure),
+    )
+
+
 def _coordinate_distance(
     first: tuple[float, float, float],
     second: tuple[float, float, float],
@@ -3842,6 +4613,7 @@ __all__ = [
     "CurveLoopRef",
     "EntityOwnershipError",
     "EntityRef",
+    "FeatureResult",
     "GeometryError",
     "GeometryModel",
     "GeometryStateError",

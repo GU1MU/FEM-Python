@@ -220,7 +220,7 @@ class Mesher:
         num_elements: Sequence[int] = (),
         heights: Sequence[float] = (),
         recombine: bool = False,
-    ) -> tuple[_geometry.EntityRef, ...]:
+    ) -> _geometry.FeatureResult:
         """Create an OCC extrusion carrying native structured-layer controls."""
         return self._geometry._structured_extrude(
             self._mesher_token,

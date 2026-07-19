@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
 import inspect
+import math
 from pathlib import Path
 import subprocess
 import sys
@@ -64,7 +65,7 @@ def _structured_extrude(
     cad: geometry.GeometryModel,
     *args: Any,
     **kwargs: Any,
-) -> tuple[geometry.EntityRef, ...]:
+) -> geometry.FeatureResult:
     return _mesher(cad).structured_extrude(*args, **kwargs)
 
 
@@ -78,7 +79,24 @@ class _FakeOcc:
             tuple[list[tuple[int, int]], list[list[tuple[int, int]]]],
         ] = {}
         self.fail_next: set[str] = set()
+        self.copy_results: dict[int, list[tuple[int, int]]] = {}
+        self.copy_register_outputs = True
+        self.boolean_register_map_outputs = True
+        self.nonplanar_after: set[str] = set()
         self.extrude_result: list[tuple[int, int]] | None = None
+        self.extrude_extra_primary_boundaries: dict[
+            tuple[int, int], list[tuple[int, int]]
+        ] = {}
+        self.extrude_side_contact_indices: dict[
+            tuple[int, int], tuple[int, ...]
+        ] = {}
+        self._extrude_configuration: tuple[
+            tuple[tuple[int, int], ...],
+            tuple[float, float, float],
+            tuple[tuple[int, int], ...],
+            tuple[tuple[int, int], ...],
+            tuple[tuple[tuple[int, int], ...], ...],
+        ] | None = None
 
     def synchronize(self) -> None:
         self.synchronize_calls += 1
@@ -94,9 +112,195 @@ class _FakeOcc:
         data = self._model._current_data()
         next_tags = data["next_tags"]
         tag = next_tags.get(dimension, 1)
+        while (dimension, tag) in data["entities"]:
+            tag += 1
         next_tags[dimension] = tag + 1
         data["entities"].add((dimension, tag))
         return tag
+
+    def _register_pair(self, pair: tuple[int, int]) -> None:
+        dimension, tag = pair
+        data = self._model._current_data()
+        data["entities"].add(pair)
+        data["next_tags"][dimension] = max(
+            data["next_tags"].get(dimension, 1),
+            tag + 1,
+        )
+
+    @staticmethod
+    def _is_valid_native_pair(pair: Any) -> bool:
+        return (
+            isinstance(pair, (tuple, list))
+            and len(pair) == 2
+            and isinstance(pair[0], int)
+            and not isinstance(pair[0], bool)
+            and 0 <= pair[0] <= 3
+            and isinstance(pair[1], int)
+            and not isinstance(pair[1], bool)
+            and pair[1] > 0
+        )
+
+    def _stored_boundary_closure(
+        self,
+        sources: Sequence[tuple[int, int]],
+    ) -> set[tuple[int, int]]:
+        data = self._model._current_data()
+        closure = set(sources)
+        frontier = list(sources)
+        while frontier:
+            source = frontier.pop()
+            for boundary in data["boundaries"].get(source, ()):
+                if boundary not in closure:
+                    closure.add(boundary)
+                    frontier.append(boundary)
+        return closure
+
+    def _clone_entity_geometry(
+        self,
+        source: tuple[int, int],
+        copied: tuple[int, int],
+        memo: dict[tuple[int, int], tuple[int, int]],
+    ) -> None:
+        data = self._model._current_data()
+        memo[source] = copied
+        if source in data["boxes"]:
+            self._store_geometry(
+                copied,
+                data["boxes"][source],
+                data["masses"].get(source, 0.0),
+                center=data["centers"].get(source),
+            )
+        copied_boundaries: list[tuple[int, int]] = []
+        for boundary in data["boundaries"].get(source, ()):
+            copied_boundary = memo.get(boundary)
+            if copied_boundary is None:
+                copied_boundary = (
+                    boundary[0],
+                    self._allocate(boundary[0]),
+                )
+                self._clone_entity_geometry(
+                    boundary,
+                    copied_boundary,
+                    memo,
+                )
+            copied_boundaries.append(copied_boundary)
+        if copied_boundaries:
+            data["boundaries"][copied] = copied_boundaries
+            data["boundary_priority"].add(copied)
+
+    @staticmethod
+    def _transformed_box(
+        box: Sequence[float],
+        transform: Any,
+    ) -> tuple[float, float, float, float, float, float]:
+        corners = [
+            transform((x, y, z))
+            for x in (float(box[0]), float(box[3]))
+            for y in (float(box[1]), float(box[4]))
+            for z in (float(box[2]), float(box[5]))
+        ]
+        return (
+            *(min(point[axis] for point in corners) for axis in range(3)),
+            *(max(point[axis] for point in corners) for axis in range(3)),
+        )  # type: ignore[return-value]
+
+    def _transform_stored_geometry(
+        self,
+        entities: Sequence[tuple[int, int]],
+        transform: Any,
+        measure_factors: Sequence[float],
+    ) -> None:
+        data = self._model._current_data()
+        for pair in self._stored_boundary_closure(entities):
+            box = data["boxes"].get(pair)
+            if box is None:
+                continue
+            data["boxes"][pair] = self._transformed_box(box, transform)
+            center = data["centers"].get(pair, self._box_center(box))
+            data["centers"][pair] = tuple(transform(center))
+            data["masses"][pair] = data["masses"].get(pair, 0.0) * float(
+                measure_factors[pair[0]]
+            )
+
+    @staticmethod
+    def _box_center(
+        box: Sequence[float],
+    ) -> tuple[float, float, float]:
+        return tuple(
+            0.5 * (float(box[axis]) + float(box[axis + 3]))
+            for axis in range(3)
+        )  # type: ignore[return-value]
+
+    @staticmethod
+    def _union_boxes(
+        boxes: Sequence[Sequence[float]],
+    ) -> tuple[float, float, float, float, float, float]:
+        return (
+            *(min(float(box[axis]) for box in boxes) for axis in range(3)),
+            *(max(float(box[axis + 3]) for box in boxes) for axis in range(3)),
+        )  # type: ignore[return-value]
+
+    @staticmethod
+    def _translated_box(
+        box: Sequence[float],
+        vector: Sequence[float],
+    ) -> tuple[float, float, float, float, float, float]:
+        return tuple(
+            float(value) + float(vector[axis % 3])
+            for axis, value in enumerate(box)
+        )  # type: ignore[return-value]
+
+    def _store_geometry(
+        self,
+        pair: tuple[int, int],
+        box: Sequence[float],
+        measure: float,
+        *,
+        center: Sequence[float] | None = None,
+    ) -> None:
+        data = self._model._current_data()
+        normalized_box = tuple(float(value) for value in box)
+        data["boxes"][pair] = normalized_box
+        data["centers"][pair] = tuple(
+            float(value)
+            for value in (
+                self._box_center(normalized_box) if center is None else center
+            )
+        )
+        data["masses"][pair] = float(measure)
+
+    def _add_boundary_entity(
+        self,
+        dimension: int,
+        box: Sequence[float],
+        measure: float,
+    ) -> tuple[int, int]:
+        pair = (dimension, self._allocate(dimension))
+        self._store_geometry(pair, box, measure)
+        return pair
+
+    def _rectangle_boundaries(
+        self,
+        x: float,
+        y: float,
+        z: float,
+        dx: float,
+        dy: float,
+    ) -> list[tuple[int, int]]:
+        return [
+            self._add_boundary_entity(1, (x, y, z, x + dx, y, z), dx),
+            self._add_boundary_entity(
+                1,
+                (x + dx, y, z, x + dx, y + dy, z),
+                dy,
+            ),
+            self._add_boundary_entity(
+                1,
+                (x, y + dy, z, x + dx, y + dy, z),
+                dx,
+            ),
+            self._add_boundary_entity(1, (x, y, z, x, y + dy, z), dy),
+        ]
 
     def addPoint(
         self,
@@ -108,14 +312,14 @@ class _FakeOcc:
     ) -> int:
         self.calls.append(("addPoint", x, y, z, meshSize, tag))
         allocated = self._allocate(0)
-        self._model._current_data()["boxes"][(0, allocated)] = (
+        self._store_geometry((0, allocated), (
             x,
             y,
             z,
             x,
             y,
             z,
-        )
+        ), 0.0, center=(x, y, z))
         return allocated
 
     def getBoundingBox(
@@ -125,9 +329,38 @@ class _FakeOcc:
     ) -> tuple[float, float, float, float, float, float]:
         return self._model._current_data()["boxes"][(dimension, tag)]
 
+    def getMass(self, dimension: int, tag: int) -> float:
+        return self._model._current_data()["masses"][(dimension, tag)]
+
+    def getCenterOfMass(
+        self,
+        dimension: int,
+        tag: int,
+    ) -> tuple[float, float, float]:
+        return self._model._current_data()["centers"][(dimension, tag)]
+
     def addLine(self, start_tag: int, end_tag: int, tag: int = -1) -> int:
         self.calls.append(("addLine", start_tag, end_tag, tag))
-        return self._allocate(1)
+        allocated = self._allocate(1)
+        data = self._model._current_data()
+        start_box = data["boxes"][(0, start_tag)]
+        end_box = data["boxes"][(0, end_tag)]
+        start = self._box_center(start_box)
+        end = self._box_center(end_box)
+        self._store_geometry(
+            (1, allocated),
+            self._union_boxes((start_box, end_box)),
+            math.dist(start, end),
+            center=tuple(
+                0.5 * (first + second)
+                for first, second in zip(start, end, strict=True)
+            ),
+        )
+        data["boundaries"][(1, allocated)] = [
+            (0, start_tag),
+            (0, end_tag),
+        ]
+        return allocated
 
     def addRectangle(
         self,
@@ -142,7 +375,13 @@ class _FakeOcc:
         self.calls.append(
             ("addRectangle", x, y, z, dx, dy, tag, roundedRadius)
         )
-        return self._allocate(2)
+        allocated = self._allocate(2)
+        pair = (2, allocated)
+        self._store_geometry(pair, (x, y, z, x + dx, y + dy, z), dx * dy)
+        self._model._current_data()["boundaries"][pair] = (
+            self._rectangle_boundaries(x, y, z, dx, dy)
+        )
+        return allocated
 
     def addDisk(
         self,
@@ -168,7 +407,29 @@ class _FakeOcc:
                 tuple(xAxis),
             )
         )
-        return self._allocate(2)
+        allocated = self._allocate(2)
+        pair = (2, allocated)
+        box = (
+            x - radius_x,
+            y - radius_y,
+            z,
+            x + radius_x,
+            y + radius_y,
+            z,
+        )
+        self._store_geometry(
+            pair,
+            box,
+            math.pi * radius_x * radius_y,
+            center=(x, y, z),
+        )
+        boundary = self._add_boundary_entity(
+            1,
+            box,
+            2.0 * math.pi * max(radius_x, radius_y),
+        )
+        self._model._current_data()["boundaries"][pair] = [boundary]
+        return allocated
 
     def addBox(
         self,
@@ -181,7 +442,17 @@ class _FakeOcc:
         tag: int = -1,
     ) -> int:
         self.calls.append(("addBox", x, y, z, dx, dy, dz, tag))
-        return self._allocate(3)
+        allocated = self._allocate(3)
+        pair = (3, allocated)
+        box = (x, y, z, x + dx, y + dy, z + dz)
+        self._store_geometry(pair, box, dx * dy * dz)
+        face_areas = (dx * dy, dx * dy, dx * dz, dx * dz, dy * dz, dy * dz)
+        boundaries = [
+            self._add_boundary_entity(2, box, area)
+            for area in face_areas
+        ]
+        self._model._current_data()["boundaries"][pair] = boundaries
+        return allocated
 
     def addCylinder(
         self,
@@ -209,7 +480,63 @@ class _FakeOcc:
                 angle,
             )
         )
-        return self._allocate(3)
+        allocated = self._allocate(3)
+        pair = (3, allocated)
+        end = (x + axis_x, y + axis_y, z + axis_z)
+        box = (
+            min(x, end[0]) - radius,
+            min(y, end[1]) - radius,
+            min(z, end[2]) - radius,
+            max(x, end[0]) + radius,
+            max(y, end[1]) + radius,
+            max(z, end[2]) + radius,
+        )
+        axis_length = math.sqrt(axis_x**2 + axis_y**2 + axis_z**2)
+        self._store_geometry(
+            pair,
+            box,
+            math.pi * radius**2 * axis_length * angle / (2.0 * math.pi),
+            center=(
+                x + 0.5 * axis_x,
+                y + 0.5 * axis_y,
+                z + 0.5 * axis_z,
+            ),
+        )
+        boundaries = [
+            self._add_boundary_entity(2, box, math.pi * radius**2)
+            for _ in range(3)
+        ]
+        self._model._current_data()["boundaries"][pair] = boundaries
+        return allocated
+
+    def copy(
+        self,
+        entities: list[tuple[int, int]],
+    ) -> list[tuple[int, int]]:
+        materialized = tuple(entities)
+        self.calls.append(("copy", materialized))
+        if "copy" in self.fail_next:
+            self.fail_next.remove("copy")
+            raise RuntimeError("fake copy failure")
+        dimension = materialized[0][0]
+        configured = self.copy_results.get(dimension)
+        if configured is None:
+            outputs = [
+                (source[0], self._allocate(source[0]))
+                for source in materialized
+            ]
+        else:
+            outputs = list(configured)
+            if self.copy_register_outputs:
+                for output in outputs:
+                    self._register_pair(output)
+
+        if self.copy_register_outputs:
+            memo: dict[tuple[int, int], tuple[int, int]] = {}
+            for source, output in zip(materialized, outputs):
+                if source[0] == output[0] and output != source:
+                    self._clone_entity_geometry(source, output, memo)
+        return outputs
 
     def fuse(
         self,
@@ -233,6 +560,18 @@ class _FakeOcc:
     ) -> tuple[list[tuple[int, int]], list[list[tuple[int, int]]]]:
         return self._boolean(
             "cut", objects, tools, tag, removeObject, removeTool
+        )
+
+    def intersect(
+        self,
+        objects: list[tuple[int, int]],
+        tools: list[tuple[int, int]],
+        tag: int = -1,
+        removeObject: bool = True,
+        removeTool: bool = True,
+    ) -> tuple[list[tuple[int, int]], list[list[tuple[int, int]]]]:
+        return self._boolean(
+            "intersect", objects, tools, tag, removeObject, removeTool
         )
 
     def fragment(
@@ -269,16 +608,34 @@ class _FakeOcc:
         if name in self.fail_next:
             self.fail_next.remove(name)
             raise RuntimeError(f"fake {name} failure")
-        outputs, input_map = self.boolean_results.get(
-            name,
-            ([objects[0]], [[pair] for pair in (*objects, *tools)]),
-        )
+        configured = self.boolean_results.get(name)
+        if configured is None:
+            outputs = [objects[0]]
+            input_map = [
+                *[
+                    [pair] if not remove_objects else [outputs[0]]
+                    for pair in objects
+                ],
+                *[[pair] if not remove_tools else [] for pair in tools],
+            ]
+        else:
+            outputs, input_map = configured
         entities = self._model._current_data()["entities"]
         if remove_objects:
             entities.difference_update(objects)
         if remove_tools:
             entities.difference_update(tools)
-        entities.update(outputs)
+        for pair in outputs:
+            if self._is_valid_native_pair(pair):
+                self._register_pair(pair)
+        input_pairs = {*objects, *tools}
+        if self.boolean_register_map_outputs:
+            for group in input_map:
+                for pair in group:
+                    if self._is_valid_native_pair(pair) and (
+                        pair not in input_pairs or pair in outputs
+                    ):
+                        self._register_pair(pair)
         return list(outputs), [list(group) for group in input_map]
 
     def translate(
@@ -315,6 +672,308 @@ class _FakeOcc:
             )
         )
 
+    def mirror(
+        self,
+        entities: list[tuple[int, int]],
+        a: float,
+        b: float,
+        c: float,
+        d: float,
+    ) -> None:
+        materialized = tuple(entities)
+        self.calls.append(("mirror", materialized, a, b, c, d))
+        if "mirror" in self.fail_next:
+            self.fail_next.remove("mirror")
+            raise RuntimeError("fake mirror failure")
+        denominator = a * a + b * b + c * c
+
+        def reflected(point: Sequence[float]) -> tuple[float, float, float]:
+            distance = (
+                a * float(point[0])
+                + b * float(point[1])
+                + c * float(point[2])
+                + d
+            ) / denominator
+            return (
+                float(point[0]) - 2.0 * distance * a,
+                float(point[1]) - 2.0 * distance * b,
+                float(point[2]) - 2.0 * distance * c,
+            )
+
+        self._transform_stored_geometry(
+            materialized,
+            reflected,
+            (1.0, 1.0, 1.0, 1.0),
+        )
+        self._force_nonplanar_if_requested("mirror", materialized)
+
+    def dilate(
+        self,
+        entities: list[tuple[int, int]],
+        x: float,
+        y: float,
+        z: float,
+        factor_x: float,
+        factor_y: float,
+        factor_z: float,
+    ) -> None:
+        materialized = tuple(entities)
+        self.calls.append(
+            (
+                "dilate",
+                materialized,
+                x,
+                y,
+                z,
+                factor_x,
+                factor_y,
+                factor_z,
+            )
+        )
+        if "dilate" in self.fail_next:
+            self.fail_next.remove("dilate")
+            raise RuntimeError("fake dilate failure")
+
+        def scaled(point: Sequence[float]) -> tuple[float, float, float]:
+            return (
+                x + factor_x * (float(point[0]) - x),
+                y + factor_y * (float(point[1]) - y),
+                z + factor_z * (float(point[2]) - z),
+            )
+
+        absolute_factors = (
+            abs(factor_x),
+            abs(factor_y),
+            abs(factor_z),
+        )
+        self._transform_stored_geometry(
+            materialized,
+            scaled,
+            (
+                1.0,
+                max(absolute_factors),
+                absolute_factors[0] * absolute_factors[1],
+                math.prod(absolute_factors),
+            ),
+        )
+        self._force_nonplanar_if_requested("dilate", materialized)
+
+    def _force_nonplanar_if_requested(
+        self,
+        operation: str,
+        entities: Sequence[tuple[int, int]],
+    ) -> None:
+        if operation not in self.nonplanar_after:
+            return
+        data = self._model._current_data()
+        for pair in entities:
+            box = data["boxes"][pair]
+            data["boxes"][pair] = (
+                box[0],
+                box[1],
+                -1.0,
+                box[3],
+                box[4],
+                1.0,
+            )
+
+    def configure_extrude_result(
+        self,
+        sources: Sequence[tuple[int, int]],
+        vector: Sequence[float],
+        outputs: Sequence[tuple[int, int]],
+        *,
+        ends: Sequence[tuple[int, int]],
+        primary: Sequence[tuple[int, int]],
+    ) -> None:
+        source_pairs = tuple(sources)
+        vector_values = tuple(float(value) for value in vector)
+        output_pairs = tuple(outputs)
+        end_pairs = tuple(ends)
+        primary_pairs = tuple(primary)
+        if len(vector_values) != 3:
+            raise ValueError("fake extrusion vector must have three components")
+        if not (
+            len(source_pairs) == len(end_pairs) == len(primary_pairs)
+        ):
+            raise ValueError(
+                "fake extrusion sources, ends, and primary entities must align"
+            )
+
+        semantic_pairs = {*end_pairs, *primary_pairs}
+        unique_sides = tuple(
+            dict.fromkeys(pair for pair in output_pairs if pair not in semantic_pairs)
+        )
+        data = self._model._current_data()
+        side_groups: list[tuple[tuple[int, int], ...]] = []
+        remaining = list(unique_sides)
+        for index, source in enumerate(source_pairs):
+            if index == len(source_pairs) - 1:
+                count = len(remaining)
+            else:
+                count = min(
+                    len(self._model._boundary_for_pair(source)),
+                    len(remaining),
+                )
+            group = tuple(remaining[:count])
+            del remaining[:count]
+            if group and not self._model._boundary_for_pair(source):
+                source_dimension = source[0]
+                if source_dimension == 0:
+                    raise ValueError("point extrusions cannot have fake side entities")
+                source_box = data["boxes"][source]
+                source_measure = data["masses"].get(source, 0.0)
+                contact = self._add_boundary_entity(
+                    source_dimension - 1,
+                    source_box,
+                    source_measure,
+                )
+                data["boundaries"][source] = [contact]
+            side_groups.append(group)
+
+        self.extrude_result = list(output_pairs)
+        self._extrude_configuration = (
+            source_pairs,
+            vector_values,  # type: ignore[arg-type]
+            end_pairs,
+            primary_pairs,
+            tuple(side_groups),
+        )
+
+    def _seed_extrusion_geometry(
+        self,
+        sources: Sequence[tuple[int, int]],
+        vector: tuple[float, float, float],
+        ends: Sequence[tuple[int, int]],
+        primary: Sequence[tuple[int, int]],
+        side_groups: Sequence[Sequence[tuple[int, int]]],
+    ) -> None:
+        data = self._model._current_data()
+        for source, end, body, sides in zip(
+            sources,
+            ends,
+            primary,
+            side_groups,
+            strict=True,
+        ):
+            source_box = data["boxes"][source]
+            source_center = data["centers"].get(
+                source,
+                self._box_center(source_box),
+            )
+            source_measure = data["masses"].get(source, 0.0)
+            end_box = self._translated_box(source_box, vector)
+            end_center = tuple(
+                float(value) + vector[axis]
+                for axis, value in enumerate(source_center)
+            )
+            self._store_geometry(
+                end,
+                end_box,
+                source_measure,
+                center=end_center,
+            )
+
+            source_boundaries = list(self._model._boundary_for_pair(source))
+            translated_boundaries: list[tuple[int, int]] = []
+            for boundary in source_boundaries:
+                boundary_box = data["boxes"].get(boundary, source_box)
+                boundary_measure = data["masses"].get(
+                    boundary,
+                    source_measure,
+                )
+                if boundary not in data["boxes"]:
+                    self._register_pair(boundary)
+                    self._store_geometry(
+                        boundary,
+                        boundary_box,
+                        boundary_measure,
+                    )
+                translated_boundary = (
+                    boundary[0],
+                    self._allocate(boundary[0]),
+                )
+                self._store_geometry(
+                    translated_boundary,
+                    self._translated_box(boundary_box, vector),
+                    boundary_measure,
+                    center=tuple(
+                        value + vector[axis]
+                        for axis, value in enumerate(
+                            data["centers"].get(
+                                boundary,
+                                self._box_center(boundary_box),
+                            )
+                        )
+                    ),
+                )
+                translated_boundaries.append(translated_boundary)
+            data["boundaries"][end] = translated_boundaries
+            data["boundary_priority"].add(end)
+
+            body_boundaries = [source, end]
+            configured_contact_indices = self.extrude_side_contact_indices.get(body)
+            if configured_contact_indices is not None and len(
+                configured_contact_indices
+            ) != len(sides):
+                raise ValueError(
+                    "fake extrusion side-contact indices must align with sides"
+                )
+            for side_index, side in enumerate(sides):
+                if not source_boundaries:
+                    raise ValueError(
+                        "fake extrusion sides require source boundary topology"
+                    )
+                contact_index = (
+                    configured_contact_indices[side_index]
+                    if configured_contact_indices is not None
+                    else side_index % len(source_boundaries)
+                )
+                source_contact = source_boundaries[contact_index]
+                end_contact = translated_boundaries[contact_index]
+                contact_box = data["boxes"][source_contact]
+                translated_contact_box = data["boxes"][end_contact]
+                self._store_geometry(
+                    side,
+                    self._union_boxes((contact_box, translated_contact_box)),
+                    max(
+                        data["masses"].get(source_contact, 0.0),
+                        math.dist((0.0, 0.0, 0.0), vector),
+                    ),
+                    center=tuple(
+                        0.5 * (first + second)
+                        for first, second in zip(
+                            data["centers"][source_contact],
+                            data["centers"][end_contact],
+                            strict=True,
+                        )
+                    ),
+                )
+                data["boundaries"][side] = [source_contact, end_contact]
+                data["boundary_priority"].add(side)
+                body_boundaries.append(side)
+
+            for extra_boundary in self.extrude_extra_primary_boundaries.get(
+                body,
+                (),
+            ):
+                self._register_pair(extra_boundary)
+                if extra_boundary not in data["boxes"]:
+                    self._store_geometry(
+                        extra_boundary,
+                        self._union_boxes((source_box, end_box)),
+                        source_measure,
+                    )
+                body_boundaries.append(extra_boundary)
+
+            self._store_geometry(
+                body,
+                self._union_boxes((source_box, end_box)),
+                source_measure * math.dist((0.0, 0.0, 0.0), vector),
+            )
+            data["boundaries"][body] = body_boundaries
+            data["boundary_priority"].add(body)
+
     def extrude(
         self,
         entities: list[tuple[int, int]],
@@ -342,8 +1001,53 @@ class _FakeOcc:
             raise RuntimeError("fake extrude failure")
         outputs = self.extrude_result
         if outputs is None:
-            outputs = [entities[0], (entities[0][0] + 1, self._allocate(entities[0][0] + 1))]
-        self._model._current_data()["entities"].update(outputs)
+            generated_outputs: list[tuple[int, int]] = []
+            ends: list[tuple[int, int]] = []
+            primary: list[tuple[int, int]] = []
+            side_groups: list[tuple[tuple[int, int], ...]] = []
+            for source in entities:
+                end = (source[0], self._allocate(source[0]))
+                body = (source[0] + 1, self._allocate(source[0] + 1))
+                sides = tuple(
+                    (source[0], self._allocate(source[0]))
+                    for _ in self._model._boundary_for_pair(source)
+                )
+                ends.append(end)
+                primary.append(body)
+                side_groups.append(sides)
+                generated_outputs.extend((end, body, *sides))
+            outputs = generated_outputs
+            self._seed_extrusion_geometry(
+                entities,
+                (dx, dy, dz),
+                ends,
+                primary,
+                side_groups,
+            )
+        elif self._extrude_configuration is not None:
+            (
+                configured_sources,
+                configured_vector,
+                ends,
+                primary,
+                side_groups,
+            ) = self._extrude_configuration
+            if tuple(entities) != configured_sources or (dx, dy, dz) != (
+                configured_vector
+            ):
+                raise RuntimeError("fake extrusion call does not match configuration")
+            for pair in outputs:
+                self._register_pair(pair)
+            self._seed_extrusion_geometry(
+                configured_sources,
+                configured_vector,
+                ends,
+                primary,
+                side_groups,
+            )
+        else:
+            for pair in outputs:
+                self._register_pair(pair)
         return list(outputs)
 
 
@@ -552,9 +1256,19 @@ class _FakeModel:
         self.calls: list[tuple[Any, ...]] = []
         self.occ = _FakeOcc(self)
         self.mesh = _FakeMesh(self)
-        self.boundary_result: list[tuple[int, int]] = []
+        self._boundary_result: list[tuple[int, int]] = []
+        self._boundary_result_overridden = False
         self.fail_remove = False
         self.fail_set_current_names: set[str] = set()
+
+    @property
+    def boundary_result(self) -> list[tuple[int, int]]:
+        return self._boundary_result
+
+    @boundary_result.setter
+    def boundary_result(self, result: Sequence[tuple[int, int]]) -> None:
+        self._boundary_result = list(result)
+        self._boundary_result_overridden = True
 
     @staticmethod
     def _new_data() -> dict[str, Any]:
@@ -562,6 +1276,10 @@ class _FakeModel:
             "entities": set(),
             "next_tags": {},
             "boxes": {},
+            "centers": {},
+            "masses": {},
+            "boundaries": {},
+            "boundary_priority": set(),
             "mesh_fields": {},
             "background_mesh_field": None,
             "element_blocks": {},
@@ -630,7 +1348,25 @@ class _FakeModel:
                 self.current,
             )
         )
-        return list(self.boundary_result)
+        boundary: list[tuple[int, int]] = []
+        for dimension, raw_tag in entities:
+            pair = (dimension, abs(raw_tag))
+            boundary.extend(self._boundary_for_pair(pair))
+        return boundary
+
+    def _boundary_for_pair(
+        self,
+        pair: tuple[int, int],
+    ) -> list[tuple[int, int]]:
+        data = self._current_data()
+        per_entity = data["boundaries"]
+        if pair in data["boundary_priority"]:
+            return list(per_entity[pair])
+        if self._boundary_result_overridden:
+            return list(self._boundary_result)
+        if pair in per_entity:
+            return list(per_entity[pair])
+        return []
 
     def getBoundingBox(
         self,
@@ -855,9 +1591,29 @@ def _apply_typed_transform(
     operation: str,
     entity: geometry.EntityRef,
 ) -> tuple[geometry.EntityRef, ...]:
-    if operation == "translate":
-        return cad.translate([entity], 1, 0, 0)
-    return cad.rotate([entity], 0, 0, 0, 0, 0, 1, 0.5)
+    operations = {
+        "translate": lambda: cad.translate([entity], 1, 0, 0),
+        "rotate": lambda: cad.rotate([entity], 0, 0, 0, 0, 0, 1, 0.5),
+        "mirror": lambda: cad.mirror([entity], 1, 0, 0, 0),
+        "scale": lambda: cad.scale([entity], 0, 0, 0, 2, 1, 1),
+    }
+    return operations[operation]()
+
+
+def _apply_foundational_operation(
+    cad: geometry.GeometryModel,
+    operation: str,
+    entity: geometry.EntityRef,
+    tool: geometry.EntityRef,
+) -> Any:
+    operations = {
+        "copy": lambda: cad.copy([entity]),
+        "mirror": lambda: cad.mirror([entity], 1, 0, 0, 0),
+        "scale": lambda: cad.scale([entity], 0, 0, 0, 2, 1, 1),
+        "intersect": lambda: cad.intersect([entity], [tool]),
+        "fragment": lambda: cad.fragment([entity], [tool]),
+    }
+    return operations[operation]()
 
 
 def _occ_operation_call_count(backend: _FakeGmsh, operation: str) -> int:
@@ -981,7 +1737,10 @@ def test_public_reference_types_are_immutable_and_boolean_filter_is_typed() -> N
     }
     assert meshing_names.isdisjoint(geometry.__all__)
     assert meshing_names.issubset(gmsh_meshing.__all__)
-    assert {"OrientedCurveRef", "CurveLoopRef"}.issubset(geometry.__all__)
+    assert {"OrientedCurveRef", "CurveLoopRef", "FeatureResult"}.issubset(
+        geometry.__all__
+    )
+    assert "FeatureResult" not in gmsh_meshing.__all__
     with pytest.raises(FrozenInstanceError):
         surface.tag = 9  # type: ignore[misc]
     with pytest.raises(FrozenInstanceError):
@@ -990,6 +1749,103 @@ def test_public_reference_types_are_immutable_and_boolean_filter_is_typed() -> N
         result.of_dimension(4)
     with pytest.raises(ValueError, match="mesh field type"):
         gmsh_meshing.MeshFieldRef(1, "Box", owner, object())  # type: ignore[arg-type]
+
+
+def test_feature_result_is_frozen_slotted_and_preserves_output_multiplicity() -> None:
+    owner = object()
+    source = geometry.EntityRef(1, 1, owner, object())
+    first_side = geometry.EntityRef(1, 7, owner, object())
+    primary = geometry.EntityRef(2, 4, owner, object())
+    end = geometry.EntityRef(1, 9, owner, object())
+    second_side = geometry.EntityRef(1, 8, owner, object())
+
+    result = geometry.FeatureResult(
+        "extrude",
+        [source],  # type: ignore[arg-type]
+        [first_side, primary, end, first_side, second_side],  # type: ignore[arg-type]
+        [primary],  # type: ignore[arg-type]
+        [end],  # type: ignore[arg-type]
+        [first_side, second_side],  # type: ignore[arg-type]
+    )
+
+    assert result.inputs == (source,)
+    assert result.outputs == (
+        first_side,
+        primary,
+        end,
+        first_side,
+        second_side,
+    )
+    assert result.primary == (primary,)
+    assert result.ends == (end,)
+    assert result.sides == (first_side, second_side)
+    assert result.of_dimension(1) == (
+        first_side,
+        end,
+        first_side,
+        second_side,
+    )
+    assert result.of_dimension(2) == (primary,)
+    assert not hasattr(result, "__dict__")
+    with pytest.raises(FrozenInstanceError):
+        result.operation = "changed"  # type: ignore[misc]
+    with pytest.raises(ValueError, match="dimension"):
+        result.of_dimension(4)
+
+
+@pytest.mark.parametrize(
+    ("case", "error_type", "message"),
+    [
+        ("empty_operation", ValueError, "operation"),
+        ("foreign_owner", geometry.EntityOwnershipError, "one geometry model"),
+        ("mixed_inputs", ValueError, "common dimension"),
+        ("duplicate_semantic", ValueError, "duplicate-free"),
+        ("overlap", ValueError, "disjoint"),
+        ("incomplete_partition", ValueError, "partition"),
+        ("wrong_order", ValueError, "first-seen output order"),
+    ],
+)
+def test_feature_result_rejects_malformed_semantic_partitions(
+    case: str,
+    error_type: type[Exception],
+    message: str,
+) -> None:
+    owner = object()
+    source = geometry.EntityRef(1, 1, owner, object())
+    primary = geometry.EntityRef(2, 2, owner, object())
+    end = geometry.EntityRef(1, 3, owner, object())
+    first_side = geometry.EntityRef(1, 4, owner, object())
+    second_side = geometry.EntityRef(1, 5, owner, object())
+    kwargs: dict[str, Any] = {
+        "operation": "extrude",
+        "inputs": (source,),
+        "outputs": (first_side, primary, end, second_side),
+        "primary": (primary,),
+        "ends": (end,),
+        "sides": (first_side, second_side),
+    }
+    if case == "empty_operation":
+        kwargs["operation"] = ""
+    elif case == "foreign_owner":
+        foreign = geometry.EntityRef(1, 6, object(), object())
+        kwargs["outputs"] = (foreign, primary, end)
+        kwargs["sides"] = (foreign,)
+    elif case == "mixed_inputs":
+        kwargs["inputs"] = (
+            source,
+            geometry.EntityRef(0, 6, owner, object()),
+        )
+    elif case == "duplicate_semantic":
+        kwargs["sides"] = (first_side, first_side, second_side)
+    elif case == "overlap":
+        kwargs["sides"] = (first_side, end, second_side)
+    elif case == "incomplete_partition":
+        kwargs["sides"] = (first_side,)
+    else:
+        kwargs["outputs"] = (second_side, primary, end, first_side)
+
+    with pytest.raises(error_type, match=message):
+        geometry.FeatureResult(**kwargs)
 
 
 @pytest.mark.parametrize("dimension", [0, 4, True, "2", None])
@@ -1549,6 +2405,263 @@ def test_entity_rejects_missing_occ_pair_and_external_removal_becomes_stale(
             cad.translate([surface], 1, 0, 0)
 
 
+def test_copy_batches_by_dimension_and_restores_caller_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("copy-order", dimension=3) as cad:
+        point = cad.point(0, 0, 0)
+        surface = cad.rectangle(0, 0, 1, 1)
+        volume = cad.box(0, 0, 0, 1, 1, 1)
+        sources = (surface, point, volume)
+
+        copied = cad.copy(item for item in sources)
+
+        assert tuple(item.dimension for item in copied) == (2, 0, 3)
+        assert len(set(copied)) == len(copied)
+        assert all(output != source for output, source in zip(copied, sources, strict=True))
+        assert all(cad.entity(item.dimension, item.tag) == item for item in (*sources, *copied))
+
+    assert [
+        call for call in backend.model.occ.calls if call[0] == "copy"
+    ] == [
+        ("copy", ((2, surface.tag),)),
+        ("copy", ((0, point.tag),)),
+        ("copy", ((3, volume.tag),)),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("malformation", "message"),
+    [
+        ("count", "unexpected entity count"),
+        ("dimension", "unexpected dimension"),
+        ("duplicate", "duplicate entities"),
+        ("source_reuse", "fresh entities"),
+        ("missing", "missing entity"),
+    ],
+)
+def test_malformed_copy_result_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    malformation: str,
+    message: str,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model(f"copy-malformed-{malformation}", dimension=2) as cad:
+        first = cad.rectangle(0, 0, 1, 1)
+        second = cad.rectangle(2, 0, 1, 1)
+        unrelated = cad.rectangle(4, 0, 1, 1)
+        sources = [first, second] if malformation == "duplicate" else [first]
+        configured = {
+            "count": [],
+            "dimension": [(1, 90)],
+            "duplicate": [(2, 90), (2, 90)],
+            "source_reuse": [(2, first.tag)],
+            "missing": [(2, 90)],
+        }[malformation]
+        backend.model.occ.copy_results[2] = configured
+        if malformation == "missing":
+            backend.model.occ.copy_register_outputs = False
+
+        with pytest.raises(geometry.GeometryError, match=message):
+            cad.copy(sources)
+
+        for old_reference in (first, second, unrelated):
+            with pytest.raises(geometry.StaleEntityError):
+                cad.translate([old_reference], 1, 0, 0)
+        reacquired = cad.entity(2, unrelated.tag)
+        assert cad.entity(2, unrelated.tag) == reacquired
+        with pytest.raises(geometry.GeometryStateError, match="dependencies unknown"):
+            cad.translate([reacquired], 1, 0, 0)
+
+
+def test_native_copy_failure_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("copy-native-failure", dimension=2) as cad:
+        source = cad.rectangle(0, 0, 1, 1)
+        unrelated = cad.rectangle(2, 0, 1, 1)
+        backend.model.occ.fail_next.add("copy")
+
+        with pytest.raises(RuntimeError, match="fake copy failure"):
+            cad.copy([source])
+
+        for old_reference in (source, unrelated):
+            with pytest.raises(geometry.StaleEntityError):
+                cad.translate([old_reference], 1, 0, 0)
+        reacquired = cad.entity(2, unrelated.tag)
+        assert cad.entity(2, unrelated.tag) == reacquired
+        with pytest.raises(geometry.GeometryStateError, match="dependencies unknown"):
+            cad.translate([reacquired], 1, 0, 0)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda cad, entity: cad.copy([]),
+        lambda cad, entity: cad.copy([entity, entity]),
+        lambda cad, entity: cad.copy([object()]),
+    ],
+)
+def test_invalid_copy_inputs_fail_before_occ_call(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: Any,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("copy-invalid", dimension=2) as cad:
+        entity = cad.rectangle(0, 0, 1, 1)
+        copy_calls = _occ_operation_call_count(backend, "copy")
+        with pytest.raises((ValueError, TypeError)):
+            operation(cad, entity)
+        assert _occ_operation_call_count(backend, "copy") == copy_calls
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ["copy", "mirror", "scale", "intersect", "fragment"],
+)
+def test_foundational_operations_reject_foreign_entities_before_native_call(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+    native_operation = "dilate" if operation == "scale" else operation
+
+    with geometry.model("foundational-owner-outer", dimension=2) as outer:
+        foreign = outer.rectangle(0, 0, 1, 1)
+        with geometry.model("foundational-owner-inner", dimension=2) as inner:
+            tool = inner.rectangle(2, 0, 1, 1)
+            native_calls = _occ_operation_call_count(backend, native_operation)
+
+            with pytest.raises(geometry.EntityOwnershipError, match="another"):
+                _apply_foundational_operation(inner, operation, foreign, tool)
+
+            assert (
+                _occ_operation_call_count(backend, native_operation) == native_calls
+            )
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ["copy", "mirror", "scale", "intersect", "fragment"],
+)
+def test_foundational_operations_reject_externally_stale_entities_pre_native(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+    native_operation = "dilate" if operation == "scale" else operation
+
+    with geometry.model(f"foundational-stale-{operation}", dimension=2) as cad:
+        source = cad.rectangle(0, 0, 1, 1)
+        tool = cad.rectangle(2, 0, 1, 1)
+        backend.model._current_data()["entities"].remove((2, source.tag))
+        native_calls = _occ_operation_call_count(backend, native_operation)
+
+        with pytest.raises(geometry.StaleEntityError, match="no longer exists"):
+            _apply_foundational_operation(cad, operation, source, tool)
+
+        assert _occ_operation_call_count(backend, native_operation) == native_calls
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ["copy", "mirror", "scale", "intersect", "fragment"],
+)
+def test_foundational_operations_reactivate_owner_and_stay_model_local(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("foundational-local-outer", dimension=2) as outer:
+        outer_source = outer.rectangle(0, 0, 1, 1)
+        outer_tool = outer.rectangle(2, 0, 1, 1)
+        with geometry.model("foundational-local-inner", dimension=2) as inner:
+            inner.rectangle(10, 0, 1, 1)
+            inner.rectangle(12, 0, 1, 1)
+            inner_snapshot = set(
+                backend.model.models["foundational-local-inner"]["entities"]
+            )
+
+            _apply_foundational_operation(
+                outer,
+                operation,
+                outer_source,
+                outer_tool,
+            )
+
+            assert backend.model.current == "foundational-local-outer"
+            assert (
+                backend.model.models["foundational-local-inner"]["entities"]
+                == inner_snapshot
+            )
+            assert inner.entities(2)
+            assert backend.model.current == "foundational-local-inner"
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda cad: cad.copy([]),
+        lambda cad: cad.mirror([], 1, 0, 0, 0),
+        lambda cad: cad.scale([], 0, 0, 0, 1, 1, 1),
+        lambda cad: cad.intersect([], []),
+        lambda cad: cad.fragment([], []),
+    ],
+)
+def test_foundational_operations_reject_new_and_closed_states(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: Any,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+    cad = geometry.GeometryModel("foundational-states", dimension=2)
+
+    with pytest.raises(geometry.GeometryStateError, match="NEW"):
+        operation(cad)
+    with cad:
+        pass
+    with pytest.raises(geometry.GeometryStateError, match="CLOSED"):
+        operation(cad)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ["copy", "mirror", "scale", "intersect", "fragment"],
+)
+def test_raw_occ_access_stales_foundational_operation_inputs_pre_native(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+    native_operation = "dilate" if operation == "scale" else operation
+
+    with geometry.model(f"foundational-raw-{operation}", dimension=2) as cad:
+        source = cad.rectangle(0, 0, 1, 1)
+        tool = cad.rectangle(2, 0, 1, 1)
+        assert cad.raw_occ is backend.model.occ
+        native_calls = _occ_operation_call_count(backend, native_operation)
+
+        with pytest.raises(geometry.StaleEntityError):
+            _apply_foundational_operation(cad, operation, source, tool)
+
+        assert _occ_operation_call_count(backend, native_operation) == native_calls
+
+
 def test_destructive_boolean_preserves_mapping_and_replaces_reused_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1580,8 +2693,10 @@ def test_destructive_boolean_preserves_mapping_and_replaces_reused_identity(
         assert cad.translate(result.outputs, 1, 0, 0) == result.outputs
 
 
+@pytest.mark.parametrize("operation", ["fragment", "intersect"])
 def test_non_destructive_boolean_preserves_input_references(
     monkeypatch: pytest.MonkeyPatch,
+    operation: str,
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
@@ -1590,7 +2705,7 @@ def test_non_destructive_boolean_preserves_input_references(
         first = cad.rectangle(0, 0, 2, 1)
         tool = cad.disk(1, 0.5, 0.25)
 
-        cad.fragment(
+        getattr(cad, operation)(
             [first],
             [tool],
             remove_objects=False,
@@ -1627,8 +2742,10 @@ def test_partially_destructive_boolean_preserves_only_kept_inputs(
             cad.translate([tool], 1, 0, 0)
 
 
+@pytest.mark.parametrize("operation", ["fuse", "intersect"])
 def test_failed_boolean_preserves_input_liveness(
     monkeypatch: pytest.MonkeyPatch,
+    operation: str,
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
@@ -1636,10 +2753,10 @@ def test_failed_boolean_preserves_input_liveness(
     with geometry.model("boolean", dimension=2) as cad:
         first = cad.rectangle(0, 0, 2, 1)
         second = cad.rectangle(2, 0, 1, 1)
-        backend.model.occ.fail_next.add("fuse")
+        backend.model.occ.fail_next.add(operation)
 
-        with pytest.raises(RuntimeError, match="fake fuse failure"):
-            cad.fuse([first], [second])
+        with pytest.raises(RuntimeError, match=f"fake {operation} failure"):
+            getattr(cad, operation)([first], [second])
 
         assert cad.translate([first, second], 1, 0, 0) == (first, second)
 
@@ -1648,13 +2765,17 @@ def test_failed_boolean_preserves_input_liveness(
     ("malformation", "message"),
     [
         ("map_length", "invalid input map"),
-        ("entity_dimension", "invalid boolean output data"),
+        ("invalid_native_dimension", "invalid boolean output data"),
+        ("facade_dimension", "above the facade dimension"),
+        ("missing_map_entity", "missing entity"),
     ],
 )
+@pytest.mark.parametrize("operation", ["cut", "intersect"])
 def test_malformed_destructive_boolean_result_invalidates_changed_inputs(
     monkeypatch: pytest.MonkeyPatch,
     malformation: str,
     message: str,
+    operation: str,
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
@@ -1667,23 +2788,35 @@ def test_malformed_destructive_boolean_result_invalidates_changed_inputs(
         backend.model.boundary_result = [(1, 7)]
         old_boundary = cad.entity(1, 7)
         if malformation == "map_length":
-            backend.model.occ.boolean_results["cut"] = (
+            backend.model.occ.boolean_results[operation] = (
                 [(2, first.tag)],
                 [[(2, first.tag)]],
             )
-        else:
-            backend.model.occ.boolean_results["cut"] = (
+        elif malformation == "invalid_native_dimension":
+            backend.model.occ.boolean_results[operation] = (
                 [(2, first.tag)],
                 [[(4, first.tag)], []],
             )
+        elif malformation == "facade_dimension":
+            backend.model.occ.boolean_results[operation] = (
+                [(2, first.tag)],
+                [[(3, 90)], []],
+            )
+        else:
+            backend.model.occ.boolean_results[operation] = (
+                [(2, first.tag)],
+                [[(2, first.tag)], [(1, 999)]],
+            )
+            backend.model.occ.boolean_register_map_outputs = False
 
         with pytest.raises(geometry.GeometryError, match=message):
-            cad.cut([first], [tool])
+            getattr(cad, operation)([first], [tool])
 
         for old_reference in (first, tool, unrelated, old_boundary):
             with pytest.raises(geometry.StaleEntityError):
                 cad.translate([old_reference], 1, 0, 0)
         reacquired = cad.entity(2, unrelated.tag)
+        assert cad.entity(2, unrelated.tag) == reacquired
         assert cad.translate([reacquired], 1, 0, 0) == (reacquired,)
 
 
@@ -1712,8 +2845,10 @@ def test_invalid_boolean_inputs_fail_before_occ_call(
         assert backend.model.occ.calls == before
 
 
-def test_boolean_requires_one_common_dimension(
+@pytest.mark.parametrize("operation", ["fuse", "cut"])
+def test_fuse_and_cut_require_one_common_dimension(
     monkeypatch: pytest.MonkeyPatch,
+    operation: str,
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
@@ -1722,7 +2857,116 @@ def test_boolean_requires_one_common_dimension(
         surface = cad.rectangle(0, 0, 1, 1)
         volume = cad.box(0, 0, 0, 1, 1, 1)
         with pytest.raises(ValueError, match="common dimension"):
-            cad.fuse([surface], [volume])
+            getattr(cad, operation)([surface], [volume])
+
+
+def test_intersect_accepts_different_homogeneous_group_dimensions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("intersect-cross-dimension", dimension=3) as cad:
+        surface = cad.rectangle(0, 0, 1, 1)
+        volume = cad.box(0, 0, 0, 1, 1, 1)
+
+        result = cad.intersect([surface], [volume])
+
+        assert tuple(item.dimension for item in result.outputs) == (2,)
+        assert result.input_map == (result.outputs, ())
+        assert backend.model.occ.calls[-1] == (
+            "intersect",
+            ((2, surface.tag),),
+            ((3, volume.tag),),
+            -1,
+            True,
+            True,
+        )
+
+
+@pytest.mark.parametrize("mixed_group", ["objects", "tools"])
+def test_intersect_rejects_mixed_dimensions_inside_either_input_group(
+    monkeypatch: pytest.MonkeyPatch,
+    mixed_group: str,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model(f"intersect-mixed-{mixed_group}", dimension=3) as cad:
+        curve = _fake_entities(cad, backend, 1, 90)[0]
+        surface = cad.rectangle(0, 0, 1, 1)
+        volume = cad.box(0, 0, 0, 1, 1, 1)
+        objects = [surface, volume] if mixed_group == "objects" else [surface]
+        tools = [curve] if mixed_group == "objects" else [curve, volume]
+        intersect_calls = _occ_operation_call_count(backend, "intersect")
+
+        with pytest.raises(ValueError, match="each have one common dimension"):
+            cad.intersect(objects, tools)
+
+        assert _occ_operation_call_count(backend, "intersect") == intersect_calls
+
+
+def test_empty_intersection_is_a_valid_boolean_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("intersect-empty", dimension=2) as cad:
+        first = cad.rectangle(0, 0, 1, 1)
+        second = cad.rectangle(2, 0, 1, 1)
+        backend.model.occ.boolean_results["intersect"] = ([], [[], []])
+
+        result = cad.intersect([first], [second])
+
+        assert result.outputs == ()
+        assert result.input_map == ((), ())
+        for removed in (first, second):
+            with pytest.raises(geometry.StaleEntityError):
+                cad.translate([removed], 1, 0, 0)
+
+
+def test_fragment_accepts_fully_mixed_dimensions_and_exports_map_only_outputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("fragment-mixed", dimension=3) as cad:
+        point = cad.point(0, 0, 0)
+        curve = _fake_entities(cad, backend, 1, 90)[0]
+        surface = cad.rectangle(0, 0, 1, 1)
+        volume = cad.box(0, 0, 0, 1, 1, 1)
+        backend.model.occ.boolean_results["fragment"] = (
+            [(3, 90)],
+            [[(2, 91)], [(3, 90)], [(1, 92)], [(0, 93)]],
+        )
+
+        result = cad.fragment([surface, volume], [curve, point])
+
+        assert tuple((item.dimension, item.tag) for item in result.outputs) == (
+            (3, 90),
+            (2, 91),
+            (1, 92),
+            (0, 93),
+        )
+        assert tuple(
+            tuple((item.dimension, item.tag) for item in group)
+            for group in result.input_map
+        ) == (
+            ((2, 91),),
+            ((3, 90),),
+            ((1, 92),),
+            ((0, 93),),
+        )
+        assert backend.model.occ.calls[-1] == (
+            "fragment",
+            ((2, surface.tag), (3, volume.tag)),
+            ((1, curve.tag), (0, point.tag)),
+            -1,
+            True,
+            True,
+        )
 
 
 def test_translate_and_rotate_forward_and_return_same_references(
@@ -1753,6 +2997,76 @@ def test_translate_and_rotate_forward_and_return_same_references(
     ) in backend.model.occ.calls
 
 
+@pytest.mark.parametrize("operation", ["mirror", "scale"])
+def test_mirror_and_scale_forward_preserve_sources_and_invalidate_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model(f"transform-{operation}", dimension=2) as cad:
+        source = cad.rectangle(0, 0, 1, 1)
+        unrelated = cad.rectangle(3, 0, 1, 1)
+        old_boundaries = cad.boundary([source], combined=False)
+
+        if operation == "mirror":
+            result = cad.mirror([source], 1, 0, 0, -1)
+            expected_call = ("mirror", ((2, source.tag),), 1.0, 0.0, 0.0, -1.0)
+        else:
+            result = cad.scale([source], 0, 0, 0, -2, 3, -1)
+            expected_call = (
+                "dilate",
+                ((2, source.tag),),
+                0.0,
+                0.0,
+                0.0,
+                -2.0,
+                3.0,
+                -1.0,
+            )
+
+        assert result == (source,)
+        assert expected_call in backend.model.occ.calls
+        for old_boundary in old_boundaries:
+            with pytest.raises(geometry.StaleEntityError):
+                cad.translate([old_boundary], 1, 0, 0)
+        assert cad.translate([source, unrelated], 1, 0, 0) == (
+            source,
+            unrelated,
+        )
+
+
+@pytest.mark.parametrize("operation", ["mirror", "scale"])
+def test_valid_2d_mirror_and_scale_plane_preservation_cases_are_forwarded(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model(f"transform-valid-plane-{operation}", dimension=2) as cad:
+        source = cad.rectangle(0, 0, 1, 1)
+
+        if operation == "mirror":
+            assert cad.mirror([source], 0, 0, 2, 0) == (source,)
+            expected = ("mirror", ((2, source.tag),), 0.0, 0.0, 2.0, 0.0)
+        else:
+            assert cad.scale([source], 0, 0, 5, 2, 3, 1) == (source,)
+            expected = (
+                "dilate",
+                ((2, source.tag),),
+                0.0,
+                0.0,
+                5.0,
+                2.0,
+                3.0,
+                1.0,
+            )
+
+        assert expected in backend.model.occ.calls
+
+
 @pytest.mark.parametrize(
     "operation",
     [
@@ -1765,6 +3079,19 @@ def test_translate_and_rotate_forward_and_return_same_references(
         lambda cad, entity: cad.rotate(
             [entity], 0, 0, 0, 0, 0, 1, float("nan")
         ),
+        lambda cad, entity: cad.mirror([], 1, 0, 0, 0),
+        lambda cad, entity: cad.mirror([entity, entity], 1, 0, 0, 0),
+        lambda cad, entity: cad.mirror([entity], float("nan"), 0, 0, 0),
+        lambda cad, entity: cad.mirror([entity], 0, 0, 0, 1),
+        lambda cad, entity: cad.mirror([entity], 1, 0, 1, 0),
+        lambda cad, entity: cad.mirror([entity], 0, 0, 1, 1),
+        lambda cad, entity: cad.scale([], 0, 0, 0, 1, 1, 1),
+        lambda cad, entity: cad.scale([entity, entity], 0, 0, 0, 1, 1, 1),
+        lambda cad, entity: cad.scale(
+            [entity], float("nan"), 0, 0, 1, 1, 1
+        ),
+        lambda cad, entity: cad.scale([entity], 0, 0, 0, 1, 0, 1),
+        lambda cad, entity: cad.scale([entity], 0, 0, 1, 1, 1, 2),
     ],
 )
 def test_invalid_transform_inputs_fail_before_occ_call(
@@ -1780,6 +3107,47 @@ def test_invalid_transform_inputs_fail_before_occ_call(
         with pytest.raises((ValueError, TypeError)):
             operation(cad, entity)
         assert backend.model.occ.calls == before
+
+
+@pytest.mark.parametrize(
+    ("operation", "native_operation"),
+    [("mirror", "mirror"), ("scale", "dilate")],
+)
+@pytest.mark.parametrize("failure_mode", ["native", "postcheck"])
+def test_mirror_and_scale_native_or_postcheck_failure_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    native_operation: str,
+    failure_mode: str,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model(
+        f"transform-failure-{operation}-{failure_mode}",
+        dimension=2,
+    ) as cad:
+        source = cad.rectangle(0, 0, 1, 1)
+        unrelated = cad.rectangle(3, 0, 1, 1)
+        if failure_mode == "native":
+            backend.model.occ.fail_next.add(native_operation)
+            error_type: type[Exception] = RuntimeError
+            message = "fake"
+        else:
+            backend.model.occ.nonplanar_after.add(native_operation)
+            error_type = ValueError
+            message = "global XY plane"
+
+        with pytest.raises(error_type, match=message):
+            _apply_typed_transform(cad, operation, source)
+
+        for old_reference in (source, unrelated):
+            with pytest.raises(geometry.StaleEntityError):
+                cad.translate([old_reference], 1, 0, 0)
+        reacquired = cad.entity(2, unrelated.tag)
+        assert cad.entity(2, unrelated.tag) == reacquired
+        with pytest.raises(geometry.GeometryStateError, match="dependencies unknown"):
+            cad.translate([reacquired], 1, 0, 0)
 
 
 @pytest.mark.parametrize(
@@ -1832,7 +3200,6 @@ def test_extrude_validates_and_forwards_layer_controls(
 
     with geometry.model("extrude", dimension=3) as cad:
         surface = cad.rectangle(0, 0, 1, 1)
-        backend.model.occ.extrude_result = [(2, 2), (3, 1), (2, 3)]
         result = _structured_extrude(
             cad,
             [surface],
@@ -1844,10 +3211,23 @@ def test_extrude_validates_and_forwards_layer_controls(
             recombine=True,
         )
 
-    assert tuple((item.dimension, item.tag) for item in result) == (
+    assert result.operation == "structured_extrude"
+    assert result.inputs == (surface,)
+    assert tuple((item.dimension, item.tag) for item in result.outputs) == (
         (2, 2),
         (3, 1),
         (2, 3),
+        (2, 4),
+        (2, 5),
+        (2, 6),
+    )
+    assert tuple((item.dimension, item.tag) for item in result.primary) == ((3, 1),)
+    assert tuple((item.dimension, item.tag) for item in result.ends) == ((2, 2),)
+    assert tuple((item.dimension, item.tag) for item in result.sides) == (
+        (2, 3),
+        (2, 4),
+        (2, 5),
+        (2, 6),
     )
     assert (
         "extrude",
@@ -2569,7 +3949,7 @@ def test_native_control_failures_preserve_exception_state_and_generation_attempt
         assert isinstance(native_mesh, gmsh_meshing.GmshMeshRef)
 
 
-@pytest.mark.parametrize("operation", ["fuse", "cut", "fragment"])
+@pytest.mark.parametrize("operation", ["fuse", "cut", "intersect", "fragment"])
 @pytest.mark.parametrize("control", _ENTITY_DEPENDENT_MESH_CONTROLS)
 def test_entity_dependency_guard_rejects_boolean_removing_control_closure(
     monkeypatch: pytest.MonkeyPatch,
@@ -2700,6 +4080,7 @@ def test_native_control_failure_keeps_geometry_sealed_without_native_mutation(
         "disk",
         "box",
         "cylinder",
+        "copy",
         "plain_extrude",
     ],
 )
@@ -2734,6 +4115,7 @@ def test_mesher_binding_seals_additive_geometry_topology(
                 "disk": lambda: cad.disk(4, 0, 1),
                 "box": lambda: cad.box(4, 0, 0, 1, 1, 1),
                 "cylinder": lambda: cad.cylinder(4, 0, 0, 0, 0, 1, 1),
+                "copy": lambda: cad.copy([surface]),
                 "plain_extrude": lambda: cad.extrude([surface], 0, 0, 1),
             }[operation]
 
@@ -2750,8 +4132,7 @@ def test_entity_dependency_guard_allows_multiple_controlled_extrusions(
     with geometry.model("multiple-controlled-extrusions", dimension=3) as cad:
         surface = cad.rectangle(0, 0, 1, 1)
         backend.model.boundary_result = []
-        backend.model.occ.extrude_result = [(2, 2), (3, 1)]
-        first_outputs = _structured_extrude(
+        first_result = _structured_extrude(
             cad,
             [surface],
             0,
@@ -2760,11 +4141,9 @@ def test_entity_dependency_guard_allows_multiple_controlled_extrusions(
             num_elements=[2],
             heights=[1.0],
         )
-        top = next(entity for entity in first_outputs if entity.dimension == 2)
-        backend.model.boundary_result = []
-        backend.model.occ.extrude_result = [(2, 3), (3, 2)]
+        top = first_result.ends[0]
 
-        second_outputs = _structured_extrude(
+        second_result = _structured_extrude(
             cad,
             [top],
             0,
@@ -2773,7 +4152,9 @@ def test_entity_dependency_guard_allows_multiple_controlled_extrusions(
             recombine=True,
         )
 
-        assert {entity.dimension for entity in second_outputs} == {2, 3}
+        assert tuple(entity.dimension for entity in second_result.primary) == (3,)
+        assert tuple(entity.dimension for entity in second_result.ends) == (2,)
+        assert second_result.sides == ()
         assert sum(call[0] == "extrude" for call in backend.model.occ.calls) == 2
 
 
@@ -2785,10 +4166,23 @@ def test_controlled_extrude_preserves_valid_duplicate_native_outputs(
 
     with geometry.model("controlled-extrude-shared-side", dimension=3) as cad:
         surface = cad.rectangle(0, 0, 1, 1)
-        backend.model.boundary_result = []
-        backend.model.occ.extrude_result = [(2, 2), (3, 1), (2, 2)]
+        backend.model.occ.configure_extrude_result(
+            [(2, surface.tag)],
+            (0, 0, 1),
+            [
+                (2, 2),
+                (3, 1),
+                (2, 3),
+                (2, 4),
+                (2, 5),
+                (2, 6),
+                (2, 3),
+            ],
+            ends=[(2, 2)],
+            primary=[(3, 1)],
+        )
 
-        outputs = _structured_extrude(
+        result = _structured_extrude(
             cad,
             [surface],
             0,
@@ -2797,15 +4191,70 @@ def test_controlled_extrude_preserves_valid_duplicate_native_outputs(
             num_elements=[1],
         )
 
-        assert tuple((item.dimension, item.tag) for item in outputs) == (
+        assert tuple((item.dimension, item.tag) for item in result.outputs) == (
             (2, 2),
             (3, 1),
-            (2, 2),
+            (2, 3),
+            (2, 4),
+            (2, 5),
+            (2, 6),
+            (2, 3),
         )
-        assert outputs[0] == outputs[2]
+        assert result.primary == result.of_dimension(3)
+        assert tuple(item.tag for item in result.ends) == (2,)
+        assert tuple(item.tag for item in result.sides) == (3, 4, 5, 6)
+        assert result.outputs[2] == result.outputs[-1]
 
 
-@pytest.mark.parametrize("operation", ["fuse", "cut", "fragment"])
+def test_extrude_rejects_omitted_generated_primary_boundary_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("extrude-omitted-boundary", dimension=3) as cad:
+        surface = cad.rectangle(0, 0, 1, 1)
+        backend.model.occ.configure_extrude_result(
+            [(2, surface.tag)],
+            (0, 0, 1),
+            [(2, 2), (3, 1), (2, 3), (2, 4), (2, 5), (2, 6)],
+            ends=[(2, 2)],
+            primary=[(3, 1)],
+        )
+        backend.model.occ.extrude_extra_primary_boundaries[(3, 1)] = [(2, 99)]
+
+        with pytest.raises(
+            geometry.GeometryError,
+            match="same-dimensional output topology completely",
+        ):
+            cad.extrude([surface], 0, 0, 1)
+
+
+def test_extrude_rejects_duplicate_side_assignment_with_omitted_source_edge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("extrude-duplicate-side-contact", dimension=3) as cad:
+        surface = cad.rectangle(0, 0, 1, 1)
+        backend.model.occ.configure_extrude_result(
+            [(2, surface.tag)],
+            (0, 0, 1),
+            [(2, 2), (3, 1), (2, 3), (2, 4), (2, 5), (2, 6)],
+            ends=[(2, 2)],
+            primary=[(3, 1)],
+        )
+        backend.model.occ.extrude_side_contact_indices[(3, 1)] = (0, 0, 1, 2)
+
+        with pytest.raises(
+            geometry.GeometryError,
+            match="side topology classification is incomplete or ambiguous",
+        ):
+            cad.extrude([surface], 0, 0, 1)
+
+
+@pytest.mark.parametrize("operation", ["fuse", "cut", "intersect", "fragment"])
 def test_mesher_binding_seals_non_destructive_booleans(
     monkeypatch: pytest.MonkeyPatch,
     operation: str,
@@ -2831,7 +4280,7 @@ def test_mesher_binding_seals_non_destructive_booleans(
         assert _occ_operation_call_count(backend, operation) == boolean_calls
 
 
-@pytest.mark.parametrize("operation", ["fuse", "cut", "fragment"])
+@pytest.mark.parametrize("operation", ["fuse", "cut", "intersect", "fragment"])
 @pytest.mark.parametrize(
     "removed_scope",
     ["objects", "tools", "objects_and_tools"],
@@ -2876,7 +4325,7 @@ def test_mesher_binding_seals_unrelated_destructive_booleans(
         assert _occ_operation_call_count(backend, operation) == boolean_calls
 
 
-@pytest.mark.parametrize("operation", ["translate", "rotate"])
+@pytest.mark.parametrize("operation", ["translate", "rotate", "mirror", "scale"])
 @pytest.mark.parametrize("control", _TRANSFORM_UNSAFE_ENTITY_CONTROLS)
 def test_entity_dependency_guard_rejects_transform_of_control_closure_only(
     monkeypatch: pytest.MonkeyPatch,
@@ -2933,7 +4382,7 @@ def test_entity_dependency_guard_rejects_transform_of_control_closure_only(
         assert _occ_operation_call_count(backend, operation) == transform_calls
 
 
-@pytest.mark.parametrize("operation", ["translate", "rotate"])
+@pytest.mark.parametrize("operation", ["translate", "rotate", "mirror", "scale"])
 def test_distance_source_transform_is_sealed_after_mesher_binding(
     monkeypatch: pytest.MonkeyPatch,
     operation: str,
@@ -6070,10 +7519,8 @@ def test_real_facade_structured_extrusion_creates_hex20(real_gmsh: Any) -> None:
             num_elements=(2,),
             recombine=True,
         )
-        volumes = tuple(
-            entity for entity in extruded if entity.dimension == 3
-        )
-        assert len(volumes) == 1
+        assert len(extruded.primary) == 1
+        assert extruded.of_dimension(3) == extruded.primary
         native_mesh = _generate_mesh(cad, size=0.5, order=2, recombine=True)
         mesh = gmsh_io.read(native_mesh)
         _assert_positive_top_dimensional_jacobians(real_gmsh, 3)

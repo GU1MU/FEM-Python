@@ -477,9 +477,7 @@ def test_real_consecutive_controlled_extrusions_allow_preserving_topology(
             num_elements=(2,),
             recombine=True,
         )
-        first_volumes = tuple(
-            entity for entity in first_extrusion if entity.dimension == 3
-        )
+        first_volumes = first_extrusion.primary
         assert len(first_volumes) == 1
 
         second_extrusion = mesher.structured_extrude(
@@ -491,9 +489,7 @@ def test_real_consecutive_controlled_extrusions_allow_preserving_topology(
             heights=(1.0,),
             recombine=True,
         )
-        second_volumes = tuple(
-            entity for entity in second_extrusion if entity.dimension == 3
-        )
+        second_volumes = second_extrusion.primary
         assert len(second_volumes) == 1
 
         native_mesh = mesher.generate(
@@ -520,7 +516,7 @@ def test_real_controlled_extrusion_accepts_repeated_shared_output(
         )
 
         mesher = gmsh_meshing.Mesher(cad)
-        outputs = mesher.structured_extrude(
+        result = mesher.structured_extrude(
             surfaces,
             0.0,
             0.0,
@@ -529,6 +525,8 @@ def test_real_controlled_extrusion_accepts_repeated_shared_output(
             recombine=True,
         )
 
-    output_keys = tuple((entity.dimension, entity.tag) for entity in outputs)
+    output_keys = tuple(
+        (entity.dimension, entity.tag) for entity in result.outputs
+    )
     assert len(output_keys) > len(set(output_keys))
     assert len({key for key in output_keys if key[0] == 3}) == 2

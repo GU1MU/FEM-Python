@@ -403,7 +403,7 @@ def test_consecutive_structured_extrusions_generate_hex_mesh(real_gmsh):
         second_surface = cad.rectangle(2.0, 0.0, 1.0, 1.0)
         mesh_builder = meshing.Mesher(cad)
 
-        first_outputs = mesh_builder.structured_extrude(
+        first_result = mesh_builder.structured_extrude(
             (first_surface,),
             0.0,
             0.0,
@@ -411,7 +411,7 @@ def test_consecutive_structured_extrusions_generate_hex_mesh(real_gmsh):
             num_elements=(2,),
             recombine=True,
         )
-        second_outputs = mesh_builder.structured_extrude(
+        second_result = mesh_builder.structured_extrude(
             (second_surface,),
             0.0,
             0.0,
@@ -421,11 +421,10 @@ def test_consecutive_structured_extrusions_generate_hex_mesh(real_gmsh):
             recombine=True,
         )
 
-        for outputs in (first_outputs, second_outputs):
+        for result in (first_result, second_result):
             volumes = {
                 (entity.dimension, entity.tag)
-                for entity in outputs
-                if entity.dimension == 3
+                for entity in result.primary
             }
             assert len(volumes) == 1
 
@@ -452,7 +451,7 @@ def test_structured_extrusion_preflight_failure_is_retryable(real_gmsh):
                 recombine=True,
             )
 
-        outputs = mesh_builder.structured_extrude(
+        result = mesh_builder.structured_extrude(
             (surface,),
             0.0,
             0.0,
@@ -460,7 +459,8 @@ def test_structured_extrusion_preflight_failure_is_retryable(real_gmsh):
             num_elements=(1,),
             recombine=True,
         )
-        assert any(entity.dimension == 3 for entity in outputs)
+        assert len(result.primary) == 1
+        assert result.primary[0].dimension == 3
 
 
 def test_successful_ordinary_control_closes_structured_extrusion_subphase(
@@ -559,7 +559,10 @@ def test_native_structured_extrusion_failure_is_terminal(
                 recombine=True,
             )
 
-        assert surface in cad.entities(2)
+        with pytest.raises(geometry.StaleEntityError):
+            cad.area(surface)
+        surviving_surfaces = cad.entities(2)
+        assert tuple(entity.tag for entity in surviving_surfaces) == (surface.tag,)
         with pytest.raises(geometry.GeometryStateError, match="MESH_FAILED"):
             mesh_builder.generate(meshing.MeshSpec(size=0.4))
         with pytest.raises(geometry.GeometryStateError, match="MESH_FAILED"):
