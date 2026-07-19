@@ -15,6 +15,7 @@ _CAD_DEPENDENCY_MESSAGE = (
     'Install the project with: pip install -e ".[cad]"'
 )
 _PLANAR_TOLERANCE = 1.0e-10
+_LOOP_WINDING_REFINEMENTS = tuple(2**power for power in range(3, 14))
 # OpenCASCADE expands Gmsh bounding boxes by this numerical safety gap.
 _OCC_BOUNDING_BOX_PADDING = 1.0e-7
 _POINT_SIZE_OPTION_NAME = "Mesh.MeshSizeFromPoints"
@@ -33,8 +34,11 @@ _GMSH_TOP_CELL_TYPE_NAMES = {
 
 _AutoCellShape = Literal["tri", "tri-quad", "quad", "tet", "hex"]
 _AutoMeshMode = Literal["line", "tri", "tri-quad", "quad", "tet", "hex"]
-_GenerationOperation = Literal["generate_mesh", "generate_auto_mesh"]
+_GenerationOperation = Literal["MeshSpec generation", "AutoMeshSpec generation"]
 _GenerationSizeMode = Literal["none", "uniform", "point", "background"]
+_Point2D = tuple[float, float]
+_Point3D = tuple[float, float, float]
+_PlaneFrame = tuple[_Point3D, _Point3D, _Point3D, _Point3D, float]
 
 
 class GeometryError(RuntimeError):
@@ -193,6 +197,44 @@ class EntityRef:
 
 
 @dataclass(frozen=True, slots=True)
+class OrientedCurveRef:
+    """One live curve with an explicit traversal orientation."""
+
+    curve: EntityRef
+    reversed: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.curve, EntityRef) or self.curve.dimension != 1:
+            raise ValueError("curve must be a dimension-one EntityRef")
+        if not isinstance(self.reversed, bool):
+            raise TypeError(f"reversed must be a boolean, got {self.reversed!r}")
+
+
+@dataclass(frozen=True, slots=True)
+class CurveLoopRef:
+    """Owner-local identity for one closed, ordered OCC curve loop."""
+
+    tag: int
+    curves: tuple[OrientedCurveRef, ...]
+    _owner_token: object = field(repr=False)
+    _loop_token: object = field(repr=False)
+
+    def __post_init__(self) -> None:
+        _validate_positive_tag(self.tag, "curve loop tag")
+        try:
+            normalized_curves = tuple(self.curves)
+        except TypeError as exc:
+            raise TypeError(
+                "curves must be an iterable of OrientedCurveRef values"
+            ) from exc
+        object.__setattr__(self, "curves", normalized_curves)
+        if not self.curves:
+            raise ValueError("curves must contain at least one oriented curve")
+        if any(not isinstance(curve, OrientedCurveRef) for curve in self.curves):
+            raise TypeError("curves must contain only OrientedCurveRef values")
+
+
+@dataclass(frozen=True, slots=True)
 class MeshFieldRef:
     """Immutable reference to one mesh field owned by a geometry model."""
 
@@ -245,14 +287,18 @@ class BooleanResult:
 
 class _State(Enum):
     NEW = auto()
-    BUILDING = auto()
+    BUILDING_GEOMETRY = auto()
+    CONFIGURING_MESH = auto()
     MESHED = auto()
     MESH_FAILED = auto()
     CLOSED = auto()
 
 
-_QUERY_STATES = frozenset({_State.BUILDING, _State.MESH_FAILED})
-_MESH_CONTROL_STATES = frozenset({_State.BUILDING})
+_QUERY_STATES = frozenset(
+    {_State.BUILDING_GEOMETRY, _State.CONFIGURING_MESH, _State.MESH_FAILED}
+)
+_GEOMETRY_MUTATION_STATES = frozenset({_State.BUILDING_GEOMETRY})
+_MESH_CONTROL_STATES = frozenset({_State.CONFIGURING_MESH})
 
 
 def _load_gmsh() -> Any:
@@ -280,6 +326,8 @@ class GeometryModel:
         self._state = _State.NEW
         self._owner_token = object()
         self._entity_tokens: dict[tuple[int, int], object] = {}
+        self._curve_loop_tokens: dict[int, object] = {}
+        self._curve_loop_dependencies: dict[int, frozenset[tuple[int, int]]] = {}
         self._mesh_field_tokens: dict[int, object] = {}
         self._mesh_field_types: dict[
             int,
@@ -299,6 +347,8 @@ class GeometryModel:
         self._pending_options: dict[str, float] = {}
         self._mesh_attempted = False
         self._generation_token: object | None = None
+        self._mesher_token: object | None = None
+        self._structured_extrusion_open = False
 
     @property
     def name(self) -> str:
@@ -343,6 +393,8 @@ class GeometryModel:
             self._created_model = True
             self._gmsh.model.setCurrent(self.name)
             self._entity_tokens.clear()
+            self._curve_loop_tokens.clear()
+            self._curve_loop_dependencies.clear()
             self._mesh_field_tokens.clear()
             self._mesh_field_types.clear()
             self._mesh_size_mode = "none"
@@ -354,7 +406,9 @@ class GeometryModel:
             self._auto_mesh_scope_unknown = False
             self._mesh_attempted = False
             self._generation_token = None
-            self._state = _State.BUILDING
+            self._mesher_token = None
+            self._structured_extrusion_open = False
+            self._state = _State.BUILDING_GEOMETRY
             return self
         except BaseException as error:
             cleanup_errors = self._cleanup_after_failed_entry()
@@ -394,6 +448,8 @@ class GeometryModel:
                 )
         finally:
             self._entity_tokens.clear()
+            self._curve_loop_tokens.clear()
+            self._curve_loop_dependencies.clear()
             self._mesh_field_tokens.clear()
             self._mesh_field_types.clear()
             self._background_field = None
@@ -403,6 +459,8 @@ class GeometryModel:
             self._auto_mesh_blockers.clear()
             self._auto_mesh_scope_unknown = False
             self._generation_token = None
+            self._mesher_token = None
+            self._structured_extrusion_open = False
             self._state = _State.CLOSED
             if gmsh is not None and self._owns_session:
                 if bool(gmsh.isInitialized()):
@@ -436,6 +494,10 @@ class GeometryModel:
         """Return synchronized current entities of one dimension."""
         self._check_state("entities", _QUERY_STATES)
         normalized_dimension = _validate_entity_dimension(dimension)
+        if normalized_dimension > self.dimension:
+            raise ValueError(
+                "entities dimension must not exceed the geometry model dimension"
+            )
         self._activate("entities")
         self._gmsh.model.occ.synchronize()
         pairs = self._gmsh.model.getEntities(normalized_dimension)
@@ -453,16 +515,15 @@ class GeometryModel:
         y: float,
         z: float = 0.0,
     ) -> EntityRef:
-        """Create an OCC point in a one-dimensional facade."""
+        """Create an OCC point whose dimension does not exceed the model target."""
         operation = "point"
-        self._check_state(operation, frozenset({_State.BUILDING}))
-        if self.dimension != 1:
-            raise ValueError("point requires a one-dimensional geometry model")
+        self._check_state(operation, _GEOMETRY_MUTATION_STATES)
         coordinates = (
             _finite_float(x, "x"),
             _finite_float(y, "y"),
             _finite_float(z, "z"),
         )
+        self._validate_2d_z(coordinates[2], operation)
         self._activate(operation)
         tag = self._gmsh.model.occ.addPoint(*coordinates)
         return self._wrap_entity((0, tag))
@@ -474,16 +535,259 @@ class GeometryModel:
     ) -> EntityRef:
         """Create a straight OCC line between two facade-owned points."""
         operation = "line"
-        self._check_state(operation, frozenset({_State.BUILDING}))
-        if self.dimension != 1:
-            raise ValueError("line requires a one-dimensional geometry model")
+        self._check_state(operation, _GEOMETRY_MUTATION_STATES)
         endpoints = self._normalize_entities((start, end), operation=operation)
         if any(endpoint.dimension != 0 for endpoint in endpoints):
             raise ValueError("line endpoints must be dimension-zero point references")
         self._activate(operation)
         self._assert_occ_liveness(endpoints, operation)
+        self._assert_planar_entities(endpoints, operation)
+        coordinates = self._point_coordinates(endpoints, operation)
+        if _coordinate_distance(coordinates[0], coordinates[1]) <= _PLANAR_TOLERANCE:
+            raise ValueError("line endpoints must have distinct coordinates")
         tag = self._gmsh.model.occ.addLine(endpoints[0].tag, endpoints[1].tag)
         return self._wrap_entity((1, tag))
+
+    def circular_arc(
+        self,
+        start: EntityRef,
+        center: EntityRef,
+        end: EntityRef,
+    ) -> EntityRef:
+        """Create a circular arc from ``start`` to ``end`` about ``center``."""
+        operation = "circular_arc"
+        self._check_state(operation, _GEOMETRY_MUTATION_STATES)
+        points = self._normalize_entities(
+            (start, center, end),
+            operation=operation,
+        )
+        if any(point.dimension != 0 for point in points):
+            raise ValueError(
+                "circular_arc inputs must be dimension-zero point references"
+            )
+        self._activate(operation)
+        self._assert_occ_liveness(points, operation)
+        self._assert_planar_entities(points, operation)
+        coordinates = self._point_coordinates(points, operation)
+        start_radius = _coordinate_distance(coordinates[0], coordinates[1])
+        end_radius = _coordinate_distance(coordinates[2], coordinates[1])
+        if min(start_radius, end_radius) <= _PLANAR_TOLERANCE:
+            raise ValueError("circular_arc radius must be positive")
+        if not math.isclose(
+            start_radius,
+            end_radius,
+            rel_tol=1.0e-10,
+            abs_tol=_PLANAR_TOLERANCE,
+        ):
+            raise ValueError(
+                "circular_arc start and end must be equidistant from center"
+            )
+        if _coordinate_distance(coordinates[0], coordinates[2]) <= _PLANAR_TOLERANCE:
+            raise ValueError("circular_arc start and end must be distinct")
+        tag = self._gmsh.model.occ.addCircleArc(
+            points[0].tag,
+            points[1].tag,
+            points[2].tag,
+        )
+        return self._wrap_entity((1, tag))
+
+    def elliptical_arc(
+        self,
+        start: EntityRef,
+        center: EntityRef,
+        major_axis_point: EntityRef,
+        end: EntityRef,
+    ) -> EntityRef:
+        """Create an elliptical arc with an explicit major-axis point."""
+        operation = "elliptical_arc"
+        self._check_state(operation, _GEOMETRY_MUTATION_STATES)
+        points = tuple(
+            self._normalize_entities((point,), operation=f"{operation} {role}")[0]
+            for role, point in zip(
+                ("start", "center", "major_axis_point", "end"),
+                (start, center, major_axis_point, end),
+                strict=True,
+            )
+        )
+        if any(point.dimension != 0 for point in points):
+            raise ValueError(
+                "elliptical_arc inputs must be dimension-zero point references"
+            )
+        self._activate(operation)
+        self._assert_occ_liveness(points, operation)
+        self._assert_planar_entities(points, operation)
+        coordinates = self._point_coordinates(points, operation)
+        if _coordinate_distance(coordinates[1], coordinates[2]) <= _PLANAR_TOLERANCE:
+            raise ValueError(
+                "elliptical_arc center and major_axis_point must be distinct"
+            )
+        if (
+            _coordinate_distance(coordinates[0], coordinates[1])
+            <= _PLANAR_TOLERANCE
+            or _coordinate_distance(coordinates[3], coordinates[1])
+            <= _PLANAR_TOLERANCE
+        ):
+            raise ValueError("elliptical_arc endpoints must differ from center")
+        if _coordinate_distance(coordinates[0], coordinates[3]) <= _PLANAR_TOLERANCE:
+            raise ValueError("elliptical_arc start and end must be distinct")
+        _validate_elliptical_arc_geometry(coordinates)
+        tag = self._gmsh.model.occ.addEllipseArc(
+            points[0].tag,
+            points[1].tag,
+            points[2].tag,
+            points[3].tag,
+        )
+        return self._wrap_entity((1, tag))
+
+    def spline(self, points: Sequence[EntityRef]) -> EntityRef:
+        """Create an interpolating spline through ordered control points."""
+        return self._point_curve("spline", points, backend_name="addSpline")
+
+    def bspline(self, points: Sequence[EntityRef]) -> EntityRef:
+        """Create a B-spline through ordered control points."""
+        return self._point_curve("bspline", points, backend_name="addBSpline")
+
+    def orient(
+        self,
+        curve: EntityRef,
+        *,
+        reversed: bool = False,
+    ) -> OrientedCurveRef:
+        """Return an explicit traversal orientation for one live curve."""
+        operation = "orient"
+        self._check_state(operation, _QUERY_STATES)
+        if not isinstance(reversed, bool):
+            raise TypeError(f"reversed must be a boolean, got {reversed!r}")
+        normalized = self._normalize_entities((curve,), operation=operation)[0]
+        if normalized.dimension != 1:
+            raise ValueError("orient requires a dimension-one curve reference")
+        self._activate(operation)
+        self._assert_occ_liveness((normalized,), operation)
+        return OrientedCurveRef(normalized, reversed)
+
+    def curve_loop(
+        self,
+        curves: Sequence[OrientedCurveRef],
+    ) -> CurveLoopRef:
+        """Create an owner-local closed loop from ordered, oriented curves."""
+        operation = "curve_loop"
+        self._check_state(operation, _GEOMETRY_MUTATION_STATES)
+        try:
+            oriented = tuple(curves)
+        except TypeError as exc:
+            raise TypeError("curve_loop curves must be iterable") from exc
+        if not oriented:
+            raise ValueError("curve_loop requires at least one oriented curve")
+        if any(not isinstance(item, OrientedCurveRef) for item in oriented):
+            raise TypeError(
+                "curve_loop requires only OrientedCurveRef values returned by orient()"
+            )
+        normalized_curves = self._normalize_entities(
+            tuple(item.curve for item in oriented),
+            operation=operation,
+        )
+        self._activate(operation)
+        self._gmsh.model.occ.synchronize()
+        self._assert_occ_liveness(normalized_curves, operation)
+        self._assert_planar_entities(normalized_curves, operation)
+
+        endpoints: list[tuple[tuple[int, int], tuple[int, int]]] = []
+        curve_tags: list[int] = []
+        for item in oriented:
+            signed_tag = -item.curve.tag if item.reversed else item.curve.tag
+            curve_tags.append(item.curve.tag)
+            raw_boundary = self._gmsh.model.getBoundary(
+                [(1, signed_tag)],
+                combined=False,
+                oriented=True,
+                recursive=False,
+            )
+            boundary = tuple(_normalize_dim_tag(pair) for pair in raw_boundary)
+            if len(boundary) != 2 or any(dimension != 0 for dimension, _ in boundary):
+                raise GeometryError(
+                    f"geometry model {self.name!r}: curve_loop could not determine "
+                    f"two ordered endpoints for curve {item.curve.tag}"
+                )
+            endpoints.append((boundary[0], boundary[1]))
+        for index, (_, end_point) in enumerate(endpoints):
+            next_start = endpoints[(index + 1) % len(endpoints)][0]
+            if end_point != next_start:
+                raise ValueError(
+                    "curve_loop curves must be continuous in the supplied order "
+                    "and close at the final endpoint"
+                )
+        ordered_start_points = tuple(start_point for start_point, _ in endpoints)
+        if len(oriented) > 1 and len(set(ordered_start_points)) != len(
+            ordered_start_points
+        ):
+            raise ValueError(
+                "curve_loop must not revisit a boundary point before final closure"
+            )
+        dependency_keys = frozenset(
+            self._entity_boundary_closure_keys(
+                normalized_curves,
+                synchronize=False,
+            )
+        )
+
+        # OCC curve loops auto-orient their positive curve tags. Negative tags
+        # are intentionally kept out of this call: Gmsh's OCC layer can
+        # interpret them as additive inner wires. The explicit typed
+        # orientation above is used to validate traversal continuity.
+        raw_tag = self._gmsh.model.occ.addCurveLoop(curve_tags)
+        try:
+            tag = _validate_positive_tag(raw_tag, "curve loop tag")
+        except ValueError as error:
+            self._curve_loop_tokens.clear()
+            self._curve_loop_dependencies.clear()
+            raise GeometryError(
+                f"geometry model {self.name!r}: curve_loop returned an invalid "
+                "loop tag; typed loop identities were invalidated"
+            ) from error
+        if tag in self._curve_loop_tokens:
+            self._curve_loop_tokens.clear()
+            self._curve_loop_dependencies.clear()
+            raise GeometryError(
+                f"geometry model {self.name!r}: curve_loop returned duplicate "
+                f"loop tag {tag}; typed loop identities were invalidated"
+            )
+        token = object()
+        reference = CurveLoopRef(tag, oriented, self._owner_token, token)
+        self._curve_loop_tokens[tag] = token
+        self._curve_loop_dependencies[tag] = dependency_keys
+        return reference
+
+    def plane_surface(
+        self,
+        outer: CurveLoopRef,
+        *,
+        holes: Sequence[CurveLoopRef] = (),
+    ) -> EntityRef:
+        """Create a planar surface from one outer loop and optional hole loops."""
+        operation = "plane_surface"
+        self._check_state(operation, _GEOMETRY_MUTATION_STATES)
+        if self.dimension < 2:
+            raise ValueError(
+                "plane_surface requires a two- or three-dimensional geometry model"
+            )
+        try:
+            materialized_holes = tuple(holes)
+        except TypeError as exc:
+            raise TypeError("plane_surface holes must be iterable") from exc
+        self._activate(operation)
+        self._gmsh.model.occ.synchronize()
+        loops = self._normalize_curve_loops(
+            (outer, *materialized_holes),
+            operation=operation,
+        )
+        member_curves = tuple(
+            oriented.curve for loop in loops for oriented in loop.curves
+        )
+        self._assert_occ_liveness(member_curves, operation)
+        self._assert_planar_entities(member_curves, operation)
+        self._assert_plane_surface_loop_compatibility(loops, operation=operation)
+        tag = self._gmsh.model.occ.addPlaneSurface([loop.tag for loop in loops])
+        return self._wrap_entity((2, tag))
 
     def rectangle(
         self,
@@ -496,7 +800,7 @@ class GeometryModel:
         rounded_radius: float = 0.0,
     ) -> EntityRef:
         """Create a rectangular OCC surface."""
-        self._check_state("rectangle", frozenset({_State.BUILDING}))
+        self._check_state("rectangle", _GEOMETRY_MUTATION_STATES)
         if self.dimension == 1:
             raise ValueError(
                 "rectangle requires a two- or three-dimensional geometry model"
@@ -535,7 +839,7 @@ class GeometryModel:
         radius_y: float | None = None,
     ) -> EntityRef:
         """Create an elliptical or circular OCC disk surface."""
-        self._check_state("disk", frozenset({_State.BUILDING}))
+        self._check_state("disk", _GEOMETRY_MUTATION_STATES)
         if self.dimension == 1:
             raise ValueError("disk requires a two- or three-dimensional geometry model")
         x_value = _finite_float(x, "x")
@@ -581,7 +885,7 @@ class GeometryModel:
         dz: float,
     ) -> EntityRef:
         """Create an OCC box volume in a three-dimensional facade."""
-        self._check_state("box", frozenset({_State.BUILDING}))
+        self._check_state("box", _GEOMETRY_MUTATION_STATES)
         if self.dimension != 3:
             raise ValueError("box requires a three-dimensional geometry model")
         values = (
@@ -609,7 +913,7 @@ class GeometryModel:
         angle: float = 2.0 * math.pi,
     ) -> EntityRef:
         """Create an OCC cylinder volume in a three-dimensional facade."""
-        self._check_state("cylinder", frozenset({_State.BUILDING}))
+        self._check_state("cylinder", _GEOMETRY_MUTATION_STATES)
         if self.dimension != 3:
             raise ValueError("cylinder requires a three-dimensional geometry model")
         coordinates = (
@@ -698,7 +1002,7 @@ class GeometryModel:
     ) -> tuple[EntityRef, ...]:
         """Translate entities in place and return their existing references."""
         operation = "translate"
-        self._check_state(operation, frozenset({_State.BUILDING}))
+        self._check_state(operation, _GEOMETRY_MUTATION_STATES)
         normalized = self._normalize_entities(entities, operation=operation)
         vector = (
             _finite_float(dx, "dx"),
@@ -711,7 +1015,9 @@ class GeometryModel:
         self._activate(operation)
         self._assert_occ_liveness(normalized, operation)
         self._check_controlled_transform_allowed(operation, normalized)
+        transformed_keys = self._entity_boundary_closure_keys(normalized)
         self._gmsh.model.occ.translate(_dim_tags(normalized), *vector)
+        self._invalidate_curve_loops_for_keys(transformed_keys)
         return normalized
 
     def rotate(
@@ -727,7 +1033,7 @@ class GeometryModel:
     ) -> tuple[EntityRef, ...]:
         """Rotate entities in place and return their existing references."""
         operation = "rotate"
-        self._check_state(operation, frozenset({_State.BUILDING}))
+        self._check_state(operation, _GEOMETRY_MUTATION_STATES)
         normalized = self._normalize_entities(entities, operation=operation)
         center = (
             _finite_float(x, "x"),
@@ -750,12 +1056,14 @@ class GeometryModel:
         self._activate(operation)
         self._assert_occ_liveness(normalized, operation)
         self._check_controlled_transform_allowed(operation, normalized)
+        transformed_keys = self._entity_boundary_closure_keys(normalized)
         self._gmsh.model.occ.rotate(
             _dim_tags(normalized),
             *center,
             *axis,
             angle_value,
         )
+        self._invalidate_curve_loops_for_keys(transformed_keys)
         return normalized
 
     def extrude(
@@ -764,14 +1072,81 @@ class GeometryModel:
         dx: float,
         dy: float,
         dz: float,
-        *,
-        num_elements: Sequence[int] = (),
-        heights: Sequence[float] = (),
-        recombine: bool = False,
     ) -> tuple[EntityRef, ...]:
-        """Extrude OCC entities with optional structured layer controls."""
-        operation = "extrude"
-        self._check_state(operation, frozenset({_State.BUILDING}))
+        """Extrude OCC entities without applying native mesh-layer controls."""
+        self._check_state("extrude", _GEOMETRY_MUTATION_STATES)
+        return self._extrude(
+            entities,
+            dx,
+            dy,
+            dz,
+            operation="extrude",
+            layer_counts=(),
+            normalized_heights=(),
+            recombine=False,
+            structured=False,
+        )
+
+    def _structured_extrude(
+        self,
+        mesher_token: object,
+        entities: Iterable[EntityRef],
+        dx: float,
+        dy: float,
+        dz: float,
+        *,
+        num_elements: Sequence[int],
+        heights: Sequence[float],
+        recombine: bool,
+    ) -> tuple[EntityRef, ...]:
+        operation = "structured_extrude"
+        self._assert_mesher_authority(mesher_token, operation)
+        if not self._structured_extrusion_open:
+            raise self._state_error(
+                operation,
+                "the structured-extrusion subphase was closed by an ordinary "
+                "mesh control, field, or generation attempt",
+            )
+        layer_counts = _positive_integer_sequence(num_elements, "num_elements")
+        try:
+            materialized_heights = tuple(heights)
+        except TypeError as exc:
+            raise TypeError("heights must be a sequence of finite numbers") from exc
+        normalized_heights = tuple(
+            _finite_float(value, "height") for value in materialized_heights
+        )
+        if not isinstance(recombine, bool):
+            raise TypeError(f"recombine must be a boolean, got {recombine!r}")
+        if not layer_counts and not recombine:
+            raise ValueError(
+                "structured_extrude requires nonempty num_elements or "
+                "recombine=True; use GeometryModel.extrude() for pure geometry"
+            )
+        return self._extrude(
+            entities,
+            dx,
+            dy,
+            dz,
+            operation=operation,
+            layer_counts=layer_counts,
+            normalized_heights=normalized_heights,
+            recombine=recombine,
+            structured=True,
+        )
+
+    def _extrude(
+        self,
+        entities: Iterable[EntityRef],
+        dx: float,
+        dy: float,
+        dz: float,
+        *,
+        operation: str,
+        layer_counts: tuple[int, ...],
+        normalized_heights: tuple[float, ...],
+        recombine: bool,
+        structured: bool,
+    ) -> tuple[EntityRef, ...]:
         if self.dimension == 1:
             raise ValueError("extrude is unavailable in a one-dimensional geometry model")
         normalized = self._normalize_entities(entities, operation=operation)
@@ -792,10 +1167,6 @@ class GeometryModel:
             raise ValueError("extrusion vector must be nonzero")
         if self.dimension == 2 and vector[2] != 0.0:
             raise ValueError("2D extrusion must remain in the global XY plane")
-        layer_counts = _positive_integer_sequence(num_elements, "num_elements")
-        normalized_heights = tuple(
-            _finite_float(value, "height") for value in tuple(heights)
-        )
         if normalized_heights:
             if not layer_counts:
                 raise ValueError("heights require nonempty num_elements")
@@ -818,57 +1189,69 @@ class GeometryModel:
                 abs_tol=1.0e-12,
             ):
                 raise ValueError("the final normalized height must be 1.0")
-        if not isinstance(recombine, bool):
-            raise TypeError(f"recombine must be a boolean, got {recombine!r}")
         self._activate(operation)
         self._assert_occ_liveness(normalized, operation)
-        output_pairs = self._gmsh.model.occ.extrude(
-            _dim_tags(normalized),
-            *vector,
-            list(layer_counts),
-            list(normalized_heights),
-            recombine,
-        )
-        controlled = bool(layer_counts or normalized_heights or recombine)
+        native_started = False
         prior_unknown_scope = self._control_dependency_scope_unknown
         prior_auto_mesh_scope_unknown = self._auto_mesh_scope_unknown
-        if controlled:
-            self._control_dependency_scope_unknown = True
-            self._auto_mesh_scope_unknown = True
-        validated_pairs = tuple(_normalize_dim_tag(pair) for pair in output_pairs)
-        if not validated_pairs:
-            raise GeometryError(
-                f"geometry model {self.name!r}: extrude returned no entities"
+        try:
+            native_started = True
+            output_pairs = self._gmsh.model.occ.extrude(
+                _dim_tags(normalized),
+                *vector,
+                list(layer_counts),
+                list(normalized_heights),
+                recombine,
             )
-        allowed_output_dimensions = {input_dimension, input_dimension + 1}
-        if any(
-            dimension not in allowed_output_dimensions
-            for dimension, _ in validated_pairs
-        ):
-            raise GeometryError(
-                f"geometry model {self.name!r}: extrude returned an entity with "
-                "an unexpected dimension"
+            if structured:
+                self._control_dependency_scope_unknown = True
+                self._auto_mesh_scope_unknown = True
+            validated_pairs = tuple(
+                _normalize_dim_tag(pair) for pair in output_pairs
             )
-        if not any(
-            dimension == input_dimension + 1 for dimension, _ in validated_pairs
-        ):
-            raise GeometryError(
-                f"geometry model {self.name!r}: extrude returned no "
-                f"dimension-{input_dimension + 1} entity"
-            )
-        outputs = tuple(self._wrap_entity(pair) for pair in validated_pairs)
-        if controlled:
-            dependency_keys = self._entity_boundary_closure_keys(
-                (*normalized, *outputs)
-            )
-            self._register_control_dependencies(
-                dependency_keys,
-                transform_unsafe=True,
-            )
-            self._auto_mesh_blockers.add(operation)
-            self._control_dependency_scope_unknown = prior_unknown_scope
-            self._auto_mesh_scope_unknown = prior_auto_mesh_scope_unknown
-        return outputs
+            if not validated_pairs:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} returned no entities"
+                )
+            allowed_output_dimensions = {input_dimension, input_dimension + 1}
+            if any(
+                dimension not in allowed_output_dimensions
+                for dimension, _ in validated_pairs
+            ):
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} returned an "
+                    "entity with an unexpected dimension"
+                )
+            if not any(
+                dimension == input_dimension + 1
+                for dimension, _ in validated_pairs
+            ):
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} returned no "
+                    f"dimension-{input_dimension + 1} entity"
+                )
+            outputs = tuple(self._wrap_entity(pair) for pair in validated_pairs)
+            if structured:
+                dependency_keys = self._entity_boundary_closure_keys(
+                    (*normalized, *outputs)
+                )
+                self._register_control_dependencies(
+                    dependency_keys,
+                    transform_unsafe=True,
+                )
+                self._auto_mesh_blockers.add(operation)
+                self._control_dependency_scope_unknown = prior_unknown_scope
+                self._auto_mesh_scope_unknown = prior_auto_mesh_scope_unknown
+            return outputs
+        except BaseException as error:
+            if structured and native_started:
+                self._state = _State.MESH_FAILED
+                self._structured_extrusion_open = False
+                error.add_note(
+                    f"geometry model {self.name!r}: structured extrusion failed "
+                    "after native OCC mutation began"
+                )
+            raise
 
     def entity(self, dimension: int, tag: int) -> EntityRef:
         """Acquire a typed reference for an existing raw OCC entity."""
@@ -878,6 +1261,10 @@ class GeometryModel:
             _validate_entity_dimension(dimension),
             _validate_positive_tag(tag, "entity tag"),
         )
+        if normalized[0] > self.dimension:
+            raise ValueError(
+                "entity dimension must not exceed the geometry model dimension"
+            )
         self._activate(operation)
         existing = {
             _normalize_dim_tag(pair)
@@ -970,15 +1357,167 @@ class GeometryModel:
                 matches.append(entity)
         return tuple(sorted(matches, key=lambda item: (item.dimension, item.tag)))
 
-    def transfinite_curve(
+    def bounding_box(
         self,
+        entity: EntityRef,
+    ) -> tuple[float, float, float, float, float, float]:
+        """Return the native OCC bounding box of one live entity."""
+        operation = "bounding_box"
+        target = self._prepare_geometry_query_entity(entity, operation=operation)
+        bounds = tuple(
+            _finite_float(value, "bounding box coordinate")
+            for value in self._gmsh.model.getBoundingBox(
+                target.dimension,
+                target.tag,
+            )
+        )
+        if len(bounds) != 6:
+            raise GeometryError(
+                f"geometry model {self.name!r}: invalid bounding box for "
+                f"entity ({target.dimension}, {target.tag})"
+            )
+        if any(bounds[axis] > bounds[axis + 3] for axis in range(3)):
+            raise GeometryError(
+                f"geometry model {self.name!r}: inverted bounding box for "
+                f"entity ({target.dimension}, {target.tag})"
+            )
+        return bounds  # type: ignore[return-value]
+
+    def length(self, curve: EntityRef) -> float:
+        """Return the OCC length of one live curve."""
+        target = self._prepare_geometry_query_entity(curve, operation="length")
+        if target.dimension != 1:
+            raise ValueError("length requires a dimension-one curve reference")
+        return _nonnegative_float(
+            self._gmsh.model.occ.getMass(1, target.tag),
+            "curve length",
+        )
+
+    def area(self, surface: EntityRef) -> float:
+        """Return the OCC area of one live surface."""
+        target = self._prepare_geometry_query_entity(surface, operation="area")
+        if target.dimension != 2:
+            raise ValueError("area requires a dimension-two surface reference")
+        return _nonnegative_float(
+            self._gmsh.model.occ.getMass(2, target.tag),
+            "surface area",
+        )
+
+    def center_of_mass(
+        self,
+        entity: EntityRef,
+    ) -> tuple[float, float, float]:
+        """Return the OCC center of mass of one live entity."""
+        operation = "center_of_mass"
+        target = self._prepare_geometry_query_entity(entity, operation=operation)
+        if target.dimension == 0:
+            bounds = self.bounding_box(target)
+            values = tuple(
+                0.5 * (bounds[axis] + bounds[axis + 3]) for axis in range(3)
+            )
+        else:
+            values = tuple(
+                _finite_float(value, "center-of-mass coordinate")
+                for value in self._gmsh.model.occ.getCenterOfMass(
+                    target.dimension,
+                    target.tag,
+                )
+            )
+        if len(values) != 3:
+            raise GeometryError(
+                f"geometry model {self.name!r}: invalid center of mass for "
+                f"entity ({target.dimension}, {target.tag})"
+            )
+        return values  # type: ignore[return-value]
+
+    def adjacent(
+        self,
+        entity: EntityRef,
+        *,
+        dimension: int,
+    ) -> tuple[EntityRef, ...]:
+        """Return deterministic immediate adjacencies at one neighboring dimension."""
+        operation = "adjacent"
+        target = self._prepare_geometry_query_entity(entity, operation=operation)
+        requested_dimension = _validate_entity_dimension(dimension)
+        if requested_dimension > self.dimension:
+            raise ValueError(
+                "adjacent dimension must not exceed the geometry model dimension"
+            )
+        if requested_dimension not in {
+            target.dimension - 1,
+            target.dimension + 1,
+        }:
+            raise ValueError(
+                "adjacent dimension must differ from the entity dimension by one"
+            )
+        raw_upward, raw_downward = self._gmsh.model.getAdjacencies(
+            target.dimension,
+            target.tag,
+        )
+        raw_tags = raw_upward if requested_dimension > target.dimension else raw_downward
+        tags = sorted(
+            {
+                _validate_positive_tag(value, "adjacent entity tag")
+                for value in raw_tags
+            }
+        )
+        existing = {
+            _normalize_dim_tag(pair)
+            for pair in self._gmsh.model.occ.getEntities(requested_dimension)
+        }
+        missing = [
+            tag for tag in tags if (requested_dimension, tag) not in existing
+        ]
+        if missing:
+            raise GeometryError(
+                f"geometry model {self.name!r}: adjacent returned missing "
+                f"entity ({requested_dimension}, {missing[0]})"
+            )
+        return tuple(
+            self._wrap_entity((requested_dimension, tag)) for tag in tags
+        )
+
+    def _bind_mesher(self) -> object:
+        """Atomically seal geometry mutation and issue the sole mesher capability."""
+        operation = "Mesher binding"
+        if self._mesher_token is not None:
+            raise self._state_error(operation, "a Mesher is already bound")
+        self._check_state(operation, _GEOMETRY_MUTATION_STATES)
+        self._activate(operation)
+        token = object()
+        self._mesher_token = token
+        self._structured_extrusion_open = True
+        self._state = _State.CONFIGURING_MESH
+        return token
+
+    def _assert_mesher_authority(
+        self,
+        mesher_token: object,
+        operation: str,
+    ) -> None:
+        if self._mesher_token is None or mesher_token is not self._mesher_token:
+            raise self._state_error(operation, "the bound Mesher capability is invalid")
+        self._check_state(operation, _MESH_CONTROL_STATES)
+
+    def _complete_mesh_configuration_operation(
+        self,
+        mesher_token: object,
+        operation: str,
+    ) -> None:
+        self._assert_mesher_authority(mesher_token, operation)
+        self._structured_extrusion_open = False
+
+    def _mesher_transfinite_curve(
+        self,
+        mesher_token: object,
         curve: EntityRef,
         *,
         num_nodes: int,
     ) -> None:
         """Set Gmsh's primary-node count, not an element count, on one curve."""
         operation = "transfinite_curve"
-        self._check_state(operation, _MESH_CONTROL_STATES)
+        self._assert_mesher_authority(mesher_token, operation)
         node_count = _integer_at_least(num_nodes, "num_nodes", minimum=2)
         target = self._prepare_mesh_control_target(
             curve,
@@ -989,12 +1528,14 @@ class GeometryModel:
             (target,),
             synchronize=False,
         )
+        self._complete_mesh_configuration_operation(mesher_token, operation)
         self._gmsh.model.mesh.setTransfiniteCurve(target.tag, node_count)
         self._register_control_dependencies(dependency_keys, transform_unsafe=True)
         self._auto_mesh_blockers.add(operation)
 
-    def transfinite_surface(
+    def _mesher_transfinite_surface(
         self,
+        mesher_token: object,
         surface: EntityRef,
         *,
         corners: Sequence[EntityRef] = (),
@@ -1005,7 +1546,7 @@ class GeometryModel:
         separately when quadrilateral output is desired.
         """
         operation = "transfinite_surface"
-        self._check_state(operation, _MESH_CONTROL_STATES)
+        self._assert_mesher_authority(mesher_token, operation)
         normalized_corners = self._normalize_mesh_control_corners(
             corners,
             allowed_counts=(0, 3, 4),
@@ -1026,6 +1567,7 @@ class GeometryModel:
             (target, *normalized_corners),
             synchronize=False,
         )
+        self._complete_mesh_configuration_operation(mesher_token, operation)
         self._gmsh.model.mesh.setTransfiniteSurface(
             target.tag,
             cornerTags=[corner.tag for corner in normalized_corners],
@@ -1033,8 +1575,9 @@ class GeometryModel:
         self._register_control_dependencies(dependency_keys, transform_unsafe=True)
         self._auto_mesh_blockers.add(operation)
 
-    def transfinite_volume(
+    def _mesher_transfinite_volume(
         self,
+        mesher_token: object,
         volume: EntityRef,
         *,
         corners: Sequence[EntityRef] = (),
@@ -1045,7 +1588,7 @@ class GeometryModel:
         remains responsible for rejecting incompatible or unsuitable topology.
         """
         operation = "transfinite_volume"
-        self._check_state(operation, _MESH_CONTROL_STATES)
+        self._assert_mesher_authority(mesher_token, operation)
         normalized_corners = self._normalize_mesh_control_corners(
             corners,
             allowed_counts=(0, 6, 8),
@@ -1066,6 +1609,7 @@ class GeometryModel:
             (target, *normalized_corners),
             synchronize=False,
         )
+        self._complete_mesh_configuration_operation(mesher_token, operation)
         self._gmsh.model.mesh.setTransfiniteVolume(
             target.tag,
             cornerTags=[corner.tag for corner in normalized_corners],
@@ -1073,14 +1617,18 @@ class GeometryModel:
         self._register_control_dependencies(dependency_keys, transform_unsafe=True)
         self._auto_mesh_blockers.add(operation)
 
-    def recombine(self, surface: EntityRef) -> None:
+    def _mesher_recombine(
+        self,
+        mesher_token: object,
+        surface: EntityRef,
+    ) -> None:
         """Request native Gmsh recombination on one surface.
 
         The entity-local request retains Gmsh's default angle and does not
         guarantee an all-quadrilateral mesh for unsuitable topology.
         """
         operation = "recombine"
-        self._check_state(operation, _MESH_CONTROL_STATES)
+        self._assert_mesher_authority(mesher_token, operation)
         target = self._prepare_mesh_control_target(
             surface,
             dimension=2,
@@ -1090,19 +1638,21 @@ class GeometryModel:
             (target,),
             synchronize=False,
         )
+        self._complete_mesh_configuration_operation(mesher_token, operation)
         self._gmsh.model.mesh.setRecombine(2, target.tag)
         self._register_control_dependencies(dependency_keys, transform_unsafe=True)
         self._auto_mesh_blockers.add(operation)
 
-    def mesh_size(
+    def _mesher_mesh_size(
         self,
+        mesher_token: object,
         points: Iterable[EntityRef],
         *,
         size: float,
     ) -> None:
         """Assign one mesh size to selected live OCC points."""
         operation = "mesh_size"
-        self._check_state(operation, _MESH_CONTROL_STATES)
+        self._assert_mesher_authority(mesher_token, operation)
         if self._mesh_size_mode == "background":
             raise ValueError(
                 "mesh_size cannot be combined with a selected background field"
@@ -1115,6 +1665,7 @@ class GeometryModel:
         self._activate(operation)
         self._gmsh.model.occ.synchronize()
         self._assert_occ_liveness(normalized, operation)
+        self._complete_mesh_configuration_operation(mesher_token, operation)
         self._gmsh.model.mesh.setSize(_dim_tags(normalized), size_value)
         self._mesh_size_mode = "point"
         self._register_control_dependencies(
@@ -1122,8 +1673,9 @@ class GeometryModel:
             transform_unsafe=True,
         )
 
-    def distance_field(
+    def _mesher_distance_field(
         self,
+        mesher_token: object,
         *,
         points: Iterable[EntityRef] = (),
         curves: Iterable[EntityRef] = (),
@@ -1132,7 +1684,7 @@ class GeometryModel:
     ) -> MeshFieldRef:
         """Create a field measuring distance from selected OCC entities."""
         operation = "distance_field"
-        self._check_state(operation, _MESH_CONTROL_STATES)
+        self._assert_mesher_authority(mesher_token, operation)
         normalized_points = self._normalize_optional_entities(
             points,
             operation=operation,
@@ -1201,6 +1753,7 @@ class GeometryModel:
                 )
             manager.setNumber(field_tag, "Sampling", sampling_value)
 
+        self._complete_mesh_configuration_operation(mesher_token, operation)
         mesh_field = self._construct_mesh_field("Distance", configure)
         self._register_control_dependencies(
             dependency_keys,
@@ -1208,8 +1761,9 @@ class GeometryModel:
         )
         return mesh_field
 
-    def threshold_field(
+    def _mesher_threshold_field(
         self,
+        mesher_token: object,
         distance: MeshFieldRef,
         *,
         size_min: float,
@@ -1219,7 +1773,7 @@ class GeometryModel:
     ) -> MeshFieldRef:
         """Map one distance field to near- and far-field mesh sizes."""
         operation = "threshold_field"
-        self._check_state(operation, _MESH_CONTROL_STATES)
+        self._assert_mesher_authority(mesher_token, operation)
         normalized_distance = self._normalize_mesh_fields(
             (distance,),
             operation=operation,
@@ -1247,12 +1801,17 @@ class GeometryModel:
             manager.setNumber(field_tag, "DistMin", dist_min_value)
             manager.setNumber(field_tag, "DistMax", dist_max_value)
 
+        self._complete_mesh_configuration_operation(mesher_token, operation)
         return self._construct_mesh_field("Threshold", configure)
 
-    def min_field(self, fields: Sequence[MeshFieldRef]) -> MeshFieldRef:
+    def _mesher_min_field(
+        self,
+        mesher_token: object,
+        fields: Sequence[MeshFieldRef],
+    ) -> MeshFieldRef:
         """Create the pointwise minimum of two or more size fields."""
         operation = "min_field"
-        self._check_state(operation, _MESH_CONTROL_STATES)
+        self._assert_mesher_authority(mesher_token, operation)
         try:
             materialized = tuple(fields)
         except TypeError as exc:
@@ -1279,12 +1838,17 @@ class GeometryModel:
                 [item.tag for item in normalized],
             )
 
+        self._complete_mesh_configuration_operation(mesher_token, operation)
         return self._construct_mesh_field("Min", configure)
 
-    def background_field(self, field: MeshFieldRef) -> None:
+    def _mesher_background_field(
+        self,
+        mesher_token: object,
+        field: MeshFieldRef,
+    ) -> None:
         """Select exactly one size-producing field as the background field."""
         operation = "background_field"
-        self._check_state(operation, _MESH_CONTROL_STATES)
+        self._assert_mesher_authority(mesher_token, operation)
         if self._background_field is not None:
             raise ValueError("background_field may be selected only once")
         if self._mesh_size_mode == "point":
@@ -1303,26 +1867,30 @@ class GeometryModel:
         self._activate(operation)
         self._gmsh.model.occ.synchronize()
         self._assert_mesh_field_liveness((normalized,), operation)
+        self._complete_mesh_configuration_operation(mesher_token, operation)
         self._gmsh.model.mesh.field.setAsBackgroundMesh(normalized.tag)
         self._background_field = normalized
         self._mesh_size_mode = "background"
 
-    def generate_mesh(
+    def _mesher_generate_mesh(
         self,
+        mesher_token: object,
         *,
         size: float | None = None,
         order: Literal[1, 2] = 1,
         recombine: bool = False,
     ) -> GmshMeshRef:
         """Generate the one native mesh permitted for this facade model."""
+        self._assert_mesher_authority(mesher_token, "generate")
         return self._generate_mesh(
             size=size,
             order=order,
             recombine=recombine,
         )
 
-    def generate_auto_mesh(
+    def _mesher_generate_auto_mesh(
         self,
+        mesher_token: object,
         *,
         level: Literal[1, 2, 3, 4, 5] = 3,
         cell_shape: Literal[
@@ -1336,6 +1904,7 @@ class GeometryModel:
         order: Literal[1, 2] = 1,
     ) -> GmshMeshRef:
         """Generate one level-scaled, strict-shape native mesh."""
+        self._assert_mesher_authority(mesher_token, "generate")
         return self._generate_auto_mesh(
             level=level,
             cell_shape=cell_shape,
@@ -1349,10 +1918,10 @@ class GeometryModel:
         order: Literal[1, 2],
         recombine: bool,
     ) -> GmshMeshRef:
-        operation = "generate_mesh"
+        operation = "MeshSpec generation"
         self._check_state(
             operation,
-            frozenset({_State.BUILDING}),
+            _MESH_CONTROL_STATES,
         )
         if self._mesh_attempted:
             raise self._state_error(operation, "the one mesh attempt was already used")
@@ -1395,10 +1964,10 @@ class GeometryModel:
         cell_shape: _AutoCellShape | None,
         order: Literal[1, 2],
     ) -> GmshMeshRef:
-        operation = "generate_auto_mesh"
+        operation = "AutoMeshSpec generation"
         self._check_state(
             operation,
-            frozenset({_State.BUILDING}),
+            _MESH_CONTROL_STATES,
         )
         if self._mesh_attempted:
             raise self._state_error(operation, "the one mesh attempt was already used")
@@ -1458,6 +2027,7 @@ class GeometryModel:
                 "least one top-dimensional OCC entity"
             )
 
+        self._structured_extrusion_open = False
         self._mesh_attempted = True
         try:
             generation_size_mode: _GenerationSizeMode = self._mesh_size_mode
@@ -1653,7 +2223,7 @@ class GeometryModel:
         if policy.requested_cell_shape is None:
             requested += f" (resolved to {policy.resolved_cell_shape!r})"
         return MeshCellShapeError(
-            f"geometry model {self.name!r}: generate_auto_mesh requested "
+            f"geometry model {self.name!r}: AutoMeshSpec requested "
             f"{requested} for dimension={self.dimension} and order={policy.order}; "
             f"expected only {expected}, but {actual_detail}; automatic fallback "
             "is disabled"
@@ -1688,17 +2258,453 @@ class GeometryModel:
         return self._raw_handle("raw_occ", "occ")
 
     def _raw_handle(self, operation: str, kind: Literal["model", "occ"]) -> Any:
-        self._check_state(operation, frozenset({_State.BUILDING}))
+        self._check_state(operation, _GEOMETRY_MUTATION_STATES)
         self._activate(operation)
         self._auto_mesh_scope_unknown = True
         if self._entity_control_dependencies:
             self._control_dependency_scope_unknown = True
         self._entity_tokens.clear()
+        self._curve_loop_tokens.clear()
+        self._curve_loop_dependencies.clear()
         self._mesh_field_tokens.clear()
         self._mesh_field_types.clear()
         if kind == "model":
             return self._gmsh.model
         return self._gmsh.model.occ
+
+    def _point_curve(
+        self,
+        operation: Literal["spline", "bspline"],
+        points: Sequence[EntityRef],
+        *,
+        backend_name: Literal["addSpline", "addBSpline"],
+    ) -> EntityRef:
+        self._check_state(operation, _GEOMETRY_MUTATION_STATES)
+        try:
+            materialized = tuple(points)
+        except TypeError as exc:
+            raise TypeError(f"{operation} points must be iterable") from exc
+        if len(materialized) < 2:
+            raise ValueError(f"{operation} requires at least two points")
+        normalized = tuple(
+            self._normalize_entities(
+                (point,),
+                operation=f"{operation} point {index}",
+            )[0]
+            for index, point in enumerate(materialized)
+        )
+        duplicate_positions: dict[EntityRef, list[int]] = {}
+        for index, point in enumerate(normalized):
+            duplicate_positions.setdefault(point, []).append(index)
+        repeated = {
+            point: positions
+            for point, positions in duplicate_positions.items()
+            if len(positions) > 1
+        }
+        periodic_repeat = (
+            len(normalized) >= 3
+            and len(repeated) == 1
+            and repeated.get(normalized[0]) == [0, len(normalized) - 1]
+        )
+        if repeated and not periodic_repeat:
+            raise ValueError(
+                f"{operation} point inputs must be duplicate-free except for "
+                "a repeated first point that closes a periodic curve"
+            )
+        if any(point.dimension != 0 for point in normalized):
+            raise ValueError(
+                f"{operation} inputs must be dimension-zero point references"
+            )
+        self._activate(operation)
+        self._assert_occ_liveness(normalized, operation)
+        self._assert_planar_entities(normalized, operation)
+        coordinates = self._point_coordinates(normalized, operation)
+        if any(
+            _coordinate_distance(first, second) <= _PLANAR_TOLERANCE
+            for first, second in zip(coordinates, coordinates[1:])
+        ):
+            raise ValueError(
+                f"{operation} consecutive points must have distinct coordinates"
+            )
+        backend = getattr(self._gmsh.model.occ, backend_name)
+        tag = backend([point.tag for point in normalized])
+        return self._wrap_entity((1, tag))
+
+    def _normalize_curve_loops(
+        self,
+        loops: Iterable[CurveLoopRef],
+        *,
+        operation: str,
+    ) -> tuple[CurveLoopRef, ...]:
+        try:
+            normalized = tuple(loops)
+        except TypeError as exc:
+            raise TypeError(f"{operation} curve loops must be iterable") from exc
+        if not normalized:
+            raise ValueError(f"{operation} requires at least one curve loop")
+        seen_tags: set[int] = set()
+        member_keys: set[tuple[int, int]] = set()
+        for loop in normalized:
+            if not isinstance(loop, CurveLoopRef):
+                raise TypeError(
+                    f"{operation} requires CurveLoopRef values, got {loop!r}"
+                )
+            if loop._owner_token is not self._owner_token:
+                raise EntityOwnershipError(
+                    f"geometry model {self.name!r}: {operation} received a "
+                    "curve loop owned by another geometry model"
+                )
+            if self._curve_loop_tokens.get(loop.tag) is not loop._loop_token:
+                raise StaleEntityError(
+                    f"geometry model {self.name!r}: {operation} received stale "
+                    f"curve loop {loop.tag}"
+                )
+            if loop.tag in seen_tags:
+                raise ValueError(f"{operation} curve loops must be duplicate-free")
+            seen_tags.add(loop.tag)
+            dependency_keys = self._curve_loop_dependencies.get(loop.tag)
+            expected_keys = frozenset(
+                self._entity_boundary_closure_keys(
+                    tuple(item.curve for item in loop.curves),
+                    synchronize=False,
+                )
+            )
+            if dependency_keys != expected_keys:
+                raise StaleEntityError(
+                    f"geometry model {self.name!r}: {operation} received stale "
+                    f"curve loop {loop.tag}"
+                )
+            overlap = member_keys & set(dependency_keys)
+            if overlap:
+                raise ValueError(
+                    f"{operation} curve loops must not share member curves or "
+                    "boundary points"
+                )
+            member_keys.update(dependency_keys)
+            self._normalize_entities(
+                tuple(item.curve for item in loop.curves),
+                operation=f"{operation} curve loop {loop.tag}",
+            )
+        return normalized
+
+    def _assert_plane_surface_loop_compatibility(
+        self,
+        loops: tuple[CurveLoopRef, ...],
+        *,
+        operation: str,
+    ) -> None:
+        self._assert_curve_loop_boundaries_separated(loops, operation=operation)
+        initial_samples = tuple(
+            self._sample_curve_loop(loop, divisions=8, operation=operation)
+            for loop in loops
+        )
+        frame = _plane_frame(
+            initial_samples[0],
+            fixed_xy=self.dimension == 2,
+            operation=operation,
+        )
+        for loop, points in zip(loops, initial_samples, strict=True):
+            _project_plane_points(points, frame, operation=operation)
+            self._assert_sampled_curve_loop_is_simple(
+                loop,
+                frame,
+                operation=operation,
+            )
+        if len(loops) == 1:
+            return
+
+        probes = tuple(points[0] for points in initial_samples[1:])
+        outer = loops[0]
+        for probe in probes:
+            winding = self._curve_loop_winding_about_point(
+                outer,
+                probe,
+                frame,
+                operation=operation,
+            )
+            if abs(winding) != 1:
+                raise ValueError(
+                    f"{operation} hole loops must lie strictly inside the outer loop"
+                )
+
+        holes = loops[1:]
+        for left_index, left_hole in enumerate(holes):
+            for right_index in range(left_index + 1, len(holes)):
+                right_hole = holes[right_index]
+                right_inside_left = self._curve_loop_winding_about_point(
+                    left_hole,
+                    probes[right_index],
+                    frame,
+                    operation=operation,
+                )
+                left_inside_right = self._curve_loop_winding_about_point(
+                    right_hole,
+                    probes[left_index],
+                    frame,
+                    operation=operation,
+                )
+                if right_inside_left != 0 or left_inside_right != 0:
+                    raise ValueError(
+                        f"{operation} hole loops must have disjoint enclosed regions"
+                    )
+
+    def _assert_sampled_curve_loop_is_simple(
+        self,
+        loop: CurveLoopRef,
+        frame: _PlaneFrame,
+        *,
+        operation: str,
+    ) -> None:
+        contacts: list[bool] = []
+        for divisions in (8, 16, 32, 64):
+            sampled = self._sample_curve_loop(
+                loop,
+                divisions=divisions,
+                operation=operation,
+            )
+            projected = _project_plane_points(sampled, frame, operation=operation)
+            contacts.append(_polyline_has_self_contact(projected, frame[-1]))
+        if contacts[-2:] == [True, True]:
+            raise ValueError(f"{operation} curve loops must not self-intersect")
+
+    def _assert_curve_loop_boundaries_separated(
+        self,
+        loops: tuple[CurveLoopRef, ...],
+        *,
+        operation: str,
+    ) -> None:
+        for loop in loops:
+            curves = tuple(item.curve for item in loop.curves)
+            for left_index, left_curve in enumerate(curves):
+                for right_index in range(left_index + 1, len(curves)):
+                    if right_index == left_index + 1 or (
+                        left_index == 0 and right_index == len(curves) - 1
+                    ):
+                        continue
+                    distance = self._occ_curve_distance(
+                        left_curve,
+                        curves[right_index],
+                        operation=operation,
+                    )
+                    if distance <= _PLANAR_TOLERANCE:
+                        raise ValueError(
+                            f"{operation} curve loops must not self-intersect"
+                        )
+
+        for left_index, left_loop in enumerate(loops):
+            for right_loop in loops[left_index + 1 :]:
+                for left_item in left_loop.curves:
+                    for right_item in right_loop.curves:
+                        distance = self._occ_curve_distance(
+                            left_item.curve,
+                            right_item.curve,
+                            operation=operation,
+                        )
+                        if distance <= _PLANAR_TOLERANCE:
+                            raise ValueError(
+                                f"{operation} curve-loop boundaries must not "
+                                "touch or intersect"
+                            )
+
+    def _occ_curve_distance(
+        self,
+        left: EntityRef,
+        right: EntityRef,
+        *,
+        operation: str,
+    ) -> float:
+        try:
+            raw_result = tuple(
+                self._gmsh.model.occ.getDistance(
+                    left.dimension,
+                    left.tag,
+                    right.dimension,
+                    right.tag,
+                )
+            )
+            if len(raw_result) != 7:
+                raise ValueError("expected seven distance result values")
+            result = tuple(
+                _finite_float(value, "curve-distance result")
+                for value in raw_result
+            )
+        except Exception as exc:
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} could not verify "
+                "curve-loop boundary separation"
+            ) from exc
+        if result[0] < 0.0:
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} received a failed "
+                "curve-distance result"
+            )
+        return result[0]
+
+    def _sample_curve_loop(
+        self,
+        loop: CurveLoopRef,
+        *,
+        divisions: int,
+        operation: str,
+    ) -> tuple[_Point3D, ...]:
+        points: list[_Point3D] = []
+        for item in loop.curves:
+            curve_points = self._sample_oriented_curve(
+                item,
+                divisions=divisions,
+                operation=operation,
+            )
+            if points:
+                scale = max(
+                    1.0,
+                    _vector_norm(points[-1]),
+                    _vector_norm(curve_points[0]),
+                )
+                if _coordinate_distance(points[-1], curve_points[0]) > (
+                    _PLANAR_TOLERANCE * scale
+                ):
+                    raise GeometryError(
+                        f"geometry model {self.name!r}: {operation} sampled a "
+                        "discontinuous curve loop"
+                    )
+                points.extend(curve_points[1:])
+            else:
+                points.extend(curve_points)
+        scale = max(1.0, *(_vector_norm(point) for point in points))
+        if _coordinate_distance(points[-1], points[0]) > (
+            _PLANAR_TOLERANCE * scale
+        ):
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} sampled an open curve loop"
+            )
+        points[-1] = points[0]
+        return tuple(points)
+
+    def _sample_oriented_curve(
+        self,
+        oriented: OrientedCurveRef,
+        *,
+        divisions: int,
+        operation: str,
+    ) -> tuple[_Point3D, ...]:
+        try:
+            raw_minimum, raw_maximum = self._gmsh.model.getParametrizationBounds(
+                1,
+                oriented.curve.tag,
+            )
+            minimum_values = tuple(raw_minimum)
+            maximum_values = tuple(raw_maximum)
+            if len(minimum_values) != 1 or len(maximum_values) != 1:
+                raise ValueError("expected one curve parameter bound")
+            minimum = _finite_float(minimum_values[0], "curve parameter minimum")
+            maximum = _finite_float(maximum_values[0], "curve parameter maximum")
+            if maximum <= minimum:
+                raise ValueError("curve parameter bounds must be increasing")
+            parameters = [
+                minimum + (maximum - minimum) * index / divisions
+                for index in range(divisions + 1)
+            ]
+            raw_coordinates = tuple(
+                self._gmsh.model.getValue(1, oriented.curve.tag, parameters)
+            )
+            if len(raw_coordinates) != 3 * len(parameters):
+                raise ValueError("curve evaluation returned an invalid coordinate count")
+            coordinates = tuple(
+                _finite_float(value, "curve evaluation coordinate")
+                for value in raw_coordinates
+            )
+        except Exception as exc:
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} could not evaluate "
+                f"curve {oriented.curve.tag} for loop validation"
+            ) from exc
+
+        points = tuple(
+            (coordinates[index], coordinates[index + 1], coordinates[index + 2])
+            for index in range(0, len(coordinates), 3)
+        )
+        if oriented.reversed:
+            return tuple(reversed(points))
+        return points
+
+    def _curve_loop_winding_about_point(
+        self,
+        loop: CurveLoopRef,
+        point: _Point3D,
+        frame: _PlaneFrame,
+        *,
+        operation: str,
+    ) -> int:
+        projected_point = _project_plane_point(point, frame, operation=operation)
+        previous_winding: int | None = None
+        for divisions in _LOOP_WINDING_REFINEMENTS:
+            sampled = self._sample_curve_loop(
+                loop,
+                divisions=divisions,
+                operation=operation,
+            )
+            projected = _project_plane_points(sampled, frame, operation=operation)
+            winding = _polyline_winding(projected, projected_point, frame[-1])
+            if winding is None:
+                previous_winding = None
+                continue
+            if winding == previous_winding:
+                return winding
+            previous_winding = winding
+        raise GeometryError(
+            f"geometry model {self.name!r}: {operation} could not determine "
+            "curve-loop containment reliably"
+        )
+
+    def _assert_planar_entities(
+        self,
+        entities: Iterable[EntityRef],
+        operation: str,
+    ) -> None:
+        if self.dimension != 2:
+            return
+        for entity in entities:
+            bounds = tuple(
+                _finite_float(value, "bounding box coordinate")
+                for value in self._gmsh.model.occ.getBoundingBox(
+                    entity.dimension,
+                    entity.tag,
+                )
+            )
+            if len(bounds) != 6:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} received an "
+                    "entity with an invalid bounding box"
+                )
+            if (
+                bounds[2] < -(_OCC_BOUNDING_BOX_PADDING + _PLANAR_TOLERANCE)
+                or bounds[5] > _OCC_BOUNDING_BOX_PADDING + _PLANAR_TOLERANCE
+            ):
+                raise ValueError(
+                    f"{operation} in a 2D facade must lie in the global XY plane"
+                )
+
+    def _point_coordinates(
+        self,
+        points: Iterable[EntityRef],
+        operation: str,
+    ) -> tuple[tuple[float, float, float], ...]:
+        result: list[tuple[float, float, float]] = []
+        for point in points:
+            bounds = tuple(
+                _finite_float(value, "point coordinate")
+                for value in self._gmsh.model.occ.getBoundingBox(0, point.tag)
+            )
+            if len(bounds) != 6:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} received a "
+                    "point with invalid coordinates"
+                )
+            values = tuple(
+                0.5 * (bounds[axis] + bounds[axis + 3]) for axis in range(3)
+            )
+            result.append(values)  # type: ignore[arg-type]
+        return tuple(result)
 
     def _boolean(
         self,
@@ -1709,7 +2715,7 @@ class GeometryModel:
         remove_objects: bool,
         remove_tools: bool,
     ) -> BooleanResult:
-        self._check_state(operation, frozenset({_State.BUILDING}))
+        self._check_state(operation, _GEOMETRY_MUTATION_STATES)
         normalized_objects = self._normalize_entities(objects, operation=operation)
         normalized_tools = self._normalize_entities(tools, operation=operation)
         if set(normalized_objects) & set(normalized_tools):
@@ -1759,6 +2765,8 @@ class GeometryModel:
         except BaseException as error:
             if invalidated_keys:
                 self._entity_tokens.clear()
+                self._curve_loop_tokens.clear()
+                self._curve_loop_dependencies.clear()
             if isinstance(error, GeometryError) or not isinstance(error, Exception):
                 raise
             raise GeometryError(
@@ -1959,6 +2967,23 @@ class GeometryModel:
         self._assert_occ_liveness((target, *related_entities), operation)
         return target
 
+    def _prepare_geometry_query_entity(
+        self,
+        entity: EntityRef,
+        *,
+        operation: str,
+    ) -> EntityRef:
+        self._check_state(operation, _QUERY_STATES)
+        target = self._normalize_entities((entity,), operation=operation)[0]
+        if target.dimension > self.dimension:
+            raise ValueError(
+                f"{operation} entity dimension exceeds the geometry model dimension"
+            )
+        self._activate(operation)
+        self._gmsh.model.occ.synchronize()
+        self._assert_occ_liveness((target,), operation)
+        return target
+
     def _normalize_mesh_control_corners(
         self,
         corners: Sequence[EntityRef],
@@ -2024,7 +3049,7 @@ class GeometryModel:
             key = (entity.dimension, entity.tag)
             if key not in existing:
                 if self._entity_tokens.get(key) is entity._entity_token:
-                    del self._entity_tokens[key]
+                    self._invalidate_entity_keys((key,))
                 raise StaleEntityError(
                     f"geometry model {self.name!r}: {operation} entity "
                     f"({entity.dimension}, {entity.tag}) no longer exists"
@@ -2073,8 +3098,24 @@ class GeometryModel:
         self,
         keys: Iterable[tuple[int, int]],
     ) -> None:
-        for key in keys:
+        materialized = set(keys)
+        for key in materialized:
             self._entity_tokens.pop(key, None)
+        self._invalidate_curve_loops_for_keys(materialized)
+
+    def _invalidate_curve_loops_for_keys(
+        self,
+        keys: Iterable[tuple[int, int]],
+    ) -> None:
+        materialized = set(keys)
+        invalid_loops = [
+            tag
+            for tag, dependencies in self._curve_loop_dependencies.items()
+            if dependencies & materialized
+        ]
+        for tag in invalid_loops:
+            self._curve_loop_tokens.pop(tag, None)
+            self._curve_loop_dependencies.pop(tag, None)
 
     def _validate_2d_z(self, z_value: float, operation: str) -> None:
         if self.dimension == 2 and abs(z_value) > _PLANAR_TOLERANCE:
@@ -2116,17 +3157,17 @@ class GeometryModel:
     def _check_auto_mesh_controls(self) -> None:
         if self._auto_mesh_scope_unknown:
             raise MeshControlConflictError(
-                f"geometry model {self.name!r}: generate_auto_mesh cannot own "
+                f"geometry model {self.name!r}: AutoMeshSpec generation cannot own "
                 "the mesh topology because raw access or a failed controlled "
                 "topology operation made the automatic topology scope unknown; "
-                "use generate_mesh() for this model"
+                "use Mesher.generate(MeshSpec(...)) for this model"
             )
         if self._auto_mesh_blockers:
             blockers = ", ".join(sorted(self._auto_mesh_blockers))
             raise MeshControlConflictError(
-                f"geometry model {self.name!r}: generate_auto_mesh conflicts "
+                f"geometry model {self.name!r}: AutoMeshSpec generation conflicts "
                 f"with explicit topology controls: {blockers}; use "
-                "generate_mesh() for this model"
+                "Mesher.generate(MeshSpec(...)) for this model"
             )
 
     def _check_controlled_transform_allowed(
@@ -2230,6 +3271,8 @@ class GeometryModel:
         self,
     ) -> tuple[tuple[str, BaseException], ...]:
         self._entity_tokens.clear()
+        self._curve_loop_tokens.clear()
+        self._curve_loop_dependencies.clear()
         self._mesh_field_tokens.clear()
         self._mesh_field_types.clear()
         self._mesh_size_mode = "none"
@@ -2239,6 +3282,8 @@ class GeometryModel:
         self._control_dependency_scope_unknown = False
         self._auto_mesh_blockers.clear()
         self._auto_mesh_scope_unknown = False
+        self._mesher_token = None
+        self._structured_extrusion_open = False
         gmsh = self._gmsh
         if gmsh is None:
             return ()
@@ -2333,7 +3378,7 @@ def _validate_mesh_dimension(value: Any) -> Literal[1, 2, 3]:
 def _validate_auto_mesh_level(value: Any) -> Literal[1, 2, 3, 4, 5]:
     if isinstance(value, bool) or not isinstance(value, int) or value not in range(1, 6):
         raise ValueError(
-            "generate_auto_mesh level must be a Python integer from 1 through "
+            "AutoMeshSpec level must be a Python integer from 1 through "
             f"5, got {value!r}"
         )
     return value
@@ -2346,7 +3391,7 @@ def _resolve_auto_mesh_mode(
     if dimension == 1:
         if cell_shape is not None:
             raise ValueError(
-                "generate_auto_mesh cell_shape must be None for dimension 1, "
+                "AutoMeshSpec cell_shape must be None for dimension 1, "
                 f"got {cell_shape!r}"
             )
         return "line"
@@ -2360,7 +3405,7 @@ def _resolve_auto_mesh_mode(
             "quad",
         }:
             raise ValueError(
-                "generate_auto_mesh cell_shape for dimension 2 must be exactly "
+                "AutoMeshSpec cell_shape for dimension 2 must be exactly "
                 f"'tri', 'tri-quad', or 'quad', got {cell_shape!r}"
             )
         return cell_shape
@@ -2369,7 +3414,7 @@ def _resolve_auto_mesh_mode(
         return "tet"
     if not isinstance(cell_shape, str) or cell_shape not in {"tet", "hex"}:
         raise ValueError(
-            "generate_auto_mesh cell_shape for dimension 3 must be exactly "
+            "AutoMeshSpec cell_shape for dimension 3 must be exactly "
             f"'tet' or 'hex', got {cell_shape!r}"
         )
     return cell_shape
@@ -2441,6 +3486,320 @@ def _nonnegative_float(value: Any, label: str) -> float:
     return normalized
 
 
+def _coordinate_distance(
+    first: tuple[float, float, float],
+    second: tuple[float, float, float],
+) -> float:
+    return math.sqrt(
+        sum((left - right) ** 2 for left, right in zip(first, second, strict=True))
+    )
+
+
+def _validate_elliptical_arc_geometry(
+    coordinates: tuple[
+        tuple[float, float, float],
+        tuple[float, float, float],
+        tuple[float, float, float],
+        tuple[float, float, float],
+    ],
+) -> None:
+    start, center, major_axis_point, end = coordinates
+    axis = _vector_difference(major_axis_point, center)
+    start_vector = _vector_difference(start, center)
+    end_vector = _vector_difference(end, center)
+    axis_unit = _scale_vector(axis, 1.0 / _vector_norm(axis))
+
+    start_perpendicular = _vector_difference(
+        start_vector,
+        _scale_vector(axis_unit, _vector_dot(start_vector, axis_unit)),
+    )
+    end_perpendicular = _vector_difference(
+        end_vector,
+        _scale_vector(axis_unit, _vector_dot(end_vector, axis_unit)),
+    )
+    angular_tolerance = 1.0e-6
+    start_perpendicular_norm = _vector_norm(start_perpendicular)
+    end_perpendicular_norm = _vector_norm(end_perpendicular)
+    if start_perpendicular_norm > angular_tolerance * _vector_norm(start_vector):
+        minor_unit = _scale_vector(
+            start_perpendicular,
+            1.0 / start_perpendicular_norm,
+        )
+    elif end_perpendicular_norm > angular_tolerance * _vector_norm(end_vector):
+        minor_unit = _scale_vector(
+            end_perpendicular,
+            1.0 / end_perpendicular_norm,
+        )
+    else:
+        raise ValueError(
+            "elliptical_arc start and end must not both lie on the major axis"
+        )
+
+    normal_unit = _vector_cross(axis_unit, minor_unit)
+    for label, vector in (("start", start_vector), ("end", end_vector)):
+        if abs(_vector_dot(vector, normal_unit)) > (
+            angular_tolerance * _vector_norm(vector)
+        ):
+            raise ValueError(
+                f"elliptical_arc {label} must lie in the center/major-axis plane"
+            )
+
+    start_major_squared = _vector_dot(start_vector, axis_unit) ** 2
+    start_minor_squared = _vector_dot(start_vector, minor_unit) ** 2
+    end_major_squared = _vector_dot(end_vector, axis_unit) ** 2
+    end_minor_squared = _vector_dot(end_vector, minor_unit) ** 2
+    equality_tolerance = _PLANAR_TOLERANCE**2
+    if math.isclose(
+        start_major_squared,
+        end_major_squared,
+        rel_tol=1.0e-12,
+        abs_tol=equality_tolerance,
+    ) or math.isclose(
+        start_minor_squared,
+        end_minor_squared,
+        rel_tol=1.0e-12,
+        abs_tol=equality_tolerance,
+    ):
+        raise ValueError(
+            "elliptical_arc endpoints must determine unique major and minor radii"
+        )
+
+    major_radius_squared = (
+        start_minor_squared * end_major_squared
+        - start_major_squared * end_minor_squared
+    ) / (start_minor_squared - end_minor_squared)
+    minor_radius_squared = (
+        start_major_squared * end_minor_squared
+        - start_minor_squared * end_major_squared
+    ) / (start_major_squared - end_major_squared)
+    if (
+        not math.isfinite(major_radius_squared)
+        or not math.isfinite(minor_radius_squared)
+        or major_radius_squared <= 0.0
+        or minor_radius_squared <= 0.0
+    ):
+        raise ValueError(
+            "elliptical_arc endpoints must determine positive finite radii"
+        )
+
+
+def _vector_difference(
+    left: tuple[float, float, float],
+    right: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    return tuple(
+        left_value - right_value
+        for left_value, right_value in zip(left, right, strict=True)
+    )  # type: ignore[return-value]
+
+
+def _scale_vector(
+    vector: tuple[float, float, float],
+    factor: float,
+) -> tuple[float, float, float]:
+    return tuple(value * factor for value in vector)  # type: ignore[return-value]
+
+
+def _vector_dot(
+    left: tuple[float, float, float],
+    right: tuple[float, float, float],
+) -> float:
+    return sum(
+        left_value * right_value
+        for left_value, right_value in zip(left, right, strict=True)
+    )
+
+
+def _vector_cross(
+    left: tuple[float, float, float],
+    right: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    return (
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    )
+
+
+def _vector_norm(vector: tuple[float, float, float]) -> float:
+    return math.sqrt(_vector_dot(vector, vector))
+
+
+def _plane_frame(
+    points: tuple[_Point3D, ...],
+    *,
+    fixed_xy: bool,
+    operation: str,
+) -> _PlaneFrame:
+    if len(points) < 4:
+        raise ValueError(f"{operation} curve loops must enclose a nonzero area")
+    origin = points[0]
+    relative = tuple(_vector_difference(point, origin) for point in points[1:])
+    scale = max(1.0, *(_vector_norm(vector) for vector in relative))
+    tolerance = _PLANAR_TOLERANCE * scale
+    if fixed_xy:
+        return (
+            origin,
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 1.0),
+            tolerance,
+        )
+
+    first_axis = max(relative, key=_vector_norm)
+    first_axis_norm = _vector_norm(first_axis)
+    if first_axis_norm <= tolerance:
+        raise ValueError(f"{operation} curve loops must enclose a nonzero area")
+    first_unit = _scale_vector(first_axis, 1.0 / first_axis_norm)
+    plane_vector = max(relative, key=lambda vector: _vector_norm(_vector_cross(first_unit, vector)))
+    normal = _vector_cross(first_unit, plane_vector)
+    normal_norm = _vector_norm(normal)
+    if normal_norm <= tolerance:
+        raise ValueError(f"{operation} curve loops must enclose a nonzero area")
+    normal_unit = _scale_vector(normal, 1.0 / normal_norm)
+    second_unit = _vector_cross(normal_unit, first_unit)
+    return origin, first_unit, second_unit, normal_unit, tolerance
+
+
+def _project_plane_point(
+    point: _Point3D,
+    frame: _PlaneFrame,
+    *,
+    operation: str,
+) -> _Point2D:
+    origin, first_axis, second_axis, normal, tolerance = frame
+    relative = _vector_difference(point, origin)
+    if abs(_vector_dot(relative, normal)) > tolerance:
+        raise ValueError(f"{operation} curve loops must be coplanar")
+    return _vector_dot(relative, first_axis), _vector_dot(relative, second_axis)
+
+
+def _project_plane_points(
+    points: tuple[_Point3D, ...],
+    frame: _PlaneFrame,
+    *,
+    operation: str,
+) -> tuple[_Point2D, ...]:
+    return tuple(
+        _project_plane_point(point, frame, operation=operation) for point in points
+    )
+
+
+def _polyline_winding(
+    points: tuple[_Point2D, ...],
+    probe: _Point2D,
+    tolerance: float,
+) -> int | None:
+    total_angle = 0.0
+    for start, end in zip(points, points[1:]):
+        if math.dist(start, end) <= tolerance:
+            continue
+        if _point_segment_distance_2d(probe, start, end) <= tolerance:
+            return None
+        start_vector = (start[0] - probe[0], start[1] - probe[1])
+        end_vector = (end[0] - probe[0], end[1] - probe[1])
+        if math.hypot(*start_vector) <= tolerance or math.hypot(*end_vector) <= tolerance:
+            return None
+        angle = math.atan2(
+            start_vector[0] * end_vector[1] - start_vector[1] * end_vector[0],
+            start_vector[0] * end_vector[0] + start_vector[1] * end_vector[1],
+        )
+        if abs(angle) >= math.pi / 2.0:
+            return None
+        total_angle += angle
+    normalized = total_angle / (2.0 * math.pi)
+    nearest = round(normalized)
+    if abs(normalized - nearest) > 1.0e-8:
+        return None
+    return nearest
+
+
+def _polyline_has_self_contact(
+    points: tuple[_Point2D, ...],
+    tolerance: float,
+) -> bool:
+    segment_count = len(points) - 1
+    for left_index in range(segment_count):
+        left_start = points[left_index]
+        left_end = points[left_index + 1]
+        if math.dist(left_start, left_end) <= tolerance:
+            continue
+        for right_index in range(left_index + 1, segment_count):
+            if right_index == left_index + 1 or (
+                left_index == 0 and right_index == segment_count - 1
+            ):
+                continue
+            right_start = points[right_index]
+            right_end = points[right_index + 1]
+            if math.dist(right_start, right_end) <= tolerance:
+                continue
+            if _segments_contact_2d(
+                left_start,
+                left_end,
+                right_start,
+                right_end,
+                tolerance,
+            ):
+                return True
+    return False
+
+
+def _segments_contact_2d(
+    left_start: _Point2D,
+    left_end: _Point2D,
+    right_start: _Point2D,
+    right_end: _Point2D,
+    tolerance: float,
+) -> bool:
+    if (
+        max(left_start[0], left_end[0]) + tolerance
+        < min(right_start[0], right_end[0])
+        or max(right_start[0], right_end[0]) + tolerance
+        < min(left_start[0], left_end[0])
+        or max(left_start[1], left_end[1]) + tolerance
+        < min(right_start[1], right_end[1])
+        or max(right_start[1], right_end[1]) + tolerance
+        < min(left_start[1], left_end[1])
+    ):
+        return False
+    left_first = _orientation_2d(left_start, left_end, right_start)
+    left_second = _orientation_2d(left_start, left_end, right_end)
+    right_first = _orientation_2d(right_start, right_end, left_start)
+    right_second = _orientation_2d(right_start, right_end, left_end)
+    if left_first * left_second < 0.0 and right_first * right_second < 0.0:
+        return True
+    return min(
+        _point_segment_distance_2d(right_start, left_start, left_end),
+        _point_segment_distance_2d(right_end, left_start, left_end),
+        _point_segment_distance_2d(left_start, right_start, right_end),
+        _point_segment_distance_2d(left_end, right_start, right_end),
+    ) <= tolerance
+
+
+def _orientation_2d(start: _Point2D, end: _Point2D, point: _Point2D) -> float:
+    return (end[0] - start[0]) * (point[1] - start[1]) - (
+        end[1] - start[1]
+    ) * (point[0] - start[0])
+
+
+def _point_segment_distance_2d(
+    point: _Point2D,
+    start: _Point2D,
+    end: _Point2D,
+) -> float:
+    delta_x = end[0] - start[0]
+    delta_y = end[1] - start[1]
+    length_squared = delta_x * delta_x + delta_y * delta_y
+    if length_squared == 0.0:
+        return math.dist(point, start)
+    parameter = (
+        (point[0] - start[0]) * delta_x + (point[1] - start[1]) * delta_y
+    ) / length_squared
+    parameter = min(1.0, max(0.0, parameter))
+    closest = (start[0] + parameter * delta_x, start[1] + parameter * delta_y)
+    return math.dist(point, closest)
+
+
 def _positive_integer_sequence(values: Sequence[int], label: str) -> tuple[int, ...]:
     try:
         materialized = tuple(values)
@@ -2480,18 +3839,13 @@ def _dim_tags(entities: Iterable[EntityRef]) -> list[tuple[int, int]]:
 
 __all__ = [
     "BooleanResult",
+    "CurveLoopRef",
     "EntityOwnershipError",
     "EntityRef",
-    "GmshMeshRef",
     "GeometryError",
     "GeometryModel",
     "GeometryStateError",
-    "MeshCellShapeError",
-    "MeshControlConflictError",
-    "MeshFieldOwnershipError",
-    "MeshFieldRef",
+    "OrientedCurveRef",
     "StaleEntityError",
-    "StaleGmshMeshError",
-    "StaleMeshFieldError",
     "model",
 ]

@@ -8,6 +8,7 @@ from fem import materials, post, steps
 from fem.core import FEMModel, validate_model
 from fem.geometry import gmsh as geometry
 from fem.io import gmsh as gmsh_io
+from fem.mesh import gmsh as gmsh_meshing
 from fem.selection import edges, elements, nodes
 from fem.solvers import static_linear
 
@@ -25,7 +26,10 @@ def main() -> None:
         if not fixed or not traction:
             raise RuntimeError("expected left and right plate boundaries")
 
-        native_mesh = cad.generate_mesh(size=0.2, order=2)
+        mesher = gmsh_meshing.Mesher(cad)
+        native_mesh = mesher.generate(
+            gmsh_meshing.MeshSpec(size=0.2, order=2)
+        )
         mesh = gmsh_io.read(native_mesh)
 
     model = FEMModel(mesh=mesh, name="gmsh_geometry_plate")

@@ -9,6 +9,7 @@ from fem.core import FEMModel, validate_model
 from fem.elements import get_element_kernel
 from fem.geometry import gmsh as geometry
 from fem.io import gmsh as gmsh_io
+from fem.mesh import gmsh as gmsh_meshing
 from fem.selection import elements, nodes
 from fem.solvers import static_linear
 
@@ -26,7 +27,8 @@ def main() -> None:
         start = cad.point(0.0, 0.5, -0.25)
         end = cad.point(LENGTH, 0.5, -0.25)
         cad.line(start, end)
-        native_mesh = cad.generate_mesh(size=0.5)
+        mesher = gmsh_meshing.Mesher(cad)
+        native_mesh = mesher.generate(gmsh_meshing.MeshSpec(size=0.5))
         mesh = gmsh_io.read(
             native_mesh,
             line_element_type="Truss2",

@@ -8,6 +8,7 @@ from fem import materials, post, steps
 from fem.core import FEMModel, validate_model
 from fem.geometry import gmsh as geometry
 from fem.io import gmsh as gmsh_io
+from fem.mesh import gmsh as gmsh_meshing
 from fem.selection import edges, elements, nodes
 from fem.solvers import static_linear
 
@@ -22,14 +23,17 @@ def main() -> None:
         if len(horizontal) != 2 or len(vertical) != 2:
             raise RuntimeError("expected two horizontal and two vertical boundaries")
 
+        mesher = gmsh_meshing.Mesher(cad)
         for curve in horizontal:
-            cad.transfinite_curve(curve, num_nodes=5)
+            mesher.transfinite_curve(curve, num_nodes=5)
         for curve in vertical:
-            cad.transfinite_curve(curve, num_nodes=3)
-        cad.transfinite_surface(surface)
-        cad.recombine(surface)
+            mesher.transfinite_curve(curve, num_nodes=3)
+        mesher.transfinite_surface(surface)
+        mesher.recombine(surface)
 
-        native_mesh = cad.generate_mesh(order=2, recombine=False)
+        native_mesh = mesher.generate(
+            gmsh_meshing.MeshSpec(order=2, recombine=False)
+        )
         mesh = gmsh_io.read(native_mesh)
 
     if mesh.num_elements != 8:

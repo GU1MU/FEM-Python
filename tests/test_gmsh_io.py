@@ -16,6 +16,7 @@ from fem.elements import get_element_kernel
 from fem.elements.hexahedron import HEX20_NATURAL_NODE_COORDS
 from fem.elements.tetrahedron import TET10_NATURAL_NODE_COORDS
 from fem.io import gmsh as gmsh_io
+from fem.mesh import gmsh as gmsh_meshing
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -115,10 +116,7 @@ class _FakeGmshMeshRef:
 
 
 def _install_fake_mesh_ref(monkeypatch):
-    from fem.geometry import gmsh as geometry_gmsh
-
     monkeypatch.setattr(gmsh_io, "GmshMeshRef", _FakeGmshMeshRef)
-    return geometry_gmsh
 
 def test_cad_extra_declares_supported_gmsh_range():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
@@ -281,7 +279,8 @@ def test_public_signatures_keep_formulation_arguments_in_io_layer():
         parameter.kind is inspect.Parameter.KEYWORD_ONLY
         for parameter in from_model_signature.parameters.values()
     )
-    assert get_type_hints(gmsh_io.read)["source"].__name__ == "GmshMeshRef"
+    assert get_type_hints(gmsh_io.read)["source"] is gmsh_meshing.GmshMeshRef
+    assert gmsh_io.GmshMeshRef is gmsh_meshing.GmshMeshRef
 
 
 def test_from_model_returns_mesh_with_minimal_backend_contract():
@@ -303,7 +302,10 @@ def test_from_model_returns_mesh_with_minimal_backend_contract():
 def test_read_rejects_foreign_source_before_borrow(monkeypatch):
     _install_fake_mesh_ref(monkeypatch)
 
-    with pytest.raises(TypeError, match="source must be a GmshMeshRef"):
+    with pytest.raises(
+        TypeError,
+        match=r"source must be a GmshMeshRef.*fem\.mesh\.gmsh\.Mesher\.generate",
+    ):
         gmsh_io.read(object())
 
 
@@ -403,14 +405,14 @@ def test_read_can_retry_after_io_conversion_failure(monkeypatch):
 
 
 def test_read_propagates_stale_handle_error_before_backend_access(monkeypatch):
-    geometry_gmsh = _install_fake_mesh_ref(monkeypatch)
+    _install_fake_mesh_ref(monkeypatch)
     model = _UnreadableModel()
-    stale_error = geometry_gmsh.StaleGmshMeshError(
+    stale_error = gmsh_meshing.StaleGmshMeshError(
         "mesh 'plate' must be imported inside its geometry context"
     )
     source = _FakeGmshMeshRef(2, model, borrow_error=stale_error)
 
-    with pytest.raises(geometry_gmsh.StaleGmshMeshError, match="inside"):
+    with pytest.raises(gmsh_meshing.StaleGmshMeshError, match="inside"):
         gmsh_io.read(source)
 
     assert source.borrow_calls == 1

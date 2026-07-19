@@ -8,6 +8,7 @@ from fem import materials, post, steps
 from fem.core import FEMModel, validate_model
 from fem.geometry import gmsh as geometry
 from fem.io import gmsh as gmsh_io
+from fem.mesh import gmsh as gmsh_meshing
 from fem.selection import edges, elements, nodes
 from fem.solvers import static_linear
 
@@ -42,16 +43,17 @@ def main() -> None:
         if not hole_curves:
             raise RuntimeError("expected at least one circular hole boundary")
 
-        hole_distance = cad.distance_field(curves=hole_curves, sampling=100)
-        hole_refinement = cad.threshold_field(
+        mesher = gmsh_meshing.Mesher(cad)
+        hole_distance = mesher.distance_field(curves=hole_curves, sampling=100)
+        hole_refinement = mesher.threshold_field(
             hole_distance,
             size_min=0.025,
             size_max=0.20,
             dist_min=0.05,
             dist_max=0.35,
         )
-        cad.background_field(hole_refinement)
-        native_mesh = cad.generate_mesh(order=1)
+        mesher.background_field(hole_refinement)
+        native_mesh = mesher.generate(gmsh_meshing.MeshSpec(order=1))
         mesh = gmsh_io.read(
             native_mesh,
             plane_type="stress",

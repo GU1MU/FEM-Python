@@ -2,6 +2,7 @@
 
 from fem.geometry import gmsh as geometry
 from fem.io import gmsh as gmsh_io
+from fem.mesh import gmsh as gmsh_meshing
 
 
 MODEL_NAME = "gmsh_geometry_auto_mesh"
@@ -15,10 +16,13 @@ def main() -> None:
         if not boundary:
             raise RuntimeError("expected a disk boundary")
 
-        native_mesh = cad.generate_auto_mesh(
-            level=3,
-            cell_shape="quad",
-            order=2,
+        mesher = gmsh_meshing.Mesher(cad)
+        native_mesh = mesher.generate(
+            gmsh_meshing.AutoMeshSpec(
+                level=3,
+                cell_shape="quad",
+                order=2,
+            )
         )
         mesh = gmsh_io.read(native_mesh)
 

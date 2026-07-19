@@ -9,6 +9,7 @@ import pytest
 from fem.core import Mesh2D, Mesh3D
 from fem.geometry import gmsh as geometry
 from fem.io import gmsh as gmsh_io
+from fem.mesh import gmsh as gmsh_meshing
 
 
 _GLOBAL_OPTIONS = (
@@ -180,9 +181,10 @@ def test_real_selected_point_mesh_size_refines_one_rectangle_corner(
         assert len(points) == 4
         assert len(refined_point) == 1
 
-        cad.mesh_size(points, size=0.45)
-        cad.mesh_size(refined_point, size=0.05)
-        native_mesh = cad.generate_mesh(order=2)
+        mesher = gmsh_meshing.Mesher(cad)
+        mesher.mesh_size(points, size=0.45)
+        mesher.mesh_size(refined_point, size=0.05)
+        native_mesh = mesher.generate(gmsh_meshing.MeshSpec(order=2))
         mesh = gmsh_io.read(native_mesh)
 
         for name, value in external_options.items():
@@ -230,16 +232,17 @@ def test_real_curve_threshold_refines_a_circular_hole_with_valid_cells(
         assert len(outer) == 4
         assert len(hole) == 1
 
-        distance = cad.distance_field(curves=hole, sampling=100)
-        threshold = cad.threshold_field(
+        mesher = gmsh_meshing.Mesher(cad)
+        distance = mesher.distance_field(curves=hole, sampling=100)
+        threshold = mesher.threshold_field(
             distance,
             size_min=0.045,
             size_max=0.36,
             dist_min=0.08,
             dist_max=0.65,
         )
-        cad.background_field(threshold)
-        native_mesh = cad.generate_mesh(order=1)
+        mesher.background_field(threshold)
+        native_mesh = mesher.generate(gmsh_meshing.MeshSpec(order=1))
         mesh = gmsh_io.read(native_mesh)
 
     records = _element_geometry(mesh)
@@ -273,26 +276,29 @@ def test_real_min_field_refines_two_regions_with_entity_recombination(
         assert len(left) == 1
         assert len(right) == 1
 
-        left_distance = cad.distance_field(curves=left, sampling=40)
-        left_threshold = cad.threshold_field(
+        mesher = gmsh_meshing.Mesher(cad)
+        left_distance = mesher.distance_field(curves=left, sampling=40)
+        left_threshold = mesher.threshold_field(
             left_distance,
             size_min=0.08,
             size_max=0.48,
             dist_min=0.12,
             dist_max=1.1,
         )
-        right_distance = cad.distance_field(curves=right, sampling=40)
-        right_threshold = cad.threshold_field(
+        right_distance = mesher.distance_field(curves=right, sampling=40)
+        right_threshold = mesher.threshold_field(
             right_distance,
             size_min=0.08,
             size_max=0.48,
             dist_min=0.12,
             dist_max=1.1,
         )
-        combined = cad.min_field([left_threshold, right_threshold])
-        cad.background_field(combined)
-        cad.recombine(domain)
-        native_mesh = cad.generate_mesh(recombine=False)
+        combined = mesher.min_field([left_threshold, right_threshold])
+        mesher.background_field(combined)
+        mesher.recombine(domain)
+        native_mesh = mesher.generate(
+            gmsh_meshing.MeshSpec(recombine=False)
+        )
         mesh = gmsh_io.read(native_mesh)
 
     records = _element_geometry(mesh)
@@ -335,16 +341,17 @@ def test_real_surface_distance_refines_one_face_of_a_small_box(
         refined_face = cad.select(faces, x=0.0)
         assert len(refined_face) == 1
 
-        distance = cad.distance_field(surfaces=refined_face, sampling=40)
-        threshold = cad.threshold_field(
+        mesher = gmsh_meshing.Mesher(cad)
+        distance = mesher.distance_field(surfaces=refined_face, sampling=40)
+        threshold = mesher.threshold_field(
             distance,
             size_min=0.13,
             size_max=0.5,
             dist_min=0.12,
             dist_max=0.75,
         )
-        cad.background_field(threshold)
-        native_mesh = cad.generate_mesh(order=1)
+        mesher.background_field(threshold)
+        native_mesh = mesher.generate(gmsh_meshing.MeshSpec(order=1))
         mesh = gmsh_io.read(native_mesh)
 
     records = _element_geometry(mesh)
@@ -366,31 +373,37 @@ def test_real_surface_distance_refines_one_face_of_a_small_box(
     _assert_positive_primary_jacobians(mesh)
 
 
-def test_real_entity_dependent_controls_protect_only_referenced_topology(
+def test_real_mesher_binding_seals_geometry_mutation_after_size_controls(
     real_gmsh: Any,
 ) -> None:
     with geometry.model("distance_topology_dependency_guard", dimension=2) as cad:
         plate = cad.rectangle(0.0, 0.0, 2.0, 1.0)
         disk = cad.disk(3.0, 0.5, 0.25)
-        disk_curves = cad.boundary([disk])
-        distance = cad.distance_field(curves=disk_curves, sampling=40)
         assert cad.translate([disk], 0.25, 0.0, 0.0) == (disk,)
+        disk_curves = cad.boundary([disk])
+        mesher = gmsh_meshing.Mesher(cad)
+        distance = mesher.distance_field(curves=disk_curves, sampling=40)
 
         with pytest.raises(
             geometry.GeometryStateError,
-            match="destructive topology replacement would invalidate.*mesh control",
+            match="CONFIGURING_MESH",
+        ):
+            cad.translate([disk], 0.25, 0.0, 0.0)
+        with pytest.raises(
+            geometry.GeometryStateError,
+            match="CONFIGURING_MESH",
         ):
             cad.cut([plate], [disk])
 
-        threshold = cad.threshold_field(
+        threshold = mesher.threshold_field(
             distance,
             size_min=0.08,
             size_max=0.35,
             dist_min=0.1,
             dist_max=0.6,
         )
-        cad.background_field(threshold)
-        native_mesh = cad.generate_mesh()
+        mesher.background_field(threshold)
+        native_mesh = mesher.generate(gmsh_meshing.MeshSpec())
         field_mesh = gmsh_io.read(native_mesh)
 
     assert {element.type for element in field_mesh.elements} == {"Tri3"}
@@ -400,45 +413,46 @@ def test_real_entity_dependent_controls_protect_only_referenced_topology(
         left = cad.rectangle(0.0, 0.0, 1.0, 1.0)
         right = cad.rectangle(2.0, 0.0, 1.0, 1.0)
         points = cad.boundary(cad.boundary([left, right]), combined=False)
-        cad.mesh_size(points, size=0.15)
-
-        with pytest.raises(
-            geometry.GeometryStateError,
-            match="OCC transform would discard.*mesh control",
-        ):
-            cad.translate([left], 0.25, 0.0, 0.0)
-
         unrelated = cad.rectangle(4.0, 0.0, 1.0, 1.0)
         overlapping_tool = cad.rectangle(4.5, 0.0, 1.0, 1.0)
         assert cad.fuse([unrelated], [overlapping_tool]).outputs
+        mesher = gmsh_meshing.Mesher(cad)
+        mesher.mesh_size(points, size=0.15)
 
         with pytest.raises(
             geometry.GeometryStateError,
-            match="destructive topology replacement would invalidate.*mesh control",
+            match="CONFIGURING_MESH",
+        ):
+            cad.translate([left], 0.25, 0.0, 0.0)
+
+        with pytest.raises(
+            geometry.GeometryStateError,
+            match="CONFIGURING_MESH",
         ):
             cad.fuse([left], [right])
 
-        native_mesh = cad.generate_mesh()
+        native_mesh = mesher.generate(gmsh_meshing.MeshSpec())
         point_mesh = gmsh_io.read(native_mesh)
 
     assert {element.type for element in point_mesh.elements} == {"Tri3"}
     _assert_positive_primary_jacobians(point_mesh)
 
 
-def test_real_recombine_rejects_transform_that_would_discard_control(
+def test_real_mesher_binding_seals_transform_after_recombine(
     real_gmsh: Any,
 ) -> None:
     with geometry.model("recombine_transform_dependency_guard", dimension=2) as cad:
         surface = cad.rectangle(0.0, 0.0, 1.0, 1.0)
-        cad.recombine(surface)
+        mesher = gmsh_meshing.Mesher(cad)
+        mesher.recombine(surface)
 
         with pytest.raises(
             geometry.GeometryStateError,
-            match="OCC transform would discard.*mesh control",
+            match="CONFIGURING_MESH",
         ):
             cad.rotate([surface], 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.25)
 
-        native_mesh = cad.generate_mesh(size=0.2)
+        native_mesh = mesher.generate(gmsh_meshing.MeshSpec(size=0.2))
         mesh = gmsh_io.read(native_mesh)
 
     assert {element.type for element in mesh.elements} == {"Quad4"}
@@ -450,7 +464,12 @@ def test_real_consecutive_controlled_extrusions_allow_preserving_topology(
 ) -> None:
     with geometry.model("consecutive_controlled_extrusions", dimension=3) as cad:
         first_surface = cad.rectangle(0.0, 0.0, 1.0, 1.0)
-        first_extrusion = cad.extrude(
+        second_surface = cad.rectangle(2.0, 0.0, 1.0, 1.0)
+        assert cad.translate([second_surface], 0.0, 0.25, 0.0) == (
+            second_surface,
+        )
+        mesher = gmsh_meshing.Mesher(cad)
+        first_extrusion = mesher.structured_extrude(
             [first_surface],
             0.0,
             0.0,
@@ -463,11 +482,7 @@ def test_real_consecutive_controlled_extrusions_allow_preserving_topology(
         )
         assert len(first_volumes) == 1
 
-        second_surface = cad.rectangle(2.0, 0.0, 1.0, 1.0)
-        assert cad.translate([second_surface], 0.0, 0.25, 0.0) == (
-            second_surface,
-        )
-        second_extrusion = cad.extrude(
+        second_extrusion = mesher.structured_extrude(
             [second_surface],
             0.0,
             0.0,
@@ -481,7 +496,9 @@ def test_real_consecutive_controlled_extrusions_allow_preserving_topology(
         )
         assert len(second_volumes) == 1
 
-        native_mesh = cad.generate_mesh(size=0.5, order=1, recombine=True)
+        native_mesh = mesher.generate(
+            gmsh_meshing.MeshSpec(size=0.5, order=1, recombine=True)
+        )
         mesh = gmsh_io.read(native_mesh)
 
     assert isinstance(mesh, Mesh3D)
@@ -502,7 +519,8 @@ def test_real_controlled_extrusion_accepts_repeated_shared_output(
             )
         )
 
-        outputs = cad.extrude(
+        mesher = gmsh_meshing.Mesher(cad)
+        outputs = mesher.structured_extrude(
             surfaces,
             0.0,
             0.0,

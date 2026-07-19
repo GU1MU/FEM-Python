@@ -16,6 +16,7 @@ from fem.elements import get_element_kernel
 from fem.elements.beam_section import parse_beam2_section
 from fem.geometry import gmsh as geometry
 from fem.io import gmsh as gmsh_io
+from fem.mesh import gmsh as gmsh_meshing
 from fem.selection import edges, elements, nodes
 from fem.solvers import static_linear
 
@@ -33,6 +34,38 @@ _FAKE_ELEMENT_PROPERTIES = {
     16: ("Quadrilateral 8", 2, 2, 8, [], 4),
     17: ("Hexahedron 20", 3, 2, 20, [], 8),
 }
+
+
+def _mesher(cad: geometry.GeometryModel) -> gmsh_meshing.Mesher:
+    bound = getattr(cad, "_test_bound_mesher", None)
+    if bound is None:
+        bound = gmsh_meshing.Mesher(cad)
+        cad._test_bound_mesher = bound
+    return bound
+
+
+def _generate_mesh(
+    cad: geometry.GeometryModel,
+    **kwargs: Any,
+) -> gmsh_meshing.GmshMeshRef:
+    spec = gmsh_meshing.MeshSpec(**kwargs)
+    return _mesher(cad).generate(spec)
+
+
+def _generate_auto_mesh(
+    cad: geometry.GeometryModel,
+    **kwargs: Any,
+) -> gmsh_meshing.GmshMeshRef:
+    spec = gmsh_meshing.AutoMeshSpec(**kwargs)
+    return _mesher(cad).generate(spec)
+
+
+def _structured_extrude(
+    cad: geometry.GeometryModel,
+    *args: Any,
+    **kwargs: Any,
+) -> tuple[geometry.EntityRef, ...]:
+    return _mesher(cad).structured_extrude(*args, **kwargs)
 
 
 class _FakeOcc:
@@ -74,7 +107,23 @@ class _FakeOcc:
         tag: int = -1,
     ) -> int:
         self.calls.append(("addPoint", x, y, z, meshSize, tag))
-        return self._allocate(0)
+        allocated = self._allocate(0)
+        self._model._current_data()["boxes"][(0, allocated)] = (
+            x,
+            y,
+            z,
+            x,
+            y,
+            z,
+        )
+        return allocated
+
+    def getBoundingBox(
+        self,
+        dimension: int,
+        tag: int,
+    ) -> tuple[float, float, float, float, float, float]:
+        return self._model._current_data()["boxes"][(dimension, tag)]
 
     def addLine(self, start_tag: int, end_tag: int, tag: int = -1) -> int:
         self.calls.append(("addLine", start_tag, end_tag, tag))
@@ -672,14 +721,14 @@ def _fake_entities(
 
 def _fake_threshold(
     cad: geometry.GeometryModel,
-    distance: geometry.MeshFieldRef,
+    distance: gmsh_meshing.MeshFieldRef,
     *,
     size_min: float = 0.05,
     size_max: float = 0.4,
     dist_min: float = 0.1,
     dist_max: float = 0.8,
-) -> geometry.MeshFieldRef:
-    return cad.threshold_field(
+) -> gmsh_meshing.MeshFieldRef:
+    return _mesher(cad).threshold_field(
         distance,
         size_min=size_min,
         size_max=size_max,
@@ -716,13 +765,14 @@ def _apply_entity_dependent_mesh_control(
     volume: geometry.EntityRef,
 ) -> None:
     operations = {
-        "transfinite_curve": lambda: cad.transfinite_curve(curve, num_nodes=3),
-        "transfinite_surface": lambda: cad.transfinite_surface(surface),
-        "transfinite_volume": lambda: cad.transfinite_volume(volume),
-        "recombine": lambda: cad.recombine(surface),
-        "mesh_size": lambda: cad.mesh_size([point], size=0.1),
-        "distance_field": lambda: cad.distance_field(surfaces=[surface]),
-        "layered_extrude": lambda: cad.extrude(
+        "transfinite_curve": lambda: _mesher(cad).transfinite_curve(curve, num_nodes=3),
+        "transfinite_surface": lambda: _mesher(cad).transfinite_surface(surface),
+        "transfinite_volume": lambda: _mesher(cad).transfinite_volume(volume),
+        "recombine": lambda: _mesher(cad).recombine(surface),
+        "mesh_size": lambda: _mesher(cad).mesh_size([point], size=0.1),
+        "distance_field": lambda: _mesher(cad).distance_field(surfaces=[surface]),
+        "layered_extrude": lambda: _structured_extrude(
+            cad,
             [surface],
             0,
             0,
@@ -730,7 +780,8 @@ def _apply_entity_dependent_mesh_control(
             num_elements=[2],
             heights=[1.0],
         ),
-        "recombined_extrude": lambda: cad.extrude(
+        "recombined_extrude": lambda: _structured_extrude(
+            cad,
             [surface],
             0,
             0,
@@ -912,22 +963,25 @@ def test_public_reference_types_are_immutable_and_boolean_filter_is_typed() -> N
     surface = geometry.EntityRef(2, 8, owner, object())
     curve = geometry.EntityRef(1, 3, owner, object())
     result = geometry.BooleanResult((surface, curve), ((surface,), (curve,)))
-    mesh_field = geometry.MeshFieldRef(5, "Distance", owner, object())
+    mesh_field = gmsh_meshing.MeshFieldRef(5, "Distance", owner, object())
 
     assert result.of_dimension(2) == (surface,)
     assert "object" not in repr(surface)
     assert (mesh_field.tag, mesh_field.field_type) == (5, "Distance")
     assert "object" not in repr(mesh_field)
-    assert issubclass(geometry.MeshFieldOwnershipError, geometry.GeometryError)
-    assert issubclass(geometry.StaleMeshFieldError, geometry.GeometryError)
-    assert issubclass(geometry.StaleGmshMeshError, geometry.GeometryError)
-    assert {
+    assert issubclass(gmsh_meshing.MeshFieldOwnershipError, geometry.GeometryError)
+    assert issubclass(gmsh_meshing.StaleMeshFieldError, geometry.GeometryError)
+    assert issubclass(gmsh_meshing.StaleGmshMeshError, geometry.GeometryError)
+    meshing_names = {
         "GmshMeshRef",
         "MeshFieldRef",
         "MeshFieldOwnershipError",
         "StaleGmshMeshError",
         "StaleMeshFieldError",
-    }.issubset(geometry.__all__)
+    }
+    assert meshing_names.isdisjoint(geometry.__all__)
+    assert meshing_names.issubset(gmsh_meshing.__all__)
+    assert {"OrientedCurveRef", "CurveLoopRef"}.issubset(geometry.__all__)
     with pytest.raises(FrozenInstanceError):
         surface.tag = 9  # type: ignore[misc]
     with pytest.raises(FrozenInstanceError):
@@ -935,7 +989,7 @@ def test_public_reference_types_are_immutable_and_boolean_filter_is_typed() -> N
     with pytest.raises(ValueError, match="dimension"):
         result.of_dimension(4)
     with pytest.raises(ValueError, match="mesh field type"):
-        geometry.MeshFieldRef(1, "Box", owner, object())  # type: ignore[arg-type]
+        gmsh_meshing.MeshFieldRef(1, "Box", owner, object())  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("dimension", [0, 4, True, "2", None])
@@ -1779,7 +1833,8 @@ def test_extrude_validates_and_forwards_layer_controls(
     with geometry.model("extrude", dimension=3) as cad:
         surface = cad.rectangle(0, 0, 1, 1)
         backend.model.occ.extrude_result = [(2, 2), (3, 1), (2, 3)]
-        result = cad.extrude(
+        result = _structured_extrude(
+            cad,
             [surface],
             0,
             0,
@@ -1844,7 +1899,10 @@ def test_invalid_extrusion_controls_fail_before_occ_call(
         vector = options.pop("vector")
         before = list(backend.model.occ.calls)
         with pytest.raises((ValueError, TypeError)):
-            cad.extrude([surface], *vector, **options)
+            if options:
+                _structured_extrude(cad, [surface], *vector, **options)
+            else:
+                cad.extrude([surface], *vector)
         assert backend.model.occ.calls == before
 
 
@@ -1958,10 +2016,10 @@ def test_transfinite_curve_and_recombine_forward_typed_targets_while_building(
         backend.model._current_data()["entities"].add((1, 7))
         curve = cad.entity(1, 7)
 
-        assert cad.transfinite_curve(curve, num_nodes=np.int64(5)) is None
-        assert cad.recombine(surface) is None
-        assert cad.transfinite_curve(curve, num_nodes=3) is None
-        assert cad.recombine(surface) is None
+        assert _mesher(cad).transfinite_curve(curve, num_nodes=np.int64(5)) is None
+        assert _mesher(cad).recombine(surface) is None
+        assert _mesher(cad).transfinite_curve(curve, num_nodes=3) is None
+        assert _mesher(cad).recombine(surface) is None
 
     assert backend.model.mesh.calls == [
         ("setTransfiniteCurve", 7, 5, "controls"),
@@ -1975,19 +2033,19 @@ def test_transfinite_curve_and_recombine_forward_typed_targets_while_building(
 @pytest.mark.parametrize(
     "operation",
     [
-        lambda cad, surface, curve: cad.transfinite_curve(
+        lambda cad, surface, curve: _mesher(cad).transfinite_curve(
             surface, num_nodes=3
         ),
-        lambda cad, surface, curve: cad.transfinite_curve(1, num_nodes=3),
-        lambda cad, surface, curve: cad.transfinite_curve(
+        lambda cad, surface, curve: _mesher(cad).transfinite_curve(1, num_nodes=3),
+        lambda cad, surface, curve: _mesher(cad).transfinite_curve(
             curve, num_nodes=True
         ),
-        lambda cad, surface, curve: cad.transfinite_curve(curve, num_nodes=1),
-        lambda cad, surface, curve: cad.transfinite_curve(
+        lambda cad, surface, curve: _mesher(cad).transfinite_curve(curve, num_nodes=1),
+        lambda cad, surface, curve: _mesher(cad).transfinite_curve(
             curve, num_nodes=2.5
         ),
-        lambda cad, surface, curve: cad.recombine(curve),
-        lambda cad, surface, curve: cad.recombine((2, 1)),
+        lambda cad, surface, curve: _mesher(cad).recombine(curve),
+        lambda cad, surface, curve: _mesher(cad).recombine((2, 1)),
     ],
 )
 def test_invalid_curve_and_recombine_controls_fail_before_backend_mutation(
@@ -2022,15 +2080,14 @@ def test_mesh_controls_reject_cross_model_and_stale_targets_before_mutation(
             inner_surface = inner.rectangle(0, 0, 1, 1)
             synchronize_calls = backend.model.occ.synchronize_calls
             with pytest.raises(geometry.EntityOwnershipError):
-                inner.recombine(outer_surface)
+                _mesher(inner).recombine(outer_surface)
             assert backend.model.occ.synchronize_calls == synchronize_calls
 
-            _ = inner.raw_model
-            with pytest.raises(geometry.StaleEntityError):
-                inner.recombine(inner_surface)
-            assert backend.model.occ.synchronize_calls == synchronize_calls
+            with pytest.raises(geometry.GeometryStateError, match="CONFIGURING_MESH"):
+                _ = inner.raw_model
+            assert _mesher(inner).recombine(inner_surface) is None
 
-    assert backend.model.mesh.calls == []
+    assert sum(call[0] == "setRecombine" for call in backend.model.mesh.calls) == 1
 
 
 def test_native_mesh_control_failure_preserves_state_and_mesh_attempt(
@@ -2043,10 +2100,10 @@ def test_native_mesh_control_failure_preserves_state_and_mesh_attempt(
         surface = cad.rectangle(0, 0, 1, 1)
         backend.model.mesh.fail_next.add("setRecombine")
         with pytest.raises(RuntimeError, match="fake setRecombine failure"):
-            cad.recombine(surface)
+            _mesher(cad).recombine(surface)
 
-        native_mesh = cad.generate_mesh(recombine=False)
-        assert isinstance(native_mesh, geometry.GmshMeshRef)
+        native_mesh = _generate_mesh(cad, recombine=False)
+        assert isinstance(native_mesh, gmsh_meshing.GmshMeshRef)
 
 
 def test_transfinite_surface_forwards_automatic_and_explicit_corners_in_order(
@@ -2065,15 +2122,15 @@ def test_transfinite_surface_forwards_automatic_and_explicit_corners_in_order(
             (0, point.tag) for point in points
         ]
 
-        assert cad.transfinite_surface(surface) is None
+        assert _mesher(cad).transfinite_surface(surface) is None
         assert (
-            cad.transfinite_surface(
+            _mesher(cad).transfinite_surface(
                 surface,
                 corners=(points[3], points[1], points[0], points[2]),
             )
             is None
         )
-        assert cad.transfinite_surface(surface, corners=points[:3]) is None
+        assert _mesher(cad).transfinite_surface(surface, corners=points[:3]) is None
         assert cad.entity(0, points[0].tag) == points[0]
 
     assert backend.model.mesh.calls == [
@@ -2123,7 +2180,7 @@ def test_invalid_surface_corner_shape_fails_before_native_control(
         synchronize_calls = backend.model.occ.synchronize_calls
 
         with pytest.raises((TypeError, ValueError)):
-            cad.transfinite_surface(surface, corners=supplied)
+            _mesher(cad).transfinite_surface(surface, corners=supplied)
 
         assert backend.model.mesh.calls == []
         assert backend.model.occ.synchronize_calls == synchronize_calls
@@ -2144,7 +2201,7 @@ def test_transfinite_surface_rejects_nonboundary_corner_before_native_control(
         backend.model.boundary_result = [(0, 1), (0, 2), (0, 3)]
 
         with pytest.raises(ValueError, match="boundary"):
-            cad.transfinite_surface(
+            _mesher(cad).transfinite_surface(
                 surface,
                 corners=(points[0], points[1], points[3]),
             )
@@ -2170,7 +2227,7 @@ def test_transfinite_surface_rejects_cross_model_and_stale_corners_pre_mutation(
             synchronize_calls = backend.model.occ.synchronize_calls
 
             with pytest.raises(geometry.EntityOwnershipError):
-                inner.transfinite_surface(
+                _mesher(inner).transfinite_surface(
                     surface,
                     corners=(points[0], points[1], foreign),
                 )
@@ -2178,7 +2235,7 @@ def test_transfinite_surface_rejects_cross_model_and_stale_corners_pre_mutation(
 
             inner._entity_tokens.pop((0, points[2].tag))
             with pytest.raises(geometry.StaleEntityError):
-                inner.transfinite_surface(surface, corners=points)
+                _mesher(inner).transfinite_surface(surface, corners=points)
             assert backend.model.occ.synchronize_calls == synchronize_calls
 
     assert backend.model.mesh.calls == []
@@ -2200,9 +2257,9 @@ def test_transfinite_volume_forwards_automatic_six_and_eight_corners_in_order(
             (0, point.tag) for point in points
         ]
 
-        assert cad.transfinite_volume(volume) is None
+        assert _mesher(cad).transfinite_volume(volume) is None
         assert (
-            cad.transfinite_volume(
+            _mesher(cad).transfinite_volume(
                 volume,
                 corners=(
                     points[5],
@@ -2215,7 +2272,7 @@ def test_transfinite_volume_forwards_automatic_six_and_eight_corners_in_order(
             )
             is None
         )
-        assert cad.transfinite_volume(volume, corners=tuple(reversed(points))) is None
+        assert _mesher(cad).transfinite_volume(volume, corners=tuple(reversed(points))) is None
 
     assert backend.model.mesh.calls == [
         ("setTransfiniteVolume", 1, (), "volume-controls"),
@@ -2253,7 +2310,7 @@ def test_invalid_volume_corner_shape_fails_before_native_control(
         synchronize_calls = backend.model.occ.synchronize_calls
 
         with pytest.raises((TypeError, ValueError)):
-            cad.transfinite_volume(volume, corners=supplied)
+            _mesher(cad).transfinite_volume(volume, corners=supplied)
 
         assert backend.model.mesh.calls == []
         assert backend.model.occ.synchronize_calls == synchronize_calls
@@ -2267,10 +2324,9 @@ def test_transfinite_volume_requires_3d_facade_and_recursive_boundary_corners(
 
     with geometry.model("two-dimensional-volume", dimension=2) as cad:
         backend.model._current_data()["entities"].add((3, 1))
-        raw_volume = cad.entity(3, 1)
         synchronize_calls = backend.model.occ.synchronize_calls
-        with pytest.raises(ValueError, match="facade dimension"):
-            cad.transfinite_volume(raw_volume)
+        with pytest.raises(ValueError, match="model dimension"):
+            cad.entity(3, 1)
         assert backend.model.occ.synchronize_calls == synchronize_calls
 
     with geometry.model("volume-membership", dimension=3) as cad:
@@ -2282,7 +2338,7 @@ def test_transfinite_volume_requires_3d_facade_and_recursive_boundary_corners(
         backend.model.boundary_result = [(0, tag) for tag in range(1, 8)]
 
         with pytest.raises(ValueError, match="boundary"):
-            cad.transfinite_volume(volume, corners=points)
+            _mesher(cad).transfinite_volume(volume, corners=points)
 
     assert backend.model.mesh.calls == []
 
@@ -2290,21 +2346,21 @@ def test_transfinite_volume_requires_3d_facade_and_recursive_boundary_corners(
 @pytest.mark.parametrize(
     "operation",
     [
-        lambda cad: cad.transfinite_curve(None, num_nodes=3),
-        lambda cad: cad.transfinite_surface(None),
-        lambda cad: cad.transfinite_volume(None),
-        lambda cad: cad.recombine(None),
-        lambda cad: cad.mesh_size([], size=0.1),
-        lambda cad: cad.distance_field(),
-        lambda cad: cad.threshold_field(
+        lambda cad: _mesher(cad).transfinite_curve(None, num_nodes=3),
+        lambda cad: _mesher(cad).transfinite_surface(None),
+        lambda cad: _mesher(cad).transfinite_volume(None),
+        lambda cad: _mesher(cad).recombine(None),
+        lambda cad: _mesher(cad).mesh_size([], size=0.1),
+        lambda cad: _mesher(cad).distance_field(),
+        lambda cad: _mesher(cad).threshold_field(
             None,
             size_min=0.1,
             size_max=0.2,
             dist_min=0.0,
             dist_max=1.0,
         ),
-        lambda cad: cad.min_field([]),
-        lambda cad: cad.background_field(None),
+        lambda cad: _mesher(cad).min_field([]),
+        lambda cad: _mesher(cad).background_field(None),
     ],
 )
 def test_mesh_controls_reject_new_and_closed_states_contextually(
@@ -2329,26 +2385,26 @@ def test_mesh_controls_reject_meshed_and_mesh_failed_states_contextually(
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
     operations = (
-        lambda cad: cad.transfinite_curve(None, num_nodes=3),
-        lambda cad: cad.transfinite_surface(None),
-        lambda cad: cad.transfinite_volume(None),
-        lambda cad: cad.recombine(None),
-        lambda cad: cad.mesh_size([], size=0.1),
-        lambda cad: cad.distance_field(),
-        lambda cad: cad.threshold_field(
+        lambda cad: _mesher(cad).transfinite_curve(None, num_nodes=3),
+        lambda cad: _mesher(cad).transfinite_surface(None),
+        lambda cad: _mesher(cad).transfinite_volume(None),
+        lambda cad: _mesher(cad).recombine(None),
+        lambda cad: _mesher(cad).mesh_size([], size=0.1),
+        lambda cad: _mesher(cad).distance_field(),
+        lambda cad: _mesher(cad).threshold_field(
             None,
             size_min=0.1,
             size_max=0.2,
             dist_min=0.0,
             dist_max=1.0,
         ),
-        lambda cad: cad.min_field([]),
-        lambda cad: cad.background_field(None),
+        lambda cad: _mesher(cad).min_field([]),
+        lambda cad: _mesher(cad).background_field(None),
     )
 
     with geometry.model("meshed-controls", dimension=3) as cad:
         cad.box(0, 0, 0, 1, 1, 1)
-        cad.generate_mesh()
+        _generate_mesh(cad, )
         for operation in operations:
             with pytest.raises(geometry.GeometryStateError, match="MESHED"):
                 operation(cad)
@@ -2357,7 +2413,7 @@ def test_mesh_controls_reject_meshed_and_mesh_failed_states_contextually(
         cad.box(0, 0, 0, 1, 1, 1)
         backend.model.mesh.fail_generate = True
         with pytest.raises(RuntimeError, match="fake mesh failure"):
-            cad.generate_mesh()
+            _generate_mesh(cad, )
         for operation in operations:
             with pytest.raises(geometry.GeometryStateError, match="MESH_FAILED"):
                 operation(cad)
@@ -2366,14 +2422,14 @@ def test_mesh_controls_reject_meshed_and_mesh_failed_states_contextually(
 @pytest.mark.parametrize(
     "operation",
     [
-        lambda cad, curve, surface, volume: cad.transfinite_curve(
+        lambda cad, curve, surface, volume: _mesher(cad).transfinite_curve(
             surface, num_nodes=3
         ),
-        lambda cad, curve, surface, volume: cad.transfinite_surface(curve),
-        lambda cad, curve, surface, volume: cad.transfinite_surface(2),
-        lambda cad, curve, surface, volume: cad.transfinite_volume(surface),
-        lambda cad, curve, surface, volume: cad.transfinite_volume((3, 1)),
-        lambda cad, curve, surface, volume: cad.recombine(volume),
+        lambda cad, curve, surface, volume: _mesher(cad).transfinite_surface(curve),
+        lambda cad, curve, surface, volume: _mesher(cad).transfinite_surface(2),
+        lambda cad, curve, surface, volume: _mesher(cad).transfinite_volume(surface),
+        lambda cad, curve, surface, volume: _mesher(cad).transfinite_volume((3, 1)),
+        lambda cad, curve, surface, volume: _mesher(cad).recombine(volume),
     ],
 )
 def test_every_mesh_control_rejects_invalid_target_before_backend_mutation(
@@ -2400,10 +2456,10 @@ def test_every_mesh_control_rejects_invalid_target_before_backend_mutation(
 @pytest.mark.parametrize(
     ("dimension", "operation"),
     [
-        (1, lambda cad, target: cad.transfinite_curve(target, num_nodes=3)),
-        (2, lambda cad, target: cad.transfinite_surface(target)),
-        (3, lambda cad, target: cad.transfinite_volume(target)),
-        (2, lambda cad, target: cad.recombine(target)),
+        (1, lambda cad, target: _mesher(cad).transfinite_curve(target, num_nodes=3)),
+        (2, lambda cad, target: _mesher(cad).transfinite_surface(target)),
+        (3, lambda cad, target: _mesher(cad).transfinite_volume(target)),
+        (2, lambda cad, target: _mesher(cad).recombine(target)),
     ],
 )
 def test_every_mesh_control_rejects_foreign_and_stale_targets_pre_mutation(
@@ -2452,7 +2508,7 @@ def test_transfinite_volume_rejects_foreign_and_stale_corner_tokens_pre_mutation
             synchronize_calls = backend.model.occ.synchronize_calls
 
             with pytest.raises(geometry.EntityOwnershipError):
-                inner.transfinite_volume(
+                _mesher(inner).transfinite_volume(
                     volume,
                     corners=(*points[:5], foreign),
                 )
@@ -2460,7 +2516,7 @@ def test_transfinite_volume_rejects_foreign_and_stale_corner_tokens_pre_mutation
 
             inner._entity_tokens.pop((0, points[5].tag))
             with pytest.raises(geometry.StaleEntityError):
-                inner.transfinite_volume(volume, corners=points)
+                _mesher(inner).transfinite_volume(volume, corners=points)
             assert backend.model.occ.synchronize_calls == synchronize_calls
 
     assert backend.model.mesh.calls == []
@@ -2472,19 +2528,19 @@ def test_transfinite_volume_rejects_foreign_and_stale_corner_tokens_pre_mutation
         (
             "setTransfiniteCurve",
             "curve",
-            lambda cad, target: cad.transfinite_curve(target, num_nodes=3),
+            lambda cad, target: _mesher(cad).transfinite_curve(target, num_nodes=3),
         ),
         (
             "setTransfiniteSurface",
             "surface",
-            lambda cad, target: cad.transfinite_surface(target),
+            lambda cad, target: _mesher(cad).transfinite_surface(target),
         ),
         (
             "setTransfiniteVolume",
             "volume",
-            lambda cad, target: cad.transfinite_volume(target),
+            lambda cad, target: _mesher(cad).transfinite_volume(target),
         ),
-        ("setRecombine", "surface", lambda cad, target: cad.recombine(target)),
+        ("setRecombine", "surface", lambda cad, target: _mesher(cad).recombine(target)),
     ],
 )
 def test_native_control_failures_preserve_exception_state_and_generation_attempt(
@@ -2509,8 +2565,8 @@ def test_native_control_failures_preserve_exception_state_and_generation_attempt
         with pytest.raises(RuntimeError, match=f"fake {native_operation} failure"):
             operation(cad, target)
 
-        native_mesh = cad.generate_mesh(recombine=False)
-        assert isinstance(native_mesh, geometry.GmshMeshRef)
+        native_mesh = _generate_mesh(cad, recombine=False)
+        assert isinstance(native_mesh, gmsh_meshing.GmshMeshRef)
 
 
 @pytest.mark.parametrize("operation", ["fuse", "cut", "fragment"])
@@ -2563,7 +2619,7 @@ def test_entity_dependency_guard_rejects_boolean_removing_control_closure(
 
         with pytest.raises(
             geometry.GeometryStateError,
-            match="entity-dependent mesh control",
+            match="CONFIGURING_MESH",
         ):
             getattr(cad, operation)(
                 [removed],
@@ -2576,7 +2632,7 @@ def test_entity_dependency_guard_rejects_boolean_removing_control_closure(
 
 
 @pytest.mark.parametrize("control", _ENTITY_DEPENDENT_MESH_CONTROLS)
-def test_native_control_failure_does_not_register_entity_dependencies(
+def test_native_control_failure_keeps_geometry_sealed_without_native_mutation(
     monkeypatch: pytest.MonkeyPatch,
     control: str,
 ) -> None:
@@ -2620,16 +2676,19 @@ def test_native_control_failure_does_not_register_entity_dependencies(
                 volume=volume,
             )
 
-        translate_calls = _occ_operation_call_count(backend, "translate")
-        assert _apply_typed_transform(cad, "translate", target) == (target,)
-        assert (
-            _occ_operation_call_count(backend, "translate")
-            == translate_calls + 1
+        expected_state = (
+            "MESH_FAILED"
+            if control in {"layered_extrude", "recombined_extrude"}
+            else "CONFIGURING_MESH"
         )
-        backend.model.boundary_result = []
+        translate_calls = _occ_operation_call_count(backend, "translate")
+        with pytest.raises(geometry.GeometryStateError, match=expected_state):
+            _apply_typed_transform(cad, "translate", target)
+        assert _occ_operation_call_count(backend, "translate") == translate_calls
         fuse_calls = _occ_operation_call_count(backend, "fuse")
-        assert cad.fuse([target], [unrelated]).outputs
-        assert _occ_operation_call_count(backend, "fuse") == fuse_calls + 1
+        with pytest.raises(geometry.GeometryStateError, match=expected_state):
+            cad.fuse([target], [unrelated])
+        assert _occ_operation_call_count(backend, "fuse") == fuse_calls
 
 
 @pytest.mark.parametrize(
@@ -2644,7 +2703,7 @@ def test_native_control_failure_does_not_register_entity_dependencies(
         "plain_extrude",
     ],
 )
-def test_entity_dependency_guard_allows_additive_topology(
+def test_mesher_binding_seals_additive_geometry_topology(
     monkeypatch: pytest.MonkeyPatch,
     operation: str,
 ) -> None:
@@ -2660,7 +2719,7 @@ def test_entity_dependency_guard_allows_additive_topology(
             start = cad.point(0, 0, 0)
             end = cad.point(1, 0, 0)
             backend.model.boundary_result = []
-            cad.mesh_size([start], size=0.1)
+            _mesher(cad).mesh_size([start], size=0.1)
             mutation = {
                 "point": lambda: cad.point(2, 0, 0),
                 "line": lambda: cad.line(start, end),
@@ -2669,7 +2728,7 @@ def test_entity_dependency_guard_allows_additive_topology(
             surface = cad.rectangle(0, 0, 1, 1)
             point = _fake_entities(cad, backend, 0, 20)[0]
             backend.model.boundary_result = []
-            cad.mesh_size([point], size=0.1)
+            _mesher(cad).mesh_size([point], size=0.1)
             mutation = {
                 "rectangle": lambda: cad.rectangle(4, 0, 1, 1),
                 "disk": lambda: cad.disk(4, 0, 1),
@@ -2678,7 +2737,8 @@ def test_entity_dependency_guard_allows_additive_topology(
                 "plain_extrude": lambda: cad.extrude([surface], 0, 0, 1),
             }[operation]
 
-        assert mutation() is not None
+        with pytest.raises(geometry.GeometryStateError, match="CONFIGURING_MESH"):
+            mutation()
 
 
 def test_entity_dependency_guard_allows_multiple_controlled_extrusions(
@@ -2691,7 +2751,8 @@ def test_entity_dependency_guard_allows_multiple_controlled_extrusions(
         surface = cad.rectangle(0, 0, 1, 1)
         backend.model.boundary_result = []
         backend.model.occ.extrude_result = [(2, 2), (3, 1)]
-        first_outputs = cad.extrude(
+        first_outputs = _structured_extrude(
+            cad,
             [surface],
             0,
             0,
@@ -2703,7 +2764,14 @@ def test_entity_dependency_guard_allows_multiple_controlled_extrusions(
         backend.model.boundary_result = []
         backend.model.occ.extrude_result = [(2, 3), (3, 2)]
 
-        second_outputs = cad.extrude([top], 0, 0, 1, recombine=True)
+        second_outputs = _structured_extrude(
+            cad,
+            [top],
+            0,
+            0,
+            1,
+            recombine=True,
+        )
 
         assert {entity.dimension for entity in second_outputs} == {2, 3}
         assert sum(call[0] == "extrude" for call in backend.model.occ.calls) == 2
@@ -2720,7 +2788,14 @@ def test_controlled_extrude_preserves_valid_duplicate_native_outputs(
         backend.model.boundary_result = []
         backend.model.occ.extrude_result = [(2, 2), (3, 1), (2, 2)]
 
-        outputs = cad.extrude([surface], 0, 0, 1, num_elements=[1])
+        outputs = _structured_extrude(
+            cad,
+            [surface],
+            0,
+            0,
+            1,
+            num_elements=[1],
+        )
 
         assert tuple((item.dimension, item.tag) for item in outputs) == (
             (2, 2),
@@ -2731,7 +2806,7 @@ def test_controlled_extrude_preserves_valid_duplicate_native_outputs(
 
 
 @pytest.mark.parametrize("operation", ["fuse", "cut", "fragment"])
-def test_entity_dependency_guard_allows_non_destructive_booleans(
+def test_mesher_binding_seals_non_destructive_booleans(
     monkeypatch: pytest.MonkeyPatch,
     operation: str,
 ) -> None:
@@ -2742,18 +2817,18 @@ def test_entity_dependency_guard_allows_non_destructive_booleans(
         first = cad.rectangle(0, 0, 1, 1)
         second = cad.rectangle(2, 0, 1, 1)
         backend.model.boundary_result = []
-        cad.recombine(first)
+        _mesher(cad).recombine(first)
         boolean_calls = _occ_operation_call_count(backend, operation)
 
-        result = getattr(cad, operation)(
-            [first],
-            [second],
-            remove_objects=False,
-            remove_tools=False,
-        )
+        with pytest.raises(geometry.GeometryStateError, match="CONFIGURING_MESH"):
+            getattr(cad, operation)(
+                [first],
+                [second],
+                remove_objects=False,
+                remove_tools=False,
+            )
 
-        assert result.outputs
-        assert _occ_operation_call_count(backend, operation) == boolean_calls + 1
+        assert _occ_operation_call_count(backend, operation) == boolean_calls
 
 
 @pytest.mark.parametrize("operation", ["fuse", "cut", "fragment"])
@@ -2761,7 +2836,7 @@ def test_entity_dependency_guard_allows_non_destructive_booleans(
     "removed_scope",
     ["objects", "tools", "objects_and_tools"],
 )
-def test_entity_dependency_guard_allows_precisely_unrelated_removal(
+def test_mesher_binding_seals_unrelated_destructive_booleans(
     monkeypatch: pytest.MonkeyPatch,
     operation: str,
     removed_scope: str,
@@ -2774,7 +2849,7 @@ def test_entity_dependency_guard_allows_precisely_unrelated_removal(
         unrelated_a = cad.rectangle(2, 0, 1, 1)
         unrelated_b = cad.rectangle(4, 0, 1, 1)
         backend.model.boundary_result = []
-        cad.recombine(protected)
+        _mesher(cad).recombine(protected)
         if removed_scope == "objects":
             objects = [unrelated_a]
             tools = [protected]
@@ -2790,15 +2865,15 @@ def test_entity_dependency_guard_allows_precisely_unrelated_removal(
         backend.model.boundary_result = []
         boolean_calls = _occ_operation_call_count(backend, operation)
 
-        result = getattr(cad, operation)(
-            objects,
-            tools,
-            remove_objects=remove_objects,
-            remove_tools=remove_tools,
-        )
+        with pytest.raises(geometry.GeometryStateError, match="CONFIGURING_MESH"):
+            getattr(cad, operation)(
+                objects,
+                tools,
+                remove_objects=remove_objects,
+                remove_tools=remove_tools,
+            )
 
-        assert result.outputs
-        assert _occ_operation_call_count(backend, operation) == boolean_calls + 1
+        assert _occ_operation_call_count(backend, operation) == boolean_calls
 
 
 @pytest.mark.parametrize("operation", ["translate", "rotate"])
@@ -2847,18 +2922,19 @@ def test_entity_dependency_guard_rejects_transform_of_control_closure_only(
 
         with pytest.raises(
             geometry.GeometryStateError,
-            match="entity-dependent mesh control",
+            match="CONFIGURING_MESH",
         ):
             _apply_typed_transform(cad, operation, controlled_parent)
 
         assert _occ_operation_call_count(backend, operation) == transform_calls
         backend.model.boundary_result = []
-        assert _apply_typed_transform(cad, operation, unrelated) == (unrelated,)
-        assert _occ_operation_call_count(backend, operation) == transform_calls + 1
+        with pytest.raises(geometry.GeometryStateError, match="CONFIGURING_MESH"):
+            _apply_typed_transform(cad, operation, unrelated)
+        assert _occ_operation_call_count(backend, operation) == transform_calls
 
 
 @pytest.mark.parametrize("operation", ["translate", "rotate"])
-def test_distance_source_transform_remains_allowed(
+def test_distance_source_transform_is_sealed_after_mesher_binding(
     monkeypatch: pytest.MonkeyPatch,
     operation: str,
 ) -> None:
@@ -2868,12 +2944,13 @@ def test_distance_source_transform_remains_allowed(
     with geometry.model(f"distance-{operation}", dimension=2) as cad:
         source = cad.rectangle(0, 0, 1, 1)
         backend.model.boundary_result = []
-        cad.distance_field(surfaces=[source])
+        _mesher(cad).distance_field(surfaces=[source])
         backend.model.boundary_result = []
         transform_calls = _occ_operation_call_count(backend, operation)
 
-        assert _apply_typed_transform(cad, operation, source) == (source,)
-        assert _occ_operation_call_count(backend, operation) == transform_calls + 1
+        with pytest.raises(geometry.GeometryStateError, match="CONFIGURING_MESH"):
+            _apply_typed_transform(cad, operation, source)
+        assert _occ_operation_call_count(backend, operation) == transform_calls
 
 
 @pytest.mark.parametrize(
@@ -2883,7 +2960,7 @@ def test_distance_source_transform_remains_allowed(
         {"remove_objects": False, "remove_tools": 1},
     ],
 )
-def test_guarded_boolean_validates_remove_flags_before_dependency_check(
+def test_mesher_seal_precedes_boolean_remove_flag_validation(
     monkeypatch: pytest.MonkeyPatch,
     options: dict[str, Any],
 ) -> None:
@@ -2894,10 +2971,10 @@ def test_guarded_boolean_validates_remove_flags_before_dependency_check(
         first = cad.rectangle(0, 0, 1, 1)
         second = cad.rectangle(2, 0, 1, 1)
         backend.model.boundary_result = []
-        cad.recombine(first)
+        _mesher(cad).recombine(first)
         fuse_calls = _occ_operation_call_count(backend, "fuse")
 
-        with pytest.raises(TypeError, match="must be a boolean"):
+        with pytest.raises(geometry.GeometryStateError, match="CONFIGURING_MESH"):
             cad.fuse([first], [second], **options)
 
         assert _occ_operation_call_count(backend, "fuse") == fuse_calls
@@ -2913,15 +2990,15 @@ def test_entity_dependency_guard_allows_more_controls_and_generation(
         surface = cad.rectangle(0, 0, 1, 1)
         point = _fake_entities(cad, backend, 0, 1)[0]
         backend.model.boundary_result = []
-        cad.mesh_size([point], size=0.1)
+        _mesher(cad).mesh_size([point], size=0.1)
 
         backend.model.boundary_result = []
-        assert cad.recombine(surface) is None
-        assert isinstance(cad.generate_mesh(), geometry.GmshMeshRef)
+        assert _mesher(cad).recombine(surface) is None
+        assert isinstance(_generate_mesh(cad, ), gmsh_meshing.GmshMeshRef)
 
 
 @pytest.mark.parametrize("raw_access", ["raw_model", "raw_occ"])
-def test_raw_access_makes_typed_removal_and_transform_fail_closed(
+def test_raw_access_is_rejected_after_mesher_binding_without_invalidating_refs(
     monkeypatch: pytest.MonkeyPatch,
     raw_access: str,
 ) -> None:
@@ -2932,28 +3009,11 @@ def test_raw_access_makes_typed_removal_and_transform_fail_closed(
         surface = cad.rectangle(0, 0, 1, 1)
         tool = cad.rectangle(2, 0, 1, 1)
         backend.model.boundary_result = []
-        cad.recombine(surface)
-        getattr(cad, raw_access)
-        reacquired_surface = cad.entity(2, surface.tag)
-        reacquired_tool = cad.entity(2, tool.tag)
-        backend.model.boundary_result = []
-        cut_calls = _occ_operation_call_count(backend, "cut")
-
-        with pytest.raises(
-            geometry.GeometryStateError,
-            match="dependencies unknown",
-        ):
-            cad.cut([reacquired_surface], [reacquired_tool])
-
-        assert _occ_operation_call_count(backend, "cut") == cut_calls
-        translate_calls = _occ_operation_call_count(backend, "translate")
-        with pytest.raises(
-            geometry.GeometryStateError,
-            match="dependencies unknown",
-        ):
-            cad.translate([reacquired_surface], 1, 0, 0)
-
-        assert _occ_operation_call_count(backend, "translate") == translate_calls
+        _mesher(cad).recombine(surface)
+        with pytest.raises(geometry.GeometryStateError, match="CONFIGURING_MESH"):
+            getattr(cad, raw_access)
+        assert cad.entity(2, surface.tag) == surface
+        assert cad.entity(2, tool.tag) == tool
 
 
 @pytest.mark.parametrize(
@@ -2964,7 +3024,7 @@ def test_raw_access_makes_typed_removal_and_transform_fail_closed(
         ([(2, 2)], geometry.GeometryError, "dimension-3"),
     ],
 )
-def test_malformed_controlled_extrude_makes_dependency_scope_unknown(
+def test_malformed_structured_extrude_enters_terminal_mesh_failed_state(
     monkeypatch: pytest.MonkeyPatch,
     native_result: list[tuple[int, int]],
     error_type: type[Exception],
@@ -2983,12 +3043,19 @@ def test_malformed_controlled_extrude_makes_dependency_scope_unknown(
         backend.model.occ.extrude_result = native_result
 
         with pytest.raises(error_type, match=message):
-            cad.extrude([surface], 0, 0, 1, num_elements=[1])
+            _structured_extrude(
+                cad,
+                [surface],
+                0,
+                0,
+                1,
+                num_elements=[1],
+            )
         backend.model.boundary_result = []
         fragment_calls = _occ_operation_call_count(backend, "fragment")
         with pytest.raises(
             geometry.GeometryStateError,
-            match="dependencies unknown",
+            match="MESH_FAILED",
         ):
             cad.fragment([surface], [tool])
 
@@ -2996,7 +3063,7 @@ def test_malformed_controlled_extrude_makes_dependency_scope_unknown(
         rotate_calls = _occ_operation_call_count(backend, "rotate")
         with pytest.raises(
             geometry.GeometryStateError,
-            match="dependencies unknown",
+            match="MESH_FAILED",
         ):
             cad.rotate([surface], 0, 0, 0, 0, 0, 1, 0.5)
 
@@ -3019,10 +3086,10 @@ def test_mesh_controls_reactivate_owned_model_and_stay_nested_model_local(
         backend.model._current_data()["entities"].add((1, 1))
         outer_curve = outer.entity(1, 1)
         outer_operations = (
-            lambda: outer.transfinite_curve(outer_curve, num_nodes=3),
-            lambda: outer.transfinite_surface(outer_surface),
-            lambda: outer.transfinite_volume(outer_volume),
-            lambda: outer.recombine(outer_surface),
+            lambda: _mesher(outer).transfinite_curve(outer_curve, num_nodes=3),
+            lambda: _mesher(outer).transfinite_surface(outer_surface),
+            lambda: _mesher(outer).transfinite_volume(outer_volume),
+            lambda: _mesher(outer).recombine(outer_surface),
         )
         for operation in outer_operations:
             backend.model.setCurrent("external")
@@ -3030,9 +3097,9 @@ def test_mesh_controls_reactivate_owned_model_and_stay_nested_model_local(
 
         with geometry.model("inner-mesh-controls", dimension=3) as inner:
             inner_volume = inner.box(0, 0, 0, 1, 1, 1)
-            inner.transfinite_volume(inner_volume)
+            _mesher(inner).transfinite_volume(inner_volume)
 
-        outer.transfinite_volume(outer_volume)
+        _mesher(outer).transfinite_volume(outer_volume)
 
     control_calls = [
         call
@@ -3068,7 +3135,7 @@ def test_mesh_size_forwards_ordered_batches_while_building(
 
         synchronize_calls = backend.model.occ.synchronize_calls
         assert (
-            cad.mesh_size(
+            _mesher(cad).mesh_size(
                 (point for point in (point_3, point_1)),
                 size=np.float64(0.2),
             )
@@ -3077,7 +3144,7 @@ def test_mesh_size_forwards_ordered_batches_while_building(
         assert backend.model.occ.synchronize_calls == synchronize_calls + 1
 
         synchronize_calls = backend.model.occ.synchronize_calls
-        assert cad.mesh_size([point_1], size=0.025) is None
+        assert _mesher(cad).mesh_size([point_1], size=0.025) is None
         assert backend.model.occ.synchronize_calls == synchronize_calls + 1
 
     assert backend.model.mesh.calls == [
@@ -3091,15 +3158,15 @@ def test_mesh_size_forwards_ordered_batches_while_building(
 @pytest.mark.parametrize(
     "operation",
     [
-        lambda cad, point, surface: cad.mesh_size([], size=0.1),
-        lambda cad, point, surface: cad.mesh_size([point, point], size=0.1),
-        lambda cad, point, surface: cad.mesh_size([surface], size=0.1),
-        lambda cad, point, surface: cad.mesh_size([object()], size=0.1),
-        lambda cad, point, surface: cad.mesh_size([point], size=True),
-        lambda cad, point, surface: cad.mesh_size([point], size=0.0),
-        lambda cad, point, surface: cad.mesh_size([point], size=-0.1),
-        lambda cad, point, surface: cad.mesh_size([point], size=float("inf")),
-        lambda cad, point, surface: cad.mesh_size([point], size=float("nan")),
+        lambda cad, point, surface: _mesher(cad).mesh_size([], size=0.1),
+        lambda cad, point, surface: _mesher(cad).mesh_size([point, point], size=0.1),
+        lambda cad, point, surface: _mesher(cad).mesh_size([surface], size=0.1),
+        lambda cad, point, surface: _mesher(cad).mesh_size([object()], size=0.1),
+        lambda cad, point, surface: _mesher(cad).mesh_size([point], size=True),
+        lambda cad, point, surface: _mesher(cad).mesh_size([point], size=0.0),
+        lambda cad, point, surface: _mesher(cad).mesh_size([point], size=-0.1),
+        lambda cad, point, surface: _mesher(cad).mesh_size([point], size=float("inf")),
+        lambda cad, point, surface: _mesher(cad).mesh_size([point], size=float("nan")),
     ],
 )
 def test_invalid_mesh_size_inputs_fail_before_synchronization_or_mutation(
@@ -3137,7 +3204,7 @@ def test_mesh_size_materializes_generators_before_native_mutation(
 
         synchronize_calls = backend.model.occ.synchronize_calls
         with pytest.raises(RuntimeError, match="point generator failed"):
-            cad.mesh_size(broken_points(), size=0.1)
+            _mesher(cad).mesh_size(broken_points(), size=0.1)
         assert backend.model.occ.synchronize_calls == synchronize_calls
         assert backend.model.mesh.calls == []
 
@@ -3155,12 +3222,12 @@ def test_mesh_size_rejects_foreign_and_stale_points_before_native_mutation(
             synchronize_calls = backend.model.occ.synchronize_calls
 
             with pytest.raises(geometry.EntityOwnershipError):
-                inner.mesh_size([foreign], size=0.1)
+                _mesher(inner).mesh_size([foreign], size=0.1)
             assert backend.model.occ.synchronize_calls == synchronize_calls
 
             inner._entity_tokens.pop((0, local.tag))
             with pytest.raises(geometry.StaleEntityError):
-                inner.mesh_size([local], size=0.1)
+                _mesher(inner).mesh_size([local], size=0.1)
             assert backend.model.occ.synchronize_calls == synchronize_calls
 
     assert backend.model.mesh.calls == []
@@ -3203,7 +3270,7 @@ def test_distance_field_forwards_dimension_specific_lists_in_source_order(
             ]
 
         synchronize_calls = backend.model.occ.synchronize_calls
-        distance = cad.distance_field(**kwargs)
+        distance = _mesher(cad).distance_field(**kwargs)
         assert backend.model.occ.synchronize_calls == synchronize_calls + 1
         assert (distance.tag, distance.field_type) == (1, "Distance")
 
@@ -3221,21 +3288,21 @@ def test_distance_field_forwards_dimension_specific_lists_in_source_order(
 @pytest.mark.parametrize(
     "operation",
     [
-        lambda cad, point, curve, surface: cad.distance_field(),
-        lambda cad, point, curve, surface: cad.distance_field(
+        lambda cad, point, curve, surface: _mesher(cad).distance_field(),
+        lambda cad, point, curve, surface: _mesher(cad).distance_field(
             points=[point, point]
         ),
-        lambda cad, point, curve, surface: cad.distance_field(points=[curve]),
-        lambda cad, point, curve, surface: cad.distance_field(curves=[point]),
-        lambda cad, point, curve, surface: cad.distance_field(surfaces=[curve]),
-        lambda cad, point, curve, surface: cad.distance_field(points=[object()]),
-        lambda cad, point, curve, surface: cad.distance_field(
+        lambda cad, point, curve, surface: _mesher(cad).distance_field(points=[curve]),
+        lambda cad, point, curve, surface: _mesher(cad).distance_field(curves=[point]),
+        lambda cad, point, curve, surface: _mesher(cad).distance_field(surfaces=[curve]),
+        lambda cad, point, curve, surface: _mesher(cad).distance_field(points=[object()]),
+        lambda cad, point, curve, surface: _mesher(cad).distance_field(
             points=[point], sampling=True
         ),
-        lambda cad, point, curve, surface: cad.distance_field(
+        lambda cad, point, curve, surface: _mesher(cad).distance_field(
             points=[point], sampling=1
         ),
-        lambda cad, point, curve, surface: cad.distance_field(
+        lambda cad, point, curve, surface: _mesher(cad).distance_field(
             points=[point], sampling=2.5
         ),
     ],
@@ -3276,7 +3343,7 @@ def test_distance_field_materializes_every_source_before_native_mutation(
 
         synchronize_calls = backend.model.occ.synchronize_calls
         with pytest.raises(RuntimeError, match="curve generator failed"):
-            cad.distance_field(points=[point], curves=broken_curves())
+            _mesher(cad).distance_field(points=[point], curves=broken_curves())
         assert backend.model.occ.synchronize_calls == synchronize_calls
         assert backend.model.mesh.field.calls == []
 
@@ -3290,7 +3357,7 @@ def test_threshold_min_and_background_build_an_ordered_inert_field_graph(
     with geometry.model("field-graph", dimension=2) as cad:
         cad.rectangle(0, 0, 1, 1)
         curve = _fake_entities(cad, backend, 1, 7)[0]
-        distance = cad.distance_field(curves=[curve], sampling=30)
+        distance = _mesher(cad).distance_field(curves=[curve], sampling=30)
         first = _fake_threshold(cad, distance)
         assert backend.model._current_data()["background_mesh_field"] is None
 
@@ -3302,9 +3369,9 @@ def test_threshold_min_and_background_build_an_ordered_inert_field_graph(
             dist_min=0.05,
             dist_max=0.6,
         )
-        minimum = cad.min_field((field for field in (second, first)))
-        nested = cad.min_field([minimum, second])
-        assert cad.background_field(nested) is None
+        minimum = _mesher(cad).min_field((field for field in (second, first)))
+        nested = _mesher(cad).min_field([minimum, second])
+        assert _mesher(cad).background_field(nested) is None
 
         fields = backend.model._current_data()["mesh_fields"]
         assert fields[distance.tag]["type"] == "Distance"
@@ -3360,7 +3427,7 @@ def test_threshold_min_and_background_build_an_ordered_inert_field_graph(
 @pytest.mark.parametrize(
     "operation",
     [
-        lambda cad, distance, threshold: cad.threshold_field(
+        lambda cad, distance, threshold: _mesher(cad).threshold_field(
             object(),
             size_min=0.1,
             size_max=0.2,
@@ -3413,7 +3480,7 @@ def test_invalid_threshold_inputs_fail_before_native_mutation(
     with geometry.model("invalid-threshold", dimension=2) as cad:
         cad.rectangle(0, 0, 1, 1)
         point = _fake_entities(cad, backend, 0, 1)[0]
-        distance = cad.distance_field(points=[point])
+        distance = _mesher(cad).distance_field(points=[point])
         threshold = _fake_threshold(cad, distance)
         calls = list(backend.model.mesh.field.calls)
 
@@ -3426,11 +3493,11 @@ def test_invalid_threshold_inputs_fail_before_native_mutation(
 @pytest.mark.parametrize(
     "operation",
     [
-        lambda cad, distance, first, second: cad.min_field([]),
-        lambda cad, distance, first, second: cad.min_field([first]),
-        lambda cad, distance, first, second: cad.min_field([first, first]),
-        lambda cad, distance, first, second: cad.min_field([distance, first]),
-        lambda cad, distance, first, second: cad.min_field([object(), first]),
+        lambda cad, distance, first, second: _mesher(cad).min_field([]),
+        lambda cad, distance, first, second: _mesher(cad).min_field([first]),
+        lambda cad, distance, first, second: _mesher(cad).min_field([first, first]),
+        lambda cad, distance, first, second: _mesher(cad).min_field([distance, first]),
+        lambda cad, distance, first, second: _mesher(cad).min_field([object(), first]),
     ],
 )
 def test_invalid_min_inputs_fail_before_native_mutation(
@@ -3443,7 +3510,7 @@ def test_invalid_min_inputs_fail_before_native_mutation(
     with geometry.model("invalid-min", dimension=2) as cad:
         cad.rectangle(0, 0, 1, 1)
         point = _fake_entities(cad, backend, 0, 1)[0]
-        distance = cad.distance_field(points=[point])
+        distance = _mesher(cad).distance_field(points=[point])
         first = _fake_threshold(cad, distance)
         second = _fake_threshold(
             cad,
@@ -3472,12 +3539,12 @@ def test_distance_sources_reject_foreign_and_stale_entities_pre_mutation(
             synchronize_calls = backend.model.occ.synchronize_calls
 
             with pytest.raises(geometry.EntityOwnershipError):
-                inner.distance_field(points=[foreign])
+                _mesher(inner).distance_field(points=[foreign])
             assert backend.model.occ.synchronize_calls == synchronize_calls
 
             inner._entity_tokens.pop((0, local.tag))
             with pytest.raises(geometry.StaleEntityError):
-                inner.distance_field(points=[local])
+                _mesher(inner).distance_field(points=[local])
             assert backend.model.occ.synchronize_calls == synchronize_calls
 
     assert backend.model.mesh.field.calls == []
@@ -3495,42 +3562,42 @@ def test_mesh_fields_are_owned_live_model_local_and_use_fresh_tokens_on_reuse(
 
     with geometry.model("outer-fields", dimension=2) as outer:
         outer_point = _fake_entities(outer, backend, 0, 1)[0]
-        outer_distance = outer.distance_field(points=[outer_point])
+        outer_distance = _mesher(outer).distance_field(points=[outer_point])
         outer_threshold = _fake_threshold(outer, outer_distance)
         with geometry.model("inner-fields", dimension=2) as inner:
             inner_point = _fake_entities(inner, backend, 0, 1)[0]
-            inner_distance = inner.distance_field(points=[inner_point])
+            inner_distance = _mesher(inner).distance_field(points=[inner_point])
             assert outer_distance.tag == inner_distance.tag == 1
 
             calls = list(backend.model.mesh.field.calls)
-            with pytest.raises(geometry.MeshFieldOwnershipError):
+            with pytest.raises(gmsh_meshing.MeshFieldOwnershipError):
                 _fake_threshold(inner, outer_distance)
             assert backend.model.mesh.field.calls == calls
 
             backend.model.mesh.field.remove(inner_distance.tag)
-            with pytest.raises(geometry.StaleMeshFieldError, match="no longer exists"):
+            with pytest.raises(gmsh_meshing.StaleMeshFieldError, match="no longer exists"):
                 _fake_threshold(inner, inner_distance)
 
-            replacement = inner.distance_field(points=[inner_point])
+            replacement = _mesher(inner).distance_field(points=[inner_point])
             assert replacement.tag == inner_distance.tag
             assert replacement != inner_distance
-            with pytest.raises(geometry.StaleMeshFieldError, match="stale"):
+            with pytest.raises(gmsh_meshing.StaleMeshFieldError, match="stale"):
                 _fake_threshold(inner, inner_distance)
 
             threshold = _fake_threshold(inner, replacement)
             assert threshold.field_type == "Threshold"
             calls = list(backend.model.mesh.field.calls)
-            with pytest.raises(geometry.MeshFieldOwnershipError):
-                inner.background_field(outer_threshold)
-            with pytest.raises(geometry.MeshFieldOwnershipError):
-                inner.min_field([threshold, outer_threshold])
+            with pytest.raises(gmsh_meshing.MeshFieldOwnershipError):
+                _mesher(inner).background_field(outer_threshold)
+            with pytest.raises(gmsh_meshing.MeshFieldOwnershipError):
+                _mesher(inner).min_field([threshold, outer_threshold])
             assert backend.model.mesh.field.calls == calls
 
-            _ = inner.raw_model
-            with pytest.raises(geometry.StaleMeshFieldError):
-                inner.background_field(threshold)
+            with pytest.raises(geometry.GeometryStateError, match="CONFIGURING_MESH"):
+                _ = inner.raw_model
+            assert _mesher(inner).background_field(threshold) is None
 
-        assert outer.background_field(outer_threshold) is None
+        assert _mesher(outer).background_field(outer_threshold) is None
 
     assert any(
         call[0] == "add" and call[-1] == "outer-fields"
@@ -3568,7 +3635,7 @@ def test_distance_field_rolls_back_after_each_configuration_failure(
         backend.model.mesh.field.fail_next.add((native_operation, option))
 
         with pytest.raises(RuntimeError, match=f"fake field {native_operation}"):
-            cad.distance_field(
+            _mesher(cad).distance_field(
                 points=[point],
                 curves=[curve],
                 surfaces=[surface],
@@ -3596,7 +3663,7 @@ def test_threshold_field_rolls_back_after_each_configuration_failure(
     with geometry.model("threshold-rollback", dimension=2) as cad:
         cad.rectangle(0, 0, 1, 1)
         point = _fake_entities(cad, backend, 0, 1)[0]
-        distance = cad.distance_field(points=[point])
+        distance = _mesher(cad).distance_field(points=[point])
         if option is None:
             backend.model.mesh.field.fail_after[("list", None)] = 1
             expected = "list"
@@ -3626,7 +3693,7 @@ def test_min_field_rolls_back_after_each_configuration_failure(
     with geometry.model("min-rollback", dimension=2) as cad:
         cad.rectangle(0, 0, 1, 1)
         point = _fake_entities(cad, backend, 0, 1)[0]
-        distance = cad.distance_field(points=[point])
+        distance = _mesher(cad).distance_field(points=[point])
         first = _fake_threshold(cad, distance)
         second = _fake_threshold(
             cad,
@@ -3640,7 +3707,7 @@ def test_min_field_rolls_back_after_each_configuration_failure(
             backend.model.mesh.field.fail_next.add(("setNumbers", "FieldsList"))
 
         with pytest.raises(RuntimeError, match=f"fake field .*{failure}"):
-            cad.min_field([second, first])
+            _mesher(cad).min_field([second, first])
 
         assert set(backend.model._current_data()["mesh_fields"]) == {
             distance.tag,
@@ -3665,15 +3732,15 @@ def test_field_constructor_rejects_invalid_or_inactive_allocated_tags(
         point = _fake_entities(cad, backend, 0, 1)[0]
         backend.model.mesh.field.add_results.append(0)
         with pytest.raises(ValueError, match="positive"):
-            cad.distance_field(points=[point])
+            _mesher(cad).distance_field(points=[point])
         assert backend.model._current_data()["mesh_fields"] == {}
 
         backend.model.mesh.field.hidden_tags.add(1)
         with pytest.raises(geometry.GeometryError, match="not active"):
-            cad.distance_field(points=[point])
+            _mesher(cad).distance_field(points=[point])
         assert backend.model._current_data()["mesh_fields"] == {}
 
-        live = cad.distance_field(points=[point])
+        live = _mesher(cad).distance_field(points=[point])
         assert (live.tag, live.field_type) == (1, "Distance")
 
 
@@ -3691,16 +3758,16 @@ def test_field_rollback_failure_preserves_primary_error_note_and_mesh_attempt(
         )
 
         with pytest.raises(RuntimeError, match="setNumber") as captured:
-            cad.distance_field(points=[point])
+            _mesher(cad).distance_field(points=[point])
         assert any(
             "rollback" in note and "remove" in note
             for note in getattr(captured.value, "__notes__", ())
         )
         assert set(backend.model._current_data()["mesh_fields"]) == {1}
 
-        replacement = cad.distance_field(points=[point])
+        replacement = _mesher(cad).distance_field(points=[point])
         assert replacement.tag == 2
-        assert isinstance(cad.generate_mesh(size=0.2), geometry.GmshMeshRef)
+        assert isinstance(_generate_mesh(cad, size=0.2), gmsh_meshing.GmshMeshRef)
 
 
 def test_background_selection_failure_is_retryable_and_keeps_fields_inert(
@@ -3712,14 +3779,14 @@ def test_background_selection_failure_is_retryable_and_keeps_fields_inert(
     with geometry.model("background-retry", dimension=2) as cad:
         cad.rectangle(0, 0, 1, 1)
         point = _fake_entities(cad, backend, 0, 1)[0]
-        distance = cad.distance_field(points=[point])
+        distance = _mesher(cad).distance_field(points=[point])
         threshold = _fake_threshold(cad, distance)
         backend.model.mesh.field.fail_next.add(("setAsBackgroundMesh", None))
 
         with pytest.raises(RuntimeError, match="setAsBackgroundMesh"):
-            cad.background_field(threshold)
+            _mesher(cad).background_field(threshold)
         assert backend.model._current_data()["background_mesh_field"] is None
-        assert cad.background_field(threshold) is None
+        assert _mesher(cad).background_field(threshold) is None
         assert backend.model._current_data()["background_mesh_field"] == threshold.tag
 
     background_calls = [
@@ -3743,20 +3810,20 @@ def test_background_rejects_non_size_fields_and_repeated_selection_pre_mutation(
     with geometry.model("invalid-background", dimension=2) as cad:
         cad.rectangle(0, 0, 1, 1)
         point = _fake_entities(cad, backend, 0, 1)[0]
-        distance = cad.distance_field(points=[point])
+        distance = _mesher(cad).distance_field(points=[point])
         threshold = _fake_threshold(cad, distance)
         calls = list(backend.model.mesh.field.calls)
 
         with pytest.raises(TypeError):
-            cad.background_field(object())
+            _mesher(cad).background_field(object())
         with pytest.raises(ValueError, match="Threshold or Min"):
-            cad.background_field(distance)
+            _mesher(cad).background_field(distance)
         assert backend.model.mesh.field.calls == calls
 
-        cad.background_field(threshold)
+        _mesher(cad).background_field(threshold)
         calls = list(backend.model.mesh.field.calls)
         with pytest.raises(ValueError, match="only once"):
-            cad.background_field(threshold)
+            _mesher(cad).background_field(threshold)
         assert backend.model.mesh.field.calls == calls
 
 
@@ -3771,29 +3838,29 @@ def test_typed_size_mode_conflicts_are_retryable_before_native_generation(
     with geometry.model(f"{mode}-mesh-conflict", dimension=2) as cad:
         cad.rectangle(0, 0, 1, 1)
         point = _fake_entities(cad, backend, 0, 1)[0]
-        distance = cad.distance_field(points=[point])
+        distance = _mesher(cad).distance_field(points=[point])
         threshold = _fake_threshold(cad, distance)
         if mode == "point":
-            cad.mesh_size([point], size=0.1)
+            _mesher(cad).mesh_size([point], size=0.1)
             field_calls = list(backend.model.mesh.field.calls)
             with pytest.raises(ValueError, match="point sizes"):
-                cad.background_field(threshold)
+                _mesher(cad).background_field(threshold)
             assert backend.model.mesh.field.calls == field_calls
         else:
-            cad.background_field(threshold)
+            _mesher(cad).background_field(threshold)
             mesh_calls = list(backend.model.mesh.calls)
             with pytest.raises(ValueError, match="background field"):
-                cad.mesh_size([point], size=0.1)
+                _mesher(cad).mesh_size([point], size=0.1)
             assert backend.model.mesh.calls == mesh_calls
 
         mesh_calls = list(backend.model.mesh.calls)
         option_calls = list(backend.option.calls)
         with pytest.raises(ValueError, match="size cannot be supplied"):
-            cad.generate_mesh(size=0.2)
+            _generate_mesh(cad, size=0.2)
         assert backend.model.mesh.calls == mesh_calls
         assert backend.option.calls == option_calls
 
-        assert isinstance(cad.generate_mesh(), geometry.GmshMeshRef)
+        assert isinstance(_generate_mesh(cad, ), gmsh_meshing.GmshMeshRef)
 
 
 @pytest.mark.parametrize("mode", ["point", "background"])
@@ -3820,15 +3887,15 @@ def test_typed_size_modes_request_and_restore_all_deterministic_options(
         cad.rectangle(0, 0, 1, 1)
         point = _fake_entities(cad, backend, 0, 1)[0]
         if mode == "point":
-            cad.mesh_size([point], size=0.1)
+            _mesher(cad).mesh_size([point], size=0.1)
         else:
-            distance = cad.distance_field(points=[point])
-            cad.background_field(_fake_threshold(cad, distance))
+            distance = _mesher(cad).distance_field(points=[point])
+            _mesher(cad).background_field(_fake_threshold(cad, distance))
         backend.option.calls.clear()
 
         assert isinstance(
-            cad.generate_mesh(order=2, recombine=True),
-            geometry.GmshMeshRef,
+            _generate_mesh(cad, order=2, recombine=True),
+            gmsh_meshing.GmshMeshRef,
         )
 
     assert backend.option.values == original
@@ -3887,21 +3954,21 @@ def test_typed_size_generation_failures_restore_every_external_option(
         cad.rectangle(0, 0, 1, 1)
         point = _fake_entities(cad, backend, 0, 1)[0]
         if mode == "point":
-            cad.mesh_size([point], size=0.1)
+            _mesher(cad).mesh_size([point], size=0.1)
         else:
-            distance = cad.distance_field(points=[point])
-            cad.background_field(_fake_threshold(cad, distance))
+            distance = _mesher(cad).distance_field(points=[point])
+            _mesher(cad).background_field(_fake_threshold(cad, distance))
 
         expected = {
             "mesh": "fake mesh failure",
             "option": "Mesh.MeshSizeMax",
         }[failure]
         with pytest.raises(RuntimeError, match=expected):
-            cad.generate_mesh(order=2, recombine=True)
+            _generate_mesh(cad, order=2, recombine=True)
 
         assert backend.option.values == original
         with pytest.raises(geometry.GeometryStateError, match="MESH_FAILED"):
-            cad.generate_mesh()
+            _generate_mesh(cad, )
 
 
 def test_nested_typed_size_modes_keep_fields_model_local_and_restore_options(
@@ -3929,21 +3996,21 @@ def test_nested_typed_size_modes_keep_fields_model_local_and_restore_options(
     with geometry.model("outer-size-mode", dimension=2) as outer:
         outer.rectangle(0, 0, 1, 1)
         outer_point = _fake_entities(outer, backend, 0, 1)[0]
-        distance = outer.distance_field(points=[outer_point])
+        distance = _mesher(outer).distance_field(points=[outer_point])
         threshold = _fake_threshold(outer, distance)
-        outer.background_field(threshold)
+        _mesher(outer).background_field(threshold)
         assert set(backend.model._current_data()["mesh_fields"]) == {1, 2}
 
         with geometry.model("inner-size-mode", dimension=2) as inner:
             inner.rectangle(0, 0, 1, 1)
             inner_point = _fake_entities(inner, backend, 0, 1)[0]
-            inner.mesh_size([inner_point], size=0.1)
-            inner.generate_mesh()
+            _mesher(inner).mesh_size([inner_point], size=0.1)
+            _generate_mesh(inner, )
             assert backend.option.values == original
 
         assert backend.model.current == "outer-size-mode"
         assert set(backend.model._current_data()["mesh_fields"]) == {1, 2}
-        outer.generate_mesh()
+        _generate_mesh(outer, )
         assert backend.option.values == original
 
     assert [
@@ -3975,24 +4042,43 @@ def test_invalid_mesh_arguments_fail_before_mesh_or_option_mutation(
     with geometry.model("mesh", dimension=2) as cad:
         cad.rectangle(0, 0, 1, 1)
         with pytest.raises((TypeError, ValueError)):
-            cad.generate_mesh(**kwargs)
+            _generate_mesh(cad, **kwargs)
         assert backend.model.mesh.calls == []
         assert backend.option.calls == []
 
 
-def test_generation_signatures_expose_only_native_meshing_arguments() -> None:
-    assert tuple(inspect.signature(geometry.GeometryModel.generate_mesh).parameters) == (
+def test_generation_surface_is_owned_only_by_mesher_specs() -> None:
+    removed = {
+        "generate_mesh",
+        "generate_auto_mesh",
+        "transfinite_curve",
+        "transfinite_surface",
+        "transfinite_volume",
+        "recombine",
+        "mesh_size",
+        "distance_field",
+        "threshold_field",
+        "min_field",
+        "background_field",
+    }
+    assert all(not hasattr(geometry.GeometryModel, name) for name in removed)
+    assert tuple(inspect.signature(gmsh_meshing.Mesher.generate).parameters) == (
         "self",
+        "spec",
+    )
+    assert tuple(inspect.signature(gmsh_meshing.MeshSpec).parameters) == (
         "size",
         "order",
         "recombine",
     )
-    assert tuple(
-        inspect.signature(geometry.GeometryModel.generate_auto_mesh).parameters
-    ) == ("self", "level", "cell_shape", "order")
+    assert tuple(inspect.signature(gmsh_meshing.AutoMeshSpec).parameters) == (
+        "level",
+        "cell_shape",
+        "order",
+    )
 
 
-def test_missing_top_dimensional_entity_is_retryable_validation_failure(
+def test_missing_top_dimensional_entity_leaves_mesher_retryable_but_geometry_sealed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = _FakeGmsh()
@@ -4000,12 +4086,14 @@ def test_missing_top_dimensional_entity_is_retryable_validation_failure(
 
     with geometry.model("mesh", dimension=2) as cad:
         with pytest.raises(ValueError, match="top-dimensional"):
-            cad.generate_mesh()
+            _generate_mesh(cad, )
         assert backend.model.mesh.calls == []
         assert backend.option.calls == []
 
-        cad.rectangle(0, 0, 1, 1)
-        assert isinstance(cad.generate_mesh(), geometry.GmshMeshRef)
+        with pytest.raises(geometry.GeometryStateError, match="CONFIGURING_MESH"):
+            cad.rectangle(0, 0, 1, 1)
+        with pytest.raises(ValueError, match="top-dimensional"):
+            _generate_mesh(cad, )
 
 
 def test_generate_mesh_assigns_size_isolates_options_and_returns_live_handle(
@@ -4025,13 +4113,13 @@ def test_generate_mesh_assigns_size_isolates_options_and_returns_live_handle(
     with geometry.model("mesh", dimension=2) as cad:
         cad.rectangle(0, 0, 1, 1)
         backend.model._current_data()["entities"].update({(0, 3), (0, 1)})
-        result = cad.generate_mesh(
+        result = _generate_mesh(cad,
             size=0.2,
             order=2,
             recombine=True,
         )
 
-        assert isinstance(result, geometry.GmshMeshRef)
+        assert isinstance(result, gmsh_meshing.GmshMeshRef)
         assert (result.dimension, result.model_name) == (2, "mesh")
         assert "GeometryModel" not in repr(result)
         assert "object" not in repr(result)
@@ -4040,12 +4128,12 @@ def test_generate_mesh_assigns_size_isolates_options_and_returns_live_handle(
         with pytest.raises(FrozenInstanceError):
             result.model_name = "renamed"  # type: ignore[misc]
         with pytest.raises(geometry.GeometryStateError, match="MESHED"):
-            cad.generate_mesh()
+            _generate_mesh(cad, )
         with pytest.raises(geometry.GeometryStateError, match="MESHED"):
             cad.entities(2)
 
     with pytest.raises(
-        geometry.StaleGmshMeshError,
+        gmsh_meshing.StaleGmshMeshError,
         match="mesh.*inside the owning geometry model context",
     ):
         result._borrow_model()
@@ -4081,7 +4169,7 @@ def test_generated_handle_reactivates_owner_across_nested_contexts(
 
     with geometry.model("outer-native-mesh", dimension=2) as outer:
         outer.rectangle(0.0, 0.0, 1.0, 1.0)
-        outer_mesh = outer.generate_mesh()
+        outer_mesh = _generate_mesh(outer, )
 
         with geometry.model("inner-native-mesh", dimension=3) as inner:
             inner.box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
@@ -4096,7 +4184,7 @@ def test_generated_handle_reactivates_owner_across_nested_contexts(
         assert backend.model.current == "outer-native-mesh"
 
     assert backend.model.current == "external"
-    with pytest.raises(geometry.StaleGmshMeshError, match="outer-native-mesh"):
+    with pytest.raises(gmsh_meshing.StaleGmshMeshError, match="outer-native-mesh"):
         outer_mesh._borrow_model()
 
 
@@ -4108,8 +4196,8 @@ def test_generated_handle_rejects_forged_generation_identity(
 
     with geometry.model("native-identity", dimension=2) as cad:
         cad.rectangle(0.0, 0.0, 1.0, 1.0)
-        native_mesh = cad.generate_mesh()
-        forged = geometry.GmshMeshRef(
+        native_mesh = _generate_mesh(cad, )
+        forged = gmsh_meshing.GmshMeshRef(
             native_mesh.dimension,
             native_mesh.model_name,
             cad,
@@ -4117,12 +4205,12 @@ def test_generated_handle_rejects_forged_generation_identity(
             object(),
         )
 
-        with pytest.raises(geometry.StaleGmshMeshError, match="native-identity"):
+        with pytest.raises(gmsh_meshing.StaleGmshMeshError, match="native-identity"):
             forged._borrow_model()
 
 
 def test_generated_handle_rejects_malformed_owner_before_dispatch() -> None:
-    malformed = geometry.GmshMeshRef(
+    malformed = gmsh_meshing.GmshMeshRef(
         2,
         "malformed-owner",
         object(),  # type: ignore[arg-type]
@@ -4130,7 +4218,7 @@ def test_generated_handle_rejects_malformed_owner_before_dispatch() -> None:
         object(),
     )
 
-    with pytest.raises(geometry.StaleGmshMeshError, match="malformed-owner"):
+    with pytest.raises(gmsh_meshing.StaleGmshMeshError, match="malformed-owner"):
         malformed._borrow_model()
 
 
@@ -4142,11 +4230,11 @@ def test_generated_handle_detects_missing_native_model(
 
     with geometry.model("missing-native-model", dimension=2) as cad:
         cad.rectangle(0.0, 0.0, 1.0, 1.0)
-        native_mesh = cad.generate_mesh()
+        native_mesh = _generate_mesh(cad, )
         del backend.model.models["missing-native-model"]
 
         with pytest.raises(
-            geometry.StaleGmshMeshError,
+            gmsh_meshing.StaleGmshMeshError,
             match="missing-native-model",
         ):
             native_mesh._borrow_model()
@@ -4172,7 +4260,7 @@ def test_1d_mesh_contract_is_validated_before_mesh_or_option_mutation(
         end = cad.point(1, 0, 0)
         cad.line(start, end)
         with pytest.raises(ValueError, match=message):
-            cad.generate_mesh(**kwargs)
+            _generate_mesh(cad, **kwargs)
         assert backend.model.mesh.calls == []
         assert backend.option.calls == []
 
@@ -4194,8 +4282,8 @@ def test_1d_generate_mesh_returns_native_handle_and_restores_options(
         start = cad.point(0, 0, 1)
         end = cad.point(2, 3, 4)
         cad.line(start, end)
-        result = cad.generate_mesh(size=0.25)
-        assert isinstance(result, geometry.GmshMeshRef)
+        result = _generate_mesh(cad, size=0.25)
+        assert isinstance(result, gmsh_meshing.GmshMeshRef)
         assert (result.dimension, result.model_name) == (1, "members")
 
     assert backend.model.mesh.calls == [
@@ -4210,22 +4298,23 @@ def test_1d_generate_mesh_returns_native_handle_and_restores_options(
     }
 
 
-def test_1d_missing_curve_is_retryable_before_mesh_attempt(
+def test_1d_missing_curve_preflight_keeps_mesher_retryable_and_seals_geometry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = _FakeGmsh()
     _install_backend(monkeypatch, backend)
 
     with geometry.model("members", dimension=1) as cad:
-        start = cad.point(0, 0, 0)
+        cad.point(0, 0, 0)
         with pytest.raises(ValueError, match="top-dimensional"):
-            cad.generate_mesh()
+            _generate_mesh(cad, )
         assert backend.model.mesh.calls == []
         assert backend.option.calls == []
 
-        end = cad.point(1, 0, 0)
-        cad.line(start, end)
-        assert isinstance(cad.generate_mesh(), geometry.GmshMeshRef)
+        with pytest.raises(geometry.GeometryStateError, match="CONFIGURING_MESH"):
+            cad.point(1, 0, 0)
+        with pytest.raises(ValueError, match="top-dimensional"):
+            _generate_mesh(cad, )
 
 
 def test_failed_generation_restores_options_and_disallows_retry(
@@ -4247,7 +4336,7 @@ def test_failed_generation_restores_options_and_disallows_retry(
         cad.rectangle(0, 0, 1, 1)
         backend.model._current_data()["entities"].add((0, 1))
         with pytest.raises(RuntimeError, match="fake mesh failure") as captured:
-            cad.generate_mesh(size=0.2, order=2, recombine=True)
+            _generate_mesh(cad, size=0.2, order=2, recombine=True)
 
         assert any(
             "mesh generation failed" in note
@@ -4262,7 +4351,7 @@ def test_failed_generation_restores_options_and_disallows_retry(
         }
         assert len(cad.entities(2)) == 1
         with pytest.raises(geometry.GeometryStateError, match="MESH_FAILED"):
-            cad.generate_mesh()
+            _generate_mesh(cad, )
 
 
 def test_size_assignment_without_points_consumes_mesh_attempt(
@@ -4274,9 +4363,9 @@ def test_size_assignment_without_points_consumes_mesh_attempt(
     with geometry.model("mesh", dimension=2) as cad:
         cad.rectangle(0, 0, 1, 1)
         with pytest.raises(geometry.GeometryError, match="point"):
-            cad.generate_mesh(size=0.25)
+            _generate_mesh(cad, size=0.25)
         with pytest.raises(geometry.GeometryStateError, match="MESH_FAILED"):
-            cad.generate_mesh()
+            _generate_mesh(cad, )
     assert backend.option.calls == []
 
 
@@ -4296,10 +4385,10 @@ def test_option_set_failure_restores_snapshot_and_marks_mesh_failed(
     with geometry.model("mesh", dimension=2) as cad:
         cad.rectangle(0, 0, 1, 1)
         with pytest.raises(RuntimeError, match="Mesh.RecombineAll"):
-            cad.generate_mesh(order=2, recombine=True)
+            _generate_mesh(cad, order=2, recombine=True)
         assert backend.option.values == original
         with pytest.raises(geometry.GeometryStateError, match="MESH_FAILED"):
-            cad.generate_mesh()
+            _generate_mesh(cad, )
 
 
 @pytest.mark.parametrize(
@@ -4427,7 +4516,7 @@ def test_auto_mesh_legal_shape_matrix_uses_exact_fixed_policy(
     ) as cad:
         _build_fake_topology(cad)
         _set_fake_element_blocks(backend, dimension, (element_type, (101, 102)))
-        result = cad.generate_auto_mesh(
+        result = _generate_auto_mesh(cad,
             cell_shape=cell_shape,
             order=order,
         )
@@ -4438,7 +4527,7 @@ def test_auto_mesh_legal_shape_matrix_uses_exact_fixed_policy(
         "Mesh.MeshSizeFactor": 1.0,
         **policy_options,
     }
-    assert isinstance(result, geometry.GmshMeshRef)
+    assert isinstance(result, gmsh_meshing.GmshMeshRef)
     assert result.dimension == dimension
     assert _first_requested_options(backend) == expected_options
     assert backend.option.values == _AUTO_OPTION_ORIGINALS
@@ -4483,9 +4572,9 @@ def test_auto_mesh_rejects_invalid_shape_matrix_before_native_mutation(
         _build_fake_topology(cad)
         synchronize_calls = backend.model.occ.synchronize_calls
         with pytest.raises((TypeError, ValueError)) as captured:
-            cad.generate_auto_mesh(cell_shape=cell_shape)
+            _generate_auto_mesh(cad, cell_shape=cell_shape)
 
-        assert "generate_auto_mesh" in str(captured.value)
+        assert "cell_shape" in str(captured.value)
         assert "cell_shape" in str(captured.value)
         assert backend.model.occ.synchronize_calls == synchronize_calls
         assert backend.model.mesh.calls == []
@@ -4504,9 +4593,9 @@ def test_auto_mesh_rejects_invalid_levels_before_native_mutation(
         cad.rectangle(0.0, 0.0, 1.0, 1.0)
         synchronize_calls = backend.model.occ.synchronize_calls
         with pytest.raises((TypeError, ValueError)) as captured:
-            cad.generate_auto_mesh(level=level)
+            _generate_auto_mesh(cad, level=level)
 
-        assert "generate_auto_mesh" in str(captured.value)
+        assert "level" in str(captured.value)
         assert "level" in str(captured.value)
         assert backend.model.occ.synchronize_calls == synchronize_calls
         assert backend.model.mesh.calls == []
@@ -4528,7 +4617,7 @@ def test_auto_mesh_levels_set_dimension_aware_absolute_size_factor(
     with geometry.model(f"auto-level-{dimension}-{level}", dimension=dimension) as cad:
         _build_fake_topology(cad)
         _set_fake_element_blocks(backend, dimension, (default_type, (1,)))
-        cad.generate_auto_mesh(level=level)
+        _generate_auto_mesh(cad, level=level)
 
     assert _first_requested_options(backend)["Mesh.MeshSizeFactor"] == pytest.approx(
         2.0 ** ((3 - level) / dimension)
@@ -4545,10 +4634,10 @@ def test_auto_mesh_preflight_validation_is_retryable(
     with geometry.model("auto-validation-retry", dimension=2) as cad:
         cad.rectangle(0.0, 0.0, 1.0, 1.0)
         with pytest.raises((TypeError, ValueError)):
-            cad.generate_auto_mesh(level=True)
+            _generate_auto_mesh(cad, level=True)
 
         _set_fake_element_blocks(backend, 2, (2, (1,)))
-        assert isinstance(cad.generate_auto_mesh(level=3), geometry.GmshMeshRef)
+        assert isinstance(_generate_auto_mesh(cad, level=3), gmsh_meshing.GmshMeshRef)
 
 
 @pytest.mark.parametrize(
@@ -4581,12 +4670,12 @@ def test_auto_mesh_strict_pure_families_return_native_handles(
     ) as cad:
         _build_fake_topology(cad)
         _set_fake_element_blocks(backend, dimension, (element_type, (1, 2)))
-        result = cad.generate_auto_mesh(
+        result = _generate_auto_mesh(cad,
             cell_shape=cell_shape,
             order=order,
         )
 
-    assert isinstance(result, geometry.GmshMeshRef)
+    assert isinstance(result, gmsh_meshing.GmshMeshRef)
     assert result.dimension == dimension
     assert backend.model.mesh.generate_calls == [dimension]
     assert backend.model.mesh.refine_calls == 0
@@ -4614,9 +4703,9 @@ def test_auto_mesh_tri_quad_accepts_each_permitted_family_union(
     with geometry.model(f"strict-mixed-{order}-{len(blocks)}", dimension=2) as cad:
         cad.rectangle(0.0, 0.0, 1.0, 1.0)
         _set_fake_element_blocks(backend, 2, *blocks)
-        result = cad.generate_auto_mesh(cell_shape="tri-quad", order=order)
+        result = _generate_auto_mesh(cad, cell_shape="tri-quad", order=order)
 
-    assert isinstance(result, geometry.GmshMeshRef)
+    assert isinstance(result, gmsh_meshing.GmshMeshRef)
     assert backend.model.mesh.generate_calls == [2]
     assert backend.model.mesh.refine_calls == 0
 
@@ -4646,12 +4735,12 @@ def test_auto_mesh_strict_validation_rejects_empty_and_malformed_output(
     with geometry.model(f"strict-malformed-{message}", dimension=2) as cad:
         cad.rectangle(0.0, 0.0, 1.0, 1.0)
         backend.model._current_data()["element_blocks"][2] = raw_blocks
-        with pytest.raises(geometry.MeshCellShapeError, match=message):
-            cad.generate_auto_mesh(cell_shape="quad")
+        with pytest.raises(gmsh_meshing.MeshCellShapeError, match=message):
+            _generate_auto_mesh(cad, cell_shape="quad")
 
         assert len(cad.entities(2)) == 1
         with pytest.raises(geometry.GeometryStateError, match="MESH_FAILED"):
-            cad.generate_auto_mesh(cell_shape="quad")
+            _generate_auto_mesh(cad, cell_shape="quad")
 
     assert backend.model.mesh.generate_calls == [2]
     assert backend.option.values == _AUTO_OPTION_ORIGINALS
@@ -4673,13 +4762,13 @@ def test_auto_mesh_shape_error_reports_aggregated_named_actual_cells(
             (3, (3,)),
             (2, (4,)),
         )
-        with pytest.raises(geometry.MeshCellShapeError) as captured:
-            cad.generate_auto_mesh(cell_shape="quad", order=2)
+        with pytest.raises(gmsh_meshing.MeshCellShapeError) as captured:
+            _generate_auto_mesh(cad, cell_shape="quad", order=2)
 
     message = str(captured.value)
     for fragment in (
         "strict-named-diagnostic",
-        "generate_auto_mesh",
+        "AutoMeshSpec",
         "cell_shape='quad'",
         "dimension=2",
         "order=2",
@@ -4708,10 +4797,10 @@ def test_auto_mesh_shape_diagnostic_falls_back_to_unknown_numeric_type(
         _set_fake_element_blocks(backend, 3, (99, (1, 2)))
         backend.model.mesh.fail_element_properties.add(99)
         with pytest.raises(
-            geometry.MeshCellShapeError,
+            gmsh_meshing.MeshCellShapeError,
             match=r"Gmsh type 99=2",
         ):
-            cad.generate_auto_mesh(cell_shape="hex")
+            _generate_auto_mesh(cad, cell_shape="hex")
 
     assert 99 not in backend.model.mesh.fail_element_properties
 
@@ -4727,9 +4816,9 @@ def test_auto_mesh_get_elements_failure_preserves_native_error_and_attempt(
     with geometry.model("strict-query-failure", dimension=2) as cad:
         cad.rectangle(0.0, 0.0, 1.0, 1.0)
         with pytest.raises(RuntimeError, match="fake getElements failure"):
-            cad.generate_auto_mesh(cell_shape="tri")
+            _generate_auto_mesh(cad, cell_shape="tri")
         with pytest.raises(geometry.GeometryStateError, match="MESH_FAILED"):
-            cad.generate_mesh()
+            _generate_mesh(cad, )
 
     assert backend.model.mesh.generate_calls == [2]
     assert backend.option.values == _AUTO_OPTION_ORIGINALS
@@ -4745,9 +4834,9 @@ def test_auto_mesh_strict_validation_ignores_lower_dimensional_blocks(
         cad.box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
         _set_fake_element_blocks(backend, 2, (2, (20,)), (3, (21,)))
         _set_fake_element_blocks(backend, 3, (17, (30, 31)))
-        result = cad.generate_auto_mesh(cell_shape="hex", order=2)
+        result = _generate_auto_mesh(cad, cell_shape="hex", order=2)
 
-    assert isinstance(result, geometry.GmshMeshRef)
+    assert isinstance(result, gmsh_meshing.GmshMeshRef)
     assert [
         call[1] for call in backend.model.mesh.calls if call[0] == "getElements"
     ] == [3]
@@ -4766,16 +4855,16 @@ def test_auto_mesh_typed_size_modes_compose_factor_once_and_restore_options(
         cad.rectangle(0.0, 0.0, 1.0, 1.0)
         point = _fake_entities(cad, backend, 0, 11)[0]
         if mode == "point":
-            cad.mesh_size([point], size=0.1)
+            _mesher(cad).mesh_size([point], size=0.1)
         else:
-            distance = cad.distance_field(points=[point])
-            cad.background_field(_fake_threshold(cad, distance))
+            distance = _mesher(cad).distance_field(points=[point])
+            _mesher(cad).background_field(_fake_threshold(cad, distance))
         _set_fake_element_blocks(backend, 2, (16, (1, 2)))
         backend.option.calls.clear()
 
         assert isinstance(
-            cad.generate_auto_mesh(level=4, cell_shape="quad", order=2),
-            geometry.GmshMeshRef,
+            _generate_auto_mesh(cad, level=4, cell_shape="quad", order=2),
+            gmsh_meshing.GmshMeshRef,
         )
 
     requested = _first_requested_options(backend)
@@ -4824,7 +4913,7 @@ def test_auto_mesh_failures_restore_every_external_option_and_consume_attempt(
         element_type = 2 if failure == "strict" else 16
         _set_fake_element_blocks(backend, 2, (element_type, (1, 2)))
         if failure == "strict":
-            expected_error: type[BaseException] = geometry.MeshCellShapeError
+            expected_error: type[BaseException] = gmsh_meshing.MeshCellShapeError
             expected_message = "Triangle 3=2"
         else:
             expected_error = RuntimeError
@@ -4835,12 +4924,12 @@ def test_auto_mesh_failures_restore_every_external_option_and_consume_attempt(
             }[failure]
 
         with pytest.raises(expected_error, match=expected_message):
-            cad.generate_auto_mesh(cell_shape="quad", order=2)
+            _generate_auto_mesh(cad, cell_shape="quad", order=2)
 
         assert backend.option.values == _AUTO_OPTION_ORIGINALS
         assert len(cad.entities(2)) == 1
         with pytest.raises(geometry.GeometryStateError, match="MESH_FAILED"):
-            cad.generate_auto_mesh(cell_shape="quad")
+            _generate_auto_mesh(cad, cell_shape="quad")
 
 def test_auto_mesh_successful_generation_restoration_failure_is_retried_on_exit(
     monkeypatch: pytest.MonkeyPatch,
@@ -4857,11 +4946,11 @@ def test_auto_mesh_successful_generation_restoration_failure_is_retried_on_exit(
             geometry.GeometryError,
             match="restoring global Gmsh options failed",
         ):
-            cad.generate_auto_mesh(cell_shape="quad")
+            _generate_auto_mesh(cad, cell_shape="quad")
 
         assert backend.option.values["Mesh.Algorithm"] == 6.0
         with pytest.raises(geometry.GeometryStateError, match="MESH_FAILED"):
-            cad.generate_auto_mesh(cell_shape="quad")
+            _generate_auto_mesh(cad, cell_shape="quad")
 
     assert backend.option.values == _AUTO_OPTION_ORIGINALS
 
@@ -4877,8 +4966,8 @@ def test_auto_mesh_shape_failure_preserves_error_when_restoration_also_fails(
     with geometry.model("auto-shape-and-restore-failure", dimension=2) as cad:
         cad.rectangle(0.0, 0.0, 1.0, 1.0)
         _set_fake_element_blocks(backend, 2, (2, (1,)))
-        with pytest.raises(geometry.MeshCellShapeError) as captured:
-            cad.generate_auto_mesh(cell_shape="quad")
+        with pytest.raises(gmsh_meshing.MeshCellShapeError) as captured:
+            _generate_auto_mesh(cad, cell_shape="quad")
 
         assert any(
             "additionally failed to restore" in note
@@ -4895,9 +4984,9 @@ def test_auto_mesh_shape_failure_preserves_error_when_restoration_also_fails(
         ("transfinite_surface", "transfinite_surface"),
         ("transfinite_volume", "transfinite_volume"),
         ("recombine", "recombine"),
-        ("num_elements_extrude", "extrude"),
-        ("heights_extrude", "extrude"),
-        ("recombined_extrude", "extrude"),
+        ("num_elements_extrude", "structured_extrude"),
+        ("heights_extrude", "structured_extrude"),
+        ("recombined_extrude", "structured_extrude"),
     ],
 )
 def test_auto_mesh_rejects_every_explicit_topology_control_retryably(
@@ -4926,9 +5015,17 @@ def test_auto_mesh_rejects_every_explicit_topology_control_retryably(
                 volume=volume,
             )
         elif control == "num_elements_extrude":
-            cad.extrude([surface], 0.0, 0.0, 1.0, num_elements=[2])
+            _structured_extrude(
+                cad,
+                [surface],
+                0.0,
+                0.0,
+                1.0,
+                num_elements=[2],
+            )
         elif control == "heights_extrude":
-            cad.extrude(
+            _structured_extrude(
+                cad,
                 [surface],
                 0.0,
                 0.0,
@@ -4937,20 +5034,27 @@ def test_auto_mesh_rejects_every_explicit_topology_control_retryably(
                 heights=[0.5, 1.0],
             )
         else:
-            cad.extrude([surface], 0.0, 0.0, 1.0, recombine=True)
+            _structured_extrude(
+                cad,
+                [surface],
+                0.0,
+                0.0,
+                1.0,
+                recombine=True,
+            )
 
         mesh_calls = list(backend.model.mesh.calls)
         option_calls = list(backend.option.calls)
         synchronize_calls = backend.model.occ.synchronize_calls
-        with pytest.raises(geometry.MeshControlConflictError) as captured:
-            cad.generate_auto_mesh(cell_shape="tet")
+        with pytest.raises(gmsh_meshing.MeshControlConflictError) as captured:
+            _generate_auto_mesh(cad, cell_shape="tet")
 
         assert reported_blocker in str(captured.value)
-        assert "generate_mesh()" in str(captured.value)
+        assert "MeshSpec" in str(captured.value)
         assert backend.model.mesh.calls == mesh_calls
         assert backend.option.calls == option_calls
         assert backend.model.occ.synchronize_calls == synchronize_calls
-        assert isinstance(cad.generate_mesh(), geometry.GmshMeshRef)
+        assert isinstance(_generate_mesh(cad, ), gmsh_meshing.GmshMeshRef)
 
 
 @pytest.mark.parametrize("raw_access", ["raw_model", "raw_occ"])
@@ -4969,15 +5073,15 @@ def test_auto_mesh_raw_access_conflict_is_retryable_through_low_level_path(
         synchronize_calls = backend.model.occ.synchronize_calls
 
         with pytest.raises(
-            geometry.MeshControlConflictError,
+            gmsh_meshing.MeshControlConflictError,
             match="scope unknown",
         ):
-            cad.generate_auto_mesh()
+            _generate_auto_mesh(cad, )
 
         assert backend.model.mesh.calls == mesh_calls
         assert backend.option.calls == option_calls
         assert backend.model.occ.synchronize_calls == synchronize_calls
-        assert isinstance(cad.generate_mesh(), geometry.GmshMeshRef)
+        assert isinstance(_generate_mesh(cad, ), gmsh_meshing.GmshMeshRef)
 
 
 @pytest.mark.parametrize("control", ["point", "background", "plain_extrude"])
@@ -4999,18 +5103,18 @@ def test_auto_mesh_accepts_compatible_typed_size_and_plain_topology_controls(
             point = _fake_entities(cad, backend, 0, 11)[0]
             backend.model.boundary_result = []
             if control == "point":
-                cad.mesh_size([point], size=0.1)
+                _mesher(cad).mesh_size([point], size=0.1)
             else:
-                distance = cad.distance_field(points=[point])
-                cad.background_field(_fake_threshold(cad, distance))
+                distance = _mesher(cad).distance_field(points=[point])
+                _mesher(cad).background_field(_fake_threshold(cad, distance))
             element_type = 2
         _set_fake_element_blocks(backend, dimension, (element_type, (1, 2)))
 
-        assert isinstance(cad.generate_auto_mesh(), geometry.GmshMeshRef)
+        assert isinstance(_generate_auto_mesh(cad, ), gmsh_meshing.GmshMeshRef)
 
 
 @pytest.mark.parametrize("failure", ["transfinite", "extrude"])
-def test_failed_precommit_topology_control_does_not_block_auto_mesh(
+def test_failed_control_state_distinguishes_precommit_and_native_occ_mutation(
     monkeypatch: pytest.MonkeyPatch,
     failure: str,
 ) -> None:
@@ -5024,17 +5128,28 @@ def test_failed_precommit_topology_control_does_not_block_auto_mesh(
         if failure == "transfinite":
             backend.model.mesh.fail_next.add("setTransfiniteVolume")
             with pytest.raises(RuntimeError, match="setTransfiniteVolume"):
-                cad.transfinite_volume(volume)
+                _mesher(cad).transfinite_volume(volume)
         else:
             backend.model.occ.fail_next.add("extrude")
             with pytest.raises(RuntimeError, match="fake extrude failure"):
-                cad.extrude([surface], 0.0, 0.0, 1.0, num_elements=[1])
+                _structured_extrude(
+                    cad,
+                    [surface],
+                    0.0,
+                    0.0,
+                    1.0,
+                    num_elements=[1],
+                )
 
         _set_fake_element_blocks(backend, 3, (4, (1, 2)))
-        assert isinstance(cad.generate_auto_mesh(), geometry.GmshMeshRef)
+        if failure == "transfinite":
+            assert isinstance(_generate_auto_mesh(cad, ), gmsh_meshing.GmshMeshRef)
+        else:
+            with pytest.raises(geometry.GeometryStateError, match="MESH_FAILED"):
+                _generate_auto_mesh(cad, )
 
 
-def test_malformed_controlled_extrusion_makes_auto_mesh_scope_unknown(
+def test_malformed_structured_extrusion_blocks_all_generation_terminally(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = _FakeGmsh()
@@ -5045,18 +5160,23 @@ def test_malformed_controlled_extrusion_makes_auto_mesh_scope_unknown(
         cad.box(2.0, 0.0, 0.0, 1.0, 1.0, 1.0)
         backend.model.occ.extrude_result = []
         with pytest.raises(geometry.GeometryError, match="no entities"):
-            cad.extrude([surface], 0.0, 0.0, 1.0, num_elements=[1])
+            _structured_extrude(
+                cad,
+                [surface],
+                0.0,
+                0.0,
+                1.0,
+                num_elements=[1],
+            )
 
-        with pytest.raises(
-            geometry.MeshControlConflictError,
-            match="scope unknown",
-        ):
-            cad.generate_auto_mesh()
+        with pytest.raises(geometry.GeometryStateError, match="MESH_FAILED"):
+            _generate_auto_mesh(cad, )
         assert backend.model.mesh.generate_calls == []
-        assert isinstance(cad.generate_mesh(), geometry.GmshMeshRef)
+        with pytest.raises(geometry.GeometryStateError, match="MESH_FAILED"):
+            _generate_mesh(cad, )
 
 
-def test_auto_mesh_missing_top_entity_is_retryable_without_option_mutation(
+def test_auto_mesh_missing_top_entity_keeps_mesher_retryable_and_seals_geometry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = _FakeGmsh()
@@ -5064,13 +5184,14 @@ def test_auto_mesh_missing_top_entity_is_retryable_without_option_mutation(
 
     with geometry.model("auto-missing-topology", dimension=2) as cad:
         with pytest.raises(ValueError, match="top-dimensional"):
-            cad.generate_auto_mesh()
+            _generate_auto_mesh(cad, )
         assert backend.model.mesh.calls == []
         assert backend.option.calls == []
 
-        cad.rectangle(0.0, 0.0, 1.0, 1.0)
-        _set_fake_element_blocks(backend, 2, (2, (1,)))
-        assert isinstance(cad.generate_auto_mesh(), geometry.GmshMeshRef)
+        with pytest.raises(geometry.GeometryStateError, match="CONFIGURING_MESH"):
+            cad.rectangle(0.0, 0.0, 1.0, 1.0)
+        with pytest.raises(ValueError, match="top-dimensional"):
+            _generate_auto_mesh(cad, )
 
 
 def test_nested_auto_mesh_models_isolate_current_model_policy_and_level(
@@ -5091,11 +5212,11 @@ def test_nested_auto_mesh_models_isolate_current_model_policy_and_level(
         with geometry.model("inner-auto", dimension=3) as inner:
             inner.box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
             _set_fake_element_blocks(backend, 3, (4, (3, 4)))
-            inner.generate_auto_mesh(level=1, cell_shape="tet")
+            _generate_auto_mesh(inner, level=1, cell_shape="tet")
             assert backend.option.values == _AUTO_OPTION_ORIGINALS
 
         assert backend.model.current == "outer-auto"
-        outer.generate_auto_mesh(level=5, cell_shape="quad")
+        _generate_auto_mesh(outer, level=5, cell_shape="quad")
         assert backend.option.values == _AUTO_OPTION_ORIGINALS
 
     assert backend.model.current == "external"
@@ -5214,7 +5335,7 @@ def test_real_auto_line_levels_refine_monotonically(
             start = cad.point(0.0, 0.0, 0.0)
             end = cad.point(8.0, 0.0, 0.0)
             cad.line(start, end)
-            cad.generate_auto_mesh(level=level)
+            _generate_auto_mesh(cad, level=level)
             native_counts = _top_dimensional_element_counts(real_gmsh, 1)
 
         assert set(native_counts) == {1}
@@ -5256,7 +5377,7 @@ def test_real_auto_2d_policies_preserve_strict_native_and_fem_families(
             cad.disk(0.0, 0.0, 1.0)
         else:
             cad.rectangle(0.0, 0.0, 2.0, 1.0)
-        native_mesh = cad.generate_auto_mesh(
+        native_mesh = _generate_auto_mesh(cad,
             level=2,
             cell_shape=cell_shape,
             order=order,
@@ -5306,7 +5427,7 @@ def test_real_auto_3d_policies_preserve_strict_native_and_fem_families(
         dimension=3,
     ) as cad:
         cad.box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
-        native_mesh = cad.generate_auto_mesh(
+        native_mesh = _generate_auto_mesh(cad,
             level=1 if cell_shape == "hex" else 2,
             cell_shape=cell_shape,
             order=order,
@@ -5334,7 +5455,7 @@ def test_real_auto_2d_all_levels_refine_monotonically(
             dimension=2,
         ) as cad:
             cad.disk(0.0, 0.0, 1.0)
-            native_mesh = cad.generate_auto_mesh(
+            native_mesh = _generate_auto_mesh(cad,
                 level=level,
                 cell_shape=cell_shape,
             )
@@ -5359,7 +5480,7 @@ def test_real_auto_3d_selected_levels_refine_monotonically(
             dimension=3,
         ) as cad:
             cad.box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
-            native_mesh = cad.generate_auto_mesh(
+            native_mesh = _generate_auto_mesh(cad,
                 level=level,
                 cell_shape=cell_shape,
             )
@@ -5390,18 +5511,18 @@ def test_real_auto_typed_size_controls_preserve_near_far_refinement(
                 boundary_points = cad.boundary(boundary, combined=False)
                 left_points = cad.select(boundary_points, x=0.0)
                 assert len(left_points) == 2
-                cad.mesh_size(left_points, size=0.04)
+                _mesher(cad).mesh_size(left_points, size=0.04)
             else:
-                distance = cad.distance_field(curves=left_curves, sampling=100)
-                threshold = cad.threshold_field(
+                distance = _mesher(cad).distance_field(curves=left_curves, sampling=100)
+                threshold = _mesher(cad).threshold_field(
                     distance,
                     size_min=0.04,
                     size_max=0.35,
                     dist_min=0.15,
                     dist_max=1.5,
                 )
-                cad.background_field(threshold)
-            native_mesh = cad.generate_auto_mesh(
+                _mesher(cad).background_field(threshold)
+            native_mesh = _generate_auto_mesh(cad,
                 level=level,
                 cell_shape="tri",
             )
@@ -5441,7 +5562,7 @@ def test_real_auto_mesh_restores_external_algorithm_and_size_options(
 
         with geometry.model("auto_restore_quad", dimension=2) as cad:
             cad.disk(0.0, 0.0, 1.0)
-            native_mesh = cad.generate_auto_mesh(
+            native_mesh = _generate_auto_mesh(cad,
                 level=2,
                 cell_shape="quad",
             )
@@ -5453,7 +5574,7 @@ def test_real_auto_mesh_restores_external_algorithm_and_size_options(
 
         with geometry.model("auto_restore_hex", dimension=3) as cad:
             cad.box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
-            native_mesh = cad.generate_auto_mesh(
+            native_mesh = _generate_auto_mesh(cad,
                 level=1,
                 cell_shape="hex",
             )
@@ -5477,7 +5598,7 @@ def test_real_1d_facade_reuses_shared_point_in_connected_spatial_mesh(
         end = cad.point(2.0, -0.5, 1.25)
         cad.line(start, middle)
         cad.line(middle, end)
-        native_mesh = cad.generate_mesh(size=0.4)
+        native_mesh = _generate_mesh(cad, size=0.4)
         mesh = gmsh_io.read(
             native_mesh,
             line_element_type="Truss2",
@@ -5518,7 +5639,7 @@ def test_real_1d_fragment_splits_intersections_into_shared_mesh_node(
 
         center = cad.select(cad.entities(0), x=0.0, y=0.0, z=0.0)
         assert len(center) == 1
-        native_mesh = cad.generate_mesh(size=0.4)
+        native_mesh = _generate_mesh(cad, size=0.4)
         mesh = gmsh_io.read(
             native_mesh,
             line_element_type="Truss2",
@@ -5543,7 +5664,7 @@ def test_real_truss2_vertical_slice_matches_bar_solution_and_exports_vtk(
         start = cad.point(0.0, 0.5, -0.25)
         end = cad.point(length, 0.5, -0.25)
         cad.line(start, end)
-        native_mesh = cad.generate_mesh(size=0.5)
+        native_mesh = _generate_mesh(cad, size=0.5)
         mesh = gmsh_io.read(
             native_mesh,
             line_element_type="Truss2",
@@ -5621,7 +5742,7 @@ def test_real_beam2_vertical_slice_uses_fixed_rectangle_axes_and_line_load(
         root = cad.point(0.0, 0.0, 0.0)
         tip = cad.point(length, 0.0, 0.0)
         cad.line(root, tip)
-        native_mesh = cad.generate_mesh(size=0.5)
+        native_mesh = _generate_mesh(cad, size=0.5)
         mesh = gmsh_io.read(
             native_mesh,
             line_element_type="Beam2",
@@ -5700,7 +5821,7 @@ def test_real_facade_rectangle_selects_regions_solves_and_survives_cleanup(
 ) -> None:
     with geometry.model("facade_rectangle", dimension=2) as cad:
         cad.rectangle(0.0, 0.0, 2.0, 1.0)
-        native_mesh = cad.generate_mesh(size=0.35)
+        native_mesh = _generate_mesh(cad, size=0.35)
         mesh = gmsh_io.read(native_mesh)
         _assert_positive_top_dimensional_jacobians(real_gmsh, 2)
 
@@ -5764,7 +5885,7 @@ def test_real_facade_cut_creates_quadratic_tri6_hole_mesh(real_gmsh: Any) -> Non
         domain = cut.of_dimension(2)
         assert len(domain) == 1
         assert len(cad.boundary(domain)) == 5
-        native_mesh = cad.generate_mesh(size=0.25, order=2)
+        native_mesh = _generate_mesh(cad, size=0.25, order=2)
         mesh = gmsh_io.read(native_mesh)
         _assert_positive_top_dimensional_jacobians(real_gmsh, 2)
 
@@ -5822,13 +5943,13 @@ def test_real_size_control_overrides_and_restores_external_point_size_option(
     try:
         with geometry.model("facade_size_fine", dimension=2) as cad:
             cad.rectangle(0.0, 0.0, 1.0, 1.0)
-            native_mesh = cad.generate_mesh(size=0.1)
+            native_mesh = _generate_mesh(cad, size=0.1)
             fine = gmsh_io.read(native_mesh)
             assert real_gmsh.option.getNumber(option_name) == 0.0
 
         with geometry.model("facade_size_coarse", dimension=2) as cad:
             cad.rectangle(0.0, 0.0, 1.0, 1.0)
-            native_mesh = cad.generate_mesh(size=0.5)
+            native_mesh = _generate_mesh(cad, size=0.5)
             coarse = gmsh_io.read(native_mesh)
             assert real_gmsh.option.getNumber(option_name) == 0.0
     finally:
@@ -5842,8 +5963,8 @@ def test_real_transfinite_line_creates_exact_truss2_mesh(real_gmsh: Any) -> None
         start = cad.point(0.0, 0.0, 0.0)
         end = cad.point(2.0, 0.0, 0.0)
         member = cad.line(start, end)
-        cad.transfinite_curve(member, num_nodes=5)
-        native_mesh = cad.generate_mesh()
+        _mesher(cad).transfinite_curve(member, num_nodes=5)
+        native_mesh = _generate_mesh(cad, )
         mesh = gmsh_io.read(native_mesh, line_element_type="Truss2")
 
     assert isinstance(mesh, Mesh3D)
@@ -5858,11 +5979,11 @@ def test_real_facade_structured_rectangle_creates_quad8(real_gmsh: Any) -> None:
         surface = cad.rectangle(0.0, 0.0, 2.0, 1.0)
         curves = cad.boundary([surface])
         for curve in curves:
-            cad.transfinite_curve(curve, num_nodes=3)
-        cad.transfinite_surface(surface)
-        cad.recombine(surface)
+            _mesher(cad).transfinite_curve(curve, num_nodes=3)
+        _mesher(cad).transfinite_surface(surface)
+        _mesher(cad).recombine(surface)
 
-        native_mesh = cad.generate_mesh(order=2, recombine=False)
+        native_mesh = _generate_mesh(cad, order=2, recombine=False)
         mesh = gmsh_io.read(native_mesh)
         _assert_positive_top_dimensional_jacobians(real_gmsh, 2)
 
@@ -5883,11 +6004,11 @@ def test_real_entity_recombine_leaves_unselected_surface_triangular(
         cad.rectangle(2.0, 0.0, 1.0, 1.0)
         structured_curves = cad.boundary([structured])
         for curve in structured_curves:
-            cad.transfinite_curve(curve, num_nodes=3)
-        cad.transfinite_surface(structured)
-        cad.recombine(structured)
+            _mesher(cad).transfinite_curve(curve, num_nodes=3)
+        _mesher(cad).transfinite_surface(structured)
+        _mesher(cad).recombine(structured)
 
-        native_mesh = cad.generate_mesh(size=0.3, recombine=False)
+        native_mesh = _generate_mesh(cad, size=0.3, recombine=False)
         mesh = gmsh_io.read(native_mesh)
         assert real_gmsh.option.getNumber("Mesh.RecombineAll") == 1.0
 
@@ -5900,7 +6021,7 @@ def test_real_entity_recombine_leaves_unselected_surface_triangular(
 def test_real_facade_box_creates_tet10(real_gmsh: Any) -> None:
     with geometry.model("facade_tet10", dimension=3) as cad:
         cad.box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
-        native_mesh = cad.generate_mesh(size=0.7, order=2)
+        native_mesh = _generate_mesh(cad, size=0.7, order=2)
         mesh = gmsh_io.read(native_mesh)
         _assert_positive_top_dimensional_jacobians(real_gmsh, 3)
 
@@ -5920,13 +6041,13 @@ def test_real_facade_transfinite_box_creates_exact_hex20_mesh(
         assert len(edges) == 12
 
         for edge in edges:
-            cad.transfinite_curve(edge, num_nodes=3)
+            _mesher(cad).transfinite_curve(edge, num_nodes=3)
         for face in faces:
-            cad.transfinite_surface(face)
-            cad.recombine(face)
-        cad.transfinite_volume(volume)
+            _mesher(cad).transfinite_surface(face)
+            _mesher(cad).recombine(face)
+        _mesher(cad).transfinite_volume(volume)
 
-        native_mesh = cad.generate_mesh(order=2, recombine=False)
+        native_mesh = _generate_mesh(cad, order=2, recombine=False)
         mesh = gmsh_io.read(native_mesh)
         _assert_positive_top_dimensional_jacobians(real_gmsh, 3)
 
@@ -5940,7 +6061,8 @@ def test_real_facade_transfinite_box_creates_exact_hex20_mesh(
 def test_real_facade_structured_extrusion_creates_hex20(real_gmsh: Any) -> None:
     with geometry.model("facade_hex20", dimension=3) as cad:
         surface = cad.rectangle(0.0, 0.0, 1.0, 1.0)
-        extruded = cad.extrude(
+        extruded = _structured_extrude(
+            cad,
             [surface],
             0.0,
             0.0,
@@ -5952,7 +6074,7 @@ def test_real_facade_structured_extrusion_creates_hex20(real_gmsh: Any) -> None:
             entity for entity in extruded if entity.dimension == 3
         )
         assert len(volumes) == 1
-        native_mesh = cad.generate_mesh(size=0.5, order=2, recombine=True)
+        native_mesh = _generate_mesh(cad, size=0.5, order=2, recombine=True)
         mesh = gmsh_io.read(native_mesh)
         _assert_positive_top_dimensional_jacobians(real_gmsh, 3)
 
