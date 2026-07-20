@@ -71,16 +71,36 @@
   matching repository text remains the architecture regression assertion that
   forbids them.
 
+## Review Follow-up
+
+- Symmetric sweep terminals are disambiguated topologically. When several
+  boundary entities have the profile's rigid-shape signature, the classifier
+  builds the boundary adjacency graph from the identified start profile and
+  accepts only the unique farthest matching entity. A real 1 x 1 x 1 cube
+  regression proves that four congruent side faces are not selected as the
+  terminal.
+- Full-turn revolutions retain uncombined topology for output completeness but
+  verify source seams against each primary entity's combined boundary. A real
+  periodic spline regression proves that opposite-oriented seam incidences
+  cancel, leave `ends` empty, and are not rejected as duplicate terminals.
+- Loft snapshots OCC entities before mutation, synchronizes afterward, and
+  rejects duplicate, missing, or pre-existing aliased output pairs before
+  publishing typed references. All malformed cases fail closed.
+- Native `addWire()` exceptions now invalidate typed entity, loop, and wire
+  identities, preserve the native exception as the cause, and raise contextual
+  `GeometryError` instead of leaking an unscoped backend exception.
+
 ## Final Verification
 
 - Supported Gmsh version: `4.15.2`.
 - Ruff: `ruff check src tests examples` passed.
 - Bytecode compilation: `python -m compileall -q src tests examples` passed
   with `PYTHONPYCACHEPREFIX` redirected to a writable workspace directory.
-- Advanced real/fake backend suite: `50 passed`.
-- The plan's documented focused command: `802 passed`.
-- Expanded architecture and all-Gmsh focused suite: `894 passed`.
-- Complete repository suite: `1489 passed`.
+- Four-finding targeted regression command: `5 passed`.
+- Advanced real/fake backend suite: `54 passed`.
+- The plan's documented focused command: `803 passed`.
+- Expanded architecture and all-Gmsh focused suite: `899 passed`.
+- Complete repository suite: `1494 passed`.
 - `git diff --check` passed.
 
 ### End-to-end examples

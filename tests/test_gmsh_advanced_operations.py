@@ -255,6 +255,36 @@ def test_real_full_revolve_retains_source_echo_without_terminal_end(
         assert cad.length(source) == pytest.approx(1.0)
 
 
+def test_real_full_revolve_accepts_cancelling_periodic_curve_seam(
+    real_gmsh: Any,
+) -> None:
+    with geometry.model("advanced-revolve-periodic-full", dimension=3) as cad:
+        points = (
+            cad.point(1.0, 0.0, -0.5),
+            cad.point(2.0, 0.0, -0.5),
+            cad.point(2.0, 0.0, 0.5),
+            cad.point(1.0, 0.0, 0.5),
+        )
+        periodic = cad.spline((*points, points[0]))
+
+        result = cad.revolve(
+            (periodic,),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            2.0 * math.pi,
+        )
+
+        assert result.outputs.count(periodic) == 1
+        assert result.ends == ()
+        assert tuple(entity.dimension for entity in result.primary) == (2,)
+        assert periodic in cad.boundary(result.primary, combined=False)
+        assert periodic not in cad.boundary(result.primary, combined=True)
+
+
 def test_real_revolve_validation_precedes_native_topology_creation(
     real_gmsh: Any,
 ) -> None:
@@ -386,6 +416,29 @@ def test_real_open_sweep_classifies_both_ends_and_lateral_topology(
             *result.sides,
         }
         assert cad.area(profile) == pytest.approx(math.pi * 0.25**2)
+
+
+def test_real_symmetric_cube_sweep_classifies_terminal_topologically(
+    real_gmsh: Any,
+) -> None:
+    with geometry.model("advanced-sweep-symmetric-cube", dimension=3) as cad:
+        profile = cad.rectangle(-0.5, -0.5, 1.0, 1.0)
+        path = _open_path(cad)
+
+        result = cad.sweep((profile,), path)
+
+        assert tuple(entity.dimension for entity in result.primary) == (3,)
+        assert len(result.ends) == 2
+        assert len(result.sides) == 4
+        assert sorted(
+            cad.center_of_mass(entity)[2] for entity in result.ends
+        ) == pytest.approx([0.0, 1.0])
+        for entity in (*result.ends, *result.sides):
+            assert cad.area(entity) == pytest.approx(1.0)
+        assert set(cad.boundary(result.primary, combined=False)) == {
+            *result.ends,
+            *result.sides,
+        }
 
 
 @pytest.mark.parametrize(
@@ -714,6 +767,47 @@ def test_real_loft_malformed_native_output_fails_closed(
             malformed_sections,
         )
         with pytest.raises(geometry.GeometryError, match="unexpected dimension"):
+            cad.loft((first, second), solid=False)
+
+        with pytest.raises(geometry.StaleEntityError, match="stale"):
+            cad.length(first_curve)
+
+
+def test_real_loft_missing_native_output_fails_closed(
+    real_gmsh: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with geometry.model("advanced-loft-missing", dimension=3) as cad:
+        first, first_curve = _open_section_wire(cad, z=0.0, half_width=0.5)
+        second, _ = _open_section_wire(cad, z=1.0, half_width=0.25)
+
+        monkeypatch.setattr(
+            real_gmsh.model.occ,
+            "addThruSections",
+            lambda *args, **kwargs: [(2, 999999)],
+        )
+        with pytest.raises(geometry.GeometryError, match="missing entity"):
+            cad.loft((first, second), solid=False)
+
+        with pytest.raises(geometry.StaleEntityError, match="stale"):
+            cad.length(first_curve)
+
+
+def test_real_loft_aliased_native_output_fails_closed(
+    real_gmsh: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with geometry.model("advanced-loft-aliased", dimension=3) as cad:
+        unrelated = cad.rectangle(2.0, 2.0, 1.0, 1.0)
+        first, first_curve = _open_section_wire(cad, z=0.0, half_width=0.5)
+        second, _ = _open_section_wire(cad, z=1.0, half_width=0.25)
+
+        monkeypatch.setattr(
+            real_gmsh.model.occ,
+            "addThruSections",
+            lambda *args, **kwargs: [(2, unrelated.tag)],
+        )
+        with pytest.raises(geometry.GeometryError, match="existing entity"):
             cad.loft((first, second), solid=False)
 
         with pytest.raises(geometry.StaleEntityError, match="stale"):

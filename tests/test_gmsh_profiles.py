@@ -1097,6 +1097,35 @@ def test_fake_wire_preserves_signed_reversal_and_preflights_invalid_chains(
         assert _count_calls(fake_gmsh, "addWire") == before
 
 
+def test_fake_wire_native_failure_is_contextual_and_fail_closed(
+    fake_gmsh: _FakeGmsh,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with geometry.model("wire-native-failure", dimension=3) as cad:
+        first_start = cad.point(0.0, 0.0, 0.0)
+        first_end = cad.point(1.0, 0.0, 0.0)
+        first_curve = cad.line(first_start, first_end)
+        existing = cad.wire((cad.orient(first_curve),), closed=False)
+        second_start = cad.point(0.0, 1.0, 0.0)
+        second_end = cad.point(1.0, 1.0, 0.0)
+        second_curve = cad.line(second_start, second_end)
+
+        def fail_add_wire(*args: Any, **kwargs: Any) -> int:
+            raise RuntimeError("injected addWire failure")
+
+        monkeypatch.setattr(fake_gmsh.model.occ, "addWire", fail_add_wire)
+        with pytest.raises(geometry.GeometryError, match="native OCC wire") as caught:
+            cad.wire((cad.orient(second_curve),), closed=False)
+
+        assert isinstance(caught.value.__cause__, RuntimeError)
+        assert cad._wire_tokens == {}
+        assert cad._wire_dependencies == {}
+        with pytest.raises(geometry.StaleEntityError, match="stale"):
+            cad._normalize_wires((existing,), operation="test")
+        with pytest.raises(geometry.StaleEntityError, match="stale"):
+            cad.length(first_curve)
+
+
 def test_fake_wire_rejects_spatial_2d_chain_and_accepts_it_in_3d(
     fake_gmsh: _FakeGmsh,
 ) -> None:

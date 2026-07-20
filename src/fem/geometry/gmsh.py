@@ -1129,7 +1129,15 @@ class GeometryModel:
             -item.curve.tag if item.reversed else item.curve.tag
             for item in oriented
         ]
-        raw_tag = self._gmsh.model.occ.addWire(signed_tags, -1, closed)
+        try:
+            raw_tag = self._gmsh.model.occ.addWire(signed_tags, -1, closed)
+        except BaseException as error:
+            self._fail_closed_after_unknown_occ_mutation()
+            if isinstance(error, GeometryError) or not isinstance(error, Exception):
+                raise
+            raise GeometryError(
+                f"geometry model {self.name!r}: native OCC wire failed"
+            ) from error
         try:
             tag = _validate_positive_tag(raw_tag, "wire tag")
         except ValueError as error:
@@ -1948,6 +1956,9 @@ class GeometryModel:
             raise ValueError("loft section member curves must be duplicate-free")
         self._assert_occ_liveness(flattened_inputs, operation)
         primary_dimension = 3 if solid else 2
+        existing_before = {
+            _normalize_dim_tag(pair) for pair in self._gmsh.model.occ.getEntities()
+        }
         native_started = False
         try:
             native_started = True
@@ -1973,6 +1984,30 @@ class GeometryModel:
                     f"geometry model {self.name!r}: loft returned an entity "
                     "with an unexpected dimension"
                 )
+            if len(set(output_pairs)) != len(output_pairs):
+                raise GeometryError(
+                    f"geometry model {self.name!r}: loft returned duplicate entities"
+                )
+            self._gmsh.model.occ.synchronize()
+            existing_after = {
+                _normalize_dim_tag(pair)
+                for pair in self._gmsh.model.occ.getEntities()
+            }
+            missing_outputs = set(output_pairs) - existing_after
+            if missing_outputs:
+                missing = min(missing_outputs)
+                raise GeometryError(
+                    f"geometry model {self.name!r}: loft returned a missing "
+                    f"entity {missing}"
+                )
+            aliased_outputs = set(output_pairs) & existing_before
+            if aliased_outputs:
+                aliased = min(aliased_outputs)
+                raise GeometryError(
+                    f"geometry model {self.name!r}: loft returned an existing "
+                    f"entity {aliased}"
+                )
+            self._assert_occ_liveness(flattened_inputs, operation)
             outputs = tuple(self._wrap_entity(pair) for pair in output_pairs)
             topology = FeatureResult(
                 operation,
@@ -1980,7 +2015,6 @@ class GeometryModel:
                 outputs,
                 _unique_first_seen(outputs),
             )
-            self._assert_occ_liveness(flattened_inputs, operation)
             return LoftResult(topology, normalized_sections)
         except BaseException as error:
             if native_started:
@@ -3952,6 +3986,8 @@ class GeometryModel:
         self,
         entity: EntityRef,
         operation: str,
+        *,
+        combined: bool = False,
     ) -> frozenset[tuple[int, int]]:
         if entity.dimension == 0:
             return frozenset()
@@ -3960,7 +3996,7 @@ class GeometryModel:
                 _normalize_dim_tag(pair)
                 for pair in self._gmsh.model.getBoundary(
                     [(entity.dimension, entity.tag)],
-                    combined=False,
+                    combined=combined,
                     oriented=False,
                     recursive=False,
                 )
@@ -4328,7 +4364,18 @@ class GeometryModel:
             )
 
         if full_turn:
-            if primary_boundary_union & input_keys:
+            uncancelled_source_seams = set().union(
+                *(
+                    self._immediate_boundary_keys(
+                        entity,
+                        operation,
+                        combined=True,
+                    )
+                    & input_keys
+                    for entity in primary
+                )
+            )
+            if uncancelled_source_seams:
                 raise GeometryError(
                     f"geometry model {self.name!r}: full revolve exposed a "
                     "coincident source seam as a terminal boundary"
@@ -4591,6 +4638,26 @@ class GeometryModel:
                     )
                 )
             ]
+            if len(terminal_matches) > 1:
+                distances = self._boundary_adjacency_distances(
+                    primary_boundaries[primary_key],
+                    start_key=start_key,
+                    operation=operation,
+                )
+                terminal_keys = {
+                    (candidate.dimension, candidate.tag)
+                    for candidate in terminal_matches
+                }
+                if terminal_keys <= distances.keys():
+                    greatest_distance = max(
+                        distances[key] for key in terminal_keys
+                    )
+                    terminal_matches = [
+                        candidate
+                        for candidate in terminal_matches
+                        if distances[(candidate.dimension, candidate.tag)]
+                        == greatest_distance
+                    ]
             if len(terminal_matches) != 1:
                 detail = "ambiguous" if len(terminal_matches) > 1 else "incomplete"
                 raise GeometryError(
@@ -4632,6 +4699,42 @@ class GeometryModel:
             ends,
             sides,
         )
+
+    def _boundary_adjacency_distances(
+        self,
+        entities: tuple[EntityRef, ...],
+        *,
+        start_key: tuple[int, int],
+        operation: str,
+    ) -> dict[tuple[int, int], int]:
+        boundary_keys = {
+            (entity.dimension, entity.tag): self._immediate_boundary_keys(
+                entity,
+                operation,
+            )
+            for entity in entities
+        }
+        if start_key not in boundary_keys:
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} boundary adjacency "
+                "is missing its start entity"
+            )
+        incidence: dict[tuple[int, int], set[tuple[int, int]]] = {}
+        for entity_key, lower_keys in boundary_keys.items():
+            for lower_key in lower_keys:
+                incidence.setdefault(lower_key, set()).add(entity_key)
+
+        distances = {start_key: 0}
+        frontier = [start_key]
+        while frontier:
+            current = frontier.pop(0)
+            for lower_key in boundary_keys[current]:
+                for neighbor in incidence[lower_key]:
+                    if neighbor in distances:
+                        continue
+                    distances[neighbor] = distances[current] + 1
+                    frontier.append(neighbor)
+        return distances
 
     def _apply_volume_edge_treatment(
         self,
