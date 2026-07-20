@@ -1,7 +1,7 @@
 """Mesh and import a filleted box with typed Gmsh geometry."""
 
 from fem.core import Mesh3D
-from fem.geometry import gmsh as geometry
+from fem import geometry
 from fem.io import gmsh as gmsh_io
 from fem.mesh import gmsh as gmsh_meshing
 

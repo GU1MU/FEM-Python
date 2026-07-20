@@ -7,8 +7,9 @@ from typing import Any, Sequence
 import numpy as np
 import pytest
 
+from fem import geometry
 from fem.core import Mesh2D
-from fem.geometry import gmsh as geometry
+from fem.geometry._gmsh import backend as _gmsh_backend
 from fem.io import gmsh as gmsh_io
 from fem.mesh import gmsh as gmsh_meshing
 
@@ -705,7 +706,7 @@ def _point_segment_distance_2d(
 @pytest.fixture
 def fake_gmsh(monkeypatch: pytest.MonkeyPatch) -> _FakeGmsh:
     backend = _FakeGmsh()
-    monkeypatch.setattr(geometry, "_load_gmsh", lambda: backend)
+    monkeypatch.setattr(_gmsh_backend, "load_gmsh", lambda: backend)
     return backend
 
 
@@ -868,6 +869,55 @@ def test_fake_degenerate_curves_fail_before_curve_creation(
             "addBSpline",
         }
         assert not any(call[0] in curve_names for call in fake_gmsh.model.occ.calls)
+
+
+@pytest.mark.parametrize(
+    ("start", "major", "end", "message"),
+    (
+        (
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+            "elliptical_arc center and major_axis_point must be distinct",
+        ),
+        (
+            (0.0, 0.0, 0.0),
+            (2.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+            "elliptical_arc endpoints must differ from center",
+        ),
+        (
+            (1.0, 0.0, 0.0),
+            (2.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            "elliptical_arc start and end must be distinct",
+        ),
+    ),
+)
+def test_fake_elliptical_arc_caller_prechecks_preserve_validation_order(
+    fake_gmsh: _FakeGmsh,
+    start: tuple[float, float, float],
+    major: tuple[float, float, float],
+    end: tuple[float, float, float],
+    message: str,
+) -> None:
+    with geometry.model("ellipse-caller-precheck", dimension=2) as cad:
+        center_point = cad.point(0.0, 0.0, 0.0)
+        start_point = cad.point(*start)
+        major_point = cad.point(*major)
+        end_point = cad.point(*end)
+        before = _count_calls(fake_gmsh, "addEllipseArc")
+
+        with pytest.raises(ValueError) as captured:
+            cad.elliptical_arc(
+                start_point,
+                center_point,
+                major_point,
+                end_point,
+            )
+
+        assert str(captured.value) == message
+        assert _count_calls(fake_gmsh, "addEllipseArc") == before
 
 
 @pytest.mark.parametrize(

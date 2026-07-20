@@ -8,7 +8,8 @@ import uuid
 
 import pytest
 
-from fem.geometry import gmsh as geometry
+from fem import geometry
+from fem.geometry._gmsh import model as _geometry_model
 from fem.io import gmsh as gmsh_io
 from fem.mesh import gmsh as meshing
 
@@ -163,7 +164,8 @@ def test_canonical_exports_share_owner_coupled_class_identity():
         "StaleGmshMeshError",
         "StaleMeshFieldError",
     ):
-        assert getattr(meshing, name) is getattr(geometry, name)
+        assert getattr(meshing, name) is getattr(_geometry_model, name)
+        assert not hasattr(geometry, name)
         assert name not in geometry.__all__
 
 

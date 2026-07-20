@@ -7,16 +7,16 @@ from dataclasses import dataclass
 import math
 from typing import Any, Literal
 
-from fem.geometry import gmsh as _geometry
-
-
-GmshMeshRef = _geometry.GmshMeshRef
-MeshCellShapeError = _geometry.MeshCellShapeError
-MeshControlConflictError = _geometry.MeshControlConflictError
-MeshFieldOwnershipError = _geometry.MeshFieldOwnershipError
-MeshFieldRef = _geometry.MeshFieldRef
-StaleGmshMeshError = _geometry.StaleGmshMeshError
-StaleMeshFieldError = _geometry.StaleMeshFieldError
+from fem import geometry as _geometry
+from fem.geometry._gmsh.model import (
+    GmshMeshRef,
+    MeshCellShapeError,
+    MeshControlConflictError,
+    MeshFieldOwnershipError,
+    MeshFieldRef,
+    StaleGmshMeshError,
+    StaleMeshFieldError,
+)
 
 _CellShape = Literal["tri", "tri-quad", "quad", "tet", "hex"]
 _CELL_SHAPES = frozenset({"tri", "tri-quad", "quad", "tet", "hex"})
@@ -79,7 +79,7 @@ class Mesher:
     def __init__(self, geometry: _geometry.GeometryModel) -> None:
         if not isinstance(geometry, _geometry.GeometryModel):
             raise TypeError(
-                "geometry must be a live fem.geometry.gmsh.GeometryModel, "
+                "geometry must be a live fem.geometry.GeometryModel, "
                 f"got {geometry!r}"
             )
         mesher_token = geometry._bind_mesher()

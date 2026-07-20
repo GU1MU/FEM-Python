@@ -1,6 +1,6 @@
 """Generate and inspect a typed automatic full-quad mesh."""
 
-from fem.geometry import gmsh as geometry
+from fem import geometry
 from fem.io import gmsh as gmsh_io
 from fem.mesh import gmsh as gmsh_meshing
 

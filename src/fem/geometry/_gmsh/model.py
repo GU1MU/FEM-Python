@@ -9,15 +9,61 @@ import operator
 from collections.abc import Iterable, Sequence
 from typing import Any, Literal
 
-
-_CAD_DEPENDENCY_MESSAGE = (
-    "Gmsh geometry support requires the optional 'cad' dependencies. "
-    'Install the project with: pip install -e ".[cad]"'
+from .._validation import (
+    _finite_float,
+    _integer_at_least,
+    _nonnegative_float,
+    _positive_feature_vector,
+    _positive_float,
+    _validate_entity_dimension,
+    _validate_mesh_dimension,
+    _validate_positive_tag,
 )
-_PLANAR_TOLERANCE = 1.0e-10
-_LOOP_WINDING_REFINEMENTS = tuple(2**power for power in range(3, 14))
-# OpenCASCADE expands Gmsh bounding boxes by this numerical safety gap.
-_OCC_BOUNDING_BOX_PADDING = 1.0e-7
+from ..errors import (
+    EntityOwnershipError,
+    GeometryError,
+    GeometryStateError,
+    StaleEntityError,
+)
+from ..types import (
+    BooleanResult,
+    CurveLoopRef,
+    EntityRef,
+    FeatureResult,
+    LoftContinuity,
+    LoftParametrization,
+    LoftResult,
+    OrientedCurveRef,
+    SweepFrame,
+    WireRef,
+    _unique_first_seen,
+)
+from . import backend
+from .constants import (
+    _LOOP_WINDING_REFINEMENTS,
+    _OCC_BOUNDING_BOX_PADDING,
+    _PLANAR_TOLERANCE,
+)
+from .predicates import (
+    _GeometrySignature,
+    _PlaneFrame,
+    _Point3D,
+    _RigidShapeSignature,
+    _coordinate_distance,
+    _matches_rigid_shape_signature,
+    _matches_rotated_signature,
+    _matches_translated_signature,
+    _plane_frame,
+    _point_axis_distance,
+    _polyline_has_self_contact,
+    _polyline_winding,
+    _project_plane_point,
+    _project_plane_points,
+    _validate_elliptical_arc_geometry,
+    _vector_norm,
+)
+
+
 _POINT_SIZE_OPTION_NAME = "Mesh.MeshSizeFromPoints"
 _MESH_FIELD_TYPES = frozenset({"Distance", "Threshold", "Min"})
 _GMSH_TOP_CELL_TYPE_NAMES = {
@@ -36,30 +82,6 @@ _AutoCellShape = Literal["tri", "tri-quad", "quad", "tet", "hex"]
 _AutoMeshMode = Literal["line", "tri", "tri-quad", "quad", "tet", "hex"]
 _GenerationOperation = Literal["MeshSpec generation", "AutoMeshSpec generation"]
 _GenerationSizeMode = Literal["none", "uniform", "point", "background"]
-_Point2D = tuple[float, float]
-_Point3D = tuple[float, float, float]
-_PlaneFrame = tuple[_Point3D, _Point3D, _Point3D, _Point3D, float]
-_GeometrySignature = tuple[
-    tuple[float, float, float, float, float, float],
-    _Point3D,
-    float,
-]
-_RigidShapeSignature = tuple[float, tuple[float, ...]]
-SweepFrame = Literal[
-    "discrete",
-    "corrected_frenet",
-    "frenet",
-    "fixed",
-    "constant_normal",
-    "darboux",
-]
-LoftContinuity = Literal["C0", "G1", "C1", "G2", "C2", "C3", "CN"]
-LoftParametrization = Literal[
-    "chord_length",
-    "centripetal",
-    "iso_parametric",
-]
-
 _SWEEP_FRAME_NAMES: dict[SweepFrame, str] = {
     "discrete": "DiscreteTrihedron",
     "corrected_frenet": "CorrectedFrenet",
@@ -78,28 +100,12 @@ _LOFT_PARAMETRIZATION_NAMES: dict[LoftParametrization, str] = {
 }
 
 
-class GeometryError(RuntimeError):
-    """Base error raised by the scripted Gmsh geometry facade."""
-
-
-class GeometryStateError(GeometryError):
-    """Raised when a geometry operation is invalid in the current state."""
-
-
 class MeshCellShapeError(GeometryError):
     """Raised when an automatic mesh violates its top-cell contract."""
 
 
 class MeshControlConflictError(GeometryError):
     """Raised when explicit topology controls conflict with automatic meshing."""
-
-
-class EntityOwnershipError(GeometryError):
-    """Raised when an entity belongs to a different geometry model."""
-
-
-class StaleEntityError(GeometryError):
-    """Raised when an entity reference no longer denotes a live OCC entity."""
 
 
 class MeshFieldOwnershipError(GeometryError):
@@ -220,85 +226,6 @@ _AUTO_MESH_POLICIES = {
 
 
 @dataclass(frozen=True, slots=True)
-class EntityRef:
-    """Immutable reference to one entity owned by a geometry model."""
-
-    dimension: int
-    tag: int
-    _owner_token: object = field(repr=False)
-    _entity_token: object = field(repr=False)
-
-    def __post_init__(self) -> None:
-        _validate_entity_dimension(self.dimension)
-        _validate_positive_tag(self.tag, "entity tag")
-
-
-@dataclass(frozen=True, slots=True)
-class OrientedCurveRef:
-    """One live curve with an explicit traversal orientation."""
-
-    curve: EntityRef
-    reversed: bool = False
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.curve, EntityRef) or self.curve.dimension != 1:
-            raise ValueError("curve must be a dimension-one EntityRef")
-        if not isinstance(self.reversed, bool):
-            raise TypeError(f"reversed must be a boolean, got {self.reversed!r}")
-
-
-@dataclass(frozen=True, slots=True)
-class CurveLoopRef:
-    """Owner-local identity for one closed, ordered OCC curve loop."""
-
-    tag: int
-    curves: tuple[OrientedCurveRef, ...]
-    _owner_token: object = field(repr=False)
-    _loop_token: object = field(repr=False)
-
-    def __post_init__(self) -> None:
-        _validate_positive_tag(self.tag, "curve loop tag")
-        try:
-            normalized_curves = tuple(self.curves)
-        except TypeError as exc:
-            raise TypeError(
-                "curves must be an iterable of OrientedCurveRef values"
-            ) from exc
-        object.__setattr__(self, "curves", normalized_curves)
-        if not self.curves:
-            raise ValueError("curves must contain at least one oriented curve")
-        if any(not isinstance(curve, OrientedCurveRef) for curve in self.curves):
-            raise TypeError("curves must contain only OrientedCurveRef values")
-
-
-@dataclass(frozen=True, slots=True)
-class WireRef:
-    """Owner-local identity for one ordered open or closed OCC wire."""
-
-    tag: int
-    curves: tuple[OrientedCurveRef, ...]
-    closed: bool
-    _owner_token: object = field(repr=False)
-    _wire_token: object = field(repr=False)
-
-    def __post_init__(self) -> None:
-        _validate_positive_tag(self.tag, "wire tag")
-        try:
-            normalized_curves = tuple(self.curves)
-        except TypeError as exc:
-            raise TypeError(
-                "curves must be an iterable of OrientedCurveRef values"
-            ) from exc
-        object.__setattr__(self, "curves", normalized_curves)
-        if not self.curves:
-            raise ValueError("curves must contain at least one oriented curve")
-        if any(not isinstance(curve, OrientedCurveRef) for curve in self.curves):
-            raise TypeError("curves must contain only OrientedCurveRef values")
-        if not isinstance(self.closed, bool):
-            raise TypeError(f"closed must be a boolean, got {self.closed!r}")
-
-
-@dataclass(frozen=True, slots=True)
 class MeshFieldRef:
     """Immutable reference to one mesh field owned by a geometry model."""
 
@@ -334,258 +261,6 @@ class GmshMeshRef:
         return GeometryModel._borrow_generated_mesh(self._owner, self)
 
 
-@dataclass(frozen=True, slots=True)
-class BooleanResult:
-    """Typed outputs and input-to-output mapping from an OCC boolean."""
-
-    outputs: tuple[EntityRef, ...]
-    input_map: tuple[tuple[EntityRef, ...], ...]
-
-    def of_dimension(self, dimension: int) -> tuple[EntityRef, ...]:
-        """Return boolean outputs having the requested entity dimension."""
-        normalized = _validate_entity_dimension(dimension)
-        return tuple(
-            entity for entity in self.outputs if entity.dimension == normalized
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class FeatureResult:
-    """Typed topology produced by one geometry feature operation.
-
-    The references describe the current geometry model state; they are not
-    persistent topological names and remain subject to the owning model's
-    liveness checks.
-    """
-
-    operation: str
-    inputs: tuple[EntityRef, ...]
-    outputs: tuple[EntityRef, ...]
-    primary: tuple[EntityRef, ...]
-    ends: tuple[EntityRef, ...] = ()
-    sides: tuple[EntityRef, ...] = ()
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.operation, str) or not self.operation.strip():
-            raise ValueError("operation must be a nonempty string")
-
-        for field_name in ("inputs", "outputs", "primary", "ends", "sides"):
-            raw_entities = getattr(self, field_name)
-            try:
-                entities = tuple(raw_entities)
-            except TypeError as exc:
-                raise TypeError(
-                    f"{field_name} must be an iterable of EntityRef values"
-                ) from exc
-            if any(not isinstance(entity, EntityRef) for entity in entities):
-                raise TypeError(
-                    f"{field_name} must contain only EntityRef values"
-                )
-            object.__setattr__(self, field_name, entities)
-
-        if not self.inputs:
-            raise ValueError("inputs must contain at least one EntityRef")
-        if len(set(self.inputs)) != len(self.inputs):
-            raise ValueError("inputs must be duplicate-free")
-        if not self.outputs:
-            raise ValueError("outputs must contain at least one EntityRef")
-        if not self.primary:
-            raise ValueError("primary must contain at least one EntityRef")
-
-        all_entities = (
-            *self.inputs,
-            *self.outputs,
-            *self.primary,
-            *self.ends,
-            *self.sides,
-        )
-        owner_token = self.inputs[0]._owner_token
-        if any(entity._owner_token is not owner_token for entity in all_entities):
-            raise EntityOwnershipError(
-                "feature result references must belong to one geometry model"
-            )
-
-        input_dimensions = {entity.dimension for entity in self.inputs}
-        if len(input_dimensions) != 1:
-            raise ValueError("feature result inputs must have one common dimension")
-        input_dimension = next(iter(input_dimensions))
-        primary_dimensions = {entity.dimension for entity in self.primary}
-        if len(primary_dimensions) != 1:
-            raise ValueError("primary entities must have one common dimension")
-        primary_dimension = next(iter(primary_dimensions))
-        if primary_dimension < input_dimension:
-            raise ValueError(
-                "feature result primary dimension must not be below its inputs"
-            )
-        boundary_dimension = primary_dimension - 1
-
-        input_set = set(self.inputs)
-        unique_outputs = _unique_first_seen(self.outputs)
-        echoed_inputs = tuple(
-            entity for entity in unique_outputs if entity in input_set
-        )
-        generated_outputs = tuple(
-            entity for entity in unique_outputs if entity not in input_set
-        )
-
-        if primary_dimension == input_dimension:
-            if self.ends or self.sides:
-                raise ValueError(
-                    "same-dimensional modifying features cannot report ends or sides"
-                )
-            if any(entity.dimension > primary_dimension for entity in self.outputs):
-                raise ValueError(
-                    "feature result outputs exceed the primary dimension"
-                )
-            expected_primary = tuple(
-                entity
-                for entity in unique_outputs
-                if entity.dimension == primary_dimension
-            )
-            if echoed_inputs or self.primary != expected_primary:
-                raise ValueError(
-                    "modifying-feature primary entities must be all unique "
-                    "top-dimensional outputs"
-                )
-        else:
-            if any(
-                entity not in input_set
-                and entity.dimension not in {boundary_dimension, primary_dimension}
-                for entity in self.outputs
-            ):
-                raise ValueError(
-                    "generated feature outputs must have the primary or boundary "
-                    "dimension"
-                )
-            if any(entity.dimension != primary_dimension for entity in self.primary):
-                raise ValueError(
-                    "primary entities must have the generated topological dimension"
-                )
-            if any(
-                entity.dimension != boundary_dimension
-                for entity in (*self.ends, *self.sides)
-            ):
-                raise ValueError(
-                    "end and side entities must match the primary boundary dimension"
-                )
-
-        partitions = (self.primary, self.ends, self.sides)
-        if any(len(set(partition)) != len(partition) for partition in partitions):
-            raise ValueError("feature result semantic fields must be duplicate-free")
-        partition_sets = tuple(set(partition) for partition in partitions)
-        if any(
-            left & right
-            for index, left in enumerate(partition_sets)
-            for right in partition_sets[index + 1 :]
-        ):
-            raise ValueError("primary, ends, and sides must be disjoint")
-
-        semantic_entities = set().union(*partition_sets)
-        partitioned_outputs = (
-            generated_outputs
-            if primary_dimension > input_dimension
-            else self.primary
-        )
-        if semantic_entities != set(partitioned_outputs):
-            raise ValueError(
-                "primary, ends, and sides must partition the generated outputs"
-            )
-        for field_name, partition, partition_set in zip(
-            ("primary", "ends", "sides"),
-            partitions,
-            partition_sets,
-            strict=True,
-        ):
-            expected_order = tuple(
-                entity for entity in partitioned_outputs if entity in partition_set
-            )
-            if partition != expected_order:
-                raise ValueError(
-                    f"{field_name} must preserve first-seen output order"
-                )
-
-    def of_dimension(self, dimension: int) -> tuple[EntityRef, ...]:
-        """Return outputs having the requested dimension, preserving repeats."""
-        normalized = _validate_entity_dimension(dimension)
-        return tuple(
-            entity for entity in self.outputs if entity.dimension == normalized
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class LoftResult:
-    """A common feature topology result with grouped loft-section history."""
-
-    topology: FeatureResult
-    sections: tuple[WireRef, ...]
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.topology, FeatureResult):
-            raise TypeError("topology must be a FeatureResult")
-        if self.topology.operation != "loft":
-            raise ValueError("loft topology must use operation 'loft'")
-        try:
-            normalized_sections = tuple(self.sections)
-        except TypeError as exc:
-            raise TypeError("sections must be an iterable of WireRef values") from exc
-        object.__setattr__(self, "sections", normalized_sections)
-        if len(self.sections) < 2:
-            raise ValueError("sections must contain at least two WireRef values")
-        if any(not isinstance(section, WireRef) for section in self.sections):
-            raise TypeError("sections must contain only WireRef values")
-        owner_token = self.topology.inputs[0]._owner_token
-        if any(section._owner_token is not owner_token for section in self.sections):
-            raise EntityOwnershipError(
-                "loft sections and topology must belong to one geometry model"
-            )
-        flattened_inputs = tuple(
-            oriented.curve
-            for section in self.sections
-            for oriented in section.curves
-        )
-        if self.topology.inputs != flattened_inputs:
-            raise ValueError(
-                "loft topology inputs must preserve grouped section-curve order"
-            )
-
-    @property
-    def operation(self) -> str:
-        return self.topology.operation
-
-    @property
-    def inputs(self) -> tuple[EntityRef, ...]:
-        return self.topology.inputs
-
-    @property
-    def outputs(self) -> tuple[EntityRef, ...]:
-        return self.topology.outputs
-
-    @property
-    def primary(self) -> tuple[EntityRef, ...]:
-        return self.topology.primary
-
-    @property
-    def ends(self) -> tuple[EntityRef, ...]:
-        return self.topology.ends
-
-    @property
-    def sides(self) -> tuple[EntityRef, ...]:
-        return self.topology.sides
-
-    def of_dimension(self, dimension: int) -> tuple[EntityRef, ...]:
-        return self.topology.of_dimension(dimension)
-
-
-def _unique_first_seen(entities: Iterable[EntityRef]) -> tuple[EntityRef, ...]:
-    seen: set[EntityRef] = set()
-    unique: list[EntityRef] = []
-    for entity in entities:
-        if entity not in seen:
-            seen.add(entity)
-            unique.append(entity)
-    return tuple(unique)
-
-
 class _State(Enum):
     NEW = auto()
     BUILDING_GEOMETRY = auto()
@@ -600,16 +275,6 @@ _QUERY_STATES = frozenset(
 )
 _GEOMETRY_MUTATION_STATES = frozenset({_State.BUILDING_GEOMETRY})
 _MESH_CONTROL_STATES = frozenset({_State.CONFIGURING_MESH})
-
-
-def _load_gmsh() -> Any:
-    try:
-        import gmsh
-    except ModuleNotFoundError as exc:
-        if exc.name != "gmsh":
-            raise
-        raise ModuleNotFoundError(_CAD_DEPENDENCY_MESSAGE) from exc
-    return gmsh
 
 
 class GeometryModel:
@@ -669,12 +334,7 @@ class GeometryModel:
             raise self._state_error("context entry", "model context is not new")
 
         try:
-            try:
-                self._gmsh = _load_gmsh()
-            except ModuleNotFoundError as exc:
-                if exc.name == "gmsh" or "optional 'cad'" in str(exc):
-                    raise ModuleNotFoundError(_CAD_DEPENDENCY_MESSAGE) from exc
-                raise
+            self._gmsh = backend.load_gmsh()
 
             if not bool(self._gmsh.isInitialized()):
                 self._owns_session = True
@@ -5617,12 +5277,6 @@ def model(name: str, *, dimension: Literal[1, 2, 3]) -> GeometryModel:
     return GeometryModel(name, dimension=dimension)
 
 
-def _validate_mesh_dimension(value: Any) -> Literal[1, 2, 3]:
-    if isinstance(value, bool) or not isinstance(value, int) or value not in (1, 2, 3):
-        raise ValueError(f"dimension must be 1, 2, or 3, got {value!r}")
-    return value
-
-
 def _validate_auto_mesh_level(value: Any) -> Literal[1, 2, 3, 4, 5]:
     if isinstance(value, bool) or not isinstance(value, int) or value not in range(1, 6):
         raise ValueError(
@@ -5668,12 +5322,6 @@ def _resolve_auto_mesh_mode(
     return cell_shape
 
 
-def _validate_entity_dimension(value: Any) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value not in range(4):
-        raise ValueError(f"entity dimension must be an integer from 0 through 3, got {value!r}")
-    return value
-
-
 def _validate_mesh_field_type(
     value: Any,
 ) -> Literal["Distance", "Threshold", "Min"]:
@@ -5685,18 +5333,6 @@ def _validate_mesh_field_type(
     return value
 
 
-def _validate_positive_tag(value: Any, label: str) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"{label} must be a positive integer, got {value!r}")
-    try:
-        normalized = int(operator.index(value))
-    except TypeError as exc:
-        raise ValueError(f"{label} must be a positive integer, got {value!r}") from exc
-    if normalized <= 0:
-        raise ValueError(f"{label} must be a positive integer, got {value!r}")
-    return normalized
-
-
 def _normalize_dim_tag(value: Any) -> tuple[int, int]:
     try:
         dimension, tag = value
@@ -5706,535 +5342,6 @@ def _normalize_dim_tag(value: Any) -> tuple[int, int]:
         _validate_entity_dimension(dimension),
         _validate_positive_tag(tag, "entity tag"),
     )
-
-
-def _finite_float(value: Any, label: str) -> float:
-    if isinstance(value, bool):
-        raise ValueError(f"{label} must be finite, got {value!r}")
-    try:
-        normalized = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{label} must be finite, got {value!r}") from exc
-    if not math.isfinite(normalized):
-        raise ValueError(f"{label} must be finite, got {value!r}")
-    return normalized
-
-
-def _positive_float(value: Any, label: str) -> float:
-    normalized = _finite_float(value, label)
-    if normalized <= 0.0:
-        raise ValueError(f"{label} must be finite and > 0, got {value!r}")
-    return normalized
-
-
-def _nonnegative_float(value: Any, label: str) -> float:
-    normalized = _finite_float(value, label)
-    if normalized < 0.0:
-        raise ValueError(f"{label} must be finite and >= 0, got {value!r}")
-    return normalized
-
-
-def _matches_translated_signature(
-    source: tuple[
-        tuple[float, float, float, float, float, float],
-        tuple[float, float, float],
-        float,
-    ],
-    candidate: tuple[
-        tuple[float, float, float, float, float, float],
-        tuple[float, float, float],
-        float,
-    ],
-    vector: tuple[float, float, float],
-) -> bool:
-    source_bounds, source_center, source_measure = source
-    candidate_bounds, candidate_center, candidate_measure = candidate
-    source_extent = max(
-        source_bounds[axis + 3] - source_bounds[axis] for axis in range(3)
-    )
-    for axis in range(3):
-        for bound_index in (axis, axis + 3):
-            if not _matches_translated_coordinate(
-                source_bounds[bound_index],
-                candidate_bounds[bound_index],
-                vector[axis],
-                local_extent=source_extent,
-                absolute_padding=_OCC_BOUNDING_BOX_PADDING,
-            ):
-                return False
-        if not _matches_translated_coordinate(
-            source_center[axis],
-            candidate_center[axis],
-            vector[axis],
-            local_extent=source_extent,
-        ):
-            return False
-    return abs(candidate_measure - source_measure) <= _PLANAR_TOLERANCE * max(
-        1.0,
-        abs(candidate_measure),
-        abs(source_measure),
-    )
-
-
-def _matches_translated_coordinate(
-    source: float,
-    candidate: float,
-    translation: float,
-    *,
-    local_extent: float,
-    absolute_padding: float = 0.0,
-) -> bool:
-    # Scale modeling tolerance with local geometry only. Absolute world
-    # coordinates contribute solely their unavoidable floating-point resolution.
-    floating_resolution = 4.0 * max(
-        math.ulp(source),
-        math.ulp(candidate),
-        math.ulp(translation),
-    )
-    tolerance = (
-        absolute_padding
-        + _PLANAR_TOLERANCE * max(1.0, local_extent)
-        + floating_resolution
-    )
-    return abs((candidate - source) - translation) <= tolerance
-
-
-def _point_axis_distance(
-    point: _Point3D,
-    axis_point: _Point3D,
-    axis: _Point3D,
-) -> float:
-    relative = tuple(
-        value - origin for value, origin in zip(point, axis_point, strict=True)
-    )
-    axis_norm = _vector_norm(axis)
-    if axis_norm == 0.0:
-        raise ValueError("axis must be nonzero")
-    return _vector_norm(_vector_cross(relative, axis)) / axis_norm
-
-
-def _rotate_point_about_axis(
-    point: _Point3D,
-    axis_point: _Point3D,
-    axis: _Point3D,
-    angle: float,
-) -> _Point3D:
-    axis_norm = _vector_norm(axis)
-    if axis_norm == 0.0:
-        raise ValueError("axis must be nonzero")
-    unit_axis = tuple(component / axis_norm for component in axis)
-    relative = tuple(
-        value - origin for value, origin in zip(point, axis_point, strict=True)
-    )
-    cosine = math.cos(angle)
-    sine = math.sin(angle)
-    cross = _vector_cross(unit_axis, relative)
-    projection = _vector_dot(unit_axis, relative)
-    rotated_relative = tuple(
-        relative[index] * cosine
-        + cross[index] * sine
-        + unit_axis[index] * projection * (1.0 - cosine)
-        for index in range(3)
-    )
-    return tuple(
-        axis_point[index] + rotated_relative[index] for index in range(3)
-    )  # type: ignore[return-value]
-
-
-def _matches_rotated_signature(
-    source: _GeometrySignature,
-    candidate: _GeometrySignature,
-    axis_point: _Point3D,
-    axis: _Point3D,
-    angle: float,
-) -> bool:
-    source_bounds, source_center, source_measure = source
-    candidate_bounds, candidate_center, candidate_measure = candidate
-    expected_center = _rotate_point_about_axis(
-        source_center,
-        axis_point,
-        axis,
-        angle,
-    )
-    source_extent = max(
-        source_bounds[index + 3] - source_bounds[index] for index in range(3)
-    )
-    candidate_extent = max(
-        candidate_bounds[index + 3] - candidate_bounds[index]
-        for index in range(3)
-    )
-    floating_resolution = 4.0 * max(
-        *(math.ulp(value) for value in (*source_center, *candidate_center)),
-        math.ulp(angle),
-    )
-    tolerance = (
-        _OCC_BOUNDING_BOX_PADDING
-        + _PLANAR_TOLERANCE * max(1.0, source_extent, candidate_extent)
-        + floating_resolution
-    )
-    if _coordinate_distance(expected_center, candidate_center) > tolerance:
-        return False
-    return abs(candidate_measure - source_measure) <= _PLANAR_TOLERANCE * max(
-        1.0,
-        abs(candidate_measure),
-        abs(source_measure),
-    )
-
-
-def _matches_rigid_shape_signature(
-    source: _RigidShapeSignature,
-    candidate: _RigidShapeSignature,
-) -> bool:
-    source_measure, source_boundaries = source
-    candidate_measure, candidate_boundaries = candidate
-    if len(source_boundaries) != len(candidate_boundaries):
-        return False
-    values = ((source_measure, candidate_measure), *zip(
-        source_boundaries,
-        candidate_boundaries,
-        strict=True,
-    ))
-    return all(
-        abs(right - left)
-        <= _PLANAR_TOLERANCE * max(1.0, abs(left), abs(right))
-        for left, right in values
-    )
-
-
-def _positive_feature_vector(
-    values: Sequence[float],
-    *,
-    count: int,
-    label: str,
-) -> tuple[float, ...]:
-    try:
-        materialized = tuple(values)
-    except TypeError as exc:
-        raise TypeError(f"{label} must be a sequence of finite values") from exc
-    allowed_lengths = {1, count, 2 * count}
-    if len(materialized) not in allowed_lengths:
-        raise ValueError(
-            f"{label} must contain one value, one value per target, or two "
-            f"values per target; got {len(materialized)}"
-        )
-    return tuple(
-        _positive_float(value, f"{label}[{index}]")
-        for index, value in enumerate(materialized)
-    )
-
-
-def _coordinate_distance(
-    first: tuple[float, float, float],
-    second: tuple[float, float, float],
-) -> float:
-    return math.sqrt(
-        sum((left - right) ** 2 for left, right in zip(first, second, strict=True))
-    )
-
-
-def _validate_elliptical_arc_geometry(
-    coordinates: tuple[
-        tuple[float, float, float],
-        tuple[float, float, float],
-        tuple[float, float, float],
-        tuple[float, float, float],
-    ],
-) -> None:
-    start, center, major_axis_point, end = coordinates
-    axis = _vector_difference(major_axis_point, center)
-    start_vector = _vector_difference(start, center)
-    end_vector = _vector_difference(end, center)
-    axis_unit = _scale_vector(axis, 1.0 / _vector_norm(axis))
-
-    start_perpendicular = _vector_difference(
-        start_vector,
-        _scale_vector(axis_unit, _vector_dot(start_vector, axis_unit)),
-    )
-    end_perpendicular = _vector_difference(
-        end_vector,
-        _scale_vector(axis_unit, _vector_dot(end_vector, axis_unit)),
-    )
-    angular_tolerance = 1.0e-6
-    start_perpendicular_norm = _vector_norm(start_perpendicular)
-    end_perpendicular_norm = _vector_norm(end_perpendicular)
-    if start_perpendicular_norm > angular_tolerance * _vector_norm(start_vector):
-        minor_unit = _scale_vector(
-            start_perpendicular,
-            1.0 / start_perpendicular_norm,
-        )
-    elif end_perpendicular_norm > angular_tolerance * _vector_norm(end_vector):
-        minor_unit = _scale_vector(
-            end_perpendicular,
-            1.0 / end_perpendicular_norm,
-        )
-    else:
-        raise ValueError(
-            "elliptical_arc start and end must not both lie on the major axis"
-        )
-
-    normal_unit = _vector_cross(axis_unit, minor_unit)
-    for label, vector in (("start", start_vector), ("end", end_vector)):
-        if abs(_vector_dot(vector, normal_unit)) > (
-            angular_tolerance * _vector_norm(vector)
-        ):
-            raise ValueError(
-                f"elliptical_arc {label} must lie in the center/major-axis plane"
-            )
-
-    start_major_squared = _vector_dot(start_vector, axis_unit) ** 2
-    start_minor_squared = _vector_dot(start_vector, minor_unit) ** 2
-    end_major_squared = _vector_dot(end_vector, axis_unit) ** 2
-    end_minor_squared = _vector_dot(end_vector, minor_unit) ** 2
-    equality_tolerance = _PLANAR_TOLERANCE**2
-    if math.isclose(
-        start_major_squared,
-        end_major_squared,
-        rel_tol=1.0e-12,
-        abs_tol=equality_tolerance,
-    ) or math.isclose(
-        start_minor_squared,
-        end_minor_squared,
-        rel_tol=1.0e-12,
-        abs_tol=equality_tolerance,
-    ):
-        raise ValueError(
-            "elliptical_arc endpoints must determine unique major and minor radii"
-        )
-
-    major_radius_squared = (
-        start_minor_squared * end_major_squared
-        - start_major_squared * end_minor_squared
-    ) / (start_minor_squared - end_minor_squared)
-    minor_radius_squared = (
-        start_major_squared * end_minor_squared
-        - start_minor_squared * end_major_squared
-    ) / (start_major_squared - end_major_squared)
-    if (
-        not math.isfinite(major_radius_squared)
-        or not math.isfinite(minor_radius_squared)
-        or major_radius_squared <= 0.0
-        or minor_radius_squared <= 0.0
-    ):
-        raise ValueError(
-            "elliptical_arc endpoints must determine positive finite radii"
-        )
-
-
-def _vector_difference(
-    left: tuple[float, float, float],
-    right: tuple[float, float, float],
-) -> tuple[float, float, float]:
-    return tuple(
-        left_value - right_value
-        for left_value, right_value in zip(left, right, strict=True)
-    )  # type: ignore[return-value]
-
-
-def _scale_vector(
-    vector: tuple[float, float, float],
-    factor: float,
-) -> tuple[float, float, float]:
-    return tuple(value * factor for value in vector)  # type: ignore[return-value]
-
-
-def _vector_dot(
-    left: tuple[float, float, float],
-    right: tuple[float, float, float],
-) -> float:
-    return sum(
-        left_value * right_value
-        for left_value, right_value in zip(left, right, strict=True)
-    )
-
-
-def _vector_cross(
-    left: tuple[float, float, float],
-    right: tuple[float, float, float],
-) -> tuple[float, float, float]:
-    return (
-        left[1] * right[2] - left[2] * right[1],
-        left[2] * right[0] - left[0] * right[2],
-        left[0] * right[1] - left[1] * right[0],
-    )
-
-
-def _vector_norm(vector: tuple[float, float, float]) -> float:
-    return math.sqrt(_vector_dot(vector, vector))
-
-
-def _plane_frame(
-    points: tuple[_Point3D, ...],
-    *,
-    fixed_xy: bool,
-    operation: str,
-) -> _PlaneFrame:
-    if len(points) < 4:
-        raise ValueError(f"{operation} curve loops must enclose a nonzero area")
-    origin = points[0]
-    relative = tuple(_vector_difference(point, origin) for point in points[1:])
-    scale = max(1.0, *(_vector_norm(vector) for vector in relative))
-    tolerance = _PLANAR_TOLERANCE * scale
-    if fixed_xy:
-        return (
-            origin,
-            (1.0, 0.0, 0.0),
-            (0.0, 1.0, 0.0),
-            (0.0, 0.0, 1.0),
-            tolerance,
-        )
-
-    first_axis = max(relative, key=_vector_norm)
-    first_axis_norm = _vector_norm(first_axis)
-    if first_axis_norm <= tolerance:
-        raise ValueError(f"{operation} curve loops must enclose a nonzero area")
-    first_unit = _scale_vector(first_axis, 1.0 / first_axis_norm)
-    plane_vector = max(relative, key=lambda vector: _vector_norm(_vector_cross(first_unit, vector)))
-    normal = _vector_cross(first_unit, plane_vector)
-    normal_norm = _vector_norm(normal)
-    if normal_norm <= tolerance:
-        raise ValueError(f"{operation} curve loops must enclose a nonzero area")
-    normal_unit = _scale_vector(normal, 1.0 / normal_norm)
-    second_unit = _vector_cross(normal_unit, first_unit)
-    return origin, first_unit, second_unit, normal_unit, tolerance
-
-
-def _project_plane_point(
-    point: _Point3D,
-    frame: _PlaneFrame,
-    *,
-    operation: str,
-) -> _Point2D:
-    origin, first_axis, second_axis, normal, tolerance = frame
-    relative = _vector_difference(point, origin)
-    if abs(_vector_dot(relative, normal)) > tolerance:
-        raise ValueError(f"{operation} curve loops must be coplanar")
-    return _vector_dot(relative, first_axis), _vector_dot(relative, second_axis)
-
-
-def _project_plane_points(
-    points: tuple[_Point3D, ...],
-    frame: _PlaneFrame,
-    *,
-    operation: str,
-) -> tuple[_Point2D, ...]:
-    return tuple(
-        _project_plane_point(point, frame, operation=operation) for point in points
-    )
-
-
-def _polyline_winding(
-    points: tuple[_Point2D, ...],
-    probe: _Point2D,
-    tolerance: float,
-) -> int | None:
-    total_angle = 0.0
-    for start, end in zip(points, points[1:]):
-        if math.dist(start, end) <= tolerance:
-            continue
-        if _point_segment_distance_2d(probe, start, end) <= tolerance:
-            return None
-        start_vector = (start[0] - probe[0], start[1] - probe[1])
-        end_vector = (end[0] - probe[0], end[1] - probe[1])
-        if math.hypot(*start_vector) <= tolerance or math.hypot(*end_vector) <= tolerance:
-            return None
-        angle = math.atan2(
-            start_vector[0] * end_vector[1] - start_vector[1] * end_vector[0],
-            start_vector[0] * end_vector[0] + start_vector[1] * end_vector[1],
-        )
-        if abs(angle) >= math.pi / 2.0:
-            return None
-        total_angle += angle
-    normalized = total_angle / (2.0 * math.pi)
-    nearest = round(normalized)
-    if abs(normalized - nearest) > 1.0e-8:
-        return None
-    return nearest
-
-
-def _polyline_has_self_contact(
-    points: tuple[_Point2D, ...],
-    tolerance: float,
-) -> bool:
-    segment_count = len(points) - 1
-    for left_index in range(segment_count):
-        left_start = points[left_index]
-        left_end = points[left_index + 1]
-        if math.dist(left_start, left_end) <= tolerance:
-            continue
-        for right_index in range(left_index + 1, segment_count):
-            if right_index == left_index + 1 or (
-                left_index == 0 and right_index == segment_count - 1
-            ):
-                continue
-            right_start = points[right_index]
-            right_end = points[right_index + 1]
-            if math.dist(right_start, right_end) <= tolerance:
-                continue
-            if _segments_contact_2d(
-                left_start,
-                left_end,
-                right_start,
-                right_end,
-                tolerance,
-            ):
-                return True
-    return False
-
-
-def _segments_contact_2d(
-    left_start: _Point2D,
-    left_end: _Point2D,
-    right_start: _Point2D,
-    right_end: _Point2D,
-    tolerance: float,
-) -> bool:
-    if (
-        max(left_start[0], left_end[0]) + tolerance
-        < min(right_start[0], right_end[0])
-        or max(right_start[0], right_end[0]) + tolerance
-        < min(left_start[0], left_end[0])
-        or max(left_start[1], left_end[1]) + tolerance
-        < min(right_start[1], right_end[1])
-        or max(right_start[1], right_end[1]) + tolerance
-        < min(left_start[1], left_end[1])
-    ):
-        return False
-    left_first = _orientation_2d(left_start, left_end, right_start)
-    left_second = _orientation_2d(left_start, left_end, right_end)
-    right_first = _orientation_2d(right_start, right_end, left_start)
-    right_second = _orientation_2d(right_start, right_end, left_end)
-    if left_first * left_second < 0.0 and right_first * right_second < 0.0:
-        return True
-    return min(
-        _point_segment_distance_2d(right_start, left_start, left_end),
-        _point_segment_distance_2d(right_end, left_start, left_end),
-        _point_segment_distance_2d(left_start, right_start, right_end),
-        _point_segment_distance_2d(left_end, right_start, right_end),
-    ) <= tolerance
-
-
-def _orientation_2d(start: _Point2D, end: _Point2D, point: _Point2D) -> float:
-    return (end[0] - start[0]) * (point[1] - start[1]) - (
-        end[1] - start[1]
-    ) * (point[0] - start[0])
-
-
-def _point_segment_distance_2d(
-    point: _Point2D,
-    start: _Point2D,
-    end: _Point2D,
-) -> float:
-    delta_x = end[0] - start[0]
-    delta_y = end[1] - start[1]
-    length_squared = delta_x * delta_x + delta_y * delta_y
-    if length_squared == 0.0:
-        return math.dist(point, start)
-    parameter = (
-        (point[0] - start[0]) * delta_x + (point[1] - start[1]) * delta_y
-    ) / length_squared
-    parameter = min(1.0, max(0.0, parameter))
-    closest = (start[0] + parameter * delta_x, start[1] + parameter * delta_y)
-    return math.dist(point, closest)
 
 
 def _positive_integer_sequence(values: Sequence[int], label: str) -> tuple[int, ...]:
@@ -6256,39 +5363,11 @@ def _positive_integer_sequence(values: Sequence[int], label: str) -> tuple[int, 
     return tuple(result)
 
 
-def _integer_at_least(value: Any, label: str, *, minimum: int) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"{label} must be an integer >= {minimum}, got {value!r}")
-    try:
-        normalized = int(operator.index(value))
-    except TypeError as exc:
-        raise ValueError(
-            f"{label} must be an integer >= {minimum}, got {value!r}"
-        ) from exc
-    if normalized < minimum:
-        raise ValueError(f"{label} must be an integer >= {minimum}, got {value!r}")
-    return normalized
-
-
 def _dim_tags(entities: Iterable[EntityRef]) -> list[tuple[int, int]]:
     return [(entity.dimension, entity.tag) for entity in entities]
 
 
 __all__ = [
-    "BooleanResult",
-    "CurveLoopRef",
-    "EntityOwnershipError",
-    "EntityRef",
-    "FeatureResult",
-    "GeometryError",
     "GeometryModel",
-    "GeometryStateError",
-    "LoftContinuity",
-    "LoftParametrization",
-    "LoftResult",
-    "OrientedCurveRef",
-    "StaleEntityError",
-    "SweepFrame",
-    "WireRef",
     "model",
 ]

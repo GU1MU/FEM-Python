@@ -1,4 +1,5 @@
 import ast
+import importlib.util
 from pathlib import Path
 import sys
 
@@ -7,6 +8,26 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
 TESTS_ROOT = PROJECT_ROOT / "tests"
 EXAMPLES_ROOT = PROJECT_ROOT / "examples"
+GEOMETRY_ROOT = SRC_ROOT / "fem" / "geometry"
+
+GEOMETRY_PUBLIC_API = [
+    "BooleanResult",
+    "CurveLoopRef",
+    "EntityOwnershipError",
+    "EntityRef",
+    "FeatureResult",
+    "GeometryError",
+    "GeometryModel",
+    "GeometryStateError",
+    "LoftContinuity",
+    "LoftParametrization",
+    "LoftResult",
+    "OrientedCurveRef",
+    "StaleEntityError",
+    "SweepFrame",
+    "WireRef",
+    "model",
+]
 
 
 def _string_literals(path):
@@ -52,6 +73,23 @@ def _module_name(path):
     if parts[-1] == "__init__":
         parts.pop()
     return ".".join(parts)
+
+
+def _top_level_definition_names(path):
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    names = set()
+    for node in tree.body:
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            names.add(node.name)
+            continue
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            targets = (node.target,)
+        else:
+            continue
+        names.update(target.id for target in targets if isinstance(target, ast.Name))
+    return names
 
 
 def _is_standard_library_or_gmsh(target):
@@ -256,29 +294,167 @@ def test_tests_do_not_reference_example_data_or_results_outputs():
     assert offenders == []
 
 
-def test_gmsh_geometry_has_no_reverse_or_third_party_runtime_dependencies():
-    paths = (
-        SRC_ROOT / "fem" / "geometry" / "__init__.py",
-        SRC_ROOT / "fem" / "geometry" / "gmsh.py",
-    )
-    allowed_fem_targets = {"fem.geometry.gmsh"}
+def test_geometry_package_has_no_reverse_or_third_party_runtime_dependencies():
+    paths = sorted(GEOMETRY_ROOT.rglob("*.py"))
+    assert paths
+
     offenders = []
     for path in paths:
         for target, lineno in _resolved_import_targets(path, _module_name(path)):
-            if target == "fem" or (
-                target.startswith("fem.") and target not in allowed_fem_targets
-            ):
-                offenders.append(
-                    f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
-                )
-            elif not target.startswith("fem.") and not _is_standard_library_or_gmsh(
-                target
-            ):
-                offenders.append(
-                    f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
-                )
+            internal_geometry_import = target == "fem.geometry" or target.startswith(
+                "fem.geometry."
+            )
+            if internal_geometry_import or _is_standard_library_or_gmsh(target):
+                continue
+            offenders.append(
+                f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+            )
 
     assert offenders == []
+
+
+def test_geometry_stateless_modules_follow_explicit_dependency_boundaries():
+    module_dependencies = {
+        "fem.geometry.errors": (),
+        "fem.geometry.types": (
+            "fem.geometry.errors",
+            "fem.geometry._validation",
+        ),
+        "fem.geometry._validation": (),
+        "fem.geometry._gmsh.constants": (),
+        "fem.geometry._gmsh.predicates": (
+            "fem.geometry._gmsh.constants",
+        ),
+    }
+    missing = []
+    offenders = []
+    for module_name, allowed_modules in module_dependencies.items():
+        relative = Path(*module_name.split(".")).with_suffix(".py")
+        path = SRC_ROOT / relative
+        if not path.is_file():
+            missing.append(str(path.relative_to(PROJECT_ROOT)))
+            continue
+        for target, lineno in _resolved_import_targets(path, module_name):
+            root = target.split(".", 1)[0]
+            if root in sys.stdlib_module_names or any(
+                target == allowed or target.startswith(f"{allowed}.")
+                for allowed in allowed_modules
+            ):
+                continue
+            offenders.append(
+                f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+            )
+
+    assert missing == []
+    assert offenders == []
+
+
+def test_geometry_facade_routes_public_stateless_names_to_canonical_modules():
+    path = GEOMETRY_ROOT / "__init__.py"
+    imports = {
+        target for target, _ in _resolved_import_targets(path, "fem.geometry")
+    }
+    error_names = {
+        "EntityOwnershipError",
+        "GeometryError",
+        "GeometryStateError",
+        "StaleEntityError",
+    }
+    type_names = {
+        "BooleanResult",
+        "CurveLoopRef",
+        "EntityRef",
+        "FeatureResult",
+        "LoftContinuity",
+        "LoftParametrization",
+        "LoftResult",
+        "OrientedCurveRef",
+        "SweepFrame",
+        "WireRef",
+    }
+
+    assert {f"fem.geometry.errors.{name}" for name in error_names} <= imports
+    assert {f"fem.geometry.types.{name}" for name in type_names} <= imports
+    assert {
+        target
+        for target in imports
+        if target.startswith("fem.geometry._gmsh.model.")
+    } == {
+        "fem.geometry._gmsh.model.GeometryModel",
+        "fem.geometry._gmsh.model.model",
+    }
+
+
+def test_private_gmsh_model_does_not_redefine_extracted_stateless_names():
+    path = GEOMETRY_ROOT / "_gmsh" / "model.py"
+    moved_names = {
+        "BooleanResult",
+        "CurveLoopRef",
+        "EntityOwnershipError",
+        "EntityRef",
+        "FeatureResult",
+        "GeometryError",
+        "GeometryStateError",
+        "LoftContinuity",
+        "LoftParametrization",
+        "LoftResult",
+        "OrientedCurveRef",
+        "StaleEntityError",
+        "SweepFrame",
+        "WireRef",
+        "_GeometrySignature",
+        "_LOOP_WINDING_REFINEMENTS",
+        "_OCC_BOUNDING_BOX_PADDING",
+        "_PLANAR_TOLERANCE",
+        "_PlaneFrame",
+        "_Point2D",
+        "_Point3D",
+        "_RigidShapeSignature",
+        "_coordinate_distance",
+        "_finite_float",
+        "_integer_at_least",
+        "_matches_rigid_shape_signature",
+        "_matches_rotated_signature",
+        "_matches_translated_coordinate",
+        "_matches_translated_signature",
+        "_nonnegative_float",
+        "_orientation_2d",
+        "_plane_frame",
+        "_point_axis_distance",
+        "_point_segment_distance_2d",
+        "_polyline_has_self_contact",
+        "_polyline_winding",
+        "_positive_feature_vector",
+        "_positive_float",
+        "_project_plane_point",
+        "_project_plane_points",
+        "_rotate_point_about_axis",
+        "_scale_vector",
+        "_segments_contact_2d",
+        "_unique_first_seen",
+        "_validate_elliptical_arc_geometry",
+        "_validate_entity_dimension",
+        "_validate_mesh_dimension",
+        "_validate_positive_tag",
+        "_vector_cross",
+        "_vector_difference",
+        "_vector_dot",
+        "_vector_norm",
+    }
+
+    assert sorted(moved_names & _top_level_definition_names(path)) == []
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    exported = None
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if any(
+            isinstance(target, ast.Name) and target.id == "__all__"
+            for target in node.targets
+        ):
+            exported = ast.literal_eval(node.value)
+    assert exported == ["GeometryModel", "model"]
 
 
 def test_gmsh_meshing_depends_only_on_geometry_and_backend_layers():
@@ -291,8 +467,8 @@ def test_gmsh_meshing_depends_only_on_geometry_and_backend_layers():
         for target, lineno in _resolved_import_targets(path, _module_name(path)):
             allowed_fem_target = (
                 target == "fem.mesh.gmsh"
-                or target == "fem.geometry.gmsh"
-                or target.startswith("fem.geometry.gmsh.")
+                or target == "fem.geometry"
+                or target.startswith("fem.geometry.")
             )
             if target == "fem" or (
                 target.startswith("fem.") and not allowed_fem_target
@@ -376,8 +552,56 @@ def test_fem_runtime_layers_do_not_import_geometry_or_meshing():
     assert offenders == []
 
 
-def test_advanced_feature_types_are_exported_only_from_the_geometry_layer():
-    from fem.geometry import gmsh as gmsh_geometry
+def test_fem_geometry_public_api_is_exact_and_model_factory_is_public():
+    from fem import geometry
+    from fem.geometry import GeometryModel, model
+
+    assert geometry.__name__ == "fem.geometry"
+    assert geometry.__all__ == GEOMETRY_PUBLIC_API
+    assert all(hasattr(geometry, name) for name in GEOMETRY_PUBLIC_API)
+    assert GeometryModel is geometry.GeometryModel
+    assert model is geometry.model
+    assert isinstance(model("layout-contract", dimension=2), GeometryModel)
+
+
+def test_fem_geometry_has_no_gmsh_alias_or_legacy_module():
+    from fem import geometry
+
+    legacy_module = ".".join(("fem", "geometry", "gmsh"))
+    assert "gmsh" not in vars(geometry)
+    assert legacy_module not in sys.modules
+    assert importlib.util.find_spec(legacy_module) is None
+    assert not (GEOMETRY_ROOT / "gmsh.py").exists()
+    assert not (GEOMETRY_ROOT / "gmsh").exists()
+
+
+def test_removed_geometry_gmsh_path_is_absent_from_python_code():
+    legacy_module = ".".join(("fem", "geometry", "gmsh"))
+    offenders = []
+    paths = sorted(
+        path
+        for root in (SRC_ROOT, TESTS_ROOT, EXAMPLES_ROOT)
+        for path in root.rglob("*.py")
+    )
+    for path in paths:
+        relative_path = path.relative_to(PROJECT_ROOT)
+        for lineno, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(),
+            start=1,
+        ):
+            if legacy_module in line:
+                offenders.append(f"{relative_path}:{lineno} -> {legacy_module}")
+        for target, lineno in _resolved_import_targets(
+            path, _project_module_name(path)
+        ):
+            if target == legacy_module or target.startswith(f"{legacy_module}."):
+                offenders.append(f"{relative_path}:{lineno} -> {target}")
+
+    assert offenders == []
+
+
+def test_geometry_feature_types_are_exported_only_from_the_geometry_layer():
+    from fem import geometry
     import fem.mesh as mesh_package
     from fem.mesh import gmsh as gmsh_meshing
 
@@ -389,23 +613,21 @@ def test_advanced_feature_types_are_exported_only_from_the_geometry_layer():
         "SweepFrame",
         "WireRef",
     }
-    assert geometry_only_names.issubset(gmsh_geometry.__all__)
-    assert gmsh_geometry.FeatureResult.__module__ == "fem.geometry.gmsh"
-    assert gmsh_geometry.LoftResult.__module__ == "fem.geometry.gmsh"
-    assert gmsh_geometry.WireRef.__module__ == "fem.geometry.gmsh"
+    assert geometry_only_names.issubset(geometry.__all__)
+    assert all(getattr(geometry, name) is not None for name in geometry_only_names)
 
     for module in (gmsh_meshing, mesh_package):
         assert geometry_only_names.isdisjoint(module.__all__)
         assert geometry_only_names.isdisjoint(vars(module))
 
 
-def test_advanced_geometry_features_are_absent_from_mesher():
-    from fem.geometry import gmsh as gmsh_geometry
+def test_geometry_feature_methods_are_absent_from_mesher():
+    from fem import geometry
     from fem.mesh import gmsh as gmsh_meshing
 
     operation_names = {"wire", "revolve", "sweep", "loft", "fillet", "chamfer"}
     assert all(
-        hasattr(gmsh_geometry.GeometryModel, operation)
+        hasattr(geometry.GeometryModel, operation)
         for operation in operation_names
     )
     assert all(

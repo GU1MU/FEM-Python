@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 from dataclasses import FrozenInstanceError
 import inspect
 import math
@@ -11,11 +12,12 @@ from typing import Any, Sequence
 import numpy as np
 import pytest
 
-from fem import materials, post, steps
+from fem import geometry, materials, post, steps
 from fem.core import FEMModel, Mesh2D, Mesh3D, validate_model
 from fem.elements import get_element_kernel
 from fem.elements.beam_section import parse_beam2_section
-from fem.geometry import gmsh as geometry
+from fem.geometry._gmsh import backend as _gmsh_backend
+from fem.geometry._gmsh import predicates as _gmsh_predicates
 from fem.io import gmsh as gmsh_io
 from fem.mesh import gmsh as gmsh_meshing
 from fem.selection import edges, elements, nodes
@@ -1568,7 +1570,7 @@ class _FakeGmsh:
 
 
 def _install_backend(monkeypatch: pytest.MonkeyPatch, backend: _FakeGmsh) -> None:
-    monkeypatch.setattr(geometry, "_load_gmsh", lambda: backend)
+    monkeypatch.setattr(_gmsh_backend, "load_gmsh", lambda: backend)
 
 
 def _fake_entities(
@@ -1891,7 +1893,32 @@ _AUTO_OPTION_ORIGINALS = {
 }
 
 
-def test_importing_geometry_gmsh_does_not_import_external_gmsh() -> None:
+def test_public_geometry_api_is_exact() -> None:
+    assert geometry.__name__ == "fem.geometry"
+    assert geometry.__all__ == [
+        "BooleanResult",
+        "CurveLoopRef",
+        "EntityOwnershipError",
+        "EntityRef",
+        "FeatureResult",
+        "GeometryError",
+        "GeometryModel",
+        "GeometryStateError",
+        "LoftContinuity",
+        "LoftParametrization",
+        "LoftResult",
+        "OrientedCurveRef",
+        "StaleEntityError",
+        "SweepFrame",
+        "WireRef",
+        "model",
+    ]
+    assert all(getattr(geometry, name) is not None for name in geometry.__all__)
+    assert not hasattr(geometry, "gmsh")
+    assert not hasattr(geometry, "load_gmsh")
+
+
+def test_importing_public_geometry_does_not_import_external_gmsh() -> None:
     src_dir = Path(__file__).resolve().parents[1] / "src"
     script = f"""
 import builtins
@@ -1906,8 +1933,16 @@ def guarded_import(name, *args, **kwargs):
     return real_import(name, *args, **kwargs)
 
 builtins.__import__ = guarded_import
-from fem.geometry import gmsh as geometry
-assert geometry.__name__ == "fem.geometry.gmsh"
+import fem
+from fem import geometry
+from fem.geometry import EntityRef, GeometryModel, model
+
+assert fem.geometry is geometry
+assert geometry.__name__ == "fem.geometry"
+assert EntityRef is geometry.EntityRef
+assert GeometryModel is geometry.GeometryModel
+assert model is geometry.model
+assert "gmsh" not in sys.modules
 """
 
     completed = subprocess.run(
@@ -1923,17 +1958,45 @@ assert geometry.__name__ == "fem.geometry.gmsh"
 def test_missing_dependency_message_is_actionable_and_closes_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def missing() -> Any:
-        raise ModuleNotFoundError("No module named 'gmsh'", name="gmsh")
+    real_import = builtins.__import__
 
-    monkeypatch.setattr(geometry, "_load_gmsh", missing)
+    def missing_gmsh(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "gmsh":
+            raise ModuleNotFoundError("No module named 'gmsh'", name="gmsh")
+        return real_import(name, *args, **kwargs)
+
     cad = geometry.model("missing", dimension=2)
+    assert isinstance(cad, geometry.GeometryModel)
+    monkeypatch.setattr(builtins, "__import__", missing_gmsh)
 
     with pytest.raises(ModuleNotFoundError, match=r"optional 'cad'.*pip install -e"):
         cad.__enter__()
 
     with pytest.raises(geometry.GeometryStateError, match="missing.*rectangle"):
         cad.rectangle(0.0, 0.0, 1.0, 1.0)
+
+
+def test_backend_loader_preserves_internal_dependency_import_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_import = builtins.__import__
+    internal_error = ModuleNotFoundError(
+        "No module named 'gmsh_internal_dependency'",
+        name="gmsh_internal_dependency",
+    )
+
+    def broken_gmsh(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "gmsh":
+            raise internal_error
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", broken_gmsh)
+
+    with pytest.raises(ModuleNotFoundError) as captured:
+        _gmsh_backend.load_gmsh()
+
+    assert captured.value is internal_error
+    assert "optional 'cad'" not in str(captured.value)
 
 
 def test_public_reference_types_are_immutable_and_boolean_filter_is_typed() -> None:
@@ -1959,9 +2022,6 @@ def test_public_reference_types_are_immutable_and_boolean_filter_is_typed() -> N
     }
     assert meshing_names.isdisjoint(geometry.__all__)
     assert meshing_names.issubset(gmsh_meshing.__all__)
-    assert {"OrientedCurveRef", "CurveLoopRef", "FeatureResult"}.issubset(
-        geometry.__all__
-    )
     assert "FeatureResult" not in gmsh_meshing.__all__
     with pytest.raises(FrozenInstanceError):
         surface.tag = 9  # type: ignore[misc]
@@ -2097,8 +2157,8 @@ def test_translated_signature_uses_local_scale_far_from_origin() -> None:
     )
     vector = (0.0, length, 0.0)
 
-    assert geometry._matches_translated_signature(source, terminal, vector)
-    assert not geometry._matches_translated_signature(source, lateral, vector)
+    assert _gmsh_predicates._matches_translated_signature(source, terminal, vector)
+    assert not _gmsh_predicates._matches_translated_signature(source, lateral, vector)
 
 
 @pytest.mark.parametrize("dimension", [0, 4, True, "2", None])
@@ -2111,9 +2171,10 @@ def test_owned_session_is_initialized_then_model_is_removed_and_finalized(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = _FakeGmsh()
+    cad = geometry.model("owned", dimension=2)
     _install_backend(monkeypatch, backend)
 
-    with geometry.model("owned", dimension=2) as cad:
+    with cad:
         assert cad.name == "owned"
         assert backend.initialized
         assert backend.model.current == "owned"

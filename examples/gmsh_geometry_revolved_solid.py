@@ -7,7 +7,7 @@ import numpy as np
 
 from fem import materials, post, steps
 from fem.core import FEMModel, Mesh3D, validate_model
-from fem.geometry import gmsh as geometry
+from fem import geometry
 from fem.io import gmsh as gmsh_io
 from fem.mesh import gmsh as gmsh_meshing
 from fem.selection import elements, nodes
