@@ -1848,6 +1848,37 @@ def test_feature_result_rejects_malformed_semantic_partitions(
         geometry.FeatureResult(**kwargs)
 
 
+def test_translated_signature_uses_local_scale_far_from_origin() -> None:
+    origin = 1.0e9
+    length = 0.1
+    source = (
+        (origin, origin, 0.0, origin + length, origin, 0.0),
+        (origin + 0.5 * length, origin, 0.0),
+        length,
+    )
+    terminal = (
+        (
+            origin,
+            origin + length,
+            0.0,
+            origin + length,
+            origin + length,
+            0.0,
+        ),
+        (origin + 0.5 * length, origin + length, 0.0),
+        length,
+    )
+    lateral = (
+        (origin, origin, 0.0, origin, origin + length, 0.0),
+        (origin, origin + 0.5 * length, 0.0),
+        length,
+    )
+    vector = (0.0, length, 0.0)
+
+    assert geometry._matches_translated_signature(source, terminal, vector)
+    assert not geometry._matches_translated_signature(source, lateral, vector)
+
+
 @pytest.mark.parametrize("dimension", [0, 4, True, "2", None])
 def test_model_rejects_invalid_mesh_dimension(dimension: Any) -> None:
     with pytest.raises(ValueError, match="dimension must be 1, 2, or 3"):

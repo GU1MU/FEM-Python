@@ -44,13 +44,17 @@ confirmed:
 - pure and structured extrusion with positive and negative vectors;
 - one-call extrusion of multiple disjoint inputs;
 - adjacent inputs whose native output contains a repeated shared side;
+- short local features positioned at world coordinates of magnitude `1e9`;
 - deterministic primary, end, and side classification for all cases.
 
-The classifier requires a complete generated primary boundary and a one-to-one
-assignment between unique sides and source-boundary entities. Incomplete or
-ambiguous topology raises `GeometryError`; a post-mutation failure clears typed
-identity assumptions, and structured extrusion enters its terminal mesh-failed
-state.
+Coordinate comparisons use translation-normalized deltas and scale modeling
+tolerance with local entity extent. Absolute world coordinates contribute only
+their floating-point ULP resolution. The classifier also requires a complete
+generated primary boundary, topology-prefilters terminal candidates, and
+enforces a one-to-one assignment between unique sides and source-boundary
+entities. Incomplete or ambiguous topology raises `GeometryError`; a
+post-mutation failure clears typed identity assumptions, and structured
+extrusion enters its terminal mesh-failed state.
 
 One mixed-dimensional native `occ.copy()` call returns only the highest
 dimension observed in Gmsh 4.15.2. The facade therefore copies homogeneous
@@ -98,10 +102,10 @@ irregular-plate example also remained valid and solved 607 Tri3 elements.
 The final working tree passed:
 
 - Python compilation of `src`, `tests`, and `examples`;
-- focused Plan 1 suite: 768 passed in 8.27 seconds;
-- complete repository suite: 1371 passed in 9.08 seconds;
-- dedicated real-Gmsh foundational suite: 32 passed in 0.65 seconds;
-- complete geometry module: 545 passed in 3.27 seconds;
+- focused Plan 1 suite: 771 passed in 9.07 seconds;
+- complete repository suite: 1374 passed in 11.06 seconds;
+- dedicated real-Gmsh foundational suite: 34 passed in 0.77 seconds;
+- complete geometry module: 546 passed in 4.21 seconds;
 - both end-to-end examples described above;
 - Ruff checks for `src`, `tests`, and `examples`;
 - architecture audits for layer direction, exports, tuple-style extrusion

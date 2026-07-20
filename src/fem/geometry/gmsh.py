@@ -3243,20 +3243,36 @@ class GeometryModel:
             )
             for entity in same_dimension
         }
+        candidate_boundaries = {
+            (entity.dimension, entity.tag): self._immediate_boundary_keys(
+                entity,
+                operation,
+            )
+            for entity in same_dimension
+        }
         end_keys: set[tuple[int, int]] = set()
         assigned_primary_keys: list[tuple[int, int]] = []
-        for source, source_signature in zip(
+        for source, source_signature, source_boundary in zip(
             inputs,
             source_signatures,
+            source_boundaries,
             strict=True,
         ):
+            source_key = (source.dimension, source.tag)
             matches = [
                 key
                 for key, candidate_signature in candidate_signatures.items()
-                if _matches_translated_signature(
-                    source_signature,
-                    candidate_signature,
-                    vector,
+                if (
+                    not (candidate_boundaries[key] & source_boundary)
+                    and any(
+                        source_key in boundary_keys and key in boundary_keys
+                        for boundary_keys in primary_boundaries.values()
+                    )
+                    and _matches_translated_signature(
+                        source_signature,
+                        candidate_signature,
+                        vector,
+                    )
                 )
             ]
             if len(matches) != 1:
@@ -3266,7 +3282,6 @@ class GeometryModel:
                     f"classification is {detail}"
                 )
             end_key = matches[0]
-            source_key = (source.dimension, source.tag)
             containing_primaries = [
                 primary_key
                 for primary_key, boundary_keys in primary_boundaries.items()
@@ -4214,47 +4229,54 @@ def _matches_translated_signature(
 ) -> bool:
     source_bounds, source_center, source_measure = source
     candidate_bounds, candidate_center, candidate_measure = candidate
-    expected_bounds = tuple(
-        value + vector[axis % 3]
-        for axis, value in enumerate(source_bounds)
-    )
-    if any(
-        not math.isclose(
-            actual,
-            expected,
-            rel_tol=_PLANAR_TOLERANCE,
-            abs_tol=_OCC_BOUNDING_BOX_PADDING + _PLANAR_TOLERANCE,
-        )
-        for actual, expected in zip(
-            candidate_bounds,
-            expected_bounds,
-            strict=True,
-        )
-    ):
-        return False
-
     source_extent = max(
         source_bounds[axis + 3] - source_bounds[axis] for axis in range(3)
     )
-    expected_center = tuple(
-        value + vector[axis] for axis, value in enumerate(source_center)
-    )
-    if any(
-        abs(actual - expected)
-        > _PLANAR_TOLERANCE
-        * max(1.0, abs(actual), abs(expected), source_extent)
-        for actual, expected in zip(
-            candidate_center,
-            expected_center,
-            strict=True,
-        )
-    ):
-        return False
+    for axis in range(3):
+        for bound_index in (axis, axis + 3):
+            if not _matches_translated_coordinate(
+                source_bounds[bound_index],
+                candidate_bounds[bound_index],
+                vector[axis],
+                local_extent=source_extent,
+                absolute_padding=_OCC_BOUNDING_BOX_PADDING,
+            ):
+                return False
+        if not _matches_translated_coordinate(
+            source_center[axis],
+            candidate_center[axis],
+            vector[axis],
+            local_extent=source_extent,
+        ):
+            return False
     return abs(candidate_measure - source_measure) <= _PLANAR_TOLERANCE * max(
         1.0,
         abs(candidate_measure),
         abs(source_measure),
     )
+
+
+def _matches_translated_coordinate(
+    source: float,
+    candidate: float,
+    translation: float,
+    *,
+    local_extent: float,
+    absolute_padding: float = 0.0,
+) -> bool:
+    # Scale modeling tolerance with local geometry only. Absolute world
+    # coordinates contribute solely their unavoidable floating-point resolution.
+    floating_resolution = 4.0 * max(
+        math.ulp(source),
+        math.ulp(candidate),
+        math.ulp(translation),
+    )
+    tolerance = (
+        absolute_padding
+        + _PLANAR_TOLERANCE * max(1.0, local_extent)
+        + floating_resolution
+    )
+    return abs((candidate - source) - translation) <= tolerance
 
 
 def _coordinate_distance(

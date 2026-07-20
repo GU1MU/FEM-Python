@@ -189,6 +189,40 @@ def test_real_structured_extrusion_handles_holed_surface_and_negative_vector(
 
 
 @pytest.mark.parametrize("structured", [False, True])
+def test_real_extrusion_classifies_short_curve_far_from_origin(
+    real_gmsh: Any,
+    structured: bool,
+) -> None:
+    origin = 1.0e9
+    length = 0.0625
+    with geometry.model(
+        f"feature_far_origin_{'structured' if structured else 'pure'}",
+        dimension=2,
+    ) as cad:
+        source = cad.line(
+            cad.point(origin, origin, 0.0),
+            cad.point(origin + length, origin, 0.0),
+        )
+        if structured:
+            result = gmsh_meshing.Mesher(cad).structured_extrude(
+                [source],
+                0.0,
+                length,
+                0.0,
+                num_elements=(1,),
+            )
+        else:
+            result = cad.extrude([source], 0.0, length, 0.0)
+
+        assert len(result.primary) == 1
+        assert len(result.ends) == 1
+        assert len(result.sides) == 2
+        end_center = cad.center_of_mass(result.ends[0])
+        assert end_center[0] - origin == pytest.approx(0.5 * length)
+        assert end_center[1] - origin == pytest.approx(length)
+
+
+@pytest.mark.parametrize("structured", [False, True])
 def test_real_extrusion_classifies_multiple_disjoint_inputs(
     real_gmsh: Any,
     structured: bool,
