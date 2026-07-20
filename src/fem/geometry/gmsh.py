@@ -39,6 +39,43 @@ _GenerationSizeMode = Literal["none", "uniform", "point", "background"]
 _Point2D = tuple[float, float]
 _Point3D = tuple[float, float, float]
 _PlaneFrame = tuple[_Point3D, _Point3D, _Point3D, _Point3D, float]
+_GeometrySignature = tuple[
+    tuple[float, float, float, float, float, float],
+    _Point3D,
+    float,
+]
+_RigidShapeSignature = tuple[float, tuple[float, ...]]
+SweepFrame = Literal[
+    "discrete",
+    "corrected_frenet",
+    "frenet",
+    "fixed",
+    "constant_normal",
+    "darboux",
+]
+LoftContinuity = Literal["C0", "G1", "C1", "G2", "C2", "C3", "CN"]
+LoftParametrization = Literal[
+    "chord_length",
+    "centripetal",
+    "iso_parametric",
+]
+
+_SWEEP_FRAME_NAMES: dict[SweepFrame, str] = {
+    "discrete": "DiscreteTrihedron",
+    "corrected_frenet": "CorrectedFrenet",
+    "frenet": "Frenet",
+    "fixed": "Fixed",
+    "constant_normal": "ConstantNormal",
+    "darboux": "Darboux",
+}
+_LOFT_CONTINUITY_NAMES: dict[LoftContinuity, str] = {
+    value: value for value in ("C0", "G1", "C1", "G2", "C2", "C3", "CN")
+}
+_LOFT_PARAMETRIZATION_NAMES: dict[LoftParametrization, str] = {
+    "chord_length": "ChordLength",
+    "centripetal": "Centripetal",
+    "iso_parametric": "IsoParametric",
+}
 
 
 class GeometryError(RuntimeError):
@@ -235,6 +272,33 @@ class CurveLoopRef:
 
 
 @dataclass(frozen=True, slots=True)
+class WireRef:
+    """Owner-local identity for one ordered open or closed OCC wire."""
+
+    tag: int
+    curves: tuple[OrientedCurveRef, ...]
+    closed: bool
+    _owner_token: object = field(repr=False)
+    _wire_token: object = field(repr=False)
+
+    def __post_init__(self) -> None:
+        _validate_positive_tag(self.tag, "wire tag")
+        try:
+            normalized_curves = tuple(self.curves)
+        except TypeError as exc:
+            raise TypeError(
+                "curves must be an iterable of OrientedCurveRef values"
+            ) from exc
+        object.__setattr__(self, "curves", normalized_curves)
+        if not self.curves:
+            raise ValueError("curves must contain at least one oriented curve")
+        if any(not isinstance(curve, OrientedCurveRef) for curve in self.curves):
+            raise TypeError("curves must contain only OrientedCurveRef values")
+        if not isinstance(self.closed, bool):
+            raise TypeError(f"closed must be a boolean, got {self.closed!r}")
+
+
+@dataclass(frozen=True, slots=True)
 class MeshFieldRef:
     """Immutable reference to one mesh field owned by a geometry model."""
 
@@ -345,27 +409,65 @@ class FeatureResult:
         if len(input_dimensions) != 1:
             raise ValueError("feature result inputs must have one common dimension")
         input_dimension = next(iter(input_dimensions))
-        primary_dimension = input_dimension + 1
-        if primary_dimension > 3:
+        primary_dimensions = {entity.dimension for entity in self.primary}
+        if len(primary_dimensions) != 1:
+            raise ValueError("primary entities must have one common dimension")
+        primary_dimension = next(iter(primary_dimensions))
+        if primary_dimension < input_dimension:
             raise ValueError(
-                "feature result primary dimension exceeds the supported range"
+                "feature result primary dimension must not be below its inputs"
             )
-        if any(
-            entity.dimension not in {input_dimension, primary_dimension}
-            for entity in self.outputs
-        ):
-            raise ValueError(
-                "feature result outputs must have the input or primary dimension"
+        boundary_dimension = primary_dimension - 1
+
+        input_set = set(self.inputs)
+        unique_outputs = _unique_first_seen(self.outputs)
+        echoed_inputs = tuple(
+            entity for entity in unique_outputs if entity in input_set
+        )
+        generated_outputs = tuple(
+            entity for entity in unique_outputs if entity not in input_set
+        )
+
+        if primary_dimension == input_dimension:
+            if self.ends or self.sides:
+                raise ValueError(
+                    "same-dimensional modifying features cannot report ends or sides"
+                )
+            if any(entity.dimension > primary_dimension for entity in self.outputs):
+                raise ValueError(
+                    "feature result outputs exceed the primary dimension"
+                )
+            expected_primary = tuple(
+                entity
+                for entity in unique_outputs
+                if entity.dimension == primary_dimension
             )
-        if any(entity.dimension != primary_dimension for entity in self.primary):
-            raise ValueError(
-                "primary entities must be one dimension above the inputs"
-            )
-        if any(
-            entity.dimension != input_dimension
-            for entity in (*self.ends, *self.sides)
-        ):
-            raise ValueError("end and side entities must match the input dimension")
+            if echoed_inputs or self.primary != expected_primary:
+                raise ValueError(
+                    "modifying-feature primary entities must be all unique "
+                    "top-dimensional outputs"
+                )
+        else:
+            if any(
+                entity not in input_set
+                and entity.dimension not in {boundary_dimension, primary_dimension}
+                for entity in self.outputs
+            ):
+                raise ValueError(
+                    "generated feature outputs must have the primary or boundary "
+                    "dimension"
+                )
+            if any(entity.dimension != primary_dimension for entity in self.primary):
+                raise ValueError(
+                    "primary entities must have the generated topological dimension"
+                )
+            if any(
+                entity.dimension != boundary_dimension
+                for entity in (*self.ends, *self.sides)
+            ):
+                raise ValueError(
+                    "end and side entities must match the primary boundary dimension"
+                )
 
         partitions = (self.primary, self.ends, self.sides)
         if any(len(set(partition)) != len(partition) for partition in partitions):
@@ -378,11 +480,15 @@ class FeatureResult:
         ):
             raise ValueError("primary, ends, and sides must be disjoint")
 
-        unique_outputs = _unique_first_seen(self.outputs)
         semantic_entities = set().union(*partition_sets)
-        if semantic_entities != set(unique_outputs):
+        partitioned_outputs = (
+            generated_outputs
+            if primary_dimension > input_dimension
+            else self.primary
+        )
+        if semantic_entities != set(partitioned_outputs):
             raise ValueError(
-                "primary, ends, and sides must partition the unique outputs"
+                "primary, ends, and sides must partition the generated outputs"
             )
         for field_name, partition, partition_set in zip(
             ("primary", "ends", "sides"),
@@ -391,7 +497,7 @@ class FeatureResult:
             strict=True,
         ):
             expected_order = tuple(
-                entity for entity in unique_outputs if entity in partition_set
+                entity for entity in partitioned_outputs if entity in partition_set
             )
             if partition != expected_order:
                 raise ValueError(
@@ -404,6 +510,70 @@ class FeatureResult:
         return tuple(
             entity for entity in self.outputs if entity.dimension == normalized
         )
+
+
+@dataclass(frozen=True, slots=True)
+class LoftResult:
+    """A common feature topology result with grouped loft-section history."""
+
+    topology: FeatureResult
+    sections: tuple[WireRef, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.topology, FeatureResult):
+            raise TypeError("topology must be a FeatureResult")
+        if self.topology.operation != "loft":
+            raise ValueError("loft topology must use operation 'loft'")
+        try:
+            normalized_sections = tuple(self.sections)
+        except TypeError as exc:
+            raise TypeError("sections must be an iterable of WireRef values") from exc
+        object.__setattr__(self, "sections", normalized_sections)
+        if len(self.sections) < 2:
+            raise ValueError("sections must contain at least two WireRef values")
+        if any(not isinstance(section, WireRef) for section in self.sections):
+            raise TypeError("sections must contain only WireRef values")
+        owner_token = self.topology.inputs[0]._owner_token
+        if any(section._owner_token is not owner_token for section in self.sections):
+            raise EntityOwnershipError(
+                "loft sections and topology must belong to one geometry model"
+            )
+        flattened_inputs = tuple(
+            oriented.curve
+            for section in self.sections
+            for oriented in section.curves
+        )
+        if self.topology.inputs != flattened_inputs:
+            raise ValueError(
+                "loft topology inputs must preserve grouped section-curve order"
+            )
+
+    @property
+    def operation(self) -> str:
+        return self.topology.operation
+
+    @property
+    def inputs(self) -> tuple[EntityRef, ...]:
+        return self.topology.inputs
+
+    @property
+    def outputs(self) -> tuple[EntityRef, ...]:
+        return self.topology.outputs
+
+    @property
+    def primary(self) -> tuple[EntityRef, ...]:
+        return self.topology.primary
+
+    @property
+    def ends(self) -> tuple[EntityRef, ...]:
+        return self.topology.ends
+
+    @property
+    def sides(self) -> tuple[EntityRef, ...]:
+        return self.topology.sides
+
+    def of_dimension(self, dimension: int) -> tuple[EntityRef, ...]:
+        return self.topology.of_dimension(dimension)
 
 
 def _unique_first_seen(entities: Iterable[EntityRef]) -> tuple[EntityRef, ...]:
@@ -459,6 +629,8 @@ class GeometryModel:
         self._entity_tokens: dict[tuple[int, int], object] = {}
         self._curve_loop_tokens: dict[int, object] = {}
         self._curve_loop_dependencies: dict[int, frozenset[tuple[int, int]]] = {}
+        self._wire_tokens: dict[int, object] = {}
+        self._wire_dependencies: dict[int, frozenset[tuple[int, int]]] = {}
         self._mesh_field_tokens: dict[int, object] = {}
         self._mesh_field_types: dict[
             int,
@@ -526,6 +698,8 @@ class GeometryModel:
             self._entity_tokens.clear()
             self._curve_loop_tokens.clear()
             self._curve_loop_dependencies.clear()
+            self._wire_tokens.clear()
+            self._wire_dependencies.clear()
             self._mesh_field_tokens.clear()
             self._mesh_field_types.clear()
             self._mesh_size_mode = "none"
@@ -581,6 +755,8 @@ class GeometryModel:
             self._entity_tokens.clear()
             self._curve_loop_tokens.clear()
             self._curve_loop_dependencies.clear()
+            self._wire_tokens.clear()
+            self._wire_dependencies.clear()
             self._mesh_field_tokens.clear()
             self._mesh_field_types.clear()
             self._background_field = None
@@ -886,6 +1062,94 @@ class GeometryModel:
         reference = CurveLoopRef(tag, oriented, self._owner_token, token)
         self._curve_loop_tokens[tag] = token
         self._curve_loop_dependencies[tag] = dependency_keys
+        return reference
+
+    def wire(
+        self,
+        curves: Sequence[OrientedCurveRef],
+        *,
+        closed: bool,
+    ) -> WireRef:
+        """Create an owner-local ordered open or closed OCC wire."""
+        operation = "wire"
+        self._check_state(operation, _GEOMETRY_MUTATION_STATES)
+        if not isinstance(closed, bool):
+            raise TypeError(f"closed must be a boolean, got {closed!r}")
+        try:
+            oriented = tuple(curves)
+        except TypeError as exc:
+            raise TypeError("wire curves must be iterable") from exc
+        if not oriented:
+            raise ValueError("wire requires at least one oriented curve")
+        if any(not isinstance(item, OrientedCurveRef) for item in oriented):
+            raise TypeError(
+                "wire requires only OrientedCurveRef values returned by orient()"
+            )
+        normalized_curves = self._normalize_entities(
+            tuple(item.curve for item in oriented),
+            operation=operation,
+        )
+        self._activate(operation)
+        self._gmsh.model.occ.synchronize()
+        self._assert_occ_liveness(normalized_curves, operation)
+        self._assert_planar_entities(normalized_curves, operation)
+
+        endpoints = self._oriented_curve_endpoints(oriented, operation=operation)
+        for (_, end_point), (next_start, _) in zip(
+            endpoints,
+            endpoints[1:],
+        ):
+            if end_point != next_start:
+                raise ValueError(
+                    "wire curves must form one continuous chain in the supplied order"
+                )
+        first_start = endpoints[0][0]
+        final_end = endpoints[-1][1]
+        if closed and final_end != first_start:
+            raise ValueError("closed wire curves must close at the final endpoint")
+        if not closed and final_end == first_start:
+            raise ValueError("open wire start and end points must be distinct")
+
+        traversal_points = (first_start, *(end for _, end in endpoints))
+        unique_traversal = (
+            traversal_points[:-1] if closed else traversal_points
+        )
+        if len(set(unique_traversal)) != len(unique_traversal):
+            raise ValueError(
+                "wire must not revisit a boundary point before its final endpoint"
+            )
+
+        dependency_keys = frozenset(
+            self._entity_boundary_closure_keys(
+                normalized_curves,
+                synchronize=False,
+            )
+        )
+        signed_tags = [
+            -item.curve.tag if item.reversed else item.curve.tag
+            for item in oriented
+        ]
+        raw_tag = self._gmsh.model.occ.addWire(signed_tags, -1, closed)
+        try:
+            tag = _validate_positive_tag(raw_tag, "wire tag")
+        except ValueError as error:
+            self._wire_tokens.clear()
+            self._wire_dependencies.clear()
+            raise GeometryError(
+                f"geometry model {self.name!r}: wire returned an invalid wire "
+                "tag; typed wire identities were invalidated"
+            ) from error
+        if tag in self._wire_tokens:
+            self._wire_tokens.clear()
+            self._wire_dependencies.clear()
+            raise GeometryError(
+                f"geometry model {self.name!r}: wire returned duplicate wire "
+                f"tag {tag}; typed wire identities were invalidated"
+            )
+        token = object()
+        reference = WireRef(tag, oriented, closed, self._owner_token, token)
+        self._wire_tokens[tag] = token
+        self._wire_dependencies[tag] = dependency_keys
         return reference
 
     def plane_surface(
@@ -1252,7 +1516,7 @@ class GeometryModel:
         self._check_controlled_transform_allowed(operation, normalized)
         transformed_keys = self._entity_boundary_closure_keys(normalized)
         self._gmsh.model.occ.translate(_dim_tags(normalized), *vector)
-        self._invalidate_curve_loops_for_keys(transformed_keys)
+        self._invalidate_curve_topology_for_keys(transformed_keys)
         return normalized
 
     def rotate(
@@ -1298,7 +1562,7 @@ class GeometryModel:
             *axis,
             angle_value,
         )
-        self._invalidate_curve_loops_for_keys(transformed_keys)
+        self._invalidate_curve_topology_for_keys(transformed_keys)
         return normalized
 
     def mirror(
@@ -1339,7 +1603,7 @@ class GeometryModel:
             self._assert_occ_liveness(normalized, operation)
             self._assert_planar_entities(normalized, operation)
             self._invalidate_entity_keys(transformed_keys - input_keys)
-            self._invalidate_curve_loops_for_keys(input_keys)
+            self._invalidate_curve_topology_for_keys(input_keys)
             return normalized
         except BaseException:
             if native_started:
@@ -1405,12 +1669,465 @@ class GeometryModel:
                 ),
             )
             self._invalidate_entity_keys(transformed_keys - input_keys)
-            self._invalidate_curve_loops_for_keys(input_keys)
+            self._invalidate_curve_topology_for_keys(input_keys)
             return normalized
         except BaseException:
             if native_started:
                 self._fail_closed_after_unknown_occ_mutation()
             raise
+
+    def revolve(
+        self,
+        entities: Iterable[EntityRef],
+        x: float,
+        y: float,
+        z: float,
+        axis_x: float,
+        axis_y: float,
+        axis_z: float,
+        angle: float,
+    ) -> FeatureResult:
+        """Revolve curves or surfaces about an axis as a pure OCC feature."""
+        operation = "revolve"
+        self._check_state(operation, _GEOMETRY_MUTATION_STATES)
+        normalized = self._normalize_entities(entities, operation=operation)
+        dimensions = {entity.dimension for entity in normalized}
+        if len(dimensions) != 1:
+            raise ValueError("revolve inputs must have one common dimension")
+        input_dimension = next(iter(dimensions))
+        if input_dimension not in {1, 2}:
+            raise ValueError("revolve supports dimension-one or dimension-two inputs")
+        if input_dimension + 1 > self.dimension:
+            raise ValueError(
+                "revolve input dimension plus one exceeds the facade dimension"
+            )
+        axis_point = (
+            _finite_float(x, "x"),
+            _finite_float(y, "y"),
+            _finite_float(z, "z"),
+        )
+        axis = (
+            _finite_float(axis_x, "axis_x"),
+            _finite_float(axis_y, "axis_y"),
+            _finite_float(axis_z, "axis_z"),
+        )
+        angle_value = _finite_float(angle, "angle")
+        if not any(component != 0.0 for component in axis):
+            raise ValueError("revolution axis must be nonzero")
+        if angle_value == 0.0:
+            raise ValueError("revolution angle must be nonzero")
+        if abs(angle_value) > 2.0 * math.pi:
+            raise ValueError("absolute revolution angle must not exceed 2*pi")
+        if self.dimension == 2 and (axis[0] != 0.0 or axis[1] != 0.0):
+            raise ValueError(
+                "2D revolution axis must be parallel to the global Z axis"
+            )
+
+        self._activate(operation)
+        self._assert_occ_liveness(normalized, operation)
+        self._gmsh.model.occ.synchronize()
+        source_signatures = tuple(
+            self._entity_geometry_signature(entity, operation)
+            for entity in normalized
+        )
+        source_boundaries = tuple(
+            self._immediate_boundary_keys(entity, operation)
+            for entity in normalized
+        )
+        native_started = False
+        try:
+            native_started = True
+            raw_outputs = self._gmsh.model.occ.revolve(
+                _dim_tags(normalized),
+                *axis_point,
+                *axis,
+                angle_value,
+                [],
+                [],
+                False,
+            )
+            output_pairs = tuple(
+                _normalize_dim_tag(pair) for pair in raw_outputs
+            )
+            if not output_pairs:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: revolve returned no entities"
+                )
+            allowed_dimensions = {input_dimension, input_dimension + 1}
+            if any(pair[0] not in allowed_dimensions for pair in output_pairs):
+                raise GeometryError(
+                    f"geometry model {self.name!r}: revolve returned an entity "
+                    "with an unexpected dimension"
+                )
+            if not any(
+                pair[0] == input_dimension + 1 for pair in output_pairs
+            ):
+                raise GeometryError(
+                    f"geometry model {self.name!r}: revolve returned no "
+                    f"dimension-{input_dimension + 1} entity"
+                )
+            outputs = tuple(self._wrap_entity(pair) for pair in output_pairs)
+            result = self._classify_revolution_result(
+                inputs=normalized,
+                outputs=outputs,
+                axis_point=axis_point,
+                axis=axis,
+                angle=angle_value,
+                source_signatures=source_signatures,
+                source_boundaries=source_boundaries,
+            )
+            self._assert_occ_liveness(normalized, operation)
+            self._assert_planar_entities(result.outputs, operation)
+            return result
+        except BaseException as error:
+            if native_started:
+                self._fail_closed_after_unknown_occ_mutation()
+            if isinstance(error, GeometryError) or not isinstance(error, Exception):
+                raise
+            raise GeometryError(
+                f"geometry model {self.name!r}: native OCC revolve failed"
+            ) from error
+
+    def sweep(
+        self,
+        entities: Iterable[EntityRef],
+        path: WireRef,
+        *,
+        frame: SweepFrame = "discrete",
+    ) -> FeatureResult:
+        """Sweep curve or surface profiles along an owner-local path wire."""
+        operation = "sweep"
+        self._check_state(operation, _GEOMETRY_MUTATION_STATES)
+        if self.dimension != 3:
+            raise ValueError("sweep requires a three-dimensional geometry model")
+        normalized = self._normalize_entities(entities, operation=operation)
+        dimensions = {entity.dimension for entity in normalized}
+        if len(dimensions) != 1:
+            raise ValueError("sweep profiles must have one common dimension")
+        input_dimension = next(iter(dimensions))
+        if input_dimension not in {1, 2}:
+            raise ValueError("sweep supports dimension-one or dimension-two profiles")
+        if input_dimension + 1 > self.dimension:
+            raise ValueError(
+                "sweep profile dimension plus one exceeds the facade dimension"
+            )
+        if not isinstance(frame, str) or frame not in _SWEEP_FRAME_NAMES:
+            raise ValueError(
+                f"unsupported sweep frame {frame!r}; expected one of "
+                f"{tuple(_SWEEP_FRAME_NAMES)}"
+            )
+        mapped_frame = _SWEEP_FRAME_NAMES[frame]  # type: ignore[index]
+
+        self._activate(operation)
+        self._gmsh.model.occ.synchronize()
+        normalized_path = self._normalize_wires((path,), operation=operation)[0]
+        path_curves = tuple(item.curve for item in normalized_path.curves)
+        if set(normalized) & set(path_curves):
+            raise ValueError("sweep path must not reuse a profile entity")
+        self._assert_occ_liveness((*normalized, *path_curves), operation)
+        source_signatures = tuple(
+            self._entity_geometry_signature(entity, operation)
+            for entity in normalized
+        )
+        source_shapes = tuple(
+            self._entity_rigid_shape_signature(entity, operation)
+            for entity in normalized
+        )
+        native_started = False
+        try:
+            native_started = True
+            raw_outputs = self._gmsh.model.occ.addPipe(
+                _dim_tags(normalized),
+                normalized_path.tag,
+                mapped_frame,
+            )
+            output_pairs = tuple(
+                _normalize_dim_tag(pair) for pair in raw_outputs
+            )
+            primary_dimension = input_dimension + 1
+            if not output_pairs:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: sweep returned no entities"
+                )
+            if any(pair[0] != primary_dimension for pair in output_pairs):
+                raise GeometryError(
+                    f"geometry model {self.name!r}: sweep returned an entity "
+                    "with an unexpected dimension"
+                )
+            primary = tuple(self._wrap_entity(pair) for pair in output_pairs)
+            result = self._classify_sweep_result(
+                inputs=normalized,
+                primary=primary,
+                path=normalized_path,
+                source_signatures=source_signatures,
+                source_shapes=source_shapes,
+            )
+            self._assert_occ_liveness((*normalized, *path_curves), operation)
+            return result
+        except BaseException as error:
+            if native_started:
+                self._fail_closed_after_unknown_occ_mutation()
+            if isinstance(error, GeometryError) or not isinstance(error, Exception):
+                raise
+            raise GeometryError(
+                f"geometry model {self.name!r}: native OCC sweep failed"
+            ) from error
+
+    def loft(
+        self,
+        sections: Iterable[WireRef],
+        *,
+        solid: bool = True,
+        ruled: bool = False,
+        max_degree: int | None = None,
+        continuity: LoftContinuity | None = None,
+        parametrization: LoftParametrization | None = None,
+        smoothing: bool = False,
+    ) -> LoftResult:
+        """Loft ordered wire sections into a surface or solid."""
+        operation = "loft"
+        self._check_state(operation, _GEOMETRY_MUTATION_STATES)
+        if self.dimension != 3:
+            raise ValueError("loft requires a three-dimensional geometry model")
+        if not isinstance(solid, bool):
+            raise TypeError(f"solid must be a boolean, got {solid!r}")
+        if not isinstance(ruled, bool):
+            raise TypeError(f"ruled must be a boolean, got {ruled!r}")
+        if not isinstance(smoothing, bool):
+            raise TypeError(f"smoothing must be a boolean, got {smoothing!r}")
+        degree = (
+            -1
+            if max_degree is None
+            else _integer_at_least(max_degree, "max_degree", minimum=1)
+        )
+        if continuity is None:
+            mapped_continuity = ""
+        elif isinstance(continuity, str) and continuity in _LOFT_CONTINUITY_NAMES:
+            mapped_continuity = _LOFT_CONTINUITY_NAMES[continuity]  # type: ignore[index]
+        else:
+            raise ValueError(
+                f"unsupported loft continuity {continuity!r}; expected one of "
+                f"{tuple(_LOFT_CONTINUITY_NAMES)}"
+            )
+        if parametrization is None:
+            mapped_parametrization = ""
+        elif (
+            isinstance(parametrization, str)
+            and parametrization in _LOFT_PARAMETRIZATION_NAMES
+        ):
+            mapped_parametrization = _LOFT_PARAMETRIZATION_NAMES[parametrization]  # type: ignore[index]
+        else:
+            raise ValueError(
+                f"unsupported loft parametrization {parametrization!r}; expected "
+                f"one of {tuple(_LOFT_PARAMETRIZATION_NAMES)}"
+            )
+
+        try:
+            materialized_sections = tuple(sections)
+        except TypeError as exc:
+            raise TypeError("loft sections must be iterable") from exc
+        if len(materialized_sections) < 2:
+            raise ValueError("loft requires at least two section wires")
+        self._activate(operation)
+        self._gmsh.model.occ.synchronize()
+        normalized_sections = self._normalize_wires(
+            materialized_sections,
+            operation=operation,
+        )
+        closed_states = {section.closed for section in normalized_sections}
+        if len(closed_states) != 1:
+            raise ValueError("loft sections must be either all open or all closed")
+        if solid and not normalized_sections[0].closed:
+            raise ValueError("solid loft requires closed section wires")
+        flattened_inputs = tuple(
+            item.curve
+            for section in normalized_sections
+            for item in section.curves
+        )
+        if len(set(flattened_inputs)) != len(flattened_inputs):
+            raise ValueError("loft section member curves must be duplicate-free")
+        self._assert_occ_liveness(flattened_inputs, operation)
+        primary_dimension = 3 if solid else 2
+        native_started = False
+        try:
+            native_started = True
+            raw_outputs = self._gmsh.model.occ.addThruSections(
+                [section.tag for section in normalized_sections],
+                -1,
+                solid,
+                ruled,
+                degree,
+                mapped_continuity,
+                mapped_parametrization,
+                smoothing,
+            )
+            output_pairs = tuple(
+                _normalize_dim_tag(pair) for pair in raw_outputs
+            )
+            if not output_pairs:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: loft returned no entities"
+                )
+            if any(pair[0] != primary_dimension for pair in output_pairs):
+                raise GeometryError(
+                    f"geometry model {self.name!r}: loft returned an entity "
+                    "with an unexpected dimension"
+                )
+            outputs = tuple(self._wrap_entity(pair) for pair in output_pairs)
+            topology = FeatureResult(
+                operation,
+                flattened_inputs,
+                outputs,
+                _unique_first_seen(outputs),
+            )
+            self._assert_occ_liveness(flattened_inputs, operation)
+            return LoftResult(topology, normalized_sections)
+        except BaseException as error:
+            if native_started:
+                self._fail_closed_after_unknown_occ_mutation()
+            if isinstance(error, GeometryError) or not isinstance(error, Exception):
+                raise
+            raise GeometryError(
+                f"geometry model {self.name!r}: native OCC loft failed"
+            ) from error
+
+    def fillet(
+        self,
+        volumes: Iterable[EntityRef],
+        curves: Iterable[EntityRef],
+        radii: Sequence[float],
+        *,
+        remove_volumes: bool = True,
+    ) -> FeatureResult:
+        """Fillet selected boundary curves of three-dimensional volumes."""
+        operation = "fillet"
+        self._check_state(operation, _GEOMETRY_MUTATION_STATES)
+        if self.dimension != 3:
+            raise ValueError("fillet requires a three-dimensional geometry model")
+        normalized_volumes = self._normalize_entities(volumes, operation=operation)
+        normalized_curves = self._normalize_entities(
+            curves,
+            operation=f"{operation} curves",
+        )
+        if any(volume.dimension != 3 for volume in normalized_volumes):
+            raise ValueError("fillet volumes must be dimension-three entities")
+        if any(curve.dimension != 1 for curve in normalized_curves):
+            raise ValueError("fillet curves must be dimension-one entities")
+        normalized_radii = _positive_feature_vector(
+            radii,
+            count=len(normalized_curves),
+            label="radii",
+        )
+        if not isinstance(remove_volumes, bool):
+            raise TypeError(
+                f"remove_volumes must be a boolean, got {remove_volumes!r}"
+            )
+        self._activate(operation)
+        self._gmsh.model.occ.synchronize()
+        self._assert_occ_liveness(
+            (*normalized_volumes, *normalized_curves),
+            operation,
+        )
+        closures = tuple(
+            self._entity_boundary_closure_keys((volume,), synchronize=False)
+            for volume in normalized_volumes
+        )
+        if any(
+            not any((curve.dimension, curve.tag) in closure for closure in closures)
+            for curve in normalized_curves
+        ):
+            raise ValueError(
+                "every fillet curve must belong to at least one selected volume"
+            )
+        return self._apply_volume_edge_treatment(
+            operation=operation,
+            volumes=normalized_volumes,
+            curves=normalized_curves,
+            surfaces=(),
+            values=normalized_radii,
+            closures=closures,
+            remove_volumes=remove_volumes,
+        )
+
+    def chamfer(
+        self,
+        volumes: Iterable[EntityRef],
+        curves: Iterable[EntityRef],
+        surfaces: Iterable[EntityRef],
+        distances: Sequence[float],
+        *,
+        remove_volumes: bool = True,
+    ) -> FeatureResult:
+        """Chamfer explicit boundary curve and adjacent-surface pairs."""
+        operation = "chamfer"
+        self._check_state(operation, _GEOMETRY_MUTATION_STATES)
+        if self.dimension != 3:
+            raise ValueError("chamfer requires a three-dimensional geometry model")
+        normalized_volumes = self._normalize_entities(volumes, operation=operation)
+        normalized_curves = self._normalize_entities(
+            curves,
+            operation=f"{operation} curves",
+        )
+        normalized_surfaces = self._normalize_entities(
+            surfaces,
+            operation=f"{operation} surfaces",
+        )
+        if any(volume.dimension != 3 for volume in normalized_volumes):
+            raise ValueError("chamfer volumes must be dimension-three entities")
+        if any(curve.dimension != 1 for curve in normalized_curves):
+            raise ValueError("chamfer curves must be dimension-one entities")
+        if any(surface.dimension != 2 for surface in normalized_surfaces):
+            raise ValueError("chamfer surfaces must be dimension-two entities")
+        if len(normalized_curves) != len(normalized_surfaces):
+            raise ValueError(
+                "chamfer curve and surface sequences must have equal nonzero lengths"
+            )
+        normalized_distances = _positive_feature_vector(
+            distances,
+            count=len(normalized_curves),
+            label="distances",
+        )
+        if not isinstance(remove_volumes, bool):
+            raise TypeError(
+                f"remove_volumes must be a boolean, got {remove_volumes!r}"
+            )
+        self._activate(operation)
+        self._gmsh.model.occ.synchronize()
+        self._assert_occ_liveness(
+            (*normalized_volumes, *normalized_curves, *normalized_surfaces),
+            operation,
+        )
+        closures = tuple(
+            self._entity_boundary_closure_keys((volume,), synchronize=False)
+            for volume in normalized_volumes
+        )
+        for curve, surface in zip(
+            normalized_curves,
+            normalized_surfaces,
+            strict=True,
+        ):
+            curve_key = (curve.dimension, curve.tag)
+            surface_key = (surface.dimension, surface.tag)
+            if curve_key not in self._immediate_boundary_keys(surface, operation):
+                raise ValueError(
+                    "each chamfer curve must be adjacent to its paired surface"
+                )
+            if not any(
+                curve_key in closure and surface_key in closure
+                for closure in closures
+            ):
+                raise ValueError(
+                    "each chamfer pair must belong to a selected volume"
+                )
+        return self._apply_volume_edge_treatment(
+            operation=operation,
+            volumes=normalized_volumes,
+            curves=normalized_curves,
+            surfaces=normalized_surfaces,
+            values=normalized_distances,
+            closures=closures,
+            remove_volumes=remove_volumes,
+        )
 
     def extrude(
         self,
@@ -2631,6 +3348,8 @@ class GeometryModel:
         self._entity_tokens.clear()
         self._curve_loop_tokens.clear()
         self._curve_loop_dependencies.clear()
+        self._wire_tokens.clear()
+        self._wire_dependencies.clear()
         self._mesh_field_tokens.clear()
         self._mesh_field_types.clear()
         if kind == "model":
@@ -2695,6 +3414,42 @@ class GeometryModel:
         tag = backend([point.tag for point in normalized])
         return self._wrap_entity((1, tag))
 
+    def _oriented_curve_endpoints(
+        self,
+        curves: tuple[OrientedCurveRef, ...],
+        *,
+        operation: str,
+    ) -> tuple[tuple[tuple[int, int], tuple[int, int]], ...]:
+        endpoints: list[tuple[tuple[int, int], tuple[int, int]]] = []
+        for item in curves:
+            signed_tag = -item.curve.tag if item.reversed else item.curve.tag
+            try:
+                raw_boundary = self._gmsh.model.getBoundary(
+                    [(1, signed_tag)],
+                    combined=False,
+                    oriented=True,
+                    recursive=False,
+                )
+                boundary = tuple(
+                    _normalize_dim_tag(pair) for pair in raw_boundary
+                )
+            except GeometryError:
+                raise
+            except Exception as exc:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} could not "
+                    f"determine ordered endpoints for curve {item.curve.tag}"
+                ) from exc
+            if len(boundary) != 2 or any(
+                dimension != 0 for dimension, _ in boundary
+            ):
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} could not "
+                    f"determine two ordered endpoints for curve {item.curve.tag}"
+                )
+            endpoints.append((boundary[0], boundary[1]))
+        return tuple(endpoints)
+
     def _normalize_curve_loops(
         self,
         loops: Iterable[CurveLoopRef],
@@ -2749,6 +3504,56 @@ class GeometryModel:
             self._normalize_entities(
                 tuple(item.curve for item in loop.curves),
                 operation=f"{operation} curve loop {loop.tag}",
+            )
+        return normalized
+
+    def _normalize_wires(
+        self,
+        wires: Iterable[WireRef],
+        *,
+        operation: str,
+    ) -> tuple[WireRef, ...]:
+        try:
+            normalized = tuple(wires)
+        except TypeError as exc:
+            raise TypeError(f"{operation} wires must be iterable") from exc
+        if not normalized:
+            raise ValueError(f"{operation} requires at least one wire")
+        seen_tags: set[int] = set()
+        for wire in normalized:
+            if not isinstance(wire, WireRef):
+                raise TypeError(
+                    f"{operation} requires WireRef values, got {wire!r}"
+                )
+            if wire._owner_token is not self._owner_token:
+                raise EntityOwnershipError(
+                    f"geometry model {self.name!r}: {operation} received a "
+                    "wire owned by another geometry model"
+                )
+            if self._wire_tokens.get(wire.tag) is not wire._wire_token:
+                raise StaleEntityError(
+                    f"geometry model {self.name!r}: {operation} received stale "
+                    f"wire {wire.tag}"
+                )
+            if wire.tag in seen_tags:
+                raise ValueError(f"{operation} wires must be duplicate-free")
+            seen_tags.add(wire.tag)
+            member_curves = tuple(item.curve for item in wire.curves)
+            dependency_keys = self._wire_dependencies.get(wire.tag)
+            expected_keys = frozenset(
+                self._entity_boundary_closure_keys(
+                    member_curves,
+                    synchronize=False,
+                )
+            )
+            if dependency_keys != expected_keys:
+                raise StaleEntityError(
+                    f"geometry model {self.name!r}: {operation} received stale "
+                    f"wire {wire.tag}"
+                )
+            self._normalize_entities(
+                member_curves,
+                operation=f"{operation} wire {wire.tag}",
             )
         return normalized
 
@@ -3365,10 +4170,608 @@ class GeometryModel:
         )
         return FeatureResult(operation, inputs, outputs, primary, ends, sides)
 
+    def _entity_rigid_shape_signature(
+        self,
+        entity: EntityRef,
+        operation: str,
+    ) -> _RigidShapeSignature:
+        measure = self._entity_geometry_signature(entity, operation)[2]
+        boundary_measures: list[float] = []
+        for dimension, tag in self._immediate_boundary_keys(entity, operation):
+            if dimension == 0:
+                boundary_measures.append(0.0)
+                continue
+            try:
+                boundary_measures.append(
+                    _nonnegative_float(
+                        self._gmsh.model.occ.getMass(dimension, tag),
+                        "boundary measure",
+                    )
+                )
+            except GeometryError:
+                raise
+            except Exception as exc:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} could not read "
+                    f"boundary measure for entity ({dimension}, {tag})"
+                ) from exc
+        return measure, tuple(sorted(boundary_measures))
+
+    def _entity_key_lies_on_axis(
+        self,
+        key: tuple[int, int],
+        *,
+        axis_point: _Point3D,
+        axis: _Point3D,
+        operation: str,
+    ) -> bool:
+        try:
+            bounds = tuple(
+                _finite_float(value, "bounding box coordinate")
+                for value in self._gmsh.model.occ.getBoundingBox(*key)
+            )
+        except GeometryError:
+            raise
+        except Exception as exc:
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} could not inspect "
+                f"axis coincidence for entity {key}"
+            ) from exc
+        if len(bounds) != 6:
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} received an invalid "
+                f"bounding box for entity {key}"
+            )
+        extent = max(
+            bounds[index + 3] - bounds[index] for index in range(3)
+        )
+        tolerance = (
+            2.0 * _OCC_BOUNDING_BOX_PADDING
+            + _PLANAR_TOLERANCE * max(1.0, extent)
+        )
+        return all(
+            _point_axis_distance(corner, axis_point, axis) <= tolerance
+            for corner in (
+                (x_value, y_value, z_value)
+                for x_value in (bounds[0], bounds[3])
+                for y_value in (bounds[1], bounds[4])
+                for z_value in (bounds[2], bounds[5])
+            )
+        )
+
+    def _classify_revolution_result(
+        self,
+        *,
+        inputs: tuple[EntityRef, ...],
+        outputs: tuple[EntityRef, ...],
+        axis_point: _Point3D,
+        axis: _Point3D,
+        angle: float,
+        source_signatures: tuple[_GeometrySignature, ...],
+        source_boundaries: tuple[frozenset[tuple[int, int]], ...],
+    ) -> FeatureResult:
+        operation = "revolve"
+        input_dimension = inputs[0].dimension
+        primary_dimension = input_dimension + 1
+        unique_outputs = _unique_first_seen(outputs)
+        input_keys = {(entity.dimension, entity.tag) for entity in inputs}
+        echoed_inputs = tuple(
+            entity
+            for entity in unique_outputs
+            if (entity.dimension, entity.tag) in input_keys
+        )
+        full_turn = math.isclose(
+            abs(angle),
+            2.0 * math.pi,
+            rel_tol=0.0,
+            abs_tol=1.0e-12,
+        )
+        if full_turn:
+            if {
+                (entity.dimension, entity.tag) for entity in echoed_inputs
+            } != input_keys:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: full revolve did not "
+                    "report each preserved source seam exactly once"
+                )
+        elif echoed_inputs:
+            raise GeometryError(
+                f"geometry model {self.name!r}: partial revolve reported a "
+                "source entity as generated topology"
+            )
+
+        generated_outputs = tuple(
+            entity
+            for entity in unique_outputs
+            if (entity.dimension, entity.tag) not in input_keys
+        )
+        primary = tuple(
+            entity
+            for entity in generated_outputs
+            if entity.dimension == primary_dimension
+        )
+        same_dimension = tuple(
+            entity
+            for entity in generated_outputs
+            if entity.dimension == input_dimension
+        )
+        if not primary:
+            raise GeometryError(
+                f"geometry model {self.name!r}: revolve could not classify a "
+                "primary generated entity"
+            )
+
+        self._gmsh.model.occ.synchronize()
+        existing_pairs = {
+            _normalize_dim_tag(pair) for pair in self._gmsh.model.occ.getEntities()
+        }
+        if any(
+            (entity.dimension, entity.tag) not in existing_pairs
+            for entity in unique_outputs
+        ):
+            raise GeometryError(
+                f"geometry model {self.name!r}: revolve returned a missing entity"
+            )
+        primary_boundaries = {
+            (entity.dimension, entity.tag): self._immediate_boundary_keys(
+                entity,
+                operation,
+            )
+            for entity in primary
+        }
+        primary_boundary_union = frozenset().union(*primary_boundaries.values())
+        same_keys = {(entity.dimension, entity.tag) for entity in same_dimension}
+        if primary_boundary_union - input_keys != same_keys:
+            raise GeometryError(
+                f"geometry model {self.name!r}: revolve could not classify "
+                "same-dimensional output topology completely"
+            )
+
+        if full_turn:
+            if primary_boundary_union & input_keys:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: full revolve exposed a "
+                    "coincident source seam as a terminal boundary"
+                )
+            if len(primary) != len(inputs):
+                raise GeometryError(
+                    f"geometry model {self.name!r}: full revolve primary "
+                    "classification is incomplete or ambiguous"
+                )
+            sides = tuple(
+                entity
+                for entity in unique_outputs
+                if (entity.dimension, entity.tag) in same_keys
+            )
+            return FeatureResult(
+                operation,
+                inputs,
+                outputs,
+                primary,
+                (),
+                sides,
+            )
+
+        candidate_signatures = {
+            (entity.dimension, entity.tag): self._entity_geometry_signature(
+                entity,
+                operation,
+            )
+            for entity in same_dimension
+        }
+        candidate_boundaries = {
+            (entity.dimension, entity.tag): self._immediate_boundary_keys(
+                entity,
+                operation,
+            )
+            for entity in same_dimension
+        }
+        end_keys: set[tuple[int, int]] = set()
+        assigned_primary_keys: list[tuple[int, int]] = []
+        moving_boundaries: list[frozenset[tuple[int, int]]] = []
+        for source, source_signature, source_boundary in zip(
+            inputs,
+            source_signatures,
+            source_boundaries,
+            strict=True,
+        ):
+            source_key = (source.dimension, source.tag)
+            moving_boundary = frozenset(
+                key
+                for key in source_boundary
+                if not self._entity_key_lies_on_axis(
+                    key,
+                    axis_point=axis_point,
+                    axis=axis,
+                    operation=operation,
+                )
+            )
+            moving_boundaries.append(moving_boundary)
+            matches = [
+                key
+                for key, candidate_signature in candidate_signatures.items()
+                if (
+                    not (candidate_boundaries[key] & moving_boundary)
+                    and any(
+                        source_key in boundary_keys and key in boundary_keys
+                        for boundary_keys in primary_boundaries.values()
+                    )
+                    and _matches_rotated_signature(
+                        source_signature,
+                        candidate_signature,
+                        axis_point,
+                        axis,
+                        angle,
+                    )
+                )
+            ]
+            if len(matches) != 1:
+                detail = "ambiguous" if len(matches) > 1 else "incomplete"
+                raise GeometryError(
+                    f"geometry model {self.name!r}: revolve terminal-entity "
+                    f"classification is {detail}"
+                )
+            end_key = matches[0]
+            containing_primaries = [
+                primary_key
+                for primary_key, boundary_keys in primary_boundaries.items()
+                if source_key in boundary_keys and end_key in boundary_keys
+            ]
+            if len(containing_primaries) != 1 or end_key in end_keys:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: revolve source-to-primary "
+                    "classification is incomplete or ambiguous"
+                )
+            end_keys.add(end_key)
+            assigned_primary_keys.append(containing_primaries[0])
+        if (
+            len(set(assigned_primary_keys)) != len(assigned_primary_keys)
+            or set(assigned_primary_keys) != set(primary_boundaries)
+        ):
+            raise GeometryError(
+                f"geometry model {self.name!r}: revolve primary-entity "
+                "classification is incomplete or ambiguous"
+            )
+
+        side_keys = same_keys - end_keys
+        moving_boundary_union = frozenset().union(*moving_boundaries)
+        assigned_source_boundary_keys: list[tuple[int, int]] = []
+        for side in same_dimension:
+            side_key = (side.dimension, side.tag)
+            if side_key not in side_keys:
+                continue
+            source_contacts = (
+                self._immediate_boundary_keys(side, operation)
+                & moving_boundary_union
+            )
+            if len(source_contacts) != 1:
+                detail = "ambiguous" if len(source_contacts) > 1 else "incomplete"
+                raise GeometryError(
+                    f"geometry model {self.name!r}: revolve side topology "
+                    f"classification is {detail}"
+                )
+            assigned_source_boundary_keys.append(next(iter(source_contacts)))
+        if (
+            len(set(assigned_source_boundary_keys))
+            != len(assigned_source_boundary_keys)
+            or set(assigned_source_boundary_keys) != moving_boundary_union
+        ):
+            raise GeometryError(
+                f"geometry model {self.name!r}: revolve side topology "
+                "classification is incomplete or ambiguous"
+            )
+        ends = tuple(
+            entity
+            for entity in unique_outputs
+            if (entity.dimension, entity.tag) in end_keys
+        )
+        sides = tuple(
+            entity
+            for entity in unique_outputs
+            if (entity.dimension, entity.tag) in side_keys
+        )
+        return FeatureResult(operation, inputs, outputs, primary, ends, sides)
+
+    def _classify_sweep_result(
+        self,
+        *,
+        inputs: tuple[EntityRef, ...],
+        primary: tuple[EntityRef, ...],
+        path: WireRef,
+        source_signatures: tuple[_GeometrySignature, ...],
+        source_shapes: tuple[_RigidShapeSignature, ...],
+    ) -> FeatureResult:
+        operation = "sweep"
+        unique_primary = _unique_first_seen(primary)
+        if not unique_primary or (
+            not path.closed and len(unique_primary) != len(inputs)
+        ):
+            raise GeometryError(
+                f"geometry model {self.name!r}: sweep primary-entity "
+                "classification is incomplete or ambiguous"
+            )
+        input_keys = {(entity.dimension, entity.tag) for entity in inputs}
+        if any(
+            (entity.dimension, entity.tag) in input_keys
+            for entity in unique_primary
+        ):
+            raise GeometryError(
+                f"geometry model {self.name!r}: sweep reported a profile as "
+                "generated topology"
+            )
+        self._gmsh.model.occ.synchronize()
+        primary_boundaries: dict[
+            tuple[int, int], tuple[EntityRef, ...]
+        ] = {}
+        all_boundaries: list[EntityRef] = []
+        for entity in unique_primary:
+            raw_boundary = self._gmsh.model.getBoundary(
+                [(entity.dimension, entity.tag)],
+                combined=False,
+                oriented=False,
+                recursive=False,
+            )
+            boundary_pairs = tuple(
+                _normalize_dim_tag(pair) for pair in raw_boundary
+            )
+            if not boundary_pairs or any(
+                dimension != inputs[0].dimension
+                for dimension, _ in boundary_pairs
+            ):
+                raise GeometryError(
+                    f"geometry model {self.name!r}: sweep returned invalid "
+                    "primary boundary topology"
+                )
+            boundary_refs = tuple(
+                self._wrap_entity(pair) for pair in boundary_pairs
+            )
+            primary_boundaries[(entity.dimension, entity.tag)] = (
+                _unique_first_seen(boundary_refs)
+            )
+            all_boundaries.extend(boundary_refs)
+        unique_boundaries = _unique_first_seen(all_boundaries)
+        boundary_keys = {
+            (entity.dimension, entity.tag) for entity in unique_boundaries
+        }
+        outputs = (*unique_primary, *unique_boundaries)
+        if path.closed:
+            return FeatureResult(
+                operation,
+                inputs,
+                outputs,
+                unique_primary,
+                (),
+                unique_boundaries,
+            )
+
+        end_keys: set[tuple[int, int]] = set()
+        assigned_primary: set[tuple[int, int]] = set()
+        for source, source_signature, source_shape in zip(
+            inputs,
+            source_signatures,
+            source_shapes,
+            strict=True,
+        ):
+            start_matches: list[
+                tuple[tuple[int, int], tuple[int, int]]
+            ] = []
+            for primary_key, candidates in primary_boundaries.items():
+                for candidate in candidates:
+                    candidate_key = (candidate.dimension, candidate.tag)
+                    candidate_signature = self._entity_geometry_signature(
+                        candidate,
+                        operation,
+                    )
+                    if _matches_translated_signature(
+                        source_signature,
+                        candidate_signature,
+                        (0.0, 0.0, 0.0),
+                    ):
+                        start_matches.append((primary_key, candidate_key))
+            if len(start_matches) != 1:
+                detail = "ambiguous" if len(start_matches) > 1 else "incomplete"
+                raise GeometryError(
+                    f"geometry model {self.name!r}: sweep start-profile "
+                    f"classification is {detail}"
+                )
+            primary_key, start_key = start_matches[0]
+            if primary_key in assigned_primary or start_key in end_keys:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: sweep profile-to-primary "
+                    "classification is ambiguous"
+                )
+            terminal_matches = [
+                candidate
+                for candidate in primary_boundaries[primary_key]
+                if (
+                    (candidate.dimension, candidate.tag) != start_key
+                    and _matches_rigid_shape_signature(
+                        source_shape,
+                        self._entity_rigid_shape_signature(candidate, operation),
+                    )
+                )
+            ]
+            if len(terminal_matches) != 1:
+                detail = "ambiguous" if len(terminal_matches) > 1 else "incomplete"
+                raise GeometryError(
+                    f"geometry model {self.name!r}: sweep terminal-profile "
+                    f"classification is {detail}"
+                )
+            terminal_key = (
+                terminal_matches[0].dimension,
+                terminal_matches[0].tag,
+            )
+            if terminal_key in end_keys:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: sweep terminal-profile "
+                    "classification is ambiguous"
+                )
+            assigned_primary.add(primary_key)
+            end_keys.update((start_key, terminal_key))
+        if assigned_primary != set(primary_boundaries):
+            raise GeometryError(
+                f"geometry model {self.name!r}: sweep primary-entity "
+                "classification is incomplete"
+            )
+        side_keys = boundary_keys - end_keys
+        ends = tuple(
+            entity
+            for entity in unique_boundaries
+            if (entity.dimension, entity.tag) in end_keys
+        )
+        sides = tuple(
+            entity
+            for entity in unique_boundaries
+            if (entity.dimension, entity.tag) in side_keys
+        )
+        return FeatureResult(
+            operation,
+            inputs,
+            outputs,
+            unique_primary,
+            ends,
+            sides,
+        )
+
+    def _apply_volume_edge_treatment(
+        self,
+        *,
+        operation: Literal["fillet", "chamfer"],
+        volumes: tuple[EntityRef, ...],
+        curves: tuple[EntityRef, ...],
+        surfaces: tuple[EntityRef, ...],
+        values: tuple[float, ...],
+        closures: tuple[set[tuple[int, int]], ...],
+        remove_volumes: bool,
+    ) -> FeatureResult:
+        invalidated_keys = set().union(*closures)
+        if remove_volumes:
+            self._check_control_dependency_scope_known(operation)
+            self._check_controlled_removal_allowed(operation, invalidated_keys)
+        existing_before = {
+            _normalize_dim_tag(pair) for pair in self._gmsh.model.occ.getEntities()
+        }
+        native_started = False
+        try:
+            native_started = True
+            if operation == "fillet":
+                raw_outputs = self._gmsh.model.occ.fillet(
+                    [volume.tag for volume in volumes],
+                    [curve.tag for curve in curves],
+                    list(values),
+                    remove_volumes,
+                )
+            else:
+                raw_outputs = self._gmsh.model.occ.chamfer(
+                    [volume.tag for volume in volumes],
+                    [curve.tag for curve in curves],
+                    [surface.tag for surface in surfaces],
+                    list(values),
+                    remove_volumes,
+                )
+            try:
+                output_pairs = tuple(
+                    _normalize_dim_tag(pair) for pair in raw_outputs
+                )
+            except Exception as exc:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} returned "
+                    "invalid entity data"
+                ) from exc
+            if not output_pairs:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} returned no entities"
+                )
+            primary_pairs = tuple(
+                pair for pair in dict.fromkeys(output_pairs) if pair[0] == 3
+            )
+            if not primary_pairs:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} returned no "
+                    "dimension-three primary entity"
+                )
+            self._gmsh.model.occ.synchronize()
+            existing_after = {
+                _normalize_dim_tag(pair)
+                for pair in self._gmsh.model.occ.getEntities()
+            }
+            if any(pair not in existing_after for pair in output_pairs):
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} returned a "
+                    "missing entity"
+                )
+            if remove_volumes:
+                input_keys = {
+                    (volume.dimension, volume.tag) for volume in volumes
+                }
+                unreported_survivors = (
+                    input_keys & existing_after
+                ) - set(output_pairs)
+                if unreported_survivors:
+                    raise GeometryError(
+                        f"geometry model {self.name!r}: {operation} left an "
+                        "input volume alive without reporting it"
+                    )
+                aliased_outputs = {
+                    pair
+                    for pair in output_pairs
+                    if pair in existing_before and pair not in invalidated_keys
+                }
+                if aliased_outputs:
+                    raise GeometryError(
+                        f"geometry model {self.name!r}: {operation} returned an "
+                        "unrelated existing entity as new topology"
+                    )
+                self._invalidate_entity_keys(invalidated_keys)
+            else:
+                missing_preserved = invalidated_keys - existing_after
+                if missing_preserved:
+                    raise GeometryError(
+                        f"geometry model {self.name!r}: {operation} removed "
+                        "topology while remove_volumes was false"
+                    )
+                if any(pair in existing_before for pair in output_pairs):
+                    raise GeometryError(
+                        f"geometry model {self.name!r}: {operation} did not "
+                        "return fresh preserving-mode topology"
+                    )
+            outputs = tuple(self._wrap_entity(pair) for pair in output_pairs)
+            primary = tuple(
+                entity
+                for entity in _unique_first_seen(outputs)
+                if entity.dimension == 3
+            )
+            primary_closure = self._entity_boundary_closure_keys(
+                primary,
+                synchronize=False,
+            )
+            unrelated_lower_outputs = {
+                (entity.dimension, entity.tag)
+                for entity in outputs
+                if entity.dimension < 3
+                and (entity.dimension, entity.tag) not in primary_closure
+            }
+            if unrelated_lower_outputs:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} returned lower-"
+                    "dimensional topology outside its primary volume closure"
+                )
+            return FeatureResult(operation, volumes, outputs, primary)
+        except BaseException as error:
+            if native_started:
+                self._fail_closed_after_unknown_occ_mutation()
+            if isinstance(error, GeometryError) or not isinstance(error, Exception):
+                raise
+            raise GeometryError(
+                f"geometry model {self.name!r}: native OCC {operation} failed"
+            ) from error
+
     def _fail_closed_after_unknown_occ_mutation(self) -> None:
         self._entity_tokens.clear()
         self._curve_loop_tokens.clear()
         self._curve_loop_dependencies.clear()
+        self._wire_tokens.clear()
+        self._wire_dependencies.clear()
         self._control_dependency_scope_unknown = True
         self._auto_mesh_scope_unknown = True
 
@@ -3487,6 +4890,8 @@ class GeometryModel:
                 self._entity_tokens.clear()
                 self._curve_loop_tokens.clear()
                 self._curve_loop_dependencies.clear()
+                self._wire_tokens.clear()
+                self._wire_dependencies.clear()
                 raise GeometryError(
                     f"geometry model {self.name!r}: {operation} removed an input "
                     "whose remove flag was false"
@@ -3495,6 +4900,8 @@ class GeometryModel:
             self._entity_tokens.clear()
             self._curve_loop_tokens.clear()
             self._curve_loop_dependencies.clear()
+            self._wire_tokens.clear()
+            self._wire_dependencies.clear()
             if isinstance(error, GeometryError) or not isinstance(error, Exception):
                 raise
             raise GeometryError(
@@ -3829,9 +5236,9 @@ class GeometryModel:
         materialized = set(keys)
         for key in materialized:
             self._entity_tokens.pop(key, None)
-        self._invalidate_curve_loops_for_keys(materialized)
+        self._invalidate_curve_topology_for_keys(materialized)
 
-    def _invalidate_curve_loops_for_keys(
+    def _invalidate_curve_topology_for_keys(
         self,
         keys: Iterable[tuple[int, int]],
     ) -> None:
@@ -3844,6 +5251,14 @@ class GeometryModel:
         for tag in invalid_loops:
             self._curve_loop_tokens.pop(tag, None)
             self._curve_loop_dependencies.pop(tag, None)
+        invalid_wires = [
+            tag
+            for tag, dependencies in self._wire_dependencies.items()
+            if dependencies & materialized
+        ]
+        for tag in invalid_wires:
+            self._wire_tokens.pop(tag, None)
+            self._wire_dependencies.pop(tag, None)
 
     def _validate_2d_z(self, z_value: float, operation: str) -> None:
         if self.dimension == 2 and abs(z_value) > _PLANAR_TOLERANCE:
@@ -4001,6 +5416,8 @@ class GeometryModel:
         self._entity_tokens.clear()
         self._curve_loop_tokens.clear()
         self._curve_loop_dependencies.clear()
+        self._wire_tokens.clear()
+        self._wire_dependencies.clear()
         self._mesh_field_tokens.clear()
         self._mesh_field_types.clear()
         self._mesh_size_mode = "none"
@@ -4277,6 +5694,130 @@ def _matches_translated_coordinate(
         + floating_resolution
     )
     return abs((candidate - source) - translation) <= tolerance
+
+
+def _point_axis_distance(
+    point: _Point3D,
+    axis_point: _Point3D,
+    axis: _Point3D,
+) -> float:
+    relative = tuple(
+        value - origin for value, origin in zip(point, axis_point, strict=True)
+    )
+    axis_norm = _vector_norm(axis)
+    if axis_norm == 0.0:
+        raise ValueError("axis must be nonzero")
+    return _vector_norm(_vector_cross(relative, axis)) / axis_norm
+
+
+def _rotate_point_about_axis(
+    point: _Point3D,
+    axis_point: _Point3D,
+    axis: _Point3D,
+    angle: float,
+) -> _Point3D:
+    axis_norm = _vector_norm(axis)
+    if axis_norm == 0.0:
+        raise ValueError("axis must be nonzero")
+    unit_axis = tuple(component / axis_norm for component in axis)
+    relative = tuple(
+        value - origin for value, origin in zip(point, axis_point, strict=True)
+    )
+    cosine = math.cos(angle)
+    sine = math.sin(angle)
+    cross = _vector_cross(unit_axis, relative)
+    projection = _vector_dot(unit_axis, relative)
+    rotated_relative = tuple(
+        relative[index] * cosine
+        + cross[index] * sine
+        + unit_axis[index] * projection * (1.0 - cosine)
+        for index in range(3)
+    )
+    return tuple(
+        axis_point[index] + rotated_relative[index] for index in range(3)
+    )  # type: ignore[return-value]
+
+
+def _matches_rotated_signature(
+    source: _GeometrySignature,
+    candidate: _GeometrySignature,
+    axis_point: _Point3D,
+    axis: _Point3D,
+    angle: float,
+) -> bool:
+    source_bounds, source_center, source_measure = source
+    candidate_bounds, candidate_center, candidate_measure = candidate
+    expected_center = _rotate_point_about_axis(
+        source_center,
+        axis_point,
+        axis,
+        angle,
+    )
+    source_extent = max(
+        source_bounds[index + 3] - source_bounds[index] for index in range(3)
+    )
+    candidate_extent = max(
+        candidate_bounds[index + 3] - candidate_bounds[index]
+        for index in range(3)
+    )
+    floating_resolution = 4.0 * max(
+        *(math.ulp(value) for value in (*source_center, *candidate_center)),
+        math.ulp(angle),
+    )
+    tolerance = (
+        _OCC_BOUNDING_BOX_PADDING
+        + _PLANAR_TOLERANCE * max(1.0, source_extent, candidate_extent)
+        + floating_resolution
+    )
+    if _coordinate_distance(expected_center, candidate_center) > tolerance:
+        return False
+    return abs(candidate_measure - source_measure) <= _PLANAR_TOLERANCE * max(
+        1.0,
+        abs(candidate_measure),
+        abs(source_measure),
+    )
+
+
+def _matches_rigid_shape_signature(
+    source: _RigidShapeSignature,
+    candidate: _RigidShapeSignature,
+) -> bool:
+    source_measure, source_boundaries = source
+    candidate_measure, candidate_boundaries = candidate
+    if len(source_boundaries) != len(candidate_boundaries):
+        return False
+    values = ((source_measure, candidate_measure), *zip(
+        source_boundaries,
+        candidate_boundaries,
+        strict=True,
+    ))
+    return all(
+        abs(right - left)
+        <= _PLANAR_TOLERANCE * max(1.0, abs(left), abs(right))
+        for left, right in values
+    )
+
+
+def _positive_feature_vector(
+    values: Sequence[float],
+    *,
+    count: int,
+    label: str,
+) -> tuple[float, ...]:
+    try:
+        materialized = tuple(values)
+    except TypeError as exc:
+        raise TypeError(f"{label} must be a sequence of finite values") from exc
+    allowed_lengths = {1, count, 2 * count}
+    if len(materialized) not in allowed_lengths:
+        raise ValueError(
+            f"{label} must contain one value, one value per target, or two "
+            f"values per target; got {len(materialized)}"
+        )
+    return tuple(
+        _positive_float(value, f"{label}[{index}]")
+        for index, value in enumerate(materialized)
+    )
 
 
 def _coordinate_distance(
@@ -4639,7 +6180,12 @@ __all__ = [
     "GeometryError",
     "GeometryModel",
     "GeometryStateError",
+    "LoftContinuity",
+    "LoftParametrization",
+    "LoftResult",
     "OrientedCurveRef",
     "StaleEntityError",
+    "SweepFrame",
+    "WireRef",
     "model",
 ]

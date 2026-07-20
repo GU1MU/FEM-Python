@@ -82,6 +82,11 @@ class _FakeOcc:
         self.copy_results: dict[int, list[tuple[int, int]]] = {}
         self.copy_register_outputs = True
         self.boolean_register_map_outputs = True
+        self.edge_treatment_results: dict[str, list[tuple[int, int]]] = {}
+        self.edge_treatment_register_outputs = True
+        self.edge_treatment_attach_lower_outputs = True
+        self.edge_treatment_preserve_destructive: set[str] = set()
+        self.edge_treatment_remove_preserved: set[str] = set()
         self.nonplanar_after: set[str] = set()
         self.extrude_result: list[tuple[int, int]] | None = None
         self.extrude_extra_primary_boundaries: dict[
@@ -637,6 +642,107 @@ class _FakeOcc:
                     ):
                         self._register_pair(pair)
         return list(outputs), [list(group) for group in input_map]
+
+    def fillet(
+        self,
+        volumeTags: list[int],
+        curveTags: list[int],
+        radii: list[float],
+        removeVolume: bool = True,
+    ) -> list[tuple[int, int]]:
+        return self._edge_treatment(
+            "fillet",
+            volumeTags,
+            curveTags,
+            (),
+            radii,
+            removeVolume,
+        )
+
+    def chamfer(
+        self,
+        volumeTags: list[int],
+        curveTags: list[int],
+        surfaceTags: list[int],
+        distances: list[float],
+        removeVolume: bool = True,
+    ) -> list[tuple[int, int]]:
+        return self._edge_treatment(
+            "chamfer",
+            volumeTags,
+            curveTags,
+            surfaceTags,
+            distances,
+            removeVolume,
+        )
+
+    def _edge_treatment(
+        self,
+        name: str,
+        volume_tags: Sequence[int],
+        curve_tags: Sequence[int],
+        surface_tags: Sequence[int],
+        values: Sequence[float],
+        remove_volume: bool,
+    ) -> list[tuple[int, int]]:
+        volumes = tuple(int(tag) for tag in volume_tags)
+        curves = tuple(int(tag) for tag in curve_tags)
+        surfaces = tuple(int(tag) for tag in surface_tags)
+        normalized_values = tuple(float(value) for value in values)
+        if name == "fillet":
+            self.calls.append(
+                (name, volumes, curves, normalized_values, remove_volume)
+            )
+        else:
+            self.calls.append(
+                (
+                    name,
+                    volumes,
+                    curves,
+                    surfaces,
+                    normalized_values,
+                    remove_volume,
+                )
+            )
+        if name in self.fail_next:
+            self.fail_next.remove(name)
+            raise RuntimeError(f"fake {name} failure")
+
+        source_pairs = tuple((3, tag) for tag in volumes)
+        configured = self.edge_treatment_results.get(name)
+        if configured is None:
+            if remove_volume:
+                outputs = list(source_pairs)
+            else:
+                outputs = [(3, self._allocate(3)) for _ in source_pairs]
+        else:
+            outputs = list(configured)
+
+        data = self._model._current_data()
+        if (
+            remove_volume and name not in self.edge_treatment_preserve_destructive
+        ) or name in self.edge_treatment_remove_preserved:
+            data["entities"].difference_update(source_pairs)
+        if self.edge_treatment_register_outputs:
+            for output in outputs:
+                if self._is_valid_native_pair(output):
+                    self._register_pair(output)
+
+        memo: dict[tuple[int, int], tuple[int, int]] = {}
+        for source, output in zip(source_pairs, outputs):
+            if source[0] == output[0] and source != output:
+                self._clone_entity_geometry(source, output, memo)
+        primary_outputs = [pair for pair in outputs if pair[0] == 3]
+        lower_outputs = [pair for pair in outputs if pair[0] < 3]
+        if (
+            self.edge_treatment_attach_lower_outputs
+            and primary_outputs
+            and lower_outputs
+        ):
+            primary = primary_outputs[0]
+            data["boundaries"].setdefault(primary, []).extend(lower_outputs)
+            data["boundary_priority"].add(primary)
+        return outputs
 
     def translate(
         self,
@@ -1368,6 +1474,28 @@ class _FakeModel:
             return list(per_entity[pair])
         return []
 
+    def getAdjacencies(
+        self,
+        dimension: int,
+        tag: int,
+    ) -> tuple[list[int], list[int]]:
+        self.calls.append(("getAdjacencies", dimension, tag, self.current))
+        pair = (dimension, tag)
+        data = self._current_data()
+        upward = sorted(
+            source_tag
+            for (source_dimension, source_tag), boundaries in data[
+                "boundaries"
+            ].items()
+            if source_dimension == dimension + 1 and pair in boundaries
+        )
+        downward = sorted(
+            boundary_tag
+            for boundary_dimension, boundary_tag in self._boundary_for_pair(pair)
+            if boundary_dimension == dimension - 1
+        )
+        return upward, downward
+
     def getBoundingBox(
         self,
         dimension: int,
@@ -1453,6 +1581,76 @@ def _fake_entities(
         (dimension, tag) for tag in tags
     )
     return tuple(cad.entity(dimension, tag) for tag in tags)
+
+
+def _fake_edge_treatment_topology(
+    cad: geometry.GeometryModel,
+    backend: _FakeGmsh,
+) -> dict[str, geometry.EntityRef]:
+    volume, unrelated_volume, outside_volume = _fake_entities(
+        cad,
+        backend,
+        3,
+        70,
+        71,
+        72,
+    )
+    surface, nonadjacent_surface, unrelated_surface, outside_surface = (
+        _fake_entities(cad, backend, 2, 80, 81, 82, 83)
+    )
+    curve, other_curve, unrelated_curve = _fake_entities(
+        cad,
+        backend,
+        1,
+        90,
+        91,
+        92,
+    )
+    start, end, other_start, other_end, unrelated_start, unrelated_end = (
+        _fake_entities(cad, backend, 0, 100, 101, 102, 103, 104, 105)
+    )
+
+    data = backend.model._current_data()
+    boundaries = {
+        (3, volume.tag): [
+            (2, surface.tag),
+            (2, nonadjacent_surface.tag),
+        ],
+        (2, surface.tag): [(1, curve.tag)],
+        (2, nonadjacent_surface.tag): [(1, other_curve.tag)],
+        (1, curve.tag): [(0, start.tag), (0, end.tag)],
+        (1, other_curve.tag): [
+            (0, other_start.tag),
+            (0, other_end.tag),
+        ],
+        (3, unrelated_volume.tag): [(2, unrelated_surface.tag)],
+        (2, unrelated_surface.tag): [(1, unrelated_curve.tag)],
+        (1, unrelated_curve.tag): [
+            (0, unrelated_start.tag),
+            (0, unrelated_end.tag),
+        ],
+        (3, outside_volume.tag): [(2, outside_surface.tag)],
+        (2, outside_surface.tag): [(1, curve.tag)],
+    }
+    data["boundaries"].update(boundaries)
+    data["boundary_priority"].update(boundaries)
+    return {
+        "volume": volume,
+        "surface": surface,
+        "nonadjacent_surface": nonadjacent_surface,
+        "curve": curve,
+        "other_curve": other_curve,
+        "start": start,
+        "end": end,
+        "other_start": other_start,
+        "other_end": other_end,
+        "unrelated_volume": unrelated_volume,
+        "unrelated_surface": unrelated_surface,
+        "unrelated_curve": unrelated_curve,
+        "unrelated_start": unrelated_start,
+        "outside_volume": outside_volume,
+        "outside_surface": outside_surface,
+    }
 
 
 def _fake_threshold(
@@ -1614,6 +1812,30 @@ def _apply_foundational_operation(
         "fragment": lambda: cad.fragment([entity], [tool]),
     }
     return operations[operation]()
+
+
+def _apply_edge_treatment(
+    cad: geometry.GeometryModel,
+    operation: str,
+    topology: dict[str, geometry.EntityRef],
+    values: Sequence[float],
+    *,
+    remove_volumes: bool = True,
+) -> geometry.FeatureResult:
+    if operation == "fillet":
+        return cad.fillet(
+            [topology["volume"]],
+            [topology["curve"]],
+            values,
+            remove_volumes=remove_volumes,
+        )
+    return cad.chamfer(
+        [topology["volume"]],
+        [topology["curve"]],
+        [topology["surface"]],
+        values,
+        remove_volumes=remove_volumes,
+    )
 
 
 def _occ_operation_call_count(backend: _FakeGmsh, operation: str) -> int:
@@ -2998,6 +3220,657 @@ def test_fragment_accepts_fully_mixed_dimensions_and_exports_map_only_outputs(
             True,
             True,
         )
+
+
+@pytest.mark.parametrize(
+    ("operation", "values"),
+    [
+        ("fillet", [0.125, np.float64(0.25)]),
+        ("chamfer", [0.2, np.float64(0.3)]),
+    ],
+)
+def test_edge_treatments_forward_native_arguments_and_return_modifying_result(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    values: Sequence[float],
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model(f"{operation}-forward", dimension=3) as cad:
+        topology = _fake_edge_treatment_topology(cad, backend)
+
+        result = _apply_edge_treatment(
+            cad,
+            operation,
+            topology,
+            values,
+            remove_volumes=False,
+        )
+
+        assert result.operation == operation
+        assert result.inputs == (topology["volume"],)
+        assert result.outputs == result.primary
+        assert len(result.primary) == 1
+        assert result.primary[0].dimension == 3
+        assert result.primary[0].tag != topology["volume"].tag
+        assert result.ends == ()
+        assert result.sides == ()
+        expected_values = tuple(float(value) for value in values)
+        if operation == "fillet":
+            expected_call = (
+                "fillet",
+                (topology["volume"].tag,),
+                (topology["curve"].tag,),
+                expected_values,
+                False,
+            )
+        else:
+            expected_call = (
+                "chamfer",
+                (topology["volume"].tag,),
+                (topology["curve"].tag,),
+                (topology["surface"].tag,),
+                expected_values,
+                False,
+            )
+        assert expected_call in backend.model.occ.calls
+
+
+@pytest.mark.parametrize("operation", ["fillet", "chamfer"])
+@pytest.mark.parametrize("value_count", [2, 4])
+def test_edge_treatments_accept_per_edge_and_endpoint_value_vectors(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    value_count: int,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model(
+        f"{operation}-value-cardinality-{value_count}",
+        dimension=3,
+    ) as cad:
+        topology = _fake_edge_treatment_topology(cad, backend)
+        values = [0.05 * (index + 1) for index in range(value_count)]
+        if operation == "fillet":
+            result = cad.fillet(
+                [topology["volume"]],
+                [topology["curve"], topology["other_curve"]],
+                values,
+                remove_volumes=False,
+            )
+        else:
+            result = cad.chamfer(
+                [topology["volume"]],
+                [topology["curve"], topology["other_curve"]],
+                [topology["surface"], topology["nonadjacent_surface"]],
+                values,
+                remove_volumes=False,
+            )
+
+        assert result.primary[0].dimension == 3
+        assert _occ_operation_call_count(backend, operation) == 1
+
+
+@pytest.mark.parametrize(
+    "invalid_operation",
+    [
+        pytest.param(
+            lambda cad, topology: cad.fillet(
+                [], [topology["curve"]], [0.1]
+            ),
+            id="empty-volumes",
+        ),
+        pytest.param(
+            lambda cad, topology: cad.fillet(
+                [topology["surface"]], [topology["curve"]], [0.1]
+            ),
+            id="fillet-volume-dimension",
+        ),
+        pytest.param(
+            lambda cad, topology: cad.fillet(
+                [topology["volume"]], [topology["surface"]], [0.1]
+            ),
+            id="fillet-curve-dimension",
+        ),
+        pytest.param(
+            lambda cad, topology: cad.fillet(
+                [topology["volume"]],
+                [topology["curve"], topology["curve"]],
+                [0.1],
+            ),
+            id="duplicate-curves",
+        ),
+        pytest.param(
+            lambda cad, topology: cad.fillet(
+                [topology["volume"]], [topology["curve"]], []
+            ),
+            id="empty-radii",
+        ),
+        pytest.param(
+            lambda cad, topology: cad.fillet(
+                [topology["volume"]], [topology["curve"]], [0.1, 0.2, 0.3]
+            ),
+            id="invalid-radii-cardinality",
+        ),
+        pytest.param(
+            lambda cad, topology: cad.fillet(
+                [topology["volume"]], [topology["curve"]], [0.0]
+            ),
+            id="zero-radius",
+        ),
+        pytest.param(
+            lambda cad, topology: cad.fillet(
+                [topology["volume"]], [topology["curve"]], [math.nan]
+            ),
+            id="nonfinite-radius",
+        ),
+        pytest.param(
+            lambda cad, topology: cad.fillet(
+                [topology["volume"]],
+                [topology["curve"]],
+                [0.1],
+                remove_volumes=1,
+            ),
+            id="fillet-nonboolean-remove",
+        ),
+        pytest.param(
+            lambda cad, topology: cad.chamfer(
+                [topology["volume"]],
+                [topology["curve"]],
+                [topology["curve"]],
+                [0.1],
+            ),
+            id="chamfer-surface-dimension",
+        ),
+        pytest.param(
+            lambda cad, topology: cad.chamfer(
+                [topology["volume"]],
+                [topology["curve"], topology["other_curve"]],
+                [topology["surface"]],
+                [0.1],
+            ),
+            id="curve-surface-count-mismatch",
+        ),
+        pytest.param(
+            lambda cad, topology: cad.chamfer(
+                [topology["volume"]],
+                [topology["curve"]],
+                [topology["surface"]],
+                [0.1, 0.2, 0.3],
+            ),
+            id="invalid-distance-cardinality",
+        ),
+        pytest.param(
+            lambda cad, topology: cad.chamfer(
+                [topology["volume"]],
+                [topology["curve"], topology["other_curve"]],
+                [topology["surface"], topology["surface"]],
+                [0.1],
+            ),
+            id="duplicate-surfaces",
+        ),
+        pytest.param(
+            lambda cad, topology: cad.chamfer(
+                [topology["volume"]],
+                [topology["curve"]],
+                [topology["surface"]],
+                [-0.1],
+            ),
+            id="negative-distance",
+        ),
+        pytest.param(
+            lambda cad, topology: cad.chamfer(
+                [topology["volume"]],
+                [topology["curve"]],
+                [topology["surface"]],
+                [0.1],
+                remove_volumes=1,
+            ),
+            id="chamfer-nonboolean-remove",
+        ),
+    ],
+)
+def test_edge_treatment_preflight_rejects_before_native_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_operation: Any,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("edge-treatment-preflight", dimension=3) as cad:
+        topology = _fake_edge_treatment_topology(cad, backend)
+        fillet_calls = _occ_operation_call_count(backend, "fillet")
+        chamfer_calls = _occ_operation_call_count(backend, "chamfer")
+
+        with pytest.raises((TypeError, ValueError)):
+            invalid_operation(cad, topology)
+
+        assert _occ_operation_call_count(backend, "fillet") == fillet_calls
+        assert _occ_operation_call_count(backend, "chamfer") == chamfer_calls
+
+
+@pytest.mark.parametrize("operation", ["fillet", "chamfer"])
+def test_edge_treatments_reject_non_3d_facade_before_native_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model(f"{operation}-2d", dimension=2) as cad:
+        surface = cad.rectangle(0.0, 0.0, 1.0, 1.0)
+        curve = cad.boundary([surface])[0]
+        calls = _occ_operation_call_count(backend, operation)
+
+        with pytest.raises(ValueError, match="three-dimensional|3D"):
+            if operation == "fillet":
+                cad.fillet([surface], [curve], [0.1])
+            else:
+                cad.chamfer([surface], [curve], [surface], [0.1])
+
+        assert _occ_operation_call_count(backend, operation) == calls
+
+
+@pytest.mark.parametrize(
+    ("operation", "curve_name", "surface_name"),
+    [
+        ("fillet", "unrelated_curve", None),
+        ("chamfer", "curve", "nonadjacent_surface"),
+        ("chamfer", "curve", "outside_surface"),
+    ],
+)
+def test_edge_treatments_validate_curve_and_surface_volume_adjacency_pre_native(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    curve_name: str,
+    surface_name: str | None,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model(f"{operation}-adjacency", dimension=3) as cad:
+        topology = _fake_edge_treatment_topology(cad, backend)
+        calls = _occ_operation_call_count(backend, operation)
+
+        with pytest.raises(ValueError, match="adjacen|belong|boundary"):
+            if operation == "fillet":
+                cad.fillet(
+                    [topology["volume"]],
+                    [topology[curve_name]],
+                    [0.1],
+                )
+            else:
+                assert surface_name is not None
+                cad.chamfer(
+                    [topology["volume"]],
+                    [topology[curve_name]],
+                    [topology[surface_name]],
+                    [0.1],
+                )
+
+        assert _occ_operation_call_count(backend, operation) == calls
+
+
+@pytest.mark.parametrize("operation", ["fillet", "chamfer"])
+def test_edge_treatments_reject_foreign_and_raw_stale_references_pre_native(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model(f"{operation}-ownership", dimension=3) as cad:
+        topology = _fake_edge_treatment_topology(cad, backend)
+        foreign_volume = geometry.EntityRef(
+            3,
+            topology["volume"].tag,
+            object(),
+            object(),
+        )
+        calls = _occ_operation_call_count(backend, operation)
+
+        with pytest.raises(geometry.EntityOwnershipError):
+            if operation == "fillet":
+                cad.fillet([foreign_volume], [topology["curve"]], [0.1])
+            else:
+                cad.chamfer(
+                    [foreign_volume],
+                    [topology["curve"]],
+                    [topology["surface"]],
+                    [0.1],
+                )
+        assert _occ_operation_call_count(backend, operation) == calls
+
+        assert cad.raw_occ is backend.model.occ
+        with pytest.raises(geometry.StaleEntityError):
+            _apply_edge_treatment(cad, operation, topology, [0.1])
+        assert _occ_operation_call_count(backend, operation) == calls
+
+
+@pytest.mark.parametrize("operation", ["fillet", "chamfer"])
+def test_destructive_edge_treatment_reuses_tag_with_fresh_identity_and_stales_closure(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model(f"{operation}-destructive", dimension=3) as cad:
+        topology = _fake_edge_treatment_topology(cad, backend)
+        old_closure = tuple(
+            topology[name]
+            for name in (
+                "volume",
+                "surface",
+                "nonadjacent_surface",
+                "curve",
+                "other_curve",
+                "start",
+                "end",
+                "other_start",
+                "other_end",
+            )
+        )
+        unrelated = tuple(
+            topology[name]
+            for name in (
+                "unrelated_volume",
+                "unrelated_surface",
+                "unrelated_curve",
+                "unrelated_start",
+            )
+        )
+
+        result = _apply_edge_treatment(cad, operation, topology, [0.1])
+
+        replacement = result.primary[0]
+        assert (replacement.dimension, replacement.tag) == (
+            topology["volume"].dimension,
+            topology["volume"].tag,
+        )
+        assert replacement != topology["volume"]
+        for reference in old_closure:
+            with pytest.raises(geometry.StaleEntityError):
+                cad.boundary([reference], combined=False)
+        for reference in (*unrelated, replacement):
+            cad.boundary([reference], combined=False)
+
+
+@pytest.mark.parametrize("operation", ["fillet", "chamfer"])
+def test_preserving_edge_treatment_keeps_original_closure_and_returns_fresh_body(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model(f"{operation}-preserve", dimension=3) as cad:
+        topology = _fake_edge_treatment_topology(cad, backend)
+        original_closure = tuple(
+            topology[name]
+            for name in (
+                "volume",
+                "surface",
+                "nonadjacent_surface",
+                "curve",
+                "other_curve",
+                "start",
+                "end",
+                "other_start",
+                "other_end",
+            )
+        )
+
+        result = _apply_edge_treatment(
+            cad,
+            operation,
+            topology,
+            [0.1],
+            remove_volumes=False,
+        )
+
+        added = result.primary[0]
+        assert added != topology["volume"]
+        assert (added.dimension, added.tag) != (
+            topology["volume"].dimension,
+            topology["volume"].tag,
+        )
+        for reference in original_closure:
+            cad.boundary([reference], combined=False)
+        added_boundary = cad.boundary([added], combined=False)
+        assert added_boundary
+        assert set(added_boundary).isdisjoint(original_closure)
+
+
+@pytest.mark.parametrize("operation", ["fillet", "chamfer"])
+def test_edge_treatment_exposes_lower_dimensional_native_outputs(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model(f"{operation}-lower-outputs", dimension=3) as cad:
+        topology = _fake_edge_treatment_topology(cad, backend)
+        backend.model.occ.edge_treatment_results[operation] = [
+            (3, 900),
+            (2, 901),
+        ]
+
+        result = _apply_edge_treatment(
+            cad,
+            operation,
+            topology,
+            [0.1],
+            remove_volumes=False,
+        )
+
+        assert tuple(entity.dimension for entity in result.outputs) == (3, 2)
+        assert result.primary == (result.outputs[0],)
+        assert result.of_dimension(2) == (result.outputs[1],)
+        assert result.ends == ()
+        assert result.sides == ()
+
+
+@pytest.mark.parametrize("operation", ["fillet", "chamfer"])
+@pytest.mark.parametrize(
+    "malformation",
+    [
+        "empty",
+        "wrong_dimension",
+        "missing",
+        "reused_preserved",
+        "unrelated_lower",
+    ],
+)
+def test_malformed_edge_treatment_result_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    malformation: str,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model(
+        f"{operation}-malformed-{malformation}",
+        dimension=3,
+    ) as cad:
+        topology = _fake_edge_treatment_topology(cad, backend)
+        if malformation == "empty":
+            outputs: list[tuple[int, int]] = []
+        elif malformation == "wrong_dimension":
+            outputs = [(2, 900)]
+        elif malformation == "missing":
+            outputs = [(3, 900)]
+            backend.model.occ.edge_treatment_register_outputs = False
+        elif malformation == "unrelated_lower":
+            outputs = [(3, 900), (2, 901)]
+            backend.model.occ.edge_treatment_attach_lower_outputs = False
+        else:
+            outputs = [(3, topology["volume"].tag)]
+        backend.model.occ.edge_treatment_results[operation] = outputs
+        preserve = malformation in {"reused_preserved", "unrelated_lower"}
+
+        with pytest.raises(geometry.GeometryError):
+            _apply_edge_treatment(
+                cad,
+                operation,
+                topology,
+                [0.1],
+                remove_volumes=not preserve,
+            )
+
+        for name in ("volume", "curve", "unrelated_volume", "unrelated_curve"):
+            with pytest.raises(geometry.StaleEntityError):
+                cad.boundary([topology[name]], combined=False)
+        reacquired = cad.entity(3, topology["unrelated_volume"].tag)
+        cad.boundary([reacquired], combined=False)
+
+
+@pytest.mark.parametrize("operation", ["fillet", "chamfer"])
+def test_malformed_edge_treatment_pair_has_operation_context(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model(f"{operation}-invalid-pair", dimension=3) as cad:
+        topology = _fake_edge_treatment_topology(cad, backend)
+        backend.model.occ.edge_treatment_results[operation] = [
+            (4, 900),
+        ]
+
+        with pytest.raises(
+            geometry.GeometryError,
+            match=rf"geometry model .*{operation} returned invalid entity data",
+        ):
+            _apply_edge_treatment(cad, operation, topology, [0.1])
+
+        with pytest.raises(geometry.StaleEntityError):
+            cad.boundary((topology["unrelated_volume"],), combined=False)
+
+
+@pytest.mark.parametrize("operation", ["fillet", "chamfer"])
+def test_preserving_edge_treatment_detects_removed_original_and_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model(f"{operation}-preserve-violation", dimension=3) as cad:
+        topology = _fake_edge_treatment_topology(cad, backend)
+        backend.model.occ.edge_treatment_remove_preserved.add(operation)
+
+        with pytest.raises(geometry.GeometryError, match="preserv|removed"):
+            _apply_edge_treatment(
+                cad,
+                operation,
+                topology,
+                [0.1],
+                remove_volumes=False,
+            )
+
+        for name in ("volume", "curve", "unrelated_volume"):
+            with pytest.raises(geometry.StaleEntityError):
+                cad.boundary([topology[name]], combined=False)
+
+
+@pytest.mark.parametrize("operation", ["fillet", "chamfer"])
+def test_destructive_edge_treatment_rejects_unreported_surviving_input(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model(f"{operation}-surviving-input", dimension=3) as cad:
+        topology = _fake_edge_treatment_topology(cad, backend)
+        backend.model.occ.edge_treatment_results[operation] = [(3, 900)]
+        backend.model.occ.edge_treatment_preserve_destructive.add(operation)
+
+        with pytest.raises(geometry.GeometryError, match="left an input volume"):
+            _apply_edge_treatment(cad, operation, topology, [0.1])
+
+        for name in ("volume", "curve", "unrelated_volume", "unrelated_curve"):
+            with pytest.raises(geometry.StaleEntityError):
+                cad.boundary([topology[name]], combined=False)
+
+
+@pytest.mark.parametrize("operation", ["fillet", "chamfer"])
+def test_edge_treatment_supports_multiple_selected_volumes(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model(f"{operation}-multiple-volumes", dimension=3) as cad:
+        topology = _fake_edge_treatment_topology(cad, backend)
+        volumes = (topology["volume"], topology["unrelated_volume"])
+        curves = (topology["curve"], topology["unrelated_curve"])
+        if operation == "fillet":
+            result = cad.fillet(volumes, curves, (0.1, 0.12))
+        else:
+            result = cad.chamfer(
+                volumes,
+                curves,
+                (topology["surface"], topology["unrelated_surface"]),
+                (0.1, 0.12),
+            )
+
+        assert len(result.primary) == 2
+        assert all(entity.dimension == 3 for entity in result.primary)
+        for source in (*volumes, *curves):
+            with pytest.raises(geometry.StaleEntityError):
+                cad.boundary((source,), combined=False)
+
+
+@pytest.mark.parametrize("operation", ["fillet", "chamfer"])
+def test_native_edge_treatment_failure_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model(f"{operation}-native-failure", dimension=3) as cad:
+        topology = _fake_edge_treatment_topology(cad, backend)
+        backend.model.occ.fail_next.add(operation)
+
+        with pytest.raises(
+            geometry.GeometryError,
+            match=rf"native OCC {operation} failed",
+        ) as caught:
+            _apply_edge_treatment(cad, operation, topology, [0.1])
+        assert isinstance(caught.value.__cause__, RuntimeError)
+        assert str(caught.value.__cause__) == f"fake {operation} failure"
+
+        for name in ("volume", "surface", "curve", "unrelated_volume"):
+            with pytest.raises(geometry.StaleEntityError):
+                cad.boundary([topology[name]], combined=False)
+
+
+@pytest.mark.parametrize("operation", ["fillet", "chamfer"])
+def test_mesher_binding_seals_edge_treatments_before_native_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model(f"{operation}-mesher-sealed", dimension=3) as cad:
+        topology = _fake_edge_treatment_topology(cad, backend)
+        _mesher(cad)
+        calls = _occ_operation_call_count(backend, operation)
+
+        with pytest.raises(geometry.GeometryStateError, match="CONFIGURING_MESH"):
+            _apply_edge_treatment(cad, operation, topology, [0.1])
+
+        assert _occ_operation_call_count(backend, operation) == calls
 
 
 def test_translate_and_rotate_forward_and_return_same_references(

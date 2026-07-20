@@ -376,17 +376,42 @@ def test_fem_runtime_layers_do_not_import_geometry_or_meshing():
     assert offenders == []
 
 
-def test_feature_result_is_exported_only_from_the_geometry_layer():
+def test_advanced_feature_types_are_exported_only_from_the_geometry_layer():
     from fem.geometry import gmsh as gmsh_geometry
     import fem.mesh as mesh_package
     from fem.mesh import gmsh as gmsh_meshing
 
-    assert "FeatureResult" in gmsh_geometry.__all__
+    geometry_only_names = {
+        "FeatureResult",
+        "LoftContinuity",
+        "LoftParametrization",
+        "LoftResult",
+        "SweepFrame",
+        "WireRef",
+    }
+    assert geometry_only_names.issubset(gmsh_geometry.__all__)
     assert gmsh_geometry.FeatureResult.__module__ == "fem.geometry.gmsh"
+    assert gmsh_geometry.LoftResult.__module__ == "fem.geometry.gmsh"
+    assert gmsh_geometry.WireRef.__module__ == "fem.geometry.gmsh"
 
     for module in (gmsh_meshing, mesh_package):
-        assert "FeatureResult" not in module.__all__
-        assert "FeatureResult" not in vars(module)
+        assert geometry_only_names.isdisjoint(module.__all__)
+        assert geometry_only_names.isdisjoint(vars(module))
+
+
+def test_advanced_geometry_features_are_absent_from_mesher():
+    from fem.geometry import gmsh as gmsh_geometry
+    from fem.mesh import gmsh as gmsh_meshing
+
+    operation_names = {"wire", "revolve", "sweep", "loft", "fillet", "chamfer"}
+    assert all(
+        hasattr(gmsh_geometry.GeometryModel, operation)
+        for operation in operation_names
+    )
+    assert all(
+        not hasattr(gmsh_meshing.Mesher, operation)
+        for operation in operation_names
+    )
 
 
 def test_historical_fem_meshing_package_is_not_imported():

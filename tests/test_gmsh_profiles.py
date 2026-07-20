@@ -20,6 +20,7 @@ class _FakeOcc:
         self.synchronize_calls = 0
         self.fail_next: set[str] = set()
         self.loop_tags: list[int] = []
+        self.wire_tags: list[int] = []
         self.distance_override: Sequence[float] | None = None
 
     def _data(self) -> dict[str, Any]:
@@ -265,6 +266,24 @@ class _FakeOcc:
             self._data()["loops"][allocated] = materialized
         return allocated
 
+    def addWire(
+        self,
+        curve_tags: Sequence[int],
+        tag: int = -1,
+        checkClosed: bool = False,
+    ) -> int:
+        materialized = tuple(curve_tags)
+        self.calls.append(("addWire", materialized, tag, checkClosed))
+        if self.wire_tags:
+            allocated = self.wire_tags.pop(0)
+        else:
+            data = self._data()
+            allocated = data["next_wire_tag"]
+            data["next_wire_tag"] += 1
+        if allocated > 0:
+            self._data()["wires"][allocated] = (materialized, checkClosed)
+        return allocated
+
     def addPlaneSurface(
         self,
         wire_tags: Sequence[int],
@@ -428,12 +447,14 @@ class _FakeModel:
             "entities": set(),
             "next_tags": {},
             "next_loop_tag": 1,
+            "next_wire_tag": 1,
             "boxes": {},
             "masses": {},
             "centers": {},
             "curve_endpoints": {},
             "curve_points": {},
             "loops": {},
+            "wires": {},
             "surface_curves": {},
             "adjacencies": {},
         }
@@ -972,6 +993,284 @@ def test_fake_reversed_loop_uses_signed_traversal_but_positive_occ_tags(
             loop.tag = loop.tag + 1  # type: ignore[misc]
         with pytest.raises(TypeError):
             loop.curves[0] = loop.curves[0]  # type: ignore[index]
+
+
+def test_fake_wire_builds_open_and_closed_frozen_slotted_references(
+    fake_gmsh: _FakeGmsh,
+) -> None:
+    with geometry.model("wire-shape", dimension=2) as cad:
+        points = (
+            cad.point(0.0, 0.0),
+            cad.point(1.0, 0.0),
+            cad.point(2.0, 0.5),
+        )
+        curves = (
+            cad.line(points[0], points[1]),
+            cad.line(points[1], points[2]),
+        )
+        oriented = tuple(cad.orient(curve) for curve in curves)
+
+        path = cad.wire(oriented, closed=False)
+        _, square_curves, _ = _square(cad, 3.0, 0.0, 1.0)
+        section_curves = tuple(cad.orient(curve) for curve in square_curves)
+        section = cad.wire(section_curves, closed=True)
+
+        assert isinstance(path, geometry.WireRef)
+        assert (path.tag, path.curves, path.closed) == (1, oriented, False)
+        assert (section.tag, section.curves, section.closed) == (
+            2,
+            section_curves,
+            True,
+        )
+        assert not hasattr(path, "__dict__")
+        assert (
+            "addWire",
+            tuple(curve.tag for curve in curves),
+            -1,
+            False,
+        ) in fake_gmsh.model.occ.calls
+        assert (
+            "addWire",
+            tuple(curve.tag for curve in square_curves),
+            -1,
+            True,
+        ) in fake_gmsh.model.occ.calls
+        with pytest.raises(FrozenInstanceError):
+            path.tag = path.tag + 1  # type: ignore[misc]
+        with pytest.raises(FrozenInstanceError):
+            path.closed = True  # type: ignore[misc]
+        with pytest.raises(TypeError):
+            path.curves[0] = path.curves[0]  # type: ignore[index]
+
+
+def test_fake_wire_preserves_signed_reversal_and_preflights_invalid_chains(
+    fake_gmsh: _FakeGmsh,
+) -> None:
+    with geometry.model("wire-validation", dimension=2) as cad:
+        points = (
+            cad.point(0.0, 0.0),
+            cad.point(1.0, 0.0),
+            cad.point(2.0, 0.0),
+        )
+        first = cad.line(points[0], points[1])
+        backward_second = cad.line(points[2], points[1])
+        oriented = (
+            cad.orient(first),
+            cad.orient(backward_second, reversed=True),
+        )
+
+        path = cad.wire(oriented, closed=False)
+
+        assert path.curves == oriented
+        assert (
+            "addWire",
+            (first.tag, -backward_second.tag),
+            -1,
+            False,
+        ) in fake_gmsh.model.occ.calls
+        before = _count_calls(fake_gmsh, "addWire")
+        with pytest.raises(ValueError, match="continuous"):
+            cad.wire(
+                (cad.orient(first), cad.orient(backward_second)),
+                closed=False,
+            )
+        with pytest.raises(ValueError, match="close|closed"):
+            cad.wire((cad.orient(first),), closed=True)
+        with pytest.raises(ValueError, match="duplicate-free"):
+            cad.wire(
+                (cad.orient(first), cad.orient(first, reversed=True)),
+                closed=False,
+            )
+        with pytest.raises(ValueError, match="at least one"):
+            cad.wire((), closed=False)
+        with pytest.raises(TypeError, match="OrientedCurveRef"):
+            cad.wire((first,), closed=False)  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="boolean"):
+            cad.wire((cad.orient(first),), closed=1)  # type: ignore[arg-type]
+
+        _, closed_curves, _ = _square(cad, 3.0, 0.0, 1.0)
+        with pytest.raises(ValueError, match="open|distinct"):
+            cad.wire(
+                tuple(cad.orient(curve) for curve in closed_curves),
+                closed=False,
+            )
+        assert _count_calls(fake_gmsh, "addWire") == before
+
+
+def test_fake_wire_rejects_spatial_2d_chain_and_accepts_it_in_3d(
+    fake_gmsh: _FakeGmsh,
+) -> None:
+    with geometry.model("wire-spatial-2d", dimension=2) as cad:
+        start = cad.point(0.0, 0.0)
+        end = cad.point(1.0, 0.0)
+        curve = cad.line(start, end)
+        fake_gmsh.model._current_data()["boxes"][(1, curve.tag)] = (
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.25,
+        )
+        before = _count_calls(fake_gmsh, "addWire")
+
+        with pytest.raises(ValueError, match="global XY plane"):
+            cad.wire((cad.orient(curve),), closed=False)
+
+        assert _count_calls(fake_gmsh, "addWire") == before
+
+    with geometry.model("wire-spatial-3d", dimension=3) as cad:
+        points = (
+            cad.point(0.0, 0.0, 0.0),
+            cad.point(1.0, 0.0, 0.5),
+            cad.point(1.5, 0.5, 1.0),
+        )
+        curves = (
+            cad.line(points[0], points[1]),
+            cad.line(points[1], points[2]),
+        )
+
+        path = cad.wire(tuple(cad.orient(curve) for curve in curves), closed=False)
+
+        assert path.closed is False
+        assert path.curves == tuple(cad.orient(curve) for curve in curves)
+
+
+def test_fake_wire_rejects_foreign_and_missing_native_members_before_occ(
+    fake_gmsh: _FakeGmsh,
+) -> None:
+    with geometry.model("wire-owner", dimension=3) as outer:
+        start = outer.point(0.0, 0.0, 0.0)
+        end = outer.point(1.0, 0.0, 0.0)
+        curve = outer.line(start, end)
+        oriented = outer.orient(curve)
+        wire = outer.wire((oriented,), closed=False)
+
+        with geometry.model("wire-foreign", dimension=3) as inner:
+            before = _count_calls(fake_gmsh, "addWire")
+            with pytest.raises(geometry.EntityOwnershipError):
+                inner.wire((oriented,), closed=False)
+            assert _count_calls(fake_gmsh, "addWire") == before
+
+        fake_gmsh.model._current_data()["entities"].remove((1, curve.tag))
+        before = _count_calls(fake_gmsh, "addWire")
+        with pytest.raises(geometry.StaleEntityError, match="no longer exists"):
+            outer.wire((oriented,), closed=False)
+
+        assert _count_calls(fake_gmsh, "addWire") == before
+        assert wire.tag not in outer._wire_tokens
+
+
+def test_fake_raw_access_invalidates_every_typed_wire_identity(
+    fake_gmsh: _FakeGmsh,
+) -> None:
+    with geometry.model("wire-raw-invalidation", dimension=3) as cad:
+        first_start = cad.point(0.0, 0.0, 0.0)
+        first_end = cad.point(1.0, 0.0, 0.0)
+        second_start = cad.point(0.0, 1.0, 0.0)
+        second_end = cad.point(1.0, 1.0, 0.0)
+        first_curve = cad.line(first_start, first_end)
+        second_curve = cad.line(second_start, second_end)
+        first = cad.wire((cad.orient(first_curve),), closed=False)
+        second = cad.wire((cad.orient(second_curve),), closed=False)
+        assert set(cad._wire_tokens) == {first.tag, second.tag}
+
+        cad.raw_occ
+
+        assert cad._wire_tokens == {}
+        assert cad._wire_dependencies == {}
+        with pytest.raises(geometry.StaleEntityError):
+            cad.orient(first_curve)
+
+
+def test_fake_member_mutation_invalidates_only_dependent_wire(
+    fake_gmsh: _FakeGmsh,
+) -> None:
+    with geometry.model("wire-targeted-invalidation", dimension=3) as cad:
+        points = tuple(cad.point(float(index), 0.0, 0.0) for index in range(6))
+        first_curves = (
+            cad.line(points[0], points[1]),
+            cad.line(points[1], points[2]),
+        )
+        second_curves = (
+            cad.line(points[3], points[4]),
+            cad.line(points[4], points[5]),
+        )
+        unrelated_start = cad.point(0.0, 2.0, 0.0)
+        unrelated_end = cad.point(1.0, 2.0, 0.0)
+        unrelated = cad.line(unrelated_start, unrelated_end)
+        first = cad.wire(
+            tuple(cad.orient(curve) for curve in first_curves),
+            closed=False,
+        )
+        second = cad.wire(
+            tuple(cad.orient(curve) for curve in second_curves),
+            closed=False,
+        )
+
+        cad.translate((unrelated,), 0.0, 0.0, 0.5)
+        assert cad._wire_tokens[first.tag] is first._wire_token
+        assert cad._wire_tokens[second.tag] is second._wire_token
+
+        cad.translate((first_curves[0],), 0.0, 0.0, 0.5)
+
+        assert first.tag not in cad._wire_tokens
+        assert first.tag not in cad._wire_dependencies
+        assert cad._wire_tokens[second.tag] is second._wire_token
+        assert second.tag in cad._wire_dependencies
+
+
+def test_fake_wire_and_curve_loop_can_share_native_tag_without_collision(
+    fake_gmsh: _FakeGmsh,
+) -> None:
+    with geometry.model("wire-loop-tag-collision", dimension=2) as cad:
+        _, curves, loop = _square(cad, 0.0, 0.0, 1.0)
+        wire = cad.wire(
+            tuple(cad.orient(curve) for curve in curves),
+            closed=True,
+        )
+
+        assert wire.tag == loop.tag == 1
+        assert cad._curve_loop_tokens[loop.tag] is loop._loop_token
+        assert cad._wire_tokens[wire.tag] is wire._wire_token
+        assert loop._loop_token is not wire._wire_token
+        assert cad.plane_surface(loop).dimension == 2
+
+        cad.translate((curves[0],), 0.25, 0.0, 0.0)
+
+        assert loop.tag not in cad._curve_loop_tokens
+        assert wire.tag not in cad._wire_tokens
+
+
+def test_fake_wire_rejects_malformed_and_duplicate_native_identity(
+    fake_gmsh: _FakeGmsh,
+) -> None:
+    with geometry.model("wire-nonpositive", dimension=3) as cad:
+        fake_gmsh.model.occ.wire_tags[:] = [0]
+        start = cad.point(0.0, 0.0, 0.0)
+        end = cad.point(1.0, 0.0, 0.0)
+        curve = cad.line(start, end)
+        with pytest.raises(geometry.GeometryError, match="invalid wire tag"):
+            cad.wire((cad.orient(curve),), closed=False)
+        assert cad._wire_tokens == {}
+
+    with geometry.model("wire-duplicate", dimension=3) as cad:
+        fake_gmsh.model.occ.wire_tags[:] = [23, 23]
+        points = (
+            cad.point(0.0, 0.0, 0.0),
+            cad.point(1.0, 0.0, 0.0),
+            cad.point(0.0, 1.0, 0.0),
+            cad.point(1.0, 1.0, 0.0),
+        )
+        first_curve = cad.line(points[0], points[1])
+        second_curve = cad.line(points[2], points[3])
+        first = cad.wire((cad.orient(first_curve),), closed=False)
+
+        with pytest.raises(geometry.GeometryError, match="duplicate wire tag"):
+            cad.wire((cad.orient(second_curve),), closed=False)
+
+        assert first.tag not in cad._wire_tokens
+        assert cad._wire_dependencies == {}
 
 
 def test_fake_curve_loop_validates_continuity_closure_and_duplicates_first(
