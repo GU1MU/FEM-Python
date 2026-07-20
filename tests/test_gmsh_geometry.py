@@ -1550,9 +1550,13 @@ class _FakeGmsh:
         self.option = _FakeOption()
         self.__version__ = "4.15.2-fake"
         self.fail_initialize_after_state = False
+        self.fail_is_initialized_count = 0
         self.fail_finalize = False
 
     def isInitialized(self) -> bool:
+        if self.fail_is_initialized_count:
+            self.fail_is_initialized_count -= 1
+            raise RuntimeError("fake session inspection failure")
         return self.initialized
 
     def initialize(self) -> None:
@@ -2184,6 +2188,32 @@ def test_owned_session_is_initialized_then_model_is_removed_and_finalized(
     assert "owned" not in backend.model.models
 
 
+def test_internal_facade_access_is_session_activation_gated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    cad = geometry.model("activation-gate", dimension=2)
+    _install_backend(monkeypatch, backend)
+
+    with pytest.raises(
+        geometry.GeometryStateError,
+        match="native facade access.*Gmsh session is not active",
+    ):
+        _ = cad._gmsh
+
+    with cad:
+        backend.model.add("external")
+        assert backend.model.current == "external"
+        assert cad._gmsh is backend
+        assert backend.model.current == "activation-gate"
+
+    with pytest.raises(
+        geometry.GeometryStateError,
+        match="native facade access.*Gmsh session is not active",
+    ):
+        _ = cad._gmsh
+
+
 def test_partially_successful_initialize_is_finalized_after_entry_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2378,6 +2408,84 @@ def test_cleanup_failure_without_primary_raises_contextual_geometry_error(
     with pytest.raises(geometry.GeometryError, match="facade.*remove facade model"):
         with geometry.model("facade", dimension=2):
             backend.model.fail_remove = True
+
+
+def test_session_inspection_failure_does_not_mask_primary_and_is_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh(initialized=True)
+    _install_backend(monkeypatch, backend)
+    cad = geometry.model("inspection-primary", dimension=2)
+
+    with pytest.raises(LookupError, match="primary") as captured:
+        with cad:
+            backend.fail_is_initialized_count = 1
+            raise LookupError("primary")
+
+    assert any(
+        "inspect Gmsh session state" in note
+        for note in captured.value.__notes__
+    )
+    assert "inspection-primary" in backend.model.models
+
+    cad.__exit__(None, None, None)
+    assert "inspection-primary" not in backend.model.models
+
+
+def test_session_inspection_failure_without_primary_is_contextual_and_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh(initialized=True)
+    _install_backend(monkeypatch, backend)
+    cad = geometry.model("inspection-cleanup", dimension=2)
+
+    with pytest.raises(
+        geometry.GeometryError,
+        match="inspection-cleanup.*inspect Gmsh session state",
+    ) as captured:
+        with cad:
+            backend.fail_is_initialized_count = 1
+
+    assert isinstance(captured.value.__cause__, RuntimeError)
+    assert "inspection-cleanup" in backend.model.models
+
+    cad.__exit__(None, None, None)
+    assert "inspection-cleanup" not in backend.model.models
+
+
+def test_cleanup_retains_later_failures_as_notes_and_retries_every_resource(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh(names=("prior",), current="prior")
+    _install_backend(monkeypatch, backend)
+    cad = geometry.model("multi-cleanup", dimension=2)
+    cad.__enter__()
+    backend.model.fail_remove = True
+    backend.model.fail_set_current_names.add("prior")
+    backend.fail_finalize = True
+
+    with pytest.raises(
+        geometry.GeometryError,
+        match="multi-cleanup.*remove facade model",
+    ) as captured:
+        cad.__exit__(None, None, None)
+
+    assert isinstance(captured.value.__cause__, RuntimeError)
+    assert any(
+        "restore prior model" in note for note in captured.value.__notes__
+    )
+    assert any(
+        "finalize owned session" in note for note in captured.value.__notes__
+    )
+    assert backend.initialized
+    assert "multi-cleanup" in backend.model.models
+
+    backend.model.fail_remove = False
+    cad.__exit__(None, None, None)
+    assert backend.model.current == "prior"
+    assert "multi-cleanup" not in backend.model.models
+    assert backend.finalize_calls == 2
+    assert not backend.initialized
 
 
 def test_nested_contexts_restore_current_models_in_lifo_order(
@@ -4554,7 +4662,7 @@ def test_transfinite_surface_rejects_nonboundary_corner_before_native_control(
     assert backend.model.mesh.calls == []
 
 
-def test_transfinite_surface_rejects_cross_model_and_stale_corners_pre_mutation(
+def test_transfinite_surface_rejects_cross_model_and_missing_native_corners(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = _FakeGmsh()
@@ -4578,10 +4686,12 @@ def test_transfinite_surface_rejects_cross_model_and_stale_corners_pre_mutation(
                 )
             assert backend.model.occ.synchronize_calls == synchronize_calls
 
-            inner._entity_tokens.pop((0, points[2].tag))
+            backend.model._current_data()["entities"].discard(
+                (0, points[2].tag)
+            )
             with pytest.raises(geometry.StaleEntityError):
                 _mesher(inner).transfinite_surface(surface, corners=points)
-            assert backend.model.occ.synchronize_calls == synchronize_calls
+            assert backend.model.occ.synchronize_calls == synchronize_calls + 1
 
     assert backend.model.mesh.calls == []
 
@@ -4724,6 +4834,28 @@ def test_mesh_controls_reject_new_and_closed_states_contextually(
         operation(cad)
 
 
+def test_meshing_port_activation_failure_does_not_consume_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("binding-activation-retry", dimension=2) as cad:
+        surface = cad.rectangle(0.0, 0.0, 1.0, 1.0)
+        original_list = backend.model.list
+
+        def fail_list() -> list[str]:
+            raise RuntimeError("injected model-list failure")
+
+        monkeypatch.setattr(backend.model, "list", fail_list)
+        with pytest.raises(RuntimeError, match="model-list failure"):
+            gmsh_meshing.Mesher(cad)
+
+        monkeypatch.setattr(backend.model, "list", original_list)
+        builder = gmsh_meshing.Mesher(cad)
+        assert builder.recombine(surface) is None
+
+
 def test_mesh_controls_reject_meshed_and_mesh_failed_states_contextually(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4807,7 +4939,7 @@ def test_every_mesh_control_rejects_invalid_target_before_backend_mutation(
         (2, lambda cad, target: _mesher(cad).recombine(target)),
     ],
 )
-def test_every_mesh_control_rejects_foreign_and_stale_targets_pre_mutation(
+def test_every_mesh_control_rejects_foreign_and_missing_native_targets(
     monkeypatch: pytest.MonkeyPatch,
     dimension: int,
     operation: Any,
@@ -4827,15 +4959,15 @@ def test_every_mesh_control_rejects_foreign_and_stale_targets_pre_mutation(
                 operation(inner, foreign)
             assert backend.model.occ.synchronize_calls == synchronize_calls
 
-            inner._entity_tokens.pop((dimension, 9))
+            backend.model._current_data()["entities"].discard((dimension, 9))
             with pytest.raises(geometry.StaleEntityError):
                 operation(inner, local)
-            assert backend.model.occ.synchronize_calls == synchronize_calls
+            assert backend.model.occ.synchronize_calls == synchronize_calls + 1
 
     assert backend.model.mesh.calls == []
 
 
-def test_transfinite_volume_rejects_foreign_and_stale_corner_tokens_pre_mutation(
+def test_transfinite_volume_rejects_foreign_and_missing_native_corners(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = _FakeGmsh()
@@ -4859,10 +4991,12 @@ def test_transfinite_volume_rejects_foreign_and_stale_corner_tokens_pre_mutation
                 )
             assert backend.model.occ.synchronize_calls == synchronize_calls
 
-            inner._entity_tokens.pop((0, points[5].tag))
+            backend.model._current_data()["entities"].discard(
+                (0, points[5].tag)
+            )
             with pytest.raises(geometry.StaleEntityError):
                 _mesher(inner).transfinite_volume(volume, corners=points)
-            assert backend.model.occ.synchronize_calls == synchronize_calls
+            assert backend.model.occ.synchronize_calls == synchronize_calls + 1
 
     assert backend.model.mesh.calls == []
 
@@ -5623,7 +5757,7 @@ def test_mesh_size_materializes_generators_before_native_mutation(
         assert backend.model.mesh.calls == []
 
 
-def test_mesh_size_rejects_foreign_and_stale_points_before_native_mutation(
+def test_mesh_size_rejects_foreign_and_missing_native_points_before_mutation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = _FakeGmsh()
@@ -5639,10 +5773,10 @@ def test_mesh_size_rejects_foreign_and_stale_points_before_native_mutation(
                 _mesher(inner).mesh_size([foreign], size=0.1)
             assert backend.model.occ.synchronize_calls == synchronize_calls
 
-            inner._entity_tokens.pop((0, local.tag))
+            backend.model._current_data()["entities"].discard((0, local.tag))
             with pytest.raises(geometry.StaleEntityError):
                 _mesher(inner).mesh_size([local], size=0.1)
-            assert backend.model.occ.synchronize_calls == synchronize_calls
+            assert backend.model.occ.synchronize_calls == synchronize_calls + 1
 
     assert backend.model.mesh.calls == []
 
@@ -5940,7 +6074,7 @@ def test_invalid_min_inputs_fail_before_native_mutation(
         assert backend.model.mesh.field.calls == calls
 
 
-def test_distance_sources_reject_foreign_and_stale_entities_pre_mutation(
+def test_distance_sources_reject_foreign_and_missing_native_entities(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = _FakeGmsh()
@@ -5956,10 +6090,10 @@ def test_distance_sources_reject_foreign_and_stale_entities_pre_mutation(
                 _mesher(inner).distance_field(points=[foreign])
             assert backend.model.occ.synchronize_calls == synchronize_calls
 
-            inner._entity_tokens.pop((0, local.tag))
+            backend.model._current_data()["entities"].discard((0, local.tag))
             with pytest.raises(geometry.StaleEntityError):
                 _mesher(inner).distance_field(points=[local])
-            assert backend.model.occ.synchronize_calls == synchronize_calls
+            assert backend.model.occ.synchronize_calls == synchronize_calls + 1
 
     assert backend.model.mesh.field.calls == []
 

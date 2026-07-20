@@ -206,6 +206,8 @@ def test_mesher_requires_live_geometry_and_failed_new_binding_is_retryable(
         native_mesh = first.generate(meshing.MeshSpec(size=0.4))
         assert _read_native(native_mesh).num_elements > 0
 
+    with pytest.raises(geometry.GeometryStateError, match="capability is invalid"):
+        first.generate(meshing.MeshSpec(size=0.4))
     with pytest.raises(geometry.GeometryStateError, match="CLOSED"):
         meshing.Mesher(source)
 

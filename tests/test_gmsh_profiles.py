@@ -1168,8 +1168,6 @@ def test_fake_wire_native_failure_is_contextual_and_fail_closed(
             cad.wire((cad.orient(second_curve),), closed=False)
 
         assert isinstance(caught.value.__cause__, RuntimeError)
-        assert cad._wire_tokens == {}
-        assert cad._wire_dependencies == {}
         with pytest.raises(geometry.StaleEntityError, match="stale"):
             cad._normalize_wires((existing,), operation="test")
         with pytest.raises(geometry.StaleEntityError, match="stale"):
@@ -1237,7 +1235,8 @@ def test_fake_wire_rejects_foreign_and_missing_native_members_before_occ(
             outer.wire((oriented,), closed=False)
 
         assert _count_calls(fake_gmsh, "addWire") == before
-        assert wire.tag not in outer._wire_tokens
+        with pytest.raises(geometry.StaleEntityError, match="stale wire"):
+            outer._normalize_wires((wire,), operation="test")
 
 
 def test_fake_raw_access_invalidates_every_typed_wire_identity(
@@ -1252,14 +1251,48 @@ def test_fake_raw_access_invalidates_every_typed_wire_identity(
         second_curve = cad.line(second_start, second_end)
         first = cad.wire((cad.orient(first_curve),), closed=False)
         second = cad.wire((cad.orient(second_curve),), closed=False)
-        assert set(cad._wire_tokens) == {first.tag, second.tag}
+        assert cad._normalize_wires((first, second), operation="test") == (
+            first,
+            second,
+        )
 
         cad.raw_occ
 
-        assert cad._wire_tokens == {}
-        assert cad._wire_dependencies == {}
-        with pytest.raises(geometry.StaleEntityError):
-            cad.orient(first_curve)
+        with pytest.raises(geometry.StaleEntityError, match="stale wire"):
+            cad._normalize_wires((first,), operation="test")
+        with pytest.raises(geometry.StaleEntityError, match="stale wire"):
+            cad._normalize_wires((second,), operation="test")
+
+
+def test_fake_cleanup_failure_still_invalidates_entity_loop_and_wire_identity(
+    fake_gmsh: _FakeGmsh,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cad = geometry.model("cleanup-reference-invalidation", dimension=2)
+    cad.__enter__()
+    _, curves, loop = _square(cad, 0.0, 0.0, 1.0)
+    wire = cad.wire(
+        tuple(cad.orient(curve) for curve in curves),
+        closed=True,
+    )
+    original_remove = fake_gmsh.model.remove
+
+    def fail_remove() -> None:
+        raise RuntimeError("injected model removal failure")
+
+    monkeypatch.setattr(fake_gmsh.model, "remove", fail_remove)
+    with pytest.raises(geometry.GeometryError, match="remove facade model"):
+        cad.__exit__(None, None, None)
+
+    with pytest.raises(geometry.StaleEntityError, match="stale entity"):
+        cad._normalize_entities((curves[0],), operation="test")
+    with pytest.raises(geometry.StaleEntityError, match="stale curve loop"):
+        cad._normalize_curve_loops((loop,), operation="test")
+    with pytest.raises(geometry.StaleEntityError, match="stale wire"):
+        cad._normalize_wires((wire,), operation="test")
+
+    monkeypatch.setattr(fake_gmsh.model, "remove", original_remove)
+    cad.__exit__(None, None, None)
 
 
 def test_fake_member_mutation_invalidates_only_dependent_wire(
@@ -1288,15 +1321,16 @@ def test_fake_member_mutation_invalidates_only_dependent_wire(
         )
 
         cad.translate((unrelated,), 0.0, 0.0, 0.5)
-        assert cad._wire_tokens[first.tag] is first._wire_token
-        assert cad._wire_tokens[second.tag] is second._wire_token
+        assert cad._normalize_wires((first, second), operation="test") == (
+            first,
+            second,
+        )
 
         cad.translate((first_curves[0],), 0.0, 0.0, 0.5)
 
-        assert first.tag not in cad._wire_tokens
-        assert first.tag not in cad._wire_dependencies
-        assert cad._wire_tokens[second.tag] is second._wire_token
-        assert second.tag in cad._wire_dependencies
+        with pytest.raises(geometry.StaleEntityError, match="stale wire"):
+            cad._normalize_wires((first,), operation="test")
+        assert cad._normalize_wires((second,), operation="test") == (second,)
 
 
 def test_fake_wire_and_curve_loop_can_share_native_tag_without_collision(
@@ -1310,15 +1344,17 @@ def test_fake_wire_and_curve_loop_can_share_native_tag_without_collision(
         )
 
         assert wire.tag == loop.tag == 1
-        assert cad._curve_loop_tokens[loop.tag] is loop._loop_token
-        assert cad._wire_tokens[wire.tag] is wire._wire_token
         assert loop._loop_token is not wire._wire_token
+        assert cad._normalize_curve_loops((loop,), operation="test") == (loop,)
+        assert cad._normalize_wires((wire,), operation="test") == (wire,)
         assert cad.plane_surface(loop).dimension == 2
 
         cad.translate((curves[0],), 0.25, 0.0, 0.0)
 
-        assert loop.tag not in cad._curve_loop_tokens
-        assert wire.tag not in cad._wire_tokens
+        with pytest.raises(geometry.StaleEntityError, match="stale curve loop"):
+            cad._normalize_curve_loops((loop,), operation="test")
+        with pytest.raises(geometry.StaleEntityError, match="stale wire"):
+            cad._normalize_wires((wire,), operation="test")
 
 
 def test_fake_wire_rejects_malformed_and_duplicate_native_identity(
@@ -1331,7 +1367,6 @@ def test_fake_wire_rejects_malformed_and_duplicate_native_identity(
         curve = cad.line(start, end)
         with pytest.raises(geometry.GeometryError, match="invalid wire tag"):
             cad.wire((cad.orient(curve),), closed=False)
-        assert cad._wire_tokens == {}
 
     with geometry.model("wire-duplicate", dimension=3) as cad:
         fake_gmsh.model.occ.wire_tags[:] = [23, 23]
@@ -1348,8 +1383,8 @@ def test_fake_wire_rejects_malformed_and_duplicate_native_identity(
         with pytest.raises(geometry.GeometryError, match="duplicate wire tag"):
             cad.wire((cad.orient(second_curve),), closed=False)
 
-        assert first.tag not in cad._wire_tokens
-        assert cad._wire_dependencies == {}
+        with pytest.raises(geometry.StaleEntityError, match="stale wire"):
+            cad._normalize_wires((first,), operation="test")
 
 
 def test_fake_curve_loop_validates_continuity_closure_and_duplicates_first(

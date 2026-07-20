@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum, auto
 import math
 import operator
 from collections.abc import Iterable, Sequence
@@ -20,7 +19,7 @@ from .._validation import (
     _validate_positive_tag,
 )
 from ..errors import (
-    EntityOwnershipError,
+    EntityOwnershipError as EntityOwnershipError,
     GeometryError,
     GeometryStateError,
     StaleEntityError,
@@ -38,12 +37,13 @@ from ..types import (
     WireRef,
     _unique_first_seen,
 )
-from . import backend
 from .constants import (
     _LOOP_WINDING_REFINEMENTS,
     _OCC_BOUNDING_BOX_PADDING,
     _PLANAR_TOLERANCE,
 )
+from .control_dependencies import _ControlDependencyLedger
+from .meshing_port import _BoundMeshingPort
 from .predicates import (
     _GeometrySignature,
     _PlaneFrame,
@@ -61,6 +61,15 @@ from .predicates import (
     _project_plane_points,
     _validate_elliptical_arc_geometry,
     _vector_norm,
+)
+from .reference_registry import _ReferenceRegistry
+from .session import _GmshModelSession
+from .state import (
+    _GEOMETRY_MUTATION_STATES,
+    _MESH_CONTROL_STATES,
+    _QUERY_STATES,
+    _ModelStateMachine,
+    _State,
 )
 
 
@@ -261,22 +270,6 @@ class GmshMeshRef:
         return GeometryModel._borrow_generated_mesh(self._owner, self)
 
 
-class _State(Enum):
-    NEW = auto()
-    BUILDING_GEOMETRY = auto()
-    CONFIGURING_MESH = auto()
-    MESHED = auto()
-    MESH_FAILED = auto()
-    CLOSED = auto()
-
-
-_QUERY_STATES = frozenset(
-    {_State.BUILDING_GEOMETRY, _State.CONFIGURING_MESH, _State.MESH_FAILED}
-)
-_GEOMETRY_MUTATION_STATES = frozenset({_State.BUILDING_GEOMETRY})
-_MESH_CONTROL_STATES = frozenset({_State.CONFIGURING_MESH})
-
-
 class GeometryModel:
     """Context-managed owner of one scripted OCC model and its mesh attempt.
 
@@ -289,13 +282,10 @@ class GeometryModel:
     def __init__(self, name: str, *, dimension: Literal[1, 2, 3]) -> None:
         self._name = name
         self._dimension = _validate_mesh_dimension(dimension)
-        self._state = _State.NEW
-        self._owner_token = object()
-        self._entity_tokens: dict[tuple[int, int], object] = {}
-        self._curve_loop_tokens: dict[int, object] = {}
-        self._curve_loop_dependencies: dict[int, frozenset[tuple[int, int]]] = {}
-        self._wire_tokens: dict[int, object] = {}
-        self._wire_dependencies: dict[int, frozenset[tuple[int, int]]] = {}
+        self._states = _ModelStateMachine(name)
+        self._session = _GmshModelSession(name)
+        self._references = _ReferenceRegistry(name)
+        self._control_dependencies = _ControlDependencyLedger(name)
         self._mesh_field_tokens: dict[int, object] = {}
         self._mesh_field_types: dict[
             int,
@@ -303,19 +293,11 @@ class GeometryModel:
         ] = {}
         self._mesh_size_mode: Literal["none", "point", "background"] = "none"
         self._background_field: MeshFieldRef | None = None
-        self._entity_control_dependencies: set[tuple[int, int]] = set()
-        self._transform_unsafe_control_dependencies: set[tuple[int, int]] = set()
-        self._control_dependency_scope_unknown = False
         self._auto_mesh_blockers: set[str] = set()
         self._auto_mesh_scope_unknown = False
-        self._gmsh: Any | None = None
-        self._owns_session = False
-        self._created_model = False
-        self._prior_current: str | None = None
-        self._pending_options: dict[str, float] = {}
         self._mesh_attempted = False
         self._generation_token: object | None = None
-        self._mesher_token: object | None = None
+        self._meshing_port: _BoundMeshingPort | None = None
         self._structured_extrusion_open = False
 
     @property
@@ -328,56 +310,35 @@ class GeometryModel:
         """Return the immutable topological mesh dimension."""
         return self._dimension
 
+    @property
+    def _gmsh(self) -> Any:
+        """Return the facade only through the session activation gate."""
+        return self._session.activate("native facade access")
+
     def __enter__(self) -> GeometryModel:
         """Enter the facade context and create its isolated Gmsh model."""
-        if self._state is not _State.NEW:
+        if self._states.state is not _State.NEW:
             raise self._state_error("context entry", "model context is not new")
 
         try:
-            self._gmsh = backend.load_gmsh()
-
-            if not bool(self._gmsh.isInitialized()):
-                self._owns_session = True
-                self._gmsh.initialize()
-
-            self._prior_current = str(self._gmsh.model.getCurrent())
-            existing_models = tuple(str(item) for item in self._gmsh.model.list())
-            if not isinstance(self.name, str) or not self.name.strip():
-                raise GeometryStateError(
-                    f"geometry model {self.name!r}: model name must be a nonempty string"
-                )
-            if self.name in existing_models:
-                raise GeometryStateError(
-                    f"geometry model {self.name!r}: a Gmsh model with this name "
-                    "already exists"
-                )
-
-            self._gmsh.model.add(self.name)
-            self._created_model = True
-            self._gmsh.model.setCurrent(self.name)
-            self._entity_tokens.clear()
-            self._curve_loop_tokens.clear()
-            self._curve_loop_dependencies.clear()
-            self._wire_tokens.clear()
-            self._wire_dependencies.clear()
+            self._session.enter()
+            self._references.clear()
             self._mesh_field_tokens.clear()
             self._mesh_field_types.clear()
             self._mesh_size_mode = "none"
             self._background_field = None
-            self._entity_control_dependencies.clear()
-            self._transform_unsafe_control_dependencies.clear()
-            self._control_dependency_scope_unknown = False
+            self._control_dependencies.clear()
             self._auto_mesh_blockers.clear()
             self._auto_mesh_scope_unknown = False
             self._mesh_attempted = False
             self._generation_token = None
-            self._mesher_token = None
+            self._meshing_port = None
             self._structured_extrusion_open = False
-            self._state = _State.BUILDING_GEOMETRY
+            self._states.enter_geometry()
             return self
         except BaseException as error:
             cleanup_errors = self._cleanup_after_failed_entry()
-            self._state = _State.CLOSED
+            self._states.close()
             for operation, cleanup_error in cleanup_errors:
                 error.add_note(
                     f"geometry model {self.name!r}: entry cleanup also failed "
@@ -392,69 +353,59 @@ class GeometryModel:
         traceback: Any,
     ) -> bool:
         """Remove the facade model and release only lifecycle state it owns."""
-        cleanup_error: tuple[str, BaseException] | None = None
-        gmsh = self._gmsh
+        cleanup_errors: list[tuple[str, BaseException]] = []
+        initialized: bool | None = None
         try:
-            if gmsh is not None and bool(gmsh.isInitialized()):
-                cleanup_error = self._capture_cleanup_error(
-                    cleanup_error,
-                    "restore mesh options",
-                    self._restore_pending_options,
-                )
-                cleanup_error = self._capture_cleanup_error(
-                    cleanup_error,
-                    "remove facade model",
-                    self._remove_created_model,
-                )
-                cleanup_error = self._capture_cleanup_error(
-                    cleanup_error,
-                    "restore prior model",
-                    self._restore_prior_model,
-                )
-        finally:
-            self._entity_tokens.clear()
-            self._curve_loop_tokens.clear()
-            self._curve_loop_dependencies.clear()
-            self._wire_tokens.clear()
-            self._wire_dependencies.clear()
+            initialized = self._session.inspect_initialized()
+        except BaseException as error:
+            cleanup_errors.append(("inspect Gmsh session state", error))
+        if initialized:
+            for operation, callback in (
+                ("restore mesh options", self._session.restore_pending_options),
+                ("remove facade model", self._session.remove_created_model),
+                ("restore prior model", self._session.restore_prior_model),
+            ):
+                try:
+                    callback()
+                except BaseException as error:
+                    cleanup_errors.append((operation, error))
+        try:
+            self._references.clear()
             self._mesh_field_tokens.clear()
             self._mesh_field_types.clear()
             self._background_field = None
-            self._entity_control_dependencies.clear()
-            self._transform_unsafe_control_dependencies.clear()
-            self._control_dependency_scope_unknown = False
+            self._control_dependencies.clear()
             self._auto_mesh_blockers.clear()
             self._auto_mesh_scope_unknown = False
             self._generation_token = None
-            self._mesher_token = None
+            self._meshing_port = None
             self._structured_extrusion_open = False
-            self._state = _State.CLOSED
-            if gmsh is not None and self._owns_session:
-                if bool(gmsh.isInitialized()):
-                    try:
-                        gmsh.finalize()
-                    except BaseException as error:
-                        if cleanup_error is None:
-                            cleanup_error = ("finalize owned session", error)
-                    else:
-                        self._owns_session = False
-                        self._created_model = False
-                else:
-                    self._owns_session = False
-                    self._created_model = False
+            self._states.close()
+        finally:
+            if initialized is not None:
+                try:
+                    self._session.finalize_owned_session(initialized=initialized)
+                except BaseException as error:
+                    cleanup_errors.append(("finalize owned session", error))
 
-        if exc_value is None and cleanup_error is not None:
-            operation, error = cleanup_error
-            raise GeometryError(
+        if exc_value is None and cleanup_errors:
+            operation, error = cleanup_errors[0]
+            contextual = GeometryError(
                 f"geometry model {self.name!r}: cleanup failed while trying to "
                 f"{operation}"
-            ) from error
-        if exc_value is not None and cleanup_error is not None:
-            operation, error = cleanup_error
-            exc_value.add_note(
-                f"geometry model {self.name!r}: cleanup also failed while "
-                f"trying to {operation}: {error}"
             )
+            for later_operation, later_error in cleanup_errors[1:]:
+                contextual.add_note(
+                    f"geometry model {self.name!r}: cleanup also failed while "
+                    f"trying to {later_operation}: {later_error}"
+                )
+            raise contextual from error
+        if exc_value is not None:
+            for operation, error in cleanup_errors:
+                exc_value.add_note(
+                    f"geometry model {self.name!r}: cleanup also failed while "
+                    f"trying to {operation}: {error}"
+                )
         return False
 
     def entities(self, dimension: int) -> tuple[EntityRef, ...]:
@@ -702,27 +653,11 @@ class GeometryModel:
         # interpret them as additive inner wires. The explicit typed
         # orientation above is used to validate traversal continuity.
         raw_tag = self._gmsh.model.occ.addCurveLoop(curve_tags)
-        try:
-            tag = _validate_positive_tag(raw_tag, "curve loop tag")
-        except ValueError as error:
-            self._curve_loop_tokens.clear()
-            self._curve_loop_dependencies.clear()
-            raise GeometryError(
-                f"geometry model {self.name!r}: curve_loop returned an invalid "
-                "loop tag; typed loop identities were invalidated"
-            ) from error
-        if tag in self._curve_loop_tokens:
-            self._curve_loop_tokens.clear()
-            self._curve_loop_dependencies.clear()
-            raise GeometryError(
-                f"geometry model {self.name!r}: curve_loop returned duplicate "
-                f"loop tag {tag}; typed loop identities were invalidated"
-            )
-        token = object()
-        reference = CurveLoopRef(tag, oriented, self._owner_token, token)
-        self._curve_loop_tokens[tag] = token
-        self._curve_loop_dependencies[tag] = dependency_keys
-        return reference
+        return self._references.register_curve_loop(
+            raw_tag,
+            oriented,
+            dependency_keys,
+        )
 
     def wire(
         self,
@@ -798,27 +733,12 @@ class GeometryModel:
             raise GeometryError(
                 f"geometry model {self.name!r}: native OCC wire failed"
             ) from error
-        try:
-            tag = _validate_positive_tag(raw_tag, "wire tag")
-        except ValueError as error:
-            self._wire_tokens.clear()
-            self._wire_dependencies.clear()
-            raise GeometryError(
-                f"geometry model {self.name!r}: wire returned an invalid wire "
-                "tag; typed wire identities were invalidated"
-            ) from error
-        if tag in self._wire_tokens:
-            self._wire_tokens.clear()
-            self._wire_dependencies.clear()
-            raise GeometryError(
-                f"geometry model {self.name!r}: wire returned duplicate wire "
-                f"tag {tag}; typed wire identities were invalidated"
-            )
-        token = object()
-        reference = WireRef(tag, oriented, closed, self._owner_token, token)
-        self._wire_tokens[tag] = token
-        self._wire_dependencies[tag] = dependency_keys
-        return reference
+        return self._references.register_wire(
+            raw_tag,
+            oriented,
+            closed,
+            dependency_keys,
+        )
 
     def plane_surface(
         self,
@@ -1958,7 +1878,9 @@ class GeometryModel:
             for entity in normalized
         )
         native_started = False
-        prior_unknown_scope = self._control_dependency_scope_unknown
+        prior_unknown_scope = (
+            self._control_dependencies.snapshot_unknown_scope()
+        )
         prior_auto_mesh_scope_unknown = self._auto_mesh_scope_unknown
         try:
             native_started = True
@@ -1970,7 +1892,7 @@ class GeometryModel:
                 recombine,
             )
             if structured:
-                self._control_dependency_scope_unknown = True
+                self._control_dependencies.mark_unknown_after_unknown_mutation()
                 self._auto_mesh_scope_unknown = True
             validated_pairs = tuple(
                 _normalize_dim_tag(pair) for pair in output_pairs
@@ -2014,14 +1936,16 @@ class GeometryModel:
                     transform_unsafe=True,
                 )
                 self._auto_mesh_blockers.add(operation)
-                self._control_dependency_scope_unknown = prior_unknown_scope
+                self._control_dependencies.restore_unknown_scope(
+                    prior_unknown_scope
+                )
                 self._auto_mesh_scope_unknown = prior_auto_mesh_scope_unknown
             return result
         except BaseException as error:
             if native_started:
                 self._fail_closed_after_unknown_occ_mutation()
                 if structured:
-                    self._state = _State.MESH_FAILED
+                    self._states.mark_mesh_failed(operation)
                     self._structured_extrusion_open = False
                     error.add_note(
                         f"geometry model {self.name!r}: structured extrusion failed "
@@ -2254,25 +2178,25 @@ class GeometryModel:
             self._wrap_entity((requested_dimension, tag)) for tag in tags
         )
 
-    def _bind_mesher(self) -> object:
-        """Atomically seal geometry mutation and issue the sole mesher capability."""
+    def _acquire_meshing_port(self) -> _BoundMeshingPort:
+        """Atomically seal geometry mutation and bind its sole meshing port."""
         operation = "Mesher binding"
-        if self._mesher_token is not None:
+        if self._meshing_port is not None:
             raise self._state_error(operation, "a Mesher is already bound")
         self._check_state(operation, _GEOMETRY_MUTATION_STATES)
         self._activate(operation)
-        token = object()
-        self._mesher_token = token
+        port = _BoundMeshingPort(self)
+        self._meshing_port = port
         self._structured_extrusion_open = True
-        self._state = _State.CONFIGURING_MESH
-        return token
+        self._states.begin_mesh_configuration(operation)
+        return port
 
     def _assert_mesher_authority(
         self,
-        mesher_token: object,
+        mesher_port: object,
         operation: str,
     ) -> None:
-        if self._mesher_token is None or mesher_token is not self._mesher_token:
+        if self._meshing_port is None or mesher_port is not self._meshing_port:
             raise self._state_error(operation, "the bound Mesher capability is invalid")
         self._check_state(operation, _MESH_CONTROL_STATES)
 
@@ -2829,9 +2753,9 @@ class GeometryModel:
             if policy.strict_cell_shape:
                 self._validate_generated_top_cell_shape(policy)
         except BaseException as error:
-            self._state = _State.MESH_FAILED
+            self._states.mark_mesh_failed(operation)
             try:
-                self._restore_pending_options()
+                self._session.restore_pending_options()
             except BaseException as restore_error:
                 error.add_note(
                     f"geometry model {self.name!r}: additionally failed to "
@@ -2843,21 +2767,21 @@ class GeometryModel:
             raise
 
         try:
-            self._restore_pending_options()
+            self._session.restore_pending_options()
         except BaseException as error:
-            self._state = _State.MESH_FAILED
+            self._states.mark_mesh_failed(operation)
             raise GeometryError(
                 f"geometry model {self.name!r}: mesh generation succeeded but "
                 "restoring global Gmsh options failed"
             ) from error
         generation_token = object()
         self._generation_token = generation_token
-        self._state = _State.MESHED
+        self._states.mark_meshed(operation)
         return GmshMeshRef(
             self.dimension,
             self.name,
             self,
-            self._owner_token,
+            self._references.owner_token,
             generation_token,
         )
 
@@ -2867,7 +2791,7 @@ class GeometryModel:
         *,
         size_mode: _GenerationSizeMode,
     ) -> None:
-        if self._pending_options:
+        if self._session.has_pending_options:
             raise GeometryStateError(
                 f"geometry model {self.name!r}: mesh options already have a "
                 "pending restoration"
@@ -2900,13 +2824,7 @@ class GeometryModel:
         elif size_mode in {"point", "background"}:
             requested["Mesh.MeshSizeFactor"] = 1.0
 
-        option_names = tuple(requested)
-        for option_name in option_names:
-            self._pending_options[option_name] = float(
-                self._gmsh.option.getNumber(option_name)
-            )
-        for option_name in option_names:
-            self._gmsh.option.setNumber(option_name, requested[option_name])
+        self._session.set_numeric_options(requested.items())
 
     def _validate_generated_top_cell_shape(
         self,
@@ -3037,13 +2955,8 @@ class GeometryModel:
         self._check_state(operation, _GEOMETRY_MUTATION_STATES)
         self._activate(operation)
         self._auto_mesh_scope_unknown = True
-        if self._entity_control_dependencies:
-            self._control_dependency_scope_unknown = True
-        self._entity_tokens.clear()
-        self._curve_loop_tokens.clear()
-        self._curve_loop_dependencies.clear()
-        self._wire_tokens.clear()
-        self._wire_dependencies.clear()
+        self._control_dependencies.mark_unknown_after_raw_access()
+        self._references.clear()
         self._mesh_field_tokens.clear()
         self._mesh_field_types.clear()
         if kind == "model":
@@ -3150,56 +3063,14 @@ class GeometryModel:
         *,
         operation: str,
     ) -> tuple[CurveLoopRef, ...]:
-        try:
-            normalized = tuple(loops)
-        except TypeError as exc:
-            raise TypeError(f"{operation} curve loops must be iterable") from exc
-        if not normalized:
-            raise ValueError(f"{operation} requires at least one curve loop")
-        seen_tags: set[int] = set()
-        member_keys: set[tuple[int, int]] = set()
-        for loop in normalized:
-            if not isinstance(loop, CurveLoopRef):
-                raise TypeError(
-                    f"{operation} requires CurveLoopRef values, got {loop!r}"
-                )
-            if loop._owner_token is not self._owner_token:
-                raise EntityOwnershipError(
-                    f"geometry model {self.name!r}: {operation} received a "
-                    "curve loop owned by another geometry model"
-                )
-            if self._curve_loop_tokens.get(loop.tag) is not loop._loop_token:
-                raise StaleEntityError(
-                    f"geometry model {self.name!r}: {operation} received stale "
-                    f"curve loop {loop.tag}"
-                )
-            if loop.tag in seen_tags:
-                raise ValueError(f"{operation} curve loops must be duplicate-free")
-            seen_tags.add(loop.tag)
-            dependency_keys = self._curve_loop_dependencies.get(loop.tag)
-            expected_keys = frozenset(
-                self._entity_boundary_closure_keys(
-                    tuple(item.curve for item in loop.curves),
-                    synchronize=False,
-                )
-            )
-            if dependency_keys != expected_keys:
-                raise StaleEntityError(
-                    f"geometry model {self.name!r}: {operation} received stale "
-                    f"curve loop {loop.tag}"
-                )
-            overlap = member_keys & set(dependency_keys)
-            if overlap:
-                raise ValueError(
-                    f"{operation} curve loops must not share member curves or "
-                    "boundary points"
-                )
-            member_keys.update(dependency_keys)
-            self._normalize_entities(
+        return self._references.normalize_curve_loops(
+            loops,
+            operation=operation,
+            dependency_resolver=lambda loop: self._entity_boundary_closure_keys(
                 tuple(item.curve for item in loop.curves),
-                operation=f"{operation} curve loop {loop.tag}",
-            )
-        return normalized
+                synchronize=False,
+            ),
+        )
 
     def _normalize_wires(
         self,
@@ -3207,49 +3078,14 @@ class GeometryModel:
         *,
         operation: str,
     ) -> tuple[WireRef, ...]:
-        try:
-            normalized = tuple(wires)
-        except TypeError as exc:
-            raise TypeError(f"{operation} wires must be iterable") from exc
-        if not normalized:
-            raise ValueError(f"{operation} requires at least one wire")
-        seen_tags: set[int] = set()
-        for wire in normalized:
-            if not isinstance(wire, WireRef):
-                raise TypeError(
-                    f"{operation} requires WireRef values, got {wire!r}"
-                )
-            if wire._owner_token is not self._owner_token:
-                raise EntityOwnershipError(
-                    f"geometry model {self.name!r}: {operation} received a "
-                    "wire owned by another geometry model"
-                )
-            if self._wire_tokens.get(wire.tag) is not wire._wire_token:
-                raise StaleEntityError(
-                    f"geometry model {self.name!r}: {operation} received stale "
-                    f"wire {wire.tag}"
-                )
-            if wire.tag in seen_tags:
-                raise ValueError(f"{operation} wires must be duplicate-free")
-            seen_tags.add(wire.tag)
-            member_curves = tuple(item.curve for item in wire.curves)
-            dependency_keys = self._wire_dependencies.get(wire.tag)
-            expected_keys = frozenset(
-                self._entity_boundary_closure_keys(
-                    member_curves,
-                    synchronize=False,
-                )
-            )
-            if dependency_keys != expected_keys:
-                raise StaleEntityError(
-                    f"geometry model {self.name!r}: {operation} received stale "
-                    f"wire {wire.tag}"
-                )
-            self._normalize_entities(
-                member_curves,
-                operation=f"{operation} wire {wire.tag}",
-            )
-        return normalized
+        return self._references.normalize_wires(
+            wires,
+            operation=operation,
+            dependency_resolver=lambda wire: self._entity_boundary_closure_keys(
+                tuple(item.curve for item in wire.curves),
+                synchronize=False,
+            ),
+        )
 
     def _assert_plane_surface_loop_compatibility(
         self,
@@ -4530,12 +4366,8 @@ class GeometryModel:
             ) from error
 
     def _fail_closed_after_unknown_occ_mutation(self) -> None:
-        self._entity_tokens.clear()
-        self._curve_loop_tokens.clear()
-        self._curve_loop_dependencies.clear()
-        self._wire_tokens.clear()
-        self._wire_dependencies.clear()
-        self._control_dependency_scope_unknown = True
+        self._references.clear()
+        self._control_dependencies.mark_unknown_after_unknown_mutation()
         self._auto_mesh_scope_unknown = True
 
     def _boolean(
@@ -4650,21 +4482,13 @@ class GeometryModel:
                 if (entity.dimension, entity.tag) not in existing_pairs
             ]
             if missing_preserved:
-                self._entity_tokens.clear()
-                self._curve_loop_tokens.clear()
-                self._curve_loop_dependencies.clear()
-                self._wire_tokens.clear()
-                self._wire_dependencies.clear()
+                self._references.clear()
                 raise GeometryError(
                     f"geometry model {self.name!r}: {operation} removed an input "
                     "whose remove flag was false"
                 )
         except BaseException as error:
-            self._entity_tokens.clear()
-            self._curve_loop_tokens.clear()
-            self._curve_loop_dependencies.clear()
-            self._wire_tokens.clear()
-            self._wire_dependencies.clear()
+            self._references.clear()
             if isinstance(error, GeometryError) or not isinstance(error, Exception):
                 raise
             raise GeometryError(
@@ -4683,35 +4507,10 @@ class GeometryModel:
         *,
         operation: str,
     ) -> tuple[EntityRef, ...]:
-        try:
-            normalized = tuple(entities)
-        except TypeError as exc:
-            raise TypeError(f"{operation} entities must be iterable") from exc
-        if not normalized:
-            raise ValueError(f"{operation} requires at least one entity")
-        seen: set[EntityRef] = set()
-        for entity in normalized:
-            if not isinstance(entity, EntityRef):
-                raise TypeError(
-                    f"{operation} requires EntityRef values, got {entity!r}"
-                )
-            if entity._owner_token is not self._owner_token:
-                raise EntityOwnershipError(
-                    f"geometry model {self.name!r}: {operation} received an "
-                    "entity owned by another geometry model"
-                )
-            current_token = self._entity_tokens.get(
-                (entity.dimension, entity.tag)
-            )
-            if current_token is not entity._entity_token:
-                raise StaleEntityError(
-                    f"geometry model {self.name!r}: {operation} received stale "
-                    f"entity ({entity.dimension}, {entity.tag})"
-                )
-            if entity in seen:
-                raise ValueError(f"{operation} entity inputs must be duplicate-free")
-            seen.add(entity)
-        return normalized
+        return self._references.normalize_entities(
+            entities,
+            operation=operation,
+        )
 
     def _normalize_optional_entities(
         self,
@@ -4720,15 +4519,10 @@ class GeometryModel:
         operation: str,
         label: str,
     ) -> tuple[EntityRef, ...]:
-        try:
-            materialized = tuple(entities)
-        except TypeError as exc:
-            raise TypeError(f"{operation} {label} must be iterable") from exc
-        if not materialized:
-            return ()
-        return self._normalize_entities(
-            materialized,
-            operation=f"{operation} {label}",
+        return self._references.normalize_optional_entities(
+            entities,
+            operation=operation,
+            label=label,
         )
 
     def _normalize_mesh_fields(
@@ -4748,7 +4542,7 @@ class GeometryModel:
                     f"{operation} requires MeshFieldRef values, got "
                     f"{mesh_field!r}"
                 )
-            if mesh_field._owner_token is not self._owner_token:
+            if mesh_field._owner_token is not self._references.owner_token:
                 raise MeshFieldOwnershipError(
                     f"geometry model {self.name!r}: {operation} received a "
                     "mesh field owned by another geometry model"
@@ -4823,7 +4617,7 @@ class GeometryModel:
             reference = MeshFieldRef(
                 allocated_tag,
                 field_type,
-                self._owner_token,
+                self._references.owner_token,
                 token,
             )
             self._mesh_field_tokens[allocated_tag] = token
@@ -4946,7 +4740,7 @@ class GeometryModel:
         for entity in entities:
             key = (entity.dimension, entity.tag)
             if key not in existing:
-                if self._entity_tokens.get(key) is entity._entity_token:
+                if self._references.is_current_entity(entity):
                     self._invalidate_entity_keys((key,))
                 raise StaleEntityError(
                     f"geometry model {self.name!r}: {operation} entity "
@@ -4996,32 +4790,13 @@ class GeometryModel:
         self,
         keys: Iterable[tuple[int, int]],
     ) -> None:
-        materialized = set(keys)
-        for key in materialized:
-            self._entity_tokens.pop(key, None)
-        self._invalidate_curve_topology_for_keys(materialized)
+        self._references.invalidate_entities(keys)
 
     def _invalidate_curve_topology_for_keys(
         self,
         keys: Iterable[tuple[int, int]],
     ) -> None:
-        materialized = set(keys)
-        invalid_loops = [
-            tag
-            for tag, dependencies in self._curve_loop_dependencies.items()
-            if dependencies & materialized
-        ]
-        for tag in invalid_loops:
-            self._curve_loop_tokens.pop(tag, None)
-            self._curve_loop_dependencies.pop(tag, None)
-        invalid_wires = [
-            tag
-            for tag, dependencies in self._wire_dependencies.items()
-            if dependencies & materialized
-        ]
-        for tag in invalid_wires:
-            self._wire_tokens.pop(tag, None)
-            self._wire_dependencies.pop(tag, None)
+        self._references.invalidate_topology(keys)
 
     def _validate_2d_z(self, z_value: float, operation: str) -> None:
         if self.dimension == 2 and abs(z_value) > _PLANAR_TOLERANCE:
@@ -5034,31 +4809,10 @@ class GeometryModel:
         operation: str,
         removed_keys: set[tuple[int, int]],
     ) -> None:
-        if not removed_keys:
-            return
-        if self._control_dependency_scope_unknown:
-            raise self._state_error(
-                operation,
-                "raw access or a failed controlled topology operation made "
-                "mesh-control dependencies unknown",
-            )
-        conflicts = removed_keys & self._entity_control_dependencies
-        if conflicts:
-            dimension, tag = min(conflicts)
-            raise self._state_error(
-                operation,
-                "destructive topology replacement would invalidate an "
-                "entity-dependent mesh control on topology "
-                f"({dimension}, {tag})",
-            )
+        self._control_dependencies.check_removal(operation, removed_keys)
 
     def _check_control_dependency_scope_known(self, operation: str) -> None:
-        if self._control_dependency_scope_unknown:
-            raise self._state_error(
-                operation,
-                "raw access or a failed controlled topology operation made "
-                "mesh-control dependencies unknown",
-            )
+        self._control_dependencies.check_scope_known(operation)
 
     def _check_auto_mesh_controls(self) -> None:
         if self._auto_mesh_scope_unknown:
@@ -5081,23 +4835,11 @@ class GeometryModel:
         operation: str,
         entities: tuple[EntityRef, ...],
     ) -> None:
-        if self._control_dependency_scope_unknown:
-            raise self._state_error(
-                operation,
-                "raw access or a failed controlled topology operation made "
-                "mesh-control dependencies unknown",
-            )
-        if not self._transform_unsafe_control_dependencies:
+        self._control_dependencies.check_scope_known(operation)
+        if not self._control_dependencies.has_transform_unsafe_dependencies:
             return
         transformed_keys = self._entity_boundary_closure_keys(entities)
-        conflicts = transformed_keys & self._transform_unsafe_control_dependencies
-        if conflicts:
-            dimension, tag = min(conflicts)
-            raise self._state_error(
-                operation,
-                "the OCC transform would discard an entity-dependent mesh "
-                f"control on topology ({dimension}, {tag})",
-            )
+        self._control_dependencies.check_transform(operation, transformed_keys)
 
     def _register_control_dependencies(
         self,
@@ -5105,59 +4847,38 @@ class GeometryModel:
         *,
         transform_unsafe: bool,
     ) -> None:
-        materialized = set(keys)
-        self._entity_control_dependencies.update(materialized)
-        if transform_unsafe:
-            self._transform_unsafe_control_dependencies.update(materialized)
+        self._control_dependencies.register(
+            keys,
+            transform_unsafe=transform_unsafe,
+        )
 
     def _check_state(
         self,
         operation: str,
         allowed: frozenset[_State],
     ) -> None:
-        if self._state not in allowed:
-            allowed_text = ", ".join(
-                state.name for state in sorted(allowed, key=lambda item: item.name)
-            )
-            raise self._state_error(
-                operation,
-                f"state {self._state.name} does not permit this operation "
-                f"(expected {allowed_text})",
-            )
+        self._states.check(operation, allowed)
 
     def _activate(self, operation: str) -> None:
-        if self._gmsh is None or not bool(self._gmsh.isInitialized()):
-            raise self._state_error(operation, "Gmsh session is not active")
-        models = tuple(str(item) for item in self._gmsh.model.list())
-        if self.name not in models:
-            raise self._state_error(operation, "facade-owned Gmsh model is missing")
-        if str(self._gmsh.model.getCurrent()) != self.name:
-            self._gmsh.model.setCurrent(self.name)
+        self._session.activate(operation)
 
     def _borrow_generated_mesh(self, source: GmshMeshRef) -> Any:
         """Validate and reactivate one live generated mesh for the IO layer."""
         stale_error = _stale_gmsh_mesh_error(source.model_name)
         if (
             source._owner is not self
-            or source._owner_token is not self._owner_token
+            or source._owner_token is not self._references.owner_token
             or source.dimension != self.dimension
             or source.model_name != self.name
-            or self._state is not _State.MESHED
+            or self._states.state is not _State.MESHED
             or self._generation_token is None
             or source._generation_token is not self._generation_token
-            or not self._created_model
+            or not self._session.created_model
         ):
             raise stale_error
 
-        gmsh = self._gmsh
         try:
-            if gmsh is None or not bool(gmsh.isInitialized()):
-                raise stale_error
-            model_names = tuple(str(item) for item in gmsh.model.list())
-            if self.name not in model_names:
-                raise stale_error
-            if str(gmsh.model.getCurrent()) != self.name:
-                gmsh.model.setCurrent(self.name)
+            gmsh = self._session.activate("borrow generated mesh")
         except StaleGmshMeshError:
             raise
         except BaseException as error:
@@ -5165,111 +4886,25 @@ class GeometryModel:
         return gmsh.model
 
     def _wrap_entity(self, pair: Any) -> EntityRef:
-        dimension, tag = _normalize_dim_tag(pair)
-        key = (dimension, tag)
-        token = self._entity_tokens.get(key)
-        if token is None:
-            token = object()
-            self._entity_tokens[key] = token
-        return EntityRef(dimension, tag, self._owner_token, token)
+        return self._references.wrap_entity(pair)
 
     def _cleanup_after_failed_entry(
         self,
     ) -> tuple[tuple[str, BaseException], ...]:
-        self._entity_tokens.clear()
-        self._curve_loop_tokens.clear()
-        self._curve_loop_dependencies.clear()
-        self._wire_tokens.clear()
-        self._wire_dependencies.clear()
+        self._references.clear()
         self._mesh_field_tokens.clear()
         self._mesh_field_types.clear()
         self._mesh_size_mode = "none"
         self._background_field = None
-        self._entity_control_dependencies.clear()
-        self._transform_unsafe_control_dependencies.clear()
-        self._control_dependency_scope_unknown = False
+        self._control_dependencies.clear()
         self._auto_mesh_blockers.clear()
         self._auto_mesh_scope_unknown = False
-        self._mesher_token = None
+        self._meshing_port = None
         self._structured_extrusion_open = False
-        gmsh = self._gmsh
-        if gmsh is None:
-            return ()
-        cleanup_errors: list[tuple[str, BaseException]] = []
-        try:
-            initialized = bool(gmsh.isInitialized())
-        except BaseException as error:
-            return (("inspect Gmsh session state", error),)
-        if initialized:
-            try:
-                self._remove_created_model()
-            except BaseException as error:
-                cleanup_errors.append(("remove facade model", error))
-            try:
-                self._restore_prior_model()
-            except BaseException as error:
-                cleanup_errors.append(("restore prior model", error))
-            if self._owns_session:
-                try:
-                    gmsh.finalize()
-                except BaseException as error:
-                    cleanup_errors.append(("finalize owned session", error))
-                else:
-                    self._owns_session = False
-                    self._created_model = False
-        else:
-            self._owns_session = False
-            self._created_model = False
-        return tuple(cleanup_errors)
-
-    def _remove_created_model(self) -> None:
-        if not self._created_model or self._gmsh is None:
-            return
-        model_names = tuple(str(item) for item in self._gmsh.model.list())
-        if self.name in model_names:
-            if str(self._gmsh.model.getCurrent()) != self.name:
-                self._gmsh.model.setCurrent(self.name)
-            self._gmsh.model.remove()
-        self._created_model = False
-
-    def _restore_prior_model(self) -> None:
-        if self._gmsh is None or self._prior_current is None:
-            return
-        model_names = tuple(str(item) for item in self._gmsh.model.list())
-        if self._prior_current in model_names:
-            self._gmsh.model.setCurrent(self._prior_current)
-
-    def _restore_pending_options(self) -> None:
-        if self._gmsh is None:
-            return
-        first_error: BaseException | None = None
-        for option_name, value in tuple(self._pending_options.items()):
-            try:
-                self._gmsh.option.setNumber(option_name, value)
-            except BaseException as error:
-                if first_error is None:
-                    first_error = error
-            else:
-                del self._pending_options[option_name]
-        if first_error is not None:
-            raise first_error
-
-    @staticmethod
-    def _capture_cleanup_error(
-        current: tuple[str, BaseException] | None,
-        operation: str,
-        callback: Any,
-    ) -> tuple[str, BaseException] | None:
-        try:
-            callback()
-        except BaseException as error:
-            return current if current is not None else (operation, error)
-        return current
+        return self._session.cleanup_after_failed_entry()
 
     def _state_error(self, operation: str, detail: str) -> GeometryStateError:
-        return GeometryStateError(
-            f"geometry model {self.name!r}: {operation} failed because {detail}"
-        )
+        return self._states.error(operation, detail)
 
 
 def model(name: str, *, dimension: Literal[1, 2, 3]) -> GeometryModel:

@@ -1,6 +1,7 @@
 import ast
 import importlib.util
 from pathlib import Path
+import subprocess
 import sys
 
 
@@ -27,6 +28,19 @@ GEOMETRY_PUBLIC_API = [
     "SweepFrame",
     "WireRef",
     "model",
+]
+
+GMSH_MESH_PUBLIC_API = [
+    "AutoMeshSpec",
+    "GmshMeshRef",
+    "MeshCellShapeError",
+    "MeshControlConflictError",
+    "MeshFieldOwnershipError",
+    "MeshFieldRef",
+    "MeshSpec",
+    "Mesher",
+    "StaleGmshMeshError",
+    "StaleMeshFieldError",
 ]
 
 
@@ -349,6 +363,90 @@ def test_geometry_stateless_modules_follow_explicit_dependency_boundaries():
     assert offenders == []
 
 
+def test_geometry_stateful_modules_follow_explicit_dependency_boundaries():
+    module_dependencies = {
+        "fem.geometry._gmsh.state": (
+            "fem.geometry.errors",
+        ),
+        "fem.geometry._gmsh.session": (
+            "fem.geometry._gmsh.backend",
+            "fem.geometry.errors",
+        ),
+        "fem.geometry._gmsh.reference_registry": (
+            "fem.geometry._validation",
+            "fem.geometry.errors",
+            "fem.geometry.types",
+        ),
+        "fem.geometry._gmsh.control_dependencies": (
+            "fem.geometry.errors",
+        ),
+        "fem.geometry._gmsh.meshing_port": (
+            "fem.geometry.types",
+        ),
+    }
+    missing = []
+    offenders = []
+    for module_name, allowed_modules in module_dependencies.items():
+        relative = Path(*module_name.split(".")).with_suffix(".py")
+        path = SRC_ROOT / relative
+        if not path.is_file():
+            missing.append(str(path.relative_to(PROJECT_ROOT)))
+            continue
+        for target, lineno in _resolved_import_targets(path, module_name):
+            root = target.split(".", 1)[0]
+            if root in sys.stdlib_module_names or any(
+                target == allowed or target.startswith(f"{allowed}.")
+                for allowed in allowed_modules
+            ):
+                continue
+            offenders.append(
+                f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+            )
+
+    assert missing == []
+    assert offenders == []
+
+
+def test_phase_3_runtime_boundaries_do_not_eagerly_import_external_gmsh():
+    modules = (
+        "fem.geometry",
+        "fem.geometry._gmsh.state",
+        "fem.geometry._gmsh.session",
+        "fem.geometry._gmsh.reference_registry",
+        "fem.geometry._gmsh.control_dependencies",
+        "fem.geometry._gmsh.meshing_port",
+        "fem.mesh",
+        "fem.mesh.gmsh",
+    )
+    script = f"""
+import builtins
+import importlib
+import sys
+
+sys.path.insert(0, {str(SRC_ROOT)!r})
+real_import = builtins.__import__
+
+def guarded_import(name, *args, **kwargs):
+    if name == "gmsh" or name.startswith("gmsh."):
+        raise AssertionError("external gmsh was imported eagerly")
+    return real_import(name, *args, **kwargs)
+
+builtins.__import__ = guarded_import
+for module_name in {modules!r}:
+    importlib.import_module(module_name)
+assert "gmsh" not in sys.modules
+"""
+    completed = subprocess.run(
+        [sys.executable, "-B", "-c", script],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_geometry_facade_routes_public_stateless_names_to_canonical_modules():
     path = GEOMETRY_ROOT / "__init__.py"
     imports = {
@@ -457,6 +555,64 @@ def test_private_gmsh_model_does_not_redefine_extracted_stateless_names():
     assert exported == ["GeometryModel", "model"]
 
 
+def test_private_gmsh_model_delegates_extracted_stateful_ownership():
+    path = GEOMETRY_ROOT / "_gmsh" / "model.py"
+    assert "_State" not in _top_level_definition_names(path)
+
+    imports = {
+        target
+        for target, _ in _resolved_import_targets(
+            path,
+            "fem.geometry._gmsh.model",
+        )
+    }
+    required_imports = {
+        "fem.geometry._gmsh.control_dependencies._ControlDependencyLedger",
+        "fem.geometry._gmsh.meshing_port._BoundMeshingPort",
+        "fem.geometry._gmsh.reference_registry._ReferenceRegistry",
+        "fem.geometry._gmsh.session._GmshModelSession",
+        "fem.geometry._gmsh.state._ModelStateMachine",
+        "fem.geometry._gmsh.state._State",
+    }
+    assert sorted(required_imports - imports) == []
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    model_classes = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "GeometryModel"
+    ]
+    assert len(model_classes) == 1
+
+    moved_attributes = {
+        "_control_dependency_scope_unknown",
+        "_created_model",
+        "_curve_loop_dependencies",
+        "_curve_loop_tokens",
+        "_entity_control_dependencies",
+        "_entity_tokens",
+        "_mesher_token",
+        "_owner_token",
+        "_owns_session",
+        "_pending_options",
+        "_prior_current",
+        "_state",
+        "_transform_unsafe_control_dependencies",
+        "_wire_dependencies",
+        "_wire_tokens",
+    }
+    offenders = sorted(
+        (node.lineno, node.attr)
+        for node in ast.walk(model_classes[0])
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+        and node.attr in moved_attributes
+    )
+
+    assert offenders == []
+
+
 def test_gmsh_meshing_depends_only_on_geometry_and_backend_layers():
     paths = (
         SRC_ROOT / "fem" / "mesh" / "__init__.py",
@@ -483,6 +639,189 @@ def test_gmsh_meshing_depends_only_on_geometry_and_backend_layers():
                     f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
                 )
 
+    assert offenders == []
+
+
+def test_fem_mesh_uses_exactly_one_private_geometry_acquisition_seam():
+    paths = sorted((SRC_ROOT / "fem" / "mesh").rglob("*.py"))
+    acquisition_calls = []
+    forbidden_attributes = []
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Attribute):
+                continue
+            if node.attr == "_acquire_meshing_port" and isinstance(
+                node.ctx,
+                ast.Load,
+            ):
+                acquisition_calls.append((path, node))
+            if (
+                node.attr.startswith("_mesher_")
+                or node.attr == "_structured_extrude"
+                or node.attr in {
+                    "_complete",
+                    "_complete_mesh_configuration_operation",
+                }
+            ):
+                forbidden_attributes.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{node.lineno} -> "
+                    f"{node.attr}"
+                )
+
+    assert forbidden_attributes == []
+    assert len(acquisition_calls) == 1
+    acquisition_path, acquisition = acquisition_calls[0]
+    assert acquisition_path == SRC_ROOT / "fem" / "mesh" / "gmsh.py"
+    assert isinstance(acquisition.value, ast.Name)
+    assert acquisition.value.id == "geometry"
+
+    tree = ast.parse(acquisition_path.read_text(encoding="utf-8"))
+    mesher_classes = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "Mesher"
+    ]
+    assert len(mesher_classes) == 1
+    mesher_class = mesher_classes[0]
+    constructors = [
+        node
+        for node in mesher_class.body
+        if isinstance(node, ast.FunctionDef) and node.name == "__init__"
+    ]
+    assert len(constructors) == 1
+    constructor_acquisitions = [
+        node
+        for node in ast.walk(constructors[0])
+        if isinstance(node, ast.Attribute)
+        and node.attr == "_acquire_meshing_port"
+    ]
+    assert len(constructor_acquisitions) == 1
+
+    mesher_attributes = {
+        node.attr
+        for node in ast.walk(mesher_class)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+    }
+    assert {"_geometry", "_mesher_token"}.isdisjoint(mesher_attributes)
+
+    slot_assignments = [
+        node
+        for node in mesher_class.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "__slots__"
+            for target in node.targets
+        )
+    ]
+    assert len(slot_assignments) == 1
+    assert ast.literal_eval(slot_assignments[0].value) == ("_port",)
+
+
+def test_bound_meshing_port_has_only_restricted_transaction_surface():
+    path = GEOMETRY_ROOT / "_gmsh" / "meshing_port.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    port_classes = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "_BoundMeshingPort"
+    ]
+    assert len(port_classes) == 1
+    port_class = port_classes[0]
+
+    expected_public_methods = {
+        "background_field",
+        "distance_field",
+        "generate_auto_mesh",
+        "generate_mesh",
+        "mesh_size",
+        "min_field",
+        "recombine",
+        "structured_extrude",
+        "threshold_field",
+        "transfinite_curve",
+        "transfinite_surface",
+        "transfinite_volume",
+    }
+    public_methods = {
+        node.name
+        for node in port_class.body
+        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+        and not node.name.startswith("_")
+    }
+    assert public_methods == expected_public_methods
+
+    public_data = {
+        target.id
+        for node in port_class.body
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+        for target in (
+            node.targets if isinstance(node, ast.Assign) else (node.target,)
+        )
+        if isinstance(target, ast.Name) and not target.id.startswith("_")
+    }
+    assert public_data == set()
+
+    slot_assignments = [
+        node
+        for node in port_class.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "__slots__"
+            for target in node.targets
+        )
+    ]
+    assert len(slot_assignments) == 1
+    assert ast.literal_eval(slot_assignments[0].value) == ("__owner",)
+
+    allowed_owner_transactions = {
+        "_mesher_background_field",
+        "_mesher_distance_field",
+        "_mesher_generate_auto_mesh",
+        "_mesher_generate_mesh",
+        "_mesher_mesh_size",
+        "_mesher_min_field",
+        "_mesher_recombine",
+        "_mesher_threshold_field",
+        "_mesher_transfinite_curve",
+        "_mesher_transfinite_surface",
+        "_mesher_transfinite_volume",
+        "_structured_extrude",
+    }
+    owner_attributes = {
+        node.attr
+        for node in ast.walk(port_class)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Attribute)
+        and isinstance(node.value.value, ast.Name)
+        and node.value.value.id == "self"
+        and node.value.attr == "__owner"
+    }
+    assert owner_attributes == allowed_owner_transactions
+
+    forbidden_internal_handles = {
+        "_control_dependencies",
+        "_generation_token",
+        "_gmsh",
+        "_mesh_field_tokens",
+        "_references",
+        "_session",
+        "_states",
+        "activate",
+        "facade",
+        "model",
+        "occ",
+        "raw_model",
+        "raw_occ",
+    }
+    offenders = sorted(
+        (node.lineno, node.attr)
+        for node in ast.walk(port_class)
+        if isinstance(node, ast.Attribute)
+        and node.attr in forbidden_internal_handles
+    )
     assert offenders == []
 
 
@@ -562,6 +901,31 @@ def test_fem_geometry_public_api_is_exact_and_model_factory_is_public():
     assert GeometryModel is geometry.GeometryModel
     assert model is geometry.model
     assert isinstance(model("layout-contract", dimension=2), GeometryModel)
+
+
+def test_fem_mesh_public_api_snapshots_remain_exact():
+    from fem import mesh
+    from fem.mesh import gmsh as gmsh_meshing
+
+    assert mesh.__all__ == ["gmsh"]
+    assert mesh.gmsh is gmsh_meshing
+    assert gmsh_meshing.__all__ == GMSH_MESH_PUBLIC_API
+    assert all(hasattr(gmsh_meshing, name) for name in GMSH_MESH_PUBLIC_API)
+
+    private_runtime_names = {
+        "_BoundMeshingPort",
+        "_ControlDependencyLedger",
+        "_EntityRegistry",
+        "_GmshModelSession",
+        "_ModelStateMachine",
+        "_ReferenceRegistry",
+        "_State",
+        "_TopologyReferenceRegistry",
+    }
+    from fem import geometry
+
+    assert private_runtime_names.isdisjoint(geometry.__all__)
+    assert private_runtime_names.isdisjoint(vars(geometry))
 
 
 def test_fem_geometry_has_no_gmsh_alias_or_legacy_module():

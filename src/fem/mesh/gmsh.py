@@ -74,7 +74,7 @@ class AutoMeshSpec:
 class Mesher:
     """Configure and generate one native mesh for one live geometry model."""
 
-    __slots__ = ("_geometry", "_mesher_token")
+    __slots__ = ("_port",)
 
     def __init__(self, geometry: _geometry.GeometryModel) -> None:
         if not isinstance(geometry, _geometry.GeometryModel):
@@ -82,9 +82,7 @@ class Mesher:
                 "geometry must be a live fem.geometry.GeometryModel, "
                 f"got {geometry!r}"
             )
-        mesher_token = geometry._bind_mesher()
-        self._geometry = geometry
-        self._mesher_token = mesher_token
+        self._port = geometry._acquire_meshing_port()
 
     def transfinite_curve(
         self,
@@ -93,13 +91,10 @@ class Mesher:
         num_nodes: int,
     ) -> None:
         """Set the primary-node count on one curve."""
-        operation = "transfinite_curve"
-        self._geometry._mesher_transfinite_curve(
-            self._mesher_token,
+        self._port.transfinite_curve(
             curve,
             num_nodes=num_nodes,
         )
-        self._complete(operation)
 
     def transfinite_surface(
         self,
@@ -108,13 +103,10 @@ class Mesher:
         corners: Sequence[_geometry.EntityRef] = (),
     ) -> None:
         """Mark one surface as transfinite with optional boundary corners."""
-        operation = "transfinite_surface"
-        self._geometry._mesher_transfinite_surface(
-            self._mesher_token,
+        self._port.transfinite_surface(
             surface,
             corners=corners,
         )
-        self._complete(operation)
 
     def transfinite_volume(
         self,
@@ -123,19 +115,14 @@ class Mesher:
         corners: Sequence[_geometry.EntityRef] = (),
     ) -> None:
         """Mark one volume as transfinite with optional boundary corners."""
-        operation = "transfinite_volume"
-        self._geometry._mesher_transfinite_volume(
-            self._mesher_token,
+        self._port.transfinite_volume(
             volume,
             corners=corners,
         )
-        self._complete(operation)
 
     def recombine(self, surface: _geometry.EntityRef) -> None:
         """Request native Gmsh recombination on one surface."""
-        operation = "recombine"
-        self._geometry._mesher_recombine(self._mesher_token, surface)
-        self._complete(operation)
+        self._port.recombine(surface)
 
     def mesh_size(
         self,
@@ -144,13 +131,10 @@ class Mesher:
         size: float,
     ) -> None:
         """Assign one mesh size to selected live OCC points."""
-        operation = "mesh_size"
-        self._geometry._mesher_mesh_size(
-            self._mesher_token,
+        self._port.mesh_size(
             points,
             size=size,
         )
-        self._complete(operation)
 
     def distance_field(
         self,
@@ -161,16 +145,12 @@ class Mesher:
         sampling: int = 20,
     ) -> MeshFieldRef:
         """Create a field measuring distance from selected OCC entities."""
-        operation = "distance_field"
-        mesh_field = self._geometry._mesher_distance_field(
-            self._mesher_token,
+        return self._port.distance_field(
             points=points,
             curves=curves,
             surfaces=surfaces,
             sampling=sampling,
         )
-        self._complete(operation)
-        return mesh_field
 
     def threshold_field(
         self,
@@ -182,33 +162,21 @@ class Mesher:
         dist_max: float,
     ) -> MeshFieldRef:
         """Map one distance field to near- and far-field mesh sizes."""
-        operation = "threshold_field"
-        mesh_field = self._geometry._mesher_threshold_field(
-            self._mesher_token,
+        return self._port.threshold_field(
             distance,
             size_min=size_min,
             size_max=size_max,
             dist_min=dist_min,
             dist_max=dist_max,
         )
-        self._complete(operation)
-        return mesh_field
 
     def min_field(self, fields: Sequence[MeshFieldRef]) -> MeshFieldRef:
         """Create the pointwise minimum of two or more size fields."""
-        operation = "min_field"
-        mesh_field = self._geometry._mesher_min_field(
-            self._mesher_token,
-            fields,
-        )
-        self._complete(operation)
-        return mesh_field
+        return self._port.min_field(fields)
 
     def background_field(self, field: MeshFieldRef) -> None:
         """Select one size-producing field as the background field."""
-        operation = "background_field"
-        self._geometry._mesher_background_field(self._mesher_token, field)
-        self._complete(operation)
+        self._port.background_field(field)
 
     def structured_extrude(
         self,
@@ -222,8 +190,7 @@ class Mesher:
         recombine: bool = False,
     ) -> _geometry.FeatureResult:
         """Create an OCC extrusion carrying native structured-layer controls."""
-        return self._geometry._structured_extrude(
-            self._mesher_token,
+        return self._port.structured_extrude(
             entities,
             dx,
             dy,
@@ -236,15 +203,13 @@ class Mesher:
     def generate(self, spec: MeshSpec | AutoMeshSpec) -> GmshMeshRef:
         """Generate the one native mesh permitted for the bound geometry."""
         if isinstance(spec, MeshSpec):
-            return self._geometry._mesher_generate_mesh(
-                self._mesher_token,
+            return self._port.generate_mesh(
                 size=spec.size,
                 order=spec.order,
                 recombine=spec.recombine,
             )
         if isinstance(spec, AutoMeshSpec):
-            return self._geometry._mesher_generate_auto_mesh(
-                self._mesher_token,
+            return self._port.generate_auto_mesh(
                 level=spec.level,
                 cell_shape=spec.cell_shape,
                 order=spec.order,
@@ -252,12 +217,6 @@ class Mesher:
         raise TypeError(
             "spec must be a MeshSpec or AutoMeshSpec, "
             f"got {spec!r}"
-        )
-
-    def _complete(self, operation: str) -> None:
-        self._geometry._complete_mesh_configuration_operation(
-            self._mesher_token,
-            operation,
         )
 
 
