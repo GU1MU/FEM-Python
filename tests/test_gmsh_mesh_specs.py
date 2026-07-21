@@ -41,7 +41,7 @@ def test_mesh_package_exports_exact_canonical_contracts() -> None:
         assert value.__module__ == owner.__name__
 
 
-def test_mesh_spec_fields_defaults_and_signatures_are_unchanged() -> None:
+def test_mesh_spec_fields_defaults_and_signatures_are_public_contract() -> None:
     assert [(item.name, item.default) for item in fields(meshing.MeshSpec)] == [
         ("size", None),
         ("order", 1),
@@ -66,7 +66,7 @@ def test_mesh_spec_fields_defaults_and_signatures_are_unchanged() -> None:
     )
 
 
-def test_mesh_specs_remain_frozen_slotted_and_normalize_size() -> None:
+def test_mesh_specs_are_frozen_slotted_and_normalize_size() -> None:
     explicit = meshing.MeshSpec(size=2, order=2, recombine=True)
     automatic = meshing.AutoMeshSpec(level=4, cell_shape="quad", order=2)
 
@@ -94,13 +94,49 @@ def test_all_mesh_errors_preserve_geometry_error_hierarchy() -> None:
     "value",
     [0, -1, float("inf"), float("nan"), True, "bad"],
 )
-def test_mesh_spec_size_validation_text_is_preserved(value: object) -> None:
+def test_mesh_spec_rejects_invalid_size(value: object) -> None:
     with pytest.raises(ValueError, match="size must be finite and > 0"):
         meshing.MeshSpec(size=value)  # type: ignore[arg-type]
 
 
-def test_auto_mesh_spec_vocabulary_validation_text_is_preserved() -> None:
+@pytest.mark.parametrize(
+    ("kwargs", "error_type"),
+    [
+        ({"order": 0}, ValueError),
+        ({"order": 3}, ValueError),
+        ({"order": True}, ValueError),
+        ({"recombine": 1}, TypeError),
+    ],
+)
+def test_mesh_spec_rejects_invalid_order_and_recombine(
+    kwargs: dict[str, object],
+    error_type: type[Exception],
+) -> None:
+    with pytest.raises(error_type):
+        meshing.MeshSpec(**kwargs)  # type: ignore[arg-type]
+
+
+def test_auto_mesh_spec_rejects_invalid_vocabulary() -> None:
     with pytest.raises(ValueError, match="cell_shape must be exactly"):
         meshing.AutoMeshSpec(cell_shape="line")  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="level must be a Python integer"):
         meshing.AutoMeshSpec(level=True)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"level": 0},
+        {"level": 6},
+        {"level": 2.0},
+        {"cell_shape": "HEX"},
+        {"order": 0},
+        {"order": 3},
+        {"order": True},
+    ],
+)
+def test_auto_mesh_spec_rejects_invalid_values(
+    kwargs: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        meshing.AutoMeshSpec(**kwargs)  # type: ignore[arg-type]

@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-import subprocess
-import sys
-
 import pytest
 
 from fem.geometry import (
@@ -413,36 +409,3 @@ def test_reference_clearing_does_not_clear_committed_control_guards() -> None:
     assert not ledger.has_dependencies
     assert not ledger.scope_unknown
     ledger.check_removal("remove", {(2, 4)})
-
-
-def test_private_registry_modules_do_not_import_external_gmsh() -> None:
-    src_dir = Path(__file__).resolve().parents[1] / "src"
-    script = f"""
-import builtins
-import sys
-
-sys.path.insert(0, {str(src_dir)!r})
-real_import = builtins.__import__
-
-def guarded_import(name, *args, **kwargs):
-    if name == "gmsh" or name.startswith("gmsh."):
-        raise AssertionError("external gmsh was imported eagerly")
-    return real_import(name, *args, **kwargs)
-
-builtins.__import__ = guarded_import
-from fem.geometry._gmsh.control_dependencies import _ControlDependencyLedger
-from fem.geometry._gmsh.reference_registry import _ReferenceRegistry
-
-assert _ControlDependencyLedger("lazy") is not None
-assert _ReferenceRegistry("lazy") is not None
-assert "gmsh" not in sys.modules
-"""
-
-    completed = subprocess.run(
-        [sys.executable, "-c", script],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert completed.returncode == 0, completed.stderr

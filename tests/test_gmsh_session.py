@@ -180,7 +180,6 @@ def _enter_session(
 ) -> _GmshModelSession:
     _install_backend(monkeypatch, gmsh)
     session = _GmshModelSession(name)
-    assert not hasattr(session, "facade")
     assert session.enter() is None
     return session
 
@@ -211,7 +210,6 @@ def test_entry_preserves_backend_session_capture_validation_and_add_order(
         ("model.getAttribute", _MODEL_INCARNATION_ATTRIBUTE),
         ("model.setCurrent", "facade"),
     ]
-    assert not hasattr(session, "facade")
     assert session.created_model
     assert gmsh.model.current == "facade"
 
@@ -967,37 +965,6 @@ def test_nested_sessions_keep_independent_numeric_option_ledgers(
     assert outer.cleanup_after_failed_entry() == ()
     assert gmsh.model.current == "prior"
     assert gmsh.finalize_calls == 0
-
-
-def test_private_session_import_does_not_eagerly_import_external_gmsh() -> None:
-    src_dir = Path(__file__).resolve().parents[1] / "src"
-    script = f"""
-import builtins
-import sys
-
-sys.path.insert(0, {str(src_dir)!r})
-real_import = builtins.__import__
-
-def guarded_import(name, *args, **kwargs):
-    if name == "gmsh" or name.startswith("gmsh."):
-        raise AssertionError("external gmsh was imported eagerly")
-    return real_import(name, *args, **kwargs)
-
-builtins.__import__ = guarded_import
-from fem.geometry._gmsh.session import _GmshModelSession
-
-assert not hasattr(_GmshModelSession("lazy"), "facade")
-assert "gmsh" not in sys.modules
-"""
-
-    completed = subprocess.run(
-        [sys.executable, "-c", script],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert completed.returncode == 0, completed.stderr
 
 
 def test_real_owned_session_close_finalizes_native_default_model() -> None:

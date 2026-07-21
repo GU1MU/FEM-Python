@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
+
 import pytest
 
 from fem import geometry
@@ -19,6 +21,19 @@ def _construct(
         record(tag)
 
     return registry.construct(field_type, allocate, lambda unused: None)
+
+
+def test_mesh_field_reference_has_the_current_immutable_contract() -> None:
+    owner = object()
+    reference = meshing.MeshFieldRef(5, "Distance", owner, object())
+
+    assert (reference.tag, reference.field_type) == (5, "Distance")
+    assert not hasattr(reference, "__dict__")
+    assert "object" not in repr(reference)
+    with pytest.raises(FrozenInstanceError):
+        reference.tag = 6  # type: ignore[misc]
+    with pytest.raises(ValueError, match="mesh field type"):
+        meshing.MeshFieldRef(1, "Box", owner, object())  # type: ignore[arg-type]
 
 
 def test_field_owner_identity_is_runtime_local_and_tag_reuse_is_fresh() -> None:

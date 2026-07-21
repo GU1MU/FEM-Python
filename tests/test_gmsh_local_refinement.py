@@ -12,47 +12,12 @@ from fem.io import gmsh as gmsh_io
 from fem.mesh import gmsh as gmsh_meshing
 
 
-_GLOBAL_OPTIONS = (
-    "General.Terminal",
-    "Mesh.ElementOrder",
-    "Mesh.SecondOrderIncomplete",
-    "Mesh.RecombineAll",
-    "Mesh.MeshSizeFromPoints",
-    "Mesh.MeshSizeFromCurvature",
-    "Mesh.MeshSizeExtendFromBoundary",
-    "Mesh.MeshSizeMin",
-    "Mesh.MeshSizeMax",
-    "Mesh.MeshSizeFactor",
-)
-
 _PRIMARY_EDGES = {
     "Tri3": ((0, 1), (1, 2), (2, 0)),
     "Tri6": ((0, 1), (1, 2), (2, 0)),
     "Quad4": ((0, 1), (1, 2), (2, 3), (3, 0)),
     "Tet4": ((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)),
 }
-
-
-@pytest.fixture
-def real_gmsh() -> Any:
-    import gmsh
-
-    owns_session = not gmsh.isInitialized()
-    if owns_session:
-        gmsh.initialize()
-    saved_options = {
-        name: gmsh.option.getNumber(name) for name in _GLOBAL_OPTIONS
-    }
-    try:
-        gmsh.clear()
-        gmsh.option.setNumber("General.Terminal", 0.0)
-        yield gmsh
-    finally:
-        gmsh.clear()
-        for name, value in saved_options.items():
-            gmsh.option.setNumber(name, value)
-        if owns_session:
-            gmsh.finalize()
 
 
 def _element_geometry(

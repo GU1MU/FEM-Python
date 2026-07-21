@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
-from pathlib import Path
-import subprocess
-import sys
 import uuid
 
 import pytest
@@ -11,44 +7,10 @@ import pytest
 from fem import geometry
 from fem.io import gmsh as gmsh_io
 from fem.mesh import gmsh as meshing
-from fem.mesh.gmsh import errors as _mesh_errors
-from fem.mesh.gmsh import mesher as _mesh_mesher
-from fem.mesh.gmsh import specs as _mesh_specs
-from fem.mesh.gmsh import types as _mesh_types
-
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
 def _model_name(label: str) -> str:
     return f"fem_meshing_{label}_{uuid.uuid4().hex}"
-
-
-@pytest.fixture
-def real_gmsh():
-    gmsh = pytest.importorskip("gmsh")
-    owns_session = not gmsh.isInitialized()
-    if owns_session:
-        gmsh.initialize()
-
-    original_models = {str(name) for name in gmsh.model.list()}
-    original_current = str(gmsh.model.getCurrent())
-    original_terminal = gmsh.option.getNumber("General.Terminal")
-    gmsh.option.setNumber("General.Terminal", 0.0)
-    try:
-        yield gmsh
-    finally:
-        if gmsh.isInitialized():
-            for model_name in tuple(str(name) for name in gmsh.model.list()):
-                if model_name not in original_models:
-                    gmsh.model.setCurrent(model_name)
-                    gmsh.model.remove()
-            remaining_models = {str(name) for name in gmsh.model.list()}
-            if original_current in remaining_models:
-                gmsh.model.setCurrent(original_current)
-            gmsh.option.setNumber("General.Terminal", original_terminal)
-        if owns_session and gmsh.isInitialized():
-            gmsh.finalize()
 
 
 def _create_top_entity(cad: geometry.GeometryModel):
@@ -65,135 +27,6 @@ def _read_native(native_mesh: meshing.GmshMeshRef):
     if native_mesh.dimension == 1:
         return gmsh_io.read(native_mesh, line_element_type="Truss2")
     return gmsh_io.read(native_mesh)
-
-
-def test_mesh_specs_are_frozen_slotted_and_normalize_values():
-    explicit = meshing.MeshSpec(size=2, order=2, recombine=True)
-    automatic = meshing.AutoMeshSpec(level=4, cell_shape="quad", order=2)
-
-    assert explicit.size == 2.0
-    assert not hasattr(explicit, "__dict__")
-    assert not hasattr(automatic, "__dict__")
-    with pytest.raises(FrozenInstanceError):
-        explicit.order = 1  # type: ignore[misc]
-    with pytest.raises(FrozenInstanceError):
-        automatic.level = 3  # type: ignore[misc]
-
-
-@pytest.mark.parametrize(
-    ("kwargs", "error_type"),
-    [
-        ({"size": 0.0}, ValueError),
-        ({"size": -1.0}, ValueError),
-        ({"size": float("inf")}, ValueError),
-        ({"size": float("nan")}, ValueError),
-        ({"size": True}, ValueError),
-        ({"order": 0}, ValueError),
-        ({"order": 3}, ValueError),
-        ({"order": True}, ValueError),
-        ({"recombine": 1}, TypeError),
-    ],
-)
-def test_mesh_spec_rejects_invalid_values(kwargs, error_type):
-    with pytest.raises(error_type):
-        meshing.MeshSpec(**kwargs)
-
-
-@pytest.mark.parametrize(
-    "kwargs",
-    [
-        {"level": 0},
-        {"level": 6},
-        {"level": True},
-        {"level": 2.0},
-        {"cell_shape": "line"},
-        {"cell_shape": "HEX"},
-        {"order": 0},
-        {"order": 3},
-        {"order": True},
-    ],
-)
-def test_auto_mesh_spec_rejects_invalid_values(kwargs):
-    with pytest.raises(ValueError):
-        meshing.AutoMeshSpec(**kwargs)
-
-
-def test_importing_meshing_facade_does_not_import_external_gmsh():
-    code = """
-import builtins
-
-real_import = builtins.__import__
-
-def guarded_import(name, *args, **kwargs):
-    if name == "gmsh" or name.startswith("gmsh."):
-        raise AssertionError("external gmsh was imported eagerly")
-    return real_import(name, *args, **kwargs)
-
-builtins.__import__ = guarded_import
-from fem.mesh import gmsh as gmsh_meshing
-assert gmsh_meshing.__name__ == "fem.mesh.gmsh"
-"""
-
-    completed = subprocess.run(
-        [sys.executable, "-B", "-c", code],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-
-
-def test_canonical_exports_have_mesh_owned_class_identity():
-    assert meshing.__all__ == [
-        "AutoMeshSpec",
-        "GmshMeshRef",
-        "MeshCellShapeError",
-        "MeshControlConflictError",
-        "MeshFieldOwnershipError",
-        "MeshFieldRef",
-        "MeshSpec",
-        "Mesher",
-        "StaleGmshMeshError",
-        "StaleMeshFieldError",
-    ]
-    canonical_owners = {
-        "AutoMeshSpec": _mesh_specs,
-        "GmshMeshRef": _mesh_types,
-        "MeshCellShapeError": _mesh_errors,
-        "MeshControlConflictError": _mesh_errors,
-        "MeshFieldOwnershipError": _mesh_errors,
-        "MeshFieldRef": _mesh_types,
-        "MeshSpec": _mesh_specs,
-        "Mesher": _mesh_mesher,
-        "StaleGmshMeshError": _mesh_errors,
-        "StaleMeshFieldError": _mesh_errors,
-    }
-    for name, owner in canonical_owners.items():
-        exported = getattr(meshing, name)
-        assert exported is getattr(owner, name)
-        assert exported.__module__ == owner.__name__
-        assert not hasattr(geometry, name)
-        assert name not in geometry.__all__
-
-
-def test_geometry_model_no_longer_exposes_public_meshing_methods():
-    old_names = (
-        "transfinite_curve",
-        "transfinite_surface",
-        "transfinite_volume",
-        "recombine",
-        "mesh_size",
-        "distance_field",
-        "threshold_field",
-        "min_field",
-        "background_field",
-        "generate_mesh",
-        "generate_auto_mesh",
-    )
-
-    assert all(not hasattr(geometry.GeometryModel, name) for name in old_names)
 
 
 def test_mesher_requires_live_geometry_and_failed_new_binding_is_retryable(

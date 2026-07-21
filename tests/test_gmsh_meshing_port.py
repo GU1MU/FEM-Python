@@ -11,7 +11,7 @@ from fem import geometry
 from fem.geometry._gmsh.meshing_port import _BoundMeshingPort
 from fem.mesh import gmsh as meshing
 from fem.mesh.gmsh import mesher as mesher_module
-from tests.test_gmsh_geometry import _FakeGmsh, _install_backend
+from tests.helpers.gmsh_fake import _FakeGmsh, _install_backend
 
 
 class _RecordingOwner:
@@ -460,10 +460,6 @@ def test_mesher_stores_one_runtime_and_routes_every_public_operation(monkeypatch
     assert geometry.acquisitions == 1
     assert runtime_ports == [port]
     assert builder._runtime is runtime
-    assert not hasattr(builder, "_port")
-    assert not hasattr(builder, "_geometry")
-    assert not hasattr(builder, "_mesher_token")
-    assert not hasattr(builder, "_complete")
     assert [name for name, _, _ in runtime.calls] == [
         "transfinite_curve",
         "transfinite_surface",

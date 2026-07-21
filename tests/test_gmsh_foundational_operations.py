@@ -10,25 +10,6 @@ from fem.io import gmsh as gmsh_io
 from fem.mesh import gmsh as gmsh_meshing
 
 
-@pytest.fixture
-def real_gmsh() -> Any:
-    import gmsh
-
-    owns_session = not gmsh.isInitialized()
-    if owns_session:
-        gmsh.initialize()
-    terminal = gmsh.option.getNumber("General.Terminal")
-    try:
-        gmsh.clear()
-        gmsh.option.setNumber("General.Terminal", 0.0)
-        yield gmsh
-    finally:
-        gmsh.clear()
-        gmsh.option.setNumber("General.Terminal", terminal)
-        if owns_session:
-            gmsh.finalize()
-
-
 def _generate(
     cad: geometry.GeometryModel,
     *,

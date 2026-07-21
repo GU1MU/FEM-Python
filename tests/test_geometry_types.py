@@ -12,7 +12,6 @@ import pytest
 from fem import geometry
 from fem.geometry import errors as geometry_errors
 from fem.geometry import types as geometry_types
-from fem.geometry._gmsh import model as gmsh_model
 from fem.mesh import gmsh as gmsh_meshing
 
 
@@ -43,6 +42,24 @@ VALUE_OBJECT_NAMES = (
     "OrientedCurveRef",
     "WireRef",
 )
+GEOMETRY_PUBLIC_API = [
+    "BooleanResult",
+    "CurveLoopRef",
+    "EntityOwnershipError",
+    "EntityRef",
+    "FeatureResult",
+    "GeometryError",
+    "GeometryModel",
+    "GeometryStateError",
+    "LoftContinuity",
+    "LoftParametrization",
+    "LoftResult",
+    "OrientedCurveRef",
+    "StaleEntityError",
+    "SweepFrame",
+    "WireRef",
+    "model",
+]
 
 
 class _IndexValue:
@@ -106,22 +123,21 @@ def _valid_loft() -> tuple[
 def test_public_error_and_type_modules_have_exact_exports() -> None:
     assert geometry_errors.__all__ == list(ERROR_NAMES)
     assert geometry_types.__all__ == list(TYPE_NAMES)
+    assert geometry.__all__ == GEOMETRY_PUBLIC_API
+    assert all(hasattr(geometry, name) for name in GEOMETRY_PUBLIC_API)
 
 
-def test_facade_submodules_and_model_runtime_share_one_public_identity() -> None:
+def test_facade_submodules_share_one_public_identity() -> None:
     for name in ERROR_NAMES:
         canonical = getattr(geometry_errors, name)
         assert getattr(geometry, name) is canonical
-        assert getattr(gmsh_model, name) is canonical
 
     for name in TYPE_NAMES:
         canonical = getattr(geometry_types, name)
         assert getattr(geometry, name) is canonical
-        assert getattr(gmsh_model, name) is canonical
 
     cad = geometry.model("type-contract", dimension=2)
     assert isinstance(cad, geometry.GeometryModel)
-    assert type(cad) is gmsh_model.GeometryModel
 
 
 @pytest.mark.parametrize(
@@ -158,14 +174,11 @@ for module_name in (
 
 from fem import geometry
 from fem.geometry import errors, types
-from fem.geometry._gmsh import model
 
 for name in {ERROR_NAMES!r}:
     assert getattr(geometry, name) is getattr(errors, name)
-    assert getattr(model, name) is getattr(errors, name)
 for name in {TYPE_NAMES!r}:
     assert getattr(geometry, name) is getattr(types, name)
-    assert getattr(model, name) is getattr(types, name)
 assert "gmsh" not in sys.modules
 """
     completed = subprocess.run(

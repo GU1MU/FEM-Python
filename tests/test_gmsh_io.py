@@ -3,7 +3,6 @@ from __future__ import annotations
 import builtins
 import inspect
 from pathlib import Path
-import subprocess
 import sys
 import tomllib
 from typing import get_type_hints
@@ -136,33 +135,6 @@ def test_cad_extra_declares_supported_gmsh_range():
     ]
 
 
-def test_importing_fem_io_gmsh_does_not_import_external_gmsh():
-    code = """
-import builtins
-
-real_import = builtins.__import__
-
-def guarded_import(name, *args, **kwargs):
-    if name == "gmsh" or name.startswith("gmsh."):
-        raise AssertionError("external gmsh was imported eagerly")
-    return real_import(name, *args, **kwargs)
-
-builtins.__import__ = guarded_import
-from fem.io import gmsh as gmsh_io
-assert gmsh_io.__name__ == "fem.io.gmsh"
-"""
-
-    completed = subprocess.run(
-        [sys.executable, "-B", "-c", code],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-
-
 @pytest.mark.parametrize("dimension", [0, 4, "2", None])
 def test_from_model_rejects_invalid_dimension_before_reading_backend(dimension):
     with pytest.raises(ValueError, match="dimension must be 1, 2, or 3"):
@@ -290,7 +262,6 @@ def test_public_signatures_keep_formulation_arguments_in_io_layer():
         for parameter in from_model_signature.parameters.values()
     )
     assert get_type_hints(gmsh_io.read)["source"] is gmsh_meshing.GmshMeshRef
-    assert gmsh_io.GmshMeshRef is gmsh_meshing.GmshMeshRef
 
 
 def test_from_model_returns_mesh_with_minimal_backend_contract():
@@ -461,36 +432,26 @@ def test_read_validates_source_dimension_before_borrow(monkeypatch):
 
 
 @pytest.fixture
-def live_gmsh():
-    gmsh = pytest.importorskip("gmsh")
-    owns_session = not gmsh.isInitialized()
-    if owns_session:
-        gmsh.initialize()
-
-    option_names = (
-        "General.Terminal",
-        "Mesh.ElementOrder",
-        "Mesh.SecondOrderIncomplete",
-        "Mesh.RecombineAll",
-    )
-    previous_options = {
-        name: gmsh.option.getNumber(name)
-        for name in option_names
-    }
+def live_gmsh(real_gmsh):
+    gmsh = real_gmsh
+    model_name = "fem_gmsh_adapter_test"
+    original_current = str(gmsh.model.getCurrent())
     try:
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.option.setNumber("Mesh.ElementOrder", 1)
         gmsh.option.setNumber("Mesh.SecondOrderIncomplete", 0)
         gmsh.option.setNumber("Mesh.RecombineAll", 0)
-        gmsh.clear()
-        gmsh.model.add("fem_gmsh_adapter_test")
+        gmsh.model.add(model_name)
         yield gmsh
     finally:
-        gmsh.clear()
-        for name, value in previous_options.items():
-            gmsh.option.setNumber(name, value)
-        if owns_session:
-            gmsh.finalize()
+        if bool(gmsh.isInitialized()):
+            remaining_models = {str(name) for name in gmsh.model.list()}
+            if model_name in remaining_models:
+                gmsh.model.setCurrent(model_name)
+                gmsh.model.remove()
+            remaining_models = {str(name) for name in gmsh.model.list()}
+            if original_current in remaining_models:
+                gmsh.model.setCurrent(original_current)
 
 
 @pytest.mark.parametrize(

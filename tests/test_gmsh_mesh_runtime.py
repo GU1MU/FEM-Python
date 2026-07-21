@@ -12,7 +12,7 @@ from fem.mesh import gmsh as gmsh_meshing
 from fem.mesh.gmsh import _runtime as runtime_module
 from fem.mesh.gmsh import types as mesh_types
 
-from tests.test_gmsh_geometry import (
+from tests.helpers.gmsh_fake import (
     _AUTO_OPTION_ORIGINALS,
     _FakeGmsh,
     _build_fake_topology,
@@ -1572,21 +1572,7 @@ def test_invalid_mesh_arguments_fail_before_mesh_or_option_mutation(
         assert backend.option.calls == []
 
 
-def test_generation_surface_is_owned_only_by_mesher_specs() -> None:
-    removed = {
-        "generate_mesh",
-        "generate_auto_mesh",
-        "transfinite_curve",
-        "transfinite_surface",
-        "transfinite_volume",
-        "recombine",
-        "mesh_size",
-        "distance_field",
-        "threshold_field",
-        "min_field",
-        "background_field",
-    }
-    assert all(not hasattr(geometry.GeometryModel, name) for name in removed)
+def test_mesher_and_mesh_spec_signatures_are_stable() -> None:
     assert tuple(inspect.signature(gmsh_meshing.Mesher.generate).parameters) == (
         "self",
         "spec",

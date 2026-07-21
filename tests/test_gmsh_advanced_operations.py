@@ -28,44 +28,6 @@ _LOFT_OPTION_MAPPINGS = (
 )
 
 
-@pytest.fixture
-def real_gmsh() -> Any:
-    gmsh = pytest.importorskip("gmsh")
-    owns_session = not gmsh.isInitialized()
-    if owns_session:
-        gmsh.initialize()
-    option_names = (
-        "General.Terminal",
-        "Mesh.ElementOrder",
-        "Mesh.SecondOrderIncomplete",
-        "Mesh.RecombineAll",
-        "Mesh.MeshSizeFromPoints",
-        "Mesh.MeshSizeFromCurvature",
-        "Mesh.MeshSizeExtendFromBoundary",
-        "Mesh.MeshSizeMin",
-        "Mesh.MeshSizeMax",
-        "Mesh.MeshSizeFactor",
-        "Mesh.Algorithm",
-        "Mesh.Algorithm3D",
-        "Mesh.RecombinationAlgorithm",
-        "Mesh.Recombine3DAll",
-        "Mesh.SubdivisionAlgorithm",
-    )
-    saved_options = {
-        name: gmsh.option.getNumber(name) for name in option_names
-    }
-    try:
-        gmsh.clear()
-        gmsh.option.setNumber("General.Terminal", 0.0)
-        yield gmsh
-    finally:
-        gmsh.clear()
-        for name, value in saved_options.items():
-            gmsh.option.setNumber(name, value)
-        if owns_session:
-            gmsh.finalize()
-
-
 def _open_path(
     cad: geometry.GeometryModel,
     *,
