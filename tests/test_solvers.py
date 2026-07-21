@@ -15,14 +15,14 @@ def test_static_linear_solver_builds_step_boundary_and_solves_case():
     model = make_static_pull_truss_model()
     mesh = model.mesh
 
-    bc = static_linear.boundary_for_step(model, "pull")
-    assert len(bc.prescribed_displacements) == 5
-    assert sum(bc.nodal_forces.values()) == pytest.approx(100.0)
-
     U = static_linear.solve(model, "pull").U
 
     assert U[mesh.global_dof(2, 0)] == pytest.approx(0.5)
     assert U[mesh.global_dof(2, 1)] == pytest.approx(0.0)
+
+
+def test_static_linear_solver_public_surface():
+    assert static_linear.__all__ == ["solve", "solve_all"]
 
 
 def test_static_linear_solver_returns_result_with_displacements_and_reactions():

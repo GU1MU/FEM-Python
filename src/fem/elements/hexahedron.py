@@ -259,7 +259,7 @@ class Hex8Kernel(_HexKernelBase):
     """Hex8 solid element kernel."""
     canonical_type = "Hex8"
     aliases = ("C3D8",)
-    face_nodes = [
+    face_node_indices = [
         [0, 3, 2, 1],
         [4, 5, 6, 7],
         [0, 1, 5, 4],
@@ -326,7 +326,7 @@ class Hex8Kernel(_HexKernelBase):
 
         if node_lookup is None:
             node_lookup = build_node_lookup(mesh)
-        face_local = self.face_nodes[local_face]
+        face_local = self.face_node_indices[local_face]
         face_nodes = [node_lookup[elem.node_ids[i]] for i in face_local]
         xyz = np.array([[n.x, n.y, n.z] for n in face_nodes], dtype=float)
         tvec = np.array(traction, dtype=float)
@@ -441,7 +441,7 @@ class Hex20Kernel(_HexKernelBase):
     """Twenty-node quadratic serendipity hexahedron kernel."""
     canonical_type = "Hex20"
     aliases = ("C3D20",)
-    face_nodes = HEX20_FACE_NODE_INDICES
+    face_node_indices = HEX20_FACE_NODE_INDICES
 
     def stiffness(
         self,
@@ -494,7 +494,7 @@ class Hex20Kernel(_HexKernelBase):
             raise ValueError(f"Invalid local_face {local_face}, must be 0-5")
         if node_lookup is None:
             node_lookup = build_node_lookup(mesh)
-        face_local = self.face_nodes[local_face]
+        face_local = self.face_node_indices[local_face]
         xyz = np.array([
             [
                 node_lookup[elem.node_ids[i]].x,

@@ -75,6 +75,26 @@ def test_registry_exposes_explicit_canonical_element_identity(element_type, cano
     assert canonical_element_type(element_type) == canonical_type
 
 
+@pytest.mark.parametrize(
+    ("element_type", "face_count", "nodes_per_face"),
+    [
+        ("Hex8", 6, 4),
+        ("Hex20", 6, 8),
+        ("Tet4", 4, 3),
+        ("Tet10", 4, 6),
+    ],
+)
+def test_solid_kernels_expose_face_node_indices(
+    element_type,
+    face_count,
+    nodes_per_face,
+):
+    topology = get_element_kernel(element_type).face_node_indices
+
+    assert len(topology) == face_count
+    assert {len(face) for face in topology} == {nodes_per_face}
+
+
 def test_registry_rejects_conflicting_aliases_without_partial_registration():
     class ConflictingKernel:
         canonical_type = "UniqueTestType"

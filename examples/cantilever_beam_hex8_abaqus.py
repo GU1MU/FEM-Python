@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from fem import abaqus, post, solvers
+from fem.boundary.step import get_step
 
 
 DATA_DIR = Path(__file__).resolve().parent / "examples_data"
@@ -10,7 +11,7 @@ DATA_DIR = Path(__file__).resolve().parent / "examples_data"
 # Read Abaqus model data and solve its first analysis step.
 model = abaqus.read(DATA_DIR / "cantilever_beam_hex8.inp")
 model.name = "cantilever_beam_hex8_abaqus"
-step = solvers.static_linear.get_step(model)
+step = get_step(model)
 
 print("Model:", model.name)
 print("Step:", step.name if step is not None else "None")

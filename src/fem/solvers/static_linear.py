@@ -4,13 +4,16 @@ from typing import Any
 
 from .. import materials
 from ..assemble import assemble_global_stiffness_sparse
+from ..boundary import step as _boundary_step
 from ..boundary.constraints import apply_dirichlet
 from ..boundary.loads import build_load_vector
-from ..boundary.step import boundary_for_step, get_step
 from ..core.model import AnalysisStep
 from ..core.result import ModelResult, ModelResults
 from ..core.validation import validate_model
 from . import linear
+
+
+__all__ = ["solve", "solve_all"]
 
 
 def solve(
@@ -19,11 +22,11 @@ def solve(
     name: str | None = None,
 ) -> ModelResult:
     """Solve one linear static model step."""
-    selected_step = get_step(model, step)
+    selected_step = _boundary_step.get_step(model, step)
     validate_model(model, selected_step)
     _validate_static_step(selected_step)
     materials.apply_sections(model)
-    boundary = boundary_for_step(model, selected_step)
+    boundary = _boundary_step.boundary_for_step(model, selected_step)
     K = assemble_global_stiffness_sparse(model.mesh)
     F = build_load_vector(model.mesh, boundary)
     K_mod, F_mod = apply_dirichlet(K, F, boundary)
@@ -100,8 +103,8 @@ def _solve_all_steps(model: Any, steps: Any) -> tuple[AnalysisStep | None, ...]:
             return (model.steps[0],)
         return (None,)
     if isinstance(steps, (str, int, AnalysisStep)):
-        return (get_step(model, steps),)
-    return tuple(get_step(model, step) for step in steps)
+        return (_boundary_step.get_step(model, steps),)
+    return tuple(_boundary_step.get_step(model, step) for step in steps)
 
 
 def _result_name(

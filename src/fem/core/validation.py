@@ -323,8 +323,6 @@ def _kernel_boundary_node_ids(
     kernel = get_element_kernel(element.type)
     if collection_kind == "surface":
         topology = getattr(kernel, "face_node_indices", None)
-        if topology is None:
-            topology = getattr(kernel, "face_nodes", None)
         local_kind = "face"
     elif collection_kind == "edge":
         topology = getattr(kernel, "edge_node_indices", None)

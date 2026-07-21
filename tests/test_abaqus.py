@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from fem import abaqus, materials, post
+from fem.boundary.step import boundary_for_step, get_step
 from fem.core.model import (
     DisplacementConstraint,
     ElementEdge,
@@ -100,7 +101,7 @@ def test_abaqus_read_builds_model_with_sets_surfaces_materials_and_steps(tmp_pat
     assert model.steps[0].boundaries[0] == DisplacementConstraint("FIXED", 1, 3, 0.0)
     assert model.steps[0].cloads[0] == NodalLoad("TIP", 3, -50.0)
 
-    bc = static_linear.boundary_for_step(model, "LOAD")
+    bc = boundary_for_step(model, "LOAD")
     assert len(bc.prescribed_displacements) == 12
     assert sum(bc.nodal_forces.values()) == pytest.approx(-200.0)
 
@@ -145,7 +146,7 @@ def test_abaqus_builds_boundary_for_perforated_plate_style_inputs_without_data_f
 ):
     inp_path = write_perforated_plate_style_inp(tmp_path, filename, step_lines)
     model = abaqus.read(inp_path)
-    bc = static_linear.boundary_for_step(model)
+    bc = boundary_for_step(model)
 
     assert len(bc.prescribed_displacements) > 0
     if expected_load_type == "pressure":
@@ -215,7 +216,7 @@ def test_abaqus_read_hides_internal_element_sets_without_breaking_surfaces_or_se
         (2, 3, 7, 6),
     )
 
-    bc = static_linear.boundary_for_step(model, "LOAD")
+    bc = boundary_for_step(model, "LOAD")
     assert len(bc.surface_tractions) == 1
 
     materials.apply_sections(model)
@@ -302,8 +303,8 @@ def test_abaqus_read_inherits_initial_boundaries_across_steps(tmp_path):
     model = abaqus.read(path)
 
     assert [step.name for step in model.steps] == ["Initial", "STEP-1", "STEP-2"]
-    assert static_linear.get_step(model).name == "STEP-1"
-    step2_bc = static_linear.boundary_for_step(model, "STEP-2")
+    assert get_step(model).name == "STEP-1"
+    step2_bc = boundary_for_step(model, "STEP-2")
     assert len(step2_bc.prescribed_displacements) == 2
     assert sum(step2_bc.nodal_forces.values()) == pytest.approx(20.0)
 
@@ -350,7 +351,7 @@ def test_abaqus_read_prefers_assembly_node_set_over_part_set_for_load_targets(tm
 
     model = abaqus.read(path)
 
-    bc = static_linear.boundary_for_step(model, "LOAD")
+    bc = boundary_for_step(model, "LOAD")
     assert model.node_sets["LOADSET"].node_ids == (2,)
     assert len(bc.nodal_forces) == 1
     assert sum(bc.nodal_forces.values()) == pytest.approx(-1000.0)
@@ -392,7 +393,7 @@ def test_abaqus_read_converts_dsload_and_dload_pressure_to_surface_tractions(tmp
 
     model = abaqus.read(path)
 
-    bc = static_linear.boundary_for_step(model, "LOAD")
+    bc = boundary_for_step(model, "LOAD")
     assert len(model.steps[0].surface_loads) == 2
     assert "TIP_FACE" in model.surfaces
     assert len(bc.surface_tractions) == 2
@@ -429,7 +430,7 @@ def test_abaqus_2d_pressure_load_builds_edge_traction(tmp_path):
     )
 
     model = abaqus.read(path)
-    bc = static_linear.boundary_for_step(model, "LOAD")
+    bc = boundary_for_step(model, "LOAD")
 
     assert "RIGHT_EDGE" in model.edges
     assert "RIGHT_EDGE" not in model.surfaces
@@ -462,7 +463,7 @@ def test_abaqus_2d_dload_pressure_generates_edge_load(tmp_path):
     )
 
     model = abaqus.read(path)
-    bc = static_linear.boundary_for_step(model)
+    bc = boundary_for_step(model)
 
     assert len(model.edges) == 1
     generated_name = next(iter(model.edges))
@@ -498,7 +499,7 @@ def test_abaqus_2d_trvec_load_builds_edge_traction(tmp_path):
     )
 
     model = abaqus.read(path)
-    bc = static_linear.boundary_for_step(model, "LOAD")
+    bc = boundary_for_step(model, "LOAD")
 
     assert len(model.steps[0].edge_loads) == 1
     assert model.steps[0].edge_loads[0].load_type == "traction"
@@ -566,7 +567,7 @@ def test_abaqus_read_projects_trshr_direction_to_surface_tangent(tmp_path):
 
     model = abaqus.read(path)
 
-    bc = static_linear.boundary_for_step(model, "LOAD")
+    bc = boundary_for_step(model, "LOAD")
     assert len(model.steps[0].surface_loads) == 1
     assert model.steps[0].surface_loads[0].load_type == "shear_traction"
     assert len(bc.surface_tractions) == 1
@@ -604,7 +605,7 @@ def test_abaqus_trshr_rejects_nonplanar_faces(tmp_path):
     model = abaqus.read(path)
 
     with pytest.raises(ValueError, match="non-planar"):
-        static_linear.boundary_for_step(model, "LOAD")
+        boundary_for_step(model, "LOAD")
 
 
 @pytest.mark.parametrize(
@@ -857,7 +858,7 @@ def test_abaqus_pressure_points_into_hex_element_for_all_faces(tmp_path):
 
     model = abaqus.read(path)
 
-    bc = static_linear.boundary_for_step(model, "LOAD")
+    bc = boundary_for_step(model, "LOAD")
     _assert_pressure_points_inward(model, bc)
 
 
@@ -941,7 +942,7 @@ def test_abaqus_pressure_points_into_tet10_element_for_all_faces(tmp_path):
 
     model = abaqus.read(path)
 
-    bc = static_linear.boundary_for_step(model, "LOAD")
+    bc = boundary_for_step(model, "LOAD")
     _assert_pressure_points_inward(model, bc)
 
 
@@ -978,7 +979,7 @@ def test_abaqus_pressure_points_into_tetra_element_for_all_faces(tmp_path):
 
     model = abaqus.read(path)
 
-    bc = static_linear.boundary_for_step(model, "LOAD")
+    bc = boundary_for_step(model, "LOAD")
     _assert_pressure_points_inward(model, bc)
 
 
@@ -1020,7 +1021,7 @@ def test_abaqus_read_accumulates_repeated_sets_and_scales_trvec_loads(tmp_path):
 
     model = abaqus.read(path)
 
-    bc = static_linear.boundary_for_step(model, "LOAD")
+    bc = boundary_for_step(model, "LOAD")
     assert model.node_sets["FIXED"].node_ids == (1, 4, 5, 8)
     assert bc.surface_tractions[0].vector == (0.0, 0.0, -10.0)
 

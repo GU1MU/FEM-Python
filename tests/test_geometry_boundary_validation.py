@@ -26,6 +26,8 @@ from tests.helpers.mesh_builders import (
     make_hex8_stiffness_mesh,
     make_quad4_stiffness_mesh,
     make_quad8_stiffness_mesh,
+    make_tet4_stiffness_mesh,
+    make_tet10_stiffness_mesh,
 )
 
 
@@ -235,22 +237,36 @@ def test_validate_model_matches_edge_index_to_kernel_topology(
         validate_model(model)
 
 
-def test_validate_model_matches_face_index_to_kernel_topology():
-    mesh = make_hex8_stiffness_mesh()
+@pytest.mark.parametrize(
+    ("builder", "node_ids", "message"),
+    [
+        (
+            make_hex8_stiffness_mesh,
+            (5, 6, 7, 8),
+            r"surface LOAD element 1 local_index 0 expects node_ids "
+            r"\(1, 4, 3, 2\), got \(5, 6, 7, 8\)",
+        ),
+        (
+            make_tet4_stiffness_mesh,
+            (1, 2, 3),
+            r"surface LOAD element 1 local_index 0 expects node_ids "
+            r"\(2, 3, 4\), got \(1, 2, 3\)",
+        ),
+    ],
+    ids=["hex8", "tet4"],
+)
+def test_validate_model_matches_face_index_to_kernel_topology(
+    builder,
+    node_ids,
+    message,
+):
+    mesh = builder()
     model = FEMModel(
         mesh=mesh,
-        surfaces={
-            "LOAD": Surface("LOAD", [ElementFace(1, 0, (5, 6, 7, 8))])
-        },
+        surfaces={"LOAD": Surface("LOAD", [ElementFace(1, 0, node_ids)])},
     )
 
-    with pytest.raises(
-        ValueError,
-        match=(
-            r"surface LOAD element 1 local_index 0 expects node_ids "
-            r"\(1, 4, 3, 2\), got \(5, 6, 7, 8\)"
-        ),
-    ):
+    with pytest.raises(ValueError, match=message):
         validate_model(model)
 
 
@@ -308,14 +324,37 @@ def test_validate_model_preserves_quadratic_edge_midside_role():
         validate_model(shifted_model)
 
 
-def test_validate_model_preserves_quadratic_face_midside_ring():
-    mesh = make_hex20_stiffness_mesh()
+@pytest.mark.parametrize(
+    ("builder", "rotated_node_ids", "reversed_node_ids", "shifted_node_ids"),
+    [
+        (
+            make_hex20_stiffness_mesh,
+            (4, 3, 2, 1, 11, 10, 9, 12),
+            (1, 2, 3, 4, 9, 10, 11, 12),
+            (4, 3, 2, 12, 11, 10, 9, 1),
+        ),
+        (
+            make_tet10_stiffness_mesh,
+            (3, 4, 2, 10, 9, 6),
+            (2, 4, 3, 9, 10, 6),
+            (3, 4, 2, 6, 10, 9),
+        ),
+    ],
+    ids=["hex20", "tet10"],
+)
+def test_validate_model_preserves_quadratic_face_midside_ring(
+    builder,
+    rotated_node_ids,
+    reversed_node_ids,
+    shifted_node_ids,
+):
+    mesh = builder()
     rotated_model = FEMModel(
         mesh=mesh,
         surfaces={
             "VALID": Surface(
                 "VALID",
-                [ElementFace(1, 0, (4, 3, 2, 1, 11, 10, 9, 12))],
+                [ElementFace(1, 0, rotated_node_ids)],
             )
         },
     )
@@ -324,7 +363,7 @@ def test_validate_model_preserves_quadratic_face_midside_ring():
         surfaces={
             "VALID": Surface(
                 "VALID",
-                [ElementFace(1, 0, (1, 2, 3, 4, 9, 10, 11, 12))],
+                [ElementFace(1, 0, reversed_node_ids)],
             )
         },
     )
@@ -333,7 +372,7 @@ def test_validate_model_preserves_quadratic_face_midside_ring():
         surfaces={
             "BAD": Surface(
                 "BAD",
-                [ElementFace(1, 0, (4, 3, 2, 12, 11, 10, 9, 1))],
+                [ElementFace(1, 0, shifted_node_ids)],
             )
         },
     )
