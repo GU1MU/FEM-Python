@@ -9,7 +9,11 @@ import pytest
 
 from fem.geometry import GeometryStateError
 from fem.geometry._gmsh import session as _session_module
-from fem.geometry._gmsh.session import _GmshModelSession
+from fem.geometry._gmsh.session import (
+    _MODEL_INCARNATION_ATTRIBUTE,
+    _SESSION_BASELINE_INCARNATION_ATTRIBUTE,
+    _GmshModelSession,
+)
 
 
 class _FakeModel:
@@ -21,10 +25,15 @@ class _FakeModel:
         current: str,
     ) -> None:
         self._backend = backend
-        self.models: dict[str, None] = dict.fromkeys(names)
+        self.models: dict[str, dict[str, list[str]]] = {
+            name: {} for name in names
+        }
         self.current = current
         self.fail_remove_count = 0
         self.fail_set_current_counts: dict[str, int] = {}
+        self.fail_get_attribute_count = 0
+        self.fail_set_attribute_count = 0
+        self.fail_set_attribute_after_state = False
 
     def list(self) -> list[str]:
         self._backend.calls.append(("model.list",))
@@ -48,7 +57,7 @@ class _FakeModel:
         self._backend.calls.append(("model.add", name))
         if name in self.models:
             raise RuntimeError(f"duplicate model {name!r}")
-        self.models[name] = None
+        self.models[name] = {}
         self.current = name
 
     def remove(self) -> None:
@@ -60,6 +69,25 @@ class _FakeModel:
             raise RuntimeError(f"unknown model {self.current!r}")
         del self.models[self.current]
         self.current = next(iter(self.models), "")
+
+    def getAttribute(self, name: str) -> list[str]:
+        self._backend.calls.append(("model.getAttribute", name))
+        if self.fail_get_attribute_count:
+            self.fail_get_attribute_count -= 1
+            raise RuntimeError("fake getAttribute failure")
+        return list(self.models[self.current].get(name, ()))
+
+    def setAttribute(self, name: str, values: list[str]) -> None:
+        materialized = [str(item) for item in values]
+        self._backend.calls.append(
+            ("model.setAttribute", name, tuple(materialized))
+        )
+        if self.fail_set_attribute_after_state:
+            self.models[self.current][name] = materialized
+        if self.fail_set_attribute_count:
+            self.fail_set_attribute_count -= 1
+            raise RuntimeError("fake setAttribute failure")
+        self.models[self.current][name] = materialized
 
 
 class _FakeOption:
@@ -175,6 +203,12 @@ def test_entry_preserves_backend_session_capture_validation_and_add_order(
         ("model.getCurrent",),
         ("model.list",),
         ("model.add", "facade"),
+        (
+            "model.setAttribute",
+            _MODEL_INCARNATION_ATTRIBUTE,
+            (session._model_incarnation,),
+        ),
+        ("model.getAttribute", _MODEL_INCARNATION_ATTRIBUTE),
         ("model.setCurrent", "facade"),
     ]
     assert not hasattr(session, "facade")
@@ -267,6 +301,7 @@ def test_activate_reselects_only_when_needed_and_returns_facade(
         ("model.list",),
         ("model.getCurrent",),
         ("model.setCurrent", "facade"),
+        ("model.getAttribute", _MODEL_INCARNATION_ATTRIBUTE),
     ]
 
     gmsh.calls.clear()
@@ -275,6 +310,7 @@ def test_activate_reselects_only_when_needed_and_returns_facade(
         ("isInitialized",),
         ("model.list",),
         ("model.getCurrent",),
+        ("model.getAttribute", _MODEL_INCARNATION_ATTRIBUTE),
     ]
 
 
@@ -300,6 +336,182 @@ def test_activate_reports_inactive_session_and_externally_missing_model(
         session.activate("query")
 
 
+@pytest.mark.parametrize("marker_written_before_error", [False, True])
+def test_entry_marker_failure_distinguishes_verified_partial_installation(
+    monkeypatch: pytest.MonkeyPatch,
+    marker_written_before_error: bool,
+) -> None:
+    gmsh = _FakeGmsh(initialized=True, names=("prior",), current="prior")
+    gmsh.model.fail_set_attribute_count = 1
+    gmsh.model.fail_set_attribute_after_state = marker_written_before_error
+    _install_backend(monkeypatch, gmsh)
+    session = _GmshModelSession("facade")
+
+    with pytest.raises(RuntimeError, match="fake setAttribute failure"):
+        session.enter()
+
+    if marker_written_before_error:
+        assert tuple(gmsh.model.models) == ("prior",)
+        assert not session.created_model
+        assert session.cleanup_after_failed_entry() == ()
+    else:
+        assert tuple(gmsh.model.models) == ("prior", "facade")
+        assert session.created_model
+        ((operation, cleanup_error),) = session.cleanup_after_failed_entry()
+        assert operation == "remove facade model"
+        assert "incarnation was never verified" in str(cleanup_error)
+        assert session.created_model
+    assert gmsh.finalize_calls == 0
+
+
+def test_cleanup_attribute_read_failure_retains_exact_model_for_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gmsh = _FakeGmsh()
+    session = _enter_session(monkeypatch, gmsh)
+    gmsh.model.fail_get_attribute_count = 2
+
+    for _ in range(2):
+        ((operation, cleanup_error),) = session.cleanup_after_failed_entry()
+        assert operation == "remove facade model"
+        assert str(cleanup_error) == "fake getAttribute failure"
+        assert session.created_model
+        assert "facade" in gmsh.model.models
+        assert gmsh.initialized
+        assert gmsh.finalize_calls == 0
+
+    assert session.cleanup_after_failed_entry() == ()
+
+    assert "facade" not in gmsh.model.models
+    assert not session.created_model
+    assert not gmsh.initialized
+    assert gmsh.finalize_calls == 1
+
+
+def test_native_borrow_is_dormant_then_reactivates_repeatedly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gmsh = _FakeGmsh(
+        initialized=True,
+        names=("external",),
+        current="external",
+    )
+    session = _enter_session(monkeypatch, gmsh)
+    capability = session.prepare_native_borrow()
+    gmsh.calls.clear()
+
+    with pytest.raises(GeometryStateError, match="inactive or revoked"):
+        capability.borrow()
+    assert gmsh.calls == []
+
+    session.validate_native_borrow(capability, "complete mesh generation")
+    session.activate_native_borrow(capability)
+    gmsh.model.setCurrent("external")
+    gmsh.calls.clear()
+
+    assert capability.borrow() is gmsh.model
+    assert capability.borrow() is gmsh.model
+    assert gmsh.model.current == "facade"
+    assert gmsh.calls.count(("model.setCurrent", "facade")) == 1
+
+
+def test_same_name_replacement_is_neither_activated_borrowed_nor_removed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gmsh = _FakeGmsh()
+    session = _enter_session(monkeypatch, gmsh)
+    capability = session.prepare_native_borrow()
+    session.validate_native_borrow(capability, "complete mesh generation")
+    session.activate_native_borrow(capability)
+
+    gmsh.model.remove()
+    gmsh.model.add("facade")
+    gmsh.model.models["facade"]["replacement"] = ["retained"]
+
+    with pytest.raises(GeometryStateError, match="incarnation.*replaced"):
+        session.activate("query")
+    with pytest.raises(GeometryStateError, match="incarnation.*replaced"):
+        capability.borrow()
+
+    session.revoke_borrows()
+    session.remove_created_model()
+    session.finalize_owned_session(initialized=True)
+
+    assert not session.created_model
+    assert gmsh.model.models["facade"]["replacement"] == ["retained"]
+    assert gmsh.initialized
+    assert gmsh.finalize_calls == 0
+
+
+def test_outer_session_owner_does_not_finalize_inner_same_name_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gmsh = _FakeGmsh()
+    _install_backend(monkeypatch, gmsh)
+    outer = _GmshModelSession("outer")
+    inner = _GmshModelSession("inner")
+    outer.enter()
+    inner.enter()
+
+    gmsh.model.remove()
+    gmsh.model.add("inner")
+    gmsh.model.models["inner"]["replacement"] = ["retained"]
+
+    inner.remove_created_model()
+    inner.restore_prior_model()
+    inner.finalize_owned_session(initialized=True)
+    outer.remove_created_model()
+    outer.restore_prior_model()
+    outer.finalize_owned_session(initialized=True)
+
+    assert tuple(gmsh.model.models) == ("inner",)
+    assert gmsh.model.models["inner"]["replacement"] == ["retained"]
+    assert gmsh.initialized
+    assert gmsh.finalize_calls == 0
+
+
+def test_native_borrow_revocation_is_idempotent_and_native_call_free(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gmsh = _FakeGmsh(initialized=True)
+    session = _enter_session(monkeypatch, gmsh)
+    capability = session.prepare_native_borrow()
+    session.activate_native_borrow(capability)
+    gmsh.calls.clear()
+
+    session.revoke_borrows()
+    session.revoke_borrows()
+
+    assert gmsh.calls == []
+    with pytest.raises(GeometryStateError, match="inactive or revoked"):
+        capability.borrow()
+    assert gmsh.calls == []
+    with pytest.raises(GeometryStateError, match="revoked"):
+        session.prepare_native_borrow()
+
+
+def test_nested_session_borrow_epochs_are_isolated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gmsh = _FakeGmsh(initialized=True)
+    _install_backend(monkeypatch, gmsh)
+    outer = _GmshModelSession("outer")
+    inner = _GmshModelSession("inner")
+    outer.enter()
+    outer_borrow = outer.prepare_native_borrow()
+    outer.activate_native_borrow(outer_borrow)
+    inner.enter()
+    inner_borrow = inner.prepare_native_borrow()
+    inner.activate_native_borrow(inner_borrow)
+
+    inner.revoke_borrows()
+
+    with pytest.raises(GeometryStateError, match="inactive or revoked"):
+        inner_borrow.borrow()
+    assert outer_borrow.borrow() is gmsh.model
+    assert gmsh.model.current == "outer"
+
+
 def test_valid_empty_prior_model_name_is_restored(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -313,6 +525,57 @@ def test_valid_empty_prior_model_name_is_restored(
     assert tuple(gmsh.model.models) == ("",)
     assert gmsh.model.current == ""
     assert ("model.setCurrent", "") in gmsh.calls
+
+
+def test_owned_session_default_model_does_not_block_finalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gmsh = _FakeGmsh(names=("",), current="")
+    session = _enter_session(monkeypatch, gmsh)
+
+    session.remove_created_model()
+    session.restore_prior_model()
+    session.finalize_owned_session(initialized=True)
+
+    assert tuple(gmsh.model.models) == ("",)
+    assert gmsh.finalize_calls == 1
+    assert not gmsh.initialized
+
+
+def test_owned_session_baseline_same_name_replacement_blocks_finalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gmsh = _FakeGmsh(names=("prior",), current="prior")
+    session = _enter_session(monkeypatch, gmsh)
+    session.remove_created_model()
+    gmsh.model.models["prior"] = {"replacement": ["retained"]}
+    gmsh.model.current = "prior"
+
+    session.finalize_owned_session(initialized=True)
+
+    assert gmsh.model.models["prior"]["replacement"] == ["retained"]
+    assert gmsh.finalize_calls == 0
+    assert gmsh.initialized
+
+
+def test_missing_model_clears_prior_identity_inspection_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gmsh = _FakeGmsh(names=("",), current="")
+    session = _enter_session(monkeypatch, gmsh)
+    gmsh.model.fail_get_attribute_count = 1
+
+    with pytest.raises(RuntimeError, match="fake getAttribute failure"):
+        session.remove_created_model()
+
+    del gmsh.model.models["facade"]
+    gmsh.model.current = ""
+    session.remove_created_model()
+    session.finalize_owned_session(initialized=True)
+
+    assert not session.created_model
+    assert gmsh.finalize_calls == 1
+    assert not gmsh.initialized
 
 
 def test_missing_prior_model_is_skipped_without_disturbing_current_model(
@@ -433,9 +696,20 @@ def test_cleanup_attempts_every_step_and_retains_each_failure_for_retry(
         ("option.setNumber", "Mesh.Algorithm", 1.0),
         ("model.list",),
         ("model.getCurrent",),
+        ("model.getAttribute", _MODEL_INCARNATION_ATTRIBUTE),
         ("model.remove", "facade"),
         ("model.list",),
         ("model.setCurrent", "prior"),
+        ("model.list",),
+        ("model.getCurrent",),
+        ("model.setCurrent", "prior"),
+        (
+            "model.getAttribute",
+            _SESSION_BASELINE_INCARNATION_ATTRIBUTE,
+        ),
+        ("model.getCurrent",),
+        ("model.setCurrent", "facade"),
+        ("model.getAttribute", _MODEL_INCARNATION_ATTRIBUTE),
         ("finalize",),
     ]
     assert session.has_pending_options
@@ -450,6 +724,34 @@ def test_cleanup_attempts_every_step_and_retains_each_failure_for_retry(
     assert gmsh.model.current == "prior"
     assert gmsh.finalize_calls == 2
     assert not gmsh.initialized
+
+
+def test_owned_session_finalization_revalidates_sole_remaining_owned_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gmsh = _FakeGmsh()
+    session = _enter_session(monkeypatch, gmsh)
+    gmsh.model.fail_remove_count = 1
+    gmsh.fail_finalize_count = 1
+
+    errors = session.cleanup_after_failed_entry()
+
+    assert tuple(operation for operation, _error in errors) == (
+        "remove facade model",
+        "finalize owned session",
+    )
+    assert tuple(str(error) for _operation, error in errors) == (
+        "fake remove failure",
+        "fake finalize failure",
+    )
+    assert session.created_model
+    assert gmsh.initialized
+    assert gmsh.finalize_calls == 1
+
+    assert session.cleanup_after_failed_entry() == ()
+    assert not session.created_model
+    assert not gmsh.initialized
+    assert gmsh.finalize_calls == 2
 
 
 def test_already_finalized_session_relinquishes_stale_cleanup_ownership(
@@ -686,6 +988,101 @@ from fem.geometry._gmsh.session import _GmshModelSession
 
 assert not hasattr(_GmshModelSession("lazy"), "facade")
 assert "gmsh" not in sys.modules
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_real_owned_session_close_finalizes_native_default_model() -> None:
+    src_dir = Path(__file__).resolve().parents[1] / "src"
+    script = f"""
+import sys
+
+sys.path.insert(0, {str(src_dir)!r})
+
+import gmsh
+from fem import geometry
+
+assert not bool(gmsh.isInitialized())
+with geometry.model("owned-session-finalization", dimension=1):
+    assert bool(gmsh.isInitialized())
+    assert gmsh.model.list().count("") == 1
+assert not bool(gmsh.isInitialized())
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_real_owned_session_preserves_added_duplicate_empty_model() -> None:
+    src_dir = Path(__file__).resolve().parents[1] / "src"
+    script = f"""
+import sys
+
+sys.path.insert(0, {str(src_dir)!r})
+
+import gmsh
+from fem import geometry
+
+assert not bool(gmsh.isInitialized())
+try:
+    with geometry.model("duplicate-empty-model", dimension=1):
+        gmsh.model.add("")
+        assert gmsh.model.list().count("") == 2
+    assert bool(gmsh.isInitialized())
+    assert gmsh.model.list().count("") == 2
+finally:
+    if bool(gmsh.isInitialized()):
+        gmsh.clear()
+        gmsh.finalize()
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_real_owned_session_preserves_replaced_default_model() -> None:
+    src_dir = Path(__file__).resolve().parents[1] / "src"
+    script = f"""
+import sys
+
+sys.path.insert(0, {str(src_dir)!r})
+
+import gmsh
+from fem import geometry
+
+assert not bool(gmsh.isInitialized())
+try:
+    with geometry.model("replaced-default-model", dimension=1):
+        gmsh.model.setCurrent("")
+        gmsh.model.remove()
+        gmsh.model.add("")
+        assert gmsh.model.list().count("") == 1
+    assert bool(gmsh.isInitialized())
+    assert gmsh.model.list().count("") == 1
+finally:
+    if bool(gmsh.isInitialized()):
+        gmsh.clear()
+        gmsh.finalize()
 """
 
     completed = subprocess.run(

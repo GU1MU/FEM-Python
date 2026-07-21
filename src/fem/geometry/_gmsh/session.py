@@ -4,9 +4,57 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from typing import Any
+from uuid import uuid4
 
 from ..errors import GeometryStateError
 from . import backend
+
+
+_MODEL_INCARNATION_ATTRIBUTE = "fem-python.geometry-model-incarnation"
+_SESSION_BASELINE_INCARNATION_ATTRIBUTE = (
+    "fem-python.session-baseline-model-incarnation"
+)
+
+
+class _NativeModelBorrow:
+    """Dormant, revocable authority for one session-owned native model."""
+
+    __slots__ = (
+        "_active",
+        "_epoch",
+        "_incarnation",
+        "_model_name",
+        "_session",
+    )
+
+    def __init__(
+        self,
+        session: _GmshModelSession,
+        model_name: str,
+        incarnation: str,
+        epoch: object,
+    ) -> None:
+        self._session = session
+        self._model_name = model_name
+        self._incarnation = incarnation
+        self._epoch = epoch
+        self._active = False
+
+    def borrow(self) -> Any:
+        """Reactivate and return the exact live facade-owned native model."""
+        session = self._session
+        if (
+            not self._active
+            or session._borrow_epoch is not self._epoch
+            or session._model_name != self._model_name
+            or session._model_incarnation != self._incarnation
+        ):
+            raise session._state_error(
+                "borrow generated mesh",
+                "native model borrow authority is inactive or revoked",
+            )
+        gmsh = session.activate("borrow generated mesh")
+        return gmsh.model
 
 
 class _GmshModelSession:
@@ -18,9 +66,14 @@ class _GmshModelSession:
     """
 
     __slots__ = (
+        "_borrow_epoch",
         "_created_model",
         "_facade",
+        "_incarnation_verified",
+        "_model_incarnation",
+        "_model_identity_inspection_failed",
         "_model_name",
+        "_owned_session_baseline_incarnations",
         "_owns_session",
         "_pending_options",
         "_prior_current",
@@ -29,9 +82,16 @@ class _GmshModelSession:
 
     def __init__(self, model_name: str) -> None:
         self._model_name = model_name
+        self._model_incarnation = uuid4().hex
+        self._borrow_epoch: object | None = object()
         self._facade: Any | None = None
         self._owns_session = False
         self._created_model = False
+        self._incarnation_verified = False
+        self._model_identity_inspection_failed = False
+        self._owned_session_baseline_incarnations: (
+            tuple[tuple[str, str], ...] | None
+        ) = None
         self._prior_current: str | None = None
         self._prior_current_captured = False
         self._pending_options: dict[str, float] = {}
@@ -60,6 +120,44 @@ class _GmshModelSession:
         self._prior_current = str(gmsh.model.getCurrent())
         self._prior_current_captured = True
         existing_models = tuple(str(item) for item in gmsh.model.list())
+        if self._owns_session:
+            if len(set(existing_models)) != len(existing_models):
+                raise self._state_error(
+                    "context entry",
+                    "owned Gmsh session baseline has ambiguous duplicate "
+                    "model names",
+                )
+            baseline_incarnations: list[tuple[str, str]] = []
+            for baseline_name in sorted(existing_models):
+                if str(gmsh.model.getCurrent()) != baseline_name:
+                    gmsh.model.setCurrent(baseline_name)
+                baseline_incarnation = uuid4().hex
+                gmsh.model.setAttribute(
+                    _SESSION_BASELINE_INCARNATION_ATTRIBUTE,
+                    [baseline_incarnation],
+                )
+                values = tuple(
+                    str(item)
+                    for item in gmsh.model.getAttribute(
+                        _SESSION_BASELINE_INCARNATION_ATTRIBUTE
+                    )
+                )
+                if values != (baseline_incarnation,):
+                    raise self._state_error(
+                        "context entry",
+                        "owned Gmsh session baseline incarnation could not "
+                        "be verified",
+                    )
+                baseline_incarnations.append(
+                    (baseline_name, baseline_incarnation)
+                )
+            if self._prior_current in existing_models and (
+                str(gmsh.model.getCurrent()) != self._prior_current
+            ):
+                gmsh.model.setCurrent(self._prior_current)
+            self._owned_session_baseline_incarnations = tuple(
+                baseline_incarnations
+            )
         if not isinstance(self._model_name, str) or not self._model_name.strip():
             raise GeometryStateError(
                 f"geometry model {self._model_name!r}: model name must be a "
@@ -73,6 +171,38 @@ class _GmshModelSession:
 
         gmsh.model.add(self._model_name)
         self._created_model = True
+        try:
+            gmsh.model.setAttribute(
+                _MODEL_INCARNATION_ATTRIBUTE,
+                [self._model_incarnation],
+            )
+            self._assert_current_model_incarnation(gmsh, "context entry")
+            self._incarnation_verified = True
+        except BaseException as error:
+            try:
+                if self._model_name in tuple(
+                    str(item) for item in gmsh.model.list()
+                ):
+                    if str(gmsh.model.getCurrent()) != self._model_name:
+                        gmsh.model.setCurrent(self._model_name)
+                    if self._current_model_has_expected_incarnation(gmsh):
+                        gmsh.model.remove()
+                        self._created_model = False
+                    else:
+                        error.add_note(
+                            f"geometry model {self._model_name!r}: entry "
+                            "cleanup retained the just-created native model "
+                            "because its incarnation could not be verified"
+                        )
+                else:
+                    self._created_model = False
+            except BaseException as cleanup_error:
+                error.add_note(
+                    f"geometry model {self._model_name!r}: entry cleanup also "
+                    "failed while trying to remove the just-created native "
+                    f"model: {cleanup_error}"
+                )
+            raise
         gmsh.model.setCurrent(self._model_name)
 
     def activate(self, operation: str) -> Any:
@@ -88,7 +218,51 @@ class _GmshModelSession:
             )
         if str(gmsh.model.getCurrent()) != self._model_name:
             gmsh.model.setCurrent(self._model_name)
+        self._assert_current_model_incarnation(gmsh, operation)
         return gmsh
+
+    def prepare_native_borrow(self) -> _NativeModelBorrow:
+        """Allocate one dormant capability for this facade-owned model."""
+        epoch = self._borrow_epoch
+        if epoch is None:
+            raise self._state_error(
+                "prepare generated mesh borrow",
+                "native model borrows have been revoked",
+            )
+        return _NativeModelBorrow(
+            self,
+            self._model_name,
+            self._model_incarnation,
+            epoch,
+        )
+
+    def validate_native_borrow(
+        self,
+        capability: _NativeModelBorrow,
+        operation: str,
+    ) -> None:
+        """Validate one dormant exact-model capability before no-fail commit."""
+        if (
+            type(capability) is not _NativeModelBorrow
+            or capability._session is not self
+            or capability._active
+            or capability._epoch is not self._borrow_epoch
+            or capability._model_name != self._model_name
+            or capability._incarnation != self._model_incarnation
+        ):
+            raise self._state_error(
+                operation,
+                "native model borrow authority is invalid or revoked",
+            )
+        self.activate(operation)
+
+    def activate_native_borrow(self, capability: _NativeModelBorrow) -> None:
+        """Activate a prepared capability through a no-fail assignment."""
+        capability._active = True
+
+    def revoke_borrows(self) -> None:
+        """Revoke every issued capability without allocation or native work."""
+        self._borrow_epoch = None
 
     def inspect_initialized(self) -> bool:
         """Inspect the loaded process-global session without guessing state."""
@@ -105,7 +279,26 @@ class _GmshModelSession:
         if self._model_name in model_names:
             if str(gmsh.model.getCurrent()) != self._model_name:
                 gmsh.model.setCurrent(self._model_name)
+            try:
+                incarnation_matches = (
+                    self._current_model_has_expected_incarnation(gmsh)
+                )
+            except BaseException:
+                self._model_identity_inspection_failed = True
+                raise
+            self._model_identity_inspection_failed = False
+            if not incarnation_matches:
+                if not self._incarnation_verified:
+                    raise self._state_error(
+                        "remove facade model",
+                        "the native model incarnation was never verified",
+                    )
+                # The facade-created incarnation is gone.  A same-name model
+                # belongs to its replacer and must never be removed here.
+                self._created_model = False
+                return
             gmsh.model.remove()
+        self._model_identity_inspection_failed = False
         self._created_model = False
 
     def restore_prior_model(self) -> None:
@@ -122,12 +315,66 @@ class _GmshModelSession:
         if not initialized:
             self._owns_session = False
             self._created_model = False
+            self._incarnation_verified = False
+            self._model_identity_inspection_failed = False
+            self._owned_session_baseline_incarnations = None
             return
         if not self._owns_session or self._facade is None:
             return
+        if self._model_identity_inspection_failed:
+            return
+        baseline_incarnations = self._owned_session_baseline_incarnations
+        if baseline_incarnations is not None:
+            baseline_models = tuple(
+                sorted(name for name, _incarnation in baseline_incarnations)
+            )
+            model_names = tuple(
+                sorted(str(item) for item in self._facade.model.list())
+            )
+            expected_with_owned_model = tuple(
+                sorted((*baseline_models, self._model_name))
+            )
+            exact_owned_model_remains = (
+                self._created_model
+                and model_names == expected_with_owned_model
+            )
+            if model_names != baseline_models:
+                if not exact_owned_model_remains:
+                    # A model outside the captured initialization baseline now
+                    # relies on this process-global session.
+                    self._owns_session = False
+                    self._owned_session_baseline_incarnations = None
+                    return
+            for baseline_name, baseline_incarnation in baseline_incarnations:
+                if str(self._facade.model.getCurrent()) != baseline_name:
+                    self._facade.model.setCurrent(baseline_name)
+                values = tuple(
+                    str(item)
+                    for item in self._facade.model.getAttribute(
+                        _SESSION_BASELINE_INCARNATION_ATTRIBUTE
+                    )
+                )
+                if values != (baseline_incarnation,):
+                    self._owns_session = False
+                    self._owned_session_baseline_incarnations = None
+                    return
+            if exact_owned_model_remains:
+                if str(self._facade.model.getCurrent()) != self._model_name:
+                    self._facade.model.setCurrent(self._model_name)
+                if not self._current_model_has_expected_incarnation(
+                    self._facade
+                ):
+                    if self._incarnation_verified:
+                        self._created_model = False
+                    self._owns_session = False
+                    self._owned_session_baseline_incarnations = None
+                    return
         self._facade.finalize()
         self._owns_session = False
         self._created_model = False
+        self._incarnation_verified = False
+        self._model_identity_inspection_failed = False
+        self._owned_session_baseline_incarnations = None
 
     def set_numeric_options(
         self,
@@ -208,6 +455,24 @@ class _GmshModelSession:
             f"geometry model {self._model_name!r}: {operation} failed because "
             f"{detail}"
         )
+
+    def _assert_current_model_incarnation(
+        self,
+        gmsh: Any,
+        operation: str,
+    ) -> None:
+        if not self._current_model_has_expected_incarnation(gmsh):
+            raise self._state_error(
+                operation,
+                "facade-owned Gmsh model incarnation is missing or replaced",
+            )
+
+    def _current_model_has_expected_incarnation(self, gmsh: Any) -> bool:
+        values = tuple(
+            str(item)
+            for item in gmsh.model.getAttribute(_MODEL_INCARNATION_ATTRIBUTE)
+        )
+        return values == (self._model_incarnation,)
 
 
 __all__: list[str] = []

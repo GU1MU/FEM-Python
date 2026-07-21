@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import math
 import operator
 from collections.abc import Iterable, Sequence
@@ -73,24 +72,6 @@ from .state import (
 )
 
 
-_POINT_SIZE_OPTION_NAME = "Mesh.MeshSizeFromPoints"
-_MESH_FIELD_TYPES = frozenset({"Distance", "Threshold", "Min"})
-_GMSH_TOP_CELL_TYPE_NAMES = {
-    1: "Line 2",
-    2: "Triangle 3",
-    3: "Quadrilateral 4",
-    4: "Tetrahedron 4",
-    5: "Hexahedron 8",
-    9: "Triangle 6",
-    11: "Tetrahedron 10",
-    16: "Quadrilateral 8",
-    17: "Hexahedron 20",
-}
-
-_AutoCellShape = Literal["tri", "tri-quad", "quad", "tet", "hex"]
-_AutoMeshMode = Literal["line", "tri", "tri-quad", "quad", "tet", "hex"]
-_GenerationOperation = Literal["MeshSpec generation", "AutoMeshSpec generation"]
-_GenerationSizeMode = Literal["none", "uniform", "point", "background"]
 _SWEEP_FRAME_NAMES: dict[SweepFrame, str] = {
     "discrete": "DiscreteTrihedron",
     "corrected_frenet": "CorrectedFrenet",
@@ -109,169 +90,8 @@ _LOFT_PARAMETRIZATION_NAMES: dict[LoftParametrization, str] = {
 }
 
 
-class MeshCellShapeError(GeometryError):
-    """Raised when an automatic mesh violates its top-cell contract."""
-
-
-class MeshControlConflictError(GeometryError):
-    """Raised when explicit topology controls conflict with automatic meshing."""
-
-
-class MeshFieldOwnershipError(GeometryError):
-    """Raised when a mesh field belongs to a different geometry model."""
-
-
-class StaleMeshFieldError(GeometryError):
-    """Raised when a mesh-field reference no longer denotes a live field."""
-
-
-class StaleGmshMeshError(GeometryError):
-    """Raised when a generated native mesh is no longer available to import."""
-
-
-def _stale_gmsh_mesh_error(model_name: str) -> StaleGmshMeshError:
-    return StaleGmshMeshError(
-        f"generated Gmsh mesh for model {model_name!r} is stale; import it "
-        "with fem.io.gmsh.read() inside the owning geometry model context"
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class _AutoMeshPolicy:
-    mode: _AutoMeshMode
-    option_overrides: tuple[tuple[str, float], ...]
-    order_one_types: frozenset[int]
-    order_two_types: frozenset[int] | None
-
-    def allowed_types(self, order: Literal[1, 2]) -> frozenset[int]:
-        if order == 1:
-            return self.order_one_types
-        if self.order_two_types is None:
-            raise ValueError(
-                f"order must be 1 for automatic {self.mode!r} mesh generation"
-            )
-        return self.order_two_types
-
-
-@dataclass(frozen=True, slots=True)
-class _MeshGenerationPolicy:
-    operation: _GenerationOperation
-    order: Literal[1, 2]
-    option_overrides: tuple[tuple[str, float], ...]
-    mesh_size_factor: float | None = None
-    requested_cell_shape: _AutoCellShape | None = None
-    resolved_cell_shape: _AutoMeshMode | None = None
-    allowed_top_cell_types: frozenset[int] | None = None
-    strict_cell_shape: bool = False
-
-
-_AUTO_MESH_POLICIES = {
-    "line": _AutoMeshPolicy(
-        "line",
-        (
-            ("Mesh.RecombineAll", 0.0),
-            ("Mesh.SubdivisionAlgorithm", 0.0),
-        ),
-        frozenset({1}),
-        None,
-    ),
-    "tri": _AutoMeshPolicy(
-        "tri",
-        (
-            ("Mesh.RecombineAll", 0.0),
-            ("Mesh.Algorithm", 6.0),
-            ("Mesh.SubdivisionAlgorithm", 0.0),
-        ),
-        frozenset({2}),
-        frozenset({9}),
-    ),
-    "tri-quad": _AutoMeshPolicy(
-        "tri-quad",
-        (
-            ("Mesh.RecombineAll", 1.0),
-            ("Mesh.Algorithm", 6.0),
-            ("Mesh.RecombinationAlgorithm", 1.0),
-            ("Mesh.SubdivisionAlgorithm", 0.0),
-        ),
-        frozenset({2, 3}),
-        frozenset({9, 16}),
-    ),
-    "quad": _AutoMeshPolicy(
-        "quad",
-        (
-            ("Mesh.RecombineAll", 1.0),
-            ("Mesh.Algorithm", 6.0),
-            ("Mesh.RecombinationAlgorithm", 3.0),
-            ("Mesh.SubdivisionAlgorithm", 0.0),
-        ),
-        frozenset({3}),
-        frozenset({16}),
-    ),
-    "tet": _AutoMeshPolicy(
-        "tet",
-        (
-            ("Mesh.RecombineAll", 0.0),
-            ("Mesh.Algorithm", 6.0),
-            ("Mesh.Algorithm3D", 1.0),
-            ("Mesh.Recombine3DAll", 0.0),
-            ("Mesh.SubdivisionAlgorithm", 0.0),
-        ),
-        frozenset({4}),
-        frozenset({11}),
-    ),
-    "hex": _AutoMeshPolicy(
-        "hex",
-        (
-            ("Mesh.RecombineAll", 0.0),
-            ("Mesh.Algorithm", 6.0),
-            ("Mesh.Algorithm3D", 1.0),
-            ("Mesh.Recombine3DAll", 0.0),
-            ("Mesh.SubdivisionAlgorithm", 2.0),
-        ),
-        frozenset({5}),
-        frozenset({17}),
-    ),
-}
-
-
-@dataclass(frozen=True, slots=True)
-class MeshFieldRef:
-    """Immutable reference to one mesh field owned by a geometry model."""
-
-    tag: int
-    field_type: Literal["Distance", "Threshold", "Min"]
-    _owner_token: object = field(repr=False)
-    _field_token: object = field(repr=False)
-
-    def __post_init__(self) -> None:
-        _validate_positive_tag(self.tag, "mesh field tag")
-        _validate_mesh_field_type(self.field_type)
-
-
-@dataclass(frozen=True, slots=True)
-class GmshMeshRef:
-    """Read-only reference to a generated mesh in a live Gmsh model context."""
-
-    dimension: Literal[1, 2, 3]
-    model_name: str
-    _owner: GeometryModel = field(repr=False)
-    _owner_token: object = field(repr=False)
-    _generation_token: object = field(repr=False)
-
-    def __post_init__(self) -> None:
-        _validate_mesh_dimension(self.dimension)
-        if not isinstance(self.model_name, str) or not self.model_name.strip():
-            raise ValueError("model_name must be a nonempty string")
-
-    def _borrow_model(self) -> Any:
-        """Return the live owning Gmsh model for the FEM IO adapter."""
-        if not isinstance(self._owner, GeometryModel):
-            raise _stale_gmsh_mesh_error(self.model_name)
-        return GeometryModel._borrow_generated_mesh(self._owner, self)
-
-
 class GeometryModel:
-    """Context-managed owner of one scripted OCC model and its mesh attempt.
+    """Context-managed owner of one scripted OCC model and native session.
 
     Gmsh model, session, and option state is process-global. This facade
     supports same-thread nested contexts but is not thread-safe. Successful
@@ -286,17 +106,7 @@ class GeometryModel:
         self._session = _GmshModelSession(name)
         self._references = _ReferenceRegistry(name)
         self._control_dependencies = _ControlDependencyLedger(name)
-        self._mesh_field_tokens: dict[int, object] = {}
-        self._mesh_field_types: dict[
-            int,
-            Literal["Distance", "Threshold", "Min"],
-        ] = {}
-        self._mesh_size_mode: Literal["none", "point", "background"] = "none"
-        self._background_field: MeshFieldRef | None = None
-        self._auto_mesh_blockers: set[str] = set()
-        self._auto_mesh_scope_unknown = False
-        self._mesh_attempted = False
-        self._generation_token: object | None = None
+        self._topology_provenance_unknown = False
         self._meshing_port: _BoundMeshingPort | None = None
         self._structured_extrusion_open = False
 
@@ -323,15 +133,8 @@ class GeometryModel:
         try:
             self._session.enter()
             self._references.clear()
-            self._mesh_field_tokens.clear()
-            self._mesh_field_types.clear()
-            self._mesh_size_mode = "none"
-            self._background_field = None
             self._control_dependencies.clear()
-            self._auto_mesh_blockers.clear()
-            self._auto_mesh_scope_unknown = False
-            self._mesh_attempted = False
-            self._generation_token = None
+            self._topology_provenance_unknown = False
             self._meshing_port = None
             self._structured_extrusion_open = False
             self._states.enter_geometry()
@@ -353,6 +156,7 @@ class GeometryModel:
         traceback: Any,
     ) -> bool:
         """Remove the facade model and release only lifecycle state it owns."""
+        self._session.revoke_borrows()
         cleanup_errors: list[tuple[str, BaseException]] = []
         initialized: bool | None = None
         try:
@@ -371,13 +175,8 @@ class GeometryModel:
                     cleanup_errors.append((operation, error))
         try:
             self._references.clear()
-            self._mesh_field_tokens.clear()
-            self._mesh_field_types.clear()
-            self._background_field = None
             self._control_dependencies.clear()
-            self._auto_mesh_blockers.clear()
-            self._auto_mesh_scope_unknown = False
-            self._generation_token = None
+            self._topology_provenance_unknown = False
             self._meshing_port = None
             self._structured_extrusion_open = False
             self._states.close()
@@ -1777,7 +1576,7 @@ class GeometryModel:
         recombine: bool,
     ) -> FeatureResult:
         operation = "structured_extrude"
-        self._assert_mesher_authority(mesher_token, operation)
+        self._meshing_validate(mesher_token, operation)
         if not self._structured_extrusion_open:
             raise self._state_error(
                 operation,
@@ -1881,7 +1680,7 @@ class GeometryModel:
         prior_unknown_scope = (
             self._control_dependencies.snapshot_unknown_scope()
         )
-        prior_auto_mesh_scope_unknown = self._auto_mesh_scope_unknown
+        prior_topology_provenance_unknown = self._topology_provenance_unknown
         try:
             native_started = True
             output_pairs = self._gmsh.model.occ.extrude(
@@ -1893,7 +1692,7 @@ class GeometryModel:
             )
             if structured:
                 self._control_dependencies.mark_unknown_after_unknown_mutation()
-                self._auto_mesh_scope_unknown = True
+                self._topology_provenance_unknown = True
             validated_pairs = tuple(
                 _normalize_dim_tag(pair) for pair in output_pairs
             )
@@ -1935,11 +1734,12 @@ class GeometryModel:
                     dependency_keys,
                     transform_unsafe=True,
                 )
-                self._auto_mesh_blockers.add(operation)
                 self._control_dependencies.restore_unknown_scope(
                     prior_unknown_scope
                 )
-                self._auto_mesh_scope_unknown = prior_auto_mesh_scope_unknown
+                self._topology_provenance_unknown = (
+                    prior_topology_provenance_unknown
+                )
             return result
         except BaseException as error:
             if native_started:
@@ -2191,774 +1991,213 @@ class GeometryModel:
         self._states.begin_mesh_configuration(operation)
         return port
 
-    def _assert_mesher_authority(
+    def _meshing_validate(
         self,
-        mesher_port: object,
+        authority: object,
         operation: str,
     ) -> None:
-        if self._meshing_port is None or mesher_port is not self._meshing_port:
-            raise self._state_error(operation, "the bound Mesher capability is invalid")
+        """Validate the sole bound port and mesh-configuration state."""
+        if self._meshing_port is None or authority is not self._meshing_port:
+            raise self._state_error(
+                operation,
+                "the bound Mesher capability is invalid",
+            )
         self._check_state(operation, _MESH_CONTROL_STATES)
 
-    def _complete_mesh_configuration_operation(
+    def _meshing_validate_identity(
         self,
-        mesher_token: object,
+        authority: object,
         operation: str,
     ) -> None:
-        self._assert_mesher_authority(mesher_token, operation)
-        self._structured_extrusion_open = False
+        """Validate port identity without constraining option restoration state."""
+        if self._meshing_port is None or authority is not self._meshing_port:
+            raise self._state_error(
+                operation,
+                "the bound Mesher capability is invalid",
+            )
 
-    def _mesher_transfinite_curve(
+    def _meshing_normalize_entities(
         self,
-        mesher_token: object,
-        curve: EntityRef,
+        authority: object,
+        entities: Iterable[EntityRef],
         *,
-        num_nodes: int,
-    ) -> None:
-        """Set Gmsh's primary-node count, not an element count, on one curve."""
-        operation = "transfinite_curve"
-        self._assert_mesher_authority(mesher_token, operation)
-        node_count = _integer_at_least(num_nodes, "num_nodes", minimum=2)
-        target = self._prepare_mesh_control_target(
-            curve,
-            dimension=1,
-            operation=operation,
-        )
-        dependency_keys = self._entity_boundary_closure_keys(
-            (target,),
-            synchronize=False,
-        )
-        self._complete_mesh_configuration_operation(mesher_token, operation)
-        self._gmsh.model.mesh.setTransfiniteCurve(target.tag, node_count)
-        self._register_control_dependencies(dependency_keys, transform_unsafe=True)
-        self._auto_mesh_blockers.add(operation)
+        operation: str,
+    ) -> tuple[EntityRef, ...]:
+        self._meshing_validate(authority, operation)
+        return self._normalize_entities(entities, operation=operation)
 
-    def _mesher_transfinite_surface(
+    def _meshing_normalize_optional_entities(
         self,
-        mesher_token: object,
-        surface: EntityRef,
+        authority: object,
+        entities: Iterable[EntityRef],
         *,
-        corners: Sequence[EntityRef] = (),
-    ) -> None:
-        """Mark one surface as transfinite with optional boundary corners.
+        operation: str,
+        label: str,
+    ) -> tuple[EntityRef, ...]:
+        self._meshing_validate(authority, operation)
+        return self._normalize_optional_entities(
+            entities,
+            operation=operation,
+            label=label,
+        )
 
-        Gmsh remains responsible for topology suitability. Call ``recombine``
-        separately when quadrilateral output is desired.
-        """
-        operation = "transfinite_surface"
-        self._assert_mesher_authority(mesher_token, operation)
-        normalized_corners = self._normalize_mesh_control_corners(
-            corners,
-            allowed_counts=(0, 3, 4),
-            operation=operation,
+    def _meshing_assert_entities_live(
+        self,
+        authority: object,
+        entities: Iterable[EntityRef],
+        *,
+        operation: str,
+    ) -> None:
+        self._meshing_validate(authority, operation)
+        materialized = tuple(entities)
+        self._activate(operation)
+        self._gmsh.model.occ.synchronize()
+        self._assert_occ_liveness(materialized, operation)
+
+    def _meshing_boundary_closure(
+        self,
+        authority: object,
+        entities: Iterable[EntityRef],
+        *,
+        operation: str,
+    ) -> tuple[tuple[int, int], ...]:
+        self._meshing_validate(authority, operation)
+        self._activate(operation)
+        return tuple(
+            sorted(
+                self._entity_boundary_closure_keys(
+                    tuple(entities),
+                    synchronize=False,
+                )
+            )
         )
-        target = self._prepare_mesh_control_target(
-            surface,
-            dimension=2,
-            operation=operation,
-            related_entities=normalized_corners,
-        )
+
+    def _meshing_assert_corners_on_boundary(
+        self,
+        authority: object,
+        target: EntityRef,
+        corners: tuple[EntityRef, ...],
+        *,
+        operation: str,
+    ) -> None:
+        self._meshing_validate(authority, operation)
+        self._activate(operation)
         self._assert_mesh_control_corners_on_boundary(
             target,
-            normalized_corners,
-            operation=operation,
-        )
-        dependency_keys = self._entity_boundary_closure_keys(
-            (target, *normalized_corners),
-            synchronize=False,
-        )
-        self._complete_mesh_configuration_operation(mesher_token, operation)
-        self._gmsh.model.mesh.setTransfiniteSurface(
-            target.tag,
-            cornerTags=[corner.tag for corner in normalized_corners],
-        )
-        self._register_control_dependencies(dependency_keys, transform_unsafe=True)
-        self._auto_mesh_blockers.add(operation)
-
-    def _mesher_transfinite_volume(
-        self,
-        mesher_token: object,
-        volume: EntityRef,
-        *,
-        corners: Sequence[EntityRef] = (),
-    ) -> None:
-        """Mark one volume as transfinite without configuring its boundary.
-
-        The caller must constrain suitable boundary curves and surfaces; Gmsh
-        remains responsible for rejecting incompatible or unsuitable topology.
-        """
-        operation = "transfinite_volume"
-        self._assert_mesher_authority(mesher_token, operation)
-        normalized_corners = self._normalize_mesh_control_corners(
             corners,
-            allowed_counts=(0, 6, 8),
             operation=operation,
         )
-        target = self._prepare_mesh_control_target(
-            volume,
-            dimension=3,
-            operation=operation,
-            related_entities=normalized_corners,
-        )
-        self._assert_mesh_control_corners_on_boundary(
-            target,
-            normalized_corners,
-            operation=operation,
-        )
-        dependency_keys = self._entity_boundary_closure_keys(
-            (target, *normalized_corners),
-            synchronize=False,
-        )
-        self._complete_mesh_configuration_operation(mesher_token, operation)
-        self._gmsh.model.mesh.setTransfiniteVolume(
-            target.tag,
-            cornerTags=[corner.tag for corner in normalized_corners],
-        )
-        self._register_control_dependencies(dependency_keys, transform_unsafe=True)
-        self._auto_mesh_blockers.add(operation)
 
-    def _mesher_recombine(
+    def _meshing_native_query(
         self,
-        mesher_token: object,
-        surface: EntityRef,
-    ) -> None:
-        """Request native Gmsh recombination on one surface.
+        authority: object,
+        operation: str,
+        callback: Any,
+    ) -> Any:
+        self._meshing_validate(authority, operation)
+        gmsh = self._session.activate(operation)
+        gmsh.model.occ.synchronize()
+        return callback(gmsh.model)
 
-        The entity-local request retains Gmsh's default angle and does not
-        guarantee an all-quadrilateral mesh for unsuitable topology.
-        """
-        operation = "recombine"
-        self._assert_mesher_authority(mesher_token, operation)
-        target = self._prepare_mesh_control_target(
-            surface,
-            dimension=2,
-            operation=operation,
-        )
-        dependency_keys = self._entity_boundary_closure_keys(
-            (target,),
-            synchronize=False,
-        )
-        self._complete_mesh_configuration_operation(mesher_token, operation)
-        self._gmsh.model.mesh.setRecombine(2, target.tag)
-        self._register_control_dependencies(dependency_keys, transform_unsafe=True)
-        self._auto_mesh_blockers.add(operation)
-
-    def _mesher_mesh_size(
+    def _meshing_native_control(
         self,
-        mesher_token: object,
-        points: Iterable[EntityRef],
-        *,
-        size: float,
-    ) -> None:
-        """Assign one mesh size to selected live OCC points."""
-        operation = "mesh_size"
-        self._assert_mesher_authority(mesher_token, operation)
-        if self._mesh_size_mode == "background":
-            raise ValueError(
-                "mesh_size cannot be combined with a selected background field"
-            )
-        size_value = _positive_float(size, "size")
-        normalized = self._normalize_entities(points, operation=operation)
-        if any(point.dimension != 0 for point in normalized):
-            raise ValueError("mesh_size requires dimension-zero point references")
-
-        self._activate(operation)
-        self._gmsh.model.occ.synchronize()
-        self._assert_occ_liveness(normalized, operation)
-        self._complete_mesh_configuration_operation(mesher_token, operation)
-        self._gmsh.model.mesh.setSize(_dim_tags(normalized), size_value)
-        self._mesh_size_mode = "point"
-        self._register_control_dependencies(
-            _dim_tags(normalized),
-            transform_unsafe=True,
-        )
-
-    def _mesher_distance_field(
-        self,
-        mesher_token: object,
-        *,
-        points: Iterable[EntityRef] = (),
-        curves: Iterable[EntityRef] = (),
-        surfaces: Iterable[EntityRef] = (),
-        sampling: int = 20,
-    ) -> MeshFieldRef:
-        """Create a field measuring distance from selected OCC entities."""
-        operation = "distance_field"
-        self._assert_mesher_authority(mesher_token, operation)
-        normalized_points = self._normalize_optional_entities(
-            points,
-            operation=operation,
-            label="points",
-        )
-        normalized_curves = self._normalize_optional_entities(
-            curves,
-            operation=operation,
-            label="curves",
-        )
-        normalized_surfaces = self._normalize_optional_entities(
-            surfaces,
-            operation=operation,
-            label="surfaces",
-        )
-        source_groups = (
-            ("points", 0, normalized_points),
-            ("curves", 1, normalized_curves),
-            ("surfaces", 2, normalized_surfaces),
-        )
-        all_sources = tuple(
-            entity
-            for _, _, group in source_groups
-            for entity in group
-        )
-        if not all_sources:
-            raise ValueError("distance_field requires at least one source entity")
-        for label, dimension, group in source_groups:
-            if any(entity.dimension != dimension for entity in group):
-                raise ValueError(
-                    f"distance_field {label} must be dimension-{dimension} "
-                    "entity references"
-                )
-        source_keys = [(entity.dimension, entity.tag) for entity in all_sources]
-        if len(set(source_keys)) != len(source_keys):
-            raise ValueError("distance_field source entities must be duplicate-free")
-        sampling_value = _integer_at_least(sampling, "sampling", minimum=2)
-
-        self._activate(operation)
-        self._gmsh.model.occ.synchronize()
-        self._assert_occ_liveness(all_sources, operation)
-        dependency_keys = self._entity_boundary_closure_keys(
-            all_sources,
-            synchronize=False,
-        )
-
-        def configure(field_tag: int) -> None:
-            manager = self._gmsh.model.mesh.field
-            if normalized_points:
-                manager.setNumbers(
-                    field_tag,
-                    "PointsList",
-                    [point.tag for point in normalized_points],
-                )
-            if normalized_curves:
-                manager.setNumbers(
-                    field_tag,
-                    "CurvesList",
-                    [curve.tag for curve in normalized_curves],
-                )
-            if normalized_surfaces:
-                manager.setNumbers(
-                    field_tag,
-                    "SurfacesList",
-                    [surface.tag for surface in normalized_surfaces],
-                )
-            manager.setNumber(field_tag, "Sampling", sampling_value)
-
-        self._complete_mesh_configuration_operation(mesher_token, operation)
-        mesh_field = self._construct_mesh_field("Distance", configure)
-        self._register_control_dependencies(
-            dependency_keys,
-            transform_unsafe=False,
-        )
-        return mesh_field
-
-    def _mesher_threshold_field(
-        self,
-        mesher_token: object,
-        distance: MeshFieldRef,
-        *,
-        size_min: float,
-        size_max: float,
-        dist_min: float,
-        dist_max: float,
-    ) -> MeshFieldRef:
-        """Map one distance field to near- and far-field mesh sizes."""
-        operation = "threshold_field"
-        self._assert_mesher_authority(mesher_token, operation)
-        normalized_distance = self._normalize_mesh_fields(
-            (distance,),
-            operation=operation,
-        )[0]
-        if normalized_distance.field_type != "Distance":
-            raise ValueError("threshold_field requires a Distance field")
-        size_min_value = _positive_float(size_min, "size_min")
-        size_max_value = _positive_float(size_max, "size_max")
-        if size_min_value >= size_max_value:
-            raise ValueError("size_min must be less than size_max")
-        dist_min_value = _nonnegative_float(dist_min, "dist_min")
-        dist_max_value = _finite_float(dist_max, "dist_max")
-        if dist_max_value <= dist_min_value:
-            raise ValueError("dist_max must be greater than dist_min")
-
-        self._activate(operation)
-        self._gmsh.model.occ.synchronize()
-        self._assert_mesh_field_liveness((normalized_distance,), operation)
-
-        def configure(field_tag: int) -> None:
-            manager = self._gmsh.model.mesh.field
-            manager.setNumber(field_tag, "InField", normalized_distance.tag)
-            manager.setNumber(field_tag, "SizeMin", size_min_value)
-            manager.setNumber(field_tag, "SizeMax", size_max_value)
-            manager.setNumber(field_tag, "DistMin", dist_min_value)
-            manager.setNumber(field_tag, "DistMax", dist_max_value)
-
-        self._complete_mesh_configuration_operation(mesher_token, operation)
-        return self._construct_mesh_field("Threshold", configure)
-
-    def _mesher_min_field(
-        self,
-        mesher_token: object,
-        fields: Sequence[MeshFieldRef],
-    ) -> MeshFieldRef:
-        """Create the pointwise minimum of two or more size fields."""
-        operation = "min_field"
-        self._assert_mesher_authority(mesher_token, operation)
-        try:
-            materialized = tuple(fields)
-        except TypeError as exc:
-            raise TypeError("min_field fields must be iterable") from exc
-        if len(materialized) < 2:
-            raise ValueError("min_field requires at least two fields")
-        normalized = self._normalize_mesh_fields(
-            materialized,
-            operation=operation,
-        )
-        if any(field.field_type not in {"Threshold", "Min"} for field in normalized):
-            raise ValueError(
-                "min_field accepts only Threshold and Min size fields"
-            )
-
-        self._activate(operation)
-        self._gmsh.model.occ.synchronize()
-        self._assert_mesh_field_liveness(normalized, operation)
-
-        def configure(field_tag: int) -> None:
-            self._gmsh.model.mesh.field.setNumbers(
-                field_tag,
-                "FieldsList",
-                [item.tag for item in normalized],
-            )
-
-        self._complete_mesh_configuration_operation(mesher_token, operation)
-        return self._construct_mesh_field("Min", configure)
-
-    def _mesher_background_field(
-        self,
-        mesher_token: object,
-        field: MeshFieldRef,
-    ) -> None:
-        """Select exactly one size-producing field as the background field."""
-        operation = "background_field"
-        self._assert_mesher_authority(mesher_token, operation)
-        if self._background_field is not None:
-            raise ValueError("background_field may be selected only once")
-        if self._mesh_size_mode == "point":
-            raise ValueError(
-                "background_field cannot be combined with typed point sizes"
-            )
-        normalized = self._normalize_mesh_fields(
-            (field,),
-            operation=operation,
-        )[0]
-        if normalized.field_type not in {"Threshold", "Min"}:
-            raise ValueError(
-                "background_field requires a Threshold or Min size field"
-            )
-
-        self._activate(operation)
-        self._gmsh.model.occ.synchronize()
-        self._assert_mesh_field_liveness((normalized,), operation)
-        self._complete_mesh_configuration_operation(mesher_token, operation)
-        self._gmsh.model.mesh.field.setAsBackgroundMesh(normalized.tag)
-        self._background_field = normalized
-        self._mesh_size_mode = "background"
-
-    def _mesher_generate_mesh(
-        self,
-        mesher_token: object,
-        *,
-        size: float | None = None,
-        order: Literal[1, 2] = 1,
-        recombine: bool = False,
-    ) -> GmshMeshRef:
-        """Generate the one native mesh permitted for this facade model."""
-        self._assert_mesher_authority(mesher_token, "generate")
-        return self._generate_mesh(
-            size=size,
-            order=order,
-            recombine=recombine,
-        )
-
-    def _mesher_generate_auto_mesh(
-        self,
-        mesher_token: object,
-        *,
-        level: Literal[1, 2, 3, 4, 5] = 3,
-        cell_shape: Literal[
-            "tri",
-            "tri-quad",
-            "quad",
-            "tet",
-            "hex",
-        ]
-        | None = None,
-        order: Literal[1, 2] = 1,
-    ) -> GmshMeshRef:
-        """Generate one level-scaled, strict-shape native mesh."""
-        self._assert_mesher_authority(mesher_token, "generate")
-        return self._generate_auto_mesh(
-            level=level,
-            cell_shape=cell_shape,
-            order=order,
-        )
-
-    def _generate_mesh(
-        self,
-        *,
-        size: float | None,
-        order: Literal[1, 2],
-        recombine: bool,
-    ) -> GmshMeshRef:
-        operation = "MeshSpec generation"
-        self._check_state(
-            operation,
-            _MESH_CONTROL_STATES,
-        )
-        if self._mesh_attempted:
-            raise self._state_error(operation, "the one mesh attempt was already used")
-        size_value = None if size is None else _positive_float(size, "size")
-        if size_value is not None and self._mesh_size_mode != "none":
-            raise ValueError(
-                "size cannot be supplied after typed point sizes or a typed "
-                "background field has been configured"
-            )
-        if isinstance(order, bool) or not isinstance(order, int) or order not in (1, 2):
-            raise ValueError(f"order must be integer 1 or 2, got {order!r}")
-        if not isinstance(recombine, bool):
-            raise TypeError(f"recombine must be a boolean, got {recombine!r}")
-        if self.dimension == 1 and order != 1:
-            raise ValueError("order must be 1 for a one-dimensional geometry model")
-        if self.dimension == 1 and recombine:
-            raise ValueError("recombine must be False for a one-dimensional geometry model")
-
-        policy = _MeshGenerationPolicy(
-            operation=operation,
-            order=order,
-            option_overrides=(
-                ("Mesh.ElementOrder", float(order)),
-                (
-                    "Mesh.SecondOrderIncomplete",
-                    1.0 if order == 2 else 0.0,
-                ),
-                ("Mesh.RecombineAll", 1.0 if recombine else 0.0),
-            ),
-        )
-        return self._generate_native_mesh(
-            policy=policy,
-            size_value=size_value,
-        )
-
-    def _generate_auto_mesh(
-        self,
-        *,
-        level: Literal[1, 2, 3, 4, 5],
-        cell_shape: _AutoCellShape | None,
-        order: Literal[1, 2],
-    ) -> GmshMeshRef:
-        operation = "AutoMeshSpec generation"
-        self._check_state(
-            operation,
-            _MESH_CONTROL_STATES,
-        )
-        if self._mesh_attempted:
-            raise self._state_error(operation, "the one mesh attempt was already used")
-
-        normalized_level = _validate_auto_mesh_level(level)
-        resolved_cell_shape = _resolve_auto_mesh_mode(
-            self.dimension,
-            cell_shape,
-        )
-        if isinstance(order, bool) or not isinstance(order, int) or order not in (1, 2):
-            raise ValueError(f"order must be integer 1 or 2, got {order!r}")
-        if self.dimension == 1 and order != 1:
-            raise ValueError("order must be 1 for a one-dimensional geometry model")
-        self._check_auto_mesh_controls()
-
-        auto_policy = _AUTO_MESH_POLICIES[resolved_cell_shape]
-        size_factor = 2.0 ** ((3 - normalized_level) / self.dimension)
-        policy = _MeshGenerationPolicy(
-            operation=operation,
-            order=order,
-            option_overrides=(
-                ("Mesh.ElementOrder", float(order)),
-                (
-                    "Mesh.SecondOrderIncomplete",
-                    1.0 if order == 2 else 0.0,
-                ),
-                *auto_policy.option_overrides,
-            ),
-            mesh_size_factor=size_factor,
-            requested_cell_shape=cell_shape,
-            resolved_cell_shape=resolved_cell_shape,
-            allowed_top_cell_types=auto_policy.allowed_types(order),
-            strict_cell_shape=True,
-        )
-        return self._generate_native_mesh(
-            policy=policy,
-            size_value=None,
-        )
-
-    def _generate_native_mesh(
-        self,
-        *,
-        policy: _MeshGenerationPolicy,
-        size_value: float | None,
-    ) -> GmshMeshRef:
-        operation = policy.operation
-
-        self._activate(operation)
-        self._gmsh.model.occ.synchronize()
-        top_entities = sorted(
-            _normalize_dim_tag(pair)
-            for pair in self._gmsh.model.getEntities(self.dimension)
-        )
-        if not top_entities:
-            raise ValueError(
-                f"geometry model {self.name!r}: mesh generation requires at "
-                "least one top-dimensional OCC entity"
-            )
-
+        authority: object,
+        operation: str,
+        callback: Any,
+    ) -> Any:
+        self._meshing_validate(authority, operation)
+        gmsh = self._session.activate(operation)
         self._structured_extrusion_open = False
-        self._mesh_attempted = True
-        try:
-            generation_size_mode: _GenerationSizeMode = self._mesh_size_mode
-            if size_value is not None:
-                generation_size_mode = "uniform"
-                points = sorted(
-                    _normalize_dim_tag(pair)
-                    for pair in self._gmsh.model.getEntities(0)
-                )
-                if not points:
-                    raise GeometryError(
-                        f"geometry model {self.name!r}: uniform mesh size "
-                        "requires at least one point entity"
-                    )
-                self._gmsh.model.mesh.setSize(points, size_value)
+        return callback(gmsh.model)
 
-            self._snapshot_and_set_mesh_options(
-                policy,
-                size_mode=generation_size_mode,
-            )
-            self._gmsh.model.mesh.generate(self.dimension)
-            self._gmsh.model.occ.synchronize()
-            if policy.strict_cell_shape:
-                self._validate_generated_top_cell_shape(policy)
-        except BaseException as error:
-            self._states.mark_mesh_failed(operation)
-            try:
-                self._session.restore_pending_options()
-            except BaseException as restore_error:
-                error.add_note(
-                    f"geometry model {self.name!r}: additionally failed to "
-                    f"restore Gmsh mesh options: {restore_error}"
-                )
-            error.add_note(
-                f"geometry model {self.name!r}: mesh generation failed"
-            )
-            raise
-
-        try:
-            self._session.restore_pending_options()
-        except BaseException as error:
-            self._states.mark_mesh_failed(operation)
-            raise GeometryError(
-                f"geometry model {self.name!r}: mesh generation succeeded but "
-                "restoring global Gmsh options failed"
-            ) from error
-        generation_token = object()
-        self._generation_token = generation_token
-        self._states.mark_meshed(operation)
-        return GmshMeshRef(
-            self.dimension,
-            self.name,
-            self,
-            self._references.owner_token,
-            generation_token,
-        )
-
-    def _snapshot_and_set_mesh_options(
+    def _meshing_commit_generation_attempt(
         self,
-        policy: _MeshGenerationPolicy,
+        authority: object,
+        operation: str,
+    ) -> None:
+        self._meshing_validate(authority, operation)
+        self._structured_extrusion_open = False
+
+    def _meshing_register_control_dependencies(
+        self,
+        authority: object,
+        keys: Iterable[tuple[int, int]],
         *,
-        size_mode: _GenerationSizeMode,
+        transform_unsafe: bool,
     ) -> None:
-        if self._session.has_pending_options:
-            raise GeometryStateError(
-                f"geometry model {self.name!r}: mesh options already have a "
-                "pending restoration"
-            )
-        requested: dict[str, float] = {}
-        for option_name, option_value in policy.option_overrides:
-            if option_name in requested:
-                raise GeometryStateError(
-                    f"geometry model {self.name!r}: generation policy contains "
-                    f"duplicate Gmsh option {option_name!r}"
-                )
-            requested[option_name] = float(option_value)
+        self._meshing_validate(authority, "mesh control dependency registration")
+        self._register_control_dependencies(
+            keys,
+            transform_unsafe=transform_unsafe,
+        )
 
-        if size_mode == "uniform":
-            requested[_POINT_SIZE_OPTION_NAME] = 1.0
-        elif size_mode in {"point", "background"}:
-            requested.update(
-                {
-                    _POINT_SIZE_OPTION_NAME: 1.0 if size_mode == "point" else 0.0,
-                    "Mesh.MeshSizeFromCurvature": 0.0,
-                    "Mesh.MeshSizeExtendFromBoundary": (
-                        1.0 if size_mode == "point" else 0.0
-                    ),
-                    "Mesh.MeshSizeMin": 0.0,
-                    "Mesh.MeshSizeMax": 1.0e22,
-                }
-            )
-        if policy.mesh_size_factor is not None:
-            requested["Mesh.MeshSizeFactor"] = policy.mesh_size_factor
-        elif size_mode in {"point", "background"}:
-            requested["Mesh.MeshSizeFactor"] = 1.0
+    def _meshing_has_pending_numeric_options(self, authority: object) -> bool:
+        self._meshing_validate_identity(authority, "mesh option transaction")
+        return self._session.has_pending_options
 
-        self._session.set_numeric_options(requested.items())
-
-    def _validate_generated_top_cell_shape(
+    def _meshing_apply_numeric_options(
         self,
-        policy: _MeshGenerationPolicy,
+        authority: object,
+        replacements: Iterable[tuple[str, float]],
     ) -> None:
-        allowed_types = policy.allowed_top_cell_types
-        if allowed_types is None or policy.resolved_cell_shape is None:
-            raise GeometryStateError(
-                f"geometry model {self.name!r}: strict mesh policy is incomplete"
-            )
+        self._meshing_validate(authority, "mesh option transaction")
+        self._session.set_numeric_options(replacements)
 
-        raw_blocks = self._gmsh.model.mesh.getElements(self.dimension)
-        try:
-            raw_types, raw_element_tags, _ = raw_blocks
-            element_types = list(raw_types)
-            element_tag_blocks = list(raw_element_tags)
-        except Exception as exc:
-            raise self._mesh_cell_shape_error(
-                policy,
-                "generated malformed top-dimensional element blocks",
-            ) from exc
+    def _meshing_restore_numeric_options(self, authority: object) -> None:
+        self._meshing_validate_identity(authority, "mesh option restoration")
+        self._session.restore_pending_options()
 
-        if len(element_types) != len(element_tag_blocks):
-            raise self._mesh_cell_shape_error(
-                policy,
-                "generated malformed top-dimensional element blocks "
-                f"({len(element_types)} type blocks and "
-                f"{len(element_tag_blocks)} element-tag blocks)",
-            )
-
-        counts: dict[int, int] = {}
-        for block_index, (raw_type, raw_tags) in enumerate(
-            zip(element_types, element_tag_blocks, strict=True)
-        ):
-            if isinstance(raw_type, bool):
-                raise self._mesh_cell_shape_error(
-                    policy,
-                    f"generated a non-integer element type in block {block_index}",
-                )
-            try:
-                element_type = int(operator.index(raw_type))
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise self._mesh_cell_shape_error(
-                    policy,
-                    f"generated a non-integer element type in block {block_index}",
-                ) from exc
-            try:
-                element_count = len(raw_tags)
-            except Exception as exc:
-                raise self._mesh_cell_shape_error(
-                    policy,
-                    "generated malformed element tags in top-dimensional "
-                    f"block {block_index}",
-                ) from exc
-            if element_count:
-                counts[element_type] = counts.get(element_type, 0) + element_count
-
-        if not counts:
-            raise self._mesh_cell_shape_error(
-                policy,
-                "generated no top-dimensional cells",
-            )
-        if set(counts).issubset(allowed_types):
-            return
-
-        actual = " and ".join(
-            f"{self._element_type_diagnostic_name(element_type)}={counts[element_type]}"
-            for element_type in sorted(counts)
-        )
-        raise self._mesh_cell_shape_error(
-            policy,
-            f"generated {actual}",
-        )
-
-    def _mesh_cell_shape_error(
+    def _meshing_fail_generation(
         self,
-        policy: _MeshGenerationPolicy,
-        actual_detail: str,
-    ) -> MeshCellShapeError:
-        allowed_types = policy.allowed_top_cell_types or frozenset()
-        expected_names = [
-            _GMSH_TOP_CELL_TYPE_NAMES.get(
-                element_type,
-                f"Gmsh type {element_type}",
-            )
-            for element_type in sorted(allowed_types)
-        ]
-        expected = " or ".join(expected_names) if expected_names else "no cell type"
-        requested = f"cell_shape={policy.requested_cell_shape!r}"
-        if policy.requested_cell_shape is None:
-            requested += f" (resolved to {policy.resolved_cell_shape!r})"
-        return MeshCellShapeError(
-            f"geometry model {self.name!r}: AutoMeshSpec requested "
-            f"{requested} for dimension={self.dimension} and order={policy.order}; "
-            f"expected only {expected}, but {actual_detail}; automatic fallback "
-            "is disabled"
-        )
+        authority: object,
+        operation: str,
+    ) -> None:
+        self._meshing_validate(authority, operation)
+        self._states.mark_mesh_failed(operation)
 
-    def _element_type_diagnostic_name(self, element_type: int) -> str:
-        try:
-            properties = self._gmsh.model.mesh.getElementProperties(element_type)
-            name = properties[0]
-            if not isinstance(name, str) or not name:
-                raise ValueError("element name is unavailable")
-        except BaseException:
-            return f"Gmsh type {element_type}"
-        return name
+    def _meshing_prepare_native_borrow(
+        self,
+        authority: object,
+        operation: str,
+    ) -> Any:
+        self._meshing_validate(authority, operation)
+        return self._session.prepare_native_borrow()
+
+    def _meshing_complete_generation(
+        self,
+        authority: object,
+        operation: str,
+        native_borrow: Any,
+    ) -> None:
+        self._meshing_validate(authority, operation)
+        self._session.validate_native_borrow(native_borrow, operation)
+        self._session.activate_native_borrow(native_borrow)
+        self._states.mark_meshed_prevalidated()
 
     @property
     def raw_model(self) -> Any:
-        """Return the raw model and transfer size-precedence ownership to caller.
+        """Return the raw model and transfer OCC mutation ownership to caller.
 
-        Access invalidates typed entity and mesh-field references. Any already
-        committed typed size mode or entity-control guard remains committed.
+        Access invalidates typed geometry references and makes topology
+        provenance unknown.
         """
         return self._raw_handle("raw_model", "model")
 
     @property
     def raw_occ(self) -> Any:
-        """Return raw OCC and transfer size-precedence ownership to caller.
+        """Return raw OCC and transfer OCC mutation ownership to caller.
 
-        Access invalidates typed entity and mesh-field references. Any already
-        committed typed size mode or entity-control guard remains committed.
+        Access invalidates typed geometry references and makes topology
+        provenance unknown.
         """
         return self._raw_handle("raw_occ", "occ")
 
     def _raw_handle(self, operation: str, kind: Literal["model", "occ"]) -> Any:
         self._check_state(operation, _GEOMETRY_MUTATION_STATES)
         self._activate(operation)
-        self._auto_mesh_scope_unknown = True
+        self._topology_provenance_unknown = True
         self._control_dependencies.mark_unknown_after_raw_access()
         self._references.clear()
-        self._mesh_field_tokens.clear()
-        self._mesh_field_types.clear()
         if kind == "model":
             return self._gmsh.model
         return self._gmsh.model.occ
@@ -4368,7 +3607,7 @@ class GeometryModel:
     def _fail_closed_after_unknown_occ_mutation(self) -> None:
         self._references.clear()
         self._control_dependencies.mark_unknown_after_unknown_mutation()
-        self._auto_mesh_scope_unknown = True
+        self._topology_provenance_unknown = True
 
     def _boolean(
         self,
@@ -4525,140 +3764,6 @@ class GeometryModel:
             label=label,
         )
 
-    def _normalize_mesh_fields(
-        self,
-        fields: Iterable[MeshFieldRef],
-        *,
-        operation: str,
-    ) -> tuple[MeshFieldRef, ...]:
-        try:
-            normalized = tuple(fields)
-        except TypeError as exc:
-            raise TypeError(f"{operation} fields must be iterable") from exc
-        seen_tags: set[int] = set()
-        for mesh_field in normalized:
-            if not isinstance(mesh_field, MeshFieldRef):
-                raise TypeError(
-                    f"{operation} requires MeshFieldRef values, got "
-                    f"{mesh_field!r}"
-                )
-            if mesh_field._owner_token is not self._references.owner_token:
-                raise MeshFieldOwnershipError(
-                    f"geometry model {self.name!r}: {operation} received a "
-                    "mesh field owned by another geometry model"
-                )
-            current_token = self._mesh_field_tokens.get(mesh_field.tag)
-            registered_type = self._mesh_field_types.get(mesh_field.tag)
-            if (
-                current_token is not mesh_field._field_token
-                or registered_type != mesh_field.field_type
-            ):
-                raise StaleMeshFieldError(
-                    f"geometry model {self.name!r}: {operation} received stale "
-                    f"mesh field {mesh_field.tag}"
-                )
-            if mesh_field.tag in seen_tags:
-                raise ValueError(f"{operation} field inputs must be duplicate-free")
-            seen_tags.add(mesh_field.tag)
-        return normalized
-
-    def _active_mesh_field_tags(self) -> set[int]:
-        try:
-            return {
-                _validate_positive_tag(tag, "mesh field tag")
-                for tag in self._gmsh.model.mesh.field.list()
-            }
-        except (TypeError, ValueError) as exc:
-            raise GeometryError(
-                f"geometry model {self.name!r}: Gmsh returned an invalid mesh "
-                "field list"
-            ) from exc
-
-    def _assert_mesh_field_liveness(
-        self,
-        fields: Iterable[MeshFieldRef],
-        operation: str,
-    ) -> None:
-        active_tags = self._active_mesh_field_tags()
-        for mesh_field in fields:
-            token = self._mesh_field_tokens.get(mesh_field.tag)
-            registered_type = self._mesh_field_types.get(mesh_field.tag)
-            if (
-                token is not mesh_field._field_token
-                or registered_type != mesh_field.field_type
-                or mesh_field.tag not in active_tags
-            ):
-                self._mesh_field_tokens.pop(mesh_field.tag, None)
-                self._mesh_field_types.pop(mesh_field.tag, None)
-                raise StaleMeshFieldError(
-                    f"geometry model {self.name!r}: {operation} mesh field "
-                    f"{mesh_field.tag} no longer exists"
-                )
-
-    def _construct_mesh_field(
-        self,
-        field_type: Literal["Distance", "Threshold", "Min"],
-        configure: Any,
-    ) -> MeshFieldRef:
-        manager = self._gmsh.model.mesh.field
-        allocated_tag: int | None = None
-        try:
-            allocated_tag = _validate_positive_tag(
-                manager.add(field_type, tag=-1),
-                "mesh field tag",
-            )
-            configure(allocated_tag)
-            if allocated_tag not in self._active_mesh_field_tags():
-                raise GeometryError(
-                    f"geometry model {self.name!r}: newly allocated "
-                    f"{field_type} field {allocated_tag} is not active"
-                )
-            token = object()
-            reference = MeshFieldRef(
-                allocated_tag,
-                field_type,
-                self._references.owner_token,
-                token,
-            )
-            self._mesh_field_tokens[allocated_tag] = token
-            self._mesh_field_types[allocated_tag] = field_type
-        except BaseException as error:
-            if allocated_tag is not None:
-                self._mesh_field_tokens.pop(allocated_tag, None)
-                self._mesh_field_types.pop(allocated_tag, None)
-                try:
-                    manager.remove(allocated_tag)
-                except BaseException as rollback_error:
-                    error.add_note(
-                        f"geometry model {self.name!r}: mesh-field rollback "
-                        f"also failed while removing field {allocated_tag}: "
-                        f"{rollback_error}"
-                    )
-            raise
-        return reference
-
-    def _prepare_mesh_control_target(
-        self,
-        entity: EntityRef,
-        *,
-        dimension: int,
-        operation: str,
-        related_entities: Iterable[EntityRef] = (),
-    ) -> EntityRef:
-        target = self._normalize_entities((entity,), operation=operation)[0]
-        if target.dimension != dimension:
-            raise ValueError(
-                f"{operation} target must be a dimension-{dimension} entity"
-            )
-        if dimension > self.dimension:
-            raise ValueError(
-                f"{operation} target dimension exceeds the facade dimension"
-            )
-        self._activate(operation)
-        self._gmsh.model.occ.synchronize()
-        self._assert_occ_liveness((target, *related_entities), operation)
-        return target
-
     def _prepare_geometry_query_entity(
         self,
         entity: EntityRef,
@@ -4675,35 +3780,6 @@ class GeometryModel:
         self._gmsh.model.occ.synchronize()
         self._assert_occ_liveness((target,), operation)
         return target
-
-    def _normalize_mesh_control_corners(
-        self,
-        corners: Sequence[EntityRef],
-        *,
-        allowed_counts: tuple[int, ...],
-        operation: str,
-    ) -> tuple[EntityRef, ...]:
-        try:
-            materialized = tuple(corners)
-        except TypeError as exc:
-            raise TypeError(f"{operation} corners must be iterable") from exc
-        if len(materialized) not in allowed_counts:
-            allowed_text = ", ".join(str(count) for count in allowed_counts)
-            raise ValueError(
-                f"{operation} requires {allowed_text} corners, got "
-                f"{len(materialized)}"
-            )
-        if not materialized:
-            return ()
-        normalized = self._normalize_entities(
-            materialized,
-            operation=f"{operation} corners",
-        )
-        if any(corner.dimension != 0 for corner in normalized):
-            raise ValueError(
-                f"{operation} corners must be dimension-zero point references"
-            )
-        return normalized
 
     def _assert_mesh_control_corners_on_boundary(
         self,
@@ -4814,22 +3890,6 @@ class GeometryModel:
     def _check_control_dependency_scope_known(self, operation: str) -> None:
         self._control_dependencies.check_scope_known(operation)
 
-    def _check_auto_mesh_controls(self) -> None:
-        if self._auto_mesh_scope_unknown:
-            raise MeshControlConflictError(
-                f"geometry model {self.name!r}: AutoMeshSpec generation cannot own "
-                "the mesh topology because raw access or a failed controlled "
-                "topology operation made the automatic topology scope unknown; "
-                "use Mesher.generate(MeshSpec(...)) for this model"
-            )
-        if self._auto_mesh_blockers:
-            blockers = ", ".join(sorted(self._auto_mesh_blockers))
-            raise MeshControlConflictError(
-                f"geometry model {self.name!r}: AutoMeshSpec generation conflicts "
-                f"with explicit topology controls: {blockers}; use "
-                "Mesher.generate(MeshSpec(...)) for this model"
-            )
-
     def _check_controlled_transform_allowed(
         self,
         operation: str,
@@ -4862,29 +3922,6 @@ class GeometryModel:
     def _activate(self, operation: str) -> None:
         self._session.activate(operation)
 
-    def _borrow_generated_mesh(self, source: GmshMeshRef) -> Any:
-        """Validate and reactivate one live generated mesh for the IO layer."""
-        stale_error = _stale_gmsh_mesh_error(source.model_name)
-        if (
-            source._owner is not self
-            or source._owner_token is not self._references.owner_token
-            or source.dimension != self.dimension
-            or source.model_name != self.name
-            or self._states.state is not _State.MESHED
-            or self._generation_token is None
-            or source._generation_token is not self._generation_token
-            or not self._session.created_model
-        ):
-            raise stale_error
-
-        try:
-            gmsh = self._session.activate("borrow generated mesh")
-        except StaleGmshMeshError:
-            raise
-        except BaseException as error:
-            raise stale_error from error
-        return gmsh.model
-
     def _wrap_entity(self, pair: Any) -> EntityRef:
         return self._references.wrap_entity(pair)
 
@@ -4892,13 +3929,8 @@ class GeometryModel:
         self,
     ) -> tuple[tuple[str, BaseException], ...]:
         self._references.clear()
-        self._mesh_field_tokens.clear()
-        self._mesh_field_types.clear()
-        self._mesh_size_mode = "none"
-        self._background_field = None
         self._control_dependencies.clear()
-        self._auto_mesh_blockers.clear()
-        self._auto_mesh_scope_unknown = False
+        self._topology_provenance_unknown = False
         self._meshing_port = None
         self._structured_extrusion_open = False
         return self._session.cleanup_after_failed_entry()
@@ -4910,62 +3942,6 @@ class GeometryModel:
 def model(name: str, *, dimension: Literal[1, 2, 3]) -> GeometryModel:
     """Return a context manager for one scripted Gmsh OCC model."""
     return GeometryModel(name, dimension=dimension)
-
-
-def _validate_auto_mesh_level(value: Any) -> Literal[1, 2, 3, 4, 5]:
-    if isinstance(value, bool) or not isinstance(value, int) or value not in range(1, 6):
-        raise ValueError(
-            "AutoMeshSpec level must be a Python integer from 1 through "
-            f"5, got {value!r}"
-        )
-    return value
-
-
-def _resolve_auto_mesh_mode(
-    dimension: Literal[1, 2, 3],
-    cell_shape: Any,
-) -> _AutoMeshMode:
-    if dimension == 1:
-        if cell_shape is not None:
-            raise ValueError(
-                "AutoMeshSpec cell_shape must be None for dimension 1, "
-                f"got {cell_shape!r}"
-            )
-        return "line"
-
-    if dimension == 2:
-        if cell_shape is None:
-            return "tri-quad"
-        if not isinstance(cell_shape, str) or cell_shape not in {
-            "tri",
-            "tri-quad",
-            "quad",
-        }:
-            raise ValueError(
-                "AutoMeshSpec cell_shape for dimension 2 must be exactly "
-                f"'tri', 'tri-quad', or 'quad', got {cell_shape!r}"
-            )
-        return cell_shape
-
-    if cell_shape is None:
-        return "tet"
-    if not isinstance(cell_shape, str) or cell_shape not in {"tet", "hex"}:
-        raise ValueError(
-            "AutoMeshSpec cell_shape for dimension 3 must be exactly "
-            f"'tet' or 'hex', got {cell_shape!r}"
-        )
-    return cell_shape
-
-
-def _validate_mesh_field_type(
-    value: Any,
-) -> Literal["Distance", "Threshold", "Min"]:
-    if not isinstance(value, str) or value not in _MESH_FIELD_TYPES:
-        raise ValueError(
-            "mesh field type must be 'Distance', 'Threshold', or 'Min', "
-            f"got {value!r}"
-        )
-    return value
 
 
 def _normalize_dim_tag(value: Any) -> tuple[int, int]:

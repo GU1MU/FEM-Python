@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-from . import gmsh
+import fem.mesh.gmsh as gmsh
 
 __all__ = ["gmsh"]

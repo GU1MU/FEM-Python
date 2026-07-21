@@ -166,7 +166,7 @@ def read(
     normalized_plane_type = _validate_plane_type(plane_type)
     normalized_thickness = _validate_thickness(thickness)
     normalized_z_tolerance = _validate_z_tolerance(z_tolerance)
-    gmsh_model = source._borrow_model()
+    gmsh_model = GmshMeshRef._borrow_model(source)
     return _from_backend(
         gmsh_model,
         dimension=dimension,

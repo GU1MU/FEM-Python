@@ -115,6 +115,16 @@ class _FakeGmshMeshRef:
         return self._gmsh_model
 
 
+class _OverridingFakeGmshMeshRef(_FakeGmshMeshRef):
+    def __init__(self, dimension, gmsh_model):
+        super().__init__(dimension, gmsh_model)
+        self.override_borrow_calls = 0
+
+    def _borrow_model(self):
+        self.override_borrow_calls += 1
+        raise AssertionError("a subclass must not replace canonical borrowing")
+
+
 def _install_fake_mesh_ref(monkeypatch):
     monkeypatch.setattr(gmsh_io, "GmshMeshRef", _FakeGmshMeshRef)
 
@@ -334,6 +344,27 @@ def test_read_infers_dimension_and_forwards_plane_formulation(monkeypatch):
         "plane_type": "strain",
         "thickness": 0.25,
     }
+
+
+def test_read_dispatches_canonical_borrow_once_for_a_reference_subclass(
+    monkeypatch,
+):
+    _install_fake_mesh_ref(monkeypatch)
+    model = _fake_model(
+        node_coordinates={
+            1: (0.0, 0.0, 0.0),
+            2: (1.0, 0.0, 0.0),
+            3: (0.0, 1.0, 0.0),
+        },
+        elements=([2], [[11]], [[1, 2, 3]]),
+    )
+    source = _OverridingFakeGmshMeshRef(2, model)
+
+    mesh = gmsh_io.read(source)
+
+    assert isinstance(mesh, Mesh2D)
+    assert source.borrow_calls == 1
+    assert source.override_borrow_calls == 0
 
 
 @pytest.mark.parametrize(

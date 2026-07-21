@@ -9,9 +9,12 @@ import uuid
 import pytest
 
 from fem import geometry
-from fem.geometry._gmsh import model as _geometry_model
 from fem.io import gmsh as gmsh_io
 from fem.mesh import gmsh as meshing
+from fem.mesh.gmsh import errors as _mesh_errors
+from fem.mesh.gmsh import mesher as _mesh_mesher
+from fem.mesh.gmsh import specs as _mesh_specs
+from fem.mesh.gmsh import types as _mesh_types
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -142,7 +145,7 @@ assert gmsh_meshing.__name__ == "fem.mesh.gmsh"
     assert completed.returncode == 0, completed.stderr
 
 
-def test_canonical_exports_share_owner_coupled_class_identity():
+def test_canonical_exports_have_mesh_owned_class_identity():
     assert meshing.__all__ == [
         "AutoMeshSpec",
         "GmshMeshRef",
@@ -155,16 +158,22 @@ def test_canonical_exports_share_owner_coupled_class_identity():
         "StaleGmshMeshError",
         "StaleMeshFieldError",
     ]
-    for name in (
-        "GmshMeshRef",
-        "MeshCellShapeError",
-        "MeshControlConflictError",
-        "MeshFieldOwnershipError",
-        "MeshFieldRef",
-        "StaleGmshMeshError",
-        "StaleMeshFieldError",
-    ):
-        assert getattr(meshing, name) is getattr(_geometry_model, name)
+    canonical_owners = {
+        "AutoMeshSpec": _mesh_specs,
+        "GmshMeshRef": _mesh_types,
+        "MeshCellShapeError": _mesh_errors,
+        "MeshControlConflictError": _mesh_errors,
+        "MeshFieldOwnershipError": _mesh_errors,
+        "MeshFieldRef": _mesh_types,
+        "MeshSpec": _mesh_specs,
+        "Mesher": _mesh_mesher,
+        "StaleGmshMeshError": _mesh_errors,
+        "StaleMeshFieldError": _mesh_errors,
+    }
+    for name, owner in canonical_owners.items():
+        exported = getattr(meshing, name)
+        assert exported is getattr(owner, name)
+        assert exported.__module__ == owner.__name__
         assert not hasattr(geometry, name)
         assert name not in geometry.__all__
 

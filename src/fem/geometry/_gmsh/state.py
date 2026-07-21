@@ -66,6 +66,10 @@ class _ModelStateMachine:
         self.check(operation, _MESH_CONTROL_STATES)
         self._state = _State.MESHED
 
+    def mark_meshed_prevalidated(self) -> None:
+        """Complete a prevalidated mesh success through a no-fail assignment."""
+        self._state = _State.MESHED
+
     def mark_mesh_failed(self, operation: str = "mesh generation") -> None:
         """Record terminal failure after native meshing work began."""
         self.check(operation, _MESH_CONTROL_STATES)

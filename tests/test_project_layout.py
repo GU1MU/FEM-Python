@@ -10,6 +10,8 @@ SRC_ROOT = PROJECT_ROOT / "src"
 TESTS_ROOT = PROJECT_ROOT / "tests"
 EXAMPLES_ROOT = PROJECT_ROOT / "examples"
 GEOMETRY_ROOT = SRC_ROOT / "fem" / "geometry"
+MESH_ROOT = SRC_ROOT / "fem" / "mesh"
+GMSH_MESH_ROOT = MESH_ROOT / "gmsh"
 
 GEOMETRY_PUBLIC_API = [
     "BooleanResult",
@@ -407,17 +409,30 @@ def test_geometry_stateful_modules_follow_explicit_dependency_boundaries():
     assert offenders == []
 
 
-def test_phase_3_runtime_boundaries_do_not_eagerly_import_external_gmsh():
-    modules = (
-        "fem.geometry",
-        "fem.geometry._gmsh.state",
-        "fem.geometry._gmsh.session",
-        "fem.geometry._gmsh.reference_registry",
-        "fem.geometry._gmsh.control_dependencies",
-        "fem.geometry._gmsh.meshing_port",
-        "fem.mesh",
-        "fem.mesh.gmsh",
+def test_phase_4_runtime_boundaries_do_not_eagerly_import_external_gmsh():
+    paths = sorted(
+        {
+            *GEOMETRY_ROOT.rglob("*.py"),
+            *MESH_ROOT.rglob("*.py"),
+            *(SRC_ROOT / "fem" / "io").rglob("*.py"),
+        }
     )
+    modules = tuple(_module_name(path) for path in paths)
+    expected_gmsh_mesh_modules = {
+        "fem.mesh.gmsh",
+        "fem.mesh.gmsh._configuration",
+        "fem.mesh.gmsh._field_registry",
+        "fem.mesh.gmsh._policies",
+        "fem.mesh.gmsh._protocols",
+        "fem.mesh.gmsh._runtime",
+        "fem.mesh.gmsh._validation",
+        "fem.mesh.gmsh.errors",
+        "fem.mesh.gmsh.mesher",
+        "fem.mesh.gmsh.specs",
+        "fem.mesh.gmsh.types",
+    }
+    assert expected_gmsh_mesh_modules <= set(modules)
+
     script = f"""
 import builtins
 import importlib
@@ -483,7 +498,7 @@ def test_geometry_facade_routes_public_stateless_names_to_canonical_modules():
     }
 
 
-def test_private_gmsh_model_does_not_redefine_extracted_stateless_names():
+def test_private_gmsh_model_does_not_redefine_moved_contracts_or_policies():
     path = GEOMETRY_ROOT / "_gmsh" / "model.py"
     moved_names = {
         "BooleanResult",
@@ -496,14 +511,26 @@ def test_private_gmsh_model_does_not_redefine_extracted_stateless_names():
         "LoftContinuity",
         "LoftParametrization",
         "LoftResult",
+        "GmshMeshRef",
+        "MeshCellShapeError",
+        "MeshControlConflictError",
+        "MeshFieldOwnershipError",
+        "MeshFieldRef",
         "OrientedCurveRef",
+        "StaleGmshMeshError",
+        "StaleMeshFieldError",
         "StaleEntityError",
         "SweepFrame",
         "WireRef",
         "_GeometrySignature",
+        "_AutoMeshPolicy",
+        "_MeshGenerationPolicy",
+        "_AUTO_MESH_POLICIES",
+        "_GMSH_TOP_CELL_TYPE_NAMES",
         "_LOOP_WINDING_REFINEMENTS",
         "_OCC_BOUNDING_BOX_PADDING",
         "_PLANAR_TOLERANCE",
+        "_POINT_SIZE_OPTION_NAME",
         "_PlaneFrame",
         "_Point2D",
         "_Point3D",
@@ -613,18 +640,33 @@ def test_private_gmsh_model_delegates_extracted_stateful_ownership():
     assert offenders == []
 
 
-def test_gmsh_meshing_depends_only_on_geometry_and_backend_layers():
-    paths = (
-        SRC_ROOT / "fem" / "mesh" / "__init__.py",
-        SRC_ROOT / "fem" / "mesh" / "gmsh.py",
-    )
+def test_gmsh_meshing_recursively_depends_only_on_public_geometry_contracts():
+    paths = sorted(MESH_ROOT.rglob("*.py"))
+    assert paths
+
     offenders = []
     for path in paths:
         for target, lineno in _resolved_import_targets(path, _module_name(path)):
-            allowed_fem_target = (
-                target == "fem.mesh.gmsh"
-                or target == "fem.geometry"
-                or target.startswith("fem.geometry.")
+            allowed_fem_target = target == "fem.mesh" or target.startswith(
+                "fem.mesh."
+            )
+            public_geometry_modules = (
+                "fem.geometry.errors",
+                "fem.geometry.types",
+            )
+            geometry_parts = target.split(".")
+            public_facade_target = (
+                len(geometry_parts) == 3
+                and geometry_parts[:2] == ["fem", "geometry"]
+                and not geometry_parts[2].startswith("_")
+            )
+            allowed_fem_target = allowed_fem_target or (
+                target == "fem.geometry"
+                or public_facade_target
+                or any(
+                    target == module or target.startswith(f"{module}.")
+                    for module in public_geometry_modules
+                )
             )
             if target == "fem" or (
                 target.startswith("fem.") and not allowed_fem_target
@@ -632,8 +674,8 @@ def test_gmsh_meshing_depends_only_on_geometry_and_backend_layers():
                 offenders.append(
                     f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
                 )
-            elif not target.startswith("fem.") and not _is_standard_library_or_gmsh(
-                target
+            elif not target.startswith("fem.") and (
+                target.split(".", 1)[0] not in sys.stdlib_module_names
             ):
                 offenders.append(
                     f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
@@ -643,7 +685,7 @@ def test_gmsh_meshing_depends_only_on_geometry_and_backend_layers():
 
 
 def test_fem_mesh_uses_exactly_one_private_geometry_acquisition_seam():
-    paths = sorted((SRC_ROOT / "fem" / "mesh").rglob("*.py"))
+    paths = sorted(MESH_ROOT.rglob("*.py"))
     acquisition_calls = []
     forbidden_attributes = []
     for path in paths:
@@ -672,7 +714,7 @@ def test_fem_mesh_uses_exactly_one_private_geometry_acquisition_seam():
     assert forbidden_attributes == []
     assert len(acquisition_calls) == 1
     acquisition_path, acquisition = acquisition_calls[0]
-    assert acquisition_path == SRC_ROOT / "fem" / "mesh" / "gmsh.py"
+    assert acquisition_path == GMSH_MESH_ROOT / "mesher.py"
     assert isinstance(acquisition.value, ast.Name)
     assert acquisition.value.id == "geometry"
 
@@ -705,7 +747,7 @@ def test_fem_mesh_uses_exactly_one_private_geometry_acquisition_seam():
         and isinstance(node.value, ast.Name)
         and node.value.id == "self"
     }
-    assert {"_geometry", "_mesher_token"}.isdisjoint(mesher_attributes)
+    assert mesher_attributes == {"_runtime"}
 
     slot_assignments = [
         node
@@ -717,7 +759,33 @@ def test_fem_mesh_uses_exactly_one_private_geometry_acquisition_seam():
         )
     ]
     assert len(slot_assignments) == 1
-    assert ast.literal_eval(slot_assignments[0].value) == ("_port",)
+    assert ast.literal_eval(slot_assignments[0].value) == ("_runtime",)
+
+    runtime_path = GMSH_MESH_ROOT / "_runtime.py"
+    runtime_tree = ast.parse(runtime_path.read_text(encoding="utf-8"))
+    runtime_classes = [
+        node
+        for node in runtime_tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "_GmshMeshRuntime"
+    ]
+    assert len(runtime_classes) == 1
+    runtime_attributes = {
+        node.attr
+        for node in ast.walk(runtime_classes[0])
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+    }
+    assert "_port" in runtime_attributes
+    assert {
+        "_geometry",
+        "_gmsh",
+        "_model",
+        "_owner",
+        "_session",
+        "raw_model",
+        "raw_occ",
+    }.isdisjoint(runtime_attributes)
 
 
 def test_bound_meshing_port_has_only_restricted_transaction_surface():
@@ -732,18 +800,26 @@ def test_bound_meshing_port_has_only_restricted_transaction_surface():
     port_class = port_classes[0]
 
     expected_public_methods = {
-        "background_field",
-        "distance_field",
-        "generate_auto_mesh",
-        "generate_mesh",
-        "mesh_size",
-        "min_field",
-        "recombine",
+        "apply_numeric_options",
+        "assert_corners_on_boundary",
+        "assert_entities_live",
+        "boundary_closure",
+        "commit_generation_attempt",
+        "complete_generation",
+        "dimension",
+        "fail_generation",
+        "has_pending_numeric_options",
+        "model_name",
+        "native_control",
+        "native_query",
+        "normalize_entities",
+        "normalize_optional_entities",
+        "prepare_native_borrow",
+        "register_control_dependencies",
+        "restore_numeric_options",
         "structured_extrude",
-        "threshold_field",
-        "transfinite_curve",
-        "transfinite_surface",
-        "transfinite_volume",
+        "topology_provenance_unknown",
+        "validate",
     }
     public_methods = {
         node.name
@@ -774,20 +850,31 @@ def test_bound_meshing_port_has_only_restricted_transaction_surface():
         )
     ]
     assert len(slot_assignments) == 1
-    assert ast.literal_eval(slot_assignments[0].value) == ("__owner",)
+    assert ast.literal_eval(slot_assignments[0].value) == (
+        "__dimension",
+        "__model_name",
+        "__owner",
+        "__prepared_native_borrow",
+        "__topology_provenance_unknown",
+    )
 
     allowed_owner_transactions = {
-        "_mesher_background_field",
-        "_mesher_distance_field",
-        "_mesher_generate_auto_mesh",
-        "_mesher_generate_mesh",
-        "_mesher_mesh_size",
-        "_mesher_min_field",
-        "_mesher_recombine",
-        "_mesher_threshold_field",
-        "_mesher_transfinite_curve",
-        "_mesher_transfinite_surface",
-        "_mesher_transfinite_volume",
+        "_meshing_apply_numeric_options",
+        "_meshing_assert_corners_on_boundary",
+        "_meshing_assert_entities_live",
+        "_meshing_boundary_closure",
+        "_meshing_commit_generation_attempt",
+        "_meshing_complete_generation",
+        "_meshing_fail_generation",
+        "_meshing_has_pending_numeric_options",
+        "_meshing_native_control",
+        "_meshing_native_query",
+        "_meshing_normalize_entities",
+        "_meshing_normalize_optional_entities",
+        "_meshing_prepare_native_borrow",
+        "_meshing_register_control_dependencies",
+        "_meshing_restore_numeric_options",
+        "_meshing_validate",
         "_structured_extrude",
     }
     owner_attributes = {
@@ -823,6 +910,86 @@ def test_bound_meshing_port_has_only_restricted_transaction_surface():
         and node.attr in forbidden_internal_handles
     )
     assert offenders == []
+
+
+def test_geometry_model_contains_no_mesh_owned_runtime_or_native_mesh_calls():
+    path = GEOMETRY_ROOT / "_gmsh" / "model.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    model_classes = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "GeometryModel"
+    ]
+    assert len(model_classes) == 1
+    model_class = model_classes[0]
+
+    forbidden_methods = {
+        "_active_mesh_field_tags",
+        "_assert_mesh_field_liveness",
+        "_borrow_generated_mesh",
+        "_check_auto_mesh_controls",
+        "_construct_mesh_field",
+        "_element_type_diagnostic_name",
+        "_generate_auto_mesh",
+        "_generate_mesh",
+        "_generate_native_mesh",
+        "_mesh_cell_shape_error",
+        "_normalize_mesh_fields",
+        "_prepare_mesh_control_target",
+        "_snapshot_and_set_mesh_options",
+        "_validate_generated_top_cell_shape",
+    }
+    method_names = {
+        node.name
+        for node in model_class.body
+        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+    }
+    assert not any(name.startswith("_mesher_") for name in method_names)
+    assert forbidden_methods.isdisjoint(method_names)
+
+    forbidden_state = {
+        "_auto_mesh_blockers",
+        "_auto_mesh_scope_unknown",
+        "_background_field",
+        "_generation_token",
+        "_mesh_attempted",
+        "_mesh_field_tokens",
+        "_mesh_field_types",
+        "_mesh_size_mode",
+    }
+    stored_attributes = {
+        node.attr
+        for node in ast.walk(model_class)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+    }
+    assert forbidden_state.isdisjoint(stored_attributes)
+
+    native_mesh_accesses = [
+        node
+        for node in ast.walk(model_class)
+        if isinstance(node, ast.Attribute)
+        and node.attr == "mesh"
+        and isinstance(node.value, ast.Attribute)
+        and node.value.attr == "model"
+    ]
+    assert native_mesh_accesses == []
+
+
+def test_generated_mesh_reference_has_no_concrete_geometry_backchannel():
+    path = GMSH_MESH_ROOT / "types.py"
+    imports = {
+        target
+        for target, _ in _resolved_import_targets(path, "fem.mesh.gmsh.types")
+    }
+    assert not any(target.startswith("fem.geometry._gmsh") for target in imports)
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    assert not any(
+        isinstance(node, ast.Name) and node.id == "GeometryModel"
+        for node in ast.walk(tree)
+    )
 
 
 def test_gmsh_io_imports_only_mesh_level_fem_core_types():
@@ -926,6 +1093,59 @@ def test_fem_mesh_public_api_snapshots_remain_exact():
 
     assert private_runtime_names.isdisjoint(geometry.__all__)
     assert private_runtime_names.isdisjoint(vars(geometry))
+
+
+def test_gmsh_mesh_facade_routes_public_names_to_canonical_modules():
+    from fem.mesh import gmsh as gmsh_meshing
+    from fem.mesh.gmsh import errors, mesher, specs, types
+
+    canonical_modules = {
+        errors: {
+            "MeshCellShapeError",
+            "MeshControlConflictError",
+            "MeshFieldOwnershipError",
+            "StaleGmshMeshError",
+            "StaleMeshFieldError",
+        },
+        mesher: {"Mesher"},
+        specs: {"AutoMeshSpec", "MeshSpec"},
+        types: {"GmshMeshRef", "MeshFieldRef"},
+    }
+    for module, names in canonical_modules.items():
+        for name in names:
+            public_object = getattr(gmsh_meshing, name)
+            assert public_object is getattr(module, name)
+            assert public_object.__module__ == module.__name__
+
+    facade_path = GMSH_MESH_ROOT / "__init__.py"
+    facade_imports = {
+        target
+        for target, _ in _resolved_import_targets(
+            facade_path,
+            "fem.mesh.gmsh",
+        )
+        if target.startswith("fem.")
+    }
+    expected_imports = {
+        f"{module.__name__}.{name}"
+        for module, names in canonical_modules.items()
+        for name in names
+    }
+    assert facade_imports == expected_imports
+
+
+def test_gmsh_mesh_backend_is_a_package_and_old_single_file_is_absent():
+    package_path = GMSH_MESH_ROOT / "__init__.py"
+    old_module_path = MESH_ROOT / "gmsh.py"
+
+    assert GMSH_MESH_ROOT.is_dir()
+    assert package_path.is_file()
+    assert not old_module_path.exists()
+
+    spec = importlib.util.find_spec("fem.mesh.gmsh")
+    assert spec is not None
+    assert Path(spec.origin).resolve() == package_path.resolve()
+    assert spec.submodule_search_locations is not None
 
 
 def test_fem_geometry_has_no_gmsh_alias_or_legacy_module():

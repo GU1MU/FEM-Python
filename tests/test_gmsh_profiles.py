@@ -445,6 +445,7 @@ class _FakeModel:
     @staticmethod
     def _new_data() -> dict[str, Any]:
         return {
+            "attributes": {},
             "entities": set(),
             "next_tags": {},
             "next_loop_tag": 1,
@@ -483,6 +484,14 @@ class _FakeModel:
     def remove(self) -> None:
         del self.models[self.current]
         self.current = next(iter(self.models), "")
+
+    def getAttribute(self, name: str) -> list[str]:
+        return list(self._current_data()["attributes"].get(name, ()))
+
+    def setAttribute(self, name: str, values: Sequence[str]) -> None:
+        self._current_data()["attributes"][name] = [
+            str(item) for item in values
+        ]
 
     def getEntities(self, dimension: int = -1) -> list[tuple[int, int]]:
         return sorted(
