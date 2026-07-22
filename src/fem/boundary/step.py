@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import operator
 from collections.abc import Callable
 from typing import Any
 
 import numpy as np
 
-from ..core.model import AnalysisStep, EdgeLoad, ElementEdge, ElementFace, SurfaceLoad
+from ..core.model import (
+    AnalysisStep,
+    EdgeLoad,
+    ElementEdge,
+    ElementFace,
+    SurfaceLoad,
+    model_element_info,
+)
 from ._common import spatial_dim
 from .condition import BoundaryCondition
 
@@ -135,6 +143,8 @@ def boundary_for_step(model: Any, step: str | int | AnalysisStep | None = None) 
                 line_load.coordinate_system,
             )
 
+    _add_gravity_loads(model, selected_step, boundary)
+
     return boundary
 
 
@@ -149,11 +159,101 @@ def _resolve_node_target(model: Any, target: str | int) -> tuple[int, ...]:
 
 def _resolve_element_target(model: Any, target: str | int) -> tuple[int, ...]:
     """Resolve an element id or named element set."""
-    if isinstance(target, int):
-        return (target,)
-    if target not in model.element_sets:
+    return _resolve_element_target_from_sets(target, model.element_sets)
+
+
+def _resolve_gravity_target(model: Any, target: str | int) -> tuple[int, ...]:
+    """Resolve gravity targets, including importer-internal element sets."""
+    element_sets = dict(model.element_sets)
+    element_sets.update(model.metadata.get("_abaqus_internal_element_sets", {}))
+    return _resolve_element_target_from_sets(target, element_sets)
+
+
+def _resolve_element_target_from_sets(
+    target: Any,
+    element_sets: dict[str, Any],
+) -> tuple[int, ...]:
+    """Resolve an integral element id or a name from an element-set mapping."""
+    if not isinstance(target, str):
+        if isinstance(target, bool):
+            raise TypeError("element target must be an integer id or element set name")
+        try:
+            return (int(operator.index(target)),)
+        except TypeError as exc:
+            raise TypeError(
+                "element target must be an integer id or element set name"
+            ) from exc
+    if target not in element_sets:
         raise KeyError(f"element set {target} is not defined")
-    return tuple(model.element_sets[target].element_ids)
+    return tuple(element_sets[target].element_ids)
+
+
+def _add_gravity_loads(
+    model: Any,
+    step: AnalysisStep,
+    boundary: BoundaryCondition,
+) -> None:
+    """Resolve a step's global and element-targeted gravity records."""
+    if not step.gravity_loads:
+        return
+    dim = spatial_dim(model.mesh)
+    global_acceleration = np.zeros(dim, dtype=float)
+    has_global = False
+
+    for load in step.gravity_loads:
+        acceleration = _validated_gravity_vector(load.acceleration, dim)
+        if load.target is None:
+            global_acceleration += acceleration
+            if not np.all(np.isfinite(global_acceleration)):
+                raise ValueError("accumulated gravity acceleration must be finite")
+            has_global = True
+            continue
+
+        for elem_id in _resolve_gravity_target(model, load.target):
+            _validated_effective_density(model, step.name, load.target, elem_id)
+            boundary.add_gravity_element(elem_id, *acceleration)
+
+    if has_global:
+        boundary.set_gravity(*(float(value) for value in global_acceleration))
+
+
+def _validated_gravity_vector(vector: Any, dim: int) -> tuple[float, ...]:
+    """Return a finite gravity acceleration matching the mesh dimension."""
+    try:
+        values = np.asarray(vector, dtype=float)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("gravity acceleration must contain finite numbers") from exc
+    if values.shape != (dim,):
+        raise ValueError(
+            f"gravity acceleration must have {dim} components, got {values.shape}"
+        )
+    if not np.all(np.isfinite(values)):
+        raise ValueError("gravity acceleration must contain finite numbers")
+    return tuple(float(value) for value in values)
+
+
+def _validated_effective_density(
+    model: Any,
+    step_name: str,
+    target: str | int,
+    elem_id: int,
+) -> float:
+    """Return effective density required by explicitly targeted gravity."""
+    density = model_element_info(model, elem_id).properties.get("rho")
+    context = (
+        f"analysis step {step_name} gravity target {target!r} element {elem_id}"
+    )
+    if density is None:
+        raise ValueError(f"{context} requires an effective density rho")
+    try:
+        value = float(density)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{context} density rho must be numeric") from exc
+    if not np.isfinite(value) or value < 0.0:
+        raise ValueError(
+            f"{context} density rho must be finite and >= 0, got {density!r}"
+        )
+    return value
 
 
 def _validated_line_load_vector(vector: Any) -> tuple[float, float, float]:

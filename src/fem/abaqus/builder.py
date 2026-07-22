@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from ..core.mesh import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
@@ -12,6 +13,7 @@ from ..core.model import (
     ElementFace,
     ElementSet,
     FEMModel,
+    GravityLoad,
     MaterialDefinition,
     NodalLoad,
     NodeSet,
@@ -247,6 +249,10 @@ def _build_step(
         load for load in distributed_loads
         if isinstance(load, EdgeLoad)
     ]
+    gravity_loads = [
+        load for load in distributed_loads
+        if isinstance(load, GravityLoad)
+    ]
     outputs = [
         OutputRequest(output.kind, output.target, output.variables, output.metadata)
         for output in step.output_requests
@@ -258,6 +264,7 @@ def _build_step(
         cloads=cloads,
         surface_loads=surface_loads,
         edge_loads=edge_loads,
+        gravity_loads=gravity_loads,
         outputs=outputs,
         metadata=dict(step.metadata),
     )
@@ -272,9 +279,11 @@ def _build_distributed_load(
     step_name: str,
     step_index: int,
     load_index: int,
-) -> SurfaceLoad | EdgeLoad:
+) -> SurfaceLoad | EdgeLoad | GravityLoad:
     """Convert an Abaqus DLOAD/DSLOAD line to a model distributed load."""
     label = load.label.upper()
+    if label == "GRAV":
+        return _build_gravity_load(load, mesh)
     if load.source == "dsload":
         target_name = str(load.target)
         if mesh.dofs_per_node == 2:
@@ -323,6 +332,52 @@ def _build_distributed_load(
             load_type="shear_traction",
         )
     raise ValueError(f"unsupported Abaqus distributed load label: {load.label}")
+
+
+def _build_gravity_load(
+    load: AbaqusDistributedLoad,
+    mesh: Any,
+) -> GravityLoad:
+    """Convert one Abaqus DLOAD GRAV record to an acceleration load."""
+    if str(load.source).casefold() != "dload":
+        raise ValueError("DSLOAD GRAV is not supported; use DLOAD for gravity")
+
+    try:
+        magnitude = float(load.magnitude)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("GRAV magnitude must be a finite number") from exc
+    if not math.isfinite(magnitude):
+        raise ValueError(f"GRAV magnitude must be finite, got {load.magnitude!r}")
+
+    if len(load.extra) != 3:
+        raise ValueError(
+            "GRAV requires 3 direction components, "
+            f"got {len(load.extra)}"
+        )
+    try:
+        direction = tuple(float(value) for value in load.extra)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("GRAV direction components must be finite numbers") from exc
+    if not all(math.isfinite(value) for value in direction):
+        raise ValueError("GRAV direction components must be finite numbers")
+
+    scale = max(abs(value) for value in direction)
+    if scale == 0.0:
+        raise ValueError("GRAV direction vector must be nonzero")
+    scaled_direction = tuple(value / scale for value in direction)
+    scaled_norm = math.sqrt(sum(value * value for value in scaled_direction))
+    unit_direction = tuple(value / scaled_norm for value in scaled_direction)
+    acceleration = tuple(magnitude * value for value in unit_direction)
+
+    dim = 3 if mesh.nodes and hasattr(mesh.nodes[0], "z") else 2
+    if dim == 2:
+        if acceleration[2] != 0.0:
+            raise ValueError(
+                "GRAV out-of-plane acceleration must be zero for a 2D model, "
+                f"got {acceleration[2]}"
+            )
+        acceleration = acceleration[:2]
+    return GravityLoad(acceleration, target=load.target)
 
 
 def _surface_from_element_target(

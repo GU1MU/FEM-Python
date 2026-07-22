@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from fem.boundary.condition import BoundaryCondition, ElementLoad
+from fem.boundary.condition import BoundaryCondition, ElementGravityLoad, ElementLoad
 from fem.boundary.loads import build_load_vector
 from fem.core.mesh import Element3D, Mesh3D, Node3D
 from fem.elements import get_element_kernel
@@ -145,6 +145,55 @@ def test_gravity_rejects_invalid_density_stored_directly_on_element(rho):
 
     with pytest.raises(ValueError, match=r"Element 1 rho must be finite and >= 0"):
         build_load_vector(mesh, bc)
+
+
+def test_targeted_gravity_requires_stamped_density_but_global_gravity_skips_it():
+    mesh = _line_mesh()
+    targeted = BoundaryCondition(
+        element_gravities=[ElementGravityLoad(1, (0.0, -9.81, 0.0))]
+    )
+
+    with pytest.raises(ValueError, match="rho is required for targeted gravity"):
+        build_load_vector(mesh, targeted)
+
+    global_bc = BoundaryCondition()
+    global_bc.set_gravity(0.0, -9.81, 0.0)
+    assert np.allclose(build_load_vector(mesh, global_bc), 0.0)
+
+
+@pytest.mark.parametrize(
+    ("acceleration", "message"),
+    [
+        ((0.0, -1.0), "must have 3 components"),
+        ((0.0, np.nan, 0.0), "components must be finite"),
+    ],
+)
+def test_targeted_gravity_assembly_revalidates_acceleration(acceleration, message):
+    mesh = _line_mesh(rho=1.0)
+    bc = BoundaryCondition(
+        element_gravities=[ElementGravityLoad(1, acceleration)]
+    )
+
+    with pytest.raises(ValueError, match=message):
+        build_load_vector(mesh, bc)
+
+
+def test_targeted_gravity_rejects_unknown_element():
+    mesh = _line_mesh(rho=1.0)
+    bc = BoundaryCondition(
+        element_gravities=[ElementGravityLoad(99, (0.0, -1.0, 0.0))]
+    )
+
+    with pytest.raises(KeyError, match="Element 99 not found"):
+        build_load_vector(mesh, bc)
+
+
+def test_targeted_gravity_allows_zero_density_and_produces_zero_load():
+    mesh = _line_mesh(rho=0.0)
+    bc = BoundaryCondition()
+    bc.add_gravity_element(1, 0.0, -9.81, 0.0)
+
+    assert np.allclose(build_load_vector(mesh, bc), 0.0)
 
 
 def test_line_kernel_rejects_nonfinite_body_vector_when_called_directly():

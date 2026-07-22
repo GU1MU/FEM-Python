@@ -14,6 +14,7 @@ from fem.core.model import (
     ElementFace,
     ElementSet,
     FEMModel,
+    GravityLoad,
     MaterialDefinition,
     NodalLoad,
     NodeSet,
@@ -123,6 +124,7 @@ def test_core_model_stores_complete_analysis_step_contract():
         boundaries=[DisplacementConstraint("FIXED", 1, 3, 0.0)],
         cloads=[NodalLoad("TIP", 3, -100.0)],
         edge_loads=[EdgeLoad("LINE_LOAD", (1.0, 0.0), load_type="traction")],
+        gravity_loads=[GravityLoad((0.0, 0.0, -9.81))],
         outputs=[core_model.OutputRequest("field", "node", ("U",))],
         metadata={"nlgeom": "NO"},
     )
@@ -134,6 +136,7 @@ def test_core_model_stores_complete_analysis_step_contract():
     assert model.steps[0].edge_loads[0].edge == "LINE_LOAD"
     assert model.steps[0].edge_loads[0].vector == (1.0, 0.0)
     assert model.steps[0].edge_loads[0].load_type == "traction"
+    assert model.steps[0].gravity_loads[0].acceleration == (0.0, 0.0, -9.81)
     assert model.steps[0].outputs[0].variables == ("U",)
     assert model.steps[0].metadata["nlgeom"] == "NO"
 
@@ -227,6 +230,21 @@ def test_steps_add_edge_load_helpers():
     assert traction == EdgeLoad("TOP", (1.0, -2.0), load_type="traction")
     assert pressure == EdgeLoad("TOP", magnitude=3.0, load_type="pressure")
     assert step.edge_loads == (traction, pressure)
+
+
+def test_gravity_load_owns_acceleration_and_step_helper_appends_records():
+    acceleration = [0.0, -9.81, 0.0]
+    step = AnalysisStep("load", gravity_loads=[GravityLoad(acceleration)])
+    acceleration[1] = 0.0
+
+    targeted = steps.gravity(step, (1.0, 0.0, 0.0), target="BALLAST")
+
+    assert step.gravity_loads[0].acceleration == (0.0, -9.81, 0.0)
+    assert targeted == GravityLoad((1.0, 0.0, 0.0), "BALLAST")
+    assert step.gravity_loads == (
+        GravityLoad((0.0, -9.81, 0.0)),
+        targeted,
+    )
 
 
 def test_nodes_select_2d_and_3d_coordinates():
