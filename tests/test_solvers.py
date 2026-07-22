@@ -81,6 +81,21 @@ def test_plural_all_returns_ordered_independent_static_results():
     assert pull2.name == "bar_pull2"
 
 
+def test_model_results_supports_direct_sequence_access():
+    model = make_two_step_static_pull_truss_model()
+
+    results = static_linear.solve(model, steps="all")
+
+    iterated = tuple(results)
+    assert len(results) == 2
+    assert all(
+        actual is expected
+        for actual, expected in zip(iterated, results.results, strict=True)
+    )
+    assert results[0] is results.results[0]
+    assert results[:] == results.results
+
+
 @pytest.mark.parametrize("selection_kind", ["tuple", "list", "generator"])
 def test_plural_iterable_selection_preserves_caller_order(selection_kind):
     model = make_two_step_static_pull_truss_model()

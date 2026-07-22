@@ -544,6 +544,49 @@ def test_model_result_owns_validated_one_dimensional_vectors():
     assert np.array_equal(result.reactions, -np.arange(num_dofs, dtype=float))
 
 
+def test_model_result_queries_one_based_nodal_components():
+    model = make_static_pull_truss_model()
+    num_dofs = model.mesh.num_dofs
+    result = ModelResult(
+        model,
+        model.steps[0],
+        np.arange(num_dofs, dtype=float),
+        -np.arange(num_dofs, dtype=float),
+    )
+
+    dof = model.mesh.global_dof(2, 1)
+    assert result.nodal_displacement(2, component=2) == float(dof)
+    assert result.nodal_reaction(2, component=2) == float(-dof)
+
+
+@pytest.mark.parametrize("component", [True, 1.0, "1"])
+def test_model_result_nodal_queries_reject_noninteger_components(component):
+    model = make_static_pull_truss_model()
+    result = ModelResult(
+        model,
+        model.steps[0],
+        np.zeros(model.mesh.num_dofs),
+        np.zeros(model.mesh.num_dofs),
+    )
+
+    with pytest.raises(TypeError, match="component must be an integer"):
+        result.nodal_displacement(2, component=component)
+
+
+@pytest.mark.parametrize("component", [0, 4])
+def test_model_result_nodal_queries_reject_out_of_range_components(component):
+    model = make_static_pull_truss_model()
+    result = ModelResult(
+        model,
+        model.steps[0],
+        np.zeros(model.mesh.num_dofs),
+        np.zeros(model.mesh.num_dofs),
+    )
+
+    with pytest.raises(IndexError, match="components are 1-based"):
+        result.nodal_reaction(2, component=component)
+
+
 def test_model_result_rejects_invalid_vectors():
     model = make_static_pull_truss_model()
     num_dofs = model.mesh.num_dofs

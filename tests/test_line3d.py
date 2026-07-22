@@ -272,13 +272,15 @@ def test_beam2_pure_tension_recovers_positive_stress_at_both_ends():
     mesh = _beam_mesh()
     U = np.zeros(mesh.num_dofs)
     U[mesh.global_dof(2, 0)] = 0.04
+    result = _beam_result(mesh, U)
 
-    rows = beam_stress.nodal_envelope(_beam_result(mesh, U))
+    rows = beam_stress.nodal_envelope(result)
 
     expected = 210.0 * 0.04 / 4.0
     assert [(row.maximum, row.minimum, row.absolute_maximum) for row in rows] == pytest.approx(
         [(expected, expected, expected), (expected, expected, expected)]
     )
+    assert beam_stress.absolute_maximum(result) == pytest.approx(expected)
 
 
 def test_beam2_pure_bending_recovers_same_extrema_at_both_ends():
