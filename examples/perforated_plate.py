@@ -25,15 +25,9 @@ EDGE_TRACTION = 1.0e6
 with geometry.model(MODEL_NAME, dimension=2) as cad:
     plate = cad.rectangle(0.0, 0.0, WIDTH, HEIGHT)
     hole = cad.disk(HOLE_X, HOLE_Y, HOLE_RADIUS)
-    domain = cad.cut([plate], [hole]).of_dimension(2)
+    cad.cut([plate], [hole])
 
-    boundary = cad.boundary(domain)
-    hole_curves = curves.by_center(
-        cad,
-        boundary,
-        x=HOLE_X,
-        y=HOLE_Y,
-    )
+    hole_curves = curves.by_center(cad, x=HOLE_X, y=HOLE_Y)
 
     mesher = gmsh_meshing.Mesher(cad)
     hole_distance = mesher.distance_field(curves=hole_curves, sampling=100)
