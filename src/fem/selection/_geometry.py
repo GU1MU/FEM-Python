@@ -217,6 +217,7 @@ def _adjacent_to(
 ) -> tuple[EntityRef, ...]:
     model = _require_model(cad)
     normalized_mode = _mode(mode)
+    explicit_candidates = entities is not None
     candidates = _resolve_entities(
         model,
         entities,
@@ -229,10 +230,20 @@ def _adjacent_to(
         operation=operation,
     )
 
-    # The public bounding-box query validates candidate ownership and lifecycle
-    # before topology matching, including candidates absent from every result.
-    for candidate in candidates:
-        model.bounding_box(candidate)
+    if explicit_candidates and candidates:
+        if dimension > model.dimension:
+            # No valid target-dimension entity can belong to this model. Retain
+            # the established per-reference exception for explicit candidates.
+            for candidate in candidates:
+                model.bounding_box(candidate)
+        else:
+            live_entities = frozenset(model.entities(dimension))
+            # Snapshot membership validates current local identities without a
+            # numerical query. The public fallback preserves precise ownership
+            # and stale-reference errors for anything absent from the snapshot.
+            for candidate in candidates:
+                if candidate not in live_entities:
+                    model.bounding_box(candidate)
 
     adjacency_sets = tuple(
         frozenset(model.adjacent(anchor, dimension=dimension))
@@ -271,6 +282,7 @@ def _resolve_entities(
         return ()
 
     seen: set[EntityRef] = set()
+    unique: list[EntityRef] = []
     for entity in candidates:
         if not isinstance(entity, EntityRef):
             raise TypeError(
@@ -280,10 +292,10 @@ def _resolve_entities(
             raise ValueError(
                 f"{operation} entities must have dimension {dimension}"
             )
-        if entity in seen:
-            raise ValueError(f"{operation} entities must be duplicate-free")
-        seen.add(entity)
-    return candidates
+        if entity not in seen:
+            seen.add(entity)
+            unique.append(entity)
+    return tuple(unique)
 
 
 def _anchors(
@@ -300,6 +312,8 @@ def _anchors(
         raise ValueError(f"{operation} requires at least one anchor")
 
     anchor_dimension: int | None = None
+    seen: set[EntityRef] = set()
+    unique: list[EntityRef] = []
     for anchor in normalized:
         if not isinstance(anchor, EntityRef):
             raise TypeError(
@@ -311,11 +325,14 @@ def _anchors(
             raise ValueError(
                 f"{operation} anchors must have one common dimension"
             )
+        if anchor not in seen:
+            seen.add(anchor)
+            unique.append(anchor)
     if anchor_dimension is None or abs(anchor_dimension - dimension) != 1:
         raise ValueError(
             f"{operation} anchor dimension must differ from target dimension by one"
         )
-    return normalized
+    return tuple(unique)
 
 
 def _coordinates(

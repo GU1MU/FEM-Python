@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-from typing import Any
+from typing import Any, Literal, get_type_hints
 
 import pytest
 
@@ -62,21 +62,21 @@ def _select_curves(
     cad: geometry.GeometryModel,
     candidates: Any,
 ) -> tuple[geometry.EntityRef, ...]:
-    return curves.by_length(cad, candidates, value=1.0e9)
+    return curves.in_box(cad, candidates, xmin=-100.0)
 
 
 def _select_surfaces(
     cad: geometry.GeometryModel,
     candidates: Any,
 ) -> tuple[geometry.EntityRef, ...]:
-    return surfaces.by_area(cad, candidates, value=1.0e9)
+    return surfaces.in_box(cad, candidates, xmin=-100.0)
 
 
 def _select_volumes(
     cad: geometry.GeometryModel,
     candidates: Any,
 ) -> tuple[geometry.EntityRef, ...]:
-    return volumes.by_volume(cad, candidates, value=1.0e9)
+    return volumes.in_box(cad, candidates, xmin=-100.0)
 
 
 _CANDIDATE_SELECTORS: tuple[
@@ -158,6 +158,15 @@ def test_selection_exports_cad_modules_without_reusing_mesh_names() -> None:
     assert "by_coord" not in volumes.__all__
 
 
+@pytest.mark.parametrize(
+    "module",
+    (points, curves, surfaces, volumes),
+    ids=("points", "curves", "surfaces", "volumes"),
+)
+def test_public_adjacency_modes_use_literal_annotations(module: Any) -> None:
+    assert get_type_hints(module.adjacent_to)["mode"] == Literal["any", "all"]
+
+
 def test_all_and_omitted_candidates_use_live_dimension_entities(
     fake_gmsh: _FakeGmsh,
 ) -> None:
@@ -196,7 +205,7 @@ def test_explicit_candidates_empty_candidates_and_generator_order_are_stable(
     with geometry.model("selection-candidates", dimension=2) as cad:
         first = cad.line(cad.point(0.0, 0.0), cad.point(0.0, 1.0))
         second = cad.line(cad.point(0.0, 2.0), cad.point(0.0, 3.0))
-        candidates = _SinglePassEntities((second, first))
+        candidates = _SinglePassEntities((second, first, second, first))
 
         assert curves.by_x(cad, 0.0, candidates) == (second, first)
         assert candidates.iterations == 1
@@ -229,11 +238,12 @@ def test_candidate_validation_is_shared_across_cad_dimensions(
     del fake_gmsh
     with geometry.model(f"candidate-validation-{dimension}", dimension=3) as cad:
         representatives = _representative_entities(cad)
+        later_representatives = _representative_entities(cad)
         target = representatives[dimension]
+        later = later_representatives[dimension]
         wrong = representatives[(dimension + 1) % 4]
 
-        with pytest.raises(ValueError, match="duplicate-free"):
-            selector(cad, (target, target))
+        assert selector(cad, (later, target, later, target)) == (later, target)
         with pytest.raises(TypeError, match="EntityRef"):
             selector(cad, (object(),))
         with pytest.raises(TypeError, match="iterable"):
@@ -242,6 +252,10 @@ def test_candidate_validation_is_shared_across_cad_dimensions(
             selector(cad, (wrong,))
         with pytest.raises(ValueError, match="dimension"):
             selector(cad, (target, wrong))
+        with pytest.raises(TypeError, match="EntityRef"):
+            selector(cad, (target, target, object()))
+        with pytest.raises(ValueError, match="dimension"):
+            selector(cad, (target, target, wrong))
 
 
 def test_coordinate_selection_matches_complete_entities_and_axis_wrappers(
@@ -376,7 +390,15 @@ def test_nearest_point_preserves_first_tie_and_optional_z_semantics(
 
         assert points.nearest(cad, 0.0, 0.0, entities=(high, low)) == high
         assert points.nearest(cad, 0.0, 0.0, 0.0, entities=(high, low)) == low
-        assert points.nearest(cad, 0.0, 0.0, entities=(right, left)) == right
+        assert (
+            points.nearest(
+                cad,
+                0.0,
+                0.0,
+                entities=(right, left, right, left),
+            )
+            == right
+        )
         assert points.nearest(cad, 0.0, 0.0, entities=()) is None
 
 
@@ -490,6 +512,94 @@ def test_adjacency_any_all_and_every_target_dimension(
         volume_surfaces = cad.boundary((volume,), combined=False)
         assert surfaces.adjacent_to(cad, (volume,)) == volume_surfaces
         assert volumes.adjacent_to(cad, (volume_surfaces[0],)) == (volume,)
+
+
+def test_adjacency_deduplicates_inputs_and_uses_one_explicit_live_snapshot(
+    fake_gmsh: _FakeGmsh,
+) -> None:
+    with geometry.model("selection-adjacency-snapshot", dimension=2) as cad:
+        topology = _shared_surface_topology(cad, fake_gmsh)
+        isolated = cad.line(cad.point(5.0, 0.0), cad.point(6.0, 0.0))
+        candidates = (
+            topology["right_curve"],
+            isolated,
+            topology["shared_curve"],
+            topology["right_curve"],
+            isolated,
+            topology["left_curve"],
+        )
+        anchors = (
+            topology["left_surface"],
+            topology["right_surface"],
+            topology["left_surface"],
+            topology["right_surface"],
+        )
+
+        fake_gmsh.model.calls.clear()
+        assert curves.adjacent_to(cad, anchors, candidates) == (
+            topology["right_curve"],
+            topology["shared_curve"],
+            topology["left_curve"],
+        )
+        assert [
+            call[1]
+            for call in fake_gmsh.model.calls
+            if call[0] == "getEntities"
+        ] == [1]
+        assert [
+            call
+            for call in fake_gmsh.model.calls
+            if call[0] == "getBoundingBox"
+        ] == []
+        assert [
+            (call[1], call[2])
+            for call in fake_gmsh.model.calls
+            if call[0] == "getAdjacencies"
+        ] == [
+            (2, topology["left_surface"].tag),
+            (2, topology["right_surface"].tag),
+        ]
+
+
+def test_adjacency_omitted_and_empty_candidates_do_not_take_extra_snapshots(
+    fake_gmsh: _FakeGmsh,
+) -> None:
+    with geometry.model("selection-adjacency-default-candidates", dimension=2) as cad:
+        topology = _shared_surface_topology(cad, fake_gmsh)
+
+        fake_gmsh.model.calls.clear()
+        assert curves.adjacent_to(cad, (topology["left_surface"],)) == (
+            topology["left_curve"],
+            topology["shared_curve"],
+        )
+        assert [
+            call[1]
+            for call in fake_gmsh.model.calls
+            if call[0] == "getEntities"
+        ] == [1]
+        assert [
+            call
+            for call in fake_gmsh.model.calls
+            if call[0] == "getBoundingBox"
+        ] == []
+
+        fake_gmsh.model.calls.clear()
+        assert curves.adjacent_to(cad, (topology["left_surface"],), ()) == ()
+        assert [
+            call[1]
+            for call in fake_gmsh.model.calls
+            if call[0] == "getEntities"
+        ] == [0]
+        assert [
+            call
+            for call in fake_gmsh.model.calls
+            if call[0] == "getBoundingBox"
+        ] == []
+        assert [
+            (call[1], call[2])
+            for call in fake_gmsh.model.calls
+            if call[0] == "getAdjacencies"
+        ] == [(2, topology["left_surface"].tag)]
 
 
 def test_adjacency_rejects_invalid_anchors_dimensions_and_modes(
@@ -650,13 +760,25 @@ def test_selection_propagates_foreign_stale_and_closed_model_errors(
                 curves.adjacent_to(
                     inner,
                     (local_surface,),
-                    (foreign_curve,),
+                    (local_curve, local_curve, foreign_curve),
                 )
             with pytest.raises(geometry.EntityOwnershipError):
                 curves.adjacent_to(
                     inner,
-                    (foreign_surface,),
+                    (local_surface, local_surface, foreign_surface),
                     (local_curve,),
+                )
+
+    with geometry.model("selection-owner-3d", dimension=3) as outer:
+        foreign_volume = outer.box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+        with geometry.model("selection-owner-2d", dimension=2) as inner:
+            local_surface = inner.rectangle(0.0, 0.0, 1.0, 1.0)
+
+            with pytest.raises(geometry.EntityOwnershipError):
+                volumes.adjacent_to(
+                    inner,
+                    (local_surface,),
+                    (foreign_volume,),
                 )
 
     with geometry.model("selection-stale", dimension=2) as cad:
@@ -669,9 +791,17 @@ def test_selection_propagates_foreign_stale_and_closed_model_errors(
         with pytest.raises(geometry.StaleEntityError):
             curves.by_length(cad, (curve,), value=1.0)
         with pytest.raises(geometry.StaleEntityError):
-            curves.adjacent_to(cad, (current_surface,), (curve,))
+            curves.adjacent_to(
+                cad,
+                (current_surface,),
+                (current_curve, current_curve, curve),
+            )
         with pytest.raises(geometry.StaleEntityError):
-            curves.adjacent_to(cad, (surface,), (current_curve,))
+            curves.adjacent_to(
+                cad,
+                (current_surface, current_surface, surface),
+                (current_curve,),
+            )
 
     closed = geometry.GeometryModel("selection-closed", dimension=2)
     with closed:
@@ -679,6 +809,7 @@ def test_selection_propagates_foreign_stale_and_closed_model_errors(
             closed.point(0.0, 0.0),
             closed.point(1.0, 0.0),
         )
+        closed_surface = closed.rectangle(0.0, 0.0, 1.0, 1.0)
     with pytest.raises(geometry.GeometryStateError, match="CLOSED"):
         curves.by_length(closed, (closed_curve,), value=1.0)
     with pytest.raises(geometry.GeometryStateError, match="CLOSED"):
@@ -687,6 +818,10 @@ def test_selection_propagates_foreign_stale_and_closed_model_errors(
         curves.by_length(closed, (), value=1.0)
     with pytest.raises(geometry.GeometryStateError, match="CLOSED"):
         points.nearest(closed, 0.0, 0.0, entities=())
+    with pytest.raises(geometry.GeometryStateError, match="CLOSED"):
+        curves.adjacent_to(closed, (closed_surface,), (closed_curve,))
+    with pytest.raises(geometry.GeometryStateError, match="CLOSED"):
+        curves.adjacent_to(closed, (closed_surface,), ())
 
     assert fake_gmsh.model.current == ""
 

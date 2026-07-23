@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Literal
 
 from ..geometry import EntityRef, GeometryModel
 from ._geometry import (
@@ -93,7 +94,7 @@ def adjacent_to(
     anchors: Iterable[EntityRef],
     entities: Iterable[EntityRef] | None = None,
     *,
-    mode: str = "any",
+    mode: Literal["any", "all"] = "any",
 ) -> tuple[EntityRef, ...]:
     """Select volumes immediately adjacent to any or all anchor surfaces."""
     return _adjacent_to(
