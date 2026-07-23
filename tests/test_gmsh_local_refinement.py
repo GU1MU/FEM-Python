@@ -10,6 +10,7 @@ from fem.core import Mesh2D, Mesh3D
 from fem import geometry
 from fem.io import gmsh as gmsh_io
 from fem.mesh import gmsh as gmsh_meshing
+from fem.selection import curves, points, surfaces
 
 
 _PRIMARY_EDGES = {
@@ -141,13 +142,18 @@ def test_real_selected_point_mesh_size_refines_one_rectangle_corner(
     with geometry.model("selected_point_refinement", dimension=2) as cad:
         domain = cad.rectangle(0.0, 0.0, 3.0, 1.5)
         boundary = cad.boundary([domain])
-        points = cad.boundary(boundary, combined=False)
-        refined_point = cad.select(points, x=0.0, y=0.0)
-        assert len(points) == 4
+        boundary_points = cad.boundary(boundary, combined=False)
+        refined_point = points.by_coord(
+            cad,
+            boundary_points,
+            x=0.0,
+            y=0.0,
+        )
+        assert len(boundary_points) == 4
         assert len(refined_point) == 1
 
         mesher = gmsh_meshing.Mesher(cad)
-        mesher.mesh_size(points, size=0.45)
+        mesher.mesh_size(boundary_points, size=0.45)
         mesher.mesh_size(refined_point, size=0.05)
         native_mesh = mesher.generate(gmsh_meshing.MeshSpec(order=2))
         mesh = gmsh_io.read(native_mesh)
@@ -184,17 +190,14 @@ def test_real_curve_threshold_refines_a_circular_hole_with_valid_cells(
         assert len(domain) == 1
 
         boundary = cad.boundary(domain)
-        outer = tuple(
-            dict.fromkeys(
-                cad.select(boundary, x=0.0)
-                + cad.select(boundary, x=4.0)
-                + cad.select(boundary, y=0.0)
-                + cad.select(boundary, y=2.0)
-            )
+        hole = curves.by_center(
+            cad,
+            boundary,
+            x=float(center[0]),
+            y=float(center[1]),
         )
-        hole = tuple(curve for curve in boundary if curve not in outer)
         assert len(boundary) == 5
-        assert len(outer) == 4
+        assert len(boundary) - len(hole) == 4
         assert len(hole) == 1
 
         mesher = gmsh_meshing.Mesher(cad)
@@ -236,8 +239,8 @@ def test_real_min_field_refines_two_regions_with_entity_recombination(
     with geometry.model("two_region_min_refinement", dimension=2) as cad:
         domain = cad.rectangle(0.0, 0.0, width, 2.0)
         boundary = cad.boundary([domain])
-        left = cad.select(boundary, x=0.0)
-        right = cad.select(boundary, x=width)
+        left = curves.by_x(cad, 0.0, boundary)
+        right = curves.by_x(cad, width, boundary)
         assert len(left) == 1
         assert len(right) == 1
 
@@ -302,8 +305,8 @@ def test_real_surface_distance_refines_one_face_of_a_small_box(
     length = 2.0
     with geometry.model("surface_distance_refinement", dimension=3) as cad:
         volume = cad.box(0.0, 0.0, 0.0, length, 0.8, 0.8)
-        faces = cad.boundary([volume])
-        refined_face = cad.select(faces, x=0.0)
+        boundary_surfaces = cad.boundary([volume])
+        refined_face = surfaces.by_x(cad, 0.0, boundary_surfaces)
         assert len(refined_face) == 1
 
         mesher = gmsh_meshing.Mesher(cad)
