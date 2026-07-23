@@ -60,7 +60,13 @@ class _FakeOcc:
     def __init__(self, model: _FakeModel) -> None:
         self._model = model
         self.synchronize_calls = 0
+        self.get_entities_calls = 0
         self.calls: list[tuple[Any, ...]] = []
+        self.distance_results: dict[tuple[int, int, int, int], Any] = {}
+        self.distance_failures: dict[
+            tuple[int, int, int, int], BaseException
+        ] = {}
+        self.distance_default: Any = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         self.boolean_results: dict[
             str,
             tuple[list[tuple[int, int]], list[list[tuple[int, int]]]],
@@ -95,6 +101,7 @@ class _FakeOcc:
         self.calls.append(("synchronize", self._model.current))
 
     def getEntities(self, dimension: int = -1) -> list[tuple[int, int]]:
+        self.get_entities_calls += 1
         entities = self._model._current_data()["entities"]
         return sorted(
             pair for pair in entities if dimension == -1 or pair[0] == dimension
@@ -330,6 +337,20 @@ class _FakeOcc:
         tag: int,
     ) -> tuple[float, float, float]:
         return self._model._current_data()["centers"][(dimension, tag)]
+
+    def getDistance(
+        self,
+        left_dimension: int,
+        left_tag: int,
+        right_dimension: int,
+        right_tag: int,
+    ) -> Any:
+        key = (left_dimension, left_tag, right_dimension, right_tag)
+        self.calls.append(("getDistance", *key))
+        failure = self.distance_failures.get(key)
+        if failure is not None:
+            raise failure
+        return self.distance_results.get(key, self.distance_default)
 
     def addLine(self, start_tag: int, end_tag: int, tag: int = -1) -> int:
         self.calls.append(("addLine", start_tag, end_tag, tag))

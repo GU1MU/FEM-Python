@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+from collections.abc import Iterator
 import math
 from pathlib import Path
 from typing import Any, Sequence
@@ -2362,6 +2363,438 @@ def test_entities_and_boundary_synchronize_and_sort_deterministically(
         True,
         "queries",
     ) in backend.model.calls
+
+
+class _SinglePassDistanceEntities:
+    def __init__(self, values: tuple[geometry.EntityRef, ...]) -> None:
+        self._values = values
+        self.iterations = 0
+
+    def __iter__(self) -> Iterator[geometry.EntityRef]:
+        self.iterations += 1
+        if self.iterations > 1:
+            raise AssertionError("distance candidates were consumed more than once")
+        yield from self._values
+
+
+class _RaisingDistanceResult:
+    def __iter__(self) -> Iterator[float]:
+        yield 0.0
+        raise RuntimeError("fake distance result iteration failure")
+
+
+class _NeverIteratedDistanceEntities:
+    def __init__(self) -> None:
+        self.iterations = 0
+
+    def __iter__(self) -> Iterator[geometry.EntityRef]:
+        self.iterations += 1
+        raise AssertionError("distance candidates should not have been consumed")
+
+
+def _distance_key(
+    left: geometry.EntityRef,
+    right: geometry.EntityRef,
+) -> tuple[int, int, int, int]:
+    return (left.dimension, left.tag, right.dimension, right.tag)
+
+
+def _distance_result(distance: float) -> tuple[float, ...]:
+    return (distance, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+
+def _recorded_distance_calls(backend: _FakeGmsh) -> list[tuple[Any, ...]]:
+    return [
+        call for call in backend.model.occ.calls if call[0] == "getDistance"
+    ]
+
+
+def test_entity_distance_supports_all_ordered_dimension_pairs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("distance-dimension-pairs", dimension=3) as cad:
+        left = {
+            dimension: _fake_entities(
+                cad,
+                backend,
+                dimension,
+                101 + dimension,
+            )[0]
+            for dimension in range(4)
+        }
+        right = {
+            dimension: _fake_entities(
+                cad,
+                backend,
+                dimension,
+                201 + dimension,
+            )[0]
+            for dimension in range(4)
+        }
+        keys: list[tuple[int, int, int, int]] = []
+        expected: list[float] = []
+        for left_dimension in range(4):
+            for right_dimension in range(4):
+                key = _distance_key(
+                    left[left_dimension],
+                    right[right_dimension],
+                )
+                distance = float(1 + 4 * left_dimension + right_dimension)
+                keys.append(key)
+                expected.append(distance)
+                backend.model.occ.distance_results[key] = _distance_result(
+                    distance
+                )
+
+        synchronize_before = backend.model.occ.synchronize_calls
+        snapshots_before = backend.model.occ.get_entities_calls
+        calls_before = len(_recorded_distance_calls(backend))
+        actual = tuple(
+            cad.distance(left[left_dimension], right[right_dimension])
+            for left_dimension in range(4)
+            for right_dimension in range(4)
+        )
+
+        assert actual == pytest.approx(expected)
+        assert backend.model.occ.synchronize_calls - synchronize_before == 16
+        assert backend.model.occ.get_entities_calls - snapshots_before == 16
+        assert _recorded_distance_calls(backend)[calls_before:] == [
+            ("getDistance", *key) for key in keys
+        ]
+
+
+def test_distances_to_is_ordered_single_pass_and_uses_one_cached_occ_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("distance-batch", dimension=3) as cad:
+        anchor = _fake_entities(cad, backend, 2, 101)[0]
+        point = _fake_entities(cad, backend, 0, 201)[0]
+        curve = _fake_entities(cad, backend, 1, 202)[0]
+        surface = _fake_entities(cad, backend, 2, 203)[0]
+        volume = _fake_entities(cad, backend, 3, 204)[0]
+        candidates = (volume, anchor, point, curve, surface)
+        expected = (4.0, 0.0, 1.0, 2.0, 3.0)
+        keys = tuple(_distance_key(anchor, candidate) for candidate in candidates)
+        for key, distance in zip(keys, expected, strict=True):
+            backend.model.occ.distance_results[key] = _distance_result(distance)
+        source = _SinglePassDistanceEntities(candidates)
+
+        synchronize_before = backend.model.occ.synchronize_calls
+        snapshots_before = backend.model.occ.get_entities_calls
+        calls_before = len(_recorded_distance_calls(backend))
+        list_before = sum(call[0] == "list" for call in backend.model.calls)
+        current_before = sum(
+            call[0] == "getCurrent" for call in backend.model.calls
+        )
+        actual = cad.distances_to(anchor, source)
+
+        assert actual == pytest.approx(expected)
+        assert source.iterations == 1
+        assert backend.model.occ.synchronize_calls == synchronize_before + 1
+        assert backend.model.occ.get_entities_calls == snapshots_before + 1
+        assert _recorded_distance_calls(backend)[calls_before:] == [
+            ("getDistance", *key) for key in keys
+        ]
+        assert sum(call[0] == "list" for call in backend.model.calls) == (
+            list_before + 1
+        )
+        assert sum(call[0] == "getCurrent" for call in backend.model.calls) == (
+            current_before + 1
+        )
+
+
+def test_distances_to_empty_batch_still_validates_native_anchor_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("distance-empty-batch", dimension=3) as cad:
+        anchor = _fake_entities(cad, backend, 0, 101)[0]
+        source = _SinglePassDistanceEntities(())
+        synchronize_before = backend.model.occ.synchronize_calls
+        snapshots_before = backend.model.occ.get_entities_calls
+        calls_before = len(_recorded_distance_calls(backend))
+
+        assert cad.distances_to(anchor, source) == ()
+        assert source.iterations == 1
+        assert backend.model.occ.synchronize_calls == synchronize_before + 1
+        assert backend.model.occ.get_entities_calls == snapshots_before + 1
+        assert len(_recorded_distance_calls(backend)) == calls_before
+
+
+def test_entity_distance_preflight_failures_make_no_native_query_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("distance-preflight", dimension=2) as cad:
+        anchor, candidate = _fake_entities(cad, backend, 0, 101, 102)
+        oversized_anchor = cad._wrap_entity((3, 901))
+        oversized_candidate = cad._wrap_entity((3, 902))
+        never_iterated = _NeverIteratedDistanceEntities()
+        duplicate_source = _SinglePassDistanceEntities(
+            (candidate, candidate)
+        )
+        synchronize_before = backend.model.occ.synchronize_calls
+        snapshots_before = backend.model.occ.get_entities_calls
+        calls_before = len(_recorded_distance_calls(backend))
+
+        with pytest.raises(ValueError, match="anchor dimension"):
+            cad.distances_to(oversized_anchor, never_iterated)
+        assert never_iterated.iterations == 0
+
+        operations = (
+            (
+                TypeError,
+                lambda: cad.distance(object(), candidate),  # type: ignore[arg-type]
+            ),
+            (
+                TypeError,
+                lambda: cad.distance(anchor, object()),  # type: ignore[arg-type]
+            ),
+            (
+                TypeError,
+                lambda: cad.distances_to(anchor, 42),  # type: ignore[arg-type]
+            ),
+            (
+                ValueError,
+                lambda: cad.distances_to(anchor, duplicate_source),
+            ),
+            (
+                ValueError,
+                lambda: cad.distances_to(anchor, (oversized_candidate,)),
+            ),
+        )
+        for error_type, operation in operations:
+            with pytest.raises(error_type):
+                operation()
+
+        assert duplicate_source.iterations == 1
+        assert backend.model.occ.synchronize_calls == synchronize_before
+        assert backend.model.occ.get_entities_calls == snapshots_before
+        assert len(_recorded_distance_calls(backend)) == calls_before
+
+
+def test_entity_distance_rejects_foreign_and_registry_stale_references_preflight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("distance-owner-outer", dimension=2) as outer:
+        foreign = outer.point(0.0, 0.0)
+        with geometry.model("distance-owner-inner", dimension=2) as inner:
+            anchor = inner.point(1.0, 0.0)
+            candidate = inner.point(2.0, 0.0)
+            synchronize_before = backend.model.occ.synchronize_calls
+            snapshots_before = backend.model.occ.get_entities_calls
+            calls_before = len(_recorded_distance_calls(backend))
+
+            with pytest.raises(geometry.EntityOwnershipError):
+                inner.distance(foreign, candidate)
+            with pytest.raises(geometry.EntityOwnershipError):
+                inner.distances_to(anchor, (candidate, foreign))
+
+            assert backend.model.occ.synchronize_calls == synchronize_before
+            assert backend.model.occ.get_entities_calls == snapshots_before
+            assert len(_recorded_distance_calls(backend)) == calls_before
+
+    with geometry.model("distance-registry-stale", dimension=2) as cad:
+        stale_anchor = cad.point(0.0, 0.0)
+        stale_candidate = cad.point(1.0, 0.0)
+        cad.raw_occ
+        current_anchor = cad.entity(0, stale_anchor.tag)
+        synchronize_before = backend.model.occ.synchronize_calls
+        snapshots_before = backend.model.occ.get_entities_calls
+        calls_before = len(_recorded_distance_calls(backend))
+
+        with pytest.raises(geometry.StaleEntityError):
+            cad.distances_to(stale_anchor, ())
+        with pytest.raises(geometry.StaleEntityError):
+            cad.distances_to(
+                current_anchor,
+                (current_anchor, stale_candidate),
+            )
+
+        assert backend.model.occ.synchronize_calls == synchronize_before
+        assert backend.model.occ.get_entities_calls == snapshots_before
+        assert len(_recorded_distance_calls(backend)) == calls_before
+
+
+def test_entity_distance_checks_closed_state_before_reference_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+    cad = geometry.GeometryModel("distance-closed", dimension=2)
+    with cad:
+        cad.point(0.0, 0.0)
+
+    synchronize_before = backend.model.occ.synchronize_calls
+    snapshots_before = backend.model.occ.get_entities_calls
+    calls_before = len(_recorded_distance_calls(backend))
+    with pytest.raises(geometry.GeometryStateError, match="CLOSED"):
+        cad.distances_to(object(), 42)  # type: ignore[arg-type]
+
+    assert backend.model.occ.synchronize_calls == synchronize_before
+    assert backend.model.occ.get_entities_calls == snapshots_before
+    assert len(_recorded_distance_calls(backend)) == calls_before
+
+
+@pytest.mark.parametrize("missing_role", ("anchor", "candidate"))
+def test_entity_distance_detects_native_missing_references_before_pair_calls(
+    monkeypatch: pytest.MonkeyPatch,
+    missing_role: str,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model(f"distance-native-missing-{missing_role}", dimension=3) as cad:
+        anchor = _fake_entities(cad, backend, 0, 101)[0]
+        candidate = _fake_entities(cad, backend, 3, 201)[0]
+        missing = anchor if missing_role == "anchor" else candidate
+        backend.model._current_data()["entities"].remove(
+            (missing.dimension, missing.tag)
+        )
+        synchronize_before = backend.model.occ.synchronize_calls
+        snapshots_before = backend.model.occ.get_entities_calls
+        calls_before = len(_recorded_distance_calls(backend))
+        candidates = () if missing_role == "anchor" else (candidate,)
+
+        with pytest.raises(geometry.StaleEntityError, match="no longer exists"):
+            cad.distances_to(anchor, candidates)
+
+        assert backend.model.occ.synchronize_calls == synchronize_before + 1
+        assert backend.model.occ.get_entities_calls == snapshots_before + 1
+        assert len(_recorded_distance_calls(backend)) == calls_before
+
+
+@pytest.mark.parametrize(
+    ("bad_result", "cause_type"),
+    (
+        pytest.param(None, TypeError, id="non-iterable"),
+        pytest.param((0.0,) * 6, ValueError, id="six-values"),
+        pytest.param((0.0,) * 8, ValueError, id="eight-values"),
+        pytest.param(
+            (0.0, 0.0, 0.0, "bad", 0.0, 0.0, 0.0),
+            ValueError,
+            id="non-numeric-witness",
+        ),
+        pytest.param(
+            (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, True),
+            ValueError,
+            id="boolean-witness",
+        ),
+        pytest.param(
+            (float("nan"), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            ValueError,
+            id="nan",
+        ),
+        pytest.param(
+            (0.0, 0.0, 0.0, float("inf"), 0.0, 0.0, 0.0),
+            ValueError,
+            id="infinite-witness",
+        ),
+        pytest.param(
+            (-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            None,
+            id="negative",
+        ),
+        pytest.param(
+            _RaisingDistanceResult(),
+            RuntimeError,
+            id="raises-during-materialization",
+        ),
+    ),
+)
+def test_entity_distance_rejects_malformed_native_results_with_pair_context(
+    monkeypatch: pytest.MonkeyPatch,
+    bad_result: Any,
+    cause_type: type[BaseException] | None,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("distance-invalid-result", dimension=3) as cad:
+        anchor = _fake_entities(cad, backend, 1, 101)[0]
+        candidate = _fake_entities(cad, backend, 2, 201)[0]
+        key = _distance_key(anchor, candidate)
+        backend.model.occ.distance_results[key] = bad_result
+
+        with pytest.raises(geometry.GeometryError) as captured:
+            cad.distances_to(anchor, (candidate,))
+
+        message = str(captured.value)
+        assert "geometry model 'distance-invalid-result': distances_to" in message
+        assert f"({anchor.dimension}, {anchor.tag})" in message
+        assert f"({candidate.dimension}, {candidate.tag})" in message
+        if cause_type is not None:
+            assert isinstance(captured.value.__cause__, cause_type)
+
+
+def test_entity_distance_wraps_native_failure_with_public_operation_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("distance-native-failure", dimension=3) as cad:
+        anchor = _fake_entities(cad, backend, 0, 101)[0]
+        candidate = _fake_entities(cad, backend, 3, 201)[0]
+        key = _distance_key(anchor, candidate)
+        native_error = RuntimeError("fake native distance failure")
+        backend.model.occ.distance_failures[key] = native_error
+
+        with pytest.raises(geometry.GeometryError) as scalar:
+            cad.distance(anchor, candidate)
+        assert "geometry model 'distance-native-failure': distance " in str(
+            scalar.value
+        )
+        assert scalar.value.__cause__ is native_error
+
+        del backend.model.occ.distance_failures[key]
+        backend.model.occ.distance_results[key] = None
+        with pytest.raises(geometry.GeometryError) as batch:
+            cad.distances_to(anchor, (candidate,))
+        assert "geometry model 'distance-native-failure': distances_to " in str(
+            batch.value
+        )
+
+
+def test_distances_to_stops_at_the_native_pair_that_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("distance-stop-on-failure", dimension=3) as cad:
+        anchor = _fake_entities(cad, backend, 0, 101)[0]
+        candidates = (
+            _fake_entities(cad, backend, 1, 201)[0],
+            _fake_entities(cad, backend, 2, 202)[0],
+            _fake_entities(cad, backend, 3, 203)[0],
+        )
+        keys = tuple(_distance_key(anchor, candidate) for candidate in candidates)
+        backend.model.occ.distance_results[keys[0]] = _distance_result(1.0)
+        backend.model.occ.distance_results[keys[1]] = None
+        backend.model.occ.distance_results[keys[2]] = _distance_result(3.0)
+        calls_before = len(_recorded_distance_calls(backend))
+
+        with pytest.raises(geometry.GeometryError):
+            cad.distances_to(anchor, candidates)
+
+        assert _recorded_distance_calls(backend)[calls_before:] == [
+            ("getDistance", *keys[0]),
+            ("getDistance", *keys[1]),
+        ]
 
 
 def test_coordinate_selection_checks_both_bounding_box_ends(

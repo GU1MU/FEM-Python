@@ -1894,6 +1894,36 @@ class GeometryModel:
             "volume",
         )
 
+    def distance(
+        self,
+        left: EntityRef,
+        right: EntityRef,
+    ) -> float:
+        """Return the minimum Euclidean distance between two OCC entity sets.
+
+        Touching, intersecting, contained, and identical entities have zero
+        distance. The unsigned result is not a boundary, signed, or Hausdorff
+        distance.
+        """
+        return self._distances_to(left, (right,), operation="distance")[0]
+
+    def distances_to(
+        self,
+        anchor: EntityRef,
+        entities: Iterable[EntityRef],
+    ) -> tuple[float, ...]:
+        """Return ordered minimum OCC entity-set distances from one anchor.
+
+        Touching, intersecting, contained, and identical entities have zero
+        distance. The unsigned results are not boundary, signed, or Hausdorff
+        distances.
+        """
+        return self._distances_to(
+            anchor,
+            entities,
+            operation="distances_to",
+        )
+
     def center_of_mass(
         self,
         entity: EntityRef,
@@ -2444,8 +2474,32 @@ class GeometryModel:
         operation: str,
     ) -> float:
         try:
+            occ = self._gmsh.model.occ
+        except Exception as exc:
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} could not verify "
+                "curve-loop boundary separation"
+            ) from exc
+        return self._read_occ_distance(
+            occ,
+            left,
+            right,
+            operation=operation,
+            curve_loop_context=True,
+        )
+
+    def _read_occ_distance(
+        self,
+        occ: Any,
+        left: EntityRef,
+        right: EntityRef,
+        *,
+        operation: str,
+        curve_loop_context: bool = False,
+    ) -> float:
+        try:
             raw_result = tuple(
-                self._gmsh.model.occ.getDistance(
+                occ.getDistance(
                     left.dimension,
                     left.tag,
                     right.dimension,
@@ -2455,15 +2509,29 @@ class GeometryModel:
             if len(raw_result) != 7:
                 raise ValueError("expected seven distance result values")
             result = tuple(
-                _finite_float(value, "curve-distance result")
+                _finite_float(value, "OCC distance result")
                 for value in raw_result
             )
         except Exception as exc:
+            if curve_loop_context:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} could not verify "
+                    "curve-loop boundary separation"
+                ) from exc
             raise GeometryError(
-                f"geometry model {self.name!r}: {operation} could not verify "
-                "curve-loop boundary separation"
+                f"geometry model {self.name!r}: {operation} could not evaluate "
+                "OCC distance for entity pair "
+                f"({left.dimension}, {left.tag}) and "
+                f"({right.dimension}, {right.tag})"
             ) from exc
         if result[0] < 0.0:
+            if not curve_loop_context:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} received a "
+                    "negative OCC distance for entity pair "
+                    f"({left.dimension}, {left.tag}) and "
+                    f"({right.dimension}, {right.tag})"
+                )
             raise GeometryError(
                 f"geometry model {self.name!r}: {operation} received a failed "
                 "curve-distance result"
@@ -3755,6 +3823,51 @@ class GeometryModel:
             label=label,
         )
 
+    def _distances_to(
+        self,
+        anchor: EntityRef,
+        entities: Iterable[EntityRef],
+        *,
+        operation: str,
+    ) -> tuple[float, ...]:
+        self._check_state(operation, _QUERY_STATES)
+        normalized_anchor = self._normalize_entities(
+            (anchor,),
+            operation=operation,
+        )[0]
+        if normalized_anchor.dimension > self.dimension:
+            raise ValueError(
+                f"{operation} anchor dimension exceeds the geometry model dimension"
+            )
+        candidates = self._normalize_optional_entities(
+            entities,
+            operation=operation,
+            label="entities",
+        )
+        if any(candidate.dimension > self.dimension for candidate in candidates):
+            raise ValueError(
+                f"{operation} candidate dimension exceeds the geometry model "
+                "dimension"
+            )
+
+        gmsh = self._activate(operation)
+        occ = gmsh.model.occ
+        occ.synchronize()
+        self._assert_occ_liveness(
+            (normalized_anchor, *candidates),
+            operation,
+            occ=occ,
+        )
+        return tuple(
+            self._read_occ_distance(
+                occ,
+                normalized_anchor,
+                candidate,
+                operation=operation,
+            )
+            for candidate in candidates
+        )
+
     def _prepare_geometry_query_entity(
         self,
         entity: EntityRef,
@@ -3833,9 +3946,12 @@ class GeometryModel:
         self,
         entities: Iterable[EntityRef],
         operation: str,
+        *,
+        occ: Any | None = None,
     ) -> None:
+        native_occ = self._gmsh.model.occ if occ is None else occ
         existing = {
-            _normalize_dim_tag(pair) for pair in self._gmsh.model.occ.getEntities()
+            _normalize_dim_tag(pair) for pair in native_occ.getEntities()
         }
         for entity in entities:
             key = (entity.dimension, entity.tag)
@@ -3943,8 +4059,8 @@ class GeometryModel:
     ) -> None:
         self._states.check(operation, allowed)
 
-    def _activate(self, operation: str) -> None:
-        self._session.activate(operation)
+    def _activate(self, operation: str) -> Any:
+        return self._session.activate(operation)
 
     def _wrap_entity(self, pair: Any) -> EntityRef:
         return self._references.wrap_entity(pair)

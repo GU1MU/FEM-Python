@@ -143,6 +143,56 @@ def _in_box(
     return tuple(matches)
 
 
+def _intersects_box(
+    cad: GeometryModel,
+    entities: Iterable[EntityRef] | None,
+    *,
+    dimension: int,
+    operation: str,
+    xmin: float | None,
+    xmax: float | None,
+    ymin: float | None,
+    ymax: float | None,
+    zmin: float | None,
+    zmax: float | None,
+    tolerance: float,
+) -> tuple[EntityRef, ...]:
+    model = _require_model(cad)
+    bounds, tolerance_value = _box_bounds(
+        operation,
+        xmin=xmin,
+        xmax=xmax,
+        ymin=ymin,
+        ymax=ymax,
+        zmin=zmin,
+        zmax=zmax,
+        tolerance=tolerance,
+    )
+    candidates = _resolve_entities(
+        model,
+        entities,
+        dimension=dimension,
+        operation=operation,
+    )
+    effective_tolerance = model.effective_bounding_box_tolerance(
+        tolerance_value
+    )
+    matches: list[EntityRef] = []
+    for entity in candidates:
+        entity_bounds = model.bounding_box(entity)
+        if all(
+            lower is None
+            or entity_bounds[axis + 3] >= lower - effective_tolerance
+            for axis, lower in enumerate(bounds[:3])
+        ) and all(
+            upper is None
+            or entity_bounds[axis] <= upper + effective_tolerance
+            for axis, upper in enumerate(bounds[3:])
+        ):
+            matches.append(entity)
+    return tuple(matches)
+
+
 def _by_measure(
     cad: GeometryModel,
     entities: Iterable[EntityRef] | None,
@@ -168,6 +218,43 @@ def _by_measure(
         for entity in candidates
         if abs(query(entity) - target_value) <= tolerance_value
     )
+
+
+def _by_measure_range(
+    cad: GeometryModel,
+    entities: Iterable[EntityRef] | None,
+    *,
+    dimension: int,
+    operation: str,
+    query_name: Literal["area", "length", "volume"],
+    minimum: float | None,
+    maximum: float | None,
+    tolerance: float,
+) -> tuple[EntityRef, ...]:
+    model = _require_model(cad)
+    lower, upper, tolerance_value = _measure_range(
+        operation,
+        minimum=minimum,
+        maximum=maximum,
+        tolerance=tolerance,
+    )
+    candidates = _resolve_entities(
+        model,
+        entities,
+        dimension=dimension,
+        operation=operation,
+    )
+    query = getattr(model, query_name)
+    matches: list[EntityRef] = []
+    for entity in candidates:
+        measure = query(entity)
+        if (
+            lower is None or measure >= lower - tolerance_value
+        ) and (
+            upper is None or measure <= upper + tolerance_value
+        ):
+            matches.append(entity)
+    return tuple(matches)
 
 
 def _nearest_point(
@@ -204,6 +291,66 @@ def _nearest_point(
             best = entity
             best_distance = distance
     return best
+
+
+def _nearest_to(
+    cad: GeometryModel,
+    anchor: EntityRef,
+    entities: Iterable[EntityRef] | None,
+    *,
+    dimension: int,
+    operation: str,
+) -> EntityRef | None:
+    model = _require_model(cad)
+    target = _distance_anchor(
+        anchor,
+        operation=operation,
+    )
+    candidates = _resolve_entities(
+        model,
+        entities,
+        dimension=dimension,
+        operation=operation,
+    )
+    distances = model.distances_to(target, candidates)
+    best: EntityRef | None = None
+    best_distance: float | None = None
+    for candidate, distance in zip(candidates, distances, strict=True):
+        if best_distance is None or distance < best_distance:
+            best = candidate
+            best_distance = distance
+    return best
+
+
+def _within_distance(
+    cad: GeometryModel,
+    anchor: EntityRef,
+    entities: Iterable[EntityRef] | None,
+    *,
+    dimension: int,
+    operation: str,
+    max_distance: float,
+    tolerance: float,
+) -> tuple[EntityRef, ...]:
+    model = _require_model(cad)
+    target = _distance_anchor(
+        anchor,
+        operation=operation,
+    )
+    maximum = _nonnegative_float(max_distance, "max_distance")
+    tolerance_value = _nonnegative_float(tolerance, "tolerance")
+    candidates = _resolve_entities(
+        model,
+        entities,
+        dimension=dimension,
+        operation=operation,
+    )
+    distances = model.distances_to(target, candidates)
+    return tuple(
+        candidate
+        for candidate, distance in zip(candidates, distances, strict=True)
+        if distance <= maximum + tolerance_value
+    )
 
 
 def _adjacent_to(
@@ -296,6 +443,16 @@ def _resolve_entities(
             seen.add(entity)
             unique.append(entity)
     return tuple(unique)
+
+
+def _distance_anchor(
+    anchor: EntityRef,
+    *,
+    operation: str,
+) -> EntityRef:
+    if not isinstance(anchor, EntityRef):
+        raise TypeError(f"{operation} anchor must be an EntityRef")
+    return anchor
 
 
 def _anchors(
@@ -401,6 +558,32 @@ def _box_bounds(
         ),
         _nonnegative_float(tolerance, "tolerance"),
     )
+
+
+def _measure_range(
+    operation: str,
+    *,
+    minimum: float | None,
+    maximum: float | None,
+    tolerance: float,
+) -> tuple[float | None, float | None, float]:
+    if minimum is None and maximum is None:
+        raise ValueError(
+            f"{operation} requires at least one of minimum and maximum"
+        )
+    lower = (
+        None
+        if minimum is None
+        else _nonnegative_float(minimum, "minimum")
+    )
+    upper = (
+        None
+        if maximum is None
+        else _nonnegative_float(maximum, "maximum")
+    )
+    if lower is not None and upper is not None and lower > upper:
+        raise ValueError("minimum must not exceed maximum")
+    return lower, upper, _nonnegative_float(tolerance, "tolerance")
 
 
 def _mode(mode: str) -> _Mode:

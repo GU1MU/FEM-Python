@@ -12,7 +12,11 @@ from ._geometry import (
     _by_center,
     _by_coord,
     _by_measure,
+    _by_measure_range,
     _in_box,
+    _intersects_box,
+    _nearest_to,
+    _within_distance,
 )
 
 
@@ -126,6 +130,39 @@ def in_box(
     )
 
 
+def intersects_box(
+    cad: GeometryModel,
+    entities: Iterable[EntityRef] | None = None,
+    *,
+    xmin: float | None = None,
+    xmax: float | None = None,
+    ymin: float | None = None,
+    ymax: float | None = None,
+    zmin: float | None = None,
+    zmax: float | None = None,
+    tolerance: float = 1.0e-8,
+) -> tuple[EntityRef, ...]:
+    """Select surfaces whose bounding boxes overlap a closed query region.
+
+    This is a conservative axis-aligned bounding-box test, not an exact
+    geometric Boolean intersection. A surface can match when its bounding box
+    overlaps even if its geometry does not enter the query region.
+    """
+    return _intersects_box(
+        cad,
+        entities,
+        dimension=2,
+        operation="surfaces.intersects_box",
+        xmin=xmin,
+        xmax=xmax,
+        ymin=ymin,
+        ymax=ymax,
+        zmin=zmin,
+        zmax=zmax,
+        tolerance=tolerance,
+    )
+
+
 def by_area(
     cad: GeometryModel,
     entities: Iterable[EntityRef] | None = None,
@@ -141,6 +178,72 @@ def by_area(
         operation="surfaces.by_area",
         query_name="area",
         value=value,
+        tolerance=tolerance,
+    )
+
+
+def by_area_range(
+    cad: GeometryModel,
+    entities: Iterable[EntityRef] | None = None,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+    tolerance: float = 1.0e-8,
+) -> tuple[EntityRef, ...]:
+    """Select surfaces in a closed, optionally one-sided area range."""
+    return _by_measure_range(
+        cad,
+        entities,
+        dimension=2,
+        operation="surfaces.by_area_range",
+        query_name="area",
+        minimum=minimum,
+        maximum=maximum,
+        tolerance=tolerance,
+    )
+
+
+def nearest_to(
+    cad: GeometryModel,
+    anchor: EntityRef,
+    entities: Iterable[EntityRef] | None = None,
+) -> EntityRef | None:
+    """Return the first surface nearest to one OCC entity.
+
+    Distance is the unsigned minimum Euclidean distance between the entity
+    sets. Touching, intersection, containment, and self-distance are zero;
+    this is neither boundary-only nor Hausdorff distance.
+    """
+    return _nearest_to(
+        cad,
+        anchor,
+        entities,
+        dimension=2,
+        operation="surfaces.nearest_to",
+    )
+
+
+def within_distance(
+    cad: GeometryModel,
+    anchor: EntityRef,
+    entities: Iterable[EntityRef] | None = None,
+    *,
+    max_distance: float,
+    tolerance: float = 1.0e-8,
+) -> tuple[EntityRef, ...]:
+    """Select surfaces within an OCC entity-set distance threshold.
+
+    Distance is the unsigned minimum Euclidean distance between the entity
+    sets. Touching, intersection, containment, and self-distance are zero;
+    this is neither boundary-only nor Hausdorff distance.
+    """
+    return _within_distance(
+        cad,
+        anchor,
+        entities,
+        dimension=2,
+        operation="surfaces.within_distance",
+        max_distance=max_distance,
         tolerance=tolerance,
     )
 
@@ -167,10 +270,14 @@ __all__ = [
     "adjacent_to",
     "all",
     "by_area",
+    "by_area_range",
     "by_center",
     "by_coord",
     "by_x",
     "by_y",
     "by_z",
     "in_box",
+    "intersects_box",
+    "nearest_to",
+    "within_distance",
 ]

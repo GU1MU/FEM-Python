@@ -1655,6 +1655,33 @@ def test_fake_plane_surface_fails_closed_on_invalid_distance_results(
         assert _count_calls(fake_gmsh, "addPlaneSurface") == before
 
 
+def test_curve_loop_distance_wraps_occ_handle_activation_failure(
+    fake_gmsh: _FakeGmsh,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del fake_gmsh
+    with geometry.model("surface-distance-activation", dimension=2) as cad:
+        first = cad.line(cad.point(0.0, 0.0), cad.point(1.0, 0.0))
+        second = cad.line(cad.point(0.0, 1.0), cad.point(1.0, 1.0))
+
+        def fail_activate(session: Any, operation: str) -> Any:
+            del session, operation
+            raise RuntimeError("fake distance activation failure")
+
+        monkeypatch.setattr(type(cad._session), "activate", fail_activate)
+        with pytest.raises(
+            geometry.GeometryError,
+            match="curve-loop boundary separation",
+        ) as captured:
+            cad._occ_curve_distance(
+                first,
+                second,
+                operation="plane_surface",
+            )
+
+        assert isinstance(captured.value.__cause__, RuntimeError)
+
+
 def test_fake_transform_and_boolean_failures_preserve_loops_until_success(
     fake_gmsh: _FakeGmsh,
 ) -> None:

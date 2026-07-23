@@ -10,7 +10,7 @@ from fem import geometry
 from fem.core import Mesh2D
 from fem.io import gmsh as gmsh_io
 from fem.mesh import gmsh as gmsh_meshing
-from fem.selection import curves, surfaces, volumes
+from fem.selection import curves, points, surfaces, volumes
 
 
 _PRIMARY_EDGES = {
@@ -210,3 +210,145 @@ def test_real_volume_predicates_and_surface_adjacency_select_disjoint_boxes(
             (first, second),
             mode="any",
         ) == cad.boundary((first, second), combined=False)
+
+
+def test_real_box_intersection_and_measure_ranges_cover_each_cad_dimension(
+    real_gmsh: Any,
+) -> None:
+    del real_gmsh
+    with geometry.model("selection_v12_spatial_ranges", dimension=3) as cad:
+        near_point = cad.point(1.0, 0.0, 0.0)
+        far_point = cad.point(4.0, 0.0, 0.0)
+        near_curve = cad.line(
+            cad.point(0.0, 1.0, 0.0),
+            cad.point(2.0, 1.0, 0.0),
+        )
+        far_curve = cad.line(
+            cad.point(3.0, 1.0, 0.0),
+            cad.point(4.0, 1.0, 0.0),
+        )
+        near_surface = cad.rectangle(0.0, 2.0, 2.0, 1.0)
+        far_surface = cad.rectangle(3.0, 2.0, 1.0, 1.0)
+        near_volume = cad.box(0.0, 4.0, 0.0, 2.0, 1.0, 1.0)
+        far_volume = cad.box(3.0, 4.0, 0.0, 1.0, 1.0, 1.0)
+        x_bounds = {"xmin": 0.75, "xmax": 1.25}
+
+        assert points.intersects_box(
+            cad,
+            (far_point, near_point),
+            **x_bounds,
+        ) == (near_point,)
+        assert curves.intersects_box(
+            cad,
+            (far_curve, near_curve),
+            **x_bounds,
+        ) == (near_curve,)
+        assert surfaces.intersects_box(
+            cad,
+            (far_surface, near_surface),
+            **x_bounds,
+        ) == (near_surface,)
+        assert volumes.intersects_box(
+            cad,
+            (far_volume, near_volume),
+            **x_bounds,
+        ) == (near_volume,)
+
+        assert curves.in_box(cad, (near_curve,), **x_bounds) == ()
+        assert curves.by_length_range(
+            cad,
+            (far_curve, near_curve),
+            minimum=2.0,
+            maximum=2.0,
+        ) == (near_curve,)
+        assert surfaces.by_area_range(
+            cad,
+            (far_surface, near_surface),
+            minimum=2.0,
+            maximum=2.0,
+        ) == (near_surface,)
+        assert volumes.by_volume_range(
+            cad,
+            (far_volume, near_volume),
+            minimum=2.0,
+            maximum=2.0,
+        ) == (near_volume,)
+
+
+def test_real_entity_distance_semantics_and_selectors(
+    real_gmsh: Any,
+) -> None:
+    del real_gmsh
+    with geometry.model("selection_v12_distance_semantics", dimension=3) as cad:
+        origin = cad.point(0.0, 0.0, 0.0)
+        shared = cad.point(1.0, 0.0, 0.0)
+        touching_curve = cad.line(origin, shared)
+        other_touching_curve = cad.line(shared, cad.point(1.0, 1.0, 0.0))
+        near_curve = cad.line(
+            cad.point(2.0, 0.0, 0.0),
+            cad.point(2.0, 1.0, 0.0),
+        )
+        far_curve = cad.line(
+            cad.point(4.0, 0.0, 0.0),
+            cad.point(4.0, 1.0, 0.0),
+        )
+        plane = cad.rectangle(-1.0, -1.0, 2.0, 2.0)
+        crossing_curve = cad.line(
+            cad.point(0.0, 0.0, -1.0),
+            cad.point(0.0, 0.0, 1.0),
+        )
+        contained_point = cad.point(0.25, 0.25, 0.25)
+        container = cad.box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+
+        assert cad.distance(origin, far_curve) == pytest.approx(4.0)
+        assert cad.distance(far_curve, origin) == pytest.approx(
+            cad.distance(origin, far_curve)
+        )
+        assert cad.distance(origin, origin) == pytest.approx(0.0)
+        assert cad.distance(touching_curve, other_touching_curve) == pytest.approx(
+            0.0
+        )
+        assert cad.distance(crossing_curve, plane) == pytest.approx(0.0)
+        assert cad.distance(contained_point, container) == pytest.approx(0.0)
+
+        candidates = (far_curve, near_curve, touching_curve)
+        assert curves.nearest_to(cad, origin, candidates) == touching_curve
+        assert curves.within_distance(
+            cad,
+            origin,
+            candidates,
+            max_distance=2.0,
+            tolerance=0.0,
+        ) == (near_curve, touching_curve)
+
+
+def test_real_distance_supports_all_ordered_dimension_pairs(
+    real_gmsh: Any,
+) -> None:
+    del real_gmsh
+    with geometry.model("selection_v12_distance_pairs", dimension=3) as cad:
+        left = (
+            cad.point(0.5, 0.5, 1.0),
+            cad.line(
+                cad.point(0.0, 0.5, 1.0),
+                cad.point(1.0, 0.5, 1.0),
+            ),
+            cad.rectangle(0.0, 0.0, 1.0, 1.0, z=1.0),
+            cad.box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0),
+        )
+        right = (
+            cad.point(0.5, 0.5, 5.0),
+            cad.line(
+                cad.point(0.0, 0.5, 5.0),
+                cad.point(1.0, 0.5, 5.0),
+            ),
+            cad.rectangle(0.0, 0.0, 1.0, 1.0, z=5.0),
+            cad.box(0.0, 0.0, 5.0, 1.0, 1.0, 1.0),
+        )
+
+        assert tuple(entity.dimension for entity in left) == (0, 1, 2, 3)
+        assert tuple(entity.dimension for entity in right) == (0, 1, 2, 3)
+        for anchor in left:
+            distances = cad.distances_to(anchor, right)
+            assert distances == pytest.approx((4.0, 4.0, 4.0, 4.0))
+            assert all(distance > 0.0 for distance in distances)
