@@ -1833,18 +1833,7 @@ class GeometryModel:
         self._gmsh.model.occ.synchronize()
         matches: list[EntityRef] = []
         for entity in normalized:
-            bounds = tuple(
-                float(value)
-                for value in self._gmsh.model.getBoundingBox(
-                    entity.dimension,
-                    entity.tag,
-                )
-            )
-            if len(bounds) != 6:
-                raise GeometryError(
-                    f"geometry model {self.name!r}: invalid bounding box for "
-                    f"entity ({entity.dimension}, {entity.tag})"
-                )
+            bounds = self._read_bounding_box(entity, operation=operation)
             if all(
                 coordinate is None
                 or (
@@ -1873,24 +1862,7 @@ class GeometryModel:
         """Return the native OCC bounding box of one live entity."""
         operation = "bounding_box"
         target = self._prepare_geometry_query_entity(entity, operation=operation)
-        bounds = tuple(
-            _finite_float(value, "bounding box coordinate")
-            for value in self._gmsh.model.getBoundingBox(
-                target.dimension,
-                target.tag,
-            )
-        )
-        if len(bounds) != 6:
-            raise GeometryError(
-                f"geometry model {self.name!r}: invalid bounding box for "
-                f"entity ({target.dimension}, {target.tag})"
-            )
-        if any(bounds[axis] > bounds[axis + 3] for axis in range(3)):
-            raise GeometryError(
-                f"geometry model {self.name!r}: inverted bounding box for "
-                f"entity ({target.dimension}, {target.tag})"
-            )
-        return bounds  # type: ignore[return-value]
+        return self._read_bounding_box(target, operation=operation)
 
     def length(self, curve: EntityRef) -> float:
         """Return the OCC length of one live curve."""
@@ -3799,6 +3771,39 @@ class GeometryModel:
         self._gmsh.model.occ.synchronize()
         self._assert_occ_liveness((target,), operation)
         return target
+
+    def _read_bounding_box(
+        self,
+        entity: EntityRef,
+        *,
+        operation: str,
+    ) -> tuple[float, float, float, float, float, float]:
+        raw_bounds = self._gmsh.model.getBoundingBox(
+            entity.dimension,
+            entity.tag,
+        )
+        try:
+            bounds = tuple(
+                _finite_float(value, "bounding box coordinate")
+                for value in raw_bounds
+            )
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} received an invalid "
+                f"bounding box for entity ({entity.dimension}, {entity.tag})"
+            ) from exc
+        if len(bounds) != 6:
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} received an invalid "
+                f"bounding box for entity ({entity.dimension}, {entity.tag})"
+            )
+        xmin, ymin, zmin, xmax, ymax, zmax = bounds
+        if xmin > xmax or ymin > ymax or zmin > zmax:
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} received an inverted "
+                f"bounding box for entity ({entity.dimension}, {entity.tag})"
+            )
+        return xmin, ymin, zmin, xmax, ymax, zmax
 
     def _assert_mesh_control_corners_on_boundary(
         self,

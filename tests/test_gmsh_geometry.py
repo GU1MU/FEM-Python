@@ -16,7 +16,7 @@ from fem.geometry._gmsh import backend as _gmsh_backend
 from fem.geometry._gmsh import predicates as _gmsh_predicates
 from fem.io import gmsh as gmsh_io
 from fem.mesh import gmsh as gmsh_meshing
-from fem.selection import edges, elements, nodes
+from fem.selection import curves, edges, elements, nodes
 from fem.solvers import static_linear
 from tests.helpers.gmsh_fake import (
     _AUTO_OPTION_ORIGINALS,
@@ -2383,10 +2383,130 @@ def test_coordinate_selection_checks_both_bounding_box_ends(
         at_x_zero = cad.select(curves, x=0.0)
         at_point = cad.select(curves, x=0.0, y=2.0)
         empty = cad.select(curves, x=5.0)
+        first_bounds = cad.bounding_box(curves[0])
 
     assert tuple(item.tag for item in at_x_zero) == (1, 3)
     assert tuple(item.tag for item in at_point) == (3,)
     assert empty == ()
+    assert first_bounds == (-1e-9, 0.0, 0.0, 1e-9, 1.0, 0.0)
+
+
+@pytest.mark.parametrize(
+    ("malformed_bounds", "message"),
+    [
+        pytest.param((0.0, 0.0, 0.0, 1.0, 1.0), "invalid", id="five-values"),
+        pytest.param(
+            (0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0),
+            "invalid",
+            id="seven-values",
+        ),
+        pytest.param(None, "invalid", id="non-iterable"),
+        pytest.param(
+            (0.0, 0.0, 0.0, 1.0, "not-numeric", 1.0),
+            "invalid",
+            id="non-numeric",
+        ),
+        pytest.param(
+            (0.0, 0.0, True, 1.0, 1.0, 1.0),
+            "invalid",
+            id="boolean",
+        ),
+        pytest.param(
+            (0.0, 0.0, float("nan"), 1.0, 1.0, 1.0),
+            "invalid",
+            id="nan",
+        ),
+        pytest.param(
+            (0.0, 0.0, 0.0, float("inf"), 1.0, 1.0),
+            "invalid",
+            id="positive-infinity",
+        ),
+        pytest.param(
+            (0.0, float("-inf"), 0.0, 1.0, 1.0, 1.0),
+            "invalid",
+            id="negative-infinity",
+        ),
+        pytest.param(
+            (1.0, 0.0, 0.0, 0.0, 1.0, 1.0),
+            "inverted",
+            id="inverted-x",
+        ),
+        pytest.param(
+            (0.0, 1.0, 0.0, 1.0, 0.0, 1.0),
+            "inverted",
+            id="inverted-y",
+        ),
+        pytest.param(
+            (0.0, 0.0, 1.0, 1.0, 1.0, 0.0),
+            "inverted",
+            id="inverted-z",
+        ),
+    ],
+)
+def test_malformed_bounding_box_results_fail_consistently(
+    monkeypatch: pytest.MonkeyPatch,
+    malformed_bounds: Any,
+    message: str,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("malformed-bounding-box", dimension=2) as cad:
+        curve = cad.line(cad.point(0.0, 0.0), cad.point(0.0, 1.0))
+        backend.model._current_data()["boxes"][(1, curve.tag)] = malformed_bounds
+        queries = (
+            ("select", lambda: cad.select((curve,), x=0.0)),
+            ("bounding_box", lambda: cad.bounding_box(curve)),
+            ("select", lambda: curves.by_x(cad, 0.0, (curve,))),
+            (
+                "bounding_box",
+                lambda: curves.in_box(cad, (curve,), xmin=0.0),
+            ),
+        )
+
+        for operation, query in queries:
+            with pytest.raises(geometry.GeometryError) as captured:
+                query()
+            error = str(captured.value)
+            assert (
+                f"geometry model 'malformed-bounding-box': {operation}" in error
+            )
+            assert f"{message} bounding box" in error
+            assert f"entity (1, {curve.tag})" in error
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        pytest.param(
+            lambda cad, curve: cad.select((curve,), x=0.0),
+            id="select",
+        ),
+        pytest.param(
+            lambda cad, curve: cad.bounding_box(curve),
+            id="bounding-box",
+        ),
+    ],
+)
+def test_native_bounding_box_failures_remain_unwrapped(
+    monkeypatch: pytest.MonkeyPatch,
+    query: Any,
+) -> None:
+    backend = _FakeGmsh()
+    _install_backend(monkeypatch, backend)
+
+    with geometry.model("native-bounding-box-failure", dimension=2) as cad:
+        curve = cad.line(cad.point(0.0, 0.0), cad.point(0.0, 1.0))
+
+        def fail_bounding_box(dimension: int, tag: int) -> tuple[float, ...]:
+            del dimension, tag
+            raise RuntimeError("fake bounding-box failure")
+
+        monkeypatch.setattr(backend.model, "getBoundingBox", fail_bounding_box)
+        with pytest.raises(RuntimeError, match="fake bounding-box failure") as caught:
+            query(cad, curve)
+
+        assert type(caught.value) is RuntimeError
 
 
 @pytest.mark.parametrize(
