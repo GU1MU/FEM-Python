@@ -10,6 +10,7 @@ TESTS_ROOT = PROJECT_ROOT / "tests"
 GEOMETRY_ROOT = SRC_ROOT / "fem" / "geometry"
 MESH_ROOT = SRC_ROOT / "fem" / "mesh"
 GMSH_MESH_ROOT = MESH_ROOT / "gmsh"
+SELECTION_ROOT = SRC_ROOT / "fem" / "selection"
 
 
 def _string_literals(path):
@@ -76,6 +77,29 @@ def test_tests_do_not_reference_example_data_or_results_outputs():
     assert offenders == []
 
 
+def test_selection_package_exports_distinct_mesh_and_geometry_modules():
+    from fem import selection
+
+    expected = [
+        "curves",
+        "edges",
+        "elements",
+        "faces",
+        "nodes",
+        "points",
+        "surfaces",
+        "volumes",
+    ]
+
+    assert selection.__all__ == expected
+    assert all(
+        getattr(selection, name).__name__ == f"fem.selection.{name}"
+        for name in expected
+    )
+    assert selection.faces is not selection.surfaces
+    assert "_geometry" not in selection.__all__
+
+
 def test_geometry_package_has_no_reverse_or_third_party_runtime_dependencies():
     paths = sorted(GEOMETRY_ROOT.rglob("*.py"))
     assert paths
@@ -91,6 +115,68 @@ def test_geometry_package_has_no_reverse_or_third_party_runtime_dependencies():
             offenders.append(
                 f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
             )
+
+    assert offenders == []
+
+
+def test_geometry_selection_depends_only_on_public_geometry_contracts():
+    module_names = (
+        "fem.selection._geometry",
+        "fem.selection.curves",
+        "fem.selection.points",
+        "fem.selection.surfaces",
+        "fem.selection.volumes",
+    )
+    missing = []
+    offenders = []
+    for module_name in module_names:
+        relative = Path(*module_name.split(".")).with_suffix(".py")
+        path = SRC_ROOT / relative
+        if not path.is_file():
+            missing.append(str(path.relative_to(PROJECT_ROOT)))
+            continue
+        for target, lineno in _resolved_import_targets(path, module_name):
+            root = target.split(".", 1)[0]
+            geometry_parts = target.split(".")
+            public_geometry_target = (
+                target == "fem.geometry"
+                or (
+                    len(geometry_parts) == 3
+                    and geometry_parts[:2] == ["fem", "geometry"]
+                    and not geometry_parts[2].startswith("_")
+                )
+            )
+            if (
+                root in sys.stdlib_module_names
+                or target == "fem.selection"
+                or target.startswith("fem.selection.")
+                or public_geometry_target
+            ):
+                continue
+            offenders.append(
+                f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+            )
+
+    assert missing == []
+    assert offenders == []
+
+
+def test_mesh_selection_modules_do_not_import_geometry():
+    module_names = (
+        "fem.selection.edges",
+        "fem.selection.elements",
+        "fem.selection.faces",
+        "fem.selection.nodes",
+    )
+    offenders = []
+    for module_name in module_names:
+        relative = Path(*module_name.split(".")).with_suffix(".py")
+        path = SRC_ROOT / relative
+        for target, lineno in _resolved_import_targets(path, module_name):
+            if target == "fem.geometry" or target.startswith("fem.geometry."):
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+                )
 
     assert offenders == []
 
@@ -180,6 +266,7 @@ def test_runtime_boundaries_do_not_eagerly_import_external_gmsh():
         {
             *GEOMETRY_ROOT.rglob("*.py"),
             *MESH_ROOT.rglob("*.py"),
+            *SELECTION_ROOT.rglob("*.py"),
             *(SRC_ROOT / "fem" / "io").rglob("*.py"),
         }
     )
@@ -198,6 +285,19 @@ def test_runtime_boundaries_do_not_eagerly_import_external_gmsh():
         "fem.mesh.gmsh.types",
     }
     assert expected_gmsh_mesh_modules <= set(modules)
+    expected_selection_modules = {
+        "fem.selection",
+        "fem.selection._geometry",
+        "fem.selection.curves",
+        "fem.selection.edges",
+        "fem.selection.elements",
+        "fem.selection.faces",
+        "fem.selection.nodes",
+        "fem.selection.points",
+        "fem.selection.surfaces",
+        "fem.selection.volumes",
+    }
+    assert expected_selection_modules <= set(modules)
 
     script = f"""
 import builtins

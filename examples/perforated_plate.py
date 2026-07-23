@@ -6,7 +6,7 @@ from fem import geometry, materials, post, steps
 from fem.core import FEMModel
 from fem.io import gmsh as gmsh_io
 from fem.mesh import gmsh as gmsh_meshing
-from fem.selection import edges, elements, nodes
+from fem.selection import curves, edges, elements, nodes
 from fem.solvers import static_linear
 
 
@@ -28,14 +28,11 @@ with geometry.model(MODEL_NAME, dimension=2) as cad:
     domain = cad.cut([plate], [hole]).of_dimension(2)
 
     boundary = cad.boundary(domain)
-    outer_curves = (
-        cad.select(boundary, x=0.0)
-        + cad.select(boundary, x=WIDTH)
-        + cad.select(boundary, y=0.0)
-        + cad.select(boundary, y=HEIGHT)
-    )
-    hole_curves = tuple(
-        curve for curve in boundary if curve not in outer_curves
+    hole_curves = curves.by_center(
+        cad,
+        boundary,
+        x=HOLE_X,
+        y=HOLE_Y,
     )
 
     mesher = gmsh_meshing.Mesher(cad)

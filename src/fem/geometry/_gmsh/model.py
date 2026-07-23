@@ -1827,8 +1827,7 @@ class GeometryModel:
             None if value is None else _finite_float(value, axis)
             for axis, value in zip(("x", "y", "z"), raw_coordinates)
         )
-        tolerance_value = _nonnegative_float(tolerance, "tolerance")
-        bounding_tolerance = tolerance_value + _OCC_BOUNDING_BOX_PADDING
+        bounding_tolerance = self.effective_bounding_box_tolerance(tolerance)
         self._activate(operation)
         self._assert_occ_liveness(normalized, operation)
         self._gmsh.model.occ.synchronize()
@@ -1856,6 +1855,16 @@ class GeometryModel:
             ):
                 matches.append(entity)
         return tuple(sorted(matches, key=lambda item: (item.dimension, item.tag)))
+
+    def effective_bounding_box_tolerance(
+        self,
+        tolerance: float = 0.0,
+    ) -> float:
+        """Return the effective tolerance for native bounding-box comparisons."""
+        return (
+            _nonnegative_float(tolerance, "tolerance")
+            + _OCC_BOUNDING_BOX_PADDING
+        )
 
     def bounding_box(
         self,
@@ -1901,6 +1910,16 @@ class GeometryModel:
         return _nonnegative_float(
             self._gmsh.model.occ.getMass(2, target.tag),
             "surface area",
+        )
+
+    def volume(self, volume: EntityRef) -> float:
+        """Return the OCC volume of one live volume."""
+        target = self._prepare_geometry_query_entity(volume, operation="volume")
+        if target.dimension != 3:
+            raise ValueError("volume requires a dimension-three volume reference")
+        return _nonnegative_float(
+            self._gmsh.model.occ.getMass(3, target.tag),
+            "volume",
         )
 
     def center_of_mass(
