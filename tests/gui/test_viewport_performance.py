@@ -149,6 +149,16 @@ def test_world_per_pixel_supports_parallel_and_perspective_cameras():
     assert viewport._world_per_pixel() == pytest.approx(expected)
 
 
+def test_line_elements_are_drawn_thicker_than_continuum_edges():
+    _application()
+    viewport = FEMViewport()
+    viewport._geometry = build_model_geometry(make_static_pull_truss_model())
+    assert viewport._element_line_width() == 3
+
+    viewport._geometry = None
+    assert viewport._element_line_width() == 1
+
+
 @pytest.mark.parametrize(
     ("view", "base", "up", "position"),
     [

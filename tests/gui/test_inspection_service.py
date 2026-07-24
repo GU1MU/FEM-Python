@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from fem.abaqus import read
 from fem.solvers.static_linear import solve
+from fem.core.mesh import Element3D, Mesh3D, Node3D
+from fem.core.model import (
+    AnalysisStep, ElementSet, FEMModel, LineLoad, MaterialDefinition,
+    SectionAssignment,
+)
 from fem_gui.inspection_service import InspectionService
 from fem_gui.visualization.model_adapter import build_model_geometry
 from fem_gui.visualization.result_adapter import build_result_data
@@ -28,7 +33,7 @@ def test_service_builds_node_element_and_assignment_indexes_once(gui_inp_path):
     basic = _page(node, "基本信息")
     assert _fields(basic)["坐标"] == "1, 0"
     assert _fields(basic)["所属节点集"] == "RIGHT"
-    assert basic.tables[0].rows == (("1", "Quad4Plane"),)
+    assert basic.tables[0].rows == (("1", "Quad4"),)
     assert _page(node, "分析定义").tables[0].rows[0][:3] == ("Static-1", "节点载荷", "U1")
     assert all(page.title != "结果" for page in node.pages)
 
@@ -52,7 +57,7 @@ def test_collection_material_section_and_step_information_is_structured(gui_inp_
 
     element_set = service.inspect("element_set", "SOLID")
     assert _fields(element_set.pages[0])["使用的材料"] == "STEEL"
-    assert element_set.pages[0].tables[0].rows[0][:3] == ("1", "Quad4Plane", "STEEL")
+    assert element_set.pages[0].tables[0].rows[0][:3] == ("1", "Quad4", "STEEL")
 
     material = _fields(service.inspect("material", "STEEL").pages[0])
     assert material["弹性模量 E"] == "210000"
@@ -84,8 +89,41 @@ def test_result_pages_use_existing_result_data_and_hide_missing_3d_components(gu
     assert "Mises" in node_fields
 
     element_result = _page(service.inspect("element", 1), "结果")
-    assert _fields(element_result)["结果位置"] == "单元中心"
+    assert _fields(element_result)["结果位置"] == "单元质心"
     values = dict(element_result.tables[0].rows)
     assert "Mises" in values
     assert "最大主应力" in values
     assert "最小主应力" in values
+
+
+def test_beam_section_and_line_load_use_the_common_inspection_service():
+    mesh = Mesh3D(
+        [Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 2.0, 0.0, 0.0)],
+        [Element3D(10, [1, 2], "Beam2", {})],
+        dofs_per_node=6,
+    )
+    model = FEMModel(
+        mesh,
+        element_sets={"BEAMS": ElementSet("BEAMS", (10,))},
+        materials={"STEEL": MaterialDefinition("STEEL", {"E": 210000.0})},
+        sections=[SectionAssignment(
+            "BEAMS", "STEEL", "beam",
+            {"section_type": "rectangle", "height": 0.1, "width": 0.02},
+        )],
+        steps=[AnalysisStep(
+            "Load",
+            line_loads=(LineLoad("BEAMS", (0.0, -5.0, 0.0), "local"),),
+        )],
+    )
+    service = InspectionService(model)
+
+    element_properties = dict(
+        service.inspect("element", 10).pages[1].tables[1].rows
+    )
+    assert element_properties["截面类型"] == "rectangle"
+    assert element_properties["矩形高度（局部 y）"] == "0.1"
+    assert element_properties["矩形宽度（局部 z）"] == "0.02"
+    load_fields = _fields(service.inspect("line_load", (0, 0)).pages[0])
+    assert load_fields["坐标系"] == "局部"
+    assert load_fields["载荷向量"] == "0, -5, 0"
+    assert service.selection_for("line_load", (0, 0)).element_ids == (10,)

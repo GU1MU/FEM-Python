@@ -16,6 +16,7 @@ class ViewportToolBar(QToolBar):
 
     def __init__(self, actions: Mapping[str, QAction], parent=None) -> None:
         super().__init__("视口工具", parent)
+        self._action_widgets: dict[str, QToolButton] = {}
         self.setObjectName("viewportToolbar")
         self.setMovable(False)
         self.setFloatable(False)
@@ -44,7 +45,17 @@ class ViewportToolBar(QToolBar):
         self.addWidget(view_button)
         self.addSeparator()
 
-        self._add_group(actions, ("select_node", "select_element", "clear_selection", "selected_info"))
+        self._model_selection_actions = (
+            "select_node", "select_element", "selected_info",
+        )
+        self._geometry_selection_actions = (
+            "geometry_select_point", "geometry_select_edge",
+            "geometry_select_face", "geometry_select_body",
+        )
+        self._add_group(actions, self._model_selection_actions)
+        self._add_group(actions, self._geometry_selection_actions)
+        self._add_group(actions, ("clear_selection",))
+        self.set_geometry_context(False)
         self.addSeparator()
         self._add_group(actions, ("nodes", "edges", "node_labels", "element_labels", "symbols"))
         self.addSeparator()
@@ -55,6 +66,9 @@ class ViewportToolBar(QToolBar):
             action = actions[name]
             self.addAction(action)
             button = self.widgetForAction(action)
+            if isinstance(button, QToolButton):
+                button.setObjectName(f"viewportAction_{name}")
+                self._action_widgets[name] = button
             if isinstance(button, QToolButton) and name in {
                 "symbols", "undeformed", "deformed", "overlay", "contour", "select_element",
             }:
@@ -66,6 +80,17 @@ class ViewportToolBar(QToolBar):
                 if isinstance(button, QToolButton):
                     button.setIconSize(QSize(36, 36))
                     button.setMinimumWidth(40)
+
+    def set_geometry_context(self, enabled: bool) -> None:
+        """Swap FEM and CAD selection buttons without changing shared actions."""
+        for name in self._model_selection_actions:
+            widget = self._action_widgets.get(name)
+            if widget is not None:
+                widget.setVisible(not enabled)
+        for name in self._geometry_selection_actions:
+            widget = self._action_widgets.get(name)
+            if widget is not None:
+                widget.setVisible(enabled)
 
 
 class ViewportPanel(QWidget):
@@ -80,3 +105,6 @@ class ViewportPanel(QWidget):
         self.toolbar = ViewportToolBar(actions, self)
         layout.addWidget(self.toolbar)
         layout.addWidget(viewport, 1)
+
+    def set_geometry_context(self, enabled: bool) -> None:
+        self.toolbar.set_geometry_context(enabled)

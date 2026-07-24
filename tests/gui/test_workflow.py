@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from time import monotonic
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
-from PySide6.QtCore import QEventLoop, QThread, QTimer
+from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication, QFileDialog
 
 from fem_gui.main_window import FEMMainWindow
@@ -23,10 +24,12 @@ def _application() -> QApplication:
 
 def _wait_for_task(window: FEMMainWindow) -> None:
     assert window._thread is not None
-    loop = QEventLoop()
-    window._thread.finished.connect(loop.quit)
-    QTimer.singleShot(10_000, loop.quit)
-    loop.exec()
+    deadline = monotonic() + 10.0
+    application = QApplication.instance()
+    while window.busy and monotonic() < deadline:
+        application.processEvents()
+        QThread.msleep(1)
+    application.processEvents()
     assert not window.busy
 
 
@@ -49,6 +52,8 @@ def test_background_import_solve_and_result_state(gui_inp_path):
 
     assert window.document.has_model
     assert callback_threads == [window.thread()]
+    assert not window.actions["submit_job"].isEnabled()
+    assert window.check_current_model(show_success=False)
     assert window.actions["submit_job"].isEnabled()
     assert not window.actions["contour"].isEnabled()
     assert window.geometry.point_index_to_node_id[0] == 1
@@ -107,34 +112,27 @@ def test_reload_clears_selection_and_old_result(gui_inp_path):
     window.close()
 
 
-def test_gui_uses_official_vtk_result_export(monkeypatch, gui_inp_path):
+def test_gui_exports_the_current_result_field_as_csv(monkeypatch, gui_inp_path):
     _application()
     window = FEMMainWindow()
     window._load_path(gui_inp_path)
     _wait_for_task(window)
     window._submit_job("Job-1", "Static-1")
     _wait_for_task(window)
-    target = ROOT / "gui_result_test.vtk"
-    generated = (
-        target,
-        ROOT / "gui_result_test_nodal_displacement.csv",
-        ROOT / "gui_result_test_element_stress.csv",
-        ROOT / "gui_result_test_nodal_stress.csv",
-    )
+    target = ROOT / "gui_result_test.csv"
     monkeypatch.setattr(
         QFileDialog,
         "getSaveFileName",
-        staticmethod(lambda *_args, **_kwargs: (str(target), "VTK 文件 (*.vtk)")),
+        staticmethod(lambda *_args, **_kwargs: (str(target), "CSV 文件 (*.csv)")),
     )
 
     try:
-        window.export_vtk()
+        window.export_csv()
+        _wait_for_task(window)
         assert target.is_file()
-        content = target.read_text(encoding="utf-8")
-        assert "DATASET UNSTRUCTURED_GRID" in content
-        assert "CELL_TYPES 1" in content
-        assert "VECTORS displacement float" in content
+        content = target.read_text(encoding="utf-8-sig")
+        assert content.startswith("field,position,association,node_id,elem_id")
+        assert "U,nodal,point" in content
     finally:
-        for path in generated:
-            path.unlink(missing_ok=True)
+        target.unlink(missing_ok=True)
         window.close()

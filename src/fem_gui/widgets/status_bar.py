@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QFrame, QLabel, QStatusBar
+from PySide6.QtCore import QTimer, Signal
+from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QStatusBar
 
 
 class CAEStatusBar(QStatusBar):
     """分别显示任务、选择、对象、坐标、分析步和结果状态。"""
+
+    cancelRequested = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -24,6 +26,13 @@ class CAEStatusBar(QStatusBar):
         self.coordinate_label = self._add_field("statusCoordinate", "坐标：—", 245)
         self.step_label = self._add_field("statusStep", "Step：—", 145)
         self.result_label = self._add_field("statusResult", "结果：—", 180)
+        self.cancel_button = QPushButton("取消", self)
+        self.cancel_button.setObjectName("cancelTaskButton")
+        self.cancel_button.setFixedWidth(48)
+        self.cancel_button.setToolTip("取消当前后台任务")
+        self.cancel_button.clicked.connect(self.cancelRequested)
+        self.cancel_button.hide()
+        self.addPermanentWidget(self.cancel_button)
 
     def _add_field(self, name: str, text: str, minimum: int) -> QLabel:
         if self._field_count:
@@ -45,8 +54,26 @@ class CAEStatusBar(QStatusBar):
         if timeout > 0:
             self._timer.start(timeout)
 
+    def set_task_active(
+        self,
+        active: bool,
+        *,
+        cancelling: bool = False,
+    ) -> None:
+        self.cancel_button.setVisible(bool(active))
+        self.cancel_button.setEnabled(bool(active) and not cancelling)
+        self.cancel_button.setText("取消中" if cancelling else "取消")
+
     def set_selection_mode(self, mode: str) -> None:
-        self.selection_label.setText(f"选择：{'单元' if mode == 'element' else '节点'}")
+        labels = {
+            "node": "节点",
+            "element": "单元",
+            "geometry_point": "几何点",
+            "geometry_edge": "几何边",
+            "geometry_face": "几何面",
+            "geometry_body": "几何体",
+        }
+        self.selection_label.setText(f"选择：{labels.get(mode, '节点')}")
 
     def set_object(self, text: str = "—", coordinates: str = "—") -> None:
         self.object_label.setText(f"对象：{text}")

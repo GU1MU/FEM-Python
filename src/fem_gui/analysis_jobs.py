@@ -14,6 +14,7 @@ class JobStatus(str, Enum):
     RUNNING = "运行中"
     COMPLETED = "已完成"
     FAILED = "失败"
+    CANCELLED = "已取消"
 
 
 @dataclass(slots=True)

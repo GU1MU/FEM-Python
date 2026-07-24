@@ -26,6 +26,7 @@ _TREE_ICONS = {
     "cload": "load",
     "surface_load": "load",
     "edge_load": "load",
+    "line_load": "load",
     "output": "output",
 }
 
@@ -41,12 +42,46 @@ _CATEGORY_ICONS = {
     "输出请求": "output",
 }
 
+_EDITABLE_KINDS = {
+    "material",
+    "step",
+    "boundary",
+    "cload",
+    "edge_load",
+    "surface_load",
+    "output",
+}
+
+
+def _section_label(section: Any, element: Any | None = None) -> str:
+    """Translate backend section identifiers into concise CAE terminology."""
+    section_type = str(section.section_type).strip()
+    normalized = section_type.casefold()
+    properties = dict(getattr(section, "properties", {}))
+    properties.update(getattr(element, "props", {}))
+    if normalized == "solid":
+        plane_type = str(properties.get("plane_type", "")).casefold()
+        if plane_type.startswith("stress"):
+            return "平面应力"
+        if plane_type.startswith("strain"):
+            return "平面应变"
+        element_type = str(getattr(element, "type", "")).casefold()
+        if element_type.startswith(("tri", "quad")):
+            return "二维实体"
+        return "三维实体"
+    return {
+        "beam": "梁截面",
+        "truss": "杆截面",
+        "shell": "壳截面",
+    }.get(normalized, f"INP 截面（{section_type}）")
+
 
 class ModelTree(QTreeWidget):
-    """只读模型导航树。"""
+    """Model navigation tree with explicit inspect and edit actions."""
 
     highlightRequested = Signal(str, object)
     informationRequested = Signal(str, object)
+    editRequested = Signal(str, object)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -66,9 +101,22 @@ class ModelTree(QTreeWidget):
         self.addTopLevelItem(root)
         root.setExpanded(True)
 
-    def set_model(self, model: Any, result: Any | None = None) -> None:
+    def set_model(
+        self,
+        model: Any,
+        result: Any | None = None,
+        *,
+        feature_rows: tuple[str, ...] = (),
+        part_name: str | None = None,
+    ) -> None:
         self.clear()
         root = self._item(str(model.name or "模型"), "model", None)
+        part = None
+        if part_name is not None:
+            part = self._item(str(part_name), "part", None)
+            for row in feature_rows:
+                part.addChild(self._item(str(row), "feature", None))
+            root.addChild(part)
         mesh = self._item(
             f"网格（{len(model.mesh.nodes)} 节点，{len(model.mesh.elements)} 单元）",
             "mesh",
@@ -92,8 +140,28 @@ class ModelTree(QTreeWidget):
         for name in model.materials:
             materials.addChild(self._item(name, "material", name))
         sections = self._category(root, "截面", len(model.sections))
+        elements_by_id = {
+            int(element.id): element
+            for element in model.mesh.elements
+            if getattr(element, "id", None) is not None
+        }
         for index, section in enumerate(model.sections):
-            sections.addChild(self._item(f"截面 {index + 1}  ({section.section_type})", "section", index))
+            element_set = model.element_sets.get(
+                getattr(section, "element_set", "")
+            )
+            representative = (
+                elements_by_id.get(element_set.element_ids[0])
+                if element_set is not None and element_set.element_ids
+                else None
+            )
+            sections.addChild(
+                self._item(
+                    f"截面 {index + 1}（"
+                    f"{_section_label(section, representative)}）",
+                    "section",
+                    index,
+                )
+            )
         steps = self._category(root, "分析", len(model.steps))
         first_step_item = None
         for index, step in enumerate(model.steps):
@@ -103,7 +171,12 @@ class ModelTree(QTreeWidget):
             bc_root = self._category(step_item, "边界条件", len(step.boundaries))
             for bc_index, boundary in enumerate(step.boundaries):
                 bc_root.addChild(self._item(f"位移约束 {bc_index + 1}", "boundary", (index, bc_index)))
-            load_count = len(step.cloads) + len(step.surface_loads) + len(step.edge_loads)
+            load_count = (
+                len(step.cloads)
+                + len(step.surface_loads)
+                + len(step.edge_loads)
+                + len(step.line_loads)
+            )
             load_root = self._category(step_item, "载荷", load_count)
             for load_index, _load in enumerate(step.cloads):
                 load_root.addChild(self._item(f"节点载荷 {load_index + 1}", "cload", (index, load_index)))
@@ -111,6 +184,12 @@ class ModelTree(QTreeWidget):
                 load_root.addChild(self._item(f"面载荷 {load_index + 1}", "surface_load", (index, load_index)))
             for load_index, _load in enumerate(step.edge_loads):
                 load_root.addChild(self._item(f"边载荷 {load_index + 1}", "edge_load", (index, load_index)))
+            for load_index, _load in enumerate(step.line_loads):
+                load_root.addChild(self._item(
+                    f"梁均布载荷 {load_index + 1}",
+                    "line_load",
+                    (index, load_index),
+                ))
             output_root = self._category(step_item, "输出请求", len(step.outputs))
             for output_index, output in enumerate(step.outputs):
                 kind_label = {"field": "字段输出", "history": "历史输出"}.get(output.kind, "输出")
@@ -119,12 +198,32 @@ class ModelTree(QTreeWidget):
             steps.addChild(step_item)
         self.addTopLevelItem(root)
         root.setExpanded(True)
-        mesh.setExpanded(True)
-        steps.setExpanded(True)
+        mesh.setExpanded(part is None)
+        steps.setExpanded(part is None)
+        if part is not None:
+            part.setExpanded(True)
         if first_step_item is None and steps.childCount():
             first_step_item = steps.child(0)
-        if first_step_item is not None:
+        if first_step_item is not None and part is None:
             first_step_item.setExpanded(True)
+
+    def set_geometry_preview(
+        self,
+        name: str,
+        feature_rows: tuple[str, ...],
+        *,
+        part_name: str = "Part-1",
+    ) -> None:
+        """Show a deliberately shallow Model → Part → Feature history."""
+        self.clear()
+        root = self._item(str(name), "model", None)
+        part = self._item(str(part_name), "part", None)
+        for row in feature_rows:
+            part.addChild(self._item(str(row), "feature", None))
+        root.addChild(part)
+        self.addTopLevelItem(root)
+        root.setExpanded(True)
+        part.setExpanded(True)
 
     def select_entity(self, kind: str, key: int) -> None:
         if kind in {"node", "element"}:
@@ -187,7 +286,12 @@ class ModelTree(QTreeWidget):
     def _on_double_clicked(self, item: QTreeWidgetItem) -> None:
         entry = self._entry(item)
         if entry is not None:
-            self.informationRequested.emit(*entry)
+            signal = (
+                self.editRequested
+                if entry[0] in _EDITABLE_KINDS
+                else self.informationRequested
+            )
+            signal.emit(*entry)
 
     def _show_context_menu(self, position: QPoint) -> None:
         item = self.itemAt(position)
@@ -197,9 +301,16 @@ class ModelTree(QTreeWidget):
         self.setCurrentItem(item)
         menu = QMenu(self)
         highlight = menu.addAction("高亮")
+        edit = (
+            menu.addAction("编辑")
+            if entry[0] in _EDITABLE_KINDS
+            else None
+        )
         information = menu.addAction("查看信息")
         chosen = menu.exec(self.viewport().mapToGlobal(position))
         if chosen is highlight:
             self.highlightRequested.emit(*entry)
+        elif edit is not None and chosen is edit:
+            self.editRequested.emit(*entry)
         elif chosen is information:
             self.informationRequested.emit(*entry)

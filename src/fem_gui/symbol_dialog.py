@@ -8,12 +8,12 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QFormLayout,
     QVBoxLayout,
 )
 
 from .visualization.symbols import SymbolSettings
+from .dialogs import CompactDoubleSpinBox, configure_form_layout
 
 
 COLOR_OPTIONS = (
@@ -38,9 +38,10 @@ class SymbolSettingsDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("约束与载荷显示")
-        self.setMinimumWidth(440)
+        self.setMinimumWidth(400)
         layout = QVBoxLayout(self)
         form = QFormLayout()
+        configure_form_layout(form)
         self.step_combo = QComboBox(self)
         for name in step_names:
             self.step_combo.addItem(name, name)
@@ -54,9 +55,11 @@ class SymbolSettingsDialog(QDialog):
         self.show_edge_loads.setChecked(settings.show_edge_loads)
         self.show_surface_loads = QCheckBox("显示面压力与面牵引", self)
         self.show_surface_loads.setChecked(settings.show_surface_loads)
+        self.show_line_loads = QCheckBox("显示梁均布线载荷", self)
+        self.show_line_loads.setChecked(settings.show_line_loads)
         self.show_values = QCheckBox("显示数值标签", self)
         self.show_values.setChecked(settings.show_values)
-        self.scale = QDoubleSpinBox(self)
+        self.scale = CompactDoubleSpinBox(self)
         self.scale.setRange(0.01, 100.0)
         self.scale.setDecimals(3)
         self.scale.setValue(settings.scale)
@@ -73,6 +76,7 @@ class SymbolSettingsDialog(QDialog):
         form.addRow(self.show_nodal_loads)
         form.addRow(self.show_edge_loads)
         form.addRow(self.show_surface_loads)
+        form.addRow(self.show_line_loads)
         form.addRow(self.show_values)
         form.addRow("符号比例：", self.scale)
         form.addRow(self.normalize)
@@ -103,6 +107,7 @@ class SymbolSettingsDialog(QDialog):
             show_nodal_loads=self.show_nodal_loads.isChecked(),
             show_edge_loads=self.show_edge_loads.isChecked(),
             show_surface_loads=self.show_surface_loads.isChecked(),
+            show_line_loads=self.show_line_loads.isChecked(),
             show_values=self.show_values.isChecked(),
             scale=float(self.scale.value()),
             normalize_arrows=self.normalize.isChecked(),

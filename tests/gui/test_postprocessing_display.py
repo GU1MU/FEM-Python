@@ -67,8 +67,8 @@ def test_analysis_uses_clean_deformed_displacement_contour_defaults(gui_inp_path
     assert window._contour_options["style"] == "continuous"
     assert window._contour_options["colormap"] == "jet"
     assert window._contour_options["decimals"] == 5
-    assert window._contour_options["show_minimum"]
-    assert window._contour_options["show_maximum"]
+    assert not window._contour_options["show_minimum"]
+    assert not window._contour_options["show_maximum"]
     assert window._contour_options["orientation"] == "horizontal"
     assert not window.actions["symbols"].isChecked()
     assert not window.actions["node_labels"].isChecked()
@@ -100,21 +100,22 @@ def test_result_ribbon_selects_real_fields_and_deformation_scale(gui_inp_path):
     stress_index = window.result_variable_combo.findData("S")
     window.result_variable_combo.setCurrentIndex(stress_index)
     window._result_variable_changed(stress_index)
-    assert window.result_position_combo.currentData() == "N"
-    assert str(window.result_component_combo.currentData()).startswith("N:")
+    assert window.result_position_combo.currentData() == "IP"
+    assert str(window.result_component_combo.currentData()).startswith("IP:")
     unaveraged_index = window.result_position_combo.findData("EN")
     window.result_position_combo.setCurrentIndex(unaveraged_index)
     window._result_position_changed(unaveraged_index)
     assert str(window.result_component_combo.currentData()).startswith("EN:")
-    center_index = window.result_position_combo.findData("E")
+    center_index = window.result_position_combo.findData("CENTROID")
     window.result_position_combo.setCurrentIndex(center_index)
     window._result_position_changed(center_index)
-    assert str(window.result_component_combo.currentData()).startswith("E:")
+    assert str(window.result_component_combo.currentData()).startswith("CENTROID:")
 
     custom_index = window.result_scale_combo.findData("custom")
     window.result_scale_combo.setCurrentIndex(custom_index)
     window._result_scale_mode_changed(custom_index)
     window.result_scale_value.setValue(8.0)
+    assert window.result_scale_value.text() == "8.00"
     assert window._scale_mode == "custom"
     assert window.viewport._deformation_scale == 8.0
 

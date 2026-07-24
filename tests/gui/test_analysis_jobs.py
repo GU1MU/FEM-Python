@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import os
 from datetime import datetime, timedelta
+from pathlib import Path
+from time import monotonic
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QEventLoop, QTimer
+from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication, QToolButton
 
 from fem.abaqus import read
@@ -26,10 +29,12 @@ def _application() -> QApplication:
 
 def _wait_for_task(window: FEMMainWindow) -> None:
     assert window._thread is not None
-    loop = QEventLoop()
-    window._thread.finished.connect(loop.quit)
-    QTimer.singleShot(10_000, loop.quit)
-    loop.exec()
+    deadline = monotonic() + 10.0
+    application = QApplication.instance()
+    while window.busy and monotonic() < deadline:
+        application.processEvents()
+        QThread.msleep(1)
+    application.processEvents()
     assert not window.busy
 
 
@@ -86,6 +91,8 @@ def test_job_actions_replace_direct_run(gui_inp_path):
     window._model_loaded(gui_inp_path, (model, build_model_geometry(model)))
     assert window.actions["step_info"].isEnabled()
     assert window.actions["check_model"].isEnabled()
+    assert not window.actions["submit_job"].isEnabled()
+    assert window.check_current_model(show_success=False)
     assert window.actions["submit_job"].isEnabled()
     window.close()
 
@@ -115,6 +122,23 @@ def test_current_step_information_and_model_check_reuse_existing_services(monkey
     assert window.check_current_model()
     assert reported[0][0] == "模型检查"
     assert ("检查结果", "通过") in reported[0][1]
+    window.close()
+
+
+def test_model_check_does_not_assemble_and_factor_the_stiffness(monkeypatch, gui_inp_path):
+    _application()
+    window = FEMMainWindow()
+    model = read(gui_inp_path)
+    window._model_loaded(gui_inp_path, (model, build_model_geometry(model)))
+    monkeypatch.setattr(
+        static_linear,
+        "validate_stiffness",
+        lambda *_args, **_kwargs: pytest.fail(
+            "GUI model check must not perform the full numerical solve preflight"
+        ),
+    )
+
+    assert window.check_current_model(show_success=False)
     window.close()
 
 
@@ -150,46 +174,51 @@ def test_submit_resubmit_open_history_and_reload_clear(gui_inp_path):
 
 
 def test_job_completes_with_primary_results_and_recovers_stress_on_demand(
-    monkeypatch, gui_inp_path
+    monkeypatch,
 ):
     _application()
     window = FEMMainWindow()
-    model = read(gui_inp_path)
+    model = make_static_pull_truss_model()
+    original_metadata = deepcopy(model.metadata)
+    original_props = [
+        deepcopy(element.props)
+        for element in model.mesh.elements
+    ]
     geometry = build_model_geometry(model)
-    window._model_loaded(gui_inp_path, (model, geometry))
+    window._model_loaded(Path("pull.inp"), (model, geometry))
     validations = []
     original_validate = static_linear.validate_problem
 
     def counted_validate(*args, **kwargs):
-        validations.append(1)
+        validations.append(QThread.currentThread() is window.thread())
         return original_validate(*args, **kwargs)
 
     monkeypatch.setattr(static_linear, "validate_problem", counted_validate)
 
-    job = window._submit_job("Job-1", "Static-1")
+    job = window._submit_job("Job-1", "pull")
     assert job is not None
     _wait_for_task(window)
 
     data = job.result_data
-    assert validations == [1]
+    assert validations == [False]
+    assert job.model_result.model is not model
+    assert model.metadata == original_metadata
+    assert [
+        element.props
+        for element in model.mesh.elements
+    ] == original_props
     assert data.field_ready("U")
-    assert not data.field_ready("N:Mises")
-    assert not data.field_ready("E:Mises")
+    assert not data.field_ready("CENTROID:Mises")
     assert "模型验证" in job.timings
     assert "线性方程求解" in job.timings
     assert "位移与反力结果" in job.timings
 
-    window._activate_result_field("N:Mises")
+    window._activate_result_field("CENTROID:Mises")
     _wait_for_task(window)
-    assert data.field_ready("N:Mises")
-    assert data.field_ready("EN:Mises")
-    assert not data.field_ready("E:Mises")
-    assert window._display.field_key == "N:Mises"
-
-    window._activate_result_field("E:Mises")
-    _wait_for_task(window)
-    assert data.field_ready("E:Mises")
-    assert window._display.field_key == "E:Mises"
+    assert not data.field_ready("CENTROID:Mises")
+    assert job.result_data is window.result_data
+    assert job.result_data.field_ready("CENTROID:Mises")
+    assert window._display.field_key == "CENTROID:Mises"
     assert "应力恢复" in job.timings
     window.close()
 
@@ -222,11 +251,11 @@ def test_failed_job_keeps_previous_result(monkeypatch, gui_inp_path):
     window.close()
 
 
-def test_check_failure_does_not_create_job(monkeypatch, gui_inp_path):
+def test_check_failure_is_reported_by_background_job(monkeypatch):
     _application()
     window = FEMMainWindow()
-    model = read(gui_inp_path)
-    window._model_loaded(gui_inp_path, (model, build_model_geometry(model)))
+    model = make_static_pull_truss_model()
+    window._model_loaded(Path("pull.inp"), (model, build_model_geometry(model)))
     monkeypatch.setattr(
         static_linear, "validate_problem",
         lambda *_args: (_ for _ in ()).throw(ValueError("模型引用错误")),
@@ -234,8 +263,12 @@ def test_check_failure_does_not_create_job(monkeypatch, gui_inp_path):
     shown: list[tuple[str, str]] = []
     monkeypatch.setattr(window, "_show_error", lambda title, message: shown.append((title, message)))
 
-    assert window._submit_job("Job-1", "Static-1") is None
-    assert window.document.jobs == []
+    job = window._submit_job("Job-1", "pull")
+    assert job is not None
+    _wait_for_task(window)
+    assert window.document.jobs == [job]
+    assert job.status is JobStatus.FAILED
+    assert job.error == "模型引用错误"
     assert shown == [("模型检查失败", "模型引用错误")]
     window.close()
 

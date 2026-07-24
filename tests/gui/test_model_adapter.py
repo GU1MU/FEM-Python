@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from fem.core.mesh import Element2D, Element3D, HexMesh3D, Node2D, Node3D, PlaneMesh2D
+from fem.core.mesh import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
 from fem.core.model import FEMModel
 from fem_gui.visualization.model_adapter import build_model_geometry
 
@@ -10,8 +10,8 @@ from fem_gui.visualization.model_adapter import build_model_geometry
 @pytest.mark.parametrize(
     ("element_type", "node_count", "vtk_type", "dimension"),
     [
-        ("Truss2D", 2, 3, 2),
-        ("Beam2D", 2, 3, 2),
+        ("Truss2", 2, 3, 3),
+        ("Beam2", 2, 3, 3),
         ("Tri3", 3, 5, 2),
         ("Tri6", 6, 22, 2),
         ("Quad4", 4, 9, 2),
@@ -26,10 +26,14 @@ def test_registered_element_topology_and_id_mapping(element_type, node_count, vt
     node_ids = [10 + 3 * index for index in range(node_count)]
     if dimension == 2:
         nodes = [Node2D(node_id, float(index), float(index % 2)) for index, node_id in enumerate(node_ids)]
-        mesh = PlaneMesh2D(nodes, [Element2D(105, node_ids, element_type)])
+        mesh = Mesh2D(nodes, [Element2D(105, node_ids, element_type)])
     else:
         nodes = [Node3D(node_id, float(index), float(index % 2), float(index % 3)) for index, node_id in enumerate(node_ids)]
-        mesh = HexMesh3D(nodes, [Element3D(105, node_ids, element_type)])
+        mesh = Mesh3D(
+            nodes,
+            [Element3D(105, node_ids, element_type)],
+            dofs_per_node=6 if element_type == "Beam2" else 3,
+        )
 
     geometry = build_model_geometry(FEMModel(mesh))
 
@@ -49,7 +53,7 @@ def test_mixed_mesh_keeps_connectivity_and_bidirectional_ids():
         Element2D(90, [21, 41, 51, 31], "Quad4"),
     ]
 
-    geometry = build_model_geometry(FEMModel(PlaneMesh2D(nodes, elements)))
+    geometry = build_model_geometry(FEMModel(Mesh2D(nodes, elements)))
 
     assert geometry.cell_types.tolist() == [5, 9]
     assert geometry.cells == ((0, 1, 2), (1, 3, 4, 2))

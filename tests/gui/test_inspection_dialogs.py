@@ -94,7 +94,7 @@ def test_mesh_browser_uses_table_models_filters_and_entity_signals(gui_inp_path)
     assert dialog.node_proxy.rowCount() == 2
     dialog.node_proxy.set_search("2")
     assert dialog.node_proxy.rowCount() == 1
-    dialog.element_proxy.set_type_filter("Quad4Plane")
+    dialog.element_proxy.set_type_filter("Quad4")
     dialog.element_proxy.set_set_filter("SOLID")
     assert dialog.element_proxy.rowCount() == 1
 

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from .viewport_background import ViewportBackgroundSettings
+from .dialogs import configure_form_layout
 
 
 PRESETS = (
@@ -43,13 +44,14 @@ class ViewportBackgroundDialog(QDialog):
         super().__init__(parent)
         self.setObjectName("viewportBackgroundDialog")
         self.setWindowTitle("视口背景")
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(390)
         self._baseline = settings.normalized()
         self._bottom_color = self._baseline.bottom_color
         self._top_color = self._baseline.top_color
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
+        configure_form_layout(form)
         self.preset_combo = QComboBox(self)
         self.preset_combo.setObjectName("backgroundPreset")
         for label, value in PRESETS:

@@ -1,12 +1,25 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QSettings
+import os
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import numpy as np
+from PySide6.QtCore import QSettings
+from PySide6.QtWidgets import QApplication
+
+from fem_gui.visualization.result_adapter import ScalarField
+from fem_gui.visualization.scene import DisplayState
 from fem_gui.viewport_background import (
     ViewportBackgroundSettings,
     load_background_settings,
     save_background_settings,
 )
+from fem_gui.widgets.viewport import FEMViewport
+
+
+def _application() -> QApplication:
+    return QApplication.instance() or QApplication([])
 
 
 def test_background_settings_persist_only_when_requested(tmp_path):
@@ -48,3 +61,34 @@ def test_background_contrast_follows_average_luminance():
     assert dark.foreground_color == "#f2f5f7"
     assert not light.is_dark
     assert light.foreground_color == "#20262d"
+
+
+def test_background_refresh_reuses_rendered_stress_grid_and_scalar(monkeypatch):
+    _application()
+    viewport = FEMViewport()
+    rendered_grid = object()
+    rendered_scalar = ScalarField(
+        "EN:Mises",
+        "Mises",
+        "point",
+        np.asarray([1.0, 2.0, 3.0]),
+    )
+    viewport._result_grid = rendered_grid
+    viewport._result_scalar = rendered_scalar
+    viewport._display = DisplayState(
+        "undeformed",
+        True,
+        rendered_scalar.key,
+    )
+    viewport._contour["show_maximum"] = True
+    calls = []
+    monkeypatch.setattr(
+        viewport,
+        "_add_extrema_labels",
+        lambda grid, scalar: calls.append((grid, scalar)),
+    )
+
+    viewport._refresh_extrema_for_background()
+
+    assert calls == [(rendered_grid, rendered_scalar)]
+    viewport.close()

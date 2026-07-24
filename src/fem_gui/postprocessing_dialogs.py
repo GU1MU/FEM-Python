@@ -33,8 +33,6 @@ from PySide6.QtWidgets import (
 )
 
 from .visualization.query import (
-    ELEMENT_STRESS,
-    NODAL_STRESS,
     QueryRecord,
     available_components,
     available_query_types,
@@ -42,6 +40,7 @@ from .visualization.query import (
     query_records,
 )
 from .visualization.result_adapter import ResultData
+from .dialogs import CompactDoubleSpinBox, configure_form_layout
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,10 +77,11 @@ class ResultDisplayDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("结果显示")
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(420)
         self._records = _field_records(fields)
         layout = QVBoxLayout(self)
         form = QFormLayout()
+        configure_form_layout(form)
         self.step_combo = QComboBox(self)
         self.step_combo.addItem(step_name, step_name)
         self.shape_combo = QComboBox(self)
@@ -113,7 +113,7 @@ class ResultDisplayDialog(QDialog):
         scale_buttons = QButtonGroup(self.scale_group)
         for button in (self.auto_scale, self.real_scale, self.custom_scale):
             scale_buttons.addButton(button)
-        self.scale_value = QDoubleSpinBox(self.scale_group)
+        self.scale_value = CompactDoubleSpinBox(self.scale_group)
         self.scale_value.setRange(0.0, 1.0e12)
         self.scale_value.setDecimals(6)
         self.scale_value.setValue(scale_value)
@@ -217,7 +217,7 @@ class ContourSettingsDialog(QDialog):
     def __init__(self, options: dict[str, Any], parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("云图设置")
-        self.setMinimumWidth(470)
+        self.setMinimumWidth(450)
         layout = QVBoxLayout(self)
         range_group = QGroupBox("范围", self)
         range_layout = QVBoxLayout(range_group)
@@ -227,8 +227,8 @@ class ContourSettingsDialog(QDialog):
         range_buttons = QButtonGroup(range_group)
         range_buttons.addButton(self.auto_range)
         range_buttons.addButton(self.manual_range)
-        self.minimum = QDoubleSpinBox(range_group)
-        self.maximum = QDoubleSpinBox(range_group)
+        self.minimum = CompactDoubleSpinBox(range_group)
+        self.maximum = CompactDoubleSpinBox(range_group)
         for spin in (self.minimum, self.maximum):
             spin.setRange(-1.0e30, 1.0e30)
             spin.setDecimals(8)
@@ -244,6 +244,7 @@ class ContourSettingsDialog(QDialog):
         range_layout.addLayout(manual_row)
         layout.addWidget(range_group)
         form = QFormLayout()
+        configure_form_layout(form)
         self.colormap = QComboBox(self)
         for label, key in (("彩虹", "jet"), ("维里迪斯", "viridis"), ("等离子", "plasma"), ("冷暖", "coolwarm"), ("灰度", "gray")):
             self.colormap.addItem(label, key)
@@ -289,9 +290,9 @@ class ContourSettingsDialog(QDialog):
         self.legend = QCheckBox("显示图例", self)
         self.legend.setChecked(bool(options.get("legend", True)))
         self.show_minimum = QCheckBox("显示最小值", self)
-        self.show_minimum.setChecked(bool(options.get("show_minimum", True)))
+        self.show_minimum.setChecked(bool(options.get("show_minimum", False)))
         self.show_maximum = QCheckBox("显示最大值", self)
-        self.show_maximum.setChecked(bool(options.get("show_maximum", True)))
+        self.show_maximum.setChecked(bool(options.get("show_maximum", False)))
         self.show_ids = QCheckBox("显示对象编号", self)
         self.show_ids.setChecked(bool(options.get("show_ids", False)))
         self.show_edges = QCheckBox("显示单元边", self)
@@ -355,7 +356,7 @@ class ResultQueryDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("查询结果")
-        self.resize(780, 520)
+        self.resize(720, 500)
         self._data = data
         self._node_ids = node_ids
         self._element_ids = element_ids
@@ -365,6 +366,7 @@ class ResultQueryDialog(QDialog):
         self._components: tuple[str, ...] = ()
         layout = QVBoxLayout(self)
         form = QFormLayout()
+        configure_form_layout(form)
         self.step_combo = QComboBox(self)
         self.step_combo.addItem(step_name, step_name)
         self.kind_combo = QComboBox(self)
@@ -475,9 +477,15 @@ class ResultQueryDialog(QDialog):
 
     def _populate_table(self) -> None:
         include_source = any(record.source_element_id is not None for record in self._records)
+        include_ip = any(record.integration_point is not None for record in self._records)
+        include_local_node = any(record.local_node is not None for record in self._records)
         headers = ["编号"]
         if include_source:
             headers.append("来源单元")
+        if include_ip:
+            headers.append("积分点")
+        if include_local_node:
+            headers.append("局部节点")
         headers.extend(_component_label(component) for component in self._components)
         self.table.clear()
         self.table.setColumnCount(len(headers))
@@ -487,6 +495,12 @@ class ResultQueryDialog(QDialog):
             values: list[object] = [record.object_id]
             if include_source:
                 values.append("平均" if record.source_element_id is None else record.source_element_id)
+            if include_ip:
+                values.append(
+                    "" if record.integration_point is None else record.integration_point
+                )
+            if include_local_node:
+                values.append("" if record.local_node is None else record.local_node)
             values.extend(record.values.get(component, float("nan")) for component in self._components)
             for column, value in enumerate(values):
                 text = f"{value:.8g}" if isinstance(value, float) else str(value)
@@ -511,17 +525,31 @@ class ResultQueryDialog(QDialog):
 def _field_records(fields: Mapping[str, Any]) -> list[tuple[str, str, str, str]]:
     records: list[tuple[str, str, str, str]] = []
     for key, field in fields.items():
-        if key in {"U", "U1", "U2", "U3", "R3"}:
+        if key in {"U", "U1", "U2", "U3"}:
             family = "位移"
-        elif key in {"RF", "RF1", "RF2", "RF3", "RM3"}:
+        elif key in {"R1", "R2", "R3"}:
+            family = "转角"
+        elif key in {"RF", "RF1", "RF2", "RF3"}:
             family = "反力"
+        elif key in {"RM1", "RM2", "RM3"}:
+            family = "反力矩"
         else:
             family = "应力"
         position = "节点" if field.association == "point" else "单元中心"
-        if key.startswith("N:"):
-            position = "节点平均"
+        if key.startswith("NODAL:"):
+            position = (
+                "节点包络"
+                if key.split(":", 1)[1] in {
+                    "S11Max", "S11Min", "S11AbsMax",
+                }
+                else "节点平均"
+            )
         elif key.startswith("EN:"):
             position = "单元节点（不平均）"
+        elif key.startswith("IP:"):
+            position = "积分点"
+        elif key.startswith("CENTROID:"):
+            position = "单元质心"
         component = key.split(":", 1)[-1] if family == "应力" else field.label
         component = _component_label(component)
         records.append((key, family, position, component))
@@ -533,7 +561,11 @@ def _component_label(component: str) -> str:
         "U": "总位移",
         "RF": "总反力",
         "MaxPrincipal": "最大主应力",
+        "MidPrincipal": "中间主应力",
         "MinPrincipal": "最小主应力",
+        "S11Max": "最大轴向应力",
+        "S11Min": "最小轴向应力",
+        "S11AbsMax": "最大绝对值轴向应力",
     }.get(component, component)
 
 

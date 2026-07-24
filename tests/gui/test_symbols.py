@@ -6,11 +6,13 @@ import pytest
 from fem_gui.visualization.symbols import (
     arc_points,
     camera_facing_offset,
+    constraint_rotation_axes,
     constraint_sample_indices,
     constraint_spatial_regions,
     constraint_symbol_dimensions,
     load_symbol_length,
     region_sample_indices,
+    rotation_lock_points,
     sample_face,
     sample_polyline,
     symbol_length,
@@ -122,8 +124,8 @@ def test_symbol_length_uses_effective_sides_for_thin_models():
     thin_plate = np.array([[0.0, 0.0, 0.0], [100.0, 10.0, 0.001]])
     length = symbol_length(thin_plate)
 
-    assert length == pytest.approx(0.15)
-    assert symbol_length(thin_plate, 2.0) == pytest.approx(0.3)
+    assert length == pytest.approx(0.4)
+    assert symbol_length(thin_plate, 2.0) == pytest.approx(0.8)
 
 
 def test_symbol_length_is_screen_limited_before_user_multiplier():
@@ -132,9 +134,21 @@ def test_symbol_length_is_screen_limited_before_user_multiplier():
     minimum_limited = symbol_length(thin_plate, world_per_pixel=0.1)
     maximum_limited = symbol_length(thin_plate, world_per_pixel=0.001)
 
-    assert minimum_limited / 0.1 == pytest.approx(18.0)
-    assert maximum_limited / 0.001 == pytest.approx(32.0)
-    assert symbol_length(thin_plate, 2.0, world_per_pixel=0.1) == pytest.approx(3.6)
+    assert minimum_limited / 0.1 == pytest.approx(24.0)
+    assert maximum_limited / 0.001 == pytest.approx(56.0)
+    assert symbol_length(thin_plate, 2.0, world_per_pixel=0.1) == pytest.approx(4.8)
+
+
+def test_symbol_grows_on_screen_as_the_camera_zooms_in():
+    line = np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]])
+
+    fitted = symbol_length(line, world_per_pixel=0.02) / 0.02
+    zoomed = symbol_length(line, world_per_pixel=0.01) / 0.01
+    close_up = symbol_length(line, world_per_pixel=0.005) / 0.005
+
+    assert fitted == pytest.approx(24.0)
+    assert zoomed == pytest.approx(40.0)
+    assert close_up == pytest.approx(56.0)
 
 
 def test_constraint_symbol_is_larger_than_load_glyph_and_has_visible_width():
@@ -166,3 +180,37 @@ def test_moment_arc_carries_axis_and_rotation_direction():
     assert positive.shape == (19, 3)
     assert np.allclose(positive[:, 2], 0.0)
     assert not np.allclose(positive, negative)
+
+
+def test_rotation_constraint_is_a_closed_crossed_ring_normal_to_its_axis():
+    center = np.array((1.0, 2.0, 3.0))
+    ring, bars = rotation_lock_points(center, np.array((1.0, 0.0, 0.0)), 2.0)
+
+    assert ring.shape == (25, 3)
+    assert bars.shape == (4, 3)
+    assert ring[0] == pytest.approx(ring[-1])
+    assert np.allclose(ring[:, 0], center[0])
+    assert np.allclose(np.mean(bars.reshape((2, 2, 3)), axis=1), center)
+
+
+def test_full_3d_rotation_lock_collapses_to_one_camera_facing_symbol():
+    axes = constraint_rotation_axes(
+        (0, 1, 2, 3, 4, 5),
+        is_3d=True,
+        point=np.zeros(3),
+        camera_position=np.array((0.0, -4.0, 3.0)),
+    )
+
+    assert axes.shape == (1, 3)
+    assert axes[0] == pytest.approx((0.0, -0.8, 0.6))
+
+
+def test_partial_rotation_lock_keeps_its_physical_axes():
+    axes = constraint_rotation_axes(
+        (3, 5),
+        is_3d=True,
+        point=np.zeros(3),
+        camera_position=None,
+    )
+
+    assert np.allclose(axes, ((1.0, 0.0, 0.0), (0.0, 0.0, 1.0)))

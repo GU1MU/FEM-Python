@@ -57,10 +57,13 @@ class RibbonGroup(QFrame):
         else:
             button.setObjectName("ribbonSmallButton")
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-            button.setIconSize(QSize(18, 18))
-            button.setFixedHeight(25)
+            button.setIconSize(QSize(24, 24))
+            button.setFixedHeight(30)
             button.setMinimumWidth(72)
-            button.setMaximumWidth(118)
+            # Commands such as “位移边界条件” need about 125 px with the
+            # application font.  The previous 118 px cap clipped those labels
+            # and even shorter commands such as “导出 CSV”.
+            button.setMaximumWidth(146)
             if compact:
                 button.setObjectName("ribbonCompactButton")
                 self._content.addWidget(button, 0, Qt.AlignmentFlag.AlignVCenter)

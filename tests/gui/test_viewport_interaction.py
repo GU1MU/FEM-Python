@@ -160,3 +160,31 @@ def test_model_clear_resets_partial_mouse_gesture() -> None:
     assert not viewport._selection_dragged
     assert viewport._abaqus_view_button is None
     assert viewport._trackball_vector is None
+
+
+def test_child_widget_mouse_move_uses_plotter_coordinates() -> None:
+    viewport, plotter = _viewport()
+    child = QWidget(plotter)
+    child.move(100, 50)
+    child.resize(200, 100)
+    viewport._picker_event_targets = {child}
+    press = _MouseEvent(
+        QEvent.Type.MouseButtonPress,
+        x=10.0,
+        y=10.0,
+        button=Qt.MouseButton.LeftButton,
+        buttons=Qt.MouseButton.LeftButton,
+        modifiers=Qt.KeyboardModifier.NoModifier,
+    )
+    move = _MouseEvent(
+        QEvent.Type.MouseMove,
+        x=11.0,
+        y=10.0,
+        button=Qt.MouseButton.NoButton,
+        buttons=Qt.MouseButton.LeftButton,
+        modifiers=Qt.KeyboardModifier.NoModifier,
+    )
+
+    assert viewport.eventFilter(child, press)
+    assert viewport.eventFilter(child, move)
+    assert not viewport._selection_dragged

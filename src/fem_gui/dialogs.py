@@ -8,11 +8,45 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFormLayout,
     QLabel,
     QVBoxLayout,
     QWidget,
 )
+
+
+class CompactDoubleSpinBox(QDoubleSpinBox):
+    """Keep numeric precision while hiding insignificant trailing zeroes."""
+
+    def __init__(self, parent=None, *, minimum_display_decimals: int = 2) -> None:
+        super().__init__(parent)
+        self._minimum_display_decimals = max(
+            0,
+            int(minimum_display_decimals),
+        )
+
+    def textFromValue(self, value: float) -> str:
+        text = super().textFromValue(value)
+        decimal_point = self.locale().decimalPoint()
+        if decimal_point not in text:
+            return text
+        whole, fraction = text.split(decimal_point, 1)
+        fraction = fraction.rstrip("0")
+        minimum = min(self._minimum_display_decimals, self.decimals())
+        fraction = fraction.ljust(minimum, "0")
+        return whole if not fraction else f"{whole}{decimal_point}{fraction}"
+
+
+def configure_form_layout(form: QFormLayout) -> None:
+    """Apply the compact alignment shared by modal parameter dialogs."""
+    form.setLabelAlignment(
+        Qt.AlignmentFlag.AlignRight
+        | Qt.AlignmentFlag.AlignVCenter
+    )
+    form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
+    form.setHorizontalSpacing(12)
+    form.setVerticalSpacing(8)
 
 
 def show_information(
@@ -23,11 +57,10 @@ def show_information(
     """显示一个只读、可复制的对象信息窗口。"""
     dialog = QDialog(parent)
     dialog.setWindowTitle(title)
-    dialog.setMinimumWidth(460)
+    dialog.setMinimumWidth(330)
     layout = QVBoxLayout(dialog)
     form = QFormLayout()
-    form.setHorizontalSpacing(22)
-    form.setVerticalSpacing(8)
+    configure_form_layout(form)
     for name, value in rows:
         label = QLabel(_format_value(value), dialog)
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)

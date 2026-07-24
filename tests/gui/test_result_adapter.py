@@ -6,14 +6,14 @@ import numpy as np
 import pytest
 
 from fem.abaqus import read
-from fem.core.mesh import BeamMesh2D, Element2D, Node2D
+from fem.core.mesh import Element3D, Mesh3D, Node3D
 from fem.core.model import FEMModel
 from fem.core.result import ModelResult
 from fem.solvers.static_linear import solve
 from fem_gui.visualization.model_adapter import build_model_geometry
 from fem_gui.visualization.result_adapter import (
     ResultData, ScalarField, StressSample, automatic_deformation_scale,
-    build_result_data, deformed_points, ensure_stress_data,
+    build_result_data, deformed_points, ensure_stress_data, field_family,
 )
 from fem_gui.visualization import result_adapter as result_adapter_module
 from fem_gui.visualization.model_adapter import ModelGeometry
@@ -47,60 +47,84 @@ def test_stress_recovery_is_lazy_and_cached_by_position(monkeypatch, gui_inp_pat
     model = read(gui_inp_path)
     result = solve(model)
     geometry = build_model_geometry(model)
-    calls = {"raw": 0, "cell": 0}
-    original_collect = result_adapter_module.field.collect
-    original_cell = result_adapter_module._plane_element_stress
+    calls = {"recovery": 0}
+    original_recovery = result_adapter_module.field.StressRecovery
 
-    def counted_collect(*args, **kwargs):
-        calls["raw"] += 1
-        return original_collect(*args, **kwargs)
+    class CountedRecovery(original_recovery):
+        def __init__(self, *args, **kwargs):
+            calls["recovery"] += 1
+            super().__init__(*args, **kwargs)
 
-    def counted_cell(*args, **kwargs):
-        calls["cell"] += 1
-        return original_cell(*args, **kwargs)
-
-    monkeypatch.setattr(result_adapter_module.field, "collect", counted_collect)
-    monkeypatch.setattr(result_adapter_module, "_plane_element_stress", counted_cell)
+    monkeypatch.setattr(
+        result_adapter_module.field,
+        "StressRecovery",
+        CountedRecovery,
+    )
 
     data = build_result_data(result, geometry, include_stress=False)
 
     assert data.field_ready("U")
-    assert not data.field_ready("N:Mises")
-    assert not data.field_ready("E:Mises")
+    assert not data.field_ready("NODAL:Mises")
+    assert not data.field_ready("CENTROID:Mises")
+    assert not data.field_ready("IP:Mises")
     assert data.element_stress == {}
     assert data.nodal_stress_samples == {}
-    assert calls == {"raw": 0, "cell": 0}
+    assert calls == {"recovery": 0}
 
-    assert ensure_stress_data(data, "N")
-    assert data.field_ready("N:Mises")
+    assert ensure_stress_data(data, "NODAL")
+    assert data.field_ready("NODAL:Mises")
     assert data.field_ready("EN:Mises")
-    assert not data.field_ready("E:Mises")
-    assert calls == {"raw": 1, "cell": 0}
+    assert data.field_ready("CENTROID:Mises")
+    assert data.field_ready("IP:Mises")
+    assert calls == {"recovery": 1}
 
     assert not ensure_stress_data(data, "EN")
-    assert ensure_stress_data(data, "E")
-    assert data.field_ready("E:Mises")
-    assert calls == {"raw": 1, "cell": 1}
-    assert not ensure_stress_data(data, ("N", "EN", "E"))
-    assert calls == {"raw": 1, "cell": 1}
+    assert not ensure_stress_data(data, "CENTROID")
+    assert not ensure_stress_data(data, ("IP", "CENTROID", "EN", "NODAL"))
+    assert calls == {"recovery": 1}
 
 
-def test_beam_rotation_is_not_treated_as_u3_and_missing_stress_is_safe():
-    mesh = BeamMesh2D(
-        [Node2D(10, 0.0, 0.0), Node2D(20, 1.0, 0.0)],
-        [Element2D(30, [10, 20], "Beam2D")],
+def test_beam_rotations_are_separate_from_translations():
+    mesh = Mesh3D(
+        [Node3D(10, 0.0, 0.0, 0.0), Node3D(20, 1.0, 0.0, 0.0)],
+        [Element3D(
+            30,
+            [10, 20],
+            "Beam2",
+            {
+                "E": 200.0,
+                "nu": 0.3,
+                "section_type": "rectangle",
+                "height": 0.1,
+                "width": 0.2,
+            },
+        )],
+        dofs_per_node=6,
     )
     model = FEMModel(mesh)
-    displacement = np.array([0.0, 0.0, 0.1, 1.0, 2.0, 0.2])
-    result = ModelResult(model, None, displacement, np.zeros(6))
+    displacement = np.array([
+        0.0, 0.0, 0.0, 0.1, 0.2, 0.3,
+        1.0, 2.0, 3.0, 0.4, 0.5, 0.6,
+    ])
+    result = ModelResult(model, None, displacement, np.zeros(12))
     geometry = build_model_geometry(model)
 
     data = build_result_data(result, geometry)
 
-    assert "U3" not in data.fields
-    assert data.fields["R3"].values.tolist() == pytest.approx([0.1, 0.2])
-    assert data.displacement_vectors[:, 2].tolist() == [0.0, 0.0]
+    assert data.fields["U3"].values.tolist() == pytest.approx([0.0, 3.0])
+    assert data.fields["R1"].values.tolist() == pytest.approx([0.1, 0.4])
+    assert data.fields["R2"].values.tolist() == pytest.approx([0.2, 0.5])
+    assert data.fields["R3"].values.tolist() == pytest.approx([0.3, 0.6])
+    assert data.displacement_vectors[:, 2].tolist() == [0.0, 3.0]
     assert data.element_stress == {}
+    assert set(data.nodal_stress) == {10, 20}
+    assert data.field_ready("NODAL:S11Max")
+    assert data.field_ready("NODAL:S11Min")
+    assert data.field_ready("NODAL:S11AbsMax")
+    assert data.stress_position_label("NODAL") == "节点包络"
+    assert field_family("R2") == "R"
+    assert field_family("RM2") == "RM"
+    assert field_family("NODAL:S11AbsMax") == "S"
 
 
 def test_automatic_deformation_scale_uses_actual_small_model_span(gui_inp_path):

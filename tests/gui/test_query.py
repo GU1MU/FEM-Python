@@ -6,7 +6,8 @@ from fem.abaqus import read
 from fem.solvers.static_linear import solve
 from fem_gui.visualization.model_adapter import build_model_geometry
 from fem_gui.visualization.query import (
-    ELEMENT_STRESS,
+    CENTROID_STRESS,
+    INTEGRATION_POINT_STRESS,
     NODE_DISPLACEMENT,
     NODAL_STRESS,
     available_components,
@@ -39,7 +40,14 @@ def test_query_records_use_fem_ids_and_real_components(gui_inp_path):
     assert "U" in displacement[0].values
     assert "U3" not in displacement[0].values
 
-    stress = query_records(data, ELEMENT_STRESS, (element_id,))
+    stress = query_records(data, CENTROID_STRESS, (element_id,))
     assert stress[0].object_id == element_id
     assert "Mises" in stress[0].values
+    integration_points = query_records(
+        data,
+        INTEGRATION_POINT_STRESS,
+        (element_id,),
+    )
+    assert len(integration_points) == 4
+    assert {record.integration_point for record in integration_points} == {1, 2, 3, 4}
     assert "Mises" in available_components(data, NODAL_STRESS)

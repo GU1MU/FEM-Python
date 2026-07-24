@@ -22,6 +22,27 @@ GENERATED_BATCH = (
     "element_set", "surface", "material", "section", "boundary", "load", "output",
 )
 
+GEOMETRY_FEATURE_BATCH = (
+    "sketch", "extrude", "geometry_move", "geometry_rotate",
+    "boolean_fuse", "boolean_cut", "feature_edit", "feature_undo",
+    "geometry_delete",
+)
+
+GEOMETRY_SELECTION_BATCH = (
+    "select_geometry_point", "select_geometry_edge",
+    "select_geometry_face", "select_geometry_body",
+    "named_region_create", "named_region_manager",
+)
+
+MESH_WORKFLOW_BATCH = (
+    "mesh_settings", "mesh_local_size", "mesh_controls", "mesh_clear",
+    "mesh_verify", "mesh_statistics", "mesh_quality",
+)
+
+PROJECT_MODEL_ANALYSIS_BATCH = (
+    "new_model", "open_project", "open_inp", "save_project", "model_info",
+    "section_assign", "step_create", "step_info", "analysis_manager",
+)
 
 def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
@@ -53,6 +74,40 @@ def test_generated_toolbar_and_tree_icons_are_transparent_pngs():
         pixmap = icon(name).pixmap(QSize(20, 20))
         assert not pixmap.isNull(), name
         assert pixmap.toImage().hasAlphaChannel(), name
+
+
+def test_new_geometry_icons_are_distinct_transparent_pngs():
+    _application()
+    cache_keys = set()
+    names = (
+        *GEOMETRY_FEATURE_BATCH,
+        *GEOMETRY_SELECTION_BATCH,
+        *MESH_WORKFLOW_BATCH,
+        *PROJECT_MODEL_ANALYSIS_BATCH,
+    )
+    for name in names:
+        assert name in _PNG_FILES
+        source = _ICON_DIR / _PNG_FILES[name]
+        assert source.is_file(), name
+        source_image = QPixmap(str(source)).toImage()
+        assert source_image.hasAlphaChannel(), name
+        for point in (
+            (0, 0),
+            (source_image.width() - 1, 0),
+            (0, source_image.height() - 1),
+            (source_image.width() - 1, source_image.height() - 1),
+        ):
+            assert source_image.pixelColor(*point).alpha() == 0, name
+        for size in (20, 32, 48):
+            pixmap = icon(name).pixmap(QSize(size, size))
+            assert not pixmap.isNull(), name
+            assert any(
+                pixmap.toImage().pixelColor(x, y).alpha() > 0
+                for y in range(size)
+                for x in range(size)
+            ), name
+        cache_keys.add(icon(name).cacheKey())
+    assert len(cache_keys) == len(names)
 
 
 def test_view_actions_map_to_coordinate_plane_pngs():

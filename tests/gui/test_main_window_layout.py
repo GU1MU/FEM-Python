@@ -4,6 +4,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QSize
 from PySide6.QtWidgets import QApplication, QLabel, QMenu, QToolBar, QToolButton
 
 from fem.abaqus import read
@@ -23,7 +24,7 @@ def test_main_window_has_modules_navigation_and_viewport_toolbar():
     window = FEMMainWindow()
 
     assert [window.ribbon.tab_bar.tabText(i) for i in range(window.ribbon.tab_bar.count())] == [
-        "项目", "模型", "分析", "结果", "视图",
+        "项目", "几何", "网格", "模型", "分析", "结果", "视图",
     ]
     assert "主页" not in [window.ribbon.tab_bar.tabText(i) for i in range(window.ribbon.tab_bar.count())]
     assert [window.navigation.tabs.tabText(i) for i in range(window.navigation.tabs.count())] == ["模型", "结果"]
@@ -38,7 +39,7 @@ def test_main_window_has_modules_navigation_and_viewport_toolbar():
     window.resize(800, 600)
     QApplication.processEvents()
     assert window.width() == 800
-    window.ribbon.tab_bar.setCurrentIndex(3)
+    window.ribbon.set_current("结果")
     QApplication.processEvents()
     variable_y = window.result_variable_combo.mapTo(
         window.ribbon, window.result_variable_combo.rect().topLeft()
@@ -79,6 +80,97 @@ def test_menu_ribbon_and_viewport_toolbar_reuse_actions():
     window.close()
 
 
+def test_small_ribbon_commands_use_readable_icons():
+    _application()
+    window = FEMMainWindow()
+    geometry_move = next(
+        button
+        for button in window.ribbon.findChildren(QToolButton)
+        if button.defaultAction() is window.actions["geometry_move"]
+    )
+
+    assert geometry_move.iconSize() == QSize(24, 24)
+    assert geometry_move.height() == 30
+    window.close()
+
+
+def test_new_preprocessing_modules_do_not_change_the_existing_model_page():
+    _application()
+    window = FEMMainWindow()
+    tab_names = [
+        window.ribbon.tab_bar.tabText(index)
+        for index in range(window.ribbon.tab_bar.count())
+    ]
+    model_page = window.ribbon.stack.widget(tab_names.index("模型"))
+    model_actions = {
+        button.defaultAction().objectName()
+        for button in model_page.findChildren(QToolButton)
+        if button.defaultAction() is not None
+    }
+
+    assert model_actions == {
+        "action_select_node",
+        "action_select_element",
+        "action_clear_selection",
+        "action_selected_info",
+        "action_nodes",
+        "action_edges",
+        "action_node_labels",
+        "action_element_labels",
+        "action_symbols",
+        "action_symbol_settings",
+        "action_material_manager",
+        "action_section_manager",
+        "action_section_assign",
+    }
+    geometry_page = window.ribbon.stack.widget(tab_names.index("几何"))
+    mesh_page = window.ribbon.stack.widget(tab_names.index("网格"))
+    geometry_actions = {
+        button.defaultAction()
+        for button in geometry_page.findChildren(QToolButton)
+        if button.defaultAction() is not None
+    }
+    assert geometry_actions == {
+        window.actions[name]
+        for name in (
+            "geometry_sketch",
+            "geometry_extrude",
+            "geometry_move",
+            "geometry_rotate",
+            "geometry_fuse",
+            "geometry_cut",
+            "geometry_manager",
+            "geometry_undo",
+            "geometry_delete",
+            "geometry_select_point",
+            "geometry_select_edge",
+            "geometry_select_face",
+            "geometry_select_body",
+            "geometry_region",
+            "geometry_regions",
+        )
+    }
+    mesh_actions = {
+        button.defaultAction()
+        for button in mesh_page.findChildren(QToolButton)
+        if button.defaultAction() is not None
+    }
+    assert mesh_actions == {
+        window.actions[name]
+        for name in (
+            "mesh_settings",
+            "mesh_local_control",
+            "mesh_controls",
+            "mesh_generate",
+            "mesh_clear",
+            "mesh_verify",
+            "mesh_statistics",
+            "mesh_quality",
+        )
+    }
+    window.close()
+
+
 def test_standard_views_use_coordinate_plane_names():
     _application()
     window = FEMMainWindow()
@@ -89,6 +181,31 @@ def test_standard_views_use_coordinate_plane_names():
     assert window.actions["left"].text() == "YZ 视图"
     assert window.actions["right"].text() == "ZY 视图"
     assert window.actions["iso"].text() == "XYZ 轴测视图"
+    window.close()
+
+
+def test_viewport_toolbar_switches_to_geometry_selection_after_creation():
+    _application()
+    window = FEMMainWindow()
+    from fem_gui.preprocessing import RectangleGeometry
+
+    window._set_native_geometry(RectangleGeometry("toolbar-geometry", 2.0, 1.0), "矩形")
+
+    geometry_face = window.viewport_panel.toolbar.findChild(
+        QToolButton,
+        "viewportAction_geometry_select_face",
+    )
+    model_node = window.viewport_panel.toolbar.findChild(
+        QToolButton,
+        "viewportAction_select_node",
+    )
+    assert geometry_face is not None and not geometry_face.isHidden()
+    assert geometry_face.defaultAction().isEnabled()
+    assert model_node is not None and model_node.isHidden()
+
+    window.ribbon.set_current("模型")
+    assert geometry_face.isHidden()
+    assert not model_node.isHidden()
     window.close()
 
 

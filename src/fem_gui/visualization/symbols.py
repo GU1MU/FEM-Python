@@ -16,6 +16,7 @@ class SymbolSettings:
     show_nodal_loads: bool = True
     show_edge_loads: bool = True
     show_surface_loads: bool = True
+    show_line_loads: bool = True
     show_values: bool = False
     scale: float = 1.0
     normalize_arrows: bool = True
@@ -63,8 +64,8 @@ def symbol_length(
     multiplier: float = 1.0,
     *,
     world_per_pixel: float | None = None,
-    minimum_pixels: float = 18.0,
-    maximum_pixels: float = 32.0,
+    minimum_pixels: float = 24.0,
+    maximum_pixels: float = 56.0,
 ) -> float:
     """Return a feature-based glyph length constrained to a useful screen size."""
     points = np.asarray(points, dtype=float)
@@ -74,7 +75,7 @@ def symbol_length(
         sides = np.ptp(points, axis=0)
         active = sides[sides > max(float(np.max(sides)) * 1.0e-9, 1.0e-12)]
         effective = float(np.median(active)) if len(active) else 1.0
-        base = 0.015 * effective
+        base = 0.04 * effective
     if world_per_pixel is not None and float(world_per_pixel) > 0.0:
         pixel_size = float(world_per_pixel)
         base = float(np.clip(
@@ -254,3 +255,67 @@ def arc_points(
     return center + radius * (
         np.cos(angles)[:, None] * first + np.sin(angles)[:, None] * second
     )
+
+
+def rotation_lock_points(
+    center: np.ndarray,
+    axis: np.ndarray,
+    radius: float,
+    *,
+    segments: int = 24,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Create a closed ring and crossed bars for a restrained rotation."""
+    center = np.asarray(center, dtype=float)
+    axis = np.asarray(axis, dtype=float)
+    axis_norm = float(np.linalg.norm(axis))
+    if axis_norm <= 0.0:
+        empty = np.empty((0, 3), dtype=float)
+        return empty, empty
+    axis = axis / axis_norm
+    reference = np.array([1.0, 0.0, 0.0])
+    if abs(float(np.dot(reference, axis))) > 0.9:
+        reference = np.array([0.0, 1.0, 0.0])
+    first = np.cross(axis, reference)
+    first /= np.linalg.norm(first)
+    second = np.cross(axis, first)
+    angles = np.linspace(0.0, 2.0 * np.pi, segments + 1)
+    ring = center + radius * (
+        np.cos(angles)[:, None] * first + np.sin(angles)[:, None] * second
+    )
+    bar_radius = 0.68 * float(radius)
+    bars = np.asarray((
+        center - bar_radius * first,
+        center + bar_radius * first,
+        center - bar_radius * second,
+        center + bar_radius * second,
+    ))
+    return ring, bars
+
+
+def constraint_rotation_axes(
+    components: tuple[int, ...],
+    *,
+    is_3d: bool,
+    point: np.ndarray,
+    camera_position: np.ndarray | None,
+) -> np.ndarray:
+    """Collapse a full 3D rotational lock to one camera-facing symbol."""
+    translation_count = 3 if is_3d else 2
+    rotations = tuple(
+        component for component in components if component >= translation_count
+    )
+    if not rotations:
+        return np.empty((0, 3), dtype=float)
+    if is_3d and set(rotations) == {3, 4, 5}:
+        if camera_position is not None:
+            view_axis = np.asarray(camera_position, dtype=float) - np.asarray(point, dtype=float)
+            norm = float(np.linalg.norm(view_axis))
+            if norm > 1.0e-12:
+                return (view_axis / norm).reshape((1, 3))
+        return np.asarray(((0.0, 0.0, 1.0),))
+    axes = []
+    for component in rotations:
+        axis = np.zeros(3)
+        axis[(component - translation_count + (2 if not is_3d else 0)) % 3] = 1.0
+        axes.append(axis)
+    return np.asarray(axes)

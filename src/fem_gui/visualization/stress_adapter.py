@@ -34,14 +34,17 @@ def build_stress_render_geometry(
     """创建节点平均或单元节点不平均的应力绘图拓扑。"""
 
     prefix, component = field_key.split(":", 1)
-    if prefix not in {"N", "EN"}:
+    if prefix not in {"N", "NODAL", "EN"}:
         raise ValueError(f"不支持的应力绘图位置：{prefix}")
     threshold = float(threshold)
     if not 0.0 <= threshold <= 100.0:
         raise ValueError("平均阈值必须位于 0 到 100 之间")
 
     samples = _sample_lookup(data, component)
-    decisions = _average_decisions(data, component, threshold) if prefix == "N" else {}
+    nodal_mode = prefix in {"N", "NODAL"}
+    if nodal_mode and not samples and data.nodal_stress:
+        return _direct_nodal_geometry(geometry, data, component)
+    decisions = _average_decisions(data, component, threshold) if nodal_mode else {}
     point_keys: dict[tuple[object, ...], int] = {}
     points: list[np.ndarray] = []
     values: list[float] = []
@@ -55,7 +58,7 @@ def build_stress_render_geometry(
         for source_point in cell:
             node_id = geometry.point_index_to_node_id[source_point]
             sample = samples[(element_id, node_id)]
-            if prefix == "EN" or not decisions[(node_id, sample.region_key)][0]:
+            if not nodal_mode or not decisions[(node_id, sample.region_key)][0]:
                 point_key = ("raw", element_id, node_id)
                 scalar = sample.values[component]
                 source_element: int | None = element_id
@@ -91,6 +94,32 @@ def build_stress_render_geometry(
     )
 
 
+def _direct_nodal_geometry(
+    geometry: ModelGeometry,
+    data: ResultData,
+    component: str,
+) -> StressRenderGeometry:
+    """Use an already recovered nodal field without element-local samples."""
+    values = np.asarray([
+        data.nodal_stress[
+            geometry.point_index_to_node_id[point_index]
+        ][component]
+        for point_index in range(len(geometry.points))
+    ], dtype=float)
+    return StressRenderGeometry(
+        points=geometry.points.copy(),
+        cells=tuple(geometry.cells),
+        cell_array=geometry.cell_array.copy(),
+        cell_types=geometry.cell_types.copy(),
+        values=values,
+        point_index_to_node_id=dict(geometry.point_index_to_node_id),
+        point_index_to_element_id={
+            point_index: None for point_index in range(len(geometry.points))
+        },
+        cell_index_to_element_id=dict(geometry.cell_index_to_element_id),
+    )
+
+
 def _sample_lookup(data: ResultData, component: str) -> dict[tuple[int, int], StressSample]:
     lookup: dict[tuple[int, int], StressSample] = {}
     for node_id, rows in data.nodal_stress_samples.items():
@@ -105,7 +134,76 @@ def _average_decisions(
     component: str,
     threshold: float,
 ) -> dict[tuple[int, object], tuple[bool, float]]:
-    """按当前标量分量独立判断是否平均，并保留区域硬边界。"""
+    """Choose canonical tensor-averaged N values or unaveraged EN values."""
+    if data.nodal_stress_by_region:
+        return _tensor_average_decisions(data, component, threshold)
+    return _legacy_average_decisions(data, component, threshold)
+
+
+def _tensor_average_decisions(
+    data: ResultData,
+    component: str,
+    threshold: float,
+) -> dict[tuple[int, object], tuple[bool, float]]:
+    tensor_components = ("S11", "S22", "S33", "S12", "S13", "S23")
+    region_values: dict[tuple[object, str], list[float]] = {}
+    node_regions: dict[tuple[int, object], list[StressSample]] = {}
+    for node_id, rows in data.nodal_stress_samples.items():
+        for sample in rows:
+            node_regions.setdefault((node_id, sample.region_key), []).append(sample)
+            for name in tensor_components:
+                if name in sample.values:
+                    region_values.setdefault(
+                        (sample.region_key, name), []
+                    ).append(sample.values[name])
+
+    region_ranges = {
+        key: float(np.ptp(np.asarray(values, dtype=float)))
+        for key, values in region_values.items()
+    }
+    decisions: dict[tuple[int, object], tuple[bool, float]] = {}
+    for key, rows in node_regions.items():
+        passed = True
+        for name in tensor_components:
+            scalars = np.asarray(
+                [row.values[name] for row in rows if name in row.values],
+                dtype=float,
+            )
+            if len(scalars) <= 1:
+                continue
+            region_range = region_ranges.get((key[1], name), 0.0)
+            tolerance = (
+                np.finfo(float).eps
+                * max(1.0, float(np.max(np.abs(scalars))))
+                * 32.0
+            )
+            relative = (
+                0.0
+                if region_range <= tolerance
+                else 100.0 * float(np.ptp(scalars)) / region_range
+            )
+            if threshold <= 0.0 or relative > threshold:
+                passed = False
+                break
+        averaged_values = data.nodal_stress_by_region.get(key)
+        averaged = (
+            passed
+            and averaged_values is not None
+            and component in averaged_values
+        )
+        decisions[key] = (
+            averaged,
+            float(averaged_values[component]) if averaged else float("nan"),
+        )
+    return decisions
+
+
+def _legacy_average_decisions(
+    data: ResultData,
+    component: str,
+    threshold: float,
+) -> dict[tuple[int, object], tuple[bool, float]]:
+    """Compatibility path for synthetic ResultData without canonical N records."""
 
     region_values: dict[object, list[float]] = {}
     node_regions: dict[tuple[int, object], list[StressSample]] = {}

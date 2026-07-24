@@ -5,7 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QAbstractItemView, QTreeWidget, QTreeWidgetItem
 
-from ..visualization.result_adapter import ResultData
+from ..visualization.result_adapter import ResultData, field_family
 
 
 ROLE_FIELD = int(Qt.ItemDataRole.UserRole)
@@ -47,16 +47,31 @@ class ResultTree(QTreeWidget):
     def _families(data: ResultData) -> tuple[tuple[str, str], ...]:
         fields = data.fields
         families: list[tuple[str, str]] = []
-        displacement = "U" if "U" in fields else next((key for key in fields if key.startswith("U")), None)
-        reaction = "RF" if "RF" in fields else next((key for key in fields if key.startswith(("RF", "RM"))), None)
-        stress_keys = [key for key in fields if not key.startswith(("U", "R3", "RF", "RM"))]
-        stress = next((key for key in stress_keys if key.endswith("Mises")), stress_keys[0] if stress_keys else None)
-        if displacement is not None:
-            families.append(("位移 U", displacement))
-        if reaction is not None:
-            families.append(("反力 RF", reaction))
-        if stress is not None:
-            families.append(("应力 S", stress))
+        labels = {
+            "U": "位移 U",
+            "R": "转角 R",
+            "RF": "反力 RF",
+            "RM": "反力矩 RM",
+            "S": "应力 S",
+        }
+        for family in ("U", "R", "RF", "RM", "S"):
+            keys = [key for key in fields if field_family(key) == family]
+            if not keys:
+                continue
+            preferred = {
+                "U": "U",
+                "RF": "RF",
+            }.get(family)
+            selected = preferred if preferred in fields else keys[0]
+            if family == "S":
+                selected = next(
+                    (key for key in keys if key.endswith(":S11AbsMax")),
+                    next(
+                        (key for key in keys if key.endswith(":Mises")),
+                        keys[0],
+                    ),
+                )
+            families.append((labels[family], selected))
         return tuple(families)
 
     def _activate_item(self, item: QTreeWidgetItem) -> None:

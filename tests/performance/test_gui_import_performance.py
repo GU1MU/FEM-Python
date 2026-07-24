@@ -6,7 +6,7 @@ from time import perf_counter
 import pytest
 
 from fem.boundary.step import boundary_for_step
-from fem.core.mesh import Element2D, Node2D, PlaneMesh2D
+from fem.core.mesh import Element2D, Mesh2D, Node2D
 from fem.core.model import AnalysisStep, Edge, EdgeLoad, ElementEdge, FEMModel
 from fem_gui.inspection_service import InspectionService
 from fem_gui.visualization.model_adapter import build_model_geometry
@@ -50,7 +50,7 @@ def _plate_model(element_count: int, pressure: bool) -> FEMModel:
         edge_loads=[EdgeLoad("TOP", magnitude=2.0, load_type="pressure")]
         if pressure else (),
     )]
-    return FEMModel(PlaneMesh2D(nodes, elements), edges=edges, steps=steps)
+    return FEMModel(Mesh2D(nodes, elements), edges=edges, steps=steps)
 
 
 @pytest.mark.parametrize(

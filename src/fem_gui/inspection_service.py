@@ -187,6 +187,7 @@ class InspectionService:
             "section": self._inspect_section, "step": self._inspect_step,
             "boundary": self._inspect_boundary, "cload": self._inspect_cload,
             "surface_load": self._inspect_surface_load, "edge_load": self._inspect_edge_load,
+            "line_load": self._inspect_line_load,
             "output": self._inspect_output,
         }
         if kind not in handlers:
@@ -222,7 +223,20 @@ class InspectionService:
             region_kind = "surface" if kind == "surface_load" else "edge"
             region = step.surface_loads[index].surface if region_kind == "surface" else step.edge_loads[index].edge
             return self.selection_for(region_kind, region)
+        if kind == "line_load":
+            step_index, index = key
+            return EntitySelection(element_ids=self.target_element_ids(
+                self.model.steps[step_index].line_loads[index].target
+            ))
         return EntitySelection()
+
+    def target_element_ids(self, target: str | int) -> tuple[int, ...]:
+        if isinstance(target, int):
+            return (int(target),) if int(target) in self.elements else ()
+        element_set = self._all_element_sets.get(str(target))
+        return () if element_set is None else tuple(
+            int(value) for value in element_set.element_ids
+        )
 
     def _inspect_model(self, _key: object) -> EntityInspection:
         mesh = self.model.mesh
@@ -278,9 +292,23 @@ class InspectionService:
             return ()
         values = dict(self.result_data.nodal_values.get(node_id, {}))
         values.update(self.result_data.nodal_stress.get(node_id, {}))
-        order = ("U1", "U2", "U3", "U", "RF1", "RF2", "RF3", "RF", "R3", "RM3",
-                 "S11", "S22", "S33", "S12", "S13", "S23", "Mises", "MaxPrincipal", "MinPrincipal")
-        labels = {"U": "位移模", "RF": "反力模", "MaxPrincipal": "最大主应力", "MinPrincipal": "最小主应力"}
+        order = (
+            "U1", "U2", "U3", "U", "R1", "R2", "R3",
+            "RF1", "RF2", "RF3", "RF", "RM1", "RM2", "RM3",
+            "S11", "S22", "S33", "S12", "S13", "S23", "Mises",
+            "MaxPrincipal", "MidPrincipal", "MinPrincipal",
+            "S11Max", "S11Min", "S11AbsMax",
+        )
+        labels = {
+            "U": "位移模",
+            "RF": "反力模",
+            "MaxPrincipal": "最大主应力",
+            "MidPrincipal": "中间主应力",
+            "MinPrincipal": "最小主应力",
+            "S11Max": "最大轴向应力",
+            "S11Min": "最小轴向应力",
+            "S11AbsMax": "最大绝对值轴向应力",
+        }
         return tuple((labels.get(name, name), format_number(values[name])) for name in order if name in values)
 
     def _inspect_element(self, key: object) -> EntityInspection:
@@ -324,7 +352,7 @@ class InspectionService:
             values = self.result_data.element_stress[element_id]
             rows = tuple((_stress_label(name), format_number(value)) for name, value in values.items())
             pages.append(InspectionPage(
-                "结果", (("结果位置", "单元中心"),),
+                "结果", (("结果位置", "单元质心"),),
                 (InspectionTable("单元结果", ("分量", "数值"), rows),),
             ))
         return EntityInspection(f"单元 {element_id}", "element", element_id, tuple(pages))
@@ -416,12 +444,20 @@ class InspectionService:
             fields.append(("平面类型", "、".join(sorted(_plane_label(value) for value in plane_types))))
         if thicknesses:
             fields.append(("厚度", "、".join(sorted(format_number(value) for value in thicknesses))))
+        for name, value in section.properties.items():
+            if _is_physical_property(name, value) and name not in {"plane_type", "thickness"}:
+                fields.append((_property_label(name), format_number(value)))
         return EntityInspection(f"截面 {index + 1}", "section", index, (InspectionPage("截面", tuple(fields)),))
 
     def _inspect_step(self, key: object) -> EntityInspection:
         step_index = int(key)
         step = self.model.steps[step_index]
-        load_count = len(step.cloads) + len(step.surface_loads) + len(step.edge_loads)
+        load_count = (
+            len(step.cloads)
+            + len(step.surface_loads)
+            + len(step.edge_loads)
+            + len(step.line_loads)
+        )
         pages = [InspectionPage("概况", (
             ("分析步名称", step.name), ("分析类型", _procedure_label(step.procedure)),
             ("边界条件数量", str(len(step.boundaries))), ("载荷数量", str(load_count)),
@@ -446,6 +482,15 @@ class InspectionService:
                 direction = _load_direction(item)
                 load_rows.append((str(len(load_rows) + 1), _load_type_label(item.load_type), target, direction, format_number(item.magnitude)))
                 load_refs.append(EntityReference(kind, (step_index, index)))
+        for index, item in enumerate(step.line_loads):
+            load_rows.append((
+                str(len(load_rows) + 1),
+                "梁均布载荷",
+                str(item.target),
+                "局部坐标" if item.coordinate_system == "local" else "全局坐标",
+                ", ".join(format_number(value) for value in item.vector),
+            ))
+            load_refs.append(EntityReference("line_load", (step_index, index)))
         if load_rows:
             pages.append(InspectionPage("载荷", tables=(InspectionTable(
                 "载荷", ("序号", "类型", "目标", "分量或方向", "数值"), tuple(load_rows), tuple(load_refs),
@@ -489,6 +534,23 @@ class InspectionService:
     def _inspect_edge_load(self, key: object) -> EntityInspection:
         return self._inspect_distributed_load("edge_load", key)
 
+    def _inspect_line_load(self, key: object) -> EntityInspection:
+        step_index, index = key
+        step = self.model.steps[step_index]
+        item = step.line_loads[index]
+        fields = (
+            ("所属分析步", step.name),
+            ("类型", "梁均布载荷"),
+            ("目标", str(item.target)),
+            ("目标单元数量", str(len(self.target_element_ids(item.target)))),
+            ("坐标系", "局部" if item.coordinate_system == "local" else "全局"),
+            ("载荷向量", ", ".join(format_number(value) for value in item.vector)),
+        )
+        return EntityInspection(
+            "梁均布载荷", "line_load", key,
+            (InspectionPage("载荷", fields),),
+        )
+
     def _inspect_distributed_load(self, kind: str, key: object) -> EntityInspection:
         step_index, index = key
         step = self.model.steps[step_index]
@@ -515,10 +577,10 @@ class InspectionService:
     def _reference_names(self, references: tuple[EntityReference, ...] | list[EntityReference]) -> str:
         names = []
         for reference in references:
-            if reference.kind in {"boundary", "cload", "surface_load", "edge_load"}:
+            if reference.kind in {"boundary", "cload", "surface_load", "edge_load", "line_load"}:
                 step_index, index = reference.key
                 step = self.model.steps[step_index]
-                labels = {"boundary": "边界条件", "cload": "节点载荷", "surface_load": "面载荷", "edge_load": "边载荷"}
+                labels = {"boundary": "边界条件", "cload": "节点载荷", "surface_load": "面载荷", "edge_load": "边载荷", "line_load": "梁均布载荷"}
                 names.append(f"{step.name} / {labels[reference.kind]} {index + 1}")
         return "、".join(names) or "—"
 
@@ -545,16 +607,34 @@ def _component_range(first: int, last: int) -> str:
 def _is_physical_property(name: str, value: object) -> bool:
     if name.startswith("_") or name in {"material", "element_set", "abaqus_type"}:
         return False
-    return isinstance(value, (Real, str)) and name in {"E", "nu", "rho", "density", "thickness", "plane_type", "area", "A", "I", "Izz"}
+    return isinstance(value, (Real, str)) and name in {
+        "E", "nu", "rho", "density", "thickness", "plane_type",
+        "area", "A", "I", "Iyy", "Izz", "J", "section_type",
+        "height", "width", "radius", "inner_radius", "outer_radius",
+    }
 
 
 def _property_label(name: str) -> str:
-    return {"E": "弹性模量 E", "nu": "泊松比 ν", "rho": "密度 ρ", "density": "密度 ρ",
-            "area": "截面积", "A": "截面积", "I": "惯性矩", "Izz": "惯性矩 Izz"}.get(name, name)
+    return {
+        "E": "弹性模量 E", "nu": "泊松比 ν", "rho": "密度 ρ",
+        "density": "密度 ρ", "area": "截面积", "A": "截面积",
+        "I": "惯性矩", "Iyy": "惯性矩 Iyy", "Izz": "惯性矩 Izz",
+        "J": "扭转常数 J", "section_type": "截面类型",
+        "height": "矩形高度（局部 y）", "width": "矩形宽度（局部 z）",
+        "radius": "半径", "inner_radius": "内半径", "outer_radius": "外半径",
+    }.get(name, name)
 
 
 def _stress_label(name: str) -> str:
-    return {"MaxPrincipal": "最大主应力", "MinPrincipal": "最小主应力", "LE11": "轴向应变"}.get(name, name)
+    return {
+        "MaxPrincipal": "最大主应力",
+        "MidPrincipal": "中间主应力",
+        "MinPrincipal": "最小主应力",
+        "LE11": "轴向应变",
+        "S11Max": "最大轴向应力",
+        "S11Min": "最小轴向应力",
+        "S11AbsMax": "最大绝对值轴向应力",
+    }.get(name, name)
 
 
 def _plane_label(value: object) -> str:

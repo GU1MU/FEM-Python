@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from .analysis_jobs import AnalysisJob, JobStatus
+from .dialogs import configure_form_layout
 
 
 SESSION_NOTICE = "作业记录、日志和结果仅保留在当前会话中；关闭、重新加载或更换模型后将被清除。"
@@ -40,9 +41,10 @@ class JobSubmitDialog(QDialog):
         super().__init__(parent)
         self.setObjectName("jobSubmitDialog")
         self.setWindowTitle("创建分析作业")
-        self.setMinimumWidth(430)
+        self.setMinimumWidth(390)
         layout = QVBoxLayout(self)
         form = QFormLayout()
+        configure_form_layout(form)
         self.name_edit = QLineEdit(default_name, self)
         self.name_edit.setMaxLength(64)
         self.step_combo = QComboBox(self)
@@ -89,7 +91,7 @@ class JobManagerDialog(QDialog):
         self.setObjectName("jobManagerDialog")
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setWindowTitle("作业管理器")
-        self.resize(720, 470)
+        self.resize(680, 450)
         layout = QVBoxLayout(self)
         notice = QLabel(SESSION_NOTICE, self)
         notice.setWordWrap(True)
@@ -179,7 +181,9 @@ class JobManagerDialog(QDialog):
                 scroll_bar.setValue(scroll_bar.maximum() if was_at_bottom else scroll_value)
             self._displayed_job_name = job_name
         self.resubmit_button.setEnabled(
-            job is not None and job.status in {JobStatus.COMPLETED, JobStatus.FAILED}
+            job is not None
+            and job.status
+            in {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}
         )
         self.open_result_button.setEnabled(job is not None and job.has_result)
 

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import dataclass, field as dataclass_field, replace
 from typing import Any
 
 import numpy as np
 
 from fem.elements import get_element_kernel
-from fem.post.stress import dispatch, field, invariants
+from fem.post.stress import beam, dispatch, field
 from .model_adapter import ModelGeometry
 
 
@@ -54,6 +54,15 @@ class ResultData:
     _stress_cache: dict[str, Any] = dataclass_field(
         default_factory=dict, repr=False, compare=False
     )
+    nodal_stress_by_region: dict[tuple[int, object], dict[str, float]] = (
+        dataclass_field(default_factory=dict, repr=False, compare=False)
+    )
+    stress_fields: dict[field.StressPosition, field.StressField] = dataclass_field(
+        default_factory=dict, repr=False, compare=False
+    )
+    stress_position_labels: dict[str, str] = dataclass_field(
+        default_factory=dict, repr=False, compare=False
+    )
 
     def field_ready(self, key: str) -> bool:
         """Return whether a catalog field already has numeric values."""
@@ -64,9 +73,40 @@ class ResultData:
         """Return stress positions advertised by the current element family."""
         return tuple(
             prefix
-            for prefix in ("N", "EN", "E")
+            for prefix in ("IP", "CENTROID", "EN", "NODAL")
             if any(key.startswith(f"{prefix}:") for key in self.fields)
         )
+
+    def stress_position_label(self, prefix: str) -> str:
+        """Return the context-aware GUI label for one stress position."""
+        return self.stress_position_labels.get(
+            str(prefix),
+            _DEFAULT_STRESS_POSITION_LABELS.get(str(prefix), str(prefix)),
+        )
+
+
+_DEFAULT_STRESS_POSITION_LABELS = {
+    "IP": "积分点",
+    "CENTROID": "单元质心",
+    "EN": "单元节点（不平均）",
+    "NODAL": "节点平均",
+}
+
+
+def field_family(field_key: str) -> str:
+    """Return the shared GUI result family for a field key."""
+    key = str(field_key)
+    if ":" in key:
+        return "S"
+    if key in {"U", "U1", "U2", "U3"}:
+        return "U"
+    if key in {"R1", "R2", "R3"}:
+        return "R"
+    if key in {"RF", "RF1", "RF2", "RF3"}:
+        return "RF"
+    if key in {"RM1", "RM2", "RM3"}:
+        return "RM"
+    return "S"
 
 
 def build_result_data(
@@ -77,6 +117,13 @@ def build_result_data(
 ) -> ResultData:
     """从 ModelResult 读取数据，不复制求解逻辑。"""
     mesh = result.model.mesh
+    stress_position_labels = dict(_DEFAULT_STRESS_POSITION_LABELS)
+    try:
+        type_keys = dispatch.resolve_type_keys(mesh, None)
+        if type_keys == ("beam2",):
+            stress_position_labels["NODAL"] = "节点包络"
+    except ValueError:
+        pass
     displacement = _nodal_vectors(mesh, result.U, geometry)
     reactions = _nodal_vectors(mesh, result.reactions, geometry)
     fields: dict[str, ScalarField] = {}
@@ -95,19 +142,56 @@ def build_result_data(
             reactions[:, component],
         )
     _add_field(fields, "RF", "总反力", "point", np.linalg.norm(reactions, axis=1))
-    rotations = None
-    moments = None
-    if translation_count == 2 and mesh.dofs_per_node >= 3:
-        rotations = np.asarray([
-            result.U[mesh.global_dof(geometry.point_index_to_node_id[index], 2)]
+    rotation_components = max(
+        0,
+        min(3, mesh.dofs_per_node - translation_count),
+    )
+    rotations = np.zeros((len(geometry.points), rotation_components), dtype=float)
+    moments = np.zeros_like(rotations)
+    rotation_labels = (
+        (("R3", "RM3"),)
+        if translation_count == 2 and rotation_components == 1
+        else tuple(
+            (f"R{component + 1}", f"RM{component + 1}")
+            for component in range(rotation_components)
+        )
+    )
+    for rotation_component, (rotation_key, moment_key) in enumerate(
+        rotation_labels
+    ):
+        dof_component = translation_count + rotation_component
+        rotations[:, rotation_component] = [
+            result.U[
+                mesh.global_dof(
+                    geometry.point_index_to_node_id[index],
+                    dof_component,
+                )
+            ]
             for index in range(len(geometry.points))
-        ])
-        moments = np.asarray([
-            result.reactions[mesh.global_dof(geometry.point_index_to_node_id[index], 2)]
+        ]
+        moments[:, rotation_component] = [
+            result.reactions[
+                mesh.global_dof(
+                    geometry.point_index_to_node_id[index],
+                    dof_component,
+                )
+            ]
             for index in range(len(geometry.points))
-        ])
-        _add_field(fields, "R3", "转角 R3", "point", rotations)
-        _add_field(fields, "RM3", "反力矩 RM3", "point", moments)
+        ]
+        _add_field(
+            fields,
+            rotation_key,
+            f"转角 {rotation_key}",
+            "point",
+            rotations[:, rotation_component],
+        )
+        _add_field(
+            fields,
+            moment_key,
+            f"反力矩 {moment_key}",
+            "point",
+            moments[:, rotation_component],
+        )
     nodal_values: dict[int, dict[str, float]] = {}
     for point_index, node_id in geometry.point_index_to_node_id.items():
         values = {
@@ -121,26 +205,49 @@ def build_result_data(
         if translation_count == 3:
             values["U3"] = float(displacement[point_index, 2])
             values["RF3"] = float(reactions[point_index, 2])
-        if rotations is not None and moments is not None:
-            values["R3"] = float(rotations[point_index])
-            values["RM3"] = float(moments[point_index])
+        for rotation_component, (rotation_key, moment_key) in enumerate(
+            rotation_labels
+        ):
+            values[rotation_key] = float(
+                rotations[point_index, rotation_component]
+            )
+            values[moment_key] = float(
+                moments[point_index, rotation_component]
+            )
         nodal_values[node_id] = values
+    stress_fields: dict[field.StressPosition, field.StressField] = {}
+    nodal_stress_by_region: dict[tuple[int, object], dict[str, float]] = {}
     if include_stress:
-        element_stress, nodal_stress, stress_samples = _stress_values(result)
+        (
+            element_stress,
+            nodal_stress,
+            stress_samples,
+            nodal_stress_by_region,
+            stress_fields,
+        ) = _stress_values(result)
     else:
         element_stress, nodal_stress, stress_samples = {}, {}, {}
     for key, label in _stress_labels(element_stress, nodal_stress, stress_samples):
+        if nodal_stress and all(
+            key in values for values in nodal_stress.values()
+        ):
+            values = np.asarray([
+                nodal_stress.get(
+                    geometry.point_index_to_node_id[index], {}
+                ).get(key, np.nan)
+                for index in range(len(geometry.points))
+            ], dtype=float)
+            _add_field(
+                fields,
+                f"NODAL:{key}",
+                f"{stress_position_labels['NODAL']}{label}",
+                "point",
+                values,
+            )
         if stress_samples and all(
             any(key in sample.values for sample in samples)
             for samples in stress_samples.values()
         ):
-            values = np.asarray([
-                _fallback_nodal_scalar(
-                    stress_samples.get(geometry.point_index_to_node_id[index], ()), key
-                )
-                for index in range(len(geometry.points))
-            ], dtype=float)
-            _add_field(fields, f"N:{key}", f"节点平均{label}", "point", values)
             element_nodal_values = np.asarray([
                 sample.values[key]
                 for node_id in geometry.point_index_to_node_id.values()
@@ -159,7 +266,20 @@ def build_result_data(
                 element_stress.get(geometry.cell_index_to_element_id[index], {}).get(key, np.nan)
                 for index in range(len(geometry.cells))
             ], dtype=float)
-            _add_field(fields, f"E:{key}", label, "cell", values)
+            _add_field(fields, f"CENTROID:{key}", label, "cell", values)
+    integration_field = stress_fields.get(field.StressPosition.INTEGRATION_POINT)
+    if integration_field is not None:
+        for component, label in _stress_field_labels(integration_field):
+            _add_field(
+                fields,
+                f"IP:{component}",
+                label,
+                "integration_point",
+                np.asarray([
+                    record.values(integration_field.component_names)[component]
+                    for record in integration_field.records
+                ], dtype=float),
+            )
     data = ResultData(
         displacement,
         reactions,
@@ -170,6 +290,9 @@ def build_result_data(
         stress_samples,
         result,
         geometry,
+        nodal_stress_by_region=nodal_stress_by_region,
+        stress_fields=stress_fields,
+        stress_position_labels=stress_position_labels,
     )
     _register_stress_catalog(data)
     return data
@@ -185,7 +308,11 @@ _STRESS_LABELS = {
     "S23": "S23",
     "Mises": "Mises",
     "MaxPrincipal": "最大主应力",
+    "MidPrincipal": "中间主应力",
     "MinPrincipal": "最小主应力",
+    "S11Max": "最大轴向应力",
+    "S11Min": "最小轴向应力",
+    "S11AbsMax": "最大绝对值轴向应力",
 }
 
 
@@ -200,28 +327,50 @@ def _register_stress_catalog(data: ResultData) -> None:
     except ValueError:
         return
     if group == "line":
-        prefixes = ("E",)
-        components = ("LE11", "S11", "Mises")
+        prefixes = ()
+        components_by_prefix: dict[str, tuple[str, ...]] = {}
+        if "truss2" in type_keys:
+            prefixes += ("CENTROID",)
+            components_by_prefix["CENTROID"] = ("LE11", "S11", "Mises")
+        if type_keys == ("beam2",):
+            prefixes += ("NODAL",)
+            components_by_prefix["NODAL"] = (
+                "S11Max",
+                "S11Min",
+                "S11AbsMax",
+            )
     elif group == "plane":
-        prefixes = ("N", "EN", "E")
+        prefixes = ("IP", "CENTROID", "EN", "NODAL")
         components = (
-            "S11", "S22", "S12", "Mises", "MaxPrincipal", "MinPrincipal",
+            "S11", "S22", "S33", "S12", "Mises",
+            "MaxPrincipal", "MidPrincipal", "MinPrincipal",
         )
+        components_by_prefix = {
+            prefix: components for prefix in prefixes
+        }
     else:
-        prefixes = ("N", "EN", "E")
+        prefixes = ("IP", "CENTROID", "EN", "NODAL")
         components = (
             "S11", "S22", "S33", "S12", "S13", "S23", "Mises",
-            "MaxPrincipal", "MinPrincipal",
+            "MaxPrincipal", "MidPrincipal", "MinPrincipal",
         )
-    associations = {"N": "point", "EN": "element_node", "E": "cell"}
+        components_by_prefix = {
+            prefix: components for prefix in prefixes
+        }
+    associations = {
+        "IP": "integration_point",
+        "CENTROID": "cell",
+        "EN": "element_node",
+        "NODAL": "point",
+    }
     for prefix in prefixes:
-        for component in components:
+        for component in components_by_prefix[prefix]:
             key = f"{prefix}:{component}"
             if key in data.fields:
                 continue
             label = _STRESS_LABELS[component]
-            if prefix == "N":
-                label = f"节点平均{label}"
+            if prefix == "NODAL":
+                label = f"{data.stress_position_label(prefix)}{label}"
             elif prefix == "EN":
                 label = f"单元节点（不平均）{label}"
             data.fields[key] = ScalarField(
@@ -244,6 +393,8 @@ def ensure_stress_data(
         requested = (prefixes,)
     else:
         requested = tuple(prefixes)
+    aliases = {"N": "NODAL", "E": "CENTROID"}
+    requested = tuple(aliases.get(prefix, prefix) for prefix in requested)
     requested_keys = [
         key
         for key, scalar in data.fields.items()
@@ -262,35 +413,38 @@ def ensure_stress_data(
         group = dispatch.stress_group_for_keys(type_keys)
         data._stress_cache["group"] = group
 
-    needs_nodal = any(prefix in {"N", "EN"} for prefix in requested)
-    if needs_nodal and "nodal" not in data._stress_cache:
-        raw = data._stress_cache.get("raw")
-        if raw is None:
-            raw = field.collect(result.model.mesh, result.U)
-            data._stress_cache["raw"] = raw
-        nodal = _nodal_stress_from_raw(raw)
-        data._stress_cache["nodal"] = nodal
-        nodal_stress, stress_samples = nodal
+    if group == "line":
+        if "line" not in data._stress_cache:
+            element_stress, nodal_stress = _line_stress(result)
+            data._stress_cache["element"] = element_stress
+            data._stress_cache["line"] = True
+            data.element_stress.clear()
+            data.element_stress.update(element_stress)
+            data.nodal_stress.clear()
+            data.nodal_stress.update(nodal_stress)
+    elif "continuum" not in data._stress_cache:
+        recovery = field.StressRecovery(result.model.mesh, result.U)
+        stress_fields = {
+            position: recovery.collect(position)
+            for position in field.StressPosition
+        }
+        (
+            element_stress,
+            nodal_stress,
+            stress_samples,
+            nodal_by_region,
+        ) = _adapt_core_stress_fields(stress_fields)
+        data.stress_fields.clear()
+        data.stress_fields.update(stress_fields)
+        data.element_stress.clear()
+        data.element_stress.update(element_stress)
         data.nodal_stress.clear()
         data.nodal_stress.update(nodal_stress)
         data.nodal_stress_samples.clear()
         data.nodal_stress_samples.update(stress_samples)
-
-    if "E" in requested and "element" not in data._stress_cache:
-        mesh = result.model.mesh
-        if group == "line":
-            element_stress = _line_element_stress(mesh, result.U)
-        elif group == "solid":
-            element_stress = _solid_element_stress(mesh, result.U)
-        else:
-            raw = data._stress_cache.get("raw")
-            if raw is None:
-                raw = field.collect(mesh, result.U)
-                data._stress_cache["raw"] = raw
-            element_stress = _plane_element_stress(raw)
-        data._stress_cache["element"] = element_stress
-        data.element_stress.clear()
-        data.element_stress.update(element_stress)
+        data.nodal_stress_by_region.clear()
+        data.nodal_stress_by_region.update(nodal_by_region)
+        data._stress_cache["continuum"] = recovery
 
     _populate_cached_stress_fields(
         data,
@@ -300,6 +454,26 @@ def ensure_stress_data(
         data.nodal_stress_samples,
     )
     return True
+
+
+def recovered_stress_data(
+    data: ResultData,
+    prefixes: str | tuple[str, ...] | None = None,
+) -> ResultData:
+    """Recover stress into a detached container safe for background work."""
+    detached = replace(
+        data,
+        fields=dict(data.fields),
+        element_stress=dict(data.element_stress),
+        nodal_stress=dict(data.nodal_stress),
+        nodal_stress_samples=dict(data.nodal_stress_samples),
+        _stress_cache=dict(data._stress_cache),
+        nodal_stress_by_region=dict(data.nodal_stress_by_region),
+        stress_fields=dict(data.stress_fields),
+        stress_position_labels=dict(data.stress_position_labels),
+    )
+    ensure_stress_data(detached, prefixes)
+    return detached
 
 
 def _populate_cached_stress_fields(
@@ -313,26 +487,26 @@ def _populate_cached_stress_fields(
     for component, label in _stress_labels(
         element_stress, nodal_stress, stress_samples
     ):
-        if stress_samples and all(
-            any(component in sample.values for sample in samples)
-            for samples in stress_samples.values()
+        if nodal_stress and all(
+            component in values for values in nodal_stress.values()
         ):
             values = np.asarray([
-                _fallback_nodal_scalar(
-                    stress_samples.get(
-                        geometry.point_index_to_node_id[index], ()
-                    ),
-                    component,
-                )
+                nodal_stress.get(
+                    geometry.point_index_to_node_id[index], {}
+                ).get(component, np.nan)
                 for index in range(len(geometry.points))
             ], dtype=float)
             _add_field(
                 data.fields,
-                f"N:{component}",
-                f"节点平均{label}",
+                f"NODAL:{component}",
+                f"{data.stress_position_label('NODAL')}{label}",
                 "point",
                 values,
             )
+        if stress_samples and all(
+            any(component in sample.values for sample in samples)
+            for samples in stress_samples.values()
+        ):
             element_nodal_values = np.asarray([
                 sample.values[component]
                 for node_id in geometry.point_index_to_node_id.values()
@@ -355,7 +529,28 @@ def _populate_cached_stress_fields(
                 ).get(component, np.nan)
                 for index in range(len(geometry.cells))
             ], dtype=float)
-            _add_field(data.fields, f"E:{component}", label, "cell", values)
+            _add_field(
+                data.fields,
+                f"CENTROID:{component}",
+                label,
+                "cell",
+                values,
+            )
+    integration_field = data.stress_fields.get(
+        field.StressPosition.INTEGRATION_POINT
+    )
+    if integration_field is not None:
+        for component, label in _stress_field_labels(integration_field):
+            _add_field(
+                data.fields,
+                f"IP:{component}",
+                label,
+                "integration_point",
+                np.asarray([
+                    record.values(integration_field.component_names)[component]
+                    for record in integration_field.records
+                ], dtype=float),
+            )
 
 
 def deformed_points(geometry: ModelGeometry, data: ResultData, scale: float) -> np.ndarray:
@@ -387,143 +582,125 @@ def _stress_values(
     dict[int, dict[str, float]],
     dict[int, dict[str, float]],
     dict[int, tuple[StressSample, ...]],
+    dict[tuple[int, object], dict[str, float]],
+    dict[field.StressPosition, field.StressField],
 ]:
     mesh = result.model.mesh
     try:
         type_keys = dispatch.resolve_type_keys(mesh, None)
         group = dispatch.stress_group_for_keys(type_keys)
     except ValueError:
-        return {}, {}, {}
+        return {}, {}, {}, {}, {}
     if group == "line":
-        return _line_element_stress(mesh, result.U), {}, {}
-    raw = field.collect(mesh, result.U)
-    element_values = (
-        _solid_element_stress(mesh, result.U)
-        if group == "solid"
-        else _plane_element_stress(raw)
+        element_values, nodal_values = _line_stress(result)
+        return element_values, nodal_values, {}, {}, {}
+    recovery = field.StressRecovery(mesh, result.U)
+    stress_fields = {
+        position: recovery.collect(position)
+        for position in field.StressPosition
+    }
+    (
+        element_values,
+        nodal_values,
+        nodal_samples,
+        nodal_by_region,
+    ) = _adapt_core_stress_fields(stress_fields)
+    return (
+        element_values,
+        nodal_values,
+        nodal_samples,
+        nodal_by_region,
+        stress_fields,
     )
-    nodal_values, nodal_samples = _nodal_stress_from_raw(raw)
-    return element_values, nodal_values, nodal_samples
 
 
-def _nodal_stress_from_raw(
-    raw: Any,
+def _adapt_core_stress_fields(
+    stress_fields: dict[field.StressPosition, field.StressField],
 ) -> tuple[
     dict[int, dict[str, float]],
+    dict[int, dict[str, float]],
     dict[int, tuple[StressSample, ...]],
+    dict[tuple[int, object], dict[str, float]],
 ]:
-    """Convert one cached element-nodal recovery into GUI stress samples."""
-    nodal_values: dict[int, dict[str, float]] = {}
-    nodal_samples: dict[int, tuple[StressSample, ...]] = {}
-    for node_id, contributions in raw.contributions_by_node.items():
-        samples = tuple(
-            StressSample(
-                int(item.elem_id),
-                int(item.local_node),
-                item.region_key,
-                float(item.weight),
-                _stress_dict(
-                    np.asarray(item.components),
-                    len(raw.component_names),
-                    item.plane_type,
-                    item.poisson_ratio,
-                ),
-            )
-            for item in contributions
-        )
-        nodal_samples[node_id] = samples
-        if not samples or len({sample.region_key for sample in samples}) != 1:
-            continue
-        keys = set.intersection(*(set(sample.values) for sample in samples))
-        weights = np.asarray([sample.weight for sample in samples], dtype=float)
-        nodal_values[node_id] = {
-            key: float(np.average(
-                [sample.values[key] for sample in samples], weights=weights
-            ))
-            for key in keys
-        }
-    return nodal_values, nodal_samples
-
-
-def _plane_element_stress(raw: Any) -> dict[int, dict[str, float]]:
-    """按正式平面单元导出语义平均单元节点应力。"""
-    groups: dict[int, list[dict[str, float]]] = {}
-    for contributions in raw.contributions_by_node.values():
-        for item in contributions:
-            groups.setdefault(item.elem_id, []).append(
-                _stress_dict(
-                    np.asarray(item.components), len(raw.component_names),
-                    item.plane_type, item.poisson_ratio,
-                )
-            )
-    return {
-        elem_id: {
-            key: float(np.mean([row[key] for row in rows]))
-            for key in rows[0]
-        }
-        for elem_id, rows in groups.items()
+    """Adapt canonical core records to the existing GUI query containers."""
+    centroid_field = stress_fields[field.StressPosition.CENTROID]
+    element_values = {
+        int(record.elem_id): record.values(centroid_field.component_names)
+        for record in centroid_field.records
+        if record.elem_id is not None
     }
 
-
-def _solid_element_stress(mesh: Any, displacement: np.ndarray) -> dict[int, dict[str, float]]:
-    """使用现有单元核在 Hex 中心或 Tet 重心恢复实体应力。"""
-    lookup = {int(node.id): node for node in mesh.nodes}
-    values: dict[int, dict[str, float]] = {}
-    for element in mesh.elements:
-        type_key = dispatch.type_key_from_name(element.type)
-        natural_coordinates = (
-            (0.0, 0.0, 0.0)
-            if type_key in {"hex8", "hex20"}
-            else (0.25, 0.25, 0.25)
+    element_nodal_field = stress_fields[field.StressPosition.ELEMENT_NODAL]
+    samples_by_node: dict[int, list[StressSample]] = {}
+    for record in element_nodal_field.records:
+        if (
+            record.node_id is None
+            or record.elem_id is None
+            or record.local_node is None
+        ):
+            continue
+        samples_by_node.setdefault(record.node_id, []).append(
+            StressSample(
+                record.elem_id,
+                record.local_node,
+                record.region_key,
+                record.weight,
+                record.values(element_nodal_field.component_names),
+            )
         )
-        stress = get_element_kernel(element.type).stress_at(
-            mesh, element, displacement, *natural_coordinates, lookup
+    nodal_samples = {
+        node_id: tuple(samples)
+        for node_id, samples in samples_by_node.items()
+    }
+
+    nodal_field = stress_fields[field.StressPosition.NODAL]
+    nodal_by_region: dict[tuple[int, object], dict[str, float]] = {}
+    records_by_node: dict[int, list[field.StressRecord]] = {}
+    for record in nodal_field.records:
+        if record.node_id is None:
+            continue
+        nodal_by_region[(record.node_id, record.region_key)] = record.values(
+            nodal_field.component_names
         )
-        values[int(element.id)] = _stress_dict(np.asarray(stress), 6)
-    return values
+        records_by_node.setdefault(record.node_id, []).append(record)
+    nodal_values = {
+        node_id: records[0].values(nodal_field.component_names)
+        for node_id, records in records_by_node.items()
+        if len(records) == 1
+    }
+    return element_values, nodal_values, nodal_samples, nodal_by_region
 
 
-def _line_element_stress(mesh: Any, displacement: np.ndarray) -> dict[int, dict[str, float]]:
-    values: dict[int, dict[str, float]] = {}
+def _line_stress(
+    result: Any,
+) -> tuple[dict[int, dict[str, float]], dict[int, dict[str, float]]]:
+    """Recover canonical Truss2 element and Beam2 nodal envelope results."""
+    mesh = result.model.mesh
+    element_values: dict[int, dict[str, float]] = {}
+    nodal_values: dict[int, dict[str, float]] = {}
     lookup = {int(node.id): node for node in mesh.nodes}
     for element in mesh.elements:
-        if dispatch.type_key_from_name(element.type) != "truss2d":
+        if dispatch.type_key_from_name(element.type) != "truss2":
             continue
         strain, stress, mises = get_element_kernel(element.type).element_stress(
-            mesh, element, displacement, lookup
+            mesh, element, result.U, lookup
         )
-        values[int(element.id)] = {"LE11": strain, "S11": stress, "Mises": mises}
-    return values
-
-
-def _stress_dict(
-    components: np.ndarray,
-    count: int,
-    plane_type: str | None = None,
-    poisson_ratio: float | None = None,
-) -> dict[str, float]:
-    values = np.asarray(components, dtype=float)
-    if count == 3:
-        s11, s22, s12 = values
-        tensor = np.array([[s11, s12, 0.0], [s12, s22, 0.0], [0.0, 0.0, 0.0]])
-        result = {
-            "S11": float(s11), "S22": float(s22), "S12": float(s12),
-            "Mises": float(invariants.von_mises_plane(
-                s11, s22, s12, plane_type or "stress", poisson_ratio or 0.0
-            )),
+        element_values[int(element.id)] = {
+            "LE11": strain,
+            "S11": stress,
+            "Mises": mises,
         }
-    else:
-        s11, s22, s33, s12, s23, s13 = values
-        tensor = np.array([[s11, s12, s13], [s12, s22, s23], [s13, s23, s33]])
-        result = {
-            "S11": float(s11), "S22": float(s22), "S33": float(s33),
-            "S12": float(s12), "S13": float(s13), "S23": float(s23),
-            "Mises": float(invariants.von_mises_3d(s11, s22, s33, s12, s23, s13)),
+    type_keys = dispatch.resolve_type_keys(mesh, None)
+    if type_keys == ("beam2",):
+        nodal_values = {
+            row.node_id: {
+                "S11Max": row.maximum,
+                "S11Min": row.minimum,
+                "S11AbsMax": row.absolute_maximum,
+            }
+            for row in beam.nodal_envelope(result)
         }
-    principal = np.linalg.eigvalsh(tensor)
-    result["MaxPrincipal"] = float(principal[-1])
-    result["MinPrincipal"] = float(principal[0])
-    return result
+    return element_values, nodal_values
 
 
 def _stress_labels(
@@ -537,20 +714,29 @@ def _stress_labels(
     labels = {
         "LE11": "轴向应变", "S11": "S11", "S22": "S22", "S33": "S33",
         "S12": "S12", "S13": "S13", "S23": "S23", "Mises": "Mises",
-        "MaxPrincipal": "最大主应力", "MinPrincipal": "最小主应力",
+        "MaxPrincipal": "最大主应力", "MidPrincipal": "中间主应力",
+        "MinPrincipal": "最小主应力",
+        "S11Max": "最大轴向应力", "S11Min": "最小轴向应力",
+        "S11AbsMax": "最大绝对值轴向应力",
     }
     return tuple((key, labels[key]) for key in labels if key in available)
 
 
-def _fallback_nodal_scalar(samples: tuple[StressSample, ...], key: str) -> float:
-    """为非绘图消费者提供完整节点数组；绘图仍保留区域硬边界。"""
-    rows = [sample for sample in samples if key in sample.values]
-    if not rows:
-        return float("nan")
-    return float(np.average(
-        [sample.values[key] for sample in rows],
-        weights=[sample.weight for sample in rows],
-    ))
+def _stress_field_labels(
+    stress_field: field.StressField,
+) -> tuple[tuple[str, str], ...]:
+    available = {
+        *stress_field.component_names,
+        "Mises",
+        "MaxPrincipal",
+        "MidPrincipal",
+        "MinPrincipal",
+    }
+    return tuple(
+        (key, _STRESS_LABELS[key])
+        for key in _STRESS_LABELS
+        if key in available
+    )
 
 
 def _add_field(fields: dict[str, ScalarField], key: str, label: str, association: str, values: np.ndarray) -> None:

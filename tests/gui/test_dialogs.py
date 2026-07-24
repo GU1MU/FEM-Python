@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QApplication
 
 from fem.abaqus import read
 from fem.solvers.static_linear import solve
+from fem_gui.dialogs import CompactDoubleSpinBox
 from fem_gui.postprocessing_dialogs import (
     ContourSettingsDialog,
     ResultDisplayDialog,
@@ -28,6 +29,19 @@ def _result_data(gui_inp_path):
     model = read(gui_inp_path)
     geometry = build_model_geometry(model)
     return model, geometry, build_result_data(solve(model), geometry)
+
+
+def test_compact_number_input_hides_only_insignificant_trailing_zeroes():
+    _application()
+    editor = CompactDoubleSpinBox()
+    editor.setDecimals(8)
+
+    editor.setValue(1.0)
+    assert editor.text() == "1.00"
+
+    editor.setValue(0.0001)
+    assert editor.text() == "0.0001"
+    assert editor.value() == 0.0001
 
 
 def test_result_display_dialog_exposes_real_families_positions_and_components(gui_inp_path):
