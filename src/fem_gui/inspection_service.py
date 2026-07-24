@@ -188,6 +188,7 @@ class InspectionService:
             "boundary": self._inspect_boundary, "cload": self._inspect_cload,
             "surface_load": self._inspect_surface_load, "edge_load": self._inspect_edge_load,
             "line_load": self._inspect_line_load,
+            "gravity_load": self._inspect_gravity_load,
             "output": self._inspect_output,
         }
         if kind not in handlers:
@@ -228,6 +229,16 @@ class InspectionService:
             return EntitySelection(element_ids=self.target_element_ids(
                 self.model.steps[step_index].line_loads[index].target
             ))
+        if kind == "gravity_load":
+            step_index, index = key
+            target = self.model.steps[step_index].gravity_loads[index].target
+            if target is None:
+                return EntitySelection(
+                    element_ids=tuple(sorted(self.elements))
+                )
+            return EntitySelection(
+                element_ids=self.target_element_ids(target)
+            )
         return EntitySelection()
 
     def target_element_ids(self, target: str | int) -> tuple[int, ...]:
@@ -457,6 +468,7 @@ class InspectionService:
             + len(step.surface_loads)
             + len(step.edge_loads)
             + len(step.line_loads)
+            + len(step.gravity_loads)
         )
         pages = [InspectionPage("概况", (
             ("分析步名称", step.name), ("分析类型", _procedure_label(step.procedure)),
@@ -491,6 +503,20 @@ class InspectionService:
                 ", ".join(format_number(value) for value in item.vector),
             ))
             load_refs.append(EntityReference("line_load", (step_index, index)))
+        for index, item in enumerate(step.gravity_loads):
+            load_rows.append((
+                str(len(load_rows) + 1),
+                "重力",
+                "整个模型" if item.target is None else str(item.target),
+                "全局坐标",
+                ", ".join(
+                    format_number(value)
+                    for value in item.acceleration
+                ),
+            ))
+            load_refs.append(
+                EntityReference("gravity_load", (step_index, index))
+            )
         if load_rows:
             pages.append(InspectionPage("载荷", tables=(InspectionTable(
                 "载荷", ("序号", "类型", "目标", "分量或方向", "数值"), tuple(load_rows), tuple(load_refs),
@@ -551,6 +577,32 @@ class InspectionService:
             (InspectionPage("载荷", fields),),
         )
 
+    def _inspect_gravity_load(self, key: object) -> EntityInspection:
+        step_index, index = key
+        step = self.model.steps[step_index]
+        item = step.gravity_loads[index]
+        target = (
+            "整个模型"
+            if item.target is None
+            else str(item.target)
+        )
+        fields = (
+            ("所属分析步", step.name),
+            ("类型", "重力"),
+            ("目标", target),
+            (
+                "加速度向量",
+                ", ".join(
+                    format_number(value)
+                    for value in item.acceleration
+                ),
+            ),
+        )
+        return EntityInspection(
+            "重力", "gravity_load", key,
+            (InspectionPage("载荷", fields),),
+        )
+
     def _inspect_distributed_load(self, kind: str, key: object) -> EntityInspection:
         step_index, index = key
         step = self.model.steps[step_index]
@@ -577,10 +629,24 @@ class InspectionService:
     def _reference_names(self, references: tuple[EntityReference, ...] | list[EntityReference]) -> str:
         names = []
         for reference in references:
-            if reference.kind in {"boundary", "cload", "surface_load", "edge_load", "line_load"}:
+            if reference.kind in {
+                "boundary",
+                "cload",
+                "surface_load",
+                "edge_load",
+                "line_load",
+                "gravity_load",
+            }:
                 step_index, index = reference.key
                 step = self.model.steps[step_index]
-                labels = {"boundary": "边界条件", "cload": "节点载荷", "surface_load": "面载荷", "edge_load": "边载荷", "line_load": "梁均布载荷"}
+                labels = {
+                    "boundary": "边界条件",
+                    "cload": "节点载荷",
+                    "surface_load": "面载荷",
+                    "edge_load": "边载荷",
+                    "line_load": "梁均布载荷",
+                    "gravity_load": "重力",
+                }
                 names.append(f"{step.name} / {labels[reference.kind]} {index + 1}")
         return "、".join(names) or "—"
 

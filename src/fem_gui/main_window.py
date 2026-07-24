@@ -22,6 +22,7 @@ from fem.boundary.step import boundary_for_step
 from fem.core.model import (
     DisplacementConstraint,
     EdgeLoad,
+    GravityLoad,
     NodalLoad,
     SurfaceLoad,
 )
@@ -1446,6 +1447,11 @@ class FEMMainWindow(QMainWindow):
             names.update(str(item.target) for item in step.cloads)
             names.update(item.edge for item in step.edge_loads)
             names.update(item.surface for item in step.surface_loads)
+            names.update(
+                str(item.target)
+                for item in step.gravity_loads
+                if isinstance(item.target, str)
+            )
         return names
 
     def show_named_region_manager(self) -> None:
@@ -1508,6 +1514,16 @@ class FEMMainWindow(QMainWindow):
                 if isinstance(item, SurfaceLoad)
                 else item
                 for item in step.surface_loads
+            )
+            step.gravity_loads = tuple(
+                replace(
+                    item,
+                    target=renames.get(item.target, item.target),
+                )
+                if isinstance(item, GravityLoad)
+                and isinstance(item.target, str)
+                else item
+                for item in step.gravity_loads
             )
         self.document.named_regions = updated
         self.document.clear_jobs()
@@ -2462,12 +2478,6 @@ class FEMMainWindow(QMainWindow):
         node_regions, edge_regions, face_regions = (
             self._supported_load_region_names()
         )
-        if not any((node_regions, edge_regions, face_regions)) and isinstance(
-            self.document.geometry_recipe,
-            NATIVE_GEOMETRY_TYPES,
-        ):
-            self._request_analysis_geometry_selection("load")
-            return
         dimensions = (
             model.mesh.dofs_per_node
             if model is not None
@@ -2496,10 +2506,11 @@ class FEMMainWindow(QMainWindow):
             for step in self.document.analysis_definitions
             if step.name == step_name
         )
-        from fem.core.model import EdgeLoad, NodalLoad, SurfaceLoad
+        from fem.core.model import EdgeLoad, GravityLoad, NodalLoad, SurfaceLoad
         if isinstance(load, NodalLoad): step.cloads = tuple(step.cloads) + (load,)
         elif isinstance(load, EdgeLoad): step.edge_loads = tuple(step.edge_loads) + (load,)
         elif isinstance(load, SurfaceLoad): step.surface_loads = tuple(step.surface_loads) + (load,)
+        elif isinstance(load, GravityLoad): step.gravity_loads = tuple(step.gravity_loads) + (load,)
         self._analysis_definitions_changed("载荷已修改，模型需要重新检查")
 
     def create_output_request(self) -> None:
@@ -2566,6 +2577,7 @@ class FEMMainWindow(QMainWindow):
             "cload": "node_load",
             "edge_load": "edge_load",
             "surface_load": "surface_load",
+            "gravity_load": "gravity_load",
             "output": "output",
         }.get(kind)
         if manager_kind is None:
@@ -2611,7 +2623,9 @@ class FEMMainWindow(QMainWindow):
                     "载荷",
                     len(step.cloads)
                     + len(step.edge_loads)
-                    + len(step.surface_loads),
+                    + len(step.surface_loads)
+                    + len(step.line_loads)
+                    + len(step.gravity_loads),
                 ),
                 ("输出请求", len(step.outputs)),
                 ("状态", "将在生成网格后编译到有限元模型"),
@@ -3802,6 +3816,7 @@ class FEMMainWindow(QMainWindow):
             "cload",
             "edge_load",
             "surface_load",
+            "gravity_load",
             "output",
         }:
             self.edit_analysis_definition(kind, key)

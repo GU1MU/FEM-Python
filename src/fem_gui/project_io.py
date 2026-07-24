@@ -10,6 +10,7 @@ from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
     EdgeLoad,
+    GravityLoad,
     MaterialDefinition,
     NodalLoad,
     OutputRequest,
@@ -157,11 +158,71 @@ def _decode_mesh_settings(data: dict[str, Any] | None):
 
 
 def _encode_step(step: AnalysisStep) -> dict[str, Any]:
-    return {"name": step.name, "procedure": step.procedure, "metadata": dict(step.metadata), "boundaries": [item.__dict__ for item in step.boundaries], "cloads": [item.__dict__ for item in step.cloads], "edge_loads": [item.__dict__ for item in step.edge_loads], "surface_loads": [item.__dict__ for item in step.surface_loads], "outputs": [{"kind": item.kind, "target": item.target, "variables": list(item.variables), "metadata": dict(item.metadata)} for item in step.outputs]}
+    return {
+        "name": step.name,
+        "procedure": step.procedure,
+        "metadata": dict(step.metadata),
+        "boundaries": [item.__dict__ for item in step.boundaries],
+        "cloads": [item.__dict__ for item in step.cloads],
+        "edge_loads": [item.__dict__ for item in step.edge_loads],
+        "surface_loads": [item.__dict__ for item in step.surface_loads],
+        "gravity_loads": [
+            {
+                "acceleration": list(item.acceleration),
+                "target": item.target,
+            }
+            for item in step.gravity_loads
+        ],
+        "outputs": [
+            {
+                "kind": item.kind,
+                "target": item.target,
+                "variables": list(item.variables),
+                "metadata": dict(item.metadata),
+            }
+            for item in step.outputs
+        ],
+    }
 
 
 def _decode_step(data: dict[str, Any]) -> AnalysisStep:
-    return AnalysisStep(data["name"], data.get("procedure", "static"), boundaries=[DisplacementConstraint(**item) for item in data.get("boundaries", ())], cloads=[NodalLoad(**item) for item in data.get("cloads", ())], edge_loads=[EdgeLoad(**item) for item in data.get("edge_loads", ())], surface_loads=[SurfaceLoad(**item) for item in data.get("surface_loads", ())], outputs=[OutputRequest(item["kind"], item["target"], item.get("variables", ()), item.get("metadata", {})) for item in data.get("outputs", ())], metadata=data.get("metadata", {}))
+    return AnalysisStep(
+        data["name"],
+        data.get("procedure", "static"),
+        boundaries=[
+            DisplacementConstraint(**item)
+            for item in data.get("boundaries", ())
+        ],
+        cloads=[
+            NodalLoad(**item)
+            for item in data.get("cloads", ())
+        ],
+        edge_loads=[
+            EdgeLoad(**item)
+            for item in data.get("edge_loads", ())
+        ],
+        surface_loads=[
+            SurfaceLoad(**item)
+            for item in data.get("surface_loads", ())
+        ],
+        gravity_loads=[
+            GravityLoad(
+                item.get("acceleration", ()),
+                item.get("target"),
+            )
+            for item in data.get("gravity_loads", ())
+        ],
+        outputs=[
+            OutputRequest(
+                item["kind"],
+                item["target"],
+                item.get("variables", ()),
+                item.get("metadata", {}),
+            )
+            for item in data.get("outputs", ())
+        ],
+        metadata=data.get("metadata", {}),
+    )
 
 
 def _history_for_recipe(recipe: Any) -> list[FeatureRecord]:

@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication
 from fem.core.model import (
     DisplacementConstraint,
     EdgeLoad,
+    GravityLoad,
     MaterialDefinition,
     NodalLoad,
     OutputRequest,
@@ -158,6 +159,73 @@ def test_load_dialog_can_edit_an_existing_distributed_load():
     assert load.vector == (2.0, -3.0)
 
 
+def test_load_dialog_creates_global_gravity_without_a_named_region():
+    _application()
+    dialog = LoadDialog(
+        ["Load"],
+        [],
+        [],
+        [],
+        3,
+        spatial_dimensions=3,
+    )
+
+    assert dialog.kind_combo.currentData() == "gravity"
+    assert not dialog.form.isRowVisible(dialog.region_combo)
+    assert dialog.form.labelForField(dialog.x_spin).text() == "ax"
+    assert dialog.form.labelForField(dialog.z_spin).text() == "az"
+
+    step_name, load = dialog.definition()
+
+    assert step_name == "Load"
+    assert load == GravityLoad((0.0, 0.0, -9.81))
+
+
+def test_load_dialog_keeps_gravity_and_distributed_vectors_separate():
+    _application()
+    dialog = LoadDialog(
+        ["Load"],
+        [],
+        ["EdgeSet"],
+        [],
+        2,
+        spatial_dimensions=2,
+    )
+
+    assert dialog.kind_combo.currentData() == "edge"
+    assert dialog.y_spin.value() == 0.0
+    dialog.kind_combo.setCurrentIndex(
+        dialog.kind_combo.findData("gravity")
+    )
+    assert dialog.y_spin.value() == -9.81
+    dialog.kind_combo.setCurrentIndex(
+        dialog.kind_combo.findData("edge")
+    )
+    assert dialog.y_spin.value() == 0.0
+
+
+def test_analysis_manager_lists_and_deletes_gravity_loads():
+    _application()
+    step = static("Load")
+    step.gravity_loads = (GravityLoad((0.0, -9.81)),)
+    manager = AnalysisDefinitionManagerDialog(
+        [step],
+        [],
+        [],
+        [],
+        2,
+        spatial_dimensions=2,
+    )
+
+    assert manager.table.rowCount() == 2
+    assert manager.table.item(1, 0).text() == "重力"
+    manager.table.selectRow(1)
+    manager._delete()
+
+    assert step.gravity_loads == (GravityLoad((0.0, -9.81)),)
+    assert manager.values()[0].gravity_loads == ()
+
+
 def test_load_dialog_only_shows_parameters_for_the_selected_load_kind():
     _application()
     dialog = LoadDialog(
@@ -252,7 +320,8 @@ def test_main_window_filters_distributed_load_regions_by_model_dimension():
 
 def test_load_dialog_validates_region_and_builds_pressure():
     _application()
-    missing_region = LoadDialog(["Load"], [], [], [], 2)
+    missing_region = LoadDialog(["Load"], [], ["Loaded"], [], 2)
+    missing_region.region_combo.clear()
     with pytest.raises(ValueError, match="载荷区域"):
         missing_region.definition()
 

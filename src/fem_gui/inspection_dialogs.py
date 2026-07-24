@@ -85,6 +85,7 @@ class EntityInfoDialog(QDialog):
         can_locate = inspection.kind in {
             "node", "element", "node_set", "element_set", "surface", "edge",
             "material", "section", "boundary", "cload", "surface_load", "edge_load",
+            "gravity_load",
         }
         highlight.setEnabled(can_locate)
         locate.setEnabled(can_locate)

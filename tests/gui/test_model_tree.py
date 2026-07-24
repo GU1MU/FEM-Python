@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from fem.abaqus import read
+from fem.core.model import GravityLoad
 from fem_gui.widgets.model_tree import ModelTree, ROLE_KIND
 
 
@@ -181,6 +182,29 @@ def test_native_geometry_tree_is_shallow_model_part_feature_history():
         "Sketch-1", "Extrude-1", "Cut-1",
     ]
     assert len(_items(tree)) == 5
+
+
+def test_gravity_is_a_regular_load_tree_item(gui_inp_path):
+    _application()
+    model = read(gui_inp_path)
+    step_index = next(
+        index
+        for index, step in enumerate(model.steps)
+        if step.name == "Static-1"
+    )
+    model.steps[step_index].gravity_loads = (
+        GravityLoad((0.0, -9.81)),
+    )
+    tree = ModelTree()
+    tree.set_model(model)
+
+    gravity = next(
+        item
+        for item in _items(tree)
+        if item.data(0, ROLE_KIND) == "gravity_load"
+    )
+    assert gravity.text(0) == "重力 1"
+    assert not gravity.icon(0).isNull()
 
 
 def test_native_meshed_tree_keeps_the_part_feature_history(gui_inp_path):

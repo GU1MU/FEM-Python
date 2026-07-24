@@ -27,6 +27,7 @@ _TREE_ICONS = {
     "surface_load": "load",
     "edge_load": "load",
     "line_load": "load",
+    "gravity_load": "load",
     "output": "output",
 }
 
@@ -49,6 +50,7 @@ _EDITABLE_KINDS = {
     "cload",
     "edge_load",
     "surface_load",
+    "gravity_load",
     "output",
 }
 
@@ -176,6 +178,7 @@ class ModelTree(QTreeWidget):
                 + len(step.surface_loads)
                 + len(step.edge_loads)
                 + len(step.line_loads)
+                + len(getattr(step, "gravity_loads", ()))
             )
             load_root = self._category(step_item, "载荷", load_count)
             for load_index, _load in enumerate(step.cloads):
@@ -188,6 +191,14 @@ class ModelTree(QTreeWidget):
                 load_root.addChild(self._item(
                     f"梁均布载荷 {load_index + 1}",
                     "line_load",
+                    (index, load_index),
+                ))
+            for load_index, _load in enumerate(
+                getattr(step, "gravity_loads", ())
+            ):
+                load_root.addChild(self._item(
+                    f"重力 {load_index + 1}",
+                    "gravity_load",
                     (index, load_index),
                 ))
             output_root = self._category(step_item, "输出请求", len(step.outputs))

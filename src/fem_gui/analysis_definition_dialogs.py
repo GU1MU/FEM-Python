@@ -29,6 +29,7 @@ from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
     EdgeLoad,
+    GravityLoad,
     NodalLoad,
     OutputRequest,
     SurfaceLoad,
@@ -178,7 +179,7 @@ class LoadDialog(QDialog):
         spatial_dimensions: int | None = None,
         selected_region: str | None = None,
         preferred_kind: str | None = None,
-        current: NodalLoad | EdgeLoad | SurfaceLoad | None = None,
+        current: NodalLoad | EdgeLoad | SurfaceLoad | GravityLoad | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("编辑载荷" if current is not None else "创建载荷")
@@ -191,6 +192,10 @@ class LoadDialog(QDialog):
         if node_regions: self.kind_combo.addItem("节点力", "node")
         if edge_regions: self.kind_combo.addItem("边载荷", "edge")
         if face_regions: self.kind_combo.addItem("面载荷", "surface")
+        self.kind_combo.addItem("重力", "gravity")
+        self._gravity_target = (
+            current.target if isinstance(current, GravityLoad) else None
+        )
         self.step_combo.addItems(step_names)
         self.load_type_combo = QComboBox(self); self.load_type_combo.addItem("牵引", "traction"); self.load_type_combo.addItem("压力", "pressure")
         self.component_combo = QComboBox(self)
@@ -202,6 +207,15 @@ class LoadDialog(QDialog):
             )
             self.component_combo.addItem(label, component)
         self.value_spin, self.x_spin, self.y_spin, self.z_spin = _value(self), _value(self), _value(self), _value(self)
+        zero_vector = (0.0,) * self.spatial_dimensions
+        gravity_vector = list(zero_vector)
+        gravity_vector[-1] = -9.81
+        self._vector_values = {
+            "edge": zero_vector,
+            "surface": zero_vector,
+            "gravity": tuple(gravity_vector),
+        }
+        self._active_vector_kind: str | None = None
         self.form = QFormLayout()
         configure_form_layout(self.form)
         self.form.addRow("载荷类别", self.kind_combo)
@@ -236,6 +250,7 @@ class LoadDialog(QDialog):
                 max(0, self.load_type_combo.findData(current.load_type))
             )
             self._set_distributed_values(current.vector, current.magnitude)
+            self._vector_values["edge"] = tuple(current.vector)
         elif isinstance(current, SurfaceLoad):
             self.kind_combo.setCurrentIndex(
                 max(0, self.kind_combo.findData("surface"))
@@ -245,6 +260,16 @@ class LoadDialog(QDialog):
                 max(0, self.load_type_combo.findData(current.load_type))
             )
             self._set_distributed_values(current.vector, current.magnitude)
+            self._vector_values["surface"] = tuple(current.vector)
+        elif isinstance(current, GravityLoad):
+            self.kind_combo.setCurrentIndex(
+                max(0, self.kind_combo.findData("gravity"))
+            )
+            self._set_distributed_values(
+                tuple(current.acceleration),
+                None,
+            )
+            self._vector_values["gravity"] = tuple(current.acceleration)
         layout = QVBoxLayout(self); layout.addLayout(self.form); layout.addWidget(_buttons(self)); self.setMinimumWidth(350); self._refresh()
         if selected_region:
             self.region_combo.setCurrentText(selected_region)
@@ -264,21 +289,64 @@ class LoadDialog(QDialog):
 
     def _refresh(self) -> None:
         kind = str(self.kind_combo.currentData() or "node")
+        if (
+            self._active_vector_kind in self._vector_values
+            and self._active_vector_kind != kind
+        ):
+            self._vector_values[self._active_vector_kind] = tuple(
+                spin.value()
+                for spin in (self.x_spin, self.y_spin, self.z_spin)[
+                    :self.spatial_dimensions
+                ]
+            )
+        if kind in self._vector_values and self._active_vector_kind != kind:
+            self._set_distributed_values(
+                self._vector_values[kind],
+                None,
+            )
+        self._active_vector_kind = (
+            kind if kind in self._vector_values else None
+        )
+        gravity = kind == "gravity"
         current = self.region_combo.currentText()
         self.region_combo.clear()
-        self.region_combo.addItems(self._regions[kind])
+        if gravity:
+            if self._gravity_target is not None:
+                self.region_combo.addItem(
+                    str(self._gravity_target),
+                    self._gravity_target,
+                )
+        else:
+            self.region_combo.addItems(self._regions[kind])
         self.region_combo.setCurrentText(current)
-        distributed = kind != "node"
+        distributed = kind in {"edge", "surface"}
         pressure = self.load_type_combo.currentData() == "pressure"
+        self.form.setRowVisible(
+            self.region_combo,
+            not gravity or self._gravity_target is not None,
+        )
+        self.region_combo.setEnabled(not gravity)
         self.form.setRowVisible(self.load_type_combo, distributed)
-        self.form.setRowVisible(self.component_combo, not distributed)
-        self.form.setRowVisible(self.value_spin, not distributed or pressure)
+        self.form.setRowVisible(self.component_combo, kind == "node")
+        self.form.setRowVisible(
+            self.value_spin,
+            kind == "node" or (distributed and pressure),
+        )
         self.form.labelForField(self.value_spin).setText(
             "压力值" if pressure and distributed else "载荷值"
         )
-        show_vector = distributed and not pressure
+        show_vector = gravity or (distributed and not pressure)
+        vector_labels = ("ax", "ay", "az") if gravity else ("Fx", "Fy", "Fz")
+        for spin, label in zip(
+            (self.x_spin, self.y_spin, self.z_spin),
+            vector_labels,
+        ):
+            self.form.labelForField(spin).setText(label)
         self.form.setRowVisible(self.x_spin, show_vector)
-        self.form.setRowVisible(self.y_spin, show_vector)
+        self.form.setRowVisible(
+            self.y_spin,
+            show_vector and self.spatial_dimensions >= 2,
+        )
         self.form.setRowVisible(
             self.z_spin,
             show_vector and self.spatial_dimensions == 3,
@@ -290,6 +358,16 @@ class LoadDialog(QDialog):
         region = self.region_combo.currentText().strip()
         if not step:
             raise ValueError("请选择分析步")
+        if kind == "gravity":
+            acceleration = (self.x_spin.value(),)
+            if self.spatial_dimensions >= 2:
+                acceleration += (self.y_spin.value(),)
+            if self.spatial_dimensions == 3:
+                acceleration += (self.z_spin.value(),)
+            return step, GravityLoad(
+                acceleration,
+                self._gravity_target,
+            )
         if not region:
             raise ValueError("请选择载荷区域")
         if kind == "node":
@@ -562,6 +640,20 @@ class AnalysisDefinitionManagerDialog(QDialog):
                     ),
                     ("surface_load", step_index, item_index),
                 )
+            for item_index, load in enumerate(step.gravity_loads):
+                self._append_row(
+                    (
+                        "重力",
+                        step.name,
+                        (
+                            "整个模型"
+                            if load.target is None
+                            else str(load.target)
+                        ),
+                        self._gravity_text(load),
+                    ),
+                    ("gravity_load", step_index, item_index),
+                )
             for item_index, output in enumerate(step.outputs):
                 self._append_row(
                     (
@@ -599,6 +691,12 @@ class AnalysisDefinitionManagerDialog(QDialog):
         if load.load_type == "pressure":
             return f"压力 = {float(load.magnitude or 0.0):g}"
         return "牵引 = (" + ", ".join(f"{value:g}" for value in load.vector) + ")"
+
+    @staticmethod
+    def _gravity_text(load: GravityLoad) -> str:
+        return "加速度 = (" + ", ".join(
+            f"{value:g}" for value in load.acceleration
+        ) + ")"
 
     @staticmethod
     def _boundary_text(boundary: DisplacementConstraint) -> str:
@@ -697,11 +795,17 @@ class AnalysisDefinitionManagerDialog(QDialog):
             self._step(target_step).boundaries = tuple(
                 self._step(target_step).boundaries
             ) + values
-        elif kind in {"node_load", "edge_load", "surface_load"}:
+        elif kind in {
+            "node_load",
+            "edge_load",
+            "surface_load",
+            "gravity_load",
+        }:
             collection_name = {
                 "node_load": "cloads",
                 "edge_load": "edge_loads",
                 "surface_load": "surface_loads",
+                "gravity_load": "gravity_loads",
             }[kind]
             collection = tuple(getattr(step, collection_name))
             current = collection[int(item_index)]
@@ -780,6 +884,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
                 "node_load": "cloads",
                 "edge_load": "edge_loads",
                 "surface_load": "surface_loads",
+                "gravity_load": "gravity_loads",
                 "output": "outputs",
             }[kind]
             collection = tuple(getattr(step, collection_name))
@@ -800,14 +905,16 @@ class AnalysisDefinitionManagerDialog(QDialog):
     @staticmethod
     def _append_load(
         step: AnalysisStep,
-        load: NodalLoad | EdgeLoad | SurfaceLoad,
+        load: NodalLoad | EdgeLoad | SurfaceLoad | GravityLoad,
     ) -> None:
         if isinstance(load, NodalLoad):
             step.cloads = tuple(step.cloads) + (load,)
         elif isinstance(load, EdgeLoad):
             step.edge_loads = tuple(step.edge_loads) + (load,)
-        else:
+        elif isinstance(load, SurfaceLoad):
             step.surface_loads = tuple(step.surface_loads) + (load,)
+        else:
+            step.gravity_loads = tuple(step.gravity_loads) + (load,)
 
     def _update_buttons(self) -> None:
         selected = self._selected() is not None

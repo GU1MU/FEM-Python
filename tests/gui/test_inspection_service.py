@@ -4,7 +4,12 @@ from fem.abaqus import read
 from fem.solvers.static_linear import solve
 from fem.core.mesh import Element3D, Mesh3D, Node3D
 from fem.core.model import (
-    AnalysisStep, ElementSet, FEMModel, LineLoad, MaterialDefinition,
+    AnalysisStep,
+    ElementSet,
+    FEMModel,
+    GravityLoad,
+    LineLoad,
+    MaterialDefinition,
     SectionAssignment,
 )
 from fem_gui.inspection_service import InspectionService
@@ -127,3 +132,25 @@ def test_beam_section_and_line_load_use_the_common_inspection_service():
     assert load_fields["坐标系"] == "局部"
     assert load_fields["载荷向量"] == "0, -5, 0"
     assert service.selection_for("line_load", (0, 0)).element_ids == (10,)
+
+
+def test_global_gravity_uses_the_common_inspection_and_selection(gui_inp_path):
+    model = read(gui_inp_path)
+    step_index = next(
+        index
+        for index, step in enumerate(model.steps)
+        if step.name == "Static-1"
+    )
+    model.steps[step_index].gravity_loads = (
+        GravityLoad((0.0, -9.81)),
+    )
+    service = InspectionService(model)
+
+    inspection = service.inspect("gravity_load", (step_index, 0))
+
+    assert inspection.title == "重力"
+    assert _fields(inspection.pages[0])["目标"] == "整个模型"
+    assert service.selection_for(
+        "gravity_load",
+        (step_index, 0),
+    ).element_ids == tuple(sorted(service.elements))

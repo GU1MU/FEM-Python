@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from fem.core.model import DisplacementConstraint, MaterialDefinition, NodalLoad
+from fem.core.model import (
+    DisplacementConstraint,
+    GravityLoad,
+    MaterialDefinition,
+    NodalLoad,
+)
 from fem.steps.factory import static
 from fem_gui.document import FEMDocument, RegionAssignment, SectionDefinition
 from fem_gui.preprocessing import MeshSettings, SketchCircle, SketchGeometry, SketchRectangle
@@ -24,6 +29,7 @@ def test_native_project_round_trip_preserves_editable_workflow_definitions(tmp_p
     step = static("Load")
     step.boundaries = (DisplacementConstraint("LEFT", 1, 2, 0.0),)
     step.cloads = (NodalLoad("RIGHT", 1, 100.0),)
+    step.gravity_loads = (GravityLoad((0.0, -9.81)),)
     document.analysis_definitions = [step]
     assert document.dirty
     target = save_native_project(tmp_path / "plate.femproj", document)
@@ -39,6 +45,9 @@ def test_native_project_round_trip_preserves_editable_workflow_definitions(tmp_p
     assert reopened.section_definitions[0].properties["thickness"] == 2.0
     assert reopened.region_assignments[0].region_name == "DOMAIN"
     assert reopened.analysis_definitions[0].cloads[0].value == 100.0
+    assert reopened.analysis_definitions[0].gravity_loads == (
+        GravityLoad((0.0, -9.81)),
+    )
     assert not reopened.has_model
     assert not reopened.dirty
     assert reopened.workflow.reason == "项目已打开，请重新生成网格后检查模型"
