@@ -6,7 +6,20 @@ from dataclasses import dataclass
 import math
 from typing import Any, Iterable, Literal
 
-from fem.geometry import gmsh as geometry
+from fem import geometry
+from fem.core.model import (
+    Edge,
+    ElementEdge,
+    ElementFace,
+    ElementSet,
+    FEMModel,
+    NodeSet,
+    Surface,
+)
+from fem.io import gmsh as gmsh_io
+from fem.mesh import gmsh as gmsh_meshing
+from fem.selection import edges as mesh_edges
+from fem.selection import faces as mesh_faces
 
 
 @dataclass(frozen=True, slots=True)
@@ -883,6 +896,7 @@ def generate_fem_model(
                 groups = {}
             if isinstance(recipe, PlateWithHoleGeometry) and not hole_boundary:
                 raise RuntimeError("圆孔边界识别失败")
+            mesher = gmsh_meshing.Mesher(cad)
             if settings.cell_shape == "hexahedron":
                 if not supports_hexahedron(recipe):
                     raise ValueError("六面体结构化网格当前仅支持长方体或矩形草图拉伸体")
@@ -901,14 +915,16 @@ def generate_fem_model(
                     int(math.ceil(geometry_characteristic_size(recipe) / settings.size)) + 1,
                 )
                 for curve in curves:
-                    cad.transfinite_curve(curve, num_nodes=node_count)
+                    mesher.transfinite_curve(curve, num_nodes=node_count)
                 for surface in boundary:
-                    cad.transfinite_surface(surface)
-                    cad.recombine(surface)
-                cad.transfinite_volume(domain[0])
-            cad.physical("DOMAIN", domain)
-            for name, entities in groups.items():
-                cad.physical(name, entities)
+                    mesher.transfinite_surface(surface)
+                    mesher.recombine(surface)
+                mesher.transfinite_volume(domain[0])
+
+            entity_groups: dict[str, tuple] = {
+                "DOMAIN": tuple(domain),
+                **groups,
+            }
             for region in named_regions:
                 region_name = str(getattr(region, "name", "")).strip()
                 if not region_name or region_name == "DOMAIN":
@@ -928,14 +944,14 @@ def generate_fem_model(
                     region_ids,
                 )
                 if region_entities:
-                    cad.physical(region_name, region_entities)
+                    entity_groups[region_name] = region_entities
             if hole_boundary:
-                cad.physical("HOLE", hole_boundary)
+                entity_groups["HOLE"] = hole_boundary
             mesh_size = settings.size
             refinements = []
             if hole_boundary and settings.local_size is not None:
-                distance = cad.distance_field(curves=hole_boundary, sampling=100)
-                refinements.append(cad.threshold_field(
+                distance = mesher.distance_field(curves=hole_boundary, sampling=100)
+                refinements.append(mesher.threshold_field(
                     distance,
                     size_min=settings.local_size,
                     size_max=settings.size,
@@ -952,8 +968,8 @@ def generate_fem_model(
                     hole_boundary,
                     control,
                 )
-                distance = cad.distance_field(**sources, sampling=100)
-                refinements.append(cad.threshold_field(
+                distance = mesher.distance_field(**sources, sampling=100)
+                refinements.append(mesher.threshold_field(
                     distance,
                     size_min=control.size,
                     size_max=settings.size,
@@ -961,14 +977,28 @@ def generate_fem_model(
                     dist_max=settings.size * 2.0,
                 ))
             if refinements:
-                background = refinements[0] if len(refinements) == 1 else cad.min_field(refinements)
-                cad.background_field(background)
+                background = (
+                    refinements[0]
+                    if len(refinements) == 1
+                    else mesher.min_field(refinements)
+                )
+                mesher.background_field(background)
                 mesh_size = None
-            return cad.generate_fem_model(
+            native_mesh = mesher.generate(
+                gmsh_meshing.MeshSpec(
+                    size=mesh_size,
+                    order=settings.order,
+                    recombine=settings.cell_shape
+                    in {"quadrilateral", "hexahedron"},
+                )
+            )
+            mesh = gmsh_io.read(native_mesh)
+            return _build_native_fem_model(
+                mesh,
+                native_mesh,
                 recipe.name,
-                size=mesh_size,
-                order=settings.order,
-                recombine=settings.cell_shape in {"quadrilateral", "hexahedron"},
+                dimension,
+                entity_groups,
             )
     finally:
         if owns_session and bool(gmsh.isInitialized()):
@@ -1017,11 +1047,84 @@ def _build_cad_domain(cad, recipe: NativeGeometry):
         }[recipe.axis]
         return cad.rotate(domain, 0.0, 0.0, 0.0, *axis, math.radians(recipe.angle_degrees))
     source = _build_cad_domain(cad, recipe.base)
-    return tuple(
-        entity
-        for entity in cad.extrude(source, 0.0, 0.0, recipe.height)
-        if entity.dimension == 3
-    )
+    return cad.extrude(source, 0.0, 0.0, recipe.height).of_dimension(3)
+
+
+def _build_native_fem_model(
+    mesh: Any,
+    native_mesh: Any,
+    name: str,
+    dimension: int,
+    entity_groups: dict[str, tuple],
+) -> FEMModel:
+    """Convert CAD entity groups to FEM sets without public topology numbering."""
+    model = FEMModel(mesh=mesh, name=name)
+    backend = native_mesh._borrow_model()
+    boundary_edges = mesh_edges.boundary(mesh) if dimension == 2 else ()
+    boundary_faces = mesh_faces.boundary(mesh) if dimension == 3 else ()
+
+    for group_name, entities in entity_groups.items():
+        if not entities:
+            continue
+        entity_dimension = entities[0].dimension
+        if any(entity.dimension != entity_dimension for entity in entities):
+            raise ValueError(
+                f"几何区域 {group_name} 包含不同维度的实体"
+            )
+        if entity_dimension == dimension:
+            element_ids = _gmsh_entity_element_ids(backend, entities)
+            model.element_sets[group_name] = ElementSet(group_name, element_ids)
+            continue
+
+        node_ids = _gmsh_entity_node_ids(backend, entities)
+        model.node_sets[group_name] = NodeSet(group_name, node_ids)
+        node_id_set = set(node_ids)
+        if dimension == 2 and entity_dimension == 1:
+            model.edges[group_name] = Edge(
+                group_name,
+                [
+                    ElementEdge(element_id, local_edge, edge_node_ids)
+                    for element_id, local_edge, edge_node_ids in boundary_edges
+                    if set(edge_node_ids).issubset(node_id_set)
+                ],
+            )
+        elif dimension == 3 and entity_dimension == 2:
+            model.surfaces[group_name] = Surface(
+                group_name,
+                [
+                    ElementFace(element_id, local_face, face_node_ids)
+                    for element_id, local_face, face_node_ids in boundary_faces
+                    if set(face_node_ids).issubset(node_id_set)
+                ],
+            )
+    return model
+
+
+def _gmsh_entity_node_ids(backend: Any, entities: tuple) -> tuple[int, ...]:
+    """Return generated node ids attached to the supplied CAD entities."""
+    node_ids: set[int] = set()
+    for entity in entities:
+        raw_ids, _coordinates, _parameters = backend.mesh.getNodes(
+            entity.dimension,
+            entity.tag,
+            True,
+            False,
+        )
+        node_ids.update(int(node_id) for node_id in raw_ids)
+    return tuple(sorted(node_ids))
+
+
+def _gmsh_entity_element_ids(backend: Any, entities: tuple) -> tuple[int, ...]:
+    """Return generated top-dimensional element ids for CAD entities."""
+    element_ids: set[int] = set()
+    for entity in entities:
+        _types, tag_blocks, _connectivity = backend.mesh.getElements(
+            entity.dimension,
+            entity.tag,
+        )
+        for tags in tag_blocks:
+            element_ids.update(int(element_id) for element_id in tags)
+    return tuple(sorted(element_ids))
 
 
 def _compile_sketch(recipe: SketchGeometry) -> NativeGeometry:
