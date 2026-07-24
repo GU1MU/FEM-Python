@@ -4,7 +4,7 @@ from typing import Any
 
 import numpy as np
 
-from .base import build_node_lookup, extrapolate_tensor_product
+from .base import build_node_lookup, tensor_product_recovery_matrix
 from ..materials import linear_elastic
 
 
@@ -45,6 +45,8 @@ class Quad4Kernel:
         gauss_order: int = 2,
     ) -> np.ndarray:
         """Return Quad4 plane element stiffness."""
+        if node_lookup is None:
+            node_lookup = build_node_lookup(mesh)
         B_data = self._integration_data(mesh, elem, node_lookup, gauss_order)
         D, t = self._material_data(elem)
         Ke = np.zeros((8, 8), dtype=float)
@@ -80,19 +82,69 @@ class Quad4Kernel:
         """Return extrapolated element-nodal stress, plane type, and nu."""
         if gauss_order != 2:
             raise ValueError("gauss_order must be 2 for Quad4 extrapolation")
-
-        a = 1.0 / np.sqrt(3.0)
-        xi_pts = [-a, a]
-        eta_pts = [-a, a]
-        gp_vals = np.vstack([
-            self.stress_at(mesh, elem, U, xi, eta, node_lookup)
-            for xi in xi_pts
-            for eta in eta_pts
-        ])
-        node_coords = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
-        node_vals = extrapolate_tensor_product(gp_vals, xi_pts, eta_pts, node_coords)
+        _, integration_point_values = self.integration_point_stress(
+            mesh, elem, U, node_lookup, gauss_order
+        )
+        node_vals = self.extrapolate_stress_to_nodes(
+            integration_point_values, gauss_order
+        )
         plane_type, nu = self._plane_data(elem)
         return node_vals, plane_type, nu
+
+    def integration_point_stress(
+        self,
+        mesh: Any,
+        elem: Any,
+        U: np.ndarray,
+        node_lookup: dict[int, Any] | None = None,
+        gauss_order: int = 2,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return Quad4 stress components in integration-point order."""
+        if node_lookup is None:
+            node_lookup = build_node_lookup(mesh)
+        gauss_points = quad4_gauss_points(gauss_order)
+        points = np.asarray(
+            [(xi, eta) for xi, eta, _ in gauss_points],
+            dtype=float,
+        )
+        values = np.asarray([
+            self.stress_at(
+                mesh, elem, U, xi, eta, node_lookup=node_lookup
+            )
+            for xi, eta in points
+        ], dtype=float)
+        return points, values
+
+    @staticmethod
+    def extrapolate_stress_to_nodes(
+        integration_point_values: np.ndarray,
+        gauss_order: int = 2,
+    ) -> np.ndarray:
+        """Extrapolate Quad4 integration-point components to element nodes."""
+        if gauss_order != 2:
+            raise ValueError("gauss_order must be 2 for Quad4 extrapolation")
+        points = [(xi, eta) for xi, eta, _ in quad4_gauss_points(gauss_order)]
+        targets = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+        values = np.asarray(integration_point_values, dtype=float)
+        if values.shape[0] != len(points):
+            raise ValueError(
+                f"Quad4 requires {len(points)} integration-point rows, got {values.shape}"
+            )
+        return tensor_product_recovery_matrix(points, targets) @ values
+
+    @staticmethod
+    def interpolate_stress_to_centroid(
+        integration_point_values: np.ndarray,
+        gauss_order: int = 2,
+    ) -> np.ndarray:
+        """Interpolate Quad4 integration-point components to (0, 0)."""
+        points = [(xi, eta) for xi, eta, _ in quad4_gauss_points(gauss_order)]
+        values = np.asarray(integration_point_values, dtype=float)
+        if values.shape[0] != len(points):
+            raise ValueError(
+                f"Quad4 requires {len(points)} integration-point rows, got {values.shape}"
+            )
+        return (tensor_product_recovery_matrix(points, [(0.0, 0.0)]) @ values)[0]
 
     def body_force(
         self,
@@ -397,6 +449,8 @@ class Quad8Kernel:
                 f"Quad8 element {elem.id} requires 8 nodes, got {len(elem.node_ids)}; "
                 f"node_ids={elem.node_ids}"
             )
+        if node_lookup is None:
+            node_lookup = build_node_lookup(mesh)
 
         D, t = self._material_data(elem)
         Ke = np.zeros((16, 16), dtype=float)
@@ -430,28 +484,70 @@ class Quad8Kernel:
         """Return extrapolated element-nodal stress, plane type, and nu."""
         if gauss_order not in (2, 3):
             raise ValueError("gauss_order must be 2 or 3 for Quad8 extrapolation")
+        _, integration_point_values = self.integration_point_stress(
+            mesh, elem, U, node_lookup, gauss_order
+        )
+        node_vals = self.extrapolate_stress_to_nodes(
+            integration_point_values, gauss_order
+        )
+        plane_type, nu = self._plane_data(elem)
+        return node_vals, plane_type, nu
 
-        if gauss_order == 2:
-            a = 1.0 / np.sqrt(3.0)
-            xi_pts = [-a, a]
-            eta_pts = [-a, a]
-        else:
-            r = np.sqrt(3.0 / 5.0)
-            xi_pts = [-r, 0.0, r]
-            eta_pts = [-r, 0.0, r]
+    def integration_point_stress(
+        self,
+        mesh: Any,
+        elem: Any,
+        U: np.ndarray,
+        node_lookup: dict[int, Any] | None = None,
+        gauss_order: int = 3,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return Quad8 stress components in integration-point order."""
+        if node_lookup is None:
+            node_lookup = build_node_lookup(mesh)
+        gauss_points = quad8_gauss_points(gauss_order)
+        points = np.asarray(
+            [(xi, eta) for xi, eta, _ in gauss_points],
+            dtype=float,
+        )
+        values = np.asarray([
+            self.stress_at(
+                mesh, elem, U, xi, eta, node_lookup=node_lookup
+            )
+            for xi, eta in points
+        ], dtype=float)
+        return points, values
 
-        gp_vals = np.vstack([
-            self.stress_at(mesh, elem, U, xi, eta, node_lookup)
-            for xi in xi_pts
-            for eta in eta_pts
-        ])
-        node_coords = [
+    @staticmethod
+    def extrapolate_stress_to_nodes(
+        integration_point_values: np.ndarray,
+        gauss_order: int = 3,
+    ) -> np.ndarray:
+        """Extrapolate Quad8 integration-point components to eight nodes."""
+        points = [(xi, eta) for xi, eta, _ in quad8_gauss_points(gauss_order)]
+        targets = [
             (-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0),
             (0.0, -1.0), (1.0, 0.0), (0.0, 1.0), (-1.0, 0.0),
         ]
-        node_vals = extrapolate_tensor_product(gp_vals, xi_pts, eta_pts, node_coords)
-        plane_type, nu = self._plane_data(elem)
-        return node_vals, plane_type, nu
+        values = np.asarray(integration_point_values, dtype=float)
+        if values.shape[0] != len(points):
+            raise ValueError(
+                f"Quad8 requires {len(points)} integration-point rows, got {values.shape}"
+            )
+        return tensor_product_recovery_matrix(points, targets) @ values
+
+    @staticmethod
+    def interpolate_stress_to_centroid(
+        integration_point_values: np.ndarray,
+        gauss_order: int = 3,
+    ) -> np.ndarray:
+        """Interpolate Quad8 integration-point components to (0, 0)."""
+        points = [(xi, eta) for xi, eta, _ in quad8_gauss_points(gauss_order)]
+        values = np.asarray(integration_point_values, dtype=float)
+        if values.shape[0] != len(points):
+            raise ValueError(
+                f"Quad8 requires {len(points)} integration-point rows, got {values.shape}"
+            )
+        return (tensor_product_recovery_matrix(points, [(0.0, 0.0)]) @ values)[0]
 
     def body_force(
         self,

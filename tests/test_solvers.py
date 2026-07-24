@@ -98,6 +98,16 @@ def test_static_linear_validate_problem_matches_solver_rules():
         static_linear.validate_problem(model, "pull")
 
 
+def test_static_linear_stiffness_preflight_detects_free_rigid_dofs():
+    model = make_static_pull_truss_model()
+
+    assert static_linear.validate_stiffness(model, "pull").name == "pull"
+
+    model.steps[0].boundaries = model.steps[0].boundaries[:1]
+    with pytest.raises(ValueError, match="约束不足或刚度矩阵奇异"):
+        static_linear.validate_stiffness(model, "pull")
+
+
 def test_solve_uses_validate_problem(monkeypatch):
     model = make_static_pull_truss_model()
     selected = model.steps[0]

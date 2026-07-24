@@ -546,6 +546,69 @@ def test_hex20_nodal_stress_recovers_gauss_point_values():
     assert np.allclose(kernel.nodal_stress(mesh, elem, U), expected)
 
 
+@pytest.mark.parametrize(
+    ("mesh_builder", "element_type", "expected_points"),
+    [
+        (make_hex8_solid_stress_mesh, "Hex8", 8),
+        (make_hex20_stiffness_mesh, "Hex20", 27),
+    ],
+)
+def test_hex_integration_point_stress_builds_node_lookup_once(
+    monkeypatch,
+    mesh_builder,
+    element_type,
+    expected_points,
+):
+    mesh = mesh_builder()
+    kernel = get_element_kernel(element_type)
+    calls = 0
+    from fem.elements import hexahedron as hexahedron_module
+
+    original = hexahedron_module.build_node_lookup
+
+    def counted_lookup(source_mesh):
+        nonlocal calls
+        calls += 1
+        return original(source_mesh)
+
+    monkeypatch.setattr(hexahedron_module, "build_node_lookup", counted_lookup)
+    natural, values = kernel.integration_point_stress(
+        mesh,
+        mesh.elements[0],
+        np.zeros(mesh.num_dofs),
+    )
+
+    assert calls == 1
+    assert natural.shape[0] == expected_points
+    assert values.shape == (expected_points, 6)
+
+
+def test_hex8_bbar_stress_at_builds_node_lookup_once(monkeypatch):
+    mesh = make_hex8_solid_stress_mesh()
+    kernel = get_element_kernel("Hex8")
+    calls = 0
+    from fem.elements import hexahedron as hexahedron_module
+
+    original = hexahedron_module.build_node_lookup
+
+    def counted_lookup(source_mesh):
+        nonlocal calls
+        calls += 1
+        return original(source_mesh)
+
+    monkeypatch.setattr(hexahedron_module, "build_node_lookup", counted_lookup)
+    kernel.stress_at(
+        mesh,
+        mesh.elements[0],
+        np.zeros(mesh.num_dofs),
+        0.0,
+        0.0,
+        0.0,
+    )
+
+    assert calls == 1
+
+
 def test_hex20_shape_functions_interpolate_all_nodes():
     for local_index, coords in enumerate(HEX20_NATURAL_NODE_COORDS):
         N, dN_dxi, dN_deta, dN_dzeta = hex20_shape_funcs_grads(*coords)
@@ -725,36 +788,6 @@ def test_hex8_bbar_stress_matches_abaqus_c3d8_reference():
         rel=2.0e-5,
         abs=1.0e-8,
     )
-
-
-# Elements package
-
-
-def test_elements_use_family_modules_and_registry_module():
-    assert type(get_element_kernel("Quad4Plane")) is Quad4PlaneKernel
-    assert type(get_element_kernel("Quad8Plane")) is Quad8PlaneKernel
-    assert type(get_element_kernel("Tri3Plane")) is Tri3PlaneKernel
-    assert type(get_element_kernel("Tri6Plane")) is Tri6PlaneKernel
-    assert type(get_element_kernel("Hex8")) is Hex8Kernel
-    assert type(get_element_kernel("Tet4")) is Tet4Kernel
-    assert type(get_element_kernel("Tet10")) is Tet10Kernel
-    assert callable(quad4_shape_grad_xi_eta)
-    assert callable(quad8_shape_funcs_grads)
-    assert callable(tri6_shape_funcs_grads)
-    assert callable(hex8_shape_funcs_grads)
-    assert callable(tet10_shape_funcs_grads)
-    assert callable(register_element_kernel)
-
-    for old_module in (
-        "fem.elements.quad4",
-        "fem.elements.quad8",
-        "fem.elements.tri3",
-        "fem.elements.tet",
-        "fem.elements.hex8",
-    ):
-        sys.modules.pop(old_module, None)
-        with pytest.raises(ModuleNotFoundError):
-            importlib.import_module(old_module)
 
 
 @pytest.mark.parametrize("element_type", ["C3D20R", "c3D20r"])

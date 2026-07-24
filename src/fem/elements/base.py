@@ -41,6 +41,33 @@ class ElementKernel(Protocol):
         """Return element-nodal stresses when supported."""
         ...
 
+    def integration_point_stress(
+        self,
+        mesh: Any,
+        elem: Any,
+        U: np.ndarray,
+        node_lookup: dict[int, Any] | None = None,
+        *args,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return natural coordinates and stress components at integration points."""
+        ...
+
+    def extrapolate_stress_to_nodes(
+        self,
+        integration_point_values: np.ndarray,
+        *args,
+    ) -> np.ndarray:
+        """Recover element-nodal stress components from integration-point values."""
+        ...
+
+    def interpolate_stress_to_centroid(
+        self,
+        integration_point_values: np.ndarray,
+        *args,
+    ) -> np.ndarray:
+        """Recover centroid stress components from integration-point values."""
+        ...
+
     def element_stress(
         self,
         mesh: Any,
@@ -83,3 +110,20 @@ def extrapolate_tensor_product(gp_vals, xi_pts, eta_pts, node_coords):
                 val += gp_vals[idx] * (wx[i] * wy[j])
         node_vals.append(val)
     return np.array(node_vals)
+
+
+def tensor_product_recovery_matrix(point_coords, target_coords):
+    """Return a 2D tensor-product Lagrange recovery matrix in input-point order."""
+    points = [tuple(float(value) for value in point) for point in point_coords]
+    targets = [tuple(float(value) for value in point) for point in target_coords]
+    xi_points = sorted({point[0] for point in points})
+    eta_points = sorted({point[1] for point in points})
+    rows = []
+    for xi, eta in targets:
+        wx = lagrange_weights_1d(xi_points, xi)
+        wy = lagrange_weights_1d(eta_points, eta)
+        rows.append([
+            wx[xi_points.index(point_xi)] * wy[eta_points.index(point_eta)]
+            for point_xi, point_eta in points
+        ])
+    return np.asarray(rows, dtype=float)

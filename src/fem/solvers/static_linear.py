@@ -3,6 +3,10 @@ from __future__ import annotations
 from time import perf_counter
 from typing import Any
 
+import numpy as np
+from scipy.sparse import diags
+from scipy.sparse.linalg import splu
+
 from .. import materials
 from ..assemble import assemble_global_stiffness_sparse
 from ..boundary.constraints import apply_dirichlet
@@ -80,6 +84,150 @@ def validate_problem(
     validate_model(model, selected_step)
     _validate_static_step(selected_step)
     return selected_step
+
+
+def validate_stiffness(
+    model: Any,
+    step: str | int | AnalysisStep | None = None,
+) -> AnalysisStep | None:
+    """Verify that assigned sections and constraints produce a solvable matrix."""
+    selected_step = validate_problem(model, step)
+    materials.apply_sections(model)
+    boundary = boundary_for_step(model, selected_step)
+    K = assemble_global_stiffness_sparse(model.mesh)
+    zero_load = np.zeros(model.mesh.num_dofs, dtype=float)
+    K_mod, _F_mod = apply_dirichlet(K, zero_load, boundary)
+    try:
+        _validate_nonsingular_stiffness(K_mod)
+    except (RuntimeError, ValueError) as error:
+        raise ValueError(
+            "模型约束不足或刚度矩阵奇异；请检查刚体位移、材料、截面和单元连接"
+        ) from error
+    return selected_step
+
+
+def validate_constraint_stability(model: Any, boundary: Any) -> None:
+    """Reject unconstrained rigid-body modes without assembling stiffness."""
+    mesh = model.mesh
+    node_lookup = {int(node.id): node for node in mesh.nodes}
+    components = _connected_node_components(mesh)
+    constrained_dofs = set(boundary.prescribed_displacements)
+    dofs_per_node = int(mesh.dofs_per_node)
+    is_3d = any(hasattr(node, "z") for node in mesh.nodes)
+    mode_count = 6 if is_3d else 3
+
+    for node_ids in components:
+        coordinates = np.asarray(
+            [
+                [
+                    float(node_lookup[node_id].x),
+                    float(node_lookup[node_id].y),
+                    float(getattr(node_lookup[node_id], "z", 0.0)),
+                ]
+                for node_id in node_ids
+            ],
+            dtype=float,
+        )
+        center = np.mean(coordinates, axis=0)
+        rows: list[np.ndarray] = []
+        for node_id, coordinate in zip(node_ids, coordinates):
+            relative = coordinate - center
+            for component in range(dofs_per_node):
+                dof_id = mesh.global_dof(node_id, component)
+                if dof_id not in constrained_dofs:
+                    continue
+                row = _rigid_mode_row(relative, component, is_3d)
+                if row is not None:
+                    rows.append(row)
+        rank = (
+            int(np.linalg.matrix_rank(np.asarray(rows, dtype=float)))
+            if rows
+            else 0
+        )
+        if rank < mode_count:
+            raise ValueError(
+                "模型约束不足或刚度矩阵奇异；"
+                "请检查刚体位移、材料、截面和单元连接"
+            )
+
+
+def _connected_node_components(mesh: Any) -> tuple[tuple[int, ...], ...]:
+    """Return connectivity components using element-node incidence only."""
+    parents = {int(node.id): int(node.id) for node in mesh.nodes}
+
+    def root(node_id: int) -> int:
+        while parents[node_id] != node_id:
+            parents[node_id] = parents[parents[node_id]]
+            node_id = parents[node_id]
+        return node_id
+
+    for element in mesh.elements:
+        node_ids = tuple(int(node_id) for node_id in element.node_ids)
+        if not node_ids:
+            continue
+        first_root = root(node_ids[0])
+        for node_id in node_ids[1:]:
+            other_root = root(node_id)
+            if other_root != first_root:
+                parents[other_root] = first_root
+
+    grouped: dict[int, list[int]] = {}
+    for node_id in parents:
+        grouped.setdefault(root(node_id), []).append(node_id)
+    return tuple(tuple(node_ids) for node_ids in grouped.values())
+
+
+def _rigid_mode_row(
+    relative: np.ndarray,
+    component: int,
+    is_3d: bool,
+) -> np.ndarray | None:
+    """Return one constrained-DOF row of the rigid-body mode matrix."""
+    x, y, z = (float(value) for value in relative)
+    if is_3d:
+        rows = (
+            (1.0, 0.0, 0.0, 0.0, z, -y),
+            (0.0, 1.0, 0.0, -z, 0.0, x),
+            (0.0, 0.0, 1.0, y, -x, 0.0),
+            (0.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0, 0.0, 1.0, 0.0),
+            (0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
+        )
+    else:
+        rows = (
+            (1.0, 0.0, -y),
+            (0.0, 1.0, x),
+            (0.0, 0.0, 1.0),
+        )
+    if component >= len(rows):
+        return None
+    return np.asarray(rows[component], dtype=float)
+
+
+def _validate_nonsingular_stiffness(K: Any) -> None:
+    """Check scaled sparse-LU pivots without depending on the load vector."""
+    diagonal = np.abs(np.asarray(K.diagonal(), dtype=float))
+    if (
+        diagonal.size != K.shape[0]
+        or not np.all(np.isfinite(diagonal))
+        or np.any(diagonal <= 0.0)
+    ):
+        raise ValueError("stiffness matrix has a zero or invalid diagonal")
+    inverse_scale = 1.0 / np.sqrt(diagonal)
+    scaling = diags(inverse_scale)
+    scaled = (scaling @ K @ scaling).tocsc()
+    factor = splu(scaled)
+    pivots = np.abs(np.asarray(factor.U.diagonal(), dtype=float))
+    tolerance = (
+        np.finfo(float).eps
+        * max(K.shape[0], 1)
+        * max(float(np.max(pivots)), 1.0)
+    )
+    if (
+        not np.all(np.isfinite(pivots))
+        or float(np.min(pivots)) <= tolerance
+    ):
+        raise ValueError("stiffness matrix is numerically rank deficient")
 
 
 def _validate_static_step(step: AnalysisStep | None) -> None:

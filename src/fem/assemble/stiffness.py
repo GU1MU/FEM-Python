@@ -31,22 +31,28 @@ def assemble_global_stiffness_sparse(mesh: Any) -> csr_matrix:
     """Assemble a sparse global stiffness matrix from a mesh."""
     _validate_mesh(mesh)
     node_lookup = {node.id: node for node in mesh.nodes}
-    rows: list[int] = []
-    cols: list[int] = []
-    data: list[float] = []
+    row_blocks: list[np.ndarray] = []
+    col_blocks: list[np.ndarray] = []
+    data_blocks: list[np.ndarray] = []
 
     for elem in mesh.elements:
         Ke = get_element_kernel(elem.type).stiffness(mesh, elem, node_lookup=node_lookup)
         dofs = list(mesh.element_dofs(elem))
         Ke = _validate_element_stiffness(Ke, dofs, mesh.num_dofs, elem)
+        dof_array = np.asarray(dofs, dtype=np.int64)
+        row_blocks.append(np.repeat(dof_array, dof_array.size))
+        col_blocks.append(np.tile(dof_array, dof_array.size))
+        data_blocks.append(Ke.reshape(-1))
 
-        for local_i, global_i in enumerate(dofs):
-            for local_j, global_j in enumerate(dofs):
-                rows.append(global_i)
-                cols.append(global_j)
-                data.append(float(Ke[local_i, local_j]))
-
-    return coo_matrix((data, (rows, cols)), shape=(mesh.num_dofs, mesh.num_dofs)).tocsr()
+    if not data_blocks:
+        return csr_matrix((mesh.num_dofs, mesh.num_dofs), dtype=float)
+    rows = np.concatenate(row_blocks)
+    cols = np.concatenate(col_blocks)
+    data = np.concatenate(data_blocks)
+    return coo_matrix(
+        (data, (rows, cols)),
+        shape=(mesh.num_dofs, mesh.num_dofs),
+    ).tocsr()
 
 
 def _validate_mesh(mesh: Any) -> None:

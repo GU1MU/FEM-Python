@@ -65,6 +65,144 @@ def test_nodal_stress_field_collects_ordered_element_contributions():
     assert raw.contributions_by_node[5][0].components == pytest.approx((0.0, 0.0, 0.0))
 
 
+def test_canonical_stress_positions_include_plane_strain_s33():
+    props = {
+        "E": 100.0,
+        "nu": 0.25,
+        "plane_type": "strain",
+        "thickness": 1.0,
+    }
+    mesh = Mesh2D(
+        nodes=[
+            Node2D(1, 0.0, 0.0),
+            Node2D(2, 1.0, 0.0),
+            Node2D(3, 0.0, 1.0),
+        ],
+        elements=[Element2D(1, [1, 2, 3], "Tri3", props)],
+    )
+    U = np.array([0.0, 0.0, 0.01, 0.0, 0.0, 0.02])
+    recovery = stress.StressRecovery(mesh, U)
+    assert stress.collect_stress(
+        mesh,
+        U,
+        position="integration_point",
+    ) == recovery.collect(stress.StressPosition.INTEGRATION_POINT)
+
+    expected_counts = {
+        stress.StressPosition.INTEGRATION_POINT: 1,
+        stress.StressPosition.CENTROID: 1,
+        stress.StressPosition.ELEMENT_NODAL: 3,
+        stress.StressPosition.NODAL: 3,
+    }
+    for position, expected_count in expected_counts.items():
+        stress_field = recovery.collect(position)
+        assert stress_field.component_names == ("S11", "S22", "S33", "S12")
+        assert len(stress_field.records) == expected_count
+        for record in stress_field.records:
+            s11, s22, s33, _s12 = record.components
+            assert s33 == pytest.approx(0.25 * (s11 + s22))
+            expected = stress.invariants.derive_stress_invariants(
+                record.components,
+                stress_field.component_names,
+            )
+            assert record.invariants == expected
+
+
+def test_nodal_mises_is_derived_after_tensor_component_averaging():
+    props = {
+        "E": 100.0,
+        "nu": 0.25,
+        "plane_type": "stress",
+        "thickness": 1.0,
+    }
+    mesh = Mesh2D(
+        nodes=[
+            Node2D(1, 0.0, 0.0),
+            Node2D(2, 1.0, 0.0),
+            Node2D(3, 0.0, 1.0),
+            Node2D(4, 1.0, 1.0),
+        ],
+        elements=[
+            Element2D(1, [1, 2, 3], "Tri3", dict(props)),
+            Element2D(2, [2, 4, 3], "Tri3", dict(props)),
+        ],
+    )
+    U = np.array([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+    recovery = stress.StressRecovery(mesh, U)
+    element_nodal = recovery.collect(stress.StressPosition.ELEMENT_NODAL)
+    nodal = recovery.collect(stress.StressPosition.NODAL)
+
+    contributions = [
+        record for record in element_nodal.records if record.node_id == 2
+    ]
+    averaged = next(record for record in nodal.records if record.node_id == 2)
+    expected_components = np.mean(
+        [record.components for record in contributions],
+        axis=0,
+    )
+    expected_invariants = stress.invariants.derive_stress_invariants(
+        expected_components,
+        nodal.component_names,
+    )
+
+    assert averaged.components == pytest.approx(expected_components)
+    assert averaged.invariants.mises == pytest.approx(expected_invariants.mises)
+    assert averaged.invariants.mises != pytest.approx(
+        np.mean([record.invariants.mises for record in contributions])
+    )
+
+
+def test_quad4_centroid_uses_integration_point_interpolation_not_direct_b_evaluation():
+    props = {
+        "E": 100.0,
+        "nu": 0.25,
+        "plane_type": "stress",
+        "thickness": 1.0,
+    }
+    mesh = Mesh2D(
+        nodes=[
+            Node2D(1, 0.0, 0.0),
+            Node2D(2, 2.0, 0.0),
+            Node2D(3, 1.7, 1.2),
+            Node2D(4, -0.2, 0.8),
+        ],
+        elements=[Element2D(1, [1, 2, 3, 4], "Quad4", props)],
+    )
+    U = np.array([0.0, 0.0, 0.1, 0.02, 0.17, 0.14, -0.04, 0.08])
+    recovery = stress.StressRecovery(mesh, U)
+    integration_points = recovery.collect(stress.StressPosition.INTEGRATION_POINT)
+    centroid = recovery.collect(stress.StressPosition.CENTROID).records[0]
+
+    expected = np.mean(
+        [record.components for record in integration_points.records],
+        axis=0,
+    )
+    direct = get_element_kernel("Quad4").stress_at(
+        mesh,
+        mesh.elements[0],
+        U,
+        0.0,
+        0.0,
+    )
+
+    assert centroid.components == pytest.approx(expected)
+    assert centroid.components[:2] != pytest.approx(direct[:2])
+
+
+def test_canonical_csv_defaults_to_integration_points_and_writes_s33(tmp_path):
+    mesh = make_mixed_tri3_quad4_mesh()
+    output = tmp_path / "stress.csv"
+
+    stress.export.csv(mesh, np.zeros(mesh.num_dofs), output)
+
+    with output.open(newline="", encoding="utf-8") as stream:
+        rows = list(csv.DictReader(stream))
+    assert rows
+    assert {row["position"] for row in rows} == {"integration_point"}
+    assert all(row["integration_point"] for row in rows)
+    assert all(row["S33"] for row in rows)
+
+
 def _stress_contribution(node_id, elem_id, components, region=None, weight=1.0):
     if region is None:
         region = stress.field.StressRegionKey(("material", "steel"), ("solid",))

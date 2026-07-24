@@ -297,9 +297,17 @@ def test_pressure_faces_share_boundary_step_lookup_tables(monkeypatch):
     lookup_ids = []
     original = boundary_step._pressure_vector_3d
 
-    def counted(current_model, face, load, node_lookup, element_lookup):
-        lookup_ids.append((id(node_lookup), id(element_lookup)))
-        return original(current_model, face, load, node_lookup, element_lookup)
+    def counted(face, load, node_lookup_factory, element_lookup_factory):
+        lookup_ids.append((
+            id(node_lookup_factory()),
+            id(element_lookup_factory()),
+        ))
+        return original(
+            face,
+            load,
+            node_lookup_factory,
+            element_lookup_factory,
+        )
 
     monkeypatch.setattr(boundary_step, "_pressure_vector_3d", counted)
     boundary_for_step(model, "load")

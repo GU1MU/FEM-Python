@@ -13,6 +13,7 @@ from ..core.model import (
     ElementSet,
     FEMModel,
     MaterialDefinition,
+    LineLoad,
     NodalLoad,
     NodeSet,
     OutputRequest,
@@ -68,6 +69,7 @@ def build_model(deck: AbaqusDeck) -> FEMModel:
                 section_element_set,
                 section.material,
                 section.section_type,
+                section.properties,
             )
         )
 
@@ -133,7 +135,16 @@ def _build_mesh(deck: AbaqusDeck) -> Any:
         )
         for element in deck.elements
     ]
-    return Mesh3D(nodes3d, elements3d)
+    element_types = {element.type for element in elements3d}
+    if element_types == {"Beam2"}:
+        dofs_per_node = 6
+    elif element_types == {"Truss2"}:
+        dofs_per_node = 3
+    elif element_types.intersection({"Beam2", "Truss2"}):
+        raise ValueError("mixed line and continuum element meshes are not supported")
+    else:
+        dofs_per_node = 3
+    return Mesh3D(nodes3d, elements3d, dofs_per_node=dofs_per_node)
 
 
 def _build_surfaces_and_edges(
@@ -261,6 +272,10 @@ def _build_step(
         load for load in distributed_loads
         if isinstance(load, EdgeLoad)
     ]
+    line_loads = [
+        load for load in distributed_loads
+        if isinstance(load, LineLoad)
+    ]
     outputs = [
         OutputRequest(output.kind, output.target, output.variables, output.metadata)
         for output in step.output_requests
@@ -272,6 +287,7 @@ def _build_step(
         cloads=cloads,
         surface_loads=surface_loads,
         edge_loads=edge_loads,
+        line_loads=line_loads,
         outputs=outputs,
         metadata=dict(step.metadata),
     )
@@ -287,9 +303,26 @@ def _build_distributed_load(
     step_index: int,
     load_index: int,
     topology: dict[str, Any],
-) -> SurfaceLoad | EdgeLoad:
+) -> SurfaceLoad | EdgeLoad | LineLoad:
     """Convert an Abaqus DLOAD/DSLOAD line to a model distributed load."""
     label = load.label.upper()
+    if mesh.elements and mesh.elements[0].type in {"Beam2", "Truss2"}:
+        if load.source != "dload":
+            raise ValueError("line loads must use *Dload")
+        if label not in {"QGLOBAL", "QLOCAL"}:
+            raise ValueError(
+                "line-element *Dload label must be QGLOBAL or QLOCAL"
+            )
+        vector = (load.magnitude, *load.extra)
+        if len(vector) != 3:
+            raise ValueError(
+                f"{label} requires three vector components, got {len(vector)}"
+            )
+        return LineLoad(
+            load.target,
+            vector,
+            "global" if label == "QGLOBAL" else "local",
+        )
     if load.source == "dsload":
         target_name = str(load.target)
         if mesh.dofs_per_node == 2:
@@ -446,11 +479,22 @@ def _element_dimension(element_type: str) -> int:
         return 2
     if etype.startswith("C3D"):
         return 3
+    if etype in {"TRUSS2", "T3D2", "BEAM2", "B31"}:
+        return 3
     raise ValueError(f"unsupported Abaqus element type: {element_type}")
 
 
 def _element_type(element: AbaqusElement) -> str:
     """Map Abaqus element type to local element type."""
+    aliases = {
+        "T3D2": "Truss2",
+        "TRUSS2": "Truss2",
+        "B31": "Beam2",
+        "BEAM2": "Beam2",
+    }
+    mapped = aliases.get(element.type.upper())
+    if mapped is not None:
+        return mapped
     try:
         return canonical_element_type(element.type)
     except NotImplementedError as exc:

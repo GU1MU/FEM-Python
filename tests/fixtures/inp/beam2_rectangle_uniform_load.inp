@@ -1,0 +1,31 @@
+*Heading
+Beam2 rectangular cantilever under a local-y uniform line load
+*Node
+1, 0.0, 0.0, 0.0
+2, 0.5, 0.0, 0.0
+3, 1.0, 0.0, 0.0
+4, 1.5, 0.0, 0.0
+5, 2.0, 0.0, 0.0
+*Element, type=B31, elset=BEAM
+1, 1, 2
+2, 2, 3
+3, 3, 4
+4, 4, 5
+*Nset, nset=FIXED
+1
+*Material, name=STEEL
+*Elastic
+2.10e11, 0.3
+*Beam Section, elset=BEAM, material=STEEL, section=rectangle, height=0.10, width=0.02
+*Boundary
+FIXED, ENCASTRE
+*Step, name=UniformLoad
+*Static
+*Dload
+BEAM, QLOCAL, 0.0, -500.0, 0.0
+*Output, field
+*Node Output
+U, RF
+*Element Output
+S
+*End Step
