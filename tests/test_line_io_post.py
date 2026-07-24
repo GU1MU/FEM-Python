@@ -1,5 +1,4 @@
 import csv
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -300,24 +299,3 @@ def test_beam2_nodal_stress_csv_contains_every_mesh_node_once(tmp_path):
     )
     assert [int(row["node_id"]) for row in rows] == [1, 2, 3]
     assert float(rows[2]["axial_stress_abs_max"]) == pytest.approx(0.0)
-
-
-def test_beam2_example_uses_topology_csv_and_programmatic_section_assignments():
-    project_root = Path(__file__).resolve().parents[1]
-    example_root = project_root / ("exam" + "ples")
-    script = (example_root / "beam2_frame.py").read_text(encoding="utf-8")
-    rows = [
-        row
-        for row in csv.reader(
-            (example_root / "examples_data" / "beam2.csv").open(encoding="utf-8")
-        )
-        if row and not row[0].lstrip().startswith("#")
-    ]
-    element_header_index = rows.index(["elem_id", "node_i", "node_j"])
-
-    assert all(len(row) == 3 for row in rows[element_header_index + 1 :])
-    assert 'mesh_csv.read_beam2(DATA_DIR / "beam2.csv")' in script
-    assert script.count("selection.elements.set_by_nodes") == 3
-    assert script.count("materials.assign(") == 3
-    for section_type in ("hollow_circle", "rectangle", "solid_circle"):
-        assert f'section_type="{section_type}"' in script

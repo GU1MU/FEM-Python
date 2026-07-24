@@ -57,7 +57,7 @@ class AbaqusCload:
 @dataclass(frozen=True)
 class AbaqusDistributedLoad:
     """Raw distributed load from DLOAD or DSLOAD."""
-    target: str | int
+    target: str | int | None
     label: str
     magnitude: float
     source: str

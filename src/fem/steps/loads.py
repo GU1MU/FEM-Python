@@ -2,7 +2,16 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from ..core.model import AnalysisStep, Edge, EdgeLoad, LineLoad, NodalLoad, Surface, SurfaceLoad
+from ..core.model import (
+    AnalysisStep,
+    Edge,
+    EdgeLoad,
+    GravityLoad,
+    LineLoad,
+    NodalLoad,
+    Surface,
+    SurfaceLoad,
+)
 
 
 def nodal_load(
@@ -74,4 +83,16 @@ def line_load(
     """Add a constant Beam2 line load to a step."""
     load = LineLoad(target, vector, coordinate_system)
     step.line_loads = tuple(step.line_loads) + (load,)
+    return load
+
+
+def gravity(
+    step: AnalysisStep,
+    acceleration: Sequence[float],
+    *,
+    target: str | int | None = None,
+) -> GravityLoad:
+    """Add a gravity acceleration to a step."""
+    load = GravityLoad(acceleration, target)
+    step.gravity_loads = tuple(step.gravity_loads) + (load,)
     return load

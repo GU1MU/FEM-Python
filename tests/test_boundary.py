@@ -6,7 +6,19 @@ from fem.boundary.condition import BoundaryCondition
 from fem.boundary.loads import build_load_vector
 from fem.boundary.step import boundary_for_step
 from fem.boundary import step as boundary_step
-from fem.core.model import AnalysisStep, Edge, EdgeLoad, ElementEdge, ElementFace, FEMModel, NodalLoad, Surface, SurfaceLoad
+from fem.core.model import (
+    AnalysisStep,
+    Edge,
+    EdgeLoad,
+    ElementEdge,
+    ElementFace,
+    ElementSet,
+    FEMModel,
+    GravityLoad,
+    NodalLoad,
+    Surface,
+    SurfaceLoad,
+)
 from fem.elements import get_element_kernel
 from fem.elements.beam_section import parse_beam2_section
 from tests.helpers.mesh_builders import (
@@ -200,6 +212,82 @@ def test_mixed_solid_body_forces_and_gravity_dispatch_by_element_type():
     assert F.shape == (mesh.num_dofs,)
     assert np.all(np.isfinite(F))
     assert float(np.linalg.norm(F)) > 0.0
+
+
+def test_boundary_step_resolves_and_accumulates_global_and_targeted_gravity():
+    mesh = make_mixed_hex8_tet4_mesh()
+    mesh.elements[0].props["rho"] = 2.0
+    mesh.elements[1].props["rho"] = 3.0
+    step = AnalysisStep(
+        "gravity",
+        gravity_loads=(
+            GravityLoad((0.0, -1.0, 0.0)),
+            GravityLoad((1.0, 0.0, -2.0)),
+            GravityLoad((0.0, 0.0, -3.0), np.int64(1)),
+            GravityLoad((4.0, 0.0, 0.0), "all"),
+        ),
+    )
+    model = FEMModel(
+        mesh=mesh,
+        element_sets={"all": ElementSet("all", (1, 2))},
+        steps=[step],
+    )
+
+    bc = boundary_for_step(model, step)
+
+    assert bc.gravity == (1.0, -1.0, -2.0)
+    assert tuple(load.elem_id for load in bc.element_gravities) == (1, 1, 2)
+    assert tuple(load.acceleration for load in bc.element_gravities) == (
+        (0.0, 0.0, -3.0),
+        (4.0, 0.0, 0.0),
+        (4.0, 0.0, 0.0),
+    )
+
+
+def test_high_level_global_and_targeted_gravity_superpose_through_kernels():
+    mesh = make_mixed_hex8_tet4_mesh()
+    mesh.elements[0].props["rho"] = 2.0
+    mesh.elements[1].props["rho"] = 3.0
+    step = AnalysisStep(
+        "gravity",
+        gravity_loads=(
+            GravityLoad((0.0, 0.0, -2.0)),
+            GravityLoad((1.0, 0.0, 0.0), "tets"),
+            GravityLoad((1.0, 0.0, 0.0), 2),
+        ),
+    )
+    model = FEMModel(
+        mesh=mesh,
+        element_sets={"tets": ElementSet("tets", (2,))},
+        steps=[step],
+    )
+
+    F = build_load_vector(mesh, boundary_for_step(model, step))
+    expected = np.zeros(mesh.num_dofs)
+    node_lookup = {node.id: node for node in mesh.nodes}
+    contributions = {
+        1: ((0.0, 0.0, -4.0),),
+        2: ((0.0, 0.0, -6.0), (3.0, 0.0, 0.0), (3.0, 0.0, 0.0)),
+    }
+    for elem in mesh.elements:
+        kernel = get_element_kernel(elem.type)
+        dofs = mesh.element_dofs(elem)
+        for vector in contributions[elem.id]:
+            expected[dofs] += kernel.body_force(mesh, elem, vector, node_lookup)
+
+    assert np.allclose(F, expected)
+
+    global_step = AnalysisStep(
+        "global",
+        gravity_loads=(GravityLoad((0.0, 0.0, -2.0)),),
+    )
+    global_model = FEMModel(mesh=mesh, steps=[global_step])
+    direct = BoundaryCondition()
+    direct.set_gravity(0.0, 0.0, -2.0)
+    assert np.allclose(
+        build_load_vector(mesh, boundary_for_step(global_model, global_step)),
+        build_load_vector(mesh, direct),
+    )
 
 
 @pytest.mark.parametrize(

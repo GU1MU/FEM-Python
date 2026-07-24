@@ -37,7 +37,9 @@ fem_gui = ["resources/icons/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-p no:cacheprovider"
+addopts = "-p no:cacheprovider --strict-markers"
 markers = [
+    "integration: tests that cross package or external-runtime boundaries",
+    "gmsh: tests that require the optional native Gmsh runtime",
     "slow: opt-in performance and scalability tests",
 ]

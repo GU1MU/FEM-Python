@@ -100,6 +100,14 @@ def nodal_envelope(result: Any) -> tuple[Beam2NodalStress, ...]:
     return tuple(rows)
 
 
+def absolute_maximum(result: Any) -> float:
+    """Return the maximum absolute stress from the Beam2 nodal envelope."""
+    return max(
+        (row.absolute_maximum for row in nodal_envelope(result)),
+        default=0.0,
+    )
+
+
 def export_nodal(result: Any, path: str) -> None:
     """Write the Beam2 nodal axial-stress envelope CSV."""
     mesh = result.model.mesh

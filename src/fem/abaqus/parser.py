@@ -60,7 +60,12 @@ def parse_file(path: str | Path) -> AbaqusDeck:
             if line.startswith("*"):
                 state.handle_keyword(_parse_keyword(line))
             else:
-                state.handle_data(_split_values(line))
+                state.handle_data(
+                    _split_values(
+                        line,
+                        preserve_leading_empty=state.mode in {"dload", "dsload"},
+                    )
+                )
 
     state.finish()
     return deck
@@ -434,15 +439,31 @@ class _ParserState:
         )
 
     def _add_distributed_load(self, values: list[str], source: str) -> None:
+        label = values[1].upper() if len(values) > 1 else ""
+        if label == "GRAV" and len(values) != 6:
+            component_count = max(len(values) - 3, 0)
+            raise ValueError(
+                "GRAV requires a magnitude and 3 direction components, "
+                f"got {component_count} direction components"
+            )
         if len(values) < 3:
             raise ValueError(f"*{source} requires target, label, and magnitude")
+        try:
+            magnitude = float(values[2])
+            extra = tuple(float(value) for value in values[3:])
+        except (TypeError, ValueError) as exc:
+            if label == "GRAV":
+                raise ValueError(
+                    "GRAV magnitude and direction components must be numeric"
+                ) from exc
+            raise
         self._ensure_step().distributed_loads.append(
             AbaqusDistributedLoad(
-                _parse_target(values[0]),
-                values[1].upper(),
-                float(values[2]),
+                _parse_optional_target(values[0]),
+                label,
+                magnitude,
                 source,
-                tuple(float(value) for value in values[3:]),
+                extra,
             )
         )
 
@@ -513,9 +534,18 @@ def _parse_keyword(line: str) -> Keyword:
     return Keyword(name, params, flags)
 
 
-def _split_values(line: str) -> list[str]:
+def _split_values(
+    line: str,
+    *,
+    preserve_leading_empty: bool = False,
+) -> list[str]:
     """Split an Abaqus comma-separated data line."""
-    return [part.strip() for part in line.split(",") if part.strip()]
+    parts = [part.strip() for part in line.split(",")]
+    while parts and not parts[-1]:
+        parts.pop()
+    if preserve_leading_empty:
+        return parts
+    return [part for part in parts if part]
 
 
 def _required_param(keyword: Keyword | None, name: str) -> str:
@@ -542,6 +572,11 @@ def _parse_target(value: str) -> str | int:
         return int(value)
     except ValueError:
         return value
+
+
+def _parse_optional_target(value: str) -> str | int | None:
+    """Parse an optional distributed-load target."""
+    return None if not value else _parse_target(value)
 
 
 def _is_int(value: str) -> bool:

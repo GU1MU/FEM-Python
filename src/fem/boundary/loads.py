@@ -36,6 +36,15 @@ def build_load_vector(mesh: Any, bc: BoundaryCondition) -> np.ndarray:
         body.add_forces(mesh, bc.body_forces, F, elem_lookup(), node_lookup(), dim)
     if bc.gravity is not None:
         body.add_gravity(mesh, bc.gravity, F, node_lookup(), dim)
+    if bc.element_gravities:
+        body.add_element_gravities(
+            mesh,
+            bc.element_gravities,
+            F,
+            elem_lookup(),
+            node_lookup(),
+            dim,
+        )
     if bc.line_loads:
         line.add_forces(mesh, bc.line_loads, F, elem_lookup(), node_lookup())
     if bc.surface_tractions:

@@ -6,6 +6,8 @@ from collections.abc import Mapping, Sequence
 from numbers import Real
 from typing import Any
 
+from .model import model_element_info
+
 
 _MESH_ATTRIBUTES = (
     "nodes",
@@ -95,7 +97,9 @@ def validate_model(model: Any, step: Any | None = None) -> None:
             "element",
         )
 
-    all_element_set_names = set(element_sets) | set(internal_element_sets)
+    all_element_sets = dict(element_sets)
+    all_element_sets.update(internal_element_sets)
+    all_element_set_names = set(all_element_sets)
     for section in model.sections:
         if section.material not in materials:
             raise KeyError(f"material {section.material} is not defined")
@@ -117,9 +121,12 @@ def validate_model(model: Any, step: Any | None = None) -> None:
             node_sets,
             element_lookup,
             element_sets,
+            all_element_sets,
             model.surfaces,
             model.edges,
             int(model.mesh.dofs_per_node),
+            3 if hasattr(model.mesh.nodes[0], "z") else 2,
+            model,
         )
 
 
@@ -323,8 +330,6 @@ def _kernel_boundary_node_ids(
     kernel = get_element_kernel(element.type)
     if collection_kind == "surface":
         topology = getattr(kernel, "face_node_indices", None)
-        if topology is None:
-            topology = getattr(kernel, "face_nodes", None)
         local_kind = "face"
     elif collection_kind == "edge":
         topology = getattr(kernel, "edge_node_indices", None)
@@ -406,9 +411,12 @@ def _validate_step_references(
     node_sets: Mapping[Any, Any],
     element_lookup: Mapping[int, Any],
     element_sets: Mapping[Any, Any],
+    gravity_element_sets: Mapping[Any, Any],
     surfaces: Mapping[Any, Any],
     edges: Mapping[Any, Any],
     dofs_per_node: int,
+    spatial_dimension: int,
+    model: Any,
 ) -> None:
     for constraint in getattr(step, "boundaries", ()):
         _validate_node_target(constraint.target, node_ids, node_sets, step.name)
@@ -478,6 +486,111 @@ def _validate_step_references(
                 "line load coordinate_system must be 'global' or 'local', "
                 f"got {getattr(load, 'coordinate_system', None)!r}"
             )
+    for load in getattr(step, "gravity_loads", ()):
+        _validate_gravity_load(
+            model,
+            step,
+            load,
+            element_lookup,
+            gravity_element_sets,
+            spatial_dimension,
+        )
+
+
+def _validate_gravity_load(
+    model: Any,
+    step: Any,
+    load: Any,
+    element_lookup: Mapping[int, Any],
+    element_sets: Mapping[Any, Any],
+    spatial_dimension: int,
+) -> None:
+    """Validate one global or explicitly targeted gravity acceleration."""
+    acceleration = getattr(load, "acceleration", None)
+    if not isinstance(acceleration, Sequence) or isinstance(
+        acceleration,
+        (str, bytes),
+    ):
+        raise TypeError(
+            f"analysis step {step.name} gravity acceleration must be a sequence"
+        )
+    if len(acceleration) != spatial_dimension:
+        raise ValueError(
+            f"analysis step {step.name} gravity acceleration must have "
+            f"{spatial_dimension} components, got {len(acceleration)}"
+        )
+    for component in acceleration:
+        _finite_scalar(
+            component,
+            f"analysis step {step.name} gravity acceleration component",
+        )
+
+    target = getattr(load, "target", None)
+    if target is None:
+        return
+    element_ids = _gravity_element_ids(
+        target,
+        element_lookup,
+        element_sets,
+        step.name,
+    )
+    for element_id in element_ids:
+        _validate_effective_gravity_density(model, step.name, target, element_id)
+
+
+def _gravity_element_ids(
+    target: Any,
+    element_lookup: Mapping[int, Any],
+    element_sets: Mapping[Any, Any],
+    step_name: str,
+) -> tuple[int, ...]:
+    """Resolve and validate one explicit gravity target."""
+    if isinstance(target, str):
+        if target not in element_sets:
+            raise KeyError(
+                f"analysis step {step_name} gravity target references missing "
+                f"element set {target}"
+            )
+        return tuple(
+            _integer_id(
+                value,
+                f"analysis step {step_name} gravity target element id",
+            )
+            for value in element_sets[target].element_ids
+        )
+    element_id = _integer_id(
+        target,
+        f"analysis step {step_name} gravity target",
+    )
+    if element_id not in element_lookup:
+        raise KeyError(
+            f"analysis step {step_name} gravity target references missing "
+            f"element {element_id}"
+        )
+    return (element_id,)
+
+
+def _validate_effective_gravity_density(
+    model: Any,
+    step_name: str,
+    target: Any,
+    element_id: int,
+) -> None:
+    """Require a finite non-negative effective density for targeted gravity."""
+    density = model_element_info(model, element_id).properties.get("rho")
+    context = (
+        f"analysis step {step_name} gravity target {target!r} element {element_id}"
+    )
+    if density is None:
+        raise ValueError(f"{context} requires an effective density rho")
+    try:
+        value = float(density)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f"{context} density rho must be numeric") from exc
+    if not math.isfinite(value) or value < 0.0:
+        raise ValueError(
+            f"{context} density rho must be finite and >= 0, got {density!r}"
+        )
 
 
 def _line_load_element_ids(

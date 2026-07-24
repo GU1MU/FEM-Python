@@ -16,12 +16,14 @@ from fem.core.model import (
     DisplacementConstraint,
     ElementSet,
     FEMModel,
+    GravityLoad,
+    MaterialDefinition,
     NodalLoad,
     SectionAssignment,
 )
 from fem.core.result import ModelResult
 from fem.solvers import static_linear
-from tests.helpers.mesh_builders import make_truss_stiffness_mesh
+from tests.helpers.mesh_builders import make_beam_stiffness_mesh, make_truss_stiffness_mesh
 from tests.helpers.model_builders import (
     make_static_pull_truss_model,
     make_truss_workflow_model,
@@ -188,6 +190,128 @@ def test_validate_model_rejects_nonfinite_step_values(kind):
 
     with pytest.raises(ValueError, match=rf"{kind} value must be finite"):
         validate_model(model)
+
+
+def test_validate_model_accepts_global_id_and_set_gravity_with_effective_density():
+    model = make_truss_workflow_model()
+    materials.add(
+        model,
+        materials.linear_elastic.material("steel", E=100.0, nu=0.3, rho=0.0),
+    )
+    materials.assign(model, "steel", "bar", area=2.0)
+    model.steps.append(
+        AnalysisStep(
+            "gravity",
+            gravity_loads=(
+                GravityLoad((0.0, -9.81, 0.0)),
+                GravityLoad((0.0, 0.0, 0.0), 1),
+                GravityLoad((1.0, 0.0, 0.0), "bar"),
+            ),
+        )
+    )
+
+    validate_model(model)
+
+    assert "rho" not in model.mesh.elements[0].props
+
+
+def test_validate_model_allows_global_gravity_on_massless_elements():
+    model = make_truss_workflow_model()
+    model.steps.append(
+        AnalysisStep("gravity", gravity_loads=(GravityLoad((0.0, -9.81, 0.0)),))
+    )
+
+    validate_model(model)
+
+
+@pytest.mark.parametrize(
+    ("target", "message"),
+    [
+        (99, "gravity target references missing element 99"),
+        ("missing", "gravity target references missing element set missing"),
+    ],
+)
+def test_validate_model_rejects_unknown_gravity_targets_with_step_context(
+    target,
+    message,
+):
+    model = make_truss_workflow_model()
+    model.steps.append(
+        AnalysisStep("gravity_case", gravity_loads=(GravityLoad((0.0, -1.0, 0.0), target),))
+    )
+
+    with pytest.raises(KeyError, match=rf"analysis step gravity_case {message}"):
+        validate_model(model)
+
+
+@pytest.mark.parametrize(
+    ("acceleration", "error", "message"),
+    [
+        ((0.0, -1.0), ValueError, "must have 3 components"),
+        ((0.0, float("nan"), 0.0), ValueError, "component must be finite"),
+        ((0.0, "bad", 0.0), TypeError, "component must be numeric"),
+    ],
+)
+def test_validate_model_rejects_invalid_gravity_acceleration(
+    acceleration,
+    error,
+    message,
+):
+    model = make_truss_workflow_model()
+    model.steps.append(
+        AnalysisStep("gravity", gravity_loads=(GravityLoad(acceleration),))
+    )
+
+    with pytest.raises(error, match=message):
+        validate_model(model)
+
+
+@pytest.mark.parametrize("rho", [None, -1.0, float("nan"), float("inf")])
+def test_validate_model_requires_valid_effective_density_for_targeted_gravity(rho):
+    model = make_truss_workflow_model()
+    properties = {"E": 100.0, "nu": 0.3}
+    if rho is not None:
+        properties["rho"] = rho
+    model.materials["steel"] = MaterialDefinition("steel", properties)
+    model.sections.append(SectionAssignment("bar", "steel", properties={"area": 2.0}))
+    model.steps.append(
+        AnalysisStep(
+            "gravity",
+            gravity_loads=(GravityLoad((0.0, -1.0, 0.0), "bar"),),
+        )
+    )
+
+    with pytest.raises(ValueError, match=r"gravity target 'bar'.*density rho"):
+        validate_model(model)
+
+
+def test_targeted_gravity_validation_ignores_stale_section_density():
+    model = make_truss_workflow_model()
+    model.materials["steel"] = MaterialDefinition(
+        "steel",
+        {"E": 100.0, "nu": 0.3, "rho": 2.0},
+    )
+    model.sections.append(SectionAssignment("bar", "steel", properties={"area": 2.0}))
+    materials.apply_sections(model)
+    model.materials["steel"] = MaterialDefinition("steel", {"E": 100.0, "nu": 0.3})
+    model.steps.append(
+        AnalysisStep(
+            "gravity",
+            gravity_loads=(GravityLoad((0.0, -1.0, 0.0), 1),),
+        )
+    )
+
+    with pytest.raises(ValueError, match="requires an effective density rho"):
+        validate_model(model)
+
+
+def test_gravity_vector_size_uses_spatial_dimension_for_beam_mesh():
+    model = FEMModel(
+        mesh=make_beam_stiffness_mesh(),
+        steps=[AnalysisStep("gravity", gravity_loads=[GravityLoad((0.0, -1.0, 0.0))])],
+    )
+
+    validate_model(model)
 
 
 def test_apply_sections_restores_original_properties_after_change_and_removal():
@@ -418,6 +542,49 @@ def test_model_result_owns_validated_one_dimensional_vectors():
 
     assert np.array_equal(result.U, np.arange(num_dofs, dtype=float))
     assert np.array_equal(result.reactions, -np.arange(num_dofs, dtype=float))
+
+
+def test_model_result_queries_one_based_nodal_components():
+    model = make_static_pull_truss_model()
+    num_dofs = model.mesh.num_dofs
+    result = ModelResult(
+        model,
+        model.steps[0],
+        np.arange(num_dofs, dtype=float),
+        -np.arange(num_dofs, dtype=float),
+    )
+
+    dof = model.mesh.global_dof(2, 1)
+    assert result.nodal_displacement(2, component=2) == float(dof)
+    assert result.nodal_reaction(2, component=2) == float(-dof)
+
+
+@pytest.mark.parametrize("component", [True, 1.0, "1"])
+def test_model_result_nodal_queries_reject_noninteger_components(component):
+    model = make_static_pull_truss_model()
+    result = ModelResult(
+        model,
+        model.steps[0],
+        np.zeros(model.mesh.num_dofs),
+        np.zeros(model.mesh.num_dofs),
+    )
+
+    with pytest.raises(TypeError, match="component must be an integer"):
+        result.nodal_displacement(2, component=component)
+
+
+@pytest.mark.parametrize("component", [0, 4])
+def test_model_result_nodal_queries_reject_out_of_range_components(component):
+    model = make_static_pull_truss_model()
+    result = ModelResult(
+        model,
+        model.steps[0],
+        np.zeros(model.mesh.num_dofs),
+        np.zeros(model.mesh.num_dofs),
+    )
+
+    with pytest.raises(IndexError, match="components are 1-based"):
+        result.nodal_reaction(2, component=component)
 
 
 def test_model_result_rejects_invalid_vectors():

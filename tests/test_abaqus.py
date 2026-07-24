@@ -3,10 +3,12 @@ import pytest
 
 from fem import abaqus, materials, post
 from fem.abaqus import builder as abaqus_builder
+from fem.boundary.step import boundary_for_step, get_step
 from fem.core.model import (
     DisplacementConstraint,
     ElementEdge,
     ElementFace,
+    GravityLoad,
     NodalLoad,
     OutputRequest,
     SectionAssignment,
@@ -131,7 +133,7 @@ def test_abaqus_read_builds_model_with_sets_surfaces_materials_and_steps(tmp_pat
     assert model.steps[0].boundaries[0] == DisplacementConstraint("FIXED", 1, 3, 0.0)
     assert model.steps[0].cloads[0] == NodalLoad("TIP", 3, -50.0)
 
-    bc = static_linear.boundary_for_step(model, "LOAD")
+    bc = boundary_for_step(model, "LOAD")
     assert len(bc.prescribed_displacements) == 12
     assert sum(bc.nodal_forces.values()) == pytest.approx(-200.0)
 
@@ -176,7 +178,7 @@ def test_abaqus_builds_boundary_for_perforated_plate_style_inputs_without_data_f
 ):
     inp_path = write_perforated_plate_style_inp(tmp_path, filename, step_lines)
     model = abaqus.read(inp_path)
-    bc = static_linear.boundary_for_step(model)
+    bc = boundary_for_step(model)
 
     assert len(bc.prescribed_displacements) > 0
     if expected_load_type == "pressure":
@@ -246,7 +248,7 @@ def test_abaqus_read_hides_internal_element_sets_without_breaking_surfaces_or_se
         (2, 3, 7, 6),
     )
 
-    bc = static_linear.boundary_for_step(model, "LOAD")
+    bc = boundary_for_step(model, "LOAD")
     assert len(bc.surface_tractions) == 1
 
     materials.apply_sections(model)
@@ -333,8 +335,8 @@ def test_abaqus_read_inherits_initial_boundaries_across_steps(tmp_path):
     model = abaqus.read(path)
 
     assert [step.name for step in model.steps] == ["Initial", "STEP-1", "STEP-2"]
-    assert static_linear.get_step(model).name == "STEP-1"
-    step2_bc = static_linear.boundary_for_step(model, "STEP-2")
+    assert get_step(model).name == "STEP-1"
+    step2_bc = boundary_for_step(model, "STEP-2")
     assert len(step2_bc.prescribed_displacements) == 2
     assert sum(step2_bc.nodal_forces.values()) == pytest.approx(20.0)
 
@@ -381,7 +383,7 @@ def test_abaqus_read_prefers_assembly_node_set_over_part_set_for_load_targets(tm
 
     model = abaqus.read(path)
 
-    bc = static_linear.boundary_for_step(model, "LOAD")
+    bc = boundary_for_step(model, "LOAD")
     assert model.node_sets["LOADSET"].node_ids == (2,)
     assert len(bc.nodal_forces) == 1
     assert sum(bc.nodal_forces.values()) == pytest.approx(-1000.0)
@@ -423,12 +425,198 @@ def test_abaqus_read_converts_dsload_and_dload_pressure_to_surface_tractions(tmp
 
     model = abaqus.read(path)
 
-    bc = static_linear.boundary_for_step(model, "LOAD")
+    bc = boundary_for_step(model, "LOAD")
     assert len(model.steps[0].surface_loads) == 2
     assert "TIP_FACE" in model.surfaces
     assert len(bc.surface_tractions) == 2
     assert np.allclose(bc.surface_tractions[0].vector, (-2.0, 0.0, 0.0))
     assert np.allclose(bc.surface_tractions[1].vector, (-3.0, 0.0, 0.0))
+
+
+def test_abaqus_parse_preserves_blank_gravity_target_and_trims_trailing_separators(
+    tmp_path,
+):
+    path = write_inp(
+        tmp_path,
+        "test_abaqus_parse_blank_gravity_target.inp",
+        [
+            "*Step, name=LOAD",
+            "*Dload",
+            ", GRAV, 9810., 0., -1., 0., ,",
+            "*End Step",
+        ],
+    )
+
+    deck = abaqus.parse_file(path)
+
+    load = deck.steps[0].distributed_loads[0]
+    assert load.target is None
+    assert load.label == "GRAV"
+    assert load.magnitude == pytest.approx(9810.0)
+    assert load.extra == (0.0, -1.0, 0.0)
+    assert load.source == "dload"
+
+
+def test_abaqus_read_builds_global_set_and_element_gravity_without_topology(tmp_path):
+    path = write_inp(
+        tmp_path,
+        "test_abaqus_gravity_targets.inp",
+        [
+            "*Node",
+            "1, 0., 0., 0.",
+            "2, 1., 0., 0.",
+            "3, 0., 1., 0.",
+            "4, 0., 0., 1.",
+            "*Element, type=C3D4, elset=SOLID",
+            "1, 1,2,3,4",
+            "*Step, name=LOAD",
+            "*Dload",
+            ", GRAV, 10., 0., -2., 0.",
+            "SOLID, GRAV, 3., 0., 0., -4.",
+            "1, GRAV, 5., 1., 0., 0.",
+            "*End Step",
+        ],
+    )
+
+    model = abaqus.read(path)
+
+    assert model.steps[0].gravity_loads == (
+        GravityLoad((0.0, -10.0, 0.0)),
+        GravityLoad((0.0, 0.0, -3.0), target="SOLID"),
+        GravityLoad((5.0, 0.0, 0.0), target=1),
+    )
+    assert model.steps[0].surface_loads == ()
+    assert model.steps[0].edge_loads == ()
+    assert model.surfaces == {}
+    assert model.edges == {}
+
+
+def test_abaqus_read_converts_in_plane_gravity_for_2d_model(tmp_path):
+    path = write_inp(
+        tmp_path,
+        "test_abaqus_2d_gravity.inp",
+        [
+            "*Node",
+            "1, 0., 0.",
+            "2, 1., 0.",
+            "3, 0., 1.",
+            "*Element, type=CPS3, elset=SOLID",
+            "1, 1,2,3",
+            "*Step, name=LOAD",
+            "*Dload",
+            ", GRAV, 10., 3., 4., 0.",
+            "*End Step",
+        ],
+    )
+
+    model = abaqus.read(path)
+
+    assert model.steps[0].gravity_loads == (GravityLoad((6.0, 8.0)),)
+    assert model.surfaces == {}
+    assert model.edges == {}
+
+
+@pytest.mark.parametrize(
+    ("record", "message"),
+    [
+        (", GRAV, 1., 0., -1.", r"GRAV requires.*3 direction components"),
+        (", GRAV, 1., 0., -1., 0., 2.", r"GRAV requires.*3 direction components"),
+        (", GRAV, bad, 0., -1., 0.", r"GRAV.*must be numeric"),
+        (", GRAV, 1., 0., , 0.", r"GRAV.*must be numeric"),
+    ],
+    ids=["too-few-components", "too-many-components", "magnitude", "empty-component"],
+)
+def test_abaqus_parse_reports_gravity_specific_record_errors(tmp_path, record, message):
+    path = write_inp(
+        tmp_path,
+        "test_abaqus_invalid_gravity_record.inp",
+        [
+            "*Step, name=LOAD",
+            "*Dload",
+            record,
+            "*End Step",
+        ],
+    )
+
+    with pytest.raises(ValueError, match=message):
+        abaqus.parse_file(path)
+
+
+@pytest.mark.parametrize(
+    ("record", "message"),
+    [
+        (", GRAV, nan, 1., 0., 0.", r"GRAV magnitude must be finite"),
+        (", GRAV, 1., nan, 0., 0.", r"GRAV direction components must be finite"),
+        (", GRAV, 1., 0., 0., 0.", r"GRAV direction vector must be nonzero"),
+    ],
+    ids=["magnitude", "direction", "zero-direction"],
+)
+def test_abaqus_read_rejects_invalid_gravity_values(tmp_path, record, message):
+    path = write_inp(
+        tmp_path,
+        "test_abaqus_invalid_gravity_value.inp",
+        [
+            "*Node",
+            "1, 0., 0., 0.",
+            "2, 1., 0., 0.",
+            "3, 0., 1., 0.",
+            "4, 0., 0., 1.",
+            "*Element, type=C3D4, elset=SOLID",
+            "1, 1,2,3,4",
+            "*Step, name=LOAD",
+            "*Dload",
+            record,
+            "*End Step",
+        ],
+    )
+
+    with pytest.raises(ValueError, match=message):
+        abaqus.read(path)
+
+
+def test_abaqus_read_rejects_out_of_plane_gravity_for_2d_model(tmp_path):
+    path = write_inp(
+        tmp_path,
+        "test_abaqus_2d_out_of_plane_gravity.inp",
+        [
+            "*Node",
+            "1, 0., 0.",
+            "2, 1., 0.",
+            "3, 0., 1.",
+            "*Element, type=CPS3, elset=SOLID",
+            "1, 1,2,3",
+            "*Step, name=LOAD",
+            "*Dload",
+            ", GRAV, 10., 0., 0., 1.",
+            "*End Step",
+        ],
+    )
+
+    with pytest.raises(ValueError, match=r"GRAV out-of-plane acceleration.*2D"):
+        abaqus.read(path)
+
+
+def test_abaqus_read_rejects_dsload_gravity_before_surface_lookup(tmp_path):
+    path = write_inp(
+        tmp_path,
+        "test_abaqus_dsload_gravity.inp",
+        [
+            "*Node",
+            "1, 0., 0., 0.",
+            "2, 1., 0., 0.",
+            "3, 0., 1., 0.",
+            "4, 0., 0., 1.",
+            "*Element, type=C3D4, elset=SOLID",
+            "1, 1,2,3,4",
+            "*Step, name=LOAD",
+            "*Dsload",
+            "MISSING_SURFACE, GRAV, 10., 0., -1., 0.",
+            "*End Step",
+        ],
+    )
+
+    with pytest.raises(ValueError, match=r"DSLOAD GRAV.*DLOAD"):
+        abaqus.read(path)
 
 
 def test_abaqus_2d_pressure_load_builds_edge_traction(tmp_path):
@@ -460,7 +648,7 @@ def test_abaqus_2d_pressure_load_builds_edge_traction(tmp_path):
     )
 
     model = abaqus.read(path)
-    bc = static_linear.boundary_for_step(model, "LOAD")
+    bc = boundary_for_step(model, "LOAD")
 
     assert "RIGHT_EDGE" in model.edges
     assert "RIGHT_EDGE" not in model.surfaces
@@ -493,7 +681,7 @@ def test_abaqus_2d_dload_pressure_generates_edge_load(tmp_path):
     )
 
     model = abaqus.read(path)
-    bc = static_linear.boundary_for_step(model)
+    bc = boundary_for_step(model)
 
     assert len(model.edges) == 1
     generated_name = next(iter(model.edges))
@@ -529,7 +717,7 @@ def test_abaqus_2d_trvec_load_builds_edge_traction(tmp_path):
     )
 
     model = abaqus.read(path)
-    bc = static_linear.boundary_for_step(model, "LOAD")
+    bc = boundary_for_step(model, "LOAD")
 
     assert len(model.steps[0].edge_loads) == 1
     assert model.steps[0].edge_loads[0].load_type == "traction"
@@ -597,11 +785,49 @@ def test_abaqus_read_projects_trshr_direction_to_surface_tangent(tmp_path):
 
     model = abaqus.read(path)
 
-    bc = static_linear.boundary_for_step(model, "LOAD")
+    bc = boundary_for_step(model, "LOAD")
     assert len(model.steps[0].surface_loads) == 1
     assert model.steps[0].surface_loads[0].load_type == "shear_traction"
     assert len(bc.surface_tractions) == 1
     assert np.allclose(bc.surface_tractions[0].vector, (10.0, 0.0, 0.0))
+
+
+def test_abaqus_read_keeps_gravity_and_trshr_in_the_same_step(tmp_path):
+    path = write_inp(
+        tmp_path,
+        "test_abaqus_gravity_and_trshr.inp",
+        [
+            "*Node",
+            "1, 0., 0., 0.",
+            "2, 1., 0., 0.",
+            "3, 1., 1., 0.",
+            "4, 0., 1., 0.",
+            "5, 0., 0., 1.",
+            "6, 1., 0., 1.",
+            "7, 1., 1., 1.",
+            "8, 0., 1., 1.",
+            "*Element, type=C3D8, elset=SOLID",
+            "1, 1,2,3,4,5,6,7,8",
+            "*Surface, type=ELEMENT, name=TOP",
+            "SOLID, S2",
+            "*Step, name=LOAD",
+            "*Static",
+            "*Dload",
+            ", GRAV, 9.81, 0., -1., 0.",
+            "*Dsload",
+            "TOP, TRSHR, 10., 1., 0., 0.",
+            "*End Step",
+        ],
+    )
+
+    model = abaqus.read(path)
+
+    step = model.steps[0]
+    assert step.gravity_loads == (GravityLoad((0.0, -9.81, 0.0)),)
+    assert len(step.surface_loads) == 1
+    assert step.surface_loads[0].load_type == "shear_traction"
+    assert set(model.surfaces) == {"TOP"}
+    assert not any(name.startswith("__DLOAD") for name in model.surfaces)
 
 
 def test_abaqus_trshr_rejects_nonplanar_faces(tmp_path):
@@ -635,7 +861,7 @@ def test_abaqus_trshr_rejects_nonplanar_faces(tmp_path):
     model = abaqus.read(path)
 
     with pytest.raises(ValueError, match="non-planar"):
-        static_linear.boundary_for_step(model, "LOAD")
+        boundary_for_step(model, "LOAD")
 
 
 @pytest.mark.parametrize(
@@ -888,7 +1114,7 @@ def test_abaqus_pressure_points_into_hex_element_for_all_faces(tmp_path):
 
     model = abaqus.read(path)
 
-    bc = static_linear.boundary_for_step(model, "LOAD")
+    bc = boundary_for_step(model, "LOAD")
     _assert_pressure_points_inward(model, bc)
 
 
@@ -972,7 +1198,7 @@ def test_abaqus_pressure_points_into_tet10_element_for_all_faces(tmp_path):
 
     model = abaqus.read(path)
 
-    bc = static_linear.boundary_for_step(model, "LOAD")
+    bc = boundary_for_step(model, "LOAD")
     _assert_pressure_points_inward(model, bc)
 
 
@@ -1009,7 +1235,7 @@ def test_abaqus_pressure_points_into_tetra_element_for_all_faces(tmp_path):
 
     model = abaqus.read(path)
 
-    bc = static_linear.boundary_for_step(model, "LOAD")
+    bc = boundary_for_step(model, "LOAD")
     _assert_pressure_points_inward(model, bc)
 
 
@@ -1051,7 +1277,7 @@ def test_abaqus_read_accumulates_repeated_sets_and_scales_trvec_loads(tmp_path):
 
     model = abaqus.read(path)
 
-    bc = static_linear.boundary_for_step(model, "LOAD")
+    bc = boundary_for_step(model, "LOAD")
     assert model.node_sets["FIXED"].node_ids == (1, 4, 5, 8)
     assert bc.surface_tractions[0].vector == (0.0, 0.0, -10.0)
 
@@ -1253,6 +1479,8 @@ def test_abaqus_read_builds_and_solves_full_c3d20_model(tmp_path):
             "*Surface, type=ELEMENT, name=FACE_6",
             "SOLID, S6",
             "*Material, name=STEEL",
+            "*Density",
+            "2.",
             "*Elastic",
             "210., 0.3",
             "*Solid Section, elset=SOLID, material=STEEL",
@@ -1262,6 +1490,9 @@ def test_abaqus_read_builds_and_solves_full_c3d20_model(tmp_path):
             "FIXED, ENCASTRE",
             "*Dsload",
             "FACE_2, P, 1.",
+            "FACE_2, TRSHR, 2., 1., 0., 0.",
+            "*Dload",
+            ", GRAV, 3., 0., -1., 0.",
             "*End Step",
         ],
     )
@@ -1297,11 +1528,19 @@ def test_abaqus_read_builds_and_solves_full_c3d20_model(tmp_path):
     assert step.surface_loads[0].surface == "FACE_2"
     assert step.surface_loads[0].load_type == "pressure"
     assert step.surface_loads[0].magnitude == pytest.approx(1.0)
+    assert step.surface_loads[1].load_type == "shear_traction"
+    assert step.surface_loads[1].magnitude == pytest.approx(2.0)
+    assert step.gravity_loads == (GravityLoad((0.0, -3.0, 0.0)),)
+    assert not any(name.startswith("__DLOAD") for name in model.surfaces)
 
     materials.apply_sections(model)
     assert model.mesh.elements[0].props["material"] == "STEEL"
     assert model.mesh.elements[0].props["E"] == 210.0
     assert model.mesh.elements[0].props["nu"] == 0.3
+    assert model.mesh.elements[0].props["rho"] == 2.0
 
     result = static_linear.solve(model, "LOAD")
     assert np.all(np.isfinite(result.U))
+    assert result.reactions[0::3].sum() == pytest.approx(-2.0, abs=1e-9)
+    assert result.reactions[1::3].sum() == pytest.approx(6.0, abs=1e-9)
+    assert result.reactions[2::3].sum() == pytest.approx(1.0, abs=1e-9)

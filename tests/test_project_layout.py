@@ -1,9 +1,16 @@
 import ast
 from pathlib import Path
+import subprocess
+import sys
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = PROJECT_ROOT / "src"
 TESTS_ROOT = PROJECT_ROOT / "tests"
+GEOMETRY_ROOT = SRC_ROOT / "fem" / "geometry"
+MESH_ROOT = SRC_ROOT / "fem" / "mesh"
+GMSH_MESH_ROOT = MESH_ROOT / "gmsh"
+SELECTION_ROOT = SRC_ROOT / "fem" / "selection"
 
 
 def _string_literals(path):
@@ -11,6 +18,49 @@ def _string_literals(path):
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             yield node.value.replace("\\", "/")
+
+
+def _resolved_import_targets(path, module_name):
+    """Yield resolved import targets and source lines for a project module."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    module_parts = module_name.split(".")
+    package_parts = (
+        module_parts if path.name == "__init__.py" else module_parts[:-1]
+    )
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                yield alias.name, node.lineno
+            continue
+        if not isinstance(node, ast.ImportFrom):
+            continue
+
+        if node.level:
+            parent_count = node.level - 1
+            base_parts = package_parts[: len(package_parts) - parent_count]
+            if node.module:
+                base_parts += node.module.split(".")
+            base = ".".join(base_parts)
+        else:
+            base = node.module or ""
+
+        for alias in node.names:
+            target = f"{base}.{alias.name}" if base else alias.name
+            yield target, node.lineno
+
+
+def _module_name(path):
+    relative = path.relative_to(SRC_ROOT).with_suffix("")
+    parts = list(relative.parts)
+    if parts[-1] == "__init__":
+        parts.pop()
+    return ".".join(parts)
+
+
+def _is_standard_library_or_gmsh(target):
+    root = target.split(".", 1)[0]
+    return root == "gmsh" or root in sys.stdlib_module_names
 
 
 def test_tests_do_not_reference_example_data_or_results_outputs():
@@ -23,5 +73,381 @@ def test_tests_do_not_reference_example_data_or_results_outputs():
                 offenders.append(f"{path.relative_to(PROJECT_ROOT)} -> {literal}")
             if literal == "results" or literal.startswith("results/"):
                 offenders.append(f"{path.relative_to(PROJECT_ROOT)} -> {literal}")
+
+    assert offenders == []
+
+
+def test_selection_package_exports_distinct_mesh_and_geometry_modules():
+    from fem import selection
+
+    expected = [
+        "curves",
+        "edges",
+        "elements",
+        "faces",
+        "nodes",
+        "points",
+        "surfaces",
+        "volumes",
+    ]
+
+    assert selection.__all__ == expected
+    assert all(
+        getattr(selection, name).__name__ == f"fem.selection.{name}"
+        for name in expected
+    )
+    assert selection.faces is not selection.surfaces
+    assert "_geometry" not in selection.__all__
+
+
+def test_geometry_package_has_no_reverse_or_third_party_runtime_dependencies():
+    paths = sorted(GEOMETRY_ROOT.rglob("*.py"))
+    assert paths
+
+    offenders = []
+    for path in paths:
+        for target, lineno in _resolved_import_targets(path, _module_name(path)):
+            internal_geometry_import = target == "fem.geometry" or target.startswith(
+                "fem.geometry."
+            )
+            if internal_geometry_import or _is_standard_library_or_gmsh(target):
+                continue
+            offenders.append(
+                f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+            )
+
+    assert offenders == []
+
+
+def test_geometry_selection_depends_only_on_public_geometry_contracts():
+    module_names = (
+        "fem.selection._geometry",
+        "fem.selection.curves",
+        "fem.selection.points",
+        "fem.selection.surfaces",
+        "fem.selection.volumes",
+    )
+    missing = []
+    offenders = []
+    for module_name in module_names:
+        relative = Path(*module_name.split(".")).with_suffix(".py")
+        path = SRC_ROOT / relative
+        if not path.is_file():
+            missing.append(str(path.relative_to(PROJECT_ROOT)))
+            continue
+        for target, lineno in _resolved_import_targets(path, module_name):
+            root = target.split(".", 1)[0]
+            geometry_parts = target.split(".")
+            public_geometry_target = (
+                target == "fem.geometry"
+                or (
+                    len(geometry_parts) == 3
+                    and geometry_parts[:2] == ["fem", "geometry"]
+                    and not geometry_parts[2].startswith("_")
+                )
+            )
+            if (
+                root in sys.stdlib_module_names
+                or target == "fem.selection"
+                or target.startswith("fem.selection.")
+                or public_geometry_target
+            ):
+                continue
+            offenders.append(
+                f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+            )
+
+    assert missing == []
+    assert offenders == []
+
+
+def test_mesh_selection_modules_do_not_import_geometry():
+    module_names = (
+        "fem.selection.edges",
+        "fem.selection.elements",
+        "fem.selection.faces",
+        "fem.selection.nodes",
+    )
+    offenders = []
+    for module_name in module_names:
+        relative = Path(*module_name.split(".")).with_suffix(".py")
+        path = SRC_ROOT / relative
+        for target, lineno in _resolved_import_targets(path, module_name):
+            if target == "fem.geometry" or target.startswith("fem.geometry."):
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+                )
+
+    assert offenders == []
+
+
+def test_geometry_stateless_modules_follow_explicit_dependency_boundaries():
+    module_dependencies = {
+        "fem.geometry.errors": (),
+        "fem.geometry.types": (
+            "fem.geometry.errors",
+            "fem.geometry._validation",
+        ),
+        "fem.geometry._validation": (),
+        "fem.geometry._gmsh.constants": (),
+        "fem.geometry._gmsh.predicates": (
+            "fem.geometry._gmsh.constants",
+        ),
+    }
+    missing = []
+    offenders = []
+    for module_name, allowed_modules in module_dependencies.items():
+        relative = Path(*module_name.split(".")).with_suffix(".py")
+        path = SRC_ROOT / relative
+        if not path.is_file():
+            missing.append(str(path.relative_to(PROJECT_ROOT)))
+            continue
+        for target, lineno in _resolved_import_targets(path, module_name):
+            root = target.split(".", 1)[0]
+            if root in sys.stdlib_module_names or any(
+                target == allowed or target.startswith(f"{allowed}.")
+                for allowed in allowed_modules
+            ):
+                continue
+            offenders.append(
+                f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+            )
+
+    assert missing == []
+    assert offenders == []
+
+
+def test_geometry_stateful_modules_follow_explicit_dependency_boundaries():
+    module_dependencies = {
+        "fem.geometry._gmsh.state": (
+            "fem.geometry.errors",
+        ),
+        "fem.geometry._gmsh.session": (
+            "fem.geometry._gmsh.backend",
+            "fem.geometry.errors",
+        ),
+        "fem.geometry._gmsh.reference_registry": (
+            "fem.geometry._validation",
+            "fem.geometry.errors",
+            "fem.geometry.types",
+        ),
+        "fem.geometry._gmsh.control_dependencies": (
+            "fem.geometry.errors",
+        ),
+        "fem.geometry._gmsh.meshing_port": (
+            "fem.geometry.types",
+        ),
+    }
+    missing = []
+    offenders = []
+    for module_name, allowed_modules in module_dependencies.items():
+        relative = Path(*module_name.split(".")).with_suffix(".py")
+        path = SRC_ROOT / relative
+        if not path.is_file():
+            missing.append(str(path.relative_to(PROJECT_ROOT)))
+            continue
+        for target, lineno in _resolved_import_targets(path, module_name):
+            root = target.split(".", 1)[0]
+            if root in sys.stdlib_module_names or any(
+                target == allowed or target.startswith(f"{allowed}.")
+                for allowed in allowed_modules
+            ):
+                continue
+            offenders.append(
+                f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+            )
+
+    assert missing == []
+    assert offenders == []
+
+
+def test_runtime_boundaries_do_not_eagerly_import_external_gmsh():
+    paths = sorted(
+        {
+            *GEOMETRY_ROOT.rglob("*.py"),
+            *MESH_ROOT.rglob("*.py"),
+            *SELECTION_ROOT.rglob("*.py"),
+            *(SRC_ROOT / "fem" / "io").rglob("*.py"),
+        }
+    )
+    modules = tuple(_module_name(path) for path in paths)
+    expected_gmsh_mesh_modules = {
+        "fem.mesh.gmsh",
+        "fem.mesh.gmsh._configuration",
+        "fem.mesh.gmsh._field_registry",
+        "fem.mesh.gmsh._policies",
+        "fem.mesh.gmsh._protocols",
+        "fem.mesh.gmsh._runtime",
+        "fem.mesh.gmsh._validation",
+        "fem.mesh.gmsh.errors",
+        "fem.mesh.gmsh.mesher",
+        "fem.mesh.gmsh.specs",
+        "fem.mesh.gmsh.types",
+    }
+    assert expected_gmsh_mesh_modules <= set(modules)
+    expected_selection_modules = {
+        "fem.selection",
+        "fem.selection._geometry",
+        "fem.selection.curves",
+        "fem.selection.edges",
+        "fem.selection.elements",
+        "fem.selection.faces",
+        "fem.selection.nodes",
+        "fem.selection.points",
+        "fem.selection.surfaces",
+        "fem.selection.volumes",
+    }
+    assert expected_selection_modules <= set(modules)
+
+    script = f"""
+import builtins
+import importlib
+import sys
+
+sys.path.insert(0, {str(SRC_ROOT)!r})
+real_import = builtins.__import__
+
+def guarded_import(name, *args, **kwargs):
+    if name == "gmsh" or name.startswith("gmsh."):
+        raise AssertionError("external gmsh was imported eagerly")
+    return real_import(name, *args, **kwargs)
+
+builtins.__import__ = guarded_import
+for module_name in {modules!r}:
+    importlib.import_module(module_name)
+assert "gmsh" not in sys.modules
+"""
+    completed = subprocess.run(
+        [sys.executable, "-B", "-c", script],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_gmsh_meshing_recursively_depends_only_on_public_geometry_contracts():
+    paths = sorted(MESH_ROOT.rglob("*.py"))
+    assert paths
+
+    offenders = []
+    for path in paths:
+        for target, lineno in _resolved_import_targets(path, _module_name(path)):
+            allowed_fem_target = target == "fem.mesh" or target.startswith(
+                "fem.mesh."
+            )
+            public_geometry_modules = (
+                "fem.geometry.errors",
+                "fem.geometry.types",
+            )
+            geometry_parts = target.split(".")
+            public_facade_target = (
+                len(geometry_parts) == 3
+                and geometry_parts[:2] == ["fem", "geometry"]
+                and not geometry_parts[2].startswith("_")
+            )
+            allowed_fem_target = allowed_fem_target or (
+                target == "fem.geometry"
+                or public_facade_target
+                or any(
+                    target == module or target.startswith(f"{module}.")
+                    for module in public_geometry_modules
+                )
+            )
+            if target == "fem" or (
+                target.startswith("fem.") and not allowed_fem_target
+            ):
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+                )
+            elif not target.startswith("fem.") and (
+                target.split(".", 1)[0] not in sys.stdlib_module_names
+            ):
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+                )
+
+    assert offenders == []
+
+
+def test_generated_mesh_reference_has_no_concrete_geometry_backchannel():
+    path = GMSH_MESH_ROOT / "types.py"
+    imports = {
+        target
+        for target, _ in _resolved_import_targets(path, "fem.mesh.gmsh.types")
+    }
+    assert not any(target.startswith("fem.geometry._gmsh") for target in imports)
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    assert not any(
+        isinstance(node, ast.Name) and node.id == "GeometryModel"
+        for node in ast.walk(tree)
+    )
+
+
+def test_gmsh_io_imports_only_mesh_level_fem_core_types():
+    path = SRC_ROOT / "fem" / "io" / "gmsh.py"
+    allowed_fem_targets = {
+        "fem.core.Element2D",
+        "fem.core.Element3D",
+        "fem.core.Mesh2D",
+        "fem.core.Mesh3D",
+        "fem.core.Node2D",
+        "fem.core.Node3D",
+        "fem.mesh.gmsh.GmshMeshRef",
+    }
+    resolved_imports = tuple(
+        _resolved_import_targets(path, "fem.io.gmsh")
+    )
+    offenders = []
+    for target, lineno in resolved_imports:
+        if (
+            target == "fem"
+            or (
+                target.startswith("fem.")
+                and target not in allowed_fem_targets
+            )
+        ):
+            offenders.append(f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}")
+
+    assert offenders == []
+    assert "fem.mesh.gmsh.GmshMeshRef" in {
+        target for target, _ in resolved_imports
+    }
+
+
+def test_fem_runtime_layers_do_not_import_geometry_or_meshing():
+    package_roots = (
+        SRC_ROOT / "fem" / "core",
+        SRC_ROOT / "fem" / "elements",
+        SRC_ROOT / "fem" / "assemble",
+        SRC_ROOT / "fem" / "solvers",
+    )
+    missing_roots = [
+        str(package_root.relative_to(PROJECT_ROOT))
+        for package_root in package_roots
+        if not package_root.is_dir()
+    ]
+    assert missing_roots == []
+
+    paths = [
+        path
+        for package_root in package_roots
+        for path in package_root.rglob("*.py")
+    ]
+
+    forbidden_roots = ("fem.geometry", "fem.mesh")
+    offenders = []
+    for path in sorted(paths):
+        for target, lineno in _resolved_import_targets(path, _module_name(path)):
+            if any(
+                target == root or target.startswith(f"{root}.")
+                for root in forbidden_roots
+            ):
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+                )
 
     assert offenders == []

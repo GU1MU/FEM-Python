@@ -553,38 +553,6 @@ def make_mixed_tet4_tet10_mesh():
     return Mesh3D(nodes=nodes, elements=elements)
 
 
-def make_mixed_quad4_quad8_mesh():
-    nodes = [
-        Node2D(1, 0.0, 0.0),
-        Node2D(2, 1.0, 0.0),
-        Node2D(3, 1.0, 1.0),
-        Node2D(4, 0.0, 1.0),
-        Node2D(5, 2.0, 0.0),
-        Node2D(6, 4.0, 0.0),
-        Node2D(7, 4.0, 2.0),
-        Node2D(8, 2.0, 2.0),
-        Node2D(9, 3.0, 0.0),
-        Node2D(10, 4.0, 1.0),
-        Node2D(11, 3.0, 2.0),
-        Node2D(12, 2.0, 1.0),
-    ]
-    elements = [
-        Element2D(
-            id=1,
-            node_ids=[1, 2, 3, 4],
-            type="Quad4",
-            props={"E": 100.0, "nu": 0.25, "thickness": 1.0, "plane_type": "stress"},
-        ),
-        Element2D(
-            id=2,
-            node_ids=[5, 6, 7, 8, 9, 10, 11, 12],
-            type="Quad8",
-            props={"E": 90.0, "nu": 0.3, "thickness": 1.0, "plane_type": "stress"},
-        ),
-    ]
-    return Mesh2D(nodes=nodes, elements=elements)
-
-
 def make_mixed_tri6_quad8_mesh():
     nodes = [
         Node2D(1, 0.0, 0.0),

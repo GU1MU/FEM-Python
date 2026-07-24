@@ -42,28 +42,44 @@ def test_core_model_supports_hand_written_mesh_model_solve_result_flow():
     assert result.reactions[mesh.global_dof(1, 0)] == pytest.approx(-100.0)
 
 
-def test_manual_workflow_uses_materials_steps_and_static_solver():
+def test_gravity_and_unified_solve_keep_static_steps_independent():
     model = make_truss_workflow_model(
-        name="manual_workflow",
-        loaded_set_name="loaded",
-        element_props={"area": 2.0},
+        name="gravity_bar",
+        loaded_set_name="tip",
     )
     mesh = model.mesh
+    materials.add(
+        model,
+        materials.linear_elastic.material(
+            "steel",
+            E=100.0,
+            nu=0.3,
+            rho=2.0,
+        ),
+    )
+    materials.assign(model, "steel", "bar", area=2.0)
 
-    steel = materials.linear_elastic.material("steel", E=100.0, nu=0.3)
-    materials.add(model, steel)
-    materials.assign(model, material="steel", element_set="bar")
+    initial = steps.static("Initial")
+    steps.displacement(initial, "fixed", components=(1, 2, 3))
+    steps.displacement(initial, "tip", components=(2, 3))
+    gravity_case = steps.static("gravity_case")
+    steps.gravity(gravity_case, (3.0, 0.0, 0.0))
+    steps.nodal_load(gravity_case, "tip", component=1, value=5.0)
+    nodal_case = steps.static("nodal_case")
+    steps.nodal_load(nodal_case, "tip", component=1, value=5.0)
+    for step in (initial, gravity_case, nodal_case):
+        steps.add(model, step)
 
-    step = steps.static("pull")
-    steps.displacement(step, target="fixed", components=(1, 2, 3))
-    steps.displacement(step, target="loaded", components=(2, 3))
-    steps.nodal_load(step, target="loaded", component=1, value=10.0)
-    steps.add(model, step)
+    results = static_linear.solve(model, steps="all")
+    gravity_result, nodal_result = results.results
 
-    result = static_linear.solve(model, step="pull")
-
-    assert result.U[mesh.global_dof(2, 0)] == pytest.approx(0.05)
-    assert result.U[mesh.global_dof(2, 1)] == pytest.approx(0.0)
+    assert tuple(result.step.name for result in results.results) == (
+        "gravity_case",
+        "nodal_case",
+    )
+    assert gravity_result.reactions[mesh.global_dof(1, 0)] == pytest.approx(-17.0)
+    assert nodal_result.reactions[mesh.global_dof(1, 0)] == pytest.approx(-5.0)
+    assert nodal_result.U[mesh.global_dof(2, 0)] == pytest.approx(0.025)
 
 
 def test_mixed_solid_model_assigns_materials_by_element_set_and_solves():

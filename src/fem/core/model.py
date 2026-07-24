@@ -191,6 +191,16 @@ class LineLoad:
 
 
 @dataclass(frozen=True)
+class GravityLoad:
+    """Gravity acceleration applied globally or to selected elements."""
+    acceleration: Sequence[float]
+    target: str | int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "acceleration", tuple(self.acceleration))
+
+
+@dataclass(frozen=True)
 class OutputRequest:
     """Output request attached to an analysis step."""
     kind: str
@@ -217,6 +227,7 @@ class AnalysisStep:
     metadata: Mapping[str, Any] = field(default_factory=dict)
     edge_loads: Sequence[EdgeLoad] = ()
     line_loads: Sequence[LineLoad] = ()
+    gravity_loads: Sequence[GravityLoad] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "boundaries", tuple(self.boundaries))
@@ -226,6 +237,7 @@ class AnalysisStep:
         object.__setattr__(self, "metadata", dict(self.metadata))
         object.__setattr__(self, "edge_loads", tuple(self.edge_loads))
         object.__setattr__(self, "line_loads", tuple(self.line_loads))
+        object.__setattr__(self, "gravity_loads", tuple(self.gravity_loads))
 
 
 @dataclass
@@ -247,7 +259,7 @@ def model_element_info(model: FEMModel, elem_id: int) -> ElementInfo:
     """Return effective type, set, section, and material data for one element id."""
     elem_id = int(elem_id)
     elem = _model_element(model, elem_id)
-    properties = dict(getattr(elem, "props", {}))
+    properties = _unstamped_element_properties(model, elem_id, elem)
     section = _matching_section(model, elem_id)
 
     material = properties.get("material")
@@ -271,6 +283,30 @@ def model_element_info(model: FEMModel, elem_id: int) -> ElementInfo:
         section_type=section_type,
         element_sets=_element_set_names(model, elem_id),
     )
+
+
+def _unstamped_element_properties(
+    model: FEMModel,
+    elem_id: int,
+    elem: Any,
+) -> dict[str, Any]:
+    """Return base properties with prior section-derived values restored."""
+    properties = dict(getattr(elem, "props", {}))
+    tracked = model.metadata.get("_section_property_keys_by_element", {})
+    originals = model.metadata.get("_section_original_properties_by_element", {})
+    identities = model.metadata.get("_section_property_element_identity_by_element", {})
+    expected_identity = identities.get(elem_id)
+    if expected_identity is not None and expected_identity != id(elem):
+        return properties
+
+    baseline = originals.get(elem_id, {})
+    for key in tracked.get(elem_id, ()):
+        existed, value = baseline.get(key, (False, None))
+        if existed:
+            properties[key] = value
+        else:
+            properties.pop(key, None)
+    return properties
 
 
 def _model_element(model: FEMModel, elem_id: int) -> Any:
