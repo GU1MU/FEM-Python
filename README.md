@@ -1,184 +1,85 @@
 # FEM Python
 
-这是一个面向教学、实验和逐步扩展的有限元项目
-项目保留清晰的有限元主流程：读取 mesh，构建 model，定义材料和分析步，装配刚度，施加载荷和约束，求解，导出后处理结果
+FEM Python is a Python project for script-based finite element modeling and linear static analysis
+It covers geometry creation, mesh generation or import, model definition, solving, result queries, and CSV/VTK export
 
-## 安装和运行
+Two primary workflows are supported:
 
+- Create geometry and meshes in Python with OCC/Gmsh
+- Build an `FEMModel` from supported content in Abaqus `.inp` files
+
+## Installation
+
+Python 3.13 or later is required, and the following commands should be run from the repository root in PowerShell:
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-pip install -e .
+.\.venv\Scripts\python.exe -m pip install -e ".[cad]"
 ```
 
-运行示例：
+The optional `cad` dependencies provide OCC/Gmsh modeling and meshing support
+
+## Examples
+
+The repository contains three representative examples:
+
+| Example | Description |
+| --- | --- |
+| [`frame.py`](examples/frame.py) | Beam2 frame, OCC geometry, automatic Gmsh mesh, fixed constraints, and multiple static load cases |
+| [`perforated_plate.py`](examples/perforated_plate.py) | First-order Tri3 plane-stress plate with a circular hole, curve selection, local mesh refinement, and edge traction |
+| [`cantilever_beam.py`](examples/cantilever_beam.py) | Abaqus `.inp` import of a quadratic Hex20 cantilever with surface traction and gravity |
+
+Run the examples:
 
 ```powershell
-python examples\cantilever_beam_hex8.py
-python examples\cantilever_beam_hex8_abaqus.py
-python examples\mixed_hex8_tet4.py
+.\.venv\Scripts\python.exe examples\frame.py
+.\.venv\Scripts\python.exe examples\perforated_plate.py
+.\.venv\Scripts\python.exe examples\cantilever_beam.py
 ```
 
-运行pytest测试：
+Results are written to `results/` by default
 
-```powershell
-pip install -e ".[test]"
-python -m pytest -q
-python -m pytest -q tests/test_solvers.py
-python -m pytest -q tests/test_solvers.py::test_static_linear_solver_builds_step_boundary_and_solves_case
-```
-
-## 当前能力
-
-网格读取：
-
-- `fem.io.inp`读取Abaqus inp中的mesh拓扑和坐标
-- `fem.io.csv`读取CSV格式mesh
-- `fem.abaqus`读取Abaqus inp中的完整模型数据
-
-单元：
-
-- `Truss2D`
-- `Beam2D`
-- `Tri3`
-- `Quad4`
-- `Quad8`
-- `Hex8`
-- `Hex20`
-- `Tet4`
-- `Tet10`
-
-求解：
-
-- 稀疏全局刚度装配
-- 支持`Hex8`、`Hex20`、`Tet4`和`Tet10`混合实体网格装配
-- 支持各单元的节点力、边力、体力、重力装配
-- 线性静力分析流程
-
-
-后处理：
-
-- 节点位移CSV
-- 单元应力CSV
-- 节点平均应力CSV
-- VTK文件导出
-
-## 模块职责
-
-`core`是数据结构层，只保存模型结构，不负责装配、求解或导出
-
-- `core.mesh`：节点、单元、mesh容器
-- `core.dof`：节点到全局自由度的映射
-- `core.model`：`FEMModel`、set、surface、材料定义、section、step和载荷声明
-- `core.result`：求解结果数据
-
-`io`是mesh读取层
-
-- `io.inp`读取Abaqus inp中的网格数据
-- `io.csv`读取CSV网格
-- `io.materials`读取独立材料表
-
-`abaqus`是Abaqus适配层
-
-- `abaqus.parser`把inp解析成中间deck
-- `abaqus.builder`把deck转换为`FEMModel`
-- `abaqus.read()`是完整模型读取入口
-
-`materials`是材料定义和赋值层
-
-- `materials.linear_elastic`定义线弹性材料和本构矩阵
-- `materials.assignment`把材料按element set赋给模型
-- 求解前由`materials.apply_sections(model)`把section信息写入单元求解属性
-
-`steps`是分析步声明层
-
-- 创建`AnalysisStep`
-- 向step加入位移约束、节点力、surface traction、surface pressure和输出请求
-
-`boundary`是求解边界解析层
-
-`elements`是单元kernel层
-
-- 每类单元提供刚度矩阵、等效载荷和应力计算
-- `elements.registry`负责按单元类型查找kernel
-- `Truss2D`提供轴向应变/应力；`Beam2D`当前提供位移和刚度响应，截面力与弯曲应力导出仍需单独实现
-
-`assemble`是全局装配层
-
-- `assemble.stiffness`根据mesh和element kernel装配全局刚度矩阵
-
-`solvers`是求解流程层
-
-- `solvers.linear.solve()`求解稀疏线性方程组
-- `solvers.static_linear.solve()`执行线性静力流程：材料赋值，step解析，装配，载荷向量，约束处理，线性求解，生成`ModelResult`
-
-`post`是后处理层
-
-- `post.displacement.export.nodal()`导出节点位移
-- `post.stress.export.element()`导出单元应力
-- `post.stress.export.nodal()`导出带阈值判断的节点应力
-- `post.vtk.export.from_result()`从`ModelResult`导出CSV和VTK
-- `post.vtk.export.from_csv()`从已有CSV导出VTK
-
-`selection`是几何选择层
-
-- `selection.nodes`按坐标筛选节点
-- `selection.elements`筛选单元
-- `selection.edges`筛选2D边
-- `selection.faces`筛选3D面并生成surface
-
-## 一般流程
-
-一般流程从mesh开始，逐步补齐有限元求解所需的数据
+## Workflow
 
 ```text
-io.csv/io.inp
-    -> mesh
-    -> FEMModel(mesh=mesh)
-    -> node_sets/element_sets/surfaces
-    -> materials + sections
-    -> steps
-    -> solvers.static_linear.solve()
-    -> ModelResult
-    -> post.vtk.export
+OCC/Gmsh modeling or Abaqus .inp import
+    → FEMModel
+    → Sets, materials, and sections
+    → AnalysisStep
+    → static_linear.solve()
+    → ModelResult / ModelResults
+    → CSV / VTK
 ```
 
-这条链路中，各层职责如下：
+Solving one load case returns a `ModelResult`; using `steps=` to solve multiple load cases returns an iterable `ModelResults`
 
-- `mesh`保存节点、单元和自由度映射
-- `FEMModel`保存mesh、set、surface、材料、section和step
-- `AnalysisStep`保存一个分析阶段中的约束、载荷和输出请求
-- `BoundaryCondition`保存解析到当前mesh后的全局DOF约束、全局节点力和单元局部边/面载荷
-- `ModelResult`保存求解后的位移和反力
-- `post`使用`mesh`、`U`、`ModelResult`或已有CSV，生成后处理文件
+## Capabilities
 
+| Category | Supported features |
+| --- | --- |
+| Geometry and meshing | OCC geometry and Boolean operations, CAD entity selection, automatic Gmsh meshing and local refinement, Gmsh/CSV mesh readers |
+| Model import | Build an `FEMModel` from supported Abaqus `.inp` keywords and analysis data |
+| 1D elements | `Truss2`, `Beam2` |
+| 2D elements | `Tri3`, `Tri6`, `Quad4`, `Quad8` with plane-stress and plane-strain formulations |
+| 3D elements | `Tet4`, `Tet10`, `Hex8`, `Hex20` |
+| Materials | Isotropic linear elasticity |
+| Constraints and loads | Zero or nonzero prescribed displacements, nodal forces, Beam2 line loads, 2D edge traction/pressure, 3D surface traction/pressure, gravity |
+| Solver | Sparse assembly, single or multiple independent linear static load cases, shared `Initial` constraints |
+| Post-processing | Nodal displacements, reactions, element or nodal stresses where supported, Beam2 stress envelopes, CSV and VTK export |
 
-## 一般流程示例
+Beam2 supports solid circular, hollow circular, and rectangular sections
 
-一般流程示例在`examples/cantilever_beam_hex8.py`
+## Scope
 
-这个脚本展示了：
+- Isotropic linear elasticity, small deformation, and linear static analysis
+- The Abaqus adapter parses only the keywords and analysis data explicitly supported by the project
+- The project does not enforce a unit system or perform unit conversion, so all input data must use consistent units
 
-- 用`fem.io.inp.read_hex8()`读取`examples/examples_data/cantilever_beam_hex8.inp`中的mesh。
-- 创建`FEMModel`。
-- 用`selection`构造node set和element set
-- 用`materials.linear_elastic`定义材料
-- 用`materials.assign()`把材料赋给element set
-- 用`steps.static()`创建分析步
-- 用`steps.displacement()`和`steps.nodal_load()`定义约束和载荷
-- 用`solvers.static_linear.solve()`求解
-- 用`post.vtk.export.from_result()`导出结果
+## Testing
 
+Install the test dependencies and run the full test suite:
 
-## Abaqus流程示例
-
-Abaqus流程示例在`examples/cantilever_beam_hex8_abaqus.py`
-
-这个脚本展示了：
-
-- 用`abaqus.read()`读取完整inp模型
-- 从模型中取得分析步
-- 用`solvers.static_linear.solve()`求解
-- 用`post.vtk.export.from_result()`导出结果
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[cad,test]"
+.\.venv\Scripts\python.exe -m pytest -q
+```
