@@ -51,7 +51,7 @@ OCC/Gmsh modeling or Abaqus .inp import
     → CSV / VTK
 ```
 
-Solving one load case returns a `ModelResult`; using `steps=` to solve multiple load cases returns an iterable `ModelResults`
+Solving one load case returns a `ModelResult`; solving multiple load cases returns an iterable `ModelResults`
 
 ## Capabilities
 
@@ -64,8 +64,8 @@ Solving one load case returns a `ModelResult`; using `steps=` to solve multiple 
 | 3D elements | `Tet4`, `Tet10`, `Hex8`, `Hex20` |
 | Materials | Isotropic linear elasticity |
 | Constraints and loads | Zero or nonzero prescribed displacements, nodal forces, Beam2 line loads, 2D edge traction/pressure, 3D surface traction/pressure, gravity |
-| Solver | Sparse assembly, single or multiple independent linear static load cases, shared `Initial` constraints |
-| Post-processing | Nodal displacements, reactions, element or nodal stresses where supported, Beam2 stress envelopes, CSV and VTK export |
+| Solver | Sparse assembly, single or multiple independent linear static load cases |
+| Post-processing | Nodal displacements, reactions, element or nodal stresses, CSV and VTK export |
 
 Beam2 supports solid circular, hollow circular, and rectangular sections
 

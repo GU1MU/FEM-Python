@@ -1,7 +1,5 @@
 # FEM Python
 
-[English](README.md)
-
 FEM Python 是一个用于脚本化有限元建模与线性静力分析的 Python 项目
 项目覆盖几何建模、网格生成或导入、模型定义、求解、结果查询以及 CSV/VTK 导出
 
@@ -54,7 +52,7 @@ OCC/Gmsh 建模或 Abaqus .inp 导入
     → CSV / VTK
 ```
 
-求解一个工况时返回 `ModelResult`；使用 `steps=` 求解一组工况时返回可迭代的 `ModelResults`
+求解一个工况时返回 `ModelResult`；求解多个工况时返回可迭代的 `ModelResults`
 
 ## 当前能力
 
@@ -67,8 +65,8 @@ OCC/Gmsh 建模或 Abaqus .inp 导入
 | 三维单元 | `Tet4`、`Tet10`、`Hex8`、`Hex20` |
 | 材料 | 各向同性线弹性材料 |
 | 约束与载荷 | 零或非零规定位移、节点力、Beam2 线载荷、二维边牵引/压力、三维面牵引/压力、重力 |
-| 求解 | 稀疏装配、单个或多个独立线性静力工况、共享 `Initial` 约束 |
-| 后处理 | 节点位移、反力、按单元类型提供的单元或节点应力、Beam2 应力包络、CSV 和 VTK |
+| 求解 | 稀疏装配、单个或多个独立线性静力工况 |
+| 后处理 | 节点位移、反力、单元或节点应力、CSV 和 VTK 导出 |
 
 Beam2 支持圆形、空心圆形和矩形截面
 
