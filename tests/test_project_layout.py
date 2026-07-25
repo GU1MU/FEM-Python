@@ -898,3 +898,139 @@ def test_production_accept_validation_has_no_passed_escape_hatch():
 
 def test_gui_model_definitions_shim_is_removed():
     assert not (GUI_ROOT / "model_definitions.py").exists()
+
+
+def test_beam_frame_domain_module_has_no_upward_or_adapter_dependency():
+    path = SRC_ROOT / "fem" / "elements" / "beam_frame.py"
+    forbidden_roots = (
+        "fem.application",
+        "fem_gui",
+        "fem.io",
+        "fem.abaqus",
+        "fem.solvers",
+        "fem.post",
+    )
+    offenders = [
+        f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+        for target, lineno in _resolved_import_targets(
+            path,
+            "fem.elements.beam_frame",
+        )
+        if any(
+            target == root or target.startswith(f"{root}.")
+            for root in forbidden_roots
+        )
+    ]
+
+    assert path.is_file()
+    assert offenders == []
+
+
+def test_beam_frame_has_one_production_resolver_and_no_legacy_helper():
+    resolver_definitions = []
+    legacy_references = []
+    for path in sorted(SRC_ROOT.rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        legacy_references.extend(
+            f"{path.relative_to(PROJECT_ROOT)}:{node.lineno}"
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Name)
+            and node.id == "beam3d_geometry"
+        )
+        resolver_definitions.extend(
+            f"{path.relative_to(PROJECT_ROOT)}:{node.lineno}"
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "resolve_beam_frame"
+        )
+
+    assert legacy_references == []
+    assert len(resolver_definitions) == 1
+    resolver_path, _lineno = resolver_definitions[0].rsplit(":", 1)
+    assert Path(resolver_path) == Path(
+        "src/fem/elements/beam_frame.py"
+    )
+
+
+def test_gui_beam_frame_consumers_use_application_query_boundary():
+    paths = (
+        GUI_ROOT / "main_window.py",
+        GUI_ROOT / "inspection_service.py",
+        GUI_ROOT / "widgets" / "viewport.py",
+    )
+    forbidden_imports = []
+    forbidden_functions = []
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        forbidden_functions.extend(
+            f"{path.relative_to(PROJECT_ROOT)}:{node.lineno} -> {node.name}"
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name in {
+                "resolve_beam_frame",
+                "beam3d_geometry",
+                "resolve_effective_beam_frames",
+            }
+        )
+        for target, lineno in _resolved_import_targets(
+            path,
+            _module_name(path),
+        ):
+            if target == "fem.elements" or target.startswith(
+                "fem.elements."
+            ):
+                forbidden_imports.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+                )
+
+    main_source = (GUI_ROOT / "main_window.py").read_text(
+        encoding="utf-8"
+    )
+    inspection_source = (GUI_ROOT / "inspection_service.py").read_text(
+        encoding="utf-8"
+    )
+    viewport_source = (
+        GUI_ROOT / "widgets" / "viewport.py"
+    ).read_text(encoding="utf-8")
+
+    assert forbidden_imports == []
+    assert forbidden_functions == []
+    assert "resolve_effective_beam_frames" in main_source
+    assert "resolve_effective_beam_frames" in inspection_source
+    assert "_effective_frame_query" in viewport_source
+
+
+def test_section_editor_does_not_own_beam_orientation_authoring():
+    path = GUI_ROOT / "model_dialogs.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    section_editor = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef)
+        and node.name == "SectionEditDialog"
+    )
+
+    assert not any(
+        value == "beam_orientation"
+        or value == "beam_local_y_reference"
+        for value in _literal_strings(section_editor)
+    )
+    assert not any(
+        isinstance(node, ast.Name)
+        and node.id in {
+            "BeamOrientation",
+            "beam_orientation",
+            "beam_local_y_reference",
+        }
+        for node in ast.walk(section_editor)
+    )
+
+
+def test_project_v1_writer_contains_explicit_orientation_fail_closed_guard():
+    path = SRC_ROOT / "fem" / "io" / "project_v1.py"
+    source = path.read_text(encoding="utf-8")
+
+    assert "beam_orientation" in source
+    assert "ProjectV1EncodeError" in source
+    assert "v1 不支持 Beam orientation" in source

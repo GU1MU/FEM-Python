@@ -7,10 +7,19 @@ import numpy as np
 import pytest
 
 from fem.abaqus import read
-from fem.application import ModelSession, RunStatus, SessionStateError
+from fem.application import (
+    BeamOrientation,
+    ModelSession,
+    RegionRef,
+    RunStatus,
+    SessionStateError,
+    resolve_effective_beam_frames,
+)
 from fem.application.preflight import run_static_preflight
 from fem.core.model import LineLoad
 from fem.solvers.static_linear import solve
+from fem_gui.inspection_service import InspectionService
+from fem_gui.widgets.viewport import _effective_line_load_vector
 
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "inp"
@@ -122,7 +131,12 @@ def test_imported_beam_definition_and_line_load_edit_check_submit_and_solve(
     delta = session.replace_model_definitions(
         before.materials,
         (replace(section, properties=edited_properties),),
-        before.assignments,
+        (
+            replace(
+                before.assignments[0],
+                beam_orientation=BeamOrientation((0.0, 1.0, 0.0)),
+            ),
+        ),
         edited_steps,
     )
 
@@ -140,6 +154,37 @@ def test_imported_beam_definition_and_line_load_edit_check_submit_and_solve(
             coordinate_system,
         ),
     )
+    frame_report = resolve_effective_beam_frames(
+        after.model,
+        RegionRef("element_set", "BEAM"),
+    )
+    assert frame_report.passed
+    frame = frame_report.entries[0].frame
+    assert frame.source == "explicit"
+    assert frame.orientation == BeamOrientation((0.0, 1.0, 0.0))
+
+    inspection = InspectionService(
+        after.model,
+        definitions=after,
+        effective_frame_query=lambda target: (
+            resolve_effective_beam_frames(after.model, target)
+        ),
+    ).inspect("assignment", 0)
+    inspection_fields = dict(inspection.pages[0].fields)
+    assert inspection_fields["orientation source"] == "explicit"
+    assert inspection_fields["effective frame source"] == "explicit"
+    assert inspection_fields["validity"] == "valid"
+
+    line_load = uniform_load.line_loads[0]
+    arrow_vector = _effective_line_load_vector(
+        line_load.vector,
+        line_load.coordinate_system,
+        frame,
+    )
+    expected_arrow = np.asarray(line_load.vector, dtype=float)
+    if coordinate_system == "local":
+        expected_arrow = frame.rotation.T @ expected_arrow
+    assert arrow_vector == pytest.approx(expected_arrow)
 
     result = _check_submit_and_solve(
         session,
