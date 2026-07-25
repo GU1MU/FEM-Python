@@ -63,6 +63,12 @@ class ResultData:
     stress_position_labels: dict[str, str] = dataclass_field(
         default_factory=dict, repr=False, compare=False
     )
+    artifact_id: str | None = dataclass_field(
+        default=None, repr=False, compare=False
+    )
+    run_id: str | None = dataclass_field(
+        default=None, repr=False, compare=False
+    )
 
     def field_ready(self, key: str) -> bool:
         """Return whether a catalog field already has numeric values."""

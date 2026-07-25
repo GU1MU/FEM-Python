@@ -1,0 +1,482 @@
+from __future__ import annotations
+
+from dataclasses import replace
+import os
+from pathlib import Path
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import pytest
+from PySide6.QtWidgets import QApplication
+
+from fem.application import (
+    NamedRegion,
+    RegionAssignment,
+    RunStatus,
+    SectionDefinition,
+)
+from fem.core.model import (
+    AnalysisStep,
+    DisplacementConstraint,
+    MaterialDefinition,
+    NodalLoad,
+)
+from fem.geometry.recipes import RectangleGeometry
+from fem.mesh.settings import LocalMeshControl, MeshSettings
+from fem.solvers.static_linear import solve
+import fem_gui.main_window as main_window_module
+from fem_gui.main_window import FEMMainWindow
+from fem_gui.visualization.model_adapter import build_model_geometry
+from fem_gui.visualization.result_adapter import build_result_data
+from tests.helpers.model_builders import (
+    make_static_pull_truss_model,
+    make_two_step_static_pull_truss_model,
+)
+
+
+_RESULT_ACTIONS = (
+    "undeformed",
+    "deformed",
+    "contour",
+    "overlay",
+    "field",
+    "scale",
+    "contour_options",
+    "query",
+    "export",
+    "screenshot",
+)
+
+
+def _application() -> QApplication:
+    return QApplication.instance() or QApplication([])
+
+
+def _new_window() -> FEMMainWindow:
+    _application()
+    return FEMMainWindow()
+
+
+def _install_imported(
+    window: FEMMainWindow,
+    model=None,
+    *,
+    path: str = "regression.inp",
+) -> None:
+    installed_model = model or make_static_pull_truss_model()
+    task = window.session.prepare_import(Path(path))
+    assert window._apply_session_delta(
+        window.session.accept_imported_model(task.token, installed_model),
+        model_geometry=build_model_geometry(installed_model),
+        source_label=path,
+    )
+
+
+def _validate_step(window: FEMMainWindow, step_name: str) -> None:
+    task = window.session.prepare_validation(step_name)
+    assert window._apply_session_delta(
+        window.session.accept_validation(
+            task.token,
+            {"passed": True},
+        )
+    )
+
+
+def _succeed_run(
+    window: FEMMainWindow,
+    *,
+    step_name: str = "pull",
+    run_name: str = "Job-1",
+) -> str:
+    if not window.session.can_submit(step_name):
+        _validate_step(window, step_name)
+    task = window.session.prepare_solve(step_name, run_name)
+    assert task.delta is not None
+    assert window._apply_session_delta(task.delta)
+    assert window._apply_session_delta(window.session.begin_run(task.token))
+    result = solve(task.model, task.step_name, name=run_name)
+    assert window._apply_session_delta(
+        window.session.accept_run_result(task.token, result),
+        result_projection=replace(
+            build_result_data(result, window.geometry),
+            artifact_id=task.token.artifact_id,
+            run_id=task.run_id,
+        ),
+    )
+    return task.run_id
+
+
+def _projection_signature(window: FEMMainWindow) -> tuple[object, ...]:
+    artifact_id = (
+        None
+        if window.document.artifact is None
+        else window.document.artifact.artifact_id
+    )
+    return (
+        window.document.session_id,
+        window.document.session_revision,
+        artifact_id,
+        window.document.displayed_result_run_id,
+        window.geometry.artifact_id if window.geometry is not None else None,
+        window.result_data.run_id if window.result_data is not None else None,
+        window.viewport.artifact_id,
+        window.viewport.run_id,
+        window.model_tree.topLevelItem(0).text(0),
+        window.result_tree.topLevelItem(0).text(0),
+    )
+
+
+def _assert_result_entries_disabled(window: FEMMainWindow) -> None:
+    assert all(not window.actions[name].isEnabled() for name in _RESULT_ACTIONS)
+    assert not window.result_variable_combo.isEnabled()
+    assert not window.result_component_combo.isEnabled()
+    assert not window.result_position_combo.isEnabled()
+    assert not window.result_scale_combo.isEnabled()
+
+
+def test_delete_and_recreate_geometry_remove_all_topology_references() -> None:
+    window = _new_window()
+    window.new_native_model()
+    window._set_native_geometry(
+        RectangleGeometry("Plate", 2.0, 1.0),
+        "矩形",
+    )
+    assert window._apply_session_delta(
+        window.session.replace_named_regions(
+            (
+                NamedRegion("Domain", "body", (1,)),
+                NamedRegion("Fixed", "edge", (4,)),
+                NamedRegion("Loaded", "edge", (2,)),
+            )
+        )
+    )
+    assert window._apply_session_delta(
+        window.session.replace_mesh_settings(
+            MeshSettings(
+                0.5,
+                local_size=0.2,
+                local_controls=(LocalMeshControl("edge", 2, 0.1),),
+            )
+        )
+    )
+    step = AnalysisStep(
+        "Load",
+        boundaries=(DisplacementConstraint("Fixed", 1, 2, 0.0),),
+        cloads=(NodalLoad("Loaded", 1, 10.0),),
+    )
+    assert window._apply_session_delta(
+        window.session.replace_model_definitions(
+            (MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3}),),
+            (SectionDefinition("Section-1", "Steel"),),
+            (RegionAssignment("Section-1", "Domain"),),
+            (step,),
+        )
+    )
+
+    window.delete_geometry()
+    deleted = window.document
+
+    assert deleted.geometry_recipe is None
+    assert deleted.parts == ()
+    assert deleted.feature_history == ()
+    assert not deleted.named_regions
+    assert deleted.region_assignments == ()
+    assert deleted.analysis_definitions == ()
+    assert deleted.mesh_settings.local_size is None
+    assert deleted.mesh_settings.local_controls == ()
+    assert deleted.artifact is None
+    assert window.geometry is None
+    _assert_result_entries_disabled(window)
+
+    window._set_native_geometry(
+        RectangleGeometry("Replacement", 3.0, 1.5),
+        "新矩形",
+    )
+    recreated = window.document
+    assert recreated.geometry_recipe.name == "Replacement"
+    assert not recreated.named_regions
+    assert recreated.region_assignments == ()
+    assert recreated.analysis_definitions == ()
+    window.close()
+
+
+def test_named_region_change_invalidates_model_validation_runs_and_results() -> None:
+    window = _new_window()
+    window.new_native_model()
+    window._set_native_geometry(
+        RectangleGeometry("Plate", 2.0, 1.0),
+        "矩形",
+    )
+    assert window._apply_session_delta(
+        window.session.replace_named_regions(
+            (NamedRegion("Old", "edge", (1,)),)
+        )
+    )
+    assert window._apply_session_delta(
+        window.session.replace_model_definitions(
+            (),
+            (),
+            (),
+            tuple(make_static_pull_truss_model().steps),
+        )
+    )
+    task = window.session.prepare_mesh_generation()
+    model = make_static_pull_truss_model()
+    assert window._apply_session_delta(
+        window.session.accept_generated_model(task.token, model),
+        model_geometry=build_model_geometry(model),
+    )
+    run_id = _succeed_run(window)
+
+    assert window._apply_session_delta(
+        window.session.replace_named_regions(
+            (NamedRegion("Changed", "edge", (2,)),)
+        )
+    )
+
+    assert tuple(window.document.named_regions) == ("Changed",)
+    assert window.document.artifact is None
+    assert not window.document.validations
+    assert not window.document.runs
+    assert window.session.find_run(run_id) is None
+    assert window.result_data is None
+    assert window.viewport.run_id is None
+    _assert_result_entries_disabled(window)
+    window.close()
+
+
+def test_definition_change_replaces_artifact_and_invalidates_check_and_result() -> None:
+    window = _new_window()
+    _install_imported(window)
+    _succeed_run(window)
+    old_artifact_id = window.document.artifact.artifact_id
+
+    materials = tuple(window.document.material_definitions)
+    assert window._apply_session_delta(
+        window.session.replace_model_definitions(
+            materials,
+            window.document.section_definitions,
+            window.document.region_assignments,
+            window.document.analysis_definitions,
+        )
+    )
+
+    assert window.document.artifact.artifact_id != old_artifact_id
+    assert not window.document.validations
+    assert not window.document.runs
+    assert window.session.current_result() is None
+    assert window.result_data is None
+    assert not window.actions["submit_job"].isEnabled()
+    _assert_result_entries_disabled(window)
+    window.close()
+
+
+def test_step_switch_uses_independent_validation_stamp_for_action_gate() -> None:
+    window = _new_window()
+    _install_imported(window, make_two_step_static_pull_truss_model())
+    _validate_step(window, "pull1")
+
+    window._set_current_step("pull1")
+    assert window.actions["submit_job"].isEnabled()
+
+    window._set_current_step("pull2")
+    assert window._current_step_name == "pull2"
+    assert not window.actions["submit_job"].isEnabled()
+
+    _validate_step(window, "pull2")
+    assert window.actions["submit_job"].isEnabled()
+    assert window.session.validation_for("pull1") is not None
+    assert window.session.validation_for("pull2") is not None
+    window.close()
+
+
+@pytest.mark.parametrize(
+    ("terminal", "expected_status"),
+    [
+        ("failed", RunStatus.FAILED),
+        ("cancelled", RunStatus.CANCELLED),
+    ],
+)
+def test_failed_or_cancelled_job_preserves_previous_displayed_result(
+    terminal: str,
+    expected_status: RunStatus,
+) -> None:
+    window = _new_window()
+    _install_imported(window)
+    first_run_id = _succeed_run(window, run_name="Job-1")
+    first_result_data = window.result_data
+
+    task = window.session.prepare_solve("pull", "Job-2")
+    assert task.delta is not None
+    assert window._apply_session_delta(task.delta)
+    assert window._apply_session_delta(window.session.begin_run(task.token))
+    if terminal == "failed":
+        terminal_delta = window.session.accept_run_failed(
+            task.token,
+            "solver failed",
+        )
+    else:
+        assert window._apply_session_delta(
+            window.session.request_cancel(task.run_id)
+        )
+        terminal_delta = window.session.accept_run_cancelled(task.token)
+    assert window._apply_session_delta(terminal_delta)
+
+    assert window.session.find_run(task.run_id).status is expected_status
+    assert window.document.displayed_result_run_id == first_run_id
+    assert window.session.current_result().provenance.run_id == first_run_id
+    assert window.result_data is first_result_data
+    assert window.viewport.run_id == first_run_id
+    assert window.actions["query"].isEnabled()
+    window.close()
+
+
+def test_stale_import_callback_cannot_change_projection() -> None:
+    window = _new_window()
+    _install_imported(window)
+    stale = window.session.prepare_import("late.inp")
+    assert window._apply_session_delta(
+        window.session.replace_model_definitions(
+            window.document.material_definitions,
+            window.document.section_definitions,
+            window.document.region_assignments,
+            window.document.analysis_definitions,
+        )
+    )
+    before = _projection_signature(window)
+
+    rejected = window.session.accept_imported_model(
+        stale.token,
+        make_static_pull_truss_model(load=999.0),
+    )
+    assert not rejected.accepted
+    assert not window._apply_session_delta(rejected)
+    assert _projection_signature(window) == before
+    window.close()
+
+
+def test_stale_mesh_callback_cannot_change_projection() -> None:
+    window = _new_window()
+    window.new_native_model()
+    window._set_native_geometry(
+        RectangleGeometry("Plate", 2.0, 1.0),
+        "矩形",
+    )
+    stale = window.session.prepare_mesh_generation()
+    assert window._apply_session_delta(
+        window.session.replace_mesh_settings(MeshSettings(0.25))
+    )
+    before = _projection_signature(window)
+
+    rejected = window.session.accept_generated_model(
+        stale.token,
+        make_static_pull_truss_model(),
+    )
+    assert not rejected.accepted
+    assert not window._apply_session_delta(rejected)
+    assert _projection_signature(window) == before
+    window.close()
+
+
+def test_stale_validation_callback_cannot_change_projection() -> None:
+    window = _new_window()
+    _install_imported(window)
+    stale = window.session.prepare_validation("pull")
+    assert window._apply_session_delta(
+        window.session.replace_model_definitions(
+            window.document.material_definitions,
+            window.document.section_definitions,
+            window.document.region_assignments,
+            window.document.analysis_definitions,
+        )
+    )
+    before = _projection_signature(window)
+
+    rejected = window.session.accept_validation(
+        stale.token,
+        {"passed": True},
+    )
+    assert not rejected.accepted
+    assert not window._apply_session_delta(rejected)
+    assert _projection_signature(window) == before
+    window.close()
+
+
+def test_stale_solve_callback_cannot_restore_invalidated_result() -> None:
+    window = _new_window()
+    _install_imported(window)
+    _validate_step(window, "pull")
+    stale = window.session.prepare_solve("pull", "Late-Job")
+    assert stale.delta is not None
+    assert window._apply_session_delta(stale.delta)
+    assert window._apply_session_delta(window.session.begin_run(stale.token))
+    assert window._apply_session_delta(
+        window.session.replace_model_definitions(
+            window.document.material_definitions,
+            window.document.section_definitions,
+            window.document.region_assignments,
+            window.document.analysis_definitions,
+        )
+    )
+    before = _projection_signature(window)
+
+    rejected = window.session.accept_run_result(
+        stale.token,
+        {"stale": True},
+    )
+    assert not rejected.accepted
+    assert not window._apply_session_delta(rejected)
+    assert _projection_signature(window) == before
+    assert window.session.current_result() is None
+    _assert_result_entries_disabled(window)
+    window.close()
+
+
+def test_stale_result_projection_callback_cannot_replace_current_cache() -> None:
+    window = _new_window()
+    _install_imported(window)
+    run_id = _succeed_run(window)
+    stale = window.session.prepare_result_projection(run_id)
+    assert window._apply_session_delta(window.session.select_result(run_id))
+    before = _projection_signature(window)
+
+    rejected = window.session.accept_result_projection(stale.token)
+    assert not rejected.accepted
+    assert not window._apply_session_delta(rejected)
+    assert _projection_signature(window) == before
+    assert window.result_data.run_id == run_id
+    window.close()
+
+
+def test_corrupt_project_open_preserves_session_tree_and_viewport(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    window = _new_window()
+    _install_imported(window)
+    _succeed_run(window)
+    corrupt = tmp_path / "corrupt.femproj"
+    corrupt.write_text('{"schema": 1, "geometry": ', encoding="utf-8")
+    errors: list[tuple[str, str]] = []
+    before_document = window.document
+    before = _projection_signature(window)
+
+    monkeypatch.setattr(
+        main_window_module.QFileDialog,
+        "getOpenFileName",
+        lambda *_args, **_kwargs: (str(corrupt), ""),
+    )
+    monkeypatch.setattr(window, "_confirm_discard_changes", lambda: True)
+    monkeypatch.setattr(
+        window,
+        "_show_error",
+        lambda title, message: errors.append((title, message)),
+    )
+
+    window.open_native_project()
+
+    assert errors
+    assert window.document is before_document
+    assert _projection_signature(window) == before
+    assert window.actions["query"].isEnabled()
+    window.close()

@@ -37,6 +37,18 @@ def _find_kind(tree, kind):
     raise AssertionError(kind)
 
 
+def _seed_current_result(window: FEMMainWindow, step_name: str) -> None:
+    validation = window.session.prepare_validation(step_name)
+    window.session.accept_validation(
+        validation.token,
+        {"passed": True},
+    )
+    solve = window.session.prepare_solve(step_name, "Seed-Result")
+    window.session.begin_run(solve.token)
+    window.session.accept_run_result(solve.token, object())
+    assert window.session.current_result() is not None
+
+
 def test_tree_double_click_opens_mesh_browser_and_entity_dialog(gui_inp_path):
     _application()
     window = FEMMainWindow()
@@ -77,20 +89,20 @@ def test_tree_double_click_edits_imported_material_and_invalidates_model(
             {"E": 123456.0, "nu": 0.28},
         ),
     )
-    window.document.workflow.model_checked = True
-    window.document.result = object()
+    _seed_current_result(window, "Static-1")
 
     window.model_tree._on_double_clicked(
         _find_kind(window.model_tree, "material")
     )
 
-    assert model.materials["STEEL"].properties == {
+    assert window.document.model.materials["STEEL"].properties == {
         "E": 123456.0,
         "nu": 0.28,
     }
     assert window.document.dirty
-    assert not window.document.workflow.model_checked
-    assert window.document.result is None
+    assert window.session.validation_for("Static-1") is None
+    assert window.session.current_result() is None
+    assert not window.document.has_result
     window.close()
 
 
@@ -123,7 +135,7 @@ def test_tree_double_click_edits_imported_boundary_and_load(
         _find_kind(window.model_tree, "boundary")
     )
 
-    boundary = model.steps[0].boundaries[0]
+    boundary = window.document.model.steps[0].boundaries[0]
     assert (
         boundary.target,
         boundary.first_component,
@@ -149,7 +161,9 @@ def test_tree_double_click_edits_imported_boundary_and_load(
     )
 
     load_step = next(
-        step for step in model.steps if step.name == "Static-1"
+        step
+        for step in window.document.model.steps
+        if step.name == "Static-1"
     )
     load = load_step.cloads[0]
     assert (load.target, load.component, load.value) == (
@@ -158,7 +172,7 @@ def test_tree_double_click_edits_imported_boundary_and_load(
         7.5,
     )
     assert window.document.dirty
-    assert not window.document.workflow.model_checked
+    assert not window.session.can_submit("Static-1")
     window.close()
 
 

@@ -10,7 +10,7 @@ from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication
 import pytest
 
-from fem_gui.document import NamedRegion
+from fem.application import NamedRegion
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.mesh_quality import analyze_mesh
 from fem_gui.preprocessing import (
@@ -53,22 +53,30 @@ def _wait_for_task(window: FEMMainWindow) -> None:
     assert not window.busy
 
 
+def _set_native_mesh_inputs(
+    window: FEMMainWindow,
+    recipe: object,
+    settings: MeshSettings,
+) -> None:
+    window._set_native_geometry(recipe, "测试几何")
+    assert window._apply_session_delta(
+        window.session.replace_mesh_settings(settings)
+    )
+
+
 def test_native_rectangle_mesh_joins_the_existing_model_workflow() -> None:
     _application()
     window = FEMMainWindow()
     recipe = RectangleGeometry("gui-native-rectangle", 2.0, 1.0)
     settings = MeshSettings(0.25, order=1, cell_shape="triangle")
-    window.document.geometry_recipe = recipe
-    window.document.mesh_settings = settings
-    window.document.native_mesh_current = False
-    window._update_action_states()
+    _set_native_mesh_inputs(window, recipe, settings)
 
     window.generate_native_mesh()
     _wait_for_task(window)
 
     assert window.document.source_kind == "native"
-    assert window.document.geometry_recipe is recipe
-    assert window.document.mesh_settings is settings
+    assert window.document.geometry_recipe == recipe
+    assert window.document.mesh_settings == settings
     assert window.document.path is None
     assert not window.actions["reload"].isEnabled()
     assert window.document.model is not None
@@ -90,8 +98,8 @@ def test_native_rectangle_mesh_joins_the_existing_model_workflow() -> None:
 
     window.clear_native_mesh()
     assert window.document.model is None
-    assert window.document.geometry_recipe is recipe
-    assert window.document.mesh_settings is settings
+    assert window.document.geometry_recipe == recipe
+    assert window.document.mesh_settings == settings
     assert window.viewport._geometry_preview is not None
     assert window.actions["mesh_generate"].isEnabled()
     window.close()
@@ -172,15 +180,18 @@ def test_rectangle_sketch_extrusion_uses_existing_solid_mesh_workflow(
 def test_quadrilateral_setting_reaches_the_same_gui_adapter() -> None:
     _application()
     window = FEMMainWindow()
-    window.document.geometry_recipe = RectangleGeometry(
-        "gui-native-quad",
-        2.0,
-        1.0,
-    )
-    window.document.mesh_settings = MeshSettings(
-        0.25,
-        order=2,
-        cell_shape="quadrilateral",
+    _set_native_mesh_inputs(
+        window,
+        RectangleGeometry(
+            "gui-native-quad",
+            2.0,
+            1.0,
+        ),
+        MeshSettings(
+            0.25,
+            order=2,
+            cell_shape="quadrilateral",
+        ),
     )
 
     window.generate_native_mesh()
@@ -209,8 +220,7 @@ def test_plate_with_hole_imports_named_boundary_and_local_refinement() -> None:
         cell_shape="triangle",
         local_size=0.04,
     )
-    window.document.geometry_recipe = recipe
-    window.document.mesh_settings = settings
+    _set_native_mesh_inputs(window, recipe, settings)
 
     window.generate_native_mesh()
     _wait_for_task(window)
@@ -375,7 +385,7 @@ def test_selecting_a_solid_geometry_prepares_tetrahedral_settings_and_preview() 
 
     window._set_native_geometry(recipe, "长方体")
 
-    assert window.document.geometry_recipe is recipe
+    assert window.document.geometry_recipe == recipe
     assert window.document.mesh_settings.cell_shape == "tetrahedron"
     assert window.viewport._geometry_preview is not None
     assert window.model_tree.topLevelItemCount() == 1

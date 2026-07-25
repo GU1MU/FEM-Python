@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
+from fem.application import NamedRegion, RegionAssignment, SectionDefinition
 from fem.abaqus import read
 from fem.core.model import (
     DisplacementConstraint,
@@ -17,8 +19,6 @@ from fem.solvers.static_linear import solve
 from fem.steps.factory import static
 import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
-from fem_gui.analysis_jobs import AnalysisJob, JobStatus
-from fem_gui.document import NamedRegion, RegionAssignment, SectionDefinition
 from fem_gui.preprocessing import (
     LocalMeshControl,
     MeshSettings,
@@ -83,10 +83,15 @@ def test_actions_follow_document_and_result_context(gui_inp_path):
     for name in ("deformed", "contour", "query", "export"):
         assert not window.actions[name].isEnabled()
 
-    result = solve(model)
-    job = AnalysisJob("Job-1", "Static-1", JobStatus.RUNNING)
-    window.document.add_job(job)
-    window._job_succeeded(job, (result, build_result_data(result, geometry)))
+    task = window.session.prepare_solve("Static-1", "Job-1")
+    assert task.delta is not None
+    window._apply_session_delta(task.delta)
+    window._apply_session_delta(window.session.begin_run(task.token))
+    result = solve(task.model, task.step_name)
+    window._job_succeeded(
+        task.token,
+        (result, build_result_data(result, geometry)),
+    )
     window._update_action_states()
     for name in ("undeformed", "deformed", "contour", "field", "query", "export"):
         assert window.actions[name].isEnabled()
@@ -106,8 +111,7 @@ def test_new_model_unlocks_model_definition_and_sketch_commands():
     _application()
     window = FEMMainWindow()
 
-    window.document.new_native_model()
-    window._update_action_states()
+    window._apply_session_delta(window.session.new_native_project())
 
     assert window.actions["geometry_sketch"].isEnabled()
     assert window.actions["material_manager"].isEnabled()
@@ -133,8 +137,7 @@ def test_every_disabled_action_explains_why_it_is_unavailable():
 def test_load_action_uses_the_same_dimension_filtered_regions_as_dialog():
     _application()
     window = FEMMainWindow()
-    window.document.source_kind = "inp"
-    window.document.model = SimpleNamespace(
+    model = SimpleNamespace(
         mesh=SimpleNamespace(
             elements=(SimpleNamespace(type="Hex8"),),
             nodes=(),
@@ -142,8 +145,16 @@ def test_load_action_uses_the_same_dimension_filtered_regions_as_dialog():
         node_sets={},
         edges={"EDGE_ONLY": object()},
         surfaces={},
+        materials={},
+        sections=(),
+        steps=(static("Load"),),
     )
-    window.document.analysis_definitions = [static("Load")]
+    task = window.session.prepare_import(Path("volume.inp"))
+    delta = window.session.accept_imported_model(task.token, model)
+    assert delta.accepted
+    window.document = window.session.snapshot()
+    window._applied_session_revision = window.document.session_revision
+    window._current_step_name = "Load"
 
     window._update_action_states()
 
@@ -159,20 +170,26 @@ def test_generated_model_uses_the_shared_install_path_without_enabling_reload(
     window = FEMMainWindow()
     model = read(gui_inp_path)
     geometry = build_model_geometry(model)
-    recipe = {"shape": "rectangle"}
-    settings = {"size": 0.25}
+    recipe = RectangleGeometry("Plate", 2.0, 1.0)
+    settings = MeshSettings(0.25)
 
+    window._set_native_geometry(recipe, "矩形")
+    window._apply_session_delta(
+        window.session.replace_mesh_settings(settings)
+    )
+    task = window.session.prepare_mesh_generation()
     window._generated_model_loaded(
         (model, geometry),
-        geometry_recipe=recipe,
-        mesh_settings=settings,
+        token=task.token,
     )
 
     assert window.document.source_kind == "native"
-    assert window.document.geometry_recipe is recipe
-    assert window.document.mesh_settings is settings
-    assert window.document.model is model
-    assert window.geometry is geometry
+    assert window.document.geometry_recipe == recipe
+    assert window.document.mesh_settings == settings
+    assert window.document.model is not None
+    assert window.document.artifact is not None
+    assert window.geometry is not None
+    assert window.geometry.artifact_id == window.document.artifact.artifact_id
     assert not window.actions["reload"].isEnabled()
     assert window.actions["close"].isEnabled()
     assert window.actions["fit"].isEnabled()
@@ -182,19 +199,20 @@ def test_generated_model_uses_the_shared_install_path_without_enabling_reload(
 def test_native_analysis_actions_are_available_before_meshing():
     _application()
     window = FEMMainWindow()
-    window.document.new_native_model()
     window._set_native_geometry(RectangleGeometry("Plate", 2.0, 1.0), "矩形")
-    window.document.named_regions["Fixed"] = NamedRegion("Fixed", "edge", (1,))
-    window.document.material_definitions = [
-        MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3})
-    ]
-    window.document.section_definitions = [
-        SectionDefinition("Solid", "Steel")
-    ]
-    window.document.analysis_definitions = [static("Load")]
-    window.document.step_name = "Load"
-
-    window._update_action_states()
+    window._apply_session_delta(
+        window.session.replace_named_regions(
+            (NamedRegion("Fixed", "edge", (1,)),)
+        )
+    )
+    window._apply_session_delta(
+        window.session.replace_model_definitions(
+            (MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3}),),
+            (SectionDefinition("Solid", "Steel"),),
+            (),
+            (static("Load"),),
+        )
+    )
 
     assert window.actions["section_assign"].isEnabled()
     assert window.actions["step_create"].isEnabled()
@@ -225,9 +243,14 @@ def test_window_title_shows_source_and_unsaved_state(gui_inp_path):
     window = FEMMainWindow()
     assert window.windowTitle() == "有限元分析"
 
-    window.document.new_native_model()
-    window._update_action_states()
+    window._apply_session_delta(window.session.new_native_project())
     assert "[自主]" in window.windowTitle()
+    assert not window.windowTitle().endswith("*")
+
+    window._set_native_geometry(
+        RectangleGeometry("Plate", 2.0, 1.0),
+        "矩形",
+    )
     assert window.windowTitle().endswith("*")
 
     model = read(gui_inp_path)
@@ -246,10 +269,15 @@ def test_boundary_action_requests_a_viewport_region_before_opening_parameters(
 ):
     application = _application()
     window = FEMMainWindow()
-    window.document.new_native_model()
     window._set_native_geometry(RectangleGeometry("Plate", 2.0, 1.0), "矩形")
-    window.document.analysis_definitions = [static("Load")]
-    window.document.step_name = "Load"
+    window._apply_session_delta(
+        window.session.replace_model_definitions(
+            (),
+            (),
+            (),
+            (static("Load"),),
+        )
+    )
 
     window.create_displacement_boundary()
 
@@ -274,35 +302,38 @@ def test_boundary_action_requests_a_viewport_region_before_opening_parameters(
     window.close()
 
 
-def test_topology_changes_invalidate_regions_but_rigid_moves_preserve_them():
+def test_geometry_transitions_invalidate_topology_references():
     _application()
     window = FEMMainWindow()
     base = RectangleGeometry("Plate", 2.0, 1.0)
     window._set_native_geometry(base, "矩形")
-    window.document.named_regions["Fixed"] = NamedRegion("Fixed", "edge", (1,))
-    window.document.region_assignments = [
-        RegionAssignment("Solid", "Fixed")
-    ]
-    window.document.set_mesh_settings(
-        MeshSettings(
-            0.2,
-            local_controls=(LocalMeshControl("edge", 1, 0.1),),
+    window._apply_session_delta(
+        window.session.replace_named_regions(
+            (NamedRegion("Fixed", "edge", (1,)),)
+        )
+    )
+    window._apply_session_delta(
+        window.session.replace_model_definitions(
+            (MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3}),),
+            (SectionDefinition("Solid", "Steel"),),
+            (RegionAssignment("Solid", "Fixed"),),
+            (),
+        )
+    )
+    window._apply_session_delta(
+        window.session.replace_mesh_settings(
+            MeshSettings(
+                0.2,
+                local_controls=(LocalMeshControl("edge", 1, 0.1),),
+            )
         )
     )
 
     moved = MovedGeometry(base, 1.0, 0.0)
     window._set_native_geometry(moved, "移动后的")
 
-    assert "Fixed" in window.document.named_regions
-    assert window.document.mesh_settings.local_controls
-
-    window._set_native_geometry(
-        RectangleGeometry("Edited", 3.0, 1.0),
-        "编辑后的",
-    )
-
     assert window.document.named_regions == {}
-    assert window.document.region_assignments == []
+    assert window.document.region_assignments == ()
     assert window.document.mesh_settings.local_controls == ()
     window.close()
 
@@ -310,7 +341,11 @@ def test_topology_changes_invalidate_regions_but_rigid_moves_preserve_them():
 def test_cancelled_discard_confirmation_keeps_the_native_project(monkeypatch):
     _application()
     window = FEMMainWindow()
-    window.document.new_native_model()
+    window._apply_session_delta(window.session.new_native_project())
+    window._set_native_geometry(
+        RectangleGeometry("Plate", 2.0, 1.0),
+        "矩形",
+    )
     assert window.document.dirty
     monkeypatch.setattr(window, "_confirm_discard_changes", lambda: False)
 
@@ -436,9 +471,12 @@ def test_local_mesh_control_applies_once_to_all_selected_edges(monkeypatch):
 def test_named_region_default_names_do_not_expose_topology_ids():
     _application()
     window = FEMMainWindow()
-    window.document.named_regions = {
-        "Surface-1": NamedRegion("Surface-1", "face", (4,)),
-    }
+    window._apply_session_delta(window.session.new_native_project())
+    window._apply_session_delta(
+        window.session.replace_named_regions(
+            (NamedRegion("Surface-1", "face", (4,)),)
+        )
+    )
 
     assert window._next_named_region_name("face") == "Surface-2"
     assert window._next_named_region_name("edge") == "EdgeSet-1"
@@ -454,16 +492,22 @@ def test_named_region_rename_updates_analysis_and_section_references(
         RectangleGeometry("Plate", 2.0, 1.0),
         "矩形",
     )
-    window.document.named_regions = {
-        "Fixed": NamedRegion("Fixed", "edge", (1, 3)),
-    }
-    window.document.region_assignments = [
-        RegionAssignment("Solid", "Fixed")
-    ]
+    window._apply_session_delta(
+        window.session.replace_named_regions(
+            (NamedRegion("Fixed", "edge", (1, 3)),)
+        )
+    )
     step = static("Load")
     step.boundaries = (DisplacementConstraint("Fixed", 1, 2, 0.0),)
     step.cloads = (NodalLoad("Fixed", 1, 10.0),)
-    window.document.analysis_definitions = [step]
+    window._apply_session_delta(
+        window.session.replace_model_definitions(
+            (MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3}),),
+            (SectionDefinition("Solid", "Steel"),),
+            (RegionAssignment("Solid", "Fixed"),),
+            (step,),
+        )
+    )
 
     class FakeRegionManager:
         def __init__(self, _regions, _parent):
@@ -485,6 +529,7 @@ def test_named_region_rename_updates_analysis_and_section_references(
 
     assert tuple(window.document.named_regions) == ("Support",)
     assert window.document.region_assignments[0].region_name == "Support"
-    assert step.boundaries[0].target == "Support"
-    assert step.cloads[0].target == "Support"
+    renamed_step = window.document.analysis_definitions[0]
+    assert renamed_step.boundaries[0].target == "Support"
+    assert renamed_step.cloads[0].target == "Support"
     window.close()

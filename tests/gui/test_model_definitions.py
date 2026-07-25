@@ -6,11 +6,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QAbstractItemView, QApplication, QDoubleSpinBox
 
+from fem.application import RegionAssignment, SectionDefinition
 from fem.core.model import ElementSet, MaterialDefinition
-from fem_gui.document import FEMDocument, RegionAssignment, SectionDefinition
 from fem_gui.model_definitions import (
-    apply_document_definitions,
-    hydrate_document_definitions,
+    compile_model_definitions,
+    definitions_from_model,
     section_assignment_issues,
 )
 from fem_gui.model_dialogs import (
@@ -29,31 +29,42 @@ def _application() -> QApplication:
 
 
 def test_native_material_section_and_region_assignment_compile_to_fem_model():
-    document = FEMDocument()
     model = generate_fem_model(RectangleGeometry("plate", 2.0, 1.0), MeshSettings(0.5))
-    document.set_generated_model(model, geometry_recipe=RectangleGeometry("plate", 2.0, 1.0), mesh_settings=MeshSettings(0.5))
-    document.material_definitions = [MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3})]
-    document.section_definitions = [SectionDefinition("Section-1", "Steel", "solid", {"thickness": 2.0})]
-    document.region_assignments = [RegionAssignment("Section-1", "DOMAIN")]
+    compiled = compile_model_definitions(
+        model,
+        (MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3}),),
+        (
+            SectionDefinition(
+                "Section-1",
+                "Steel",
+                "solid",
+                {"thickness": 2.0},
+            ),
+        ),
+        (RegionAssignment("Section-1", "DOMAIN"),),
+        (),
+    )
 
-    apply_document_definitions(document)
-
-    assert model.materials["Steel"].properties["E"] == 210000.0
-    assert model.sections[0].element_set == "DOMAIN"
-    assert model.sections[0].material == "Steel"
-    assert model.sections[0].properties["thickness"] == 2.0
+    assert compiled is not model
+    assert compiled.materials["Steel"].properties["E"] == 210000.0
+    assert compiled.sections[0].element_set == "DOMAIN"
+    assert compiled.sections[0].material == "Steel"
+    assert compiled.sections[0].properties["thickness"] == 2.0
+    assert model.materials == {}
+    assert model.sections == []
 
 
 def test_inp_definitions_are_hydrated_for_the_same_management_dialogs(gui_inp_path):
     from fem.abaqus import read
 
-    document = FEMDocument()
-    document.set_model(gui_inp_path, read(gui_inp_path))
-    hydrate_document_definitions(document)
+    materials, sections, assignments, steps = definitions_from_model(
+        read(gui_inp_path)
+    )
 
-    assert [material.name for material in document.material_definitions] == ["STEEL"]
-    assert document.section_definitions[0].material == "STEEL"
-    assert document.region_assignments[0].region_name == "SOLID"
+    assert [material.name for material in materials] == ["STEEL"]
+    assert sections[0].material == "STEEL"
+    assert assignments[0].region_name == "SOLID"
+    assert steps
 
 
 def test_material_and_section_dialogs_use_modal_parameter_fields_only():
@@ -155,38 +166,27 @@ def test_material_editor_preserves_unknown_inp_behaviors_read_only():
 
 
 def test_readiness_reports_missing_material_and_section_without_faking_solver_support():
-    document = FEMDocument()
     model = generate_fem_model(RectangleGeometry("plate", 2.0, 1.0), MeshSettings(0.5))
-    document.set_generated_model(model, geometry_recipe=RectangleGeometry("plate", 2.0, 1.0), mesh_settings=MeshSettings(0.5))
 
-    assert section_assignment_issues(document) == ("尚未定义材料",)
+    assert section_assignment_issues(model) == ("尚未定义材料",)
 
 
 def test_readiness_reports_incomplete_elasticity_and_unassigned_elements():
-    document = FEMDocument()
     model = generate_fem_model(
         RectangleGeometry("plate", 2.0, 1.0),
         MeshSettings(0.5),
     )
-    document.set_generated_model(
-        model,
-        geometry_recipe=RectangleGeometry("plate", 2.0, 1.0),
-        mesh_settings=MeshSettings(0.5),
-    )
     first_element_id = model.mesh.elements[0].id
     model.element_sets["PARTIAL"] = ElementSet("PARTIAL", [first_element_id])
-    document.material_definitions = [
-        MaterialDefinition("Incomplete", {"E": 210000.0})
-    ]
-    document.section_definitions = [
-        SectionDefinition("Section-1", "Incomplete")
-    ]
-    document.region_assignments = [
-        RegionAssignment("Section-1", "PARTIAL")
-    ]
-    apply_document_definitions(document)
+    compiled = compile_model_definitions(
+        model,
+        (MaterialDefinition("Incomplete", {"E": 210000.0}),),
+        (SectionDefinition("Section-1", "Incomplete"),),
+        (RegionAssignment("Section-1", "PARTIAL"),),
+        (),
+    )
 
-    issues = section_assignment_issues(document)
+    issues = section_assignment_issues(compiled)
 
     assert any("缺少线弹性参数" in issue for issue in issues)
     assert any("尚未分配截面" in issue for issue in issues)

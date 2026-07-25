@@ -7,6 +7,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication
 
+from fem.application import (
+    ModelSession,
+    NamedRegion,
+    RegionAssignment,
+    SectionDefinition,
+)
 from fem.core.model import (
     DisplacementConstraint,
     EdgeLoad,
@@ -24,14 +30,7 @@ from fem_gui.analysis_definition_dialogs import (
     OutputRequestDialog,
     StaticStepDialog,
 )
-from fem_gui.document import (
-    FEMDocument,
-    NamedRegion,
-    RegionAssignment,
-    SectionDefinition,
-)
 from fem_gui.main_window import FEMMainWindow
-from fem_gui.model_definitions import apply_document_definitions
 from fem_gui.preprocessing import (
     ExtrudedGeometry,
     MeshSettings,
@@ -45,27 +44,37 @@ def _application() -> QApplication:
 
 
 def test_native_linear_static_definition_reuses_the_existing_solver():
-    model = generate_fem_model(RectangleGeometry("plate", 2.0, 1.0), MeshSettings(0.5))
-    document = FEMDocument()
-    document.set_generated_model(model, geometry_recipe=RectangleGeometry("plate", 2.0, 1.0), mesh_settings=MeshSettings(0.5))
-    document.material_definitions = [MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3})]
-    document.section_definitions = [SectionDefinition("Section-1", "Steel", properties={"thickness": 1.0})]
-    document.region_assignments = [RegionAssignment("Section-1", "DOMAIN")]
-    document.analysis_definitions = [
-        static(
-            "Step-1",
-        )
-    ]
-    step = document.analysis_definitions[0]
+    recipe = RectangleGeometry("plate", 2.0, 1.0)
+    settings = MeshSettings(0.5)
+    model = generate_fem_model(recipe, settings)
+    step = static("Step-1")
     step.boundaries = (DisplacementConstraint("LEFT", 1, 2, 0.0),)
     step.cloads = (NodalLoad("RIGHT", 1, 10.0),)
-    apply_document_definitions(document)
+    session = ModelSession()
+    session.new_native_project()
+    session.replace_geometry(session.snapshot().parts, recipe)
+    session.replace_mesh_settings(settings)
+    session.replace_model_definitions(
+        (MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3}),),
+        (
+            SectionDefinition(
+                "Section-1",
+                "Steel",
+                properties={"thickness": 1.0},
+            ),
+        ),
+        (RegionAssignment("Section-1", "DOMAIN"),),
+        (step,),
+    )
+    mesh_task = session.prepare_mesh_generation()
+    session.accept_generated_model(mesh_task.token, model)
+    compiled_model = session.snapshot().model
 
-    selected = validate_problem(model, "Step-1")
-    result = solve(model, selected)
+    selected = validate_problem(compiled_model, "Step-1")
+    result = solve(compiled_model, selected)
 
     assert selected is not None
-    assert result.U.size == model.mesh.num_dofs
+    assert result.U.size == compiled_model.mesh.num_dofs
 
 
 def test_analysis_dialogs_define_only_supported_kernel_objects():
@@ -293,13 +302,15 @@ def test_main_window_filters_distributed_load_regions_by_model_dimension():
     _application()
     window = FEMMainWindow()
     rectangle = RectangleGeometry("plate", 2.0, 1.0)
-    window.document.source_kind = "native"
-    window.document.geometry_recipe = rectangle
-    window.document.named_regions = {
-        "NodeSet": NamedRegion("NodeSet", "point", (1,)),
-        "EdgeSet": NamedRegion("EdgeSet", "edge", (1,)),
-        "Surface": NamedRegion("Surface", "face", (1,)),
-    }
+    regions = (
+        NamedRegion("NodeSet", "point", (1,)),
+        NamedRegion("EdgeSet", "edge", (1,)),
+        NamedRegion("Surface", "face", (1,)),
+    )
+    window._set_native_geometry(rectangle, "矩形")
+    assert window._apply_session_delta(
+        window.session.replace_named_regions(regions)
+    )
 
     node_regions, edge_regions, face_regions = (
         window._supported_load_region_names()
@@ -308,7 +319,10 @@ def test_main_window_filters_distributed_load_regions_by_model_dimension():
     assert edge_regions == ["EdgeSet"]
     assert face_regions == []
 
-    window.document.geometry_recipe = ExtrudedGeometry(rectangle, 1.0)
+    window._set_native_geometry(ExtrudedGeometry(rectangle, 1.0), "拉伸体")
+    assert window._apply_session_delta(
+        window.session.replace_named_regions(regions)
+    )
     node_regions, edge_regions, face_regions = (
         window._supported_load_region_names()
     )

@@ -173,6 +173,8 @@ class FEMViewport(QWidget):
         self._pick_grid = None
         self._pick_locators: dict[int, tuple[int, Any]] = {}
         self._result_data: ResultData | None = None
+        self._artifact_id: str | None = None
+        self._run_id: str | None = None
         self._actors: dict[str, Any] = {}
         self._selection_mode = "node"
         self._selected_kind: str | None = None
@@ -229,6 +231,16 @@ class FEMViewport(QWidget):
     @property
     def can_capture(self) -> bool:
         return self._plotter is not None
+
+    @property
+    def artifact_id(self) -> str | None:
+        """Return the Session artifact represented by the model cache."""
+        return self._artifact_id
+
+    @property
+    def run_id(self) -> str | None:
+        """Return the Session run represented by the result cache."""
+        return self._run_id
 
     @staticmethod
     def _uses_abaqus_view_modifier(modifiers: Qt.KeyboardModifier) -> bool:
@@ -446,6 +458,8 @@ class FEMViewport(QWidget):
     ) -> None:
         self._model = model
         self._geometry = geometry
+        self._artifact_id = geometry.artifact_id
+        self._run_id = None
         self._geometry_preview = None
         self._geometry_preview_surface = None
         self._geometry_preview_edges = None
@@ -485,6 +499,8 @@ class FEMViewport(QWidget):
     def clear_model(self) -> None:
         self._model = None
         self._geometry = None
+        self._artifact_id = None
+        self._run_id = None
         self._geometry_preview = None
         self._geometry_preview_surface = None
         self._geometry_preview_edges = None
@@ -577,6 +593,7 @@ class FEMViewport(QWidget):
 
     def set_result_data(self, data: ResultData) -> None:
         self._result_data = data
+        self._run_id = data.run_id
         if self._display.field_key not in data.fields:
             field_key = "U" if "U" in data.fields else next(iter(data.fields), None)
             self._display = replace(self._display, field_key=field_key)

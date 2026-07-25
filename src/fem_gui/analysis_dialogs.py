@@ -26,6 +26,13 @@ from .dialogs import configure_form_layout
 
 
 SESSION_NOTICE = "作业记录、日志和结果仅保留在当前会话中；关闭、重新加载或更换模型后将被清除。"
+_STATUS_LABELS = {
+    JobStatus.PENDING: "等待中",
+    JobStatus.RUNNING: "运行中",
+    JobStatus.SUCCEEDED: "已完成",
+    JobStatus.FAILED: "失败",
+    JobStatus.CANCELLED: "已取消",
+}
 
 
 class JobSubmitDialog(QDialog):
@@ -144,7 +151,7 @@ class JobManagerDialog(QDialog):
             entries = (
                 job.name,
                 job.step_name,
-                job.status.value,
+                _STATUS_LABELS.get(job.status, str(job.status.value)),
                 job.started_at.strftime("%H:%M:%S") if job.started_at else "—",
                 _elapsed_text(job),
             )

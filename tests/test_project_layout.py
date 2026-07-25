@@ -11,6 +11,8 @@ GEOMETRY_ROOT = SRC_ROOT / "fem" / "geometry"
 MESH_ROOT = SRC_ROOT / "fem" / "mesh"
 GMSH_MESH_ROOT = MESH_ROOT / "gmsh"
 SELECTION_ROOT = SRC_ROOT / "fem" / "selection"
+APPLICATION_ROOT = SRC_ROOT / "fem" / "application"
+GUI_ROOT = SRC_ROOT / "fem_gui"
 
 
 def _string_literals(path):
@@ -449,5 +451,199 @@ def test_fem_runtime_layers_do_not_import_geometry_or_meshing():
                 offenders.append(
                     f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
                 )
+
+    assert offenders == []
+
+
+def test_headless_fem_package_does_not_import_gui_modules():
+    offenders = []
+    for path in sorted((SRC_ROOT / "fem").rglob("*.py")):
+        for target, lineno in _resolved_import_targets(
+            path,
+            _module_name(path),
+        ):
+            if target == "fem_gui" or target.startswith("fem_gui."):
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+                )
+
+    assert offenders == []
+
+
+def test_application_layer_has_no_qt_pyvista_or_gui_dependency():
+    assert APPLICATION_ROOT.is_dir()
+    forbidden_roots = {"PySide6", "pyvista", "pyvistaqt", "fem_gui"}
+    offenders = []
+    for path in sorted(APPLICATION_ROOT.rglob("*.py")):
+        for target, lineno in _resolved_import_targets(
+            path,
+            _module_name(path),
+        ):
+            if target.split(".", 1)[0] in forbidden_roots:
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+                )
+
+    assert offenders == []
+
+
+def test_kernel_runtime_layers_do_not_import_application_session():
+    package_roots = (
+        SRC_ROOT / "fem" / "core",
+        SRC_ROOT / "fem" / "elements",
+        SRC_ROOT / "fem" / "solvers",
+    )
+    assert all(path.is_dir() for path in package_roots)
+    offenders = []
+    for path in sorted(
+        source
+        for root in package_roots
+        for source in root.rglob("*.py")
+    ):
+        for target, lineno in _resolved_import_targets(
+            path,
+            _module_name(path),
+        ):
+            if target == "fem.application" or target.startswith(
+                "fem.application."
+            ):
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+                )
+
+    assert offenders == []
+
+
+def _attribute_chain(node):
+    if isinstance(node, ast.Name):
+        return (node.id,)
+    if isinstance(node, ast.Attribute):
+        parent = _attribute_chain(node.value)
+        return () if not parent else (*parent, node.attr)
+    if isinstance(node, ast.Subscript):
+        return _attribute_chain(node.value)
+    return ()
+
+
+def _assignment_targets(tree):
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = (
+                node.targets
+                if isinstance(node, ast.Assign)
+                else (node.target,)
+            )
+            yield from targets
+
+
+def _is_snapshot_owned_chain(chain):
+    if len(chain) > 2 and chain[:2] == ("self", "document"):
+        return True
+    return len(chain) > 1 and chain[0] in {
+        "document",
+        "snapshot",
+        "session_snapshot",
+    }
+
+
+def test_gui_session_adapters_do_not_mutate_snapshots_or_legacy_workflow():
+    paths = (
+        GUI_ROOT / "main_window.py",
+        GUI_ROOT / "project_io.py",
+        GUI_ROOT / "model_definitions.py",
+    )
+    mutating_methods = {
+        "add",
+        "append",
+        "clear",
+        "discard",
+        "extend",
+        "insert",
+        "pop",
+        "popitem",
+        "remove",
+        "reverse",
+        "setdefault",
+        "sort",
+        "update",
+    }
+    offenders = []
+
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for target in _assignment_targets(tree):
+            chain = _attribute_chain(target)
+            if _is_snapshot_owned_chain(chain) or "workflow" in chain:
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:"
+                    f"{getattr(target, 'lineno', '?')} -> "
+                    f"{'.'.join(chain)} assignment"
+                )
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(
+                node.func,
+                ast.Attribute,
+            ):
+                continue
+            owner = _attribute_chain(node.func.value)
+            if (
+                node.func.attr in mutating_methods
+                and (
+                    _is_snapshot_owned_chain(owner)
+                    or "workflow" in owner
+                )
+            ):
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{node.lineno} -> "
+                    f"{'.'.join((*owner, node.func.attr))}()"
+                )
+
+    assert offenders == []
+
+
+def test_production_code_has_no_legacy_workflow_state_booleans():
+    offenders = []
+    for path in sorted(SRC_ROOT.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == "WorkflowState":
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{node.lineno} -> "
+                    "class WorkflowState"
+                )
+            elif isinstance(node, ast.Name) and node.id == "WorkflowState":
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{node.lineno} -> "
+                    "WorkflowState"
+                )
+            elif isinstance(node, ast.Attribute) and node.attr in {
+                "workflow",
+                "model_checked",
+                "results_current",
+            }:
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{node.lineno} -> "
+                    f".{node.attr}"
+                )
+
+    assert offenders == []
+
+
+def test_gui_uses_only_public_model_session_commands():
+    path = GUI_ROOT / "main_window.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(
+            node.func,
+            ast.Attribute,
+        ):
+            continue
+        owner = _attribute_chain(node.func.value)
+        if owner == ("self", "session") and node.func.attr.startswith("_"):
+            offenders.append(
+                f"{path.relative_to(PROJECT_ROOT)}:{node.lineno} -> "
+                f"self.session.{node.func.attr}()"
+            )
 
     assert offenders == []

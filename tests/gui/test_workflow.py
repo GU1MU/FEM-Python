@@ -39,9 +39,9 @@ def test_background_import_solve_and_result_state(gui_inp_path):
     callback_threads: list[QThread] = []
     original_model_loaded = window._model_loaded
 
-    def record_model_loaded(path, value):
+    def record_model_loaded(path, value, **kwargs):
         callback_threads.append(QThread.currentThread())
-        original_model_loaded(path, value)
+        original_model_loaded(path, value, **kwargs)
 
     window._model_loaded = record_model_loaded
 
@@ -98,6 +98,7 @@ def test_reload_clears_selection_and_old_result(gui_inp_path):
     window._load_path(gui_inp_path)
     _wait_for_task(window)
     window.selection.select_node(1)
+    assert window.check_current_model(show_success=False)
     window._submit_job("Job-1", "Static-1")
     _wait_for_task(window)
     assert window.document.has_result
@@ -117,6 +118,7 @@ def test_gui_exports_the_current_result_field_as_csv(monkeypatch, gui_inp_path):
     window = FEMMainWindow()
     window._load_path(gui_inp_path)
     _wait_for_task(window)
+    assert window.check_current_model(show_success=False)
     window._submit_job("Job-1", "Static-1")
     _wait_for_task(window)
     target = ROOT / "gui_result_test.csv"

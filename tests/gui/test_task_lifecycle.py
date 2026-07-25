@@ -12,9 +12,9 @@ from PySide6.QtCore import QEventLoop, QThread, QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from fem.application import RunStatus
 from fem.abaqus import read
 from fem.solvers import static_linear
-from fem_gui.analysis_jobs import JobStatus
 from fem_gui.main_window import FEMMainWindow
 import fem_gui.main_window as main_window_module
 from fem_gui.visualization.model_adapter import build_model_geometry
@@ -42,7 +42,26 @@ def _window_with_model() -> FEMMainWindow:
         Path("pull.inp"),
         (model, build_model_geometry(model)),
     )
+    validation = window.session.prepare_validation("pull")
+    window._apply_session_delta(
+        window.session.accept_validation(
+            validation.token,
+            {"passed": True},
+        )
+    )
     return window
+
+
+def _bump_model_revision(window: FEMMainWindow) -> None:
+    snapshot = window.document
+    window._apply_session_delta(
+        window.session.replace_model_definitions(
+            snapshot.material_definitions,
+            snapshot.section_definitions,
+            snapshot.region_assignments,
+            snapshot.analysis_definitions,
+        )
+    )
 
 
 def test_task_callbacks_run_on_gui_thread_and_cleanup_once() -> None:
@@ -200,7 +219,8 @@ def test_model_and_mesh_checks_compute_off_the_gui_thread(
     assert model_threads == [False]
     assert mesh_threads == [False]
     assert dialogs == ["模型检查", "网格质量检查"]
-    assert window.document.workflow.model_checked
+    validation = window.session.validation_for("Static-1")
+    assert validation is not None and validation.passed
     window.close()
 
 
@@ -243,14 +263,14 @@ def test_model_revision_discards_stale_check_results(
 
     assert window.start_model_check()
     assert model_check_entered.wait(2.0)
-    window.document.mark_dirty()
+    _bump_model_revision(window)
     model_check_release.set()
     _wait_for_task(window)
-    assert not window.document.workflow.model_checked
+    assert window.session.validation_for("Static-1") is None
 
     window.show_mesh_quality()
     assert mesh_check_entered.wait(2.0)
-    window.document.mark_dirty()
+    _bump_model_revision(window)
     mesh_check_release.set()
     _wait_for_task(window)
 
@@ -439,8 +459,8 @@ def test_cancelled_analysis_job_has_explicit_terminal_state(monkeypatch) -> None
         return original_solve(*args, **kwargs)
 
     monkeypatch.setattr(static_linear, "solve", delayed_solve)
-    job = window._submit_job("Job-1", "pull")
-    assert job is not None
+    started = window._submit_job("Job-1", "pull")
+    assert started is not None
     deadline = monotonic() + 2.0
     while not entered_solver.is_set() and monotonic() < deadline:
         _application().processEvents()
@@ -448,7 +468,9 @@ def test_cancelled_analysis_job_has_explicit_terminal_state(monkeypatch) -> None
     release_solver.set()
     _wait_for_task(window)
 
-    assert job.status is JobStatus.CANCELLED
+    job = window.session.find_run(started.run_id)
+    assert job is not None
+    assert job.status is RunStatus.CANCELLED
     assert not job.has_result
     assert job.error is None
     assert window.actions["resubmit_job"].isEnabled()

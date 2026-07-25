@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
-from datetime import datetime
 import logging
 from pathlib import Path
 from time import perf_counter
@@ -18,15 +17,16 @@ from PySide6.QtWidgets import (
 )
 
 from fem.abaqus import build_model as build_abaqus_model, parse_file
+from fem.application import ModelSession
 from fem.boundary.step import boundary_for_step
 from fem.core.model import (
-    DisplacementConstraint,
     EdgeLoad,
     GravityLoad,
     NodalLoad,
     SurfaceLoad,
 )
 from fem.solvers import static_linear
+from fem.io.project_v1 import load_project_v1, save_project_v1
 
 from .actions import build_actions
 from .analysis_dialogs import JobManagerDialog, JobSubmitDialog
@@ -39,13 +39,7 @@ from .analysis_definition_dialogs import (
 )
 from .analysis_jobs import AnalysisJob, JobStatus
 from .dialogs import CompactDoubleSpinBox, show_information
-from .document import FEMDocument, FeatureRecord, NamedRegion
-from .model_definitions import (
-    apply_document_definitions,
-    compiled_model_snapshot,
-    hydrate_document_definitions,
-)
-from .project_io import load_native_project, save_native_project
+from .document import FeatureRecord, NamedRegion
 from .model_dialogs import (
     MaterialEditDialog,
     MaterialManagerDialog,
@@ -173,7 +167,10 @@ class FEMMainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("有限元分析")
         self.resize(1280, 800)
-        self.document = FEMDocument()
+        self.session = ModelSession()
+        self.document = self.session.snapshot()
+        self._applied_session_revision = self.document.session_revision
+        self._current_step_name: str | None = None
         self.geometry: ModelGeometry | None = None
         self.result_data: ResultData | None = None
         self.inspection_service: InspectionService | None = None
@@ -200,6 +197,7 @@ class FEMMainWindow(QMainWindow):
         self._task_failure_callback: Callable[[str], None] | None = None
         self._task_cancel_callback: Callable[[], None] | None = None
         self._task_error_title = "操作失败"
+        self._active_session_task_token: object | None = None
         self._close_after_task_cancel = False
         self._job_manager: JobManagerDialog | None = None
         self._display = DisplayState()
@@ -233,6 +231,208 @@ class FEMMainWindow(QMainWindow):
     @property
     def busy(self) -> bool:
         return self._thread is not None
+
+    def _apply_session_delta(
+        self,
+        delta: object,
+        *,
+        model_geometry: ModelGeometry | None = None,
+        result_projection: ResultData | None = None,
+        timings: dict[str, float] | None = None,
+        source_label: str | None = None,
+    ) -> bool:
+        """Project one accepted Session transition into every GUI cache."""
+        if not bool(getattr(delta, "accepted", True)):
+            return False
+        revision = int(getattr(delta, "session_revision"))
+        if revision <= self._applied_session_revision:
+            return False
+
+        snapshot = self.session.snapshot()
+        if snapshot.session_revision < revision:
+            return False
+        if snapshot.session_revision > revision:
+            # A newer transition was already accepted.  Project only the newest
+            # state and let the older delta become an ordered no-op.
+            revision = snapshot.session_revision
+
+        previous_artifact_id = (
+            self.document.artifact.artifact_id
+            if self.document.artifact is not None
+            else None
+        )
+        self.document = snapshot
+
+        step_names = self.session.runnable_step_names()
+        if self._current_step_name not in step_names:
+            self._current_step_name = self.session.default_step_name()
+        self._symbol_settings = replace(
+            self._symbol_settings,
+            step_name=self._current_step_name,
+        )
+
+        artifact = snapshot.artifact
+        if artifact is None:
+            self._clear_model_projection()
+            recipe = snapshot.geometry_recipe
+            if isinstance(recipe, NATIVE_GEOMETRY_TYPES):
+                self.model_tree.set_geometry_preview(
+                    recipe.name,
+                    tuple(item.name for item in snapshot.feature_history),
+                    part_name=(
+                        snapshot.parts[0].name
+                        if snapshot.parts
+                        else "Part-1"
+                    ),
+                )
+                try:
+                    self.viewport.show_geometry_preview(
+                        build_geometry_preview(recipe)
+                    )
+                finally:
+                    # The Session transition is already committed.  Keep action
+                    # gates aligned with it even when the optional renderer
+                    # cannot display the preview.
+                    self._update_action_states()
+                self.viewport_panel.set_geometry_context(True)
+                self.status_panel.set_object(recipe.name)
+            else:
+                self.viewport_panel.set_geometry_context(False)
+                self.status_panel.set_object()
+        elif (
+            previous_artifact_id != artifact.artifact_id
+            or self.geometry is None
+            or self.geometry.artifact_id != artifact.artifact_id
+            or self.viewport.artifact_id != artifact.artifact_id
+        ):
+            geometry = model_geometry or build_model_geometry(artifact.model)
+            geometry = replace(geometry, artifact_id=artifact.artifact_id)
+            self._install_model(
+                artifact.model,
+                geometry,
+                dict(timings or {}),
+                source_label=source_label or self._session_source_label(),
+            )
+
+        current_result = self.session.current_result()
+        current_run_id = (
+            current_result.provenance.run_id
+            if current_result is not None
+            else None
+        )
+        if current_run_id is None:
+            self._clear_result_projection()
+        elif (
+            result_projection is not None
+            and artifact is not None
+            and result_projection.artifact_id == artifact.artifact_id
+            and result_projection.run_id == current_run_id
+        ):
+            self._install_result_projection(result_projection)
+        elif (
+            self.result_data is None
+            or self.result_data.run_id != current_run_id
+            or self.result_data.artifact_id != artifact.artifact_id
+        ):
+            core_result = getattr(
+                current_result,
+                "result",
+                getattr(current_result, "model_result", None),
+            )
+            if core_result is not None and self.geometry is not None:
+                self._install_result_projection(
+                    replace(
+                        build_result_data(
+                            core_result,
+                            self.geometry,
+                            include_stress=False,
+                        ),
+                        artifact_id=artifact.artifact_id,
+                        run_id=current_run_id,
+                    )
+                )
+        elif (
+            self.viewport.run_id != current_run_id
+            or (
+                self.inspection_service is not None
+                and self.inspection_service.result_data is not self.result_data
+            )
+        ):
+            self._install_result_projection(self.result_data)
+
+        self._sync_step_combos()
+        self._refresh_result_controls()
+        self._update_action_states()
+        self._applied_session_revision = revision
+        return True
+
+    def _session_source_label(self) -> str:
+        path = self.document.source_path or self.document.project_path
+        if path is not None:
+            return Path(path).name
+        recipe = self.document.geometry_recipe
+        if recipe is not None:
+            return str(getattr(recipe, "name", "") or "Model-1")
+        model = self.document.model
+        return str(getattr(model, "name", "") or "模型")
+
+    def _clear_model_projection(self) -> None:
+        self._close_inspection_windows()
+        self._close_job_manager()
+        self.inspection_service = None
+        self.geometry = None
+        self.result_data = None
+        self.selection.clear()
+        self._display = DisplayState()
+        self.model_tree.clear_model()
+        self.result_tree.clear_result()
+        self.navigation.show_model()
+        self.viewport.clear_model()
+        self.status_panel.set_step(self._current_step_name)
+        self.status_panel.set_result()
+
+    def _clear_result_projection(self) -> None:
+        if self.inspection_service is not None:
+            self.inspection_service.update_result_data(None)
+        if self.result_data is None and self.viewport.run_id is None:
+            self.result_tree.clear_result()
+            return
+        self.result_data = None
+        self._display = DisplayState()
+        self.result_tree.clear_result()
+        self.navigation.show_model()
+        if self.document.artifact is not None and self.geometry is not None:
+            self.viewport.set_model(
+                self.document.artifact.model,
+                self.geometry,
+                refresh_symbols=False,
+                render=False,
+            )
+            self.viewport.set_symbol_settings(
+                self._symbol_settings,
+                refresh=False,
+                render=False,
+            )
+            self.viewport.show_boundary_and_loads(render=False)
+            self.viewport.render()
+        self.status_panel.set_result()
+
+    def _install_result_projection(self, data: ResultData) -> None:
+        if (
+            self.document.artifact is None
+            or data.artifact_id != self.document.artifact.artifact_id
+            or self.geometry is None
+            or self.geometry.artifact_id != data.artifact_id
+            or self.viewport.artifact_id != data.artifact_id
+        ):
+            return
+        self.result_data = data
+        if self.inspection_service is not None:
+            self.inspection_service.update_result_data(data)
+        self.viewport.set_result_data(data)
+        step_name = self._current_step_name or self.session.default_step_name()
+        self.result_tree.set_result(step_name or "", data)
+        self.status_panel.set_result("分析结果")
 
     def _build_actions(self) -> None:
         self.actions = build_actions(self)
@@ -543,7 +743,7 @@ class FEMMainWindow(QMainWindow):
         self._set_current_step(str(step_name))
 
     def _sync_step_combos(self) -> None:
-        names = self.document.runnable_step_names()
+        names = self.session.runnable_step_names()
         for combo in self._step_combos:
             combo.blockSignals(True)
             combo.clear()
@@ -552,18 +752,21 @@ class FEMMainWindow(QMainWindow):
             else:
                 for name in names:
                     combo.addItem(name, name)
-                index = combo.findData(self.document.step_name)
+                index = combo.findData(self._current_step_name)
                 combo.setCurrentIndex(index if index >= 0 else 0)
             combo.setEnabled(bool(names) and not self.busy)
             combo.blockSignals(False)
 
     def _set_current_step(self, name: str) -> None:
-        self.document.step_name = name
+        if name not in self.session.runnable_step_names():
+            return
+        self._current_step_name = name
         self._symbol_settings = replace(self._symbol_settings, step_name=name)
         self.viewport.set_symbol_settings(self._symbol_settings)
         self._sync_step_combos()
         self.status_panel.set_step(name)
         self.status_panel.set_state(f"已选择分析步：{name}", 4000)
+        self._update_action_states()
 
     @staticmethod
     def _field_family(field_key: str) -> str:
@@ -697,7 +900,10 @@ class FEMMainWindow(QMainWindow):
 
     def _result_scale_mode_changed(self, _index: int) -> None:
         self._scale_mode = str(self.result_scale_combo.currentData())
-        self.result_scale_value.setEnabled(self._scale_mode == "custom" and self.document.has_result)
+        self.result_scale_value.setEnabled(
+            self._scale_mode == "custom"
+            and self.session.current_result() is not None
+        )
         self._apply_scale()
 
     def _result_scale_value_changed(self, value: float) -> None:
@@ -706,8 +912,8 @@ class FEMMainWindow(QMainWindow):
             self._apply_scale()
 
     def _update_action_states(self) -> None:
-        has_model = self.document.has_model
-        has_result = self.document.has_result
+        has_model = self.document.artifact is not None
+        has_result = self.session.current_result() is not None
         busy = self.busy
         source_kind = self.document.source_kind
         self._set_action_available(
@@ -726,7 +932,9 @@ class FEMMainWindow(QMainWindow):
         )
         self._set_action_available(
             "reload",
-            self.document.can_reload and not busy,
+            source_kind == "imported"
+            and self.document.source_path is not None
+            and not busy,
             "只有已打开的 INP 模型可以重新加载",
         )
         self._set_action_available(
@@ -860,7 +1068,7 @@ class FEMMainWindow(QMainWindow):
             and not busy,
             "请先创建几何或打开 INP，并创建截面",
         )
-        has_step = bool(self.document.runnable_step_names())
+        has_step = bool(self.session.runnable_step_names())
         self._set_action_available(
             "step_create",
             source_kind is not None and not busy,
@@ -907,30 +1115,32 @@ class FEMMainWindow(QMainWindow):
             has_step and not busy,
             "当前没有可查看的分析步",
         )
-        model_ready_for_check = has_model and (
-            source_kind == "inp"
-            or self.document.mesh_is_current
+        can_check_current = (
+            self._current_step_name is not None
+            and self.session.can_check(self._current_step_name)
         )
         self._set_action_available(
             "check_model",
-            model_ready_for_check and has_step and not busy,
+            can_check_current and not busy,
             "请先生成网格或打开包含分析步的 INP 模型",
         )
         self._set_action_available(
             "submit_job",
             has_step
             and self.geometry is not None
-            and self.document.workflow.model_checked
+            and self._current_step_name is not None
+            and self.session.can_submit(self._current_step_name)
             and not busy,
-            self.document.workflow.reason or "请先通过模型检查",
+            "请先通过当前分析步的模型检查",
         )
-        active = self.document.find_job(self.document.active_job_name)
-        resubmittable = (
-            active
-            if active is not None
-            and active.status
-            in {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}
-            else self.document.latest_resubmittable_job()
+        resubmittable = next(
+            (
+                run
+                for run in reversed(self.document.runs)
+                if str(getattr(run.status, "value", run.status)).lower()
+                in {"succeeded", "failed", "cancelled"}
+            ),
+            None,
         )
         self._set_action_available(
             "resubmit_job",
@@ -1006,7 +1216,7 @@ class FEMMainWindow(QMainWindow):
         if source_kind is None:
             self.setWindowTitle("有限元分析")
             return
-        if source_kind == "inp":
+        if source_kind == "imported":
             name = (
                 self.document.path.name
                 if self.document.path is not None
@@ -1041,7 +1251,7 @@ class FEMMainWindow(QMainWindow):
         action.setStatusTip(message)
 
     def create_sketch_geometry(self) -> None:
-        if self.document.source_kind == "inp":
+        if self.document.source_kind == "imported":
             self._show_error(
                 "几何编辑不可用",
                 "当前 INP 只包含有限元模型和网格，不能反向转换为可编辑 CAD；请新建自主模型。",
@@ -1238,19 +1448,8 @@ class FEMMainWindow(QMainWindow):
         elif dialog.operation == "delete" and isinstance(current, BooleanGeometry):
             self._set_native_geometry(current.object_geometry, "撤销后的")
         elif dialog.operation == "clear":
-            self.document.geometry_recipe = None
-            self.document.mesh_settings = None
-            self.document.native_mesh_current = False
-            self.document.named_regions.clear()
-            self.document.mark_dirty()
-            if self.document.has_model and self.geometry is not None:
-                self.viewport.set_model(self.document.model, self.geometry)
-                self.viewport.set_edges_visible(self.actions["edges"].isChecked())
-                self.viewport.set_symbols_visible(self.actions["symbols"].isChecked())
-            else:
-                self.viewport.clear_model()
+            self._apply_session_delta(self.session.clear_geometry())
             self.status_panel.set_state("当前几何已清空", 5000)
-            self._update_action_states()
 
     def undo_geometry_feature(self) -> None:
         current = self.document.geometry_recipe
@@ -1262,34 +1461,20 @@ class FEMMainWindow(QMainWindow):
     def delete_geometry(self) -> None:
         if not isinstance(self.document.geometry_recipe, NATIVE_GEOMETRY_TYPES):
             return
-        if self.document.source_kind == "native":
-            self.document.clear_generated_mesh()
-            self.geometry = None
-            self.result_data = None
-            self.inspection_service = None
-            self.selection.clear()
-            self.model_tree.clear_model()
-            self.result_tree.clear_result()
-        self.document.geometry_recipe = None
-        self.document.mesh_settings = None
-        self.document.native_mesh_current = False
+        self._apply_session_delta(self.session.clear_geometry())
         self._selected_geometry_kind = None
         self._selected_geometry_id = None
         self._selected_geometry_ids.clear()
-        if self.document.has_model and self.geometry is not None:
-            self.viewport.set_model(self.document.model, self.geometry)
-            self.viewport.set_edges_visible(self.actions["edges"].isChecked())
-            self.viewport.set_symbols_visible(self.actions["symbols"].isChecked())
-        else:
-            self.viewport.clear_model()
         self.viewport_panel.set_geometry_context(False)
         self.status_panel.set_state("当前几何已删除", 5000)
-        self._update_action_states()
 
     def _set_native_geometry(self, recipe: object, label: str) -> None:
         if not isinstance(recipe, NATIVE_GEOMETRY_TYPES):
             raise TypeError(f"不支持的几何定义：{type(recipe).__name__}")
+        if self.document.source_kind != "native":
+            self._apply_session_delta(self.session.new_native_project())
         prior_recipe = self.document.geometry_recipe
+        current_settings = self.document.mesh_settings
         preserve_topology_references = (
             isinstance(recipe, (MovedGeometry, RotatedGeometry))
             and recipe.base is prior_recipe
@@ -1304,21 +1489,18 @@ class FEMMainWindow(QMainWindow):
             and self.document.named_regions
         ):
             invalidated_regions = tuple(self.document.named_regions)
-            self.document.named_regions.clear()
-            self.document.region_assignments = [
-                assignment
-                for assignment in self.document.region_assignments
-                if assignment.region_name not in invalidated_regions
-            ]
-        self.document.begin_native_model(recipe)
-        self.document.feature_history = native_feature_history(recipe)
+        delta = self.session.replace_geometry(
+            tuple(self.document.parts),
+            recipe,
+            feature_history=tuple(native_feature_history(recipe)),
+        )
+        self._apply_session_delta(delta)
         self._pending_local_mesh_selection = False
         self._pending_analysis_selection = None
         self._selected_geometry_kind = None
         self._selected_geometry_id = None
         self._selected_geometry_ids.clear()
         dimension = geometry_dimension(recipe)
-        current_settings = self.document.mesh_settings
         target_shape = "tetrahedron" if dimension == 3 else "triangle"
         if isinstance(current_settings, MeshSettings):
             valid_shape = (
@@ -1330,7 +1512,7 @@ class FEMMainWindow(QMainWindow):
                 if dimension == 3
                 else current_settings.cell_shape in {"triangle", "quadrilateral"}
             )
-            self.document.set_mesh_settings(replace(
+            settings = replace(
                 current_settings,
                 cell_shape=current_settings.cell_shape if valid_shape else target_shape,
                 local_size=None,
@@ -1339,21 +1521,15 @@ class FEMMainWindow(QMainWindow):
                     if preserve_topology_references
                     else ()
                 ),
-            ))
+            )
         else:
-            self.document.set_mesh_settings(MeshSettings(
+            settings = MeshSettings(
                 geometry_characteristic_size(recipe) / 10.0,
                 cell_shape=target_shape,
-            ))
-        # Enable the next workflow actions before touching the native renderer.
-        # A display-backend error must never leave valid geometry unusable.
-        self._update_action_states()
-        self.model_tree.set_geometry_preview(
-            recipe.name,
-            tuple(record.name for record in self.document.feature_history),
-            part_name=self.document.parts[0].name,
+            )
+        self._apply_session_delta(
+            self.session.replace_mesh_settings(settings)
         )
-        self.viewport.show_geometry_preview(build_geometry_preview(recipe))
         self._geometry_selection_mode = "body"
         self.actions["geometry_select_body"].setChecked(True)
         self.viewport.set_selection_mode("geometry_body")
@@ -1397,13 +1573,11 @@ class FEMMainWindow(QMainWindow):
         if name in self.document.named_regions:
             self._show_error("创建命名区域", f"区域名称已存在：{name}")
             return None
-        self.document.named_regions[name] = NamedRegion(name, kind, entity_ids)
-        self.document.mark_dirty()
-        if self.document.source_kind == "native" and self.document.has_model:
-            self.document.native_mesh_current = False
-            self.document.workflow.invalidate_mesh(
-                "命名区域已修改，网格需要重新生成"
-            )
+        regions = dict(self.document.named_regions)
+        regions[name] = NamedRegion(name, kind, entity_ids)
+        self._apply_session_delta(
+            self.session.replace_named_regions(regions)
+        )
         self.status_panel.set_state(
             f"已创建几何区域 {name}；网格生成后可使用对应的网格集合进行分配和分析",
             5000,
@@ -1449,6 +1623,11 @@ class FEMMainWindow(QMainWindow):
             names.update(item.surface for item in step.surface_loads)
             names.update(
                 str(item.target)
+                for item in step.line_loads
+                if isinstance(item.target, str)
+            )
+            names.update(
+                str(item.target)
                 for item in step.gravity_loads
                 if isinstance(item.target, str)
             )
@@ -1485,59 +1664,19 @@ class FEMMainWindow(QMainWindow):
                 + "、".join(sorted(referenced_deleted)),
             )
             return
-        for assignment in self.document.region_assignments:
-            assignment.region_name = renames.get(
-                assignment.region_name,
-                assignment.region_name,
+        try:
+            delta = self.session.replace_named_regions(
+                updated,
+                renames=renames,
             )
-        for step in self.document.analysis_definitions:
-            step.boundaries = tuple(
-                replace(item, target=renames.get(str(item.target), item.target))
-                if isinstance(item, DisplacementConstraint)
-                else item
-                for item in step.boundaries
-            )
-            step.cloads = tuple(
-                replace(item, target=renames.get(str(item.target), item.target))
-                if isinstance(item, NodalLoad)
-                else item
-                for item in step.cloads
-            )
-            step.edge_loads = tuple(
-                replace(item, edge=renames.get(item.edge, item.edge))
-                if isinstance(item, EdgeLoad)
-                else item
-                for item in step.edge_loads
-            )
-            step.surface_loads = tuple(
-                replace(item, surface=renames.get(item.surface, item.surface))
-                if isinstance(item, SurfaceLoad)
-                else item
-                for item in step.surface_loads
-            )
-            step.gravity_loads = tuple(
-                replace(
-                    item,
-                    target=renames.get(item.target, item.target),
-                )
-                if isinstance(item, GravityLoad)
-                and isinstance(item.target, str)
-                else item
-                for item in step.gravity_loads
-            )
-        self.document.named_regions = updated
-        self.document.clear_jobs()
-        self.document.result = None
-        self.document.native_mesh_current = False
-        self.document.mark_dirty()
-        self.document.workflow.invalidate_mesh(
-            "命名区域已修改，网格需要重新生成"
-        )
+        except ValueError as error:
+            self._show_error("命名区域管理", str(error))
+            return
+        self._apply_session_delta(delta)
         self.status_panel.set_state(
             "命名区域已更新，请重新生成网格",
             5000,
         )
-        self._update_action_states()
 
     def _analysis_region_names(
         self,
@@ -1634,9 +1773,10 @@ class FEMMainWindow(QMainWindow):
         )
         if not dialog.exec():
             return
-        self.document.set_mesh_settings(dialog.settings())
+        self._apply_session_delta(
+            self.session.replace_mesh_settings(dialog.settings())
+        )
         self.status_panel.set_state("网格设置已更新，请生成网格", 5000)
-        self._update_action_states()
 
     def show_mesh_controls(self) -> None:
         settings = self.document.mesh_settings
@@ -1648,12 +1788,13 @@ class FEMMainWindow(QMainWindow):
         updated = dialog.settings()
         if updated == settings:
             return
-        self.document.set_mesh_settings(updated)
+        self._apply_session_delta(
+            self.session.replace_mesh_settings(updated)
+        )
         self.status_panel.set_state(
             "局部网格控制已更新，请重新生成网格",
             5000,
         )
-        self._update_action_states()
 
     def set_local_mesh_control(self) -> None:
         settings = self.document.mesh_settings
@@ -1705,7 +1846,11 @@ class FEMMainWindow(QMainWindow):
             replace(control, entity_id=entity_id)
             for entity_id in selected_ids
         )
-        self.document.set_mesh_settings(replace(settings, local_controls=controls))
+        self._apply_session_delta(
+            self.session.replace_mesh_settings(
+                replace(settings, local_controls=controls)
+            )
+        )
         kind_name = {
             "point": "点",
             "edge": "边",
@@ -1715,7 +1860,6 @@ class FEMMainWindow(QMainWindow):
             f"已设置所选{kind_name}的局部尺寸，请重新生成网格",
             5000,
         )
-        self._update_action_states()
 
     def clear_native_mesh(self) -> None:
         recipe = self.document.geometry_recipe
@@ -1724,33 +1868,14 @@ class FEMMainWindow(QMainWindow):
             or not isinstance(recipe, NATIVE_GEOMETRY_TYPES)
         ):
             return
-        self.document.clear_generated_mesh()
-        self._close_inspection_windows()
-        self._close_job_manager()
-        self.inspection_service = None
-        self.geometry = None
-        self.result_data = None
-        self.selection.clear()
+        self._apply_session_delta(
+            self.session.clear_generated_model()
+        )
         self._selected_geometry_kind = None
         self._selected_geometry_id = None
         self._selected_geometry_ids.clear()
-        self._display = DisplayState()
-        self.model_tree.set_geometry_preview(
-            recipe.name,
-            tuple(record.name for record in self.document.feature_history),
-            part_name=self.document.parts[0].name if self.document.parts else "Part-1",
-        )
-        self.result_tree.clear_result()
-        self.navigation.show_model()
-        self.viewport.clear_model()
-        self.viewport.show_geometry_preview(build_geometry_preview(recipe))
         self.setWindowTitle(f"有限元分析 — {recipe.name}（几何）")
-        self.status_panel.set_object(recipe.name)
-        self.status_panel.set_step(None)
-        self.status_panel.set_result()
         self.status_panel.set_state("网格已清除，几何与网格控制已保留", 5000)
-        self._refresh_result_controls()
-        self._update_action_states()
 
     def show_mesh_statistics(self) -> None:
         self._start_mesh_analysis("statistics")
@@ -1763,7 +1888,7 @@ class FEMMainWindow(QMainWindow):
 
     def _start_mesh_analysis(self, report_kind: str) -> None:
         model = self.document.model
-        revision = self.document.revision
+        revision = self.document.model_revision
         if model is None or self.busy:
             return
 
@@ -1776,7 +1901,7 @@ class FEMMainWindow(QMainWindow):
         def succeeded(report: object) -> None:
             if (
                 self.document.model is not model
-                or self.document.revision != revision
+                or self.document.model_revision != revision
             ):
                 self.status_panel.set_state(
                     "模型已发生变化，已忽略旧的网格检查结果",
@@ -1851,9 +1976,12 @@ class FEMMainWindow(QMainWindow):
             MeshSettings,
         ):
             return
+        task = self.session.prepare_mesh_generation()
+        recipe = task.geometry_recipe
+        settings = task.mesh_settings
         self.status_panel.set_state("正在生成网格……")
 
-        named_regions = tuple(self.document.named_regions.values())
+        named_regions = task.named_regions
 
         def workload(context: TaskContext):
             timings: dict[str, float] = {}
@@ -1875,8 +2003,7 @@ class FEMMainWindow(QMainWindow):
         def succeeded(value: object) -> None:
             self._generated_model_loaded(
                 value,
-                geometry_recipe=recipe,
-                mesh_settings=settings,
+                token=task.token,
             )
             self.ribbon.set_current("模型")
 
@@ -1884,7 +2011,13 @@ class FEMMainWindow(QMainWindow):
             workload,
             succeeded,
             "网格生成失败",
+            lambda message: self._session_task_failed(
+                task.token,
+                "网格生成失败",
+                message,
+            ),
             task_name="网格生成",
+            on_cancelled=lambda: self._session_task_cancelled(task.token),
         )
 
     def open_inp(self) -> None:
@@ -1897,14 +2030,14 @@ class FEMMainWindow(QMainWindow):
     def new_native_model(self) -> None:
         if self.busy:
             return
-        if not self.close_model():
+        if not self._confirm_discard_changes():
             return
-        self.document.new_native_model()
-        self.setWindowTitle("有限元分析 — Model-1")
+        self._apply_session_delta(
+            self.session.new_native_project()
+        )
         self.model_tree.set_geometry_preview("Model-1", (), part_name="Part-1")
         self.viewport_panel.set_geometry_context(True)
         self.status_panel.set_state("已新建自主模型，请进入几何模块创建草图", 5000)
-        self._update_action_states()
         self.ribbon.set_current("几何")
 
     def open_native_project(self) -> None:
@@ -1915,24 +2048,20 @@ class FEMMainWindow(QMainWindow):
         )
         if not path:
             return
+        if not self._confirm_discard_changes():
+            return
+        expected_revision = self.document.session_revision
         try:
-            if not self.close_model():
-                return
-            load_native_project(path, self.document)
-            recipe = self.document.geometry_recipe
-            self.geometry = None
-            self.result_data = None
-            if isinstance(recipe, NATIVE_GEOMETRY_TYPES):
-                self.model_tree.set_geometry_preview(
-                    recipe.name,
-                    tuple(item.name for item in self.document.feature_history),
-                    part_name=self.document.parts[0].name,
-                )
-                self.viewport.show_geometry_preview(build_geometry_preview(recipe))
-                self.viewport_panel.set_geometry_context(True)
-                self.setWindowTitle(f"有限元分析 — {Path(path).name}")
+            project = load_project_v1(path)
+            delta = self.session.replace_from_snapshot(
+                project,
+                expected_session_revision=expected_revision,
+            )
+            self._apply_session_delta(
+                delta,
+                source_label=Path(path).name,
+            )
             self.status_panel.set_state("自主项目已打开，请生成网格并检查模型", 6000)
-            self._update_action_states()
             self.ribbon.set_current("几何")
         except Exception as error:
             self._show_error("打开自主项目失败", str(error))
@@ -1940,7 +2069,7 @@ class FEMMainWindow(QMainWindow):
     def save_native_project(self) -> bool:
         if self.document.source_kind != "native" or self.document.geometry_recipe is None:
             return False
-        path = self.document.native_project_path
+        path = self.document.project_path
         if path is None:
             filename, _filter = QFileDialog.getSaveFileName(
                 self, "保存自主项目", "Model-1.femproj", "FEM 自主项目 (*.femproj)"
@@ -1950,22 +2079,44 @@ class FEMMainWindow(QMainWindow):
             path = Path(filename)
             if path.suffix.lower() != ".femproj":
                 path = path.with_suffix(".femproj")
+        save_snapshot = None
+        marked_clean = False
         try:
-            target = save_native_project(path, self.document)
+            save_snapshot = self.session.prepare_project_save()
+            target = save_project_v1(path, save_snapshot)
+            marked_clean = self._apply_session_delta(
+                self.session.accept_project_saved(
+                    save_snapshot.token,
+                    target,
+                )
+            )
         except Exception as error:
+            if save_snapshot is not None:
+                self._apply_session_delta(
+                    self.session.accept_task_failed(
+                        save_snapshot.token,
+                        error,
+                    )
+                )
             self._show_error("保存自主项目失败", str(error))
             return False
+        if not marked_clean:
+            self.status_panel.set_state(
+                "已保存发起操作时的项目快照；当前修改仍未保存",
+                6000,
+            )
+            return False
         self.status_panel.set_state(f"自主项目已保存：{target.name}", 5000)
-        self._update_window_title()
         return True
 
     def reload_model(self) -> None:
-        if self.document.path is not None:
-            self._load_path(self.document.path)
+        if self.document.source_path is not None:
+            self._load_path(self.document.source_path)
 
     def _load_path(self, path: Path) -> None:
         if not self._confirm_discard_changes():
             return
+        task = self.session.prepare_import(path)
         self.status_panel.set_state("正在导入模型……")
 
         self.status_panel.set_state("正在解析 INP……")
@@ -1989,43 +2140,66 @@ class FEMMainWindow(QMainWindow):
 
         self._start_task(
             workload,
-            lambda value: self._model_loaded(path, value),
+            lambda value: self._model_loaded(
+                path,
+                value,
+                token=task.token,
+            ),
             "模型加载失败",
+            lambda message: self._session_task_failed(
+                task.token,
+                "模型加载失败",
+                message,
+            ),
             task_name="INP 导入",
+            on_cancelled=lambda: self._session_task_cancelled(task.token),
         )
 
-    def _model_loaded(self, path: Path, value: object) -> None:
+    def _model_loaded(
+        self,
+        path: Path,
+        value: object,
+        *,
+        token: object | None = None,
+    ) -> None:
         model, geometry, timings = self._unpack_model_load(value)
-        self.document.set_model(path, model)
-        hydrate_document_definitions(self.document)
-        self._install_model(
-            model,
-            geometry,
-            timings,
+        task = self.session.prepare_import(path) if token is None else None
+        active_token = token or task.token
+        delta = self.session.accept_imported_model(active_token, model)
+        accepted = self._apply_session_delta(
+            delta,
+            model_geometry=geometry,
+            timings=timings,
             source_label=path.name,
         )
+        if not accepted:
+            self.status_panel.set_state(
+                "导入结果已过期，未覆盖当前会话",
+                5000,
+            )
 
     def _generated_model_loaded(
         self,
         value: object,
         *,
-        geometry_recipe: object | None = None,
-        mesh_settings: object | None = None,
+        token: object | None = None,
     ) -> None:
         """Install a generated model through the same GUI path as an INP model."""
         model, geometry, timings = self._unpack_model_load(value)
-        self.document.set_generated_model(
-            model,
-            geometry_recipe=geometry_recipe,
-            mesh_settings=mesh_settings,
-        )
-        apply_document_definitions(self.document)
-        self._install_model(
-            model,
-            geometry,
-            timings,
+        task = self.session.prepare_mesh_generation() if token is None else None
+        active_token = token or task.token
+        delta = self.session.accept_generated_model(active_token, model)
+        accepted = self._apply_session_delta(
+            delta,
+            model_geometry=geometry,
+            timings=timings,
             source_label=str(getattr(model, "name", None) or "未命名模型"),
         )
+        if not accepted:
+            self.status_panel.set_state(
+                "网格结果已过期，未覆盖当前会话",
+                5000,
+            )
 
     @staticmethod
     def _unpack_model_load(value: object) -> tuple[object, ModelGeometry, dict[str, float]]:
@@ -2069,7 +2243,7 @@ class FEMMainWindow(QMainWindow):
         self.actions["overlay"].setChecked(False)
         self._symbol_settings = replace(
             self._symbol_settings,
-            step_name=self.document.step_name,
+            step_name=self._current_step_name,
         )
         started = perf_counter()
         self.inspection_service = InspectionService(model)
@@ -2112,7 +2286,7 @@ class FEMMainWindow(QMainWindow):
         )
         self.setWindowTitle(f"有限元分析 — {source_label}")
         self.status_panel.set_object()
-        self.status_panel.set_step(self.document.step_name)
+        self.status_panel.set_step(self._current_step_name)
         self.status_panel.set_result()
         self.status_panel.set_state("模型加载完成", 5000)
         if simplified:
@@ -2162,13 +2336,7 @@ class FEMMainWindow(QMainWindow):
             return False
         if confirm and not self._confirm_discard_changes():
             return False
-        self.document.close()
-        self._close_inspection_windows()
-        self._close_job_manager()
-        self.inspection_service = None
-        self.geometry = None
-        self.result_data = None
-        self.selection.clear()
+        self._apply_session_delta(self.session.close())
         self._selected_geometry_kind = None
         self._selected_geometry_id = None
         self._selected_geometry_ids.clear()
@@ -2177,66 +2345,84 @@ class FEMMainWindow(QMainWindow):
         self.actions["undeformed"].setChecked(True)
         self.actions["contour"].setChecked(False)
         self.actions["overlay"].setChecked(False)
-        self.model_tree.clear_model()
-        self.result_tree.clear_result()
-        self.navigation.show_model()
-        self.viewport.clear_model()
-        self.setWindowTitle("有限元分析")
         self.status_panel.reset_document()
         self.status_panel.set_selection_mode(self.selection.mode)
-        self._refresh_result_controls()
-        self._update_action_states()
         return True
 
-    def _apply_model_definition_changes(self, reason: str) -> None:
-        """Compile modal model edits into the existing model and expire results."""
-        if self.document.model is not None:
-            apply_document_definitions(self.document)
-            self.inspection_service = InspectionService(self.document.model)
-            self._show_model_in_tree(self.document.model)
-            self.viewport.show_boundary_and_loads(render=False)
-            self.viewport.render()
-        self.document.mark_model_definition_changed(reason)
-        self._update_action_states()
+    def _apply_model_definition_changes(
+        self,
+        reason: str,
+        *,
+        materials: object | None = None,
+        sections: object | None = None,
+        assignments: object | None = None,
+        steps: object | None = None,
+    ) -> None:
+        """Atomically compile editable definitions through the Session."""
+        delta = self.session.replace_model_definitions(
+            tuple(
+                self.document.material_definitions
+                if materials is None
+                else materials
+            ),
+            tuple(
+                self.document.section_definitions
+                if sections is None
+                else sections
+            ),
+            tuple(
+                self.document.region_assignments
+                if assignments is None
+                else assignments
+            ),
+            tuple(
+                self.document.analysis_definitions
+                if steps is None
+                else steps
+            ),
+        )
+        self._apply_session_delta(delta)
+        self.status_panel.set_state(reason, 5000)
 
     def show_material_manager(self) -> None:
         dialog = MaterialManagerDialog(self.document.material_definitions, self)
         if not dialog.exec():
             return
-        values = dialog.values()
-        old_materials = self.document.material_definitions
-        old_sections = deepcopy(self.document.section_definitions)
+        values = tuple(dialog.values())
+        old_materials = tuple(self.document.material_definitions)
+        sections = tuple(self.document.section_definitions)
         if len(values) == len(old_materials):
             renames = {
                 old.name: new.name
                 for old, new in zip(old_materials, values)
                 if old.name != new.name
             }
-            for section in self.document.section_definitions:
-                section.material = renames.get(section.material, section.material)
+            sections = tuple(
+                replace(
+                    section,
+                    material=renames.get(section.material, section.material),
+                )
+                for section in sections
+            )
         available = {material.name for material in values}
         missing = sorted({
             section.material
-            for section in self.document.section_definitions
+            for section in sections
             if section.material not in available
         })
         if missing:
-            self.document.section_definitions = old_sections
             self._show_error(
                 "材料管理",
                 f"材料仍被截面引用，不能删除：{'、'.join(missing)}",
             )
             return
-        self.document.material_definitions = values
         try:
             self._apply_model_definition_changes(
-                "材料已修改，模型需要重新检查"
+                "材料已修改，模型需要重新检查",
+                materials=values,
+                sections=sections,
             )
         except ValueError as error:
-            self.document.material_definitions = old_materials
-            self.document.section_definitions = old_sections
-            if self.document.model is not None:
-                apply_document_definitions(self.document)
             self._show_error("材料管理", str(error))
 
     def edit_material(self, material_name: str) -> None:
@@ -2277,22 +2463,23 @@ class FEMMainWindow(QMainWindow):
             )
             return
 
-        old_materials = deepcopy(self.document.material_definitions)
-        old_sections = deepcopy(self.document.section_definitions)
-        self.document.material_definitions[row] = updated
+        materials = list(self.document.material_definitions)
+        materials[row] = updated
+        sections = tuple(self.document.section_definitions)
         if updated.name != material_name:
-            for section in self.document.section_definitions:
-                if section.material == material_name:
-                    section.material = updated.name
+            sections = tuple(
+                replace(section, material=updated.name)
+                if section.material == material_name
+                else section
+                for section in sections
+            )
         try:
             self._apply_model_definition_changes(
-                "材料已修改，模型需要重新检查"
+                "材料已修改，模型需要重新检查",
+                materials=materials,
+                sections=sections,
             )
         except ValueError as error:
-            self.document.material_definitions = old_materials
-            self.document.section_definitions = old_sections
-            if self.document.model is not None:
-                apply_document_definitions(self.document)
             self._show_error("编辑材料", str(error))
 
     def show_section_manager(self) -> None:
@@ -2304,43 +2491,44 @@ class FEMMainWindow(QMainWindow):
         )
         if not dialog.exec():
             return
-        values = dialog.values()
-        old_sections = self.document.section_definitions
-        old_assignments = deepcopy(self.document.region_assignments)
+        values = tuple(dialog.values())
+        old_sections = tuple(self.document.section_definitions)
+        assignments = tuple(self.document.region_assignments)
         if len(values) == len(old_sections):
             renames = {
                 old.name: new.name
                 for old, new in zip(old_sections, values)
                 if old.name != new.name
             }
-            for assignment in self.document.region_assignments:
-                assignment.section_name = renames.get(
-                    assignment.section_name,
-                    assignment.section_name,
+            assignments = tuple(
+                replace(
+                    assignment,
+                    section_name=renames.get(
+                        assignment.section_name,
+                        assignment.section_name,
+                    ),
                 )
+                for assignment in assignments
+            )
         available = {section.name for section in values}
         missing = sorted({
             assignment.section_name
-            for assignment in self.document.region_assignments
+            for assignment in assignments
             if assignment.section_name not in available
         })
         if missing:
-            self.document.region_assignments = old_assignments
             self._show_error(
                 "截面管理",
                 f"截面仍被区域引用，不能删除：{'、'.join(missing)}",
             )
             return
-        self.document.section_definitions = values
         try:
             self._apply_model_definition_changes(
-                "截面已修改，模型需要重新检查"
+                "截面已修改，模型需要重新检查",
+                sections=values,
+                assignments=assignments,
             )
         except ValueError as error:
-            self.document.section_definitions = old_sections
-            self.document.region_assignments = old_assignments
-            if self.document.model is not None:
-                apply_document_definitions(self.document)
             self._show_error("截面管理", str(error))
 
     def assign_section_to_region(self) -> None:
@@ -2361,21 +2549,27 @@ class FEMMainWindow(QMainWindow):
         if not dialog.exec():
             return
         assignment = dialog.assignment()
-        self.document.region_assignments = [
+        assignments = [
             current
             for current in self.document.region_assignments
             if current.region_name != assignment.region_name
         ] + [assignment]
-        self._apply_model_definition_changes("截面分配已修改，模型需要重新检查")
+        self._apply_model_definition_changes(
+            "截面分配已修改，模型需要重新检查",
+            assignments=assignments,
+        )
 
-    def _analysis_definitions_changed(self, reason: str) -> None:
-        self.document.step_name = self.document.default_step_name()
-        self._apply_model_definition_changes(reason)
+    def _analysis_definitions_changed(
+        self,
+        reason: str,
+        steps: object,
+    ) -> None:
+        self._apply_model_definition_changes(reason, steps=steps)
 
     def create_static_step(self) -> None:
         if self.document.source_kind is None:
             return
-        definitions = self.document.analysis_definitions
+        definitions = list(deepcopy(self.document.analysis_definitions))
         name = f"Step-{len(definitions) + 1}"
         dialog = StaticStepDialog(name, self)
         if not dialog.exec():
@@ -2392,11 +2586,14 @@ class FEMMainWindow(QMainWindow):
             self._show_error("创建分析步", f"分析步名称已存在：{step.name}")
             return
         definitions.append(step)
-        self._analysis_definitions_changed("分析步已修改，模型需要重新检查")
+        self._analysis_definitions_changed(
+            "分析步已修改，模型需要重新检查",
+            definitions,
+        )
 
     def create_displacement_boundary(self) -> None:
         model = self.document.model
-        if not self.document.runnable_step_names():
+        if not self.session.runnable_step_names():
             return
         selected_region = None
         if (
@@ -2420,7 +2617,7 @@ class FEMMainWindow(QMainWindow):
             else geometry_dimension(self.document.geometry_recipe)
         )
         dialog = DisplacementDialog(
-            list(self.document.runnable_step_names()),
+            list(self.session.runnable_step_names()),
             node_regions,
             dimensions,
             self,
@@ -2433,17 +2630,17 @@ class FEMMainWindow(QMainWindow):
         except ValueError as error:
             self._show_error("位移边界条件", str(error))
             return
-        step = next(
-            step
-            for step in self.document.analysis_definitions
-            if step.name == step_name
-        )
+        definitions = list(deepcopy(self.document.analysis_definitions))
+        step = next(step for step in definitions if step.name == step_name)
         step.boundaries = tuple(step.boundaries) + boundaries
-        self._analysis_definitions_changed("边界条件已修改，模型需要重新检查")
+        self._analysis_definitions_changed(
+            "边界条件已修改，模型需要重新检查",
+            definitions,
+        )
 
     def create_load(self) -> None:
         model = self.document.model
-        if not self.document.runnable_step_names():
+        if not self.session.runnable_step_names():
             return
         selected_region = None
         preferred_kind = None
@@ -2484,7 +2681,7 @@ class FEMMainWindow(QMainWindow):
             else geometry_dimension(self.document.geometry_recipe)
         )
         dialog = LoadDialog(
-            list(self.document.runnable_step_names()),
+            list(self.session.runnable_step_names()),
             node_regions,
             edge_regions,
             face_regions,
@@ -2501,22 +2698,25 @@ class FEMMainWindow(QMainWindow):
         except ValueError as error:
             self._show_error("创建载荷", str(error))
             return
-        step = next(
-            step
-            for step in self.document.analysis_definitions
-            if step.name == step_name
+        definitions = list(deepcopy(self.document.analysis_definitions))
+        step = next(step for step in definitions if step.name == step_name)
+        if isinstance(load, NodalLoad):
+            step.cloads = tuple(step.cloads) + (load,)
+        elif isinstance(load, EdgeLoad):
+            step.edge_loads = tuple(step.edge_loads) + (load,)
+        elif isinstance(load, SurfaceLoad):
+            step.surface_loads = tuple(step.surface_loads) + (load,)
+        elif isinstance(load, GravityLoad):
+            step.gravity_loads = tuple(step.gravity_loads) + (load,)
+        self._analysis_definitions_changed(
+            "载荷已修改，模型需要重新检查",
+            definitions,
         )
-        from fem.core.model import EdgeLoad, GravityLoad, NodalLoad, SurfaceLoad
-        if isinstance(load, NodalLoad): step.cloads = tuple(step.cloads) + (load,)
-        elif isinstance(load, EdgeLoad): step.edge_loads = tuple(step.edge_loads) + (load,)
-        elif isinstance(load, SurfaceLoad): step.surface_loads = tuple(step.surface_loads) + (load,)
-        elif isinstance(load, GravityLoad): step.gravity_loads = tuple(step.gravity_loads) + (load,)
-        self._analysis_definitions_changed("载荷已修改，模型需要重新检查")
 
     def create_output_request(self) -> None:
-        if not self.document.runnable_step_names():
+        if not self.session.runnable_step_names():
             return
-        dialog = OutputRequestDialog(list(self.document.runnable_step_names()), self)
+        dialog = OutputRequestDialog(list(self.session.runnable_step_names()), self)
         if not dialog.exec():
             return
         try:
@@ -2524,13 +2724,13 @@ class FEMMainWindow(QMainWindow):
         except ValueError as error:
             self._show_error("输出请求", str(error))
             return
-        step = next(
-            step
-            for step in self.document.analysis_definitions
-            if step.name == step_name
-        )
+        definitions = list(deepcopy(self.document.analysis_definitions))
+        step = next(step for step in definitions if step.name == step_name)
         step.outputs = tuple(step.outputs) + (output,)
-        self._analysis_definitions_changed("输出请求已修改，模型需要重新检查")
+        self._analysis_definitions_changed(
+            "输出请求已修改，模型需要重新检查",
+            definitions,
+        )
 
     def _analysis_manager_dialog(
         self,
@@ -2564,9 +2764,9 @@ class FEMMainWindow(QMainWindow):
             return
         if not dialog.exec():
             return
-        self.document.analysis_definitions = dialog.values()
         self._analysis_definitions_changed(
-            "分析步、边界、载荷或输出请求已修改，模型需要重新检查"
+            "分析步、边界、载荷或输出请求已修改，模型需要重新检查",
+            dialog.values(),
         )
 
     def edit_analysis_definition(self, kind: str, key: object) -> None:
@@ -2595,21 +2795,21 @@ class FEMMainWindow(QMainWindow):
         dialog = self._analysis_manager_dialog()
         if dialog is None or not dialog.edit_definition(definition_key):
             return
-        self.document.analysis_definitions = dialog.values()
         self._analysis_definitions_changed(
-            "分析步、边界、载荷或输出请求已修改，模型需要重新检查"
+            "分析步、边界、载荷或输出请求已修改，模型需要重新检查",
+            dialog.values(),
         )
 
     def show_current_step_information(self) -> EntityInfoDialog | None:
         """复用现有只读信息窗口显示当前分析步。"""
-        if self.document.step_name is None:
+        if self._current_step_name is None:
             return None
         if self.document.model is None:
             step = next(
                 (
                     item
                     for item in self.document.analysis_definitions
-                    if item.name == self.document.step_name
+                    if item.name == self._current_step_name
                 ),
                 None,
             )
@@ -2632,34 +2832,32 @@ class FEMMainWindow(QMainWindow):
             ])
             return None
         for index, step in enumerate(self.document.model.steps):
-            if step.name == self.document.step_name:
+            if step.name == self._current_step_name:
                 return self.show_entity_information("step", index)
         return None
 
     def check_current_model(self, show_success: bool = True) -> bool:
         """检查模型定义完整性；数值稳定性在实际求解时检查。"""
-        prepared = self._prepare_model_check()
-        if prepared is None:
+        task = self._prepare_model_check()
+        if task is None:
             return False
-        model, step_name, revision = prepared
-        definition_inputs = self._model_definition_inputs()
         try:
-            checked_model = compiled_model_snapshot(
-                model,
-                *definition_inputs,
-            )
             selected_step, boundary = self._evaluate_model_check(
-                checked_model,
-                step_name,
+                task.model,
+                task.step_name,
             )
         except Exception as error:
+            self._apply_session_delta(
+                self.session.accept_validation_failed(
+                    task.token,
+                    {"error": str(error)},
+                )
+            )
             self._show_error("模型检查失败", str(error))
             return False
         return self._complete_model_check(
-            model,
-            step_name,
-            revision,
-            checked_model,
+            task.token,
+            task.model,
             selected_step,
             boundary,
             show_success=show_success,
@@ -2669,57 +2867,57 @@ class FEMMainWindow(QMainWindow):
         """Run the user-facing model check without blocking the Qt event loop."""
         if self.busy:
             return False
-        prepared = self._prepare_model_check()
-        if prepared is None:
+        task = self._prepare_model_check()
+        if task is None:
             return False
-        model, step_name, revision = prepared
-        definition_inputs = self._model_definition_inputs()
 
         def workload(context: TaskContext):
-            context.report("正在准备模型快照……")
-            checked_model = compiled_model_snapshot(
-                model,
-                *definition_inputs,
-            )
             context.report("正在检查模型……")
-            result = self._evaluate_model_check(checked_model, step_name)
+            result = self._evaluate_model_check(task.model, task.step_name)
             context.checkpoint()
-            return checked_model, *result
+            return task.model, *result
 
         def succeeded(value: object) -> None:
             checked_model, selected_step, boundary = value
             self._complete_model_check(
-                model,
-                step_name,
-                revision,
+                task.token,
                 checked_model,
                 selected_step,
                 boundary,
                 show_success=True,
             )
 
+        def failed(message: str) -> None:
+            self._apply_session_delta(
+                self.session.accept_validation_failed(
+                    task.token,
+                    {"error": message},
+                )
+            )
+            self._show_error("模型检查失败", message)
+
+        def cancelled() -> None:
+            self._apply_session_delta(
+                self.session.accept_validation_failed(
+                    task.token,
+                    {"cancelled": True},
+                )
+            )
+
         return self._start_task(
             workload,
             succeeded,
             "模型检查失败",
+            failed,
             task_name="模型检查",
+            on_cancelled=cancelled,
         )
 
-    def _prepare_model_check(self) -> tuple[object, str, int] | None:
-        model = self.document.model
-        step_name = self.document.step_name
-        if model is None or step_name is None:
+    def _prepare_model_check(self) -> object | None:
+        step_name = self._current_step_name
+        if step_name is None or not self.session.can_check(step_name):
             return None
-        return model, str(step_name), self.document.revision
-
-    def _model_definition_inputs(self) -> tuple[tuple[object, ...], ...]:
-        """Capture lightweight references; the worker performs every deep copy."""
-        return (
-            tuple(self.document.material_definitions),
-            tuple(self.document.section_definitions),
-            tuple(self.document.region_assignments),
-            tuple(self.document.analysis_definitions),
-        )
+        return self.session.prepare_validation(step_name)
 
     @staticmethod
     def _evaluate_model_check(
@@ -2735,20 +2933,22 @@ class FEMMainWindow(QMainWindow):
 
     def _complete_model_check(
         self,
-        model: object,
-        step_name: str,
-        revision: int,
+        token: object,
         checked_model: object,
         selected_step: object,
         boundary: object,
         *,
         show_success: bool,
     ) -> bool:
-        if (
-            self.document.model is not model
-            or self.document.step_name != step_name
-            or self.document.revision != revision
-        ):
+        delta = self.session.accept_validation(
+            token,
+            {
+                "step_name": selected_step.name,
+                "boundary": boundary,
+            },
+            passed=True,
+        )
+        if not self._apply_session_delta(delta):
             self.status_panel.set_state(
                 "模型已发生变化，已忽略旧的检查结果",
                 5000,
@@ -2771,8 +2971,6 @@ class FEMMainWindow(QMainWindow):
                 ("边载荷数量", len(boundary.edge_tractions)),
                 ("检查结果", "通过"),
             ])
-        self.document.mark_model_checked()
-        self._update_action_states()
         self.status_panel.set_state("模型检查通过", 4000)
         return True
 
@@ -2781,9 +2979,9 @@ class FEMMainWindow(QMainWindow):
         if self.document.model is None or self.geometry is None or self.busy:
             return
         dialog = JobSubmitDialog(
-            self.document.next_job_name(),
-            self.document.runnable_step_names(),
-            self.document.step_name,
+            self.session.next_run_name(),
+            self.session.runnable_step_names(),
+            self._current_step_name,
             self,
         )
         if dialog.exec():
@@ -2793,18 +2991,18 @@ class FEMMainWindow(QMainWindow):
         """以当前模型状态重新提交某个已完成或失败作业。"""
         if self.busy or self.document.model is None or self.geometry is None:
             return
-        source = self.document.find_job(source_name or self.document.active_job_name)
+        source = self.session.find_run(source_name)
         if source is None or source.status not in {
             JobStatus.COMPLETED,
             JobStatus.FAILED,
             JobStatus.CANCELLED,
         }:
-            source = self.document.latest_resubmittable_job()
+            source = self.session.latest_resubmittable_run()
         if source is None:
             return
         dialog = JobSubmitDialog(
-            self.document.next_job_name(),
-            self.document.runnable_step_names(),
+            self.session.next_run_name(),
+            self.session.runnable_step_names(),
             source.step_name,
             self,
         )
@@ -2833,25 +3031,23 @@ class FEMMainWindow(QMainWindow):
         if len(clean_name) > 64:
             self._show_error("创建作业失败", "作业名称不能超过 64 个字符。")
             return None
-        if self.document.find_job(clean_name) is not None:
+        if self.session.find_run(clean_name) is not None:
             self._show_error("创建作业失败", f"作业名称已存在：{clean_name}")
             return None
-        if clean_step not in self.document.runnable_step_names():
+        if clean_step not in self.session.runnable_step_names():
             self._show_error("创建作业失败", f"分析步不存在：{clean_step}")
             return None
-        job = AnalysisJob(
-            clean_name,
-            clean_step,
-            JobStatus.RUNNING,
-            started_at=datetime.now(),
-            source_job_name=source_job_name,
-        )
-        job.add_message("开始检查模型")
-        if source_job_name is not None:
-            job.add_message(f"基于当前模型重新提交自 {source_job_name}")
-        self.document.add_job(job)
-        self.document.active_job_name = job.name
-        model = self.document.model
+        try:
+            task = self.session.prepare_solve(clean_step, clean_name)
+        except (KeyError, RuntimeError, ValueError) as error:
+            self._show_error("创建作业失败", str(error))
+            return None
+        if task.delta is not None:
+            self._apply_session_delta(task.delta)
+        self._apply_session_delta(self.session.begin_run(task.token))
+        job = self.session.find_run(task.run_id)
+        if job is None:
+            return None
         geometry = self.geometry
         self.status_panel.set_state(f"正在分析：{job.name}")
         self._refresh_job_manager()
@@ -2861,87 +3057,98 @@ class FEMMainWindow(QMainWindow):
             context: TaskContext,
         ) -> tuple[object, ResultData, dict[str, float]]:
             timings: dict[str, float] = {}
-            context.report("正在创建作业模型快照……")
-            snapshot_started = perf_counter()
-            solve_model = deepcopy(model)
-            timings["模型快照"] = perf_counter() - snapshot_started
-            context.checkpoint()
+            solve_model = task.model
             context.report("正在验证模型……")
             validation_started = perf_counter()
             selected_step = static_linear.validate_problem(
                 solve_model,
-                clean_step,
+                task.step_name,
             )
             timings["模型验证"] = perf_counter() - validation_started
             stage["name"] = "求解"
             context.report("正在装配并求解……")
             result = static_linear.solve(
                 solve_model,
-                clean_step,
-                name=job.name,
+                task.step_name,
+                name=task.run_name,
                 _validated_step=selected_step,
                 timings=timings,
             )
             context.report("正在准备结果……")
             started = perf_counter()
             data = build_result_data(result, geometry, include_stress=False)
+            data = replace(
+                data,
+                artifact_id=task.token.artifact_id,
+                run_id=task.run_id,
+            )
             timings["位移与反力结果"] = perf_counter() - started
             context.checkpoint()
             return result, data, timings
 
         self._start_task(
             workload,
-            lambda value, submitted=job: self._job_succeeded(submitted, value),
+            lambda value, token=task.token: self._job_succeeded(token, value),
             "分析运行失败",
-            lambda message, submitted=job, current_stage=stage: self._job_failed(
-                submitted,
+            lambda message, token=task.token, current_stage=stage: self._job_failed(
+                token,
                 message,
                 validation_failure=current_stage["name"] == "模型验证",
             ),
             task_name=f"作业 {job.name}",
-            on_cancelled=lambda submitted=job: self._job_cancelled(submitted),
+            on_cancelled=lambda token=task.token: self._job_cancelled(token),
         )
+        self._active_session_task_token = task.token
         return job
 
-    def _job_succeeded(self, job: AnalysisJob, value: object) -> None:
+    def _job_succeeded(self, token: object, value: object) -> None:
         if len(value) == 2:
             result, data = value
             timings = {}
         else:
             result, data, timings = value
-        job.status = JobStatus.COMPLETED
-        job.finished_at = datetime.now()
-        job.model_result = result
-        job.result_data = data
-        job.timings.update(timings)
-        job.add_message("模型检查通过")
-        job.add_message("开始线性静力分析")
-        for stage, seconds in timings.items():
-            job.add_message(f"{stage}：{seconds:.3f} s")
-        job.add_message("线性静力分析完成")
-        self.document.active_job_name = job.name
+        data = replace(
+            data,
+            artifact_id=token.artifact_id,
+            run_id=token.run_id,
+        )
+        delta = self.session.accept_run_result(
+            token,
+            result,
+            timings=timings,
+        )
+        if not self._apply_session_delta(
+            delta,
+            result_projection=data,
+        ):
+            self.status_panel.set_state(
+                "求解结果已过期，未覆盖当前会话",
+                5000,
+            )
+            return
+        job = self.session.find_run(token.run_id)
+        if job is None:
+            return
         activation_started = perf_counter()
         self._activate_job_result(job, completion=True)
-        job.timings["首次结果显示"] = perf_counter() - activation_started
-        job.add_message(f"首次结果显示：{job.timings['首次结果显示']:.3f} s")
+        timings["首次结果显示"] = perf_counter() - activation_started
         self._refresh_job_manager()
         self.status_panel.set_state(f"分析完成：{job.name}", 5000)
         self.ribbon.set_current("结果")
 
     def _job_failed(
         self,
-        job: AnalysisJob,
+        token: object,
         message: str,
         *,
         validation_failure: bool = False,
     ) -> None:
-        job.status = JobStatus.FAILED
-        job.finished_at = datetime.now()
-        job.error = message
-        if not validation_failure:
-            job.add_message("开始线性静力分析")
-        job.add_message("模型检查失败" if validation_failure else "分析失败")
-        job.add_message(message)
+        self._apply_session_delta(
+            self.session.accept_run_failed(token, message)
+        )
+        job = self.session.find_run(token.run_id)
+        if job is None:
+            return
         self._refresh_job_manager()
         state = "模型检查失败" if validation_failure else "分析失败"
         self.status_panel.set_state(f"{state}：{job.name}", 5000)
@@ -2950,11 +3157,13 @@ class FEMMainWindow(QMainWindow):
             message,
         )
 
-    def _job_cancelled(self, job: AnalysisJob) -> None:
-        job.status = JobStatus.CANCELLED
-        job.finished_at = datetime.now()
-        job.error = None
-        job.add_message("分析已由用户取消")
+    def _job_cancelled(self, token: object) -> None:
+        self._apply_session_delta(
+            self.session.accept_run_cancelled(token)
+        )
+        job = self.session.find_run(token.run_id)
+        if job is None:
+            return
         self._refresh_job_manager()
         self.status_panel.set_state(f"分析已取消：{job.name}", 5000)
 
@@ -2962,17 +3171,35 @@ class FEMMainWindow(QMainWindow):
         """将一个已完成会话作业的结果接入现有后处理流程。"""
         if not job.has_result:
             return
-        self.document.result = job.model_result
-        self.document.mark_result_current()
-        self.document.active_job_name = job.name
-        self.document.step_name = job.step_name
-        self.result_data = job.result_data
-        data = job.result_data
+        if self.document.displayed_result_run_id != job.run_id:
+            projection = self.session.prepare_result_projection(job.run_id)
+            if self.geometry is None:
+                return
+            data = replace(
+                build_result_data(
+                    projection.record.result,
+                    self.geometry,
+                    include_stress=False,
+                ),
+                artifact_id=projection.token.artifact_id,
+                run_id=projection.run_id,
+            )
+            if not self._apply_session_delta(
+                self.session.accept_result_projection(
+                    projection.token
+                )
+            ):
+                return
+            self._apply_session_delta(
+                self.session.select_result(job.run_id),
+                result_projection=data,
+            )
+        self._set_current_step(job.step_name)
+        data = self.result_data
+        if data is None or data.run_id != job.run_id:
+            return
         field_key = "U" if "U" in data.fields else next(iter(data.fields), None)
         self._display = DisplayState("deformed", True, field_key)
-        if self.inspection_service is not None:
-            self.inspection_service.update_result_data(data)
-        self.viewport.set_result_data(data)
         self._apply_scale()
         self.actions["deformed"].setChecked(True)
         self.actions["contour"].setChecked(True)
@@ -3026,12 +3253,28 @@ class FEMMainWindow(QMainWindow):
 
     def open_job_result(self, name: str) -> None:
         """打开一个已完成作业的内存结果，不重新求解。"""
-        job = self.document.find_job(name)
+        job = self.session.find_run(name)
         if job is None or not job.has_result:
             return
         self._activate_job_result(job)
         self._refresh_job_manager()
         self.ribbon.set_current("结果")
+
+    def _session_task_failed(
+        self,
+        token: object,
+        title: str,
+        message: str,
+    ) -> None:
+        if self._apply_session_delta(
+            self.session.accept_task_failed(token, message)
+        ):
+            self._show_error(title, message)
+
+    def _session_task_cancelled(self, token: object) -> None:
+        self._apply_session_delta(
+            self.session.accept_task_cancelled(token)
+        )
 
     def _start_task(
         self,
@@ -3134,7 +3377,7 @@ class FEMMainWindow(QMainWindow):
                 self._task_failure_callback(message)
             else:
                 self._show_error(self._task_error_title, message)
-        except Exception as callback_error:
+        except Exception:
             logging.exception("GUI background task failure callback failed")
             self._show_error(self._task_error_title, message)
 
@@ -3169,6 +3412,14 @@ class FEMMainWindow(QMainWindow):
             or self._task_cancel_requested
         ):
             return False
+        token = self._active_session_task_token
+        if token is not None and getattr(token, "run_id", None) is not None:
+            try:
+                self._apply_session_delta(
+                    self.session.request_cancel(token.run_id)
+                )
+            except (KeyError, RuntimeError):
+                pass
         self._task_cancel_requested = True
         self._worker.request_cancel()
         self.status_panel.set_task_active(True, cancelling=True)
@@ -3207,6 +3458,7 @@ class FEMMainWindow(QMainWindow):
         self._task_success_callback = None
         self._task_failure_callback = None
         self._task_cancel_callback = None
+        self._active_session_task_token = None
         self.status_panel.set_task_active(False)
         self._update_action_states()
         if self._close_after_task_cancel:
@@ -3424,8 +3676,27 @@ class FEMMainWindow(QMainWindow):
             }
             self.status_panel.set_object(f"{names.get(kind, '对象')} {key}")
 
+    def _current_result_projection(self) -> ResultData | None:
+        record = self.session.current_result()
+        data = self.result_data
+        artifact = self.document.artifact
+        if record is None or data is None or artifact is None:
+            return None
+        provenance = record.provenance
+        if (
+            provenance.artifact_id != artifact.artifact_id
+            or provenance.run_id != data.run_id
+            or data.artifact_id != artifact.artifact_id
+            or self.geometry is None
+            or self.geometry.artifact_id != artifact.artifact_id
+            or self.viewport.artifact_id != artifact.artifact_id
+            or self.viewport.run_id != provenance.run_id
+        ):
+            return None
+        return data
+
     def set_shape_mode(self, shape_mode: str) -> None:
-        if self.result_data is None:
+        if self._current_result_projection() is None:
             return
         shape = "deformed" if shape_mode == "deformed" else "undeformed"
         self._display = replace(self._display, shape_mode=shape)
@@ -3434,7 +3705,7 @@ class FEMMainWindow(QMainWindow):
         self._apply_display()
 
     def _toggle_contour(self, checked: bool) -> None:
-        if self.result_data is None:
+        if self._current_result_projection() is None:
             return
         self._display = replace(self._display, contour_enabled=bool(checked))
         self._apply_display()
@@ -3454,6 +3725,8 @@ class FEMMainWindow(QMainWindow):
             self.set_shape_mode(mode)
 
     def _apply_display(self) -> None:
+        if self._current_result_projection() is None:
+            return
         show_edges = (
             bool(self._contour_options["edges"])
             if self._display.contour_enabled
@@ -3469,9 +3742,10 @@ class FEMMainWindow(QMainWindow):
         self.status_panel.set_result(self._result_status_text())
 
     def _activate_result_field(self, field_key: str) -> None:
-        if self.result_data is None or field_key not in self.result_data.fields:
+        data = self._current_result_projection()
+        if data is None or field_key not in data.fields:
             return
-        if not self.result_data.field_ready(field_key):
+        if not data.field_ready(field_key):
             prefix = field_key.split(":", 1)[0]
             self._ensure_result_stress(
                 (prefix,),
@@ -3507,7 +3781,9 @@ class FEMMainWindow(QMainWindow):
             self.status_panel.set_state("当前任务完成后才能恢复应力结果", 4000)
             return False
 
-        active_job = self.document.find_job(self.document.active_job_name)
+        if data.run_id is None:
+            return False
+        projection = self.session.prepare_result_projection(data.run_id)
         self.status_panel.set_state("正在恢复应力结果……")
 
         def workload(context: TaskContext) -> tuple[ResultData, float]:
@@ -3518,22 +3794,19 @@ class FEMMainWindow(QMainWindow):
             return updated, perf_counter() - started
 
         def succeeded(value: object) -> None:
-            if self.result_data is not data:
+            updated, _seconds = value
+            if not self._apply_session_delta(
+                self.session.accept_result_projection(
+                    projection.token
+                ),
+                result_projection=updated,
+            ):
                 return
-            updated, seconds = value
-            self.result_data = updated
-            if active_job is not None and active_job.result_data is data:
-                active_job.result_data = updated
-            elapsed = float(seconds)
-            if active_job is not None:
-                active_job.timings["应力恢复"] = (
-                    active_job.timings.get("应力恢复", 0.0) + elapsed
-                )
-                active_job.add_message(f"应力恢复：{elapsed:.3f} s")
-            if self.inspection_service is not None:
-                self.inspection_service.update_result_data(updated)
-            self.viewport.set_result_data(updated)
-            self._refresh_result_controls()
+            if (
+                self.result_data is None
+                or self.result_data.run_id != projection.run_id
+            ):
+                return
             self._refresh_job_manager()
             self.status_panel.set_state("应力结果恢复完成", 4000)
             on_ready()
@@ -3542,12 +3815,20 @@ class FEMMainWindow(QMainWindow):
             workload,
             succeeded,
             "应力结果恢复失败",
+            lambda message: self._session_task_failed(
+                projection.token,
+                "应力结果恢复失败",
+                message,
+            ),
             task_name="应力恢复",
+            on_cancelled=lambda: self._session_task_cancelled(
+                projection.token
+            ),
         )
         return False
 
     def _result_status_text(self) -> str:
-        if self.result_data is None:
+        if self._current_result_projection() is None:
             return "—"
         shape = "变形" if self._display.shape_mode == "deformed" else "未变形"
         if not self._display.contour_enabled:
@@ -3566,9 +3847,9 @@ class FEMMainWindow(QMainWindow):
         return f"{shape} / {result_name}"
 
     def show_result_display_dialog(self) -> None:
-        if self.result_data is None:
+        if self._current_result_projection() is None:
             return
-        step_name = self.document.step_name or "分析结果"
+        step_name = self._current_step_name or "分析结果"
         dialog = ResultDisplayDialog(
             self.result_data.fields,
             step_name=step_name,
@@ -3621,12 +3902,14 @@ class FEMMainWindow(QMainWindow):
         self._apply_display()
 
     def _apply_scale(self) -> None:
-        if self.geometry is None or self.result_data is None:
+        if self.geometry is None or self._current_result_projection() is None:
             return
         scale = automatic_deformation_scale(self.geometry, self.result_data) if self._scale_mode == "auto" else 1.0 if self._scale_mode == "real" else self._scale_value
         self.viewport.set_deformation_scale(scale)
 
     def show_contour_dialog(self) -> None:
+        if self._current_result_projection() is None:
+            return
         dialog = ContourSettingsDialog(dict(self._contour_options), self)
         dialog.applyRequested.connect(self._set_contour_options)
         dialog.exec()
@@ -3644,7 +3927,7 @@ class FEMMainWindow(QMainWindow):
             return
         dialog = SymbolSettingsDialog(
             self._symbol_settings,
-            self.document.runnable_step_names(),
+            self.session.runnable_step_names(),
             self,
         )
         dialog.applyRequested.connect(self._apply_symbol_settings)
@@ -3678,13 +3961,14 @@ class FEMMainWindow(QMainWindow):
     def _apply_symbol_settings(self, settings: SymbolSettings) -> None:
         self._symbol_settings = settings
         if settings.step_name is not None:
-            self.document.step_name = settings.step_name
+            self._current_step_name = settings.step_name
         self.viewport.set_symbol_settings(settings)
         self._sync_step_combos()
-        self.status_panel.set_step(self.document.step_name)
+        self.status_panel.set_step(self._current_step_name)
+        self._update_action_states()
 
     def query_result(self) -> None:
-        if self.result_data is None or self.geometry is None:
+        if self._current_result_projection() is None or self.geometry is None:
             return
         prefixes = self.result_data.available_stress_prefixes()
         if any(
@@ -3702,7 +3986,7 @@ class FEMMainWindow(QMainWindow):
             selected_kind, selected_id = "element", self.selection.element_id
         dialog = ResultQueryDialog(
             self.result_data,
-            step_name=self.document.step_name or "分析结果",
+            step_name=self._current_step_name or "分析结果",
             node_ids=tuple(self.geometry.node_id_to_point_index),
             element_ids=tuple(self.geometry.element_id_to_cell_index),
             selected_kind=selected_kind,
@@ -3716,7 +4000,7 @@ class FEMMainWindow(QMainWindow):
         self._on_viewport_pick(kind, identifier)
 
     def export_csv(self) -> None:
-        if self.result_data is None:
+        if self._current_result_projection() is None:
             return
         field_key = self._display.field_key
         if field_key is None or field_key not in self.result_data.fields:
@@ -3753,6 +4037,8 @@ class FEMMainWindow(QMainWindow):
         )
 
     def export_viewport_image(self) -> None:
+        if self._current_result_projection() is None:
+            return
         default = (self.document.path.stem if self.document.path else "viewport") + ".png"
         path, _filter = QFileDialog.getSaveFileName(
             self,
@@ -3776,7 +4062,7 @@ class FEMMainWindow(QMainWindow):
         if self.inspection_service is None:
             source = {
                 "native": "自主模型",
-                "inp": "INP 模型",
+                "imported": "INP 模型",
             }.get(self.document.source_kind, "未打开")
             show_information(self, "模型概况", [
                 ("模型来源", source),
@@ -3793,7 +4079,15 @@ class FEMMainWindow(QMainWindow):
                 ("材料数量", len(self.document.material_definitions)),
                 ("截面数量", len(self.document.section_definitions)),
                 ("分析步数量", len(self.document.analysis_definitions)),
-                ("当前状态", self.document.workflow.reason or "就绪"),
+                (
+                    "当前状态",
+                    "未保存"
+                    if self.document.dirty
+                    else "模型检查已通过"
+                    if self._current_step_name
+                    and self.session.can_submit(self._current_step_name)
+                    else "就绪",
+                ),
             ])
             return
         self.show_entity_information("model", None)
@@ -3952,5 +4246,6 @@ class FEMMainWindow(QMainWindow):
             return
         self._close_inspection_windows()
         self._close_job_manager()
-        self.document.clear_jobs()
+        if self.document.is_open:
+            self._apply_session_delta(self.session.close())
         event.accept()

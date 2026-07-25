@@ -23,6 +23,7 @@ class ModelGeometry:
     point_index_to_node_id: dict[int, int]
     element_id_to_cell_index: dict[int, int]
     cell_index_to_element_id: dict[int, int]
+    artifact_id: str | None = None
 
 
 def build_model_geometry(model: Any) -> ModelGeometry:

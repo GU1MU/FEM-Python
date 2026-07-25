@@ -1,108 +1,136 @@
-"""Apply editable GUI model definitions to the existing FEMModel kernel."""
+"""Pure adapters between editable definitions and the FEM kernel model.
+
+Project inputs are owned by :class:`fem.application.ModelSession`.  Functions
+in this module operate only on detached values: extraction returns tuples and
+compilation returns a deep-copied model.  They never assign to a GUI document
+or mutate a Session snapshot.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from typing import Any
 
+from fem.application import RegionAssignment, SectionDefinition
 from fem.core.model import MaterialDefinition, SectionAssignment
 from fem.materials import linear_elastic
 
-from .document import FEMDocument, RegionAssignment, SectionDefinition
+
+DefinitionTuple = tuple[
+    tuple[Any, ...],
+    tuple[SectionDefinition, ...],
+    tuple[RegionAssignment, ...],
+    tuple[Any, ...],
+]
 
 
-def hydrate_document_definitions(document: FEMDocument) -> None:
-    """Expose parsed INP materials/sections through the same GUI dialogs."""
-    model = document.model
-    if model is None:
-        return
-    document.material_definitions = list(model.materials.values())
-    document.section_definitions.clear()
-    document.region_assignments.clear()
-    for index, section in enumerate(model.sections, start=1):
+def definitions_from_model(model: Any) -> DefinitionTuple:
+    """Return detached editable definitions projected from one kernel model."""
+    materials = deepcopy(tuple(getattr(model, "materials", {}).values()))
+    sections: list[SectionDefinition] = []
+    assignments: list[RegionAssignment] = []
+    for index, section in enumerate(getattr(model, "sections", ()), start=1):
         name = f"Section-{index}"
-        document.section_definitions.append(
+        sections.append(
             SectionDefinition(
                 name,
-                section.material,
-                section.section_type,
-                dict(section.properties),
+                str(section.material),
+                str(section.section_type),
+                deepcopy(dict(section.properties)),
             )
         )
-        document.region_assignments.append(
-            RegionAssignment(
-                name, section.element_set
-            )
+        assignments.append(
+            RegionAssignment(name, str(section.element_set))
         )
-    document.analysis_definitions = deepcopy(model.steps)
+    steps = deepcopy(tuple(getattr(model, "steps", ())))
+    return materials, tuple(sections), tuple(assignments), steps
 
 
-def apply_document_definitions(document: FEMDocument) -> None:
-    """Compile GUI definitions into the current FEMModel without a new backend.
-
-    Native models are rebuilt repeatedly after meshing.  The GUI definitions are
-    therefore the durable source and this function is intentionally idempotent.
-    """
-    model = document.model
-    if model is None:
-        return
-    materials = {
-        material.name: MaterialDefinition(material.name, dict(material.properties))
-        for material in document.material_definitions
-    }
-    model.materials = materials
-
-    definitions = {section.name: section for section in document.section_definitions}
-    element_sets = dict(
-        model.metadata.get("_abaqus_internal_element_sets", {})
+def compile_model_definitions(
+    model: Any,
+    material_definitions: Mapping[str, Any] | Iterable[Any],
+    section_definitions: Iterable[SectionDefinition],
+    region_assignments: Iterable[RegionAssignment],
+    analysis_definitions: Iterable[Any],
+) -> Any:
+    """Compile detached definition inputs into a detached model copy."""
+    compiled = deepcopy(model)
+    materials = tuple(
+        material_definitions.values()
+        if isinstance(material_definitions, Mapping)
+        else material_definitions
     )
-    element_sets.update(model.element_sets)
-    assignments: list[SectionAssignment] = []
-    for assignment in document.region_assignments:
-        section = definitions.get(assignment.section_name)
+    sections = tuple(section_definitions)
+    assignments = tuple(region_assignments)
+    steps = tuple(analysis_definitions)
+
+    material_map = {
+        str(material.name): MaterialDefinition(
+            str(material.name),
+            deepcopy(dict(material.properties)),
+        )
+        for material in materials
+    }
+    section_map = {str(section.name): section for section in sections}
+    element_sets = dict(
+        getattr(compiled, "metadata", {}).get(
+            "_abaqus_internal_element_sets",
+            {},
+        )
+    )
+    element_sets.update(getattr(compiled, "element_sets", {}))
+
+    compiled_sections: list[SectionAssignment] = []
+    for assignment in assignments:
+        section = section_map.get(str(assignment.section_name))
         if section is None:
             raise ValueError(f"截面 {assignment.section_name} 不存在")
-        if section.material not in model.materials:
-            raise ValueError(f"截面 {section.name} 引用了不存在的材料 {section.material}")
-        if assignment.region_name not in element_sets:
-            raise ValueError(f"区域 {assignment.region_name} 不是单元集")
-        assignments.append(
+        if str(section.material) not in material_map:
+            raise ValueError(
+                f"截面 {section.name} 引用了不存在的材料 {section.material}"
+            )
+        region_name = str(assignment.region_name)
+        if region_name not in element_sets:
+            raise ValueError(f"区域 {region_name} 不是单元集")
+        compiled_sections.append(
             SectionAssignment(
-                assignment.region_name,
-                section.material,
-                section.section_type,
-                dict(section.properties),
+                region_name,
+                str(section.material),
+                str(section.section_type),
+                deepcopy(dict(section.properties)),
             )
         )
-    model.sections = assignments
-    model.steps = deepcopy(document.analysis_definitions)
+
+    compiled.materials = material_map
+    compiled.sections = compiled_sections
+    compiled.steps = deepcopy(list(steps))
+    return compiled
 
 
 def compiled_model_snapshot(
     model: Any,
-    material_definitions: tuple[Any, ...],
-    section_definitions: tuple[SectionDefinition, ...],
-    region_assignments: tuple[RegionAssignment, ...],
-    analysis_definitions: tuple[Any, ...],
+    material_definitions: Iterable[Any],
+    section_definitions: Iterable[SectionDefinition],
+    region_assignments: Iterable[RegionAssignment],
+    analysis_definitions: Iterable[Any],
 ) -> Any:
-    """Compile GUI definitions into an isolated model for background checks."""
-    snapshot_document = FEMDocument(
-        model=deepcopy(model),
-        material_definitions=deepcopy(list(material_definitions)),
-        section_definitions=deepcopy(list(section_definitions)),
-        region_assignments=deepcopy(list(region_assignments)),
-        analysis_definitions=deepcopy(list(analysis_definitions)),
+    """Compile and validate an isolated model for checks/background work."""
+    compiled = compile_model_definitions(
+        model,
+        material_definitions,
+        section_definitions,
+        region_assignments,
+        analysis_definitions,
     )
-    apply_document_definitions(snapshot_document)
-    issues = section_assignment_issues(snapshot_document)
+    issues = section_assignment_issues(compiled)
     if issues:
         raise ValueError("；".join(issues))
-    return snapshot_document.model
+    return compiled
 
 
-def section_assignment_issues(document: FEMDocument) -> tuple[str, ...]:
-    """Return actionable input issues for a submit/check guard."""
-    model = document.model
+def section_assignment_issues(model: Any | None) -> tuple[str, ...]:
+    """Return actionable material/section issues for a detached model."""
     if model is None:
         return ("尚未生成网格或打开 INP 模型",)
     if not model.materials:
@@ -121,9 +149,7 @@ def section_assignment_issues(document: FEMDocument) -> tuple[str, ...]:
     for section in model.sections:
         material = model.materials.get(section.material)
         if material is None:
-            issues.append(
-                f"截面引用了不存在的材料：{section.material}"
-            )
+            issues.append(f"截面引用了不存在的材料：{section.material}")
         elif material.name not in validated_materials:
             properties = material.properties
             if "E" not in properties or "nu" not in properties:
@@ -161,3 +187,20 @@ def section_assignment_issues(document: FEMDocument) -> tuple[str, ...]:
             f"（单元 {preview}{suffix}）"
         )
     return tuple(issues)
+
+
+# Transitional names imported by older GUI modules.  Their signatures now
+# accept detached values and their behavior is pure.
+hydrate_document_definitions = definitions_from_model
+apply_document_definitions = compile_model_definitions
+
+
+__all__ = [
+    "DefinitionTuple",
+    "apply_document_definitions",
+    "compile_model_definitions",
+    "compiled_model_snapshot",
+    "definitions_from_model",
+    "hydrate_document_definitions",
+    "section_assignment_issues",
+]

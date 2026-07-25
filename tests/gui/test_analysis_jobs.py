@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
 
@@ -12,11 +13,10 @@ import pytest
 from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication, QToolButton
 
+from fem.application import AnalysisRun, ModelSession, RunStatus
 from fem.abaqus import read
 from fem.solvers import static_linear
 from fem_gui.analysis_dialogs import JobManagerDialog
-from fem_gui.analysis_jobs import AnalysisJob, JobStatus
-from fem_gui.document import FEMDocument
 from fem_gui.main_window import FEMMainWindow
 import fem_gui.main_window as main_window_module
 from fem_gui.visualization.model_adapter import build_model_geometry
@@ -38,41 +38,77 @@ def _wait_for_task(window: FEMMainWindow) -> None:
     assert not window.busy
 
 
+def _validated_session() -> ModelSession:
+    session = ModelSession()
+    model = make_static_pull_truss_model()
+    imported = session.prepare_import(Path("pull.inp"))
+    session.accept_imported_model(imported.token, model)
+    validation = session.prepare_validation("pull")
+    session.accept_validation(validation.token, {"passed": True})
+    return session
+
+
+def _accept_validation(window: FEMMainWindow, step_name: str) -> None:
+    task = window.session.prepare_validation(step_name)
+    window._apply_session_delta(
+        window.session.accept_validation(
+            task.token,
+            {"passed": True},
+        )
+    )
+
+
 def test_analysis_job_timestamps_elapsed_and_result_state():
-    job = AnalysisJob("Job-1", "Static-1", JobStatus.RUNNING)
-    job.started_at = datetime.now() - timedelta(seconds=1.0)
-    job.add_message("开始线性静力分析")
-    assert job.messages[0].count(":") == 2
+    started_at = datetime.now(timezone.utc) - timedelta(seconds=1.0)
+    job = AnalysisRun(
+        run_id="run-1",
+        name="Job-1",
+        step_name="Static-1",
+        artifact_id="artifact-1",
+        model_revision=1,
+        status=RunStatus.RUNNING,
+        started_at=started_at,
+        messages=("开始线性静力分析",),
+    )
+    assert job.messages == ("开始线性静力分析",)
     assert job.elapsed_seconds is not None and job.elapsed_seconds >= 1.0
     assert not job.has_result
 
-    job.status = JobStatus.COMPLETED
-    job.finished_at = job.started_at + timedelta(seconds=2.5)
-    job.model_result = object()
-    job.result_data = object()
-    assert job.elapsed_seconds == pytest.approx(2.5)
-    assert job.has_result
-    job.status = JobStatus.FAILED
-    assert not job.has_result
+    completed = replace(
+        job,
+        status=RunStatus.SUCCEEDED,
+        finished_at=started_at + timedelta(seconds=2.5),
+        result_id="result-1",
+    )
+    assert completed.elapsed_seconds == pytest.approx(2.5)
+    assert completed.has_result
+    assert not replace(completed, status=RunStatus.FAILED).has_result
 
 
-def test_document_jobs_are_case_insensitive_and_cleared():
-    document = FEMDocument()
-    first = AnalysisJob("Job-1", "pull", JobStatus.COMPLETED)
-    document.add_job(first)
-    assert document.next_job_name() == "Job-2"
-    assert document.find_job("job-1") is first
+def test_session_runs_are_case_insensitive_and_cleared_by_model_transitions():
+    session = _validated_session()
+    first = session.prepare_solve("pull", "Job-1")
+    assert session.next_run_name() == "Job-2"
+    found = session.find_run("job-1")
+    assert found is not None
+    assert found.run_id == first.run_id
     with pytest.raises(ValueError):
-        document.add_job(AnalysisJob("JOB-1", "pull", JobStatus.FAILED))
+        session.prepare_solve("pull", "JOB-1")
 
-    document.set_model("model.inp", make_static_pull_truss_model())
-    assert document.jobs == []
-    assert document.active_job_name is None
-    document.add_job(AnalysisJob("Job-1", "pull", JobStatus.COMPLETED))
-    document.active_job_name = "Job-1"
-    document.close()
-    assert document.jobs == []
-    assert document.active_job_name is None
+    replacement = session.prepare_import(Path("replacement.inp"))
+    session.accept_imported_model(
+        replacement.token,
+        make_static_pull_truss_model(),
+    )
+    assert session.snapshot().runs == ()
+    assert session.snapshot().active_job_name is None
+
+    validation = session.prepare_validation("pull")
+    session.accept_validation(validation.token, {"passed": True})
+    session.prepare_solve("pull", "Job-1")
+    session.close()
+    assert session.snapshot().runs == ()
+    assert session.snapshot().active_job_name is None
 
 
 def test_job_actions_replace_direct_run(gui_inp_path):
@@ -148,27 +184,38 @@ def test_submit_resubmit_open_history_and_reload_clear(gui_inp_path):
     model = read(gui_inp_path)
     geometry = build_model_geometry(model)
     window._model_loaded(gui_inp_path, (model, geometry))
+    assert window.check_current_model(show_success=False)
 
-    job1 = window._submit_job("Job-1", "Static-1")
-    assert job1 is not None and job1.status is JobStatus.RUNNING
+    started1 = window._submit_job("Job-1", "Static-1")
+    assert started1 is not None
+    assert started1.status is RunStatus.RUNNING
     _wait_for_task(window)
-    assert job1.has_result
-    assert window.document.active_job_name == "Job-1"
+    job1 = window.session.find_run(started1.run_id)
+    assert job1 is not None and job1.has_result
+    assert window.document.active_job_name is None
+    assert window.document.displayed_result_run_id == job1.run_id
     assert window.result_tree.topLevelItem(0).child(0).text(0) == "Job-1 · Static-1"
 
-    previous = job1.model_result
-    job2 = window._submit_job("Job-2", "Static-1", source_job_name="Job-1")
-    assert job2 is not None and job2.source_job_name == "Job-1"
+    previous = window.session.current_result()
+    assert previous is not None
+    started2 = window._submit_job(
+        "Job-2",
+        "Static-1",
+        source_job_name="Job-1",
+    )
+    assert started2 is not None
     _wait_for_task(window)
-    assert job2.has_result
-    assert job1.model_result is previous
+    job2 = window.session.find_run(started2.run_id)
+    assert job2 is not None and job2.has_result
 
     window.open_job_result("Job-1")
-    assert window.document.active_job_name == "Job-1"
-    assert window.document.result is job1.model_result
+    selected = window.session.current_result()
+    assert selected is not None
+    assert selected.provenance.run_id == job1.run_id
+    assert window.document.displayed_result_run_id == job1.run_id
     window.reload_model()
     _wait_for_task(window)
-    assert window.document.jobs == []
+    assert window.document.jobs == ()
     assert window.document.active_job_name is None
     window.close()
 
@@ -178,6 +225,12 @@ def test_job_completes_with_primary_results_and_recovers_stress_on_demand(
 ):
     _application()
     window = FEMMainWindow()
+    errors: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        window,
+        "_show_error",
+        lambda title, message: errors.append((title, message)),
+    )
     model = make_static_pull_truss_model()
     original_metadata = deepcopy(model.metadata)
     original_props = [
@@ -186,6 +239,7 @@ def test_job_completes_with_primary_results_and_recovers_stress_on_demand(
     ]
     geometry = build_model_geometry(model)
     window._model_loaded(Path("pull.inp"), (model, geometry))
+    _accept_validation(window, "pull")
     validations = []
     original_validate = static_linear.validate_problem
 
@@ -195,13 +249,18 @@ def test_job_completes_with_primary_results_and_recovers_stress_on_demand(
 
     monkeypatch.setattr(static_linear, "validate_problem", counted_validate)
 
-    job = window._submit_job("Job-1", "pull")
-    assert job is not None
+    started = window._submit_job("Job-1", "pull")
+    assert started is not None
     _wait_for_task(window)
 
-    data = job.result_data
+    job = window.session.find_run(started.run_id)
+    record = window.session.current_result()
+    data = window.result_data
+    assert job is not None
+    assert record is not None
+    assert data is not None
     assert validations == [False]
-    assert job.model_result.model is not model
+    assert record.result.model is not model
     assert model.metadata == original_metadata
     assert [
         element.props
@@ -216,10 +275,11 @@ def test_job_completes_with_primary_results_and_recovers_stress_on_demand(
     window._activate_result_field("CENTROID:Mises")
     _wait_for_task(window)
     assert not data.field_ready("CENTROID:Mises")
-    assert job.result_data is window.result_data
-    assert job.result_data.field_ready("CENTROID:Mises")
+    assert window.result_data is not data
+    assert window.result_data is not None
+    assert window.result_data.field_ready("CENTROID:Mises")
     assert window._display.field_key == "CENTROID:Mises"
-    assert "应力恢复" in job.timings
+    assert errors == []
     window.close()
 
 
@@ -229,10 +289,12 @@ def test_failed_job_keeps_previous_result(monkeypatch, gui_inp_path):
     model = read(gui_inp_path)
     geometry = build_model_geometry(model)
     window._model_loaded(gui_inp_path, (model, geometry))
+    assert window.check_current_model(show_success=False)
     successful = window._submit_job("Job-1", "Static-1")
     assert successful is not None
     _wait_for_task(window)
-    previous_result = window.document.result
+    previous_result = window.session.current_result()
+    assert previous_result is not None
     shown: list[tuple[str, str]] = []
     monkeypatch.setattr(window, "_show_error", lambda title, message: shown.append((title, message)))
     monkeypatch.setattr(
@@ -240,13 +302,21 @@ def test_failed_job_keeps_previous_result(monkeypatch, gui_inp_path):
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("求解故障")),
     )
 
-    failed = window._submit_job("Job-2", "Static-1")
-    assert failed is not None
+    failed_started = window._submit_job("Job-2", "Static-1")
+    assert failed_started is not None
     _wait_for_task(window)
-    assert failed.status is JobStatus.FAILED
+    failed = window.session.find_run(failed_started.run_id)
+    assert failed is not None
+    assert failed.status is RunStatus.FAILED
     assert failed.error == "求解故障"
     assert not failed.has_result
-    assert window.document.result is previous_result
+    current_result = window.session.current_result()
+    assert current_result is not None
+    assert current_result.provenance.run_id == previous_result.provenance.run_id
+    assert (
+        window.document.displayed_result_run_id
+        == previous_result.provenance.run_id
+    )
     assert shown == [("分析运行失败", "求解故障")]
     window.close()
 
@@ -256,6 +326,7 @@ def test_check_failure_is_reported_by_background_job(monkeypatch):
     window = FEMMainWindow()
     model = make_static_pull_truss_model()
     window._model_loaded(Path("pull.inp"), (model, build_model_geometry(model)))
+    _accept_validation(window, "pull")
     monkeypatch.setattr(
         static_linear, "validate_problem",
         lambda *_args: (_ for _ in ()).throw(ValueError("模型引用错误")),
@@ -263,11 +334,13 @@ def test_check_failure_is_reported_by_background_job(monkeypatch):
     shown: list[tuple[str, str]] = []
     monkeypatch.setattr(window, "_show_error", lambda title, message: shown.append((title, message)))
 
-    job = window._submit_job("Job-1", "pull")
-    assert job is not None
+    started = window._submit_job("Job-1", "pull")
+    assert started is not None
     _wait_for_task(window)
-    assert window.document.jobs == [job]
-    assert job.status is JobStatus.FAILED
+    job = window.session.find_run(started.run_id)
+    assert job is not None
+    assert tuple(run.run_id for run in window.document.jobs) == (job.run_id,)
+    assert job.status is RunStatus.FAILED
     assert job.error == "模型引用错误"
     assert shown == [("模型检查失败", "模型引用错误")]
     window.close()
@@ -278,10 +351,11 @@ def test_submit_rejects_busy_empty_and_duplicate_names(monkeypatch, gui_inp_path
     window = FEMMainWindow()
     model = read(gui_inp_path)
     window._model_loaded(gui_inp_path, (model, build_model_geometry(model)))
+    assert window.check_current_model(show_success=False)
     shown: list[tuple[str, str]] = []
     monkeypatch.setattr(window, "_show_error", lambda title, message: shown.append((title, message)))
     assert window._submit_job("   ", "Static-1") is None
-    assert window.document.jobs == []
+    assert window.document.jobs == ()
 
     first = window._submit_job("Job-1", "Static-1")
     assert first is not None
@@ -299,12 +373,13 @@ def test_job_workflow_creates_no_job_files(monkeypatch, tmp_path, gui_inp_path):
     window = FEMMainWindow()
     model = read(gui_inp_path)
     window._model_loaded(gui_inp_path, (model, build_model_geometry(model)))
+    assert window.check_current_model(show_success=False)
     assert window._submit_job("Job-1", "Static-1") is not None
     _wait_for_task(window)
     for name in ("jobs", "job.json", "solver.log", "result.npz"):
         assert not (tmp_path / name).exists()
     window.close_model()
-    assert window.document.jobs == []
+    assert window.document.jobs == ()
     window.close()
 
 
@@ -313,14 +388,15 @@ def test_job_manager_shows_memory_log_and_history_actions(gui_inp_path):
     window = FEMMainWindow()
     model = read(gui_inp_path)
     window._model_loaded(gui_inp_path, (model, build_model_geometry(model)))
-    job = window._submit_job("Job-1", "Static-1")
-    assert job is not None
+    assert window.check_current_model(show_success=False)
+    started = window._submit_job("Job-1", "Static-1")
+    assert started is not None
     _wait_for_task(window)
 
     manager = window.show_job_manager()
     assert manager is not None
     assert manager.table.rowCount() == 1
-    assert "线性静力分析完成" in manager.log_view.toPlainText()
+    assert manager.table.item(0, 2).text() == "已完成"
     assert manager.resubmit_button.isEnabled()
     assert manager.open_result_button.isEnabled()
     assert window.show_job_manager() is manager
@@ -330,8 +406,16 @@ def test_job_manager_shows_memory_log_and_history_actions(gui_inp_path):
 
 def test_job_manager_refresh_preserves_manual_log_scroll_position():
     _application()
-    job = AnalysisJob("Job-1", "Static-1", JobStatus.RUNNING)
-    job.messages = [f"日志行 {index}" for index in range(100)]
+    job = AnalysisRun(
+        run_id="run-1",
+        name="Job-1",
+        step_name="Static-1",
+        artifact_id="artifact-1",
+        model_revision=1,
+        status=RunStatus.RUNNING,
+        started_at=datetime.now(timezone.utc),
+        messages=tuple(f"日志行 {index}" for index in range(100)),
+    )
     manager = JobManagerDialog([job])
     manager.show()
     QApplication.processEvents()
@@ -344,12 +428,12 @@ def test_job_manager_refresh_preserves_manual_log_scroll_position():
     manager.refresh()
     assert scroll_bar.value() == manual_position
 
-    job.messages.append("新增日志")
-    manager.refresh()
+    job = replace(job, messages=job.messages + ("新增日志",))
+    manager.refresh([job])
     assert scroll_bar.value() == manual_position
 
     scroll_bar.setValue(scroll_bar.maximum())
-    job.messages.append("继续新增日志")
-    manager.refresh()
+    job = replace(job, messages=job.messages + ("继续新增日志",))
+    manager.refresh([job])
     assert scroll_bar.value() == scroll_bar.maximum()
     manager.close()

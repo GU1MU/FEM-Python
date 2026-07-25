@@ -10,9 +10,9 @@ from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication
 
 from fem.abaqus import read
+from fem.application import NamedRegion, RegionAssignment, SectionDefinition
 from fem.core.model import DisplacementConstraint, MaterialDefinition, NodalLoad
 from fem.steps.factory import static
-from fem_gui.document import NamedRegion, RegionAssignment, SectionDefinition
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.preprocessing import MeshSettings, SketchGeometry, SketchRectangle
 from fem_gui.visualization.model_adapter import build_model_geometry
@@ -31,6 +31,10 @@ def _wait(window: FEMMainWindow) -> None:
     assert not window.busy
 
 
+def _apply(window: FEMMainWindow, delta: object) -> None:
+    assert window._apply_session_delta(delta)
+
+
 def test_native_preprocess_check_job_result_workflow(monkeypatch):
     _application()
     window = FEMMainWindow()
@@ -40,19 +44,37 @@ def test_native_preprocess_check_job_result_workflow(monkeypatch):
         SketchGeometry("Plate", (SketchRectangle("material", 0.0, 0.0, 2.0, 1.0),)),
         "草图",
     )
-    window.document.named_regions = {
-        "Fixed": NamedRegion("Fixed", "edge", (4,)),
-        "Loaded": NamedRegion("Loaded", "edge", (2,)),
-    }
-    window.document.material_definitions = [MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3})]
-    window.document.section_definitions = [SectionDefinition("Section-1", "Steel", properties={"thickness": 1.0})]
-    window.document.region_assignments = [RegionAssignment("Section-1", "DOMAIN")]
+    _apply(
+        window,
+        window.session.replace_named_regions(
+            (
+                NamedRegion("Fixed", "edge", (4,)),
+                NamedRegion("Loaded", "edge", (2,)),
+            )
+        ),
+    )
     step = static("Load")
     step.boundaries = (DisplacementConstraint("Fixed", 1, 2, 0.0),)
     step.cloads = (NodalLoad("Loaded", 1, 10.0),)
-    window.document.analysis_definitions = [step]
-    window._analysis_definitions_changed("分析步、边界和载荷已定义")
-    window.document.set_mesh_settings(MeshSettings(0.5))
+    _apply(
+        window,
+        window.session.replace_model_definitions(
+            (MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3}),),
+            (
+                SectionDefinition(
+                    "Section-1",
+                    "Steel",
+                    properties={"thickness": 1.0},
+                ),
+            ),
+            (RegionAssignment("Section-1", "DOMAIN"),),
+            (step,),
+        ),
+    )
+    _apply(
+        window,
+        window.session.replace_mesh_settings(MeshSettings(0.5)),
+    )
     window.generate_native_mesh()
     _wait(window)
 
@@ -68,7 +90,16 @@ def test_native_preprocess_check_job_result_workflow(monkeypatch):
     _wait(window)
 
     assert window.document.has_result
-    assert window.document.workflow.results_current
+    current_result = window.session.current_result()
+    assert current_result is not None
+    assert (
+        current_result.provenance.artifact_id
+        == window.document.artifact.artifact_id
+    )
+    assert (
+        current_result.provenance.model_revision
+        == window.document.model_revision
+    )
     assert window.result_data is not None and "U" in window.result_data.fields
     window.close()
 
@@ -81,14 +112,19 @@ def test_inp_check_job_result_workflow(monkeypatch, gui_inp_path):
     model = read(gui_inp_path)
     window._model_loaded(Path(gui_inp_path), (model, build_model_geometry(model)))
 
-    assert window.document.source_kind == "inp"
+    assert window.document.source_kind == "imported"
     assert not window.actions["submit_job"].isEnabled()
     assert window.check_current_model(show_success=False), errors
     assert window._submit_job("Job-1", "Static-1") is not None
     _wait(window)
 
     assert window.document.has_result
-    assert window.document.workflow.results_current
+    current_result = window.session.current_result()
+    assert current_result is not None
+    assert (
+        current_result.provenance.artifact_id
+        == window.document.artifact.artifact_id
+    )
     window.close()
 
 
@@ -140,37 +176,43 @@ def test_model_check_rejects_an_underconstrained_native_model(monkeypatch):
         ),
         "草图",
     )
-    window.document.named_regions = {
-        "Fixed": NamedRegion("Fixed", "edge", (4,)),
-    }
-    window.document.material_definitions = [
-        MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3})
-    ]
-    window.document.section_definitions = [
-        SectionDefinition(
-            "Section-1",
-            "Steel",
-            properties={
-                "plane_type": "stress",
-                "thickness": 1.0,
-            },
-        )
-    ]
-    window.document.region_assignments = [
-        RegionAssignment("Section-1", "DOMAIN")
-    ]
+    _apply(
+        window,
+        window.session.replace_named_regions(
+            (NamedRegion("Fixed", "edge", (4,)),)
+        ),
+    )
     step = static("Load")
     step.boundaries = (
         DisplacementConstraint("Fixed", 1, 1, 0.0),
     )
-    window.document.analysis_definitions = [step]
-    window._analysis_definitions_changed("分析定义已修改")
-    window.document.set_mesh_settings(MeshSettings(0.5))
+    _apply(
+        window,
+        window.session.replace_model_definitions(
+            (MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3}),),
+            (
+                SectionDefinition(
+                    "Section-1",
+                    "Steel",
+                    properties={
+                        "plane_type": "stress",
+                        "thickness": 1.0,
+                    },
+                ),
+            ),
+            (RegionAssignment("Section-1", "DOMAIN"),),
+            (step,),
+        ),
+    )
+    _apply(
+        window,
+        window.session.replace_mesh_settings(MeshSettings(0.5)),
+    )
     window.generate_native_mesh()
     _wait(window)
 
     assert not window.check_current_model(show_success=False)
     assert errors
     assert "约束不足或刚度矩阵奇异" in errors[-1][1]
-    assert not window.document.workflow.model_checked
+    assert not window.session.can_submit("Load")
     window.close()

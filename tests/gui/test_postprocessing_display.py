@@ -9,7 +9,6 @@ from PySide6.QtWidgets import QApplication
 from fem.abaqus import read
 from fem.solvers.static_linear import solve
 from fem_gui.main_window import FEMMainWindow
-from fem_gui.analysis_jobs import AnalysisJob, JobStatus
 from fem_gui.visualization.model_adapter import build_model_geometry
 from fem_gui.visualization.result_adapter import build_result_data
 
@@ -24,11 +23,21 @@ def _solved_window(path) -> FEMMainWindow:
     geometry = build_model_geometry(model)
     window._model_loaded(path, (model, geometry))
     result = solve(model)
-    job = AnalysisJob("Job-1", "Static-1", JobStatus.RUNNING)
-    window.document.add_job(job)
-    window._job_succeeded(job, (result, build_result_data(result, geometry)))
+    _install_result(window, geometry, result)
     window._update_action_states()
     return window
+
+
+def _install_result(window, geometry, result) -> None:
+    assert window.check_current_model(show_success=False)
+    task = window.session.prepare_solve("Static-1", "Job-1")
+    if task.delta is not None:
+        assert window._apply_session_delta(task.delta)
+    assert window._apply_session_delta(window.session.begin_run(task.token))
+    window._job_succeeded(
+        task.token,
+        (result, build_result_data(result, geometry)),
+    )
 
 
 def test_shape_and_contour_are_independent_for_all_four_states(gui_inp_path):
@@ -56,10 +65,7 @@ def test_analysis_uses_clean_deformed_displacement_contour_defaults(gui_inp_path
     window.selection.select_node(1)
     window.viewport.highlight_node(1)
     result = solve(model)
-
-    job = AnalysisJob("Job-1", "Static-1", JobStatus.RUNNING)
-    window.document.add_job(job)
-    window._job_succeeded(job, (result, build_result_data(result, geometry)))
+    _install_result(window, geometry, result)
 
     assert window._display.shape_mode == "deformed"
     assert window._display.contour_enabled
