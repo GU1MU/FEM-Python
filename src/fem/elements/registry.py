@@ -3,7 +3,7 @@ from __future__ import annotations
 from .base import ElementKernel
 from .capabilities import (
     ElementCapabilityDescriptor,
-    ElementCapabilityLimitation,
+    ElementCapabilityRequirement,
 )
 from .hexahedron import Hex8Kernel, Hex20Kernel
 from .line import Beam2Kernel, Truss2Kernel
@@ -162,13 +162,9 @@ _SPATIAL_DOF_LABELS = ("U1", "U2", "U3")
 _SPATIAL_FORCE_LABELS = ("Fx", "Fy", "Fz")
 _BEAM_DOF_LABELS = ("U1", "U2", "U3", "UR1", "UR2", "UR3")
 _BEAM_FORCE_LABELS = ("Fx", "Fy", "Fz", "Mx", "My", "Mz")
-_BEAM_ORIENTATION_LIMITATION = ElementCapabilityLimitation(
-    code="beam.orientation.assumed",
+_BEAM_ORIENTATION_REQUIREMENT = ElementCapabilityRequirement(
+    code="beam.orientation.explicit",
     operations=("section.rectangle", "load.line.local"),
-    message=(
-        "Beam2 local axes are inferred automatically from element geometry; "
-        "user-defined orientation is unavailable."
-    ),
 )
 
 
@@ -262,7 +258,7 @@ def _register_builtin_capabilities() -> None:
             load_kinds=("node", "line", "gravity"),
             dof_labels=_BEAM_DOF_LABELS,
             force_labels=_BEAM_FORCE_LABELS,
-            limitations=(_BEAM_ORIENTATION_LIMITATION,),
+            requirements=(_BEAM_ORIENTATION_REQUIREMENT,),
         ),
     )
 

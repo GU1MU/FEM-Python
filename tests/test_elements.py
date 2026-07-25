@@ -3,7 +3,12 @@ import pytest
 
 from fem import boundary
 from fem.core.mesh import Element3D, Mesh3D, Node3D
-from fem.elements import canonical_element_type, get_element_kernel, register_element_kernel
+from fem.elements import (
+    canonical_element_type,
+    get_element_kernel,
+    register_element_kernel,
+    resolve_beam_frame,
+)
 from fem.elements.beam_section import parse_beam2_section
 from fem.elements.hexahedron import (
     HEX20_EXTRAPOLATION_MATRIX,
@@ -13,7 +18,7 @@ from fem.elements.hexahedron import (
     hex8_gauss_points,
     hex8_shape_funcs_grads,
 )
-from fem.elements.line import beam3d_geometry, line3d_geometry
+from fem.elements.line import line3d_geometry
 from fem.elements.tetrahedron import (
     TET10_NATURAL_NODE_COORDS,
     tet10_gauss_points,
@@ -210,7 +215,9 @@ def test_inclined_beam_cantilever_matches_euler_bernoulli_tip_response():
     elem = mesh.elements[0]
     kernel = get_element_kernel(elem.type)
     Ke = kernel.stiffness(mesh, elem)
-    L, rotation = beam3d_geometry(mesh, elem)
+    frame = resolve_beam_frame(mesh, elem)
+    L = frame.length
+    rotation = frame.rotation
     E = float(elem.props["E"])
     Izz = parse_beam2_section(elem.props).Izz
     free = mesh.node_dofs(elem.node_ids[1])

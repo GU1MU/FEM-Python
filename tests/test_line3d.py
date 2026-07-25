@@ -6,9 +6,12 @@ from fem.boundary.loads import build_load_vector
 from fem.core.mesh import Element3D, Mesh3D, Node3D
 from fem.core.model import AnalysisStep, FEMModel
 from fem.core.result import ModelResult
-from fem.elements import get_element_kernel
+from fem.elements import (
+    BEAM_LOCAL_Y_REFERENCE_KEY,
+    get_element_kernel,
+    resolve_beam_frame,
+)
 from fem.elements.beam_section import axial_stress_extrema, parse_beam2_section
-from fem.elements.line import beam3d_geometry
 from fem.post.stress import beam as beam_stress
 
 
@@ -323,7 +326,10 @@ def test_beam2_pure_bending_about_local_y_recovers_section_extrema():
 
 def test_beam2_inclined_and_reversed_elements_preserve_physical_extrema():
     inclined = _beam_mesh(end=(2.0, 3.0, 6.0))
-    _, rotation = beam3d_geometry(inclined, inclined.elements[0])
+    rotation = resolve_beam_frame(
+        inclined,
+        inclined.elements[0],
+    ).rotation
     local_displacement = np.zeros(12)
     local_displacement[6] = 0.07
     local_displacement[7] = 0.02
@@ -378,57 +384,6 @@ def test_beam2_shared_node_uses_maximum_minimum_envelope_without_averaging():
     assert [(row.maximum, row.minimum, row.absolute_maximum) for row in rows] == pytest.approx(
         [(21.0, 21.0, 21.0), (21.0, -21.0, 21.0), (-21.0, -21.0, 21.0)]
     )
-
-
-def test_beam2_local_axes_are_orthonormal_and_right_handed():
-    mesh = _beam_mesh(end=(2.0, 3.0, 6.0))
-
-    length, rotation = beam3d_geometry(mesh, mesh.elements[0])
-
-    assert length == pytest.approx(7.0)
-    assert rotation @ rotation.T == pytest.approx(np.eye(3), abs=1e-12)
-    assert np.linalg.det(rotation) == pytest.approx(1.0)
-    assert rotation[0] == pytest.approx(np.array([2.0, 3.0, 6.0]) / 7.0)
-
-
-@pytest.mark.parametrize(
-    ("end", "expected"),
-    [
-        ((1.0, 0.0, 0.0), np.eye(3)),
-        (
-            (0.0, 1.0, 0.0),
-            np.array([[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]),
-        ),
-        (
-            (0.0, 0.0, 1.0),
-            np.array([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
-        ),
-    ],
-)
-def test_beam2_automatic_local_frame_for_global_axes(end, expected):
-    mesh = Mesh3D(
-        nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, *end)],
-        elements=[Element3D(1, [1, 2], "Beam2")],
-        dofs_per_node=6,
-    )
-
-    _, rotation = beam3d_geometry(mesh, mesh.elements[0])
-
-    assert rotation == pytest.approx(expected, abs=1e-12)
-    assert np.cross(rotation[0], rotation[1]) == pytest.approx(rotation[2], abs=1e-12)
-
-
-def test_beam2_automatic_local_frame_uses_y_fallback_near_global_z():
-    mesh = Mesh3D(
-        nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 1e-14, 0.0, 1.0)],
-        elements=[Element3D(1, [1, 2], "Beam2")],
-        dofs_per_node=6,
-    )
-
-    _, rotation = beam3d_geometry(mesh, mesh.elements[0])
-
-    assert rotation[2] == pytest.approx([0.0, 1.0, 0.0], abs=1e-12)
-    assert rotation @ rotation.T == pytest.approx(np.eye(3), abs=1e-12)
 
 
 @pytest.mark.parametrize("mode", range(6))
@@ -497,6 +452,57 @@ def test_beam2_rectangle_dimension_swap_exchanges_cantilever_bending_response():
     assert tall_compliance[1, 1] < tall_compliance[2, 2]
 
 
+def test_beam2_explicit_orientation_rotates_rectangle_bending_axes() -> None:
+    local_y_global_y = _beam_mesh(
+        props={BEAM_LOCAL_Y_REFERENCE_KEY: (0.0, 1.0, 0.0)}
+    )
+    local_y_global_z = _beam_mesh(
+        props={BEAM_LOCAL_Y_REFERENCE_KEY: (0.0, 0.0, 1.0)}
+    )
+    kernel = get_element_kernel("Beam2")
+
+    first = np.linalg.inv(
+        kernel.stiffness(
+            local_y_global_y,
+            local_y_global_y.elements[0],
+        )[6:, 6:]
+    )
+    rotated = np.linalg.inv(
+        kernel.stiffness(
+            local_y_global_z,
+            local_y_global_z.elements[0],
+        )[6:, 6:]
+    )
+
+    assert first[1, 1] == pytest.approx(rotated[2, 2])
+    assert first[2, 2] == pytest.approx(rotated[1, 1])
+    assert first[1, 1] < first[2, 2]
+    assert rotated[2, 2] < rotated[1, 1]
+
+
+def test_beam2_explicit_orientation_removes_near_global_z_axis_swap() -> None:
+    properties = {
+        "height": 0.1,
+        "width": 0.02,
+        BEAM_LOCAL_Y_REFERENCE_KEY: (0.0, 1.0, 0.0),
+    }
+    vertical = _beam_mesh(end=(0.0, 0.0, 4.0), props=properties)
+    perturbed = _beam_mesh(end=(1e-11, 0.0, 4.0), props=properties)
+    kernel = get_element_kernel("Beam2")
+
+    vertical_compliance = np.linalg.inv(
+        kernel.stiffness(vertical, vertical.elements[0])[6:, 6:]
+    )
+    perturbed_compliance = np.linalg.inv(
+        kernel.stiffness(perturbed, perturbed.elements[0])[6:, 6:]
+    )
+
+    assert perturbed_compliance[0, 0] == pytest.approx(
+        vertical_compliance[0, 0],
+        rel=1e-9,
+    )
+
+
 def test_beam2_circular_stiffness_is_invariant_to_roll_about_beam_axis():
     mesh = _beam_mesh()
     elem = mesh.elements[0]
@@ -540,6 +546,23 @@ def test_beam2_inclined_stiffness_is_symmetric_and_reversal_invariant():
     )
 
 
+def test_beam2_explicit_orientation_reversal_only_permutes_stiffness():
+    properties = {BEAM_LOCAL_Y_REFERENCE_KEY: (0.0, 1.0, 0.0)}
+    mesh = _beam_mesh(end=(2.0, 3.0, 6.0), props=properties)
+    reversed_mesh = _beam_mesh(end=(2.0, 3.0, 6.0), props=properties)
+    reversed_mesh.elements[0].node_ids = [2, 1]
+    kernel = get_element_kernel("Beam2")
+    permutation = np.eye(12)[[6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5]]
+
+    stiffness = kernel.stiffness(mesh, mesh.elements[0])
+    reversed_stiffness = kernel.stiffness(reversed_mesh, reversed_mesh.elements[0])
+
+    assert reversed_stiffness == pytest.approx(
+        permutation @ stiffness @ permutation.T,
+        abs=1e-10,
+    )
+
+
 @pytest.mark.parametrize("end", [(0.0, 0.0, 4.0), (1e-14, 0.0, 4.0)])
 def test_beam2_global_z_fallback_is_reversal_invariant(end):
     mesh = _beam_mesh(end=end)
@@ -575,3 +598,22 @@ def test_beam2_body_force_preserves_resultant_and_moment():
 
     assert element_force[:3] + element_force[6:9] == pytest.approx(total_force)
     assert assembled_moment == pytest.approx(np.cross(end / 2.0, total_force))
+
+
+def test_beam2_explicit_orientation_body_force_reversal_only_permutes_nodes():
+    properties = {BEAM_LOCAL_Y_REFERENCE_KEY: (0.0, 1.0, 0.0)}
+    mesh = _beam_mesh(end=(2.0, 3.0, 6.0), props=properties)
+    reversed_mesh = _beam_mesh(end=(2.0, 3.0, 6.0), props=properties)
+    reversed_mesh.elements[0].node_ids = [2, 1]
+    kernel = get_element_kernel("Beam2")
+    permutation = np.eye(12)[[6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5]]
+    body_vector = (1.5, -2.0, 0.25)
+
+    force = kernel.body_force(mesh, mesh.elements[0], body_vector)
+    reversed_force = kernel.body_force(
+        reversed_mesh,
+        reversed_mesh.elements[0],
+        body_vector,
+    )
+
+    assert reversed_force == pytest.approx(permutation @ force, abs=1e-12)

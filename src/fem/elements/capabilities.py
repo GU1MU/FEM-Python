@@ -39,6 +39,18 @@ class ElementCapabilityLimitation:
 
 
 @dataclass(frozen=True, slots=True)
+class ElementCapabilityRequirement:
+    """One model-state requirement for a group of domain operations."""
+
+    code: str
+    operations: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _require_nonempty_text(self.code, "requirement code")
+        _require_text_tuple(self.operations, "requirement operations")
+
+
+@dataclass(frozen=True, slots=True)
 class ElementCapabilityDescriptor:
     """Intrinsic numerical and modeling capabilities of one element kernel."""
 
@@ -54,6 +66,7 @@ class ElementCapabilityDescriptor:
     dof_labels: tuple[str, ...]
     force_labels: tuple[str, ...]
     limitations: tuple[ElementCapabilityLimitation, ...] = ()
+    requirements: tuple[ElementCapabilityRequirement, ...] = ()
 
     def __post_init__(self) -> None:
         _require_nonempty_text(self.canonical_type, "canonical element type")
@@ -112,6 +125,20 @@ class ElementCapabilityDescriptor:
         _require_unique_names(
             tuple(item.code for item in self.limitations),
             "limitation codes",
+        )
+        if not isinstance(self.requirements, tuple):
+            raise TypeError("element requirements must be a tuple")
+        if any(
+            not isinstance(item, ElementCapabilityRequirement)
+            for item in self.requirements
+        ):
+            raise TypeError(
+                "element requirements must contain "
+                "ElementCapabilityRequirement values"
+            )
+        _require_unique_names(
+            tuple(item.code for item in self.requirements),
+            "requirement codes",
         )
 
     @property

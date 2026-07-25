@@ -15,15 +15,28 @@ from fem.core.model import (
     NodalLoad,
 )
 from fem.core.result import ModelResult
-from fem.elements import get_element_kernel
+from fem.elements import (
+    BEAM_LOCAL_Y_REFERENCE_KEY,
+    get_element_kernel,
+    resolve_beam_frame,
+)
 from fem.elements.beam_section import parse_beam2_section
-from fem.elements.line import beam3d_geometry
 from fem.post.stress import beam as beam_stress
 from fem.solvers import static_linear
 
 
-def _beam_model(*, inclined=False):
+def _beam_model(*, inclined=False, orientation=None):
     end = (2.0, 3.0, 6.0) if inclined else (4.0, 0.0, 0.0)
+    properties = {
+        "E": 210.0,
+        "nu": 0.25,
+        "section_type": "rectangle",
+        "height": 3.0,
+        "width": 2.0,
+        "rho": 99.0,
+    }
+    if orientation is not None:
+        properties[BEAM_LOCAL_Y_REFERENCE_KEY] = orientation
     mesh = Mesh3D(
         nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, *end)],
         elements=[
@@ -31,14 +44,7 @@ def _beam_model(*, inclined=False):
                 10,
                 [1, 2],
                 "Beam2",
-                {
-                    "E": 210.0,
-                    "nu": 0.25,
-                    "section_type": "rectangle",
-                    "height": 3.0,
-                    "width": 2.0,
-                    "rho": 99.0,
-                },
+                properties,
             )
         ],
         dofs_per_node=6,
@@ -131,10 +137,13 @@ def test_line_load_three_local_directions_match_consistent_nodal_vector(vector, 
 
 
 def test_global_and_equivalent_local_line_loads_match_on_inclined_beam():
-    model = _beam_model(inclined=True)
+    model = _beam_model(
+        inclined=True,
+        orientation=(0.0, 1.0, 0.0),
+    )
     global_vector = np.array([1.5, -2.0, 0.25])
-    _, rotation = beam3d_geometry(model.mesh, model.mesh.elements[0])
-    local_vector = rotation @ global_vector
+    frame = resolve_beam_frame(model.mesh, model.mesh.elements[0])
+    local_vector = frame.rotation @ global_vector
     global_step = AnalysisStep(
         "global", line_loads=(LineLoad(10, global_vector, "global"),)
     )
@@ -145,6 +154,55 @@ def test_global_and_equivalent_local_line_loads_match_on_inclined_beam():
     assert _step_force(model, global_step) == pytest.approx(
         _step_force(model, local_step)
     )
+
+
+def test_explicit_orientation_global_line_load_reversal_only_permutes_nodes():
+    model = _beam_model(inclined=True, orientation=(0.0, 1.0, 0.0))
+    reversed_model = _beam_model(inclined=True, orientation=(0.0, 1.0, 0.0))
+    reversed_model.mesh.elements[0].node_ids = [2, 1]
+    kernel = get_element_kernel("Beam2")
+    permutation = np.eye(12)[[6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5]]
+    global_vector = (1.5, -2.0, 0.25)
+
+    force = kernel.line_load(
+        model.mesh,
+        model.mesh.elements[0],
+        global_vector,
+        "global",
+    )
+    reversed_force = kernel.line_load(
+        reversed_model.mesh,
+        reversed_model.mesh.elements[0],
+        global_vector,
+        "global",
+    )
+
+    assert reversed_force == pytest.approx(permutation @ force, abs=1e-12)
+
+
+def test_explicit_orientation_local_line_load_reversal_transforms_components():
+    model = _beam_model(inclined=True, orientation=(0.0, 1.0, 0.0))
+    reversed_model = _beam_model(inclined=True, orientation=(0.0, 1.0, 0.0))
+    reversed_model.mesh.elements[0].node_ids = [2, 1]
+    kernel = get_element_kernel("Beam2")
+    permutation = np.eye(12)[[6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5]]
+    local_axis_reversal = np.diag([-1.0, 1.0, -1.0])
+    local_vector = np.array([2.0, 3.0, 4.0])
+
+    force = kernel.line_load(
+        model.mesh,
+        model.mesh.elements[0],
+        local_vector,
+        "local",
+    )
+    reversed_force = kernel.line_load(
+        reversed_model.mesh,
+        reversed_model.mesh.elements[0],
+        local_axis_reversal @ local_vector,
+        "local",
+    )
+
+    assert reversed_force == pytest.approx(permutation @ force, abs=1e-12)
 
 
 def test_multiple_line_loads_accumulate_without_area_density_or_gravity_scaling():
@@ -162,10 +220,15 @@ def test_multiple_line_loads_accumulate_without_area_density_or_gravity_scaling(
 
 
 def test_inclined_global_line_loads_accumulate_in_recovered_stress_envelope():
-    model = _beam_model(inclined=True)
+    model = _beam_model(
+        inclined=True,
+        orientation=(0.0, 1.0, 0.0),
+    )
     mesh = model.mesh
     elem = mesh.elements[0]
-    length, rotation = beam3d_geometry(mesh, elem)
+    frame = resolve_beam_frame(mesh, elem)
+    length = frame.length
+    rotation = frame.rotation
     first_local = np.array([2.0, 3.0, 4.0])
     second_local = np.array([-1.0, 2.0, -2.0])
     combined_local = first_local + second_local
@@ -263,10 +326,15 @@ def test_uniform_transverse_line_load_cantilever_matches_closed_form_and_reactio
 
 
 def test_inclined_cantilever_solution_recovers_combined_axial_and_biaxial_bending():
-    model = _beam_model(inclined=True)
+    model = _beam_model(
+        inclined=True,
+        orientation=(0.0, 1.0, 0.0),
+    )
     mesh = model.mesh
     elem = mesh.elements[0]
-    length, rotation = beam3d_geometry(mesh, elem)
+    frame = resolve_beam_frame(mesh, elem)
+    length = frame.length
+    rotation = frame.rotation
     axial_force = 12.0
     force_y = 5.0
     force_z = -3.0
@@ -321,6 +389,47 @@ def test_inclined_cantilever_solution_recovers_combined_axial_and_biaxial_bendin
             (axial_stress, axial_stress, axial_stress),
         ],
         atol=1e-10,
+    )
+
+
+def test_explicit_orientation_local_end_actions_follow_reversal_convention():
+    model = _beam_model(inclined=True, orientation=(0.0, 1.0, 0.0))
+    reversed_model = _beam_model(inclined=True, orientation=(0.0, 1.0, 0.0))
+    reversed_model.mesh.elements[0].node_ids = [2, 1]
+    kernel = get_element_kernel("Beam2")
+    local_axis_reversal = np.diag([-1.0, 1.0, -1.0])
+    action_component_reversal = np.array([1.0, -1.0, 1.0])
+    local_vector = np.array([2.0, 3.0, 4.0])
+    displacement = np.arange(model.mesh.num_dofs, dtype=float) / 10.0
+    local_load = kernel.local_line_load(
+        model.mesh,
+        model.mesh.elements[0],
+        local_vector,
+        "local",
+    )
+    reversed_local_load = kernel.local_line_load(
+        reversed_model.mesh,
+        reversed_model.mesh.elements[0],
+        local_axis_reversal @ local_vector,
+        "local",
+    )
+
+    actions = kernel.local_end_actions(
+        model.mesh,
+        model.mesh.elements[0],
+        displacement,
+        local_load,
+    )
+    reversed_actions = kernel.local_end_actions(
+        reversed_model.mesh,
+        reversed_model.mesh.elements[0],
+        displacement,
+        reversed_local_load,
+    )
+
+    assert reversed_actions == pytest.approx(
+        actions[::-1] * action_component_reversal,
+        abs=1e-12,
     )
 
 

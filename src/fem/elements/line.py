@@ -5,6 +5,7 @@ from typing import Any
 import numpy as np
 
 from .base import build_node_lookup
+from .beam_frame import BeamFrame, resolve_beam_frame
 from .beam_section import Beam2Section, parse_beam2_section
 
 
@@ -88,26 +89,6 @@ def line3d_geometry(
     if length <= 0.0:
         raise ValueError(f"Line2 element {elem.id} has zero length")
     return length, delta / length
-
-
-def beam3d_geometry(
-    mesh: Any,
-    elem: Any,
-    node_lookup: dict[int, Any] | None = None,
-) -> tuple[float, np.ndarray]:
-    """Return Beam2 length and global-to-local right-handed rotation."""
-    length, e_x = line3d_geometry(mesh, elem, node_lookup)
-    reference = np.array([0.0, 0.0, 1.0])
-    projected = reference - float(reference @ e_x) * e_x
-    projected_norm = float(np.linalg.norm(projected))
-    if projected_norm <= 1e-12:
-        reference = np.array([0.0, 1.0, 0.0])
-        projected = reference - float(reference @ e_x) * e_x
-        projected_norm = float(np.linalg.norm(projected))
-    e_z = projected / projected_norm
-    e_y = np.cross(e_z, e_x)
-    e_y /= np.linalg.norm(e_y)
-    return length, np.vstack([e_x, e_y, e_z])
 
 
 def _beam3_transformation(rotation: np.ndarray) -> np.ndarray:
@@ -238,10 +219,10 @@ class Beam2Kernel:
         """Return the transformed 12-by-12 Beam2 stiffness matrix."""
         E, nu, section = _beam_properties(elem)
         _validate_optional_rho(elem)
-        length, rotation = beam3d_geometry(mesh, elem, node_lookup)
+        frame = resolve_beam_frame(mesh, elem, node_lookup)
         G = E / (2.0 * (1.0 + nu))
         local = _beam2_local_stiffness(
-            length,
+            frame.length,
             E,
             section.area,
             section.Iyy,
@@ -249,7 +230,7 @@ class Beam2Kernel:
             G,
             section.J,
         )
-        transformation = _beam3_transformation(rotation)
+        transformation = _beam3_transformation(frame.rotation)
         return transformation.T @ local @ transformation
 
     def body_force(
@@ -261,11 +242,11 @@ class Beam2Kernel:
     ) -> np.ndarray:
         """Return the consistent Beam2 body-force vector."""
         section = parse_beam2_section(elem.props)
-        length, rotation = beam3d_geometry(mesh, elem, node_lookup)
+        frame = resolve_beam_frame(mesh, elem, node_lookup)
         global_vector = _body_vector_3d(vector, "Beam2")
-        local_line_load = section.area * (rotation @ global_vector)
-        local_force = _beam2_consistent_line_load(length, local_line_load)
-        return _beam3_transformation(rotation).T @ local_force
+        local_line_load = section.area * (frame.rotation @ global_vector)
+        local_force = _beam2_consistent_line_load(frame.length, local_line_load)
+        return _beam3_transformation(frame.rotation).T @ local_force
 
     def line_load(
         self,
@@ -276,15 +257,14 @@ class Beam2Kernel:
         node_lookup: dict[int, Any] | None = None,
     ) -> np.ndarray:
         """Return the consistent Beam2 force for a constant line load."""
-        length, rotation = beam3d_geometry(mesh, elem, node_lookup)
-        local_force = self.local_line_load(
-            mesh,
-            elem,
+        frame = resolve_beam_frame(mesh, elem, node_lookup)
+        local_vector = _beam2_local_line_vector(
             vector,
             coordinate_system,
-            node_lookup,
+            frame,
         )
-        return _beam3_transformation(rotation).T @ local_force
+        local_force = _beam2_consistent_line_load(frame.length, local_vector)
+        return _beam3_transformation(frame.rotation).T @ local_force
 
     def local_line_load(
         self,
@@ -295,19 +275,13 @@ class Beam2Kernel:
         node_lookup: dict[int, Any] | None = None,
     ) -> np.ndarray:
         """Return the local consistent vector used by assembly and recovery."""
-        line_vector = _body_vector_3d(vector, "line load")
-        if coordinate_system not in {"global", "local"}:
-            raise ValueError(
-                "line load coordinate_system must be 'global' or 'local', "
-                f"got {coordinate_system!r}"
-            )
-        length, rotation = beam3d_geometry(mesh, elem, node_lookup)
-        local_vector = (
-            rotation @ line_vector
-            if coordinate_system == "global"
-            else line_vector
+        frame = resolve_beam_frame(mesh, elem, node_lookup)
+        local_vector = _beam2_local_line_vector(
+            vector,
+            coordinate_system,
+            frame,
         )
-        return _beam2_consistent_line_load(length, local_vector)
+        return _beam2_consistent_line_load(frame.length, local_vector)
 
     def local_end_actions(
         self,
@@ -319,10 +293,10 @@ class Beam2Kernel:
     ) -> np.ndarray:
         """Return tension-positive (N, My, Mz) at both Beam2 ends."""
         E, nu, section = _beam_properties(elem)
-        length, rotation = beam3d_geometry(mesh, elem, node_lookup)
+        frame = resolve_beam_frame(mesh, elem, node_lookup)
         G = E / (2.0 * (1.0 + nu))
         local_stiffness = _beam2_local_stiffness(
-            length,
+            frame.length,
             E,
             section.area,
             section.Iyy,
@@ -335,7 +309,9 @@ class Beam2Kernel:
             raise ValueError(
                 f"Beam2 element {elem.id} displacement requires 12 values"
             )
-        local_displacement = _beam3_transformation(rotation) @ element_displacement
+        local_displacement = (
+            _beam3_transformation(frame.rotation) @ element_displacement
+        )
         local_load = (
             np.zeros(12, dtype=float)
             if equivalent_local_load is None
@@ -374,4 +350,24 @@ def _beam2_consistent_line_load(length: float, vector: np.ndarray) -> np.ndarray
             -qy * length**2 / 12.0,
         ],
         dtype=float,
+    )
+
+
+def _beam2_local_line_vector(
+    vector: tuple[float, float, float],
+    coordinate_system: str,
+    frame: BeamFrame,
+) -> np.ndarray:
+    """Return one validated constant line-load vector in local components."""
+
+    line_vector = _body_vector_3d(vector, "line load")
+    if coordinate_system not in {"global", "local"}:
+        raise ValueError(
+            "line load coordinate_system must be 'global' or 'local', "
+            f"got {coordinate_system!r}"
+        )
+    return (
+        frame.rotation @ line_vector
+        if coordinate_system == "global"
+        else line_vector
     )
