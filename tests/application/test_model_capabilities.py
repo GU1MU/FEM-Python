@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from fem.abaqus import read
 from fem.application import (
     AuthoringStatus,
     RegionRef,
@@ -20,7 +22,12 @@ from fem.core.model import (
     NodeSet,
     Surface,
 )
+from fem.core.model import LineLoad, SectionAssignment
+from fem.elements import BEAM_LOCAL_Y_REFERENCE_KEY
 from fem.mesh.settings import MeshSettings
+
+
+_FIXTURES = Path(__file__).parents[1] / "fixtures" / "inp"
 
 
 def _element(
@@ -106,10 +113,125 @@ def test_line_element_report_separates_topology_and_spatial_dimension() -> None:
         "hollow_circle",
     )
     assert region.distributed_load_kinds == ("line",)
-    assert region.status is AuthoringStatus.LIMITED
+    assert region.status is AuthoringStatus.ENABLED
+    assert region.diagnostics == ()
+    assert region.status_for("section.rectangle") is (
+        AuthoringStatus.LIMITED
+    )
+    assert region.status_for("load.line.local") is (
+        AuthoringStatus.LIMITED
+    )
+    assert region.status_for("load.line.global") is (
+        AuthoringStatus.ENABLED
+    )
+    assert region.status_for("section.solid_circle") is (
+        AuthoringStatus.ENABLED
+    )
     assert {
-        item.code for item in region.diagnostics
+        item.code
+        for item in region.diagnostics_for("section.rectangle")
     } == {"beam.orientation.assumed"}
+
+
+def test_installed_rectangle_orientation_is_contextual() -> None:
+    model = read(_FIXTURES / "beam2_rectangle_uniform_load.inp")
+    target = RegionRef("element_set", "BEAM")
+
+    automatic = describe_model_capabilities(model)
+    automatic_region = automatic.region(target)
+
+    assert automatic.status is AuthoringStatus.LIMITED
+    assert automatic_region.status is AuthoringStatus.LIMITED
+    assert {
+        item.code for item in automatic.diagnostics
+    } == {"beam.orientation.assumed"}
+
+    model.sections[0].properties[
+        BEAM_LOCAL_Y_REFERENCE_KEY
+    ] = (0.0, 1.0, 0.0)
+    explicit = describe_model_capabilities(model)
+    explicit_region = explicit.region(target)
+
+    assert explicit.status is AuthoringStatus.ENABLED
+    assert explicit_region.status is AuthoringStatus.ENABLED
+    assert explicit_region.status_for("section.rectangle") is (
+        AuthoringStatus.ENABLED
+    )
+    assert explicit_region.status_for("load.line.local") is (
+        AuthoringStatus.ENABLED
+    )
+
+
+def test_circle_with_global_load_has_no_irrelevant_orientation_warning() -> None:
+    model = read(_FIXTURES / "beam2_rectangle_uniform_load.inp")
+    original = model.sections[0]
+    model.sections = [
+        SectionAssignment(
+            original.element_set,
+            original.material,
+            "solid_circle",
+            {"radius": 0.05},
+        )
+    ]
+    selected = next(
+        item for item in model.steps if item.name == "UniformLoad"
+    )
+    selected.line_loads = (
+        LineLoad("BEAM", (0.0, -500.0, 0.0), "global"),
+    )
+
+    report = describe_model_capabilities(model)
+    region = report.region(RegionRef("element_set", "BEAM"))
+
+    assert report.status is AuthoringStatus.ENABLED
+    assert region.status is AuthoringStatus.ENABLED
+    assert report.diagnostics == ()
+    assert region.status_for("section.rectangle") is (
+        AuthoringStatus.LIMITED
+    )
+    assert region.status_for("load.line.local") is (
+        AuthoringStatus.LIMITED
+    )
+
+
+def test_mixed_explicit_and_automatic_region_reports_only_automatic_ids() -> None:
+    model = read(_FIXTURES / "beam2_rectangle_uniform_load.inp")
+    model.element_sets["HEAD"] = ElementSet("HEAD", (1, 2))
+    model.element_sets["TAIL"] = ElementSet("TAIL", (3, 4))
+    original = model.sections[0]
+    properties = dict(original.properties)
+    model.sections = [
+        SectionAssignment(
+            "HEAD",
+            original.material,
+            "rectangle",
+            {
+                **properties,
+                BEAM_LOCAL_Y_REFERENCE_KEY: (0.0, 1.0, 0.0),
+            },
+        ),
+        SectionAssignment(
+            "TAIL",
+            original.material,
+            "rectangle",
+            properties,
+        ),
+    ]
+
+    region = describe_region_capabilities(
+        model,
+        RegionRef("element_set", "BEAM"),
+    )
+    warning = next(
+        item
+        for item in region.diagnostics_for("load.line.local")
+        if item.code == "beam.orientation.assumed"
+    )
+
+    assert region.status_for("load.line.local") is (
+        AuthoringStatus.LIMITED
+    )
+    assert warning.details_dict()["element_ids"] == (3, 4)
 
 
 def test_same_name_regions_remain_distinct_typed_references() -> None:

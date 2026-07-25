@@ -1,5 +1,12 @@
 """Headless application lifecycle contracts for FEM front ends."""
 
+from fem.elements import BeamOrientation
+
+from .beam_frames import (
+    BeamFrameReport,
+    EffectiveBeamFrame,
+    resolve_effective_beam_frames,
+)
 from .changes import ArtifactKind, ChangeKind, SessionDelta
 from .capabilities import (
     AuthoringCapability,
@@ -10,6 +17,7 @@ from .capabilities import (
     describe_model_capabilities,
     describe_native_authoring_capabilities,
     describe_region_capabilities,
+    evaluate_authoring_candidate,
     require_region_kind,
 )
 from .definitions import (
@@ -72,9 +80,12 @@ __all__ = [
     "ArtifactKind",
     "AuthoringCapability",
     "AuthoringStatus",
+    "BeamFrameReport",
+    "BeamOrientation",
     "ChangeKind",
     "DefinitionCompileResult",
     "DefinitionRejected",
+    "EffectiveBeamFrame",
     "FeatureRecord",
     "ImportTaskSnapshot",
     "LogicalRecipeTopologyResolver",
@@ -117,11 +128,13 @@ __all__ = [
     "describe_model_capabilities",
     "describe_native_authoring_capabilities",
     "describe_region_capabilities",
+    "evaluate_authoring_candidate",
     "definitions_from_model",
     "generate_fem_model",
     "internal_error_report",
     "normalize_model_definitions",
     "require_region_kind",
+    "resolve_effective_beam_frames",
     "run_static_preflight",
     "safe_static_preflight",
 ]

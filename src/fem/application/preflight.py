@@ -13,7 +13,14 @@ from fem.core.validation import (
 )
 from fem.solvers import static_linear
 
-from .capabilities import RegionRef, describe_model_capabilities
+from .beam_frames import resolve_effective_beam_frames
+from .capabilities import (
+    RegionRef,
+    _assumed_orientation_diagnostic,
+    _diagnostic_for_operation,
+    _requires_explicit_beam_orientation,
+    describe_model_capabilities,
+)
 from .diagnostics import (
     PreflightDiagnostic,
     PreflightFacts,
@@ -119,6 +126,11 @@ def run_static_preflight(
 
     definitions_valid = _append_definition_diagnostics(
         owned_model,
+        diagnostics,
+    )
+    _append_beam_orientation_diagnostics(
+        owned_model,
+        selected_step,
         diagnostics,
     )
 
@@ -283,6 +295,29 @@ def _append_definition_diagnostics(
             if issue.element_set
             else issue.element_id
         )
+        details = {
+            "assignment_index": issue.assignment_index,
+            "element_set": issue.element_set,
+            "element_id": issue.element_id,
+            "material": issue.material,
+            "section_type": issue.section_type,
+        }
+        if str(code).startswith("beam.orientation."):
+            details["operation"] = "section.assignment"
+            assignment_index = issue.assignment_index
+            if (
+                assignment_index is not None
+                and 0 <= assignment_index < len(sections)
+            ):
+                properties = getattr(
+                    sections[assignment_index],
+                    "properties",
+                    {},
+                )
+                if "beam_local_y_reference" in properties:
+                    details["reference"] = deepcopy(
+                        properties["beam_local_y_reference"]
+                    )
         diagnostics.append(
             PreflightDiagnostic(
                 code=code,
@@ -296,11 +331,7 @@ def _append_definition_diagnostics(
                     str(issue.assignment_index),
                 ),
                 remediation="请修复材料、截面及其单元集分配。",
-                details={
-                    "element_id": issue.element_id,
-                    "material": issue.material,
-                    "section_type": issue.section_type,
-                },
+                details=details,
             )
         )
     if resolution.uncovered_element_ids:
@@ -326,6 +357,198 @@ def _append_definition_diagnostics(
         and bool(sections)
         and not resolution.issues
         and not resolution.uncovered_element_ids
+    )
+
+
+def _append_beam_orientation_diagnostics(
+    model: Any,
+    selected_step: Any,
+    diagnostics: list[PreflightDiagnostic],
+) -> None:
+    """Validate effective installed frames before numerical stiffness."""
+
+    visited_sections: set[RegionRef] = set()
+    for section in getattr(model, "sections", ()):
+        section_type = _effective_section_type(section)
+        if section_type not in {
+            "rectangle",
+            "solid_circle",
+            "hollow_circle",
+        }:
+            continue
+        try:
+            target = RegionRef(
+                "element_set",
+                str(getattr(section, "element_set", "")),
+            )
+        except ValueError:
+            continue
+        if target in visited_sections:
+            continue
+        visited_sections.add(target)
+        report = resolve_effective_beam_frames(model, target)
+        for diagnostic in report.diagnostics:
+            if (
+                not diagnostic.code.startswith("beam.orientation.")
+                and diagnostic.code != "model.structure.invalid"
+            ):
+                continue
+            _append_unique_diagnostic(
+                diagnostics,
+                _diagnostic_for_operation(
+                    diagnostic,
+                    "section.assignment",
+                ),
+            )
+        rectangle_automatic = tuple(
+            entry
+            for entry in report.entries
+            if (
+                entry.frame.source != "explicit"
+                and str(entry.section_type).strip().casefold()
+                == "rectangle"
+            )
+        )
+        if (
+            rectangle_automatic
+            and _requires_explicit_beam_orientation(
+                model,
+                target,
+                "section.rectangle",
+            )
+        ):
+            _append_unique_diagnostic(
+                diagnostics,
+                _assumed_orientation_diagnostic(
+                    target,
+                    "section.rectangle",
+                    rectangle_automatic,
+                ),
+            )
+
+    if selected_step is None:
+        return
+    for load_index, line_load in enumerate(
+        getattr(selected_step, "line_loads", ())
+    ):
+        if (
+            str(getattr(line_load, "coordinate_system", ""))
+            .strip()
+            .casefold()
+            != "local"
+        ):
+            continue
+        raw_target = getattr(line_load, "target", None)
+        try:
+            target: RegionRef | int = (
+                RegionRef("element_set", raw_target)
+                if isinstance(raw_target, str)
+                else raw_target
+            )
+        except (TypeError, ValueError):
+            continue
+        report = resolve_effective_beam_frames(model, target)
+        for diagnostic in report.diagnostics:
+            if (
+                not diagnostic.code.startswith("beam.orientation.")
+                and diagnostic.code != "model.structure.invalid"
+            ):
+                continue
+            contextual = _diagnostic_for_operation(
+                diagnostic,
+                "load.line.local",
+            )
+            details = contextual.details_dict()
+            details["step"] = str(getattr(selected_step, "name", ""))
+            details["load_index"] = load_index
+            _append_unique_diagnostic(
+                diagnostics,
+                PreflightDiagnostic(
+                    code=contextual.code,
+                    severity=contextual.severity,
+                    stage=contextual.stage,
+                    message=contextual.message,
+                    subject=contextual.subject,
+                    path=contextual.path,
+                    remediation=contextual.remediation,
+                    details=details,
+                ),
+            )
+        automatic = tuple(
+            entry
+            for entry in report.entries
+            if entry.frame.source != "explicit"
+        )
+        if (
+            automatic
+            and _requires_explicit_beam_orientation(
+                model,
+                target,
+                "load.line.local",
+            )
+        ):
+            warning = _assumed_orientation_diagnostic(
+                target,
+                "load.line.local",
+                automatic,
+            )
+            details = warning.details_dict()
+            details["step"] = str(getattr(selected_step, "name", ""))
+            details["load_index"] = load_index
+            _append_unique_diagnostic(
+                diagnostics,
+                PreflightDiagnostic(
+                    code=warning.code,
+                    severity=warning.severity,
+                    stage=warning.stage,
+                    message=warning.message,
+                    subject=warning.subject,
+                    path=warning.path,
+                    remediation=warning.remediation,
+                    details=details,
+                ),
+            )
+
+
+def _effective_section_type(section: Any) -> str:
+    section_type = str(
+        getattr(section, "section_type", "")
+    ).strip().casefold()
+    if section_type == "beam":
+        section_type = str(
+            getattr(section, "properties", {}).get(
+                "section_type",
+                section_type,
+            )
+        ).strip().casefold()
+    return section_type
+
+
+def _append_unique_diagnostic(
+    diagnostics: list[PreflightDiagnostic],
+    diagnostic: PreflightDiagnostic,
+) -> None:
+    identity = _diagnostic_identity(diagnostic)
+    if any(
+        _diagnostic_identity(existing) == identity
+        for existing in diagnostics
+    ):
+        return
+    diagnostics.append(diagnostic)
+
+
+def _diagnostic_identity(
+    diagnostic: PreflightDiagnostic,
+) -> str:
+    return repr(
+        (
+            diagnostic.code,
+            diagnostic.severity.value,
+            diagnostic.stage.value,
+            diagnostic.subject,
+            diagnostic.path,
+            diagnostic.details,
+        )
     )
 
 

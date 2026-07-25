@@ -12,14 +12,18 @@ from fem.application import (
     PreflightReport,
     PreflightSeverity,
     PreflightStage,
+    RegionRef,
     TaskToken,
     run_static_preflight,
 )
 from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
+    LineLoad,
     NodalLoad,
+    SectionAssignment,
 )
+from fem.elements import BEAM_LOCAL_Y_REFERENCE_KEY
 
 
 _FIXTURES = Path(__file__).parents[1] / "fixtures" / "inp"
@@ -80,6 +84,249 @@ def test_valid_beam_reports_orientation_limitation_without_blocking() -> None:
         "beam.orientation.assumed",
         "output.request.not_executed",
     }
+
+
+def test_circle_with_global_load_has_no_orientation_warning() -> None:
+    model = _read("beam2_rectangle_uniform_load.inp")
+    original = model.sections[0]
+    model.sections = [
+        SectionAssignment(
+            original.element_set,
+            original.material,
+            "solid_circle",
+            {"radius": 0.05},
+        )
+    ]
+    selected = next(
+        item for item in model.steps if item.name == "UniformLoad"
+    )
+    selected.line_loads = (
+        LineLoad("BEAM", (0.0, -500.0, 0.0), "global"),
+    )
+
+    report = run_static_preflight(model, "UniformLoad")
+
+    assert report.passed
+    assert "beam.orientation.assumed" not in {
+        item.code for item in report.diagnostics
+    }
+
+
+def test_only_selected_step_local_load_requires_orientation() -> None:
+    model = _read("beam2_rectangle_uniform_load.inp")
+    original = model.sections[0]
+    model.sections = [
+        SectionAssignment(
+            original.element_set,
+            original.material,
+            "solid_circle",
+            {"radius": 0.05},
+        )
+    ]
+    model.steps.append(
+        AnalysisStep(
+            "GlobalOnly",
+            line_loads=(
+                LineLoad(
+                    "BEAM",
+                    (0.0, -500.0, 0.0),
+                    "global",
+                ),
+            ),
+        )
+    )
+
+    unrelated = run_static_preflight(model, "GlobalOnly")
+    selected = run_static_preflight(model, "UniformLoad")
+
+    assert "beam.orientation.assumed" not in {
+        item.code for item in unrelated.diagnostics
+    }
+    assert "beam.orientation.assumed" in {
+        item.code for item in selected.diagnostics
+    }
+
+
+def test_explicit_orientation_removes_installed_and_local_warnings() -> None:
+    model = _read("beam2_rectangle_uniform_load.inp")
+    model.sections[0].properties[
+        BEAM_LOCAL_Y_REFERENCE_KEY
+    ] = (0.0, 1.0, 0.0)
+
+    report = run_static_preflight(model, "UniformLoad")
+
+    assert report.passed
+    assert report.numerical_stability_checked
+    assert "beam.orientation.assumed" not in {
+        item.code for item in report.diagnostics
+    }
+
+
+def test_parallel_orientation_blocks_before_stiffness_with_typed_subject() -> None:
+    model = _read("beam2_rectangle_uniform_load.inp")
+    model.sections[0].properties[
+        BEAM_LOCAL_Y_REFERENCE_KEY
+    ] = (1.0, 0.0, 0.0)
+
+    report = run_static_preflight(model, "UniformLoad")
+    diagnostic = next(
+        item
+        for item in report.diagnostics
+        if item.code == "beam.orientation.parallel"
+    )
+
+    assert not report.passed
+    assert not report.numerical_stability_checked
+    assert diagnostic.subject == RegionRef("element_set", "BEAM")
+    assert diagnostic.details_dict()["element_id"] == 1
+    assert diagnostic.details_dict()["operation"] == (
+        "section.assignment"
+    )
+
+
+def test_invalid_orientation_blocks_before_stiffness_with_stable_code() -> None:
+    model = _read("beam2_rectangle_uniform_load.inp")
+    model.sections[0].properties[
+        BEAM_LOCAL_Y_REFERENCE_KEY
+    ] = (0.0, 0.0, 0.0)
+
+    report = run_static_preflight(model, "UniformLoad")
+    diagnostic = next(
+        item
+        for item in report.diagnostics
+        if (
+            item.code == "beam.orientation.invalid"
+            and item.details_dict().get("operation")
+            == "section.assignment"
+        )
+    )
+
+    assert not report.passed
+    assert not report.numerical_stability_checked
+    assert diagnostic.subject == RegionRef("element_set", "BEAM")
+    assert diagnostic.details_dict()["element_id"] == 1
+    assert diagnostic.details_dict()["reference"] == (0.0, 0.0, 0.0)
+
+
+def test_shadowed_parallel_orientation_still_blocks_preflight() -> None:
+    model = _read("beam2_rectangle_uniform_load.inp")
+    valid = model.sections[0]
+    model.sections = [
+        SectionAssignment(
+            valid.element_set,
+            valid.material,
+            valid.section_type,
+            {
+                **valid.properties,
+                BEAM_LOCAL_Y_REFERENCE_KEY: (1.0, 0.0, 0.0),
+            },
+        ),
+        SectionAssignment(
+            valid.element_set,
+            valid.material,
+            valid.section_type,
+            {
+                **valid.properties,
+                BEAM_LOCAL_Y_REFERENCE_KEY: (0.0, 1.0, 0.0),
+            },
+        ),
+    ]
+
+    report = run_static_preflight(model, "UniformLoad")
+
+    diagnostic = next(
+        item
+        for item in report.diagnostics
+        if item.code == "beam.orientation.parallel"
+    )
+    assert not report.passed
+    assert not report.numerical_stability_checked
+    assert diagnostic.details_dict()["assignment_index"] == 0
+
+
+def test_zero_length_beam_is_reported_as_structure_error() -> None:
+    model = _read("beam2_rectangle_uniform_load.inp")
+    element = model.mesh.elements[0]
+    nodes = {node.id: node for node in model.mesh.nodes}
+    first, second = (
+        nodes[element.node_ids[0]],
+        nodes[element.node_ids[1]],
+    )
+    second.x = first.x
+    second.y = first.y
+    second.z = first.z
+
+    report = run_static_preflight(model, "UniformLoad")
+
+    diagnostic = next(
+        item
+        for item in report.diagnostics
+        if item.code == "model.structure.invalid"
+    )
+    assert not report.passed
+    assert not report.numerical_stability_checked
+    assert diagnostic.details_dict()["element_id"] == 1
+    assert "zero length" in diagnostic.message
+
+
+def test_nonbeam_orientation_target_is_blocked_before_stiffness() -> None:
+    model = _read("truss2_tension.inp")
+    original = model.sections[0]
+    model.sections = [
+        SectionAssignment(
+            "TRUSS",
+            original.material,
+            "rectangle",
+            {
+                "height": 0.1,
+                "width": 0.1,
+                BEAM_LOCAL_Y_REFERENCE_KEY: (0.0, 1.0, 0.0),
+            },
+        )
+    ]
+
+    report = run_static_preflight(model, "Tension")
+    diagnostic = next(
+        item
+        for item in report.diagnostics
+        if item.code == "beam.orientation.unsupported_target"
+    )
+
+    assert not report.passed
+    assert not report.numerical_stability_checked
+    assert diagnostic.subject == RegionRef("element_set", "TRUSS")
+    assert diagnostic.details_dict()["operation"] == (
+        "section.assignment"
+    )
+
+
+def test_integer_local_load_warning_preserves_element_subject() -> None:
+    model = _read("beam2_rectangle_uniform_load.inp")
+    original = model.sections[0]
+    model.sections = [
+        SectionAssignment(
+            original.element_set,
+            original.material,
+            "solid_circle",
+            {"radius": 0.05},
+        )
+    ]
+    selected = next(
+        item for item in model.steps if item.name == "UniformLoad"
+    )
+    selected.line_loads = (
+        LineLoad(1, (0.0, -500.0, 0.0), "local"),
+    )
+
+    report = run_static_preflight(model, "UniformLoad")
+    warning = next(
+        item
+        for item in report.diagnostics
+        if item.code == "beam.orientation.assumed"
+    )
+
+    assert warning.subject == 1
+    assert warning.details_dict()["operation"] == "load.line.local"
 
 
 def test_underconstrained_truss_returns_stable_singular_code() -> None:

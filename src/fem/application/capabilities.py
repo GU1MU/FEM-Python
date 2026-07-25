@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
 from fem.elements import (
     ElementCapabilityDescriptor,
+    ElementCapabilityRequirement,
     get_element_capabilities,
 )
 
@@ -17,11 +19,17 @@ from .diagnostics import (
     PreflightStage,
 )
 
+if TYPE_CHECKING:
+    from fem.core.model import LineLoad
+
+    from .definitions import ModelDefinitions, RegionAssignment
+
 
 _REGION_KINDS = frozenset(
     {"node_set", "element_set", "edge", "surface"}
 )
 _DISTRIBUTED_LOAD_KINDS = frozenset({"edge", "surface", "line"})
+_EXPLICIT_BEAM_ORIENTATION_REQUIREMENT = "beam.orientation.explicit"
 
 
 class AuthoringStatus(str, Enum):
@@ -59,6 +67,15 @@ class AuthoringCapability:
     status: AuthoringStatus
     diagnostics: tuple[PreflightDiagnostic, ...] = ()
 
+    @property
+    def can_submit(self) -> bool:
+        """Return the strict Phase 4 candidate-submission decision."""
+
+        return (
+            self.status is AuthoringStatus.ENABLED
+            and not any(item.blocking for item in self.diagnostics)
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class RegionCapability:
@@ -79,6 +96,7 @@ class RegionCapability:
     load_kinds: tuple[str, ...]
     distributed_load_kinds: tuple[str, ...]
     diagnostics: tuple[PreflightDiagnostic, ...] = ()
+    operations: tuple[AuthoringCapability, ...] = ()
 
     @property
     def status(self) -> AuthoringStatus:
@@ -103,6 +121,32 @@ class RegionCapability:
             and str(load_kind).strip().casefold()
             in self.distributed_load_kinds
         )
+
+    def operation(self, name: str) -> AuthoringCapability:
+        """Return the contextual decision for one catalog operation."""
+
+        normalized = _normalize_operation(name)
+        for capability in self.operations:
+            if capability.operation == normalized:
+                return capability
+        return AuthoringCapability(
+            normalized,
+            AuthoringStatus.UNAVAILABLE,
+            (),
+        )
+
+    def status_for(self, operation: str) -> AuthoringStatus:
+        """Return one operation status without changing the base status."""
+
+        return self.operation(operation).status
+
+    def diagnostics_for(
+        self,
+        operation: str,
+    ) -> tuple[PreflightDiagnostic, ...]:
+        """Return only diagnostics relevant to one operation."""
+
+        return self.operation(operation).diagnostics
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,8 +217,352 @@ def require_region_kind(region: RegionRef, expected_kind: str) -> str:
     return region.name
 
 
+def evaluate_authoring_candidate(
+    model: Any,
+    definitions: ModelDefinitions,
+    *,
+    operation: str,
+    candidate: RegionAssignment | LineLoad,
+    step_name: str | None = None,
+    candidate_index: int | None = None,
+) -> AuthoringCapability:
+    """Evaluate an uninstalled assignment or line load on detached state."""
+
+    normalized_operation = _normalize_operation(operation)
+    from fem.core.model import LineLoad
+
+    from .definitions import RegionAssignment
+
+    if isinstance(candidate, RegionAssignment):
+        return _evaluate_assignment_candidate(
+            model,
+            definitions,
+            normalized_operation,
+            candidate,
+            candidate_index,
+        )
+    if isinstance(candidate, LineLoad):
+        return _evaluate_line_load_candidate(
+            model,
+            definitions,
+            normalized_operation,
+            candidate,
+            step_name,
+            candidate_index,
+        )
+    return _unsupported_candidate(
+        normalized_operation,
+        subject=type(candidate).__name__,
+        message=(
+            "authoring candidate must be RegionAssignment or LineLoad"
+        ),
+    )
+
+
+def _evaluate_assignment_candidate(
+    model: Any,
+    definitions: Any,
+    operation: str,
+    candidate: Any,
+    candidate_index: int | None,
+) -> AuthoringCapability:
+    from .definitions import (
+        DefinitionRejected,
+        ModelDefinitions,
+        compile_model_definitions,
+        normalize_model_definitions,
+    )
+
+    try:
+        normalized = normalize_model_definitions(definitions)
+        candidate_assignments = list(normalized.assignments)
+        if candidate_index is None:
+            candidate_assignments = [
+                assignment
+                for assignment in candidate_assignments
+                if assignment.region_name != candidate.region_name
+            ]
+            candidate_assignments.append(deepcopy(candidate))
+            owned_candidate_index = len(candidate_assignments) - 1
+        else:
+            owned_candidate_index = _validated_candidate_index(
+                candidate_index,
+                len(candidate_assignments),
+                "assignment",
+            )
+            candidate_assignments[owned_candidate_index] = deepcopy(
+                candidate
+            )
+        candidate_definitions = ModelDefinitions(
+            materials=normalized.materials,
+            sections=normalized.sections,
+            assignments=tuple(candidate_assignments),
+            steps=normalized.steps,
+        )
+    except (DefinitionRejected, IndexError, TypeError, ValueError) as error:
+        if isinstance(error, DefinitionRejected):
+            return _candidate_decision(operation, error.diagnostics)
+        return _unsupported_candidate(
+            operation,
+            subject=getattr(candidate, "region_name", None),
+            message=str(error),
+        )
+
+    compile_result = compile_model_definitions(
+        model,
+        candidate_definitions,
+    )
+    if not compile_result.passed:
+        return _candidate_decision(
+            operation,
+            compile_result.diagnostics,
+        )
+    compiled = compile_result.require_model()
+    compiled_definitions = compile_result.definitions
+    assert compiled_definitions is not None
+    owned_candidate = compiled_definitions.assignments[
+        owned_candidate_index
+    ]
+    section = next(
+        (
+            item
+            for item in compiled_definitions.sections
+            if item.name == owned_candidate.section_name
+        ),
+        None,
+    )
+    target = RegionRef("element_set", owned_candidate.region_name)
+    if section is None:
+        return _unsupported_candidate(
+            operation,
+            subject=target,
+            message=(
+                f"section {owned_candidate.section_name!r} is not defined"
+            ),
+        )
+    expected_operation = _section_operation(section)
+    if operation != expected_operation:
+        return _unsupported_candidate(
+            operation,
+            subject=target,
+            message=(
+                f"operation {operation!r} does not match "
+                f"section type {section.section_type!r}"
+            ),
+        )
+    return _evaluate_compiled_orientation_operation(
+        compiled,
+        target,
+        operation,
+    )
+
+
+def _evaluate_line_load_candidate(
+    model: Any,
+    definitions: Any,
+    operation: str,
+    candidate: Any,
+    step_name: str | None,
+    candidate_index: int | None,
+) -> AuthoringCapability:
+    from .definitions import (
+        DefinitionRejected,
+        compile_model_definitions,
+        normalize_model_definitions,
+    )
+
+    try:
+        normalized = normalize_model_definitions(definitions)
+    except DefinitionRejected as error:
+        return _candidate_decision(operation, error.diagnostics)
+    compile_result = compile_model_definitions(model, normalized)
+    if not compile_result.passed:
+        return _candidate_decision(
+            operation,
+            compile_result.diagnostics,
+        )
+    compiled = compile_result.require_model()
+
+    if step_name is not None:
+        from fem.boundary.step import get_step
+
+        try:
+            selected_step = get_step(compiled, step_name)
+        except Exception as error:
+            return AuthoringCapability(
+                operation,
+                AuthoringStatus.UNAVAILABLE,
+                (
+                    PreflightDiagnostic(
+                        code="step.reference.invalid",
+                        severity=PreflightSeverity.ERROR,
+                        stage=PreflightStage.STEP,
+                        message=str(error),
+                        subject=str(step_name),
+                        path=("steps", str(step_name)),
+                        remediation="请选择当前 definitions 中存在的分析步。",
+                    ),
+                ),
+            )
+        line_loads = list(getattr(selected_step, "line_loads", ()))
+        try:
+            if candidate_index is None:
+                line_loads.append(deepcopy(candidate))
+            else:
+                owned_index = _validated_candidate_index(
+                    candidate_index,
+                    len(line_loads),
+                    "line load",
+                )
+                line_loads[owned_index] = deepcopy(candidate)
+        except (IndexError, TypeError, ValueError) as error:
+            return _unsupported_candidate(
+                operation,
+                subject=str(step_name),
+                message=str(error),
+            )
+        selected_step.line_loads = tuple(line_loads)
+
+    coordinate_system = str(
+        getattr(candidate, "coordinate_system", "")
+    ).strip().casefold()
+    expected_operation = f"load.line.{coordinate_system}"
+    if (
+        operation != expected_operation
+        or coordinate_system not in {"global", "local"}
+    ):
+        return _unsupported_candidate(
+            operation,
+            subject=getattr(candidate, "target", None),
+            message=(
+                f"operation {operation!r} does not match line load "
+                f"coordinate system {coordinate_system!r}"
+            ),
+        )
+    raw_target = getattr(candidate, "target", None)
+    try:
+        target: RegionRef | int = (
+            RegionRef("element_set", raw_target)
+            if isinstance(raw_target, str)
+            else raw_target
+        )
+    except (TypeError, ValueError) as error:
+        return _unsupported_candidate(
+            operation,
+            subject=raw_target,
+            message=str(error),
+        )
+    return _evaluate_compiled_orientation_operation(
+        compiled,
+        target,
+        operation,
+    )
+
+
+def _evaluate_compiled_orientation_operation(
+    model: Any,
+    target: RegionRef | int,
+    operation: str,
+) -> AuthoringCapability:
+    if not _supports_target_operation(model, target, operation):
+        return _unsupported_candidate(
+            operation,
+            subject=target,
+            message=f"target does not support {operation!r}",
+        )
+    if not _requires_explicit_beam_orientation(
+        model,
+        target,
+        operation,
+    ):
+        return AuthoringCapability(
+            operation,
+            AuthoringStatus.ENABLED,
+            (),
+        )
+
+    # Lazy import avoids capabilities <-> beam_frames module initialization.
+    from .beam_frames import resolve_effective_beam_frames
+
+    report = resolve_effective_beam_frames(model, target)
+    diagnostics = tuple(
+        _diagnostic_for_operation(item, operation)
+        for item in report.diagnostics
+    )
+    if any(item.blocking for item in diagnostics):
+        return AuthoringCapability(
+            operation,
+            AuthoringStatus.UNAVAILABLE,
+            diagnostics,
+        )
+    automatic = tuple(
+        entry
+        for entry in report.entries
+        if entry.frame.source != "explicit"
+    )
+    if automatic:
+        warning = _assumed_orientation_diagnostic(
+            target,
+            operation,
+            automatic,
+        )
+        return AuthoringCapability(
+            operation,
+            AuthoringStatus.LIMITED,
+            (*diagnostics, warning),
+        )
+    return AuthoringCapability(
+        operation,
+        AuthoringStatus.ENABLED,
+        diagnostics,
+    )
+
+
+def _candidate_decision(
+    operation: str,
+    diagnostics: Iterable[PreflightDiagnostic],
+) -> AuthoringCapability:
+    owned = tuple(
+        _diagnostic_for_operation(item, operation)
+        for item in deepcopy(tuple(diagnostics))
+    )
+    status = (
+        AuthoringStatus.UNAVAILABLE
+        if any(item.blocking for item in owned)
+        else (
+            AuthoringStatus.LIMITED
+            if owned
+            else AuthoringStatus.ENABLED
+        )
+    )
+    return AuthoringCapability(operation, status, owned)
+
+
+def _unsupported_candidate(
+    operation: str,
+    *,
+    subject: Any,
+    message: str,
+) -> AuthoringCapability:
+    diagnostic = PreflightDiagnostic(
+        code="beam.orientation.unsupported_target",
+        severity=PreflightSeverity.ERROR,
+        stage=PreflightStage.CAPABILITY,
+        message=message,
+        subject=subject,
+        path=("capabilities", "operations", operation),
+        remediation="请选择支持该操作且只包含 Beam2 单元的目标区域。",
+        details={"operation": operation},
+    )
+    return AuthoringCapability(
+        operation,
+        AuthoringStatus.UNAVAILABLE,
+        (diagnostic,),
+    )
+
+
 def describe_model_capabilities(model: Any) -> ModelCapabilityReport:
-    """Describe intrinsic model facts and Phase 3 authoring policy."""
+    """Describe intrinsic facts and installed Phase 4 authoring policy."""
 
     elements = tuple(getattr(getattr(model, "mesh", None), "elements", ()))
     aggregate = _aggregate_capabilities(
@@ -184,6 +572,22 @@ def describe_model_capabilities(model: Any) -> ModelCapabilityReport:
     regions = tuple(
         describe_region_capabilities(model, reference)
         for reference in _model_region_refs(model)
+    )
+    installed_region_names = {
+        str(getattr(section, "element_set", ""))
+        for section in getattr(model, "sections", ())
+    }
+    installed_diagnostics = tuple(
+        diagnostic
+        for region in regions
+        if (
+            region.region.kind == "element_set"
+            and region.region.name in installed_region_names
+        )
+        for diagnostic in region.diagnostics
+    )
+    model_diagnostics = _deduplicate_diagnostics(
+        (*aggregate.diagnostics, *installed_diagnostics)
     )
     output_diagnostic = PreflightDiagnostic(
         code="output.request.not_executed",
@@ -215,14 +619,9 @@ def describe_model_capabilities(model: Any) -> ModelCapabilityReport:
         and item.families == ("beam",)
     )
     line_status = (
-        AuthoringStatus.LIMITED
+        AuthoringStatus.ENABLED
         if line_regions
-        and any(item.diagnostics for item in line_regions)
-        else (
-            AuthoringStatus.ENABLED
-            if line_regions
-            else AuthoringStatus.UNAVAILABLE
-        )
+        else AuthoringStatus.UNAVAILABLE
     )
     authoring = (
         AuthoringCapability("section.create", section_status),
@@ -250,7 +649,7 @@ def describe_model_capabilities(model: Any) -> ModelCapabilityReport:
         section_families=aggregate.section_families,
         section_presets=aggregate.section_presets,
         load_kinds=aggregate.load_kinds,
-        diagnostics=aggregate.diagnostics,
+        diagnostics=model_diagnostics,
         regions=regions,
         authoring=authoring,
     )
@@ -280,6 +679,12 @@ def describe_region_capabilities(
         element_lookup[element_id].type for element_id in element_ids
     )
     aggregate = _aggregate_capabilities(element_types, subject=region)
+    operations, installed_diagnostics = _region_operation_capabilities(
+        model,
+        region,
+        element_ids,
+        aggregate,
+    )
     return RegionCapability(
         region=region,
         canonical_element_types=aggregate.canonical_element_types,
@@ -295,7 +700,10 @@ def describe_region_capabilities(
         section_presets=aggregate.section_presets,
         load_kinds=aggregate.load_kinds,
         distributed_load_kinds=aggregate.distributed_load_kinds,
-        diagnostics=aggregate.diagnostics,
+        diagnostics=_deduplicate_diagnostics(
+            (*aggregate.diagnostics, *installed_diagnostics)
+        ),
+        operations=operations,
     )
 
 
@@ -375,6 +783,7 @@ class _CapabilityAggregate:
     section_presets: tuple[str, ...]
     load_kinds: tuple[str, ...]
     distributed_load_kinds: tuple[str, ...]
+    requirements: tuple[ElementCapabilityRequirement, ...]
     diagnostics: tuple[PreflightDiagnostic, ...]
 
 
@@ -406,19 +815,20 @@ def _aggregate_capabilities(
                 )
             )
         return _CapabilityAggregate(
-            (),
-            (),
-            False,
-            None,
-            None,
-            None,
-            (),
-            (),
-            (),
-            (),
-            (),
-            (),
-            tuple(diagnostics),
+            canonical_element_types=(),
+            families=(),
+            compatible=False,
+            topological_dimension=None,
+            spatial_dimension=None,
+            dofs_per_node=None,
+            dof_labels=(),
+            force_labels=(),
+            section_families=(),
+            section_presets=(),
+            load_kinds=(),
+            distributed_load_kinds=(),
+            requirements=(),
+            diagnostics=tuple(diagnostics),
         )
 
     families = _ordered_unique(item.family for item in descriptors)
@@ -436,6 +846,7 @@ def _aggregate_capabilities(
         item.section_families for item in descriptors
     )
     load_kinds = _intersection(item.load_kinds for item in descriptors)
+    requirements = _aggregate_requirements(descriptors)
     compatible = (
         len(families) == 1
         and len(topologies) == 1
@@ -501,8 +912,417 @@ def _aggregate_capabilities(
             kind for kind in load_kinds
             if kind in _DISTRIBUTED_LOAD_KINDS
         ),
+        requirements=requirements,
         diagnostics=tuple(diagnostics),
     )
+
+
+def _region_operation_capabilities(
+    model: Any,
+    region: RegionRef,
+    element_ids: tuple[int, ...],
+    aggregate: _CapabilityAggregate,
+) -> tuple[
+    tuple[AuthoringCapability, ...],
+    tuple[PreflightDiagnostic, ...],
+]:
+    requirement_operations = _ordered_unique(
+        operation
+        for requirement in aggregate.requirements
+        for operation in requirement.operations
+    )
+    operation_names = requirement_operations
+    if (
+        aggregate.compatible
+        and aggregate.families == ("beam",)
+        and region.kind == "element_set"
+    ):
+        operation_names = _ordered_unique(
+            (
+                *requirement_operations,
+                *(
+                    f"section.{preset}"
+                    for preset in aggregate.section_presets
+                ),
+                *(
+                    ("load.line.global",)
+                    if "line" in aggregate.distributed_load_kinds
+                    else ()
+                ),
+            )
+        )
+    if not operation_names:
+        return (), ()
+
+    if (
+        not aggregate.compatible
+        or aggregate.families != ("beam",)
+        or region.kind != "element_set"
+    ):
+        diagnostics = aggregate.diagnostics or (
+            _unsupported_mix_diagnostic(
+                region,
+                "operation requires a compatible Beam2 element set",
+            ),
+        )
+        return (
+            tuple(
+                AuthoringCapability(
+                    operation,
+                    AuthoringStatus.UNAVAILABLE,
+                    diagnostics,
+                )
+                for operation in operation_names
+            ),
+            (),
+        )
+
+    entries: tuple[Any, ...] = ()
+    frame_diagnostics: tuple[PreflightDiagnostic, ...] = ()
+    mesh_nodes = tuple(
+        getattr(getattr(model, "mesh", None), "nodes", ())
+    )
+    if mesh_nodes:
+        # Lazy import avoids capabilities <-> beam_frames initialization.
+        from .beam_frames import resolve_effective_beam_frames
+
+        report = resolve_effective_beam_frames(model, region)
+        entries = report.entries
+        frame_diagnostics = report.diagnostics
+
+    automatic_entries = tuple(
+        entry
+        for entry in entries
+        if entry.frame.source != "explicit"
+    )
+    fallback_automatic = not entries and not frame_diagnostics
+    decisions: list[AuthoringCapability] = []
+    for operation in operation_names:
+        operation_diagnostics = tuple(
+            _diagnostic_for_operation(item, operation)
+            for item in frame_diagnostics
+        )
+        if _aggregate_requires(
+            aggregate,
+            _EXPLICIT_BEAM_ORIENTATION_REQUIREMENT,
+            operation,
+        ) and (automatic_entries or fallback_automatic):
+            operation_diagnostics = (
+                *operation_diagnostics,
+                _assumed_orientation_diagnostic(
+                    region,
+                    operation,
+                    automatic_entries,
+                    fallback_element_ids=(
+                        element_ids if fallback_automatic else ()
+                    ),
+                ),
+            )
+        decisions.append(
+            AuthoringCapability(
+                operation,
+                _status_from_diagnostics(operation_diagnostics),
+                operation_diagnostics,
+            )
+        )
+
+    installed_diagnostics = tuple(
+        _diagnostic_for_operation(item, "section.assignment")
+        for item in frame_diagnostics
+    )
+    rectangle_automatic = tuple(
+        entry
+        for entry in automatic_entries
+        if _is_rectangle_section_type(entry.section_type)
+    )
+    if (
+        rectangle_automatic
+        and _aggregate_requires(
+            aggregate,
+            _EXPLICIT_BEAM_ORIENTATION_REQUIREMENT,
+            "section.rectangle",
+        )
+    ):
+        installed_diagnostics = (
+            *installed_diagnostics,
+            _assumed_orientation_diagnostic(
+                region,
+                "section.rectangle",
+                rectangle_automatic,
+            ),
+        )
+    return tuple(decisions), installed_diagnostics
+
+
+def _aggregate_requirements(
+    descriptors: Iterable[ElementCapabilityDescriptor],
+) -> tuple[ElementCapabilityRequirement, ...]:
+    operations_by_code: dict[str, list[str]] = {}
+    order: list[str] = []
+    for descriptor in descriptors:
+        for requirement in descriptor.requirements:
+            if requirement.code not in operations_by_code:
+                operations_by_code[requirement.code] = []
+                order.append(requirement.code)
+            operations = operations_by_code[requirement.code]
+            for operation in requirement.operations:
+                if operation not in operations:
+                    operations.append(operation)
+    return tuple(
+        ElementCapabilityRequirement(
+            code=code,
+            operations=tuple(operations_by_code[code]),
+        )
+        for code in order
+    )
+
+
+def _aggregate_requires(
+    aggregate: _CapabilityAggregate,
+    requirement_code: str,
+    operation: str,
+) -> bool:
+    normalized = _normalize_operation(operation)
+    return any(
+        requirement.code == requirement_code
+        and normalized in requirement.operations
+        for requirement in aggregate.requirements
+    )
+
+
+def _requires_explicit_beam_orientation(
+    model: Any,
+    target: RegionRef | int,
+    operation: str,
+) -> bool:
+    elements = tuple(
+        getattr(getattr(model, "mesh", None), "elements", ())
+    )
+    lookup = {int(element.id): element for element in elements}
+    try:
+        if isinstance(target, bool):
+            return False
+        if isinstance(target, int):
+            element_types = (lookup[target].type,)
+        elif isinstance(target, RegionRef):
+            element_types = tuple(
+                lookup[element_id].type
+                for element_id in _region_element_ids(
+                    model,
+                    target,
+                    lookup,
+                )
+            )
+        else:
+            return False
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return False
+    aggregate = _aggregate_capabilities(
+        element_types,
+        subject=target,
+    )
+    return (
+        aggregate.compatible
+        and aggregate.families == ("beam",)
+        and _aggregate_requires(
+            aggregate,
+            _EXPLICIT_BEAM_ORIENTATION_REQUIREMENT,
+            operation,
+        )
+    )
+
+
+def _supports_target_operation(
+    model: Any,
+    target: RegionRef | int,
+    operation: str,
+) -> bool:
+    elements = tuple(
+        getattr(getattr(model, "mesh", None), "elements", ())
+    )
+    lookup = {int(element.id): element for element in elements}
+    try:
+        if isinstance(target, bool):
+            return False
+        if isinstance(target, int):
+            element_types = (lookup[target].type,)
+        elif isinstance(target, RegionRef):
+            element_types = tuple(
+                lookup[element_id].type
+                for element_id in _region_element_ids(
+                    model,
+                    target,
+                    lookup,
+                )
+            )
+        else:
+            return False
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return False
+
+    aggregate = _aggregate_capabilities(
+        element_types,
+        subject=target,
+    )
+    if not aggregate.compatible:
+        return False
+    normalized = _normalize_operation(operation)
+    if normalized.startswith("section."):
+        return _supports_section_preset(
+            aggregate.section_presets,
+            normalized.removeprefix("section."),
+        )
+    if normalized in {"load.line.global", "load.line.local"}:
+        return (
+            aggregate.families == ("beam",)
+            and "line" in aggregate.distributed_load_kinds
+        )
+    return False
+
+
+def _validated_candidate_index(
+    value: Any,
+    size: int,
+    label: str,
+) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{label} candidate_index must be an integer")
+    index = int(value)
+    if index < 0 or index >= size:
+        raise IndexError(
+            f"{label} candidate_index {index} is outside 0..{size - 1}"
+        )
+    return index
+
+
+def _assumed_orientation_diagnostic(
+    subject: RegionRef | int,
+    operation: str,
+    entries: Iterable[Any],
+    *,
+    fallback_element_ids: tuple[int, ...] = (),
+) -> PreflightDiagnostic:
+    owned_entries = tuple(entries)
+    element_ids = tuple(
+        int(entry.element_id) for entry in owned_entries
+    ) or tuple(int(value) for value in fallback_element_ids)
+    assignment_indexes = _ordered_unique(
+        int(entry.assignment_index)
+        for entry in owned_entries
+        if entry.assignment_index is not None
+    )
+    tangents = tuple(
+        (
+            int(entry.element_id),
+            tuple(float(value) for value in entry.frame.local_x),
+        )
+        for entry in owned_entries
+    )
+    details: dict[str, Any] = {
+        "operation": _normalize_operation(operation),
+        "element_ids": element_ids,
+        "assignment_indexes": assignment_indexes,
+        "reference": None,
+        "element_tangents": tangents,
+    }
+    if len(element_ids) == 1:
+        details["element_id"] = element_ids[0]
+    if len(assignment_indexes) == 1:
+        details["assignment_index"] = assignment_indexes[0]
+    return PreflightDiagnostic(
+        code="beam.orientation.assumed",
+        severity=PreflightSeverity.WARNING,
+        stage=PreflightStage.CAPABILITY,
+        message=(
+            f"{operation} uses an automatic Beam2 local frame for "
+            f"{len(element_ids)} target element(s)."
+        ),
+        subject=subject,
+        path=(
+            "capabilities",
+            "operations",
+            _normalize_operation(operation),
+        ),
+        remediation=(
+            "旧模型可继续执行；新建或保存该方向敏感定义时请提供显式"
+            "局部 y 参考方向。"
+        ),
+        details=details,
+    )
+
+
+def _diagnostic_for_operation(
+    diagnostic: PreflightDiagnostic,
+    operation: str,
+) -> PreflightDiagnostic:
+    details = diagnostic.details_dict()
+    details["operation"] = _normalize_operation(operation)
+    return PreflightDiagnostic(
+        code=diagnostic.code,
+        severity=diagnostic.severity,
+        stage=diagnostic.stage,
+        message=diagnostic.message,
+        subject=diagnostic.subject,
+        path=diagnostic.path,
+        remediation=diagnostic.remediation,
+        details=details,
+    )
+
+
+def _status_from_diagnostics(
+    diagnostics: Iterable[PreflightDiagnostic],
+) -> AuthoringStatus:
+    owned = tuple(diagnostics)
+    if any(item.blocking for item in owned):
+        return AuthoringStatus.UNAVAILABLE
+    if owned:
+        return AuthoringStatus.LIMITED
+    return AuthoringStatus.ENABLED
+
+
+def _section_operation(section: Any) -> str:
+    section_type = str(
+        getattr(section, "section_type", "")
+    ).strip().casefold()
+    if section_type == "beam":
+        section_type = str(
+            getattr(section, "properties", {}).get(
+                "section_type",
+                section_type,
+            )
+        ).strip().casefold()
+    return f"section.{section_type}"
+
+
+def _is_rectangle_section_type(section_type: Any) -> bool:
+    return str(section_type or "").strip().casefold() == "rectangle"
+
+
+def _normalize_operation(operation: Any) -> str:
+    return str(operation).strip().casefold()
+
+
+def _deduplicate_diagnostics(
+    diagnostics: Iterable[PreflightDiagnostic],
+) -> tuple[PreflightDiagnostic, ...]:
+    result: list[PreflightDiagnostic] = []
+    seen: set[str] = set()
+    for diagnostic in diagnostics:
+        identity = repr(
+            (
+                diagnostic.code,
+                diagnostic.severity.value,
+                diagnostic.stage.value,
+                diagnostic.subject,
+                diagnostic.path,
+                diagnostic.details,
+            )
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        result.append(diagnostic)
+    return tuple(result)
 
 
 def _model_region_refs(model: Any) -> tuple[RegionRef, ...]:
@@ -671,5 +1491,6 @@ __all__ = [
     "describe_model_capabilities",
     "describe_native_authoring_capabilities",
     "describe_region_capabilities",
+    "evaluate_authoring_candidate",
     "require_region_kind",
 ]
