@@ -210,6 +210,8 @@ class _TetKernelBase:
                 f"{self.canonical_type} element {elem.id} requires {self.node_count} "
                 f"nodes, got {len(elem.node_ids)}; node_ids={elem.node_ids}"
             )
+        if node_lookup is None:
+            node_lookup = build_node_lookup(mesh)
 
         D = self._material_matrix(elem)
         Ke = np.zeros((self.node_count * 3, self.node_count * 3), dtype=float)
@@ -233,6 +235,40 @@ class _TetKernelBase:
         B, _ = self._B_matrix(mesh, elem, xi, eta, zeta, node_lookup)
         sigma = D @ (B @ U[mesh.element_dofs(elem)])
         return tuple(float(v) for v in sigma)
+
+    def integration_point_stress(
+        self,
+        mesh: Any,
+        elem: Any,
+        U: np.ndarray,
+        node_lookup: dict[int, Any] | None = None,
+        gauss_order: int | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return tetrahedral stress components at all integration points."""
+        if gauss_order is not None:
+            raise ValueError(
+                f"gauss_order is not configurable for {self.type_names[0]}"
+            )
+        if node_lookup is None:
+            node_lookup = build_node_lookup(mesh)
+        gauss_points = self.gauss_points()
+        points = np.asarray(
+            [(xi, eta, zeta) for xi, eta, zeta, _ in gauss_points],
+            dtype=float,
+        )
+        values = np.asarray([
+            self.stress_at(
+                mesh,
+                elem,
+                U,
+                xi,
+                eta,
+                zeta,
+                node_lookup=node_lookup,
+            )
+            for xi, eta, zeta in points
+        ], dtype=float)
+        return points, values
 
     def volume(self, mesh: Any, elem: Any, node_lookup: dict[int, Any] | None = None) -> float:
         """Return element volume using the stiffness integration rule."""
@@ -332,8 +368,36 @@ class Tet4Kernel(_TetKernelBase):
         node_lookup: dict[int, Any] | None = None,
     ) -> np.ndarray:
         """Return element-nodal stresses using constant Tet4 stress."""
-        stress = self.stress_at(mesh, elem, U, *TET4_CENTROID, node_lookup)
-        return np.tile(stress, (self.node_count, 1))
+        _, integration_point_values = self.integration_point_stress(
+            mesh, elem, U, node_lookup
+        )
+        return self.extrapolate_stress_to_nodes(integration_point_values)
+
+    @staticmethod
+    def extrapolate_stress_to_nodes(
+        integration_point_values: np.ndarray,
+        gauss_order: int | None = None,
+    ) -> np.ndarray:
+        """Replicate constant Tet4 stress to all four nodes."""
+        if gauss_order is not None:
+            raise ValueError("gauss_order is not configurable for Tet4")
+        values = np.asarray(integration_point_values, dtype=float)
+        if values.shape[0] != 1:
+            raise ValueError(f"Tet4 requires 1 integration-point row, got {values.shape}")
+        return np.tile(values[0], (4, 1))
+
+    @staticmethod
+    def interpolate_stress_to_centroid(
+        integration_point_values: np.ndarray,
+        gauss_order: int | None = None,
+    ) -> np.ndarray:
+        """Return the Tet4 centroid integration-point stress."""
+        if gauss_order is not None:
+            raise ValueError("gauss_order is not configurable for Tet4")
+        values = np.asarray(integration_point_values, dtype=float)
+        if values.shape[0] != 1:
+            raise ValueError(f"Tet4 requires 1 integration-point row, got {values.shape}")
+        return values[0].copy()
 
     def face_traction(
         self,
@@ -389,11 +453,36 @@ class Tet10Kernel(_TetKernelBase):
         node_lookup: dict[int, Any] | None = None,
     ) -> np.ndarray:
         """Return element-nodal stresses from Hammer-point linear extrapolation."""
-        gp_vals = np.array([
-            self.stress_at(mesh, elem, U, xi, eta, zeta, node_lookup)
-            for xi, eta, zeta, _ in self.gauss_points()
-        ], dtype=float)
-        return TET10_LINEAR_EXTRAPOLATION_MATRIX @ gp_vals
+        _, integration_point_values = self.integration_point_stress(
+            mesh, elem, U, node_lookup
+        )
+        return self.extrapolate_stress_to_nodes(integration_point_values)
+
+    @staticmethod
+    def extrapolate_stress_to_nodes(
+        integration_point_values: np.ndarray,
+        gauss_order: int | None = None,
+    ) -> np.ndarray:
+        """Linearly extrapolate four Hammer-point rows to ten nodes."""
+        if gauss_order is not None:
+            raise ValueError("gauss_order is not configurable for Tet10")
+        values = np.asarray(integration_point_values, dtype=float)
+        if values.shape[0] != 4:
+            raise ValueError(f"Tet10 requires 4 integration-point rows, got {values.shape}")
+        return TET10_LINEAR_EXTRAPOLATION_MATRIX @ values
+
+    @staticmethod
+    def interpolate_stress_to_centroid(
+        integration_point_values: np.ndarray,
+        gauss_order: int | None = None,
+    ) -> np.ndarray:
+        """Interpolate the symmetric Hammer-point field to the tetrahedron centroid."""
+        if gauss_order is not None:
+            raise ValueError("gauss_order is not configurable for Tet10")
+        values = np.asarray(integration_point_values, dtype=float)
+        if values.shape[0] != 4:
+            raise ValueError(f"Tet10 requires 4 integration-point rows, got {values.shape}")
+        return np.mean(values, axis=0)
 
     def face_traction(
         self,

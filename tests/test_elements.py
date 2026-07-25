@@ -566,6 +566,69 @@ def test_hex20_nodal_stress_recovers_gauss_point_values():
     assert np.allclose(kernel.nodal_stress(mesh, elem, U), expected)
 
 
+@pytest.mark.parametrize(
+    ("mesh_builder", "element_type", "expected_points"),
+    [
+        (make_hex8_solid_stress_mesh, "Hex8", 8),
+        (make_hex20_stiffness_mesh, "Hex20", 27),
+    ],
+)
+def test_hex_integration_point_stress_builds_node_lookup_once(
+    monkeypatch,
+    mesh_builder,
+    element_type,
+    expected_points,
+):
+    mesh = mesh_builder()
+    kernel = get_element_kernel(element_type)
+    calls = 0
+    from fem.elements import hexahedron as hexahedron_module
+
+    original = hexahedron_module.build_node_lookup
+
+    def counted_lookup(source_mesh):
+        nonlocal calls
+        calls += 1
+        return original(source_mesh)
+
+    monkeypatch.setattr(hexahedron_module, "build_node_lookup", counted_lookup)
+    natural, values = kernel.integration_point_stress(
+        mesh,
+        mesh.elements[0],
+        np.zeros(mesh.num_dofs),
+    )
+
+    assert calls == 1
+    assert natural.shape[0] == expected_points
+    assert values.shape == (expected_points, 6)
+
+
+def test_hex8_bbar_stress_at_builds_node_lookup_once(monkeypatch):
+    mesh = make_hex8_solid_stress_mesh()
+    kernel = get_element_kernel("Hex8")
+    calls = 0
+    from fem.elements import hexahedron as hexahedron_module
+
+    original = hexahedron_module.build_node_lookup
+
+    def counted_lookup(source_mesh):
+        nonlocal calls
+        calls += 1
+        return original(source_mesh)
+
+    monkeypatch.setattr(hexahedron_module, "build_node_lookup", counted_lookup)
+    kernel.stress_at(
+        mesh,
+        mesh.elements[0],
+        np.zeros(mesh.num_dofs),
+        0.0,
+        0.0,
+        0.0,
+    )
+
+    assert calls == 1
+
+
 def test_hex20_shape_functions_interpolate_all_nodes():
     for local_index, coords in enumerate(HEX20_NATURAL_NODE_COORDS):
         N, dN_dxi, dN_deta, dN_dzeta = hex20_shape_funcs_grads(*coords)
@@ -707,3 +770,58 @@ def test_solid_kernels_provide_nodal_stress_matching_post_helpers(builder):
         node_vals = kernel.nodal_stress(mesh, elem, U, node_lookup)
 
     assert np.allclose(node_vals, expected)
+def test_hex8_bbar_stress_matches_abaqus_c3d8_reference():
+    """固定 Abaqus C3D8 基准，防止退回未修正的常规 B 矩阵。"""
+    mesh = make_hex8_solid_stress_mesh()
+    coordinates = (
+        (1.25, 10.0, 200.0), (1.25, 0.0, 200.0),
+        (1.25, 0.0, 192.0), (1.25, 10.0, 192.0),
+        (11.25, 10.0, 200.0), (11.25, 0.0, 200.0),
+        (11.25, 0.0, 192.0), (11.25, 10.0, 192.0),
+    )
+    for node, (x, y, z) in zip(mesh.nodes, coordinates):
+        node.x, node.y, node.z = x, y, z
+    mesh.elements[0].props = {"E": 220000.0, "nu": 0.3}
+    nodal_displacements = (
+        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+        (0.0029052102537830754, -0.011516803538312588, 0.014116381956906784),
+        (-0.0029052102536912526, -0.011516803538289972, -0.014116381957019121),
+        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+        (-0.0029052102536925393, -0.011516803538290809, 0.014116381957018316),
+        (0.002905210253783908, -0.011516803538313872, -0.014116381956907585),
+    )
+    displacement = np.asarray(nodal_displacements, dtype=float).ravel()
+    kernel = get_element_kernel("Hex8")
+    a = 1.0 / np.sqrt(3.0)
+
+    integration_stress = kernel.stress_at(
+        mesh, mesh.elements[0], displacement, -a, -a, -a
+    )
+    nodal_stress = kernel.nodal_stress(mesh, mesh.elements[0], displacement)
+
+    assert integration_stress == pytest.approx(
+        [-49.4706, -61.4677, 110.938, -5.99856, 71.3284, 10.2427],
+        rel=2.0e-5,
+    )
+    assert nodal_stress[0] == pytest.approx(
+        [-99.5386, -99.5386, 199.077, 0.0, 121.812, 30.7282],
+        rel=2.0e-5,
+        abs=1.0e-8,
+    )
+
+
+@pytest.mark.parametrize("element_type", ["C3D20R", "c3D20r"])
+def test_registry_rejects_reduced_integration_hex20_alias(element_type):
+    with pytest.raises(
+        NotImplementedError,
+        match=rf"Unsupported element type: {element_type}",
+    ):
+        get_element_kernel(element_type)
+
+
+def test_registry_rejects_unimplemented_reduced_integration_hex8_alias():
+    with pytest.raises(
+        NotImplementedError,
+        match=r"Unsupported element type: C3D8R; reduced integration is not implemented",
+    ):
+        get_element_kernel("C3D8R")

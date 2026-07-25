@@ -73,9 +73,56 @@ class Tri3Kernel:
         node_lookup: dict[int, Any] | None = None,
     ):
         """Return element-nodal stress, plane type, and nu."""
-        sigma = self.stress_at(mesh, elem, U, node_lookup)
+        _, integration_point_values = self.integration_point_stress(
+            mesh, elem, U, node_lookup
+        )
+        sigma = self.extrapolate_stress_to_nodes(integration_point_values)
         plane_type, nu = self._plane_data(elem)
-        return np.tile(sigma, (3, 1)), plane_type, nu
+        return sigma, plane_type, nu
+
+    def integration_point_stress(
+        self,
+        mesh: Any,
+        elem: Any,
+        U: np.ndarray,
+        node_lookup: dict[int, Any] | None = None,
+        gauss_order: int | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return the constant stress at the centroid integration point."""
+        if gauss_order is not None:
+            raise ValueError("gauss_order is not configurable for Tri3")
+        point = np.array([[1.0 / 3.0, 1.0 / 3.0]], dtype=float)
+        stress = np.asarray(
+            [self.stress_at(mesh, elem, U, node_lookup)],
+            dtype=float,
+        )
+        return point, stress
+
+    @staticmethod
+    def extrapolate_stress_to_nodes(
+        integration_point_values: np.ndarray,
+        gauss_order: int | None = None,
+    ) -> np.ndarray:
+        """Replicate constant Tri3 stress to all three element nodes."""
+        if gauss_order is not None:
+            raise ValueError("gauss_order is not configurable for Tri3")
+        values = np.asarray(integration_point_values, dtype=float)
+        if values.shape[0] != 1:
+            raise ValueError(f"Tri3 requires 1 integration-point row, got {values.shape}")
+        return np.tile(values[0], (3, 1))
+
+    @staticmethod
+    def interpolate_stress_to_centroid(
+        integration_point_values: np.ndarray,
+        gauss_order: int | None = None,
+    ) -> np.ndarray:
+        """Return the centroid integration-point stress."""
+        if gauss_order is not None:
+            raise ValueError("gauss_order is not configurable for Tri3")
+        values = np.asarray(integration_point_values, dtype=float)
+        if values.shape[0] != 1:
+            raise ValueError(f"Tri3 requires 1 integration-point row, got {values.shape}")
+        return values[0].copy()
 
     def body_force(
         self,
@@ -248,6 +295,38 @@ def tri6_gauss_points():
     ]
 
 
+TRI6_NATURAL_NODE_COORDS = np.array([
+    (0.0, 0.0),
+    (1.0, 0.0),
+    (0.0, 1.0),
+    (0.5, 0.0),
+    (0.5, 0.5),
+    (0.0, 0.5),
+], dtype=float)
+
+
+def _tri6_recovery_matrix() -> np.ndarray:
+    """Return the three-point linear stress recovery matrix at Tri6 nodes."""
+    gp_coords = np.array(
+        [(xi, eta) for xi, eta, _ in tri6_gauss_points()],
+        dtype=float,
+    )
+    gp_basis = np.column_stack((
+        np.ones(len(gp_coords)),
+        gp_coords[:, 0],
+        gp_coords[:, 1],
+    ))
+    node_basis = np.column_stack((
+        np.ones(len(TRI6_NATURAL_NODE_COORDS)),
+        TRI6_NATURAL_NODE_COORDS[:, 0],
+        TRI6_NATURAL_NODE_COORDS[:, 1],
+    ))
+    return node_basis @ np.linalg.inv(gp_basis)
+
+
+TRI6_EXTRAPOLATION_MATRIX = _tri6_recovery_matrix()
+
+
 def tri6_edge_gauss_points():
     """Return 3-point Gauss rule on [-1, 1] for quadratic edges."""
     r = np.sqrt(3.0 / 5.0)
@@ -272,6 +351,8 @@ class Tri6Kernel:
                 f"Tri6 element {elem.id} requires 6 nodes, got {len(elem.node_ids)}; "
                 f"node_ids={elem.node_ids}"
             )
+        if node_lookup is None:
+            node_lookup = build_node_lookup(mesh)
 
         D, t = self._material_data(elem)
         Ke = np.zeros((12, 12), dtype=float)
@@ -305,23 +386,65 @@ class Tri6Kernel:
         """Return element-nodal stress, plane type, and nu."""
         if gauss_order not in (None, 3):
             raise ValueError("gauss_order must be 3 for Tri6 nodal stress")
-        node_coords = [
-            (0.0, 0.0),
-            (1.0, 0.0),
-            (0.0, 1.0),
-            (0.5, 0.0),
-            (0.5, 0.5),
-            (0.0, 0.5),
-        ]
-        node_vals = np.array(
-            [
-                self.stress_at(mesh, elem, U, xi, eta, node_lookup)
-                for xi, eta in node_coords
-            ],
-            dtype=float,
+        _, integration_point_values = self.integration_point_stress(
+            mesh, elem, U, node_lookup, gauss_order
+        )
+        node_vals = self.extrapolate_stress_to_nodes(
+            integration_point_values, gauss_order
         )
         plane_type, nu = self._plane_data(elem)
         return node_vals, plane_type, nu
+
+    def integration_point_stress(
+        self,
+        mesh: Any,
+        elem: Any,
+        U: np.ndarray,
+        node_lookup: dict[int, Any] | None = None,
+        gauss_order: int | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return stress components at the three Tri6 integration points."""
+        if gauss_order not in (None, 3):
+            raise ValueError("gauss_order must be 3 for Tri6 stress recovery")
+        if node_lookup is None:
+            node_lookup = build_node_lookup(mesh)
+        points = np.array(
+            [(xi, eta) for xi, eta, _ in tri6_gauss_points()],
+            dtype=float,
+        )
+        values = np.asarray([
+            self.stress_at(
+                mesh, elem, U, xi, eta, node_lookup=node_lookup
+            )
+            for xi, eta in points
+        ], dtype=float)
+        return points, values
+
+    @staticmethod
+    def extrapolate_stress_to_nodes(
+        integration_point_values: np.ndarray,
+        gauss_order: int | None = None,
+    ) -> np.ndarray:
+        """Linearly extrapolate three integration-point rows to six nodes."""
+        if gauss_order not in (None, 3):
+            raise ValueError("gauss_order must be 3 for Tri6 stress recovery")
+        values = np.asarray(integration_point_values, dtype=float)
+        if values.shape[0] != 3:
+            raise ValueError(f"Tri6 requires 3 integration-point rows, got {values.shape}")
+        return TRI6_EXTRAPOLATION_MATRIX @ values
+
+    @staticmethod
+    def interpolate_stress_to_centroid(
+        integration_point_values: np.ndarray,
+        gauss_order: int | None = None,
+    ) -> np.ndarray:
+        """Interpolate the symmetric three-point field to the triangle centroid."""
+        if gauss_order not in (None, 3):
+            raise ValueError("gauss_order must be 3 for Tri6 stress recovery")
+        values = np.asarray(integration_point_values, dtype=float)
+        if values.shape[0] != 3:
+            raise ValueError(f"Tri6 requires 3 integration-point rows, got {values.shape}")
+        return np.mean(values, axis=0)
 
     def body_force(
         self,

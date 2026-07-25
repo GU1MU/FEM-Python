@@ -56,6 +56,10 @@ _ELEMENT_NODE_COUNTS = {
     "C3D8": 8,
     "C3D10": 10,
     "C3D20": 20,
+    "B31": 2,
+    "BEAM2": 2,
+    "T3D2": 2,
+    "TRUSS2": 2,
 }
 
 
@@ -588,7 +592,12 @@ class _ScanState:
             self.element_record_size = (
                 None if node_count is None else node_count + 1
             )
-            if element_type.startswith("C3D"):
+            if element_type in {"B31", "BEAM2"}:
+                self.max_dofs_per_node = max(self.max_dofs_per_node, 6)
+            elif element_type.startswith("C3D") or element_type in {
+                "T3D2",
+                "TRUSS2",
+            }:
                 self.max_dofs_per_node = max(self.max_dofs_per_node, 3)
             elif element_type:
                 self.max_dofs_per_node = max(self.max_dofs_per_node, 2)
@@ -849,6 +858,12 @@ class _ScanState:
                 len(values) == 6
                 and _finite_numbers(values[2:]) is not None
                 and _nonzero_direction(values[3:])
+            )
+        elif source == "dload" and label in {"QGLOBAL", "QLOCAL"}:
+            valid = (
+                len(values) == 5
+                and bool(values[0])
+                and _finite_numbers(values[2:]) is not None
             )
         elif label in {"TRVEC", "TRSHR"}:
             expected_lengths = {5, 6} if label == "TRVEC" else {6}

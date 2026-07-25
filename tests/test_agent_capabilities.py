@@ -16,6 +16,11 @@ def test_capability_declaration_is_versioned_and_provider_safe():
     assert capabilities["precomputed_result_queries_required"] is False
     assert capabilities["reusable_solution_state"] is True
     assert set(capabilities["element_types"]) == set(SUPPORTED_ELEMENT_TYPES)
+    assert {"B31", "BEAM2", "T3D2", "TRUSS2"} <= set(
+        capabilities["element_types"]
+    )
+    assert {"beam", "solid", "truss"} == set(capabilities["section_types"])
+    assert {"QGLOBAL", "QLOCAL"} <= set(capabilities["dload_labels"])
 
 
 def test_unknown_keywords_are_blocking_by_default():

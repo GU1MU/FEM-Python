@@ -34,6 +34,7 @@ class AbaqusSection:
     material: str
     section_type: str = "solid"
     element_ids: tuple[int, ...] = ()
+    properties: dict[str, Any] = field(default_factory=dict)
     thickness: float | None = None
 
 

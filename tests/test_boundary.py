@@ -5,6 +5,7 @@ from fem import boundary
 from fem.boundary.condition import BoundaryCondition
 from fem.boundary.loads import build_load_vector
 from fem.boundary.step import boundary_for_step
+from fem.boundary import step as boundary_step
 from fem.core.model import (
     AnalysisStep,
     Edge,
@@ -367,6 +368,40 @@ def test_boundary_step_builds_2d_edge_pressure():
     assert bc.edge_tractions[0].elem_id == 1
     assert bc.edge_tractions[0].local_index == 1
     assert np.allclose(bc.edge_tractions[0].vector, (-2.0, 0.0))
+
+
+def test_pressure_faces_share_boundary_step_lookup_tables(monkeypatch):
+    mesh = make_selection_hex_mesh()
+    model = FEMModel(
+        mesh=mesh,
+        surfaces={"LOADED": Surface("LOADED", [
+            ElementFace(1, 0, (1, 2, 3, 4)),
+            ElementFace(1, 1, (5, 6, 7, 8)),
+        ])},
+        steps=[AnalysisStep(
+            "load", surface_loads=[SurfaceLoad("LOADED", magnitude=2.0, load_type="pressure")]
+        )],
+    )
+    lookup_ids = []
+    original = boundary_step._pressure_vector_3d
+
+    def counted(face, load, node_lookup_factory, element_lookup_factory):
+        lookup_ids.append((
+            id(node_lookup_factory()),
+            id(element_lookup_factory()),
+        ))
+        return original(
+            face,
+            load,
+            node_lookup_factory,
+            element_lookup_factory,
+        )
+
+    monkeypatch.setattr(boundary_step, "_pressure_vector_3d", counted)
+    boundary_for_step(model, "load")
+
+    assert len(lookup_ids) == 2
+    assert len(set(lookup_ids)) == 1
 
 
 def test_boundary_step_rejects_2d_surface_loads():

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -12,8 +13,42 @@ from tests.helpers.abaqus_builders import write_perforated_plate_style_inp
 from tests.helpers.file_builders import write_inp
 
 
+LINE_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "inp"
+
+
 def _codes(result) -> set[str]:
     return {diagnostic.code for diagnostic in result.diagnostics}
+
+
+@pytest.mark.parametrize(
+    "name, element_type, dofs_per_node",
+    (
+        ("truss2_tension.inp", "Truss2", 3),
+        ("beam2_rectangle_uniform_load.inp", "Beam2", 6),
+        ("beam2_hollow_circle_uniform_load.inp", "Beam2", 6),
+    ),
+)
+def test_inspection_accepts_supported_line_element_inputs(
+    name,
+    element_type,
+    dofs_per_node,
+):
+    inspected = inspect_abaqus(LINE_FIXTURES / name)
+
+    assert inspected.ok
+    assert inspected.model is not None
+    assert {element.type for element in inspected.model.mesh.elements} == {
+        element_type
+    }
+    assert inspected.model.mesh.dofs_per_node == dofs_per_node
+    assert not (
+        _codes(inspected)
+        & {
+            "UNSUPPORTED_ELEMENT",
+            "UNSUPPORTED_KEYWORD",
+            "UNSUPPORTED_KEYWORD_OPTION",
+        }
+    )
 
 
 def _minimal_tet_lines(*extra_lines: str) -> list[str]:

@@ -39,6 +39,19 @@ Run the examples:
 
 Results are written to `results/` by default
 
+## Desktop GUI
+
+Install the GUI dependencies and start the Chinese desktop application:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[cad,gui]"
+.\.venv\Scripts\python.exe -m fem_gui.app
+```
+
+The GUI supports native sketch/feature modeling, Abaqus `.inp` import,
+materials and sections, analysis definitions, mesh generation, background
+linear-static jobs, result queries, and CSV/VTK export.
+
 ## Workflow
 
 ```text

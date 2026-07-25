@@ -59,7 +59,6 @@ def boundary_for_step(model: Any, step: str | int | AnalysisStep | None = None) 
         if elem_lookup_cache is None:
             elem_lookup_cache = {int(elem.id): elem for elem in model.mesh.elements}
         return elem_lookup_cache
-
     for constraint in _step_boundaries(model, selected_step):
         for node_id in _resolve_node_target(model, constraint.target):
             for component in range(

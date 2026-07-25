@@ -38,13 +38,17 @@ SUPPORTED_ELEMENT_TYPES = frozenset(
         "C3D10",
         "C3D8",
         "C3D20",
+        "B31",
+        "BEAM2",
+        "T3D2",
+        "TRUSS2",
     }
 )
-SUPPORTED_SECTION_TYPES = frozenset({"solid"})
+SUPPORTED_SECTION_TYPES = frozenset({"beam", "solid", "truss"})
 SUPPORTED_PROCEDURES = frozenset({"static"})
 SUPPORTED_BOUNDARY_LABELS = frozenset({"ENCASTRE", "XSYMM", "YSYMM", "ZSYMM"})
 SUPPORTED_DLOAD_LABELS = frozenset(
-    {"GRAV", "P1", "P2", "P3", "P4", "P5", "P6"}
+    {"GRAV", "P1", "P2", "P3", "P4", "P5", "P6", "QGLOBAL", "QLOCAL"}
 )
 SUPPORTED_DSLOAD_LABELS = frozenset(
     {"P", "P1", "P2", "P3", "P4", "P5", "P6", "TRVEC", "TRSHR"}
@@ -108,6 +112,27 @@ KEYWORD_CAPABILITIES: Mapping[str, KeywordCapability] = {
         CapabilityDisposition.SUPPORTED,
         allowed_parameters=frozenset({"elset", "material"}),
         required_parameters=frozenset({"elset", "material"}),
+    ),
+    "beam section": KeywordCapability(
+        CapabilityDisposition.SUPPORTED,
+        allowed_parameters=frozenset(
+            {
+                "elset",
+                "material",
+                "section",
+                "height",
+                "width",
+                "radius",
+                "outer_radius",
+                "inner_radius",
+            }
+        ),
+        required_parameters=frozenset({"elset", "material", "section"}),
+    ),
+    "truss section": KeywordCapability(
+        CapabilityDisposition.SUPPORTED,
+        allowed_parameters=frozenset({"elset", "material", "area"}),
+        required_parameters=frozenset({"elset", "material", "area"}),
     ),
     "step": KeywordCapability(
         CapabilityDisposition.SUPPORTED,

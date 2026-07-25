@@ -20,6 +20,10 @@ from .deck import (
 
 
 _SUPPORTED_ELEMENT_NODE_COUNTS = {
+    "TRUSS2": 2,
+    "T3D2": 2,
+    "BEAM2": 2,
+    "B31": 2,
     "CPS3": 3,
     "CPE3": 3,
     "CPS6": 6,
@@ -387,9 +391,36 @@ class _ParserState:
         element_set = _required_param(keyword, "elset")
         material = _required_param(keyword, "material")
         section_type = keyword.name.replace(" section", "")
+        assignment_type = section_type
+        properties: dict[str, object] = {}
+        if section_type == "truss":
+            properties["area"] = float(_required_param(keyword, "area"))
+        elif section_type == "beam":
+            preset = _required_param(keyword, "section").lower()
+            dimensions = {
+                "rectangle": ("height", "width"),
+                "solid_circle": ("radius",),
+                "hollow_circle": ("outer_radius", "inner_radius"),
+            }
+            if preset not in dimensions:
+                choices = ", ".join(dimensions)
+                raise ValueError(
+                    f"unsupported Beam2 section preset {preset!r}; "
+                    f"expected one of {choices}"
+                )
+            assignment_type = preset
+            properties["section_type"] = preset
+            for name in dimensions[preset]:
+                properties[name] = float(_required_param(keyword, name))
         element_ids = tuple(self.deck.element_sets.get(element_set, ()))
         self.deck.sections.append(
-            AbaqusSection(element_set, material, section_type, element_ids)
+            AbaqusSection(
+                element_set,
+                material,
+                assignment_type,
+                element_ids,
+                properties,
+            )
         )
         if section_type == "solid":
             self.mode = "solid_section"

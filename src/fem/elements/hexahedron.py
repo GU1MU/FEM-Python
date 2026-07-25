@@ -72,6 +72,15 @@ def hex8_gauss_points(gauss_order: int = 2):
     ]
 
 
+HEX8_NATURAL_GRADIENTS = np.asarray(
+    [
+        hex8_shape_funcs_grads(xi, eta, zeta)[1:]
+        for xi, eta, zeta, _weight in hex8_gauss_points()
+    ],
+    dtype=float,
+)
+
+
 def _hex8_extrapolation_matrix() -> np.ndarray:
     """Return the constant 2x2x2 Gauss-to-node extrapolation matrix."""
     n_gp = np.array(
@@ -281,15 +290,65 @@ class Hex8Kernel(_HexKernelBase):
                 f"Hex8 element {elem.id} requires 8 nodes, got {len(elem.node_ids)}; "
                 f"node_ids={elem.node_ids}"
             )
+        if node_lookup is None:
+            node_lookup = build_node_lookup(mesh)
 
         D = self._material_matrix(elem)
         Ke = np.zeros((24, 24), dtype=float)
-
-        for xi, eta, zeta, w in hex8_gauss_points(gauss_order):
-            B, detJ = self._B_matrix(mesh, elem, xi, eta, zeta, node_lookup)
-            Ke += (B.T @ D @ B) * detJ * w
+        integration = self._integration_matrices(
+            mesh,
+            elem,
+            node_lookup,
+            gauss_order,
+        )
+        b_volume = self._average_volumetric_operator(integration)
+        for B, detJ, w in integration:
+            B_bar = self._apply_bbar(B, b_volume)
+            Ke += (B_bar.T @ D @ B_bar) * detJ * w
 
         return Ke
+
+    def _integration_matrices(
+        self,
+        mesh: Any,
+        elem: Any,
+        node_lookup: dict[int, Any],
+        gauss_order: int,
+    ) -> list[tuple[np.ndarray, float, float]]:
+        """Build all Hex8 integration matrices with one coordinate lookup."""
+        gauss_points = hex8_gauss_points(gauss_order)
+        nodes = self._nodes(mesh, elem, node_lookup)
+        coordinates = np.asarray(
+            [[node.x, node.y, node.z] for node in nodes],
+            dtype=float,
+        )
+        natural_gradients = HEX8_NATURAL_GRADIENTS
+        jacobians = natural_gradients @ coordinates
+        determinants = np.linalg.det(jacobians)
+        invalid = np.flatnonzero(determinants <= 0.0)
+        if invalid.size:
+            detJ = float(determinants[int(invalid[0])])
+            raise ValueError(
+                f"Hex8 element {elem.id} has non-positive Jacobian determinant "
+                f"{detJ}; expected > 0"
+            )
+
+        global_gradients = np.linalg.inv(jacobians) @ natural_gradients
+        matrices = np.zeros((8, 6, 24), dtype=float)
+        offsets = 3 * np.arange(8)
+        matrices[:, 0, offsets] = global_gradients[:, 0, :]
+        matrices[:, 1, offsets + 1] = global_gradients[:, 1, :]
+        matrices[:, 2, offsets + 2] = global_gradients[:, 2, :]
+        matrices[:, 3, offsets] = global_gradients[:, 1, :]
+        matrices[:, 3, offsets + 1] = global_gradients[:, 0, :]
+        matrices[:, 4, offsets + 1] = global_gradients[:, 2, :]
+        matrices[:, 4, offsets + 2] = global_gradients[:, 1, :]
+        matrices[:, 5, offsets] = global_gradients[:, 2, :]
+        matrices[:, 5, offsets + 2] = global_gradients[:, 0, :]
+        return [
+            (matrices[index], float(determinants[index]), float(weight))
+            for index, (*_point, weight) in enumerate(gauss_points)
+        ]
 
     def body_force(
         self,
@@ -370,9 +429,16 @@ class Hex8Kernel(_HexKernelBase):
         node_lookup: dict[int, Any] | None = None,
     ) -> tuple[float, float, float, float, float, float]:
         """Return stress at one natural coordinate point."""
+        if node_lookup is None:
+            node_lookup = build_node_lookup(mesh)
         D = self._material_matrix(elem)
         B, _ = self._B_matrix(mesh, elem, xi, eta, zeta, node_lookup)
-        sigma = D @ (B @ U[mesh.element_dofs(elem)])
+        integration = [
+            (*self._B_matrix(mesh, elem, gx, gy, gz, node_lookup), weight)
+            for gx, gy, gz, weight in hex8_gauss_points()
+        ]
+        B_bar = self._apply_bbar(B, self._average_volumetric_operator(integration))
+        sigma = D @ (B_bar @ U[mesh.element_dofs(elem)])
         return tuple(float(v) for v in sigma)
 
     def nodal_stress(
@@ -384,11 +450,86 @@ class Hex8Kernel(_HexKernelBase):
         gauss_order: int = 2,
     ) -> np.ndarray:
         """Return element-nodal stresses extrapolated from 2x2x2 Gauss stresses."""
-        gp_vals = np.array([
-            self.stress_at(mesh, elem, U, xi, eta, zeta, node_lookup)
-            for xi, eta, zeta, _ in hex8_gauss_points(gauss_order)
+        _, integration_point_values = self.integration_point_stress(
+            mesh, elem, U, node_lookup, gauss_order
+        )
+        return self.extrapolate_stress_to_nodes(
+            integration_point_values, gauss_order
+        )
+
+    def integration_point_stress(
+        self,
+        mesh: Any,
+        elem: Any,
+        U: np.ndarray,
+        node_lookup: dict[int, Any] | None = None,
+        gauss_order: int = 2,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return all Hex8 B-bar integration-point stresses in one pass."""
+        if node_lookup is None:
+            node_lookup = build_node_lookup(mesh)
+        D = self._material_matrix(elem)
+        gauss_points = hex8_gauss_points(gauss_order)
+        integration = [
+            (*self._B_matrix(mesh, elem, xi, eta, zeta, node_lookup), w)
+            for xi, eta, zeta, w in gauss_points
+        ]
+        b_volume = self._average_volumetric_operator(integration)
+        element_u = U[mesh.element_dofs(elem)]
+        values = np.array([
+            D @ (self._apply_bbar(B, b_volume) @ element_u)
+            for B, _detJ, _weight in integration
         ], dtype=float)
-        return HEX8_EXTRAPOLATION_MATRIX @ gp_vals
+        points = np.asarray(
+            [(xi, eta, zeta) for xi, eta, zeta, _ in gauss_points],
+            dtype=float,
+        )
+        return points, values
+
+    @staticmethod
+    def extrapolate_stress_to_nodes(
+        integration_point_values: np.ndarray,
+        gauss_order: int = 2,
+    ) -> np.ndarray:
+        """Extrapolate eight Hex8 integration-point rows to eight nodes."""
+        hex8_gauss_points(gauss_order)
+        values = np.asarray(integration_point_values, dtype=float)
+        if values.shape[0] != 8:
+            raise ValueError(f"Hex8 requires 8 integration-point rows, got {values.shape}")
+        return HEX8_EXTRAPOLATION_MATRIX @ values
+
+    @staticmethod
+    def interpolate_stress_to_centroid(
+        integration_point_values: np.ndarray,
+        gauss_order: int = 2,
+    ) -> np.ndarray:
+        """Interpolate the symmetric Hex8 integration-point field to the centroid."""
+        hex8_gauss_points(gauss_order)
+        values = np.asarray(integration_point_values, dtype=float)
+        if values.shape[0] != 8:
+            raise ValueError(f"Hex8 requires 8 integration-point rows, got {values.shape}")
+        return np.mean(values, axis=0)
+
+    @staticmethod
+    def _average_volumetric_operator(integration) -> np.ndarray:
+        """Return the element-average volumetric strain operator for C3D8 B-bar."""
+        volume = sum(detJ * weight for _B, detJ, weight in integration)
+        if volume <= 0.0:
+            raise ValueError("Hex8 element integration volume must be positive")
+        return sum(
+            (B[0] + B[1] + B[2]) * detJ * weight
+            for B, detJ, weight in integration
+        ) / volume
+
+    @staticmethod
+    def _apply_bbar(B: np.ndarray, average_volume: np.ndarray) -> np.ndarray:
+        """Replace the pointwise volumetric operator while preserving deviatoric strain."""
+        B_bar = B.copy()
+        correction = (average_volume - (B[0] + B[1] + B[2])) / 3.0
+        B_bar[0] += correction
+        B_bar[1] += correction
+        B_bar[2] += correction
+        return B_bar
 
     def _B_matrix(
         self,
@@ -455,6 +596,8 @@ class Hex20Kernel(_HexKernelBase):
                 f"Hex20 element {elem.id} requires 20 nodes, got {len(elem.node_ids)}; "
                 f"node_ids={elem.node_ids}"
             )
+        if node_lookup is None:
+            node_lookup = build_node_lookup(mesh)
         D = self._material_matrix(elem)
         Ke = np.zeros((60, 60), dtype=float)
         for xi, eta, zeta, w in hex20_gauss_points(gauss_order):
@@ -541,11 +684,66 @@ class Hex20Kernel(_HexKernelBase):
         node_lookup: dict[int, Any] | None = None,
         gauss_order: int = 3,
     ) -> np.ndarray:
-        gp_vals = np.array([
-            self.stress_at(mesh, elem, U, xi, eta, zeta, node_lookup)
-            for xi, eta, zeta, _ in hex20_gauss_points(gauss_order)
-        ])
-        return HEX20_EXTRAPOLATION_MATRIX @ gp_vals
+        _, integration_point_values = self.integration_point_stress(
+            mesh, elem, U, node_lookup, gauss_order
+        )
+        return self.extrapolate_stress_to_nodes(
+            integration_point_values, gauss_order
+        )
+
+    def integration_point_stress(
+        self,
+        mesh: Any,
+        elem: Any,
+        U: np.ndarray,
+        node_lookup: dict[int, Any] | None = None,
+        gauss_order: int = 3,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return Hex20 stresses at all 3x3x3 integration points."""
+        if node_lookup is None:
+            node_lookup = build_node_lookup(mesh)
+        gauss_points = hex20_gauss_points(gauss_order)
+        points = np.asarray(
+            [(xi, eta, zeta) for xi, eta, zeta, _ in gauss_points],
+            dtype=float,
+        )
+        values = np.asarray([
+            self.stress_at(
+                mesh,
+                elem,
+                U,
+                xi,
+                eta,
+                zeta,
+                node_lookup=node_lookup,
+            )
+            for xi, eta, zeta in points
+        ], dtype=float)
+        return points, values
+
+    @staticmethod
+    def extrapolate_stress_to_nodes(
+        integration_point_values: np.ndarray,
+        gauss_order: int = 3,
+    ) -> np.ndarray:
+        """Recover twenty Hex20 nodal rows from 27 integration points."""
+        hex20_gauss_points(gauss_order)
+        values = np.asarray(integration_point_values, dtype=float)
+        if values.shape[0] != 27:
+            raise ValueError(f"Hex20 requires 27 integration-point rows, got {values.shape}")
+        return HEX20_EXTRAPOLATION_MATRIX @ values
+
+    @staticmethod
+    def interpolate_stress_to_centroid(
+        integration_point_values: np.ndarray,
+        gauss_order: int = 3,
+    ) -> np.ndarray:
+        """Return the Hex20 stress at its centroid integration point."""
+        hex20_gauss_points(gauss_order)
+        values = np.asarray(integration_point_values, dtype=float)
+        if values.shape[0] != 27:
+            raise ValueError(f"Hex20 requires 27 integration-point rows, got {values.shape}")
+        return values[13].copy()
 
     def _B_matrix(self, mesh, elem, xi, eta, zeta, node_lookup):
         nodes = self._nodes(mesh, elem, node_lookup)

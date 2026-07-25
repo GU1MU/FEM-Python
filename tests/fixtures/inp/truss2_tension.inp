@@ -1,0 +1,28 @@
+*Heading
+Truss2 axial tension: expected S11 = 210 MPa
+*Node
+1, 0.0, 0.0, 0.0
+2, 2.0, 0.0, 0.0
+*Element, type=T3D2, elset=TRUSS
+1, 1, 2
+*Nset, nset=FIXED
+1
+*Nset, nset=TIP
+2
+*Material, name=STEEL
+*Elastic
+2.10e11, 0.3
+*Truss Section, elset=TRUSS, material=STEEL, area=1.0e-4
+*Boundary
+FIXED, 1, 3, 0.0
+TIP, 2, 3, 0.0
+*Step, name=Tension
+*Static
+*Cload
+TIP, 1, 2.10e4
+*Output, field
+*Node Output
+U, RF
+*Element Output
+S
+*End Step

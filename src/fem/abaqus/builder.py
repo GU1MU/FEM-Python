@@ -15,6 +15,7 @@ from ..core.model import (
     FEMModel,
     GravityLoad,
     MaterialDefinition,
+    LineLoad,
     NodalLoad,
     NodeSet,
     OutputRequest,
@@ -69,7 +70,7 @@ def build_model(deck: AbaqusDeck) -> FEMModel:
                 section_element_set,
                 section_element_ids,
             )
-        section_properties: dict[str, float] = {}
+        section_properties: dict[str, Any] = dict(section.properties)
         if section.thickness is not None:
             effective_ids = section_element_ids or resolved_element_ids
             if any(
@@ -90,9 +91,14 @@ def build_model(deck: AbaqusDeck) -> FEMModel:
             )
         )
 
-    surfaces, edges = _build_surfaces_and_edges(mesh, deck, element_sets)
+    topology: dict[str, Any] = {
+        "elements": {elem.id: elem for elem in mesh.elements},
+    }
+    surfaces, edges = _build_surfaces_and_edges(mesh, deck, element_sets, topology)
     steps = [
-        _build_step(step, mesh, surfaces, edges, element_sets, step_index)
+        _build_step(
+            step, mesh, surfaces, edges, element_sets, step_index, topology
+        )
         for step_index, step in enumerate(deck.steps)
     ]
     model = FEMModel(
@@ -147,31 +153,44 @@ def _build_mesh(deck: AbaqusDeck) -> Any:
         )
         for element in deck.elements
     ]
-    return Mesh3D(nodes3d, elements3d)
+    element_types = {element.type for element in elements3d}
+    if element_types == {"Beam2"}:
+        dofs_per_node = 6
+    elif element_types == {"Truss2"}:
+        dofs_per_node = 3
+    elif element_types.intersection({"Beam2", "Truss2"}):
+        raise ValueError("mixed line and continuum element meshes are not supported")
+    else:
+        dofs_per_node = 3
+    return Mesh3D(nodes3d, elements3d, dofs_per_node=dofs_per_node)
 
 
 def _build_surfaces_and_edges(
     mesh: Any,
     deck: AbaqusDeck,
     element_sets: dict[str, ElementSet],
+    topology: dict[str, Any],
 ) -> tuple[dict[str, Surface], dict[str, Edge]]:
     """Build named model surfaces and edges from deck surface entries."""
     if mesh.dofs_per_node == 2:
-        return {}, _build_edges(mesh, deck, element_sets)
-    return _build_surfaces(mesh, deck, element_sets), {}
+        return {}, _build_edges(mesh, deck, element_sets, topology)
+    return _build_surfaces(mesh, deck, element_sets, topology), {}
 
 
 def _build_surfaces(
     mesh: Any,
     deck: AbaqusDeck,
     element_sets: dict[str, ElementSet],
+    topology: dict[str, Any],
 ) -> dict[str, Surface]:
     """Build named model surfaces from deck surface entries."""
-    face_lookup = {
-        (elem_id, local_index): node_ids
-        for elem_id, local_index, node_ids in face_selection.all(mesh)
-    }
-    elem_lookup = {elem.id: elem for elem in mesh.elements}
+    if not any(
+        deck.surface_scopes.get(name, "model") != "part"
+        for name in deck.surfaces
+    ):
+        return {}
+    face_lookup = _face_lookup(mesh, topology)
+    elem_lookup = topology["elements"]
     surfaces: dict[str, Surface] = {}
 
     for name, entries in deck.surfaces.items():
@@ -197,13 +216,16 @@ def _build_edges(
     mesh: Any,
     deck: AbaqusDeck,
     element_sets: dict[str, ElementSet],
+    topology: dict[str, Any],
 ) -> dict[str, Edge]:
     """Build named model edges from 2D Abaqus surface entries."""
-    edge_lookup = {
-        (elem_id, local_index): node_ids
-        for elem_id, local_index, node_ids in edge_selection.all(mesh)
-    }
-    elem_lookup = {elem.id: elem for elem in mesh.elements}
+    if not any(
+        deck.surface_scopes.get(name, "model") != "part"
+        for name in deck.surfaces
+    ):
+        return {}
+    edge_lookup = _edge_lookup(mesh, topology)
+    elem_lookup = topology["elements"]
     edges: dict[str, Edge] = {}
 
     for name, entries in deck.surfaces.items():
@@ -232,6 +254,7 @@ def _build_step(
     edges: dict[str, Edge],
     element_sets: dict[str, ElementSet],
     step_index: int,
+    topology: dict[str, Any],
 ) -> AnalysisStep:
     """Convert raw Abaqus step data to core step data."""
     boundaries: list[DisplacementConstraint] = []
@@ -255,6 +278,7 @@ def _build_step(
             step.name,
             step_index,
             load_index,
+            topology,
         )
         for load_index, load in enumerate(step.distributed_loads)
     ]
@@ -265,6 +289,10 @@ def _build_step(
     edge_loads = [
         load for load in distributed_loads
         if isinstance(load, EdgeLoad)
+    ]
+    line_loads = [
+        load for load in distributed_loads
+        if isinstance(load, LineLoad)
     ]
     gravity_loads = [
         load for load in distributed_loads
@@ -281,6 +309,7 @@ def _build_step(
         cloads=cloads,
         surface_loads=surface_loads,
         edge_loads=edge_loads,
+        line_loads=line_loads,
         gravity_loads=gravity_loads,
         outputs=outputs,
         metadata=dict(step.metadata),
@@ -296,11 +325,29 @@ def _build_distributed_load(
     step_name: str,
     step_index: int,
     load_index: int,
-) -> SurfaceLoad | EdgeLoad | GravityLoad:
+    topology: dict[str, Any],
+) -> SurfaceLoad | EdgeLoad | LineLoad | GravityLoad:
     """Convert an Abaqus DLOAD/DSLOAD line to a model distributed load."""
     label = load.label.upper()
     if label == "GRAV":
         return _build_gravity_load(load, mesh)
+    if mesh.elements and mesh.elements[0].type in {"Beam2", "Truss2"}:
+        if load.source != "dload":
+            raise ValueError("line loads must use *Dload")
+        if label not in {"QGLOBAL", "QLOCAL"}:
+            raise ValueError(
+                "line-element *Dload label must be QGLOBAL or QLOCAL"
+            )
+        vector = (load.magnitude, *load.extra)
+        if len(vector) != 3:
+            raise ValueError(
+                f"{label} requires three vector components, got {len(vector)}"
+            )
+        return LineLoad(
+            load.target,
+            vector,
+            "global" if label == "QGLOBAL" else "local",
+        )
     if load.source == "dsload":
         target_name = str(load.target)
         if mesh.dofs_per_node == 2:
@@ -318,6 +365,7 @@ def _build_distributed_load(
                 load.target,
                 face_label,
                 element_sets,
+                topology,
             )
         else:
             surfaces[target_name] = _surface_from_element_target(
@@ -326,6 +374,7 @@ def _build_distributed_load(
                 load.target,
                 face_label,
                 element_sets,
+                topology,
             )
     else:
         raise ValueError(f"unsupported distributed load source: {load.source}")
@@ -403,13 +452,11 @@ def _surface_from_element_target(
     target: str | int,
     face_label: str,
     element_sets: dict[str, ElementSet],
+    topology: dict[str, Any],
 ) -> Surface:
     """Build a generated surface from an element target and face label."""
-    face_lookup = {
-        (elem_id, face_index): node_ids
-        for elem_id, face_index, node_ids in face_selection.all(mesh)
-    }
-    elem_lookup = {elem.id: elem for elem in mesh.elements}
+    face_lookup = _face_lookup(mesh, topology)
+    elem_lookup = topology["elements"]
     model_faces = []
     for element_id in _resolve_element_target(target, element_sets):
         elem = _require_mesh_element(elem_lookup, element_id)
@@ -427,13 +474,11 @@ def _edge_from_element_target(
     target: str | int,
     face_label: str,
     element_sets: dict[str, ElementSet],
+    topology: dict[str, Any],
 ) -> Edge:
     """Build a generated edge collection from a 2D element target and face label."""
-    edge_lookup = {
-        (elem_id, edge_index): node_ids
-        for elem_id, edge_index, node_ids in edge_selection.all(mesh)
-    }
-    elem_lookup = {elem.id: elem for elem in mesh.elements}
+    edge_lookup = _edge_lookup(mesh, topology)
+    elem_lookup = topology["elements"]
     model_edges = []
     for element_id in _resolve_element_target(target, element_sets):
         elem = _require_mesh_element(elem_lookup, element_id)
@@ -443,6 +488,28 @@ def _edge_from_element_target(
             raise ValueError(f"element {element_id} does not have Abaqus edge {face_label}")
         model_edges.append(ElementEdge(element_id, local_index, node_ids))
     return Edge(name, model_edges)
+
+
+def _face_lookup(mesh: Any, topology: dict[str, Any]) -> dict[tuple[int, int], tuple[int, ...]]:
+    lookup = topology.get("faces")
+    if lookup is None:
+        lookup = {
+            (elem_id, face_index): node_ids
+            for elem_id, face_index, node_ids in face_selection.all(mesh)
+        }
+        topology["faces"] = lookup
+    return lookup
+
+
+def _edge_lookup(mesh: Any, topology: dict[str, Any]) -> dict[tuple[int, int], tuple[int, ...]]:
+    lookup = topology.get("edges")
+    if lookup is None:
+        lookup = {
+            (elem_id, edge_index): node_ids
+            for elem_id, edge_index, node_ids in edge_selection.all(mesh)
+        }
+        topology["edges"] = lookup
+    return lookup
 
 
 def _scaled_traction_vector(load: AbaqusDistributedLoad, mesh: Any) -> tuple[float, ...]:
@@ -483,11 +550,22 @@ def _element_dimension(element_type: str) -> int:
         return 2
     if etype.startswith("C3D"):
         return 3
+    if etype in {"TRUSS2", "T3D2", "BEAM2", "B31"}:
+        return 3
     raise ValueError(f"unsupported Abaqus element type: {element_type}")
 
 
 def _element_type(element: AbaqusElement) -> str:
     """Map Abaqus element type to local element type."""
+    aliases = {
+        "T3D2": "Truss2",
+        "TRUSS2": "Truss2",
+        "B31": "Beam2",
+        "BEAM2": "Beam2",
+    }
+    mapped = aliases.get(element.type.upper())
+    if mapped is not None:
+        return mapped
     try:
         return canonical_element_type(element.type)
     except NotImplementedError as exc:
