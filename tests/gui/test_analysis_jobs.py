@@ -21,6 +21,7 @@ from fem_gui.main_window import FEMMainWindow
 import fem_gui.main_window as main_window_module
 from fem_gui.visualization.model_adapter import build_model_geometry
 from tests.helpers.model_builders import make_static_pull_truss_model
+from tests.helpers.preflight_builders import passing_preflight_report
 
 
 def _application() -> QApplication:
@@ -44,7 +45,10 @@ def _validated_session() -> ModelSession:
     imported = session.prepare_import(Path("pull.inp"))
     session.accept_imported_model(imported.token, model)
     validation = session.prepare_validation("pull")
-    session.accept_validation(validation.token, {"passed": True})
+    session.accept_validation(
+        validation.token,
+        passing_preflight_report(validation.token),
+    )
     return session
 
 
@@ -53,7 +57,7 @@ def _accept_validation(window: FEMMainWindow, step_name: str) -> None:
     window._apply_session_delta(
         window.session.accept_validation(
             task.token,
-            {"passed": True},
+            passing_preflight_report(task.token),
         )
     )
 
@@ -104,7 +108,10 @@ def test_session_runs_are_case_insensitive_and_cleared_by_model_transitions():
     assert session.snapshot().active_job_name is None
 
     validation = session.prepare_validation("pull")
-    session.accept_validation(validation.token, {"passed": True})
+    session.accept_validation(
+        validation.token,
+        passing_preflight_report(validation.token),
+    )
     session.prepare_solve("pull", "Job-1")
     session.close()
     assert session.snapshot().runs == ()
@@ -161,20 +168,29 @@ def test_current_step_information_and_model_check_reuse_existing_services(monkey
     window.close()
 
 
-def test_model_check_does_not_assemble_and_factor_the_stiffness(monkeypatch, gui_inp_path):
+def test_model_check_runs_the_shared_numerical_stiffness_preflight(
+    monkeypatch,
+    gui_inp_path,
+):
     _application()
     window = FEMMainWindow()
     model = read(gui_inp_path)
     window._model_loaded(gui_inp_path, (model, build_model_geometry(model)))
+    original = static_linear.validate_stiffness
+    calls: list[str] = []
+
+    def tracked(model, step):
+        calls.append(str(step.name))
+        return original(model, step)
+
     monkeypatch.setattr(
         static_linear,
         "validate_stiffness",
-        lambda *_args, **_kwargs: pytest.fail(
-            "GUI model check must not perform the full numerical solve preflight"
-        ),
+        tracked,
     )
 
     assert window.check_current_model(show_success=False)
+    assert calls == ["Static-1"]
     window.close()
 
 
@@ -321,7 +337,7 @@ def test_failed_job_keeps_previous_result(monkeypatch, gui_inp_path):
     window.close()
 
 
-def test_check_failure_is_reported_by_background_job(monkeypatch):
+def test_solver_defensive_validation_failure_is_reported_by_job(monkeypatch):
     _application()
     window = FEMMainWindow()
     model = make_static_pull_truss_model()
@@ -342,7 +358,7 @@ def test_check_failure_is_reported_by_background_job(monkeypatch):
     assert tuple(run.run_id for run in window.document.jobs) == (job.run_id,)
     assert job.status is RunStatus.FAILED
     assert job.error == "模型引用错误"
-    assert shown == [("模型检查失败", "模型引用错误")]
+    assert shown == [("分析运行失败", "模型引用错误")]
     window.close()
 
 

@@ -33,7 +33,12 @@ from .model import (
     model_element_info,
 )
 from .result import ModelResult, ModelResults
-from .validation import validate_mesh, validate_model
+from .validation import (
+    validate_analysis_step,
+    validate_mesh,
+    validate_model,
+    validate_model_structure,
+)
 
 __all__ = [
     "AnalysisStep",
@@ -69,6 +74,8 @@ __all__ = [
     "model",
     "model_element_info",
     "result",
+    "validate_analysis_step",
     "validate_mesh",
     "validate_model",
+    "validate_model_structure",
 ]

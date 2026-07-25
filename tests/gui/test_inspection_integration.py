@@ -20,6 +20,7 @@ from fem_gui.main_window import FEMMainWindow
 from fem_gui.model_dialogs import MaterialEditDialog
 from fem_gui.visualization.model_adapter import build_model_geometry
 from fem_gui.widgets.model_tree import ROLE_KIND
+from tests.helpers.preflight_builders import passing_preflight_report
 
 
 def _application() -> QApplication:
@@ -41,7 +42,7 @@ def _seed_current_result(window: FEMMainWindow, step_name: str) -> None:
     validation = window.session.prepare_validation(step_name)
     window.session.accept_validation(
         validation.token,
-        {"passed": True},
+        passing_preflight_report(validation.token),
     )
     solve = window.session.prepare_solve(step_name, "Seed-Result")
     window.session.begin_run(solve.token)

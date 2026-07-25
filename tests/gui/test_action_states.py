@@ -162,7 +162,7 @@ def test_load_action_uses_the_same_dimension_filtered_regions_as_dialog():
     window._update_action_states()
 
     assert not window.actions["load_create"].isEnabled()
-    assert "三维面载荷区域" in window.actions["load_create"].toolTip()
+    assert "capability report" in window.actions["load_create"].toolTip()
     window.close()
 
 
@@ -221,7 +221,10 @@ def test_native_analysis_actions_are_available_before_meshing():
     assert window.actions["step_create"].isEnabled()
     assert window.actions["boundary_create"].isEnabled()
     assert window.actions["load_create"].isEnabled()
-    assert window.actions["output_create"].isEnabled()
+    assert not window.actions["output_create"].isEnabled()
+    assert "既有请求仅可查看或删除" in (
+        window.actions["output_create"].toolTip()
+    )
     assert window.actions["analysis_manager"].isEnabled()
     assert window.actions["close"].isEnabled()
     assert window.actions["model_info"].isEnabled()

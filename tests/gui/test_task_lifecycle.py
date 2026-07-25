@@ -19,6 +19,7 @@ from fem_gui.main_window import FEMMainWindow
 import fem_gui.main_window as main_window_module
 from fem_gui.visualization.model_adapter import build_model_geometry
 from tests.helpers.model_builders import make_static_pull_truss_model
+from tests.helpers.preflight_builders import passing_preflight_report
 
 
 def _application() -> QApplication:
@@ -46,7 +47,7 @@ def _window_with_model() -> FEMMainWindow:
     window._apply_session_delta(
         window.session.accept_validation(
             validation.token,
-            {"passed": True},
+            passing_preflight_report(validation.token),
         )
     )
     return window
@@ -195,9 +196,9 @@ def test_model_and_mesh_checks_compute_off_the_gui_thread(
     original_check = window._evaluate_model_check
     original_mesh = main_window_module.analyze_mesh
 
-    def checked(model, step_name):
+    def checked(model, step_name, token=None):
         model_threads.append(QThread.currentThread() is window.thread())
-        return original_check(model, step_name)
+        return original_check(model, step_name, token)
 
     def analyzed(model):
         mesh_threads.append(QThread.currentThread() is window.thread())
@@ -243,10 +244,10 @@ def test_model_revision_discards_stale_check_results(
     original_model_check = window._evaluate_model_check
     original_mesh_check = main_window_module.analyze_mesh
 
-    def delayed_model_check(model_snapshot, step_name):
+    def delayed_model_check(model_snapshot, step_name, token=None):
         model_check_entered.set()
         model_check_release.wait(2.0)
-        return original_model_check(model_snapshot, step_name)
+        return original_model_check(model_snapshot, step_name, token)
 
     def delayed_mesh_check(current_model):
         mesh_check_entered.set()

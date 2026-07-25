@@ -13,6 +13,7 @@ from fem_gui.main_window import FEMMainWindow
 from fem_gui.visualization.model_adapter import build_model_geometry
 from fem_gui.visualization.result_adapter import build_result_data
 from tests.helpers.model_builders import make_static_pull_truss_model
+from tests.helpers.preflight_builders import passing_preflight_report
 
 
 def _application() -> QApplication:
@@ -43,7 +44,7 @@ def _install_successful_result(
     assert window._apply_session_delta(
         window.session.accept_validation(
             validation.token,
-            {"passed": True},
+            passing_preflight_report(validation.token),
         )
     )
     solve_task = window.session.prepare_solve("pull", run_name)
@@ -96,7 +97,10 @@ def test_unprovenanced_result_projection_is_never_relabelled_as_current() -> Non
     window = _window_with_imported_model()
     validation = window.session.prepare_validation("pull")
     assert window._apply_session_delta(
-        window.session.accept_validation(validation.token, {"passed": True})
+        window.session.accept_validation(
+            validation.token,
+            passing_preflight_report(validation.token),
+        )
     )
     solve_task = window.session.prepare_solve("pull", "Job-1")
     assert window._apply_session_delta(solve_task.delta)

@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 import numpy as np
 
-from ..elements import get_element_kernel
+from ..elements import get_element_capabilities, get_element_kernel
 from .condition import LineElementLoad
 
 
@@ -20,7 +20,7 @@ def add_forces(
         elem = elem_lookup.get(load.elem_id)
         if elem is None:
             raise KeyError(f"Element {load.elem_id} not found in mesh")
-        if str(elem.type).casefold() != "beam2":
+        if "line" not in get_element_capabilities(elem.type).load_kinds:
             raise ValueError("line loads may target only Beam2 elements")
         kernel = get_element_kernel(elem.type)
         element_force = np.asarray(

@@ -9,17 +9,21 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
-from fem.core.model import MaterialDefinition, SectionAssignment
 from fem.geometry.recipe_topology import can_preserve_logical_references
 
 from .changes import ArtifactKind, ChangeKind, SessionDelta
 from .definitions import (
     FeatureRecord,
+    ModelDefinitions,
     NamedRegion,
     NativePart,
     RegionAssignment,
     SectionDefinition,
+    compile_model_definitions,
+    definitions_from_model,
+    normalize_model_definitions,
 )
+from .diagnostics import PreflightReport, internal_error_report
 from .revisions import (
     ImportTaskSnapshot,
     MeshTaskSnapshot,
@@ -525,22 +529,22 @@ class ModelSession:
         mesh_settings = deepcopy(detached.mesh_settings)
         feature_history = deepcopy(detached.feature_history)
         named_regions = _regions_by_name(detached.named_regions)
-        materials = _named_tuple(
-            detached.material_definitions, "material"
+        definitions = normalize_model_definitions(
+            detached.material_definitions,
+            detached.section_definitions,
+            detached.region_assignments,
+            detached.analysis_definitions,
         )
-        sections = _named_tuple(detached.section_definitions, "section")
-        assignments = deepcopy(detached.region_assignments)
-        steps = _named_tuple(detached.analysis_definitions, "analysis step")
-        _validate_definition_links(materials, sections, assignments)
+        materials = definitions.materials
+        sections = definitions.sections
+        assignments = definitions.assignments
+        steps = definitions.steps
         model = deepcopy(detached.model)
         if model is not None:
-            model = self._compile_definitions(
+            model = compile_model_definitions(
                 model,
-                materials,
-                sections,
-                assignments,
-                steps,
-            )
+                definitions,
+            ).require_model()
 
         self._session_id = new_identity("session")
         self._clear_content()
@@ -795,31 +799,25 @@ class ModelSession:
     ) -> SessionDelta:
         self._check_expected(expected_session_revision)
         self._require_open()
-        owned_materials = _named_tuple(materials, "material")
-        owned_sections = _named_tuple(sections, "section")
-        owned_assignments = deepcopy(tuple(assignments))
-        owned_steps = _named_tuple(steps, "analysis step")
-        _validate_definition_links(
-            owned_materials,
-            owned_sections,
-            owned_assignments,
+        owned = normalize_model_definitions(
+            materials,
+            sections,
+            assignments,
+            steps,
         )
 
         compiled_model = None
         previous_artifact = self._artifact
         if previous_artifact is not None:
-            compiled_model = self._compile_definitions(
-                deepcopy(previous_artifact.model),
-                owned_materials,
-                owned_sections,
-                owned_assignments,
-                owned_steps,
-            )
+            compiled_model = compile_model_definitions(
+                previous_artifact.model,
+                owned,
+            ).require_model()
 
-        self._materials = owned_materials
-        self._sections = owned_sections
-        self._assignments = owned_assignments
-        self._steps = owned_steps
+        self._materials = owned.materials
+        self._sections = owned.sections
+        self._assignments = owned.assignments
+        self._steps = owned.steps
         self._definitions_explicit = True
         self._drop_computations()
         self._increment_domain_revisions(project=True, model=True)
@@ -887,12 +885,7 @@ class ModelSession:
         if status is not TokenStatus.CURRENT:
             return self._rejected(status, "stale imported model")
         owned_model = deepcopy(model)
-        (
-            materials,
-            sections,
-            assignments,
-            steps,
-        ) = _definitions_from_model(owned_model)
+        definitions = definitions_from_model(owned_model)
         source_path = Path(self._task_data[token.task_id])
 
         self._session_id = new_identity("session")
@@ -900,10 +893,10 @@ class ModelSession:
         self._is_open = True
         self._source_kind = "imported"
         self._source_path = source_path
-        self._materials = materials
-        self._sections = sections
-        self._assignments = assignments
-        self._steps = steps
+        self._materials = definitions.materials
+        self._sections = definitions.sections
+        self._assignments = definitions.assignments
+        self._steps = definitions.steps
         self._definitions_explicit = True
         self._increment_domain_revisions(project=True, mesh=True, model=True)
         self._artifact = self._new_artifact(owned_model, "imported")
@@ -958,24 +951,25 @@ class ModelSession:
         owned_model = deepcopy(model)
         definitions = None
         if self._definitions_explicit:
-            owned_model = self._compile_definitions(
-                owned_model,
+            current_definitions = ModelDefinitions(
                 self._materials,
                 self._sections,
                 self._assignments,
                 self._steps,
             )
+            owned_model = compile_model_definitions(
+                owned_model,
+                current_definitions,
+            ).require_model()
         else:
-            definitions = _definitions_from_model(owned_model)
+            definitions = definitions_from_model(owned_model)
 
         self._drop_computations()
         if definitions is not None:
-            (
-                self._materials,
-                self._sections,
-                self._assignments,
-                self._steps,
-            ) = definitions
+            self._materials = definitions.materials
+            self._sections = definitions.sections
+            self._assignments = definitions.assignments
+            self._steps = definitions.steps
         self._increment_domain_revisions(project=True, model=True)
         self._artifact = self._new_artifact(owned_model, "native")
         self._complete_token(token)
@@ -1014,14 +1008,14 @@ class ModelSession:
     def accept_validation(
         self,
         token: TaskToken,
-        report: Any,
-        *,
-        passed: bool | None = None,
+        report: PreflightReport,
     ) -> SessionDelta:
         status = self._token_status_for(token, "validation")
         if status is not TokenStatus.CURRENT:
             return self._rejected(status, "stale validation report")
-        outcome = _validation_passed(report) if passed is None else bool(passed)
+        if not isinstance(report, PreflightReport):
+            raise TypeError("validation report must be PreflightReport")
+        self._validate_report_provenance(token, report)
         owned_report = deepcopy(report)
         artifact = self._require_current_artifact()
         stamp = ValidationStamp(
@@ -1032,20 +1026,31 @@ class ModelSession:
         )
         self._validations[str(token.step_name)] = ValidationRecord(
             stamp=stamp,
-            passed=outcome,
             report=owned_report,
         )
         self._complete_token(token)
         return self._emit(
             {ChangeKind.VALIDATIONS},
             frozenset(),
-            "validation passed" if outcome else "validation failed",
+            (
+                "validation passed"
+                if owned_report.passed
+                else "validation failed"
+            ),
         )
 
     def accept_validation_failed(
-        self, token: TaskToken, report: Any
+        self,
+        token: TaskToken,
+        report: PreflightReport,
     ) -> SessionDelta:
-        return self.accept_validation(token, report, passed=False)
+        if not isinstance(report, PreflightReport):
+            raise TypeError("validation report must be PreflightReport")
+        if report.passed:
+            raise ValueError(
+                "failed validation callback requires an error diagnostic"
+            )
+        return self.accept_validation(token, report)
 
     # ------------------------------------------------------------------
     # Runs and solver results
@@ -1298,7 +1303,17 @@ class ModelSession:
         if token.task_kind == "solve":
             return self.accept_run_failed(token, error)
         if token.task_kind == "validation":
-            return self.accept_validation(token, error, passed=False)
+            report = internal_error_report(
+                str(token.step_name),
+                error,
+                session_id=token.session_id,
+                artifact_id=token.artifact_id,
+                model_revision=_token_dependency(
+                    token,
+                    "model_revision",
+                ),
+            )
+            return self.accept_validation_failed(token, report)
         self._complete_token(token)
         return self._emit(
             {ChangeKind.SESSION},
@@ -1746,6 +1761,35 @@ class ModelSession:
             return TokenStatus.WRONG_KIND
         return status
 
+    def _validate_report_provenance(
+        self,
+        token: TaskToken,
+        report: PreflightReport,
+    ) -> None:
+        """Require a report to identify the exact validation snapshot."""
+
+        expected_step = str(token.step_name)
+        expected_revision = _token_dependency(
+            token,
+            "model_revision",
+        )
+        mismatches: list[str] = []
+        if report.step_name != expected_step:
+            mismatches.append(
+                f"step {report.step_name!r} != {expected_step!r}"
+            )
+        if report.session_id != token.session_id:
+            mismatches.append("session_id")
+        if report.artifact_id != token.artifact_id:
+            mismatches.append("artifact_id")
+        if report.model_revision != expected_revision:
+            mismatches.append("model_revision")
+        if mismatches:
+            raise ValueError(
+                "preflight report provenance does not match validation token: "
+                + ", ".join(mismatches)
+            )
+
     def _revision_value(self, name: str) -> int | None:
         return {
             "session_revision": self._session_revision,
@@ -1755,58 +1799,6 @@ class ModelSession:
             "saved_project_revision": self._saved_project_revision,
         }.get(str(name))
 
-    def _compile_definitions(
-        self,
-        model: Any,
-        materials: tuple[Any, ...],
-        sections: tuple[SectionDefinition, ...],
-        assignments: tuple[RegionAssignment, ...],
-        steps: tuple[Any, ...],
-    ) -> Any:
-        material_map = {
-            str(material.name): MaterialDefinition(
-                str(material.name),
-                deepcopy(dict(material.properties)),
-            )
-            for material in materials
-        }
-        section_map = {str(section.name): section for section in sections}
-        element_sets = dict(getattr(model, "element_sets", {}))
-        metadata = getattr(model, "metadata", {})
-        element_sets.update(
-            dict(metadata.get("_abaqus_internal_element_sets", {}))
-        )
-        compiled_assignments: list[SectionAssignment] = []
-        for assignment in assignments:
-            section = section_map.get(str(assignment.section_name))
-            if section is None:
-                raise ValueError(
-                    f"section {assignment.section_name!r} is not defined"
-                )
-            if str(section.material) not in material_map:
-                raise ValueError(
-                    f"section {section.name!r} references missing material "
-                    f"{section.material!r}"
-                )
-            region_name = str(assignment.region_name)
-            if region_name not in element_sets:
-                raise ValueError(
-                    f"region {region_name!r} is not an element set"
-                )
-            compiled_assignments.append(
-                SectionAssignment(
-                    region_name,
-                    str(section.material),
-                    str(section.section_type),
-                    deepcopy(dict(section.properties)),
-                )
-            )
-        model.materials = material_map
-        model.sections = compiled_assignments
-        model.steps = deepcopy(list(steps))
-        return model
-
-
 def _canonical_source_kind(value: Any) -> str:
     normalized = str(value).strip().casefold()
     if normalized == "inp":
@@ -1814,27 +1806,6 @@ def _canonical_source_kind(value: Any) -> str:
     if normalized not in {"native", "imported"}:
         raise ValueError(f"unsupported project source kind: {value!r}")
     return normalized
-
-
-def _named_tuple(
-    values: Mapping[str, Any] | Iterable[Any], label: str
-) -> tuple[Any, ...]:
-    owned = deepcopy(_mapping_values(values))
-    names: dict[str, str] = {}
-    for value in owned:
-        if not hasattr(value, "name"):
-            raise TypeError(f"{label} is missing a name")
-        name = str(value.name).strip()
-        if not name:
-            raise ValueError(f"{label} name must not be empty")
-        key = name.casefold()
-        if key in names:
-            raise ValueError(
-                f"{label} names must be unique ignoring case: "
-                f"{names[key]!r} and {name!r}"
-            )
-        names[key] = name
-    return owned
 
 
 def _regions_by_name(
@@ -1858,73 +1829,11 @@ def _regions_by_name(
     return result
 
 
-def _validate_definition_links(
-    materials: tuple[Any, ...],
-    sections: tuple[SectionDefinition, ...],
-    assignments: tuple[RegionAssignment, ...],
-) -> None:
-    material_names = {str(material.name) for material in materials}
-    section_map = {str(section.name): section for section in sections}
-    for section in sections:
-        if str(section.material) not in material_names:
-            raise ValueError(
-                f"section {section.name!r} references missing material "
-                f"{section.material!r}"
-            )
-    for assignment in assignments:
-        if str(assignment.section_name) not in section_map:
-            raise ValueError(
-                f"assignment references missing section "
-                f"{assignment.section_name!r}"
-            )
-
-
-def _definitions_from_model(
-    model: Any,
-) -> tuple[
-    tuple[Any, ...],
-    tuple[SectionDefinition, ...],
-    tuple[RegionAssignment, ...],
-    tuple[Any, ...],
-]:
-    materials = deepcopy(tuple(getattr(model, "materials", {}).values()))
-    sections: list[SectionDefinition] = []
-    assignments: list[RegionAssignment] = []
-    for index, section in enumerate(getattr(model, "sections", ()), start=1):
-        name = f"Section-{index}"
-        sections.append(
-            SectionDefinition(
-                name=name,
-                material=str(section.material),
-                section_type=str(section.section_type),
-                properties=deepcopy(dict(section.properties)),
-            )
-        )
-        assignments.append(
-            RegionAssignment(
-                section_name=name,
-                region_name=str(section.element_set),
-            )
-        )
-    steps = deepcopy(tuple(getattr(model, "steps", ())))
-    return materials, tuple(sections), tuple(assignments), steps
-
-
-def _validation_passed(report: Any) -> bool:
-    if isinstance(report, BaseException):
-        return False
-    if isinstance(report, bool):
-        return report
-    if isinstance(report, Mapping):
-        for name in ("passed", "is_valid", "ok"):
-            if name in report:
-                return bool(report[name])
-    for name in ("passed", "is_valid", "ok"):
-        if hasattr(report, name):
-            return bool(getattr(report, name))
-    # ``accept_validation`` is the success callback.  Reports without an
-    # explicit outcome therefore represent a passing validation.
-    return True
+def _token_dependency(token: TaskToken, name: str) -> int | None:
+    for dependency_name, value in token.dependency_revisions:
+        if dependency_name == name:
+            return int(value)
+    return None
 
 
 def _rename_step_region_references(

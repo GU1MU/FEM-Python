@@ -72,6 +72,48 @@ def test_line_load_element_id_and_element_set_targets_are_equivalent():
     assert _step_force(model, by_id) == pytest.approx(_step_force(model, by_set))
 
 
+def test_line_load_resolves_importer_internal_element_set():
+    model = _beam_model()
+    model.element_sets.clear()
+    model.metadata["_abaqus_internal_element_sets"] = {
+        "imported": ElementSet("imported", (10,))
+    }
+    by_id = AnalysisStep(
+        "id",
+        line_loads=(LineLoad(10, (0.0, 2.0, 0.0)),),
+    )
+    imported = AnalysisStep(
+        "set",
+        line_loads=(LineLoad("imported", (0.0, 2.0, 0.0)),),
+    )
+
+    validate_model(model, imported)
+    assert _step_force(model, imported) == pytest.approx(
+        _step_force(model, by_id)
+    )
+
+
+def test_public_line_load_set_wins_over_same_named_internal_set():
+    model = _beam_model()
+    model.element_sets["shared"] = ElementSet("shared", (10,))
+    model.metadata["_abaqus_internal_element_sets"] = {
+        "shared": ElementSet("shared", (999,))
+    }
+    by_id = AnalysisStep(
+        "id",
+        line_loads=(LineLoad(10, (0.0, 2.0, 0.0)),),
+    )
+    shared = AnalysisStep(
+        "set",
+        line_loads=(LineLoad("shared", (0.0, 2.0, 0.0)),),
+    )
+
+    validate_model(model, shared)
+    assert _step_force(model, shared) == pytest.approx(
+        _step_force(model, by_id)
+    )
+
+
 @pytest.mark.parametrize(
     ("vector", "expected"),
     [

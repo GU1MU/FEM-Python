@@ -1,12 +1,38 @@
 """Headless application lifecycle contracts for FEM front ends."""
 
 from .changes import ArtifactKind, ChangeKind, SessionDelta
+from .capabilities import (
+    AuthoringCapability,
+    AuthoringStatus,
+    ModelCapabilityReport,
+    RegionCapability,
+    RegionRef,
+    describe_model_capabilities,
+    describe_native_authoring_capabilities,
+    describe_region_capabilities,
+    require_region_kind,
+)
 from .definitions import (
+    DefinitionCompileResult,
+    DefinitionRejected,
     FeatureRecord,
+    ModelDefinitions,
     NamedRegion,
     NativePart,
     RegionAssignment,
     SectionDefinition,
+    compile_model_definitions,
+    compiled_model_snapshot,
+    definitions_from_model,
+    normalize_model_definitions,
+)
+from .diagnostics import (
+    PreflightDiagnostic,
+    PreflightFacts,
+    PreflightReport,
+    PreflightSeverity,
+    PreflightStage,
+    internal_error_report,
 )
 from .revisions import (
     ImportTaskSnapshot,
@@ -30,6 +56,7 @@ from .preprocessing import (
     TopologyResolutionError,
     generate_fem_model,
 )
+from .preflight import run_static_preflight, safe_static_preflight
 from .session import (
     ModelSession,
     ProjectSaveSnapshot,
@@ -43,18 +70,31 @@ from .validation import ValidationRecord, ValidationStamp
 __all__ = [
     "AnalysisRun",
     "ArtifactKind",
+    "AuthoringCapability",
+    "AuthoringStatus",
     "ChangeKind",
+    "DefinitionCompileResult",
+    "DefinitionRejected",
     "FeatureRecord",
     "ImportTaskSnapshot",
     "LogicalRecipeTopologyResolver",
     "MeshTaskSnapshot",
     "ModelArtifact",
+    "ModelCapabilityReport",
+    "ModelDefinitions",
     "ModelSession",
     "NamedRegion",
     "NativePart",
     "ProjectSaveSnapshot",
     "ProjectSnapshot",
+    "PreflightDiagnostic",
+    "PreflightFacts",
+    "PreflightReport",
+    "PreflightSeverity",
+    "PreflightStage",
     "RegionAssignment",
+    "RegionCapability",
+    "RegionRef",
     "ResultProjectionTaskSnapshot",
     "ResultProvenance",
     "ResultRecord",
@@ -72,5 +112,16 @@ __all__ = [
     "ValidationRecord",
     "ValidationStamp",
     "ValidationTaskSnapshot",
+    "compile_model_definitions",
+    "compiled_model_snapshot",
+    "describe_model_capabilities",
+    "describe_native_authoring_capabilities",
+    "describe_region_capabilities",
+    "definitions_from_model",
     "generate_fem_model",
+    "internal_error_report",
+    "normalize_model_definitions",
+    "require_region_kind",
+    "run_static_preflight",
+    "safe_static_preflight",
 ]

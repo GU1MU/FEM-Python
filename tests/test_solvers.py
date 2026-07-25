@@ -415,6 +415,18 @@ def test_static_linear_validate_problem_matches_solver_rules():
         static_linear.validate_problem(model, "pull")
 
 
+def test_static_validation_only_checks_the_selected_step_references():
+    model = make_two_step_static_pull_truss_model()
+    model.steps[2].cloads = (NodalLoad("MISSING_IN_PULL2", 1, 1.0),)
+
+    assert static_linear.validate_problem(model, "pull1") is model.steps[1]
+    result = static_linear.solve(model, steps=("pull1",))
+    assert result.results[0].step is model.steps[1]
+
+    with pytest.raises(KeyError, match="MISSING_IN_PULL2"):
+        static_linear.validate_problem(model, "pull2")
+
+
 def test_static_linear_stiffness_preflight_detects_free_rigid_dofs():
     model = make_static_pull_truss_model()
 

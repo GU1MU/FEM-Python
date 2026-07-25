@@ -346,6 +346,8 @@ def _model_element_set(model: FEMModel, name: str) -> ElementSet:
 
 def _all_model_element_sets(model: FEMModel) -> dict[str, ElementSet]:
     """Return public and importer-internal element sets."""
-    result = dict(model.element_sets)
-    result.update(model.metadata.get("_abaqus_internal_element_sets", {}))
+    result = dict(
+        model.metadata.get("_abaqus_internal_element_sets", {})
+    )
+    result.update(model.element_sets)
     return result

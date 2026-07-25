@@ -1,10 +1,12 @@
-"""Step-specific validation records."""
+"""Step-specific validation stamps and typed records."""
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+
+from .diagnostics import PreflightReport
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,11 +24,21 @@ class ValidationRecord:
     """A successful or failed validation attempt for one stamped step."""
 
     stamp: ValidationStamp
-    passed: bool
-    report: Any = None
+    report: PreflightReport
     created_at: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.report, PreflightReport):
+            raise TypeError("validation report must be PreflightReport")
+        object.__setattr__(self, "report", deepcopy(self.report))
+
+    @property
+    def passed(self) -> bool:
+        """Derive the stamp outcome from its typed report."""
+
+        return self.report.passed
 
     @property
     def is_valid(self) -> bool:

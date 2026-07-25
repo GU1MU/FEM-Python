@@ -50,6 +50,7 @@ _EDITABLE_KINDS = {
     "cload",
     "edge_load",
     "surface_load",
+    "line_load",
     "gravity_load",
     "output",
 }

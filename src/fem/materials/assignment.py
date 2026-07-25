@@ -1,11 +1,18 @@
 from __future__ import annotations
 
-from copy import deepcopy
 from collections.abc import Mapping
+from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any
 
 from ..core.model import ElementSet, MaterialDefinition, SectionAssignment
 from ..elements.beam_section import parse_beam2_section
+from .sections import (
+    MaterialPropertyError,
+    SectionCompatibilityError,
+    SectionPropertyError,
+    resolve_section_properties,
+)
 
 
 _SECTION_KEYS_METADATA = "_section_property_keys_by_element"
@@ -16,6 +23,116 @@ _SECTION_METADATA_KEYS = (
     _SECTION_ORIGINALS_METADATA,
     _SECTION_IDENTITIES_METADATA,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class SectionResolutionIssue:
+    """One deterministic problem found by pure section resolution."""
+
+    code: str
+    message: str
+    assignment_index: int | None = None
+    element_set: str | None = None
+    material: str | None = None
+    section_type: str | None = None
+    element_id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedSectionAssignment:
+    """One source assignment retained in caller order."""
+
+    assignment_index: int
+    element_set: str
+    material: str
+    section_type: str
+    element_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class EffectiveSectionAssignment:
+    """The final last-match assignment and owned properties for one element."""
+
+    element_id: int
+    assignment_index: int
+    element_set: str
+    material: str
+    section_type: str
+    applied_properties: dict[str, Any]
+    effective_properties: dict[str, Any]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "applied_properties",
+            deepcopy(dict(self.applied_properties)),
+        )
+        object.__setattr__(
+            self,
+            "effective_properties",
+            deepcopy(dict(self.effective_properties)),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SectionResolution:
+    """Pure model-wide section resolution with explicit failure facts."""
+
+    assignments: tuple[ResolvedSectionAssignment, ...]
+    effective_assignments: tuple[EffectiveSectionAssignment, ...]
+    uncovered_element_ids: tuple[int, ...]
+    missing_materials: tuple[str, ...]
+    missing_element_sets: tuple[str, ...]
+    missing_element_ids: tuple[int, ...]
+    incompatible_element_ids: tuple[int, ...]
+    issues: tuple[SectionResolutionIssue, ...]
+
+    @property
+    def passed(self) -> bool:
+        """Return whether every declared assignment resolved successfully."""
+
+        return not self.issues
+
+    @property
+    def fully_covered(self) -> bool:
+        """Return whether every model element has a declared assignment."""
+
+        return not self.uncovered_element_ids
+
+    @property
+    def assignment_order(self) -> tuple[int, ...]:
+        """Return source assignment indices in their preserved order."""
+
+        return tuple(item.assignment_index for item in self.assignments)
+
+    def for_element(
+        self,
+        element_id: int,
+    ) -> EffectiveSectionAssignment | None:
+        """Return the final assignment for an element, if it is covered."""
+
+        target = int(element_id)
+        return next(
+            (
+                item
+                for item in self.effective_assignments
+                if item.element_id == target
+            ),
+            None,
+        )
+
+    def require_valid(self) -> SectionResolution:
+        """Return this resolution or raise its first canonical error."""
+
+        if not self.issues:
+            return self
+        issue = self.issues[0]
+        if issue.code in {
+            "definition.material.missing",
+            "definition.section.reference_missing",
+        }:
+            raise KeyError(issue.message)
+        raise ValueError(issue.message)
 
 
 def add(model: Any, material: MaterialDefinition) -> MaterialDefinition:
@@ -45,10 +162,12 @@ def assign(
 
 
 def apply_sections(model: Any) -> None:
-    """Copy assigned material and section data onto element props."""
+    """Apply the same pure last-match resolution used by validation."""
+
     element_lookup = _element_lookup(model)
-    resolved_sections = _resolve_sections(model, element_lookup)
-    _validate_effective_beam2_sections(model, element_lookup, resolved_sections)
+    resolution = resolve_sections(model, element_lookup=element_lookup)
+    resolution.require_valid()
+    _validate_unassigned_beam_sections(model, element_lookup, resolution)
     props_snapshot = {
         element_id: (elem.props, deepcopy(elem.props))
         for element_id, elem in element_lookup.items()
@@ -73,87 +192,304 @@ def apply_sections(model: Any) -> None:
             element_identities,
         )
 
-        for element_set, props in resolved_sections:
-            for element_id in element_set.element_ids:
-                elem = element_lookup[element_id]
-                baseline = original_values.setdefault(element_id, {})
-                _restore_tracked_keys(
-                    elem,
-                    section_keys.get(element_id, ()),
-                    baseline,
-                )
-                for key in props:
-                    if key not in baseline:
-                        baseline[key] = (
-                            key in elem.props,
-                            deepcopy(elem.props.get(key)),
-                        )
-                elem.props.update(props)
-                section_keys[element_id] = tuple(props)
-                element_identities[element_id] = id(elem)
+        for effective in resolution.effective_assignments:
+            element_id = effective.element_id
+            elem = element_lookup[element_id]
+            props = effective.applied_properties
+            baseline = original_values.setdefault(element_id, {})
+            _restore_tracked_keys(
+                elem,
+                section_keys.get(element_id, ()),
+                baseline,
+            )
+            for key in props:
+                if key not in baseline:
+                    baseline[key] = (
+                        key in elem.props,
+                        deepcopy(elem.props.get(key)),
+                    )
+            elem.props.update(props)
+            section_keys[element_id] = tuple(props)
+            element_identities[element_id] = id(elem)
     except Exception:
         _restore_apply_sections_state(model, props_snapshot, metadata_snapshot)
         raise
 
 
-def _resolve_sections(
+def resolve_sections(
+    model: Any,
+    *,
+    element_lookup: dict[int, Any] | None = None,
+) -> SectionResolution:
+    """Resolve every assignment without mutating model or element props."""
+
+    lookup = (
+        _element_lookup(model)
+        if element_lookup is None
+        else dict(element_lookup)
+    )
+    assignments: list[ResolvedSectionAssignment] = []
+    effective_by_element: dict[int, EffectiveSectionAssignment] = {}
+    targeted_element_ids: set[int] = set()
+    issues: list[SectionResolutionIssue] = []
+    missing_materials: list[str] = []
+    missing_element_sets: list[str] = []
+    missing_element_ids: list[int] = []
+    incompatible_element_ids: list[int] = []
+
+    for assignment_index, section in enumerate(
+        getattr(model, "sections", ()),
+    ):
+        element_set_name = str(section.element_set)
+        material_name = str(section.material)
+        declared_type = str(section.section_type)
+        material = getattr(model, "materials", {}).get(material_name)
+        try:
+            element_set = _section_element_set(model, element_set_name)
+        except KeyError:
+            element_set = None
+
+        element_ids = (
+            ()
+            if element_set is None
+            else tuple(int(value) for value in element_set.element_ids)
+        )
+        assignments.append(
+            ResolvedSectionAssignment(
+                assignment_index=assignment_index,
+                element_set=element_set_name,
+                material=material_name,
+                section_type=declared_type,
+                element_ids=element_ids,
+            )
+        )
+
+        if material is None:
+            _append_unique(missing_materials, material_name)
+            issues.append(
+                SectionResolutionIssue(
+                    code="definition.material.missing",
+                    message=f"material {material_name} is not defined",
+                    assignment_index=assignment_index,
+                    element_set=element_set_name,
+                    material=material_name,
+                    section_type=declared_type,
+                )
+            )
+        if element_set is None:
+            _append_unique(missing_element_sets, element_set_name)
+            issues.append(
+                SectionResolutionIssue(
+                    code="definition.section.reference_missing",
+                    message=(
+                        f"element set {element_set_name} is not defined"
+                    ),
+                    assignment_index=assignment_index,
+                    element_set=element_set_name,
+                    material=material_name,
+                    section_type=declared_type,
+                )
+            )
+        if element_set is None:
+            continue
+
+        for element_id in element_ids:
+            elem = lookup.get(element_id)
+            if elem is None:
+                _append_unique(missing_element_ids, element_id)
+                issues.append(
+                    SectionResolutionIssue(
+                        code="definition.section.reference_missing",
+                        message=f"element {element_id} is not defined",
+                        assignment_index=assignment_index,
+                        element_set=element_set_name,
+                        material=material_name,
+                        section_type=declared_type,
+                        element_id=element_id,
+                    )
+                )
+                continue
+            targeted_element_ids.add(element_id)
+            # Last assignment wins as a declaration too: a later invalid
+            # assignment cannot leave an earlier valid assignment effective.
+            effective_by_element.pop(element_id, None)
+            if material is None:
+                continue
+
+            try:
+                resolved = resolve_section_properties(
+                    elem.type,
+                    material.properties,
+                    declared_type,
+                    section.properties,
+                    baseline_properties=_restored_properties(
+                        model,
+                        element_id,
+                        elem,
+                    ),
+                )
+            except SectionCompatibilityError as exc:
+                _append_unique(incompatible_element_ids, element_id)
+                issues.append(
+                    _element_issue(
+                        "definition.section.incompatible",
+                        exc,
+                        assignment_index,
+                        element_set_name,
+                        material_name,
+                        declared_type,
+                        element_id,
+                    )
+                )
+                continue
+            except MaterialPropertyError as exc:
+                issues.append(
+                    _element_issue(
+                        "definition.material.invalid",
+                        exc,
+                        assignment_index,
+                        element_set_name,
+                        material_name,
+                        declared_type,
+                        element_id,
+                    )
+                )
+                continue
+            except (SectionPropertyError, NotImplementedError) as exc:
+                if isinstance(exc, NotImplementedError):
+                    _append_unique(incompatible_element_ids, element_id)
+                    code = "definition.section.incompatible"
+                else:
+                    code = "definition.section.invalid"
+                issues.append(
+                    _element_issue(
+                        code,
+                        exc,
+                        assignment_index,
+                        element_set_name,
+                        material_name,
+                        declared_type,
+                        element_id,
+                    )
+                )
+                continue
+
+            applied = dict(resolved.applied_properties)
+            applied["material"] = material_name
+            applied["section_type"] = resolved.section_type
+            applied["_stress_material_signature"] = (
+                "material",
+                material_name,
+                _freeze_signature(material.properties),
+            )
+            applied["_stress_section_signature"] = (
+                "section",
+                resolved.section_type,
+                _freeze_signature(section.properties),
+            )
+            effective = dict(resolved.effective_properties)
+            effective.update(applied)
+            effective_by_element[element_id] = EffectiveSectionAssignment(
+                element_id=element_id,
+                assignment_index=assignment_index,
+                element_set=element_set_name,
+                material=material_name,
+                section_type=resolved.section_type,
+                applied_properties=applied,
+                effective_properties=effective,
+            )
+
+    effective_assignments = tuple(
+        effective_by_element[element_id]
+        for element_id in lookup
+        if element_id in effective_by_element
+    )
+    uncovered = tuple(
+        element_id
+        for element_id in lookup
+        if element_id not in targeted_element_ids
+    )
+    return SectionResolution(
+        assignments=tuple(assignments),
+        effective_assignments=effective_assignments,
+        uncovered_element_ids=uncovered,
+        missing_materials=tuple(missing_materials),
+        missing_element_sets=tuple(missing_element_sets),
+        missing_element_ids=tuple(missing_element_ids),
+        incompatible_element_ids=tuple(incompatible_element_ids),
+        issues=tuple(issues),
+    )
+
+
+def _validate_unassigned_beam_sections(
     model: Any,
     element_lookup: dict[int, Any],
-) -> list[tuple[ElementSet, dict[str, Any]]]:
-    """Resolve and validate every section without mutating model state."""
-    resolved_sections: list[tuple[ElementSet, dict[str, Any]]] = []
-    for section in model.sections:
-        if section.material not in model.materials:
-            raise KeyError(f"material {section.material} is not defined")
-        element_set = _section_element_set(model, section.element_set)
-
-        props = dict(model.materials[section.material].properties)
-        props.update(section.properties)
-        props["material"] = section.material
-        props["section_type"] = section.section_type
-        props["_stress_material_signature"] = (
-            "material",
-            section.material,
-            _freeze_signature(model.materials[section.material].properties),
-        )
-        props["_stress_section_signature"] = (
-            "section",
-            section.section_type,
-            _freeze_signature(section.properties),
-        )
-        for element_id in element_set.element_ids:
-            if element_id not in element_lookup:
-                raise KeyError(f"element {element_id} is not defined")
-        resolved_sections.append((element_set, props))
-    return resolved_sections
-
-
-def _validate_effective_beam2_sections(
-    model: Any,
-    element_lookup: dict[int, Any],
-    resolved_sections: list[tuple[ElementSet, dict[str, Any]]],
+    resolution: SectionResolution,
 ) -> None:
-    """Validate the final Beam2 properties without mutating model state."""
-    effective = {
-        element_id: _restored_properties(model, element_id, elem)
-        for element_id, elem in element_lookup.items()
-    }
-    last_assignment: dict[int, dict[str, Any]] = {}
-    for element_set, props in resolved_sections:
-        for element_id in element_set.element_ids:
-            last_assignment[element_id] = props
-    for element_id, props in last_assignment.items():
-        effective[element_id].update(props)
+    """Preserve validation for directly-authored uncovered beam elements."""
 
+    covered = {
+        item.element_id for item in resolution.effective_assignments
+    }
     for element_id, elem in element_lookup.items():
-        if str(elem.type).casefold() != "beam2":
+        if (
+            element_id in covered
+            or _element_capabilities(elem.type).family != "beam"
+        ):
             continue
         try:
-            parse_beam2_section(effective[element_id])
+            parse_beam2_section(
+                _restored_properties(model, element_id, elem)
+            )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(
                 f"Element {element_id} has invalid Beam2 section: {exc}"
             ) from exc
+
+
+def _element_capabilities(element_type: str) -> Any:
+    """Query lazily to preserve elements → materials import compatibility."""
+
+    from ..elements import get_element_capabilities
+
+    return get_element_capabilities(element_type)
+
+
+def _element_issue(
+    code: str,
+    error: Exception,
+    assignment_index: int,
+    element_set: str,
+    material: str,
+    section_type: str,
+    element_id: int,
+) -> SectionResolutionIssue:
+    """Return a stable issue with element context."""
+
+    if code == "definition.material.invalid":
+        message = (
+            f"Element {element_id} has invalid material {material}: {error}"
+        )
+    elif code == "definition.section.incompatible":
+        message = f"Element {element_id} has incompatible section: {error}"
+    else:
+        message = f"Element {element_id} has invalid section: {error}"
+    return SectionResolutionIssue(
+        code=code,
+        message=message,
+        assignment_index=assignment_index,
+        element_set=element_set,
+        material=material,
+        section_type=section_type,
+        element_id=element_id,
+    )
+
+
+def _append_unique(values: list[Any], value: Any) -> None:
+    """Append a fact once while preserving discovery order."""
+
+    if value not in values:
+        values.append(value)
 
 
 def _restored_properties(model: Any, element_id: int, elem: Any) -> dict[str, Any]:

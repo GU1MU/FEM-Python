@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from fem.application import ModelSession, NativePart, RunStatus
 from fem.core.model import AnalysisStep
+from tests.helpers.preflight_builders import passing_preflight_report
 
 
 def _model() -> SimpleNamespace:
@@ -25,7 +26,10 @@ def _session() -> ModelSession:
     mesh = session.prepare_mesh_generation()
     session.accept_generated_model(mesh.token, _model())
     validation = session.prepare_validation("Step-A")
-    session.accept_validation(validation.token, {"passed": True})
+    session.accept_validation(
+        validation.token,
+        passing_preflight_report(validation.token),
+    )
     return session
 
 

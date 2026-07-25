@@ -17,12 +17,23 @@ from PySide6.QtWidgets import (
 )
 
 from fem.abaqus import build_model as build_abaqus_model, parse_file
-from fem.application import ModelSession
+from fem.application import (
+    AuthoringStatus,
+    DefinitionRejected,
+    ModelCapabilityReport,
+    ModelSession,
+    PreflightDiagnostic,
+    PreflightReport,
+    RegionRef,
+    describe_model_capabilities,
+    describe_native_authoring_capabilities,
+    safe_static_preflight,
+)
 from fem.application.preprocessing import generate_fem_model
-from fem.boundary.step import boundary_for_step
 from fem.core.model import (
     EdgeLoad,
     GravityLoad,
+    LineLoad,
     NodalLoad,
     SurfaceLoad,
 )
@@ -36,7 +47,6 @@ from .analysis_definition_dialogs import (
     AnalysisDefinitionManagerDialog,
     DisplacementDialog,
     LoadDialog,
-    OutputRequestDialog,
     StaticStepDialog,
 )
 from .analysis_jobs import AnalysisJob, JobStatus
@@ -1087,13 +1097,30 @@ class FEMMainWindow(QMainWindow):
             and not busy,
             "请先创建分析步，并准备可选择的几何或节点区域",
         )
-        supported_load_regions = self._supported_load_region_names()
+        supported_load_regions = self._supported_load_regions()
         has_load_region = any(supported_load_regions)
-        load_reason = (
-            "请先创建分析步"
-            if not has_step
-            else "当前模型没有后端支持的节点、二维边或三维面载荷区域"
+        capability_report = self._model_capability_report()
+        blocking_capability = next(
+            (
+                diagnostic
+                for diagnostic in (
+                    capability_report.diagnostics
+                    if capability_report is not None
+                    else ()
+                )
+                if diagnostic.blocking
+            ),
+            None,
         )
+        if not has_step:
+            load_reason = "请先创建分析步"
+        elif blocking_capability is not None:
+            load_reason = (
+                f"[{blocking_capability.code}] "
+                f"{blocking_capability.remediation or blocking_capability.message}"
+            )
+        else:
+            load_reason = "当前 capability report 没有可用的载荷目标区域"
         self._set_action_available(
             "load_create",
             has_step
@@ -1103,8 +1130,8 @@ class FEMMainWindow(QMainWindow):
         )
         self._set_action_available(
             "output_create",
-            has_step and not busy,
-            "请先创建分析步",
+            False,
+            "当前求解链不会执行输出请求；既有请求仅可查看或删除",
         )
         self._set_action_available(
             "analysis_manager",
@@ -1734,47 +1761,47 @@ class FEMMainWindow(QMainWindow):
         extend_unique(face_regions, self._native_analysis_region_names({"face"}))
         return node_regions, edge_regions, face_regions
 
-    def _model_dimension(self) -> int:
-        """Return the model topology dimension used by GUI preprocessing."""
-        recipe = self.document.geometry_recipe
-        if isinstance(recipe, NATIVE_GEOMETRY_TYPES):
-            return geometry_dimension(recipe)
-        model = self.document.model
-        if model is None:
-            return 3
-        element_types = {
-            str(element.type).strip().casefold()
-            for element in model.mesh.elements
-        }
-        if element_types and all(
-            kind.startswith(("beam", "truss", "line"))
-            for kind in element_types
-        ):
-            return 1
-        if element_types and all(
-            kind.startswith(("tri", "quad"))
-            for kind in element_types
-        ):
-            return 2
-        if element_types and any(
-            kind.startswith(("tet", "hex"))
-            for kind in element_types
-        ):
-            return 3
-        nodes = model.mesh.nodes
-        return 3 if nodes and hasattr(nodes[0], "z") else 2
-
-    def _supported_load_region_names(
+    def _model_capability_report(
         self,
-    ) -> tuple[list[str], list[str], list[str]]:
-        """Expose only distributed load targets supported by the solver."""
+    ) -> ModelCapabilityReport | None:
+        """Return the headless capability report for current authoring state."""
+
+        model = self.document.model
+        if model is not None:
+            return describe_model_capabilities(model)
+        recipe = self.document.geometry_recipe
+        settings = self.document.mesh_settings
+        if isinstance(recipe, NATIVE_GEOMETRY_TYPES):
+            return describe_native_authoring_capabilities(
+                recipe,
+                settings,
+            )
+        return None
+
+    def _supported_load_regions(
+        self,
+    ) -> tuple[list[str], list[str], list[str], list[str]]:
+        """Return targets filtered by the application capability report."""
+
         node_regions, edge_regions, face_regions = self._analysis_region_names()
-        dimension = self._model_dimension()
-        if dimension == 2:
-            return node_regions, edge_regions, []
-        if dimension == 3:
-            return node_regions, [], face_regions
-        return node_regions, [], []
+        report = self._model_capability_report()
+        if report is None:
+            return node_regions, [], [], []
+        supported = set(report.load_kinds)
+        line_regions = [
+            item.region.name
+            for item in report.regions
+            if item.region.kind == "element_set"
+            and item.compatible
+            and item.families == ("beam",)
+            and item.supports_distributed_load("line")
+        ]
+        return (
+            node_regions if "node" in supported else [],
+            edge_regions if "edge" in supported else [],
+            face_regions if "surface" in supported else [],
+            line_regions,
+        )
 
     def _request_analysis_geometry_selection(self, operation: str) -> None:
         recipe = self.document.geometry_recipe
@@ -2386,32 +2413,66 @@ class FEMMainWindow(QMainWindow):
         sections: object | None = None,
         assignments: object | None = None,
         steps: object | None = None,
-    ) -> None:
+    ) -> bool:
         """Atomically compile editable definitions through the Session."""
-        delta = self.session.replace_model_definitions(
-            tuple(
-                self.document.material_definitions
-                if materials is None
-                else materials
-            ),
-            tuple(
-                self.document.section_definitions
-                if sections is None
-                else sections
-            ),
-            tuple(
-                self.document.region_assignments
-                if assignments is None
-                else assignments
-            ),
-            tuple(
-                self.document.analysis_definitions
-                if steps is None
-                else steps
-            ),
-        )
+        try:
+            delta = self.session.replace_model_definitions(
+                tuple(
+                    self.document.material_definitions
+                    if materials is None
+                    else materials
+                ),
+                tuple(
+                    self.document.section_definitions
+                    if sections is None
+                    else sections
+                ),
+                tuple(
+                    self.document.region_assignments
+                    if assignments is None
+                    else assignments
+                ),
+                tuple(
+                    self.document.analysis_definitions
+                    if steps is None
+                    else steps
+                ),
+            )
+        except DefinitionRejected as error:
+            self._show_error(
+                "模型定义",
+                self._render_diagnostics(error.diagnostics),
+            )
+            return False
         self._apply_session_delta(delta)
         self.status_panel.set_state(reason, 5000)
+        return True
+
+    @staticmethod
+    def _render_diagnostics(
+        diagnostics: object,
+    ) -> str:
+        """Render structured diagnostics without reinterpreting their rules."""
+
+        values = tuple(diagnostics)
+        if any(
+            not isinstance(item, PreflightDiagnostic)
+            for item in values
+        ):
+            raise TypeError(
+                "diagnostic renderer requires PreflightDiagnostic values"
+            )
+        return "\n".join(
+            (
+                f"[{item.code}] {item.message}"
+                + (
+                    f"\n建议：{item.remediation}"
+                    if item.remediation
+                    else ""
+                )
+            )
+            for item in values
+        ) or "操作未通过模型定义校验。"
 
     def show_material_manager(self) -> None:
         dialog = MaterialManagerDialog(self.document.material_definitions, self)
@@ -2512,11 +2573,32 @@ class FEMMainWindow(QMainWindow):
             self._show_error("编辑材料", str(error))
 
     def show_section_manager(self) -> None:
+        capability_report = self._model_capability_report()
+        section_authoring = (
+            capability_report.operation("section.create")
+            if capability_report is not None
+            else None
+        )
         dialog = SectionManagerDialog(
             self.document.material_definitions,
             self.document.section_definitions,
             self,
-            model_dimension=self._model_dimension(),
+            model_dimension=(
+                capability_report.topological_dimension
+                if capability_report is not None
+                and capability_report.topological_dimension is not None
+                else 3
+            ),
+            section_presets=(
+                capability_report.section_presets
+                if capability_report is not None
+                else ()
+            ),
+            authoring_enabled=(
+                section_authoring is not None
+                and section_authoring.status
+                in {AuthoringStatus.ENABLED, AuthoringStatus.LIMITED}
+            ),
         )
         if not dialog.exec():
             return
@@ -2561,20 +2643,52 @@ class FEMMainWindow(QMainWindow):
             self._show_error("截面管理", str(error))
 
     def assign_section_to_region(self) -> None:
-        model = self.document.model
         if not self.document.section_definitions:
             return
-        regions = list(model.element_sets) if model is not None else []
+        capability_report = self._model_capability_report()
+        regions: list[RegionRef] = []
+        if capability_report is not None:
+            regions.extend(
+                item.region
+                for item in capability_report.regions
+                if item.region.kind == "element_set"
+            )
         if isinstance(self.document.geometry_recipe, NATIVE_GEOMETRY_TYPES):
-            if "DOMAIN" not in regions:
-                regions.insert(0, "DOMAIN")
+            domain = RegionRef("element_set", "DOMAIN")
+            if domain not in regions:
+                regions.insert(0, domain)
             for name in self._native_analysis_region_names({"body"}):
-                if name not in regions:
-                    regions.append(name)
+                reference = RegionRef("element_set", name)
+                if reference not in regions:
+                    regions.append(reference)
         if not regions:
             self._show_error("截面分配", "当前模型没有可分配的单元区域")
             return
-        dialog = RegionAssignmentDialog(self.document.section_definitions, regions, self)
+        compatible_targets = {
+            section.name: tuple(
+                region
+                for region in regions
+                if (
+                    capability_report is not None
+                    and (
+                        capability_report.region(region).supports_section(
+                            section.section_type
+                        )
+                        if capability_report.regions
+                        else capability_report.supports_section(
+                            section.section_type
+                        )
+                    )
+                )
+            )
+            for section in self.document.section_definitions
+        }
+        dialog = RegionAssignmentDialog(
+            self.document.section_definitions,
+            regions,
+            self,
+            compatible_targets=compatible_targets,
+        )
         if not dialog.exec():
             return
         assignment = dialog.assignment()
@@ -2640,8 +2754,12 @@ class FEMMainWindow(QMainWindow):
         ):
             self._request_analysis_geometry_selection("boundary")
             return
+        capability_report = self._model_capability_report()
         dimensions = (
-            model.mesh.dofs_per_node
+            capability_report.dofs_per_node
+            if capability_report is not None
+            and capability_report.dofs_per_node is not None
+            else model.mesh.dofs_per_node
             if model is not None
             else geometry_dimension(self.document.geometry_recipe)
         )
@@ -2651,6 +2769,11 @@ class FEMMainWindow(QMainWindow):
             dimensions,
             self,
             selected_region=selected_region,
+            labels=(
+                capability_report.dof_labels
+                if capability_report is not None
+                else ()
+            ),
         )
         if not dialog.exec():
             return
@@ -2673,7 +2796,9 @@ class FEMMainWindow(QMainWindow):
             return
         selected_region = None
         preferred_kind = None
-        model_dimension = self._model_dimension()
+        capability_report = self._model_capability_report()
+        if capability_report is None:
+            return
         if (
             self.document.source_kind == "native"
             and self._selected_geometry_kind in {"point", "edge", "face"}
@@ -2684,30 +2809,24 @@ class FEMMainWindow(QMainWindow):
                 "edge": "edge",
                 "face": "surface",
             }[self._selected_geometry_kind]
-            if preferred_kind == "edge" and model_dimension != 2:
+            if preferred_kind not in capability_report.load_kinds:
                 self._show_error(
                     "创建载荷",
-                    "当前后端仅支持二维模型的边载荷；"
-                    "三维模型请选面，一维模型请使用节点力。",
-                )
-                return
-            if preferred_kind == "surface" and model_dimension != 3:
-                self._show_error(
-                    "创建载荷",
-                    "当前后端仅支持三维模型的面载荷；"
-                    "二维模型请选边，一维模型请使用节点力。",
+                    "所选区域不支持当前模型的分布载荷契约。",
                 )
                 return
             selected_region = self._create_region_from_current_geometry_selection()
             if selected_region is None:
                 return
-        node_regions, edge_regions, face_regions = (
-            self._supported_load_region_names()
+        node_regions, edge_regions, face_regions, line_regions = (
+            self._supported_load_regions()
         )
         dimensions = (
-            model.mesh.dofs_per_node
+            capability_report.dofs_per_node
+            if capability_report.dofs_per_node is not None
+            else model.mesh.dofs_per_node
             if model is not None
-            else geometry_dimension(self.document.geometry_recipe)
+            else 3
         )
         dialog = LoadDialog(
             list(self.session.runnable_step_names()),
@@ -2716,9 +2835,13 @@ class FEMMainWindow(QMainWindow):
             face_regions,
             dimensions,
             self,
-            spatial_dimensions=model_dimension,
+            spatial_dimensions=(
+                capability_report.spatial_dimension or 3
+            ),
+            line_regions=line_regions,
             selected_region=selected_region,
             preferred_kind=preferred_kind,
+            labels=capability_report.force_labels,
         )
         if not dialog.exec():
             return
@@ -2735,6 +2858,8 @@ class FEMMainWindow(QMainWindow):
             step.edge_loads = tuple(step.edge_loads) + (load,)
         elif isinstance(load, SurfaceLoad):
             step.surface_loads = tuple(step.surface_loads) + (load,)
+        elif isinstance(load, LineLoad):
+            step.line_loads = tuple(step.line_loads) + (load,)
         elif isinstance(load, GravityLoad):
             step.gravity_loads = tuple(step.gravity_loads) + (load,)
         self._analysis_definitions_changed(
@@ -2743,22 +2868,10 @@ class FEMMainWindow(QMainWindow):
         )
 
     def create_output_request(self) -> None:
-        if not self.session.runnable_step_names():
-            return
-        dialog = OutputRequestDialog(list(self.session.runnable_step_names()), self)
-        if not dialog.exec():
-            return
-        try:
-            step_name, output = dialog.definition()
-        except ValueError as error:
-            self._show_error("输出请求", str(error))
-            return
-        definitions = list(deepcopy(self.document.analysis_definitions))
-        step = next(step for step in definitions if step.name == step_name)
-        step.outputs = tuple(step.outputs) + (output,)
-        self._analysis_definitions_changed(
-            "输出请求已修改，模型需要重新检查",
-            definitions,
+        self._show_error(
+            "输出请求",
+            "当前求解链不会执行输出请求，因此不能新建；"
+            "既有请求仍可在分析定义管理中查看或删除。",
         )
 
     def _analysis_manager_dialog(
@@ -2766,15 +2879,14 @@ class FEMMainWindow(QMainWindow):
     ) -> AnalysisDefinitionManagerDialog | None:
         if not self.document.analysis_definitions:
             return None
-        node_regions, edge_regions, face_regions = (
-            self._supported_load_region_names()
+        node_regions, edge_regions, face_regions, line_regions = (
+            self._supported_load_regions()
         )
-        model_dimension = self._model_dimension()
+        capability_report = self._model_capability_report()
         dimensions = (
-            self.document.model.mesh.dofs_per_node
-            if self.document.model is not None
-            else geometry_dimension(self.document.geometry_recipe)
-            if isinstance(self.document.geometry_recipe, NATIVE_GEOMETRY_TYPES)
+            capability_report.dofs_per_node
+            if capability_report is not None
+            and capability_report.dofs_per_node is not None
             else 3
         )
         return AnalysisDefinitionManagerDialog(
@@ -2784,7 +2896,23 @@ class FEMMainWindow(QMainWindow):
             face_regions,
             dimensions,
             self,
-            spatial_dimensions=model_dimension,
+            spatial_dimensions=(
+                capability_report.spatial_dimension
+                if capability_report is not None
+                and capability_report.spatial_dimension is not None
+                else 3
+            ),
+            line_regions=line_regions,
+            dof_labels=(
+                capability_report.dof_labels
+                if capability_report is not None
+                else ()
+            ),
+            force_labels=(
+                capability_report.force_labels
+                if capability_report is not None
+                else ()
+            ),
         )
 
     def show_analysis_manager(self) -> None:
@@ -2806,6 +2934,7 @@ class FEMMainWindow(QMainWindow):
             "cload": "node_load",
             "edge_load": "edge_load",
             "surface_load": "surface_load",
+            "line_load": "line_load",
             "gravity_load": "gravity_load",
             "output": "output",
         }.get(kind)
@@ -2866,29 +2995,18 @@ class FEMMainWindow(QMainWindow):
         return None
 
     def check_current_model(self, show_success: bool = True) -> bool:
-        """检查模型定义完整性；数值稳定性在实际求解时检查。"""
+        """Run the same structured static preflight used by background checks."""
         task = self._prepare_model_check()
         if task is None:
             return False
-        try:
-            selected_step, boundary = self._evaluate_model_check(
-                task.model,
-                task.step_name,
-            )
-        except Exception as error:
-            self._apply_session_delta(
-                self.session.accept_validation_failed(
-                    task.token,
-                    {"error": str(error)},
-                )
-            )
-            self._show_error("模型检查失败", str(error))
-            return False
+        report = self._evaluate_model_check(
+            task.model,
+            task.step_name,
+            task.token,
+        )
         return self._complete_model_check(
             task.token,
-            task.model,
-            selected_step,
-            boundary,
+            report,
             show_success=show_success,
         )
 
@@ -2902,35 +3020,33 @@ class FEMMainWindow(QMainWindow):
 
         def workload(context: TaskContext):
             context.report("正在检查模型……")
-            result = self._evaluate_model_check(task.model, task.step_name)
+            result = self._evaluate_model_check(
+                task.model,
+                task.step_name,
+                task.token,
+            )
             context.checkpoint()
-            return task.model, *result
+            return result
 
         def succeeded(value: object) -> None:
-            checked_model, selected_step, boundary = value
             self._complete_model_check(
                 task.token,
-                checked_model,
-                selected_step,
-                boundary,
+                value,
                 show_success=True,
             )
 
         def failed(message: str) -> None:
             self._apply_session_delta(
-                self.session.accept_validation_failed(
+                self.session.accept_task_failed(
                     task.token,
-                    {"error": message},
+                    message,
                 )
             )
             self._show_error("模型检查失败", message)
 
         def cancelled() -> None:
             self._apply_session_delta(
-                self.session.accept_validation_failed(
-                    task.token,
-                    {"cancelled": True},
-                )
+                self.session.accept_task_cancelled(task.token)
             )
 
         return self._start_task(
@@ -2952,55 +3068,76 @@ class FEMMainWindow(QMainWindow):
     def _evaluate_model_check(
         model: object,
         step_name: str,
-    ) -> tuple[object, object]:
-        selected_step = static_linear.validate_problem(model, step_name)
-        boundary = boundary_for_step(model, selected_step)
-        if not boundary.prescribed_displacements:
-            raise ValueError("当前分析步没有位移边界条件")
-        static_linear.validate_constraint_stability(model, boundary)
-        return selected_step, boundary
+        token: object | None = None,
+    ) -> PreflightReport:
+        return safe_static_preflight(
+            model,
+            step_name,
+            token=token,
+        )
 
     def _complete_model_check(
         self,
         token: object,
-        checked_model: object,
-        selected_step: object,
-        boundary: object,
+        report: object,
         *,
         show_success: bool,
     ) -> bool:
-        delta = self.session.accept_validation(
-            token,
-            {
-                "step_name": selected_step.name,
-                "boundary": boundary,
-            },
-            passed=True,
-        )
+        if not isinstance(report, PreflightReport):
+            raise TypeError("model check must return PreflightReport")
+        delta = self.session.accept_validation(token, report)
         if not self._apply_session_delta(delta):
             self.status_panel.set_state(
                 "模型已发生变化，已忽略旧的检查结果",
                 5000,
             )
             return False
+        if not report.passed:
+            message = self._render_diagnostics(report.errors)
+            self._show_error(
+                "模型检查失败",
+                message or "模型检查未通过",
+            )
+            self.status_panel.set_state("模型检查未通过", 5000)
+            return False
         if show_success:
-            mesh = checked_model.mesh
+            facts = report.facts
+            warnings = "；".join(
+                f"[{item.code}] {item.message}"
+                for item in report.warnings
+            )
             show_information(self, "模型检查", [
-                ("模型名称", checked_model.name or "未命名模型"),
-                ("当前分析步", selected_step.name if selected_step else "—"),
-                ("分析类型", "线性静力"),
-                ("节点数", len(mesh.nodes)),
-                ("单元数", len(mesh.elements)),
-                ("总自由度数", mesh.num_dofs),
-                ("材料数量", len(checked_model.materials)),
-                ("截面数量", len(checked_model.sections)),
-                ("位移边界条件数量", len(boundary.prescribed_displacements)),
-                ("节点载荷数量", len(boundary.nodal_forces)),
-                ("表面载荷数量", len(boundary.surface_tractions)),
-                ("边载荷数量", len(boundary.edge_tractions)),
+                ("模型名称", facts.model_name or "未命名模型"),
+                ("当前分析步", facts.step_name or "—"),
+                ("分析类型", facts.procedure or "线性静力"),
+                ("节点数", facts.node_count),
+                ("单元数", facts.element_count),
+                ("总自由度数", facts.dof_count),
+                ("材料数量", facts.material_count),
+                ("截面数量", facts.section_count),
+                ("位移边界条件数量", facts.displacement_count),
+                ("节点载荷数量", facts.nodal_load_count),
+                ("表面载荷数量", facts.surface_load_count),
+                ("边载荷数量", facts.edge_load_count),
+                ("梁线载荷数量", facts.line_load_count),
+                ("重力载荷数量", facts.gravity_load_count),
+                (
+                    "数值稳定性",
+                    (
+                        "已检查"
+                        if report.numerical_stability_checked
+                        else "未执行"
+                    ),
+                ),
+                ("警告/限制", warnings or "无"),
                 ("检查结果", "通过"),
             ])
-        self.status_panel.set_state("模型检查通过", 4000)
+        self.status_panel.set_state(
+            "模型检查通过（有警告）"
+            if report.warnings
+            else "模型检查通过",
+            4000,
+        )
         return True
 
     def create_and_submit_job(self) -> None:
@@ -3087,20 +3224,12 @@ class FEMMainWindow(QMainWindow):
         ) -> tuple[object, ResultData, dict[str, float]]:
             timings: dict[str, float] = {}
             solve_model = task.model
-            context.report("正在验证模型……")
-            validation_started = perf_counter()
-            selected_step = static_linear.validate_problem(
-                solve_model,
-                task.step_name,
-            )
-            timings["模型验证"] = perf_counter() - validation_started
             stage["name"] = "求解"
             context.report("正在装配并求解……")
             result = static_linear.solve(
                 solve_model,
                 task.step_name,
                 name=task.run_name,
-                _validated_step=selected_step,
                 timings=timings,
             )
             context.report("正在准备结果……")

@@ -9,7 +9,12 @@ from fem import materials
 from fem.materials import assignment as material_assignment
 from fem.assemble import assemble_global_stiffness_sparse
 from fem.assemble import stiffness as stiffness_module
-from fem.core import validate_mesh, validate_model
+from fem.core import (
+    validate_analysis_step,
+    validate_mesh,
+    validate_model,
+    validate_model_structure,
+)
 from fem.core.mesh import Element3D, Mesh3D, Node3D
 from fem.core.model import (
     AnalysisStep,
@@ -17,6 +22,7 @@ from fem.core.model import (
     ElementSet,
     FEMModel,
     GravityLoad,
+    LineLoad,
     MaterialDefinition,
     NodalLoad,
     SectionAssignment,
@@ -26,6 +32,7 @@ from fem.solvers import static_linear
 from tests.helpers.mesh_builders import make_beam_stiffness_mesh, make_truss_stiffness_mesh
 from tests.helpers.model_builders import (
     make_static_pull_truss_model,
+    make_two_step_static_pull_truss_model,
     make_truss_workflow_model,
 )
 
@@ -121,6 +128,47 @@ def test_validate_model_rejects_case_insensitive_duplicate_step_names():
     model.steps.append(AnalysisStep("PULL"))
 
     with pytest.raises(ValueError, match="step names must be unique ignoring case"):
+        validate_model(model)
+
+
+def test_selected_step_validation_ignores_unrelated_step_reference_errors():
+    model = make_two_step_static_pull_truss_model()
+    selected = model.steps[1]
+    invalid = model.steps[2]
+    invalid.cloads = (NodalLoad("MISSING_IN_OTHER_STEP", 1, 1.0),)
+
+    validate_model_structure(model)
+    validate_analysis_step(model, selected)
+    validate_model(model, selected)
+
+    with pytest.raises(KeyError, match="MISSING_IN_OTHER_STEP"):
+        validate_analysis_step(model, invalid)
+    with pytest.raises(KeyError, match="MISSING_IN_OTHER_STEP"):
+        validate_model(model)
+
+
+def test_selected_step_validation_includes_inherited_initial_boundaries():
+    model = make_two_step_static_pull_truss_model()
+    selected = model.steps[1]
+    model.steps[0].boundaries = (
+        DisplacementConstraint("MISSING_INITIAL_TARGET", 1, 3, 0.0),
+    )
+
+    validate_model_structure(model)
+    with pytest.raises(KeyError, match="MISSING_INITIAL_TARGET"):
+        validate_analysis_step(model, selected)
+    with pytest.raises(KeyError, match="MISSING_INITIAL_TARGET"):
+        validate_model(model, selected)
+
+
+def test_selected_step_does_not_inherit_initial_loads():
+    model = make_two_step_static_pull_truss_model()
+    selected = model.steps[1]
+    model.steps[0].cloads = (NodalLoad("MISSING_INITIAL_LOAD", 1, 1.0),)
+
+    validate_model(model, selected)
+
+    with pytest.raises(KeyError, match="MISSING_INITIAL_LOAD"):
         validate_model(model)
 
 
@@ -305,13 +353,80 @@ def test_targeted_gravity_validation_ignores_stale_section_density():
         validate_model(model)
 
 
-def test_gravity_vector_size_uses_spatial_dimension_for_beam_mesh():
+def test_public_element_set_wins_over_same_named_internal_set_for_gravity():
+    mesh = Mesh3D(
+        nodes=[
+            Node3D(1, 0.0, 0.0, 0.0),
+            Node3D(2, 1.0, 0.0, 0.0),
+            Node3D(3, 2.0, 0.0, 0.0),
+        ],
+        elements=[
+            Element3D(
+                1,
+                [1, 2],
+                "Truss2",
+                {"E": 100.0, "area": 1.0, "rho": 1.0},
+            ),
+            Element3D(2, [2, 3], "Truss2", {"E": 100.0, "area": 1.0}),
+        ],
+    )
     model = FEMModel(
-        mesh=make_beam_stiffness_mesh(),
-        steps=[AnalysisStep("gravity", gravity_loads=[GravityLoad((0.0, -1.0, 0.0))])],
+        mesh=mesh,
+        element_sets={"shared": ElementSet("shared", (1,))},
+        steps=[
+            AnalysisStep(
+                "gravity",
+                gravity_loads=(GravityLoad((0.0, -1.0, 0.0), "shared"),),
+            )
+        ],
+        metadata={
+            "_abaqus_internal_element_sets": {
+                "shared": ElementSet("shared", (2,)),
+            }
+        },
     )
 
     validate_model(model)
+
+
+@pytest.mark.parametrize(
+    "mesh_factory",
+    [make_truss_stiffness_mesh, make_beam_stiffness_mesh],
+    ids=["truss", "beam"],
+)
+def test_gravity_vector_size_uses_catalog_spatial_dimension_for_line_mesh(
+    mesh_factory,
+):
+    model = FEMModel(
+        mesh=mesh_factory(),
+        steps=[
+            AnalysisStep(
+                "gravity",
+                gravity_loads=[GravityLoad((0.0, -1.0, 0.0))],
+            )
+        ],
+    )
+
+    validate_model(model)
+
+    model.steps[0].gravity_loads = (GravityLoad((0.0, -1.0)),)
+    with pytest.raises(ValueError, match="must have 3 components"):
+        validate_model(model)
+
+
+def test_line_load_compatibility_uses_element_capabilities():
+    model = FEMModel(
+        mesh=make_truss_stiffness_mesh(),
+        element_sets={"bar": ElementSet("bar", (1,))},
+    )
+    step = AnalysisStep(
+        "line",
+        line_loads=(LineLoad("bar", (0.0, -1.0, 0.0)),),
+    )
+
+    validate_model_structure(model)
+    with pytest.raises(ValueError, match="line loads may target only Beam2"):
+        validate_analysis_step(model, step)
 
 
 def test_apply_sections_restores_original_properties_after_change_and_removal():

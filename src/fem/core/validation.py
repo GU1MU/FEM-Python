@@ -17,6 +17,17 @@ _MESH_ATTRIBUTES = (
     "num_dofs",
     "element_dofs",
 )
+_MODEL_ATTRIBUTES = (
+    "mesh",
+    "node_sets",
+    "element_sets",
+    "materials",
+    "sections",
+    "surfaces",
+    "edges",
+    "steps",
+    "metadata",
+)
 
 
 def validate_mesh(mesh: Any) -> None:
@@ -42,27 +53,9 @@ def validate_mesh(mesh: Any) -> None:
     _validate_dof_map(mesh, node_ids)
 
 
-def validate_model(model: Any, step: Any | None = None) -> None:
-    """Validate a finite-element model and its references before solving."""
-    required = (
-        "mesh",
-        "node_sets",
-        "element_sets",
-        "materials",
-        "sections",
-        "surfaces",
-        "edges",
-        "steps",
-        "metadata",
-    )
-    missing = [name for name in required if not hasattr(model, name)]
-    if missing:
-        raise TypeError(
-            "model validation requires attributes "
-            + ", ".join(required)
-            + f"; missing {', '.join(missing)}"
-        )
-
+def validate_model_structure(model: Any) -> None:
+    """Validate model-owned structure without inspecting Step references."""
+    _require_model_attributes(model)
     validate_mesh(model.mesh)
     node_ids = {_entity_id(node, "node") for node in model.mesh.nodes}
     element_lookup = {
@@ -90,6 +83,8 @@ def validate_model(model: Any, step: Any | None = None) -> None:
             "element",
         )
     for name, element_set in internal_element_sets.items():
+        if name in element_sets:
+            continue
         _validate_set_members(
             getattr(element_set, "element_ids", None),
             element_ids,
@@ -97,9 +92,7 @@ def validate_model(model: Any, step: Any | None = None) -> None:
             "element",
         )
 
-    all_element_sets = dict(element_sets)
-    all_element_sets.update(internal_element_sets)
-    all_element_set_names = set(all_element_sets)
+    all_element_set_names = set(element_sets) | set(internal_element_sets)
     for section in model.sections:
         if section.material not in materials:
             raise KeyError(f"material {section.material} is not defined")
@@ -108,25 +101,52 @@ def validate_model(model: Any, step: Any | None = None) -> None:
 
     _validate_boundaries(model.surfaces, element_lookup, node_ids, "surface", "faces")
     _validate_boundaries(model.edges, element_lookup, node_ids, "edge", "edges")
+    _validate_unique_step_names(list(model.steps))
 
-    model_steps = list(model.steps)
-    _validate_unique_step_names(model_steps)
-    steps = list(model_steps)
-    if step is not None and all(candidate is not step for candidate in steps):
-        steps.append(step)
+
+def validate_analysis_step(model: Any, step: Any | None) -> None:
+    """Validate references and effective Initial boundaries for one Step."""
+    if step is None:
+        return
+    _require_model_attributes(model)
+    node_ids = {_entity_id(node, "node") for node in model.mesh.nodes}
+    element_lookup = {
+        _entity_id(element, "element"): element for element in model.mesh.elements
+    }
+    node_sets = _mapping(model.node_sets, "model.node_sets")
+    element_sets = _mapping(model.element_sets, "model.element_sets")
+    all_element_sets = dict(_internal_element_sets(model))
+    all_element_sets.update(element_sets)
+    _validate_step_references(
+        step,
+        node_ids,
+        node_sets,
+        element_lookup,
+        all_element_sets,
+        _mapping(model.surfaces, "model.surfaces"),
+        _mapping(model.edges, "model.edges"),
+        int(model.mesh.dofs_per_node),
+        _model_spatial_dimension(element_lookup),
+        model,
+        effective_boundaries=_effective_step_boundaries(model, step),
+    )
+
+
+def validate_model(model: Any, step: Any | None = None) -> None:
+    """Validate model structure and either all Steps or one selected Step."""
+    validate_model_structure(model)
+    steps = list(model.steps) if step is None else [step]
     for candidate in steps:
-        _validate_step_references(
-            candidate,
-            node_ids,
-            node_sets,
-            element_lookup,
-            element_sets,
-            all_element_sets,
-            model.surfaces,
-            model.edges,
-            int(model.mesh.dofs_per_node),
-            3 if hasattr(model.mesh.nodes[0], "z") else 2,
-            model,
+        validate_analysis_step(model, candidate)
+
+
+def _require_model_attributes(model: Any) -> None:
+    missing = [name for name in _MODEL_ATTRIBUTES if not hasattr(model, name)]
+    if missing:
+        raise TypeError(
+            "model validation requires attributes "
+            + ", ".join(_MODEL_ATTRIBUTES)
+            + f"; missing {', '.join(missing)}"
         )
 
 
@@ -410,15 +430,21 @@ def _validate_step_references(
     node_ids: set[int],
     node_sets: Mapping[Any, Any],
     element_lookup: Mapping[int, Any],
-    element_sets: Mapping[Any, Any],
-    gravity_element_sets: Mapping[Any, Any],
+    all_element_sets: Mapping[Any, Any],
     surfaces: Mapping[Any, Any],
     edges: Mapping[Any, Any],
     dofs_per_node: int,
     spatial_dimension: int,
     model: Any,
+    *,
+    effective_boundaries: Sequence[Any] | None = None,
 ) -> None:
-    for constraint in getattr(step, "boundaries", ()):
+    boundaries = (
+        getattr(step, "boundaries", ())
+        if effective_boundaries is None
+        else effective_boundaries
+    )
+    for constraint in boundaries:
         _validate_node_target(constraint.target, node_ids, node_sets, step.name)
         first = _integer_id(
             constraint.first_component,
@@ -463,11 +489,14 @@ def _validate_step_references(
         element_ids = _line_load_element_ids(
             load.target,
             element_lookup,
-            element_sets,
+            all_element_sets,
             step.name,
         )
         for element_id in element_ids:
-            if str(element_lookup[element_id].type).casefold() != "beam2":
+            capabilities = _element_capabilities(
+                element_lookup[element_id].type
+            )
+            if "line" not in capabilities.load_kinds:
                 raise ValueError("line loads may target only Beam2 elements")
         vector = getattr(load, "vector", None)
         if not isinstance(vector, Sequence) or isinstance(vector, (str, bytes)):
@@ -492,9 +521,50 @@ def _validate_step_references(
             step,
             load,
             element_lookup,
-            gravity_element_sets,
+            all_element_sets,
             spatial_dimension,
         )
+
+
+def _effective_step_boundaries(model: Any, step: Any) -> tuple[Any, ...]:
+    """Return the Initial boundaries inherited by one selected Step."""
+    initial = next(
+        (
+            candidate
+            for candidate in model.steps
+            if str(candidate.name).casefold() == "initial"
+        ),
+        None,
+    )
+    selected = tuple(getattr(step, "boundaries", ()))
+    if initial is None or initial is step:
+        return selected
+    return tuple(getattr(initial, "boundaries", ())) + selected
+
+
+def _model_spatial_dimension(
+    element_lookup: Mapping[int, Any],
+) -> int:
+    """Return the common catalog spatial dimension for model elements."""
+    dimensions = {
+        _element_capabilities(element.type).spatial_dimension
+        for element in element_lookup.values()
+    }
+    if not dimensions:
+        raise ValueError("model must contain at least one element")
+    if len(dimensions) != 1:
+        raise ValueError(
+            "model elements must share one spatial dimension, got "
+            + ", ".join(str(value) for value in sorted(dimensions))
+        )
+    return next(iter(dimensions))
+
+
+def _element_capabilities(element_type: Any) -> Any:
+    """Resolve capabilities lazily to keep core package initialization acyclic."""
+    from ..elements import get_element_capabilities
+
+    return get_element_capabilities(element_type)
 
 
 def _validate_gravity_load(

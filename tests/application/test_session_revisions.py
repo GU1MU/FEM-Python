@@ -14,6 +14,7 @@ from fem.application import (
     SectionDefinition,
 )
 from fem.core.model import AnalysisStep, MaterialDefinition
+from tests.helpers.preflight_builders import passing_preflight_report
 
 
 def _model(*step_names: str) -> SimpleNamespace:
@@ -68,7 +69,8 @@ def test_domain_revisions_advance_only_for_their_semantics() -> None:
     session.accept_generated_model(mesh_task.token, _model("Step-A"))
     validation_task = session.prepare_validation("Step-A")
     validation_delta = session.accept_validation(
-        validation_task.token, {"passed": True}
+        validation_task.token,
+        passing_preflight_report(validation_task.token),
     )
     after_validation = session.snapshot()
 

@@ -1,6 +1,57 @@
 from __future__ import annotations
 
 from . import linear_elastic
-from .assignment import add, apply_sections, assign
+from .assignment import (
+    EffectiveSectionAssignment,
+    ResolvedSectionAssignment,
+    SectionResolution,
+    SectionResolutionIssue,
+    add,
+    apply_sections,
+    assign,
+    resolve_sections,
+)
+from .sections import (
+    BEAM_SECTION_TYPES,
+    SECTION_PRESETS,
+    SECTION_TYPES,
+    MaterialPropertyError,
+    ResolvedSectionProperties,
+    SectionCompatibilityError,
+    SectionPropertyError,
+    SectionSchemaError,
+    element_section_family,
+    resolve_section_properties,
+    resolve_section_preset_properties,
+    section_family,
+    section_presets_for_element_family,
+    section_type_for_preset,
+    validate_material_properties,
+)
 
-__all__ = ["add", "apply_sections", "assign", "linear_elastic"]
+__all__ = [
+    "BEAM_SECTION_TYPES",
+    "EffectiveSectionAssignment",
+    "MaterialPropertyError",
+    "ResolvedSectionAssignment",
+    "ResolvedSectionProperties",
+    "SECTION_PRESETS",
+    "SECTION_TYPES",
+    "SectionCompatibilityError",
+    "SectionPropertyError",
+    "SectionResolution",
+    "SectionResolutionIssue",
+    "SectionSchemaError",
+    "add",
+    "apply_sections",
+    "assign",
+    "element_section_family",
+    "linear_elastic",
+    "resolve_section_properties",
+    "resolve_section_preset_properties",
+    "resolve_sections",
+    "section_family",
+    "section_presets_for_element_family",
+    "section_type_for_preset",
+    "validate_material_properties",
+]

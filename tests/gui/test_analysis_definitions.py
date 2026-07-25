@@ -313,23 +313,25 @@ def test_main_window_filters_distributed_load_regions_by_model_dimension():
         window.session.replace_named_regions(regions)
     )
 
-    node_regions, edge_regions, face_regions = (
-        window._supported_load_region_names()
+    node_regions, edge_regions, face_regions, line_regions = (
+        window._supported_load_regions()
     )
     assert "NodeSet" in node_regions
     assert edge_regions == ["EdgeSet"]
     assert face_regions == []
+    assert line_regions == []
 
     window._set_native_geometry(ExtrudedGeometry(rectangle, 1.0), "拉伸体")
     assert window._apply_session_delta(
         window.session.replace_named_regions(regions)
     )
-    node_regions, edge_regions, face_regions = (
-        window._supported_load_region_names()
+    node_regions, edge_regions, face_regions, line_regions = (
+        window._supported_load_regions()
     )
     assert "NodeSet" in node_regions
     assert edge_regions == []
     assert face_regions == ["Surface"]
+    assert line_regions == []
     window.close()
 
 

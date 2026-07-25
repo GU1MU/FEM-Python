@@ -13,6 +13,11 @@ GMSH_MESH_ROOT = MESH_ROOT / "gmsh"
 SELECTION_ROOT = SRC_ROOT / "fem" / "selection"
 APPLICATION_ROOT = SRC_ROOT / "fem" / "application"
 GUI_ROOT = SRC_ROOT / "fem_gui"
+AUTHORING_GUI_PATHS = (
+    GUI_ROOT / "main_window.py",
+    GUI_ROOT / "model_dialogs.py",
+    GUI_ROOT / "analysis_definition_dialogs.py",
+)
 
 
 def _string_literals(path):
@@ -553,10 +558,11 @@ def test_recipe_compiler_does_not_map_logical_ids_by_backend_tag_order():
     assert offenders == []
 
 
-def test_kernel_runtime_layers_do_not_import_application_session():
+def test_kernel_and_material_layers_do_not_import_application():
     package_roots = (
         SRC_ROOT / "fem" / "core",
         SRC_ROOT / "fem" / "elements",
+        SRC_ROOT / "fem" / "materials",
         SRC_ROOT / "fem" / "solvers",
     )
     assert all(path.is_dir() for path in package_roots)
@@ -616,7 +622,6 @@ def test_gui_session_adapters_do_not_mutate_snapshots_or_legacy_workflow():
     paths = (
         GUI_ROOT / "main_window.py",
         GUI_ROOT / "project_io.py",
-        GUI_ROOT / "model_definitions.py",
     )
     mutating_methods = {
         "add",
@@ -713,3 +718,183 @@ def test_gui_uses_only_public_model_session_commands():
             )
 
     assert offenders == []
+
+
+def _literal_strings(node):
+    for descendant in ast.walk(node):
+        if (
+            isinstance(descendant, ast.Constant)
+            and isinstance(descendant.value, str)
+        ):
+            yield descendant.value
+
+
+def _contains_casefold_call(node):
+    return any(
+        isinstance(descendant, ast.Call)
+        and isinstance(descendant.func, ast.Attribute)
+        and descendant.func.attr == "casefold"
+        for descendant in ast.walk(node)
+    )
+
+
+def test_gui_authoring_does_not_infer_element_capabilities_from_type_names():
+    family_prefixes = ("beam", "truss", "tri", "quad", "tet", "hex")
+    canonical_element_types = {
+        "beam2",
+        "truss2",
+        "tri3",
+        "tri6",
+        "quad4",
+        "quad8",
+        "tet4",
+        "tet10",
+        "hex8",
+        "hex20",
+    }
+    offenders = []
+
+    for path in AUTHORING_GUI_PATHS:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for value in _literal_strings(tree):
+            if value.casefold() in canonical_element_types:
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)} -> "
+                    f"canonical element type literal {value!r}"
+                )
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "startswith"
+                and any(
+                    value.casefold().startswith(family_prefixes)
+                    for argument in node.args
+                    for value in _literal_strings(argument)
+                )
+            ):
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{node.lineno} -> "
+                    "element-family startswith()"
+                )
+                continue
+
+            if not isinstance(node, ast.Compare) or not any(
+                isinstance(operator, (ast.Eq, ast.NotEq))
+                for operator in node.ops
+            ):
+                continue
+            operands = (node.left, *node.comparators)
+            if any(
+                value.casefold() == "beam2"
+                for operand in operands
+                for value in _literal_strings(operand)
+            ) and any(_contains_casefold_call(operand) for operand in operands):
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{node.lineno} -> "
+                    "casefold() Beam2 comparison"
+                )
+
+    assert offenders == []
+
+
+def test_gui_authoring_does_not_import_element_kernels():
+    offenders = []
+    for path in AUTHORING_GUI_PATHS:
+        for target, lineno in _resolved_import_targets(
+            path,
+            _module_name(path),
+        ):
+            if target == "fem.elements" or target.startswith("fem.elements."):
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+                )
+
+    assert offenders == []
+
+
+def test_main_window_model_check_uses_application_preflight_only():
+    path = GUI_ROOT / "main_window.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    forbidden_calls = {
+        "boundary_for_step",
+        "validate_constraint_stability",
+        "validate_problem",
+    }
+    model_check_functions = {
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and (
+            "model_check" in node.name
+            or node.name == "check_current_model"
+        )
+    }
+    assert model_check_functions
+
+    offenders = []
+    for function in model_check_functions:
+        for node in ast.walk(function):
+            if not isinstance(node, ast.Call):
+                continue
+            function_name = (
+                node.func.id
+                if isinstance(node.func, ast.Name)
+                else node.func.attr
+                if isinstance(node.func, ast.Attribute)
+                else ""
+            )
+            if function_name in forbidden_calls:
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{node.lineno} -> "
+                    f"{function_name}()"
+                )
+
+    assert offenders == []
+
+
+def test_session_has_no_private_model_definitions_compiler():
+    path = APPLICATION_ROOT / "session.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    forbidden_functions = {
+        "_compile_definitions",
+        "_definitions_from_model",
+        "_validate_definition_links",
+    }
+    offenders = [
+        f"{path.relative_to(PROJECT_ROOT)}:{node.lineno} -> {node.name}()"
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in forbidden_functions
+    ]
+
+    assert offenders == []
+
+
+def test_production_accept_validation_has_no_passed_escape_hatch():
+    offenders = []
+    for path in sorted(SRC_ROOT.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            function_name = (
+                node.func.id
+                if isinstance(node.func, ast.Name)
+                else node.func.attr
+                if isinstance(node.func, ast.Attribute)
+                else ""
+            )
+            if function_name != "accept_validation":
+                continue
+            if any(keyword.arg == "passed" for keyword in node.keywords):
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{node.lineno} -> "
+                    "accept_validation(..., passed=...)"
+                )
+
+    assert offenders == []
+
+
+def test_gui_model_definitions_shim_is_removed():
+    assert not (GUI_ROOT / "model_definitions.py").exists()

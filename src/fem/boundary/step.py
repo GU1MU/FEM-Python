@@ -14,6 +14,7 @@ from ..core.model import (
     SurfaceLoad,
     model_element_info,
 )
+from ..elements import get_element_capabilities
 from ._common import spatial_dim
 from .condition import BoundaryCondition
 
@@ -134,7 +135,7 @@ def boundary_for_step(model: Any, step: str | int | AnalysisStep | None = None) 
             elem = elem_lookup().get(elem_id)
             if elem is None:
                 raise KeyError(f"element {elem_id} is not defined")
-            if str(elem.type).casefold() != "beam2":
+            if "line" not in get_element_capabilities(elem.type).load_kinds:
                 raise ValueError("line loads may target only Beam2 elements")
             boundary.add_line_load(
                 elem_id,
@@ -157,15 +158,32 @@ def _resolve_node_target(model: Any, target: str | int) -> tuple[int, ...]:
 
 
 def _resolve_element_target(model: Any, target: str | int) -> tuple[int, ...]:
-    """Resolve an element id or named element set."""
-    return _resolve_element_target_from_sets(target, model.element_sets)
+    """Resolve an element id or public/importer-internal element set."""
+    return _resolve_element_target_from_sets(
+        target,
+        _all_element_sets(model),
+    )
 
 
 def _resolve_gravity_target(model: Any, target: str | int) -> tuple[int, ...]:
     """Resolve gravity targets, including importer-internal element sets."""
-    element_sets = dict(model.element_sets)
-    element_sets.update(model.metadata.get("_abaqus_internal_element_sets", {}))
-    return _resolve_element_target_from_sets(target, element_sets)
+    return _resolve_element_target_from_sets(
+        target,
+        _all_element_sets(model),
+    )
+
+
+def _all_element_sets(model: Any) -> dict[str, Any]:
+    """Merge importer-internal sets with public same-name precedence."""
+
+    element_sets = dict(
+        getattr(model, "metadata", {}).get(
+            "_abaqus_internal_element_sets",
+            {},
+        )
+    )
+    element_sets.update(getattr(model, "element_sets", {}))
+    return element_sets
 
 
 def _resolve_element_target_from_sets(

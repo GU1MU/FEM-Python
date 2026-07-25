@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from copy import deepcopy
+from math import isfinite
 
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -25,11 +27,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from fem.application import RegionRef, require_region_kind
 from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
     EdgeLoad,
     GravityLoad,
+    LineLoad,
     NodalLoad,
     OutputRequest,
     SurfaceLoad,
@@ -48,12 +52,38 @@ def _value(parent: QDialog, value: float = 0.0) -> QDoubleSpinBox:
 
 
 def _buttons(dialog: QDialog) -> QDialogButtonBox:
-    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, dialog)
+    buttons = QDialogButtonBox(
+        QDialogButtonBox.StandardButton.Ok
+        | QDialogButtonBox.StandardButton.Cancel,
+        dialog,
+    )
     buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
     buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
     buttons.accepted.connect(dialog.accept)
     buttons.rejected.connect(dialog.reject)
     return buttons
+
+
+def _region_ref(value: RegionRef | str, kind: str) -> RegionRef:
+    return value if isinstance(value, RegionRef) else RegionRef(kind, str(value))
+
+
+def _select_region(
+    combo: QComboBox,
+    value: RegionRef | str | None,
+) -> None:
+    if value is None:
+        return
+    name = value.name if isinstance(value, RegionRef) else str(value)
+    for index in range(combo.count()):
+        reference = combo.itemData(index)
+        if (
+            isinstance(reference, RegionRef)
+            and reference.name == name
+        ):
+            combo.setCurrentIndex(index)
+            return
+    combo.setCurrentText(name)
 
 
 class StaticStepDialog(QDialog):
@@ -64,7 +94,9 @@ class StaticStepDialog(QDialog):
         form = QFormLayout()
         configure_form_layout(form)
         form.addRow("分析步名称", self.name_edit)
-        layout = QVBoxLayout(self); layout.addLayout(form); layout.addWidget(_buttons(self))
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(_buttons(self))
 
     def step(self):
         name = self.name_edit.text().strip()
@@ -74,31 +106,47 @@ class StaticStepDialog(QDialog):
 
 
 class DisplacementDialog(QDialog):
+    _COMPONENT_LABELS = ("U1", "U2", "U3", "UR1", "UR2", "UR3")
+
     def __init__(
         self,
         step_names: list[str],
-        regions: list[str],
+        regions: Sequence[RegionRef | str],
         dimensions: int,
         parent=None,
         *,
-        selected_region: str | None = None,
+        selected_region: RegionRef | str | None = None,
         current: DisplacementConstraint | None = None,
+        labels: Sequence[str] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("位移边界条件")
-        self.region_combo, self.step_combo = QComboBox(self), QComboBox(self)
-        self.region_combo.addItems(regions); self.step_combo.addItems(step_names)
-        if selected_region:
-            self.region_combo.setCurrentText(selected_region)
+        self.region_combo = QComboBox(self)
+        self.step_combo = QComboBox(self)
+        references = tuple(
+            _region_ref(region, "node_set")
+            for region in regions
+        )
+        for reference in references:
+            self.region_combo.addItem(reference.name, reference)
+        self.step_combo.addItems(step_names)
+        _select_region(self.region_combo, selected_region)
         self.component_checks: dict[int, QCheckBox] = {}
         self.component_values: dict[int, QDoubleSpinBox] = {}
+        component_labels = tuple(str(label) for label in labels or ())
         component_widget = QWidget(self)
         component_layout = QGridLayout(component_widget)
         component_layout.setContentsMargins(0, 0, 0, 0)
         component_layout.addWidget(QLabel("自由度", component_widget), 0, 0)
         component_layout.addWidget(QLabel("位移值", component_widget), 0, 1)
         for component in range(1, dimensions + 1):
-            check = QCheckBox(f"U{component}", component_widget)
+            if component <= len(component_labels):
+                label = component_labels[component - 1]
+            elif component <= len(self._COMPONENT_LABELS):
+                label = self._COMPONENT_LABELS[component - 1]
+            else:
+                label = f"U{component}"
+            check = QCheckBox(label, component_widget)
             value = _value(self)
             value.setEnabled(False)
             check.toggled.connect(value.setEnabled)
@@ -109,7 +157,7 @@ class DisplacementDialog(QDialog):
         if self.component_checks:
             self.component_checks[1].setChecked(True)
         if current is not None:
-            self.region_combo.setCurrentText(str(current.target))
+            _select_region(self.region_combo, str(current.target))
             for component, check in self.component_checks.items():
                 selected = (
                     current.first_component
@@ -121,14 +169,19 @@ class DisplacementDialog(QDialog):
                     self.component_values[component].setValue(current.value)
         form = QFormLayout()
         configure_form_layout(form)
-        form.addRow("选择区域", self.region_combo); form.addRow("分析步", self.step_combo)
+        form.addRow("选择区域", self.region_combo)
+        form.addRow("分析步", self.step_combo)
         form.addRow("约束分量", component_widget)
-        layout = QVBoxLayout(self); layout.addLayout(form); layout.addWidget(_buttons(self)); self.setMinimumWidth(350)
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(_buttons(self))
+        self.setMinimumWidth(350)
 
     def definitions(self) -> tuple[str, tuple[DisplacementConstraint, ...]]:
-        target = self.region_combo.currentText().strip()
-        if not target:
+        region = self.region_combo.currentData()
+        if not isinstance(region, RegionRef):
             raise ValueError("请选择约束区域")
+        target = require_region_kind(region, "node_set")
         step_name = self.step_combo.currentText().strip()
         if not step_name:
             raise ValueError("请选择分析步")
@@ -170,49 +223,103 @@ class LoadDialog(QDialog):
     def __init__(
         self,
         step_names: list[str],
-        node_regions: list[str],
-        edge_regions: list[str],
-        face_regions: list[str],
+        node_regions: Sequence[RegionRef | str],
+        edge_regions: Sequence[RegionRef | str],
+        face_regions: Sequence[RegionRef | str],
         dimensions: int,
         parent=None,
         *,
         spatial_dimensions: int | None = None,
-        selected_region: str | None = None,
+        line_regions: Sequence[RegionRef | str] | None = None,
+        selected_region: RegionRef | str | None = None,
         preferred_kind: str | None = None,
-        current: NodalLoad | EdgeLoad | SurfaceLoad | GravityLoad | None = None,
+        current: (
+            NodalLoad
+            | EdgeLoad
+            | SurfaceLoad
+            | LineLoad
+            | GravityLoad
+            | None
+        ) = None,
+        labels: Sequence[str] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("编辑载荷" if current is not None else "创建载荷")
-        self._regions = {"node": node_regions, "edge": edge_regions, "surface": face_regions}
+        resolved_line_regions = [
+            _region_ref(region, "element_set")
+            for region in line_regions or ()
+        ]
+        if (
+            isinstance(current, LineLoad)
+            and str(current.target)
+            not in {region.name for region in resolved_line_regions}
+        ):
+            resolved_line_regions.append(
+                RegionRef("element_set", str(current.target))
+            )
+        self._regions = {
+            "node": [
+                _region_ref(region, "node_set")
+                for region in node_regions
+            ],
+            "edge": [
+                _region_ref(region, "edge")
+                for region in edge_regions
+            ],
+            "surface": [
+                _region_ref(region, "surface")
+                for region in face_regions
+            ],
+            "line": resolved_line_regions,
+        }
         self.dimensions = dimensions
         self.spatial_dimensions = int(
             spatial_dimensions if spatial_dimensions is not None else min(dimensions, 3)
         )
-        self.kind_combo, self.region_combo, self.step_combo = QComboBox(self), QComboBox(self), QComboBox(self)
-        if node_regions: self.kind_combo.addItem("节点力", "node")
-        if edge_regions: self.kind_combo.addItem("边载荷", "edge")
-        if face_regions: self.kind_combo.addItem("面载荷", "surface")
+        self.kind_combo = QComboBox(self)
+        self.region_combo = QComboBox(self)
+        self.step_combo = QComboBox(self)
+        if self._regions["node"]:
+            self.kind_combo.addItem("节点力", "node")
+        if self._regions["edge"]:
+            self.kind_combo.addItem("边载荷", "edge")
+        if self._regions["surface"]:
+            self.kind_combo.addItem("面载荷", "surface")
+        if resolved_line_regions:
+            self.kind_combo.addItem("梁线载荷", "line")
         self.kind_combo.addItem("重力", "gravity")
         self._gravity_target = (
             current.target if isinstance(current, GravityLoad) else None
         )
         self.step_combo.addItems(step_names)
-        self.load_type_combo = QComboBox(self); self.load_type_combo.addItem("牵引", "traction"); self.load_type_combo.addItem("压力", "pressure")
+        self.load_type_combo = QComboBox(self)
+        self.load_type_combo.addItem("牵引", "traction")
+        self.load_type_combo.addItem("压力", "pressure")
+        self.coordinate_system_combo = QComboBox(self)
+        self.coordinate_system_combo.addItem("全局坐标系", "global")
+        self.coordinate_system_combo.addItem("局部坐标系", "local")
         self.component_combo = QComboBox(self)
+        component_labels = tuple(str(label) for label in labels or ())
         for component in range(1, dimensions + 1):
             label = (
-                self._COMPONENT_LABELS[component - 1]
+                component_labels[component - 1]
+                if component <= len(component_labels)
+                else self._COMPONENT_LABELS[component - 1]
                 if component <= len(self._COMPONENT_LABELS)
                 else f"F{component}"
             )
             self.component_combo.addItem(label, component)
-        self.value_spin, self.x_spin, self.y_spin, self.z_spin = _value(self), _value(self), _value(self), _value(self)
+        self.value_spin = _value(self)
+        self.x_spin = _value(self)
+        self.y_spin = _value(self)
+        self.z_spin = _value(self)
         zero_vector = (0.0,) * self.spatial_dimensions
         gravity_vector = list(zero_vector)
         gravity_vector[-1] = -9.81
         self._vector_values = {
             "edge": zero_vector,
             "surface": zero_vector,
+            "line": (0.0, 0.0, 0.0),
             "gravity": tuple(gravity_vector),
         }
         self._active_vector_kind: str | None = None
@@ -222,12 +329,21 @@ class LoadDialog(QDialog):
         self.form.addRow("选择区域", self.region_combo)
         self.form.addRow("分析步", self.step_combo)
         self.form.addRow("载荷形式", self.load_type_combo)
+        self.form.addRow("坐标系", self.coordinate_system_combo)
+        self.local_axis_label = QLabel(
+            "局部坐标轴由梁单元几何自动确定；当前不支持编辑截面方向。",
+            self,
+        )
+        self.local_axis_label.setWordWrap(True)
+        self.form.addRow(self.local_axis_label)
         self.form.addRow("分量", self.component_combo)
         self.form.addRow("载荷值", self.value_spin)
         self.form.addRow("Fx", self.x_spin)
         self.form.addRow("Fy", self.y_spin)
         self.form.addRow("Fz", self.z_spin)
-        self.kind_combo.currentIndexChanged.connect(self._refresh); self.load_type_combo.currentIndexChanged.connect(self._refresh)
+        self.kind_combo.currentIndexChanged.connect(self._refresh)
+        self.load_type_combo.currentIndexChanged.connect(self._refresh)
+        self.coordinate_system_combo.currentIndexChanged.connect(self._refresh)
         if preferred_kind:
             index = self.kind_combo.findData(preferred_kind)
             if index >= 0:
@@ -261,6 +377,20 @@ class LoadDialog(QDialog):
             )
             self._set_distributed_values(current.vector, current.magnitude)
             self._vector_values["surface"] = tuple(current.vector)
+        elif isinstance(current, LineLoad):
+            self.kind_combo.setCurrentIndex(
+                max(0, self.kind_combo.findData("line"))
+            )
+            selected_region = str(current.target)
+            coordinate_index = self.coordinate_system_combo.findData(
+                current.coordinate_system
+            )
+            if coordinate_index >= 0:
+                self.coordinate_system_combo.setCurrentIndex(coordinate_index)
+            line_vector = tuple(current.vector[:3])
+            line_vector += (0.0,) * (3 - len(line_vector))
+            self._set_distributed_values(line_vector, None)
+            self._vector_values["line"] = line_vector
         elif isinstance(current, GravityLoad):
             self.kind_combo.setCurrentIndex(
                 max(0, self.kind_combo.findData("gravity"))
@@ -270,9 +400,12 @@ class LoadDialog(QDialog):
                 None,
             )
             self._vector_values["gravity"] = tuple(current.acceleration)
-        layout = QVBoxLayout(self); layout.addLayout(self.form); layout.addWidget(_buttons(self)); self.setMinimumWidth(350); self._refresh()
-        if selected_region:
-            self.region_combo.setCurrentText(selected_region)
+        layout = QVBoxLayout(self)
+        layout.addLayout(self.form)
+        layout.addWidget(_buttons(self))
+        self.setMinimumWidth(350)
+        self._refresh()
+        _select_region(self.region_combo, selected_region)
 
     def _set_distributed_values(
         self,
@@ -293,10 +426,15 @@ class LoadDialog(QDialog):
             self._active_vector_kind in self._vector_values
             and self._active_vector_kind != kind
         ):
+            vector_dimensions = (
+                3
+                if self._active_vector_kind == "line"
+                else self.spatial_dimensions
+            )
             self._vector_values[self._active_vector_kind] = tuple(
                 spin.value()
                 for spin in (self.x_spin, self.y_spin, self.z_spin)[
-                    :self.spatial_dimensions
+                    :vector_dimensions
                 ]
             )
         if kind in self._vector_values and self._active_vector_kind != kind:
@@ -317,8 +455,9 @@ class LoadDialog(QDialog):
                     self._gravity_target,
                 )
         else:
-            self.region_combo.addItems(self._regions[kind])
-        self.region_combo.setCurrentText(current)
+            for reference in self._regions[kind]:
+                self.region_combo.addItem(reference.name, reference)
+        _select_region(self.region_combo, current)
         distributed = kind in {"edge", "surface"}
         pressure = self.load_type_combo.currentData() == "pressure"
         self.form.setRowVisible(
@@ -327,6 +466,13 @@ class LoadDialog(QDialog):
         )
         self.region_combo.setEnabled(not gravity)
         self.form.setRowVisible(self.load_type_combo, distributed)
+        line_load = kind == "line"
+        self.form.setRowVisible(self.coordinate_system_combo, line_load)
+        local_coordinates = (
+            line_load
+            and self.coordinate_system_combo.currentData() == "local"
+        )
+        self.form.setRowVisible(self.local_axis_label, local_coordinates)
         self.form.setRowVisible(self.component_combo, kind == "node")
         self.form.setRowVisible(
             self.value_spin,
@@ -335,27 +481,32 @@ class LoadDialog(QDialog):
         self.form.labelForField(self.value_spin).setText(
             "压力值" if pressure and distributed else "载荷值"
         )
-        show_vector = gravity or (distributed and not pressure)
-        vector_labels = ("ax", "ay", "az") if gravity else ("Fx", "Fy", "Fz")
+        show_vector = gravity or line_load or (distributed and not pressure)
+        if gravity:
+            vector_labels = ("ax", "ay", "az")
+        elif line_load:
+            vector_labels = ("q1", "q2", "q3")
+        else:
+            vector_labels = ("Fx", "Fy", "Fz")
         for spin, label in zip(
             (self.x_spin, self.y_spin, self.z_spin),
             vector_labels,
         ):
             self.form.labelForField(spin).setText(label)
         self.form.setRowVisible(self.x_spin, show_vector)
+        vector_dimensions = 3 if line_load else self.spatial_dimensions
         self.form.setRowVisible(
             self.y_spin,
-            show_vector and self.spatial_dimensions >= 2,
+            show_vector and vector_dimensions >= 2,
         )
         self.form.setRowVisible(
             self.z_spin,
-            show_vector and self.spatial_dimensions == 3,
+            show_vector and vector_dimensions == 3,
         )
 
     def definition(self):
         kind = str(self.kind_combo.currentData())
         step = self.step_combo.currentText().strip()
-        region = self.region_combo.currentText().strip()
         if not step:
             raise ValueError("请选择分析步")
         if kind == "gravity":
@@ -368,26 +519,51 @@ class LoadDialog(QDialog):
                 acceleration,
                 self._gravity_target,
             )
-        if not region:
+        region = self.region_combo.currentData()
+        if not isinstance(region, RegionRef):
             raise ValueError("请选择载荷区域")
+        expected_kind = {
+            "node": "node_set",
+            "edge": "edge",
+            "surface": "surface",
+            "line": "element_set",
+        }.get(kind)
+        if expected_kind is None:
+            raise ValueError("当前没有可用的载荷区域")
+        target = require_region_kind(region, expected_kind)
         if kind == "node":
             component = self.component_combo.currentData()
             if component is None:
                 raise ValueError("请选择节点力分量")
             return step, NodalLoad(
-                region,
+                target,
                 int(component),
                 self.value_spin.value(),
             )
-        if kind not in {"edge", "surface"}:
-            raise ValueError("当前没有可用的载荷区域")
+        if kind == "line":
+            vector = tuple(
+                spin.value()
+                for spin in (self.x_spin, self.y_spin, self.z_spin)
+            )
+            if len(vector) != 3 or not all(isfinite(value) for value in vector):
+                raise ValueError("梁线载荷必须包含三个有限分量")
+            coordinate_system = str(
+                self.coordinate_system_combo.currentData() or ""
+            )
+            if coordinate_system not in {"global", "local"}:
+                raise ValueError("梁线载荷坐标系只能为 global 或 local")
+            return step, LineLoad(
+                target,
+                vector,
+                coordinate_system=coordinate_system,
+            )
         load_type = str(self.load_type_combo.currentData())
         if load_type == "pressure":
-            return step, (EdgeLoad(region, magnitude=self.value_spin.value(), load_type="pressure") if kind == "edge" else SurfaceLoad(region, magnitude=self.value_spin.value(), load_type="pressure"))
+            return step, (EdgeLoad(target, magnitude=self.value_spin.value(), load_type="pressure") if kind == "edge" else SurfaceLoad(target, magnitude=self.value_spin.value(), load_type="pressure"))
         vector = tuple(value.value() for value in (self.x_spin, self.y_spin))
         if self.spatial_dimensions == 3:
             vector += (self.z_spin.value(),)
-        return step, (EdgeLoad(region, vector, load_type="traction") if kind == "edge" else SurfaceLoad(region, vector, load_type="traction"))
+        return step, (EdgeLoad(target, vector, load_type="traction") if kind == "edge" else SurfaceLoad(target, vector, load_type="traction"))
 
 
 class OutputRequestDialog(QDialog):
@@ -405,8 +581,12 @@ class OutputRequestDialog(QDialog):
         current: OutputRequest | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("编辑输出请求" if current is not None else "创建输出请求")
-        self.step_combo, self.kind_combo, self.target_combo = QComboBox(self), QComboBox(self), QComboBox(self)
+        self.setWindowTitle(
+            "查看输出请求" if current is not None else "创建输出请求"
+        )
+        self.step_combo = QComboBox(self)
+        self.kind_combo = QComboBox(self)
+        self.target_combo = QComboBox(self)
         self.step_combo.addItems(step_names)
         self.kind_combo.addItem("字段输出", "field")
         if current is not None and current.kind != "field":
@@ -467,6 +647,12 @@ class OutputRequestDialog(QDialog):
         self.target_combo.setEnabled(
             current is None or current.target in {"node", "element"}
         )
+        if current is not None:
+            self.step_combo.setEnabled(False)
+            self.kind_combo.setEnabled(False)
+            self.target_combo.setEnabled(False)
+            for check in self.variable_checks.values():
+                check.setEnabled(False)
         self.kind_combo.currentIndexChanged.connect(self._refresh_variables)
         self.target_combo.currentIndexChanged.connect(self._target_changed)
         form = QFormLayout()
@@ -475,7 +661,10 @@ class OutputRequestDialog(QDialog):
         form.addRow("输出类型", self.kind_combo)
         form.addRow("输出位置", self.target_combo)
         form.addRow("输出变量", variable_widget)
-        layout = QVBoxLayout(self); layout.addLayout(form); layout.addWidget(_buttons(self)); self.setMinimumWidth(330)
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(_buttons(self))
+        self.setMinimumWidth(330)
         self._refresh_variables()
 
     def definition(self) -> tuple[str, OutputRequest]:
@@ -540,6 +729,9 @@ class AnalysisDefinitionManagerDialog(QDialog):
         parent=None,
         *,
         spatial_dimensions: int | None = None,
+        line_regions: Sequence[str] | None = None,
+        dof_labels: Sequence[str] | None = None,
+        force_labels: Sequence[str] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("分析定义管理")
@@ -547,7 +739,12 @@ class AnalysisDefinitionManagerDialog(QDialog):
         self.node_regions = list(node_regions)
         self.edge_regions = list(edge_regions)
         self.face_regions = list(face_regions)
+        self.line_regions = list(line_regions or ())
         self.dimensions = int(dimensions)
+        self.dof_labels = tuple(str(label) for label in dof_labels or ())
+        self.force_labels = tuple(
+            str(label) for label in force_labels or ()
+        )
         self.spatial_dimensions = int(
             spatial_dimensions
             if spatial_dimensions is not None
@@ -616,7 +813,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
                         "节点力",
                         step.name,
                         str(load.target),
-                        f"{dict(enumerate(('Fx', 'Fy', 'Fz'), 1)).get(load.component, f'F{load.component}')} = {load.value:g}",
+                        f"{self._force_label(load.component)} = {load.value:g}",
                     ),
                     ("node_load", step_index, item_index),
                 )
@@ -639,6 +836,16 @@ class AnalysisDefinitionManagerDialog(QDialog):
                         self._distributed_text(load),
                     ),
                     ("surface_load", step_index, item_index),
+                )
+            for item_index, load in enumerate(step.line_loads):
+                self._append_row(
+                    (
+                        "梁线载荷",
+                        step.name,
+                        str(load.target),
+                        self._line_load_text(load),
+                    ),
+                    ("line_load", step_index, item_index),
                 )
             for item_index, load in enumerate(step.gravity_loads):
                 self._append_row(
@@ -699,11 +906,52 @@ class AnalysisDefinitionManagerDialog(QDialog):
         ) + ")"
 
     @staticmethod
-    def _boundary_text(boundary: DisplacementConstraint) -> str:
+    def _line_load_text(load: LineLoad) -> str:
+        coordinate_system = {
+            "global": "全局",
+            "local": "局部（自动局部轴）",
+        }.get(load.coordinate_system, load.coordinate_system)
+        return coordinate_system + " = (" + ", ".join(
+            f"{value:g}" for value in load.vector
+        ) + ")"
+
+    @staticmethod
+    def _label(
+        component: int,
+        labels: Sequence[str],
+        defaults: Sequence[str],
+        fallback_prefix: str,
+    ) -> str:
+        if 1 <= component <= len(labels):
+            return str(labels[component - 1])
+        if 1 <= component <= len(defaults):
+            return str(defaults[component - 1])
+        return f"{fallback_prefix}{component}"
+
+    def _dof_label(self, component: int) -> str:
+        return self._label(
+            component,
+            self.dof_labels,
+            DisplacementDialog._COMPONENT_LABELS,
+            "U",
+        )
+
+    def _force_label(self, component: int) -> str:
+        return self._label(
+            component,
+            self.force_labels,
+            LoadDialog._COMPONENT_LABELS,
+            "F",
+        )
+
+    def _boundary_text(self, boundary: DisplacementConstraint) -> str:
         component = (
-            f"U{boundary.first_component}"
+            self._dof_label(boundary.first_component)
             if boundary.first_component == boundary.last_component
-            else f"U{boundary.first_component}–U{boundary.last_component}"
+            else (
+                f"{self._dof_label(boundary.first_component)}–"
+                f"{self._dof_label(boundary.last_component)}"
+            )
         )
         return f"{component} = {boundary.value:g}"
 
@@ -778,6 +1026,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
                 self.dimensions,
                 self,
                 current=current,
+                labels=self.dof_labels,
             )
             dialog.step_combo.setCurrentText(step.name)
             if not dialog.exec():
@@ -799,12 +1048,14 @@ class AnalysisDefinitionManagerDialog(QDialog):
             "node_load",
             "edge_load",
             "surface_load",
+            "line_load",
             "gravity_load",
         }:
             collection_name = {
                 "node_load": "cloads",
                 "edge_load": "edge_loads",
                 "surface_load": "surface_loads",
+                "line_load": "line_loads",
                 "gravity_load": "gravity_loads",
             }[kind]
             collection = tuple(getattr(step, collection_name))
@@ -813,7 +1064,11 @@ class AnalysisDefinitionManagerDialog(QDialog):
                 [item.name for item in self.steps],
                 self._with_existing(
                     self.node_regions,
-                    str(getattr(current, "target", "")),
+                    (
+                        str(getattr(current, "target", ""))
+                        if kind == "node_load"
+                        else ""
+                    ),
                 ),
                 self._with_existing(
                     self.edge_regions,
@@ -826,7 +1081,16 @@ class AnalysisDefinitionManagerDialog(QDialog):
                 self.dimensions,
                 self,
                 spatial_dimensions=self.spatial_dimensions,
+                line_regions=self._with_existing(
+                    self.line_regions,
+                    (
+                        str(getattr(current, "target", ""))
+                        if kind == "line_load"
+                        else ""
+                    ),
+                ),
                 current=current,
+                labels=self.force_labels,
             )
             dialog.step_combo.setCurrentText(step.name)
             if not dialog.exec():
@@ -884,6 +1148,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
                 "node_load": "cloads",
                 "edge_load": "edge_loads",
                 "surface_load": "surface_loads",
+                "line_load": "line_loads",
                 "gravity_load": "gravity_loads",
                 "output": "outputs",
             }[kind]
@@ -905,7 +1170,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
     @staticmethod
     def _append_load(
         step: AnalysisStep,
-        load: NodalLoad | EdgeLoad | SurfaceLoad | GravityLoad,
+        load: NodalLoad | EdgeLoad | SurfaceLoad | LineLoad | GravityLoad,
     ) -> None:
         if isinstance(load, NodalLoad):
             step.cloads = tuple(step.cloads) + (load,)
@@ -913,13 +1178,20 @@ class AnalysisDefinitionManagerDialog(QDialog):
             step.edge_loads = tuple(step.edge_loads) + (load,)
         elif isinstance(load, SurfaceLoad):
             step.surface_loads = tuple(step.surface_loads) + (load,)
+        elif isinstance(load, LineLoad):
+            step.line_loads = tuple(step.line_loads) + (load,)
         else:
             step.gravity_loads = tuple(step.gravity_loads) + (load,)
 
     def _update_buttons(self) -> None:
-        selected = self._selected() is not None
-        self.edit_button.setEnabled(selected)
-        self.delete_button.setEnabled(selected)
+        selected = self._selected()
+        self.edit_button.setEnabled(selected is not None)
+        self.edit_button.setText(
+            "查看"
+            if selected is not None and selected[0] == "output"
+            else "编辑"
+        )
+        self.delete_button.setEnabled(selected is not None)
 
     def values(self) -> list[AnalysisStep]:
         return deepcopy(self.steps)

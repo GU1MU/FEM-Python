@@ -33,6 +33,7 @@ from fem.geometry.recipes import (
     RectangleGeometry,
 )
 from fem.mesh.settings import LocalMeshControl, MeshSettings
+from tests.helpers.preflight_builders import passing_preflight_report
 
 
 def _model(*step_names: str) -> SimpleNamespace:
@@ -45,7 +46,17 @@ def _model(*step_names: str) -> SimpleNamespace:
             "Region-B": ElementSet("Region-B", (1,)),
         },
         metadata={},
-        mesh=SimpleNamespace(nodes=[], elements=[]),
+        mesh=SimpleNamespace(
+            nodes=[],
+            elements=[
+                SimpleNamespace(
+                    id=1,
+                    type="Tri3",
+                    node_ids=(1, 2, 3),
+                    props={},
+                )
+            ],
+        ),
     )
 
 
@@ -76,7 +87,10 @@ def _session_with_artifacts() -> ModelSession:
     mesh = session.prepare_mesh_generation()
     session.accept_generated_model(mesh.token, _model("Step-A"))
     validation = session.prepare_validation("Step-A")
-    session.accept_validation(validation.token, {"passed": True})
+    session.accept_validation(
+        validation.token,
+        passing_preflight_report(validation.token),
+    )
     solve = session.prepare_solve("Step-A", "Job-1")
     session.begin_run(solve.token)
     session.accept_run_result(solve.token, {"value": 1})
@@ -110,7 +124,10 @@ def _session_with_exact_geometry_artifacts(recipe) -> ModelSession:
     mesh = session.prepare_mesh_generation()
     session.accept_generated_model(mesh.token, _model("Step-A"))
     validation = session.prepare_validation("Step-A")
-    session.accept_validation(validation.token, {"passed": True})
+    session.accept_validation(
+        validation.token,
+        passing_preflight_report(validation.token),
+    )
     solve = session.prepare_solve("Step-A", "Job-1")
     session.begin_run(solve.token)
     session.accept_run_result(solve.token, {"value": 1})

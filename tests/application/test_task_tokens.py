@@ -8,9 +8,11 @@ import pytest
 from fem.application import (
     ModelSession,
     NativePart,
+    PreflightReport,
     TokenStatus,
 )
 from fem.core.model import AnalysisStep
+from tests.helpers.preflight_builders import passing_preflight_report
 
 
 def _model(*step_names: str) -> SimpleNamespace:
@@ -32,7 +34,10 @@ def _session() -> ModelSession:
     mesh = session.prepare_mesh_generation()
     session.accept_generated_model(mesh.token, _model("Step-A"))
     validation = session.prepare_validation("Step-A")
-    session.accept_validation(validation.token, {"passed": True})
+    session.accept_validation(
+        validation.token,
+        passing_preflight_report(validation.token),
+    )
     return session
 
 
@@ -118,9 +123,10 @@ def test_failed_and_cancelled_callbacks_use_the_same_token_gate(
 def test_repeated_completion_is_explicitly_rejected() -> None:
     session = _session()
     task = session.prepare_validation("Step-A")
-    first = session.accept_validation(task.token, {"passed": True})
+    report = passing_preflight_report(task.token)
+    first = session.accept_validation(task.token, report)
     revision = session.session_revision
-    second = session.accept_validation(task.token, {"passed": True})
+    second = session.accept_validation(task.token, report)
 
     assert first.accepted
     assert not second.accepted
@@ -187,7 +193,9 @@ def test_generic_validation_failure_keeps_failed_step_record() -> None:
     record = session.validation_for("Step-A")
     assert record is not None
     assert not record.passed
-    assert isinstance(record.report, ValueError)
+    assert isinstance(record.report, PreflightReport)
+    assert record.report.errors[0].code == "preflight.internal_error"
+    assert record.report.errors[0].message == "bad"
     assert not session.can_submit("Step-A")
 
 

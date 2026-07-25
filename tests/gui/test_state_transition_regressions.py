@@ -32,6 +32,7 @@ from tests.helpers.model_builders import (
     make_static_pull_truss_model,
     make_two_step_static_pull_truss_model,
 )
+from tests.helpers.preflight_builders import passing_preflight_report
 
 
 _RESULT_ACTIONS = (
@@ -77,7 +78,7 @@ def _validate_step(window: FEMMainWindow, step_name: str) -> None:
     assert window._apply_session_delta(
         window.session.accept_validation(
             task.token,
-            {"passed": True},
+            passing_preflight_report(task.token),
         )
     )
 
@@ -394,7 +395,7 @@ def test_stale_validation_callback_cannot_change_projection() -> None:
 
     rejected = window.session.accept_validation(
         stale.token,
-        {"passed": True},
+        passing_preflight_report(stale.token),
     )
     assert not rejected.accepted
     assert not window._apply_session_delta(rejected)
