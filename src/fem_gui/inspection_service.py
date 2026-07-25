@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from numbers import Real
 from typing import Any
+
+from fem.application import RegionRef, resolve_effective_beam_frames
 
 from .visualization.result_adapter import ResultData
 
@@ -49,9 +52,33 @@ class EntitySelection:
 class InspectionService:
     """为一个 FEMModel 建立一次只读反向索引。"""
 
-    def __init__(self, model: Any, result_data: ResultData | None = None) -> None:
+    def __init__(
+        self,
+        model: Any,
+        result_data: ResultData | None = None,
+        *,
+        definitions: Any | None = None,
+        effective_frame_query: (
+            Callable[[RegionRef | int], Any] | None
+        ) = None,
+    ) -> None:
         self.model = model
         self.result_data = result_data
+        self.definitions = definitions
+        self.section_definitions = tuple(
+            getattr(definitions, "sections", ())
+        )
+        self.region_assignments = tuple(
+            getattr(definitions, "assignments", ())
+        )
+        self._effective_frame_query = (
+            effective_frame_query
+            if effective_frame_query is not None
+            else lambda target: resolve_effective_beam_frames(
+                self.model,
+                target,
+            )
+        )
         self.nodes = {int(node.id): node for node in model.mesh.nodes}
         self.elements = {int(element.id): element for element in model.mesh.elements}
         self.node_sets_by_node: dict[int, list[str]] = defaultdict(list)
@@ -69,9 +96,18 @@ class InspectionService:
         self._all_element_sets.update(model.metadata.get("_abaqus_internal_element_sets", {}))
         self._build_indexes()
         self._element_record_cached = lru_cache(maxsize=4096)(self._make_element_record)
+        self._beam_frame_report_cached = lru_cache(maxsize=4096)(
+            self._query_effective_beam_frames
+        )
 
     def update_result_data(self, result_data: ResultData | None) -> None:
         self.result_data = result_data
+
+    def _query_effective_beam_frames(
+        self,
+        target: RegionRef | int,
+    ) -> Any:
+        return self._effective_frame_query(target)
 
     def _build_indexes(self) -> None:
         for name, node_set in self.model.node_sets.items():
@@ -189,6 +225,7 @@ class InspectionService:
             "surface_load": self._inspect_surface_load, "edge_load": self._inspect_edge_load,
             "line_load": self._inspect_line_load,
             "gravity_load": self._inspect_gravity_load,
+            "assignment": self._inspect_assignment,
             "output": self._inspect_output,
         }
         if kind not in handlers:
@@ -212,6 +249,13 @@ class InspectionService:
             return EntitySelection(element_ids=tuple(sorted(self.material_elements.get(str(key), ()))))
         if kind == "section":
             return EntitySelection(element_ids=self.section_elements.get(int(key), ()))
+        if kind == "assignment":
+            assignment = self.region_assignments[int(key)]
+            return EntitySelection(
+                element_ids=self.target_element_ids(
+                    str(assignment.region_name)
+                )
+            )
         if kind == "boundary":
             step_index, index = key
             return EntitySelection(node_ids=self.target_node_ids(self.model.steps[step_index].boundaries[index].target))
@@ -359,6 +403,57 @@ class InspectionService:
         if property_rows:
             tables.append(InspectionTable("有效属性", ("属性", "数值"), property_rows))
         pages = [InspectionPage("基本信息", tuple(fields)), InspectionPage("连接与属性", tables=tuple(tables))]
+        frame_report = self._beam_frame_report_cached(element_id)
+        frame_entry = (
+            frame_report.for_element(element_id)
+            if hasattr(frame_report, "for_element")
+            else next(
+                (
+                    entry
+                    for entry in tuple(
+                        getattr(frame_report, "entries", ())
+                    )
+                    if int(entry.element_id) == element_id
+                ),
+                None,
+            )
+        )
+        if frame_entry is not None:
+            frame = frame_entry.frame
+            provenance = (
+                "direct element"
+                if frame_entry.assignment_index is None
+                else f"截面分配 {int(frame_entry.assignment_index) + 1}"
+            )
+            frame_fields = [
+                ("单元编号", str(element_id)),
+                ("frame source", str(frame.source)),
+                ("effective properties 来源", provenance),
+                (
+                    "assignment element set",
+                    str(frame_entry.element_set or "—"),
+                ),
+                (
+                    "effective section type",
+                    str(frame_entry.section_type or "—"),
+                ),
+                ("local x", _vector_text(frame.local_x)),
+                ("local y", _vector_text(frame.local_y)),
+                ("local z", _vector_text(frame.local_z)),
+            ]
+            frame_diagnostics = tuple(
+                getattr(frame_report, "diagnostics", ())
+            )
+            if frame_diagnostics:
+                frame_fields.append(
+                    (
+                        "diagnostics",
+                        _diagnostic_summary(frame_diagnostics),
+                    )
+                )
+            pages.append(
+                InspectionPage("Beam 局部坐标", tuple(frame_fields))
+            )
         if self.result_data is not None and element_id in self.result_data.element_stress:
             values = self.result_data.element_stress[element_id]
             rows = tuple((_stress_label(name), format_number(value)) for name, value in values.items())
@@ -460,6 +555,152 @@ class InspectionService:
                 fields.append((_property_label(name), format_number(value)))
         return EntityInspection(f"截面 {index + 1}", "section", index, (InspectionPage("截面", tuple(fields)),))
 
+    def _inspect_assignment(self, key: object) -> EntityInspection:
+        index = int(key)
+        assignment = self.region_assignments[index]
+        section = next(
+            (
+                item
+                for item in self.section_definitions
+                if str(item.name) == str(assignment.section_name)
+            ),
+            None,
+        )
+        target = RegionRef(
+            "element_set",
+            str(assignment.region_name),
+        )
+        report = self._beam_frame_report_cached(target)
+        entries = tuple(getattr(report, "entries", ()))
+        element_ids = tuple(getattr(report, "element_ids", ()))
+        diagnostics = tuple(getattr(report, "diagnostics", ()))
+        orientation = getattr(assignment, "beam_orientation", None)
+        not_applicable = (
+            orientation is None
+            and not entries
+            and bool(diagnostics)
+            and all(
+                str(getattr(item, "code", ""))
+                == "beam.orientation.unsupported_target"
+                for item in diagnostics
+            )
+        )
+        if not_applicable:
+            diagnostics = ()
+        reference = (
+            None
+            if orientation is None
+            else getattr(orientation, "local_y_reference", None)
+        )
+        sources = sorted(
+            {
+                str(entry.frame.source)
+                for entry in entries
+            }
+        )
+        fields = [
+            ("分配编号", str(index + 1)),
+            ("截面", str(assignment.section_name)),
+            ("目标单元集", str(assignment.region_name)),
+            (
+                "section type",
+                str(getattr(section, "section_type", "—")),
+            ),
+            (
+                "orientation source",
+                (
+                    "not applicable"
+                    if not_applicable
+                    else (
+                        "explicit"
+                        if orientation is not None
+                        else "automatic"
+                    )
+                ),
+            ),
+            (
+                "authored reference",
+                "—" if reference is None else _vector_text(reference),
+            ),
+            (
+                "effective frame source",
+                (
+                    "not applicable"
+                    if not_applicable
+                    else ("、".join(sources) or "—")
+                ),
+            ),
+            (
+                "有效元素数量",
+                "0" if not_applicable else str(len(entries)),
+            ),
+            (
+                "无效元素数量",
+                (
+                    "0"
+                    if not_applicable
+                    else str(max(0, len(element_ids) - len(entries)))
+                ),
+            ),
+            (
+                "validity",
+                (
+                    "not applicable"
+                    if not_applicable
+                    else (
+                        "valid"
+                        if bool(getattr(report, "passed", False))
+                        else "invalid"
+                    )
+                ),
+            ),
+        ]
+        properties = dict(getattr(section, "properties", {}))
+        if (
+            str(getattr(section, "section_type", "")).casefold()
+            == "rectangle"
+        ):
+            fields.extend(
+                (
+                    ("矩形高度（local y）", format_number(properties.get("height"))),
+                    ("矩形宽度（local z）", format_number(properties.get("width"))),
+                    (
+                        "截面轴映射",
+                        "height → local y；width → local z",
+                    ),
+                )
+            )
+        if diagnostics:
+            fields.append(("diagnostics", _diagnostic_summary(diagnostics)))
+        tables = ()
+        if diagnostics:
+            tables = (
+                InspectionTable(
+                    "方向诊断",
+                    ("代码", "严重性", "说明"),
+                    tuple(
+                        (
+                            str(getattr(item, "code", "")),
+                            str(
+                                getattr(
+                                    getattr(item, "severity", ""),
+                                    "value",
+                                    getattr(item, "severity", ""),
+                                )
+                            ),
+                            str(getattr(item, "message", item)),
+                        )
+                        for item in diagnostics
+                    ),
+                ),
+            )
+        return EntityInspection(
+            f"截面分配 {index + 1}",
+            "assignment",
+            index,
+            (InspectionPage("截面分配", tuple(fields), tables),),
+        )
+
     def _inspect_step(self, key: object) -> EntityInspection:
         step_index = int(key)
         step = self.model.steps[step_index]
@@ -499,7 +740,11 @@ class InspectionService:
                 str(len(load_rows) + 1),
                 "梁均布载荷",
                 str(item.target),
-                "局部坐标" if item.coordinate_system == "local" else "全局坐标",
+                (
+                    "局部（Beam 已解析局部坐标）"
+                    if item.coordinate_system == "local"
+                    else "全局坐标"
+                ),
                 ", ".join(format_number(value) for value in item.vector),
             ))
             load_refs.append(EntityReference("line_load", (step_index, index)))
@@ -569,7 +814,14 @@ class InspectionService:
             ("类型", "梁均布载荷"),
             ("目标", str(item.target)),
             ("目标单元数量", str(len(self.target_element_ids(item.target)))),
-            ("坐标系", "局部" if item.coordinate_system == "local" else "全局"),
+            (
+                "坐标系",
+                (
+                    "局部（Beam 已解析局部坐标）"
+                    if item.coordinate_system == "local"
+                    else "全局"
+                ),
+            ),
             ("载荷向量", ", ".join(format_number(value) for value in item.vector)),
         )
         return EntityInspection(
@@ -660,6 +912,24 @@ def format_number(value: object) -> str:
             return "0"
         return f"{number:.6g}"
     return str(value)
+
+
+def _vector_text(values: object) -> str:
+    return ", ".join(
+        format_number(value)
+        for value in tuple(values)
+    )
+
+
+def _diagnostic_summary(diagnostics: object) -> str:
+    values = tuple(diagnostics)
+    return "；".join(
+        (
+            f"[{getattr(item, 'code', 'diagnostic')}] "
+            f"{getattr(item, 'message', str(item))}"
+        )
+        for item in values
+    ) or "—"
 
 
 def _counter_text(values: Any) -> str:

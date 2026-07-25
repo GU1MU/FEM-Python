@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -13,8 +14,8 @@ from PySide6.QtCore import QEvent, QTimer, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QLabel, QStackedLayout, QVBoxLayout, QWidget
 
+from fem.application import RegionRef
 from fem.boundary.step import boundary_for_step, get_step
-from fem.elements.line import beam3d_geometry
 from fem.post.stress import dispatch, field
 from ..preprocessing import GeometryPreview
 from ..viewport_background import ViewportBackgroundSettings
@@ -41,6 +42,24 @@ _pyvista = None
 _QtInteractor = None
 _backend_error: Exception | None = None
 _backend_attempted = False
+
+BEAM_FRAME_GLYPH_LIMIT = 64
+BEAM_FRAME_CACHE_LIMIT = 256
+
+
+def _effective_line_load_vector(
+    vector: object,
+    coordinate_system: str,
+    frame: Any | None,
+) -> np.ndarray | None:
+    """Project local components with the application-resolved Beam rotation."""
+
+    values = np.asarray(vector, dtype=float)
+    if coordinate_system != "local":
+        return values
+    if frame is None:
+        return None
+    return np.asarray(frame.rotation, dtype=float).T @ values
 
 
 def _binding_error(interactor: type[object]) -> RuntimeError | None:
@@ -212,6 +231,11 @@ class FEMViewport(QWidget):
         self._symbol_settings = SymbolSettings()
         self._symbols_visible = True
         self._boundary_cache: dict[str | None, Any] = {}
+        self._effective_frame_query: (
+            Callable[[RegionRef | int], Any] | None
+        ) = None
+        self._beam_frame_cache: dict[RegionRef | int, Any] = {}
+        self._beam_frame_preview_target: RegionRef | int | None = None
         self._last_symbol_scale: float | None = None
         self._last_symbol_camera_position: np.ndarray | None = None
         self._updating_symbol_scale = False
@@ -477,6 +501,9 @@ class FEMViewport(QWidget):
         *,
         refresh_symbols: bool = True,
         render: bool = True,
+        effective_frame_query: (
+            Callable[[RegionRef | int], Any] | None
+        ) = None,
     ) -> None:
         self._model = model
         self._geometry = geometry
@@ -502,6 +529,9 @@ class FEMViewport(QWidget):
         self._display = DisplayState()
         self._overlay_undeformed = False
         self._boundary_cache.clear()
+        self._effective_frame_query = effective_frame_query
+        self._beam_frame_cache.clear()
+        self._beam_frame_preview_target = None
         self._last_symbol_scale = None
         self._last_symbol_camera_position = None
         if is_offscreen_environment():
@@ -543,6 +573,9 @@ class FEMViewport(QWidget):
         self._pending_hover_position = None
         self._hover_timer.stop()
         self._boundary_cache.clear()
+        self._effective_frame_query = None
+        self._beam_frame_cache.clear()
+        self._beam_frame_preview_target = None
         self._last_symbol_scale = None
         self._last_symbol_camera_position = None
         self._grid = None
@@ -638,6 +671,7 @@ class FEMViewport(QWidget):
         self._selection_highlight_visible = True
         self._remove_actor("selection")
         self._remove_actor("geometry_selection")
+        self._clear_beam_frame_preview(render=False)
         self._clear_preselection(render=False)
         self._render()
 
@@ -652,6 +686,7 @@ class FEMViewport(QWidget):
     ) -> None:
         """Highlight one or more logical preview entities of the same kind."""
         self._remove_actor("geometry_selection")
+        self._clear_beam_frame_preview(render=False)
         if (
             self._plotter is None
             or self._geometry_preview is None
@@ -720,6 +755,7 @@ class FEMViewport(QWidget):
         self._selected_id = int(node_id)
         self._selection_highlight_visible = True
         self._remove_actor("selection")
+        self._clear_beam_frame_preview(render=False)
         if self._plotter is not None and _pyvista is not None:
             point = _pyvista.PolyData(self._model_display_points()[[index]])
             self._actors["selection"] = self._plotter.add_mesh(
@@ -745,13 +781,15 @@ class FEMViewport(QWidget):
             )
             self._offset_highlight_actor(self._actors["selection"])
             self._update_pickable_actors()
-            self._render()
+        self.show_beam_frame_preview(int(element_id), render=False)
+        self._render()
 
     def highlight_nodes(self, node_ids: tuple[int, ...]) -> None:
         if self._geometry is None or _pyvista is None or self._plotter is None:
             return
         indices = [self._geometry.node_id_to_point_index[node_id] for node_id in node_ids if node_id in self._geometry.node_id_to_point_index]
         self._remove_actor("set_highlight")
+        self._clear_beam_frame_preview(render=False)
         if indices:
             self._actors["set_highlight"] = self._plotter.add_mesh(
                 _pyvista.PolyData(self._model_display_points()[indices]), color="#4f8fa8",
@@ -765,6 +803,7 @@ class FEMViewport(QWidget):
             return
         indices = [self._geometry.element_id_to_cell_index[element_id] for element_id in element_ids if element_id in self._geometry.element_id_to_cell_index]
         self._remove_actor("set_highlight")
+        self._clear_beam_frame_preview(render=False)
         if indices:
             self._actors["set_highlight"] = self._plotter.add_mesh(
                 self._pick_grid.extract_cells(indices), color="#4f8fa8", style="wireframe",
@@ -777,6 +816,7 @@ class FEMViewport(QWidget):
         if self._geometry is None or _pyvista is None or self._plotter is None:
             return
         connectivity: list[int] = []
+        self._clear_beam_frame_preview(render=False)
         for member in members:
             indices = [
                 self._geometry.node_id_to_point_index[int(node_id)]
@@ -801,6 +841,157 @@ class FEMViewport(QWidget):
             **kwargs,
         )
         self._render()
+
+    def _effective_beam_frame_report(
+        self,
+        target: RegionRef | int,
+    ) -> Any | None:
+        cached = self._beam_frame_cache.get(target)
+        if cached is not None:
+            return cached
+        if not callable(self._effective_frame_query):
+            return None
+        report = self._effective_frame_query(target)
+        if len(self._beam_frame_cache) >= BEAM_FRAME_CACHE_LIMIT:
+            oldest = next(iter(self._beam_frame_cache))
+            self._beam_frame_cache.pop(oldest, None)
+        self._beam_frame_cache[target] = report
+        return report
+
+    def _clear_beam_frame_preview(
+        self,
+        *,
+        render: bool,
+    ) -> None:
+        self._beam_frame_preview_target = None
+        for name in tuple(self._actors):
+            if name.startswith("beam_frame_"):
+                self._remove_actor(name)
+        if render:
+            self._render()
+
+    def show_beam_frame_preview(
+        self,
+        target: RegionRef | int,
+        *,
+        render: bool = True,
+    ) -> None:
+        """Draw bounded assignment-aware Beam axes for one selected target."""
+
+        self._clear_beam_frame_preview(render=False)
+        self._beam_frame_preview_target = target
+        if (
+            self._plotter is None
+            or self._geometry is None
+            or self._model is None
+        ):
+            if render:
+                self._render()
+            return
+        report = self._effective_beam_frame_report(target)
+        entries = tuple(getattr(report, "entries", ()))
+        if not entries:
+            if render:
+                self._render()
+            return
+        entries = entries[:BEAM_FRAME_GLYPH_LIMIT]
+        element_lookup = {
+            int(element.id): element
+            for element in self._model.mesh.elements
+        }
+        points = self._current_points()
+        frame_rows: list[tuple[np.ndarray, Any]] = []
+        for entry in entries:
+            element = element_lookup.get(int(entry.element_id))
+            if element is None:
+                continue
+            indices = [
+                self._geometry.node_id_to_point_index[int(node_id)]
+                for node_id in element.node_ids
+                if int(node_id) in self._geometry.node_id_to_point_index
+            ]
+            if not indices:
+                continue
+            frame_rows.append(
+                (
+                    np.mean(points[indices], axis=0),
+                    entry.frame,
+                )
+            )
+        if not frame_rows:
+            if render:
+                self._render()
+            return
+        glyph_scale = 0.75 * symbol_length(
+            self._geometry.points,
+            self._symbol_settings.scale,
+            world_per_pixel=self._world_per_pixel(),
+        )
+        axes = (
+            ("x", "#dc4b4b", "local_x"),
+            ("y", "#45a565", "local_y"),
+            ("z", "#477fd1", "local_z"),
+        )
+        label_points: list[np.ndarray] = []
+        labels: list[str] = []
+        for source in ("explicit", "automatic"):
+            selected = [
+                (origin, frame)
+                for origin, frame in frame_rows
+                if str(frame.source) == source
+            ]
+            if not selected:
+                continue
+            origins = np.asarray(
+                [origin for origin, _frame in selected],
+                dtype=float,
+            )
+            for axis_name, color, attribute in axes:
+                vectors = np.asarray(
+                    [
+                        getattr(frame, attribute)
+                        for _origin, frame in selected
+                    ],
+                    dtype=float,
+                )
+                actor_name = f"beam_frame_{axis_name}_{source}"
+                self._actors[actor_name] = self._plotter.add_arrows(
+                    origins,
+                    vectors,
+                    mag=glyph_scale,
+                    color=color,
+                    opacity=1.0 if source == "explicit" else 0.48,
+                    name=actor_name,
+                    reset_camera=False,
+                )
+                label_points.extend(
+                    origins + glyph_scale * vectors
+                )
+                labels.extend(
+                    (
+                        axis_name
+                        if source == "explicit"
+                        else f"{axis_name} (automatic)"
+                    )
+                    for _ in selected
+                )
+        if label_points:
+            self._actors["beam_frame_labels"] = (
+                self._plotter.add_point_labels(
+                    np.asarray(label_points, dtype=float),
+                    labels,
+                    point_size=0,
+                    font_size=8,
+                    shape_color=self._visual_palette()[
+                        "label_background"
+                    ],
+                    name="beam_frame_labels",
+                    reset_camera=False,
+                )
+            )
+        self._update_pickable_actors()
+        if render:
+            self._render()
 
     def set_display(
         self,
@@ -996,8 +1187,15 @@ class FEMViewport(QWidget):
         try:
             self.show_boundary_and_loads(
                 self._symbol_settings.step_name,
-                render=render,
+                render=False,
             )
+            if self._beam_frame_preview_target is not None:
+                self.show_beam_frame_preview(
+                    self._beam_frame_preview_target,
+                    render=False,
+                )
+            if render:
+                self._render()
         finally:
             self._updating_symbol_scale = False
 
@@ -1331,9 +1529,27 @@ class FEMViewport(QWidget):
                     int(element.id): element
                     for element in self._model.mesh.elements
                 }
-                node_object_lookup = {
-                    int(node.id): node for node in self._model.mesh.nodes
-                }
+                frame_by_element: dict[int, Any] = {}
+                for definition in selected_definition.line_loads:
+                    if definition.coordinate_system != "local":
+                        continue
+                    frame_target = (
+                        int(definition.target)
+                        if isinstance(definition.target, int)
+                        else RegionRef(
+                            "element_set",
+                            str(definition.target),
+                        )
+                    )
+                    report = self._effective_beam_frame_report(
+                        frame_target
+                    )
+                    for entry in tuple(
+                        getattr(report, "entries", ())
+                    ):
+                        frame_by_element[int(entry.element_id)] = (
+                            entry.frame
+                        )
                 for load in boundary.line_loads:
                     element = element_lookup.get(int(load.elem_id))
                     if element is None:
@@ -1343,14 +1559,13 @@ class FEMViewport(QWidget):
                         for node_id in element.node_ids
                     ])
                     samples = sample_polyline(points, settings.sampling_density)
-                    vector = np.asarray(load.vector, dtype=float)
-                    if load.coordinate_system == "local":
-                        _length, rotation = beam3d_geometry(
-                            self._model.mesh,
-                            element,
-                            node_object_lookup,
-                        )
-                        vector = rotation.T @ vector
+                    vector = _effective_line_load_vector(
+                        load.vector,
+                        load.coordinate_system,
+                        frame_by_element.get(int(load.elem_id)),
+                    )
+                    if vector is None:
+                        continue
                     if float(np.linalg.norm(vector)) <= 0.0:
                         continue
                     for sample_index, sample in enumerate(samples):

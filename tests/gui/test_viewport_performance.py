@@ -136,6 +136,7 @@ def test_boundary_cache_reuses_step_and_is_cleared_by_new_model(monkeypatch):
         new_model, build_model_geometry(new_model), refresh_symbols=False, render=False
     )
     assert viewport._boundary_cache == {}
+    assert viewport._beam_frame_cache == {}
 
 
 def test_world_per_pixel_supports_parallel_and_perspective_cameras():

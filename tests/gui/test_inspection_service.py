@@ -1,6 +1,15 @@
 from __future__ import annotations
 
+import pytest
+
 from fem.abaqus import read
+from fem.application import (
+    BeamOrientation,
+    ModelDefinitions,
+    RegionAssignment,
+    SectionDefinition,
+    resolve_effective_beam_frames,
+)
 from fem.solvers.static_linear import solve
 from fem.core.mesh import Element3D, Mesh3D, Node3D
 from fem.core.model import (
@@ -129,9 +138,158 @@ def test_beam_section_and_line_load_use_the_common_inspection_service():
     assert element_properties["矩形高度（局部 y）"] == "0.1"
     assert element_properties["矩形宽度（局部 z）"] == "0.02"
     load_fields = _fields(service.inspect("line_load", (0, 0)).pages[0])
-    assert load_fields["坐标系"] == "局部"
+    assert (
+        load_fields["坐标系"]
+        == "局部（Beam 已解析局部坐标）"
+    )
     assert load_fields["载荷向量"] == "0, -5, 0"
     assert service.selection_for("line_load", (0, 0)).element_ids == (10,)
+
+
+@pytest.mark.parametrize(
+    ("orientation", "source", "reference"),
+    [
+        (BeamOrientation((0.0, 1.0, 0.0)), "explicit", "0, 1, 0"),
+        (None, "automatic", "—"),
+    ],
+)
+def test_assignment_and_element_inspection_use_effective_frame_query(
+    orientation,
+    source,
+    reference,
+):
+    properties = {
+        "height": 0.1,
+        "width": 0.02,
+    }
+    if orientation is not None:
+        properties["beam_local_y_reference"] = (
+            orientation.local_y_reference
+        )
+    mesh = Mesh3D(
+        [Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 2.0, 0.0, 0.0)],
+        [Element3D(10, [1, 2], "Beam2", {})],
+        dofs_per_node=6,
+    )
+    model = FEMModel(
+        mesh,
+        element_sets={"BEAMS": ElementSet("BEAMS", (10,))},
+        materials={
+            "STEEL": MaterialDefinition(
+                "STEEL",
+                {"E": 210000.0, "nu": 0.3},
+            )
+        },
+        sections=[
+            SectionAssignment(
+                "BEAMS",
+                "STEEL",
+                "rectangle",
+                properties,
+            )
+        ],
+    )
+    definitions = ModelDefinitions(
+        materials=tuple(model.materials.values()),
+        sections=(
+            SectionDefinition(
+                "Beam Section",
+                "STEEL",
+                "rectangle",
+                {"height": 0.1, "width": 0.02},
+            ),
+        ),
+        assignments=(
+            RegionAssignment(
+                "Beam Section",
+                "BEAMS",
+                orientation,
+            ),
+        ),
+    )
+    queried = []
+
+    def query(target):
+        queried.append(target)
+        return resolve_effective_beam_frames(model, target)
+
+    service = InspectionService(
+        model,
+        definitions=definitions,
+        effective_frame_query=query,
+    )
+
+    assignment = _fields(
+        service.inspect("assignment", 0).pages[0]
+    )
+    assert assignment["orientation source"] == source
+    assert assignment["authored reference"] == reference
+    assert assignment["effective frame source"] == source
+    assert assignment["有效元素数量"] == "1"
+    assert assignment["无效元素数量"] == "0"
+    assert assignment["validity"] == "valid"
+    assert assignment["矩形高度（local y）"] == "0.1"
+    assert assignment["矩形宽度（local z）"] == "0.02"
+    assert service.selection_for("assignment", 0).element_ids == (10,)
+
+    frame = _fields(
+        _page(service.inspect("element", 10), "Beam 局部坐标")
+    )
+    assert frame["frame source"] == source
+    assert frame["effective properties 来源"] == "截面分配 1"
+    assert frame["local x"] == "1, 0, 0"
+    assert frame["local y"] == "0, 1, 0"
+    assert frame["local z"] == "0, 0, 1"
+
+    service.inspect("element", 10)
+    assert len(queried) == 2
+
+
+def test_non_beam_assignment_marks_orientation_not_applicable():
+    mesh = Mesh3D(
+        [Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 2.0, 0.0, 0.0)],
+        [Element3D(10, [1, 2], "Truss2", {})],
+        dofs_per_node=3,
+    )
+    model = FEMModel(
+        mesh,
+        element_sets={"TRUSSES": ElementSet("TRUSSES", (10,))},
+        materials={
+            "STEEL": MaterialDefinition("STEEL", {"E": 210000.0})
+        },
+        sections=[
+            SectionAssignment(
+                "TRUSSES",
+                "STEEL",
+                "truss",
+                {"area": 0.1},
+            )
+        ],
+    )
+    definitions = ModelDefinitions(
+        materials=tuple(model.materials.values()),
+        sections=(
+            SectionDefinition(
+                "Truss Section",
+                "STEEL",
+                "truss",
+                {"area": 0.1},
+            ),
+        ),
+        assignments=(
+            RegionAssignment("Truss Section", "TRUSSES"),
+        ),
+    )
+
+    service = InspectionService(model, definitions=definitions)
+    assignment = _fields(service.inspect("assignment", 0).pages[0])
+
+    assert assignment["orientation source"] == "not applicable"
+    assert assignment["effective frame source"] == "not applicable"
+    assert assignment["有效元素数量"] == "0"
+    assert assignment["无效元素数量"] == "0"
+    assert assignment["validity"] == "not applicable"
+    assert "diagnostics" not in assignment
 
 
 def test_global_gravity_uses_the_common_inspection_and_selection(gui_inp_path):

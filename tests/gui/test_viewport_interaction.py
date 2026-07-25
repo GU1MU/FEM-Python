@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -9,7 +10,15 @@ import pytest
 from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtWidgets import QApplication, QWidget
 
-from fem_gui.widgets.viewport import FEMViewport
+from fem.application import RegionRef
+from fem.core.mesh import Element3D, Mesh3D, Node3D
+from fem.core.model import FEMModel
+from fem_gui.visualization.model_adapter import build_model_geometry
+from fem_gui.widgets.viewport import (
+    BEAM_FRAME_GLYPH_LIMIT,
+    FEMViewport,
+    _effective_line_load_vector,
+)
 
 
 def _application() -> QApplication:
@@ -188,3 +197,141 @@ def test_child_widget_mouse_move_uses_plotter_coordinates() -> None:
     assert viewport.eventFilter(child, press)
     assert viewport.eventFilter(child, move)
     assert not viewport._selection_dragged
+
+
+class _FrameActor:
+    def SetPickable(self, _value) -> None:
+        return
+
+
+class _FramePlotter:
+    def __init__(self) -> None:
+        self.camera = None
+        self.arrow_calls = []
+        self.label_calls = []
+        self.removed = []
+        self.render_count = 0
+
+    def add_arrows(self, origins, vectors, **kwargs):
+        self.arrow_calls.append(
+            (np.asarray(origins), np.asarray(vectors), kwargs)
+        )
+        return _FrameActor()
+
+    def add_point_labels(self, points, labels, **kwargs):
+        self.label_calls.append(
+            (np.asarray(points), tuple(labels), kwargs)
+        )
+        return _FrameActor()
+
+    def remove_actor(self, actor, **_kwargs):
+        self.removed.append(actor)
+
+    def render(self) -> None:
+        self.render_count += 1
+
+
+def _many_beam_model(count: int) -> FEMModel:
+    nodes = []
+    elements = []
+    for index in range(count):
+        start = 2 * index + 1
+        nodes.extend(
+            (
+                Node3D(start, 0.0, float(index), 0.0),
+                Node3D(start + 1, 1.0, float(index), 0.0),
+            )
+        )
+        elements.append(
+            Element3D(index + 1, [start, start + 1], "Beam2", {})
+        )
+    return FEMModel(
+        Mesh3D(nodes, elements, dofs_per_node=6),
+        name="many beams",
+    )
+
+
+def test_selected_beam_frame_preview_is_cached_and_glyph_bounded() -> None:
+    _application()
+    model = _many_beam_model(BEAM_FRAME_GLYPH_LIMIT + 11)
+    geometry = build_model_geometry(model)
+    frame = SimpleNamespace(
+        source="explicit",
+        local_x=np.asarray((1.0, 0.0, 0.0)),
+        local_y=np.asarray((0.0, 1.0, 0.0)),
+        local_z=np.asarray((0.0, 0.0, 1.0)),
+        rotation=np.eye(3),
+    )
+    report = SimpleNamespace(
+        entries=tuple(
+            SimpleNamespace(element_id=index + 1, frame=frame)
+            for index in range(BEAM_FRAME_GLYPH_LIMIT + 11)
+        )
+    )
+    queried = []
+
+    def query(target):
+        queried.append(target)
+        return report
+
+    viewport = FEMViewport()
+    viewport.set_model(
+        model,
+        geometry,
+        refresh_symbols=False,
+        render=False,
+        effective_frame_query=query,
+    )
+    plotter = _FramePlotter()
+    viewport._plotter = plotter
+    target = RegionRef("element_set", "BEAMS")
+
+    viewport.show_beam_frame_preview(target)
+    viewport.show_beam_frame_preview(target)
+
+    assert queried == [target]
+    assert all(
+        len(origins) == BEAM_FRAME_GLYPH_LIMIT
+        for origins, _vectors, _kwargs in plotter.arrow_calls[:3]
+    )
+    assert {
+        call[2]["name"]
+        for call in plotter.arrow_calls[:3]
+    } == {
+        "beam_frame_x_explicit",
+        "beam_frame_y_explicit",
+        "beam_frame_z_explicit",
+    }
+    assert len(plotter.label_calls[0][1]) == (
+        3 * BEAM_FRAME_GLYPH_LIMIT
+    )
+
+
+def test_local_line_load_vector_uses_resolved_rotation_without_fallback() -> None:
+    rotation = np.asarray(
+        (
+            (1.0, 0.0, 0.0),
+            (0.0, 0.0, 1.0),
+            (0.0, -1.0, 0.0),
+        )
+    )
+    frame = SimpleNamespace(rotation=rotation)
+
+    assert _effective_line_load_vector(
+        (0.0, 2.0, 0.0),
+        "local",
+        frame,
+    ) == pytest.approx((0.0, 0.0, 2.0))
+    assert _effective_line_load_vector(
+        (0.0, 2.0, 0.0),
+        "global",
+        None,
+    ) == pytest.approx((0.0, 2.0, 0.0))
+    assert (
+        _effective_line_load_vector(
+            (0.0, 2.0, 0.0),
+            "local",
+            None,
+        )
+        is None
+    )
