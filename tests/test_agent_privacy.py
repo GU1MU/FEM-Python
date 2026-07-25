@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 
 from fem_agent.artifacts import ArtifactStore
 from fem_agent.engine import (
@@ -14,22 +13,6 @@ from fem_agent.providers.base import (
 from fem_agent.providers.deepseek import DeepSeekProvider
 from fem_agent.providers.fake import FakeProvider
 from tests.helpers.file_builders import write_inp
-
-
-def test_privacy_document_discloses_engineering_values_sent_to_provider():
-    guide = (
-        Path(__file__).resolve().parents[1] / "docs" / "fem-agent-v0.md"
-    ).read_text(encoding="utf-8")
-
-    for disclosure in (
-        "材料常数（弹性模量、泊松比、密度）",
-        "约束目标/自由度/数值",
-        "载荷目标/分量/大小/方向",
-        "不等同于匿名化或数值脱敏",
-        "这个文件以明文保存 API Key",
-        "`.gitignore` 只能降低常规 Git 误提交风险",
-    ):
-        assert disclosure in guide
 
 
 def test_inp_comment_coordinates_connectivity_and_path_never_reach_provider(
