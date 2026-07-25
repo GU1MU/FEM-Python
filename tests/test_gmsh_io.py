@@ -228,8 +228,13 @@ def test_default_backend_requires_initialized_session(monkeypatch):
     with pytest.raises(RuntimeError, match="not initialized"):
         gmsh_io.from_model(dimension=2)
 
-def test_public_api_exports_only_mesh_conversion_entry_points():
-    assert gmsh_io.__all__ == ["read", "from_model"]
+def test_public_api_exports_only_conversion_and_membership_entry_points():
+    assert gmsh_io.__all__ == [
+        "read",
+        "from_model",
+        "entity_node_ids",
+        "entity_element_ids",
+    ]
 
 
 def test_public_signatures_keep_formulation_arguments_in_io_layer():

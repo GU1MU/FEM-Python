@@ -9,16 +9,17 @@ import numpy as np
 import pytest
 from PySide6.QtWidgets import QApplication
 
-pv = pytest.importorskip("pyvista")
-
 from fem_gui.preprocessing import BoxGeometry, GeometryPreview, build_geometry_preview
 from fem_gui.widgets import viewport as viewport_module
 from fem_gui.widgets.viewport import (
     FEMViewport,
     PickHit,
     _geometry_edge_polydata,
+    _geometry_point_polydata,
     _geometry_surface_polydata,
 )
+
+pv = pytest.importorskip("pyvista")
 
 
 def _application() -> QApplication:
@@ -53,6 +54,22 @@ def test_triangulated_geometry_faces_preserve_logical_ids() -> None:
     assert surface.n_cells == 12
     assert set(ids) == set(range(1, 7))
     assert all(np.count_nonzero(ids == entity_id) == 2 for entity_id in range(1, 7))
+
+
+def test_preview_cells_without_logical_ids_are_not_selectable() -> None:
+    preview = GeometryPreview(
+        ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+        ((0, 1, 2),),
+        ((0, 1),),
+    )
+    points = np.asarray(preview.points, dtype=float)
+    surface = _geometry_surface_polydata(pv, points, preview)
+    edges = _geometry_edge_polydata(pv, points, preview)
+    vertices = _geometry_point_polydata(pv, points, preview)
+
+    assert set(surface.cell_data["geometry_entity_id"]) == {0}
+    assert set(edges.cell_data["geometry_entity_id"]) == {0}
+    assert vertices.n_points == 0
 
 
 def test_face_pick_returns_frontmost_visible_logical_face() -> None:

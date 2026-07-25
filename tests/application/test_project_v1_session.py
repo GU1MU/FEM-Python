@@ -118,6 +118,57 @@ def test_old_v1_missing_new_keys_uses_compatible_defaults():
     )
 
 
+@pytest.mark.parametrize(
+    ("keep_named_regions", "keep_local_controls"),
+    ((True, False), (False, True)),
+)
+def test_legacy_v1_topology_references_fail_closed_instead_of_remapping(
+    keep_named_regions,
+    keep_local_controls,
+):
+    payload = encode_project_v1(_project_snapshot())
+    payload.pop("logical_topology_version")
+    if not keep_named_regions:
+        payload["named_regions"] = []
+    if not keep_local_controls:
+        payload["mesh_settings"]["local_controls"] = []
+
+    with pytest.raises(ProjectV1DecodeError, match="逻辑拓扑契约版本.*重新选择"):
+        decode_project_v1(payload)
+
+
+def test_legacy_v1_without_topology_references_remains_loadable():
+    payload = encode_project_v1(_project_snapshot())
+    payload.pop("logical_topology_version")
+    payload["named_regions"] = []
+    payload["mesh_settings"]["local_controls"] = []
+
+    reopened = decode_project_v1(payload)
+
+    assert reopened.named_regions == ()
+    assert reopened.mesh_settings.local_controls == ()
+
+
+def test_unknown_logical_topology_version_is_rejected():
+    payload = encode_project_v1(_project_snapshot())
+    payload["logical_topology_version"] = 999
+
+    with pytest.raises(ProjectV1DecodeError, match="不支持的逻辑拓扑契约版本"):
+        decode_project_v1(payload)
+
+
+@pytest.mark.parametrize("invalid_version", (True, 1.5, "1"))
+def test_logical_topology_version_requires_a_strict_integer(invalid_version):
+    payload = encode_project_v1(_project_snapshot())
+    payload["logical_topology_version"] = invalid_version
+
+    with pytest.raises(
+        ProjectV1DecodeError,
+        match=r"\$\.logical_topology_version 必须是整数",
+    ):
+        decode_project_v1(payload)
+
+
 def test_invalid_detached_decode_leaves_current_session_field_equal():
     session = ModelSession()
     session.replace_from_snapshot(_project_snapshot())

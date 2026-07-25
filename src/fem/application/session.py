@@ -10,6 +10,7 @@ from types import MappingProxyType
 from typing import Any
 
 from fem.core.model import MaterialDefinition, SectionAssignment
+from fem.geometry.recipe_topology import can_preserve_logical_references
 
 from .changes import ArtifactKind, ChangeKind, SessionDelta
 from .definitions import (
@@ -603,33 +604,54 @@ class ModelSession:
             if feature_history is None
             else tuple(feature_history)
         )
-        mesh_settings = _without_mesh_topology_references(
+        preserve_references = can_preserve_logical_references(
+            self._geometry_recipe,
+            owned_recipe,
+        )
+        mesh_settings = (
             self._mesh_settings
+            if preserve_references
+            else _without_mesh_topology_references(self._mesh_settings)
+        )
+        mesh_settings_changed = mesh_settings != self._mesh_settings
+        named_regions_changed = (
+            not preserve_references and bool(self._named_regions)
+        )
+        definitions_changed = (
+            not self._definitions_explicit
+            or (
+                not preserve_references
+                and bool(self._assignments or self._steps)
+            )
         )
 
         self._parts = owned_parts
         self._geometry_recipe = owned_recipe
         self._feature_history = owned_history
         self._mesh_settings = mesh_settings
-        # Geometry edits cannot currently prove logical topology identity.
-        self._named_regions = {}
-        self._assignments = ()
-        self._steps = ()
+        if not preserve_references:
+            self._named_regions = {}
+            self._assignments = ()
+            self._steps = ()
         self._definitions_explicit = True
         self._drop_model_state()
         self._increment_domain_revisions(project=True, mesh=True, model=True)
+        changed = {
+            ChangeKind.PROJECT_INPUTS,
+            ChangeKind.GEOMETRY,
+            ChangeKind.MODEL,
+            ChangeKind.VALIDATIONS,
+            ChangeKind.RUNS,
+            ChangeKind.DISPLAYED_RESULT,
+        }
+        if mesh_settings_changed:
+            changed.add(ChangeKind.MESH_SETTINGS)
+        if named_regions_changed:
+            changed.add(ChangeKind.NAMED_REGIONS)
+        if definitions_changed:
+            changed.add(ChangeKind.DEFINITIONS)
         return self._emit(
-            {
-                ChangeKind.PROJECT_INPUTS,
-                ChangeKind.GEOMETRY,
-                ChangeKind.MESH_SETTINGS,
-                ChangeKind.NAMED_REGIONS,
-                ChangeKind.DEFINITIONS,
-                ChangeKind.MODEL,
-                ChangeKind.VALIDATIONS,
-                ChangeKind.RUNS,
-                ChangeKind.DISPLAYED_RESULT,
-            },
+            changed,
             _MODEL_INVALIDATIONS,
             "geometry replaced",
         )

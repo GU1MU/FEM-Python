@@ -30,8 +30,10 @@ _GMSH_NUMERIC_OPTIONS = (
 def _requires_native_gmsh(item: pytest.Item) -> bool:
     test_name = str(getattr(item, "originalname", item.name)).split("[", 1)[0]
     fixture_names = set(getattr(item, "fixturenames", ()))
-    return test_name.startswith("test_real_") or bool(
-        fixture_names & _GMSH_FIXTURE_NAMES
+    return (
+        item.get_closest_marker("gmsh") is not None
+        or test_name.startswith("test_real_")
+        or bool(fixture_names & _GMSH_FIXTURE_NAMES)
     )
 
 

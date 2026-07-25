@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 import math
 import operator
@@ -157,7 +158,6 @@ def read(
             "source must be a GmshMeshRef returned by "
             "fem.mesh.gmsh.Mesher.generate()"
         )
-
     dimension = _validate_dimension(source.dimension)
     normalized_line_element_type = _validate_line_element_type(
         dimension,
@@ -207,6 +207,63 @@ def from_model(
         thickness=normalized_thickness,
         z_tolerance=normalized_z_tolerance,
     )
+
+
+def entity_node_ids(
+    source: GmshMeshRef,
+    entities: Iterable[Any],
+) -> tuple[int, ...]:
+    """Return mesh node IDs owned by live CAD entities in ``source``."""
+    gmsh_model = _borrow_generated_model(source)
+    node_ids: set[int] = set()
+    for entity in entities:
+        dimension, tag = _entity_key(entity)
+        raw_ids, _coordinates, _parameters = gmsh_model.mesh.getNodes(
+            dimension,
+            tag,
+            True,
+            False,
+        )
+        node_ids.update(int(node_id) for node_id in raw_ids)
+    return tuple(sorted(node_ids))
+
+
+def entity_element_ids(
+    source: GmshMeshRef,
+    entities: Iterable[Any],
+) -> tuple[int, ...]:
+    """Return mesh element IDs owned by live CAD entities in ``source``."""
+    gmsh_model = _borrow_generated_model(source)
+    element_ids: set[int] = set()
+    for entity in entities:
+        dimension, tag = _entity_key(entity)
+        _types, tag_blocks, _connectivity = gmsh_model.mesh.getElements(
+            dimension,
+            tag,
+        )
+        for tags in tag_blocks:
+            element_ids.update(int(element_id) for element_id in tags)
+    return tuple(sorted(element_ids))
+
+
+def _borrow_generated_model(source: GmshMeshRef) -> Any:
+    if not isinstance(source, GmshMeshRef):
+        raise TypeError(
+            "source must be a GmshMeshRef returned by "
+            "fem.mesh.gmsh.Mesher.generate()"
+        )
+    return GmshMeshRef._borrow_model(source)
+
+
+def _entity_key(entity: Any) -> tuple[int, int]:
+    dimension = _integer_value(
+        getattr(entity, "dimension", None),
+        "entity dimensions must be integers",
+    )
+    tag = _positive_tag(getattr(entity, "tag", None), "entity tags")
+    if dimension not in (0, 1, 2, 3):
+        raise ValueError("entity dimensions must be 0, 1, 2, or 3")
+    return dimension, tag
 
 
 def _resolve_live_backend() -> Any:
@@ -593,4 +650,4 @@ def _positive_tag(value: Any, label: str) -> int:
     return tag
 
 
-__all__ = ["read", "from_model"]
+__all__ = ["read", "from_model", "entity_node_ids", "entity_element_ids"]

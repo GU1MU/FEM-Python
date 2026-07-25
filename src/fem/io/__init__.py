@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from . import csv, gmsh, inp, materials, project_v1
 from .project_v1 import (
+    LOGICAL_TOPOLOGY_VERSION,
     SCHEMA_VERSION,
     ProjectV1DecodeError,
     ProjectV1EncodeError,
@@ -19,6 +20,7 @@ from .project_v1 import (
 )
 
 __all__ = [
+    "LOGICAL_TOPOLOGY_VERSION",
     "SCHEMA_VERSION",
     "ProjectV1DecodeError",
     "ProjectV1EncodeError",

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest
 from PySide6.QtWidgets import QApplication
 
 from fem.application import NamedRegion, RegionAssignment, SectionDefinition
@@ -20,10 +21,12 @@ from fem.steps.factory import static
 import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.preprocessing import (
+    BoxGeometry,
     LocalMeshControl,
     MeshSettings,
     MovedGeometry,
     RectangleGeometry,
+    RotatedGeometry,
 )
 from fem_gui.visualization.model_adapter import build_model_geometry
 from fem_gui.visualization.result_adapter import build_result_data
@@ -302,11 +305,32 @@ def test_boundary_action_requests_a_viewport_region_before_opening_parameters(
     window.close()
 
 
-def test_geometry_transitions_invalidate_topology_references():
+@pytest.mark.parametrize(
+    ("before", "after"),
+    (
+        (
+            MovedGeometry(RectangleGeometry("Plate", 2.0, 1.0), 1.0, 0.0),
+            MovedGeometry(RectangleGeometry("Plate", 3.0, 1.5), 2.0, -1.0),
+        ),
+        (
+            RotatedGeometry(
+                RectangleGeometry("Plate", 2.0, 1.0),
+                "z",
+                15.0,
+            ),
+            RotatedGeometry(
+                RectangleGeometry("Plate", 3.0, 1.5),
+                "z",
+                60.0,
+            ),
+        ),
+    ),
+    ids=("move-parameters", "rotate-parameters"),
+)
+def test_geometry_parameter_edits_preserve_topology_references(before, after):
     _application()
     window = FEMMainWindow()
-    base = RectangleGeometry("Plate", 2.0, 1.0)
-    window._set_native_geometry(base, "矩形")
+    window._set_native_geometry(before, "变换后的")
     window._apply_session_delta(
         window.session.replace_named_regions(
             (NamedRegion("Fixed", "edge", (1,)),)
@@ -324,17 +348,60 @@ def test_geometry_transitions_invalidate_topology_references():
         window.session.replace_mesh_settings(
             MeshSettings(
                 0.2,
+                local_size=0.15,
                 local_controls=(LocalMeshControl("edge", 1, 0.1),),
             )
         )
     )
 
-    moved = MovedGeometry(base, 1.0, 0.0)
-    window._set_native_geometry(moved, "移动后的")
+    window._set_native_geometry(after, "参数修改后的")
+
+    assert tuple(window.document.named_regions) == ("Fixed",)
+    assert window.document.region_assignments == (
+        RegionAssignment("Solid", "Fixed"),
+    )
+    assert window.document.mesh_settings.local_size == 0.15
+    assert window.document.mesh_settings.local_controls == (
+        LocalMeshControl("edge", 1, 0.1),
+    )
+    assert "已有拓扑引用已保留" in window.status_panel.state_label.text()
+    assert "旧命名区域已失效" not in window.status_panel.state_label.text()
+    window.close()
+
+
+def test_geometry_topology_change_reports_cleared_references():
+    _application()
+    window = FEMMainWindow()
+    window._set_native_geometry(
+        BoxGeometry("Box", 2.0, 1.0, 0.5),
+        "长方体",
+    )
+    window._apply_session_delta(
+        window.session.replace_named_regions(
+            (NamedRegion("Fixed", "edge", (1,)),)
+        )
+    )
+    window._apply_session_delta(
+        window.session.replace_mesh_settings(
+            MeshSettings(
+                0.2,
+                local_size=0.15,
+                local_controls=(LocalMeshControl("edge", 1, 0.1),),
+            )
+        )
+    )
+
+    window._set_native_geometry(
+        RectangleGeometry("Plate", 2.0, 1.0),
+        "矩形",
+    )
 
     assert window.document.named_regions == {}
-    assert window.document.region_assignments == ()
+    assert window.document.mesh_settings.local_size is None
     assert window.document.mesh_settings.local_controls == ()
+    message = window.status_panel.state_label.text()
+    assert "1 个旧命名区域已失效" in message
+    assert "旧局部网格设置已失效" in message
     window.close()
 
 

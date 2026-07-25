@@ -25,6 +25,11 @@ from .runs import (
     ResultRecord,
     RunStatus,
 )
+from .preprocessing import (
+    LogicalRecipeTopologyResolver,
+    TopologyResolutionError,
+    generate_fem_model,
+)
 from .session import (
     ModelSession,
     ProjectSaveSnapshot,
@@ -41,6 +46,7 @@ __all__ = [
     "ChangeKind",
     "FeatureRecord",
     "ImportTaskSnapshot",
+    "LogicalRecipeTopologyResolver",
     "MeshTaskSnapshot",
     "ModelArtifact",
     "ModelSession",
@@ -61,8 +67,10 @@ __all__ = [
     "SessionStateError",
     "SolveTaskSnapshot",
     "TaskToken",
+    "TopologyResolutionError",
     "TokenStatus",
     "ValidationRecord",
     "ValidationStamp",
     "ValidationTaskSnapshot",
+    "generate_fem_model",
 ]

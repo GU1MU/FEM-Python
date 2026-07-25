@@ -5,8 +5,10 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QAbstractItemView, QApplication, QDoubleSpinBox
+import pytest
 
 from fem.application import RegionAssignment, SectionDefinition
+from fem.application.preprocessing import generate_fem_model
 from fem.core.model import ElementSet, MaterialDefinition
 from fem_gui.model_definitions import (
     compile_model_definitions,
@@ -21,13 +23,14 @@ from fem_gui.model_dialogs import (
     SectionEditDialog,
     SectionManagerDialog,
 )
-from fem_gui.preprocessing import MeshSettings, RectangleGeometry, generate_fem_model
+from fem_gui.preprocessing import MeshSettings, RectangleGeometry
 
 
 def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
+@pytest.mark.gmsh
 def test_native_material_section_and_region_assignment_compile_to_fem_model():
     model = generate_fem_model(RectangleGeometry("plate", 2.0, 1.0), MeshSettings(0.5))
     compiled = compile_model_definitions(
@@ -165,12 +168,14 @@ def test_material_editor_preserves_unknown_inp_behaviors_read_only():
     assert dialog.material().properties == original.properties
 
 
+@pytest.mark.gmsh
 def test_readiness_reports_missing_material_and_section_without_faking_solver_support():
     model = generate_fem_model(RectangleGeometry("plate", 2.0, 1.0), MeshSettings(0.5))
 
     assert section_assignment_issues(model) == ("尚未定义材料",)
 
 
+@pytest.mark.gmsh
 def test_readiness_reports_incomplete_elasticity_and_unassigned_elements():
     model = generate_fem_model(
         RectangleGeometry("plate", 2.0, 1.0),

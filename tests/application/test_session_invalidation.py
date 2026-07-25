@@ -7,6 +7,7 @@ import pytest
 
 from fem.application import (
     ArtifactKind,
+    ChangeKind,
     FeatureRecord,
     ModelSession,
     NamedRegion,
@@ -24,6 +25,12 @@ from fem.core.model import (
     MaterialDefinition,
     NodalLoad,
     SurfaceLoad,
+)
+from fem.geometry.recipes import (
+    BooleanGeometry,
+    BoxGeometry,
+    MovedGeometry,
+    RectangleGeometry,
 )
 from fem.mesh.settings import LocalMeshControl, MeshSettings
 
@@ -74,6 +81,130 @@ def _session_with_artifacts() -> ModelSession:
     session.begin_run(solve.token)
     session.accept_run_result(solve.token, {"value": 1})
     return session
+
+
+def _session_with_exact_geometry_artifacts(recipe) -> ModelSession:
+    session = ModelSession()
+    session.new_native_project()
+    session.replace_geometry(
+        (NativePart(),),
+        recipe,
+        feature_history=(FeatureRecord("Base-1", "base"),),
+    )
+    session.replace_named_regions(
+        (NamedRegion("Region-A", "body", (1,)),)
+    )
+    session.replace_mesh_settings(
+        MeshSettings(
+            1.0,
+            local_size=0.25,
+            local_controls=(LocalMeshControl("edge", 1, 0.2),),
+        )
+    )
+    session.replace_model_definitions(
+        (MaterialDefinition("Steel", {"E": 1.0, "nu": 0.3}),),
+        (SectionDefinition("Solid", "Steel"),),
+        (RegionAssignment("Solid", "Region-A"),),
+        (AnalysisStep("Step-A"),),
+    )
+    mesh = session.prepare_mesh_generation()
+    session.accept_generated_model(mesh.token, _model("Step-A"))
+    validation = session.prepare_validation("Step-A")
+    session.accept_validation(validation.token, {"passed": True})
+    solve = session.prepare_solve("Step-A", "Job-1")
+    session.begin_run(solve.token)
+    session.accept_run_result(solve.token, {"value": 1})
+    return session
+
+
+def test_topology_compatible_geometry_edit_preserves_inputs_and_drops_artifacts() -> None:
+    session = _session_with_exact_geometry_artifacts(
+        RectangleGeometry("Plate", 2.0, 1.0)
+    )
+
+    delta = session.replace_geometry(
+        (NativePart(),),
+        RectangleGeometry("Resized", 4.0, 3.0),
+    )
+    snapshot = session.snapshot()
+
+    assert delta.changed == {
+        ChangeKind.PROJECT_INPUTS,
+        ChangeKind.GEOMETRY,
+        ChangeKind.MODEL,
+        ChangeKind.VALIDATIONS,
+        ChangeKind.RUNS,
+        ChangeKind.DISPLAYED_RESULT,
+    }
+    assert snapshot.named_regions["Region-A"] == NamedRegion(
+        "Region-A", "body", (1,)
+    )
+    assert snapshot.mesh_settings.local_size == 0.25
+    assert snapshot.mesh_settings.local_controls == (
+        LocalMeshControl("edge", 1, 0.2),
+    )
+    assert snapshot.assignments == (RegionAssignment("Solid", "Region-A"),)
+    assert tuple(step.name for step in snapshot.steps) == ("Step-A",)
+    assert snapshot.artifact is None
+    assert not snapshot.validations
+    assert not snapshot.runs
+    assert snapshot.displayed_result is None
+    assert {
+        ArtifactKind.MODEL,
+        ArtifactKind.RESULTS,
+        ArtifactKind.DISPLAYED_RESULT,
+    }.issubset(delta.invalidated)
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    (
+        (
+            BoxGeometry("Box", 2.0, 1.0, 0.5),
+            RectangleGeometry("Plate", 2.0, 1.0),
+        ),
+        (
+            RectangleGeometry("Plate", 2.0, 1.0),
+            BooleanGeometry(
+                "Union",
+                "fuse",
+                RectangleGeometry("Object", 2.0, 1.0),
+                MovedGeometry(
+                    RectangleGeometry("Tool", 1.0, 0.5),
+                    0.5,
+                    0.25,
+                ),
+            ),
+        ),
+    ),
+    ids=("box-to-rectangle", "unproven-boolean"),
+)
+def test_topology_incompatible_geometry_edit_clears_dependent_inputs(
+    before,
+    after,
+) -> None:
+    session = _session_with_exact_geometry_artifacts(before)
+
+    delta = session.replace_geometry((NativePart(),), after)
+    snapshot = session.snapshot()
+
+    assert delta.changed == {
+        ChangeKind.PROJECT_INPUTS,
+        ChangeKind.GEOMETRY,
+        ChangeKind.MESH_SETTINGS,
+        ChangeKind.NAMED_REGIONS,
+        ChangeKind.DEFINITIONS,
+        ChangeKind.MODEL,
+        ChangeKind.VALIDATIONS,
+        ChangeKind.RUNS,
+        ChangeKind.DISPLAYED_RESULT,
+    }
+    assert snapshot.mesh_settings.local_size is None
+    assert snapshot.mesh_settings.local_controls == ()
+    assert not snapshot.named_regions
+    assert snapshot.assignments == ()
+    assert snapshot.steps == ()
+    assert snapshot.artifact is None
 
 
 @pytest.mark.parametrize(

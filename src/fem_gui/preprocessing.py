@@ -1,23 +1,18 @@
-"""Small, persistent preprocessing inputs for the native Gmsh workflow."""
+"""Display-only helpers for native geometry authoring."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Any, Iterable
 
-from fem import geometry
-from fem.core.model import (
-    Edge,
-    ElementEdge,
-    ElementFace,
-    ElementSet,
-    FEMModel,
-    NodeSet,
-    Surface,
+# Compatibility re-exports for GUI dialogs and existing callers.  The value
+# types themselves have one headless implementation in fem.
+from fem.geometry.recipe_topology import (
+    EntityKind,
+    RecipeTopology,
+    describe_recipe_topology,
 )
-# Compatibility re-exports; remove once GUI callers use the headless modules.
-from fem.geometry.recipes import (  # noqa: F401 - compatibility re-exports
+from fem.geometry.recipes import (  # noqa: F401
     BASE_GEOMETRY_TYPES,
     BooleanGeometry,
     BoxGeometry,
@@ -39,22 +34,90 @@ from fem.geometry.recipes import (  # noqa: F401 - compatibility re-exports
     SketchRectangle,
     geometry_dimension,
 )
-from fem.io import gmsh as gmsh_io
-from fem.mesh import gmsh as gmsh_meshing
-from fem.mesh.settings import LocalMeshControl, MeshSettings
-from fem.selection import edges as mesh_edges
-from fem.selection import faces as mesh_faces
+from fem.mesh.settings import LocalMeshControl, MeshSettings  # noqa: F401
 
 
 @dataclass(frozen=True, slots=True)
 class GeometryPreview:
-    """Backend-neutral surface and feature edges for viewport preview."""
+    """Backend-neutral display cells with explicit selectable logical IDs."""
 
     points: tuple[tuple[float, float, float], ...]
     faces: tuple[tuple[int, ...], ...]
     edges: tuple[tuple[int, ...], ...]
     face_ids: tuple[int, ...] = ()
     edge_ids: tuple[int, ...] = ()
+    point_ids: tuple[int, ...] = ()
+    face_logical_ids: tuple[str | None, ...] = ()
+    edge_logical_ids: tuple[str | None, ...] = ()
+    point_logical_ids: tuple[str | None, ...] = ()
+
+    def __post_init__(self) -> None:
+        for name, ids, cells in (
+            ("face_ids", self.face_ids, self.faces),
+            ("edge_ids", self.edge_ids, self.edges),
+            ("point_ids", self.point_ids, self.points),
+            ("face_logical_ids", self.face_logical_ids, self.faces),
+            ("edge_logical_ids", self.edge_logical_ids, self.edges),
+            ("point_logical_ids", self.point_logical_ids, self.points),
+        ):
+            if ids and len(ids) != len(cells):
+                raise ValueError(f"{name} 必须与对应显示实体数量一致")
+            if name.endswith("_ids") and not name.endswith("_logical_ids") and any(
+                int(value) < 0 for value in ids
+            ):
+                raise ValueError(f"{name} 只能使用非负逻辑编号")
+
+
+def _preview_entity_ids(
+    topology: RecipeTopology,
+    recipe_type: str,
+    kind: EntityKind,
+    logical_ids: tuple[str | None, ...],
+) -> tuple[int, ...]:
+    result = []
+    for logical_id in logical_ids:
+        if logical_id is None:
+            result.append(0)
+            continue
+        try:
+            entity = topology.entity(logical_id)
+        except KeyError as exc:
+            raise RuntimeError(
+                f"{recipe_type} 预览引用了 catalog 中不存在的 "
+                f"{kind} logical_id: {logical_id}"
+            ) from exc
+        if entity.kind != kind or not entity.selectable:
+            raise RuntimeError(
+                f"{recipe_type} 预览引用了不可选的 {kind} "
+                f"logical_id: {logical_id}"
+            )
+        result.append(topology.logical_index(logical_id))
+    return tuple(result)
+
+
+def _make_preview(
+    recipe: NativeGeometry,
+    points: tuple[tuple[float, float, float], ...],
+    faces: tuple[tuple[int, ...], ...],
+    edges: tuple[tuple[int, ...], ...],
+    face_logical_ids: tuple[str | None, ...],
+    edge_logical_ids: tuple[str | None, ...],
+    point_logical_ids: tuple[str | None, ...],
+) -> GeometryPreview:
+    """Materialize display ordinals exclusively from the recipe catalog."""
+    topology = describe_recipe_topology(recipe)
+    recipe_type = type(recipe).__name__
+    return GeometryPreview(
+        points,
+        faces,
+        edges,
+        _preview_entity_ids(topology, recipe_type, "face", face_logical_ids),
+        _preview_entity_ids(topology, recipe_type, "edge", edge_logical_ids),
+        _preview_entity_ids(topology, recipe_type, "point", point_logical_ids),
+        face_logical_ids,
+        edge_logical_ids,
+        point_logical_ids,
+    )
 
 
 def geometry_characteristic_size(recipe: NativeGeometry) -> float:
@@ -79,7 +142,9 @@ def geometry_characteristic_size(recipe: NativeGeometry) -> float:
 
 
 def supports_hexahedron(recipe: NativeGeometry) -> bool:
-    """Return whether the existing structured box workflow can mesh this recipe."""
+    """Return whether the structured box workflow can mesh this recipe."""
+    if isinstance(recipe, (MovedGeometry, RotatedGeometry)):
+        return supports_hexahedron(recipe.base)
     if isinstance(recipe, BoxGeometry):
         return True
     if not isinstance(recipe, ExtrudedGeometry) or not isinstance(
@@ -124,7 +189,8 @@ def geometry_feature_rows(recipe: NativeGeometry) -> tuple[str, ...]:
         description = f"圆盘  半径={recipe.radius:g}"
     elif isinstance(recipe, PlateWithHoleGeometry):
         description = (
-            f"带孔板  {recipe.width:g} × {recipe.height:g}，孔半径={recipe.hole_radius:g}"
+            f"带孔板  {recipe.width:g} × {recipe.height:g}，"
+            f"孔半径={recipe.hole_radius:g}"
         )
     elif isinstance(recipe, BoxGeometry):
         description = f"长方体  {recipe.width:g} × {recipe.depth:g} × {recipe.height:g}"
@@ -133,122 +199,54 @@ def geometry_feature_rows(recipe: NativeGeometry) -> tuple[str, ...]:
     return (f"基础体  {description}",)
 
 
-def build_geometry_preview(recipe: NativeGeometry, *, segments: int = 48) -> GeometryPreview:
-    """Build a small deterministic display mesh without generating FE elements."""
-    count = max(12, int(segments))
+def build_geometry_preview(
+    recipe: NativeGeometry,
+    *,
+    segments: int = 48,
+) -> GeometryPreview:
+    """Build a deterministic display mesh and verify its logical-ID contract."""
+    preview = _build_geometry_preview(recipe, max(12, int(segments)))
+    _validate_preview_topology(recipe, preview)
+    return preview
+
+
+def _build_geometry_preview(
+    recipe: NativeGeometry,
+    segments: int,
+) -> GeometryPreview:
     if isinstance(recipe, SketchGeometry):
-        return build_geometry_preview(_compile_sketch(recipe), segments=count)
-    if isinstance(recipe, BooleanGeometry):
-        if recipe.operation == "cut":
-            rectangular = _axis_aligned_rectangle(recipe.object_geometry)
-            tool_rectangle = _axis_aligned_rectangle(recipe.tool_geometry)
-            if rectangular is not None and tool_rectangle is not None:
-                x, y, width, height = rectangular
-                inner_x, inner_y, inner_width, inner_height = tool_rectangle
-                if (
-                    x < inner_x < inner_x + inner_width < x + width
-                    and y < inner_y < inner_y + inner_height < y + height
-                ):
-                    points = (
-                        (x, y, 0.0),
-                        (x + width, y, 0.0),
-                        (x + width, y + height, 0.0),
-                        (x, y + height, 0.0),
-                        (inner_x, inner_y, 0.0),
-                        (inner_x + inner_width, inner_y, 0.0),
-                        (inner_x + inner_width, inner_y + inner_height, 0.0),
-                        (inner_x, inner_y + inner_height, 0.0),
-                    )
-                    faces = tuple(
-                        (index, (index + 1) % 4, 4 + (index + 1) % 4, 4 + index)
-                        for index in range(4)
-                    )
-                    edges = ((0, 1, 2, 3, 0), (4, 5, 6, 7, 4))
-                    return GeometryPreview(
-                        points,
-                        faces,
-                        edges,
-                        (1, 1, 1, 1),
-                        (1, 2),
-                    )
-            circular = _axis_aligned_circle(recipe.tool_geometry)
-            if rectangular is not None and circular is not None:
-                x, y, width, height = rectangular
-                center_x, center_y, radius = circular
-                local_x = center_x - x
-                local_y = center_y - y
-                if (
-                    radius < local_x < width - radius
-                    and radius < local_y < height - radius
-                ):
-                    ring = build_geometry_preview(
-                        PlateWithHoleGeometry(
-                            "cut-preview",
-                            width,
-                            height,
-                            local_x,
-                            local_y,
-                            radius,
-                        ),
-                        segments=count,
-                    )
-                    return GeometryPreview(
-                        tuple((px + x, py + y, pz) for px, py, pz in ring.points),
-                        ring.faces,
-                        ring.edges,
-                        ring.face_ids,
-                        ring.edge_ids,
-                    )
-        object_preview = build_geometry_preview(recipe.object_geometry, segments=count)
-        tool_preview = build_geometry_preview(recipe.tool_geometry, segments=count)
-        point_offset = len(object_preview.points)
-        points = object_preview.points + tool_preview.points
-        tool_edges = tuple(
-            tuple(index + point_offset for index in edge)
-            for edge in tool_preview.edges
-        )
-        edges = object_preview.edges + tool_edges
-        edge_offset = max(object_preview.edge_ids or (0,))
-        edge_ids = (
-            object_preview.edge_ids
-            + tuple(edge_offset + value for value in (tool_preview.edge_ids or ()))
-        )
-        if recipe.operation == "cut":
-            return GeometryPreview(
-                points,
-                object_preview.faces,
-                edges,
-                object_preview.face_ids,
-                edge_ids,
-            )
-        tool_faces = tuple(
-            tuple(index + point_offset for index in face)
-            for face in tool_preview.faces
-        )
-        face_offset = max(object_preview.face_ids or (0,))
-        return GeometryPreview(
-            points,
-            object_preview.faces + tool_faces,
-            edges,
-            object_preview.face_ids
-            + tuple(face_offset + value for value in (tool_preview.face_ids or ())),
-            edge_ids,
-        )
-    if isinstance(recipe, MovedGeometry):
-        preview = build_geometry_preview(recipe.base, segments=count)
-        return GeometryPreview(
-            tuple((x + recipe.dx, y + recipe.dy, z + recipe.dz) for x, y, z in preview.points),
+        preview = _build_geometry_preview(_compile_sketch(recipe), segments)
+        return _make_preview(
+            recipe,
+            preview.points,
             preview.faces,
             preview.edges,
-            preview.face_ids,
-            preview.edge_ids,
+            preview.face_logical_ids,
+            preview.edge_logical_ids,
+            preview.point_logical_ids,
+        )
+    if isinstance(recipe, BooleanGeometry):
+        return _boolean_preview(recipe, segments)
+    if isinstance(recipe, MovedGeometry):
+        preview = _build_geometry_preview(recipe.base, segments)
+        return _make_preview(
+            recipe,
+            tuple(
+                (x + recipe.dx, y + recipe.dy, z + recipe.dz)
+                for x, y, z in preview.points
+            ),
+            preview.faces,
+            preview.edges,
+            preview.face_logical_ids,
+            preview.edge_logical_ids,
+            preview.point_logical_ids,
         )
     if isinstance(recipe, RotatedGeometry):
-        preview = build_geometry_preview(recipe.base, segments=count)
+        preview = _build_geometry_preview(recipe.base, segments)
         angle = math.radians(recipe.angle_degrees)
         cosine, sine = math.cos(angle), math.sin(angle)
 
-        def rotate_point(point: tuple[float, float, float]) -> tuple[float, float, float]:
+        def rotate(point):
             x, y, z = point
             if recipe.axis == "x":
                 return x, y * cosine - z * sine, y * sine + z * cosine
@@ -256,136 +254,452 @@ def build_geometry_preview(recipe: NativeGeometry, *, segments: int = 48) -> Geo
                 return x * cosine + z * sine, y, -x * sine + z * cosine
             return x * cosine - y * sine, x * sine + y * cosine, z
 
-        return GeometryPreview(
-            tuple(rotate_point(point) for point in preview.points),
+        return _make_preview(
+            recipe,
+            tuple(rotate(point) for point in preview.points),
             preview.faces,
             preview.edges,
-            preview.face_ids,
-            preview.edge_ids,
+            preview.face_logical_ids,
+            preview.edge_logical_ids,
+            preview.point_logical_ids,
         )
     if isinstance(recipe, ExtrudedGeometry):
-        preview = build_geometry_preview(recipe.base, segments=count)
-        point_count = len(preview.points)
-        points = preview.points + tuple(
-            (x, y, z + recipe.height) for x, y, z in preview.points
-        )
-        faces = list(preview.faces)
-        face_ids = [1] * len(preview.faces)
-        faces.extend(tuple(reversed(tuple(index + point_count for index in face))) for face in preview.faces)
-        face_ids.extend([2] * len(preview.faces))
-        base_edge_ids = preview.edge_ids or tuple(range(1, len(preview.edges) + 1))
-        for edge, edge_id in zip(preview.edges, base_edge_ids):
-            for start, end in zip(edge, edge[1:]):
-                faces.append((start, end, end + point_count, start + point_count))
-                face_ids.append(2 + edge_id)
-        edges = list(preview.edges)
-        edges.extend(tuple(index + point_count for index in edge) for edge in preview.edges)
-        feature_points = sorted({index for edge in preview.edges for index in edge})
-        edges.extend((index, index + point_count) for index in feature_points)
-        return GeometryPreview(
-            points,
-            tuple(faces),
-            tuple(edges),
-            tuple(face_ids),
-            tuple(range(1, len(edges) + 1)),
-        )
+        return _extruded_preview(recipe, segments)
     if isinstance(recipe, RectangleGeometry):
-        points = (
-            (0.0, 0.0, 0.0),
-            (recipe.width, 0.0, 0.0),
-            (recipe.width, recipe.height, 0.0),
-            (0.0, recipe.height, 0.0),
-        )
-        return GeometryPreview(
-            points,
-            ((0, 1, 2, 3),),
-            ((0, 1), (1, 2), (2, 3), (3, 0)),
-            (1,),
-            (1, 2, 3, 4),
-        )
+        return _rectangle_preview(recipe)
     if isinstance(recipe, BoxGeometry):
-        w, d, h = recipe.width, recipe.depth, recipe.height
-        points = (
-            (0.0, 0.0, 0.0), (w, 0.0, 0.0), (w, d, 0.0), (0.0, d, 0.0),
-            (0.0, 0.0, h), (w, 0.0, h), (w, d, h), (0.0, d, h),
-        )
-        faces = (
-            (0, 3, 2, 1), (4, 5, 6, 7), (0, 1, 5, 4),
-            (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7),
-        )
-        edges = (
-            (0, 1, 2, 3, 0), (4, 5, 6, 7, 4),
-            (0, 4), (1, 5), (2, 6), (3, 7),
-        )
-        return GeometryPreview(points, faces, edges, tuple(range(1, 7)), tuple(range(1, 7)))
-
-    angles = tuple(2.0 * math.pi * index / count for index in range(count))
+        return _box_preview(recipe)
     if isinstance(recipe, DiskGeometry):
-        points = ((0.0, 0.0, 0.0),) + tuple(
-            (recipe.radius * math.cos(angle), recipe.radius * math.sin(angle), 0.0)
-            for angle in angles
-        )
-        faces = tuple((0, 1 + index, 1 + (index + 1) % count) for index in range(count))
-        edge = tuple(range(1, count + 1)) + (1,)
-        return GeometryPreview(points, faces, (edge,), (1,) * len(faces), (1,))
+        return _disk_preview(recipe, segments)
     if isinstance(recipe, PlateWithHoleGeometry):
-        hole_angles = _rectangle_hole_angles(recipe, count)
-        hole_count = len(hole_angles)
-        inner = tuple(
+        return _plate_with_hole_preview(recipe, segments)
+    return _cylinder_preview(recipe, segments)
+
+
+def _boolean_preview(
+    recipe: BooleanGeometry,
+    segments: int,
+) -> GeometryPreview:
+    if recipe.operation == "cut":
+        outer = _axis_aligned_rectangle(recipe.object_geometry)
+        inner_rectangle = _axis_aligned_rectangle(recipe.tool_geometry)
+        if outer is not None and inner_rectangle is not None:
+            x, y, width, height = outer
+            inner_x, inner_y, inner_width, inner_height = inner_rectangle
+            if (
+                x < inner_x < inner_x + inner_width < x + width
+                and y < inner_y < inner_y + inner_height < y + height
+            ):
+                points = (
+                    (x, y, 0.0),
+                    (x + width, y, 0.0),
+                    (x + width, y + height, 0.0),
+                    (x, y + height, 0.0),
+                    (inner_x, inner_y, 0.0),
+                    (inner_x + inner_width, inner_y, 0.0),
+                    (
+                        inner_x + inner_width,
+                        inner_y + inner_height,
+                        0.0,
+                    ),
+                    (inner_x, inner_y + inner_height, 0.0),
+                )
+                faces = tuple(
+                    (
+                        index,
+                        (index + 1) % 4,
+                        4 + (index + 1) % 4,
+                        4 + index,
+                    )
+                    for index in range(4)
+                )
+                return _make_preview(
+                    recipe,
+                    points,
+                    faces,
+                    (
+                        (4, 5, 6, 7, 4),
+                        (0, 1, 2, 3, 0),
+                    ),
+                    ("face:domain",) * len(faces),
+                    ("edge:hole-loop", "edge:outer-loop"),
+                    (
+                        "point:bottom-left",
+                        "point:bottom-right",
+                        "point:top-right",
+                        "point:top-left",
+                        "point:hole-bottom-left",
+                        "point:hole-bottom-right",
+                        "point:hole-top-right",
+                        "point:hole-top-left",
+                    ),
+                )
+        circle = _axis_aligned_circle(recipe.tool_geometry)
+        if outer is not None and circle is not None:
+            x, y, width, height = outer
+            center_x, center_y, radius = circle
+            local_x, local_y = center_x - x, center_y - y
+            if radius < local_x < width - radius and radius < local_y < height - radius:
+                ring = _plate_with_hole_preview(
+                    PlateWithHoleGeometry(
+                        "cut-preview",
+                        width,
+                        height,
+                        local_x,
+                        local_y,
+                        radius,
+                    ),
+                    segments,
+                )
+                return _make_preview(
+                    recipe,
+                    tuple(
+                        (point_x + x, point_y + y, point_z)
+                        for point_x, point_y, point_z in ring.points
+                    ),
+                    ring.faces,
+                    ring.edges,
+                    ring.face_logical_ids,
+                    ring.edge_logical_ids,
+                    ring.point_logical_ids,
+                )
+
+    object_preview = _build_geometry_preview(
+        recipe.object_geometry,
+        segments,
+    )
+    tool_preview = _build_geometry_preview(recipe.tool_geometry, segments)
+    offset = len(object_preview.points)
+    points = object_preview.points + tool_preview.points
+    tool_edges = tuple(
+        tuple(index + offset for index in edge) for edge in tool_preview.edges
+    )
+    edges = object_preview.edges + tool_edges
+    if recipe.operation == "cut":
+        faces = object_preview.faces
+    else:
+        faces = object_preview.faces + tuple(
+            tuple(index + offset for index in face) for face in tool_preview.faces
+        )
+    # General boolean cells are illustrative. CAD lineage is deliberately
+    # unavailable until a future persistent-naming implementation proves it.
+    return _make_preview(
+        recipe,
+        points,
+        faces,
+        edges,
+        (None,) * len(faces),
+        (None,) * len(edges),
+        (None,) * len(points),
+    )
+
+
+def _derived_logical_id(
+    topology: RecipeTopology,
+    source_logical_id: str | None,
+    kind: EntityKind,
+    semantic_prefix: str,
+) -> str | None:
+    if source_logical_id is None:
+        return None
+    candidates = []
+    for mapping in topology.transition.mappings:
+        if (
+            mapping.source_logical_id == source_logical_id
+            and mapping.relation == "derived"
+        ):
+            entity = topology.entity(mapping.target_logical_id)
+            if entity.kind == kind and entity.semantic_role.startswith(semantic_prefix):
+                candidates.append(entity.logical_id)
+    if len(candidates) != 1:
+        raise RuntimeError(
+            f"ExtrudedGeometry catalog 无法为 {source_logical_id} 唯一解析 "
+            f"{kind}({semantic_prefix})"
+        )
+    return candidates[0]
+
+
+def _extruded_preview(
+    recipe: ExtrudedGeometry,
+    segments: int,
+) -> GeometryPreview:
+    base = _build_geometry_preview(recipe.base, segments)
+    topology = describe_recipe_topology(recipe)
+    point_count = len(base.points)
+    points = base.points + tuple((x, y, z + recipe.height) for x, y, z in base.points)
+    faces = list(base.faces)
+    face_logical_ids = [
+        _derived_logical_id(topology, logical_id, "face", "copy.bottom.")
+        for logical_id in base.face_logical_ids
+    ]
+    faces.extend(
+        tuple(reversed(tuple(index + point_count for index in face)))
+        for face in base.faces
+    )
+    face_logical_ids.extend(
+        _derived_logical_id(topology, logical_id, "face", "copy.top.")
+        for logical_id in base.face_logical_ids
+    )
+
+    for edge, logical_id in zip(
+        base.edges,
+        base.edge_logical_ids,
+        strict=True,
+    ):
+        for start, end in zip(edge, edge[1:]):
+            faces.append((start, end, end + point_count, start + point_count))
+            face_logical_ids.append(
+                _derived_logical_id(topology, logical_id, "face", "sweep.")
+            )
+
+    edges = list(base.edges)
+    edges.extend(tuple(index + point_count for index in edge) for edge in base.edges)
+    edge_logical_ids = [
+        _derived_logical_id(topology, logical_id, "edge", "copy.bottom.")
+        for logical_id in base.edge_logical_ids
+    ]
+    edge_logical_ids.extend(
+        _derived_logical_id(topology, logical_id, "edge", "copy.top.")
+        for logical_id in base.edge_logical_ids
+    )
+    point_logical_ids = tuple(
+        _derived_logical_id(topology, logical_id, "point", "copy.bottom.")
+        for logical_id in base.point_logical_ids
+    ) + tuple(
+        _derived_logical_id(topology, logical_id, "point", "copy.top.")
+        for logical_id in base.point_logical_ids
+    )
+    feature_points = tuple(
+        index
+        for index, logical_id in enumerate(base.point_logical_ids)
+        if logical_id is not None
+    )
+    edges.extend((index, index + point_count) for index in feature_points)
+    edge_logical_ids.extend(
+        _derived_logical_id(
+            topology,
+            base.point_logical_ids[index],
+            "edge",
+            "sweep.",
+        )
+        for index in feature_points
+    )
+    return _make_preview(
+        recipe,
+        points,
+        tuple(faces),
+        tuple(edges),
+        tuple(face_logical_ids),
+        tuple(edge_logical_ids),
+        point_logical_ids,
+    )
+
+
+def _rectangle_preview(recipe: RectangleGeometry) -> GeometryPreview:
+    points = (
+        (0.0, 0.0, 0.0),
+        (recipe.width, 0.0, 0.0),
+        (recipe.width, recipe.height, 0.0),
+        (0.0, recipe.height, 0.0),
+    )
+    return _make_preview(
+        recipe,
+        points,
+        ((0, 1, 2, 3),),
+        ((0, 1), (1, 2), (2, 3), (3, 0)),
+        ("face:domain",),
+        ("edge:bottom", "edge:right", "edge:top", "edge:left"),
+        (
+            "point:bottom-left",
+            "point:bottom-right",
+            "point:top-right",
+            "point:top-left",
+        ),
+    )
+
+
+def _box_preview(recipe: BoxGeometry) -> GeometryPreview:
+    width, depth, height = recipe.width, recipe.depth, recipe.height
+    points = (
+        (0.0, 0.0, 0.0),
+        (width, 0.0, 0.0),
+        (width, depth, 0.0),
+        (0.0, depth, 0.0),
+        (0.0, 0.0, height),
+        (width, 0.0, height),
+        (width, depth, height),
+        (0.0, depth, height),
+    )
+    faces = (
+        (0, 3, 2, 1),
+        (4, 5, 6, 7),
+        (0, 1, 5, 4),
+        (1, 2, 6, 5),
+        (2, 3, 7, 6),
+        (3, 0, 4, 7),
+    )
+    edges = (
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    )
+    return _make_preview(
+        recipe,
+        points,
+        faces,
+        edges,
+        (
+            "face:bottom",
+            "face:top",
+            "face:front",
+            "face:right",
+            "face:back",
+            "face:left",
+        ),
+        (
+            "edge:bottom-front",
+            "edge:bottom-right",
+            "edge:bottom-back",
+            "edge:bottom-left",
+            "edge:top-front",
+            "edge:top-right",
+            "edge:top-back",
+            "edge:top-left",
+            "edge:vertical-front-left",
+            "edge:vertical-front-right",
+            "edge:vertical-back-right",
+            "edge:vertical-back-left",
+        ),
+        (
+            "point:bottom-front-left",
+            "point:bottom-front-right",
+            "point:bottom-back-right",
+            "point:bottom-back-left",
+            "point:top-front-left",
+            "point:top-front-right",
+            "point:top-back-right",
+            "point:top-back-left",
+        ),
+    )
+
+
+def _disk_preview(
+    recipe: DiskGeometry,
+    segments: int,
+) -> GeometryPreview:
+    angles = _angles(segments)
+    points = ((0.0, 0.0, 0.0),) + tuple(
+        (
+            recipe.radius * math.cos(angle),
+            recipe.radius * math.sin(angle),
+            0.0,
+        )
+        for angle in angles
+    )
+    faces = tuple(
+        (0, 1 + index, 1 + (index + 1) % segments) for index in range(segments)
+    )
+    edge = tuple(range(1, segments + 1)) + (1,)
+    return _make_preview(
+        recipe,
+        points,
+        faces,
+        (edge,),
+        ("face:domain",) * len(faces),
+        ("edge:outer",),
+        (None,) * len(points),
+    )
+
+
+def _plate_with_hole_preview(
+    recipe: PlateWithHoleGeometry,
+    segments: int,
+) -> GeometryPreview:
+    hole_rays = _rectangle_hole_rays(recipe, segments)
+    hole_angles = tuple(angle for angle, _logical_id in hole_rays)
+    count = len(hole_angles)
+    inner = tuple(
+        (
+            recipe.hole_x + recipe.hole_radius * math.cos(angle),
+            recipe.hole_y + recipe.hole_radius * math.sin(angle),
+            0.0,
+        )
+        for angle in hole_angles
+    )
+    outer = []
+    for angle in hole_angles:
+        delta_x, delta_y = math.cos(angle), math.sin(angle)
+        distances = []
+        if delta_x > 0.0:
+            distances.append((recipe.width - recipe.hole_x) / delta_x)
+        elif delta_x < 0.0:
+            distances.append(-recipe.hole_x / delta_x)
+        if delta_y > 0.0:
+            distances.append((recipe.height - recipe.hole_y) / delta_y)
+        elif delta_y < 0.0:
+            distances.append(-recipe.hole_y / delta_y)
+        distance = min(value for value in distances if value > 0.0)
+        outer.append(
             (
-                recipe.hole_x + recipe.hole_radius * math.cos(angle),
-                recipe.hole_y + recipe.hole_radius * math.sin(angle),
+                recipe.hole_x + distance * delta_x,
+                recipe.hole_y + distance * delta_y,
                 0.0,
             )
-            for angle in hole_angles
         )
-        outer = []
-        for angle in hole_angles:
-            dx, dy = math.cos(angle), math.sin(angle)
-            distances = []
-            if dx > 0.0:
-                distances.append((recipe.width - recipe.hole_x) / dx)
-            elif dx < 0.0:
-                distances.append(-recipe.hole_x / dx)
-            if dy > 0.0:
-                distances.append((recipe.height - recipe.hole_y) / dy)
-            elif dy < 0.0:
-                distances.append(-recipe.hole_y / dy)
-            distance = min(value for value in distances if value > 0.0)
-            outer.append((recipe.hole_x + distance * dx, recipe.hole_y + distance * dy, 0.0))
-        points = inner + tuple(outer)
-        faces = tuple(
-            (
-                index,
-                hole_count + index,
-                hole_count + (index + 1) % hole_count,
-                (index + 1) % hole_count,
-            )
-            for index in range(hole_count)
+    points = inner + tuple(outer)
+    faces = tuple(
+        (
+            index,
+            count + index,
+            count + (index + 1) % count,
+            (index + 1) % count,
         )
-        return GeometryPreview(
-            points,
-            faces,
-            (
-                tuple(range(hole_count)) + (0,),
-                tuple(range(hole_count, 2 * hole_count)) + (hole_count,),
-            ),
-            (1,) * len(faces),
-            (1, 2),
-        )
+        for index in range(count)
+    )
+    return _make_preview(
+        recipe,
+        points,
+        faces,
+        (
+            tuple(range(count)) + (0,),
+            tuple(range(count, 2 * count)) + (count,),
+        ),
+        ("face:domain",) * len(faces),
+        ("edge:hole-loop", "edge:outer-loop"),
+        (None,) * count
+        + tuple(logical_id for _angle, logical_id in hole_rays),
+    )
 
-    bottom_center, top_center = (0.0, 0.0, 0.0), (0.0, 0.0, recipe.height)
+
+def _cylinder_preview(
+    recipe: CylinderGeometry,
+    segments: int,
+) -> GeometryPreview:
+    angles = _angles(segments)
     bottom = tuple(
-        (recipe.radius * math.cos(angle), recipe.radius * math.sin(angle), 0.0)
+        (
+            recipe.radius * math.cos(angle),
+            recipe.radius * math.sin(angle),
+            0.0,
+        )
         for angle in angles
     )
     top = tuple((x, y, recipe.height) for x, y, _z in bottom)
-    points = (bottom_center, top_center) + bottom + top
-    bottom_start, top_start = 2, 2 + count
+    points = ((0.0, 0.0, 0.0), (0.0, 0.0, recipe.height)) + bottom + top
+    bottom_start, top_start = 2, 2 + segments
     faces = []
-    face_ids = []
-    for index in range(count):
-        next_index = (index + 1) % count
+    face_logical_ids = []
+    for index in range(segments):
+        next_index = (index + 1) % segments
         faces.extend(
             (
                 (0, bottom_start + next_index, bottom_start + index),
@@ -398,389 +712,82 @@ def build_geometry_preview(recipe: NativeGeometry, *, segments: int = 48) -> Geo
                 ),
             )
         )
-        face_ids.extend((1, 2, 3))
-    edges = [
-        tuple(range(bottom_start, bottom_start + count)) + (bottom_start,),
-        tuple(range(top_start, top_start + count)) + (top_start,),
-    ]
-    quarter = max(1, count // 4)
-    edges.extend(
-        (bottom_start + index, top_start + index)
-        for index in range(0, count, quarter)
+        face_logical_ids.extend(("face:bottom", "face:top", "face:outer"))
+    edges = (
+        tuple(range(bottom_start, bottom_start + segments)) + (bottom_start,),
+        tuple(range(top_start, top_start + segments)) + (top_start,),
     )
-    return GeometryPreview(
+    return _make_preview(
+        recipe,
         points,
         tuple(faces),
-        tuple(edges),
-        tuple(face_ids),
-        tuple(range(1, len(edges) + 1)),
+        edges,
+        tuple(face_logical_ids),
+        ("edge:bottom-rim", "edge:top-rim"),
+        (None,) * len(points),
     )
 
 
-def _axis_aligned_rectangle(recipe: NativeGeometry) -> tuple[float, float, float, float] | None:
-    if isinstance(recipe, RectangleGeometry):
-        return 0.0, 0.0, recipe.width, recipe.height
-    if isinstance(recipe, MovedGeometry):
-        base = _axis_aligned_rectangle(recipe.base)
-        if base is None or recipe.dz != 0.0:
-            return None
-        x, y, width, height = base
-        return x + recipe.dx, y + recipe.dy, width, height
-    return None
-
-
-def _rectangle_hole_angles(
-    recipe: PlateWithHoleGeometry,
-    segments: int,
-) -> tuple[float, ...]:
-    """Sample a rectangular plate radially while preserving all four corners."""
-    regular = [
-        2.0 * math.pi * index / max(12, int(segments))
-        for index in range(max(12, int(segments)))
-    ]
-    corners = (
-        (0.0, 0.0),
-        (recipe.width, 0.0),
-        (recipe.width, recipe.height),
-        (0.0, recipe.height),
-    )
-    angles = regular + [
-        math.atan2(y - recipe.hole_y, x - recipe.hole_x) % (2.0 * math.pi)
-        for x, y in corners
-    ]
-    return tuple(sorted({round(angle, 12) for angle in angles}))
-
-
-def _axis_aligned_circle(recipe: NativeGeometry) -> tuple[float, float, float] | None:
-    if isinstance(recipe, DiskGeometry):
-        return 0.0, 0.0, recipe.radius
-    if isinstance(recipe, MovedGeometry):
-        base = _axis_aligned_circle(recipe.base)
-        if base is None or recipe.dz != 0.0:
-            return None
-        x, y, radius = base
-        return x + recipe.dx, y + recipe.dy, radius
-    return None
-
-
-def generate_fem_model(
+def _validate_preview_topology(
     recipe: NativeGeometry,
-    settings: MeshSettings,
-    *,
-    named_regions: Iterable[Any] = (),
-):
-    """Build one labeled native geometry and return the canonical FEM model."""
-    try:
-        import gmsh
-    except ModuleNotFoundError as error:
-        raise ModuleNotFoundError(
-            "几何与网格功能需要 Gmsh；请安装项目的 cad 可选依赖"
-        ) from error
-
-    owns_session = not bool(gmsh.isInitialized())
-    try:
-        if owns_session:
-            # Gmsh's default SIGINT handler can only be installed by Python's
-            # main thread. GUI generation intentionally runs in one worker.
-            gmsh.initialize(interruptible=False)
-        dimension = geometry_dimension(recipe)
-        with geometry.model(recipe.name, dimension=dimension) as cad:
-            domain = _build_cad_domain(cad, recipe)
-            boundary = cad.boundary(domain)
-            groups: dict[str, tuple] = {}
-            hole_boundary: tuple = ()
-            if isinstance(recipe, (RectangleGeometry, PlateWithHoleGeometry)):
-                groups = {
-                    "LEFT": cad.select(boundary, x=0.0),
-                    "RIGHT": cad.select(boundary, x=recipe.width),
-                    "BOTTOM": cad.select(boundary, y=0.0),
-                    "TOP": cad.select(boundary, y=recipe.height),
-                }
-                if any(len(entities) != 1 for entities in groups.values()):
-                    raise RuntimeError("矩形边界识别失败")
-                outer = {entity for entities in groups.values() for entity in entities}
-                hole_boundary = tuple(entity for entity in boundary if entity not in outer)
-            elif isinstance(recipe, DiskGeometry):
-                groups = {"OUTER": boundary}
-            elif isinstance(recipe, BoxGeometry):
-                groups = {
-                    "LEFT": cad.select(boundary, x=0.0),
-                    "RIGHT": cad.select(boundary, x=recipe.width),
-                    "FRONT": cad.select(boundary, y=0.0),
-                    "BACK": cad.select(boundary, y=recipe.depth),
-                    "BOTTOM": cad.select(boundary, z=0.0),
-                    "TOP": cad.select(boundary, z=recipe.height),
-                }
-                if any(len(entities) != 1 for entities in groups.values()):
-                    raise RuntimeError("长方体边界识别失败")
-            elif isinstance(recipe, CylinderGeometry):
-                bottom = cad.select(boundary, z=0.0)
-                top = cad.select(boundary, z=recipe.height)
-                caps = {*bottom, *top}
-                groups = {
-                    "BOTTOM": bottom,
-                    "TOP": top,
-                    "OUTER": tuple(entity for entity in boundary if entity not in caps),
-                }
-            elif isinstance(recipe, ExtrudedGeometry):
-                bottom = cad.select(boundary, z=0.0)
-                top = cad.select(boundary, z=recipe.height)
-                caps = {*bottom, *top}
-                groups = {
-                    "BOTTOM": bottom,
-                    "TOP": top,
-                    "OUTER": tuple(entity for entity in boundary if entity not in caps),
-                }
-            else:
-                # CAE users create named regions explicitly; do not expose a
-                # synthetic all-boundary set as a default modelling concept.
-                groups = {}
-            if isinstance(recipe, PlateWithHoleGeometry) and not hole_boundary:
-                raise RuntimeError("圆孔边界识别失败")
-            mesher = gmsh_meshing.Mesher(cad)
-            if settings.cell_shape == "hexahedron":
-                if not supports_hexahedron(recipe):
-                    raise ValueError("六面体结构化网格当前仅支持长方体或矩形草图拉伸体")
-                curves = tuple(
-                    sorted(
-                        {
-                            entity
-                            for entity in cad.boundary(boundary)
-                            if entity.dimension == 1
-                        },
-                        key=lambda item: item.tag,
-                    )
-                )
-                node_count = max(
-                    2,
-                    int(math.ceil(geometry_characteristic_size(recipe) / settings.size)) + 1,
-                )
-                for curve in curves:
-                    mesher.transfinite_curve(curve, num_nodes=node_count)
-                for surface in boundary:
-                    mesher.transfinite_surface(surface)
-                    mesher.recombine(surface)
-                mesher.transfinite_volume(domain[0])
-
-            entity_groups: dict[str, tuple] = {
-                "DOMAIN": tuple(domain),
-                **groups,
-            }
-            for region in named_regions:
-                region_name = str(getattr(region, "name", "")).strip()
-                if not region_name or region_name == "DOMAIN":
-                    continue
-                region_kind = str(getattr(region, "entity_kind", ""))
-                region_ids = tuple(
-                    int(value) for value in getattr(region, "entity_ids", ())
-                )
-                region_entities = _named_region_entities(
-                    cad,
-                    recipe,
-                    domain,
-                    boundary,
-                    groups,
-                    hole_boundary,
-                    region_kind,
-                    region_ids,
-                )
-                if region_entities:
-                    entity_groups[region_name] = region_entities
-            if hole_boundary:
-                entity_groups["HOLE"] = hole_boundary
-            mesh_size = settings.size
-            refinements = []
-            if hole_boundary and settings.local_size is not None:
-                distance = mesher.distance_field(curves=hole_boundary, sampling=100)
-                refinements.append(mesher.threshold_field(
-                    distance,
-                    size_min=settings.local_size,
-                    size_max=settings.size,
-                    dist_min=recipe.hole_radius * 0.25,
-                    dist_max=recipe.hole_radius * 2.0,
-                ))
-            for control in settings.local_controls:
-                sources = _local_control_sources(
-                    cad,
-                    recipe,
-                    domain,
-                    boundary,
-                    groups,
-                    hole_boundary,
-                    control,
-                )
-                distance = mesher.distance_field(**sources, sampling=100)
-                refinements.append(mesher.threshold_field(
-                    distance,
-                    size_min=control.size,
-                    size_max=settings.size,
-                    dist_min=0.0,
-                    dist_max=settings.size * 2.0,
-                ))
-            if refinements:
-                background = (
-                    refinements[0]
-                    if len(refinements) == 1
-                    else mesher.min_field(refinements)
-                )
-                mesher.background_field(background)
-                mesh_size = None
-            native_mesh = mesher.generate(
-                gmsh_meshing.MeshSpec(
-                    size=mesh_size,
-                    order=settings.order,
-                    recombine=settings.cell_shape
-                    in {"quadrilateral", "hexahedron"},
-                )
+    preview: GeometryPreview,
+) -> None:
+    topology = describe_recipe_topology(recipe)
+    for kind, raw_ids, logical_ids in (
+        ("point", preview.point_ids, preview.point_logical_ids),
+        ("edge", preview.edge_ids, preview.edge_logical_ids),
+        ("face", preview.face_ids, preview.face_logical_ids),
+    ):
+        if len(logical_ids) != len(raw_ids):
+            raise RuntimeError(
+                f"{type(recipe).__name__} 预览的 {kind} cell 缺少 logical_id 绑定"
             )
-            mesh = gmsh_io.read(native_mesh)
-            return _build_native_fem_model(
-                mesh,
-                native_mesh,
-                recipe.name,
-                dimension,
-                entity_groups,
+        for index, (entity_id, logical_id) in enumerate(
+            zip(raw_ids, logical_ids, strict=True)
+        ):
+            expected_id = (
+                0
+                if logical_id is None
+                else _preview_entity_ids(
+                    topology,
+                    type(recipe).__name__,
+                    kind,
+                    (logical_id,),
+                )[0]
             )
-    finally:
-        if owns_session and bool(gmsh.isInitialized()):
-            gmsh.finalize()
-
-
-def _build_cad_domain(cad, recipe: NativeGeometry):
-    if isinstance(recipe, SketchGeometry):
-        return _build_cad_domain(cad, _compile_sketch(recipe))
-    if isinstance(recipe, BooleanGeometry):
-        objects = _build_cad_domain(cad, recipe.object_geometry)
-        tools = _build_cad_domain(cad, recipe.tool_geometry)
-        operation = {
-            "fuse": cad.fuse,
-            "cut": cad.cut,
-            "fragment": cad.fragment,
-        }[recipe.operation]
-        result = operation(objects, tools).of_dimension(geometry_dimension(recipe))
-        if not result:
-            raise RuntimeError("布尔操作没有生成有效几何")
-        return result
-    if isinstance(recipe, (RectangleGeometry, PlateWithHoleGeometry)):
-        plate = cad.rectangle(0.0, 0.0, recipe.width, recipe.height)
-        if isinstance(recipe, PlateWithHoleGeometry):
-            hole = cad.disk(recipe.hole_x, recipe.hole_y, recipe.hole_radius)
-            domain = cad.cut([plate], [hole]).of_dimension(2)
-            if len(domain) != 1:
-                raise RuntimeError("带孔板布尔切除失败")
-            return domain
-        return (plate,)
-    if isinstance(recipe, DiskGeometry):
-        return (cad.disk(0.0, 0.0, recipe.radius),)
-    if isinstance(recipe, BoxGeometry):
-        return (cad.box(0.0, 0.0, 0.0, recipe.width, recipe.depth, recipe.height),)
-    if isinstance(recipe, CylinderGeometry):
-        return (cad.cylinder(0.0, 0.0, 0.0, 0.0, 0.0, recipe.height, recipe.radius),)
-    if isinstance(recipe, MovedGeometry):
-        domain = _build_cad_domain(cad, recipe.base)
-        return cad.translate(domain, recipe.dx, recipe.dy, recipe.dz)
-    if isinstance(recipe, RotatedGeometry):
-        domain = _build_cad_domain(cad, recipe.base)
-        axis = {
-            "x": (1.0, 0.0, 0.0),
-            "y": (0.0, 1.0, 0.0),
-            "z": (0.0, 0.0, 1.0),
-        }[recipe.axis]
-        return cad.rotate(domain, 0.0, 0.0, 0.0, *axis, math.radians(recipe.angle_degrees))
-    source = _build_cad_domain(cad, recipe.base)
-    return cad.extrude(source, 0.0, 0.0, recipe.height).of_dimension(3)
-
-
-def _build_native_fem_model(
-    mesh: Any,
-    native_mesh: Any,
-    name: str,
-    dimension: int,
-    entity_groups: dict[str, tuple],
-) -> FEMModel:
-    """Convert CAD entity groups to FEM sets without public topology numbering."""
-    model = FEMModel(mesh=mesh, name=name)
-    backend = native_mesh._borrow_model()
-    boundary_edges = mesh_edges.boundary(mesh) if dimension == 2 else ()
-    boundary_faces = mesh_faces.boundary(mesh) if dimension == 3 else ()
-
-    for group_name, entities in entity_groups.items():
-        if not entities:
-            continue
-        entity_dimension = entities[0].dimension
-        if any(entity.dimension != entity_dimension for entity in entities):
-            raise ValueError(
-                f"几何区域 {group_name} 包含不同维度的实体"
+            if int(entity_id) != expected_id:
+                raise RuntimeError(
+                    f"{type(recipe).__name__} 预览的 {kind} cell[{index}] "
+                    f"logical_id={logical_id!r} 应映射为 {expected_id}，"
+                    f"实际为 {entity_id}"
+                )
+        actual = {int(entity_id) for entity_id in raw_ids if int(entity_id) > 0}
+        expected = {
+            topology.logical_index(entity.logical_id)
+            for entity in topology.entities_of(kind, selectable_only=True)
+        }
+        if actual != expected:
+            raise RuntimeError(
+                f"{type(recipe).__name__} 预览的 {kind} 逻辑编号"
+                f"与 recipe topology 不一致: {sorted(actual)} != "
+                f"{sorted(expected)}"
             )
-        if entity_dimension == dimension:
-            element_ids = _gmsh_entity_element_ids(backend, entities)
-            model.element_sets[group_name] = ElementSet(group_name, element_ids)
-            continue
-
-        node_ids = _gmsh_entity_node_ids(backend, entities)
-        model.node_sets[group_name] = NodeSet(group_name, node_ids)
-        node_id_set = set(node_ids)
-        if dimension == 2 and entity_dimension == 1:
-            model.edges[group_name] = Edge(
-                group_name,
-                [
-                    ElementEdge(element_id, local_edge, edge_node_ids)
-                    for element_id, local_edge, edge_node_ids in boundary_edges
-                    if set(edge_node_ids).issubset(node_id_set)
-                ],
-            )
-        elif dimension == 3 and entity_dimension == 2:
-            model.surfaces[group_name] = Surface(
-                group_name,
-                [
-                    ElementFace(element_id, local_face, face_node_ids)
-                    for element_id, local_face, face_node_ids in boundary_faces
-                    if set(face_node_ids).issubset(node_id_set)
-                ],
-            )
-    return model
-
-
-def _gmsh_entity_node_ids(backend: Any, entities: tuple) -> tuple[int, ...]:
-    """Return generated node ids attached to the supplied CAD entities."""
-    node_ids: set[int] = set()
-    for entity in entities:
-        raw_ids, _coordinates, _parameters = backend.mesh.getNodes(
-            entity.dimension,
-            entity.tag,
-            True,
-            False,
-        )
-        node_ids.update(int(node_id) for node_id in raw_ids)
-    return tuple(sorted(node_ids))
-
-
-def _gmsh_entity_element_ids(backend: Any, entities: tuple) -> tuple[int, ...]:
-    """Return generated top-dimensional element ids for CAD entities."""
-    element_ids: set[int] = set()
-    for entity in entities:
-        _types, tag_blocks, _connectivity = backend.mesh.getElements(
-            entity.dimension,
-            entity.tag,
-        )
-        for tags in tag_blocks:
-            element_ids.update(int(element_id) for element_id in tags)
-    return tuple(sorted(element_ids))
 
 
 def _compile_sketch(recipe: SketchGeometry) -> NativeGeometry:
-    """Compile a generic sketch to the existing, tested native feature chain."""
-
-    def contour_geometry(contour: SketchContour, index: int) -> NativeGeometry:
-        contour_name = f"{recipe.name}-Contour-{index}"
+    def contour_geometry(
+        contour: SketchContour,
+        index: int,
+    ) -> NativeGeometry:
+        name = f"{recipe.name}-Contour-{index}"
         if isinstance(contour, SketchRectangle):
             result: NativeGeometry = RectangleGeometry(
-                contour_name,
+                name,
                 contour.width,
                 contour.height,
             )
         else:
-            result = DiskGeometry(contour_name, contour.radius)
+            result = DiskGeometry(name, contour.radius)
         if contour.x != 0.0 or contour.y != 0.0:
             result = MovedGeometry(result, contour.x, contour.y)
         return result
@@ -803,203 +810,111 @@ def _compile_sketch(recipe: SketchGeometry) -> NativeGeometry:
     return result
 
 
-def _local_control_sources(
-    cad,
+def _axis_aligned_rectangle(
     recipe: NativeGeometry,
-    domain: tuple,
-    boundary: tuple,
-    groups: dict[str, tuple],
-    hole_boundary: tuple,
-    control: LocalMeshControl,
-) -> dict[str, tuple]:
-    """Map stable preview entity ids to current OCC topology."""
-    dimension = geometry_dimension(recipe)
-    if control.entity_kind == "point":
-        points = tuple(
-            entity
-            for entity in cad.boundary(domain, recursive=True)
-            if entity.dimension == 0
-        )
-        if not points:
-            curves = tuple(entity for entity in cad.boundary(domain, recursive=True) if entity.dimension == 1)
-            points = tuple(entity for entity in cad.boundary(curves) if entity.dimension == 0)
-        unique = tuple(sorted(set(points), key=lambda item: item.tag))
-        if control.entity_id > len(unique):
-            raise ValueError("所选几何点已失效，请重新选择")
-        return {"points": (unique[control.entity_id - 1],)}
-    if control.entity_kind == "edge":
-        if dimension == 2:
-            edge_groups = _two_dimensional_edge_groups(
-                cad,
-                recipe,
-                boundary,
-                hole_boundary,
-            )
-            curves = (
-                edge_groups[control.entity_id - 1]
-                if control.entity_id <= len(edge_groups)
-                else ()
-            )
-        else:
-            curves = tuple(
-                entity
-                for entity in cad.boundary(boundary)
-                if entity.dimension == 1
-            )
-            curves = tuple(sorted(set(curves), key=lambda item: item.tag))
-            if control.entity_id <= len(curves):
-                curves = (curves[control.entity_id - 1],)
-        if not curves:
-            raise ValueError("所选几何边已失效，请重新选择")
-        return {"curves": curves}
-    if dimension == 2:
-        return {"surfaces": domain}
-    if isinstance(recipe, BoxGeometry):
-        names = ("BOTTOM", "TOP", "FRONT", "RIGHT", "BACK", "LEFT")
-        surfaces = groups.get(names[min(control.entity_id - 1, len(names) - 1)], ())
-    elif isinstance(recipe, CylinderGeometry):
-        names = ("BOTTOM", "TOP", "OUTER")
-        surfaces = groups.get(names[min(control.entity_id - 1, 2)], ())
-    elif isinstance(recipe, ExtrudedGeometry):
-        face_groups = _extruded_face_groups(
-            cad,
-            recipe,
-            boundary,
-            groups,
-        )
-        surfaces = (
-            face_groups[control.entity_id - 1]
-            if control.entity_id <= len(face_groups)
-            else ()
-        )
-    else:
-        ordered = tuple(sorted(boundary, key=lambda item: item.tag))
-        surfaces = (
-            (ordered[control.entity_id - 1],)
-            if control.entity_id <= len(ordered)
-            else ()
-        )
-    if not surfaces:
-        raise ValueError("所选几何面已失效，请重新选择")
-    return {"surfaces": surfaces}
+) -> tuple[float, float, float, float] | None:
+    if isinstance(recipe, RectangleGeometry):
+        return 0.0, 0.0, recipe.width, recipe.height
+    if isinstance(recipe, MovedGeometry):
+        base = _axis_aligned_rectangle(recipe.base)
+        if base is None or recipe.dz != 0.0:
+            return None
+        x, y, width, height = base
+        return x + recipe.dx, y + recipe.dy, width, height
+    if isinstance(recipe, RotatedGeometry) and math.isclose(
+        recipe.angle_degrees % 360.0,
+        0.0,
+        abs_tol=1.0e-12,
+    ):
+        return _axis_aligned_rectangle(recipe.base)
+    return None
 
 
-def _extruded_face_groups(
-    cad,
-    recipe: ExtrudedGeometry,
-    boundary: tuple,
-    groups: dict[str, tuple],
-) -> tuple[tuple, ...]:
-    """Match extruded preview face ids to caps and individual side groups."""
-    bottom = tuple(groups.get("BOTTOM", ()))
-    top = tuple(groups.get("TOP", ()))
-    outer = tuple(groups.get("OUTER", ()))
-    logical = (
-        _compile_sketch(recipe.base)
-        if isinstance(recipe.base, SketchGeometry)
-        else recipe.base
+def _axis_aligned_circle(
+    recipe: NativeGeometry,
+) -> tuple[float, float, float] | None:
+    if isinstance(recipe, DiskGeometry):
+        return 0.0, 0.0, recipe.radius
+    if isinstance(recipe, MovedGeometry):
+        base = _axis_aligned_circle(recipe.base)
+        if base is None or recipe.dz != 0.0:
+            return None
+        x, y, radius = base
+        return x + recipe.dx, y + recipe.dy, radius
+    if isinstance(recipe, RotatedGeometry):
+        base = _axis_aligned_circle(recipe.base)
+        if base is None:
+            return None
+        x, y, radius = base
+        angle = math.radians(recipe.angle_degrees)
+        return (
+            x * math.cos(angle) - y * math.sin(angle),
+            x * math.sin(angle) + y * math.cos(angle),
+            radius,
+        )
+    return None
+
+
+def _rectangle_hole_rays(
+    recipe: PlateWithHoleGeometry,
+    segments: int,
+) -> tuple[tuple[float, str | None], ...]:
+    segment_count = max(12, int(segments))
+    rays: list[tuple[float, str | None]] = [
+        (2.0 * math.pi * index / segment_count, None)
+        for index in range(segment_count)
+    ]
+    corners = (
+        ("point:bottom-left", 0.0, 0.0),
+        ("point:bottom-right", recipe.width, 0.0),
+        ("point:top-right", recipe.width, recipe.height),
+        ("point:top-left", 0.0, recipe.height),
     )
-    rectangle = _axis_aligned_rectangle(logical)
-    if rectangle is not None:
-        x, y, width, height = rectangle
-        sides = (
-            tuple(cad.select(boundary, y=y)),
-            tuple(cad.select(boundary, x=x + width)),
-            tuple(cad.select(boundary, y=y + height)),
-            tuple(cad.select(boundary, x=x)),
+    angular_tolerance = 64.0 * math.ulp(2.0 * math.pi)
+    for logical_id, x, y in corners:
+        angle = math.atan2(y - recipe.hole_y, x - recipe.hole_x) % (
+            2.0 * math.pi
         )
-        if all(sides):
-            return bottom, top, *sides
-    if isinstance(logical, BooleanGeometry) and logical.operation == "cut":
-        rectangle = _axis_aligned_rectangle(logical.object_geometry)
-        if rectangle is not None:
-            x, y, width, height = rectangle
-            outer_sides = tuple(sorted({
-                *cad.select(boundary, x=x),
-                *cad.select(boundary, x=x + width),
-                *cad.select(boundary, y=y),
-                *cad.select(boundary, y=y + height),
-            }, key=lambda item: item.tag))
-            inner_sides = tuple(
-                entity for entity in outer if entity not in set(outer_sides)
-            )
-            if inner_sides and outer_sides:
-                if _axis_aligned_circle(logical.tool_geometry) is not None:
-                    return bottom, top, inner_sides, outer_sides
-                return bottom, top, outer_sides, inner_sides
-    return bottom, top, outer
+        match = next(
+            (
+                index
+                for index, (candidate, _candidate_id) in enumerate(rays)
+                if abs((angle - candidate + math.pi) % (2.0 * math.pi) - math.pi)
+                <= angular_tolerance
+            ),
+            None,
+        )
+        if match is None:
+            rays.append((angle, logical_id))
+        else:
+            rays[match] = (rays[match][0], logical_id)
+    return tuple(sorted(rays, key=lambda item: item[0]))
 
 
-def _named_region_entities(
-    cad,
-    recipe: NativeGeometry,
-    domain: tuple,
-    boundary: tuple,
-    groups: dict[str, tuple],
-    hole_boundary: tuple,
-    entity_kind: str,
-    entity_ids: tuple[int, ...],
-) -> tuple:
-    """Resolve a user-created geometry collection to real CAD entities."""
-    if entity_kind == "body":
-        return tuple(domain)
-    entities: list = []
-    for entity_id in entity_ids:
-        # Region selection intentionally reuses the same stable preview-to-CAD
-        # mapping as local mesh controls.
-        control = LocalMeshControl(
-            entity_kind, entity_id, 1.0,
-        )
-        sources = _local_control_sources(
-            cad,
-            recipe,
-            domain,
-            boundary,
-            groups,
-            hole_boundary,
-            control,
-        )
-        for values in sources.values():
-            entities.extend(values)
-    return tuple(sorted(set(entities), key=lambda item: (item.dimension, item.tag)))
+def _angles(count: int) -> tuple[float, ...]:
+    return tuple(2.0 * math.pi * index / count for index in range(count))
 
 
-def _two_dimensional_edge_groups(
-    cad,
-    recipe: NativeGeometry,
-    boundary: tuple,
-    hole_boundary: tuple,
-) -> tuple[tuple, ...]:
-    """Map preview loop ids to final OCC curves for 2-D local sizing."""
-    if isinstance(recipe, PlateWithHoleGeometry):
-        outer = tuple(
-            entity for entity in boundary if entity not in set(hole_boundary)
-        )
-        return hole_boundary, outer
-    logical = _compile_sketch(recipe) if isinstance(recipe, SketchGeometry) else recipe
-    rectangle = _axis_aligned_rectangle(logical)
-    if rectangle is not None:
-        x, y, width, height = rectangle
-        # Preview ids follow the perimeter clockwise from the bottom edge.
-        groups = (
-            tuple(cad.select(boundary, y=y)),
-            tuple(cad.select(boundary, x=x + width)),
-            tuple(cad.select(boundary, y=y + height)),
-            tuple(cad.select(boundary, x=x)),
-        )
-        if all(groups):
-            return groups
-    if isinstance(logical, BooleanGeometry) and logical.operation == "cut":
-        rectangle = _axis_aligned_rectangle(logical.object_geometry)
-        if rectangle is not None:
-            x, y, width, height = rectangle
-            outer = {
-                *cad.select(boundary, x=x),
-                *cad.select(boundary, x=x + width),
-                *cad.select(boundary, y=y),
-                *cad.select(boundary, y=y + height),
-            }
-            inner = tuple(entity for entity in boundary if entity not in outer)
-            if inner and outer:
-                return inner, tuple(sorted(outer, key=lambda item: item.tag))
-    return (tuple(boundary),)
+__all__ = [
+    "BooleanGeometry",
+    "BoxGeometry",
+    "CylinderGeometry",
+    "DiskGeometry",
+    "ExtrudedGeometry",
+    "GeometryPreview",
+    "LocalMeshControl",
+    "MeshSettings",
+    "MovedGeometry",
+    "NATIVE_GEOMETRY_TYPES",
+    "PlateWithHoleGeometry",
+    "RectangleGeometry",
+    "RotatedGeometry",
+    "SketchCircle",
+    "SketchGeometry",
+    "SketchRectangle",
+    "build_geometry_preview",
+    "geometry_characteristic_size",
+    "geometry_dimension",
+    "geometry_feature_rows",
+    "supports_hexahedron",
+]

@@ -90,11 +90,31 @@ def _geometry_edge_polydata(pyvista, points: np.ndarray, preview: GeometryPrevie
     edge_mesh.points = points
     edge_mesh.lines = line_cells
     edge_mesh.cell_data["geometry_entity_id"] = np.asarray(
-        preview.edge_ids or tuple(range(1, len(preview.edges) + 1)),
+        preview.edge_ids
+        if len(preview.edge_ids) == len(preview.edges)
+        else (0,) * len(preview.edges),
         dtype=np.int64,
     )
     edge_mesh.set_active_scalars(None)
     return edge_mesh
+
+
+def _geometry_point_polydata(
+    pyvista,
+    points: np.ndarray,
+    preview: GeometryPreview,
+):
+    """Build pickable points from logical vertices, excluding display samples."""
+    point_ids = np.asarray(
+        preview.point_ids
+        if len(preview.point_ids) == len(points)
+        else (0,) * len(points),
+        dtype=np.int64,
+    )
+    selectable = point_ids > 0
+    point_mesh = pyvista.PolyData(points[selectable])
+    point_mesh.point_data["geometry_entity_id"] = point_ids[selectable]
+    return point_mesh
 
 
 def _geometry_surface_polydata(
@@ -108,7 +128,9 @@ def _geometry_surface_polydata(
     )
     surface = pyvista.PolyData(points, faces=face_cells)
     surface.cell_data["geometry_entity_id"] = np.asarray(
-        preview.face_ids or tuple(range(1, len(preview.faces) + 1)),
+        preview.face_ids
+        if len(preview.face_ids) == len(preview.faces)
+        else (0,) * len(preview.faces),
         dtype=np.int64,
     )
     surface = surface.triangulate()
@@ -566,25 +588,21 @@ class FEMViewport(QWidget):
                 name="geometry_edges",
                 reset_camera=False,
             )
-        point_mesh = _pyvista.PolyData(points)
-        point_mesh.point_data["geometry_entity_id"] = np.arange(
-            1,
-            len(points) + 1,
-            dtype=np.int64,
-        )
+        point_mesh = _geometry_point_polydata(_pyvista, points, preview)
         self._geometry_preview_points = point_mesh
-        self._actors["geometry_points"] = self._plotter.add_mesh(
-            point_mesh,
-            color="#406f8f",
-            point_size=6,
-            render_points_as_spheres=True,
-            show_scalar_bar=False,
-            name="geometry_points",
-            reset_camera=False,
-        )
-        self._actors["geometry_points"].SetVisibility(
-            self._selection_mode == "geometry_point"
-        )
+        if point_mesh.n_points:
+            self._actors["geometry_points"] = self._plotter.add_mesh(
+                point_mesh,
+                color="#406f8f",
+                point_size=6,
+                render_points_as_spheres=True,
+                show_scalar_bar=False,
+                name="geometry_points",
+                reset_camera=False,
+            )
+            self._actors["geometry_points"].SetVisibility(
+                self._selection_mode == "geometry_point"
+            )
         self._pick_grid = None
         self._pick_locators.clear()
         self._clear_preselection(render=False)
@@ -651,9 +669,9 @@ class FEMViewport(QWidget):
                 return
             data = _pyvista.PolyData(
                 np.asarray(
-                    tuple(self._geometry_preview.points[index] for index in indices),
+                    self._geometry_preview_points.points,
                     dtype=float,
-                )
+                )[np.asarray(indices, dtype=np.int64)]
             )
             kwargs = {"point_size": 13, "render_points_as_spheres": True}
         elif kind == "geometry_edge" and self._geometry_preview_edges is not None:
@@ -2057,6 +2075,8 @@ class FEMViewport(QWidget):
                 "geometry_surface",
                 mode,
             )
+            if hit is not None and hit.entity_id <= 0:
+                return None
             if hit is not None and mode == "geometry_body":
                 return replace(hit, entity_id=1)
             return hit
@@ -2191,6 +2211,7 @@ class FEMViewport(QWidget):
             & (distances <= threshold)
             & (closest[:, 2] >= 0.0)
             & (closest[:, 2] <= 1.0)
+            & (ids[np.asarray(cells, dtype=np.int64)] > 0)
         )
         if not len(candidates):
             return None

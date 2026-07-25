@@ -56,6 +56,7 @@ if TYPE_CHECKING:
 
 
 SCHEMA_VERSION = 1
+LOGICAL_TOPOLOGY_VERSION = 1
 
 
 class ProjectV1Error(ValueError):
@@ -119,6 +120,7 @@ def decode_project_v1(
         "$",
         required={"schema", "source", "geometry"},
         optional={
+            "logical_topology_version",
             "parts",
             "mesh_settings",
             "feature_history",
@@ -133,6 +135,19 @@ def decode_project_v1(
     schema = _integer(root["schema"], "$.schema", error_type=ProjectV1DecodeError)
     if schema != SCHEMA_VERSION:
         raise ProjectV1DecodeError(f"不支持的项目 schema：{schema!r}")
+    topology_version = (
+        None
+        if "logical_topology_version" not in root
+        else _integer(
+            root["logical_topology_version"],
+            "$.logical_topology_version",
+            error_type=ProjectV1DecodeError,
+        )
+    )
+    if topology_version not in {None, LOGICAL_TOPOLOGY_VERSION}:
+        raise ProjectV1DecodeError(
+            f"不支持的逻辑拓扑契约版本：{topology_version!r}"
+        )
     source_kind = _string(root["source"], "$.source", error_type=ProjectV1DecodeError)
     if source_kind != "native":
         raise ProjectV1DecodeError("v1 项目只支持 source='native'")
@@ -171,6 +186,17 @@ def decode_project_v1(
         )
     )
     _require_unique_names(named_regions, "$.named_regions")
+    if topology_version is None and (
+        named_regions
+        or (
+            mesh_settings is not None
+            and bool(mesh_settings.local_controls)
+        )
+    ):
+        raise ProjectV1DecodeError(
+            "旧项目缺少逻辑拓扑契约版本，无法安全恢复命名区域或局部网格控制；"
+            "请移除这些实体引用后打开项目并重新选择"
+        )
 
     materials = tuple(
         _decode_material(item, f"$.materials[{index}]")
@@ -278,6 +304,7 @@ def encode_project_v1(
 
     payload = {
         "schema": SCHEMA_VERSION,
+        "logical_topology_version": LOGICAL_TOPOLOGY_VERSION,
         "source": "native",
         "parts": [
             _encode_part(item, f"snapshot.parts[{index}]")
@@ -2056,6 +2083,7 @@ def _reject_json_constant(value: str) -> NoReturn:
 
 
 __all__ = [
+    "LOGICAL_TOPOLOGY_VERSION",
     "SCHEMA_VERSION",
     "ProjectV1DecodeError",
     "ProjectV1EncodeError",

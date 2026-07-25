@@ -17,11 +17,14 @@ class LocalMeshControl:
     def __post_init__(self) -> None:
         if self.entity_kind not in {"point", "edge", "face"}:
             raise ValueError("局部网格控制只支持点、边或面")
-        if int(self.entity_id) <= 0:
-            raise ValueError("几何实体编号必须大于零")
+        if (
+            isinstance(self.entity_id, bool)
+            or not isinstance(self.entity_id, int)
+            or self.entity_id <= 0
+        ):
+            raise ValueError("几何实体编号必须是大于零的整数")
         if float(self.size) <= 0.0:
             raise ValueError("局部网格尺寸必须大于零")
-        object.__setattr__(self, "entity_id", int(self.entity_id))
         object.__setattr__(self, "size", float(self.size))
 
 

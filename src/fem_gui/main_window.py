@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from fem.abaqus import build_model as build_abaqus_model, parse_file
 from fem.application import ModelSession
+from fem.application.preprocessing import generate_fem_model
 from fem.boundary.step import boundary_for_step
 from fem.core.model import (
     EdgeLoad,
@@ -25,6 +26,7 @@ from fem.core.model import (
     NodalLoad,
     SurfaceLoad,
 )
+from fem.geometry.recipe_topology import can_preserve_logical_references
 from fem.solvers import static_linear
 from fem.io.project_v1 import load_project_v1, save_project_v1
 
@@ -70,7 +72,6 @@ from .preprocessing import (
     RotatedGeometry,
     SketchGeometry,
     build_geometry_preview,
-    generate_fem_model,
     geometry_characteristic_size,
     geometry_dimension,
     geometry_feature_rows,
@@ -1475,12 +1476,9 @@ class FEMMainWindow(QMainWindow):
             self._apply_session_delta(self.session.new_native_project())
         prior_recipe = self.document.geometry_recipe
         current_settings = self.document.mesh_settings
-        preserve_topology_references = (
-            isinstance(recipe, (MovedGeometry, RotatedGeometry))
-            and recipe.base is prior_recipe
-        ) or (
-            isinstance(prior_recipe, (MovedGeometry, RotatedGeometry))
-            and prior_recipe.base is recipe
+        preserve_topology_references = can_preserve_logical_references(
+            prior_recipe,
+            recipe,
         )
         invalidated_regions: tuple[str, ...] = ()
         if (
@@ -1489,6 +1487,35 @@ class FEMMainWindow(QMainWindow):
             and self.document.named_regions
         ):
             invalidated_regions = tuple(self.document.named_regions)
+        invalidated_mesh_references = (
+            prior_recipe is not None
+            and not preserve_topology_references
+            and isinstance(current_settings, MeshSettings)
+            and (
+                current_settings.local_size is not None
+                or bool(current_settings.local_controls)
+            )
+        )
+        invalidated_definitions = (
+            prior_recipe is not None
+            and not preserve_topology_references
+            and bool(
+                self.document.region_assignments
+                or self.document.analysis_definitions
+            )
+        )
+        preserved_references = preserve_topology_references and bool(
+            self.document.named_regions
+            or self.document.region_assignments
+            or self.document.analysis_definitions
+            or (
+                isinstance(current_settings, MeshSettings)
+                and (
+                    current_settings.local_size is not None
+                    or bool(current_settings.local_controls)
+                )
+            )
+        )
         delta = self.session.replace_geometry(
             tuple(self.document.parts),
             recipe,
@@ -1515,7 +1542,11 @@ class FEMMainWindow(QMainWindow):
             settings = replace(
                 current_settings,
                 cell_shape=current_settings.cell_shape if valid_shape else target_shape,
-                local_size=None,
+                local_size=(
+                    current_settings.local_size
+                    if preserve_topology_references
+                    else None
+                ),
                 local_controls=(
                     current_settings.local_controls
                     if preserve_topology_references
@@ -1544,6 +1575,12 @@ class FEMMainWindow(QMainWindow):
                 f"；{len(invalidated_regions)} 个旧命名区域已失效，"
                 "请重新选择同名区域"
             )
+        if invalidated_mesh_references:
+            message += "；旧局部网格设置已失效"
+        if invalidated_definitions:
+            message += "；依赖旧拓扑的区域分配和分析步已失效"
+        if preserved_references:
+            message += "；逻辑拓扑未变化，已有拓扑引用已保留"
         self.status_panel.set_state(message, 6000)
 
     def create_named_geometry_region(self) -> None:
@@ -1977,21 +2014,13 @@ class FEMMainWindow(QMainWindow):
         ):
             return
         task = self.session.prepare_mesh_generation()
-        recipe = task.geometry_recipe
-        settings = task.mesh_settings
         self.status_panel.set_state("正在生成网格……")
-
-        named_regions = task.named_regions
 
         def workload(context: TaskContext):
             timings: dict[str, float] = {}
             context.report("正在生成网格……")
             started = perf_counter()
-            model = generate_fem_model(
-                recipe,
-                settings,
-                named_regions=named_regions,
-            )
+            model = generate_fem_model(task)
             timings["Gmsh 几何与网格"] = perf_counter() - started
             context.report("正在准备显示网格……")
             started = perf_counter()

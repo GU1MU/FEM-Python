@@ -13,6 +13,7 @@ from fem.application import (
     RegionAssignment,
     SectionDefinition,
 )
+from fem.application.preprocessing import generate_fem_model
 from fem.core.model import (
     DisplacementConstraint,
     EdgeLoad,
@@ -35,7 +36,6 @@ from fem_gui.preprocessing import (
     ExtrudedGeometry,
     MeshSettings,
     RectangleGeometry,
-    generate_fem_model,
 )
 
 
@@ -43,6 +43,7 @@ def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
+@pytest.mark.gmsh
 def test_native_linear_static_definition_reuses_the_existing_solver():
     recipe = RectangleGeometry("plate", 2.0, 1.0)
     settings = MeshSettings(0.5)

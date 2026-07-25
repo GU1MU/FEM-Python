@@ -269,6 +269,7 @@ def test_runtime_boundaries_do_not_eagerly_import_external_gmsh():
             *GEOMETRY_ROOT.rglob("*.py"),
             *MESH_ROOT.rglob("*.py"),
             *SELECTION_ROOT.rglob("*.py"),
+            *APPLICATION_ROOT.rglob("*.py"),
             *(SRC_ROOT / "fem" / "io").rglob("*.py"),
         }
     )
@@ -483,6 +484,71 @@ def test_application_layer_has_no_qt_pyvista_or_gui_dependency():
                 offenders.append(
                     f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
                 )
+
+    assert offenders == []
+
+
+def test_gui_preprocessing_contains_only_display_authoring_helpers():
+    path = GUI_ROOT / "preprocessing.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    allowed_fem_modules = {
+        "fem.geometry.recipe_topology",
+        "fem.geometry.recipes",
+        "fem.mesh.settings",
+    }
+    offenders = []
+    for target, lineno in _resolved_import_targets(
+        path,
+        "fem_gui.preprocessing",
+    ):
+        allowed_fem_target = any(
+            target == module or target.startswith(f"{module}.")
+            for module in allowed_fem_modules
+        )
+        if target == "gmsh" or target.startswith("gmsh."):
+            offenders.append(f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}")
+        elif target == "fem" or (
+            target.startswith("fem.") and not allowed_fem_target
+        ):
+            offenders.append(f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}")
+    forbidden_functions = {
+        "generate_fem_model",
+        "_build_cad_domain",
+        "_build_native_fem_model",
+        "_gmsh_entity_node_ids",
+        "_gmsh_entity_element_ids",
+    }
+    offenders.extend(
+        f"{path.relative_to(PROJECT_ROOT)}:{node.lineno} -> def {node.name}"
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in forbidden_functions
+    )
+
+    assert offenders == []
+
+
+def test_recipe_compiler_does_not_map_logical_ids_by_backend_tag_order():
+    path = APPLICATION_ROOT / "recipe_compiler.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        function_name = (
+            node.func.id
+            if isinstance(node.func, ast.Name)
+            else node.func.attr
+            if isinstance(node.func, ast.Attribute)
+            else ""
+        )
+        if function_name != "sorted":
+            continue
+        if any(
+            isinstance(descendant, ast.Attribute) and descendant.attr == "tag"
+            for descendant in ast.walk(node)
+        ):
+            offenders.append(f"{path.relative_to(PROJECT_ROOT)}:{node.lineno}")
 
     assert offenders == []
 
