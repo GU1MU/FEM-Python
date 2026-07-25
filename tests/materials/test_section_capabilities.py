@@ -13,6 +13,12 @@ from fem.core.model import (
     MaterialDefinition,
     SectionAssignment,
 )
+from fem.core.mesh import Element3D, Mesh3D, Node3D
+from fem.elements import (
+    BEAM_LOCAL_Y_REFERENCE_KEY,
+    BeamOrientation,
+    resolve_beam_frame,
+)
 
 
 def _element(
@@ -456,3 +462,285 @@ def test_later_invalid_assignment_cannot_leave_an_earlier_match_effective() -> N
     assert resolution.for_element(1) is None
     assert resolution.uncovered_element_ids == ()
     assert resolution.incompatible_element_ids == (1,)
+
+
+def test_beam_orientation_property_is_canonical_and_assignment_owned() -> None:
+    reference = [0, 2, 0]
+
+    resolved = materials.resolve_section_properties(
+        "Beam2",
+        {"E": 210.0, "nu": 0.3},
+        "rectangle",
+        {
+            "height": 1.0,
+            "width": 2.0,
+            BEAM_LOCAL_Y_REFERENCE_KEY: reference,
+        },
+    )
+    reference[1] = 9
+
+    assert resolved.applied_properties[BEAM_LOCAL_Y_REFERENCE_KEY] == (
+        0.0,
+        2.0,
+        0.0,
+    )
+    assert resolved.effective_properties[BEAM_LOCAL_Y_REFERENCE_KEY] == (
+        0.0,
+        2.0,
+        0.0,
+    )
+    assert BEAM_LOCAL_Y_REFERENCE_KEY in resolved.owned_property_keys
+
+
+def test_covered_automatic_beam_suppresses_direct_baseline_orientation() -> None:
+    resolved = materials.resolve_section_properties(
+        "Beam2",
+        {"E": 210.0, "nu": 0.3},
+        "rectangle",
+        {"height": 1.0, "width": 2.0},
+        baseline_properties={
+            BEAM_LOCAL_Y_REFERENCE_KEY: (0.0, 1.0, 0.0),
+        },
+    )
+
+    assert BEAM_LOCAL_Y_REFERENCE_KEY not in resolved.applied_properties
+    assert BEAM_LOCAL_Y_REFERENCE_KEY not in resolved.effective_properties
+    assert BEAM_LOCAL_Y_REFERENCE_KEY in resolved.owned_property_keys
+
+
+@pytest.mark.parametrize("element_type", ("Tri3", "Tet4", "Truss2"))
+def test_non_beam_section_rejects_beam_orientation_property(
+    element_type,
+) -> None:
+    section_type = "truss" if element_type == "Truss2" else "solid"
+    section_properties = (
+        {"area": 1.0}
+        if element_type == "Truss2"
+        else {"thickness": 1.0}
+        if element_type == "Tri3"
+        else {}
+    )
+    section_properties[BEAM_LOCAL_Y_REFERENCE_KEY] = (0.0, 1.0, 0.0)
+
+    with pytest.raises(
+        materials.SectionPropertyError,
+        match="only with Beam",
+    ):
+        materials.resolve_section_properties(
+            element_type,
+            {"E": 210.0, "nu": 0.3},
+            section_type,
+            section_properties,
+        )
+
+
+def test_resolution_preserves_stable_beam_orientation_issue_codes() -> None:
+    beam = _element(1, "Beam2")
+    solid = _element(2, "Tet4")
+    model = _model(beam, solid)
+    model.materials["steel"] = MaterialDefinition(
+        "steel",
+        {"E": 210.0, "nu": 0.3},
+    )
+    model.element_sets = {
+        "BEAM": ElementSet("BEAM", (1,)),
+        "SOLID": ElementSet("SOLID", (2,)),
+    }
+    model.sections = [
+        SectionAssignment(
+            "BEAM",
+            "steel",
+            "rectangle",
+            {
+                "height": 1.0,
+                "width": 2.0,
+                BEAM_LOCAL_Y_REFERENCE_KEY: (0.0, 0.0, 0.0),
+            },
+        ),
+        SectionAssignment(
+            "SOLID",
+            "steel",
+            "solid",
+            {BEAM_LOCAL_Y_REFERENCE_KEY: (0.0, 1.0, 0.0)},
+        ),
+    ]
+
+    resolution = materials.resolve_sections(model)
+
+    assert [issue.code for issue in resolution.issues] == [
+        "beam.orientation.invalid",
+        "beam.orientation.unsupported_target",
+    ]
+
+    with pytest.raises(ValueError) as invalid:
+        resolution.require_valid()
+    assert getattr(invalid.value, "code", None) == "beam.orientation.invalid"
+
+    before = [dict(element.props) for element in model.mesh.elements]
+    with pytest.raises(ValueError) as applied:
+        materials.apply_sections(model)
+    assert getattr(applied.value, "code", None) == "beam.orientation.invalid"
+    assert [element.props for element in model.mesh.elements] == before
+
+
+@pytest.mark.parametrize("element_type", ("Truss2", "Tet4"))
+def test_uncovered_non_beam_cannot_keep_direct_orientation(
+    element_type,
+) -> None:
+    element = _element(
+        1,
+        element_type,
+        **{BEAM_LOCAL_Y_REFERENCE_KEY: (0.0, 1.0, 0.0)},
+    )
+    model = _model(element)
+
+    with pytest.raises(ValueError) as caught:
+        materials.apply_sections(model)
+
+    assert getattr(caught.value, "code", None) == (
+        "beam.orientation.unsupported_target"
+    )
+    assert element.props[BEAM_LOCAL_Y_REFERENCE_KEY] == (0.0, 1.0, 0.0)
+
+
+def test_unrepresentable_beam_orientation_keeps_typed_section_error() -> None:
+    with pytest.raises(materials.SectionPropertyError) as caught:
+        materials.resolve_section_properties(
+            "Beam2",
+            {"E": 210.0, "nu": 0.3},
+            "rectangle",
+            {
+                "height": 1.0,
+                "width": 2.0,
+                BEAM_LOCAL_Y_REFERENCE_KEY: (10**10000, 0.0, 0.0),
+            },
+        )
+
+    assert getattr(caught.value, "code", None) == "beam.orientation.invalid"
+
+
+def _beam_orientation_ownership_model():
+    direct_reference = (0.0, 1.0, 0.0)
+    element = Element3D(
+        1,
+        [1, 2],
+        "Beam2",
+        {
+            "E": 10.0,
+            "nu": 0.25,
+            "section_type": "rectangle",
+            "height": 3.0,
+            "width": 1.0,
+            BEAM_LOCAL_Y_REFERENCE_KEY: direct_reference,
+            "custom": "direct",
+        },
+    )
+    model = _model(element)
+    model.mesh = Mesh3D(
+        nodes=[
+            Node3D(1, 0.0, 0.0, 0.0),
+            Node3D(2, 2.0, 0.0, 0.0),
+        ],
+        elements=[element],
+        dofs_per_node=6,
+    )
+    model.materials["steel"] = MaterialDefinition(
+        "steel",
+        {"E": 210.0, "nu": 0.3},
+    )
+    model.element_sets["BEAM"] = ElementSet("BEAM", (1,))
+    return model, element, direct_reference
+
+
+def _beam_assignment(reference=None):
+    properties = {"height": 2.0, "width": 1.0}
+    if reference is not None:
+        properties[BEAM_LOCAL_Y_REFERENCE_KEY] = reference
+    return SectionAssignment(
+        "BEAM",
+        "steel",
+        "rectangle",
+        properties,
+    )
+
+
+def test_apply_sections_clears_and_restores_owned_beam_orientation() -> None:
+    model, element, direct_reference = _beam_orientation_ownership_model()
+    model.sections = [_beam_assignment()]
+
+    materials.apply_sections(model)
+
+    assert BEAM_LOCAL_Y_REFERENCE_KEY not in element.props
+    assert resolve_beam_frame(model.mesh, element).source == "automatic"
+
+    assignment_reference = (0.0, 0.0, 1.0)
+    model.sections = [_beam_assignment(BeamOrientation(assignment_reference))]
+    materials.apply_sections(model)
+    assert element.props[BEAM_LOCAL_Y_REFERENCE_KEY] == assignment_reference
+    assert resolve_beam_frame(model.mesh, element).source == "explicit"
+
+    model.sections = [_beam_assignment()]
+    materials.apply_sections(model)
+    assert BEAM_LOCAL_Y_REFERENCE_KEY not in element.props
+    assert resolve_beam_frame(model.mesh, element).source == "automatic"
+
+    model.sections.clear()
+    materials.apply_sections(model)
+    assert element.props[BEAM_LOCAL_Y_REFERENCE_KEY] == direct_reference
+    assert element.props["custom"] == "direct"
+    assert resolve_beam_frame(model.mesh, element).source == "explicit"
+
+
+def test_section_ownership_survives_model_deepcopy() -> None:
+    model, _, direct_reference = _beam_orientation_ownership_model()
+    assignment_reference = (0.0, 0.0, 1.0)
+    model.sections = [_beam_assignment(assignment_reference)]
+    materials.apply_sections(model)
+
+    copied = deepcopy(model)
+    copied_element = copied.mesh.elements[0]
+    copied.sections = [_beam_assignment()]
+    materials.apply_sections(copied)
+    assert BEAM_LOCAL_Y_REFERENCE_KEY not in copied_element.props
+
+    copied.sections.clear()
+    materials.apply_sections(copied)
+
+    assert copied_element.props[BEAM_LOCAL_Y_REFERENCE_KEY] == (
+        direct_reference
+    )
+    assert resolve_beam_frame(copied.mesh, copied_element).orientation == (
+        BeamOrientation(direct_reference)
+    )
+
+
+def test_last_automatic_assignment_cannot_leak_earlier_orientation() -> None:
+    model, element, _ = _beam_orientation_ownership_model()
+    model.sections = [
+        _beam_assignment((0.0, 0.0, 1.0)),
+        _beam_assignment(),
+    ]
+
+    resolution = materials.resolve_sections(model)
+    materials.apply_sections(model)
+
+    effective = resolution.for_element(1)
+    assert effective.assignment_index == 1
+    assert BEAM_LOCAL_Y_REFERENCE_KEY not in effective.effective_properties
+    assert BEAM_LOCAL_Y_REFERENCE_KEY not in element.props
+
+
+def test_apply_sections_rejects_shadowed_parallel_orientation() -> None:
+    model, element, direct_reference = _beam_orientation_ownership_model()
+    model.sections = [
+        _beam_assignment((1.0, 0.0, 0.0)),
+        _beam_assignment((0.0, 1.0, 0.0)),
+    ]
+    before = deepcopy(element.props)
+
+    with pytest.raises(ValueError) as caught:
+        materials.apply_sections(model)
+
+    assert getattr(caught.value, "code", None) == "beam.orientation.parallel"
+    assert element.props == before
+    assert element.props[BEAM_LOCAL_Y_REFERENCE_KEY] == direct_reference

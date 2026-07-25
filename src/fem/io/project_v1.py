@@ -1269,9 +1269,14 @@ def _encode_assignment(assignment: Any, path: str) -> dict[str, Any]:
     _exact_dataclass(
         assignment,
         RegionAssignment,
-        {"section_name", "region_name"},
+        {"section_name", "region_name", "beam_orientation"},
         path,
     )
+    if assignment.beam_orientation is not None:
+        raise ProjectV1EncodeError(
+            f"{path}.beam_orientation 无法由 .femproj v1 无损表示；"
+            "v1 不支持 Beam orientation"
+        )
     return {
         "section_name": _string(
             assignment.section_name,

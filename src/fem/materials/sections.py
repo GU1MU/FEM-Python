@@ -8,6 +8,11 @@ from dataclasses import dataclass
 from math import isfinite
 from typing import Any
 
+from ..elements.beam_frame import (
+    BEAM_LOCAL_Y_REFERENCE_KEY,
+    BeamOrientationInvalidError,
+    parse_beam_orientation,
+)
 from ..elements.beam_section import parse_beam2_section
 
 
@@ -63,6 +68,18 @@ class SectionCompatibilityError(SectionSchemaError):
     """A known section type is incompatible with an element family."""
 
 
+class BeamOrientationPropertyError(SectionPropertyError):
+    """A Beam orientation property is invalid at section-schema level."""
+
+    code = "beam.orientation.invalid"
+
+
+class BeamOrientationTargetError(SectionPropertyError):
+    """A Beam orientation property targets a non-Beam element family."""
+
+    code = "beam.orientation.unsupported_target"
+
+
 @dataclass(frozen=True, slots=True)
 class ResolvedSectionProperties:
     """Owned effective properties for one element/section combination."""
@@ -73,6 +90,7 @@ class ResolvedSectionProperties:
     section_type: str
     applied_properties: dict[str, Any]
     effective_properties: dict[str, Any]
+    owned_property_keys: tuple[str, ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -85,6 +103,10 @@ class ResolvedSectionProperties:
             "effective_properties",
             deepcopy(dict(self.effective_properties)),
         )
+        owned = tuple(str(name) for name in self.owned_property_keys)
+        if len(owned) != len(set(owned)):
+            raise ValueError("owned section property keys must be unique")
+        object.__setattr__(self, "owned_property_keys", owned)
 
 
 def element_section_family(element_type: str) -> str:
@@ -228,6 +250,36 @@ def resolve_section_properties(
         element_family,
         material_properties,
     )
+    orientation_in_baseline = BEAM_LOCAL_Y_REFERENCE_KEY in baseline
+    orientation_in_material = BEAM_LOCAL_Y_REFERENCE_KEY in material_data
+    orientation_in_section = BEAM_LOCAL_Y_REFERENCE_KEY in section_data
+    if element_family != "beam" and (
+        orientation_in_baseline
+        or orientation_in_material
+        or orientation_in_section
+    ):
+        raise BeamOrientationTargetError(
+            f"{BEAM_LOCAL_Y_REFERENCE_KEY} may be used only with Beam sections"
+        )
+    if element_family == "beam":
+        # A covering assignment owns placement. Direct element placement must
+        # not leak through when the assignment intentionally uses automatic.
+        baseline.pop(BEAM_LOCAL_Y_REFERENCE_KEY, None)
+        if orientation_in_material:
+            raise BeamOrientationPropertyError(
+                f"{BEAM_LOCAL_Y_REFERENCE_KEY} belongs to a section assignment, "
+                "not a material"
+            )
+        if orientation_in_section:
+            try:
+                orientation = parse_beam_orientation(
+                    section_data[BEAM_LOCAL_Y_REFERENCE_KEY]
+                )
+            except BeamOrientationInvalidError as exc:
+                raise BeamOrientationPropertyError(str(exc)) from exc
+            section_data[BEAM_LOCAL_Y_REFERENCE_KEY] = (
+                orientation.local_y_reference
+            )
 
     combined = dict(baseline)
     combined.update(material_data)
@@ -310,6 +362,18 @@ def resolve_section_properties(
         section_type=concrete_type,
         applied_properties=applied,
         effective_properties=effective,
+        owned_property_keys=tuple(
+            dict.fromkeys(
+                (
+                    *applied,
+                    *(
+                        (BEAM_LOCAL_Y_REFERENCE_KEY,)
+                        if element_family == "beam"
+                        else ()
+                    ),
+                )
+            )
+        ),
     )
 
 
@@ -509,6 +573,8 @@ def _element_capabilities(element_type: str) -> Any:
 
 __all__ = [
     "BEAM_SECTION_TYPES",
+    "BeamOrientationPropertyError",
+    "BeamOrientationTargetError",
     "MaterialPropertyError",
     "ResolvedSectionProperties",
     "SECTION_PRESETS",

@@ -9,6 +9,7 @@ from .assignment import (
     add,
     apply_sections,
     assign,
+    restored_element_properties,
     resolve_sections,
 )
 from .sections import (
@@ -50,6 +51,7 @@ __all__ = [
     "resolve_section_properties",
     "resolve_section_preset_properties",
     "resolve_sections",
+    "restored_element_properties",
     "section_family",
     "section_presets_for_element_family",
     "section_type_for_preset",

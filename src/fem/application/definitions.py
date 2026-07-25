@@ -8,6 +8,14 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from fem.core.model import MaterialDefinition, SectionAssignment
+from fem.elements import (
+    BEAM_LOCAL_Y_REFERENCE_KEY,
+    BeamOrientation,
+    BeamOrientationError,
+    get_element_capabilities,
+    parse_beam_orientation,
+    resolve_beam_frame,
+)
 
 from .capabilities import RegionRef
 from .diagnostics import (
@@ -59,6 +67,7 @@ class RegionAssignment:
 
     section_name: str
     region_name: str
+    beam_orientation: BeamOrientation | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,29 +194,93 @@ def _normalize_model_definitions(
         )
         step_values = tuple(() if steps is None else steps)
 
-    owned_materials = tuple(
-        MaterialDefinition(
-            _required_name(material, "material"),
-            deepcopy(dict(getattr(material, "properties", {}))),
+    owned_materials_list: list[MaterialDefinition] = []
+    for index, material in enumerate(deepcopy(tuple(material_values))):
+        name = _required_name(material, "material")
+        properties = deepcopy(dict(getattr(material, "properties", {})))
+        if BEAM_LOCAL_Y_REFERENCE_KEY in properties:
+            raise DefinitionRejected(
+                (
+                    _beam_orientation_diagnostic(
+                        code="beam.orientation.invalid",
+                        message=(
+                            f"material {name!r} must not define reserved "
+                            f"property {BEAM_LOCAL_Y_REFERENCE_KEY!r}"
+                        ),
+                        subject=name,
+                        path=(
+                            "definitions",
+                            "materials",
+                            str(index),
+                            "properties",
+                            BEAM_LOCAL_Y_REFERENCE_KEY,
+                        ),
+                        details={
+                            "material_index": index,
+                            "property": BEAM_LOCAL_Y_REFERENCE_KEY,
+                        },
+                    ),
+                )
+            )
+        owned_materials_list.append(MaterialDefinition(name, properties))
+    owned_materials = tuple(owned_materials_list)
+    owned_sections_list: list[SectionDefinition] = []
+    for index, section in enumerate(deepcopy(tuple(section_values))):
+        properties = deepcopy(dict(section.properties))
+        if BEAM_LOCAL_Y_REFERENCE_KEY in properties:
+            raise DefinitionRejected(
+                (
+                    _beam_orientation_diagnostic(
+                        code="beam.orientation.invalid",
+                        message=(
+                            f"section {_required_name(section, 'section')!r} "
+                            f"must not define reserved property "
+                            f"{BEAM_LOCAL_Y_REFERENCE_KEY!r}"
+                        ),
+                        subject=_required_name(section, "section"),
+                        path=(
+                            "definitions",
+                            "sections",
+                            str(index),
+                            "properties",
+                            BEAM_LOCAL_Y_REFERENCE_KEY,
+                        ),
+                        details={
+                            "section_index": index,
+                            "property": BEAM_LOCAL_Y_REFERENCE_KEY,
+                        },
+                    ),
+                )
+            )
+        owned_sections_list.append(
+            SectionDefinition(
+                name=_required_name(section, "section"),
+                material=str(section.material).strip(),
+                section_type=str(section.section_type).strip().casefold(),
+                properties=properties,
+            )
         )
-        for material in deepcopy(tuple(material_values))
-    )
-    owned_sections = tuple(
-        SectionDefinition(
-            name=_required_name(section, "section"),
-            material=str(section.material).strip(),
-            section_type=str(section.section_type).strip().casefold(),
-            properties=deepcopy(dict(section.properties)),
+    owned_sections = tuple(owned_sections_list)
+
+    owned_assignments_list: list[RegionAssignment] = []
+    for index, assignment in enumerate(
+        deepcopy(tuple(assignment_values))
+    ):
+        section_name = str(assignment.section_name).strip()
+        region_name = str(assignment.region_name).strip()
+        orientation = _normalize_beam_orientation(
+            getattr(assignment, "beam_orientation", None),
+            assignment_index=index,
+            region_name=region_name,
         )
-        for section in deepcopy(tuple(section_values))
-    )
-    owned_assignments = tuple(
-        RegionAssignment(
-            section_name=str(assignment.section_name).strip(),
-            region_name=str(assignment.region_name).strip(),
+        owned_assignments_list.append(
+            RegionAssignment(
+                section_name=section_name,
+                region_name=region_name,
+                beam_orientation=orientation,
+            )
         )
-        for assignment in deepcopy(tuple(assignment_values))
-    )
+    owned_assignments = tuple(owned_assignments_list)
     owned_steps = deepcopy(tuple(step_values))
     for step in owned_steps:
         name = _required_name(step, "analysis step")
@@ -240,26 +313,71 @@ def definitions_from_model(model: Any) -> ModelDefinitions:
         start=1,
     ):
         name = f"Section-{index}"
+        properties = deepcopy(dict(section.properties))
+        orientation = None
+        if BEAM_LOCAL_Y_REFERENCE_KEY in properties:
+            raw_orientation = properties.pop(BEAM_LOCAL_Y_REFERENCE_KEY)
+            try:
+                orientation = parse_beam_orientation(raw_orientation)
+            except BeamOrientationError as error:
+                raise DefinitionRejected(
+                    (
+                        _beam_orientation_diagnostic(
+                            code="beam.orientation.invalid",
+                            message=str(error),
+                            subject=_element_set_subject(
+                                str(section.element_set)
+                            ),
+                            path=(
+                                "definitions",
+                                "assignments",
+                                str(index - 1),
+                                "beam_orientation",
+                            ),
+                            details={
+                                "assignment_index": index - 1,
+                                "element_set": str(section.element_set),
+                                "reference": deepcopy(raw_orientation),
+                                "error_type": type(error).__name__,
+                            },
+                        ),
+                    )
+                ) from error
         sections.append(
             SectionDefinition(
                 name=name,
                 material=str(section.material),
                 section_type=str(section.section_type),
-                properties=deepcopy(dict(section.properties)),
+                properties=properties,
             )
         )
         assignments.append(
             RegionAssignment(
                 section_name=name,
                 region_name=str(section.element_set),
+                beam_orientation=orientation,
             )
         )
-    return normalize_model_definitions(
+    definitions = normalize_model_definitions(
         materials,
         sections,
         assignments,
         deepcopy(tuple(getattr(model, "steps", ()))),
     )
+    target_diagnostics = _orientation_target_diagnostics(
+        model,
+        definitions,
+    )
+    if target_diagnostics:
+        raise DefinitionRejected(target_diagnostics)
+    if assignments:
+        orientation_diagnostics = _compiled_orientation_diagnostics(
+            model,
+            definitions,
+        )
+        if orientation_diagnostics:
+            raise DefinitionRejected(orientation_diagnostics)
+    return definitions
 
 
 def compile_model_definitions(
@@ -306,12 +424,17 @@ def compile_model_definitions(
                 raise KeyError(
                     f"region {assignment.region_name!r} is not an element set"
                 )
+            properties = deepcopy(dict(section.properties))
+            if assignment.beam_orientation is not None:
+                properties[BEAM_LOCAL_Y_REFERENCE_KEY] = tuple(
+                    assignment.beam_orientation.local_y_reference
+                )
             compiled_sections.append(
                 SectionAssignment(
                     element_set=assignment.region_name,
                     material=section.material,
                     section_type=section.section_type,
-                    properties=deepcopy(dict(section.properties)),
+                    properties=properties,
                 )
             )
 
@@ -319,6 +442,16 @@ def compile_model_definitions(
         compiled.sections = compiled_sections
         compiled.steps = deepcopy(list(normalized.steps))
         if compiled_sections:
+            target_diagnostics = _orientation_target_diagnostics(
+                compiled,
+                normalized,
+            )
+            if target_diagnostics:
+                return DefinitionCompileResult(
+                    definitions=deepcopy(normalized),
+                    model=None,
+                    diagnostics=target_diagnostics,
+                )
             from fem.materials import resolve_sections
 
             resolution = resolve_sections(compiled)
@@ -327,9 +460,24 @@ def compile_model_definitions(
                     definitions=deepcopy(normalized),
                     model=None,
                     diagnostics=tuple(
-                        _section_resolution_diagnostic(issue)
+                        _section_resolution_diagnostic(
+                            issue,
+                            normalized,
+                        )
                         for issue in resolution.issues
                     ),
+                )
+            orientation_diagnostics = (
+                _compiled_orientation_diagnostics(
+                    compiled,
+                    normalized,
+                )
+            )
+            if orientation_diagnostics:
+                return DefinitionCompileResult(
+                    definitions=deepcopy(normalized),
+                    model=None,
+                    diagnostics=orientation_diagnostics,
                 )
     except DefinitionRejected as error:
         return DefinitionCompileResult(
@@ -361,6 +509,280 @@ def compiled_model_snapshot(
         base_model,
         definitions,
     ).require_model()
+
+
+def _normalize_beam_orientation(
+    value: Any,
+    *,
+    assignment_index: int,
+    region_name: str,
+) -> BeamOrientation | None:
+    if value is None:
+        return None
+
+    if not isinstance(value, BeamOrientation):
+        error = TypeError(
+            "assignment beam_orientation must be BeamOrientation or None"
+        )
+        raise DefinitionRejected(
+            (
+                _beam_orientation_diagnostic(
+                    code="beam.orientation.invalid",
+                    message=str(error),
+                    subject=_element_set_subject(region_name),
+                    path=(
+                        "definitions",
+                        "assignments",
+                        str(assignment_index),
+                        "beam_orientation",
+                    ),
+                    details={
+                        "assignment_index": assignment_index,
+                        "element_set": region_name,
+                        "value_type": type(value).__name__,
+                    },
+                ),
+            )
+        ) from error
+    return deepcopy(value)
+
+
+def _compiled_orientation_diagnostics(
+    model: Any,
+    definitions: ModelDefinitions,
+) -> tuple[PreflightDiagnostic, ...]:
+    """Validate every authored explicit direction against its whole target."""
+
+    from fem.materials import (
+        MaterialPropertyError,
+        SectionCompatibilityError,
+        SectionPropertyError,
+        resolve_section_properties,
+        restored_element_properties,
+    )
+
+    element_lookup = {
+        int(element.id): element
+        for element in getattr(
+            getattr(model, "mesh", None),
+            "elements",
+            (),
+        )
+    }
+    metadata = getattr(model, "metadata", {})
+    element_sets = dict(
+        metadata.get("_abaqus_internal_element_sets", {})
+    )
+    element_sets.update(dict(getattr(model, "element_sets", {})))
+    core_sections = tuple(getattr(model, "sections", ()))
+    materials = getattr(model, "materials", {})
+    diagnostics: list[PreflightDiagnostic] = []
+
+    for assignment_index, assignment in enumerate(definitions.assignments):
+        orientation = assignment.beam_orientation
+        if orientation is None:
+            continue
+        if assignment_index >= len(core_sections):
+            continue
+        core_section = core_sections[assignment_index]
+        element_set = element_sets.get(assignment.region_name)
+        material = materials.get(str(core_section.material))
+        if element_set is None or material is None:
+            continue
+        for raw_element_id in getattr(element_set, "element_ids", ()):
+            element_id = int(raw_element_id)
+            element = element_lookup.get(element_id)
+            if element is None:
+                continue
+            try:
+                resolved = resolve_section_properties(
+                    str(element.type),
+                    material.properties,
+                    str(core_section.section_type),
+                    core_section.properties,
+                    baseline_properties=restored_element_properties(
+                        model,
+                        element_id,
+                        element,
+                    ),
+                )
+            except (
+                MaterialPropertyError,
+                SectionCompatibilityError,
+                SectionPropertyError,
+                NotImplementedError,
+                KeyError,
+                TypeError,
+                ValueError,
+            ):
+                # The ordinary section-resolution diagnostics own these
+                # schema/reference failures.
+                continue
+            try:
+                resolve_beam_frame(
+                    model.mesh,
+                    element,
+                    properties=deepcopy(resolved.effective_properties),
+                )
+            except BeamOrientationError as error:
+                details = {
+                    "assignment_index": assignment_index,
+                    "element_set": assignment.region_name,
+                    "element_id": element_id,
+                    "reference": tuple(orientation.local_y_reference),
+                    "operation": "section.assignment",
+                    "error_type": type(error).__name__,
+                }
+                tangent = getattr(error, "tangent", None)
+                if tangent is not None:
+                    details["element_tangent"] = deepcopy(tangent)
+                diagnostics.append(
+                    _beam_orientation_diagnostic(
+                        code=_beam_frame_error_code(error),
+                        message=str(error),
+                        subject=_element_set_subject(
+                            assignment.region_name
+                        ),
+                        path=(
+                            "definitions",
+                            "assignments",
+                            str(assignment_index),
+                            "beam_orientation",
+                        ),
+                        details=details,
+                    )
+                )
+    return tuple(diagnostics)
+
+
+def _orientation_target_diagnostics(
+    model: Any,
+    definitions: ModelDefinitions,
+) -> tuple[PreflightDiagnostic, ...]:
+    oriented_assignments = tuple(
+        (index, assignment)
+        for index, assignment in enumerate(definitions.assignments)
+        if assignment.beam_orientation is not None
+    )
+    if not oriented_assignments:
+        return ()
+
+    element_lookup = {
+        int(element.id): element
+        for element in getattr(
+            getattr(model, "mesh", None),
+            "elements",
+            (),
+        )
+    }
+    element_sets = dict(
+        getattr(model, "metadata", {}).get(
+            "_abaqus_internal_element_sets",
+            {},
+        )
+    )
+    element_sets.update(dict(getattr(model, "element_sets", {})))
+    diagnostics: list[PreflightDiagnostic] = []
+
+    for assignment_index, assignment in oriented_assignments:
+        orientation = assignment.beam_orientation
+        assert orientation is not None
+        element_set = element_sets.get(assignment.region_name)
+        if element_set is None:
+            # The ordinary section-resolution path reports this reference.
+            continue
+        target_element_ids = tuple(
+            getattr(element_set, "element_ids", ())
+        )
+        if not target_element_ids:
+            diagnostics.append(
+                _beam_orientation_diagnostic(
+                    code="beam.orientation.unsupported_target",
+                    message=(
+                        "Beam orientation requires a non-empty Beam2 "
+                        f"element set; {assignment.region_name!r} is empty"
+                    ),
+                    subject=_element_set_subject(
+                        assignment.region_name
+                    ),
+                    path=(
+                        "definitions",
+                        "assignments",
+                        str(assignment_index),
+                        "beam_orientation",
+                    ),
+                    details={
+                        "assignment_index": assignment_index,
+                        "element_set": assignment.region_name,
+                        "reference": tuple(
+                            orientation.local_y_reference
+                        ),
+                        "operation": "section.assignment",
+                    },
+                )
+            )
+            continue
+        for raw_element_id in target_element_ids:
+            element_id = int(raw_element_id)
+            element = element_lookup.get(element_id)
+            if element is None:
+                continue
+            try:
+                descriptor = get_element_capabilities(str(element.type))
+            except (KeyError, NotImplementedError, TypeError, ValueError):
+                descriptor = None
+            if (
+                descriptor is None
+                or descriptor.canonical_type != "Beam2"
+            ):
+                diagnostics.append(
+                    _beam_orientation_diagnostic(
+                        code="beam.orientation.unsupported_target",
+                        message=(
+                            "Beam orientation can target only Beam2 "
+                            f"elements; element {element_id} has type "
+                            f"{element.type!r}"
+                        ),
+                        subject=_element_set_subject(
+                            assignment.region_name
+                        ),
+                        path=(
+                            "definitions",
+                            "assignments",
+                            str(assignment_index),
+                            "beam_orientation",
+                        ),
+                        details={
+                            "assignment_index": assignment_index,
+                            "element_set": assignment.region_name,
+                            "element_id": element_id,
+                            "element_type": str(element.type),
+                            "reference": tuple(
+                                orientation.local_y_reference
+                            ),
+                            "operation": "section.assignment",
+                        },
+                    )
+                )
+    return tuple(diagnostics)
+
+
+def _beam_frame_error_code(error: Exception) -> str:
+    code = getattr(error, "code", None)
+    if code in {
+        "beam.orientation.invalid",
+        "beam.orientation.parallel",
+        "beam.orientation.unsupported_target",
+    }:
+        return str(code)
+    return "beam.orientation.invalid"
+
+
+def _element_set_subject(name: str) -> Any:
+    try:
+        return RegionRef("element_set", name)
+    except ValueError:
+        return str(name)
 
 
 def _mapping_values(
@@ -445,12 +867,85 @@ def _definition_diagnostic(error: Exception) -> PreflightDiagnostic:
     )
 
 
-def _section_resolution_diagnostic(issue: Any) -> PreflightDiagnostic:
+def _beam_orientation_diagnostic(
+    *,
+    code: str,
+    message: str,
+    subject: Any,
+    path: Iterable[str],
+    details: Mapping[str, Any],
+) -> PreflightDiagnostic:
+    remediation = {
+        "beam.orientation.invalid": (
+            "请提供三个有限、非零的全局局部 y 参考方向分量。"
+        ),
+        "beam.orientation.parallel": (
+            "请让参考方向与目标梁单元轴线保持明显非平行。"
+        ),
+        "beam.orientation.unsupported_target": (
+            "请仅将 Beam orientation 用于完全由 Beam2 单元组成的区域。"
+        ),
+    }.get(code, "请修正 Beam orientation 后重试。")
+    return PreflightDiagnostic(
+        code=code,
+        severity=PreflightSeverity.ERROR,
+        stage=PreflightStage.DEFINITIONS,
+        message=str(message),
+        subject=subject,
+        path=tuple(path),
+        remediation=remediation,
+        details=details,
+    )
+
+
+def _section_resolution_diagnostic(
+    issue: Any,
+    definitions: ModelDefinitions | None = None,
+) -> PreflightDiagnostic:
     code = (
         "definition.section.missing"
         if issue.code == "definition.section.reference_missing"
         else issue.code
     )
+    if str(code).startswith("beam.orientation."):
+        assignment_index = issue.assignment_index
+        orientation = None
+        if (
+            definitions is not None
+            and assignment_index is not None
+            and 0 <= int(assignment_index) < len(definitions.assignments)
+        ):
+            orientation = definitions.assignments[
+                int(assignment_index)
+            ].beam_orientation
+        details: dict[str, Any] = {
+            "assignment_index": assignment_index,
+            "element_id": issue.element_id,
+            "element_set": issue.element_set,
+            "material": issue.material,
+            "section_type": issue.section_type,
+            "operation": "section.assignment",
+        }
+        if orientation is not None:
+            details["reference"] = tuple(
+                orientation.local_y_reference
+            )
+        return _beam_orientation_diagnostic(
+            code=str(code),
+            message=issue.message,
+            subject=(
+                _element_set_subject(issue.element_set)
+                if issue.element_set is not None
+                else issue.element_id
+            ),
+            path=(
+                "definitions",
+                "assignments",
+                str(assignment_index),
+                "beam_orientation",
+            ),
+            details=details,
+        )
     return PreflightDiagnostic(
         code=code,
         severity=PreflightSeverity.ERROR,

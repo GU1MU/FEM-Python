@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 
 import pytest
@@ -26,6 +27,7 @@ from fem.core.model import (
     SurfaceLoad,
 )
 from fem.geometry.recipes import RectangleGeometry
+from fem.elements import BeamOrientation
 from fem.io import project_v1
 from fem.io.project_v1 import (
     ProjectV1DecodeError,
@@ -101,6 +103,13 @@ def test_v1_round_trip_preserves_line_loads_local_size_and_editable_inputs():
             "coordinate_system": "local",
         }
     ]
+    assert payload["assignments"] == [
+        {
+            "section_name": "Section-1",
+            "region_name": "DOMAIN",
+        }
+    ]
+    assert reopened.region_assignments[0].beam_orientation is None
     assert reopened == original
 
 
@@ -113,6 +122,7 @@ def test_old_v1_missing_new_keys_uses_compatible_defaults():
 
     assert reopened.mesh_settings.local_size is None
     assert reopened.analysis_definitions[0].line_loads == ()
+    assert reopened.region_assignments[0].beam_orientation is None
     assert reopened.mesh_settings.local_controls == (
         LocalMeshControl("edge", 2, 0.5),
     )
@@ -342,4 +352,68 @@ def test_encoder_blocks_state_v1_cannot_preserve(tmp_path):
     with pytest.raises(ProjectV1EncodeError, match="无法由 JSON 无损表示"):
         save_project_v1(target, unsupported_metadata)
 
+    assert target.read_text(encoding="utf-8") == "previous"
+
+
+def test_explicit_beam_orientation_fails_closed_before_atomic_replace(
+    tmp_path,
+):
+    target = tmp_path / "plate.femproj"
+    target.write_text("previous", encoding="utf-8")
+    base = _project_snapshot()
+    explicit = replace(
+        base,
+        region_assignments=(
+            RegionAssignment(
+                "Section-1",
+                "DOMAIN",
+                BeamOrientation((0.0, 1.0, 0.0)),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        ProjectV1EncodeError,
+        match=r"v1 不支持 Beam orientation",
+    ):
+        save_project_v1(target, explicit)
+
+    assert target.read_text(encoding="utf-8") == "previous"
+    assert list(tmp_path.glob(f".{target.name}.*.tmp")) == []
+
+
+def test_explicit_orientation_save_failure_keeps_session_dirty(
+    tmp_path,
+):
+    session = ModelSession()
+    session.replace_from_snapshot(_project_snapshot())
+    before_edit = session.snapshot()
+    session.replace_model_definitions(
+        before_edit.material_definitions,
+        before_edit.section_definitions,
+        (
+            RegionAssignment(
+                "Section-1",
+                "DOMAIN",
+                BeamOrientation((0.0, 1.0, 0.0)),
+            ),
+        ),
+        before_edit.analysis_definitions,
+    )
+    before_save = session.snapshot()
+    save_snapshot = session.prepare_project_save()
+    target = tmp_path / "plate.femproj"
+    target.write_text("previous", encoding="utf-8")
+
+    with pytest.raises(ProjectV1EncodeError):
+        save_project_v1(target, save_snapshot)
+
+    after = session.snapshot()
+    assert after.dirty
+    assert after.project_revision == before_save.project_revision
+    assert (
+        after.saved_project_revision
+        == before_save.saved_project_revision
+    )
+    assert after.project_path == before_save.project_path
     assert target.read_text(encoding="utf-8") == "previous"

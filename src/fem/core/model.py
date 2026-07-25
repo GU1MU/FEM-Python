@@ -296,8 +296,20 @@ def _unstamped_element_properties(
     originals = model.metadata.get("_section_original_properties_by_element", {})
     identities = model.metadata.get("_section_property_element_identity_by_element", {})
     expected_identity = identities.get(elem_id)
-    if expected_identity is not None and expected_identity != id(elem):
-        return properties
+    if expected_identity is not None:
+        if isinstance(expected_identity, int):
+            identity_matches = expected_identity == id(elem)
+        else:
+            identity_matches = (
+                getattr(
+                    elem,
+                    "_fem_section_property_tracking_identity",
+                    None,
+                )
+                is expected_identity
+            )
+        if not identity_matches:
+            return properties
 
     baseline = originals.get(elem_id, {})
     for key in tracked.get(elem_id, ()):

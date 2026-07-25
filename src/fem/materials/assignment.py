@@ -6,6 +6,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..core.model import ElementSet, MaterialDefinition, SectionAssignment
+from ..elements.beam_frame import (
+    BEAM_LOCAL_Y_REFERENCE_KEY,
+    BeamOrientationError,
+    BeamOrientationInvalidError,
+    BeamOrientationUnsupportedTargetError,
+    resolve_beam_frame,
+)
 from ..elements.beam_section import parse_beam2_section
 from .sections import (
     MaterialPropertyError,
@@ -18,11 +25,25 @@ from .sections import (
 _SECTION_KEYS_METADATA = "_section_property_keys_by_element"
 _SECTION_ORIGINALS_METADATA = "_section_original_properties_by_element"
 _SECTION_IDENTITIES_METADATA = "_section_property_element_identity_by_element"
+_SECTION_IDENTITY_ATTRIBUTE = "_fem_section_property_tracking_identity"
 _SECTION_METADATA_KEYS = (
     _SECTION_KEYS_METADATA,
     _SECTION_ORIGINALS_METADATA,
     _SECTION_IDENTITIES_METADATA,
 )
+
+
+class _SectionElementIdentity:
+    """Opaque lineage marker shared by an element and section metadata."""
+
+    __slots__ = ()
+
+    def __deepcopy__(
+        self,
+        memo: dict[int, Any],
+    ) -> _SectionElementIdentity:
+        memo[id(self)] = self
+        return self
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +81,7 @@ class EffectiveSectionAssignment:
     section_type: str
     applied_properties: dict[str, Any]
     effective_properties: dict[str, Any]
+    owned_property_keys: tuple[str, ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -72,6 +94,10 @@ class EffectiveSectionAssignment:
             "effective_properties",
             deepcopy(dict(self.effective_properties)),
         )
+        owned = tuple(str(name) for name in self.owned_property_keys)
+        if len(owned) != len(set(owned)):
+            raise ValueError("owned section property keys must be unique")
+        object.__setattr__(self, "owned_property_keys", owned)
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +158,16 @@ class SectionResolution:
             "definition.section.reference_missing",
         }:
             raise KeyError(issue.message)
+        if issue.code == "beam.orientation.invalid":
+            raise BeamOrientationInvalidError(
+                issue.message,
+                element_id=issue.element_id,
+            )
+        if issue.code == "beam.orientation.unsupported_target":
+            raise BeamOrientationUnsupportedTargetError(
+                issue.message,
+                element_id=issue.element_id,
+            )
         raise ValueError(issue.message)
 
 
@@ -168,6 +204,7 @@ def apply_sections(model: Any) -> None:
     resolution = resolve_sections(model, element_lookup=element_lookup)
     resolution.require_valid()
     _validate_unassigned_beam_sections(model, element_lookup, resolution)
+    _validate_declared_beam_frames(model, element_lookup, resolution)
     props_snapshot = {
         element_id: (elem.props, deepcopy(elem.props))
         for element_id, elem in element_lookup.items()
@@ -179,6 +216,13 @@ def apply_sections(model: Any) -> None:
             deepcopy(model.metadata.get(key)),
         )
         for key in _SECTION_METADATA_KEYS
+    }
+    identity_attribute_snapshot = {
+        element_id: (
+            hasattr(elem, _SECTION_IDENTITY_ATTRIBUTE),
+            getattr(elem, _SECTION_IDENTITY_ATTRIBUTE, None),
+        )
+        for element_id, elem in element_lookup.items()
     }
 
     try:
@@ -196,23 +240,33 @@ def apply_sections(model: Any) -> None:
             element_id = effective.element_id
             elem = element_lookup[element_id]
             props = effective.applied_properties
+            owned_keys = effective.owned_property_keys
             baseline = original_values.setdefault(element_id, {})
             _restore_tracked_keys(
                 elem,
                 section_keys.get(element_id, ()),
                 baseline,
             )
-            for key in props:
+            for key in owned_keys:
                 if key not in baseline:
                     baseline[key] = (
                         key in elem.props,
                         deepcopy(elem.props.get(key)),
                     )
+            for key in owned_keys:
+                if key not in props:
+                    elem.props.pop(key, None)
             elem.props.update(props)
-            section_keys[element_id] = tuple(props)
-            element_identities[element_id] = id(elem)
+            section_keys[element_id] = owned_keys
+            element_identities[element_id] = _tracking_identity(elem)
     except Exception:
-        _restore_apply_sections_state(model, props_snapshot, metadata_snapshot)
+        _restore_apply_sections_state(
+            model,
+            props_snapshot,
+            metadata_snapshot,
+            identity_attribute_snapshot,
+            element_lookup,
+        )
         raise
 
 
@@ -360,7 +414,11 @@ def resolve_sections(
                     _append_unique(incompatible_element_ids, element_id)
                     code = "definition.section.incompatible"
                 else:
-                    code = "definition.section.invalid"
+                    code = getattr(
+                        exc,
+                        "code",
+                        "definition.section.invalid",
+                    )
                 issues.append(
                     _element_issue(
                         code,
@@ -385,7 +443,12 @@ def resolve_sections(
             applied["_stress_section_signature"] = (
                 "section",
                 resolved.section_type,
-                _freeze_signature(section.properties),
+                _freeze_signature(
+                    _canonical_section_signature_properties(
+                        section.properties,
+                        resolved.applied_properties,
+                    )
+                ),
             )
             effective = dict(resolved.effective_properties)
             effective.update(applied)
@@ -397,6 +460,11 @@ def resolve_sections(
                 section_type=resolved.section_type,
                 applied_properties=applied,
                 effective_properties=effective,
+                owned_property_keys=tuple(
+                    dict.fromkeys(
+                        (*resolved.owned_property_keys, *applied)
+                    )
+                ),
             )
 
     effective_assignments = tuple(
@@ -421,30 +489,101 @@ def resolve_sections(
     )
 
 
+def restored_element_properties(
+    model: Any,
+    element_id: int,
+    element: Any | None = None,
+) -> dict[str, Any]:
+    """Return direct element properties with applied section ownership undone."""
+
+    target = int(element_id)
+    resolved_element = (
+        _element_lookup(model).get(target)
+        if element is None
+        else element
+    )
+    if resolved_element is None:
+        raise KeyError(f"element {target} is not defined")
+    if int(resolved_element.id) != target:
+        raise ValueError(
+            f"element id mismatch: expected {target}, "
+            f"got {resolved_element.id!r}"
+        )
+    return _restored_properties(model, target, resolved_element)
+
+
 def _validate_unassigned_beam_sections(
     model: Any,
     element_lookup: dict[int, Any],
     resolution: SectionResolution,
 ) -> None:
-    """Preserve validation for directly-authored uncovered beam elements."""
+    """Validate direct section data that is not owned by an assignment."""
 
     covered = {
         item.element_id for item in resolution.effective_assignments
     }
     for element_id, elem in element_lookup.items():
-        if (
-            element_id in covered
-            or _element_capabilities(elem.type).family != "beam"
-        ):
+        if element_id in covered:
+            continue
+        properties = _restored_properties(model, element_id, elem)
+        if _element_capabilities(elem.type).family != "beam":
+            if BEAM_LOCAL_Y_REFERENCE_KEY in properties:
+                raise BeamOrientationUnsupportedTargetError(
+                    (
+                        f"Element {element_id} is not Beam2 and cannot define "
+                        f"{BEAM_LOCAL_Y_REFERENCE_KEY!r}"
+                    ),
+                    element_id=element_id,
+                    reference=properties[BEAM_LOCAL_Y_REFERENCE_KEY],
+                )
             continue
         try:
-            parse_beam2_section(
-                _restored_properties(model, element_id, elem)
+            parse_beam2_section(properties)
+            resolve_beam_frame(
+                model.mesh,
+                elem,
+                properties=properties,
             )
+        except BeamOrientationError:
+            raise
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(
                 f"Element {element_id} has invalid Beam2 section: {exc}"
             ) from exc
+
+
+def _validate_declared_beam_frames(
+    model: Any,
+    element_lookup: dict[int, Any],
+    resolution: SectionResolution,
+) -> None:
+    """Validate every declared Beam frame before mutating element props."""
+
+    sections = tuple(getattr(model, "sections", ()))
+    materials = getattr(model, "materials", {})
+    for assignment in resolution.assignments:
+        section = sections[assignment.assignment_index]
+        material = materials[assignment.material]
+        for element_id in assignment.element_ids:
+            elem = element_lookup[element_id]
+            if _element_capabilities(elem.type).family != "beam":
+                continue
+            resolved = resolve_section_properties(
+                elem.type,
+                material.properties,
+                section.section_type,
+                section.properties,
+                baseline_properties=_restored_properties(
+                    model,
+                    element_id,
+                    elem,
+                ),
+            )
+            resolve_beam_frame(
+                model.mesh,
+                elem,
+                properties=resolved.effective_properties,
+            )
 
 
 def _element_capabilities(element_type: str) -> Any:
@@ -500,7 +639,7 @@ def _restored_properties(model: Any, element_id: int, elem: Any) -> dict[str, An
     element_identities = model.metadata.get(_SECTION_IDENTITIES_METADATA, {})
     keys = section_keys.get(element_id, ())
     expected_identity = element_identities.get(element_id)
-    if expected_identity is not None and expected_identity != id(elem):
+    if not _tracking_identity_matches(expected_identity, elem):
         return props
 
     baseline = original_values.get(element_id, {})
@@ -517,6 +656,8 @@ def _restore_apply_sections_state(
     model: Any,
     props_snapshot: dict[int, tuple[dict[str, Any], dict[str, Any]]],
     metadata_snapshot: dict[str, tuple[bool, Any, Any]],
+    identity_attribute_snapshot: dict[int, tuple[bool, Any]],
+    element_lookup: dict[int, Any],
 ) -> None:
     """Roll back element props and section tracking metadata after a failure."""
     for original_props, values in props_snapshot.values():
@@ -533,6 +674,13 @@ def _restore_apply_sections_state(
             model.metadata[key] = original_value
         else:
             model.metadata[key] = original_value
+
+    for element_id, (existed, value) in identity_attribute_snapshot.items():
+        elem = element_lookup[element_id]
+        if existed:
+            setattr(elem, _SECTION_IDENTITY_ATTRIBUTE, value)
+        elif hasattr(elem, _SECTION_IDENTITY_ATTRIBUTE):
+            delattr(elem, _SECTION_IDENTITY_ATTRIBUTE)
 
 
 def _element_lookup(model: Any) -> dict[int, Any]:
@@ -562,13 +710,40 @@ def _restore_section_properties(
             raw_element_id,
             element_identities.get(element_id),
         )
-        if expected_identity is not None and expected_identity != id(elem):
+        if not _tracking_identity_matches(expected_identity, elem):
             continue
         baseline = original_values.get(raw_element_id, original_values.get(element_id, {}))
         _restore_tracked_keys(elem, keys, baseline)
     section_keys.clear()
     original_values.clear()
     element_identities.clear()
+
+
+def _tracking_identity(elem: Any) -> Any:
+    """Return a deepcopy-stable lineage marker for one mutable element."""
+
+    identity = getattr(elem, _SECTION_IDENTITY_ATTRIBUTE, None)
+    if isinstance(identity, _SectionElementIdentity):
+        return identity
+    identity = _SectionElementIdentity()
+    try:
+        setattr(elem, _SECTION_IDENTITY_ATTRIBUTE, identity)
+    except (AttributeError, TypeError):
+        return id(elem)
+    return identity
+
+
+def _tracking_identity_matches(expected_identity: Any, elem: Any) -> bool:
+    """Distinguish a copied element lineage from an unrelated replacement."""
+
+    if expected_identity is None:
+        return True
+    if isinstance(expected_identity, int):
+        return expected_identity == id(elem)
+    return (
+        getattr(elem, _SECTION_IDENTITY_ATTRIBUTE, None)
+        is expected_identity
+    )
 
 
 def _restore_tracked_keys(
@@ -611,3 +786,19 @@ def _freeze_signature(value: Any) -> Any:
     except TypeError:
         return repr(value)
     return value
+
+
+def _canonical_section_signature_properties(
+    properties: Mapping[str, Any],
+    applied_properties: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return authored section data with canonical Beam placement."""
+
+    canonical = deepcopy(dict(properties))
+    if BEAM_LOCAL_Y_REFERENCE_KEY in applied_properties:
+        canonical[BEAM_LOCAL_Y_REFERENCE_KEY] = deepcopy(
+            applied_properties[BEAM_LOCAL_Y_REFERENCE_KEY]
+        )
+    else:
+        canonical.pop(BEAM_LOCAL_Y_REFERENCE_KEY, None)
+    return canonical

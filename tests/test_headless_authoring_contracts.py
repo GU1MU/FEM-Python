@@ -86,4 +86,5 @@ def test_definition_serialisation_shape_remains_compatible() -> None:
     assert asdict(RegionAssignment("Section-1", "DOMAIN")) == {
         "section_name": "Section-1",
         "region_name": "DOMAIN",
+        "beam_orientation": None,
     }
