@@ -9,8 +9,10 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from fem.abaqus import read
+from fem.application import RegionAssignment, SectionDefinition
 from fem.core.model import GravityLoad
-from fem_gui.widgets.model_tree import ModelTree, ROLE_KIND
+from fem.elements import BeamOrientation
+from fem_gui.widgets.model_tree import ModelTree, ROLE_KEY, ROLE_KIND
 
 
 def _application() -> QApplication:
@@ -226,3 +228,65 @@ def test_native_meshed_tree_keeps_the_part_feature_history(gui_inp_path):
     ]
     assert mesh.text(0).startswith("网格（")
     assert not mesh.isExpanded()
+
+
+def test_assignment_nodes_show_orientation_and_route_edit_by_index():
+    _application()
+    model = SimpleNamespace(
+        name="Beam assignments",
+        mesh=SimpleNamespace(nodes=[None, None], elements=[None]),
+        node_sets={},
+        element_sets={},
+        surfaces={},
+        edges={},
+        materials={},
+        sections=[],
+        steps=[],
+    )
+    sections = (
+        SectionDefinition("Beam-A", "Steel", "rectangle", {}),
+        SectionDefinition("Beam-B", "Steel", "solid_circle", {}),
+    )
+    assignments = (
+        RegionAssignment(
+            "Beam-A",
+            "SET-A",
+            BeamOrientation((0.0, 1.0, 0.0)),
+        ),
+        RegionAssignment("Beam-B", "SET-B"),
+    )
+    tree = ModelTree()
+    tree.set_model(
+        model,
+        section_definitions=sections,
+        region_assignments=assignments,
+    )
+
+    items = _items(tree)
+    assignment_items = sorted(
+        (
+            item
+            for item in items
+            if item.data(0, ROLE_KIND) == "assignment"
+        ),
+        key=lambda item: item.data(0, ROLE_KEY),
+    )
+    assert [item.text(0) for item in assignment_items] == [
+        "Beam-A → SET-A",
+        "Beam-B → SET-B",
+    ]
+    assert [
+        item.child(0).text(0)
+        for item in assignment_items
+    ] == [
+        "orientation: explicit",
+        "orientation: automatic",
+    ]
+
+    edited = []
+    tree.editRequested.connect(
+        lambda kind, key: edited.append((kind, key))
+    )
+    tree._on_double_clicked(assignment_items[1])
+
+    assert edited == [("assignment", 1)]

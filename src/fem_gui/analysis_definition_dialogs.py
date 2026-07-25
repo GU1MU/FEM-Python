@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from copy import deepcopy
 from math import isfinite
 
@@ -83,6 +83,41 @@ def _select_region(
         ):
             combo.setCurrentIndex(index)
             return
+
+
+def _authoring_candidate_enabled(decision: object | None) -> bool:
+    """Allow candidate writes only for an explicit, non-blocking ENABLED result."""
+
+    if decision is None:
+        return False
+    if isinstance(decision, bool):
+        return decision
+    status = getattr(decision, "status", None)
+    status_value = getattr(status, "value", status)
+    diagnostics = tuple(getattr(decision, "diagnostics", ()))
+    return (
+        str(status_value).strip().casefold() == "enabled"
+        and not any(bool(getattr(item, "blocking", False)) for item in diagnostics)
+    )
+
+
+def _authoring_candidate_message(decision: object | None) -> str:
+    """Render an application decision without reimplementing its policy."""
+
+    if decision is None:
+        return "当前无法验证局部梁线载荷；该定义不可保存。"
+    diagnostics = tuple(getattr(decision, "diagnostics", ()))
+    if diagnostics:
+        return "\n".join(
+            (
+                f"[{getattr(item, 'code', 'authoring.unavailable')}] "
+                f"{getattr(item, 'message', str(item))}"
+            )
+            for item in diagnostics
+        )
+    status = getattr(decision, "status", None)
+    status_value = getattr(status, "value", status)
+    return f"当前候选状态为 {status_value or 'unknown'}；只有 ENABLED 才可保存。"
     combo.setCurrentText(name)
 
 
@@ -242,9 +277,15 @@ class LoadDialog(QDialog):
             | None
         ) = None,
         labels: Sequence[str] | None = None,
+        candidate_evaluator: (
+            Callable[[LineLoad, str], object | None] | None
+        ) = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("编辑载荷" if current is not None else "创建载荷")
+        self._candidate_evaluator = candidate_evaluator
+        self._candidate_signature: tuple[str, LineLoad] | None = None
+        self._candidate_result: object | None = None
         resolved_line_regions = [
             _region_ref(region, "element_set")
             for region in line_regions or ()
@@ -297,7 +338,10 @@ class LoadDialog(QDialog):
         self.load_type_combo.addItem("压力", "pressure")
         self.coordinate_system_combo = QComboBox(self)
         self.coordinate_system_combo.addItem("全局坐标系", "global")
-        self.coordinate_system_combo.addItem("局部坐标系", "local")
+        self.coordinate_system_combo.addItem(
+            "局部（Beam 已解析局部坐标）",
+            "local",
+        )
         self.component_combo = QComboBox(self)
         component_labels = tuple(str(label) for label in labels or ())
         for component in range(1, dimensions + 1):
@@ -331,11 +375,14 @@ class LoadDialog(QDialog):
         self.form.addRow("载荷形式", self.load_type_combo)
         self.form.addRow("坐标系", self.coordinate_system_combo)
         self.local_axis_label = QLabel(
-            "局部坐标轴由梁单元几何自动确定；当前不支持编辑截面方向。",
+            "局部（Beam 已解析局部坐标）",
             self,
         )
         self.local_axis_label.setWordWrap(True)
         self.form.addRow(self.local_axis_label)
+        self.candidate_diagnostic_label = QLabel("", self)
+        self.candidate_diagnostic_label.setWordWrap(True)
+        self.form.addRow(self.candidate_diagnostic_label)
         self.form.addRow("分量", self.component_combo)
         self.form.addRow("载荷值", self.value_spin)
         self.form.addRow("Fx", self.x_spin)
@@ -402,10 +449,20 @@ class LoadDialog(QDialog):
             self._vector_values["gravity"] = tuple(current.acceleration)
         layout = QVBoxLayout(self)
         layout.addLayout(self.form)
-        layout.addWidget(_buttons(self))
+        self.buttons = _buttons(self)
+        layout.addWidget(self.buttons)
         self.setMinimumWidth(350)
+        self.region_combo.currentIndexChanged.connect(
+            self._update_candidate_state
+        )
+        self.step_combo.currentIndexChanged.connect(
+            self._update_candidate_state
+        )
+        for spin in (self.x_spin, self.y_spin, self.z_spin):
+            spin.valueChanged.connect(self._update_candidate_state)
         self._refresh()
         _select_region(self.region_combo, selected_region)
+        self._update_candidate_state()
 
     def _set_distributed_values(
         self,
@@ -473,6 +530,10 @@ class LoadDialog(QDialog):
             and self.coordinate_system_combo.currentData() == "local"
         )
         self.form.setRowVisible(self.local_axis_label, local_coordinates)
+        self.form.setRowVisible(
+            self.candidate_diagnostic_label,
+            local_coordinates,
+        )
         self.form.setRowVisible(self.component_combo, kind == "node")
         self.form.setRowVisible(
             self.value_spin,
@@ -503,6 +564,89 @@ class LoadDialog(QDialog):
             self.z_spin,
             show_vector and vector_dimensions == 3,
         )
+        self._update_candidate_state()
+
+    def candidate_decision(
+        self,
+        candidate: LineLoad | None = None,
+        step_name: str | None = None,
+    ) -> object | None:
+        """Return the cached application decision for one local LineLoad."""
+
+        if candidate is None:
+            selected_step, selected = self.definition()
+            if not isinstance(selected, LineLoad):
+                return None
+            candidate = selected
+            step_name = selected_step
+        if candidate.coordinate_system != "local":
+            return None
+        step = str(
+            self.step_combo.currentText()
+            if step_name is None
+            else step_name
+        ).strip()
+        signature = (step, candidate)
+        if signature == self._candidate_signature:
+            return self._candidate_result
+        self._candidate_signature = signature
+        self._candidate_result = (
+            self._candidate_evaluator(candidate, step)
+            if callable(self._candidate_evaluator)
+            else None
+        )
+        return self._candidate_result
+
+    def _update_candidate_state(self) -> None:
+        if not hasattr(self, "buttons"):
+            return
+        local_line_load = (
+            self.kind_combo.currentData() == "line"
+            and self.coordinate_system_combo.currentData() == "local"
+        )
+        ok_button = self.buttons.button(
+            QDialogButtonBox.StandardButton.Ok
+        )
+        if not local_line_load:
+            self.candidate_diagnostic_label.clear()
+            self.candidate_diagnostic_label.setVisible(False)
+            ok_button.setEnabled(True)
+            return
+        self.candidate_diagnostic_label.setVisible(True)
+        try:
+            step_name, candidate = self.definition()
+            decision = self.candidate_decision(candidate, step_name)
+        except (KeyError, TypeError, ValueError) as error:
+            self.candidate_diagnostic_label.setText(str(error))
+            ok_button.setEnabled(False)
+            return
+        enabled = _authoring_candidate_enabled(decision)
+        self.candidate_diagnostic_label.setText(
+            ""
+            if enabled
+            else _authoring_candidate_message(decision)
+        )
+        ok_button.setEnabled(enabled)
+
+    def accept(self) -> None:
+        try:
+            step_name, candidate = self.definition()
+        except (TypeError, ValueError) as error:
+            QMessageBox.warning(self, "载荷", str(error))
+            return
+        if (
+            isinstance(candidate, LineLoad)
+            and candidate.coordinate_system == "local"
+        ):
+            decision = self.candidate_decision(candidate, step_name)
+            if not _authoring_candidate_enabled(decision):
+                QMessageBox.warning(
+                    self,
+                    "梁线载荷",
+                    _authoring_candidate_message(decision),
+                )
+                return
+        super().accept()
 
     def definition(self):
         kind = str(self.kind_combo.currentData())
@@ -732,6 +876,9 @@ class AnalysisDefinitionManagerDialog(QDialog):
         line_regions: Sequence[str] | None = None,
         dof_labels: Sequence[str] | None = None,
         force_labels: Sequence[str] | None = None,
+        candidate_evaluator: (
+            Callable[..., object | None] | None
+        ) = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("分析定义管理")
@@ -745,6 +892,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
         self.force_labels = tuple(
             str(label) for label in force_labels or ()
         )
+        self._candidate_evaluator = candidate_evaluator
         self.spatial_dimensions = int(
             spatial_dimensions
             if spatial_dimensions is not None
@@ -909,7 +1057,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
     def _line_load_text(load: LineLoad) -> str:
         coordinate_system = {
             "global": "全局",
-            "local": "局部（自动局部轴）",
+            "local": "局部（Beam 已解析局部坐标）",
         }.get(load.coordinate_system, load.coordinate_system)
         return coordinate_system + " = (" + ", ".join(
             f"{value:g}" for value in load.vector
@@ -1091,6 +1239,24 @@ class AnalysisDefinitionManagerDialog(QDialog):
                 ),
                 current=current,
                 labels=self.force_labels,
+                candidate_evaluator=(
+                    None
+                    if self._candidate_evaluator is None
+                    else (
+                        lambda candidate, target_step,
+                        source_step=step.name,
+                        source_index=int(item_index):
+                        self._candidate_evaluator(
+                            candidate,
+                            target_step,
+                            candidate_index=(
+                                source_index
+                                if target_step == source_step
+                                else None
+                            ),
+                        )
+                    )
+                ),
             )
             dialog.step_combo.setCurrentText(step.name)
             if not dialog.exec():
@@ -1100,6 +1266,18 @@ class AnalysisDefinitionManagerDialog(QDialog):
             except ValueError as error:
                 QMessageBox.warning(self, "分析定义", str(error))
                 return
+            if (
+                isinstance(value, LineLoad)
+                and value.coordinate_system == "local"
+            ):
+                decision = dialog.candidate_decision(value, target_step)
+                if not _authoring_candidate_enabled(decision):
+                    QMessageBox.warning(
+                        self,
+                        "分析定义",
+                        _authoring_candidate_message(decision),
+                    )
+                    return
             setattr(
                 step,
                 collection_name,

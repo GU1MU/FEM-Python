@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QLabel, QMainWindow, QMessageBox, QSizePolicy, QSplitter, QVBoxLayout, QWidget,
 )
 
+import fem.application as application_api
 from fem.abaqus import build_model as build_abaqus_model, parse_file
 from fem.application import (
     AuthoringStatus,
@@ -2267,6 +2268,14 @@ class FEMMainWindow(QMainWindow):
         return model, geometry, dict(timings)
 
     def _show_model_in_tree(self, model: object) -> None:
+        definition_options = {
+            "section_definitions": tuple(
+                self.document.section_definitions
+            ),
+            "region_assignments": tuple(
+                self.document.region_assignments
+            ),
+        }
         if self.document.source_kind == "native" and self.document.parts:
             self.model_tree.set_model(
                 model,
@@ -2274,9 +2283,10 @@ class FEMMainWindow(QMainWindow):
                     record.name for record in self.document.feature_history
                 ),
                 part_name=self.document.parts[0].name,
+                **definition_options,
             )
             return
-        self.model_tree.set_model(model)
+        self.model_tree.set_model(model, **definition_options)
 
     def _install_model(
         self,
@@ -2301,8 +2311,31 @@ class FEMMainWindow(QMainWindow):
             self._symbol_settings,
             step_name=self._current_step_name,
         )
+        definitions = application_api.ModelDefinitions(
+            materials=tuple(self.document.material_definitions),
+            sections=tuple(self.document.section_definitions),
+            assignments=tuple(self.document.region_assignments),
+            steps=tuple(self.document.analysis_definitions),
+        )
+        frame_resolver = getattr(
+            application_api,
+            "resolve_effective_beam_frames",
+            None,
+        )
+        frame_query = (
+            (
+                lambda target, installed_model=model, resolver=frame_resolver:
+                resolver(installed_model, target)
+            )
+            if callable(frame_resolver)
+            else None
+        )
         started = perf_counter()
-        self.inspection_service = InspectionService(model)
+        self.inspection_service = InspectionService(
+            model,
+            definitions=definitions,
+            effective_frame_query=frame_query,
+        )
         timings["InspectionService 初始化"] = perf_counter() - started
         started = perf_counter()
         self._show_model_in_tree(model)
@@ -2321,7 +2354,13 @@ class FEMMainWindow(QMainWindow):
         self.actions["symbols"].setChecked(policy["show_symbols"])
 
         started = perf_counter()
-        self.viewport.set_model(model, geometry, refresh_symbols=False, render=False)
+        self.viewport.set_model(
+            model,
+            geometry,
+            refresh_symbols=False,
+            render=False,
+            effective_frame_query=frame_query,
+        )
         self.viewport.set_edges_visible(self.actions["edges"].isChecked(), render=False)
         timings["视口网格创建"] = perf_counter() - started
         self.viewport.set_symbol_settings(self._symbol_settings, refresh=False, render=False)
@@ -2645,6 +2684,64 @@ class FEMMainWindow(QMainWindow):
     def assign_section_to_region(self) -> None:
         if not self.document.section_definitions:
             return
+        dialog = self._region_assignment_dialog()
+        if dialog is None or not dialog.exec():
+            return
+        try:
+            assignment = dialog.assignment()
+            decision = dialog.candidate_decision(assignment)
+        except (TypeError, ValueError) as error:
+            self._show_error("截面分配", str(error))
+            return
+        if not self._authoring_decision_enabled(decision):
+            self._show_authoring_decision_error("截面分配", decision)
+            return
+        assignments = [
+            current
+            for current in self.document.region_assignments
+            if current.region_name != assignment.region_name
+        ] + [assignment]
+        self._apply_model_definition_changes(
+            "截面分配已修改，模型需要重新检查",
+            assignments=assignments,
+        )
+
+    def edit_region_assignment(self, assignment_index: int) -> None:
+        assignments = list(self.document.region_assignments)
+        index = int(assignment_index)
+        if index < 0 or index >= len(assignments):
+            self._show_error(
+                "截面分配",
+                f"截面分配不存在：{assignment_index}",
+            )
+            return
+        dialog = self._region_assignment_dialog(
+            assignments[index],
+            assignment_index=index,
+        )
+        if dialog is None or not dialog.exec():
+            return
+        try:
+            updated = dialog.assignment()
+            decision = dialog.candidate_decision(updated)
+        except (TypeError, ValueError) as error:
+            self._show_error("截面分配", str(error))
+            return
+        if not self._authoring_decision_enabled(decision):
+            self._show_authoring_decision_error("截面分配", decision)
+            return
+        assignments[index] = updated
+        self._apply_model_definition_changes(
+            "截面分配已修改，模型需要重新检查",
+            assignments=assignments,
+        )
+
+    def _region_assignment_dialog(
+        self,
+        current: object | None = None,
+        *,
+        assignment_index: int | None = None,
+    ) -> RegionAssignmentDialog | None:
         capability_report = self._model_capability_report()
         regions: list[RegionRef] = []
         if capability_report is not None:
@@ -2661,9 +2758,16 @@ class FEMMainWindow(QMainWindow):
                 reference = RegionRef("element_set", name)
                 if reference not in regions:
                     regions.append(reference)
+        if current is not None:
+            existing = RegionRef(
+                "element_set",
+                str(current.region_name),
+            )
+            if existing not in regions:
+                regions.append(existing)
         if not regions:
             self._show_error("截面分配", "当前模型没有可分配的单元区域")
-            return
+            return None
         compatible_targets = {
             section.name: tuple(
                 region
@@ -2683,24 +2787,110 @@ class FEMMainWindow(QMainWindow):
             )
             for section in self.document.section_definitions
         }
-        dialog = RegionAssignmentDialog(
+        if current is not None:
+            existing_targets = list(
+                compatible_targets.get(current.section_name, ())
+            )
+            existing_region = RegionRef(
+                "element_set",
+                str(current.region_name),
+            )
+            if existing_region not in existing_targets:
+                existing_targets.append(existing_region)
+            compatible_targets[current.section_name] = tuple(
+                existing_targets
+            )
+        return RegionAssignmentDialog(
             self.document.section_definitions,
             regions,
             self,
             compatible_targets=compatible_targets,
+            current=current,
+            candidate_evaluator=(
+                lambda candidate, index=assignment_index:
+                self._evaluate_region_assignment_candidate(
+                    candidate,
+                    candidate_index=index,
+                )
+            ),
+            orientation_suggester=self._suggest_region_assignment_orientation,
         )
-        if not dialog.exec():
-            return
-        assignment = dialog.assignment()
-        assignments = [
-            current
-            for current in self.document.region_assignments
-            if current.region_name != assignment.region_name
-        ] + [assignment]
-        self._apply_model_definition_changes(
-            "截面分配已修改，模型需要重新检查",
-            assignments=assignments,
+
+    def _suggest_region_assignment_orientation(
+        self,
+        region: RegionRef,
+    ) -> object | None:
+        resolver = getattr(
+            application_api,
+            "resolve_effective_beam_frames",
+            None,
         )
+        model = self.document.model
+        if not callable(resolver) or model is None:
+            return None
+        return resolver(model, region)
+
+    def _evaluate_region_assignment_candidate(
+        self,
+        candidate: object,
+        *,
+        candidate_index: int | None = None,
+    ) -> object | None:
+        evaluator = getattr(
+            application_api,
+            "evaluate_authoring_candidate",
+            None,
+        )
+        model = self.document.model
+        if not callable(evaluator) or model is None:
+            return None
+        section = next(
+            (
+                item
+                for item in self.document.section_definitions
+                if item.name == candidate.section_name
+            ),
+            None,
+        )
+        if section is None:
+            return None
+        section_type = str(section.section_type).strip().casefold()
+        if section_type == "beam":
+            section_type = str(
+                section.properties.get("section_type", section_type)
+            ).strip().casefold()
+        definitions = application_api.ModelDefinitions(
+            materials=tuple(self.document.material_definitions),
+            sections=tuple(self.document.section_definitions),
+            assignments=tuple(self.document.region_assignments),
+            steps=tuple(self.document.analysis_definitions),
+        )
+        return evaluator(
+            model,
+            definitions,
+            operation=f"section.{section_type}",
+            candidate=candidate,
+            candidate_index=candidate_index,
+        )
+
+    @staticmethod
+    def _authoring_decision_enabled(decision: object | None) -> bool:
+        return FEMMainWindow._strict_authoring_decision_enabled(
+            decision
+        )
+
+    def _show_authoring_decision_error(
+        self,
+        title: str,
+        decision: object | None,
+    ) -> None:
+        diagnostics = tuple(getattr(decision, "diagnostics", ()))
+        message = (
+            self._render_diagnostics(diagnostics)
+            if diagnostics
+            else "当前 authoring capability 不允许提交该定义。"
+        )
+        self._show_error(title, message)
 
     def _analysis_definitions_changed(
         self,
@@ -2842,6 +3032,7 @@ class FEMMainWindow(QMainWindow):
             selected_region=selected_region,
             preferred_kind=preferred_kind,
             labels=capability_report.force_labels,
+            candidate_evaluator=self._evaluate_line_load_candidate,
         )
         if not dialog.exec():
             return
@@ -2850,6 +3041,17 @@ class FEMMainWindow(QMainWindow):
         except ValueError as error:
             self._show_error("创建载荷", str(error))
             return
+        if (
+            isinstance(load, LineLoad)
+            and load.coordinate_system == "local"
+        ):
+            decision = dialog.candidate_decision(load, step_name)
+            if not self._strict_authoring_decision_enabled(decision):
+                self._show_authoring_decision_error(
+                    "创建梁线载荷",
+                    decision,
+                )
+                return
         definitions = list(deepcopy(self.document.analysis_definitions))
         step = next(step for step in definitions if step.name == step_name)
         if isinstance(load, NodalLoad):
@@ -2913,6 +3115,56 @@ class FEMMainWindow(QMainWindow):
                 if capability_report is not None
                 else ()
             ),
+            candidate_evaluator=self._evaluate_line_load_candidate,
+        )
+
+    def _evaluate_line_load_candidate(
+        self,
+        candidate: LineLoad,
+        step_name: str,
+        *,
+        candidate_index: int | None = None,
+    ) -> object | None:
+        evaluator = getattr(
+            application_api,
+            "evaluate_authoring_candidate",
+            None,
+        )
+        model = self.document.model
+        if not callable(evaluator) or model is None:
+            return None
+        definitions = application_api.ModelDefinitions(
+            materials=tuple(self.document.material_definitions),
+            sections=tuple(self.document.section_definitions),
+            assignments=tuple(self.document.region_assignments),
+            steps=tuple(self.document.analysis_definitions),
+        )
+        return evaluator(
+            model,
+            definitions,
+            operation="load.line.local",
+            candidate=candidate,
+            step_name=str(step_name),
+            candidate_index=candidate_index,
+        )
+
+    @staticmethod
+    def _strict_authoring_decision_enabled(
+        decision: object | None,
+    ) -> bool:
+        if decision is None:
+            return False
+        if isinstance(decision, bool):
+            return decision
+        status = getattr(decision, "status", None)
+        value = getattr(status, "value", status)
+        diagnostics = tuple(getattr(decision, "diagnostics", ()))
+        return (
+            str(value).strip().casefold() == "enabled"
+            and not any(
+                bool(getattr(item, "blocking", False))
+                for item in diagnostics
+            )
         )
 
     def show_analysis_manager(self) -> None:
@@ -2921,9 +3173,14 @@ class FEMMainWindow(QMainWindow):
             return
         if not dialog.exec():
             return
+        values = dialog.values()
+        if tuple(values) == tuple(
+            self.document.analysis_definitions
+        ):
+            return
         self._analysis_definitions_changed(
             "分析步、边界、载荷或输出请求已修改，模型需要重新检查",
-            dialog.values(),
+            values,
         )
 
     def edit_analysis_definition(self, kind: str, key: object) -> None:
@@ -4262,12 +4519,15 @@ class FEMMainWindow(QMainWindow):
     def _edit_tree_entry(self, kind: str, key: object) -> None:
         if kind == "material":
             self.edit_material(str(key))
+        elif kind == "assignment":
+            self.edit_region_assignment(int(key))
         elif kind in {
             "step",
             "boundary",
             "cload",
             "edge_load",
             "surface_load",
+            "line_load",
             "gravity_load",
             "output",
         }:
@@ -4343,6 +4603,27 @@ class FEMMainWindow(QMainWindow):
             )
             self.viewport.highlight_region(members, region_kind)
             return
+        beam_frame_target: RegionRef | int | None = None
+        if kind == "element":
+            beam_frame_target = int(key)
+        elif kind == "element_set":
+            beam_frame_target = RegionRef("element_set", str(key))
+        elif kind == "assignment":
+            assignment = self.document.region_assignments[int(key)]
+            beam_frame_target = RegionRef(
+                "element_set",
+                str(assignment.region_name),
+            )
+        elif kind == "line_load":
+            step_index, load_index = key
+            target = self.document.model.steps[
+                int(step_index)
+            ].line_loads[int(load_index)].target
+            beam_frame_target = (
+                int(target)
+                if isinstance(target, int)
+                else RegionRef("element_set", str(target))
+            )
         selection = self.inspection_service.selection_for(kind, key)
         if len(selection.node_ids) == 1 and not selection.element_ids:
             self._on_viewport_pick("node", selection.node_ids[0])
@@ -4352,6 +4633,13 @@ class FEMMainWindow(QMainWindow):
             self.viewport.highlight_nodes(selection.node_ids)
         elif selection.element_ids:
             self.viewport.highlight_elements(selection.element_ids)
+        if (
+            beam_frame_target is not None
+            and len(selection.element_ids) != 1
+        ):
+            self.viewport.show_beam_frame_preview(
+                beam_frame_target
+            )
 
     def locate_entity(self, kind: str, key: object) -> None:
         if self.inspection_service is None:

@@ -1,18 +1,25 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from fem.abaqus import read
 from fem.application import (
+    BeamOrientation,
     ModelSession,
     NativePart,
     PreflightReport,
+    RegionAssignment,
     TokenStatus,
 )
 from fem.core.model import AnalysisStep
 from tests.helpers.preflight_builders import passing_preflight_report
+
+
+_FIXTURES = Path(__file__).parents[1] / "fixtures" / "inp"
 
 
 def _model(*step_names: str) -> SimpleNamespace:
@@ -34,6 +41,23 @@ def _session() -> ModelSession:
     mesh = session.prepare_mesh_generation()
     session.accept_generated_model(mesh.token, _model("Step-A"))
     validation = session.prepare_validation("Step-A")
+    session.accept_validation(
+        validation.token,
+        passing_preflight_report(validation.token),
+    )
+    return session
+
+
+def _beam_session() -> ModelSession:
+    session = ModelSession()
+    task = session.prepare_import(
+        _FIXTURES / "beam2_rectangle_uniform_load.inp"
+    )
+    session.accept_imported_model(
+        task.token,
+        read(_FIXTURES / "beam2_rectangle_uniform_load.inp"),
+    )
+    validation = session.prepare_validation("UniformLoad")
     session.accept_validation(
         validation.token,
         passing_preflight_report(validation.token),
@@ -151,6 +175,54 @@ def test_result_projection_token_becomes_stale_with_its_model() -> None:
         TokenStatus.STALE_REVISION,
         TokenStatus.STALE_ARTIFACT,
     }
+
+
+def test_orientation_edit_rejects_old_validation_and_solve_callbacks() -> None:
+    session = _beam_session()
+    validation = session.prepare_validation("UniformLoad")
+    solve = session.prepare_solve("UniformLoad", "Beam-Job")
+    session.begin_run(solve.token)
+    before = session.snapshot()
+    assignment = before.region_assignments[0]
+
+    session.replace_model_definitions(
+        before.material_definitions,
+        before.section_definitions,
+        (
+            RegionAssignment(
+                assignment.section_name,
+                assignment.region_name,
+                BeamOrientation((0.0, 1.0, 0.0)),
+            ),
+        ),
+        before.analysis_definitions,
+    )
+    after_edit = session.snapshot()
+
+    validation_delta = session.accept_validation(
+        validation.token,
+        passing_preflight_report(validation.token),
+    )
+    solve_delta = session.accept_run_result(
+        solve.token,
+        {"U": [1.0]},
+    )
+
+    assert after_edit.model_revision == before.model_revision + 1
+    assert not validation_delta.accepted
+    assert validation_delta.token_status in {
+        TokenStatus.STALE_REVISION,
+        TokenStatus.STALE_ARTIFACT,
+    }
+    assert not solve_delta.accepted
+    assert solve_delta.token_status in {
+        TokenStatus.STALE_REVISION,
+        TokenStatus.STALE_ARTIFACT,
+        TokenStatus.STALE_RUN,
+    }
+    assert session.session_revision == after_edit.session_revision
+    assert not session.snapshot().validations
+    assert not session.snapshot().runs
 
 
 def test_close_and_load_identity_reject_old_validation_token() -> None:

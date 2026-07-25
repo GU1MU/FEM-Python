@@ -21,6 +21,7 @@ _TREE_ICONS = {
     "edge": "surface",
     "material": "material",
     "section": "section",
+    "assignment": "section",
     "step": "step",
     "boundary": "boundary",
     "cload": "load",
@@ -45,6 +46,7 @@ _CATEGORY_ICONS = {
 
 _EDITABLE_KINDS = {
     "material",
+    "assignment",
     "step",
     "boundary",
     "cload",
@@ -111,6 +113,8 @@ class ModelTree(QTreeWidget):
         *,
         feature_rows: tuple[str, ...] = (),
         part_name: str | None = None,
+        section_definitions: tuple[Any, ...] = (),
+        region_assignments: tuple[Any, ...] = (),
     ) -> None:
         self.clear()
         root = self._item(str(model.name or "模型"), "model", None)
@@ -165,6 +169,41 @@ class ModelTree(QTreeWidget):
                     index,
                 )
             )
+        if region_assignments:
+            assignments = self._category(
+                root,
+                "截面分配",
+                len(region_assignments),
+            )
+            known_sections = {
+                str(section.name)
+                for section in section_definitions
+            }
+            for index, assignment in enumerate(region_assignments):
+                section_name = str(assignment.section_name)
+                region_name = str(assignment.region_name)
+                label = f"{section_name} → {region_name}"
+                if known_sections and section_name not in known_sections:
+                    label += "（截面缺失）"
+                item = self._item(
+                    label,
+                    "assignment",
+                    index,
+                )
+                orientation = (
+                    "explicit"
+                    if getattr(assignment, "beam_orientation", None)
+                    is not None
+                    else "automatic"
+                )
+                item.addChild(
+                    self._item(
+                        f"orientation: {orientation}",
+                        "detail",
+                        None,
+                    )
+                )
+                assignments.addChild(item)
         steps = self._category(root, "分析", len(model.steps))
         first_step_item = None
         for index, step in enumerate(model.steps):
@@ -286,7 +325,7 @@ class ModelTree(QTreeWidget):
             return None
         kind = str(item.data(0, ROLE_KIND))
         key = item.data(0, ROLE_KEY)
-        if kind in {"empty", "category"}:
+        if kind in {"empty", "category", "detail"}:
             return None
         return kind, key
 

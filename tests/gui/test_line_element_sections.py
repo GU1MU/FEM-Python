@@ -9,6 +9,7 @@ import pytest
 
 from fem.application import RegionAssignment, RegionRef, SectionDefinition
 from fem.core.model import MaterialDefinition
+from fem.elements import BeamOrientation
 from fem.materials import MaterialPropertyError, SectionPropertyError
 from fem_gui.model_dialogs import (
     RegionAssignmentDialog,
@@ -125,8 +126,8 @@ def test_beam_shape_switch_clears_irrelevant_legacy_fields():
         ),
     )
 
-    assert dialog.form.isRowVisible(dialog.limitation_label)
-    assert "beam.orientation.assumed" in dialog.limitation_label.text()
+    assert not dialog.form.isRowVisible(dialog.limitation_label)
+    assert "beam.orientation.assumed" not in dialog.limitation_label.text()
     dialog.type_combo.setCurrentIndex(
         dialog.type_combo.findData("solid_circle")
     )
@@ -236,3 +237,159 @@ def test_region_assignment_preserves_namespaces_and_legacy_strings():
 
     legacy = RegionAssignmentDialog([section], ["DOMAIN"])
     assert legacy.assignment() == RegionAssignment("Section", "DOMAIN")
+
+
+def test_region_assignment_edits_preserves_and_clears_explicit_orientation():
+    _application()
+    section = SectionDefinition(
+        "Beam",
+        "Steel",
+        "rectangle",
+        {"height": 1.0, "width": 0.5},
+    )
+    current = RegionAssignment(
+        "Beam",
+        "BEAM_SET",
+        BeamOrientation((0.0, 1.0, 0.0)),
+    )
+    dialog = RegionAssignmentDialog(
+        [section],
+        [RegionRef("element_set", "BEAM_SET")],
+        current=current,
+    )
+
+    assert dialog.windowTitle() == "编辑截面分配"
+    assert dialog.section_combo.currentText() == "Beam"
+    assert dialog.region_combo.currentData() == RegionRef(
+        "element_set",
+        "BEAM_SET",
+    )
+    assert dialog.orientation_mode_combo.currentData() == "explicit"
+    assert dialog.reference_vector() == (0.0, 1.0, 0.0)
+    assert dialog.assignment() == current
+
+    dialog.orientation_mode_combo.setCurrentIndex(
+        dialog.orientation_mode_combo.findData("automatic")
+    )
+    assert dialog.assignment() == RegionAssignment("Beam", "BEAM_SET")
+
+    dialog.orientation_mode_combo.setCurrentIndex(
+        dialog.orientation_mode_combo.findData("explicit")
+    )
+    assert dialog.assignment() == current
+
+
+def test_region_assignment_explicit_vector_validation_and_candidate_seam():
+    _application()
+    section = SectionDefinition(
+        "Beam",
+        "Steel",
+        "solid_circle",
+        {"radius": 1.0},
+    )
+    evaluated = []
+    dialog = RegionAssignmentDialog(
+        [section],
+        ["BEAM_SET"],
+        candidate_evaluator=lambda candidate: (
+            evaluated.append(candidate) or True
+        ),
+    )
+    dialog.orientation_mode_combo.setCurrentIndex(
+        dialog.orientation_mode_combo.findData("explicit")
+    )
+
+    assert not dialog.buttons.button(
+        QDialogButtonBox.StandardButton.Ok
+    ).isEnabled()
+    with pytest.raises(ValueError, match="零向量"):
+        dialog.assignment()
+
+    dialog.orientation_z_spin.setValue(2.0)
+    candidate = dialog.assignment()
+    assert candidate.beam_orientation == BeamOrientation((0.0, 0.0, 2.0))
+    assert dialog.buttons.button(
+        QDialogButtonBox.StandardButton.Ok
+    ).isEnabled()
+    assert dialog.candidate_decision(candidate) is True
+    assert dialog.candidate_decision(candidate) is True
+    assert evaluated == [candidate]
+
+
+def test_region_assignment_uses_domain_suggestion_when_switching_to_explicit():
+    _application()
+    section = SectionDefinition(
+        "Beam",
+        "Steel",
+        "rectangle",
+        {"height": 1.0, "width": 0.5},
+    )
+    requested = []
+    dialog = RegionAssignmentDialog(
+        [section],
+        ["BEAM_SET"],
+        orientation_suggester=lambda region: (
+            requested.append(region)
+            or BeamOrientation((0.0, 0.0, 1.0))
+        ),
+    )
+
+    dialog.orientation_mode_combo.setCurrentIndex(
+        dialog.orientation_mode_combo.findData("explicit")
+    )
+
+    assert requested == [RegionRef("element_set", "BEAM_SET")]
+    assert dialog.reference_vector() == (0.0, 0.0, 1.0)
+    assert dialog.assignment().beam_orientation == BeamOrientation(
+        (0.0, 0.0, 1.0)
+    )
+
+
+def test_assignment_section_switch_keeps_beam_value_and_clears_nonbeam():
+    _application()
+    sections = (
+        SectionDefinition(
+            "Rectangle",
+            "Steel",
+            "rectangle",
+            {"height": 0.1, "width": 0.02},
+        ),
+        SectionDefinition(
+            "Circle",
+            "Steel",
+            "solid_circle",
+            {"radius": 0.05},
+        ),
+        SectionDefinition(
+            "Solid",
+            "Steel",
+            "solid",
+            {"thickness": 1.0},
+        ),
+    )
+    region = RegionRef("element_set", "DOMAIN")
+    current = RegionAssignment(
+        "Rectangle",
+        "DOMAIN",
+        BeamOrientation((0.0, 1.0, 0.0)),
+    )
+    dialog = RegionAssignmentDialog(
+        sections,
+        [region],
+        current=current,
+        compatible_targets={
+            section.name: (region,)
+            for section in sections
+        },
+    )
+
+    dialog.section_combo.setCurrentText("Circle")
+    assert dialog.orientation_mode_combo.currentData() == "explicit"
+    assert dialog.beam_orientation() == BeamOrientation(
+        (0.0, 1.0, 0.0)
+    )
+
+    dialog.section_combo.setCurrentText("Solid")
+    assert dialog.orientation_mode_combo.currentData() == "automatic"
+    assert dialog.beam_orientation() is None
+    assert dialog.assignment().beam_orientation is None

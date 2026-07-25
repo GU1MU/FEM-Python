@@ -8,8 +8,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
+from fem.abaqus import read
+from fem.application import RegionAssignment
 from fem.solvers.static_linear import solve
 from fem_gui.main_window import FEMMainWindow
+from fem_gui.model_dialogs import RegionAssignmentDialog
 from fem_gui.visualization.model_adapter import build_model_geometry
 from fem_gui.visualization.result_adapter import build_result_data
 from tests.helpers.model_builders import make_static_pull_truss_model
@@ -199,4 +202,64 @@ def test_action_gates_delegate_validation_decisions_to_session_queries(
     assert ("submit", "pull") in calls
     assert window.actions["check_model"].isEnabled()
     assert window.actions["submit_job"].isEnabled()
+    window.close()
+
+
+def test_assignment_edit_replaces_the_selected_index_through_session(
+    monkeypatch,
+    gui_inp_path,
+) -> None:
+    window = FEMMainWindow()
+    model = read(gui_inp_path)
+    window._model_loaded(
+        gui_inp_path,
+        (model, build_model_geometry(model)),
+    )
+    before = window.document
+    original_section = before.section_definitions[0]
+    original_assignment = before.region_assignments[0]
+    second_section = replace(original_section, name="Section-2")
+    second_assignment = RegionAssignment(
+        second_section.name,
+        original_assignment.region_name,
+    )
+    assert window._apply_session_delta(
+        window.session.replace_model_definitions(
+            before.material_definitions,
+            (*before.section_definitions, second_section),
+            (*before.region_assignments, second_assignment),
+            before.analysis_definitions,
+        )
+    )
+    revision = window.document.session_revision
+    replacement = RegionAssignment(
+        second_section.name,
+        original_assignment.region_name,
+    )
+    errors = []
+    monkeypatch.setattr(
+        window,
+        "_show_error",
+        lambda title, message: errors.append((title, message)),
+    )
+    monkeypatch.setattr(
+        RegionAssignmentDialog,
+        "exec",
+        lambda _dialog: True,
+    )
+    monkeypatch.setattr(
+        RegionAssignmentDialog,
+        "assignment",
+        lambda _dialog: replacement,
+    )
+
+    window.edit_region_assignment(0)
+
+    assert window.document.session_revision == revision + 1
+    assert window.document.region_assignments == (
+        replacement,
+        second_assignment,
+    )
+    assert errors == []
+    window.close_model(confirm=False)
     window.close()

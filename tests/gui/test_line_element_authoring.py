@@ -5,7 +5,13 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QDialog, QPushButton
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QDialogButtonBox,
+    QMessageBox,
+    QPushButton,
+)
 
 from fem.core.model import (
     DisplacementConstraint,
@@ -63,6 +69,9 @@ def test_line_load_dialog_uses_capability_regions_and_three_components() -> None
         dialog.coordinate_system_combo.itemData(index)
         for index in range(dialog.coordinate_system_combo.count())
     ] == ["global", "local"]
+    assert dialog.coordinate_system_combo.itemText(1) == (
+        "局部（Beam 已解析局部坐标）"
+    )
     assert dialog.form.isRowVisible(dialog.coordinate_system_combo)
     assert not dialog.form.isRowVisible(dialog.load_type_combo)
     assert not dialog.form.isRowVisible(dialog.component_combo)
@@ -101,8 +110,94 @@ def test_line_load_dialog_edits_local_load_and_explains_local_axes() -> None:
     assert dialog.region_combo.currentText() == "IMPORTED-BEAM"
     assert dialog.coordinate_system_combo.currentData() == "local"
     assert dialog.form.isRowVisible(dialog.local_axis_label)
-    assert "自动" in dialog.local_axis_label.text()
+    assert (
+        dialog.local_axis_label.text()
+        == "局部（Beam 已解析局部坐标）"
+    )
+    assert not dialog.buttons.button(
+        QDialogButtonBox.StandardButton.Ok
+    ).isEnabled()
+    assert "不可保存" in dialog.candidate_diagnostic_label.text()
     assert dialog.definition() == ("Step-A", current)
+
+
+def test_local_line_load_requires_an_enabled_nonblocking_candidate() -> None:
+    _application()
+    decisions = []
+
+    def evaluate(candidate, step_name):
+        decisions.append((candidate, step_name))
+        return SimpleNamespace(
+            status=SimpleNamespace(value="limited"),
+            diagnostics=(
+                SimpleNamespace(
+                    code="beam.orientation.assumed",
+                    message="BEAM-SET 缺少显式方向",
+                    blocking=False,
+                ),
+            ),
+        )
+
+    dialog = LoadDialog(
+        ["Step-A"],
+        [],
+        [],
+        [],
+        6,
+        spatial_dimensions=3,
+        line_regions=["BEAM-SET"],
+        preferred_kind="line",
+        candidate_evaluator=evaluate,
+    )
+    dialog.coordinate_system_combo.setCurrentIndex(
+        dialog.coordinate_system_combo.findData("local")
+    )
+
+    assert not dialog.buttons.button(
+        QDialogButtonBox.StandardButton.Ok
+    ).isEnabled()
+    assert "beam.orientation.assumed" in (
+        dialog.candidate_diagnostic_label.text()
+    )
+    assert dialog.candidate_decision() is dialog.candidate_decision()
+    assert len(decisions) == 1
+
+    dialog.coordinate_system_combo.setCurrentIndex(
+        dialog.coordinate_system_combo.findData("global")
+    )
+    assert dialog.buttons.button(
+        QDialogButtonBox.StandardButton.Ok
+    ).isEnabled()
+
+
+def test_enabled_candidate_with_blocking_diagnostic_is_not_writable() -> None:
+    _application()
+    dialog = LoadDialog(
+        ["Step-A"],
+        [],
+        [],
+        [],
+        6,
+        line_regions=["BEAM-SET"],
+        preferred_kind="line",
+        candidate_evaluator=lambda _candidate, _step, **_context: SimpleNamespace(
+            status=SimpleNamespace(value="enabled"),
+            diagnostics=(
+                SimpleNamespace(
+                    code="beam.orientation.parallel",
+                    message="参考方向与单元平行",
+                    blocking=True,
+                ),
+            ),
+        ),
+    )
+    dialog.coordinate_system_combo.setCurrentIndex(
+        dialog.coordinate_system_combo.findData("local")
+    )
+
+    assert not dialog.buttons.button(
+        QDialogButtonBox.StandardButton.Ok
+    ).isEnabled()
 
 
 def test_beam_component_labels_support_capability_overrides() -> None:
@@ -165,6 +260,10 @@ def test_manager_lists_moves_and_deletes_line_loads(monkeypatch) -> None:
         6,
         spatial_dimensions=3,
         line_regions=["BEAM-SET"],
+        candidate_evaluator=lambda _candidate, _step, **_context: SimpleNamespace(
+            status=SimpleNamespace(value="enabled"),
+            diagnostics=(),
+        ),
     )
 
     line_row = manager._rows.index(("line_load", 0, 0))
@@ -203,6 +302,87 @@ def test_manager_lists_moves_and_deletes_line_loads(monkeypatch) -> None:
     assert manager.select_definition(("line_load", 1, 0))
     manager._delete()
     assert manager.values()[1].line_loads == ()
+
+
+def test_manager_does_not_resave_a_limited_legacy_local_load(
+    monkeypatch,
+) -> None:
+    _application()
+    step = static("Step-A")
+    current = LineLoad(
+        "BEAM-SET",
+        (0.0, -1.0, 0.0),
+        "local",
+    )
+    step.line_loads = (current,)
+    manager = AnalysisDefinitionManagerDialog(
+        [step],
+        [],
+        [],
+        [],
+        6,
+        line_regions=["BEAM-SET"],
+        candidate_evaluator=lambda _candidate, _step: SimpleNamespace(
+            status=SimpleNamespace(value="limited"),
+            diagnostics=(
+                SimpleNamespace(
+                    code="beam.orientation.assumed",
+                    message="legacy compatibility frame",
+                    blocking=False,
+                ),
+            ),
+        ),
+    )
+    warnings = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda *args: warnings.append(args),
+    )
+    monkeypatch.setattr(
+        LoadDialog,
+        "exec",
+        lambda _dialog: QDialog.DialogCode.Accepted,
+    )
+
+    assert not manager.edit_definition(("line_load", 0, 0))
+    assert manager.values()[0].line_loads == (current,)
+    assert warnings
+
+
+def test_limited_legacy_local_load_can_be_changed_to_global(
+    monkeypatch,
+) -> None:
+    _application()
+    step = static("Step-A")
+    step.line_loads = (
+        LineLoad("BEAM-SET", (0.0, -1.0, 0.0), "local"),
+    )
+    manager = AnalysisDefinitionManagerDialog(
+        [step],
+        [],
+        [],
+        [],
+        6,
+        line_regions=["BEAM-SET"],
+        candidate_evaluator=lambda *_args, **_kwargs: SimpleNamespace(
+            status=SimpleNamespace(value="limited"),
+            diagnostics=(),
+        ),
+    )
+
+    def accept_as_global(dialog: LoadDialog):
+        dialog.coordinate_system_combo.setCurrentIndex(
+            dialog.coordinate_system_combo.findData("global")
+        )
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(LoadDialog, "exec", accept_as_global)
+
+    assert manager.edit_definition(("line_load", 0, 0))
+    assert manager.values()[0].line_loads == (
+        LineLoad("BEAM-SET", (0.0, -1.0, 0.0), "global"),
+    )
 
 
 def test_existing_output_request_is_read_only_and_deletable() -> None:

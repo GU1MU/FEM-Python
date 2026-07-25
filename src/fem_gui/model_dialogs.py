@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
+from math import isfinite
 
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+import fem.application as application_api
 from fem.application import RegionRef, require_region_kind
 from fem.core.model import MaterialDefinition
 from fem.materials import (
@@ -37,6 +39,14 @@ from .document import RegionAssignment, SectionDefinition
 def _number(parent: QDialog, value: float, *, minimum: float = 0.0) -> QDoubleSpinBox:
     box = CompactDoubleSpinBox(parent)
     box.setRange(minimum, 1.0e15)
+    box.setDecimals(8)
+    box.setValue(float(value))
+    return box
+
+
+def _signed_number(parent: QDialog, value: float = 0.0) -> QDoubleSpinBox:
+    box = CompactDoubleSpinBox(parent)
+    box.setRange(-1.0e15, 1.0e15)
     box.setDecimals(8)
     box.setValue(float(value))
     return box
@@ -742,12 +752,6 @@ class SectionEditDialog(QDialog):
                 "当前模型能力未提供可创建的截面预设。"
             )
             self.form.setRowVisible(self.limitation_label, True)
-        elif preset == "rectangle":
-            self.limitation_label.setText(
-                "beam.orientation.assumed：局部坐标由内核根据单元几何"
-                "自动确定；当前版本不提供方向编辑。"
-            )
-            self.form.setRowVisible(self.limitation_label, True)
         else:
             self.limitation_label.clear()
             self.form.setRowVisible(self.limitation_label, False)
@@ -950,11 +954,23 @@ class RegionAssignmentDialog(QDialog):
             Sequence[RegionRef | str],
         ]
         | None = None,
+        current: RegionAssignment | None = None,
+        candidate_evaluator: Callable[[RegionAssignment], object] | None = None,
+        explicit_reference: Sequence[float] | None = None,
+        orientation_suggester: Callable[[RegionRef], object] | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("截面分配")
+        self.setWindowTitle(
+            "编辑截面分配" if current is not None else "截面分配"
+        )
         self._sections = tuple(deepcopy(sections))
         self._regions = self._normalize_regions(regions)
+        self._current = deepcopy(current)
+        self._candidate_evaluator = candidate_evaluator
+        self._orientation_suggester = orientation_suggester
+        self._conversion_message = ""
+        self._last_candidate: RegionAssignment | None = None
+        self._last_candidate_decision: object | None = None
         self._compatible_targets = (
             None
             if compatible_targets is None
@@ -964,30 +980,98 @@ class RegionAssignmentDialog(QDialog):
             }
         )
         self.section_combo, self.region_combo = QComboBox(self), QComboBox(self)
+        self.orientation_mode_combo = QComboBox(self)
+        self.orientation_mode_combo.addItem("自动（兼容旧模型）", "automatic")
+        self.orientation_mode_combo.addItem("显式参考方向", "explicit")
+        authored_orientation = (
+            None
+            if current is None
+            else getattr(current, "beam_orientation", None)
+        )
+        authored_reference = getattr(
+            authored_orientation,
+            "local_y_reference",
+            None,
+        )
+        initial_reference = (
+            authored_reference
+            if authored_reference is not None
+            else explicit_reference
+        )
+        if initial_reference is None:
+            initial_reference = (0.0, 0.0, 0.0)
+        try:
+            reference_values = tuple(float(value) for value in initial_reference)
+        except (TypeError, ValueError):
+            reference_values = (0.0, 0.0, 0.0)
+        if len(reference_values) != 3:
+            reference_values = (0.0, 0.0, 0.0)
+        self.orientation_x_spin = _signed_number(self, reference_values[0])
+        self.orientation_y_spin = _signed_number(self, reference_values[1])
+        self.orientation_z_spin = _signed_number(self, reference_values[2])
+        self.orientation_help_label = QLabel(
+            "参考方向使用全局笛卡尔坐标，表示近似 Beam 局部 y 轴。",
+            self,
+        )
+        self.orientation_help_label.setWordWrap(True)
+        self.orientation_help_label.setMaximumWidth(280)
+        self.orientation_diagnostic_label = QLabel(self)
+        self.orientation_diagnostic_label.setWordWrap(True)
         self.section_combo.addItems(
             [section.name for section in self._sections]
         )
         self.section_combo.currentIndexChanged.connect(
             self._refresh_regions
         )
-        form = QFormLayout()
-        configure_form_layout(form)
-        form.addRow("截面", self.section_combo)
-        form.addRow("单元区域", self.region_combo)
-        buttons = QDialogButtonBox(
+        self.section_combo.currentIndexChanged.connect(
+            self._update_orientation_fields
+        )
+        self.orientation_mode_combo.currentIndexChanged.connect(
+            self._orientation_mode_changed
+        )
+        self.region_combo.currentIndexChanged.connect(
+            self._orientation_target_changed
+        )
+        for spin in (
+            self.orientation_x_spin,
+            self.orientation_y_spin,
+            self.orientation_z_spin,
+        ):
+            spin.valueChanged.connect(self._update_orientation_fields)
+        self.form = QFormLayout()
+        configure_form_layout(self.form)
+        self.form.addRow("截面", self.section_combo)
+        self.form.addRow("单元区域", self.region_combo)
+        self.form.addRow("梁截面方向", self.orientation_mode_combo)
+        self.form.addRow(self.orientation_help_label)
+        self.form.addRow("参考方向 X", self.orientation_x_spin)
+        self.form.addRow("参考方向 Y", self.orientation_y_spin)
+        self.form.addRow("参考方向 Z", self.orientation_z_spin)
+        self.form.addRow(self.orientation_diagnostic_label)
+        self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
+        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
-        layout.addLayout(form)
-        layout.addWidget(buttons)
+        layout.addLayout(self.form)
+        layout.addWidget(self.buttons)
         self.setMinimumWidth(300)
         self._refresh_regions()
+        if current is not None:
+            section_index = self.section_combo.findText(current.section_name)
+            if section_index >= 0:
+                self.section_combo.setCurrentIndex(section_index)
+            self._select_region(current.region_name)
+        if authored_orientation is not None:
+            self.orientation_mode_combo.setCurrentIndex(
+                self.orientation_mode_combo.findData("explicit")
+            )
+        self._update_orientation_fields()
 
     def assignment(self) -> RegionAssignment:
         section_name = self.section_combo.currentText().strip()
@@ -997,7 +1081,81 @@ class RegionAssignmentDialog(QDialog):
         if not isinstance(region, RegionRef):
             raise ValueError("没有可分配的兼容单元区域")
         region_name = require_region_kind(region, "element_set")
-        return RegionAssignment(section_name, region_name)
+        orientation = self.beam_orientation()
+        if orientation is None:
+            return RegionAssignment(section_name, region_name)
+        return RegionAssignment(
+            section_name,
+            region_name,
+            beam_orientation=orientation,
+        )
+
+    def beam_orientation(self) -> object | None:
+        if (
+            not self._selected_section_is_beam()
+            or self.orientation_mode_combo.currentData() != "explicit"
+        ):
+            return None
+        reference = self.reference_vector()
+        if not all(isfinite(value) for value in reference):
+            raise ValueError("梁截面参考方向必须包含三个有限分量")
+        if not any(value != 0.0 for value in reference):
+            raise ValueError("梁截面参考方向不能为零向量")
+        orientation_type = getattr(
+            application_api,
+            "BeamOrientation",
+            None,
+        )
+        if orientation_type is None:
+            raise ValueError("当前运行时尚未提供 Beam orientation contract")
+        return orientation_type(reference)
+
+    def reference_vector(self) -> tuple[float, float, float]:
+        return tuple(
+            float(spin.value())
+            for spin in (
+                self.orientation_x_spin,
+                self.orientation_y_spin,
+                self.orientation_z_spin,
+            )
+        )
+
+    def candidate_decision(
+        self,
+        candidate: RegionAssignment | None = None,
+    ) -> object | None:
+        value = self.assignment() if candidate is None else candidate
+        if (
+            self._last_candidate is not None
+            and value == self._last_candidate
+        ):
+            return self._last_candidate_decision
+        decision = (
+            None
+            if self._candidate_evaluator is None
+            else self._candidate_evaluator(value)
+        )
+        self._last_candidate = deepcopy(value)
+        self._last_candidate_decision = decision
+        return decision
+
+    def accept(self) -> None:
+        try:
+            candidate = self.assignment()
+            decision = self.candidate_decision(candidate)
+        except (TypeError, ValueError) as error:
+            QMessageBox.warning(self, "截面分配", str(error))
+            return
+        if not self._decision_enabled(decision):
+            self.orientation_diagnostic_label.setText(
+                self._decision_text(decision)
+            )
+            self.form.setRowVisible(
+                self.orientation_diagnostic_label,
+                True,
+            )
+            return
+        super().accept()
 
     @staticmethod
     def _normalize_regions(
@@ -1015,6 +1173,7 @@ class RegionAssignmentDialog(QDialog):
         return tuple(normalized)
 
     def _refresh_regions(self) -> None:
+        current_region = self.region_combo.currentData()
         section_index = self.section_combo.currentIndex()
         if section_index < 0 or section_index >= len(self._sections):
             targets: tuple[RegionRef, ...] = ()
@@ -1026,6 +1185,18 @@ class RegionAssignmentDialog(QDialog):
                 section.name,
                 self._compatible_targets.get(section.section_type, ()),
             )
+        if (
+            self._current is not None
+            and 0 <= section_index < len(self._sections)
+            and self._sections[section_index].name
+            == self._current.section_name
+        ):
+            existing = RegionRef(
+                "element_set",
+                self._current.region_name,
+            )
+            if existing not in targets:
+                targets = (*targets, existing)
         self.region_combo.clear()
         name_counts = {
             region.name: sum(
@@ -1042,3 +1213,153 @@ class RegionAssignmentDialog(QDialog):
                 )
                 label = f"{region.name}（{kind_label}）"
             self.region_combo.addItem(label, region)
+        if isinstance(current_region, RegionRef):
+            index = self.region_combo.findData(current_region)
+            if index >= 0:
+                self.region_combo.setCurrentIndex(index)
+        self._update_orientation_fields()
+
+    def _select_region(self, region_name: str) -> None:
+        index = self.region_combo.findData(
+            RegionRef("element_set", str(region_name))
+        )
+        if index >= 0:
+            self.region_combo.setCurrentIndex(index)
+
+    def _orientation_mode_changed(self) -> None:
+        if self.orientation_mode_combo.currentData() == "explicit":
+            self._maybe_prefill_orientation()
+        self._update_orientation_fields()
+
+    def _orientation_target_changed(self) -> None:
+        self._conversion_message = ""
+        if self.orientation_mode_combo.currentData() == "explicit":
+            self._maybe_prefill_orientation()
+        self._update_orientation_fields()
+
+    def _maybe_prefill_orientation(self) -> None:
+        if (
+            self._orientation_suggester is None
+            or any(value != 0.0 for value in self.reference_vector())
+        ):
+            return
+        region = self.region_combo.currentData()
+        if not isinstance(region, RegionRef):
+            return
+        try:
+            report = self._orientation_suggester(region)
+        except (KeyError, TypeError, ValueError):
+            report = None
+        suggested = getattr(report, "suggested_orientation", report)
+        reference = getattr(suggested, "local_y_reference", None)
+        if reference is not None:
+            values = tuple(float(value) for value in reference)
+            if len(values) == 3 and all(isfinite(value) for value in values):
+                for spin, value in zip(
+                    (
+                        self.orientation_x_spin,
+                        self.orientation_y_spin,
+                        self.orientation_z_spin,
+                    ),
+                    values,
+                ):
+                    spin.setValue(value)
+                self._conversion_message = ""
+                return
+        self._conversion_message = (
+            "当前区域的 compatibility frame 无法无损转换为一个统一的显式参考"
+            "方向；切换可能改变截面方向，请输入并预览后提交。"
+        )
+
+    def _selected_section_is_beam(self) -> bool:
+        section_index = self.section_combo.currentIndex()
+        if section_index < 0 or section_index >= len(self._sections):
+            return False
+        section_type = str(
+            self._sections[section_index].section_type
+        ).strip().casefold()
+        return section_type in {
+            "beam",
+            "rectangle",
+            "solid_circle",
+            "hollow_circle",
+        }
+
+    def _update_orientation_fields(self) -> None:
+        beam_section = self._selected_section_is_beam()
+        if (
+            not beam_section
+            and self.orientation_mode_combo.currentData() != "automatic"
+        ):
+            self.orientation_mode_combo.setCurrentIndex(
+                self.orientation_mode_combo.findData("automatic")
+            )
+        explicit = (
+            beam_section
+            and self.orientation_mode_combo.currentData() == "explicit"
+        )
+        self.form.setRowVisible(self.orientation_mode_combo, beam_section)
+        self.form.setRowVisible(self.orientation_help_label, explicit)
+        for spin in (
+            self.orientation_x_spin,
+            self.orientation_y_spin,
+            self.orientation_z_spin,
+        ):
+            self.form.setRowVisible(spin, explicit)
+        reference_valid = (
+            not explicit
+            or (
+                all(isfinite(value) for value in self.reference_vector())
+                and any(value != 0.0 for value in self.reference_vector())
+            )
+        )
+        if explicit and not reference_valid:
+            self.orientation_diagnostic_label.setText(
+                self._conversion_message
+                or "显式参考方向必须是非零的三个有限分量。"
+            )
+        else:
+            self.orientation_diagnostic_label.clear()
+        self.form.setRowVisible(
+            self.orientation_diagnostic_label,
+            explicit and not reference_valid,
+        )
+        self.buttons.button(
+            QDialogButtonBox.StandardButton.Ok
+        ).setEnabled(reference_valid and self.region_combo.count() > 0)
+        self._last_candidate = None
+        self._last_candidate_decision = None
+
+    @staticmethod
+    def _decision_enabled(decision: object | None) -> bool:
+        if decision is None:
+            return False
+        if isinstance(decision, bool):
+            return decision
+        status = getattr(decision, "status", None)
+        value = getattr(status, "value", status)
+        diagnostics = tuple(getattr(decision, "diagnostics", ()))
+        return (
+            str(value).strip().casefold() == "enabled"
+            and not any(
+                bool(getattr(item, "blocking", False))
+                for item in diagnostics
+            )
+        )
+
+    @staticmethod
+    def _decision_text(decision: object | None) -> str:
+        diagnostics = tuple(getattr(decision, "diagnostics", ()))
+        lines = []
+        for diagnostic in diagnostics:
+            code = str(getattr(diagnostic, "code", "")).strip()
+            message = str(getattr(diagnostic, "message", "")).strip()
+            remediation = str(
+                getattr(diagnostic, "remediation", "")
+            ).strip()
+            text = f"[{code}] {message}" if code else message
+            if remediation:
+                text += f"\n建议：{remediation}"
+            if text:
+                lines.append(text)
+        return "\n".join(lines) or "当前截面分配不能提交。"

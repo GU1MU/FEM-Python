@@ -1,19 +1,24 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from fem.abaqus import read
 from fem.application import (
     ArtifactKind,
+    BeamOrientation,
     ChangeKind,
+    DefinitionRejected,
     FeatureRecord,
     ModelSession,
     NamedRegion,
     NativePart,
     RegionAssignment,
     SectionDefinition,
+    TokenStatus,
 )
 from fem.core.model import (
     AnalysisStep,
@@ -34,6 +39,9 @@ from fem.geometry.recipes import (
 )
 from fem.mesh.settings import LocalMeshControl, MeshSettings
 from tests.helpers.preflight_builders import passing_preflight_report
+
+
+_FIXTURES = Path(__file__).parents[1] / "fixtures" / "inp"
 
 
 def _model(*step_names: str) -> SimpleNamespace:
@@ -94,6 +102,31 @@ def _session_with_artifacts() -> ModelSession:
     solve = session.prepare_solve("Step-A", "Job-1")
     session.begin_run(solve.token)
     session.accept_run_result(solve.token, {"value": 1})
+    return session
+
+
+def _accept_beam_computations(session: ModelSession) -> None:
+    validation = session.prepare_validation("UniformLoad")
+    session.accept_validation(
+        validation.token,
+        passing_preflight_report(validation.token),
+    )
+    solve = session.prepare_solve("UniformLoad", "Beam-Job")
+    session.begin_run(solve.token)
+    session.accept_run_result(solve.token, {"U": [1.0]})
+    session.select_result(solve.run_id)
+
+
+def _beam_session_with_artifacts() -> ModelSession:
+    session = ModelSession()
+    task = session.prepare_import(
+        _FIXTURES / "beam2_rectangle_uniform_load.inp"
+    )
+    session.accept_imported_model(
+        task.token,
+        read(_FIXTURES / "beam2_rectangle_uniform_load.inp"),
+    )
+    _accept_beam_computations(session)
     return session
 
 
@@ -275,6 +308,93 @@ def test_definition_change_recompiles_model_and_invalidates_derived_state() -> N
     assert not current.runs
     assert current.displayed_result is None
     assert current.model.materials["Steel"].properties["E"] == 2.0
+
+
+def test_beam_orientation_edit_and_clear_recompile_and_invalidate() -> None:
+    session = _beam_session_with_artifacts()
+
+    for orientation in (
+        BeamOrientation((0.0, 1.0, 0.0)),
+        None,
+    ):
+        before = session.snapshot()
+        assignment = before.region_assignments[0]
+
+        delta = session.replace_model_definitions(
+            before.material_definitions,
+            before.section_definitions,
+            (
+                RegionAssignment(
+                    assignment.section_name,
+                    assignment.region_name,
+                    orientation,
+                ),
+            ),
+            before.analysis_definitions,
+        )
+        current = session.snapshot()
+
+        assert current.session_revision == before.session_revision + 1
+        assert current.project_revision == before.project_revision + 1
+        assert current.model_revision == before.model_revision + 1
+        assert current.artifact is not None
+        assert current.artifact.artifact_id != (
+            before.artifact.artifact_id
+        )
+        assert current.region_assignments[0].beam_orientation == (
+            orientation
+        )
+        assert not current.validations
+        assert not current.runs
+        assert current.displayed_result is None
+        assert not current.has_result
+        assert {
+            ArtifactKind.MODEL,
+            ArtifactKind.VALIDATIONS,
+            ArtifactKind.RUNS,
+            ArtifactKind.RESULTS,
+        }.issubset(delta.invalidated)
+
+        if orientation is not None:
+            _accept_beam_computations(session)
+
+
+def test_parallel_orientation_rejection_preserves_all_accepted_state() -> None:
+    session = _beam_session_with_artifacts()
+    validation = session.prepare_validation("UniformLoad")
+    before = session.snapshot()
+    assignment = before.region_assignments[0]
+
+    with pytest.raises(DefinitionRejected) as caught:
+        session.replace_model_definitions(
+            before.material_definitions,
+            before.section_definitions,
+            (
+                RegionAssignment(
+                    assignment.section_name,
+                    assignment.region_name,
+                    BeamOrientation((1.0, 0.0, 0.0)),
+                ),
+            ),
+            before.analysis_definitions,
+        )
+
+    after = session.snapshot()
+    assert {
+        item.code for item in caught.value.diagnostics
+    } == {"beam.orientation.parallel"}
+    assert after.session_revision == before.session_revision
+    assert after.project_revision == before.project_revision
+    assert after.model_revision == before.model_revision
+    assert after.artifact.artifact_id == before.artifact.artifact_id
+    assert after.region_assignments == before.region_assignments
+    assert after.validations == before.validations
+    assert after.runs == before.runs
+    assert after.displayed_result == before.displayed_result
+    assert after.has_result == before.has_result
+    assert session.validate_task_token(validation.token) is (
+        TokenStatus.CURRENT
+    )
 
 
 def test_clear_geometry_removes_all_topology_dependent_inputs() -> None:
