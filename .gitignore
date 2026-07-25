@@ -1,4 +1,7 @@
 results/
+agent-workspace/
+/fem-agent.config.json
+/tests/fem-agent.test.config.json
 temp/
 __pycache__/
 .pytest_cache/
@@ -7,7 +10,6 @@ __pycache__/
 .env
 ex.py
 *.txt
-superpowers/
 data/
 scripts/
 docs/

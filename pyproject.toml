@@ -13,9 +13,17 @@ dependencies = [
     "scipy>=1.16,<2",
 ]
 
+[project.scripts]
+fem-agent = "fem_agent.cli:main"
+
 [project.optional-dependencies]
 cad = [
     "gmsh>=4.15.2,<5",
+]
+agent = [
+    "httpx[socks]>=0.28,<1",
+    "openai>=2.46,<3",
+    "prompt-toolkit>=3.0.52,<4",
 ]
 test = [
     "pytest>=9",

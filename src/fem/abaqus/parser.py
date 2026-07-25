@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable
 
@@ -59,7 +60,10 @@ def parse_file(path: str | Path) -> AbaqusDeck:
                 state.handle_data(
                     _split_values(
                         line,
-                        preserve_leading_empty=state.mode in {"dload", "dsload"},
+                        preserve_leading_empty=(
+                            state.mode
+                            in {"dload", "dsload", "solid_section"}
+                        ),
                     )
                 )
 
@@ -233,6 +237,8 @@ class _ParserState:
             self._add_density(values)
         elif self.mode == "elastic":
             self._add_elastic(values)
+        elif self.mode == "solid_section":
+            self._add_solid_section_data(values)
         elif self.mode == "static":
             self._ensure_step().metadata["time"] = tuple(float(value) for value in values)
         elif self.mode == "boundary":
@@ -385,6 +391,26 @@ class _ParserState:
         self.deck.sections.append(
             AbaqusSection(element_set, material, section_type, element_ids)
         )
+        if section_type == "solid":
+            self.mode = "solid_section"
+
+    def _add_solid_section_data(self, values: list[str]) -> None:
+        if len(values) != 1:
+            raise ValueError(
+                "*Solid Section data must contain exactly one scalar "
+                "thickness value"
+            )
+        thickness = float(values[0])
+        if not math.isfinite(thickness) or thickness <= 0.0:
+            raise ValueError(
+                "*Solid Section thickness must be finite and greater than zero"
+            )
+        section = self.deck.sections[-1]
+        if section.thickness is not None:
+            raise ValueError(
+                "*Solid Section supports at most one thickness data record"
+            )
+        self.deck.sections[-1] = replace(section, thickness=thickness)
 
     def _add_boundary(self, values: list[str]) -> None:
         target = _parse_target(values[0])

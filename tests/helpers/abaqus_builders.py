@@ -5,7 +5,13 @@ from collections.abc import Sequence
 from tests.helpers.file_builders import write_inp
 
 
-def write_perforated_plate_style_inp(directory, filename: str, step_lines: Sequence[str]):
+def write_perforated_plate_style_inp(
+    directory,
+    filename: str,
+    step_lines: Sequence[str],
+    *,
+    section_data: Sequence[str] = (),
+):
     """Write a small Abaqus model with perforated-plate-style surface setup."""
     return write_inp(
         directory,
@@ -35,11 +41,72 @@ def write_perforated_plate_style_inp(directory, filename: str, step_lines: Seque
             "*Elastic",
             "210000., 0.3",
             "*Solid Section, elset=SOLID, material=STEEL",
+            *section_data,
             "*Boundary",
             "Set-left, 1, 2, 0.",
             "*Step, name=Step-1, nlgeom=NO",
             "*Static",
             *step_lines,
+            "*End Step",
+        ],
+    )
+
+
+def write_hex20_block_inp(directory, filename: str):
+    """Write one constrained and loaded quadratic brick for Agent E2E tests."""
+
+    coordinates = (
+        (-1, -1, -1),
+        (1, -1, -1),
+        (1, 1, -1),
+        (-1, 1, -1),
+        (-1, -1, 1),
+        (1, -1, 1),
+        (1, 1, 1),
+        (-1, 1, 1),
+        (0, -1, -1),
+        (1, 0, -1),
+        (0, 1, -1),
+        (-1, 0, -1),
+        (0, -1, 1),
+        (1, 0, 1),
+        (0, 1, 1),
+        (-1, 0, 1),
+        (-1, -1, 0),
+        (1, -1, 0),
+        (1, 1, 0),
+        (-1, 1, 0),
+    )
+    return write_inp(
+        directory,
+        filename,
+        [
+            "*Node",
+            *[
+                f"{node_id}, {x}, {y}, {z}"
+                for node_id, (x, y, z) in enumerate(
+                    coordinates,
+                    start=1,
+                )
+            ],
+            "*Element, type=C3D20, elset=SOLID",
+            "1, " + ",".join(str(node_id) for node_id in range(1, 21)),
+            "*Nset, nset=Set-fixed",
+            "1,4,5,8,12,16,17,20",
+            "*Nset, nset=Set-loaded",
+            "2,3,6,7,10,14,18,19",
+            "*Surface, type=ELEMENT, name=Surf-loaded",
+            "SOLID, S4",
+            "*Material, name=STEEL",
+            "*Elastic",
+            "206000., 0.3",
+            "*Solid Section, elset=SOLID, material=STEEL",
+            "*Boundary",
+            "Set-fixed, 1, 3, 0.",
+            "*Step, name=Step-1, nlgeom=NO",
+            "*Static",
+            "*Cload",
+            "Set-loaded, 1, 10.",
             "*End Step",
         ],
     )

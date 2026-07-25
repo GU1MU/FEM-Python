@@ -34,6 +34,7 @@ class AbaqusSection:
     material: str
     section_type: str = "solid"
     element_ids: tuple[int, ...] = ()
+    thickness: float | None = None
 
 
 @dataclass(frozen=True)

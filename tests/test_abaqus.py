@@ -128,6 +128,74 @@ def test_abaqus_read_perforated_plate_style_inputs_without_data_files(
     assert model.edges["Surf-right"].edges[0] == ElementEdge(2, 1, (3, 6))
 
 
+def test_abaqus_read_preserves_2d_solid_section_thickness(tmp_path):
+    inp_path = write_perforated_plate_style_inp(
+        tmp_path,
+        "plate_with_thickness.inp",
+        ("*Cload", "Set-right, 1, 10."),
+        section_data=("2.5,",),
+    )
+
+    model = abaqus.read(inp_path)
+
+    assert model.sections[0].properties == {"thickness": 2.5}
+    materials.apply_sections(model)
+    assert {
+        element.props["thickness"]
+        for element in model.mesh.elements
+    } == {2.5}
+
+
+def test_abaqus_solid_section_thickness_affects_2d_stiffness(tmp_path):
+    thin_path = write_perforated_plate_style_inp(
+        tmp_path,
+        "plate_thickness_1.inp",
+        ("*Cload", "Set-right, 1, 10."),
+        section_data=("1.,",),
+    )
+    thick_path = write_perforated_plate_style_inp(
+        tmp_path,
+        "plate_thickness_2.inp",
+        ("*Cload", "Set-right, 1, 10."),
+        section_data=("2.,",),
+    )
+
+    thin = static_linear.solve(abaqus.read(thin_path))
+    thick = static_linear.solve(abaqus.read(thick_path))
+
+    thin_displacement = thin.nodal_displacement(3, 1)
+    thick_displacement = thick.nodal_displacement(3, 1)
+    assert thin_displacement != 0.0
+    assert thick_displacement == pytest.approx(thin_displacement / 2.0)
+
+
+def test_abaqus_rejects_solid_section_thickness_for_3d_elements(tmp_path):
+    path = write_inp(
+        tmp_path,
+        "solid_thickness_3d.inp",
+        [
+            "*Node",
+            "1, 0., 0., 0.",
+            "2, 1., 0., 0.",
+            "3, 0., 1., 0.",
+            "4, 0., 0., 1.",
+            "*Element, type=C3D4, elset=SOLID",
+            "1, 1,2,3,4",
+            "*Material, name=STEEL",
+            "*Elastic",
+            "210000., 0.3",
+            "*Solid Section, elset=SOLID, material=STEEL",
+            "2.5,",
+            "*Step, name=LOAD",
+            "*Static",
+            "*End Step",
+        ],
+    )
+
+    with pytest.raises(ValueError, match="two-dimensional CPS/CPE"):
+        abaqus.read(path)
+
+
 @pytest.mark.parametrize(
     ("filename", "step_lines", "expected_load_type"),
     [

@@ -55,6 +55,10 @@ def build_model(deck: AbaqusDeck) -> FEMModel:
         for name, material in deck.materials.items()
     }
     sections: list[SectionAssignment] = []
+    element_types = {
+        int(element.id): element.type.upper()
+        for element in deck.elements
+    }
     for section_index, section in enumerate(deck.sections):
         section_element_set = section.element_set
         section_element_ids = _unique_ids(section.element_ids)
@@ -65,11 +69,24 @@ def build_model(deck: AbaqusDeck) -> FEMModel:
                 section_element_set,
                 section_element_ids,
             )
+        section_properties: dict[str, float] = {}
+        if section.thickness is not None:
+            effective_ids = section_element_ids or resolved_element_ids
+            if any(
+                not element_types.get(element_id, "").startswith(("CPS", "CPE"))
+                for element_id in effective_ids
+            ):
+                raise ValueError(
+                    "Abaqus SOLID SECTION thickness data is supported only "
+                    "for two-dimensional CPS/CPE elements"
+                )
+            section_properties["thickness"] = section.thickness
         sections.append(
             SectionAssignment(
                 section_element_set,
                 section.material,
                 section.section_type,
+                section_properties,
             )
         )
 
