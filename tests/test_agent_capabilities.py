@@ -1,3 +1,4 @@
+from fem.abaqus.contracts import STANDARD_LINE_SUBSET
 from fem_agent.capabilities import (
     CapabilityDisposition,
     SUPPORTED_ELEMENT_TYPES,
@@ -29,7 +30,19 @@ def test_unknown_keywords_are_blocking_by_default():
     assert capability.disposition == CapabilityDisposition.BLOCKING
 
 
-def test_output_metadata_is_visible_but_not_physical_input():
-    capability = keyword_capability("Node Output")
+def test_output_keywords_publish_static_postprocess_categories():
+    node = keyword_capability("Node Output")
+    history = keyword_capability("History Output")
 
-    assert capability.disposition == CapabilityDisposition.IGNORED
+    assert node.disposition == CapabilityDisposition.POSTPROCESS_CANDIDATE
+    assert history.disposition == CapabilityDisposition.PRESERVED_OUTPUT
+    assert all(
+        keyword_capability(name).disposition
+        is CapabilityDisposition.POSTPROCESS_CANDIDATE
+        for name in STANDARD_LINE_SUBSET.postprocess_candidate_keywords
+    )
+    assert all(
+        keyword_capability(name).disposition
+        is CapabilityDisposition.PRESERVED_OUTPUT
+        for name in STANDARD_LINE_SUBSET.preserved_output_keywords
+    )

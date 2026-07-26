@@ -39,6 +39,12 @@ _COMMON_UNSUPPORTED_PROCEDURES = frozenset(
     }
 )
 _LOAD_KEYWORDS = frozenset({"cload", "dload", "dsload"})
+_OUTPUT_DISPOSITIONS = frozenset(
+    {
+        CapabilityDisposition.POSTPROCESS_CANDIDATE,
+        CapabilityDisposition.PRESERVED_OUTPUT,
+    }
+)
 _MAX_DIAGNOSTICS = 96
 _MAX_SET_MEMBERSHIP_IDS = 2_000_000
 _SAFE_TOKEN_PATTERN = re.compile(r"[^a-z0-9 _-]+")
@@ -252,9 +258,13 @@ class _ScanState:
         self.keyword_count += 1
         safe_name = _safe_token(keyword.name, fallback="invalid-keyword")
         capability = keyword_capability(keyword.name)
-        self._record_inventory(safe_name, keyword, capability.disposition)
 
         if capability.disposition == CapabilityDisposition.BLOCKING:
+            self._record_inventory(
+                safe_name,
+                keyword,
+                capability.disposition,
+            )
             if keyword.name in _COMMON_UNSUPPORTED_PROCEDURES:
                 self._block(
                     DiagnosticCode.UNSUPPORTED_PROCEDURE,
@@ -282,6 +292,18 @@ class _ScanState:
             return
 
         missing = capability.required_parameters.difference(keyword.parameters)
+        unknown_parameters = set(keyword.parameters).difference(
+            capability.allowed_parameters
+        )
+        unknown_flags = set(keyword.flags).difference(capability.allowed_flags)
+        disposition = _static_keyword_disposition(
+            keyword,
+            capability.disposition,
+            unknown_parameters,
+            unknown_flags,
+        )
+        self._record_inventory(safe_name, keyword, disposition)
+
         for parameter in sorted(missing):
             display_parameter = _safe_token(
                 parameter,
@@ -296,34 +318,34 @@ class _ScanState:
                 f"{safe_name}:{_safe_token(parameter, fallback='parameter')}",
             )
 
-        unknown_parameters = set(keyword.parameters).difference(
-            capability.allowed_parameters
-        )
-        for parameter in sorted(unknown_parameters):
-            display_parameter = _safe_token(
-                parameter,
-                fallback="parameter",
-            ).upper()
-            self._block(
-                DiagnosticCode.UNSUPPORTED_KEYWORD_OPTION,
-                (
-                    f"*{safe_name.upper()} uses the unsupported "
-                    f"{display_parameter} parameter."
-                ),
-                f"{safe_name}:{_safe_token(parameter, fallback='parameter')}",
-            )
+        if capability.disposition not in _OUTPUT_DISPOSITIONS:
+            for parameter in sorted(unknown_parameters):
+                display_parameter = _safe_token(
+                    parameter,
+                    fallback="parameter",
+                ).upper()
+                self._block(
+                    DiagnosticCode.UNSUPPORTED_KEYWORD_OPTION,
+                    (
+                        f"*{safe_name.upper()} uses the unsupported "
+                        f"{display_parameter} parameter."
+                    ),
+                    (
+                        f"{safe_name}:"
+                        f"{_safe_token(parameter, fallback='parameter')}"
+                    ),
+                )
 
-        unknown_flags = set(keyword.flags).difference(capability.allowed_flags)
-        for flag in sorted(unknown_flags):
-            display_flag = _safe_token(flag, fallback="flag").upper()
-            self._block(
-                DiagnosticCode.UNSUPPORTED_KEYWORD_OPTION,
-                (
-                    f"*{safe_name.upper()} uses the unsupported "
-                    f"{display_flag} flag."
-                ),
-                f"{safe_name}:{_safe_token(flag, fallback='flag')}",
-            )
+            for flag in sorted(unknown_flags):
+                display_flag = _safe_token(flag, fallback="flag").upper()
+                self._block(
+                    DiagnosticCode.UNSUPPORTED_KEYWORD_OPTION,
+                    (
+                        f"*{safe_name.upper()} uses the unsupported "
+                        f"{display_flag} flag."
+                    ),
+                    f"{safe_name}:{_safe_token(flag, fallback='flag')}",
+                )
 
         if capability.disposition == CapabilityDisposition.IGNORED:
             self.diagnostics.add(
@@ -511,6 +533,11 @@ class _ScanState:
                 return
             item = _InventoryItem(safe_name, disposition)
             self._inventory[safe_name] = item
+        elif (
+            disposition is CapabilityDisposition.PRESERVED_OUTPUT
+            and item.disposition is CapabilityDisposition.POSTPROCESS_CANDIDATE
+        ):
+            item.disposition = disposition
         item.count += 1
         item.parameters.update(
             _safe_token(name, fallback="parameter")
@@ -1029,6 +1056,30 @@ def _parse_keyword(line: str) -> _Keyword:
         else:
             flags.add(part.lower())
     return _Keyword(name, parameters, frozenset(flags))
+
+
+def _static_keyword_disposition(
+    keyword: _Keyword,
+    disposition: CapabilityDisposition,
+    unknown_parameters: set[str],
+    unknown_flags: set[str],
+) -> CapabilityDisposition:
+    """Classify output structure without claiming request execution."""
+
+    if disposition not in _OUTPUT_DISPOSITIONS:
+        return disposition
+    if disposition is CapabilityDisposition.PRESERVED_OUTPUT:
+        return disposition
+    if unknown_parameters or unknown_flags:
+        return CapabilityDisposition.PRESERVED_OUTPUT
+    variable = keyword.parameters.get("variable")
+    if variable is not None and variable.casefold() == "preselect":
+        return CapabilityDisposition.PRESERVED_OUTPUT
+    if keyword.name == "output" and (
+        "history" in keyword.flags or "field" not in keyword.flags
+    ):
+        return CapabilityDisposition.PRESERVED_OUTPUT
+    return CapabilityDisposition.POSTPROCESS_CANDIDATE
 
 
 def _split_values(

@@ -143,6 +143,7 @@ def test_inspect_hex20_input_matches_direct_import(tmp_path):
     }
     assert inventory["element"]["parameters"] == ("elset", "type")
     assert inventory["output"]["count"] == 1
+    assert inventory["output"]["disposition"] == "preserved_output"
     assert inventory["restart"]["disposition"] == "inspected_but_ignored"
     assert "IGNORED_METADATA" in _codes(inspected)
     ignored = [
@@ -152,8 +153,77 @@ def test_inspect_hex20_input_matches_direct_import(tmp_path):
     ]
     assert len(ignored) == 1
     assert ignored[0].severity == DiagnosticSeverity.INFO
-    assert "*OUTPUT" in ignored[0].message
     assert "*RESTART" in ignored[0].message
+    assert "*OUTPUT" not in ignored[0].message
+
+
+def test_output_inventory_preserves_unknown_options_without_solver_claims(
+    tmp_path,
+):
+    lines = (
+        LINE_FIXTURES / "truss2_tension.inp"
+    ).read_text(encoding="utf-8").splitlines()
+    output_index = lines.index("*Output, field")
+    lines[output_index] = (
+        "*Output, field, frequency=1, FutureParentFlag"
+    )
+    node_output_index = lines.index("*Node Output")
+    lines[node_output_index] = (
+        "*Node Output, FutureOption=kept, FutureChildFlag"
+    )
+    path = write_inp(tmp_path, "classified_output.inp", lines)
+
+    inspected = inspect_abaqus(path)
+    inventory = {
+        item["name"]: item
+        for item in inspected.keyword_inspection.keyword_inventory
+    }
+
+    assert inspected.ok
+    assert inventory["output"]["disposition"] == "preserved_output"
+    assert inventory["node output"]["disposition"] == "preserved_output"
+    assert (
+        inventory["element output"]["disposition"]
+        == "postprocess_candidate"
+    )
+    assert set(inventory["output"]) == {
+        "name",
+        "count",
+        "parameters",
+        "flags",
+        "disposition",
+    }
+    assert "UNSUPPORTED_KEYWORD_OPTION" not in _codes(inspected)
+
+
+@pytest.mark.parametrize(
+    ("output_keyword", "expected_disposition"),
+    (
+        ("*Output, field", "postprocess_candidate"),
+        ("*Output, history", "preserved_output"),
+        ("*Output, field, variable=PRESELECT", "preserved_output"),
+    ),
+)
+def test_output_parent_structure_has_static_non_solver_disposition(
+    tmp_path,
+    output_keyword,
+    expected_disposition,
+):
+    path = write_inp(
+        tmp_path,
+        "output_parent_classification.inp",
+        [
+            "*Step, name=OUTPUT",
+            "*Static",
+            output_keyword,
+            "*End Step",
+        ],
+    )
+
+    report = inspect_abaqus_keywords(path)
+    inventory = {item["name"]: item for item in report.keyword_inventory}
+
+    assert inventory["output"]["disposition"] == expected_disposition
 
 
 def test_inspection_accepts_positive_2d_solid_section_thickness(tmp_path):

@@ -1751,6 +1751,28 @@ def test_standard_line_subset_excludes_retired_wire_dialect():
         STANDARD_LINE_SUBSET.distributed_load_labels
     )
     assert "truss section" not in STANDARD_LINE_SUBSET.executed_keywords
+    output_keywords = {
+        "output",
+        "field output",
+        "history output",
+        "node output",
+        "element output",
+    }
+    assert output_keywords.isdisjoint(
+        STANDARD_LINE_SUBSET.solver_executed_keywords
+    )
+    assert STANDARD_LINE_SUBSET.postprocess_candidate_keywords == frozenset(
+        {
+            "output",
+            "field output",
+            "node output",
+            "element output",
+        }
+    )
+    assert STANDARD_LINE_SUBSET.preserved_output_keywords == frozenset(
+        {"history output"}
+    )
+    assert output_keywords <= STANDARD_LINE_SUBSET.accepted_keywords
 
 
 def test_retired_element_aliases_are_not_adapter_mapping_keys():

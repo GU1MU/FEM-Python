@@ -466,7 +466,11 @@ def _audit_line_subset(deck: AbaqusDeck) -> bool:
                 ),
             ) from exc
 
-    executed = set(STANDARD_LINE_SUBSET.executed_keywords)
+    accepted = set(STANDARD_LINE_SUBSET.accepted_keywords)
+    output_keywords = set(
+        STANDARD_LINE_SUBSET.postprocess_candidate_keywords
+        | STANDARD_LINE_SUBSET.preserved_output_keywords
+    )
     harmless = set(STANDARD_LINE_SUBSET.harmless_ignored_keywords)
     for occurrence in deck.keyword_occurrences:
         name = occurrence.name
@@ -477,12 +481,12 @@ def _audit_line_subset(deck: AbaqusDeck) -> bool:
                 location=occurrence.location,
                 remediation="Use supported *DLOAD records for B31 or GRAV.",
             )
-        if name not in executed and name not in harmless:
+        if name not in accepted and name not in harmless:
             remediation = _unsupported_keyword_remediation(name)
             raise UnsupportedAbaqusFeatureError(
                 (
-                    f"*{name.upper()} is not executed by the supported "
-                    "B31/T3D2 linear-static subset"
+                    f"*{name.upper()} is outside the accepted "
+                    "B31/T3D2 linear-static input vocabulary"
                 ),
                 code="abaqus.line.keyword_unsupported",
                 location=occurrence.location,
@@ -490,6 +494,10 @@ def _audit_line_subset(deck: AbaqusDeck) -> bool:
                 remediation=remediation,
             )
         if name in harmless:
+            continue
+        if name in output_keywords:
+            # Output options are preserved authoring evidence.  Concrete
+            # postprocessing support is classified after solve.
             continue
         params = {
             str(key).casefold(): value

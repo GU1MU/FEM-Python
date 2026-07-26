@@ -5,13 +5,36 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class AbaqusLineSubset:
-    """Exact Abaqus vocabulary executed for the Phase 6 line subset."""
+    """Static Abaqus compatibility vocabulary for the line subset.
+
+    Output keywords are accepted authoring input.  Their execution status is
+    decided later against a concrete result capability, so they are never
+    included in the solver-executed vocabulary.
+    """
 
     element_types: frozenset[str]
     section_profiles: frozenset[str]
     distributed_load_labels: frozenset[str]
     executed_keywords: frozenset[str]
     harmless_ignored_keywords: frozenset[str]
+    postprocess_candidate_keywords: frozenset[str] = frozenset()
+    preserved_output_keywords: frozenset[str] = frozenset()
+
+    @property
+    def solver_executed_keywords(self) -> frozenset[str]:
+        """Return the legacy ``executed_keywords`` field under its exact role."""
+
+        return self.executed_keywords
+
+    @property
+    def accepted_keywords(self) -> frozenset[str]:
+        """Return all keyword categories accepted by the line adapter."""
+
+        return (
+            self.solver_executed_keywords
+            | self.postprocess_candidate_keywords
+            | self.preserved_output_keywords
+        )
 
 
 STANDARD_LINE_SUBSET = AbaqusLineSubset(
@@ -42,15 +65,19 @@ STANDARD_LINE_SUBSET = AbaqusLineSubset(
             "boundary",
             "cload",
             "dload",
-            "output",
-            "field output",
-            "history output",
-            "node output",
-            "element output",
             "end step",
         }
     ),
     harmless_ignored_keywords=frozenset({"heading"}),
+    postprocess_candidate_keywords=frozenset(
+        {
+            "output",
+            "field output",
+            "node output",
+            "element output",
+        }
+    ),
+    preserved_output_keywords=frozenset({"history output"}),
 )
 
 # Keep one descriptor object while offering a package-specific discoverable name.

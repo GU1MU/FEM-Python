@@ -11,6 +11,8 @@ from .schemas import ResultQueryKind, SCHEMA_VERSION
 
 class CapabilityDisposition(str, Enum):
     SUPPORTED = "supported"
+    POSTPROCESS_CANDIDATE = "postprocess_candidate"
+    PRESERVED_OUTPUT = "preserved_output"
     IGNORED = "inspected_but_ignored"
     WARNING = "unsupported_warning"
     BLOCKING = "unsupported_blocking"
@@ -145,24 +147,24 @@ KEYWORD_CAPABILITIES: Mapping[str, KeywordCapability] = {
     "dload": KeywordCapability(CapabilityDisposition.SUPPORTED),
     "dsload": KeywordCapability(CapabilityDisposition.SUPPORTED),
     "output": KeywordCapability(
-        CapabilityDisposition.IGNORED,
+        CapabilityDisposition.POSTPROCESS_CANDIDATE,
         allowed_parameters=frozenset({"variable", "frequency", "number interval"}),
         allowed_flags=frozenset({"field", "history"}),
     ),
     "field output": KeywordCapability(
-        CapabilityDisposition.IGNORED,
+        CapabilityDisposition.POSTPROCESS_CANDIDATE,
         allowed_parameters=frozenset({"name", "variable", "frequency"}),
     ),
     "history output": KeywordCapability(
-        CapabilityDisposition.IGNORED,
+        CapabilityDisposition.PRESERVED_OUTPUT,
         allowed_parameters=frozenset({"name", "variable", "frequency"}),
     ),
     "node output": KeywordCapability(
-        CapabilityDisposition.IGNORED,
+        CapabilityDisposition.POSTPROCESS_CANDIDATE,
         allowed_parameters=frozenset({"nset", "frequency"}),
     ),
     "element output": KeywordCapability(
-        CapabilityDisposition.IGNORED,
+        CapabilityDisposition.POSTPROCESS_CANDIDATE,
         allowed_parameters=frozenset(
             {"elset", "position", "directions", "frequency"}
         ),
