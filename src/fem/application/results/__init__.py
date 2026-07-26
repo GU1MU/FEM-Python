@@ -62,6 +62,7 @@ from .execution import (
     ResultExecutionReport,
     execute_output_requests,
 )
+from .workflow import SolveResultBundle, build_solve_result_bundle
 
 __all__ = [
     "ElementResultProfile",
@@ -102,8 +103,10 @@ __all__ = [
     "ResultTopologyProjection",
     "ResultVariable",
     "ScalarFieldSelection",
+    "SolveResultBundle",
     "advance_materialization",
     "build_result_provider",
+    "build_solve_result_bundle",
     "build_initial_materialization",
     "catalog_diagnostics",
     "catalog_entries",

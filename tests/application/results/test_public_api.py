@@ -20,6 +20,10 @@ from fem.application.results.registry import (
     catalog_entries,
     classify_result_model,
 )
+from fem.application.results.workflow import (
+    SolveResultBundle,
+    build_solve_result_bundle,
+)
 
 
 def test_result_package_exports_provider_query_projection_and_execution() -> None:
@@ -29,7 +33,9 @@ def test_result_package_exports_provider_query_projection_and_execution() -> Non
         "ResultExecutionReport": ResultExecutionReport,
         "ResultProvider": ResultProvider,
         "ResultQuery": ResultQuery,
+        "SolveResultBundle": SolveResultBundle,
         "build_result_provider": build_result_provider,
+        "build_solve_result_bundle": build_solve_result_bundle,
         "catalog_entries": catalog_entries,
         "classify_result_model": classify_result_model,
         "execute_output_requests": execute_output_requests,
