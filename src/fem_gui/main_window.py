@@ -54,6 +54,7 @@ from fem.application import (
     safe_static_preflight,
 )
 from fem.application.preprocessing import generate_fem_model
+from fem.application.results import build_solve_result_bundle
 from fem.core.model import (
     EdgeLoad,
     GravityLoad,
@@ -3682,14 +3683,13 @@ class FEMMainWindow(QMainWindow):
         job = self.session.find_run(task.run_id)
         if job is None:
             return None
-        geometry = self.geometry
         self.status_panel.set_state(f"正在分析：{job.name}")
         self._refresh_job_manager()
         stage = {"name": "模型验证"}
 
         def workload(
             context: TaskContext,
-        ) -> tuple[object, ResultData, dict[str, float]]:
+        ) -> tuple[object, dict[str, float]]:
             timings: dict[str, float] = {}
             solve_model = task.model
             stage["name"] = "求解"
@@ -3700,46 +3700,32 @@ class FEMMainWindow(QMainWindow):
                 name=task.run_name,
                 timings=timings,
             )
-            context.report("正在准备结果……")
+            context.report("正在执行输出请求……")
             started = perf_counter()
-            data = build_result_data(result, geometry, include_stress=False)
-            data = replace(
-                data,
-                artifact_id=task.token.artifact_id,
-                run_id=task.run_id,
+            bundle = build_solve_result_bundle(
+                task,
+                result,
+                cancellation=context,
             )
-            timings["位移与反力结果"] = perf_counter() - started
+            timings["输出请求与初始结果"] = perf_counter() - started
             context.checkpoint()
-            return result, data, timings
+            return bundle, timings
 
         def apply_result(value: object) -> TaskApplyOutcome:
-            if len(value) == 2:
-                result, data = value
-                timings: dict[str, float] = {}
-            else:
-                result, data, timings = value
-            data = replace(
-                data,
-                artifact_id=task.token.artifact_id,
-                run_id=task.token.run_id,
-            )
-            delta = self.session.accept_run_result(
+            bundle, timings = value
+            delta = self.session.accept_run_succeeded(
                 task.token,
-                result,
+                bundle,
                 timings=timings,
             )
             return self._session_task_outcome(
                 delta,
-                (data, timings),
+                timings,
             )
 
         def project_result(value: object) -> None:
-            delta, payload = value
-            data, timings = payload
-            if not self._apply_session_delta(
-                delta,
-                result_projection=data,
-            ):
+            delta, timings = value
+            if not self._apply_session_delta(delta):
                 raise RuntimeError("已接受的求解结果无法投影")
             completed = self.session.find_run(task.token.run_id)
             if completed is None:
@@ -3776,25 +3762,13 @@ class FEMMainWindow(QMainWindow):
         return None
 
     def _job_succeeded(self, token: object, value: object) -> None:
-        if len(value) == 2:
-            result, data = value
-            timings = {}
-        else:
-            result, data, timings = value
-        data = replace(
-            data,
-            artifact_id=token.artifact_id,
-            run_id=token.run_id,
-        )
-        delta = self.session.accept_run_result(
+        bundle, timings = value
+        delta = self.session.accept_run_succeeded(
             token,
-            result,
+            bundle,
             timings=timings,
         )
-        if not self._apply_session_delta(
-            delta,
-            result_projection=data,
-        ):
+        if not self._apply_session_delta(delta):
             self.status_panel.set_state(
                 "求解结果已过期，未覆盖当前会话",
                 5000,

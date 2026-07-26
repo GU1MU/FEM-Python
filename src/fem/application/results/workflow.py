@@ -99,6 +99,37 @@ def build_solve_result_bundle(
     )
 
 
+def validate_solve_result_model_identity(
+    result: ModelResult,
+    expected_model: object,
+    step_name: str,
+) -> None:
+    """Require a solved model to match the accepted artifact and step inputs."""
+
+    if type(result) is not ModelResult:
+        raise TypeError("result must be exactly ModelResult")
+    if type(step_name) is not str or not step_name.strip():
+        raise ValueError("step_name must be a nonblank string")
+    result_step = _unique_model_step(result.model, step_name)
+    expected_step = _unique_model_step(expected_model, step_name)
+    if result.step is not result_step:
+        raise ValueError("solved result step must belong to its result model")
+    if _mesh_identity(result.model) != _mesh_identity(expected_model):
+        raise ValueError(
+            "solved result model topology must match the accepted artifact"
+        )
+    try:
+        step_matches = result_step == expected_step
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            "solved result step cannot be matched to the accepted artifact"
+        ) from error
+    if type(step_matches) is not bool or not step_matches:
+        raise ValueError(
+            "solved result step must match the accepted artifact step"
+        )
+
+
 def _validate_solve_result(
     task: SolveTaskSnapshot,
     result: ModelResult,
@@ -169,4 +200,64 @@ def _validate_solve_result(
     )
 
 
-__all__ = ["SolveResultBundle", "build_solve_result_bundle"]
+def _unique_model_step(model: object, step_name: str) -> object:
+    try:
+        steps = tuple(model.steps)  # type: ignore[attr-defined]
+    except (AttributeError, TypeError) as error:
+        raise TypeError("result model must expose iterable steps") from error
+    matching = tuple(
+        step
+        for step in steps
+        if getattr(step, "name", None) == step_name
+    )
+    if len(matching) != 1:
+        raise ValueError(
+            "result model must contain exactly one matching step"
+        )
+    return matching[0]
+
+
+def _mesh_identity(model: object) -> tuple[object, ...]:
+    try:
+        mesh = model.mesh  # type: ignore[attr-defined]
+        nodes = tuple(mesh.nodes)
+        elements = tuple(mesh.elements)
+        node_ids = tuple(int(value) for value in mesh.node_ids)
+        dofs_per_node = int(mesh.dofs_per_node)
+        num_dofs = int(mesh.num_dofs)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise TypeError(
+            "result model mesh must expose canonical topology and DOFs"
+        ) from error
+
+    node_identity = tuple(
+        (
+            int(node.id),
+            float(node.x),
+            float(node.y),
+            float(getattr(node, "z", 0.0)),
+        )
+        for node in nodes
+    )
+    element_identity = tuple(
+        (
+            int(element.id),
+            str(element.type).strip().casefold(),
+            tuple(int(node_id) for node_id in element.node_ids),
+        )
+        for element in elements
+    )
+    return (
+        node_ids,
+        node_identity,
+        element_identity,
+        dofs_per_node,
+        num_dofs,
+    )
+
+
+__all__ = [
+    "SolveResultBundle",
+    "build_solve_result_bundle",
+    "validate_solve_result_model_identity",
+]

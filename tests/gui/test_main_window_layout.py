@@ -8,10 +8,10 @@ from PySide6.QtCore import QSize
 from PySide6.QtWidgets import QApplication, QLabel, QMenu, QToolBar, QToolButton
 
 from fem.abaqus import read
+from fem.application.results import build_solve_result_bundle
 from fem.solvers.static_linear import solve
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.visualization.model_adapter import build_model_geometry
-from fem_gui.visualization.result_adapter import build_result_data
 
 
 def _application() -> QApplication:
@@ -231,14 +231,16 @@ def test_result_navigation_refreshes_and_activates_real_field(gui_inp_path):
     window._on_viewport_pick("node", 2)
     assert window.status_panel.object_label.text() == "对象：节点 2"
     assert "x=1" in window.status_panel.coordinate_label.text()
-    result = solve(model)
-    data = build_result_data(result, geometry)
     assert window.check_current_model(show_success=False)
     task = window.session.prepare_solve("Static-1", "Job-1")
     if task.delta is not None:
         assert window._apply_session_delta(task.delta)
     assert window._apply_session_delta(window.session.begin_run(task.token))
-    window._job_succeeded(task.token, (result, data))
+    result = solve(task.model, task.step_name)
+    window._job_succeeded(
+        task.token,
+        (build_solve_result_bundle(task, result), {}),
+    )
 
     text = []
     root = window.result_tree.invisibleRootItem()

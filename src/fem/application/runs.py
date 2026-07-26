@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Mapping
+from typing import Mapping
+
+from fem.core.result import ModelResult
+
+from .results.data import ResultMaterializationSnapshot
+from .results.execution import (
+    OutputExecutionStatus,
+    ResultExecutionReport,
+)
+from .results.provider import restore_result_provider
 
 
 def utc_now() -> datetime:
@@ -65,12 +75,102 @@ class ResultProvenance:
     run_id: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, eq=False)
 class ResultRecord:
     """One solver result plus its complete provenance."""
 
     result_id: str
     provenance: ResultProvenance
-    result: Any
+    result: ModelResult
+    output_report: ResultExecutionReport
+    materialization: ResultMaterializationSnapshot
     created_at: datetime = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        if type(self.result_id) is not str or not self.result_id.strip():
+            raise ValueError("result_id must be a nonblank string")
+        if type(self.provenance) is not ResultProvenance:
+            raise TypeError("provenance must be ResultProvenance")
+        if type(self.result) is not ModelResult:
+            raise TypeError("result must be exactly ModelResult")
+        if type(self.output_report) is not ResultExecutionReport:
+            raise TypeError("output_report must be ResultExecutionReport")
+        if (
+            type(self.materialization)
+            is not ResultMaterializationSnapshot
+        ):
+            raise TypeError(
+                "materialization must be ResultMaterializationSnapshot"
+            )
+
+        source = self.output_report.source
+        if self.materialization.source != source:
+            raise ValueError(
+                "output report and materialization sources must match"
+            )
+        expected_identity = (
+            self.result_id,
+            self.provenance.session_id,
+            self.provenance.artifact_id,
+            self.provenance.model_revision,
+            self.provenance.step_name,
+            self.provenance.run_id,
+        )
+        actual_identity = (
+            source.result_id,
+            source.session_id,
+            source.artifact_id,
+            source.model_revision,
+            source.step_name,
+            source.run_id,
+        )
+        if actual_identity != expected_identity:
+            raise ValueError(
+                "result source must match record identity and provenance"
+            )
+        materialized_keys = {
+            field_data.key for field_data in self.materialization.fields
+        }
+        executed_keys = {
+            key
+            for request in self.output_report.requests
+            if request.status is OutputExecutionStatus.EXECUTED
+            for variable in request.variables
+            for key in variable.field_keys
+        }
+        if not executed_keys.issubset(materialized_keys):
+            raise ValueError(
+                "every executed output field must be materialized"
+            )
+
+        restored = restore_result_provider(
+            self.result,
+            self.materialization,
+        )
+        object.__setattr__(self, "result", restored._owned_result)
+        object.__setattr__(
+            self,
+            "output_report",
+            deepcopy(self.output_report),
+        )
+        object.__setattr__(
+            self,
+            "materialization",
+            restored.snapshot,
+        )
+
+
+def detached_result_record(record: ResultRecord) -> ResultRecord:
+    """Return a detached record whose public result vectors stay readonly."""
+
+    if type(record) is not ResultRecord:
+        raise TypeError("record must be exactly ResultRecord")
+    return ResultRecord(
+        result_id=record.result_id,
+        provenance=deepcopy(record.provenance),
+        result=record.result,
+        output_report=record.output_report,
+        materialization=record.materialization,
+        created_at=record.created_at,
+    )
 

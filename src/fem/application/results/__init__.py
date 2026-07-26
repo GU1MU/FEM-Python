@@ -62,7 +62,11 @@ from .execution import (
     ResultExecutionReport,
     execute_output_requests,
 )
-from .workflow import SolveResultBundle, build_solve_result_bundle
+from .workflow import (
+    SolveResultBundle,
+    build_solve_result_bundle,
+    validate_solve_result_model_identity,
+)
 
 __all__ = [
     "ElementResultProfile",
@@ -119,4 +123,5 @@ __all__ = [
     "project_output_request",
     "registry_entry_for",
     "restore_result_provider",
+    "validate_solve_result_model_identity",
 ]

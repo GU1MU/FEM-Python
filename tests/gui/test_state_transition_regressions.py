@@ -23,6 +23,7 @@ from fem.core.model import (
     MaterialDefinition,
     NodalLoad,
 )
+from fem.application.results import build_solve_result_bundle
 from fem.geometry import LogicalEntityRef
 from fem.geometry.recipes import RectangleGeometry
 from fem.io.project import save_project
@@ -101,7 +102,10 @@ def _succeed_run(
     assert window._apply_session_delta(window.session.begin_run(task.token))
     result = solve(task.model, task.step_name, name=run_name)
     assert window._apply_session_delta(
-        window.session.accept_run_result(task.token, result),
+        window.session.accept_run_succeeded(
+            task.token,
+            build_solve_result_bundle(task, result),
+        ),
         result_projection=replace(
             build_result_data(result, window.geometry),
             artifact_id=task.token.artifact_id,
@@ -466,6 +470,8 @@ def test_stale_solve_callback_cannot_restore_invalidated_result() -> None:
     assert stale.delta is not None
     assert window._apply_session_delta(stale.delta)
     assert window._apply_session_delta(window.session.begin_run(stale.token))
+    result = solve(stale.model, stale.step_name, name=stale.run_name)
+    bundle = build_solve_result_bundle(stale, result)
     assert window._apply_session_delta(
         window.session.replace_model_definitions(
             window.document.materials,
@@ -476,9 +482,9 @@ def test_stale_solve_callback_cannot_restore_invalidated_result() -> None:
     )
     before = _projection_signature(window)
 
-    rejected = window.session.accept_run_result(
+    rejected = window.session.accept_run_succeeded(
         stale.token,
-        {"stale": True},
+        bundle,
     )
     assert not rejected.accepted
     assert not window._apply_session_delta(rejected)

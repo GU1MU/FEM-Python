@@ -5,7 +5,8 @@ from dataclasses import replace
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from time import monotonic
+from threading import Event
+from time import monotonic, sleep
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -287,7 +288,7 @@ def test_job_completes_with_primary_results_and_recovers_stress_on_demand(
     assert not data.field_ready("CENTROID:Mises")
     assert "模型验证" in job.timings
     assert "线性方程求解" in job.timings
-    assert "位移与反力结果" in job.timings
+    assert "输出请求与初始结果" in job.timings
 
     window._activate_result_field("CENTROID:Mises")
     _wait_for_task(window)
@@ -335,6 +336,106 @@ def test_failed_job_keeps_previous_result(monkeypatch, gui_inp_path):
         == previous_result.provenance.run_id
     )
     assert shown == [("分析运行失败", "求解故障")]
+    window.close()
+
+
+def test_base_result_provider_failure_marks_run_failed_and_preserves_display(
+    monkeypatch,
+    gui_inp_path,
+):
+    _application()
+    window = FEMMainWindow()
+    model = read(gui_inp_path)
+    window._model_loaded(
+        gui_inp_path,
+        (model, build_model_geometry(model)),
+    )
+    assert window.check_current_model(show_success=False)
+    successful = window._submit_job("Job-1", "Static-1")
+    assert successful is not None
+    _wait_for_task(window)
+    previous = window.session.current_result()
+    shown: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        window,
+        "_show_error",
+        lambda title, message: shown.append((title, message)),
+    )
+    monkeypatch.setattr(
+        main_window_module,
+        "build_solve_result_bundle",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("结果基座故障")
+        ),
+    )
+
+    started = window._submit_job("Job-2", "Static-1")
+    assert started is not None
+    _wait_for_task(window)
+
+    failed = window.session.find_run(started.run_id)
+    current = window.session.current_result()
+    assert failed.status is RunStatus.FAILED
+    assert failed.error == "结果基座故障"
+    assert not failed.has_result
+    assert current.provenance.run_id == previous.provenance.run_id
+    assert window.document.displayed_result_run_id == previous.provenance.run_id
+    assert shown == [("分析运行失败", "结果基座故障")]
+    window.close()
+
+
+def test_cancellation_during_output_execution_discards_bundle(
+    monkeypatch,
+):
+    _application()
+    window = FEMMainWindow()
+    model = make_static_pull_truss_model()
+    window._model_loaded(
+        Path("pull.inp"),
+        (model, build_model_geometry(model)),
+    )
+    _accept_validation(window, "pull")
+    entered_output = Event()
+    original_build = main_window_module.build_solve_result_bundle
+
+    def wait_for_cancellation(
+        task,
+        result,
+        *,
+        cancellation,
+    ):
+        entered_output.set()
+        while not cancellation.is_cancelled:
+            sleep(0.001)
+        cancellation.checkpoint()
+        return original_build(
+            task,
+            result,
+            cancellation=cancellation,
+        )
+
+    monkeypatch.setattr(
+        main_window_module,
+        "build_solve_result_bundle",
+        wait_for_cancellation,
+    )
+
+    started = window._submit_job("Job-1", "pull")
+    assert started is not None
+    application = QApplication.instance()
+    deadline = monotonic() + 10.0
+    while not entered_output.is_set() and monotonic() < deadline:
+        application.processEvents()
+        QThread.msleep(1)
+    assert entered_output.is_set()
+    assert window.cancel_current_task()
+    _wait_for_task(window)
+
+    cancelled = window.session.find_run(started.run_id)
+    assert cancelled.status is RunStatus.CANCELLED
+    assert cancelled.cancellation_requested
+    assert not cancelled.has_result
+    assert window.session.current_result() is None
     window.close()
 
 

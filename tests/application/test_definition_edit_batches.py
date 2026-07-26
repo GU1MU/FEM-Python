@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
 from fem.application import (
@@ -22,12 +20,15 @@ from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
     ElementSet,
+    FEMModel,
     GravityLoad,
     MaterialDefinition,
 )
+from fem.core.mesh import Element3D, Mesh3D, Node3D
 from fem.geometry import LogicalEntityRef
 from fem.geometry.recipe_topology import describe_recipe_topology
 from fem.geometry.recipes import BoxGeometry
+from tests.helpers.result_builders import make_solve_result_bundle
 
 
 def _reference(recipe: BoxGeometry, kind: str) -> LogicalEntityRef:
@@ -433,23 +434,25 @@ def test_named_region_batch_compare_and_swap_conflict_is_atomic() -> None:
 
 def test_definition_batch_recompiles_artifact_and_invalidates_computations() -> None:
     session, _recipe = _definition_session()
-    generated_model = SimpleNamespace(
-        materials={},
-        sections=[],
-        steps=[AnalysisStep("Step-A")],
-        element_sets={"Domain-A": ElementSet("Domain-A", (1,))},
-        metadata={},
-        mesh=SimpleNamespace(
-            nodes=[],
+    generated_model = FEMModel(
+        mesh=Mesh3D(
+            nodes=(
+                Node3D(1, 0.0, 0.0, 0.0),
+                Node3D(2, 1.0, 0.0, 0.0),
+                Node3D(3, 0.0, 1.0, 0.0),
+                Node3D(4, 0.0, 0.0, 1.0),
+            ),
             elements=(
-                SimpleNamespace(
-                    id=1,
-                    type="Tet4",
-                    node_ids=(1, 2, 3, 4),
-                    props={},
+                Element3D(
+                    1,
+                    (1, 2, 3, 4),
+                    "Tet4",
+                    {"E": 1.0, "nu": 0.3},
                 ),
             ),
         ),
+        steps=[AnalysisStep("Step-A")],
+        element_sets={"Domain-A": ElementSet("Domain-A", (1,))},
     )
     mesh_task = session.prepare_mesh_generation()
     assert session.accept_generated_model(
@@ -463,7 +466,10 @@ def test_definition_batch_recompiles_artifact_and_invalidates_computations() -> 
     )
     solve = session.prepare_solve("Step-A", "Job-1")
     session.begin_run(solve.token)
-    session.accept_run_result(solve.token, {"U": [1.0]})
+    session.accept_run_succeeded(
+        solve.token,
+        make_solve_result_bundle(solve, marker=1.0),
+    )
     session.select_result(solve.run_id)
     before = session.snapshot()
     properties = {"E": 200_000.0, "nu": 0.3}

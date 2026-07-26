@@ -23,6 +23,7 @@ from fem.application.results.registry import (
 from fem.application.results.workflow import (
     SolveResultBundle,
     build_solve_result_bundle,
+    validate_solve_result_model_identity,
 )
 
 
@@ -41,6 +42,9 @@ def test_result_package_exports_provider_query_projection_and_execution() -> Non
         "execute_output_requests": execute_output_requests,
         "project_output_request": project_output_request,
         "restore_result_provider": restore_result_provider,
+        "validate_solve_result_model_identity": (
+            validate_solve_result_model_identity
+        ),
     }
 
     assert set(expected).issubset(results.__all__)

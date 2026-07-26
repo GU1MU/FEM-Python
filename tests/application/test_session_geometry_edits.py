@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
 from fem.application import (
@@ -17,9 +15,11 @@ from fem.application import (
 from fem.core.model import (
     AnalysisStep,
     ElementSet,
+    FEMModel,
     GravityLoad,
     MaterialDefinition,
 )
+from fem.core.mesh import Element2D, Mesh2D, Node2D
 from fem.geometry import LogicalEntityRef
 from fem.geometry.recipe_topology import describe_recipe_topology
 from fem.geometry.recipes import (
@@ -29,6 +29,10 @@ from fem.geometry.recipes import (
 )
 from fem.mesh.settings import LocalMeshControl, MeshSettings
 from tests.helpers.preflight_builders import passing_preflight_report
+from tests.helpers.result_builders import (
+    assert_result_records_equivalent,
+    make_solve_result_bundle,
+)
 
 
 def _reference(recipe, kind: str) -> LogicalEntityRef:
@@ -122,23 +126,29 @@ def test_invalid_explicit_mesh_settings_reject_the_whole_transition() -> None:
         (RegionAssignment("Solid", "Domain-A"),),
         (AnalysisStep("Step-A"),),
     )
-    generated_model = SimpleNamespace(
-        materials={},
-        sections=[],
-        steps=[AnalysisStep("Step-A")],
-        element_sets={"Domain-A": ElementSet("Domain-A", (1,))},
-        metadata={},
-        mesh=SimpleNamespace(
-            nodes=[],
+    generated_model = FEMModel(
+        mesh=Mesh2D(
+            nodes=(
+                Node2D(1, 0.0, 0.0),
+                Node2D(2, 1.0, 0.0),
+                Node2D(3, 0.0, 1.0),
+            ),
             elements=(
-                SimpleNamespace(
-                    id=1,
-                    type="Tri3",
-                    node_ids=(1, 2, 3),
-                    props={},
+                Element2D(
+                    1,
+                    (1, 2, 3),
+                    "Tri3",
+                    {
+                        "E": 1.0,
+                        "nu": 0.3,
+                        "plane_type": "stress",
+                        "thickness": 1.0,
+                    },
                 ),
             ),
         ),
+        steps=[AnalysisStep("Step-A")],
+        element_sets={"Domain-A": ElementSet("Domain-A", (1,))},
     )
     mesh_task = session.prepare_mesh_generation()
     session.accept_generated_model(mesh_task.token, generated_model)
@@ -149,7 +159,10 @@ def test_invalid_explicit_mesh_settings_reject_the_whole_transition() -> None:
     )
     solve = session.prepare_solve("Step-A", "Job-1")
     session.begin_run(solve.token)
-    session.accept_run_result(solve.token, {"U": [1.0]})
+    session.accept_run_succeeded(
+        solve.token,
+        make_solve_result_bundle(solve, marker=1.0),
+    )
     session.select_result(solve.run_id)
     before = session.snapshot()
 
@@ -175,7 +188,10 @@ def test_invalid_explicit_mesh_settings_reject_the_whole_transition() -> None:
     assert after.artifact.artifact_id == before.artifact.artifact_id
     assert after.validations == before.validations
     assert after.runs == before.runs
-    assert after.displayed_result == before.displayed_result
+    assert_result_records_equivalent(
+        after.displayed_result,
+        before.displayed_result,
+    )
 
 
 def test_unset_preserves_compatible_local_controls_and_reports_effect() -> None:

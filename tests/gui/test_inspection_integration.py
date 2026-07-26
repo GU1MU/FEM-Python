@@ -7,6 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from fem.abaqus import read
+from fem.application.results import build_solve_result_bundle
 from fem.core.model import (
     DisplacementConstraint,
     MaterialDefinition,
@@ -20,7 +21,6 @@ from fem_gui.analysis_definition_dialogs import (
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.model_dialogs import MaterialEditDialog
 from fem_gui.visualization.model_adapter import build_model_geometry
-from fem_gui.visualization.result_adapter import build_result_data
 from fem_gui.widgets.model_tree import ROLE_KIND
 from tests.helpers.preflight_builders import passing_preflight_report
 
@@ -55,7 +55,7 @@ def _seed_current_result(window: FEMMainWindow, step_name: str) -> None:
     result = static_linear.solve(solve.model, step_name)
     window._job_succeeded(
         solve.token,
-        (result, build_result_data(result, window.geometry)),
+        (build_solve_result_bundle(solve, result), {}),
     )
     assert window.session.current_result() is not None
 

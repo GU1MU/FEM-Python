@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -15,9 +14,11 @@ from fem.application import (
     RegionAssignment,
     TokenStatus,
 )
-from fem.core.model import AnalysisStep
+from fem.core.model import AnalysisStep, FEMModel
 from fem.geometry.recipes import BoxGeometry
 from tests.helpers.preflight_builders import passing_preflight_report
+from tests.helpers.result_builders import make_solve_result_bundle
+from tests.helpers.model_builders import make_simple_truss_mesh
 
 
 _FIXTURES = (
@@ -28,14 +29,10 @@ _FIXTURES = (
 )
 
 
-def _model(*step_names: str) -> SimpleNamespace:
-    return SimpleNamespace(
-        materials={},
-        sections=[],
+def _model(*step_names: str) -> FEMModel:
+    return FEMModel(
+        mesh=make_simple_truss_mesh(),
         steps=[AnalysisStep(name) for name in step_names],
-        element_sets={},
-        metadata={},
-        mesh=SimpleNamespace(nodes=[], elements=[]),
     )
 
 
@@ -152,7 +149,10 @@ def test_solve_reserves_one_result_identity_before_worker_start() -> None:
     assert solve.token.result_id == solve.result_id
     assert session.find_run(solve.run_id).result_id is None
     session.begin_run(solve.token)
-    session.accept_run_result(solve.token, {"value": 1})
+    session.accept_run_succeeded(
+        solve.token,
+        make_solve_result_bundle(solve, marker=1.0),
+    )
     accepted = session.current_result()
     assert accepted.result_id == solve.result_id
     assert session.find_run(solve.run_id).result_id == solve.result_id
@@ -196,7 +196,10 @@ def test_result_projection_token_becomes_stale_with_its_model() -> None:
     session = _session()
     solve = session.prepare_solve("Step-A", "Job-1")
     session.begin_run(solve.token)
-    session.accept_run_result(solve.token, {"value": 1})
+    session.accept_run_succeeded(
+        solve.token,
+        make_solve_result_bundle(solve, marker=1.0),
+    )
     projection = session.prepare_result_projection(solve.run_id)
     assert projection.token.result_id == solve.result_id
     assert (
@@ -244,9 +247,9 @@ def test_orientation_edit_rejects_old_validation_and_solve_callbacks() -> None:
         validation.token,
         passing_preflight_report(validation.token),
     )
-    solve_delta = session.accept_run_result(
+    solve_delta = session.accept_run_succeeded(
         solve.token,
-        {"U": [1.0]},
+        make_solve_result_bundle(solve, marker=1.0),
     )
 
     assert after_edit.model_revision == before.model_revision + 1
@@ -318,7 +321,10 @@ def test_result_projection_acceptance_is_single_use() -> None:
     session = _session()
     solve = session.prepare_solve("Step-A", "Job-1")
     session.begin_run(solve.token)
-    session.accept_run_result(solve.token, {"value": 1})
+    session.accept_run_succeeded(
+        solve.token,
+        make_solve_result_bundle(solve, marker=1.0),
+    )
     projection = session.prepare_result_projection(solve.run_id)
 
     accepted = session.accept_result_projection(projection.token)
@@ -333,7 +339,10 @@ def test_result_projection_is_stale_after_a_newer_session_transition() -> None:
     session = _session()
     solve = session.prepare_solve("Step-A", "Job-1")
     session.begin_run(solve.token)
-    session.accept_run_result(solve.token, {"value": 1})
+    session.accept_run_succeeded(
+        solve.token,
+        make_solve_result_bundle(solve, marker=1.0),
+    )
     projection = session.prepare_result_projection(solve.run_id)
 
     session.select_result(solve.run_id)

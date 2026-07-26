@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -7,6 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from fem.abaqus import read
+from fem.application.results import build_solve_result_bundle
 from fem.solvers.static_linear import solve
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.visualization.model_adapter import build_model_geometry
@@ -22,21 +24,29 @@ def _solved_window(path) -> FEMMainWindow:
     model = read(path)
     geometry = build_model_geometry(model)
     window._model_loaded(path, (model, geometry))
-    result = solve(model)
-    _install_result(window, geometry, result)
+    _install_result(window)
     window._update_action_states()
     return window
 
 
-def _install_result(window, geometry, result) -> None:
+def _install_result(window) -> None:
     assert window.check_current_model(show_success=False)
     task = window.session.prepare_solve("Static-1", "Job-1")
     if task.delta is not None:
         assert window._apply_session_delta(task.delta)
     assert window._apply_session_delta(window.session.begin_run(task.token))
+    result = solve(task.model, task.step_name)
     window._job_succeeded(
         task.token,
-        (result, build_result_data(result, geometry)),
+        (build_solve_result_bundle(task, result), {}),
+    )
+    accepted = window.session.current_result()
+    window._install_result_projection(
+        replace(
+            build_result_data(accepted.result, window.geometry),
+            artifact_id=accepted.provenance.artifact_id,
+            run_id=accepted.provenance.run_id,
+        )
     )
 
 
@@ -64,8 +74,7 @@ def test_analysis_uses_clean_deformed_displacement_contour_defaults(gui_inp_path
     window._model_loaded(gui_inp_path, (model, geometry))
     window.selection.select_node(1)
     window.viewport.highlight_node(1)
-    result = solve(model)
-    _install_result(window, geometry, result)
+    _install_result(window)
 
     assert window._display.shape_mode == "deformed"
     assert window._display.contour_enabled

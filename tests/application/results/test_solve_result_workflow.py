@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from copy import deepcopy
 
 import pytest
 
@@ -10,6 +11,7 @@ from fem.application.results import (
     ResultProvider,
     SolveResultBundle,
     build_solve_result_bundle,
+    validate_solve_result_model_identity,
 )
 from fem.application.revisions import SolveTaskSnapshot, TaskToken
 from fem.core.model import AnalysisStep, OutputRequest
@@ -257,3 +259,38 @@ def test_bundle_rejects_result_outside_task_snapshot(
 
     with pytest.raises(ValueError, match=message):
         build_solve_result_bundle(task, result)
+
+
+def test_result_model_identity_matches_detached_artifact_inputs() -> None:
+    task, result = _task_and_result()
+    expected_model = deepcopy(task.model)
+
+    validate_solve_result_model_identity(
+        result,
+        expected_model,
+        task.step_name,
+    )
+
+
+def test_result_model_identity_rejects_foreign_topology_and_step() -> None:
+    task, result = _task_and_result()
+    foreign_model = deepcopy(task.model)
+    foreign_model.mesh.nodes[1].x = 3.0
+
+    with pytest.raises(ValueError, match="topology"):
+        validate_solve_result_model_identity(
+            result,
+            foreign_model,
+            task.step_name,
+        )
+
+    wrong_step_model = deepcopy(task.model)
+    wrong_step_model.steps = [
+        AnalysisStep(task.step_name, procedure="dynamic")
+    ]
+    with pytest.raises(ValueError, match="artifact step"):
+        validate_solve_result_model_identity(
+            result,
+            wrong_step_model,
+            task.step_name,
+        )

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -22,9 +21,11 @@ from fem.application import (
 from fem.core.model import (
     AnalysisStep,
     ElementSet,
+    FEMModel,
     GravityLoad,
     MaterialDefinition,
 )
+from fem.core.mesh import Element2D, Mesh2D, Node2D
 from fem.geometry.recipes import (
     BooleanGeometry,
     BoxGeometry,
@@ -35,6 +36,10 @@ from fem.geometry import LogicalEntityRef
 from fem.geometry.recipe_topology import describe_recipe_topology
 from fem.mesh.settings import LocalMeshControl, MeshSettings
 from tests.helpers.preflight_builders import passing_preflight_report
+from tests.helpers.result_builders import (
+    assert_result_records_equivalent,
+    make_solve_result_bundle,
+)
 
 
 _FIXTURES = (
@@ -50,27 +55,33 @@ def _first_reference(recipe, kind: str) -> LogicalEntityRef:
     return LogicalEntityRef(entity.logical_id)
 
 
-def _model(*step_names: str) -> SimpleNamespace:
-    return SimpleNamespace(
-        materials={},
-        sections=[],
+def _model(*step_names: str) -> FEMModel:
+    return FEMModel(
+        mesh=Mesh2D(
+            nodes=(
+                Node2D(1, 0.0, 0.0),
+                Node2D(2, 1.0, 0.0),
+                Node2D(3, 0.0, 1.0),
+            ),
+            elements=(
+                Element2D(
+                    1,
+                    (1, 2, 3),
+                    "Tri3",
+                    {
+                        "E": 1.0,
+                        "nu": 0.3,
+                        "plane_type": "stress",
+                        "thickness": 1.0,
+                    },
+                ),
+            ),
+        ),
         steps=[AnalysisStep(name) for name in step_names],
         element_sets={
             "Region-A": ElementSet("Region-A", (1,)),
             "Region-B": ElementSet("Region-B", (1,)),
         },
-        metadata={},
-        mesh=SimpleNamespace(
-            nodes=[],
-            elements=[
-                SimpleNamespace(
-                    id=1,
-                    type="Tri3",
-                    node_ids=(1, 2, 3),
-                    props={},
-                )
-            ],
-        ),
     )
 
 
@@ -108,7 +119,10 @@ def _session_with_artifacts() -> ModelSession:
     )
     solve = session.prepare_solve("Step-A", "Job-1")
     session.begin_run(solve.token)
-    session.accept_run_result(solve.token, {"value": 1})
+    session.accept_run_succeeded(
+        solve.token,
+        make_solve_result_bundle(solve, marker=1.0),
+    )
     return session
 
 
@@ -120,7 +134,10 @@ def _accept_beam_computations(session: ModelSession) -> None:
     )
     solve = session.prepare_solve("UniformLoad", "Beam-Job")
     session.begin_run(solve.token)
-    session.accept_run_result(solve.token, {"U": [1.0]})
+    session.accept_run_succeeded(
+        solve.token,
+        make_solve_result_bundle(solve, marker=1.0),
+    )
     session.select_result(solve.run_id)
 
 
@@ -170,7 +187,10 @@ def _session_with_exact_geometry_artifacts(recipe) -> ModelSession:
     )
     solve = session.prepare_solve("Step-A", "Job-1")
     session.begin_run(solve.token)
-    session.accept_run_result(solve.token, {"value": 1})
+    session.accept_run_succeeded(
+        solve.token,
+        make_solve_result_bundle(solve, marker=1.0),
+    )
     return session
 
 
@@ -475,7 +495,10 @@ def test_parallel_orientation_rejection_preserves_all_accepted_state() -> None:
     assert after.assignments == before.assignments
     assert after.validations == before.validations
     assert after.runs == before.runs
-    assert after.displayed_result == before.displayed_result
+    assert_result_records_equivalent(
+        after.displayed_result,
+        before.displayed_result,
+    )
     assert after.has_result == before.has_result
     assert session.validate_task_token(validation.token) is (
         TokenStatus.CURRENT

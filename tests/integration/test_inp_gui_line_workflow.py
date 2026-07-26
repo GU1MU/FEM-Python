@@ -16,6 +16,7 @@ from fem.application import (
     resolve_effective_beam_frames,
 )
 from fem.application.preflight import run_static_preflight
+from fem.application.results import build_solve_result_bundle
 from fem.core.model import LineLoad
 from fem.solvers.static_linear import solve
 from fem_gui.inspection_service import InspectionService
@@ -68,7 +69,10 @@ def _check_submit_and_solve(
     solve_task = session.prepare_solve(step_name, run_name)
     assert session.begin_run(solve_task.token).accepted
     result = solve(solve_task.model, solve_task.step_name)
-    assert session.accept_run_result(solve_task.token, result).accepted
+    assert session.accept_run_succeeded(
+        solve_task.token,
+        build_solve_result_bundle(solve_task, result),
+    ).accepted
 
     run = session.find_run(solve_task.run_id)
     assert run is not None

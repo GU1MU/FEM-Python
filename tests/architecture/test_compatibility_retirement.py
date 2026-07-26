@@ -12,7 +12,13 @@ from fem.application import (
     ResultRecord,
     RunStatus,
     SessionSnapshot,
+    SolveTaskSnapshot,
+    TaskToken,
 )
+from fem.core.model import AnalysisStep, FEMModel
+from fem.core.result import ModelResult
+from tests.helpers.model_builders import make_simple_truss_mesh
+from tests.helpers.result_builders import make_solve_result_bundle
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -60,8 +66,30 @@ def test_session_snapshot_legacy_aliases_are_absent() -> None:
     assert canonical.issubset(SessionSnapshot.__dataclass_fields__)
 
 
-def test_result_record_keeps_raw_result_and_complete_provenance() -> None:
-    raw = object()
+def test_result_record_requires_owned_typed_result_artifacts() -> None:
+    token = TaskToken(
+        session_id="session",
+        task_id="task",
+        task_kind="solve",
+        dependency_revisions=(("model_revision", 7),),
+        artifact_id="artifact",
+        step_name="Load",
+        run_id="run",
+        result_id="result",
+    )
+    model = FEMModel(
+        mesh=make_simple_truss_mesh(),
+        steps=[AnalysisStep("Load")],
+    )
+    task = SolveTaskSnapshot(
+        token=token,
+        model=model,
+        step_name="Load",
+        run_name="Job-1",
+        run_id="run",
+        result_id="result",
+    )
+    bundle = make_solve_result_bundle(task, marker=3.0)
     provenance = ResultProvenance(
         session_id="session",
         artifact_id="artifact",
@@ -72,11 +100,18 @@ def test_result_record_keeps_raw_result_and_complete_provenance() -> None:
     record = ResultRecord(
         "result",
         provenance,
-        raw,
+        bundle.result,
+        bundle.execution_report,
+        bundle.initial_materialization,
         datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
 
-    assert record.result is raw
+    assert type(record.result) is ModelResult
+    assert record.result is not bundle.result
+    assert record.result.U.flags.writeable is False
+    assert record.output_report.source.result_id == "result"
+    assert record.materialization.source.result_id == "result"
+    assert record.materialization.generation == 0
     assert record.provenance == provenance
     assert record.provenance.run_id == "run"
     assert record.provenance.model_revision == 7

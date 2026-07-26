@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication
 
 from fem.abaqus import read
 from fem.application import RegionAssignment, describe_session_authoring
+from fem.application.results import build_solve_result_bundle
 from fem.solvers.static_linear import solve
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.model_dialogs import RegionAssignmentDialog
@@ -58,14 +59,11 @@ def _install_successful_result(
     )
 
     result = solve(solve_task.model, solve_task.step_name, name=run_name)
-    projection = replace(
-        build_result_data(result, window.geometry),
-        artifact_id=solve_task.token.artifact_id,
-        run_id=solve_task.run_id,
-    )
     assert window._apply_session_delta(
-        window.session.accept_run_result(solve_task.token, result),
-        result_projection=projection,
+        window.session.accept_run_succeeded(
+            solve_task.token,
+            build_solve_result_bundle(solve_task, result),
+        ),
     )
     return solve_task.run_id
 
@@ -112,7 +110,10 @@ def test_unprovenanced_result_projection_is_never_relabelled_as_current() -> Non
     stale_projection = build_result_data(result, window.geometry)
 
     assert window._apply_session_delta(
-        window.session.accept_run_result(solve_task.token, result),
+        window.session.accept_run_succeeded(
+            solve_task.token,
+            build_solve_result_bundle(solve_task, result),
+        ),
         result_projection=stale_projection,
     )
 

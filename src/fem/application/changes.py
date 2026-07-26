@@ -21,6 +21,7 @@ class ChangeKind(str, Enum):
     DEFINITIONS = "definitions"
     VALIDATIONS = "validations"
     RUNS = "runs"
+    RESULTS = "results"
     DISPLAYED_RESULT = "displayed_result"
     SAVED_STATE = "saved_state"
 

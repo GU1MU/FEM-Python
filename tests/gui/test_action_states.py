@@ -18,6 +18,7 @@ from fem.application import (
     RenameIntent,
     SectionDefinition,
 )
+from fem.application.results import build_solve_result_bundle
 from fem.abaqus import read
 from fem.core.model import (
     AnalysisStep,
@@ -40,7 +41,6 @@ from fem.steps.factory import static
 import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.visualization.model_adapter import build_model_geometry
-from fem_gui.visualization.result_adapter import build_result_data
 
 
 def _application() -> QApplication:
@@ -126,7 +126,7 @@ def test_actions_follow_document_and_result_context(gui_inp_path):
     result = solve(task.model, task.step_name)
     window._job_succeeded(
         task.token,
-        (result, build_result_data(result, geometry)),
+        (build_solve_result_bundle(task, result), {}),
     )
     window._update_action_states()
     for name in ("undeformed", "deformed", "contour", "field", "query", "export"):

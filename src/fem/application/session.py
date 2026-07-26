@@ -17,6 +17,11 @@ from fem.geometry import (
 from fem.geometry.recipe_topology import can_preserve_logical_references
 from fem.mesh.settings import MeshSettings
 
+from .results import (
+    ResultSourceKey,
+    SolveResultBundle,
+    validate_solve_result_model_identity,
+)
 from .changes import (
     ArtifactKind,
     ChangeKind,
@@ -65,6 +70,7 @@ from .runs import (
     ResultProvenance,
     ResultRecord,
     RunStatus,
+    detached_result_record,
     utc_now,
 )
 from .validation import ValidationRecord, ValidationStamp
@@ -118,6 +124,14 @@ def _mapping_values(value: Mapping[Any, Any] | Iterable[Any]) -> tuple[Any, ...]
     if isinstance(value, Mapping):
         return tuple(value.values())
     return tuple(value)
+
+
+@dataclass(frozen=True, slots=True)
+class _IssuedSolvePayload:
+    """Exact detached model objects issued for one solve task."""
+
+    model: Any
+    step: Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -1376,6 +1390,17 @@ class ModelSession:
             raise ValueError("run name must not be empty")
         if self._find_run_by_name(resolved_name) is not None:
             raise ValueError(f"run name already exists: {resolved_name}")
+        solve_model = deepcopy(artifact.model)
+        solve_steps = tuple(
+            step
+            for step in getattr(solve_model, "steps", ())
+            if str(getattr(step, "name", "")) == resolved_step
+        )
+        if len(solve_steps) != 1:
+            raise SessionStateError(
+                "current model artifact must contain exactly one matching "
+                f"analysis step: {resolved_step}"
+            )
         run_id = new_identity("run")
         result_id = new_identity("result")
         run = AnalysisRun(
@@ -1399,9 +1424,13 @@ class ModelSession:
             run_id=run_id,
             result_id=result_id,
         )
+        self._task_data[token.task_id] = _IssuedSolvePayload(
+            model=solve_model,
+            step=solve_steps[0],
+        )
         return SolveTaskSnapshot(
             token=token,
-            model=deepcopy(artifact.model),
+            model=solve_model,
             step_name=resolved_step,
             run_name=resolved_name,
             run_id=run_id,
@@ -1428,10 +1457,10 @@ class ModelSession:
             {ChangeKind.RUNS}, frozenset(), "analysis run started"
         )
 
-    def accept_run_result(
+    def accept_run_succeeded(
         self,
         token: TaskToken,
-        result: Any,
+        bundle: SolveResultBundle,
         *,
         timings: Mapping[str, float] | None = None,
     ) -> SessionDelta:
@@ -1444,13 +1473,48 @@ class ModelSession:
                 TokenStatus.INVALID_STATE,
                 "run is not running",
             )
-        owned_result = deepcopy(result)
+        if type(bundle) is not SolveResultBundle:
+            raise TypeError("bundle must be exactly SolveResultBundle")
+        issued_payload = self._task_data.get(token.task_id)
+        if type(issued_payload) is not _IssuedSolvePayload:
+            raise SessionStateError(
+                "solve task has no issued model payload"
+            )
+        if (
+            bundle.result.model is not issued_payload.model
+            or bundle.result.step is not issued_payload.step
+        ):
+            raise ValueError(
+                "solve result must use the exact model and step issued "
+                "for the solve task"
+            )
         owned_timings = {
             str(name): float(seconds)
             for name, seconds in (timings or {}).items()
         }
         artifact = self._require_current_artifact()
         result_id = str(token.result_id)
+        expected_source = ResultSourceKey(
+            result_id=result_id,
+            session_id=self._session_id,
+            artifact_id=artifact.artifact_id,
+            model_revision=self._model_revision,
+            step_name=str(token.step_name),
+            run_id=run.run_id,
+        )
+        if bundle.source != expected_source:
+            raise ValueError(
+                "solve result bundle source must match the reserved result"
+            )
+        if getattr(bundle.result.step, "name", None) != expected_source.step_name:
+            raise ValueError(
+                "solve result step must match the reserved result step"
+            )
+        validate_solve_result_model_identity(
+            bundle.result,
+            artifact.model,
+            expected_source.step_name,
+        )
         provenance = ResultProvenance(
             session_id=self._session_id,
             artifact_id=artifact.artifact_id,
@@ -1458,7 +1522,13 @@ class ModelSession:
             step_name=str(token.step_name),
             run_id=run.run_id,
         )
-        record = ResultRecord(result_id, provenance, owned_result)
+        record = ResultRecord(
+            result_id=result_id,
+            provenance=provenance,
+            result=bundle.result,
+            output_report=bundle.execution_report,
+            materialization=bundle.initial_materialization,
+        )
         self._results[run.run_id] = record
         self._runs[run.run_id] = replace(
             run,
@@ -1473,7 +1543,11 @@ class ModelSession:
         self._displayed_result_run_id = run.run_id
         self._complete_token(token)
         return self._emit(
-            {ChangeKind.RUNS, ChangeKind.DISPLAYED_RESULT},
+            {
+                ChangeKind.RUNS,
+                ChangeKind.RESULTS,
+                ChangeKind.DISPLAYED_RESULT,
+            },
             frozenset(),
             "analysis run succeeded",
         )
@@ -1581,7 +1655,7 @@ class ModelSession:
         return ResultTaskSnapshot(
             token=token,
             run_id=str(run_id),
-            record=deepcopy(record),
+            record=detached_result_record(record),
         )
 
     def accept_result_projection(self, token: TaskToken) -> SessionDelta:
@@ -1723,7 +1797,11 @@ class ModelSession:
             runs=deepcopy(tuple(self._runs.values())),
             selected_run_id=self._selected_run_id,
             displayed_result_run_id=self._displayed_result_run_id,
-            displayed_result=deepcopy(displayed),
+            displayed_result=(
+                None
+                if displayed is None
+                else detached_result_record(displayed)
+            ),
             dirty=self.dirty,
             can_save=self.can_save,
         )
@@ -1754,7 +1832,11 @@ class ModelSession:
 
     def current_result(self) -> ResultRecord | None:
         record = self._current_result_record(self._displayed_result_run_id)
-        return None if record is None else deepcopy(record)
+        return (
+            None
+            if record is None
+            else detached_result_record(record)
+        )
 
     def find_run(self, run_id_or_name: str | None) -> AnalysisRun | None:
         normalized = str(run_id_or_name or "").strip()
@@ -1931,6 +2013,9 @@ class ModelSession:
         )
 
     def _drop_computations(self) -> None:
+        for task_id, token in self._issued_tokens.items():
+            if token.task_kind == "solve":
+                self._task_data.pop(task_id, None)
         self._validations.clear()
         self._runs.clear()
         self._results.clear()

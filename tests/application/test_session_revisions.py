@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -13,20 +12,18 @@ from fem.application import (
     RevisionConflictError,
     SectionDefinition,
 )
-from fem.core.model import AnalysisStep, MaterialDefinition
+from fem.core.model import AnalysisStep, FEMModel, MaterialDefinition
 from fem.geometry.recipes import BoxGeometry
 from fem.mesh.settings import MeshSettings
 from tests.helpers.preflight_builders import passing_preflight_report
+from tests.helpers.result_builders import make_solve_result_bundle
+from tests.helpers.model_builders import make_simple_truss_mesh
 
 
-def _model(*step_names: str) -> SimpleNamespace:
-    return SimpleNamespace(
-        materials={},
-        sections=[],
+def _model(*step_names: str) -> FEMModel:
+    return FEMModel(
+        mesh=make_simple_truss_mesh(),
         steps=[AnalysisStep(name) for name in step_names],
-        element_sets={},
-        metadata={},
-        mesh=SimpleNamespace(nodes=[], elements=[]),
     )
 
 
@@ -114,7 +111,10 @@ def test_domain_revisions_advance_only_for_their_semantics() -> None:
 
     run_task = session.prepare_solve("Step-A", "Job-1")
     session.begin_run(run_task.token)
-    session.accept_run_result(run_task.token, {"U": [1.0]})
+    session.accept_run_succeeded(
+        run_task.token,
+        make_solve_result_bundle(run_task, marker=1.0),
+    )
     before_select = session.snapshot()
     session.select_result(run_task.run_id)
     after_select = session.snapshot()
