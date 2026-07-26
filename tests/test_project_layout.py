@@ -493,6 +493,106 @@ def test_application_layer_has_no_qt_pyvista_or_gui_dependency():
     assert offenders == []
 
 
+def test_result_support_matrix_has_one_application_owner():
+    results_root = APPLICATION_ROOT / "results"
+    projection_path = results_root / "output_requests.py"
+    registry_path = results_root / "registry.py"
+    support_names = {
+        "_VARIABLE_ORDER",
+        "_PRIMARY_TARGETS",
+        "_EXECUTABLE_STRESS_POSITIONS",
+        "_DEFAULT_STRESS_POSITION",
+    }
+    assignments = []
+    factory_definitions = []
+
+    for path in sorted(APPLICATION_ROOT.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = (
+                    node.targets
+                    if isinstance(node, ast.Assign)
+                    else (node.target,)
+                )
+                for target in targets:
+                    if isinstance(target, ast.Name) and target.id in support_names:
+                        assignments.append(
+                            (
+                                target.id,
+                                path.relative_to(PROJECT_ROOT),
+                                node.lineno,
+                            )
+                        )
+            if (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name in {"catalog_entries", "project_output_request"}
+            ):
+                factory_definitions.append(
+                    (
+                        node.name,
+                        path.relative_to(PROJECT_ROOT),
+                        node.lineno,
+                    )
+                )
+
+    expected_projection = projection_path.relative_to(PROJECT_ROOT)
+    assert {
+        (name, path)
+        for name, path, _lineno in assignments
+    } == {
+        (name, expected_projection)
+        for name in support_names
+    }
+    assert {
+        (name, path)
+        for name, path, _lineno in factory_definitions
+    } == {
+        ("catalog_entries", registry_path.relative_to(PROJECT_ROOT)),
+        ("project_output_request", expected_projection),
+    }
+
+
+def test_application_recovery_calls_are_owned_by_result_materializer():
+    owner = APPLICATION_ROOT / "results" / "_materializers.py"
+    recovery_imports = []
+    offenders = []
+
+    for path in sorted(APPLICATION_ROOT.rglob("*.py")):
+        targets = tuple(
+            _resolved_import_targets(path, _module_name(path))
+        )
+        for target, lineno in targets:
+            recovery_target = (
+                target == "fem.post.stress"
+                or target.startswith("fem.post.stress.")
+                or target == "fem.post.averaging.resolve_nodal_stress"
+            )
+            if not recovery_target:
+                continue
+            recovery_imports.append(
+                (path.relative_to(PROJECT_ROOT), target)
+            )
+            if path != owner:
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+                )
+
+    owner_path = owner.relative_to(PROJECT_ROOT)
+    assert owner.is_file()
+    assert any(
+        path == owner_path
+        and target == "fem.post.stress.field.StressRecovery"
+        for path, target in recovery_imports
+    )
+    assert any(
+        path == owner_path
+        and target == "fem.post.averaging.resolve_nodal_stress"
+        for path, target in recovery_imports
+    )
+    assert offenders == []
+
+
 def test_gui_geometry_preview_contains_only_display_authoring_helpers():
     path = GUI_ROOT / "geometry_preview.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))

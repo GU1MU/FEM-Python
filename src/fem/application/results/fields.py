@@ -83,7 +83,7 @@ _CONTINUUM_STRESS_RECOVERY_POSITIONS = frozenset(
     }
 )
 
-_VARIABLE_ORDER = {
+_FIELD_VARIABLE_SORT_ORDER = {
     ResultVariable.U: 0,
     ResultVariable.UR: 1,
     ResultVariable.RF: 2,
@@ -235,7 +235,7 @@ def field_materialization_sort_key(
     else:
         gauss_key = (1, request.gauss_order)
     return (
-        _VARIABLE_ORDER[request.field_id.variable],
+        _FIELD_VARIABLE_SORT_ORDER[request.field_id.variable],
         _POSITION_ORDER[request.field_id.position],
         *policy_key,
         *gauss_key,

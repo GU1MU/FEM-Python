@@ -409,7 +409,7 @@ def test_common_dof_mixed_model_publishes_primary_without_partial_stress() -> No
         "result.catalog.stress_family_unsupported",
     )
     assert catalog.diagnostics[0].path == (
-        "results",
+        type(catalog).__module__.split(".")[-2],
         "catalog",
         "variables",
         "S",

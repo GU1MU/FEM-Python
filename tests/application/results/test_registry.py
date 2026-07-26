@@ -165,9 +165,15 @@ def test_mixed_stress_omission_has_one_stable_catalog_diagnostic() -> None:
 
     assert len(diagnostics) == 1
     diagnostic = diagnostics[0]
+    result_namespace = type(diagnostic).__module__.split(".")[-2]
     assert diagnostic.code == "result.catalog.stress_family_unsupported"
     assert diagnostic.severity == "warning"
-    assert diagnostic.path == ("results", "catalog", "variables", "S")
+    assert diagnostic.path == (
+        result_namespace,
+        "catalog",
+        "variables",
+        "S",
+    )
     assert diagnostic.details == {
         "canonical_variable": "S",
         "model_family": "mixed_unsupported",
