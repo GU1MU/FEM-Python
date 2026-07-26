@@ -11,10 +11,14 @@ from ._common import (
     PLANE_ELEMENT_HEADER,
     SOLID_HEADER,
     TET_CENTROID,
-    matches,
-    nodal_stress,
     node_lookup,
     validated_u,
+)
+from .field import (
+    CANONICAL_PLANE_COMPONENT_NAMES,
+    StressField,
+    StressPosition,
+    collect_stress,
 )
 from .invariants import von_mises_3d, von_mises_plane
 
@@ -159,28 +163,19 @@ def _plane(
     gauss_order: int | None = None,
 ) -> None:
     """Export plane element-nodal stresses without averaging."""
-    U = validated_u(mesh, U)
-    lookup = node_lookup(mesh)
+    recovered = collect_stress(
+        mesh,
+        U,
+        position=StressPosition.ELEMENT_NODAL,
+        element_type=type_key,
+        gauss_order=gauss_order,
+    )
 
     path = prepare_output_path(path)
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(PLANE_ELEMENT_HEADER)
-        for elem in mesh.elements:
-            if not matches(elem, type_key):
-                continue
-            node_vals, plane_type, nu = nodal_stress(mesh, elem, U, lookup, gauss_order)
-            for local_node, node_id in enumerate(elem.node_ids, start=1):
-                sig_x, sig_y, tau_xy = node_vals[local_node - 1].tolist()
-                writer.writerow([
-                    elem.id,
-                    node_id,
-                    local_node,
-                    sig_x,
-                    sig_y,
-                    tau_xy,
-                    von_mises_plane(sig_x, sig_y, tau_xy, plane_type, nu),
-                ])
+        _write_plane_records(writer, recovered, mesh)
 
 
 def _solid(
@@ -190,7 +185,12 @@ def _solid(
     type_key: str,
     natural_coords: tuple[float, float, float],
 ) -> None:
-    """Export solid element stresses at one natural coordinate point."""
+    """Export solid element stresses at one legacy representative point.
+
+    This path intentionally remains direct: distorted solid elements can
+    produce different values when integration-point stresses are interpolated
+    to the canonical centroid.
+    """
     U = validated_u(mesh, U)
     lookup = node_lookup(mesh)
 
@@ -229,34 +229,23 @@ def _plane_multi(
     gauss_order: int | None = None,
 ) -> None:
     """Export mixed plane element-nodal stresses without averaging."""
-    U = validated_u(mesh, U)
-    lookup = node_lookup(mesh)
+    recovered = collect_stress(
+        mesh,
+        U,
+        position=StressPosition.ELEMENT_NODAL,
+        gauss_order=gauss_order,
+    )
 
     path = prepare_output_path(path)
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(PLANE_ELEMENT_HEADER)
-        for elem in mesh.elements:
-            type_key = dispatch.type_key_from_name(elem.type)
-            if type_key not in type_keys:
-                continue
-            order = (
-                gauss_order
-                if gauss_order is not None
-                else dispatch.default_gauss_order(type_key)
-            )
-            node_vals, plane_type, nu = nodal_stress(mesh, elem, U, lookup, order)
-            for local_node, node_id in enumerate(elem.node_ids, start=1):
-                sig_x, sig_y, tau_xy = node_vals[local_node - 1].tolist()
-                writer.writerow([
-                    elem.id,
-                    node_id,
-                    local_node,
-                    sig_x,
-                    sig_y,
-                    tau_xy,
-                    von_mises_plane(sig_x, sig_y, tau_xy, plane_type, nu),
-                ])
+        selected_element_ids = {
+            int(elem.id)
+            for elem in mesh.elements
+            if dispatch.type_key_from_name(elem.type) in type_keys
+        }
+        _write_plane_records(writer, recovered, mesh, selected_element_ids)
 
 
 def _solid_multi(
@@ -265,7 +254,13 @@ def _solid_multi(
     path: str,
     type_keys: set[str],
 ) -> None:
-    """Export mixed solid element stresses at one representative point per element."""
+    """Export mixed solid element stresses at one representative point per element.
+
+    This remains a controlled legacy exception.  Direct representative-point
+    evaluation is observably different from canonical integration-point
+    interpolation at ``StressPosition.CENTROID`` for distorted solids, so this
+    compatibility schema cannot delegate to that field without changing values.
+    """
     U = validated_u(mesh, U)
     lookup = node_lookup(mesh)
 
@@ -300,3 +295,59 @@ def _solid_multi(
                 tau_zx,
                 von_mises_3d(sig_x, sig_y, sig_z, tau_xy, tau_yz, tau_zx),
             ])
+
+
+def _write_plane_records(
+    writer,
+    recovered: StressField,
+    mesh,
+    selected_element_ids: set[int] | None = None,
+) -> None:
+    """Project canonical element-nodal plane rows to the legacy CSV schema."""
+    if recovered.position is not StressPosition.ELEMENT_NODAL:
+        raise ValueError("plane element export requires element-nodal stress")
+    if recovered.component_names != CANONICAL_PLANE_COMPONENT_NAMES:
+        raise ValueError("plane element export requires canonical plane stress")
+
+    elements_by_id = {int(elem.id): elem for elem in mesh.elements}
+    for record in recovered.records:
+        if (
+            record.elem_id is None
+            or record.node_id is None
+            or record.local_node is None
+        ):
+            raise ValueError(
+                "canonical plane element-nodal stress is missing row provenance"
+            )
+        if (
+            selected_element_ids is not None
+            and record.elem_id not in selected_element_ids
+        ):
+            continue
+        sig_x, sig_y, _sig_z, tau_xy = record.components
+        elem = elements_by_id[record.elem_id]
+        plane_type = elem.props.get("plane_type")
+        if plane_type is None:
+            plane_type = (
+                "strain"
+                if str(elem.type).upper().startswith("CPE")
+                else "stress"
+            )
+        writer.writerow([
+            record.elem_id,
+            record.node_id,
+            record.local_node,
+            sig_x,
+            sig_y,
+            tau_xy,
+            # Preserve the legacy byte contract for plane strain.  Computing
+            # S33 after element-nodal extrapolation can differ by a final bit
+            # from extrapolating the canonical complete tensor.
+            von_mises_plane(
+                sig_x,
+                sig_y,
+                tau_xy,
+                str(plane_type),
+                float(elem.props["nu"]),
+            ),
+        ])
