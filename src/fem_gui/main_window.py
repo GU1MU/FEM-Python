@@ -17,7 +17,10 @@ from PySide6.QtWidgets import (
 )
 
 import fem.application as application_api
-from fem.abaqus import build_model as build_abaqus_model, parse_file
+from fem.abaqus import (
+    build_model_with_report as build_abaqus_model_with_report,
+    parse_file,
+)
 from fem.application import (
     AuthoringStatus,
     DefinitionRejected,
@@ -152,6 +155,7 @@ class FEMMainWindow(QMainWindow):
         self.session = ModelSession()
         self.document = self.session.snapshot()
         self._applied_session_revision = self.document.session_revision
+        self._import_notices: tuple[object, ...] = ()
         self._current_step_name: str | None = None
         self.geometry: ModelGeometry | None = None
         self.result_data: ResultData | None = None
@@ -211,6 +215,12 @@ class FEMMainWindow(QMainWindow):
     @property
     def busy(self) -> bool:
         return self._thread is not None
+
+    @property
+    def import_notices(self) -> tuple[object, ...]:
+        """Return detached, non-authoritative notices for the current import."""
+
+        return deepcopy(self._import_notices)
 
     def _apply_session_delta(
         self,
@@ -2074,9 +2084,12 @@ class FEMMainWindow(QMainWindow):
             return
         if not self._confirm_discard_changes():
             return
-        self._apply_session_delta(
+        installed = self._apply_session_delta(
             self.session.new_native_project()
         )
+        if not installed:
+            return
+        self._import_notices = ()
         self.model_tree.set_geometry_preview("Model-1", (), part_name="Part-1")
         self.viewport_panel.set_geometry_context(True)
         self.status_panel.set_state("已新建自主模型，请进入几何模块创建草图", 5000)
@@ -2105,6 +2118,7 @@ class FEMMainWindow(QMainWindow):
             )
             if not installed:
                 return
+            self._import_notices = ()
             if loaded.notices:
                 self.status_panel.set_state(
                     "；".join(
@@ -2184,14 +2198,15 @@ class FEMMainWindow(QMainWindow):
             timings["INP 解析"] = perf_counter() - started
             context.report("正在构建有限元模型……")
             started = perf_counter()
-            model = build_abaqus_model(deck)
+            build_result = build_abaqus_model_with_report(deck)
+            model = build_result.model
             timings["FEMModel 构建"] = perf_counter() - started
             context.report("正在生成显示网格……")
             started = perf_counter()
             geometry = build_model_geometry(model)
             timings["VTK 显示几何构建"] = perf_counter() - started
             context.checkpoint()
-            return model, geometry, timings
+            return model, geometry, timings, build_result.notices
 
         self._start_task(
             workload,
@@ -2217,7 +2232,7 @@ class FEMMainWindow(QMainWindow):
         *,
         token: object | None = None,
     ) -> None:
-        model, geometry, timings = self._unpack_model_load(value)
+        model, geometry, timings, notices = self._unpack_model_load(value)
         task = self.session.prepare_import(path) if token is None else None
         active_token = token or task.token
         delta = self.session.accept_imported_model(active_token, model)
@@ -2232,6 +2247,8 @@ class FEMMainWindow(QMainWindow):
                 "导入结果已过期，未覆盖当前会话",
                 5000,
             )
+            return
+        self._install_import_notices(notices)
 
     def _generated_model_loaded(
         self,
@@ -2240,7 +2257,7 @@ class FEMMainWindow(QMainWindow):
         token: object | None = None,
     ) -> None:
         """Install a generated model through the same GUI path as an INP model."""
-        model, geometry, timings = self._unpack_model_load(value)
+        model, geometry, timings, _notices = self._unpack_model_load(value)
         task = self.session.prepare_mesh_generation() if token is None else None
         active_token = token or task.token
         delta = self.session.accept_generated_model(active_token, model)
@@ -2255,15 +2272,50 @@ class FEMMainWindow(QMainWindow):
                 "网格结果已过期，未覆盖当前会话",
                 5000,
             )
+            return
+        self._import_notices = ()
 
     @staticmethod
-    def _unpack_model_load(value: object) -> tuple[object, ModelGeometry, dict[str, float]]:
+    def _unpack_model_load(
+        value: object,
+    ) -> tuple[
+        object,
+        ModelGeometry,
+        dict[str, float],
+        tuple[object, ...],
+    ]:
         if len(value) == 2:
             model, geometry = value
             timings = {}
-        else:
+            notices = ()
+        elif len(value) == 3:
             model, geometry, timings = value
-        return model, geometry, dict(timings)
+            notices = ()
+        elif len(value) == 4:
+            model, geometry, timings, notices = value
+        else:
+            raise ValueError(
+                "model load result must contain model, geometry, optional "
+                "timings, and optional notices"
+            )
+        return model, geometry, dict(timings), tuple(notices)
+
+    def _install_import_notices(
+        self,
+        notices: tuple[object, ...],
+    ) -> None:
+        """Replace notices only after the imported Session CAS was projected."""
+
+        self._import_notices = deepcopy(tuple(notices))
+        if not self._import_notices:
+            return
+        self.status_panel.set_state(
+            "；".join(
+                str(getattr(notice, "message", notice))
+                for notice in self._import_notices
+            ),
+            12000,
+        )
 
     def _show_model_in_tree(self, model: object) -> None:
         definition_options = {
@@ -2426,7 +2478,9 @@ class FEMMainWindow(QMainWindow):
             return False
         if confirm and not self._confirm_discard_changes():
             return False
-        self._apply_session_delta(self.session.close())
+        closed = self._apply_session_delta(self.session.close())
+        if closed:
+            self._import_notices = ()
         self._selected_geometry_refs.clear()
         self._display = DisplayState()
         self._overlay_undeformed = False
@@ -4693,5 +4747,7 @@ class FEMMainWindow(QMainWindow):
         self._close_inspection_windows()
         self._close_job_manager()
         if self.document.is_open:
-            self._apply_session_delta(self.session.close())
+            closed = self._apply_session_delta(self.session.close())
+            if closed:
+                self._import_notices = ()
         event.accept()
