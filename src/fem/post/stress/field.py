@@ -2,13 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-import math
-from numbers import Real
-from typing import Any, Hashable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
 from ...elements import get_element_kernel
+from ..averaging import NodalAveragingPolicy, resolve_nodal_stress
+from ..fields import (
+    ResultRegionKey,
+    ResultRegionSignature,
+    make_result_region_signature,
+    result_region_sort_key,
+)
 from . import dispatch
 from ._common import element_volume, node_lookup, validated_u
 from .invariants import (
@@ -42,12 +47,16 @@ class StressPosition(str, Enum):
     NODAL = "nodal"
 
 
-@dataclass(frozen=True)
-class StressRegionKey:
-    """Material and section signatures that form a hard averaging boundary."""
+def StressRegionKey(
+    material_signature: Any,
+    section_signature: Any,
+) -> ResultRegionKey:
+    """Compatibility factory returning the sole result-region identity type."""
 
-    material_signature: Hashable
-    section_signature: Hashable
+    return ResultRegionKey(
+        _coerce_region_signature(material_signature),
+        _coerce_region_signature(section_signature),
+    )
 
 
 @dataclass(frozen=True)
@@ -63,8 +72,10 @@ class StressRecord:
     natural_coordinates: tuple[float, ...] | None = None
     node_id: int | None = None
     local_node: int | None = None
-    region_key: StressRegionKey | None = None
+    region_key: ResultRegionKey | None = None
     weight: float = 1.0
+    displacement: tuple[float, ...] | None = None
+    averaged: bool | None = None
 
     def values(self, component_names: Sequence[str]) -> dict[str, float]:
         """Return named components and invariants for exporters and GUI consumers."""
@@ -98,7 +109,7 @@ class _ElementIntegrationPointField:
     gauss_order: int | None
     natural_coordinates: np.ndarray
     components: np.ndarray
-    region_key: StressRegionKey
+    region_key: ResultRegionKey
     weight: float
 
 
@@ -125,9 +136,10 @@ class StressRecovery:
             if group == "plane"
             else CANONICAL_SOLID_COMPONENT_NAMES
         )
+        self._U = validated_u(mesh, U)
         self._ip_fields = _collect_element_integration_points(
             mesh,
-            validated_u(mesh, U),
+            self._U,
             self.lookup,
             set(type_keys),
             group,
@@ -161,7 +173,11 @@ class StressRecovery:
             )
         elif resolved_position is StressPosition.ELEMENT_NODAL:
             records = _element_nodal_records(
-                self.mesh, self.lookup, self._ip_fields, self.component_names
+                self.mesh,
+                self.lookup,
+                self._ip_fields,
+                self.component_names,
+                self._U,
             )
         else:
             element_nodal_field = self.collect(StressPosition.ELEMENT_NODAL)
@@ -189,7 +205,7 @@ class ElementNodalStressContribution:
     local_node: int
     components: tuple[float, ...]
     weight: float
-    region_key: StressRegionKey
+    region_key: ResultRegionKey
     plane_type: str | None = None
     poisson_ratio: float | None = None
 
@@ -373,6 +389,7 @@ def _element_nodal_records(
     lookup: dict[int, Any],
     fields: Sequence[_ElementIntegrationPointField],
     component_names: tuple[str, ...],
+    U: np.ndarray,
 ) -> list[StressRecord]:
     records: list[StressRecord] = []
     for item in fields:
@@ -403,6 +420,7 @@ def _element_nodal_records(
                     local_node=local_node,
                     region_key=item.region_key,
                     weight=item.weight,
+                    displacement=_node_displacement(mesh, int(node_id), U),
                 )
             )
     return records
@@ -414,7 +432,7 @@ def _average_nodal_records(
     element_nodal: Sequence[StressRecord],
     component_names: tuple[str, ...],
 ) -> list[StressRecord]:
-    grouped: dict[tuple[int, StressRegionKey], list[StressRecord]] = {}
+    grouped: dict[tuple[int, ResultRegionKey], list[StressRecord]] = {}
     for record in element_nodal:
         if record.node_id is None or record.region_key is None:
             continue
@@ -428,7 +446,7 @@ def _average_nodal_records(
         grouped.items(),
         key=lambda item: (
             node_order.get(item[0][0], len(node_order)),
-            repr(item[0][1]),
+            result_region_sort_key(item[0][1]),
         ),
     ):
         weights = np.asarray(
@@ -449,6 +467,7 @@ def _average_nodal_records(
                 node_id=node_id,
                 region_key=region_key,
                 weight=float(np.sum(weights)),
+                displacement=contributions[0].displacement,
             )
         )
     return records
@@ -465,8 +484,10 @@ def _make_record(
     natural_coordinates: tuple[float, ...] | None = None,
     node_id: int | None = None,
     local_node: int | None = None,
-    region_key: StressRegionKey | None = None,
+    region_key: ResultRegionKey | None = None,
     weight: float = 1.0,
+    displacement: tuple[float, ...] | None = None,
+    averaged: bool | None = None,
 ) -> StressRecord:
     values = tuple(float(value) for value in components)
     return StressRecord(
@@ -481,6 +502,8 @@ def _make_record(
         local_node=local_node,
         region_key=region_key,
         weight=float(weight),
+        displacement=displacement,
+        averaged=averaged,
     )
 
 
@@ -489,6 +512,22 @@ def _node_coordinates(node: Any) -> tuple[float, ...]:
     if hasattr(node, "z"):
         coordinates.append(float(node.z))
     return tuple(coordinates)
+
+
+def _node_displacement(
+    mesh: Any,
+    node_id: int,
+    U: np.ndarray,
+) -> tuple[float, ...]:
+    translation_count = (
+        3
+        if mesh.nodes and hasattr(mesh.nodes[0], "z")
+        else 2
+    )
+    return tuple(
+        float(U[mesh.global_dof(node_id, component)])
+        for component in range(min(mesh.dofs_per_node, translation_count))
+    )
 
 
 def _physical_coordinates(
@@ -567,69 +606,116 @@ def resolve(
     field: NodalStressField,
     threshold: float = 75.0,
 ) -> ResolvedNodalStressField:
-    """Resolve raw contributions using component-wise relative variation."""
+    """Compatibility adapter over the canonical complete-tensor resolver.
 
-    if (
-        isinstance(threshold, bool)
-        or not isinstance(threshold, Real)
-        or not math.isfinite(float(threshold))
-        or not 0.0 <= float(threshold) <= 100.0
-    ):
-        raise ValueError("threshold must be a finite number from 0.0 through 100.0")
-    threshold_value = float(threshold)
-    region_ranges = _component_ranges_by_region(field)
+    The historical component schema and isolated-node zero rows remain here
+    only for legacy CSV/VTK callers.
+    """
+
+    try:
+        policy = NodalAveragingPolicy(threshold_percent=threshold)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            "threshold must be a finite number from 0.0 through 100.0"
+        ) from error
+
+    canonical, metadata = _canonical_field_from_legacy(field)
+    element_ids = tuple(
+        dict.fromkeys(
+            contribution.elem_id
+            for node_id in field.node_ids
+            for contribution in field.contributions_by_node.get(node_id, ())
+        )
+    )
+    resolved = resolve_nodal_stress(
+        canonical,
+        policy,
+        node_ids=field.node_ids,
+        element_ids=element_ids,
+    )
+    canonical_plane = (
+        canonical.component_names == CANONICAL_PLANE_COMPONENT_NAMES
+    )
+    rows_by_node_region: dict[
+        tuple[int, ResultRegionKey],
+        list[ResolvedNodalStressRow],
+    ] = {}
+    for record in resolved.records:
+        if record.node_id is None or record.region_key is None:
+            continue
+        plane_type, poisson_ratio = metadata[
+            (record.node_id, record.region_key)
+        ]
+        components = (
+            (
+                record.components[0],
+                record.components[1],
+                record.components[3],
+            )
+            if canonical_plane
+            else record.components
+        )
+        rows_by_node_region.setdefault(
+            (record.node_id, record.region_key),
+            [],
+        ).append(
+            ResolvedNodalStressRow(
+                node_id=record.node_id,
+                components=tuple(float(value) for value in components),
+                elem_id=record.elem_id,
+                local_node=record.local_node,
+                averaged=bool(record.averaged),
+                plane_type=plane_type,
+                poisson_ratio=poisson_ratio,
+            )
+        )
+
     rows: list[ResolvedNodalStressRow] = []
-
     for node_id in field.node_ids:
         contributions = tuple(field.contributions_by_node.get(node_id, ()))
-        if not contributions:
-            rows.append(
-                ResolvedNodalStressRow(
-                    node_id=node_id,
-                    components=(0.0,) * len(field.component_names),
-                    elem_id=None,
-                    local_node=None,
-                    averaged=True,
-                )
+        region_order = tuple(
+            dict.fromkeys(
+                contribution.region_key for contribution in contributions
             )
-            continue
-        if len(contributions) == 1:
-            rows.append(_raw_row(contributions[0]))
-            continue
-
-        region_keys = {item.region_key for item in contributions}
-        if len(region_keys) != 1 or threshold_value == 0.0:
-            rows.extend(_raw_row(item) for item in contributions)
-            continue
-
-        region_key = contributions[0].region_key
-        values = np.asarray([item.components for item in contributions], dtype=float)
-        node_ranges = np.ptp(values, axis=0)
-        region_ranges_for_key = region_ranges[region_key]
-        relative_variation = np.zeros_like(node_ranges)
-        nonzero = region_ranges_for_key != 0.0
-        relative_variation[nonzero] = (
-            100.0 * node_ranges[nonzero] / region_ranges_for_key[nonzero]
         )
-        if np.all(relative_variation <= threshold_value):
-            weights = np.asarray([item.weight for item in contributions], dtype=float)
-            averaged = np.average(values, axis=0, weights=weights)
-            first = contributions[0]
-            rows.append(
-                ResolvedNodalStressRow(
-                    node_id=node_id,
-                    components=tuple(float(value) for value in averaged),
-                    elem_id=None,
-                    local_node=None,
-                    averaged=True,
-                    plane_type=first.plane_type,
-                    poisson_ratio=first.poisson_ratio,
+        if region_order:
+            # Historical field.resolve treated any multi-region node as fully
+            # unaveraged. Keep that projection only in this legacy adapter.
+            if len(region_order) > 1:
+                rows.extend(
+                    _legacy_raw_row(contribution)
+                    for contribution in contributions
                 )
+                continue
+            for region_key in region_order:
+                rows.extend(
+                    rows_by_node_region[(node_id, region_key)]
+                )
+            continue
+        rows.append(
+            ResolvedNodalStressRow(
+                node_id=node_id,
+                components=(0.0,) * len(field.component_names),
+                elem_id=None,
+                local_node=None,
+                averaged=True,
             )
-        else:
-            rows.extend(_raw_row(item) for item in contributions)
-
+        )
     return ResolvedNodalStressField(field.component_names, tuple(rows))
+
+
+def _legacy_raw_row(
+    contribution: ElementNodalStressContribution,
+) -> ResolvedNodalStressRow:
+    return ResolvedNodalStressRow(
+        node_id=contribution.node_id,
+        components=contribution.components,
+        elem_id=contribution.elem_id,
+        local_node=contribution.local_node,
+        averaged=False,
+        plane_type=contribution.plane_type,
+        poisson_ratio=contribution.poisson_ratio,
+    )
 
 
 def collect(
@@ -697,41 +783,91 @@ def collect(
     )
 
 
-def _component_ranges_by_region(field: NodalStressField) -> dict[StressRegionKey, np.ndarray]:
-    values_by_region: dict[StressRegionKey, list[tuple[float, ...]]] = {}
-    for contributions in field.contributions_by_node.values():
-        for item in contributions:
-            values_by_region.setdefault(item.region_key, []).append(item.components)
-    return {
-        key: np.ptp(np.asarray(values, dtype=float), axis=0)
-        for key, values in values_by_region.items()
-    }
-
-
-def _raw_row(item: ElementNodalStressContribution) -> ResolvedNodalStressRow:
-    return ResolvedNodalStressRow(
-        node_id=item.node_id,
-        components=item.components,
-        elem_id=item.elem_id,
-        local_node=item.local_node,
-        averaged=False,
-        plane_type=item.plane_type,
-        poisson_ratio=item.poisson_ratio,
+def _canonical_field_from_legacy(
+    legacy: NodalStressField,
+) -> tuple[
+    StressField,
+    dict[tuple[int, ResultRegionKey], tuple[str | None, float | None]],
+]:
+    is_plane = legacy.component_names == PLANE_COMPONENT_NAMES
+    if not is_plane and legacy.component_names != SOLID_COMPONENT_NAMES:
+        raise ValueError("legacy nodal stress field has unsupported components")
+    component_names = (
+        CANONICAL_PLANE_COMPONENT_NAMES
+        if is_plane
+        else CANONICAL_SOLID_COMPONENT_NAMES
+    )
+    metadata: dict[
+        tuple[int, ResultRegionKey],
+        tuple[str | None, float | None],
+    ] = {}
+    records: list[StressRecord] = []
+    for node_id in legacy.node_ids:
+        for contribution in legacy.contributions_by_node.get(node_id, ()):
+            if contribution.node_id != node_id:
+                raise ValueError(
+                    "legacy contribution node id does not match its node group"
+                )
+            if is_plane:
+                plane_type = contribution.plane_type or "stress"
+                poisson_ratio = (
+                    0.0
+                    if contribution.poisson_ratio is None
+                    else contribution.poisson_ratio
+                )
+                components = complete_plane_components(
+                    contribution.components,
+                    plane_type,
+                    poisson_ratio,
+                )
+            else:
+                components = contribution.components
+            metadata.setdefault(
+                (node_id, contribution.region_key),
+                (
+                    contribution.plane_type,
+                    contribution.poisson_ratio,
+                ),
+            )
+            records.append(
+                _make_record(
+                    StressPosition.ELEMENT_NODAL,
+                    components,
+                    component_names,
+                    coordinates=(),
+                    elem_id=contribution.elem_id,
+                    node_id=node_id,
+                    local_node=contribution.local_node,
+                    region_key=contribution.region_key,
+                    weight=contribution.weight,
+                )
+            )
+    return (
+        StressField(
+            StressPosition.ELEMENT_NODAL,
+            component_names,
+            tuple(records),
+        ),
+        metadata,
     )
 
 
-def _region_key(elem: Any) -> StressRegionKey:
+def _region_key(elem: Any) -> ResultRegionKey:
     props = dict(getattr(elem, "props", {}))
     material_signature = props.get(MATERIAL_SIGNATURE_KEY)
     if material_signature is None:
         if "material" in props:
-            material_signature = ("material", _freeze(props["material"]))
+            material_signature = ("material", props["material"])
         elif "material_id" in props:
-            material_signature = ("material_id", _freeze(props["material_id"]))
+            material_signature = ("material_id", props["material_id"])
         else:
             material_signature = (
                 "effective",
-                tuple((name, _freeze(props[name])) for name in ("E", "nu", "rho") if name in props),
+                tuple(
+                    (name, props[name])
+                    for name in ("E", "nu", "rho")
+                    if name in props
+                ),
             )
 
     section_signature = props.get(SECTION_SIGNATURE_KEY)
@@ -751,29 +887,35 @@ def _region_key(elem: Any) -> StressRegionKey:
         }
         section_signature = (
             "section",
-            _freeze(props.get("section_type")),
-            _freeze(section_properties),
+            props.get("section_type"),
+            section_properties,
         )
 
-    return StressRegionKey(_freeze(material_signature), _freeze(section_signature))
+    return StressRegionKey(material_signature, section_signature)
 
 
-def _freeze(value: Any) -> Hashable:
-    """Recursively convert signature data to a deterministic hashable value."""
+def _coerce_region_signature(value: Any) -> ResultRegionSignature:
+    if type(value) is ResultRegionSignature:
+        return value
+    return make_result_region_signature(_legacy_signature_json(value))
 
-    if isinstance(value, Mapping):
-        return tuple(
-            (str(key), _freeze(item))
-            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
-        )
-    if isinstance(value, (list, tuple)):
-        return tuple(_freeze(item) for item in value)
-    if isinstance(value, (set, frozenset)):
-        return tuple(sorted((_freeze(item) for item in value), key=repr))
+
+def _legacy_signature_json(value: Any) -> Any:
+    """Translate historical tuple signatures without repr/hash fallbacks."""
+
     if isinstance(value, np.generic):
-        return value.item()
-    try:
-        hash(value)
-    except TypeError:
-        return repr(value)
-    return value
+        return _legacy_signature_json(value.item())
+    if value is None or type(value) in {bool, int, float, str}:
+        return value
+    if isinstance(value, Mapping):
+        converted: dict[str, Any] = {}
+        for key, item in value.items():
+            if type(key) is not str:
+                raise TypeError("result-region signature mapping keys must be strings")
+            converted[key] = _legacy_signature_json(item)
+        return converted
+    if isinstance(value, (list, tuple)):
+        return [_legacy_signature_json(item) for item in value]
+    raise TypeError(
+        "result-region signatures must contain only finite JSON values"
+    )
