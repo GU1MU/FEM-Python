@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
+import os
 from pathlib import Path
+import secrets
+import shutil
 import tempfile
 from typing import Any
 
@@ -75,11 +79,7 @@ def export_results(
         )
         prefix = f"result-{run_id}"
 
-        with tempfile.TemporaryDirectory(
-            prefix=".fem-agent-export-",
-            dir=exports_path,
-        ) as temporary:
-            staging = Path(temporary).resolve(strict=True)
+        with _temporary_export_directory(exports_path) as staging:
             _generate_exports(result, requested, staging, prefix)
             staged_files = _validated_staged_files(staging, limits)
             destinations = tuple(exports_path / path.name for path in staged_files)
@@ -131,6 +131,44 @@ def export_results(
                 ),
             )
         )
+
+
+@contextmanager
+def _temporary_export_directory(exports_path: Path) -> Iterator[Path]:
+    """Create a private staging child that remains usable in Windows sandboxes."""
+
+    if os.name != "nt":
+        with tempfile.TemporaryDirectory(
+            prefix=".fem-agent-export-",
+            dir=exports_path,
+        ) as temporary:
+            yield Path(temporary).resolve(strict=True)
+        return
+
+    # Python 3.13 translates mode 0o700 into a restrictive Windows ACL.
+    # A managed worker token may then be unable to reopen its own temporary
+    # directory. The already-confined exports parent supplies the security
+    # boundary, so inherit its ACL for this short-lived staging child.
+    staging: Path | None = None
+    for _attempt in range(100):
+        candidate = exports_path / (
+            f".fem-agent-export-{secrets.token_hex(8)}"
+        )
+        try:
+            candidate.mkdir(mode=0o777)
+        except FileExistsError:
+            continue
+        staging = candidate.resolve(strict=True)
+        break
+    if staging is None:
+        raise _ExportFailure(
+            "could not allocate a unique export staging directory"
+        )
+
+    try:
+        yield staging
+    finally:
+        shutil.rmtree(staging)
 
 
 def _normalize_formats(
