@@ -171,6 +171,10 @@ class AbaqusOutputRequest:
     target: str
     variables: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
+    parent_parameters: tuple[tuple[str, str], ...] = ()
+    parent_flags: tuple[str, ...] = ()
+    child_parameters: tuple[tuple[str, str], ...] = ()
+    child_flags: tuple[str, ...] = ()
 
 
 @dataclass

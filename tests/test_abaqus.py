@@ -11,6 +11,7 @@ from fem.core.model import (
     GravityLoad,
     NodalLoad,
     OutputRequest,
+    OutputSourceEvidence,
     SectionAssignment,
 )
 from fem.core.mesh import Mesh3D
@@ -1367,10 +1368,10 @@ def test_abaqus_read_stores_output_requests_on_steps(tmp_path):
             "*Step, name=OUTPUT",
             "*Static",
             "*Output, field, variable=PRESELECT",
-            "*Node Output",
-            "U, RF",
-            "*Element Output, directions=YES",
-            "S, E",
+            "*Node Output, frequency=2, NodeFutureFlag",
+            "u, RF, u",
+            "*Element Output, directions=YES, ElementFutureFlag",
+            "S, e",
             "*Output, history, variable=PRESELECT",
             "*End Step",
         ],
@@ -1379,10 +1380,59 @@ def test_abaqus_read_stores_output_requests_on_steps(tmp_path):
     model = abaqus.read(path)
 
     outputs = model.steps[0].outputs
-    assert outputs[0] == OutputRequest("field", "preselect", ("PRESELECT",), {"variable": "PRESELECT"})
-    assert outputs[1] == OutputRequest("field", "node", ("U", "RF"), {})
-    assert outputs[2] == OutputRequest("field", "element", ("S", "E"), {"directions": "YES"})
-    assert outputs[3] == OutputRequest("history", "preselect", ("PRESELECT",), {"variable": "PRESELECT"})
+    assert outputs[0] == OutputRequest(
+        "field",
+        "preselect",
+        ("PRESELECT",),
+        {"variable": "PRESELECT"},
+        OutputSourceEvidence(
+            "abaqus",
+            (("variable", "PRESELECT"),),
+            ("field",),
+        ),
+    )
+    assert outputs[1] == OutputRequest(
+        "field",
+        "node",
+        ("u", "RF", "u"),
+        {"variable": "PRESELECT", "frequency": "2"},
+        OutputSourceEvidence(
+            "abaqus",
+            (("variable", "PRESELECT"),),
+            ("field",),
+            (("frequency", "2"),),
+            ("nodefutureflag",),
+        ),
+    )
+    assert outputs[2] == OutputRequest(
+        "field",
+        "element",
+        ("S", "e"),
+        {"variable": "PRESELECT", "directions": "YES"},
+        OutputSourceEvidence(
+            "abaqus",
+            (("variable", "PRESELECT"),),
+            ("field",),
+            (("directions", "YES"),),
+            ("elementfutureflag",),
+        ),
+    )
+    assert outputs[3] == OutputRequest(
+        "history",
+        "preselect",
+        ("PRESELECT",),
+        {"variable": "PRESELECT"},
+        OutputSourceEvidence(
+            "abaqus",
+            (("variable", "PRESELECT"),),
+            ("history",),
+        ),
+    )
+
+    evidence = outputs[1].source_evidence
+    assert evidence is not None
+    with pytest.raises(AttributeError):
+        evidence.parent_flags = ("changed",)
 
 
 def test_abaqus_parse_accumulates_wrapped_c3d20_connectivity(tmp_path):

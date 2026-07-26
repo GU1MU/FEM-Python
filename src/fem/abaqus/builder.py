@@ -23,6 +23,7 @@ from ..core.model import (
     NodalLoad,
     NodeSet,
     OutputRequest,
+    OutputSourceEvidence,
     SectionAssignment,
     Surface,
     SurfaceLoad,
@@ -1767,7 +1768,19 @@ def _build_step(
         if isinstance(load, GravityLoad)
     ]
     outputs = [
-        OutputRequest(output.kind, output.target, output.variables, output.metadata)
+        OutputRequest(
+            output.kind,
+            output.target,
+            output.variables,
+            output.metadata,
+            OutputSourceEvidence(
+                "abaqus",
+                output.parent_parameters,
+                output.parent_flags,
+                output.child_parameters,
+                output.child_flags,
+            ),
+        )
         for output in step.output_requests
     ]
     return AnalysisStep(

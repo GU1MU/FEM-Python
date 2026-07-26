@@ -150,7 +150,7 @@ def test_preflight_uses_one_blanket_warning_for_all_output_requests() -> None:
     assert warning.details == (("count", 3),)
 
 
-def test_abaqus_parent_output_context_is_not_inherited_current_oracle(
+def test_abaqus_parent_output_context_is_inherited_with_source_evidence(
     tmp_path: Path,
 ) -> None:
     deck = _output_deck(
@@ -174,10 +174,17 @@ def test_abaqus_parent_output_context_is_not_inherited_current_oracle(
     assert parent.flags == ("field", "parentflag")
     assert request.kind == "field"
     assert request.target == "node"
-    assert request.metadata == {}
+    assert request.metadata == {
+        "frequency": "1",
+        "parentoption": "kept-only-in-source",
+    }
+    assert request.parent_parameters == parent.params
+    assert request.parent_flags == parent.flags
+    assert request.child_parameters == ()
+    assert request.child_flags == ()
 
 
-def test_abaqus_child_options_and_variables_define_current_request_oracle(
+def test_abaqus_child_options_override_parent_and_preserve_variables_and_flags(
     tmp_path: Path,
 ) -> None:
     deck = _output_deck(
@@ -203,14 +210,41 @@ def test_abaqus_child_options_and_variables_define_current_request_oracle(
         ("futureoption", "ChildValue"),
     )
     assert child.flags == ("childflag",)
-    assert request.variables == ("U", "RF", "U", "CUSTOMVARIABLE")
+    assert request.variables == ("u", "Rf", "u", "customVariable")
     assert request.metadata == {
         "frequency": "2",
         "nset": "Tip",
         "futureoption": "ChildValue",
     }
+    assert request.parent_parameters == (("frequency", "1"),)
+    assert request.parent_flags == ("field", "parentflag")
+    assert request.child_parameters == child.params
+    assert request.child_flags == ("childflag",)
     assert "parentflag" not in request.metadata
     assert "childflag" not in request.metadata
+
+
+def test_abaqus_output_parent_context_ends_at_unrelated_keyword(
+    tmp_path: Path,
+) -> None:
+    deck = _output_deck(
+        tmp_path,
+        "*Output, field, frequency=1",
+        "*Node Output",
+        "U",
+        "*Boundary",
+        "1, 1, 1, 0",
+        "*Element Output",
+        "S",
+    )
+
+    inherited, standalone = deck.steps[0].output_requests
+
+    assert inherited.metadata == {"frequency": "1"}
+    assert inherited.parent_parameters == (("frequency", "1"),)
+    assert standalone.metadata == {}
+    assert standalone.parent_parameters == ()
+    assert standalone.parent_flags == ()
 
 
 @pytest.mark.parametrize(

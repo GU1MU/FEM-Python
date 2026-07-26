@@ -52,6 +52,15 @@ _SUPPORTED_ELEMENT_NODE_COUNTS = {
 _ABAQUS_REAL_PATTERN = re.compile(
     r"[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[EeDd][+-]?\d+)?\Z"
 )
+_OUTPUT_CONTEXT_KEYWORDS = frozenset(
+    {
+        "output",
+        "field output",
+        "history output",
+        "node output",
+        "element output",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -196,6 +205,7 @@ class _ParserState:
         self.current_step: AbaqusStep | None = None
         self.current_output_kind: str | None = None
         self.current_output_target: str | None = None
+        self.current_output_parent: Keyword | None = None
         self.scope = "model"
         self.current_set_accepts_data = True
         self.current_surface_accepts_data = True
@@ -209,6 +219,8 @@ class _ParserState:
         self.mode = None
         self.current_set_accepts_data = True
         self.current_surface_accepts_data = True
+        if keyword.name not in _OUTPUT_CONTEXT_KEYWORDS:
+            self._clear_output_context()
 
         if keyword.name == "part":
             self.scope = "part"
@@ -332,6 +344,7 @@ class _ParserState:
                 metadata=dict(keyword.params),
                 keyword_location=keyword.location,
             )
+            self._clear_output_context()
             self.deck.steps.append(self.current_step)
             return
 
@@ -382,6 +395,7 @@ class _ParserState:
 
         if keyword.name == "end step":
             self.current_step = None
+            self._clear_output_context()
 
     def handle_blank(
         self,
@@ -1099,14 +1113,21 @@ class _ParserState:
             kind = "history"
         self.current_output_kind = kind
         self.current_output_target = None
+        self.current_output_parent = keyword
         variable = keyword.params.get("variable")
         if variable is not None:
             self._ensure_step().output_requests.append(
                 AbaqusOutputRequest(
                     kind,
-                    "preselect" if variable.upper() == "PRESELECT" else "output",
-                    (variable.upper(),),
-                    dict(keyword.params),
+                    (
+                        "preselect"
+                        if variable.casefold() == "preselect"
+                        else "output"
+                    ),
+                    (variable,),
+                    _effective_output_metadata(keyword, None),
+                    _keyword_parameters(keyword),
+                    _keyword_flags(keyword),
                 )
             )
 
@@ -1114,10 +1135,20 @@ class _ParserState:
         kind = keyword.name.split(" ", 1)[0]
         self.current_output_kind = kind
         self.current_output_target = kind
+        self.current_output_parent = None
         variable = keyword.params.get("variable")
         if variable is not None:
             self._ensure_step().output_requests.append(
-                AbaqusOutputRequest(kind, kind, (variable.upper(),), dict(keyword.params))
+                AbaqusOutputRequest(
+                    kind,
+                    kind,
+                    (variable,),
+                    _effective_output_metadata(None, keyword),
+                    (),
+                    (),
+                    _keyword_parameters(keyword),
+                    _keyword_flags(keyword),
+                )
             )
             self.mode = None
         else:
@@ -1133,16 +1164,72 @@ class _ParserState:
     def _add_output_request(self, values: list[str]) -> None:
         kind = self.current_output_kind or "field"
         target = self.current_output_target or kind
-        metadata = dict(self.keyword.params) if self.keyword is not None else {}
+        child = self.keyword
         self._ensure_step().output_requests.append(
-            AbaqusOutputRequest(kind, target, tuple(value.upper() for value in values), metadata)
+            AbaqusOutputRequest(
+                kind,
+                target,
+                tuple(values),
+                _effective_output_metadata(
+                    self.current_output_parent,
+                    child,
+                ),
+                _keyword_parameters(self.current_output_parent),
+                _keyword_flags(self.current_output_parent),
+                _keyword_parameters(child),
+                _keyword_flags(child),
+            )
         )
+
+    def _clear_output_context(self) -> None:
+        self.current_output_kind = None
+        self.current_output_target = None
+        self.current_output_parent = None
 
     def _ensure_step(self) -> AbaqusStep:
         if self.current_step is None:
             self.current_step = AbaqusStep("Initial")
             self.deck.steps.append(self.current_step)
         return self.current_step
+
+
+def _keyword_parameters(
+    keyword: Keyword | None,
+) -> tuple[tuple[str, str], ...]:
+    if keyword is None:
+        return ()
+    return keyword.occurrence.params
+
+
+def _keyword_flags(keyword: Keyword | None) -> tuple[str, ...]:
+    if keyword is None:
+        return ()
+    return keyword.occurrence.flags
+
+
+def _effective_output_metadata(
+    parent: Keyword | None,
+    child: Keyword | None,
+) -> dict[str, str]:
+    """Merge output options while letting child keys override by casefold."""
+
+    metadata: dict[str, str] = {}
+    for keyword in (parent, child):
+        if keyword is None:
+            continue
+        for key, value in keyword.occurrence.params:
+            collision = next(
+                (
+                    existing
+                    for existing in metadata
+                    if existing.casefold() == key.casefold()
+                ),
+                None,
+            )
+            if collision is not None and collision != key:
+                del metadata[collision]
+            metadata[key] = value
+    return metadata
 
 
 def _assemble_keyword(
