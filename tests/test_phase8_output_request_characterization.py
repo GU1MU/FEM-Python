@@ -97,7 +97,7 @@ def test_programmatic_metadata_is_deeply_owned_and_immutable() -> None:
         request.metadata["averaging"]["thresholds"][0] = 1
 
 
-def test_installed_capability_publishes_create_and_existing_operations() -> None:
+def test_installed_capability_publishes_intrinsic_create_and_catalog() -> None:
     model = read(_STANDARD_INP_FIXTURES / "truss2_tension.inp")
     report = describe_model_capabilities(model)
     output_operations = tuple(
@@ -111,9 +111,10 @@ def test_installed_capability_publishes_create_and_existing_operations() -> None
         for capability in output_operations
     ) == (
         ("output_request.create", AuthoringStatus.ENABLED),
-        ("output_request.existing", AuthoringStatus.READ_ONLY),
     )
     assert all(not capability.diagnostics for capability in output_operations)
+    assert report.output_request_catalog is not None
+    assert report.output_request_candidates
 
 
 def test_preflight_reports_each_unsupported_output_request() -> None:

@@ -449,7 +449,6 @@ def test_preflight_emits_only_projected_unsupported_output_diagnostics(
         if diagnostic.stage is PreflightStage.OUTPUT
     )
 
-    assert preflight_module._output_execution_gate_open()
     assert len(observed) == 1
     requests, evaluation = observed[0]
     assert requests == step.outputs

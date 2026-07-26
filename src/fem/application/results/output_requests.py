@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from fem.core.model import OutputRequest, OutputSourceEvidence
@@ -78,6 +78,10 @@ class ResultCapabilityCatalog:
 
     profile: ElementResultProfile
     entries: tuple[FieldRegistryEntry, ...]
+    candidates: tuple[OutputRequestProjection, ...] = field(
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         if type(self.profile) is not ElementResultProfile:
@@ -91,6 +95,11 @@ class ResultCapabilityCatalog:
             raise ValueError(
                 "entries must exactly match the contextual registry catalog"
             )
+        object.__setattr__(
+            self,
+            "candidates",
+            _project_source_independent_candidates(self),
+        )
 
     @classmethod
     def from_profile(
@@ -469,6 +478,40 @@ def project_output_request(
         executable_request=executable_request,
         diagnostics=diagnostics,
     )
+
+
+def _project_source_independent_candidates(
+    capabilities: ResultCapabilityCatalog,
+) -> tuple[OutputRequestProjection, ...]:
+    """Build the owned authoring catalog through the sole support evaluator."""
+
+    candidates: list[OutputRequestProjection] = []
+    for variable in _VARIABLE_ORDER:
+        positions: tuple[FieldPosition | None, ...] = (
+            tuple(FieldPosition)
+            if variable is ResultVariable.S
+            else (None,)
+        )
+        for position in positions:
+            metadata = (
+                {}
+                if position is None
+                else {"position": position.value}
+            )
+            request = OutputRequest(
+                "field",
+                _PRIMARY_TARGETS[variable],
+                (variable.value,),
+                metadata,
+            )
+            projection = project_output_request(
+                request,
+                capabilities,
+                request_index=len(candidates),
+            )
+            if projection.executable:
+                candidates.append(projection)
+    return tuple(candidates)
 
 
 @dataclass(frozen=True, slots=True)

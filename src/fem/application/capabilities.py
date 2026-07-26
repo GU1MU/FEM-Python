@@ -40,11 +40,6 @@ _REGION_KINDS = frozenset(
 _DISTRIBUTED_LOAD_KINDS = frozenset({"edge", "surface", "line"})
 _EXPLICIT_BEAM_ORIENTATION_REQUIREMENT = "beam.orientation.explicit"
 
-# The solve workflow now executes the canonical result-support projection and
-# stores its report/materialization atomically with every successful run.
-output_execution_installed = True
-
-
 class AuthoringStatus(str, Enum):
     """Product-level availability derived from domain capabilities."""
 
@@ -142,6 +137,22 @@ class SessionAuthoringProjection:
     report: ModelCapabilityReport
     targets: tuple[AuthoringTarget, ...]
     step_lifecycle: tuple[StepLifecycleProjection, ...]
+    operations: tuple[AuthoringCapability, ...]
+
+    @property
+    def output_request_catalog(self) -> ResultCapabilityCatalog | None:
+        """Return the source-independent candidate catalog."""
+
+        return self.report.output_request_catalog
+
+    def operation(self, name: str) -> AuthoringCapability:
+        """Return a Session-contextual operation before model-level fallback."""
+
+        normalized = _normalize_operation(name)
+        for capability in self.operations:
+            if capability.operation == normalized:
+                return capability
+        return self.report.operation(normalized)
 
     def target(self, region: RegionRef) -> AuthoringTarget:
         if type(region) is not RegionRef:
@@ -249,6 +260,26 @@ class ModelCapabilityReport:
     diagnostics: tuple[PreflightDiagnostic, ...]
     regions: tuple[RegionCapability, ...]
     authoring: tuple[AuthoringCapability, ...]
+    output_request_catalog: ResultCapabilityCatalog | None
+
+    def __post_init__(self) -> None:
+        if (
+            self.output_request_catalog is not None
+            and type(self.output_request_catalog) is not ResultCapabilityCatalog
+        ):
+            raise TypeError(
+                "output_request_catalog must be ResultCapabilityCatalog or None"
+            )
+
+    @property
+    def output_request_candidates(
+        self,
+    ) -> tuple[OutputRequestProjection, ...]:
+        """Return source-independent, canonically projected create choices."""
+
+        if self.output_request_catalog is None:
+            return ()
+        return self.output_request_catalog.candidates
 
     @property
     def status(self) -> AuthoringStatus:
@@ -300,7 +331,7 @@ class _OutputSupportEvaluation:
 
         return (
             self.catalog is not None
-            and bool(self.catalog.entries)
+            and bool(self.catalog.candidates)
         )
 
 
@@ -352,48 +383,20 @@ def _model_output_requests(model: Any) -> Iterable[Any]:
         yield from getattr(step, "outputs", ())
 
 
-def _output_execution_gate_open() -> bool:
-    """Return the single Batch 2/3 output lifecycle feature gate."""
-
-    return output_execution_installed
-
-
 def _output_authoring_capabilities(
     *,
     supports_candidate: bool,
-) -> tuple[AuthoringCapability, AuthoringCapability]:
-    """Project the shared result catalog through the output lifecycle gate."""
+) -> tuple[AuthoringCapability]:
+    """Expose intrinsic create support from the canonical candidate catalog."""
 
-    diagnostic = PreflightDiagnostic(
-        code="output.request.not_executed",
-        severity=PreflightSeverity.WARNING,
-        stage=PreflightStage.OUTPUT,
-        message=(
-            "Output requests are preserved but are not executed by the "
-            "current solver."
-        ),
-        subject="output_request",
-        path=("analysis", "outputs"),
-        remediation=(
-            "当前求解链不会执行输出请求；既有请求仅可查看或删除"
-        ),
-    )
-    available = _output_execution_gate_open() and supports_candidate
-    diagnostics = () if available else (diagnostic,)
     return (
         AuthoringCapability(
             "output_request.create",
             (
                 AuthoringStatus.ENABLED
-                if available
+                if supports_candidate
                 else AuthoringStatus.UNAVAILABLE
             ),
-            diagnostics,
-        ),
-        AuthoringCapability(
-            "output_request.existing",
-            AuthoringStatus.READ_ONLY,
-            diagnostics,
         ),
     )
 
@@ -833,6 +836,7 @@ def describe_model_capabilities(model: Any) -> ModelCapabilityReport:
         diagnostics=model_diagnostics,
         regions=regions,
         authoring=authoring,
+        output_request_catalog=output_support.catalog,
     )
 
 
@@ -931,7 +935,7 @@ def describe_native_authoring_capabilities(
         result_catalog = ResultCapabilityCatalog.from_profile(profile)
     output_capabilities = _output_authoring_capabilities(
         supports_candidate=(
-            result_catalog is not None and bool(result_catalog.entries)
+            result_catalog is not None and bool(result_catalog.candidates)
         ),
     )
     return ModelCapabilityReport(
@@ -959,6 +963,7 @@ def describe_native_authoring_capabilities(
             ),
             *output_capabilities,
         ),
+        output_request_catalog=result_catalog,
     )
 
 
@@ -1060,7 +1065,76 @@ def describe_session_authoring(snapshot: Any) -> SessionAuthoringProjection:
                 submit_reason=submit_reason,
             )
         )
-    return SessionAuthoringProjection(report, targets, tuple(lifecycles))
+    return SessionAuthoringProjection(
+        report,
+        targets,
+        tuple(lifecycles),
+        _session_output_authoring_capabilities(snapshot, report),
+    )
+
+
+def _session_output_authoring_capabilities(
+    snapshot: Any,
+    report: ModelCapabilityReport,
+) -> tuple[AuthoringCapability, ...]:
+    """Merge intrinsic output support with Session-owned lifecycle facts."""
+
+    steps = tuple(getattr(snapshot, "steps", ()))
+    editable_steps = tuple(
+        step
+        for step in steps
+        if (
+            (name := str(getattr(step, "name", "")).strip())
+            and name.casefold() != "initial"
+        )
+    )
+    existing = tuple(
+        request
+        for step in steps
+        for request in tuple(getattr(step, "outputs", ()))
+    )
+    deletable = tuple(
+        request
+        for step in editable_steps
+        for request in tuple(getattr(step, "outputs", ()))
+    )
+    idle = (
+        getattr(snapshot, "running_run_id", None) is None
+        and not bool(getattr(snapshot, "busy", False))
+    )
+    intrinsic_create = report.operation("output_request.create")
+    create_enabled = (
+        intrinsic_create.status is AuthoringStatus.ENABLED
+        and bool(editable_steps)
+        and idle
+    )
+    return (
+        AuthoringCapability(
+            "output_request.create",
+            (
+                AuthoringStatus.ENABLED
+                if create_enabled
+                else AuthoringStatus.UNAVAILABLE
+            ),
+            intrinsic_create.diagnostics,
+        ),
+        AuthoringCapability(
+            "output_request.view",
+            (
+                AuthoringStatus.READ_ONLY
+                if existing
+                else AuthoringStatus.UNAVAILABLE
+            ),
+        ),
+        AuthoringCapability(
+            "output_request.delete",
+            (
+                AuthoringStatus.ENABLED
+                if deletable and idle
+                else AuthoringStatus.UNAVAILABLE
+            ),
+        ),
+    )
 
 
 def _append_target_region(
@@ -1152,6 +1226,7 @@ def _empty_model_capability_report() -> ModelCapabilityReport:
                 AuthoringStatus.UNAVAILABLE,
             ),
         ),
+        output_request_catalog=None,
     )
 
 

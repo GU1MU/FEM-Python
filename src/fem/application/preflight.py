@@ -19,7 +19,6 @@ from .capabilities import (
     _assumed_orientation_diagnostic,
     _diagnostic_for_operation,
     _evaluate_output_requests,
-    _output_execution_gate_open,
     _requires_explicit_beam_orientation,
     describe_model_capabilities,
 )
@@ -603,30 +602,10 @@ def _append_output_diagnostic(
     if not outputs:
         return
     output_support = _evaluate_output_requests(model, outputs)
-    if (
-        _output_execution_gate_open()
-        and output_support.complete
-    ):
-        _append_projected_output_diagnostics(
-            output_support.projections,
-            diagnostics,
-            step_name,
-        )
-        return
-    diagnostics.append(
-        PreflightDiagnostic(
-            code="output.request.not_executed",
-            severity=PreflightSeverity.WARNING,
-            stage=PreflightStage.OUTPUT,
-            message=(
-                "Output requests are preserved but are not executed by the "
-                "current solver."
-            ),
-            subject=step_name,
-            path=("steps", step_name, "outputs"),
-            remediation="既有输出请求可查看或删除；求解结果不会按其裁剪。",
-            details={"count": len(outputs)},
-        )
+    _append_projected_output_diagnostics(
+        output_support.projections,
+        diagnostics,
+        step_name,
     )
 
 

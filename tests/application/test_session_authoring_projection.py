@@ -1,12 +1,16 @@
 from pathlib import Path
+from dataclasses import replace
 
 from fem.abaqus import read
 from fem.application import (
+    AnalysisRun,
     AuthoringStatus,
     ModelSession,
     RegionRef,
+    RunStatus,
     describe_session_authoring,
 )
+from fem.core.model import AnalysisStep, OutputRequest
 from fem.geometry import RectangleGeometry
 from fem.mesh.settings import MeshSettings
 
@@ -94,3 +98,122 @@ def test_authoring_capability_separates_enter_and_submit_semantics() -> None:
     assert capability.can_submit is (
         capability.status is AuthoringStatus.ENABLED
     )
+
+
+def test_output_operations_are_session_contextual_and_independent() -> None:
+    path = _FIXTURES / "truss2_tension.inp"
+    session = ModelSession()
+    task = session.prepare_import(path)
+    session.accept_imported_model(task.token, read(path))
+
+    projection = describe_session_authoring(session.snapshot())
+
+    assert tuple(item.operation for item in projection.operations) == (
+        "output_request.create",
+        "output_request.view",
+        "output_request.delete",
+    )
+    assert projection.operation(
+        "output_request.create"
+    ).status is AuthoringStatus.ENABLED
+    assert projection.operation(
+        "output_request.view"
+    ).status is AuthoringStatus.READ_ONLY
+    assert not projection.operation("output_request.view").can_submit
+    assert projection.operation(
+        "output_request.delete"
+    ).status is AuthoringStatus.ENABLED
+    assert (
+        projection.output_request_catalog
+        is projection.report.output_request_catalog
+    )
+
+
+def test_unsupported_existing_output_remains_viewable_and_deletable() -> None:
+    path = _FIXTURES / "truss2_tension.inp"
+    session = ModelSession()
+    task = session.prepare_import(path)
+    session.accept_imported_model(task.token, read(path))
+    snapshot = replace(
+        session.snapshot(),
+        steps=(
+            AnalysisStep(
+                "Tension",
+                outputs=(
+                    OutputRequest(
+                        "history",
+                        "preselect",
+                        ("Future",),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    projection = describe_session_authoring(snapshot)
+
+    assert projection.operation(
+        "output_request.view"
+    ).status is AuthoringStatus.READ_ONLY
+    assert projection.operation(
+        "output_request.delete"
+    ).status is AuthoringStatus.ENABLED
+
+
+def test_output_create_and_delete_require_idle_but_view_does_not() -> None:
+    path = _FIXTURES / "truss2_tension.inp"
+    session = ModelSession()
+    task = session.prepare_import(path)
+    session.accept_imported_model(task.token, read(path))
+    snapshot = session.snapshot()
+    busy = replace(
+        snapshot,
+        runs=(
+            AnalysisRun(
+                run_id="run-1",
+                name="Job-1",
+                step_name="Tension",
+                artifact_id=snapshot.artifact.artifact_id,
+                model_revision=snapshot.model_revision,
+                status=RunStatus.RUNNING,
+            ),
+        ),
+    )
+
+    projection = describe_session_authoring(busy)
+
+    assert projection.operation(
+        "output_request.create"
+    ).status is AuthoringStatus.UNAVAILABLE
+    assert projection.operation(
+        "output_request.view"
+    ).status is AuthoringStatus.READ_ONLY
+    assert projection.operation(
+        "output_request.delete"
+    ).status is AuthoringStatus.UNAVAILABLE
+
+
+def test_output_operations_require_step_and_request_existence() -> None:
+    path = _FIXTURES / "truss2_tension.inp"
+    session = ModelSession()
+    task = session.prepare_import(path)
+    session.accept_imported_model(task.token, read(path))
+    snapshot = session.snapshot()
+
+    empty_step = describe_session_authoring(
+        replace(snapshot, steps=(AnalysisStep("Tension"),))
+    )
+    assert empty_step.operation(
+        "output_request.create"
+    ).status is AuthoringStatus.ENABLED
+    assert empty_step.operation(
+        "output_request.view"
+    ).status is AuthoringStatus.UNAVAILABLE
+    assert empty_step.operation(
+        "output_request.delete"
+    ).status is AuthoringStatus.UNAVAILABLE
+
+    no_step = describe_session_authoring(replace(snapshot, steps=()))
+    assert no_step.operation(
+        "output_request.create"
+    ).status is AuthoringStatus.UNAVAILABLE

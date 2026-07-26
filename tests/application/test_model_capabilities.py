@@ -359,8 +359,11 @@ def test_native_authoring_uses_catalog_for_mesh_settings(
     assert report.operation("output_request.create").status is (
         AuthoringStatus.ENABLED
     )
-    assert report.operation("output_request.existing").status is (
-        AuthoringStatus.READ_ONLY
+    assert report.output_request_catalog is not None
+    assert report.output_request_candidates
+    assert all(
+        candidate.executable
+        for candidate in report.output_request_candidates
     )
 
 
@@ -398,12 +401,12 @@ def test_native_and_realized_output_support_share_result_catalog(
     assert realized_report.operation(
         "output_request.create"
     ).status is AuthoringStatus.ENABLED
-    assert native_report.operation(
-        "output_request.existing"
-    ).status is AuthoringStatus.READ_ONLY
-    assert realized_report.operation(
-        "output_request.existing"
-    ).status is AuthoringStatus.READ_ONLY
+    assert native_report.output_request_catalog == observed[0]
+    assert realized_report.output_request_catalog == observed[1]
+    assert (
+        native_report.output_request_candidates
+        == realized_report.output_request_candidates
+    )
 
 
 def test_output_request_create_is_enabled_when_catalog_has_candidates() -> None:
@@ -412,15 +415,18 @@ def test_output_request_create_is_enabled_when_catalog_has_candidates() -> None:
     report = describe_model_capabilities(model)
 
     create = report.operation("output_request.create")
-    existing = report.operation("output_request.existing")
 
     assert create.status is AuthoringStatus.ENABLED
-    assert existing.status is AuthoringStatus.READ_ONLY
     assert create.diagnostics == ()
-    assert existing.diagnostics == ()
+    assert report.output_request_catalog is not None
+    assert report.output_request_candidates
+    assert all(
+        candidate.authoring_request.source_evidence is None
+        for candidate in report.output_request_candidates
+    )
 
 
-def test_output_capability_uses_canonical_result_projection_with_open_gate(
+def test_output_capability_uses_canonical_result_projection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     model = read(_FIXTURES / "truss2_tension.inp")
@@ -444,14 +450,19 @@ def test_output_capability_uses_canonical_result_projection_with_open_gate(
 
     report = describe_model_capabilities(model)
     create = report.operation("output_request.create")
-    existing = report.operation("output_request.existing")
 
-    assert capabilities_module.output_execution_installed is True
     assert len(observed) == 2
     assert len({id(catalog) for catalog, _projection in observed}) == 1
     assert observed[0][0].profile.family.value == "truss"
     assert all(projection.executable for _catalog, projection in observed)
     assert create.status is AuthoringStatus.ENABLED
-    assert existing.status is AuthoringStatus.READ_ONLY
     assert create.diagnostics == ()
-    assert existing.diagnostics == ()
+    assert any(
+        request.source_evidence is not None
+        for step in model.steps
+        for request in step.outputs
+    )
+    assert all(
+        candidate.authoring_request.source_evidence is None
+        for candidate in report.output_request_candidates
+    )

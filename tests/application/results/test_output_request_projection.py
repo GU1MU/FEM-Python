@@ -127,6 +127,66 @@ def test_capability_catalog_exposes_registry_owned_profile_diagnostics() -> None
     assert catalog.diagnostics[0].details["canonical_variable"] == "S"
 
 
+@pytest.mark.parametrize(
+    ("family", "expected"),
+    (
+        (
+            ResultModelFamily.PLANE_CONTINUUM,
+            (
+                ("node", "U", None),
+                ("node", "RF", None),
+                ("element", "S", "integration_point"),
+                ("element", "S", "centroid"),
+                ("element", "S", "element_nodal"),
+            ),
+        ),
+        (
+            ResultModelFamily.TRUSS,
+            (
+                ("node", "U", None),
+                ("node", "RF", None),
+                ("element", "S", "centroid"),
+            ),
+        ),
+        (
+            ResultModelFamily.BEAM,
+            (
+                ("node", "U", None),
+                ("node", "UR", None),
+                ("node", "RF", None),
+                ("node", "RM", None),
+                ("element", "S", "section_end"),
+            ),
+        ),
+    ),
+)
+def test_capability_catalog_owns_only_legal_source_independent_candidates(
+    family: ResultModelFamily,
+    expected: tuple[tuple[str, str, str | None], ...],
+) -> None:
+    catalog = _capabilities(family)
+
+    assert type(catalog.candidates) is tuple
+    assert tuple(
+        (
+            candidate.authoring_request.target,
+            candidate.authoring_request.variables[0],
+            candidate.authoring_request.metadata.get("position"),
+        )
+        for candidate in catalog.candidates
+    ) == expected
+    assert tuple(
+        candidate.request_index for candidate in catalog.candidates
+    ) == tuple(range(len(expected)))
+    assert all(candidate.executable for candidate in catalog.candidates)
+    assert all(
+        candidate.authoring_request.source_evidence is None
+        for candidate in catalog.candidates
+    )
+    with pytest.raises(FrozenInstanceError):
+        catalog.candidates = ()
+
+
 def test_projection_rejects_a_forged_capability_catalog() -> None:
     with pytest.raises(TypeError, match="ResultCapabilityCatalog"):
         project_output_request(
