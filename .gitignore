@@ -1,4 +1,8 @@
 results/
+!/src/fem/application/results/
+!/src/fem/application/results/**
+!/tests/application/results/
+!/tests/application/results/**
 agent-workspace/
 /fem-agent.config.json
 /tests/fem-agent.test.config.json
