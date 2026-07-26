@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+from math import isfinite
 from pathlib import Path
 import re
 from typing import Any, Mapping
@@ -18,6 +19,7 @@ from fem.application.results import (
     ResultQuery,
     ResultQueryRecord,
     ResultQueryResult,
+    ResultSourceKey,
     ScalarFieldSelection,
 )
 from fem.post.fields import encode_result_region_key
@@ -68,6 +70,30 @@ class ResultDisplaySettings:
     scale_value: float
     overlay_undeformed: bool
     show_edges: bool
+
+
+@dataclass(frozen=True, slots=True)
+class TypedResultDisplaySettings:
+    """Catalog-native result display state with a complete field selection."""
+
+    shape_mode: str
+    contour_enabled: bool
+    selection: ScalarFieldSelection
+    scale_mode: str
+    scale_value: float
+    overlay_undeformed: bool
+    show_edges: bool
+
+    def __post_init__(self) -> None:
+        _validate_typed_display_options(
+            shape_mode=self.shape_mode,
+            contour_enabled=self.contour_enabled,
+            selection=self.selection,
+            scale_mode=self.scale_mode,
+            scale_value=self.scale_value,
+            overlay_undeformed=self.overlay_undeformed,
+            show_edges=self.show_edges,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,6 +253,255 @@ class ResultDisplayDialog(QDialog):
         contour_enabled = self.contour_checkbox.isChecked()
         for control in (self.family_combo, self.position_combo, self.component_combo):
             control.setEnabled(contour_enabled)
+        deformed = self.shape_combo.currentData() == "deformed"
+        self.scale_group.setEnabled(deformed)
+        self.overlay_checkbox.setEnabled(deformed)
+
+
+class TypedResultDisplayDialog(QDialog):
+    """从 immutable result catalog 选择完整的 scalar field identity。"""
+
+    applyRequested = Signal(TypedResultDisplaySettings)
+
+    def __init__(
+        self,
+        catalog: ResultCatalog,
+        *,
+        current_selection: ScalarFieldSelection,
+        shape_mode: str,
+        contour_enabled: bool,
+        scale_mode: str,
+        scale_value: float,
+        overlay_undeformed: bool,
+        show_edges: bool,
+        parent=None,
+    ) -> None:
+        if type(catalog) is not ResultCatalog:
+            raise TypeError("catalog must be ResultCatalog")
+        _validate_typed_display_selection(catalog, current_selection)
+        initial = TypedResultDisplaySettings(
+            shape_mode=shape_mode,
+            contour_enabled=contour_enabled,
+            selection=current_selection,
+            scale_mode=scale_mode,
+            scale_value=scale_value,
+            overlay_undeformed=overlay_undeformed,
+            show_edges=show_edges,
+        )
+
+        super().__init__(parent)
+        self.setWindowTitle("结果显示")
+        self.setMinimumWidth(420)
+        self._catalog = catalog
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        configure_form_layout(form)
+        self.step_combo = QComboBox(self)
+        self.step_combo.addItem(catalog.source.step_name, catalog.source)
+        self.shape_combo = QComboBox(self)
+        self.shape_combo.addItem("未变形形状", "undeformed")
+        self.shape_combo.addItem("变形形状", "deformed")
+        self.shape_combo.setCurrentIndex(
+            self.shape_combo.findData(initial.shape_mode)
+        )
+        self.contour_checkbox = QCheckBox("显示云图", self)
+        self.contour_checkbox.setChecked(initial.contour_enabled)
+        self.field_combo = QComboBox(self)
+        self.component_combo = QComboBox(self)
+        self.availability_label = QLabel(self)
+        self.availability_label.setWordWrap(True)
+        for availability in catalog.fields:
+            self.field_combo.addItem(
+                _typed_result_display_field_label(availability),
+                availability.key,
+            )
+        self.field_combo.setCurrentIndex(
+            self.field_combo.findData(current_selection.field_key)
+        )
+        form.addRow("结果步：", self.step_combo)
+        form.addRow("几何形状：", self.shape_combo)
+        form.addRow(self.contour_checkbox)
+        form.addRow("场变量：", self.field_combo)
+        form.addRow("分量：", self.component_combo)
+        form.addRow("字段状态：", self.availability_label)
+        layout.addLayout(form)
+
+        self.scale_group = QGroupBox("变形比例", self)
+        scale_layout = QVBoxLayout(self.scale_group)
+        self.auto_scale = QRadioButton("自动", self.scale_group)
+        self.real_scale = QRadioButton("真实比例", self.scale_group)
+        self.custom_scale = QRadioButton("指定比例", self.scale_group)
+        scale_buttons = QButtonGroup(self.scale_group)
+        for button in (
+            self.auto_scale,
+            self.real_scale,
+            self.custom_scale,
+        ):
+            scale_buttons.addButton(button)
+        self.scale_value = CompactDoubleSpinBox(self.scale_group)
+        self.scale_value.setRange(0.0, 1.0e12)
+        self.scale_value.setDecimals(6)
+        self.scale_value.setValue(initial.scale_value)
+        custom_row = QHBoxLayout()
+        custom_row.addWidget(self.custom_scale)
+        custom_row.addWidget(self.scale_value, 1)
+        scale_layout.addWidget(self.auto_scale)
+        scale_layout.addWidget(self.real_scale)
+        scale_layout.addLayout(custom_row)
+        {
+            "auto": self.auto_scale,
+            "real": self.real_scale,
+            "custom": self.custom_scale,
+        }[initial.scale_mode].setChecked(True)
+        layout.addWidget(self.scale_group)
+
+        self.overlay_checkbox = QCheckBox("叠加未变形轮廓", self)
+        self.overlay_checkbox.setChecked(initial.overlay_undeformed)
+        self.edges_checkbox = QCheckBox("显示单元边", self)
+        self.edges_checkbox.setChecked(initial.show_edges)
+        layout.addWidget(self.overlay_checkbox)
+        layout.addWidget(self.edges_checkbox)
+
+        self.button_box = _dialog_buttons(self)
+        self.apply_button = self.button_box.button(
+            QDialogButtonBox.StandardButton.Apply
+        )
+        self.ok_button = self.button_box.button(
+            QDialogButtonBox.StandardButton.Ok
+        )
+        self.apply_button.clicked.connect(self.apply)
+        self.button_box.accepted.connect(self.accept_with_apply)
+        self.button_box.rejected.connect(self.reject)
+        layout.addWidget(self.button_box)
+
+        self._sync_components(
+            preferred_component=current_selection.component,
+        )
+        self.field_combo.currentIndexChanged.connect(
+            self._field_changed
+        )
+        self.shape_combo.currentIndexChanged.connect(
+            self._refresh_mode_state
+        )
+        self.contour_checkbox.toggled.connect(
+            self._refresh_mode_state
+        )
+        self._refresh_availability()
+        self._refresh_mode_state()
+
+    @property
+    def catalog(self) -> ResultCatalog:
+        """返回 dialog 绑定的 exact immutable catalog。"""
+
+        return self._catalog
+
+    @property
+    def source(self) -> ResultSourceKey:
+        """返回 catalog 所属的 exact result source。"""
+
+        return self._catalog.source
+
+    def current_availability(self) -> FieldAvailability:
+        """返回当前字段的完整 catalog entry。"""
+
+        key = self.field_combo.currentData()
+        if type(key) is not FieldMaterializationKey:
+            raise RuntimeError("no typed result field is selected")
+        for availability in self._catalog.fields:
+            if availability.key == key:
+                return availability
+        raise RuntimeError("field key is outside the dialog catalog")
+
+    def current_selection(self) -> ScalarFieldSelection:
+        """返回当前完整 materialization key 与 descriptor component。"""
+
+        availability = self.current_availability()
+        component = self.component_combo.currentData()
+        if type(component) is not str:
+            raise RuntimeError("no typed scalar component is selected")
+        if component not in availability.descriptor.columns:
+            raise RuntimeError(
+                "selected component is outside the field descriptor"
+            )
+        return ScalarFieldSelection(availability.key, component)
+
+    def settings(self) -> TypedResultDisplaySettings:
+        """返回当前 catalog-native 显示设置。"""
+
+        scale_mode = (
+            "auto"
+            if self.auto_scale.isChecked()
+            else "real"
+            if self.real_scale.isChecked()
+            else "custom"
+        )
+        return TypedResultDisplaySettings(
+            shape_mode=self.shape_combo.currentData(),
+            contour_enabled=self.contour_checkbox.isChecked(),
+            selection=self.current_selection(),
+            scale_mode=scale_mode,
+            scale_value=float(self.scale_value.value()),
+            overlay_undeformed=self.overlay_checkbox.isChecked(),
+            show_edges=self.edges_checkbox.isChecked(),
+        )
+
+    def apply(self) -> None:
+        """仅为 READY/LAZY selection 发出 typed settings。"""
+
+        if self.current_availability().state is FieldState.UNAVAILABLE:
+            return
+        self.applyRequested.emit(self.settings())
+
+    def accept_with_apply(self) -> None:
+        """提交可显示字段并关闭对话框。"""
+
+        if self.current_availability().state is FieldState.UNAVAILABLE:
+            return
+        self.apply()
+        self.accept()
+
+    def _field_changed(self, *_args: object) -> None:
+        self._sync_components()
+        self._refresh_availability()
+
+    def _sync_components(
+        self,
+        *,
+        preferred_component: str | None = None,
+    ) -> None:
+        if preferred_component is None:
+            candidate = self.component_combo.currentData()
+            if type(candidate) is str:
+                preferred_component = candidate
+        self.component_combo.blockSignals(True)
+        self.component_combo.clear()
+        availability = self.current_availability()
+        for component in availability.descriptor.columns:
+            self.component_combo.addItem(component, component)
+        selected_index = self.component_combo.findData(preferred_component)
+        if selected_index < 0:
+            selected_index = self.component_combo.findData(
+                availability.descriptor.default_component
+            )
+        self.component_combo.setCurrentIndex(
+            selected_index if selected_index >= 0 else 0
+        )
+        self.component_combo.blockSignals(False)
+
+    def _refresh_availability(self) -> None:
+        availability = self.current_availability()
+        self.availability_label.setText(
+            _typed_result_display_availability_text(availability)
+        )
+        can_submit = availability.state is not FieldState.UNAVAILABLE
+        self.apply_button.setEnabled(can_submit)
+        self.ok_button.setEnabled(can_submit)
+
+    def _refresh_mode_state(self) -> None:
+        contour_enabled = self.contour_checkbox.isChecked()
+        self.field_combo.setEnabled(contour_enabled)
+        self.component_combo.setEnabled(contour_enabled)
         deformed = self.shape_combo.currentData() == "deformed"
         self.scale_group.setEnabled(deformed)
         self.overlay_checkbox.setEnabled(deformed)
@@ -1023,6 +1298,108 @@ def _typed_field_label(availability: FieldAvailability) -> str:
         f"{descriptor.field_id.position.value} · "
         f"{availability.state.value}"
     )
+
+
+_TYPED_RESULT_FIELD_LABELS = {
+    "result.field.u.node": "位移 U",
+    "result.field.ur.node": "转角 UR",
+    "result.field.rf.node": "反力 RF",
+    "result.field.rm.node": "反力矩 RM",
+    "result.field.le.centroid": "对数应变 LE（单元质心）",
+    "result.field.s.integration_point": "应力 S（积分点）",
+    "result.field.s.centroid": "应力 S（单元质心）",
+    "result.field.s.element_nodal": "应力 S（单元节点）",
+    "result.field.s.node_region": "应力 S（节点区域）",
+    "result.field.s.resolved_nodal": "应力 S（平均节点）",
+    "result.field.s.section_end": "应力 S（截面端点）",
+    "result.field.s.section_node_envelope": "应力 S（截面节点包络）",
+}
+_TYPED_RESULT_FIELD_STATE_LABELS = {
+    FieldState.READY: "就绪",
+    FieldState.LAZY: "按需加载",
+    FieldState.UNAVAILABLE: "不可用",
+}
+
+
+def _typed_result_display_field_label(
+    availability: FieldAvailability,
+) -> str:
+    descriptor = availability.descriptor
+    label = _TYPED_RESULT_FIELD_LABELS.get(
+        descriptor.label_key,
+        descriptor.label_key,
+    )
+    return (
+        f"{label}"
+        f"（{_TYPED_RESULT_FIELD_STATE_LABELS[availability.state]}）"
+    )
+
+
+def _typed_result_display_availability_text(
+    availability: FieldAvailability,
+) -> str:
+    if availability.state is FieldState.READY:
+        return "已就绪"
+    if availability.state is FieldState.LAZY:
+        return "待物化；应用后由外层命令加载"
+    if availability.diagnostics:
+        return "\n".join(
+            diagnostic.message for diagnostic in availability.diagnostics
+        )
+    return "不可用"
+
+
+def _validate_typed_display_selection(
+    catalog: ResultCatalog,
+    selection: ScalarFieldSelection,
+) -> None:
+    if type(selection) is not ScalarFieldSelection:
+        raise TypeError("current_selection must be ScalarFieldSelection")
+    matches = tuple(
+        availability
+        for availability in catalog.fields
+        if availability.key == selection.field_key
+    )
+    if len(matches) != 1:
+        raise ValueError(
+            "current_selection must reference exactly one catalog field"
+        )
+    if selection.component not in matches[0].descriptor.columns:
+        raise ValueError(
+            "current_selection component is outside the field descriptor"
+        )
+
+
+def _validate_typed_display_options(
+    *,
+    shape_mode: str,
+    contour_enabled: bool,
+    selection: ScalarFieldSelection,
+    scale_mode: str,
+    scale_value: float,
+    overlay_undeformed: bool,
+    show_edges: bool,
+) -> None:
+    if type(shape_mode) is not str:
+        raise TypeError("shape_mode must be a string")
+    if shape_mode not in {"undeformed", "deformed"}:
+        raise ValueError("shape_mode must be undeformed or deformed")
+    if type(contour_enabled) is not bool:
+        raise TypeError("contour_enabled must be a boolean")
+    if type(selection) is not ScalarFieldSelection:
+        raise TypeError("selection must be ScalarFieldSelection")
+    if type(scale_mode) is not str:
+        raise TypeError("scale_mode must be a string")
+    if scale_mode not in {"auto", "real", "custom"}:
+        raise ValueError("scale_mode must be auto, real, or custom")
+    if type(scale_value) is not float:
+        raise TypeError("scale_value must be a float")
+    if not isfinite(scale_value) or scale_value < 0.0:
+        raise ValueError("scale_value must be finite and non-negative")
+    if type(overlay_undeformed) is not bool:
+        raise TypeError("overlay_undeformed must be a boolean")
+    if type(show_edges) is not bool:
+        raise TypeError("show_edges must be a boolean")
 
 
 def _typed_availability_text(availability: FieldAvailability) -> str:
