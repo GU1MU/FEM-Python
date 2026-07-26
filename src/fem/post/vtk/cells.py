@@ -21,6 +21,25 @@ _VTK_CELL_TYPES = {
 }
 
 
+class UnsupportedVTKCellTypeError(ValueError):
+    """Raised when a canonical FEM element has no VTK Legacy cell type."""
+
+
+def vtk_cell_type(canonical_type: str) -> int:
+    """Return the exact VTK Legacy cell type for a canonical FEM type."""
+
+    if type(canonical_type) is not str:
+        raise TypeError("canonical_type must be a string")
+    try:
+        _node_count, vtk_type = _VTK_CELL_TYPES[canonical_type]
+    except KeyError as error:
+        raise UnsupportedVTKCellTypeError(
+            "Unsupported canonical element type for VTK export: "
+            f"{canonical_type}"
+        ) from error
+    return vtk_type
+
+
 @dataclass(frozen=True)
 class ResultTopology:
     """VTK topology expanded for element-local nodal result rows."""
@@ -43,11 +62,12 @@ def build(mesh):
     for elem in mesh.elements:
         try:
             canonical_type = canonical_element_type(elem.type)
-        except NotImplementedError:
-            raise ValueError(f"Unsupported element type for VTK export: {elem.type}")
-        if canonical_type not in _VTK_CELL_TYPES:
-            raise ValueError(f"Unsupported element type for VTK export: {elem.type}")
-        node_count, vtk_type = _VTK_CELL_TYPES[canonical_type]
+            vtk_type = vtk_cell_type(canonical_type)
+        except (NotImplementedError, UnsupportedVTKCellTypeError) as error:
+            raise UnsupportedVTKCellTypeError(
+                f"Unsupported element type for VTK export: {elem.type}"
+            ) from error
+        node_count = _VTK_CELL_TYPES[canonical_type][0]
         if len(elem.node_ids) != node_count:
             continue
         pt_ids = [node_id_to_pt_idx[nid] for nid in elem.node_ids]
@@ -185,3 +205,12 @@ def build_result(mesh, nodal_rows=()) -> ResultTopology:
         cell_types=tuple(cell_types),
         elems_for_cell=tuple(elems_for_cell),
     )
+
+
+__all__ = [
+    "ResultTopology",
+    "UnsupportedVTKCellTypeError",
+    "build",
+    "build_result",
+    "vtk_cell_type",
+]
