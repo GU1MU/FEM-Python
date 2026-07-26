@@ -127,6 +127,52 @@ def test_beam_rotations_are_separate_from_translations():
     assert field_family("NODAL:S11AbsMax") == "S"
 
 
+def test_truss_stress_is_adapted_from_one_canonical_recovery(monkeypatch):
+    mesh = Mesh3D(
+        [Node3D(10, 0.0, 0.0, 0.0), Node3D(20, 2.0, 0.0, 0.0)],
+        [
+            Element3D(
+                30,
+                [10, 20],
+                "Truss2",
+                {"E": 100.0, "area": 2.0},
+            )
+        ],
+    )
+    model = FEMModel(mesh)
+    result = ModelResult(
+        model,
+        None,
+        np.asarray([0.0, 0.0, 0.0, 0.2, 0.0, 0.0]),
+        np.zeros(mesh.num_dofs),
+    )
+    original_recover = result_adapter_module.truss.recover
+    calls = 0
+
+    def counted_recover(mesh_, displacement):
+        nonlocal calls
+        calls += 1
+        return original_recover(mesh_, displacement)
+
+    monkeypatch.setattr(
+        result_adapter_module.truss,
+        "recover",
+        counted_recover,
+    )
+
+    data = build_result_data(result, build_model_geometry(model))
+
+    assert calls == 1
+    assert data.element_stress == {
+        30: {"LE11": 0.1, "S11": 10.0, "Mises": 10.0}
+    }
+    assert list(data.fields)[-3:] == [
+        "CENTROID:LE11",
+        "CENTROID:S11",
+        "CENTROID:Mises",
+    ]
+
+
 def test_automatic_deformation_scale_uses_actual_small_model_span(gui_inp_path):
     model = read(gui_inp_path)
     result = solve(model)

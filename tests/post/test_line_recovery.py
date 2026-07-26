@@ -6,7 +6,8 @@ import numpy as np
 import pytest
 
 from fem.core.mesh import Element3D, Mesh3D, Node3D
-from fem.post.stress import truss
+from fem.post import stress
+from fem.post.stress import element, truss
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +64,38 @@ def test_truss_recovery_returns_analytical_immutable_centroid_row() -> None:
         row.S11 = 0.0
     with pytest.raises(FrozenInstanceError):
         recovered.rows = ()
+
+
+def test_truss_types_and_module_are_exported_from_stress_package() -> None:
+    assert stress.truss is truss
+    assert stress.TrussStressField is truss.TrussStressField
+    assert stress.TrussStressRow is truss.TrussStressRow
+
+
+def test_legacy_truss_csv_calls_canonical_recovery_once_and_preserves_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    mesh, displacement = _inclined_truss()
+    calls: list[tuple[Mesh3D, np.ndarray]] = []
+    original_recover = truss.recover
+
+    def counted_recover(mesh_, displacement_):
+        calls.append((mesh_, displacement_))
+        return original_recover(mesh_, displacement_)
+
+    monkeypatch.setattr(truss, "recover", counted_recover)
+    path = tmp_path / "legacy-truss.csv"
+
+    element.truss2(mesh, displacement, path)
+
+    assert len(calls) == 1
+    assert calls[0][0] is mesh
+    assert calls[0][1] is displacement
+    assert path.read_bytes() == (
+        b"elem_id,node_i,node_j,axial_strain,axial_stress,mises\r\n"
+        b"70,10,20,0.09999999999999999,20.0,20.0\r\n"
+    )
 
 
 def test_truss_recovery_is_invariant_to_reversed_connectivity() -> None:

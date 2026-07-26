@@ -7,8 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from fem.elements import get_element_kernel
-from fem.post.stress import beam, dispatch, field
+from fem.post.stress import beam, dispatch, field, truss
 from .model_adapter import ModelGeometry
 
 
@@ -684,20 +683,13 @@ def _line_stress(
     mesh = result.model.mesh
     element_values: dict[int, dict[str, float]] = {}
     nodal_values: dict[int, dict[str, float]] = {}
-    lookup = {int(node.id): node for node in mesh.nodes}
-    for element in mesh.elements:
-        if dispatch.type_key_from_name(element.type) != "truss2":
-            continue
-        strain, stress, mises = get_element_kernel(element.type).element_stress(
-            mesh, element, result.U, lookup
-        )
-        element_values[int(element.id)] = {
-            "LE11": strain,
-            "S11": stress,
-            "Mises": mises,
-        }
     type_keys = dispatch.resolve_type_keys(mesh, None)
-    if type_keys == ("beam2",):
+    if type_keys == ("truss2",):
+        element_values = {
+            row.element_id: row.values()
+            for row in truss.recover(mesh, result.U).rows
+        }
+    elif type_keys == ("beam2",):
         nodal_values = {
             row.node_id: {
                 "S11Max": row.maximum,

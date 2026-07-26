@@ -6,7 +6,7 @@ from typing import Sequence
 from ...elements import get_element_kernel
 from ...core.mesh import Mesh2D, Mesh3D
 from .._paths import prepare_output_path
-from . import dispatch
+from . import dispatch, truss
 from ._common import (
     PLANE_ELEMENT_HEADER,
     SOLID_HEADER,
@@ -71,8 +71,7 @@ def mixed(
 
 def truss2(mesh: Mesh3D, U: Sequence[float], path: str) -> None:
     """Export Truss2 element axial strain/stress and mises to CSV."""
-    U = validated_u(mesh, U)
-    lookup = node_lookup(mesh)
+    recovered = truss.recover(mesh, U)
 
     path = prepare_output_path(path)
     with open(path, "w", newline="", encoding="utf-8") as f:
@@ -85,18 +84,15 @@ def truss2(mesh: Mesh3D, U: Sequence[float], path: str) -> None:
             "axial_stress",
             "mises",
         ])
-        for elem in mesh.elements:
+        for elem, row in zip(mesh.elements, recovered.rows, strict=True):
             ni_id, nj_id = elem.node_ids
-            axial_strain, axial_stress, mises = get_element_kernel(
-                elem.type
-            ).element_stress(mesh, elem, U, lookup)
             writer.writerow([
-                elem.id,
+                row.element_id,
                 ni_id,
                 nj_id,
-                axial_strain,
-                axial_stress,
-                mises,
+                row.LE11,
+                row.S11,
+                row.Mises,
             ])
 
 
