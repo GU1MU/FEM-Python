@@ -97,7 +97,7 @@ def test_programmatic_metadata_is_deeply_owned_and_immutable() -> None:
         request.metadata["averaging"]["thresholds"][0] = 1
 
 
-def test_current_capability_publishes_create_and_existing_operations() -> None:
+def test_installed_capability_publishes_create_and_existing_operations() -> None:
     model = read(_STANDARD_INP_FIXTURES / "truss2_tension.inp")
     report = describe_model_capabilities(model)
     output_operations = tuple(
@@ -110,17 +110,13 @@ def test_current_capability_publishes_create_and_existing_operations() -> None:
         (capability.operation, capability.status)
         for capability in output_operations
     ) == (
-        ("output_request.create", AuthoringStatus.UNAVAILABLE),
+        ("output_request.create", AuthoringStatus.ENABLED),
         ("output_request.existing", AuthoringStatus.READ_ONLY),
     )
-    assert {
-        diagnostic.code
-        for capability in output_operations
-        for diagnostic in capability.diagnostics
-    } == {"output.request.not_executed"}
+    assert all(not capability.diagnostics for capability in output_operations)
 
 
-def test_preflight_uses_one_blanket_warning_for_all_output_requests() -> None:
+def test_preflight_reports_each_unsupported_output_request() -> None:
     model = read(_STANDARD_INP_FIXTURES / "truss2_tension.inp")
     step = next(step for step in model.steps if step.name == "Tension")
     step.outputs = (
@@ -142,12 +138,24 @@ def test_preflight_uses_one_blanket_warning_for_all_output_requests() -> None:
     )
 
     assert report.passed
-    assert len(output_diagnostics) == 1
-    warning = output_diagnostics[0]
-    assert warning.code == "output.request.not_executed"
-    assert warning.severity is PreflightSeverity.WARNING
-    assert warning.path == ("steps", "Tension", "outputs")
-    assert warning.details == (("count", 3),)
+    assert tuple(item.code for item in output_diagnostics) == (
+        "output.request.kind_unsupported",
+        "output.request.target_unsupported",
+        "output.request.variable_unsupported",
+    )
+    assert all(
+        item.severity is PreflightSeverity.WARNING
+        for item in output_diagnostics
+    )
+    assert tuple(item.path for item in output_diagnostics) == (
+        ("steps", "Tension", "outputs", "1", "kind"),
+        ("steps", "Tension", "outputs", "1", "target"),
+        ("steps", "Tension", "outputs", "2", "variables", "0"),
+    )
+    assert tuple(
+        dict(item.details)["request_index"]
+        for item in output_diagnostics
+    ) == (1, 1, 2)
 
 
 def test_abaqus_parent_output_context_is_inherited_with_source_evidence(

@@ -71,9 +71,7 @@ def test_valid_collinear_truss_uses_actual_stiffness_and_passes() -> None:
     assert report.facts.step_name == "Tension"
     assert report.facts.dof_count == 6
     assert report.facts.displacement_count == 5
-    assert {
-        item.code for item in report.diagnostics
-    } == {"output.request.not_executed"}
+    assert report.diagnostics == ()
 
 
 def test_valid_beam_reports_orientation_limitation_without_blocking() -> None:
@@ -92,10 +90,7 @@ def test_valid_beam_reports_orientation_limitation_without_blocking() -> None:
     assert report.facts.line_load_count == 1
     assert {
         item.code for item in report.diagnostics
-    } == {
-        "beam.orientation.assumed",
-        "output.request.not_executed",
-    }
+    } == {"beam.orientation.assumed"}
 
 
 def test_circle_with_global_load_has_no_orientation_warning() -> None:
@@ -407,20 +402,23 @@ def test_missing_section_coverage_is_blocking_before_stiffness() -> None:
     assert "definition.section.unassigned_elements" in codes
 
 
-def test_output_request_warning_does_not_create_a_false_failure() -> None:
+def test_unsupported_output_warning_does_not_create_a_false_failure() -> None:
     model = _read("truss2_tension.inp")
+    step = next(item for item in model.steps if item.name == "Tension")
+    step.outputs = (OutputRequest("field", "node", ("Future",)),)
     report = run_static_preflight(model, "Tension")
     warning = next(
         item
         for item in report.diagnostics
-        if item.code == "output.request.not_executed"
+        if item.stage is PreflightStage.OUTPUT
     )
 
+    assert warning.code == "output.request.variable_unsupported"
     assert warning.severity is PreflightSeverity.WARNING
     assert report.passed
 
 
-def test_preflight_projects_each_output_before_emitting_legacy_blanket_warning(
+def test_preflight_emits_only_projected_unsupported_output_diagnostics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     model = _read("truss2_tension.inp")
@@ -451,7 +449,7 @@ def test_preflight_projects_each_output_before_emitting_legacy_blanket_warning(
         if diagnostic.stage is PreflightStage.OUTPUT
     )
 
-    assert not preflight_module._output_execution_gate_open()
+    assert preflight_module._output_execution_gate_open()
     assert len(observed) == 1
     requests, evaluation = observed[0]
     assert requests == step.outputs
@@ -461,8 +459,19 @@ def test_preflight_projects_each_output_before_emitting_legacy_blanket_warning(
         for projection in evaluation.projections
     ) == (True, False)
     assert len(output_diagnostics) == 1
-    assert output_diagnostics[0].code == "output.request.not_executed"
-    assert output_diagnostics[0].details == (("count", 2),)
+    assert (
+        output_diagnostics[0].code
+        == "output.request.variable_unsupported"
+    )
+    assert output_diagnostics[0].path == (
+        "steps",
+        "Tension",
+        "outputs",
+        "1",
+        "variables",
+        "0",
+    )
+    assert dict(output_diagnostics[0].details)["request_index"] == 1
     assert report.passed
 
 

@@ -357,7 +357,7 @@ def test_native_authoring_uses_catalog_for_mesh_settings(
         AuthoringStatus.ENABLED
     )
     assert report.operation("output_request.create").status is (
-        AuthoringStatus.UNAVAILABLE
+        AuthoringStatus.ENABLED
     )
     assert report.operation("output_request.existing").status is (
         AuthoringStatus.READ_ONLY
@@ -394,10 +394,10 @@ def test_native_and_realized_output_support_share_result_catalog(
     assert observed[0].entries == observed[1].entries
     assert native_report.operation(
         "output_request.create"
-    ).status is AuthoringStatus.UNAVAILABLE
+    ).status is AuthoringStatus.ENABLED
     assert realized_report.operation(
         "output_request.create"
-    ).status is AuthoringStatus.UNAVAILABLE
+    ).status is AuthoringStatus.ENABLED
     assert native_report.operation(
         "output_request.existing"
     ).status is AuthoringStatus.READ_ONLY
@@ -406,20 +406,21 @@ def test_native_and_realized_output_support_share_result_catalog(
     ).status is AuthoringStatus.READ_ONLY
 
 
-def test_output_request_create_is_unavailable_with_stable_reason() -> None:
-    report = describe_model_capabilities(
-        _model(_element(1, "Tri3", (1, 2, 3)))
-    )
+def test_output_request_create_is_enabled_when_catalog_has_candidates() -> None:
+    model = _model(_element(1, "Tri3", (1, 2, 3)))
+    model.mesh.dofs_per_node = 2
+    report = describe_model_capabilities(model)
 
     create = report.operation("output_request.create")
     existing = report.operation("output_request.existing")
 
-    assert create.status is AuthoringStatus.UNAVAILABLE
+    assert create.status is AuthoringStatus.ENABLED
     assert existing.status is AuthoringStatus.READ_ONLY
-    assert create.diagnostics[0].code == "output.request.not_executed"
+    assert create.diagnostics == ()
+    assert existing.diagnostics == ()
 
 
-def test_output_capability_uses_canonical_result_projection_behind_closed_gate(
+def test_output_capability_uses_canonical_result_projection_with_open_gate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     model = read(_FIXTURES / "truss2_tension.inp")
@@ -445,14 +446,12 @@ def test_output_capability_uses_canonical_result_projection_behind_closed_gate(
     create = report.operation("output_request.create")
     existing = report.operation("output_request.existing")
 
-    assert capabilities_module.output_execution_installed is False
+    assert capabilities_module.output_execution_installed is True
     assert len(observed) == 2
     assert len({id(catalog) for catalog, _projection in observed}) == 1
     assert observed[0][0].profile.family.value == "truss"
     assert all(projection.executable for _catalog, projection in observed)
-    assert create.status is AuthoringStatus.UNAVAILABLE
+    assert create.status is AuthoringStatus.ENABLED
     assert existing.status is AuthoringStatus.READ_ONLY
-    assert {
-        diagnostic.code
-        for diagnostic in (*create.diagnostics, *existing.diagnostics)
-    } == {"output.request.not_executed"}
+    assert create.diagnostics == ()
+    assert existing.diagnostics == ()

@@ -40,9 +40,9 @@ _REGION_KINDS = frozenset(
 _DISTRIBUTED_LOAD_KINDS = frozenset({"edge", "surface", "line"})
 _EXPLICIT_BEAM_ORIENTATION_REQUIREMENT = "beam.orientation.explicit"
 
-# Batch 2 characterizes the canonical result-support path without exposing
-# execution or authoring.  Batch 3 owns the lifecycle switch.
-output_execution_installed = False
+# The solve workflow now executes the canonical result-support projection and
+# stores its report/materialization atomically with every successful run.
+output_execution_installed = True
 
 
 class AuthoringStatus(str, Enum):
