@@ -1,8 +1,117 @@
 from __future__ import annotations
 
-from typing import Dict, Optional, Sequence
+from collections.abc import Callable, Sequence
+from typing import Dict, Optional
 
 import numpy as np
+
+
+def append_legacy_ascii_unstructured_grid_geometry(
+    lines: list[str],
+    *,
+    title: str,
+    points: Sequence[Sequence[object]],
+    cells: Sequence[Sequence[int]],
+    cell_types: Sequence[int],
+    numeric_declaration: str,
+    format_float: Callable[[object], str],
+) -> None:
+    """Append one validated VTK Legacy ASCII 3.0 geometry prefix."""
+
+    if type(lines) is not list or any(type(line) is not str for line in lines):
+        raise TypeError("lines must be a list containing only strings")
+    if type(title) is not str:
+        raise TypeError("title must be a string")
+    if not title or "\n" in title or "\r" in title:
+        raise ValueError("title must be non-empty single-line text")
+    try:
+        title.encode("ascii", errors="strict")
+    except UnicodeEncodeError as error:
+        raise ValueError("title must contain only ASCII text") from error
+    if len(title) > 256:
+        raise ValueError("title must not exceed 256 characters")
+    if type(numeric_declaration) is not str:
+        raise TypeError("numeric_declaration must be a string")
+    if numeric_declaration not in {"float", "double"}:
+        raise ValueError(
+            "numeric_declaration must be VTK float or double"
+        )
+    if not callable(format_float):
+        raise TypeError("format_float must be callable")
+    if not isinstance(points, Sequence) or isinstance(points, (str, bytes)):
+        raise TypeError("points must be a sequence")
+    if not isinstance(cells, Sequence) or isinstance(cells, (str, bytes)):
+        raise TypeError("cells must be a sequence")
+    if not isinstance(cell_types, Sequence) or isinstance(
+        cell_types,
+        (str, bytes),
+    ):
+        raise TypeError("cell_types must be a sequence")
+
+    point_lines: list[str] = []
+    for point in points:
+        if not isinstance(point, Sequence) or isinstance(point, (str, bytes)):
+            raise TypeError("points must contain coordinate sequences")
+        if len(point) != 3:
+            raise ValueError("every point must contain three coordinates")
+        formatted = tuple(format_float(component) for component in point)
+        if any(
+            type(value) is not str
+            or not value
+            or any(character.isspace() for character in value)
+            for value in formatted
+        ):
+            raise ValueError(
+                "format_float must return one non-empty numeric token"
+            )
+        point_lines.append(" ".join(formatted))
+
+    cell_lines: list[str] = []
+    point_count = len(points)
+    for cell in cells:
+        if not isinstance(cell, Sequence) or isinstance(cell, (str, bytes)):
+            raise TypeError("cells must contain connectivity sequences")
+        if not cell:
+            raise ValueError("cells must not contain empty connectivity")
+        connectivity = tuple(cell)
+        if any(type(index) is not int for index in connectivity):
+            raise TypeError("cell connectivity must contain integers")
+        if len(set(connectivity)) != len(connectivity):
+            raise ValueError("cell connectivity must not repeat point indexes")
+        if any(index < 0 or index >= point_count for index in connectivity):
+            raise ValueError(
+                "cell connectivity references an unknown point index"
+            )
+        cell_lines.append(
+            " ".join(
+                (str(len(connectivity)), *(str(index) for index in connectivity))
+            )
+        )
+
+    if len(cell_types) != len(cells):
+        raise ValueError("cell_types length must match cells")
+    checked_cell_types = tuple(cell_types)
+    if any(type(cell_type) is not int for cell_type in checked_cell_types):
+        raise TypeError("cell_types must contain integers")
+    if any(cell_type <= 0 for cell_type in checked_cell_types):
+        raise ValueError("cell_types must contain positive VTK type IDs")
+
+    geometry = [
+        "# vtk DataFile Version 3.0",
+        title,
+        "ASCII",
+        "DATASET UNSTRUCTURED_GRID",
+        f"POINTS {point_count} {numeric_declaration}",
+        *point_lines,
+        (
+            f"CELLS {len(cells)} "
+            f"{sum(len(cell) + 1 for cell in cells)}"
+        ),
+        *cell_lines,
+        f"CELL_TYPES {len(checked_cell_types)}",
+        *(str(cell_type) for cell_type in checked_cell_types),
+    ]
+    lines.extend(geometry)
 
 
 def write(
