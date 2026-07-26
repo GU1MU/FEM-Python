@@ -5,8 +5,22 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any, Mapping
 
+from fem.application.results import (
+    FieldAssociation,
+    FieldAvailability,
+    FieldMaterializationKey,
+    FieldState,
+    ResultCatalog,
+    ResultProvider,
+    ResultQuery,
+    ResultQueryRecord,
+    ResultQueryResult,
+    ScalarFieldSelection,
+)
+from fem.post.fields import encode_result_region_key
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
@@ -54,6 +68,15 @@ class ResultDisplaySettings:
     scale_value: float
     overlay_undeformed: bool
     show_edges: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _TypedQueryMode:
+    association: FieldAssociation
+
+    def __post_init__(self) -> None:
+        if type(self.association) is not FieldAssociation:
+            raise TypeError("association must be FieldAssociation")
 
 
 class ResultDisplayDialog(QDialog):
@@ -520,6 +543,510 @@ class ResultQueryDialog(QDialog):
 
     def _table_text(self, separator: str) -> str:
         return "\n".join(separator.join(row) for row in self._table_rows())
+
+
+class TypedResultQueryDialog(QDialog):
+    """用 provider catalog 构造精确查询，数值工作由外层命令完成。"""
+
+    selectionRequested = Signal(object)
+    queryRequested = Signal(object)
+
+    def __init__(
+        self,
+        provider: ResultProvider,
+        catalog: ResultCatalog | None = None,
+        *,
+        parent=None,
+    ) -> None:
+        if type(provider) is not ResultProvider:
+            raise TypeError("provider must be ResultProvider")
+        provider_catalog = provider.catalog()
+        if catalog is None:
+            catalog = provider_catalog
+        elif type(catalog) is not ResultCatalog:
+            raise TypeError("catalog must be ResultCatalog or None")
+        elif catalog != provider_catalog:
+            raise ValueError("catalog must exactly match provider.catalog()")
+
+        super().__init__(parent)
+        self.setWindowTitle("查询结果")
+        self.resize(900, 520)
+        self._catalog = catalog
+        self._source = provider.source
+        self._initial_generation = provider.snapshot.generation
+        self._node_ids = provider.snapshot.topology.node_ids
+        self._element_ids = provider.snapshot.topology.element_ids
+        self._last_query: ResultQuery | None = None
+        self._displayed_generation: int | None = None
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        configure_form_layout(form)
+        self.step_combo = QComboBox(self)
+        self.step_combo.addItem(self._source.step_name, self._source)
+        self.association_combo = QComboBox(self)
+        self.association_combo.addItem(
+            "节点",
+            _TypedQueryMode(FieldAssociation.NODE),
+        )
+        self.association_combo.addItem(
+            "单元",
+            _TypedQueryMode(FieldAssociation.ELEMENT),
+        )
+        self.field_combo = QComboBox(self)
+        self.component_combo = QComboBox(self)
+        self.ids_edit = QLineEdit(self)
+        self.ids_edit.setPlaceholderText("留空查询全部；例如：1, 3, 5-8")
+        self.availability_label = QLabel(self)
+        form.addRow("结果步：", self.step_combo)
+        form.addRow("对象类型：", self.association_combo)
+        form.addRow("场变量：", self.field_combo)
+        form.addRow("分量：", self.component_combo)
+        form.addRow("对象编号：", self.ids_edit)
+        form.addRow("字段状态：", self.availability_label)
+        layout.addLayout(form)
+
+        command_row = QHBoxLayout()
+        self.query_button = QPushButton("查询", self)
+        copy_button = QPushButton("复制", self)
+        close_button = QPushButton("关闭", self)
+        self.query_button.clicked.connect(self.request_query)
+        copy_button.clicked.connect(self.copy_table)
+        close_button.clicked.connect(self.close)
+        command_row.addWidget(self.query_button)
+        command_row.addWidget(copy_button)
+        command_row.addStretch(1)
+        command_row.addWidget(close_button)
+        layout.addLayout(command_row)
+
+        self.result_summary = QLabel("尚未查询", self)
+        layout.addWidget(self.result_summary)
+        self.table = QTableWidget(self)
+        self.table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers
+        )
+        self.table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+        layout.addWidget(self.table, 1)
+        self._prepare_table()
+
+        default_availability = self._availability_for_key(
+            self._catalog.default_selection.field_key
+        )
+        default_mode = (
+            FieldAssociation.NODE
+            if _typed_query_association_matches(
+                FieldAssociation.NODE,
+                default_availability.descriptor.association,
+            )
+            else FieldAssociation.ELEMENT
+        )
+        self.association_combo.setCurrentIndex(
+            0 if default_mode is FieldAssociation.NODE else 1
+        )
+        self._sync_fields(
+            preferred_key=self._catalog.default_selection.field_key,
+            emit_selection=False,
+        )
+        self.association_combo.currentIndexChanged.connect(
+            self._association_changed
+        )
+        self.field_combo.currentIndexChanged.connect(self._field_changed)
+        self.component_combo.currentIndexChanged.connect(
+            self._component_changed
+        )
+
+    @property
+    def catalog(self) -> ResultCatalog:
+        """返回 dialog 绑定的 exact immutable catalog。"""
+
+        return self._catalog
+
+    def current_availability(self) -> FieldAvailability:
+        """返回当前字段的 typed catalog entry。"""
+
+        key = self.field_combo.currentData()
+        if type(key) is not FieldMaterializationKey:
+            raise RuntimeError("no typed result field is selected")
+        return self._availability_for_key(key)
+
+    def current_selection(self) -> ScalarFieldSelection:
+        """返回当前完整 field key 与 scalar component。"""
+
+        availability = self.current_availability()
+        component = self.component_combo.currentData()
+        if type(component) is not str:
+            raise RuntimeError("no typed scalar component is selected")
+        if component not in availability.descriptor.columns:
+            raise RuntimeError(
+                "selected component is outside the field descriptor"
+            )
+        return ScalarFieldSelection(availability.key, component)
+
+    def current_query(self) -> ResultQuery:
+        """根据 typed association 与 FEM ID 输入构造精确查询。"""
+
+        availability = self.current_availability()
+        if availability.state is FieldState.UNAVAILABLE:
+            raise ValueError("当前字段不可查询。")
+        selection = self.current_selection()
+        mode = self.association_combo.currentData()
+        if type(mode) is not _TypedQueryMode:
+            raise RuntimeError("query association must be typed")
+        if mode.association is FieldAssociation.NODE:
+            node_ids = _parse_typed_query_ids(
+                self.ids_edit.text(),
+                self._node_ids,
+            )
+            element_ids: tuple[int, ...] = ()
+        elif mode.association is FieldAssociation.ELEMENT:
+            node_ids = ()
+            element_ids = _parse_typed_query_ids(
+                self.ids_edit.text(),
+                self._element_ids,
+            )
+        else:
+            raise RuntimeError("query association must be typed")
+        return ResultQuery(
+            field_key=selection.field_key,
+            component=selection.component,
+            node_ids=node_ids,
+            element_ids=element_ids,
+        )
+
+    def request_query(self, *_args: object) -> None:
+        """把 selection/query 交给外层，不在 dialog 内恢复或读取字段。"""
+
+        try:
+            selection = self.current_selection()
+            query = self.current_query()
+        except (RuntimeError, ValueError) as error:
+            QMessageBox.warning(self, "查询结果", str(error))
+            return
+        self._last_query = query
+        self.selectionRequested.emit(selection)
+        self.queryRequested.emit(query)
+
+    def set_query_result(self, result: ResultQueryResult) -> None:
+        """按 application 结果原序显示全部 query records。"""
+
+        if type(result) is not ResultQueryResult:
+            raise TypeError("result must be ResultQueryResult")
+        if result.source != self._source:
+            raise ValueError("query result source must match the dialog source")
+        minimum_generation = self._initial_generation
+        if self._displayed_generation is not None:
+            minimum_generation = max(
+                minimum_generation,
+                self._displayed_generation,
+            )
+        if result.materialization_generation < minimum_generation:
+            raise ValueError("query result generation is stale")
+        expected_query = self._last_query
+        if expected_query is None:
+            expected_query = self.current_query()
+        if result.query != expected_query:
+            raise ValueError("query result must match the latest dialog query")
+
+        self.table.setRowCount(len(result.records))
+        for row, record in enumerate(result.records):
+            location = record.location
+            values = (
+                location.association.value,
+                _optional_identity_text(location.node_id),
+                _optional_identity_text(location.element_id),
+                _optional_identity_text(location.integration_point),
+                _optional_identity_text(location.local_node),
+                (
+                    ""
+                    if location.region_key is None
+                    else encode_result_region_key(location.region_key)
+                ),
+                _averaged_text(location.averaged),
+                _number_text(location.coordinates[0]),
+                _number_text(location.coordinates[1]),
+                _number_text(location.coordinates[2]),
+                _number_text(record.value),
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, record)
+                self.table.setItem(row, column, item)
+        self.table.resizeColumnsToContents()
+        if self.table.rowCount():
+            self.table.selectRow(0)
+        self._displayed_generation = result.materialization_generation
+        self.result_summary.setText(
+            f"共 {len(result.records)} 行 · "
+            f"materialization generation "
+            f"{result.materialization_generation}"
+        )
+
+    def show_result(self, result: ResultQueryResult) -> None:
+        """兼容 Qt slot 风格的显式展示入口。"""
+
+        self.set_query_result(result)
+
+    def record_at(self, row: int) -> ResultQueryRecord:
+        """返回显示行绑定的 exact ResultQueryRecord。"""
+
+        if type(row) is not int:
+            raise TypeError("row must be an integer")
+        if row < 0 or row >= self.table.rowCount():
+            raise IndexError(row)
+        item = self.table.item(row, 0)
+        if item is None:
+            raise RuntimeError("query table row is incomplete")
+        record = item.data(Qt.ItemDataRole.UserRole)
+        if type(record) is not ResultQueryRecord:
+            raise RuntimeError("query table row lost its typed record")
+        return record
+
+    def copy_table(self) -> None:
+        """复制当前 typed query 表格。"""
+
+        QApplication.clipboard().setText(self._table_text("\t"))
+
+    def _association_changed(self, *_args: object) -> None:
+        self._last_query = None
+        self._sync_fields(emit_selection=True)
+
+    def _field_changed(self, *_args: object) -> None:
+        self._last_query = None
+        self._sync_components()
+        self._refresh_availability()
+        self._emit_selection_requested()
+
+    def _component_changed(self, *_args: object) -> None:
+        self._last_query = None
+        self._emit_selection_requested()
+
+    def _sync_fields(
+        self,
+        *,
+        preferred_key: FieldMaterializationKey | None = None,
+        emit_selection: bool,
+    ) -> None:
+        if preferred_key is None:
+            candidate = self.field_combo.currentData()
+            if type(candidate) is FieldMaterializationKey:
+                preferred_key = candidate
+        mode = self.association_combo.currentData()
+        self.field_combo.blockSignals(True)
+        self.field_combo.clear()
+        if type(mode) is _TypedQueryMode:
+            for availability in self._catalog.fields:
+                if _typed_query_association_matches(
+                    mode.association,
+                    availability.descriptor.association,
+                ):
+                    self.field_combo.addItem(
+                        _typed_field_label(availability),
+                        availability.key,
+                    )
+        selected_index = self.field_combo.findData(preferred_key)
+        if selected_index < 0:
+            default_key = self._catalog.default_selection.field_key
+            selected_index = self.field_combo.findData(default_key)
+        self.field_combo.setCurrentIndex(
+            selected_index if selected_index >= 0 else 0
+        )
+        self.field_combo.blockSignals(False)
+        self._sync_components()
+        self._refresh_availability()
+        if emit_selection:
+            self._emit_selection_requested()
+
+    def _sync_components(self) -> None:
+        current = self.component_combo.currentData()
+        self.component_combo.blockSignals(True)
+        self.component_combo.clear()
+        try:
+            availability = self.current_availability()
+        except RuntimeError:
+            self.component_combo.blockSignals(False)
+            return
+        for component in availability.descriptor.columns:
+            self.component_combo.addItem(component, component)
+        selected_component = current
+        if (
+            availability.key
+            == self._catalog.default_selection.field_key
+        ):
+            selected_component = self._catalog.default_selection.component
+        index = self.component_combo.findData(selected_component)
+        if index < 0:
+            index = self.component_combo.findData(
+                availability.descriptor.default_component
+            )
+        self.component_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.component_combo.blockSignals(False)
+
+    def _refresh_availability(self) -> None:
+        try:
+            availability = self.current_availability()
+        except RuntimeError:
+            self.availability_label.setText("没有适用于当前对象的字段")
+            self.query_button.setEnabled(False)
+            return
+        self.availability_label.setText(
+            _typed_availability_text(availability)
+        )
+        self.query_button.setEnabled(
+            availability.state is not FieldState.UNAVAILABLE
+        )
+
+    def _emit_selection_requested(self) -> None:
+        try:
+            availability = self.current_availability()
+            selection = self.current_selection()
+        except RuntimeError:
+            return
+        if availability.state is not FieldState.UNAVAILABLE:
+            self.selectionRequested.emit(selection)
+
+    def _availability_for_key(
+        self,
+        key: FieldMaterializationKey,
+    ) -> FieldAvailability:
+        for availability in self._catalog.fields:
+            if availability.key == key:
+                return availability
+        raise RuntimeError("field key is outside the dialog catalog")
+
+    def _prepare_table(self) -> None:
+        headers = (
+            "关联",
+            "节点",
+            "单元",
+            "积分点",
+            "局部节点",
+            "区域",
+            "平均状态",
+            "X",
+            "Y",
+            "Z",
+            "值",
+        )
+        self.table.clear()
+        self.table.setColumnCount(len(headers))
+        self.table.setHorizontalHeaderLabels(headers)
+        self.table.setRowCount(0)
+
+    def _table_rows(self) -> list[list[str]]:
+        return [
+            [
+                self.table.horizontalHeaderItem(column).text()
+                for column in range(self.table.columnCount())
+            ],
+            *[
+                [
+                    self.table.item(row, column).text()
+                    for column in range(self.table.columnCount())
+                ]
+                for row in range(self.table.rowCount())
+            ],
+        ]
+
+    def _table_text(self, separator: str) -> str:
+        return "\n".join(
+            separator.join(row) for row in self._table_rows()
+        )
+
+
+def _typed_query_association_matches(
+    mode: FieldAssociation,
+    association: FieldAssociation,
+) -> bool:
+    if mode is FieldAssociation.NODE:
+        if association is FieldAssociation.NODE:
+            return True
+        if association is FieldAssociation.ELEMENT_NODE:
+            return True
+        if association is FieldAssociation.NODE_REGION:
+            return True
+        return association is FieldAssociation.RESOLVED_NODAL
+    if mode is FieldAssociation.ELEMENT:
+        if association is FieldAssociation.ELEMENT:
+            return True
+        if association is FieldAssociation.INTEGRATION_POINT:
+            return True
+        return association is FieldAssociation.ELEMENT_NODE
+    raise TypeError("mode must be a query association")
+
+
+def _parse_typed_query_ids(
+    text: str,
+    valid_ids: tuple[int, ...],
+) -> tuple[int, ...]:
+    if type(text) is not str:
+        raise TypeError("text must be a string")
+    if type(valid_ids) is not tuple or any(
+        type(value) is not int for value in valid_ids
+    ):
+        raise TypeError("valid_ids must be a tuple of integers")
+    if not text.strip():
+        return ()
+
+    valid = frozenset(valid_ids)
+    parsed: list[int] = []
+    for token in re.split(r"[\s,，;；]+", text.strip()):
+        if not token:
+            continue
+        match = re.fullmatch(r"(-?\d+)\s*[-~～]\s*(-?\d+)", token)
+        if match is None:
+            try:
+                candidates = (int(token),)
+            except ValueError as error:
+                raise ValueError(
+                    f"无法识别的有限元编号：{token}"
+                ) from error
+        else:
+            first, last = (int(value) for value in match.groups())
+            step = 1 if last >= first else -1
+            candidates = range(first, last + step, step)
+        for candidate in candidates:
+            if candidate not in valid:
+                raise ValueError(f"有限元编号不存在：{candidate}")
+            if candidate not in parsed:
+                parsed.append(candidate)
+    return tuple(parsed)
+
+
+def _typed_field_label(availability: FieldAvailability) -> str:
+    descriptor = availability.descriptor
+    return (
+        f"{descriptor.label_key} · "
+        f"{descriptor.field_id.variable.value}/"
+        f"{descriptor.field_id.position.value} · "
+        f"{availability.state.value}"
+    )
+
+
+def _typed_availability_text(availability: FieldAvailability) -> str:
+    if availability.state is FieldState.READY:
+        return "已就绪"
+    if availability.state is FieldState.LAZY:
+        return "待物化；选择会交给外层命令"
+    if availability.diagnostics:
+        return availability.diagnostics[0].message
+    return "不可用"
+
+
+def _optional_identity_text(value: int | None) -> str:
+    return "" if value is None else str(value)
+
+
+def _averaged_text(value: bool | None) -> str:
+    if value is None:
+        return "缺失"
+    return "是" if value else "否"
+
+
+def _number_text(value: float) -> str:
+    return f"{value:.8g}"
 
 
 def _field_records(fields: Mapping[str, Any]) -> list[tuple[str, str, str, str]]:
