@@ -12,11 +12,13 @@ from fem_gui.task_controller import BackgroundTaskState, TaskCompletion
 
 
 def require_accepted(receipt: GuiCommandReceipt) -> GuiCommandReceipt:
-    """Require one synchronous command to commit an accepted Session delta."""
+    """Require one synchronous command to return exactly one accepted payload."""
 
     assert type(receipt) is GuiCommandReceipt
     assert receipt.status is GuiCommandStatus.ACCEPTED
-    assert receipt.delta is not None and receipt.delta.accepted
+    assert (receipt.delta is None) != (receipt.outcome is None)
+    if receipt.delta is not None:
+        assert receipt.delta.accepted
     assert receipt.diagnostic is None
     assert receipt.completion is None
     return receipt
@@ -32,6 +34,7 @@ def require_rejected(
     assert type(receipt) is GuiCommandReceipt
     assert receipt.status is GuiCommandStatus.REJECTED
     assert receipt.delta is None
+    assert receipt.outcome is None
     assert receipt.diagnostic is not None
     assert receipt.diagnostic.code == code
     assert receipt.completion is None
@@ -48,6 +51,7 @@ def await_succeeded(
     assert type(receipt) is GuiCommandReceipt
     assert receipt.status is GuiCommandStatus.PENDING
     assert receipt.delta is None
+    assert receipt.outcome is None
     assert receipt.diagnostic is None
     completion = receipt.completion
     assert completion is not None

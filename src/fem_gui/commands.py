@@ -8,17 +8,20 @@ from dataclasses import dataclass, replace
 from enum import Enum
 import logging
 import math
+from numbers import Real
+from pathlib import Path
 from threading import Event, Lock
 from time import monotonic
-from typing import Any
+from typing import Any, overload
 
 from PySide6.QtCore import QCoreApplication, QThread
 
 from fem.application import NativePart, SessionDelta, UNSET, Unset
+from fem.application.results import ResultSourceKey, ScalarFieldSelection
 from fem.geometry import NATIVE_GEOMETRY_TYPES, NativeGeometry
 from fem.mesh.settings import MeshSettings
 
-from .task_controller import TaskCompletion
+from .task_controller import BackgroundTaskState, TaskCompletion
 
 
 class GuiCommandStatus(str, Enum):
@@ -51,14 +54,129 @@ class GuiCommandDiagnostic:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class GuiCommandOutcome:
+    """Detached metadata describing one accepted non-Session operation."""
+
+    output_path: Path | None = None
+    source: ResultSourceKey | None = None
+    materialization_generation: int | None = None
+    selection: ScalarFieldSelection | None = None
+    record_count: int | None = None
+    diagnostic_summary: str = ""
+
+    def __post_init__(self) -> None:
+        output_path = _optional_output_path(self.output_path)
+        result_values = (
+            self.source,
+            self.materialization_generation,
+            self.selection,
+        )
+        result_value_count = sum(value is not None for value in result_values)
+        if result_value_count not in {0, len(result_values)}:
+            raise ValueError(
+                "source, materialization_generation, and selection "
+                "must be supplied together"
+            )
+        if result_value_count:
+            source = _owned_result_source(self.source)
+            generation = _materialization_generation(self.materialization_generation)
+            selection = _owned_scalar_selection(self.selection)
+        else:
+            source = None
+            generation = None
+            selection = None
+        record_count = _optional_record_count(self.record_count)
+        if record_count is not None and source is None:
+            raise ValueError("record_count requires complete result provenance")
+        if output_path is None and source is None:
+            raise ValueError(
+                "an outcome requires an output path or complete result provenance"
+            )
+
+        object.__setattr__(self, "output_path", output_path)
+        object.__setattr__(self, "source", source)
+        object.__setattr__(
+            self,
+            "materialization_generation",
+            generation,
+        )
+        object.__setattr__(self, "selection", selection)
+        object.__setattr__(self, "record_count", record_count)
+        object.__setattr__(
+            self,
+            "diagnostic_summary",
+            _stable_diagnostic_summary(self.diagnostic_summary),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ResultCsvExportSpec:
+    """Exact accepted result identity for one scalar CSV export."""
+
+    source: ResultSourceKey
+    materialization_generation: int
+    selection: ScalarFieldSelection
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "source",
+            _owned_result_source(self.source),
+        )
+        object.__setattr__(
+            self,
+            "materialization_generation",
+            _materialization_generation(self.materialization_generation),
+        )
+        object.__setattr__(
+            self,
+            "selection",
+            _owned_scalar_selection(self.selection),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ResultVtkExportSpec:
+    """Exact accepted result identity and deformation for one VTK export."""
+
+    source: ResultSourceKey
+    materialization_generation: int
+    selection: ScalarFieldSelection
+    deformation_scale: float
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "source",
+            _owned_result_source(self.source),
+        )
+        object.__setattr__(
+            self,
+            "materialization_generation",
+            _materialization_generation(self.materialization_generation),
+        )
+        object.__setattr__(
+            self,
+            "selection",
+            _owned_scalar_selection(self.selection),
+        )
+        object.__setattr__(
+            self,
+            "deformation_scale",
+            _finite_deformation_scale(self.deformation_scale),
+        )
+
+
 TaskCompletionObserver = Callable[[TaskCompletion], None]
 
 
 class GuiCommandCompletion:
     """Thread-safe, observable terminal handle for one pending command.
 
-    The handle retains a metadata-only copy of :class:`TaskCompletion`.
-    Worker payloads are deliberately removed so the public command layer never
+    The handle retains a metadata-only copy of :class:`TaskCompletion` and,
+    for successful commands, an independent sanitized outcome. Worker
+    payloads are deliberately removed so the public command layer never
     becomes an owner of a Session snapshot, model, or result.
     """
 
@@ -67,6 +185,7 @@ class GuiCommandCompletion:
         "_command_id",
         "_event",
         "_lock",
+        "_outcome",
         "_task_id",
         "_terminal",
     )
@@ -82,6 +201,7 @@ class GuiCommandCompletion:
         self._event = Event()
         self._lock = Lock()
         self._terminal: TaskCompletion | None = None
+        self._outcome: GuiCommandOutcome | None = None
         self._callbacks: list[TaskCompletionObserver] = []
 
     @property
@@ -101,6 +221,11 @@ class GuiCommandCompletion:
     def terminal(self) -> TaskCompletion | None:
         with self._lock:
             return self._terminal
+
+    @property
+    def outcome(self) -> GuiCommandOutcome | None:
+        with self._lock:
+            return self._outcome
 
     def observe(self, callback: TaskCompletionObserver) -> None:
         """Observe the terminal value once, including late subscriptions."""
@@ -126,20 +251,27 @@ class GuiCommandCompletion:
                 raise ValueError("terminal task_id does not match the controller task")
             self._task_id = resolved
 
-    def complete(self, completion: TaskCompletion) -> bool:
+    def complete(
+        self,
+        completion: TaskCompletion,
+        *,
+        outcome: GuiCommandOutcome | None = None,
+    ) -> bool:
         """Install one controller terminal value, returning false if already done."""
 
         if type(completion) is not TaskCompletion:
             raise TypeError("completion must be a TaskCompletion")
-        terminal = replace(completion, value=None)
         callbacks: tuple[TaskCompletionObserver, ...]
         with self._lock:
             if self._terminal is not None:
                 return False
+            resolved_outcome = _completion_outcome(completion, outcome)
+            terminal = replace(completion, value=None)
             if self._task_id is not None and completion.task_id != self._task_id:
                 raise ValueError("terminal task_id does not match the controller task")
             self._task_id = completion.task_id
             self._terminal = terminal
+            self._outcome = resolved_outcome
             callbacks = tuple(self._callbacks)
             self._callbacks.clear()
             self._event.set()
@@ -152,30 +284,19 @@ class GuiCommandCompletion:
 
         resolved_timeout = _wait_timeout(timeout)
         application = QCoreApplication.instance()
-        if (
-            application is None
-            or QThread.currentThread() != application.thread()
-        ):
+        if application is None or QThread.currentThread() != application.thread():
             self._event.wait(resolved_timeout)
             return self.terminal
 
-        deadline = (
-            None
-            if resolved_timeout is None
-            else monotonic() + resolved_timeout
-        )
+        deadline = None if resolved_timeout is None else monotonic() + resolved_timeout
         while not self._event.is_set():
             application.processEvents()
             if self._event.is_set():
                 break
-            remaining = (
-                None if deadline is None else max(0.0, deadline - monotonic())
-            )
+            remaining = None if deadline is None else max(0.0, deadline - monotonic())
             if remaining == 0.0:
                 break
-            self._event.wait(
-                0.001 if remaining is None else min(0.001, remaining)
-            )
+            self._event.wait(0.001 if remaining is None else min(0.001, remaining))
         application.processEvents()
         return self.terminal
 
@@ -197,6 +318,7 @@ class GuiCommandReceipt:
     delta: SessionDelta | None = None
     diagnostic: GuiCommandDiagnostic | None = None
     completion: GuiCommandCompletion | None = None
+    outcome: GuiCommandOutcome | None = None
 
     def __post_init__(self) -> None:
         command_id = _command_id(self.command_id)
@@ -212,41 +334,72 @@ class GuiCommandReceipt:
             type(self.completion) is not GuiCommandCompletion
         ):
             raise TypeError("completion must be a GuiCommandCompletion or None")
+        if self.outcome is not None and type(self.outcome) is not GuiCommandOutcome:
+            raise TypeError("outcome must be a GuiCommandOutcome or None")
 
         if self.status is GuiCommandStatus.ACCEPTED:
             if (
-                self.delta is None
-                or not self.delta.accepted
+                (self.delta is None) == (self.outcome is None)
+                or (self.delta is not None and not self.delta.accepted)
                 or self.diagnostic is not None
                 or self.completion is not None
             ):
-                raise ValueError("an accepted receipt requires one accepted delta only")
+                raise ValueError(
+                    "an accepted receipt requires exactly one accepted delta or outcome"
+                )
         elif self.status is GuiCommandStatus.REJECTED:
             if (
                 self.delta is not None
                 or self.diagnostic is None
                 or self.completion is not None
+                or self.outcome is not None
             ):
                 raise ValueError("a rejected receipt requires one diagnostic only")
         elif (
             self.delta is not None
             or self.diagnostic is not None
             or self.completion is None
+            or self.outcome is not None
             or self.completion.command_id != command_id
         ):
             raise ValueError("a pending receipt requires its matching completion only")
         object.__setattr__(self, "command_id", command_id)
+        if self.outcome is not None:
+            object.__setattr__(self, "outcome", deepcopy(self.outcome))
+
+    @classmethod
+    @overload
+    def accepted(
+        cls,
+        command_id: int,
+        delta: SessionDelta,
+        *,
+        outcome: None = None,
+    ) -> GuiCommandReceipt: ...
+
+    @classmethod
+    @overload
+    def accepted(
+        cls,
+        command_id: int,
+        delta: None = None,
+        *,
+        outcome: GuiCommandOutcome,
+    ) -> GuiCommandReceipt: ...
 
     @classmethod
     def accepted(
         cls,
         command_id: int,
-        delta: SessionDelta,
+        delta: SessionDelta | None = None,
+        *,
+        outcome: GuiCommandOutcome | None = None,
     ) -> GuiCommandReceipt:
         return cls(
             command_id=command_id,
             status=GuiCommandStatus.ACCEPTED,
             delta=delta,
+            outcome=outcome,
         )
 
     @classmethod
@@ -391,6 +544,87 @@ def _optional_revision(value: Any) -> int | None:
     return _revision(value, "expected_session_revision")
 
 
+def _optional_output_path(value: Any) -> Path | None:
+    if value is None:
+        return None
+    if not isinstance(value, Path):
+        raise TypeError("output_path must be a Path or None")
+    path = Path(value)
+    if (
+        not path.name.strip()
+        or path.name in {".", ".."}
+        or any(not character.isprintable() for character in str(path))
+    ):
+        raise ValueError("output_path must identify a file")
+    return path
+
+
+def _owned_result_source(value: Any) -> ResultSourceKey:
+    if type(value) is not ResultSourceKey:
+        raise TypeError("source must be a ResultSourceKey")
+    return deepcopy(value)
+
+
+def _owned_scalar_selection(value: Any) -> ScalarFieldSelection:
+    if type(value) is not ScalarFieldSelection:
+        raise TypeError("selection must be a ScalarFieldSelection")
+    return deepcopy(value)
+
+
+def _materialization_generation(value: Any) -> int:
+    if type(value) is not int:
+        raise TypeError("materialization_generation must be an integer")
+    if value < 0:
+        raise ValueError("materialization_generation must be a non-negative integer")
+    return value
+
+
+def _optional_record_count(value: Any) -> int | None:
+    if value is None:
+        return None
+    if type(value) is not int:
+        raise TypeError("record_count must be an integer or None")
+    if value < 0:
+        raise ValueError("record_count must be non-negative")
+    return value
+
+
+def _stable_diagnostic_summary(value: Any) -> str:
+    if type(value) is not str:
+        raise TypeError("diagnostic_summary must be a string")
+    if any(
+        not character.isprintable() and not character.isspace() for character in value
+    ):
+        raise ValueError("diagnostic_summary must not contain control characters")
+    return " ".join(value.split())
+
+
+def _finite_deformation_scale(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise TypeError("deformation_scale must be a real number")
+    scale = float(value)
+    if not math.isfinite(scale):
+        raise ValueError("deformation_scale must be finite")
+    return scale
+
+
+def _completion_outcome(
+    completion: TaskCompletion,
+    explicit: GuiCommandOutcome | None,
+) -> GuiCommandOutcome | None:
+    if explicit is not None and type(explicit) is not GuiCommandOutcome:
+        raise TypeError("outcome must be a GuiCommandOutcome or None")
+    value_outcome = (
+        completion.value if type(completion.value) is GuiCommandOutcome else None
+    )
+    if explicit is not None and value_outcome is not None:
+        raise ValueError("completion outcome must come from one explicit source only")
+    outcome = explicit if explicit is not None else value_outcome
+    if outcome is not None and completion.state is not BackgroundTaskState.SUCCEEDED:
+        raise ValueError("only a succeeded completion may carry a command outcome")
+    return None if outcome is None else deepcopy(outcome)
+
+
 def _required_text(value: Any, label: str) -> str:
     if type(value) is not str or not value.strip():
         raise ValueError(f"{label} must be a non-empty string")
@@ -430,9 +664,12 @@ __all__ = [
     "CloseSessionCommand",
     "GuiCommandCompletion",
     "GuiCommandDiagnostic",
+    "GuiCommandOutcome",
     "GuiCommandReceipt",
     "GuiCommandStatus",
     "MeshInputEdit",
     "NativeGeometryEdit",
     "NewNativeProjectCommand",
+    "ResultCsvExportSpec",
+    "ResultVtkExportSpec",
 ]
