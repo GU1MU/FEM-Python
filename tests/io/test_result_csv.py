@@ -669,6 +669,181 @@ def test_cancellation_preserves_old_target_and_cleans_temp(
     assert list(tmp_path.glob(f".{target.name}.*.tmp")) == []
 
 
+@pytest.mark.parametrize(
+    ("cancel_on", "stage"),
+    (
+        (1, "write"),
+        (2, "readback"),
+        (3, "compare"),
+        (4, "replace"),
+    ),
+)
+def test_public_checkpoint_cancels_each_atomic_stage(
+    tmp_path: Path,
+    cancel_on: int,
+    stage: str,
+) -> None:
+    export, _snapshot = _export(
+        ResultVariable.U,
+        FieldPosition.NODE,
+    )
+    target = tmp_path / "result.csv"
+    target.write_bytes(b"old-result")
+    atomic_calls = 0
+
+    def cancel_at_stage() -> None:
+        nonlocal atomic_calls
+        if not list(tmp_path.glob(f".{target.name}.*.tmp")):
+            return
+        atomic_calls += 1
+        if atomic_calls == cancel_on:
+            raise RuntimeError(f"cancelled before {stage}")
+
+    with pytest.raises(RuntimeError, match=f"cancelled before {stage}"):
+        write_result_csv(
+            target,
+            export,
+            checkpoint=cancel_at_stage,
+        )
+
+    assert atomic_calls == cancel_on
+    assert target.read_bytes() == b"old-result"
+    assert list(tmp_path.glob(f".{target.name}.*.tmp")) == []
+
+
+def test_csv_completion_wins_after_four_atomic_checkpoints(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    export, _snapshot = _export(
+        ResultVariable.U,
+        FieldPosition.NODE,
+    )
+    target = tmp_path / "result.csv"
+    target.write_bytes(b"old-result")
+    shared_writer = result_csv_module.atomic_write_verified_text
+    default_replace = shared_writer.__globals__["os"].replace
+    atomic_calls = 0
+    final_hooks = 0
+    cancellation_pending = False
+
+    def checkpoint() -> None:
+        nonlocal atomic_calls
+        if cancellation_pending:
+            raise RuntimeError("late cancellation must not be observed")
+        if list(tmp_path.glob(f".{target.name}.*.tmp")):
+            atomic_calls += 1
+
+    def before_replace() -> None:
+        nonlocal final_hooks
+        final_hooks += 1
+
+    def replace_and_cancel(
+        source: str | Path,
+        destination: str | Path,
+    ) -> None:
+        nonlocal cancellation_pending
+        default_replace(source, destination)
+        cancellation_pending = True
+
+    def injected_writer(*args: Any, **kwargs: Any) -> Path:
+        kwargs["replace_func"] = replace_and_cancel
+        return shared_writer(*args, **kwargs)
+
+    monkeypatch.setattr(
+        result_csv_module,
+        "atomic_write_verified_text",
+        injected_writer,
+    )
+
+    returned = write_result_csv(
+        target,
+        export,
+        checkpoint=checkpoint,
+        before_replace=before_replace,
+    )
+
+    assert returned == target
+    assert atomic_calls == 4
+    assert final_hooks == 1
+    assert cancellation_pending
+    assert read_result_csv(target).selection == export.selection
+    assert list(tmp_path.glob(f".{target.name}.*.tmp")) == []
+
+
+def test_csv_row_serialization_polls_before_filesystem_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    export, _snapshot = _export(
+        ResultVariable.U,
+        FieldPosition.NODE,
+    )
+    parent = tmp_path / "not-created"
+    target = parent / "result.csv"
+    project = result_csv_module._project_result_csv
+    serializing = False
+    serialization_calls = 0
+
+    def tracked_project(*args: Any, **kwargs: Any):
+        nonlocal serializing
+        projected = project(*args, **kwargs)
+        serializing = True
+        return projected
+
+    def cancel_during_first_row() -> None:
+        nonlocal serialization_calls
+        if not serializing:
+            return
+        serialization_calls += 1
+        if serialization_calls == 2:
+            raise RuntimeError("cancelled during CSV row serialization")
+
+    monkeypatch.setattr(
+        result_csv_module,
+        "_project_result_csv",
+        tracked_project,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="cancelled during CSV row serialization",
+    ):
+        write_result_csv(
+            target,
+            export,
+            checkpoint=cancel_during_first_row,
+        )
+
+    assert serialization_calls == 2
+    assert not parent.exists()
+
+
+def test_invalid_surrogate_is_typed_before_filesystem_creation(
+    tmp_path: Path,
+) -> None:
+    export, _snapshot = _export(
+        ResultVariable.U,
+        FieldPosition.NODE,
+    )
+    invalid = _with_unit(export, "\ud800")
+    parent = tmp_path / "not-created"
+    target = parent / "result.csv"
+
+    with pytest.raises(
+        ResultCsvEncodeError,
+        match="valid strict UTF-8",
+    ):
+        dumps_result_csv(invalid)
+    with pytest.raises(
+        ResultCsvEncodeError,
+        match="valid strict UTF-8",
+    ):
+        write_result_csv(target, invalid)
+
+    assert not parent.exists()
+
+
 @pytest.mark.parametrize("stage", ("fsync", "replace"))
 def test_atomic_fault_preserves_old_target_and_cleans_temp(
     tmp_path: Path,
@@ -871,12 +1046,16 @@ def test_complete_key_tamper_triggers_semantic_mismatch(
     target.write_bytes(b"old-result")
     serialize = result_csv_module._serialize_result_csv
 
-    def tampered_serialize(projected) -> str:
+    def tampered_serialize(
+        projected,
+        *,
+        checkpoint=None,
+    ) -> str:
         return _mutate(
-                serialize(projected),
-                column,
-                replacement,
-                data_row=None,
+            serialize(projected, checkpoint=checkpoint),
+            column,
+            replacement,
+            data_row=None,
             )
 
     monkeypatch.setattr(

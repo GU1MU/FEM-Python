@@ -22,6 +22,7 @@ def atomic_write_verified_text(
     expected_semantic: Any,
     error_type: type[Exception] = ValueError,
     mismatch_message: str = "temporary file semantic verification failed",
+    checkpoint: Callable[[], Any] | None = None,
     before_replace: Callable[[], Any] | None = None,
     replace_func: Callable[[str | Path, str | Path], Any] | None = None,
     unlink_func: Callable[[Path], Any] | None = None,
@@ -32,10 +33,11 @@ def atomic_write_verified_text(
 ) -> Path:
     """Durably write, semantically verify, then atomically install text.
 
-    The optional callback is the final cancellation/checkpoint boundary.  Once
-    replacement succeeds, completion wins and no later callback is observed.
-    Cleanup failures are attached to the primary exception instead of masking
-    it.
+    ``checkpoint`` is observed immediately before write, readback, semantic
+    comparison, and replacement.  ``before_replace`` remains the final,
+    once-only hook immediately before the atomic commit.  Once replacement
+    succeeds, completion wins and neither callback is observed again.  Cleanup
+    failures are attached to the primary exception instead of masking it.
     """
 
     if not isinstance(serialized, str):
@@ -45,8 +47,16 @@ def atomic_write_verified_text(
         Exception,
     ):
         raise TypeError("error_type must be an Exception type")
+    if checkpoint is not None and not callable(checkpoint):
+        raise TypeError("checkpoint must be callable or None")
     if before_replace is not None and not callable(before_replace):
         raise TypeError("before_replace must be callable or None")
+    try:
+        serialized.encode("utf-8", errors="strict")
+    except UnicodeEncodeError as error:
+        raise error_type(
+            "serialized text must be valid strict UTF-8"
+        ) from error
 
     target = Path(path)
     expected = deepcopy(expected_semantic)
@@ -82,6 +92,7 @@ def atomic_write_verified_text(
         descriptor = -1
         stream_error: BaseException | None = None
         try:
+            _invoke_checkpoint(checkpoint)
             stream.write(serialized)
             stream.flush()
             fsync(stream.fileno())
@@ -101,10 +112,13 @@ def atomic_write_verified_text(
                     temporary=temporary,
                 )
 
+        _invoke_checkpoint(checkpoint)
         verified = verifier(temporary)
+        _invoke_checkpoint(checkpoint)
         actual_semantic = semantic_encoder(verified)
         if actual_semantic != expected:
             raise error_type(mismatch_message)
+        _invoke_checkpoint(checkpoint)
         if before_replace is not None:
             before_replace()
 
@@ -141,6 +155,11 @@ def atomic_write_verified_text(
                     action="delete temporary text file",
                     temporary=temporary,
                 )
+
+
+def _invoke_checkpoint(checkpoint: Callable[[], Any] | None) -> None:
+    if checkpoint is not None:
+        checkpoint()
 
 
 def _add_cleanup_note(

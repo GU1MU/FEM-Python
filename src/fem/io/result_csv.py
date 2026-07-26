@@ -205,11 +205,18 @@ class _ResultCsvMetadata:
 def dumps_result_csv(
     snapshot: ResultExportSnapshot,
     query_result: ResultQueryResult | None = None,
+    *,
+    checkpoint: Callable[[], Any] | None = None,
 ) -> str:
     """Serialize a complete field or exact query as deterministic CSV."""
 
-    projected = _project_result_csv(snapshot, query_result)
-    return _serialize_result_csv(projected)
+    _validate_checkpoint(checkpoint)
+    projected = _project_result_csv(
+        snapshot,
+        query_result,
+        checkpoint=checkpoint,
+    )
+    return _serialize_result_csv(projected, checkpoint=checkpoint)
 
 
 def read_result_csv(path: str | Path) -> ResultCsvReadback:
@@ -297,22 +304,32 @@ def write_result_csv(
     snapshot: ResultExportSnapshot,
     query_result: ResultQueryResult | None = None,
     *,
+    checkpoint: Callable[[], Any] | None = None,
     before_replace: Callable[[], Any] | None = None,
 ) -> Path:
     """Durably verify and atomically install one canonical result CSV."""
 
-    projected = _project_result_csv(snapshot, query_result)
-    serialized = _serialize_result_csv(projected)
+    _validate_checkpoint(checkpoint)
+    projected = _project_result_csv(
+        snapshot,
+        query_result,
+        checkpoint=checkpoint,
+    )
+    serialized = _serialize_result_csv(
+        projected,
+        checkpoint=checkpoint,
+    )
     return atomic_write_verified_text(
         path,
         serialized,
         verifier=read_result_csv,
         semantic_encoder=_semantic_identity,
         expected_semantic=projected,
-        error_type=ResultCsvError,
+        error_type=ResultCsvEncodeError,
         mismatch_message=(
             "temporary result CSV semantic verification failed"
         ),
+        checkpoint=checkpoint,
         before_replace=before_replace,
     )
 
@@ -320,7 +337,10 @@ def write_result_csv(
 def _project_result_csv(
     snapshot: ResultExportSnapshot,
     query_result: ResultQueryResult | None,
+    *,
+    checkpoint: Callable[[], Any] | None,
 ) -> ResultCsvReadback:
+    _invoke_checkpoint(checkpoint)
     if type(snapshot) is not ResultExportSnapshot:
         raise TypeError("snapshot must be ResultExportSnapshot")
     if query_result is not None and type(query_result) is not ResultQueryResult:
@@ -338,28 +358,35 @@ def _project_result_csv(
 
     if query_result is None:
         values = field_data.values
-        source_rows = tuple(
-            (location, float(values[index, component_index]))
-            for index, location in enumerate(field_data.locations)
-        )
+        collected_rows: list[tuple[FieldLocation, float]] = []
+        for index, location in enumerate(field_data.locations):
+            _invoke_checkpoint(checkpoint)
+            collected_rows.append(
+                (location, float(values[index, component_index]))
+            )
+        source_rows = tuple(collected_rows)
     else:
         _validate_query_result(snapshot, query_result)
-        source_rows = tuple(
-            (record.location, record.value)
-            for record in query_result.records
-        )
+        collected_rows = []
+        for record in query_result.records:
+            _invoke_checkpoint(checkpoint)
+            collected_rows.append((record.location, record.value))
+        source_rows = tuple(collected_rows)
     if not source_rows:
         raise ResultCsvEmptySelectionError(
             "result CSV export requires at least one scalar row"
         )
 
-    records = tuple(
-        ResultCsvRecord(
-            location=_csv_location(location),
-            value=value,
+    collected_records: list[ResultCsvRecord] = []
+    for location, value in source_rows:
+        _invoke_checkpoint(checkpoint)
+        collected_records.append(
+            ResultCsvRecord(
+                location=_csv_location(location),
+                value=value,
+            )
         )
-        for location, value in source_rows
-    )
+    records = tuple(collected_records)
     descriptor = field_data.descriptor
     try:
         return ResultCsvReadback(
@@ -424,7 +451,12 @@ def _validate_query_result(
         )
 
 
-def _serialize_result_csv(projected: ResultCsvReadback) -> str:
+def _serialize_result_csv(
+    projected: ResultCsvReadback,
+    *,
+    checkpoint: Callable[[], Any] | None = None,
+) -> str:
+    _invoke_checkpoint(checkpoint)
     output = io.StringIO(newline="")
     output.write("\ufeff")
     writer = csv.writer(
@@ -436,6 +468,7 @@ def _serialize_result_csv(projected: ResultCsvReadback) -> str:
 
     metadata = _encode_metadata(projected)
     for record in projected.records:
+        _invoke_checkpoint(checkpoint)
         location = record.location
         row = {
             **metadata,
@@ -462,6 +495,13 @@ def _serialize_result_csv(projected: ResultCsvReadback) -> str:
         raise ResultCsvEncodeError(
             "result CSV text values must not contain carriage returns"
         )
+    _invoke_checkpoint(checkpoint)
+    try:
+        serialized.encode("utf-8", errors="strict")
+    except UnicodeEncodeError as error:
+        raise ResultCsvEncodeError(
+            "result CSV text must be valid strict UTF-8"
+        ) from error
     return serialized
 
 
@@ -770,6 +810,16 @@ def _reject_carriage_return(value: str, *, label: str) -> None:
         raise ResultCsvEncodeError(
             f"{label} must not contain carriage returns"
         )
+
+
+def _validate_checkpoint(checkpoint: Callable[[], Any] | None) -> None:
+    if checkpoint is not None and not callable(checkpoint):
+        raise TypeError("checkpoint must be callable or None")
+
+
+def _invoke_checkpoint(checkpoint: Callable[[], Any] | None) -> None:
+    if checkpoint is not None:
+        checkpoint()
 
 
 def _semantic_identity(value: ResultCsvReadback) -> ResultCsvReadback:
