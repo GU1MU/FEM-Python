@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -9,7 +10,7 @@ from typing import Any
 from fem.elements import get_element_capabilities
 from fem.post.averaging import NodalAveragingPolicy
 
-from .data import FieldDescriptor
+from .data import FieldDescriptor, ResultDiagnostic
 from .fields import (
     FieldAssociation,
     FieldMaterializationKey,
@@ -189,20 +190,34 @@ def classify_result_model(model: Any) -> ElementResultProfile:
         raise TypeError(
             "model must expose a mesh with elements and dofs_per_node"
         ) from error
-
-    if (
-        type(mesh_dofs_per_node) is not int
-        or mesh_dofs_per_node <= 0
-    ):
-        raise TypeError("mesh.dofs_per_node must be a positive integer")
-
-    descriptors = []
-    unsupported_types: list[str] = []
+    element_types = []
     for element in elements:
         try:
-            element_type = element.type
+            element_types.append(element.type)
         except AttributeError as error:
             raise TypeError("mesh elements must expose type") from error
+    return classify_result_element_types(
+        tuple(element_types),
+        dofs_per_node=mesh_dofs_per_node,
+    )
+
+
+def classify_result_element_types(
+    element_types: Iterable[object],
+    *,
+    dofs_per_node: int,
+) -> ElementResultProfile:
+    """Classify expected or realized elements through one capability path."""
+
+    if type(dofs_per_node) is not int or dofs_per_node <= 0:
+        raise TypeError("dofs_per_node must be a positive integer")
+    try:
+        requested_types = tuple(element_types)
+    except TypeError as error:
+        raise TypeError("element_types must be iterable") from error
+    descriptors = []
+    unsupported_types: list[str] = []
+    for element_type in requested_types:
         try:
             descriptors.append(get_element_capabilities(element_type))
         except (NotImplementedError, TypeError, ValueError):
@@ -223,11 +238,11 @@ def classify_result_model(model: Any) -> ElementResultProfile:
         for descriptor in descriptors
     )
     primary_compatible = (
-        bool(elements)
+        bool(requested_types)
         and not unsupported_types
-        and len(descriptors) == len(elements)
+        and len(descriptors) == len(requested_types)
         and len(profiles) == 1
-        and profiles[0][0] == mesh_dofs_per_node
+        and profiles[0][0] == dofs_per_node
     )
     if primary_compatible:
         dofs_per_node = profiles[0][0]
@@ -240,7 +255,7 @@ def classify_result_model(model: Any) -> ElementResultProfile:
 
     family = _stress_family(
         descriptors=tuple(descriptors),
-        element_count=len(elements),
+        element_count=len(requested_types),
         unsupported=bool(unsupported_types),
         primary_compatible=primary_compatible,
     )
@@ -253,6 +268,40 @@ def classify_result_model(model: Any) -> ElementResultProfile:
         force_labels=force_labels,
         primary_compatible=primary_compatible,
         stress_compatible=family is not ResultModelFamily.MIXED_UNSUPPORTED,
+    )
+
+
+def catalog_diagnostics(
+    profile: ElementResultProfile,
+) -> tuple[ResultDiagnostic, ...]:
+    """Explain profile-level omissions without inventing a field descriptor."""
+
+    if type(profile) is not ElementResultProfile:
+        raise TypeError("profile must be ElementResultProfile")
+    if profile.family is not ResultModelFamily.MIXED_UNSUPPORTED:
+        return ()
+    return (
+        ResultDiagnostic(
+            code="result.catalog.stress_family_unsupported",
+            severity="warning",
+            message=(
+                "The element collection has no single canonical stress "
+                "field contract."
+            ),
+            path=("results", "catalog", "variables", ResultVariable.S.value),
+            remediation=(
+                "Use one compatible continuum family, homogeneous Truss2, "
+                "or homogeneous Beam2 for canonical stress recovery."
+            ),
+            details={
+                "canonical_variable": ResultVariable.S.value,
+                "model_family": profile.family.value,
+                "canonical_element_types": list(
+                    profile.canonical_element_types
+                ),
+                "element_families": list(profile.element_families),
+            },
+        ),
     )
 
 
@@ -576,7 +625,9 @@ __all__ = [
     "FieldRegistryEntry",
     "RECOVERY_CONTRACT",
     "ResultModelFamily",
+    "catalog_diagnostics",
     "catalog_entries",
+    "classify_result_element_types",
     "classify_result_model",
     "descriptor_for",
     "registry_entry_for",

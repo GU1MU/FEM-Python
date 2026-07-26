@@ -16,7 +16,9 @@ from fem.application.results.registry import (
     ElementResultProfile,
     FieldRecoveryKind,
     ResultModelFamily,
+    catalog_diagnostics,
     catalog_entries,
+    classify_result_element_types,
     classify_result_model,
     descriptor_for,
     registry_entry_for,
@@ -93,6 +95,21 @@ def test_classification_preserves_first_seen_canonical_type_order() -> None:
     assert profile.element_families == ("plane_continuum",)
 
 
+def test_expected_element_classification_matches_realized_model_profile() -> None:
+    element_types = ("Tri3", "Quad4", "Tri3")
+
+    expected = classify_result_element_types(
+        element_types,
+        dofs_per_node=2,
+    )
+    realized = classify_result_model(
+        _model(element_types, dofs_per_node=2)
+    )
+
+    assert expected == realized
+    assert catalog_entries(expected) == catalog_entries(realized)
+
+
 @pytest.mark.parametrize(
     ("element_types", "dofs_per_node", "primary_compatible"),
     (
@@ -136,6 +153,35 @@ def test_exact_common_dof_profile_can_publish_primary_for_stress_mixed_model() -
         entry.descriptor.field_id.variable
         for entry in catalog_entries(profile)
     ] == [ResultVariable.U, ResultVariable.RF]
+
+
+def test_mixed_stress_omission_has_one_stable_catalog_diagnostic() -> None:
+    profile = classify_result_element_types(
+        ("Hex8", "Truss2"),
+        dofs_per_node=3,
+    )
+
+    diagnostics = catalog_diagnostics(profile)
+
+    assert len(diagnostics) == 1
+    diagnostic = diagnostics[0]
+    assert diagnostic.code == "result.catalog.stress_family_unsupported"
+    assert diagnostic.severity == "warning"
+    assert diagnostic.path == ("results", "catalog", "variables", "S")
+    assert diagnostic.details == {
+        "canonical_variable": "S",
+        "model_family": "mixed_unsupported",
+        "canonical_element_types": ("Hex8", "Truss2"),
+        "element_families": ("solid_continuum", "truss"),
+    }
+    with pytest.raises(TypeError):
+        diagnostic.details["model_family"] = "forged"  # type: ignore[index]
+
+
+def test_supported_profile_has_no_catalog_diagnostics() -> None:
+    profile = classify_result_element_types(("Quad4",), dofs_per_node=2)
+
+    assert catalog_diagnostics(profile) == ()
 
 
 @pytest.mark.parametrize(

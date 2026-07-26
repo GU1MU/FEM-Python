@@ -118,6 +118,15 @@ def test_capability_catalog_is_exact_immutable_registry_projection() -> None:
         ResultCapabilityCatalog.from_profile(object())
 
 
+def test_capability_catalog_exposes_registry_owned_profile_diagnostics() -> None:
+    catalog = _capabilities(ResultModelFamily.MIXED_UNSUPPORTED)
+
+    assert tuple(item.code for item in catalog.diagnostics) == (
+        "result.catalog.stress_family_unsupported",
+    )
+    assert catalog.diagnostics[0].details["canonical_variable"] == "S"
+
+
 def test_projection_rejects_a_forged_capability_catalog() -> None:
     with pytest.raises(TypeError, match="ResultCapabilityCatalog"):
         project_output_request(

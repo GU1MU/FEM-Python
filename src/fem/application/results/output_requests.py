@@ -19,6 +19,7 @@ from .registry import (
     ElementResultProfile,
     FieldRegistryEntry,
     ResultModelFamily,
+    catalog_diagnostics,
     catalog_entries,
 )
 
@@ -111,6 +112,12 @@ class ResultCapabilityCatalog:
         """Validate already-computed contextual registry entries."""
 
         return cls(profile, entries)
+
+    @property
+    def diagnostics(self) -> tuple[ResultDiagnostic, ...]:
+        """Return the registry-owned profile diagnostics."""
+
+        return catalog_diagnostics(self.profile)
 
     def entry_for(
         self,

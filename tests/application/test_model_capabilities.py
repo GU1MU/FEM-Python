@@ -356,6 +356,54 @@ def test_native_authoring_uses_catalog_for_mesh_settings(
     assert report.operation("section.create").status is (
         AuthoringStatus.ENABLED
     )
+    assert report.operation("output_request.create").status is (
+        AuthoringStatus.UNAVAILABLE
+    )
+    assert report.operation("output_request.existing").status is (
+        AuthoringStatus.READ_ONLY
+    )
+
+
+def test_native_and_realized_output_support_share_result_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed = []
+    original = capabilities_module.ResultCapabilityCatalog.from_profile
+
+    def from_profile(profile):
+        catalog = original(profile)
+        observed.append(catalog)
+        return catalog
+
+    monkeypatch.setattr(
+        capabilities_module.ResultCapabilityCatalog,
+        "from_profile",
+        from_profile,
+    )
+    realized = _model(_element(1, "Tri3", (1, 2, 3)))
+    realized.mesh.dofs_per_node = 2
+
+    native_report = describe_native_authoring_capabilities(
+        object(),
+        MeshSettings(1.0, order=1, cell_shape="triangle"),
+    )
+    realized_report = describe_model_capabilities(realized)
+
+    assert len(observed) == 2
+    assert observed[0].profile == observed[1].profile
+    assert observed[0].entries == observed[1].entries
+    assert native_report.operation(
+        "output_request.create"
+    ).status is AuthoringStatus.UNAVAILABLE
+    assert realized_report.operation(
+        "output_request.create"
+    ).status is AuthoringStatus.UNAVAILABLE
+    assert native_report.operation(
+        "output_request.existing"
+    ).status is AuthoringStatus.READ_ONLY
+    assert realized_report.operation(
+        "output_request.existing"
+    ).status is AuthoringStatus.READ_ONLY
 
 
 def test_output_request_create_is_unavailable_with_stable_reason() -> None:

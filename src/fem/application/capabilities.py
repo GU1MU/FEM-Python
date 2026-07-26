@@ -23,7 +23,10 @@ from .results.output_requests import (
     ResultCapabilityCatalog,
     project_output_request,
 )
-from .results.registry import classify_result_model
+from .results.registry import (
+    classify_result_element_types,
+    classify_result_model,
+)
 
 if TYPE_CHECKING:
     from fem.core.model import LineLoad
@@ -353,6 +356,44 @@ def _output_execution_gate_open() -> bool:
     """Return the single Batch 2/3 output lifecycle feature gate."""
 
     return output_execution_installed
+
+
+def _output_authoring_capabilities(
+    *,
+    supports_candidate: bool,
+) -> tuple[AuthoringCapability, AuthoringCapability]:
+    """Project the shared result catalog through the output lifecycle gate."""
+
+    diagnostic = PreflightDiagnostic(
+        code="output.request.not_executed",
+        severity=PreflightSeverity.WARNING,
+        stage=PreflightStage.OUTPUT,
+        message=(
+            "Output requests are preserved but are not executed by the "
+            "current solver."
+        ),
+        subject="output_request",
+        path=("analysis", "outputs"),
+        remediation="可查看或删除既有输出请求；当前版本不能新建。",
+    )
+    available = _output_execution_gate_open() and supports_candidate
+    diagnostics = () if available else (diagnostic,)
+    return (
+        AuthoringCapability(
+            "output_request.create",
+            (
+                AuthoringStatus.ENABLED
+                if available
+                else AuthoringStatus.UNAVAILABLE
+            ),
+            diagnostics,
+        ),
+        AuthoringCapability(
+            "output_request.existing",
+            AuthoringStatus.READ_ONLY,
+            diagnostics,
+        ),
+    )
 
 
 def require_region_kind(region: RegionRef, expected_kind: str) -> str:
@@ -745,24 +786,8 @@ def describe_model_capabilities(model: Any) -> ModelCapabilityReport:
     model_diagnostics = _deduplicate_diagnostics(
         (*aggregate.diagnostics, *installed_diagnostics)
     )
-    output_diagnostic = PreflightDiagnostic(
-        code="output.request.not_executed",
-        severity=PreflightSeverity.WARNING,
-        stage=PreflightStage.OUTPUT,
-        message=(
-            "Output requests are preserved but are not executed by the "
-            "current solver."
-        ),
-        subject="output_request",
-        path=("analysis", "outputs"),
-        remediation="可查看或删除既有输出请求；当前版本不能新建。",
-    )
-    output_authoring_available = (
-        _output_execution_gate_open()
-        and output_support.supports_output_authoring
-    )
-    output_diagnostics = (
-        () if output_authoring_available else (output_diagnostic,)
+    output_capabilities = _output_authoring_capabilities(
+        supports_candidate=output_support.supports_output_authoring,
     )
     section_status = (
         AuthoringStatus.UNAVAILABLE
@@ -789,20 +814,7 @@ def describe_model_capabilities(model: Any) -> ModelCapabilityReport:
     authoring = (
         AuthoringCapability("section.create", section_status),
         AuthoringCapability("line_load.create", line_status),
-        AuthoringCapability(
-            "output_request.create",
-            (
-                AuthoringStatus.ENABLED
-                if output_authoring_available
-                else AuthoringStatus.UNAVAILABLE
-            ),
-            output_diagnostics,
-        ),
-        AuthoringCapability(
-            "output_request.existing",
-            AuthoringStatus.READ_ONLY,
-            output_diagnostics,
-        ),
+        *output_capabilities,
     )
     return ModelCapabilityReport(
         canonical_element_types=aggregate.canonical_element_types,
@@ -904,11 +916,22 @@ def describe_native_authoring_capabilities(
     }.get((shape, order))
     if canonical is None:
         aggregate = _aggregate_capabilities(("",), subject="native_mesh")
+        result_catalog = None
     else:
         aggregate = _aggregate_capabilities(
             (canonical,),
             subject="native_mesh",
         )
+        profile = classify_result_element_types(
+            (canonical,),
+            dofs_per_node=aggregate.dofs_per_node,
+        )
+        result_catalog = ResultCapabilityCatalog.from_profile(profile)
+    output_capabilities = _output_authoring_capabilities(
+        supports_candidate=(
+            result_catalog is not None and bool(result_catalog.entries)
+        ),
+    )
     return ModelCapabilityReport(
         canonical_element_types=aggregate.canonical_element_types,
         families=aggregate.families,
@@ -932,6 +955,7 @@ def describe_native_authoring_capabilities(
                     else AuthoringStatus.UNAVAILABLE
                 ),
             ),
+            *output_capabilities,
         ),
     )
 

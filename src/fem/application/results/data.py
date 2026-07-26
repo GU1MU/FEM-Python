@@ -265,6 +265,7 @@ class ResultCatalog:
     source: ResultSourceKey
     fields: tuple[FieldAvailability, ...]
     default_selection: ScalarFieldSelection
+    diagnostics: tuple[ResultDiagnostic, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.source) is not ResultSourceKey:
@@ -276,6 +277,7 @@ class ResultCatalog:
                 raise TypeError(
                     "fields must contain only FieldAvailability values"
                 )
+        _validate_diagnostic_tuple(self.diagnostics)
         _validate_unique_sorted_keys(
             tuple(item.key for item in self.fields),
             label="catalog fields",

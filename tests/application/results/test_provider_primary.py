@@ -392,17 +392,27 @@ def _mixed_solid_truss_result() -> ModelResult:
 
 def test_common_dof_mixed_model_publishes_primary_without_partial_stress() -> None:
     provider = build_result_provider(_source(), _mixed_solid_truss_result())
+    catalog = provider.catalog()
 
     assert provider.profile.family is ResultModelFamily.MIXED_UNSUPPORTED
     assert provider.profile.primary_compatible is True
     assert provider.profile.stress_compatible is False
     assert tuple(
         item.descriptor.field_id.variable
-        for item in provider.catalog().fields
+        for item in catalog.fields
     ) == (ResultVariable.U, ResultVariable.RF)
     assert all(
         item.state is FieldState.READY
-        for item in provider.catalog().fields
+        for item in catalog.fields
+    )
+    assert tuple(item.code for item in catalog.diagnostics) == (
+        "result.catalog.stress_family_unsupported",
+    )
+    assert catalog.diagnostics[0].path == (
+        "results",
+        "catalog",
+        "variables",
+        "S",
     )
     assert provider.snapshot.topology.element_ids == (500, 200)
     assert provider.snapshot.topology.element_types == ("Hex8", "Truss2")

@@ -581,9 +581,27 @@ def test_availability_and_catalog_bind_full_key_descriptor_and_default() -> None
         field_data.source,
         (availability,),
         ScalarFieldSelection(field_data.key, "Mises"),
+        (_diagnostic(),),
     )
 
     assert catalog.default_selection.field_key == field_data.key
+    assert tuple(item.code for item in catalog.diagnostics) == (
+        "result.field.unavailable",
+    )
+    with pytest.raises(TypeError, match="diagnostics must be a tuple"):
+        ResultCatalog(
+            field_data.source,
+            (availability,),
+            ScalarFieldSelection(field_data.key, "Mises"),
+            [_diagnostic()],  # type: ignore[arg-type]
+        )
+    with pytest.raises(TypeError, match="ResultDiagnostic"):
+        ResultCatalog(
+            field_data.source,
+            (availability,),
+            ScalarFieldSelection(field_data.key, "Mises"),
+            (object(),),  # type: ignore[arg-type]
+        )
     with pytest.raises(ValueError, match="unavailable"):
         ResultCatalog(
             field_data.source,

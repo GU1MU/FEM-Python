@@ -41,6 +41,7 @@ from .registry import (
     FieldRecoveryKind,
     FieldRegistryEntry,
     ResultModelFamily,
+    catalog_diagnostics,
     catalog_entries,
     classify_result_model,
     registry_entry_for,
@@ -300,7 +301,7 @@ def build_result_provider(
         topology=topology,
         base_fields=base_fields,
     )
-    catalog = _build_catalog(source, entries, snapshot)
+    catalog = _build_catalog(source, profile, entries, snapshot)
     return ResultProvider(
         _owned_result=owned_result,
         _profile=profile,
@@ -346,7 +347,7 @@ def restore_result_provider(
         expected_topology=expected_topology,
     )
     catalog = _catalog_with_ready_patch(
-        _build_catalog(snapshot.source, entries, snapshot),
+        _build_catalog(snapshot.source, profile, entries, snapshot),
         checked,
     )
     return ResultProvider(
@@ -692,6 +693,7 @@ def _primary_field(
 
 def _build_catalog(
     source: ResultSourceKey,
+    profile: ElementResultProfile,
     entries: tuple[FieldRegistryEntry, ...],
     snapshot: ResultMaterializationSnapshot,
 ) -> ResultCatalog:
@@ -745,6 +747,7 @@ def _build_catalog(
             field_key=default.key,
             component=default.descriptor.default_component,
         ),
+        diagnostics=catalog_diagnostics(profile),
     )
 
 
@@ -771,6 +774,7 @@ def _catalog_with_ready_patch(
         source=catalog.source,
         fields=fields,
         default_selection=catalog.default_selection,
+        diagnostics=catalog.diagnostics,
     )
 
 
