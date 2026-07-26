@@ -121,7 +121,7 @@ def test_clear_generated_model_rejects_an_issued_mesh_token() -> None:
     assert session.snapshot().artifact is None
 
 
-def test_token_tampering_reports_artifact_step_and_run_mismatch() -> None:
+def test_token_tampering_reports_artifact_step_run_and_result_mismatch() -> None:
     session = _session()
     validation = session.prepare_validation("Step-A")
     wrong_artifact = replace(validation.token, artifact_id="other")
@@ -135,7 +135,27 @@ def test_token_tampering_reports_artifact_step_and_run_mismatch() -> None:
 
     solve = session.prepare_solve("Step-A", "Job-1")
     wrong_run = replace(solve.token, run_id="other")
+    wrong_result = replace(solve.token, result_id="other")
     assert session.validate_task_token(wrong_run) is TokenStatus.STALE_RUN
+    assert (
+        session.validate_task_token(wrong_result)
+        is TokenStatus.STALE_RESULT
+    )
+
+
+def test_solve_reserves_one_result_identity_before_worker_start() -> None:
+    session = _session()
+
+    solve = session.prepare_solve("Step-A", "Job-1")
+
+    assert solve.result_id.startswith("result-")
+    assert solve.token.result_id == solve.result_id
+    assert session.find_run(solve.run_id).result_id is None
+    session.begin_run(solve.token)
+    session.accept_run_result(solve.token, {"value": 1})
+    accepted = session.current_result()
+    assert accepted.result_id == solve.result_id
+    assert session.find_run(solve.run_id).result_id == solve.result_id
 
 
 @pytest.mark.parametrize("terminal", ["failed", "cancelled"])
@@ -178,6 +198,13 @@ def test_result_projection_token_becomes_stale_with_its_model() -> None:
     session.begin_run(solve.token)
     session.accept_run_result(solve.token, {"value": 1})
     projection = session.prepare_result_projection(solve.run_id)
+    assert projection.token.result_id == solve.result_id
+    assert (
+        session.validate_task_token(
+            replace(projection.token, result_id="other")
+        )
+        is TokenStatus.STALE_RESULT
+    )
     assert (
         session.validate_task_token(projection.token)
         is TokenStatus.CURRENT

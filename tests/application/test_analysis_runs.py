@@ -56,6 +56,8 @@ def test_pending_running_succeeded_lifecycle_and_provenance() -> None:
 
     assert succeeded.status is RunStatus.SUCCEEDED
     assert succeeded.has_result
+    assert succeeded.result_id == solve.result_id
+    assert current.result_id == solve.result_id
     assert succeeded.timings == {"solve": 0.25}
     assert current.result == {"value": 42}
     assert current.provenance.session_id == snapshot.session_id

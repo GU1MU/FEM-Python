@@ -1377,6 +1377,7 @@ class ModelSession:
         if self._find_run_by_name(resolved_name) is not None:
             raise ValueError(f"run name already exists: {resolved_name}")
         run_id = new_identity("run")
+        result_id = new_identity("result")
         run = AnalysisRun(
             run_id=run_id,
             name=resolved_name,
@@ -1396,6 +1397,7 @@ class ModelSession:
             artifact_id=artifact.artifact_id,
             step_name=resolved_step,
             run_id=run_id,
+            result_id=result_id,
         )
         return SolveTaskSnapshot(
             token=token,
@@ -1403,6 +1405,7 @@ class ModelSession:
             step_name=resolved_step,
             run_name=resolved_name,
             run_id=run_id,
+            result_id=result_id,
             delta=delta,
         )
 
@@ -1447,7 +1450,7 @@ class ModelSession:
             for name, seconds in (timings or {}).items()
         }
         artifact = self._require_current_artifact()
-        result_id = new_identity("result")
+        result_id = str(token.result_id)
         provenance = ResultProvenance(
             session_id=self._session_id,
             artifact_id=artifact.artifact_id,
@@ -1573,6 +1576,7 @@ class ModelSession:
             artifact_id=record.provenance.artifact_id,
             step_name=record.provenance.step_name,
             run_id=record.provenance.run_id,
+            result_id=record.result_id,
         )
         return ResultTaskSnapshot(
             token=token,
@@ -1805,6 +1809,8 @@ class ModelSession:
             return TokenStatus.STALE_STEP
         if token.run_id != issued.run_id:
             return TokenStatus.STALE_RUN
+        if token.result_id != issued.result_id:
+            return TokenStatus.STALE_RESULT
         if token.dependency_revisions != issued.dependency_revisions:
             return TokenStatus.STALE_REVISION
         if token != issued:
@@ -1833,6 +1839,10 @@ class ModelSession:
                 or run.step_name != token.step_name
             ):
                 return TokenStatus.STALE_RUN
+        if token.result_id is not None and token.task_kind != "solve":
+            record = self._current_result_record(token.run_id)
+            if record is None or record.result_id != token.result_id:
+                return TokenStatus.STALE_RESULT
         return TokenStatus.CURRENT
 
     # ------------------------------------------------------------------
@@ -2037,6 +2047,7 @@ class ModelSession:
         artifact_id: str | None = None,
         step_name: str | None = None,
         run_id: str | None = None,
+        result_id: str | None = None,
     ) -> TaskToken:
         token = TaskToken(
             session_id=self._session_id,
@@ -2046,6 +2057,7 @@ class ModelSession:
             artifact_id=artifact_id,
             step_name=step_name,
             run_id=run_id,
+            result_id=result_id,
         )
         self._issued_tokens[token.task_id] = token
         return token

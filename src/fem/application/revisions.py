@@ -18,6 +18,7 @@ class TokenStatus(str, Enum):
     STALE_ARTIFACT = "stale_artifact"
     STALE_STEP = "stale_step"
     STALE_RUN = "stale_run"
+    STALE_RESULT = "stale_result"
     WRONG_KIND = "wrong_kind"
     UNKNOWN_TASK = "unknown_task"
     ALREADY_COMPLETED = "already_completed"
@@ -45,6 +46,7 @@ class TaskToken:
     artifact_id: str | None = None
     step_name: str | None = None
     run_id: str | None = None
+    result_id: str | None = None
 
     def __post_init__(self) -> None:
         dependencies = tuple(
@@ -68,6 +70,8 @@ class TaskToken:
             object.__setattr__(self, "step_name", str(self.step_name))
         if self.run_id is not None:
             object.__setattr__(self, "run_id", str(self.run_id))
+        if self.result_id is not None:
+            object.__setattr__(self, "result_id", str(self.result_id))
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +120,7 @@ class SolveTaskSnapshot:
     step_name: str
     run_name: str
     run_id: str
+    result_id: str
     delta: Any | None = None
 
 
