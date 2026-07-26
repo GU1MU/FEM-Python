@@ -16,6 +16,10 @@ from fem.elements import (
 from fem.post.stress import beam
 
 
+class _RecoveryCancelled(RuntimeError):
+    pass
+
+
 def _beam_properties() -> dict[str, float | str]:
     return {
         "E": 100.0,
@@ -127,6 +131,84 @@ def test_canonical_node_envelope_omits_isolated_nodes_and_keeps_shared_extrema()
     legacy = beam.nodal_envelope(_chain_result())
     assert [row.node_id for row in legacy] == [10, 20, 30, 40]
     assert legacy[-1] == beam.Beam2NodalStress(40, 0.0, 0.0, 0.0)
+
+
+def test_section_end_recovery_cancels_after_one_element_and_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _chain_result(with_isolated_node=False)
+    kernel_type = type(get_element_kernel("Beam2"))
+    original = kernel_type.local_end_actions
+    completed_elements: list[int] = []
+
+    def counted(
+        self,
+        mesh,
+        element,
+        displacement,
+        local_load,
+        lookup,
+    ):
+        actions = original(
+            self,
+            mesh,
+            element,
+            displacement,
+            local_load,
+            lookup,
+        )
+        completed_elements.append(int(element.id))
+        return actions
+
+    def checkpoint() -> None:
+        if completed_elements:
+            raise _RecoveryCancelled("cancelled after one Beam2 element")
+
+    monkeypatch.setattr(kernel_type, "local_end_actions", counted)
+
+    with pytest.raises(_RecoveryCancelled, match="one Beam2 element"):
+        beam.recover_section_end_stress(
+            result,
+            checkpoint=checkpoint,
+        )
+
+    assert completed_elements == [101]
+    retried = beam.recover_section_end_stress(result)
+    assert [
+        (row.element_id, row.local_node)
+        for row in retried.rows
+    ] == [(101, 1), (101, 2), (205, 1), (205, 2)]
+    assert completed_elements == [101, 101, 205]
+
+
+@pytest.mark.parametrize(
+    "cancel_at",
+    (
+        pytest.param(2, id="contribution-loop"),
+        pytest.param(6, id="node-loop"),
+    ),
+)
+def test_node_envelope_cancels_inside_each_loop_and_retries(
+    cancel_at: int,
+) -> None:
+    field = beam.recover_section_end_stress(_chain_result())
+    checkpoint_calls = 0
+
+    def checkpoint() -> None:
+        nonlocal checkpoint_calls
+        checkpoint_calls += 1
+        if checkpoint_calls == cancel_at:
+            raise _RecoveryCancelled("cancelled during Beam envelope")
+
+    with pytest.raises(_RecoveryCancelled, match="Beam envelope"):
+        beam.section_node_envelope(
+            field,
+            checkpoint=checkpoint,
+        )
+
+    assert checkpoint_calls == cancel_at
+    retried = beam.section_node_envelope(field)
+    assert [row.node_id for row in retried.rows] == [10, 20, 30]
 
 
 def test_section_end_recovery_preserves_arbitrary_integer_mesh_ids() -> None:

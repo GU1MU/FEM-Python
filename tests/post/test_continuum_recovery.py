@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import pytest
 
+from fem.post import averaging as averaging_module
 from fem.post.averaging import NodalAveragingPolicy, resolve_nodal_stress
 from fem.post.fields import ResultRegionKey, result_region_sort_key
+from fem.post.stress import field as field_module
 from fem.post.stress.field import StressPosition, StressRecovery
 from tests.helpers.phase8_result_characterization import (
     make_continuum_nodal_semantics_result,
 )
+
+
+class _RecoveryCancelled(RuntimeError):
+    pass
 
 
 @pytest.mark.parametrize(
@@ -68,3 +74,144 @@ def test_element_nodal_records_carry_sample_displacement_and_exact_region() -> N
         regions_by_node[1],
         key=result_region_sort_key,
     )
+
+
+@pytest.mark.parametrize(
+    "position",
+    (
+        StressPosition.INTEGRATION_POINT,
+        StressPosition.CENTROID,
+        StressPosition.ELEMENT_NODAL,
+        StressPosition.NODAL,
+    ),
+)
+def test_position_transform_cancellation_never_caches_partial_field(
+    position: StressPosition,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = make_continuum_nodal_semantics_result()
+    recovery = StressRecovery(result.model.mesh, result.U)
+    if position is StressPosition.NODAL:
+        recovery.collect(StressPosition.ELEMENT_NODAL)
+
+    original_make_record = field_module._make_record
+    completed_records = 0
+    cancellation_enabled = True
+
+    def counted_make_record(*args, **kwargs):
+        nonlocal completed_records
+        record = original_make_record(*args, **kwargs)
+        completed_records += 1
+        return record
+
+    def checkpoint() -> None:
+        if cancellation_enabled and completed_records:
+            raise _RecoveryCancelled("cancelled during position transform")
+
+    monkeypatch.setattr(
+        field_module,
+        "_make_record",
+        counted_make_record,
+    )
+
+    with pytest.raises(_RecoveryCancelled, match="position transform"):
+        recovery.collect(position, checkpoint=checkpoint)
+
+    assert completed_records >= 1
+    assert position not in recovery._cache
+    cancellation_enabled = False
+    retried = recovery.collect(position, checkpoint=checkpoint)
+    clean = StressRecovery(
+        result.model.mesh,
+        result.U,
+    ).collect(position)
+    assert retried == clean
+
+
+def test_position_transform_final_checkpoint_precedes_cache_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = make_continuum_nodal_semantics_result()
+    expected = StressRecovery(result.model.mesh, result.U).collect(
+        StressPosition.CENTROID
+    )
+    recovery = StressRecovery(result.model.mesh, result.U)
+    original_centroid_records = field_module._centroid_records
+    transform_finished = False
+    cancellation_enabled = True
+
+    def marked_centroid_records(*args, **kwargs):
+        nonlocal transform_finished
+        records = original_centroid_records(*args[:-1], None, **kwargs)
+        transform_finished = True
+        return records
+
+    def checkpoint() -> None:
+        if cancellation_enabled and transform_finished:
+            raise _RecoveryCancelled("cancelled at final checkpoint")
+
+    monkeypatch.setattr(
+        field_module,
+        "_centroid_records",
+        marked_centroid_records,
+    )
+
+    with pytest.raises(_RecoveryCancelled, match="final checkpoint"):
+        recovery.collect(StressPosition.CENTROID, checkpoint=checkpoint)
+
+    assert StressPosition.CENTROID not in recovery._cache
+    cancellation_enabled = False
+    assert recovery.collect(
+        StressPosition.CENTROID,
+        checkpoint=checkpoint,
+    ) == expected
+
+
+def test_resolved_nodal_cancellation_stops_between_input_records_and_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = make_continuum_nodal_semantics_result()
+    mesh = result.model.mesh
+    element_nodal = StressRecovery(mesh, result.U).collect(
+        StressPosition.ELEMENT_NODAL
+    )
+    original_weight = averaging_module._positive_finite_weight
+    checked_records = 0
+
+    def counted_weight(value):
+        nonlocal checked_records
+        checked_records += 1
+        return original_weight(value)
+
+    def checkpoint() -> None:
+        if checked_records:
+            raise _RecoveryCancelled("cancelled during nodal resolution")
+
+    monkeypatch.setattr(
+        averaging_module,
+        "_positive_finite_weight",
+        counted_weight,
+    )
+
+    with pytest.raises(_RecoveryCancelled, match="nodal resolution"):
+        resolve_nodal_stress(
+            element_nodal,
+            node_ids=mesh.node_ids,
+            element_ids=tuple(
+                element.id for element in mesh.elements
+            ),
+            checkpoint=checkpoint,
+        )
+
+    assert checked_records == 1
+    retried = resolve_nodal_stress(
+        element_nodal,
+        node_ids=mesh.node_ids,
+        element_ids=tuple(element.id for element in mesh.elements),
+    )
+    clean = resolve_nodal_stress(
+        element_nodal,
+        node_ids=mesh.node_ids,
+        element_ids=tuple(element.id for element in mesh.elements),
+    )
+    assert retried == clean

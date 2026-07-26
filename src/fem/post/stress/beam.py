@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import csv
 from dataclasses import dataclass
 import math
@@ -215,9 +216,14 @@ class BeamNodeEnvelopeField:
         object.__setattr__(self, "rows", rows)
 
 
-def recover_section_end_stress(result: ModelResult) -> BeamEndStressField:
+def recover_section_end_stress(
+    result: ModelResult,
+    *,
+    checkpoint: Callable[[], None] | None = None,
+) -> BeamEndStressField:
     """Recover canonical Beam2 section-end rows from one complete result."""
 
+    _validate_checkpoint(checkpoint)
     if not isinstance(result, ModelResult):
         raise TypeError("result must be ModelResult")
     mesh = result.model.mesh
@@ -236,6 +242,7 @@ def recover_section_end_stress(result: ModelResult) -> BeamEndStressField:
 
     rows: list[BeamSectionEndStress] = []
     for elem in mesh.elements:
+        _run_checkpoint(checkpoint)
         element_id = _integer_id("element id", elem.id)
         try:
             element_type = canonical_element_type(elem.type)
@@ -292,6 +299,7 @@ def recover_section_end_stress(result: ModelResult) -> BeamEndStressField:
             ),
             dtype=float,
         )
+        _run_checkpoint(checkpoint)
         if end_actions.shape != (2, 3) or not np.all(np.isfinite(end_actions)):
             raise ValueError(
                 f"Beam2 element {element_id} end actions must have shape "
@@ -339,17 +347,22 @@ def recover_section_end_stress(result: ModelResult) -> BeamEndStressField:
 
 def section_node_envelope(
     field: BeamEndStressField,
+    *,
+    checkpoint: Callable[[], None] | None = None,
 ) -> BeamNodeEnvelopeField:
     """Derive incident-node envelopes without inventing isolated-node rows."""
 
+    _validate_checkpoint(checkpoint)
     if type(field) is not BeamEndStressField:
         raise TypeError("field must be BeamEndStressField")
     contributions: dict[int, list[BeamSectionEndStress]] = {}
     for row in field.rows:
+        _run_checkpoint(checkpoint)
         contributions.setdefault(row.node_id, []).append(row)
 
     rows: list[BeamNodeEnvelopeStress] = []
     for node_id in field.node_order:
+        _run_checkpoint(checkpoint)
         node_contributions = contributions.get(node_id, ())
         if not node_contributions:
             continue
@@ -377,12 +390,24 @@ def section_node_envelope(
     return BeamNodeEnvelopeField(tuple(rows))
 
 
-def nodal_envelope(result: Any) -> tuple[Beam2NodalStress, ...]:
+def nodal_envelope(
+    result: Any,
+    *,
+    checkpoint: Callable[[], None] | None = None,
+) -> tuple[Beam2NodalStress, ...]:
     """Compatibility view of Beam2 envelopes including isolated zero rows."""
 
-    field = recover_section_end_stress(result)
+    _validate_checkpoint(checkpoint)
+    field = recover_section_end_stress(
+        result,
+        checkpoint=checkpoint,
+    )
     canonical = {
-        row.node_id: row for row in section_node_envelope(field).rows
+        row.node_id: row
+        for row in section_node_envelope(
+            field,
+            checkpoint=checkpoint,
+        ).rows
     }
     return tuple(
         Beam2NodalStress(
@@ -445,6 +470,18 @@ def _integer_id(name: str, value: Any) -> int:
         return operator.index(value)
     except TypeError as error:
         raise TypeError(f"{name} must be an integer") from error
+
+
+def _validate_checkpoint(
+    checkpoint: Callable[[], None] | None,
+) -> None:
+    if checkpoint is not None and not callable(checkpoint):
+        raise TypeError("checkpoint must be callable or None")
+
+
+def _run_checkpoint(checkpoint: Callable[[], None] | None) -> None:
+    if checkpoint is not None:
+        checkpoint()
 
 
 def _unique_integer_ids(name: str, values: Any) -> tuple[int, ...]:

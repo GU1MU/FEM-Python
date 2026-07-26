@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 import math
 from numbers import Integral, Real
@@ -100,15 +100,24 @@ class TrussStressField:
         object.__setattr__(self, "rows", rows)
 
 
-def recover(mesh: Any, U: Sequence[float]) -> TrussStressField:
+def recover(
+    mesh: Any,
+    U: Sequence[float],
+    *,
+    checkpoint: Callable[[], None] | None = None,
+) -> TrussStressField:
     """Recover LE11, S11, and Mises for a homogeneous spatial Truss2 mesh."""
 
+    if checkpoint is not None and not callable(checkpoint):
+        raise TypeError("checkpoint must be callable or None")
     elements, nodes = _validated_truss_mesh(mesh)
     displacement = _owned_displacement(mesh, U)
     kernel = get_element_kernel("Truss2")
     rows: list[TrussStressRow] = []
 
     for element in elements:
+        if checkpoint is not None:
+            checkpoint()
         try:
             raw_values = tuple(
                 kernel.element_stress(
@@ -123,6 +132,8 @@ def recover(mesh: Any, U: Sequence[float]) -> TrussStressField:
                 f"Truss2 kernel returned invalid stress values for element "
                 f"{element.id!r}"
             ) from error
+        if checkpoint is not None:
+            checkpoint()
         if len(raw_values) != 3:
             raise ValueError(
                 f"Truss2 kernel returned {len(raw_values)} stress values for "

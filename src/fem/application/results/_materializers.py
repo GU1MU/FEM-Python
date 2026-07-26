@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 import math
 from numbers import Real
@@ -60,6 +61,18 @@ def check_cancellation(cancellation: object | None) -> None:
     raise TypeError(
         "cancellation must be callable, expose checkpoint(), or be None"
     )
+
+
+def _checkpoint_for_cancellation(
+    cancellation: object | None,
+) -> Callable[[], None] | None:
+    if cancellation is None:
+        return None
+
+    def checkpoint() -> None:
+        check_cancellation(cancellation)
+
+    return checkpoint
 
 
 def materialize_derived_fields(
@@ -167,6 +180,7 @@ def _materialize_continuum(
         grouped.setdefault(target[0].request.gauss_order, []).append(target)
 
     fields: list[FieldData] = []
+    checkpoint = _checkpoint_for_cancellation(cancellation)
     for gauss_order in sorted(
         grouped,
         key=lambda value: (value is not None, 0 if value is None else value),
@@ -176,13 +190,15 @@ def _materialize_continuum(
             result.model.mesh,
             result.U,
             gauss_order=gauss_order,
+            checkpoint=checkpoint,
         )
         check_cancellation(cancellation)
         for key, entry in grouped[gauss_order]:
             check_cancellation(cancellation)
             if key.request.field_id.position is FieldPosition.RESOLVED_NODAL:
                 element_nodal = recovery.collect(
-                    StressPosition.ELEMENT_NODAL
+                    StressPosition.ELEMENT_NODAL,
+                    checkpoint=checkpoint,
                 )
                 recovered: StressField | ResolvedStressField = (
                     resolve_nodal_stress(
@@ -193,11 +209,13 @@ def _materialize_continuum(
                             int(element.id)
                             for element in result.model.mesh.elements
                         ),
+                        checkpoint=checkpoint,
                     )
                 )
             else:
                 recovered = recovery.collect(
-                    _stress_position(key.request.field_id.position)
+                    _stress_position(key.request.field_id.position),
+                    checkpoint=checkpoint,
                 )
             check_cancellation(cancellation)
             fields.append(
@@ -226,7 +244,11 @@ def _materialize_truss(
     if any(entry.recovery_kind not in allowed for _key, entry in targets):
         raise ValueError("Truss materialization received a non-Truss target")
     check_cancellation(cancellation)
-    recovered = truss.recover(result.model.mesh, result.U)
+    recovered = truss.recover(
+        result.model.mesh,
+        result.U,
+        checkpoint=_checkpoint_for_cancellation(cancellation),
+    )
     check_cancellation(cancellation)
     fields = []
     for key, entry in targets:
@@ -256,7 +278,11 @@ def _materialize_beam(
     if any(entry.recovery_kind not in allowed for _key, entry in targets):
         raise ValueError("Beam materialization received a non-Beam target")
     check_cancellation(cancellation)
-    section_end = beam.recover_section_end_stress(result)
+    checkpoint = _checkpoint_for_cancellation(cancellation)
+    section_end = beam.recover_section_end_stress(
+        result,
+        checkpoint=checkpoint,
+    )
     check_cancellation(cancellation)
     envelope = None
     fields = []
@@ -275,7 +301,10 @@ def _materialize_beam(
             continue
         if envelope is None:
             check_cancellation(cancellation)
-            envelope = beam.section_node_envelope(section_end)
+            envelope = beam.section_node_envelope(
+                section_end,
+                checkpoint=checkpoint,
+            )
             check_cancellation(cancellation)
         fields.append(
             _simple_rows_field(

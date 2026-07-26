@@ -10,6 +10,10 @@ from fem.post import stress
 from fem.post.stress import element, truss
 
 
+class _RecoveryCancelled(RuntimeError):
+    pass
+
+
 # ---------------------------------------------------------------------------
 # Truss2 pure-post recovery
 
@@ -154,6 +158,65 @@ def test_truss_recovery_preserves_noncontiguous_mesh_element_order_and_uses_kern
     assert [row.LE11 for row in recovered.rows] == pytest.approx([0.2, 0.1])
     assert [row.S11 for row in recovered.rows] == pytest.approx([20.0, 10.0])
     assert [row.Mises for row in recovered.rows] == pytest.approx([20.0, 10.0])
+
+
+def test_truss_recovery_cancels_after_one_element_and_retries_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mesh = Mesh3D(
+        nodes=[
+            Node3D(10, 0.0, 0.0, 0.0),
+            Node3D(20, 1.0, 0.0, 0.0),
+            Node3D(30, 2.0, 0.0, 0.0),
+        ],
+        elements=[
+            Element3D(
+                90,
+                [10, 20],
+                "Truss2",
+                {"E": 100.0, "area": 1.0},
+            ),
+            Element3D(
+                7,
+                [20, 30],
+                "Truss2",
+                {"E": 100.0, "area": 1.0},
+            ),
+        ],
+    )
+    displacement = np.zeros(mesh.num_dofs)
+    kernel_type = type(truss.get_element_kernel("Truss2"))
+    original = kernel_type.element_stress
+    completed_elements: list[int] = []
+
+    def counted(self, mesh_, element_, values, lookup):
+        recovered = original(
+            self,
+            mesh_,
+            element_,
+            values,
+            lookup,
+        )
+        completed_elements.append(int(element_.id))
+        return recovered
+
+    def checkpoint() -> None:
+        if completed_elements:
+            raise _RecoveryCancelled("cancelled after one Truss2 element")
+
+    monkeypatch.setattr(kernel_type, "element_stress", counted)
+
+    with pytest.raises(_RecoveryCancelled, match="one Truss2 element"):
+        truss.recover(
+            mesh,
+            displacement,
+            checkpoint=checkpoint,
+        )
+
+    assert completed_elements == [90]
+    retried = truss.recover(mesh, displacement)
+    assert [row.element_id for row in retried.rows] == [90, 7]
+    assert completed_elements == [90, 90, 7]
 
 
 @pytest.mark.parametrize(

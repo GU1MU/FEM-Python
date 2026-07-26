@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping, Sequence
@@ -36,6 +37,19 @@ SOLID_COMPONENT_NAMES = (
 )
 CANONICAL_PLANE_COMPONENT_NAMES = ("S11", "S22", "S33", "S12")
 CANONICAL_SOLID_COMPONENT_NAMES = ("S11", "S22", "S33", "S12", "S23", "S13")
+
+
+def _validate_checkpoint(
+    checkpoint: Callable[[], None] | None,
+) -> Callable[[], None] | None:
+    if checkpoint is not None and not callable(checkpoint):
+        raise TypeError("checkpoint must be callable or None")
+    return checkpoint
+
+
+def _run_checkpoint(checkpoint: Callable[[], None] | None) -> None:
+    if checkpoint is not None:
+        checkpoint()
 
 
 class StressPosition(str, Enum):
@@ -122,7 +136,11 @@ class StressRecovery:
         U: Sequence[float],
         element_type: str | None = None,
         gauss_order: int | None = None,
+        *,
+        checkpoint: Callable[[], None] | None = None,
     ) -> None:
+        checkpoint = _validate_checkpoint(checkpoint)
+        _run_checkpoint(checkpoint)
         type_keys = dispatch.resolve_type_keys(mesh, element_type)
         group = dispatch.stress_group_for_keys(type_keys)
         if group not in {"plane", "solid"}:
@@ -144,14 +162,20 @@ class StressRecovery:
             set(type_keys),
             group,
             gauss_order,
+            checkpoint,
         )
+        _run_checkpoint(checkpoint)
         self._cache: dict[StressPosition, StressField] = {}
 
     def collect(
         self,
         position: StressPosition | str = StressPosition.INTEGRATION_POINT,
+        *,
+        checkpoint: Callable[[], None] | None = None,
     ) -> StressField:
         """Recover and cache one requested stress position."""
+        checkpoint = _validate_checkpoint(checkpoint)
+        _run_checkpoint(checkpoint)
         try:
             resolved_position = StressPosition(position)
         except ValueError as exc:
@@ -161,15 +185,24 @@ class StressRecovery:
             ) from exc
         cached = self._cache.get(resolved_position)
         if cached is not None:
+            _run_checkpoint(checkpoint)
             return cached
 
         if resolved_position is StressPosition.INTEGRATION_POINT:
             records = _integration_point_records(
-                self.mesh, self.lookup, self._ip_fields, self.component_names
+                self.mesh,
+                self.lookup,
+                self._ip_fields,
+                self.component_names,
+                checkpoint,
             )
         elif resolved_position is StressPosition.CENTROID:
             records = _centroid_records(
-                self.mesh, self.lookup, self._ip_fields, self.component_names
+                self.mesh,
+                self.lookup,
+                self._ip_fields,
+                self.component_names,
+                checkpoint,
             )
         elif resolved_position is StressPosition.ELEMENT_NODAL:
             records = _element_nodal_records(
@@ -178,20 +211,26 @@ class StressRecovery:
                 self._ip_fields,
                 self.component_names,
                 self._U,
+                checkpoint,
             )
         else:
-            element_nodal_field = self.collect(StressPosition.ELEMENT_NODAL)
+            element_nodal_field = self.collect(
+                StressPosition.ELEMENT_NODAL,
+                checkpoint=checkpoint,
+            )
             records = _average_nodal_records(
                 self.mesh,
                 self.lookup,
                 element_nodal_field.records,
                 self.component_names,
+                checkpoint,
             )
         stress_field = StressField(
             resolved_position,
             self.component_names,
             tuple(records),
         )
+        _run_checkpoint(checkpoint)
         self._cache[resolved_position] = stress_field
         return stress_field
 
@@ -246,14 +285,21 @@ def collect_stress(
     position: StressPosition | str = StressPosition.INTEGRATION_POINT,
     element_type: str | None = None,
     gauss_order: int | None = None,
+    *,
+    checkpoint: Callable[[], None] | None = None,
 ) -> StressField:
     """Collect one continuum stress field from the canonical integration-point data."""
-    return StressRecovery(
+    recovery = StressRecovery(
         mesh,
         U,
         element_type=element_type,
         gauss_order=gauss_order,
-    ).collect(position)
+        checkpoint=checkpoint,
+    )
+    return recovery.collect(
+        position,
+        checkpoint=checkpoint,
+    )
 
 
 def _collect_element_integration_points(
@@ -263,9 +309,11 @@ def _collect_element_integration_points(
     selected: set[str],
     group: str,
     gauss_order: int | None,
+    checkpoint: Callable[[], None] | None,
 ) -> list[_ElementIntegrationPointField]:
     fields: list[_ElementIntegrationPointField] = []
     for elem in mesh.elements:
+        _run_checkpoint(checkpoint)
         type_key = dispatch.type_key_from_name(elem.type)
         if type_key not in selected:
             continue
@@ -283,6 +331,7 @@ def _collect_element_integration_points(
             natural, raw_components = kernel.integration_point_stress(
                 mesh, elem, U, lookup, order
             )
+        _run_checkpoint(checkpoint)
         raw_values = np.asarray(raw_components, dtype=float)
         if group == "plane":
             plane_type, nu = kernel._plane_data(elem)
@@ -327,13 +376,16 @@ def _integration_point_records(
     lookup: dict[int, Any],
     fields: Sequence[_ElementIntegrationPointField],
     component_names: tuple[str, ...],
+    checkpoint: Callable[[], None] | None,
 ) -> list[StressRecord]:
     records: list[StressRecord] = []
     for item in fields:
+        _run_checkpoint(checkpoint)
         for index, (natural, components) in enumerate(
             zip(item.natural_coordinates, item.components),
             start=1,
         ):
+            _run_checkpoint(checkpoint)
             records.append(
                 _make_record(
                     StressPosition.INTEGRATION_POINT,
@@ -357,15 +409,18 @@ def _centroid_records(
     lookup: dict[int, Any],
     fields: Sequence[_ElementIntegrationPointField],
     component_names: tuple[str, ...],
+    checkpoint: Callable[[], None] | None,
 ) -> list[StressRecord]:
     records: list[StressRecord] = []
     for item in fields:
+        _run_checkpoint(checkpoint)
         if item.gauss_order is None:
             components = item.kernel.interpolate_stress_to_centroid(item.components)
         else:
             components = item.kernel.interpolate_stress_to_centroid(
                 item.components, item.gauss_order
             )
+        _run_checkpoint(checkpoint)
         natural = _centroid_natural_coordinates(item.type_key)
         records.append(
             _make_record(
@@ -390,15 +445,18 @@ def _element_nodal_records(
     fields: Sequence[_ElementIntegrationPointField],
     component_names: tuple[str, ...],
     U: np.ndarray,
+    checkpoint: Callable[[], None] | None,
 ) -> list[StressRecord]:
     records: list[StressRecord] = []
     for item in fields:
+        _run_checkpoint(checkpoint)
         if item.gauss_order is None:
             node_values = item.kernel.extrapolate_stress_to_nodes(item.components)
         else:
             node_values = item.kernel.extrapolate_stress_to_nodes(
                 item.components, item.gauss_order
             )
+        _run_checkpoint(checkpoint)
         if node_values.shape != (len(item.elem.node_ids), len(component_names)):
             raise ValueError(
                 f"Element {item.elem.id} element-nodal stress shape {node_values.shape} "
@@ -408,6 +466,7 @@ def _element_nodal_records(
             zip(item.elem.node_ids, node_values),
             start=1,
         ):
+            _run_checkpoint(checkpoint)
             node = lookup[int(node_id)]
             records.append(
                 _make_record(
@@ -431,9 +490,11 @@ def _average_nodal_records(
     lookup: dict[int, Any],
     element_nodal: Sequence[StressRecord],
     component_names: tuple[str, ...],
+    checkpoint: Callable[[], None] | None,
 ) -> list[StressRecord]:
     grouped: dict[tuple[int, ResultRegionKey], list[StressRecord]] = {}
     for record in element_nodal:
+        _run_checkpoint(checkpoint)
         if record.node_id is None or record.region_key is None:
             continue
         grouped.setdefault((record.node_id, record.region_key), []).append(record)
@@ -449,6 +510,7 @@ def _average_nodal_records(
             result_region_sort_key(item[0][1]),
         ),
     ):
+        _run_checkpoint(checkpoint)
         weights = np.asarray(
             [record.weight for record in contributions],
             dtype=float,
@@ -458,6 +520,7 @@ def _average_nodal_records(
             axis=0,
             weights=weights,
         )
+        _run_checkpoint(checkpoint)
         records.append(
             _make_record(
                 StressPosition.NODAL,
@@ -723,6 +786,8 @@ def collect(
     U: Sequence[float],
     element_type: str | None = None,
     gauss_order: int | None = None,
+    *,
+    checkpoint: Callable[[], None] | None = None,
 ) -> NodalStressField:
     """Compatibility view of canonical element-nodal stress records."""
     stress_field = collect_stress(
@@ -731,6 +796,7 @@ def collect(
         position=StressPosition.ELEMENT_NODAL,
         element_type=element_type,
         gauss_order=gauss_order,
+        checkpoint=checkpoint,
     )
     contributions: dict[int, list[ElementNodalStressContribution]] = {
         int(node_id): [] for node_id in mesh.node_ids
@@ -738,6 +804,7 @@ def collect(
     is_plane = stress_field.component_names == CANONICAL_PLANE_COMPONENT_NAMES
     element_lookup = {int(elem.id): elem for elem in mesh.elements}
     for record in stress_field.records:
+        _run_checkpoint(checkpoint)
         if (
             record.node_id is None
             or record.elem_id is None

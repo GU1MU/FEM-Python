@@ -24,7 +24,7 @@ from fem.application.results.provider import build_result_provider
 from fem.core.mesh import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
 from fem.core.model import AnalysisStep, FEMModel, LineLoad
 from fem.core.result import ModelResult
-from fem.elements import get_element_capabilities
+from fem.elements import get_element_capabilities, get_element_kernel
 from fem.post.averaging import NodalAveragingPolicy
 from tests.helpers.mesh_builders import make_hex8_stiffness_mesh
 from tests.helpers.phase8_result_characterization import (
@@ -157,6 +157,64 @@ def _loaded_beam_result() -> ModelResult:
     return ModelResult(
         model,
         step,
+        np.zeros(mesh.num_dofs),
+        np.zeros(mesh.num_dofs),
+    )
+
+
+def _truss_chain_result() -> ModelResult:
+    mesh = Mesh3D(
+        nodes=[
+            Node3D(10, 0.0, 0.0, 0.0),
+            Node3D(20, 1.0, 0.0, 0.0),
+            Node3D(30, 2.0, 0.0, 0.0),
+        ],
+        elements=[
+            Element3D(
+                101,
+                [10, 20],
+                "Truss2",
+                {"E": 100.0, "area": 1.0},
+            ),
+            Element3D(
+                205,
+                [20, 30],
+                "Truss2",
+                {"E": 100.0, "area": 1.0},
+            ),
+        ],
+    )
+    return ModelResult(
+        FEMModel(mesh=mesh),
+        None,
+        np.zeros(mesh.num_dofs),
+        np.zeros(mesh.num_dofs),
+    )
+
+
+def _beam_chain_result() -> ModelResult:
+    properties = {
+        "E": 100.0,
+        "nu": 0.25,
+        "section_type": "rectangle",
+        "height": 2.0,
+        "width": 1.0,
+    }
+    mesh = Mesh3D(
+        nodes=[
+            Node3D(10, 0.0, 0.0, 0.0),
+            Node3D(20, 1.0, 0.0, 0.0),
+            Node3D(30, 2.0, 0.0, 0.0),
+        ],
+        elements=[
+            Element3D(101, [10, 20], "Beam2", properties),
+            Element3D(205, [20, 30], "Beam2", properties),
+        ],
+        dofs_per_node=6,
+    )
+    return ModelResult(
+        FEMModel(mesh=mesh),
+        None,
         np.zeros(mesh.num_dofs),
         np.zeros(mesh.num_dofs),
     )
@@ -582,9 +640,13 @@ def test_truss_one_recovery_splits_le_and_s_with_exact_columns(
     original = _materializers.truss.recover
     calls = []
 
-    def counted_recover(mesh, displacement):
+    def counted_recover(mesh, displacement, *, checkpoint=None):
         calls.append((mesh, displacement))
-        return original(mesh, displacement)
+        return original(
+            mesh,
+            displacement,
+            checkpoint=checkpoint,
+        )
 
     monkeypatch.setattr(_materializers.truss, "recover", counted_recover)
 
@@ -643,9 +705,9 @@ def test_beam_one_section_recovery_materializes_end_and_envelope(
     original = _materializers.beam.recover_section_end_stress
     calls = []
 
-    def counted_recover(result):
+    def counted_recover(result, *, checkpoint=None):
         calls.append(result)
-        return original(result)
+        return original(result, checkpoint=checkpoint)
 
     monkeypatch.setattr(
         _materializers.beam,
@@ -740,12 +802,16 @@ def test_post_exception_does_not_poison_retry(
     original = _materializers.truss.recover
     calls = 0
 
-    def fail_once(mesh, displacement):
+    def fail_once(mesh, displacement, *, checkpoint=None):
         nonlocal calls
         calls += 1
         if calls == 1:
             raise RuntimeError("injected recovery failure")
-        return original(mesh, displacement)
+        return original(
+            mesh,
+            displacement,
+            checkpoint=checkpoint,
+        )
 
     monkeypatch.setattr(_materializers.truss, "recover", fail_once)
 
@@ -760,18 +826,18 @@ class _Cancelled(RuntimeError):
     pass
 
 
-class _CheckpointProbe:
-    def __init__(self, cancel_at: int) -> None:
-        self.calls = 0
-        self.cancel_at = cancel_at
+class _CancellationSwitch:
+    def __init__(self) -> None:
+        self.cancelled = False
 
     def checkpoint(self) -> None:
-        self.calls += 1
-        if self.calls == self.cancel_at:
+        if self.cancelled:
             raise _Cancelled("cancelled")
 
 
-def test_cancellation_during_position_work_returns_no_patch_and_is_retryable() -> None:
+def test_continuum_element_loop_cancellation_returns_no_patch_and_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     provider = build_result_provider(
         _source(),
         make_continuum_nodal_semantics_result(),
@@ -781,16 +847,145 @@ def test_cancellation_during_position_work_returns_no_patch_and_is_retryable() -
         _key(provider, ResultVariable.S, FieldPosition.CENTROID),
     )
     before = provider.snapshot
-    probe = _CheckpointProbe(cancel_at=6)
+    cancellation = _CancellationSwitch()
+    kernel_type = type(get_element_kernel("Tri3"))
+    original = kernel_type.integration_point_stress
+    completed_elements: list[int] = []
+    arm_once = True
+
+    def counted(self, mesh, element, *args, **kwargs):
+        nonlocal arm_once
+        values = original(
+            self,
+            mesh,
+            element,
+            *args,
+            **kwargs,
+        )
+        completed_elements.append(int(element.id))
+        if arm_once:
+            cancellation.cancelled = True
+            arm_once = False
+        return values
+
+    monkeypatch.setattr(
+        kernel_type,
+        "integration_point_stress",
+        counted,
+    )
 
     with pytest.raises(_Cancelled, match="cancelled"):
-        provider.materialize(keys, cancellation=probe)
+        provider.materialize(keys, cancellation=cancellation)
 
+    assert completed_elements == [1]
     assert provider.snapshot is before
     assert all(
         provider.field_status(key).state is FieldState.LAZY for key in keys
     )
-    assert len(provider.materialize(keys).fields) == 2
+    cancellation.cancelled = False
+    patch = provider.materialize(keys, cancellation=cancellation)
+    assert len(patch.fields) == 2
+    assert completed_elements == [1, 1, 2, 3]
+
+
+def test_truss_element_loop_cancellation_returns_no_patch_and_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = build_result_provider(_source("truss"), _truss_chain_result())
+    key = _key(provider, ResultVariable.S, FieldPosition.CENTROID)
+    before = provider.snapshot
+    cancellation = _CancellationSwitch()
+    kernel_type = type(get_element_kernel("Truss2"))
+    original = kernel_type.element_stress
+    completed_elements: list[int] = []
+    arm_once = True
+
+    def counted(self, mesh, element, displacement, lookup):
+        nonlocal arm_once
+        values = original(
+            self,
+            mesh,
+            element,
+            displacement,
+            lookup,
+        )
+        completed_elements.append(int(element.id))
+        if arm_once:
+            cancellation.cancelled = True
+            arm_once = False
+        return values
+
+    monkeypatch.setattr(kernel_type, "element_stress", counted)
+
+    with pytest.raises(_Cancelled, match="cancelled"):
+        provider.materialize((key,), cancellation=cancellation)
+
+    assert completed_elements == [101]
+    assert provider.snapshot is before
+    assert provider.field_status(key).state is FieldState.LAZY
+    cancellation.cancelled = False
+    patch = provider.materialize((key,), cancellation=cancellation)
+    assert tuple(field.key for field in patch.fields) == (key,)
+    assert completed_elements == [101, 101, 205]
+
+
+def test_beam_element_loop_cancellation_returns_no_patch_and_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = build_result_provider(_source("beam"), _beam_chain_result())
+    keys = (
+        _key(provider, ResultVariable.S, FieldPosition.SECTION_END),
+        _key(
+            provider,
+            ResultVariable.S,
+            FieldPosition.SECTION_NODE_ENVELOPE,
+        ),
+    )
+    before = provider.snapshot
+    cancellation = _CancellationSwitch()
+    kernel_type = type(get_element_kernel("Beam2"))
+    original = kernel_type.local_end_actions
+    completed_elements: list[int] = []
+    arm_once = True
+
+    def counted(
+        self,
+        mesh,
+        element,
+        displacement,
+        local_load,
+        lookup,
+    ):
+        nonlocal arm_once
+        values = original(
+            self,
+            mesh,
+            element,
+            displacement,
+            local_load,
+            lookup,
+        )
+        completed_elements.append(int(element.id))
+        if arm_once:
+            cancellation.cancelled = True
+            arm_once = False
+        return values
+
+    monkeypatch.setattr(kernel_type, "local_end_actions", counted)
+
+    with pytest.raises(_Cancelled, match="cancelled"):
+        provider.materialize(keys, cancellation=cancellation)
+
+    assert completed_elements == [101]
+    assert provider.snapshot is before
+    assert all(
+        provider.field_status(key).state is FieldState.LAZY
+        for key in keys
+    )
+    cancellation.cancelled = False
+    patch = provider.materialize(keys, cancellation=cancellation)
+    assert {field.key for field in patch.fields} == set(keys)
+    assert completed_elements == [101, 101, 205]
 
 
 def test_callable_cancellation_convention_and_invalid_probe() -> None:

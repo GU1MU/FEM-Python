@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 import math
 from numbers import Real
@@ -54,6 +55,7 @@ def resolve_nodal_stress(
     *,
     node_ids: Sequence[int],
     element_ids: Sequence[int],
+    checkpoint: Callable[[], None] | None = None,
 ) -> ResolvedStressField:
     """Resolve complete element-nodal tensors per node and result region.
 
@@ -70,6 +72,8 @@ def resolve_nodal_stress(
     )
     from .stress.invariants import derive_stress_invariants
 
+    if checkpoint is not None and not callable(checkpoint):
+        raise TypeError("checkpoint must be callable or None")
     if type(element_nodal_field) is not StressField:
         raise TypeError("element_nodal_field must be StressField")
     if element_nodal_field.position is not StressPosition.ELEMENT_NODAL:
@@ -89,13 +93,22 @@ def resolve_nodal_stress(
     if type(policy) is not NodalAveragingPolicy:
         raise TypeError("policy must be NodalAveragingPolicy")
 
-    node_order = _ordered_id_map(node_ids, label="node_ids")
-    element_order = _ordered_id_map(element_ids, label="element_ids")
+    node_order = _ordered_id_map(
+        node_ids,
+        label="node_ids",
+        checkpoint=checkpoint,
+    )
+    element_order = _ordered_id_map(
+        element_ids,
+        label="element_ids",
+        checkpoint=checkpoint,
+    )
     grouped: dict[tuple[int, ResultRegionKey], list[StressRecord]] = {}
     values_by_region: dict[ResultRegionKey, list[tuple[float, ...]]] = {}
     source_locations: set[tuple[int, int, int]] = set()
 
     for record in element_nodal_field.records:
+        _run_checkpoint(checkpoint)
         if type(record) is not StressRecord:
             raise TypeError("element_nodal_field records must be StressRecord")
         if record.position is not StressPosition.ELEMENT_NODAL:
@@ -149,6 +162,7 @@ def resolve_nodal_stress(
     region_ranges: dict[ResultRegionKey, np.ndarray] = {}
     region_tolerances: dict[ResultRegionKey, np.ndarray] = {}
     for region_key, values in values_by_region.items():
+        _run_checkpoint(checkpoint)
         array = np.asarray(values, dtype=float)
         region_ranges[region_key] = np.ptp(array, axis=0)
         region_tolerances[region_key] = (
@@ -156,6 +170,7 @@ def resolve_nodal_stress(
             * np.maximum(1.0, np.max(np.abs(array), axis=0))
             * 32.0
         )
+        _run_checkpoint(checkpoint)
 
     records: list[StressRecord] = []
     grouped_by_node: dict[
@@ -163,16 +178,19 @@ def resolve_nodal_stress(
         list[tuple[ResultRegionKey, list[StressRecord]]],
     ] = {}
     for (node_id, region_key), contributions in grouped.items():
+        _run_checkpoint(checkpoint)
         grouped_by_node.setdefault(node_id, []).append(
             (region_key, contributions)
         )
 
     for node_id in node_order:
+        _run_checkpoint(checkpoint)
         node_regions = sorted(
             grouped_by_node.get(node_id, ()),
             key=lambda item: result_region_sort_key(item[0]),
         )
         for region_key, contributions in node_regions:
+            _run_checkpoint(checkpoint)
             ordered = sorted(
                 contributions,
                 key=lambda record: (
@@ -256,13 +274,20 @@ def resolve_nodal_stress(
     return ResolvedStressField(component_names, tuple(records))
 
 
+def _run_checkpoint(checkpoint: Callable[[], None] | None) -> None:
+    if checkpoint is not None:
+        checkpoint()
+
+
 def _ordered_id_map(
     values: Sequence[int],
     *,
     label: str,
+    checkpoint: Callable[[], None] | None,
 ) -> dict[int, int]:
     result: dict[int, int] = {}
     for index, value in enumerate(values):
+        _run_checkpoint(checkpoint)
         if isinstance(value, bool) or not isinstance(value, int):
             raise TypeError(f"{label} must contain integer ids")
         if value in result:
