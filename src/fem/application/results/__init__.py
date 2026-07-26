@@ -1,5 +1,21 @@
 """Typed, headless result identities for application consumers."""
 
+from .data import (
+    FieldAvailability,
+    FieldData,
+    FieldDescriptor,
+    FieldLocation,
+    FieldState,
+    ResultCatalog,
+    ResultDiagnostic,
+    ResultExportSnapshot,
+    ResultMaterializationPatch,
+    ResultMaterializationSnapshot,
+    ResultTopologyProjection,
+    advance_materialization,
+    build_initial_materialization,
+    prepare_result_export_snapshot,
+)
 from .fields import (
     FieldAssociation,
     FieldMaterializationKey,
@@ -15,13 +31,27 @@ from .fields import (
 
 __all__ = [
     "FieldAssociation",
+    "FieldAvailability",
+    "FieldData",
+    "FieldDescriptor",
+    "FieldLocation",
     "FieldMaterializationKey",
     "FieldPosition",
     "FieldRequest",
+    "FieldState",
     "PhysicalQuantity",
+    "ResultCatalog",
+    "ResultDiagnostic",
+    "ResultExportSnapshot",
     "ResultFieldId",
+    "ResultMaterializationPatch",
+    "ResultMaterializationSnapshot",
     "ResultSourceKey",
+    "ResultTopologyProjection",
     "ResultVariable",
     "ScalarFieldSelection",
+    "advance_materialization",
+    "build_initial_materialization",
     "field_materialization_sort_key",
+    "prepare_result_export_snapshot",
 ]
