@@ -10,6 +10,7 @@ from fem.application import (
     SessionAuthoringProjection,
     SessionSnapshot,
 )
+from fem.application.results import FieldState
 from fem.geometry import (
     BooleanGeometry,
     ExtrudedGeometry,
@@ -228,8 +229,35 @@ class GuiActionContext:
     display_backend_available: bool = True
     open_dialog_keys: frozenset[str] = frozenset()
     viewport_capture_active: bool = False
+    # Compatibility defaults preserve the legacy displayed-result projection
+    # until MainWindow supplies the derived Phase-8 facts explicitly.
+    result_source_current: bool = True
+    catalog_available: bool = True
+    selected_field_exists: bool = True
+    selected_field_state: FieldState | None = FieldState.READY
+    materialization_pending: bool = False
+    result_task_busy: bool = False
+    viewport_scene_available: bool = False
 
     def __post_init__(self) -> None:
+        for name in (
+            "busy",
+            "display_backend_available",
+            "viewport_capture_active",
+            "result_source_current",
+            "catalog_available",
+            "selected_field_exists",
+            "materialization_pending",
+            "result_task_busy",
+            "viewport_scene_available",
+        ):
+            if type(getattr(self, name)) is not bool:
+                raise TypeError(f"{name} must be a bool")
+        if (
+            self.selected_field_state is not None
+            and type(self.selected_field_state) is not FieldState
+        ):
+            raise TypeError("selected_field_state must be a FieldState or None")
         selection = tuple(self.geometry_selection)
         if any(type(item) is not LogicalEntityRef for item in selection):
             raise TypeError("geometry selection must contain LogicalEntityRef values")
@@ -268,6 +296,13 @@ def derive_action_availability(
     busy = context.busy
     has_model = snapshot.artifact is not None
     has_result = snapshot.displayed_result is not None
+    has_current_result = has_result and context.result_source_current
+    has_result_catalog = has_current_result and context.catalog_available
+    result_actions_idle = (
+        not busy
+        and not context.materialization_pending
+        and not context.result_task_busy
+    )
     recipe = snapshot.geometry_recipe
     has_native_geometry = (
         snapshot.source_kind == "native"
@@ -515,23 +550,38 @@ def derive_action_availability(
         GuiActionKey.DEFORMED,
         GuiActionKey.CONTOUR,
         GuiActionKey.OVERLAY,
-        GuiActionKey.FIELD,
         GuiActionKey.SCALE,
         GuiActionKey.CONTOUR_OPTIONS,
-        GuiActionKey.QUERY,
-        GuiActionKey.EXPORT,
     ):
         set_state(
             key,
-            has_result and (not busy or key not in {GuiActionKey.FIELD, GuiActionKey.QUERY}),
+            has_result,
             "当前没有可查看的分析结果",
         )
     set_state(
+        GuiActionKey.FIELD,
+        has_result_catalog and result_actions_idle,
+        "当前结果目录不可用，或结果任务正在运行",
+    )
+    set_state(
+        GuiActionKey.QUERY,
+        has_result_catalog and result_actions_idle,
+        "当前结果目录不可用，或结果任务正在运行",
+    )
+    set_state(
+        GuiActionKey.EXPORT,
+        has_result_catalog
+        and context.selected_field_exists
+        and context.selected_field_state is FieldState.READY
+        and result_actions_idle,
+        "请选择已就绪的当前结果字段，并等待结果任务完成",
+    )
+    set_state(
         GuiActionKey.SCREENSHOT,
-        has_result
+        context.viewport_scene_available
         and context.display_backend_available
         and not context.viewport_capture_active,
-        "当前没有可截图的分析结果，或视口不支持截图",
+        "当前视口没有可捕获场景，或截图后端不可用",
     )
 
     for raw_key in context.open_dialog_keys:
