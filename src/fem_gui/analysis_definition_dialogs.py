@@ -32,6 +32,7 @@ from fem.application import (
     RegionRef,
     require_region_kind,
 )
+from fem.core.immutable_json import thaw_json_mapping
 from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
@@ -735,7 +736,9 @@ class OutputRequestDialog(QDialog):
             (current.kind, current.target) if current is not None else None
         )
         self._preserved_metadata = (
-            dict(current.metadata) if current is not None else {}
+            thaw_json_mapping(current.metadata)
+            if current is not None
+            else {}
         )
         known_variables = set(self.variable_checks)
         self._preserved_variables = (

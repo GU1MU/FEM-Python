@@ -47,16 +47,20 @@ def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def test_programmatic_output_request_string_coercion_is_current_oracle() -> None:
-    request = OutputRequest(
-        23,
-        17,
-        ("u", 2, None, "u"),
-    )
-
-    assert request.kind == "23"
-    assert request.target == "17"
-    assert request.variables == ("u", "2", "None", "u")
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    (
+        ((23, "node", ("U",)), "kind"),
+        (("field", 17, ("U",)), "target"),
+        (("field", "node", ("u", 2, None, "u")), r"variables\[1\]"),
+    ),
+)
+def test_programmatic_output_request_rejects_string_coercion(
+    arguments: tuple[object, object, object],
+    message: str,
+) -> None:
+    with pytest.raises(TypeError, match=message):
+        OutputRequest(*arguments)
 
 
 def test_programmatic_variables_preserve_case_order_and_duplicates() -> None:
@@ -71,7 +75,7 @@ def test_programmatic_variables_preserve_case_order_and_duplicates() -> None:
     assert request.variables == ("rf", "U", "rf", "CustomVariable")
 
 
-def test_programmatic_metadata_is_only_shallowly_detached() -> None:
+def test_programmatic_metadata_is_deeply_owned_and_immutable() -> None:
     nested = {"thresholds": [0, 75, 100]}
     source = {"averaging": nested}
 
@@ -80,14 +84,17 @@ def test_programmatic_metadata_is_only_shallowly_detached() -> None:
     nested["thresholds"][1] = 80
 
     assert request.metadata == {
-        "averaging": {"thresholds": [0, 80, 100]},
+        "averaging": {"thresholds": (0, 75, 100)},
     }
     assert request.metadata is not source
-    assert request.metadata["averaging"] is nested
+    assert request.metadata["averaging"] is not nested
 
-    # The frozen dataclass currently exposes a mutable metadata dict.
-    request.metadata["public_mutation"] = {"kept": True}
-    assert request.metadata["public_mutation"] == {"kept": True}
+    with pytest.raises(TypeError):
+        request.metadata["public_mutation"] = {"kept": True}
+    with pytest.raises(TypeError):
+        request.metadata["averaging"]["late"] = True
+    with pytest.raises(TypeError):
+        request.metadata["averaging"]["thresholds"][0] = 1
 
 
 def test_current_capability_publishes_create_and_existing_operations() -> None:

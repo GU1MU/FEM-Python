@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any, Sequence
+
+from .immutable_json import freeze_json_mapping
 
 
 @dataclass(frozen=True)
@@ -200,19 +203,149 @@ class GravityLoad:
         object.__setattr__(self, "acceleration", tuple(self.acceleration))
 
 
-@dataclass(frozen=True)
-class OutputRequest:
-    """Output request attached to an analysis step."""
-    kind: str
-    target: str
-    variables: Sequence[str] = ()
-    metadata: Mapping[str, Any] = field(default_factory=dict)
+@dataclass(frozen=True, slots=True)
+class OutputSourceEvidence:
+    """Immutable structured source context for an imported output request."""
+
+    source_kind: str
+    parent_parameters: tuple[tuple[str, str], ...] = ()
+    parent_flags: tuple[str, ...] = ()
+    child_parameters: tuple[tuple[str, str], ...] = ()
+    child_flags: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "kind", str(self.kind).lower())
-        object.__setattr__(self, "target", str(self.target).lower())
-        object.__setattr__(self, "variables", tuple(str(value) for value in self.variables))
-        object.__setattr__(self, "metadata", dict(self.metadata))
+        source_kind = _exact_nonblank_string(
+            self.source_kind,
+            name="source_kind",
+        )
+        object.__setattr__(self, "source_kind", source_kind.lower())
+        object.__setattr__(
+            self,
+            "parent_parameters",
+            _freeze_output_evidence_parameters(
+                self.parent_parameters,
+                name="parent_parameters",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "parent_flags",
+            _freeze_output_evidence_flags(
+                self.parent_flags,
+                name="parent_flags",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "child_parameters",
+            _freeze_output_evidence_parameters(
+                self.child_parameters,
+                name="child_parameters",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "child_flags",
+            _freeze_output_evidence_flags(
+                self.child_flags,
+                name="child_flags",
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class OutputRequest:
+    """Output request attached to an analysis step."""
+
+    kind: str
+    target: str
+    variables: tuple[str, ...] = ()
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+    source_evidence: OutputSourceEvidence | None = None
+
+    def __post_init__(self) -> None:
+        kind = _exact_nonblank_string(self.kind, name="kind")
+        target = _exact_nonblank_string(self.target, name="target")
+        variables = _freeze_output_variables(self.variables)
+        metadata = freeze_json_mapping(self.metadata, name="metadata")
+        evidence = self.source_evidence
+        if evidence is not None and type(evidence) is not OutputSourceEvidence:
+            raise TypeError(
+                "source_evidence must be exactly OutputSourceEvidence or None"
+            )
+
+        object.__setattr__(self, "kind", kind.lower())
+        object.__setattr__(self, "target", target.lower())
+        object.__setattr__(self, "variables", variables)
+        object.__setattr__(self, "metadata", metadata)
+
+
+def _exact_nonblank_string(value: Any, *, name: str) -> str:
+    if type(value) is not str:
+        raise TypeError(f"{name} must be an exact string")
+    if not value.strip():
+        raise ValueError(f"{name} must not be blank")
+    return value
+
+
+def _freeze_output_variables(value: Any) -> tuple[str, ...]:
+    if isinstance(value, (str, bytes, bytearray, Mapping)):
+        raise TypeError("variables must be an iterable of exact strings")
+    try:
+        variables = tuple(value)
+    except TypeError as error:
+        raise TypeError(
+            "variables must be an iterable of exact strings"
+        ) from error
+    for index, item in enumerate(variables):
+        if type(item) is not str:
+            raise TypeError(f"variables[{index}] must be an exact string")
+    return variables
+
+
+def _freeze_output_evidence_parameters(
+    value: Any,
+    *,
+    name: str,
+) -> tuple[tuple[str, str], ...]:
+    if isinstance(value, (str, bytes, bytearray, Mapping)):
+        raise TypeError(f"{name} must be an iterable of string pairs")
+    try:
+        parameters = tuple(value)
+    except TypeError as error:
+        raise TypeError(f"{name} must be an iterable of string pairs") from error
+
+    result: list[tuple[str, str]] = []
+    for index, item in enumerate(parameters):
+        if isinstance(item, (str, bytes, bytearray, Mapping)):
+            raise TypeError(f"{name}[{index}] must be a pair of exact strings")
+        try:
+            pair = tuple(item)
+        except TypeError as error:
+            raise TypeError(
+                f"{name}[{index}] must be a pair of exact strings"
+            ) from error
+        if len(pair) != 2 or any(type(part) is not str for part in pair):
+            raise TypeError(f"{name}[{index}] must be a pair of exact strings")
+        result.append((pair[0], pair[1]))
+    return tuple(result)
+
+
+def _freeze_output_evidence_flags(
+    value: Any,
+    *,
+    name: str,
+) -> tuple[str, ...]:
+    if isinstance(value, (str, bytes, bytearray, Mapping)):
+        raise TypeError(f"{name} must be an iterable of exact strings")
+    try:
+        flags = tuple(value)
+    except TypeError as error:
+        raise TypeError(f"{name} must be an iterable of exact strings") from error
+    for index, flag in enumerate(flags):
+        if type(flag) is not str:
+            raise TypeError(f"{name}[{index}] must be an exact string")
+    return flags
 
 
 @dataclass

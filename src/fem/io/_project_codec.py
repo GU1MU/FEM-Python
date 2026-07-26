@@ -16,6 +16,7 @@ from fem.application.definitions import (
     RegionAssignment,
     SectionDefinition,
 )
+from fem.core.immutable_json import thaw_json_mapping
 from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
@@ -1551,6 +1552,7 @@ def decode_output_field(
             f"{path}.metadata",
             policy.decode_error,
         ),
+        None,
     )
 
 
@@ -1793,10 +1795,23 @@ def encode_output_field(
     _field_exact_dataclass(
         output,
         OutputRequest,
-        {"kind", "target", "variables", "metadata"},
+        {"kind", "target", "variables", "metadata", "source_evidence"},
         path,
         policy,
     )
+    if output.source_evidence is not None:
+        raise policy.encode_error(
+            f"{path}.source_evidence 不能由 {policy.version_label} 无损表示"
+        )
+    try:
+        metadata = thaw_json_mapping(
+            output.metadata,
+            name=f"{path}.metadata",
+        )
+    except (TypeError, ValueError) as error:
+        raise policy.encode_error(
+            f"{path}.metadata 不是有效的 immutable JSON mapping：{error}"
+        ) from error
     return {
         "kind": _field_string(
             output.kind,
@@ -1823,7 +1838,7 @@ def encode_output_field(
             )
         ],
         "metadata": _field_json_object(
-            output.metadata,
+            metadata,
             f"{path}.metadata",
             policy.encode_error,
         ),

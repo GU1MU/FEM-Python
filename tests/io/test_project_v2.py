@@ -23,6 +23,7 @@ from fem.core.model import (
     MaterialDefinition,
     NodalLoad,
     OutputRequest,
+    OutputSourceEvidence,
     SurfaceLoad,
 )
 from fem.elements import BeamOrientation
@@ -273,6 +274,7 @@ def test_shared_current_step_field_codecs_round_trip_every_load_shape():
     )
 
     assert reopened == step
+    assert reopened.outputs[0].source_evidence is None
     assert (
         encode_step_field(
             reopened,
@@ -1518,6 +1520,39 @@ def test_v2_atomic_writer_preserves_old_target_on_encode_failure(tmp_path):
 
     with pytest.raises(ProjectV2EncodeError):
         save_project_v2(target, replace(_snapshot(), feature_history=()))
+
+    assert target.read_text(encoding="utf-8") == "old"
+    assert list(tmp_path.glob(f".{target.name}.*.tmp")) == []
+
+
+def test_v2_writer_rejects_source_evidence_without_touching_target(tmp_path):
+    snapshot = _snapshot()
+    step = snapshot.analysis_definitions[0]
+    output = OutputRequest(
+        "field",
+        "node",
+        ("u", "u"),
+        {"frequency": "1"},
+        OutputSourceEvidence(
+            "abaqus",
+            (("frequency", "1"),),
+            ("field",),
+            (("nset", "Tip"),),
+            ("futureflag",),
+        ),
+    )
+    guarded = replace(
+        snapshot,
+        analysis_definitions=(replace(step, outputs=(output,)),),
+    )
+    target = tmp_path / "project.femproj"
+    target.write_text("old", encoding="utf-8")
+
+    with pytest.raises(
+        ProjectV2EncodeError,
+        match=r"source_evidence.*v2",
+    ):
+        save_project_v2(target, guarded)
 
     assert target.read_text(encoding="utf-8") == "old"
     assert list(tmp_path.glob(f".{target.name}.*.tmp")) == []
