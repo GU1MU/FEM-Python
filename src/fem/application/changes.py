@@ -54,7 +54,8 @@ class SessionDelta:
 
     Stale asynchronous callbacks also return a delta.  Such a delta has
     ``accepted=False``, carries the unchanged session revision, and has empty
-    change/invalidation sets.
+    change/invalidation sets.  Revision-neutral task receipts use the same
+    empty sets with ``accepted=True`` and likewise preserve the revision.
     """
 
     session_revision: int

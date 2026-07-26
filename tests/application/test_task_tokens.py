@@ -326,16 +326,21 @@ def test_result_projection_acceptance_is_single_use() -> None:
         make_solve_result_bundle(solve, marker=1.0),
     )
     projection = session.prepare_result_projection(solve.run_id)
+    before_revision = session.session_revision
 
     accepted = session.accept_result_projection(projection.token)
     repeated = session.accept_result_projection(projection.token)
 
     assert accepted.accepted
+    assert accepted.changed == frozenset()
+    assert accepted.invalidated == frozenset()
+    assert accepted.session_revision == before_revision
+    assert session.session_revision == before_revision
     assert not repeated.accepted
     assert repeated.token_status is TokenStatus.ALREADY_COMPLETED
 
 
-def test_result_projection_is_stale_after_a_newer_session_transition() -> None:
+def test_result_projection_survives_display_and_save_transitions() -> None:
     session = _session()
     solve = session.prepare_solve("Step-A", "Job-1")
     session.begin_run(solve.token)
@@ -346,9 +351,12 @@ def test_result_projection_is_stale_after_a_newer_session_transition() -> None:
     projection = session.prepare_result_projection(solve.run_id)
 
     session.select_result(solve.run_id)
+    save = session.prepare_project_save()
+    session.accept_project_saved(save.token, Path("saved.fem.json"))
     before_revision = session.session_revision
     delta = session.accept_result_projection(projection.token)
 
-    assert not delta.accepted
-    assert delta.token_status is TokenStatus.STALE_REVISION
+    assert delta.accepted
+    assert delta.changed == frozenset()
+    assert delta.invalidated == frozenset()
     assert session.session_revision == before_revision

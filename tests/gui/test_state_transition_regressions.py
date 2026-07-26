@@ -494,7 +494,7 @@ def test_stale_solve_callback_cannot_restore_invalidated_result() -> None:
     window.close()
 
 
-def test_stale_result_projection_callback_cannot_replace_current_cache() -> None:
+def test_revision_neutral_projection_receipt_preserves_current_cache() -> None:
     window = _new_window()
     _install_imported(window)
     run_id = _succeed_run(window)
@@ -502,11 +502,34 @@ def test_stale_result_projection_callback_cannot_replace_current_cache() -> None
     assert window._apply_session_delta(window.session.select_result(run_id))
     before = _projection_signature(window)
 
-    rejected = window.session.accept_result_projection(stale.token)
-    assert not rejected.accepted
-    assert not window._apply_session_delta(rejected)
+    receipt = window.session.accept_result_projection(stale.token)
+    assert receipt.accepted
+    assert window._apply_result_projection_receipt(receipt)
     assert _projection_signature(window) == before
     assert window.result_data.run_id == run_id
+    window.close()
+
+
+def test_hidden_run_projection_receipt_cannot_replace_current_cache() -> None:
+    window = _new_window()
+    _install_imported(window)
+    run_a = _succeed_run(window, run_name="Job-A")
+    projection = window.session.prepare_result_projection(run_a)
+    data_a = window.result_data
+    assert data_a is not None and data_a.run_id == run_a
+    run_b = _succeed_run(window, run_name="Job-B")
+    before = _projection_signature(window)
+
+    receipt = window.session.accept_result_projection(projection.token)
+
+    assert receipt.accepted
+    assert window._apply_result_projection_receipt(
+        receipt,
+        result_projection=data_a,
+    )
+    assert _projection_signature(window) == before
+    assert window.result_data is not None
+    assert window.result_data.run_id == run_b
     window.close()
 
 

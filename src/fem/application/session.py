@@ -1643,10 +1643,7 @@ class ModelSession:
             )
         token = self._issue_token(
             "result_projection",
-            (
-                ("model_revision", self._model_revision),
-                ("session_revision", self._session_revision),
-            ),
+            (("model_revision", self._model_revision),),
             artifact_id=record.provenance.artifact_id,
             step_name=record.provenance.step_name,
             run_id=record.provenance.run_id,
@@ -1665,10 +1662,9 @@ class ModelSession:
         if status is not TokenStatus.CURRENT:
             return self._rejected(status, "stale result projection")
         self._complete_token(token)
-        return self._emit(
-            {ChangeKind.SESSION},
-            frozenset(),
-            "result projection accepted",
+        return SessionDelta(
+            session_revision=self._session_revision,
+            reason="result projection accepted",
         )
 
     def accept_task_failed(

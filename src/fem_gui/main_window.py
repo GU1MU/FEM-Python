@@ -849,6 +849,45 @@ class FEMMainWindow(QMainWindow):
         self._applied_session_revision = revision
         return True
 
+    def _apply_result_projection_receipt(
+        self,
+        receipt: SessionDelta,
+        *,
+        result_projection: ResultData | None = None,
+    ) -> bool:
+        """Consume a revision-neutral projection receipt without rebuilding."""
+
+        if (
+            type(receipt) is not SessionDelta
+            or not receipt.accepted
+            or receipt.changed
+            or receipt.invalidated
+        ):
+            return False
+        if result_projection is None:
+            return True
+        current_result = self.session.current_result()
+        if (
+            current_result is None
+            or current_result.provenance.run_id
+            != result_projection.run_id
+        ):
+            return True
+        artifact = self.document.artifact
+        if (
+            artifact is None
+            or self.geometry is None
+            or result_projection.artifact_id != artifact.artifact_id
+            or self.geometry.artifact_id != artifact.artifact_id
+        ):
+            return False
+        self._install_result_projection(result_projection)
+        if self.result_data is not result_projection:
+            return False
+        self._refresh_result_controls()
+        self._update_action_states()
+        return True
+
     def _session_source_label(self) -> str:
         path = self.document.source_path or self.document.project_path
         if path is not None:
@@ -3837,7 +3876,7 @@ class FEMMainWindow(QMainWindow):
                 artifact_id=projection.token.artifact_id,
                 run_id=projection.run_id,
             )
-            if not self._apply_session_delta(
+            if not self._apply_result_projection_receipt(
                 self.session.accept_result_projection(
                     projection.token
                 )
@@ -4401,7 +4440,7 @@ class FEMMainWindow(QMainWindow):
 
         def succeeded(value: object) -> None:
             delta, updated = value
-            if not self._apply_session_delta(
+            if not self._apply_result_projection_receipt(
                 delta,
                 result_projection=updated,
             ):
