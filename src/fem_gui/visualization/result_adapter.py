@@ -691,12 +691,10 @@ def _line_stress(
         }
     elif type_keys == ("beam2",):
         nodal_values = {
-            row.node_id: {
-                "S11Max": row.maximum,
-                "S11Min": row.minimum,
-                "S11AbsMax": row.absolute_maximum,
-            }
-            for row in beam.nodal_envelope(result)
+            row.node_id: row.values()
+            for row in beam.section_node_envelope(
+                beam.recover_section_end_stress(result)
+            ).rows
         }
     return element_values, nodal_values
 

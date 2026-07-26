@@ -127,6 +127,71 @@ def test_beam_rotations_are_separate_from_translations():
     assert field_family("NODAL:S11AbsMax") == "S"
 
 
+def test_beam_stress_consumes_typed_envelope_without_isolated_zero(
+    monkeypatch,
+):
+    mesh = Mesh3D(
+        [
+            Node3D(10, 0.0, 0.0, 0.0),
+            Node3D(20, 1.0, 0.0, 0.0),
+            Node3D(30, 2.0, 0.0, 0.0),
+        ],
+        [Element3D(
+            40,
+            [10, 20],
+            "Beam2",
+            {
+                "E": 200.0,
+                "nu": 0.3,
+                "section_type": "rectangle",
+                "height": 0.1,
+                "width": 0.2,
+            },
+        )],
+        dofs_per_node=6,
+    )
+    model = FEMModel(mesh)
+    result = ModelResult(
+        model,
+        None,
+        np.zeros(mesh.num_dofs),
+        np.zeros(mesh.num_dofs),
+    )
+    original_recover = (
+        result_adapter_module.beam.recover_section_end_stress
+    )
+    calls = 0
+
+    def counted_recover(result_):
+        nonlocal calls
+        calls += 1
+        return original_recover(result_)
+
+    def reject_legacy(_result):
+        raise AssertionError("GUI Beam path must not call the legacy envelope")
+
+    monkeypatch.setattr(
+        result_adapter_module.beam,
+        "recover_section_end_stress",
+        counted_recover,
+    )
+    monkeypatch.setattr(
+        result_adapter_module.beam,
+        "nodal_envelope",
+        reject_legacy,
+    )
+
+    data = build_result_data(result, build_model_geometry(model))
+
+    assert calls == 1
+    assert set(data.nodal_stress) == {10, 20}
+    assert 30 not in data.nodal_stress
+    assert data.fields["NODAL:S11AbsMax"].values[:2] == pytest.approx(
+        [0.0, 0.0]
+    )
+    assert np.isnan(data.fields["NODAL:S11AbsMax"].values[2])
+
+
 def test_truss_stress_is_adapted_from_one_canonical_recovery(monkeypatch):
     mesh = Mesh3D(
         [Node3D(10, 0.0, 0.0, 0.0), Node3D(20, 2.0, 0.0, 0.0)],
