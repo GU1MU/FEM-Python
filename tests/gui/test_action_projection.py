@@ -126,14 +126,23 @@ def test_geometry_selection_rejects_noncanonical_values() -> None:
         GuiActionContext(geometry_selection=("edge:left",))
 
 
-def test_result_action_descriptors_keep_legacy_keys_and_handlers() -> None:
+def test_result_action_descriptors_use_canonical_export_keys_and_handlers() -> None:
     descriptors = {item.key: item for item in ACTION_DESCRIPTORS}
 
     assert descriptors[GuiActionKey.FIELD].handler == ("show_result_display_dialog")
     assert descriptors[GuiActionKey.QUERY].handler == "query_result"
-    assert descriptors[GuiActionKey.EXPORT].handler == "export_csv"
+    assert descriptors[GuiActionKey.EXPORT_CSV].handler == "export_csv"
+    assert descriptors[GuiActionKey.EXPORT_VTK].handler == "export_vtk"
     assert descriptors[GuiActionKey.SCREENSHOT].handler == ("export_viewport_image")
-    assert "export_vtk" not in {key.value for key in GuiActionKey}
+    assert tuple(
+        key.value
+        for key in (
+            GuiActionKey.EXPORT_CSV,
+            GuiActionKey.EXPORT_VTK,
+            GuiActionKey.SCREENSHOT,
+        )
+    ) == ("export_csv", "export_vtk", "screenshot")
+    assert "export" not in {key.value for key in GuiActionKey}
 
 
 @pytest.mark.parametrize(
@@ -176,8 +185,14 @@ def test_result_action_readiness_is_a_typed_fact_truth_table(
 
     assert states[GuiActionKey.FIELD].enabled is field_enabled
     assert states[GuiActionKey.QUERY].enabled is query_enabled
-    assert states[GuiActionKey.EXPORT].enabled is export_enabled
-    for key in (GuiActionKey.FIELD, GuiActionKey.QUERY, GuiActionKey.EXPORT):
+    assert states[GuiActionKey.EXPORT_CSV].enabled is export_enabled
+    assert states[GuiActionKey.EXPORT_VTK].enabled is export_enabled
+    for key in (
+        GuiActionKey.FIELD,
+        GuiActionKey.QUERY,
+        GuiActionKey.EXPORT_CSV,
+        GuiActionKey.EXPORT_VTK,
+    ):
         if not states[key].enabled:
             assert states[key].reason
 
@@ -193,7 +208,8 @@ def test_query_can_submit_a_lazy_field_for_materialization() -> None:
 
     assert states[GuiActionKey.FIELD].enabled
     assert states[GuiActionKey.QUERY].enabled
-    assert not states[GuiActionKey.EXPORT].enabled
+    assert not states[GuiActionKey.EXPORT_CSV].enabled
+    assert not states[GuiActionKey.EXPORT_VTK].enabled
 
 
 @pytest.mark.parametrize(

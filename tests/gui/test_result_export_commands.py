@@ -98,13 +98,6 @@ def test_public_result_exports_use_canonical_snapshot_bound_writers(
     window = _solved_window()
     csv_spec, vtk_spec = _specs(window)
     revision = window.document.session_revision
-    monkeypatch.setattr(
-        main_window_module,
-        "export_field_csv",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("legacy GUI CSV export must not be called")
-        ),
-    )
 
     csv_receipt = window.export_result_csv(
         tmp_path / "result.csv",

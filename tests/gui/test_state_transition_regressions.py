@@ -50,7 +50,8 @@ _RESULT_ACTIONS = (
     "scale",
     "contour_options",
     "query",
-    "export",
+    "export_csv",
+    "export_vtk",
     "screenshot",
 )
 

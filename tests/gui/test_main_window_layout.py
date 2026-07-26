@@ -76,6 +76,36 @@ def test_menu_ribbon_and_viewport_toolbar_reuse_actions():
     selected_info = window.actions["selected_info"]
     assert selected_info in window.viewport_panel.toolbar.actions()
     assert selected_info in ribbon_actions
+    result_menu = window.findChild(QMenu, "menuResult")
+    assert result_menu is not None
+    tab_names = [
+        window.ribbon.tab_bar.tabText(index)
+        for index in range(window.ribbon.tab_bar.count())
+    ]
+    project_actions = {
+        button.defaultAction()
+        for button in window.ribbon.stack.widget(
+            tab_names.index("项目")
+        ).findChildren(QToolButton)
+        if button.defaultAction() is not None
+    }
+    result_actions = {
+        button.defaultAction()
+        for button in window.ribbon.stack.widget(
+            tab_names.index("结果")
+        ).findChildren(QToolButton)
+        if button.defaultAction() is not None
+    }
+    for name in ("export_csv", "export_vtk", "screenshot"):
+        export_action = window.actions[name]
+        assert export_action in result_menu.actions()
+        assert export_action in ribbon_actions
+    assert window.actions["export_csv"] in project_actions
+    assert window.actions["export_vtk"] in project_actions
+    assert window.actions["screenshot"] not in project_actions
+    assert window.actions["export_csv"] in result_actions
+    assert window.actions["screenshot"] in result_actions
+    assert window.actions["export_vtk"] not in result_actions
     window.close()
 
 

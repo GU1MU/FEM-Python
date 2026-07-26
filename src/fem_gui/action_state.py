@@ -89,7 +89,8 @@ class GuiActionKey(str, Enum):
     SCALE = "scale"
     CONTOUR_OPTIONS = "contour_options"
     QUERY = "query"
-    EXPORT = "export"
+    EXPORT_CSV = "export_csv"
+    EXPORT_VTK = "export_vtk"
     SCREENSHOT = "screenshot"
     ABOUT = "about"
     SELECT_NODE = "select_node"
@@ -206,7 +207,8 @@ ACTION_DESCRIPTORS: tuple[GuiActionDescriptor, ...] = (
     _d(GuiActionKey.SCALE, "变形比例", "show_result_display_dialog", "scale"),
     _d(GuiActionKey.CONTOUR_OPTIONS, "云图设置", "show_contour_dialog", "settings"),
     _d(GuiActionKey.QUERY, "查询结果", "query_result", "query"),
-    _d(GuiActionKey.EXPORT, "导出 CSV", "export_csv", "export"),
+    _d(GuiActionKey.EXPORT_CSV, "导出 CSV", "export_csv", "export"),
+    _d(GuiActionKey.EXPORT_VTK, "导出 VTK", "export_vtk", "export"),
     _d(GuiActionKey.SCREENSHOT, "保存视口图片", "export_viewport_image", "image"),
     _d(GuiActionKey.ABOUT, "关于", "show_about"),
     _d(GuiActionKey.SELECT_NODE, "选择节点", "_set_selection_mode", "select_node", checkable=True, checked=True, group="selection", argument="node"),
@@ -569,14 +571,18 @@ def derive_action_availability(
         has_result_catalog and result_actions_idle,
         "当前结果目录不可用，或结果任务正在运行",
     )
-    set_state(
-        GuiActionKey.EXPORT,
+    result_export_enabled = (
         has_result_catalog
         and context.selected_field_exists
         and context.selected_field_state is FieldState.READY
-        and result_actions_idle,
-        "请选择已就绪的当前结果字段，并等待结果任务完成",
+        and result_actions_idle
     )
+    for key in (GuiActionKey.EXPORT_CSV, GuiActionKey.EXPORT_VTK):
+        set_state(
+            key,
+            result_export_enabled,
+            "请选择已就绪的当前结果字段，并等待结果任务完成",
+        )
     set_state(
         GuiActionKey.SCREENSHOT,
         context.viewport_scene_available

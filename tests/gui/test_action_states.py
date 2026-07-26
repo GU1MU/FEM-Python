@@ -100,7 +100,19 @@ def test_actions_follow_document_and_result_context(gui_inp_path):
         "mesh_statistics", "mesh_quality",
     ):
         assert not window.actions[name].isEnabled()
-    for name in ("reload", "close", "submit_job", "fit", "select_node", "model_info", "deformed", "overlay", "query", "export"):
+    for name in (
+        "reload",
+        "close",
+        "submit_job",
+        "fit",
+        "select_node",
+        "model_info",
+        "deformed",
+        "overlay",
+        "query",
+        "export_csv",
+        "export_vtk",
+    ):
         assert not window.actions[name].isEnabled()
     assert not window.result_variable_combo.isEnabled()
 
@@ -116,7 +128,7 @@ def test_actions_follow_document_and_result_context(gui_inp_path):
     assert window.actions["mesh_statistics"].isEnabled()
     assert window.actions["mesh_quality"].isEnabled()
     assert not window.actions["mesh_clear"].isEnabled()
-    for name in ("deformed", "contour", "query", "export"):
+    for name in ("deformed", "contour", "query", "export_csv", "export_vtk"):
         assert not window.actions[name].isEnabled()
 
     task = window.session.prepare_solve("Static-1", "Job-1")
@@ -129,7 +141,15 @@ def test_actions_follow_document_and_result_context(gui_inp_path):
         (build_solve_result_bundle(task, result), {}),
     )
     window._update_action_states()
-    for name in ("undeformed", "deformed", "contour", "field", "query", "export"):
+    for name in (
+        "undeformed",
+        "deformed",
+        "contour",
+        "field",
+        "query",
+        "export_csv",
+        "export_vtk",
+    ):
         assert window.actions[name].isEnabled()
     assert window.result_variable_combo.isEnabled()
     assert window.result_component_combo.isEnabled()
@@ -362,7 +382,9 @@ def test_short_action_labels_fit_the_ribbon_vocabulary():
     assert window.actions["open_project"].text() == "打开项目"
     assert window.actions["save_project"].text() == "保存项目"
     assert window.actions["open"].text() == "打开 INP"
-    assert window.actions["export"].text() == "导出 CSV"
+    assert window.actions["export_csv"].text() == "导出 CSV"
+    assert window.actions["export_vtk"].text() == "导出 VTK"
+    assert "export" not in window.actions
     window.close()
 
 

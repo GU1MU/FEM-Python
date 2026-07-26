@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from time import monotonic
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -10,6 +9,8 @@ import numpy as np
 from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication, QFileDialog
 
+from fem.io.result_csv import read_result_csv
+from fem.io.result_vtk import read_result_vtk
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.postprocessing_dialogs import ResultDisplaySettings
 from fem_gui.task_controller import (
@@ -18,10 +19,6 @@ from fem_gui.task_controller import (
     TaskCompletion,
 )
 from fem_gui.visualization.symbols import SymbolSettings
-
-
-ROOT = Path(__file__).resolve().parents[2]
-
 
 def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
@@ -115,7 +112,11 @@ def test_reload_clears_selection_and_old_result(gui_inp_path):
     window.close()
 
 
-def test_gui_exports_the_current_result_field_as_csv(monkeypatch, gui_inp_path):
+def test_gui_exports_the_current_result_field_as_csv_and_vtk(
+    monkeypatch,
+    gui_inp_path,
+    tmp_path,
+):
     _application()
     window = FEMMainWindow()
     window._load_path(gui_inp_path)
@@ -123,20 +124,41 @@ def test_gui_exports_the_current_result_field_as_csv(monkeypatch, gui_inp_path):
     assert window.check_current_model(show_success=False)
     window._submit_job("Job-1", "Static-1")
     _wait_for_task(window)
-    target = ROOT / "gui_result_test.csv"
+    window._apply_result_display_settings(
+        ResultDisplaySettings(
+            shape_mode="deformed",
+            contour_enabled=True,
+            field_key="U",
+            scale_mode="custom",
+            scale_value=2.5,
+            overlay_undeformed=False,
+            show_edges=False,
+        )
+    )
+    csv_target = tmp_path / "gui_result_test.csv"
+    vtk_target = tmp_path / "gui_result_test.vtk"
+    targets = iter(
+        (
+            (str(csv_target), "CSV 文件 (*.csv)"),
+            (str(vtk_target), "VTK 文件 (*.vtk)"),
+        )
+    )
     monkeypatch.setattr(
         QFileDialog,
         "getSaveFileName",
-        staticmethod(lambda *_args, **_kwargs: (str(target), "CSV 文件 (*.csv)")),
+        staticmethod(lambda *_args, **_kwargs: next(targets)),
     )
 
-    try:
-        window.export_csv()
-        _wait_for_task(window)
-        assert target.is_file()
-        content = target.read_text(encoding="utf-8-sig")
-        assert content.startswith("field,position,association,node_id,elem_id")
-        assert "U,nodal,point" in content
-    finally:
-        target.unlink(missing_ok=True)
-        window.close()
+    assert window.actions["export_csv"].isEnabled()
+    assert window.actions["export_vtk"].isEnabled()
+    window.actions["export_csv"].trigger()
+    _wait_for_task(window)
+    csv_readback = read_result_csv(csv_target)
+    assert csv_readback.selection == window.result_data.field_selections["U"]
+
+    window.actions["export_vtk"].trigger()
+    _wait_for_task(window)
+    vtk_readback = read_result_vtk(vtk_target)
+    assert vtk_readback.selection == window.result_data.field_selections["U"]
+    assert vtk_readback.deformation_scale == 2.5
+    window.close()

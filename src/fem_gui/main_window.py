@@ -56,6 +56,8 @@ from fem.application import (
 from fem.application.preprocessing import generate_fem_model
 from fem.application.results import (
     ResultExportSnapshot,
+    ResultSourceKey,
+    ScalarFieldSelection,
     build_solve_result_bundle,
     prepare_result_export_snapshot,
     restore_result_provider,
@@ -164,7 +166,6 @@ from .viewport_background import (
 )
 from .viewport_background_dialog import ViewportBackgroundDialog
 from .visualization.model_adapter import ModelGeometry, build_model_geometry
-from .visualization.csv_export import export_field_csv
 from .visualization.result_adapter import (
     ResultData,
     automatic_deformation_scale,
@@ -1208,7 +1209,7 @@ class FEMMainWindow(QMainWindow):
         result_menu.setObjectName("menuResult")
         result_menu.addActions([self.actions[name] for name in ("undeformed", "deformed", "contour")])
         result_menu.addSeparator()
-        result_menu.addActions([self.actions[name] for name in ("overlay", "field", "scale", "contour_options", "query", "export", "screenshot")])
+        result_menu.addActions([self.actions[name] for name in ("overlay", "field", "scale", "contour_options", "query", "export_csv", "export_vtk", "screenshot")])
         help_menu = self.menuBar().addMenu("帮助")
         help_menu.setObjectName("menuHelp")
         help_menu.addAction(self.actions["about"])
@@ -1219,7 +1220,7 @@ class FEMMainWindow(QMainWindow):
             ("文件", ("new_native", "open_project", "save_project", "open", "reload", "close"), ("new_native", "open")),
             ("信息", ("model_info",), ()),
             ("分析", ("submit_job",), ("submit_job",)),
-            ("输出", ("export", "screenshot"), ()),
+            ("输出", ("export_csv", "export_vtk"), ()),
         ), step_group="分析")
         self._add_ribbon_page("几何", (
             ("创建", ("geometry_sketch",), ("geometry_sketch",)),
@@ -1379,7 +1380,7 @@ class FEMMainWindow(QMainWindow):
         display_group.add_action(self.actions["contour_options"])
         output_group = page.add_group("查询与导出")
         output_group.add_action(self.actions["query"], large=True)
-        for name in ("export", "screenshot"):
+        for name in ("export_csv", "screenshot"):
             output_group.add_action(self.actions[name])
 
     def _add_ribbon_page(
@@ -4953,17 +4954,10 @@ class FEMMainWindow(QMainWindow):
         self._on_viewport_pick(kind, identifier)
 
     def export_csv(self) -> None:
-        if self._current_result_projection() is None:
+        export_identity = self._current_result_export_identity("导出 CSV 失败")
+        if export_identity is None:
             return
-        field_key = self._display.field_key
-        if field_key is None or field_key not in self.result_data.fields:
-            self._show_error("导出 CSV 失败", "请先选择一个结果字段")
-            return
-        scalar = self.result_data.fields[field_key]
-        if not scalar.ready:
-            prefix = field_key.split(":", 1)[0]
-            self._ensure_result_stress((prefix,), self.export_csv)
-            return
+        source, generation, selection, field_key = export_identity
         stem = self.document.path.stem if self.document.path else "result"
         safe_field = field_key.replace(":", "_")
         default = f"{stem}_{safe_field}.csv"
@@ -4973,21 +4967,90 @@ class FEMMainWindow(QMainWindow):
         if not path:
             return
         target = Path(path).with_suffix(".csv")
-        data = self.result_data
         self.status_panel.set_state("正在导出 CSV……")
-
-        def workload(context: TaskContext):
-            context.report("正在导出 CSV……")
-            result = export_field_csv(data, field_key, target)
-            context.checkpoint()
-            return result
-
-        self._start_task(
-            workload,
-            lambda _value: self.status_panel.set_state("CSV 导出完成", 5000),
-            "导出 CSV 失败",
-            task_name="CSV 导出",
+        receipt = self.export_result_csv(
+            target,
+            ResultCsvExportSpec(
+                source,
+                generation,
+                selection,
+            ),
         )
+        if receipt.diagnostic is not None:
+            self._show_command_rejection("导出 CSV 失败", receipt)
+
+    def export_vtk(self) -> None:
+        export_identity = self._current_result_export_identity("导出 VTK 失败")
+        if export_identity is None:
+            return
+        source, generation, selection, field_key = export_identity
+        stem = self.document.path.stem if self.document.path else "result"
+        safe_field = field_key.replace(":", "_")
+        default = f"{stem}_{safe_field}.vtk"
+        path, _filter = QFileDialog.getSaveFileName(
+            self,
+            "导出当前结果字段",
+            default,
+            "VTK 文件 (*.vtk)",
+        )
+        if not path:
+            return
+        target = Path(path).with_suffix(".vtk")
+        self.status_panel.set_state("正在导出 VTK……")
+        receipt = self.export_result_vtk(
+            target,
+            ResultVtkExportSpec(
+                source,
+                generation,
+                selection,
+                self._current_result_export_deformation_scale(),
+            ),
+        )
+        if receipt.diagnostic is not None:
+            self._show_command_rejection("导出 VTK 失败", receipt)
+
+    def _current_result_export_identity(
+        self,
+        error_title: str,
+    ) -> tuple[ResultSourceKey, int, ScalarFieldSelection, str] | None:
+        data = self._current_result_projection()
+        if data is None:
+            return None
+        field_key = self._display.field_key
+        scalar = data.fields.get(field_key or "")
+        if field_key is None or scalar is None:
+            self._show_error(error_title, "请先选择一个结果字段")
+            return None
+        if not scalar.ready:
+            self._show_error(error_title, "当前结果字段尚未就绪")
+            return None
+        selection = data.field_selections.get(field_key)
+        if selection is None:
+            self._show_error(error_title, "当前结果字段缺少规范化选择标识")
+            return None
+        record = self.session.current_result()
+        if record is None:
+            return None
+        materialization = record.materialization
+        return (
+            materialization.source,
+            materialization.generation,
+            selection,
+            field_key,
+        )
+
+    def _current_result_export_deformation_scale(self) -> float:
+        if (
+            self._display.shape_mode != "deformed"
+            or self.geometry is None
+            or self.result_data is None
+        ):
+            return 0.0
+        if self._scale_mode == "auto":
+            return automatic_deformation_scale(self.geometry, self.result_data)
+        if self._scale_mode == "real":
+            return 1.0
+        return float(self._scale_value)
 
     def export_viewport_image(self) -> None:
         if self._current_result_projection() is None:
