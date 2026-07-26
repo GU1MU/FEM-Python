@@ -1320,3 +1320,410 @@ def test_transitional_gui_document_adapter_is_removed():
 
     assert not adapter.exists()
     assert offenders == []
+
+
+def _call_terminal_name(node):
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return ""
+
+
+def _normalized_wire_literal(value):
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.strip().upper().split())
+
+
+def _zero_subscript(node):
+    return (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.slice, ast.Constant)
+        and node.slice.value == 0
+    )
+
+
+def test_abaqus_adapter_is_headless():
+    abaqus_root = SRC_ROOT / "fem" / "abaqus"
+    paths = sorted(abaqus_root.rglob("*.py"))
+    assert paths
+
+    offenders = []
+    for path in paths:
+        for target, lineno in _resolved_import_targets(
+            path,
+            _module_name(path),
+        ):
+            if target == "fem_gui" or target.startswith("fem_gui."):
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+                )
+
+    assert offenders == []
+
+
+def test_abaqus_parser_has_no_application_solver_or_gui_dependency():
+    path = SRC_ROOT / "fem" / "abaqus" / "parser.py"
+    forbidden_roots = (
+        "fem.application",
+        "fem.solver",
+        "fem.solvers",
+        "fem_gui",
+    )
+    offenders = [
+        f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+        for target, lineno in _resolved_import_targets(
+            path,
+            "fem.abaqus.parser",
+        )
+        if any(
+            target == root or target.startswith(f"{root}.")
+            for root in forbidden_roots
+        )
+    ]
+
+    assert path.is_file()
+    assert offenders == []
+
+
+def test_abaqus_parser_does_not_compute_beam_frames_or_rotations():
+    path = SRC_ROOT / "fem" / "abaqus" / "parser.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    forbidden_calls = {
+        "beam3d_geometry",
+        "cross",
+        "resolve_beam_frame",
+    }
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _call_terminal_name(node.func)
+        if name in forbidden_calls or "rotation" in name.casefold():
+            offenders.append(
+                f"{path.relative_to(PROJECT_ROOT)}:{node.lineno} -> {name}()"
+            )
+
+    assert offenders == []
+
+
+def test_core_elements_and_materials_do_not_import_abaqus_adapter():
+    package_roots = (
+        SRC_ROOT / "fem" / "core",
+        SRC_ROOT / "fem" / "elements",
+        SRC_ROOT / "fem" / "materials",
+    )
+    assert all(root.is_dir() for root in package_roots)
+
+    offenders = []
+    for path in sorted(
+        source
+        for root in package_roots
+        for source in root.rglob("*.py")
+    ):
+        for target, lineno in _resolved_import_targets(
+            path,
+            _module_name(path),
+        ):
+            if target == "fem.abaqus" or target.startswith("fem.abaqus."):
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+                )
+
+    assert offenders == []
+
+
+def test_domain_application_and_gui_do_not_branch_on_abaqus_wire_tokens():
+    package_roots = (
+        SRC_ROOT / "fem" / "core",
+        SRC_ROOT / "fem" / "elements",
+        SRC_ROOT / "fem" / "materials",
+        SRC_ROOT / "fem" / "application",
+        SRC_ROOT / "fem" / "solvers",
+        GUI_ROOT,
+    )
+    adapter_only_tokens = {
+        "B31",
+        "T3D2",
+        "RECT",
+        "CIRC",
+        "THICK PIPE",
+        "PIPE",
+        "PX",
+        "PY",
+        "PZ",
+        "P1",
+        "P2",
+        "QGLOBAL",
+        "QLOCAL",
+    }
+    offenders = []
+
+    for path in sorted(
+        source
+        for root in package_roots
+        for source in root.rglob("*.py")
+    ):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        semantic_nodes = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(
+                node,
+                (
+                    ast.Compare,
+                    ast.Dict,
+                    ast.MatchValue,
+                    ast.Set,
+                ),
+            )
+            or (
+                isinstance(node, (ast.Assign, ast.AnnAssign))
+                and isinstance(
+                    node.value,
+                    (ast.Dict, ast.List, ast.Set, ast.Tuple),
+                )
+            )
+        ]
+        reported = set()
+        for semantic_node in semantic_nodes:
+            for literal in ast.walk(semantic_node):
+                if not (
+                    isinstance(literal, ast.Constant)
+                    and isinstance(literal.value, str)
+                ):
+                    continue
+                token = _normalized_wire_literal(literal.value)
+                if token not in adapter_only_tokens:
+                    continue
+                offender = (
+                    f"{path.relative_to(PROJECT_ROOT)}:{literal.lineno} -> "
+                    f"{literal.value!r}"
+                )
+                if offender not in reported:
+                    offenders.append(offender)
+                    reported.add(offender)
+
+    assert offenders == []
+
+
+def test_non_adapter_semantics_do_not_read_abaqus_type_provenance():
+    package_roots = (
+        SRC_ROOT / "fem" / "core",
+        SRC_ROOT / "fem" / "elements",
+        SRC_ROOT / "fem" / "materials",
+        SRC_ROOT / "fem" / "application",
+        SRC_ROOT / "fem" / "solvers",
+    )
+    offenders = []
+
+    for path in sorted(
+        source
+        for root in package_roots
+        for source in root.rglob("*.py")
+    ):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "abaqus_type"
+            ):
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{node.lineno} -> "
+                    ".get('abaqus_type')"
+                )
+            elif (
+                isinstance(node, ast.Subscript)
+                and isinstance(node.slice, ast.Constant)
+                and node.slice.value == "abaqus_type"
+            ):
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{node.lineno} -> "
+                    "['abaqus_type']"
+                )
+
+    assert offenders == []
+
+
+def test_abaqus_formulation_notice_has_one_adapter_owner():
+    notice_code = "abaqus.b31.euler_bernoulli_approximation"
+    occurrences = []
+    for path in sorted(SRC_ROOT.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        occurrences.extend(
+            (path.relative_to(PROJECT_ROOT), node.lineno)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and node.value == notice_code
+        )
+
+    assert len(occurrences) == 1
+    assert occurrences[0][0] == Path("src/fem/abaqus/builder.py")
+
+
+def test_b31_source_topology_audit_has_one_adapter_implementation():
+    topology_code = "abaqus.b31.nodal_normal_averaging_unsupported"
+    definitions = []
+    code_occurrences = []
+
+    for path in sorted(SRC_ROOT.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        definitions.extend(
+            (path.relative_to(PROJECT_ROOT), node.lineno)
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "_audit_b31_topology"
+        )
+        code_occurrences.extend(
+            (path.relative_to(PROJECT_ROOT), node.lineno)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and node.value == topology_code
+        )
+
+    expected_path = Path("src/fem/abaqus/builder.py")
+    assert len(definitions) == 1
+    assert definitions[0][0] == expected_path
+    assert len(code_occurrences) == 1
+    assert code_occurrences[0][0] == expected_path
+
+
+def test_production_has_no_beam_slenderness_gate():
+    suspicious_name_fragments = (
+        "beam_aspect_ratio",
+        "beam_slender",
+        "length_to_depth",
+        "length_to_section",
+        "slenderness",
+    )
+    offenders = []
+
+    for path in sorted(SRC_ROOT.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            names = ()
+            if isinstance(node, ast.Name):
+                names = (node.id,)
+            elif isinstance(node, ast.Attribute):
+                names = (node.attr,)
+            elif isinstance(node, ast.arg):
+                names = (node.arg,)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names = (node.name,)
+            if any(
+                fragment in name.casefold()
+                for name in names
+                for fragment in suspicious_name_fragments
+            ):
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{node.lineno} -> "
+                    f"{names[0]}"
+                )
+
+    assert offenders == []
+
+
+def test_abaqus_builder_does_not_dispatch_from_first_mesh_element():
+    abaqus_root = SRC_ROOT / "fem" / "abaqus"
+    offenders = []
+
+    for path in sorted(abaqus_root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not _zero_subscript(node):
+                continue
+            chain = _attribute_chain(node.value)
+            if len(chain) >= 2 and chain[-2:] == ("mesh", "elements"):
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{node.lineno} -> "
+                    f"{'.'.join(chain)}[0]"
+                )
+
+    assert offenders == []
+
+
+def test_standard_line_subset_excludes_retired_wire_dialect():
+    from fem.abaqus.contracts import (
+        RETIRED_DLOAD_LABELS,
+        RETIRED_ELEMENT_TYPES,
+        STANDARD_LINE_SUBSET,
+    )
+
+    assert STANDARD_LINE_SUBSET.element_types == frozenset({"B31", "T3D2"})
+    assert STANDARD_LINE_SUBSET.section_profiles == frozenset(
+        {"RECT", "CIRC", "THICK PIPE"}
+    )
+    assert STANDARD_LINE_SUBSET.distributed_load_labels == frozenset(
+        {"PX", "PY", "PZ", "P1", "P2", "GRAV"}
+    )
+    assert RETIRED_ELEMENT_TYPES.isdisjoint(
+        STANDARD_LINE_SUBSET.element_types
+    )
+    assert RETIRED_DLOAD_LABELS.isdisjoint(
+        STANDARD_LINE_SUBSET.distributed_load_labels
+    )
+    assert "truss section" not in STANDARD_LINE_SUBSET.executed_keywords
+
+
+def test_retired_element_aliases_are_not_adapter_mapping_keys():
+    retired_aliases = {"BEAM2", "TRUSS2"}
+    offenders = []
+
+    for path in sorted((SRC_ROOT / "fem" / "abaqus").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Dict):
+                continue
+            for key in node.keys:
+                if (
+                    isinstance(key, ast.Constant)
+                    and key.value in retired_aliases
+                ):
+                    offenders.append(
+                        f"{path.relative_to(PROJECT_ROOT)}:{key.lineno} -> "
+                        f"mapping key {key.value!r}"
+                    )
+
+    assert offenders == []
+
+
+def test_abaqus_pipe_profile_is_never_mapped_to_hollow_circle():
+    path = SRC_ROOT / "fem" / "abaqus" / "builder.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    offenders = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If) and any(
+            value == "PIPE" for value in _literal_strings(node.test)
+        ):
+            if any(
+                value == "hollow_circle"
+                for statement in node.body
+                for value in _literal_strings(statement)
+            ):
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{node.lineno} -> "
+                    "PIPE branch contains hollow_circle"
+                )
+        if not isinstance(node, ast.Dict):
+            continue
+        for key, value in zip(node.keys, node.values):
+            if (
+                isinstance(key, ast.Constant)
+                and key.value == "PIPE"
+                and any(
+                    literal == "hollow_circle"
+                    for literal in _literal_strings(value)
+                )
+            ):
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{key.lineno} -> "
+                    "PIPE mapping contains hollow_circle"
+                )
+
+    assert offenders == []

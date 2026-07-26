@@ -441,12 +441,11 @@ def _plane_type(
             f"plane_type {raw_value!r} is invalid; expected 'stress' or 'strain'"
         )
 
-    for candidate in (element_type, properties.get("abaqus_type")):
-        normalized = str(candidate or "").strip().casefold()
-        if normalized.startswith("cpe"):
-            return "strain"
-        if normalized.startswith("cps"):
-            return "stress"
+    normalized = str(element_type or "").strip().casefold()
+    if normalized.startswith("cpe"):
+        return "strain"
+    if normalized.startswith("cps"):
+        return "stress"
     return "stress"
 
 

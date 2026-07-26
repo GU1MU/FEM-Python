@@ -123,7 +123,7 @@ def test_beam_presets_use_one_validated_schema(
     } == expected
 
 
-def test_plane_defaults_inherit_explicit_and_imported_formulation_data() -> None:
+def test_plane_defaults_use_explicit_formulation_not_source_provenance() -> None:
     material = {"E": 210.0, "nu": 0.3}
 
     inherited = materials.resolve_section_properties(
@@ -132,8 +132,19 @@ def test_plane_defaults_inherit_explicit_and_imported_formulation_data() -> None
         "solid",
         {},
         baseline_properties={
-            "abaqus_type": "CPE3",
+            "plane_type": "strain",
+            "abaqus_type": "CPS3",
             "thickness": 2.5,
+        },
+    )
+    provenance_only = materials.resolve_section_properties(
+        "Tri3",
+        material,
+        "solid",
+        {},
+        baseline_properties={
+            "abaqus_type": "CPE3",
+            "thickness": 1.5,
         },
     )
     overridden = materials.resolve_section_properties(
@@ -145,6 +156,8 @@ def test_plane_defaults_inherit_explicit_and_imported_formulation_data() -> None
 
     assert inherited.effective_properties["plane_type"] == "strain"
     assert inherited.effective_properties["thickness"] == 2.5
+    assert provenance_only.effective_properties["plane_type"] == "stress"
+    assert provenance_only.effective_properties["thickness"] == 1.5
     assert overridden.effective_properties["plane_type"] == "stress"
     assert overridden.effective_properties["thickness"] == 3.0
 
