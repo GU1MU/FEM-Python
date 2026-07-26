@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import ast
+from dataclasses import replace
+from pathlib import Path
+
 import pytest
 
 from fem.abaqus import read
@@ -10,7 +14,22 @@ from fem.application import (
     SectionDefinition,
     resolve_effective_beam_frames,
 )
-from fem.solvers.static_linear import solve
+from fem.application.results import (
+    ElementResultInspectionRequest,
+    FieldPosition,
+    FieldRequest,
+    FieldState,
+    NodeResultInspectionRequest,
+    ResultCatalog,
+    ResultDiagnostic,
+    ResultFieldId,
+    ResultProvider,
+    ResultSourceKey,
+    ResultVariable,
+    advance_materialization,
+    build_result_provider,
+    restore_result_provider,
+)
 from fem.core.mesh import Element3D, Mesh3D, Node3D
 from fem.core.model import (
     AnalysisStep,
@@ -21,9 +40,14 @@ from fem.core.model import (
     MaterialDefinition,
     SectionAssignment,
 )
+from fem.post.averaging import NodalAveragingPolicy
+from fem.solvers.static_linear import solve
 from fem_gui.inspection_service import InspectionService
 from fem_gui.visualization.model_adapter import build_model_geometry
 from fem_gui.visualization.result_adapter import build_result_data
+from tests.helpers.phase8_result_characterization import (
+    make_continuum_nodal_semantics_result,
+)
 
 
 def _page(inspection, title):
@@ -32,6 +56,92 @@ def _page(inspection, title):
 
 def _fields(page):
     return dict(page.fields)
+
+
+def _provider_source() -> ResultSourceKey:
+    return ResultSourceKey(
+        result_id="inspection-result",
+        session_id="inspection-session",
+        artifact_id="inspection-artifact",
+        model_revision=3,
+        step_name="Step-1",
+        run_id="inspection-run",
+    )
+
+
+def _provider_with_all_continuum_fields():
+    result = make_continuum_nodal_semantics_result()
+    provider = build_result_provider(_provider_source(), result)
+    keys = tuple(
+        provider.resolve_request(
+            FieldRequest(
+                ResultFieldId(ResultVariable.S, position),
+                averaging_policy=(
+                    NodalAveragingPolicy()
+                    if position is FieldPosition.RESOLVED_NODAL
+                    else None
+                ),
+            )
+        )
+        for position in (
+            FieldPosition.INTEGRATION_POINT,
+            FieldPosition.CENTROID,
+            FieldPosition.ELEMENT_NODAL,
+            FieldPosition.NODE_REGION,
+            FieldPosition.RESOLVED_NODAL,
+        )
+    )
+    provider = restore_result_provider(
+        result,
+        advance_materialization(
+            provider.snapshot,
+            provider.materialize(keys),
+        ),
+    )
+    return result, provider
+
+
+def _provider_with_unavailable_field():
+    result = make_continuum_nodal_semantics_result()
+    provider = build_result_provider(_provider_source(), result)
+    catalog = provider.catalog()
+    target = next(
+        availability
+        for availability in catalog.fields
+        if (
+            availability.state is FieldState.LAZY
+            and availability.descriptor.field_id.position
+            is FieldPosition.CENTROID
+        )
+    )
+    unavailable = replace(
+        target,
+        state=FieldState.UNAVAILABLE,
+        diagnostics=(
+            ResultDiagnostic(
+                code="result.field.unavailable",
+                severity="warning",
+                message="Field is unavailable.",
+                path=("inspection",),
+                remediation="Choose another field.",
+                details={"position": "centroid"},
+            ),
+        ),
+    )
+    fields = tuple(
+        unavailable if availability is target else availability
+        for availability in catalog.fields
+    )
+    provider = replace(
+        provider,
+        _catalog=ResultCatalog(
+            source=catalog.source,
+            fields=fields,
+            default_selection=catalog.default_selection,
+            diagnostics=catalog.diagnostics,
+        ),
+    )
+    return result, provider
 
 
 def test_service_builds_node_element_and_assignment_indexes_once(gui_inp_path):
@@ -108,6 +218,201 @@ def test_result_pages_use_existing_result_data_and_hide_missing_3d_components(gu
     assert "Mises" in values
     assert "最大主应力" in values
     assert "最小主应力" in values
+
+
+def test_typed_provider_drives_node_and_element_result_pages_in_catalog_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result, provider = _provider_with_all_continuum_fields()
+    observed = []
+    original = ResultProvider.inspect_result
+
+    def inspect_result(self, request):
+        observed.append(request)
+        return original(self, request)
+
+    monkeypatch.setattr(ResultProvider, "inspect_result", inspect_result)
+
+    class LegacyResultBomb:
+        def __getattribute__(self, name):
+            raise AssertionError(
+                f"typed inspection read legacy ResultData attribute {name}"
+            )
+
+    service = InspectionService(
+        result.model,
+        LegacyResultBomb(),
+        result_provider=provider,
+    )
+    node_page = _page(service.inspect("node", 1), "结果")
+    element_page = _page(service.inspect("element", 2), "结果")
+
+    assert tuple(type(request) for request in observed) == (
+        NodeResultInspectionRequest,
+        ElementResultInspectionRequest,
+    )
+    assert tuple(table.title for table in node_page.tables) == (
+        "位移 U（就绪）",
+        "反力 RF（就绪）",
+        "应力 S（单元节点）（就绪）",
+        "应力 S（节点区域）（就绪）",
+        "应力 S（平均节点）（就绪）",
+    )
+    assert tuple(table.title for table in element_page.tables) == (
+        "应力 S（积分点）（就绪）",
+        "应力 S（单元质心）（就绪）",
+        "应力 S（单元节点）（就绪）",
+    )
+    assert all(
+        table.columns
+        == (
+            "状态",
+            "分量",
+            "数值",
+            "节点",
+            "单元",
+            "积分点",
+            "局部节点",
+            "结果区域",
+            "平均",
+            "诊断",
+        )
+        for table in (*node_page.tables, *element_page.tables)
+    )
+
+
+def test_typed_result_rows_preserve_all_location_provenance() -> None:
+    result, provider = _provider_with_all_continuum_fields()
+    service = InspectionService(result.model, result_provider=provider)
+    page = _page(service.inspect("node", 1), "结果")
+    by_title = {table.title: table for table in page.tables}
+
+    element_node = tuple(
+        row
+        for row in by_title["应力 S（单元节点）（就绪）"].rows
+        if row[1] == "S11"
+    )
+    node_region = tuple(
+        row
+        for row in by_title["应力 S（节点区域）（就绪）"].rows
+        if row[1] == "S11"
+    )
+    resolved = tuple(
+        row
+        for row in by_title["应力 S（平均节点）（就绪）"].rows
+        if row[1] == "S11"
+    )
+
+    assert len(element_node) == 3
+    assert tuple(row[4] for row in element_node) == ("1", "2", "3")
+    assert all(row[6] != "—" for row in element_node)
+    assert len(node_region) == 2
+    assert len({row[7] for row in node_region}) == 2
+    assert len(resolved) == 3
+    assert tuple(row[4] for row in resolved) == ("1", "2", "3")
+    assert len({row[7] for row in resolved}) == 2
+    assert all(row[8] in {"是", "否"} for row in resolved)
+
+
+def test_typed_provider_update_is_exact_and_clearable() -> None:
+    result, provider = _provider_with_all_continuum_fields()
+    service = InspectionService(result.model)
+
+    with pytest.raises(TypeError, match="exactly ResultProvider"):
+        InspectionService(result.model, result_provider=object())
+    with pytest.raises(TypeError, match="exactly ResultProvider"):
+        service.update_result_provider(object())
+
+    service.update_result_provider(provider)
+    assert service.result_provider is provider
+    assert _page(service.inspect("node", 1), "结果").tables
+
+    service.update_result_provider(None)
+    assert service.result_provider is None
+    assert all(
+        page.title != "结果"
+        for page in service.inspect("node", 1).pages
+    )
+
+
+def test_lazy_and_unavailable_provider_fields_do_not_materialize_or_block_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result, provider = _provider_with_unavailable_field()
+    calls = []
+
+    def materialize(self, keys, *, cancellation=None):
+        del self, cancellation
+        calls.append(tuple(keys))
+        raise AssertionError("inspection must not materialize fields")
+
+    monkeypatch.setattr(ResultProvider, "materialize", materialize)
+    service = InspectionService(result.model, result_provider=provider)
+
+    assert service.inspect("model", None).pages[0].title == "概况"
+    node_page = _page(service.inspect("node", 1), "结果")
+    element_page = _page(service.inspect("element", 1), "结果")
+    titles = tuple(
+        table.title
+        for table in (*node_page.tables, *element_page.tables)
+    )
+
+    assert any(title.endswith("（按需加载）") for title in titles)
+    assert "应力 S（单元质心）（不可用）" in titles
+    unavailable = next(
+        table
+        for table in element_page.tables
+        if table.title == "应力 S（单元质心）（不可用）"
+    )
+    assert unavailable.rows[0][0] == "不可用"
+    assert "result.field.unavailable" in unavailable.rows[0][-1]
+    assert calls == []
+
+
+def test_typed_inspection_path_has_no_legacy_or_support_order_dependency() -> None:
+    module_path = Path(
+        InspectionService.__init__.__code__.co_filename
+    )
+    tree = ast.parse(module_path.read_text(encoding="utf-8"))
+    imported_modules = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    }
+    typed_functions = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in {
+            "_provider_result_page",
+            "_provider_result_table",
+        }
+    }
+    typed_source = "\n".join(
+        ast.unparse(typed_functions[name])
+        for name in sorted(typed_functions)
+    )
+
+    assert not any(
+        module.endswith("visualization.result_adapter")
+        or module.endswith("widgets.result_tree")
+        for module in imported_modules
+    )
+    assert set(typed_functions) == {
+        "_provider_result_page",
+        "_provider_result_table",
+    }
+    assert ".inspect_result(" in typed_source
+    for forbidden in (
+        ".materialize(",
+        "result_data",
+        "nodal_values",
+        "nodal_stress",
+        "element_stress",
+        "field_family",
+        "sorted(",
+    ):
+        assert forbidden not in typed_source
 
 
 def test_beam_section_and_line_load_use_the_common_inspection_service():

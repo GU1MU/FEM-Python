@@ -10,8 +10,64 @@ from numbers import Real
 from typing import Any
 
 from fem.application import RegionRef, resolve_effective_beam_frames
+from fem.application.results import (
+    ElementResultInspectionRequest,
+    FieldPosition,
+    FieldState,
+    NodeResultInspectionRequest,
+    ResultInspectionField,
+    ResultInspectionRequest,
+    ResultInspectionResult,
+    ResultProvider,
+    ResultQueryValidationError,
+)
+from fem.post.fields import encode_result_region_key
 
-from .visualization.result_adapter import ResultData
+
+_RESULT_VARIABLE_LABELS = {
+    "U": "位移 U",
+    "UR": "转角 UR",
+    "RF": "反力 RF",
+    "RM": "反力矩 RM",
+    "LE": "对数应变 LE",
+    "S": "应力 S",
+}
+_RESULT_POSITION_LABELS = {
+    FieldPosition.INTEGRATION_POINT: "积分点",
+    FieldPosition.CENTROID: "单元质心",
+    FieldPosition.ELEMENT_NODAL: "单元节点",
+    FieldPosition.NODE_REGION: "节点区域",
+    FieldPosition.RESOLVED_NODAL: "平均节点",
+    FieldPosition.SECTION_END: "截面端点",
+    FieldPosition.SECTION_NODE_ENVELOPE: "截面节点包络",
+}
+_RESULT_COMPONENT_LABELS = {
+    "Magnitude": "模",
+    "Mises": "Mises 等效应力",
+    "MaxPrincipal": "最大主应力",
+    "MidPrincipal": "中间主应力",
+    "MinPrincipal": "最小主应力",
+    "S11Max": "最大轴向应力",
+    "S11Min": "最小轴向应力",
+    "S11AbsMax": "最大绝对值轴向应力",
+}
+_RESULT_STATE_LABELS = {
+    FieldState.READY: "就绪",
+    FieldState.LAZY: "按需加载",
+    FieldState.UNAVAILABLE: "不可用",
+}
+_RESULT_COLUMNS = (
+    "状态",
+    "分量",
+    "数值",
+    "节点",
+    "单元",
+    "积分点",
+    "局部节点",
+    "结果区域",
+    "平均",
+    "诊断",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,8 +111,9 @@ class InspectionService:
     def __init__(
         self,
         model: Any,
-        result_data: ResultData | None = None,
+        result_data: Any | None = None,
         *,
+        result_provider: ResultProvider | None = None,
         definitions: Any | None = None,
         effective_frame_query: (
             Callable[[RegionRef | int], Any] | None
@@ -64,6 +121,7 @@ class InspectionService:
     ) -> None:
         self.model = model
         self.result_data = result_data
+        self.result_provider = _require_result_provider(result_provider)
         self.definitions = definitions
         self.section_definitions = tuple(
             getattr(definitions, "sections", ())
@@ -100,8 +158,16 @@ class InspectionService:
             self._query_effective_beam_frames
         )
 
-    def update_result_data(self, result_data: ResultData | None) -> None:
+    def update_result_data(self, result_data: Any | None) -> None:
         self.result_data = result_data
+
+    def update_result_provider(
+        self,
+        result_provider: ResultProvider | None,
+    ) -> None:
+        """Install one exact immutable provider without materializing fields."""
+
+        self.result_provider = _require_result_provider(result_provider)
 
     def _query_effective_beam_frames(
         self,
@@ -337,9 +403,16 @@ class InspectionService:
                     tuple(row[4] for row in self.node_analysis[node_id]),
                 ),),
             ))
-        result_fields = self._node_result_fields(node_id)
-        if result_fields:
-            pages.append(InspectionPage("结果", result_fields))
+        if self.result_provider is not None:
+            result_page = self._provider_result_page(
+                NodeResultInspectionRequest(node_id)
+            )
+            if result_page is not None:
+                pages.append(result_page)
+        else:
+            result_fields = self._node_result_fields(node_id)
+            if result_fields:
+                pages.append(InspectionPage("结果", result_fields))
         return EntityInspection(f"节点 {node_id}", "node", node_id, tuple(pages))
 
     def _node_result_fields(self, node_id: int) -> tuple[tuple[str, str], ...]:
@@ -454,14 +527,63 @@ class InspectionService:
             pages.append(
                 InspectionPage("Beam 局部坐标", tuple(frame_fields))
             )
-        if self.result_data is not None and element_id in self.result_data.element_stress:
+        if self.result_provider is not None:
+            result_page = self._provider_result_page(
+                ElementResultInspectionRequest(element_id)
+            )
+            if result_page is not None:
+                pages.append(result_page)
+        elif (
+            self.result_data is not None
+            and element_id in self.result_data.element_stress
+        ):
             values = self.result_data.element_stress[element_id]
-            rows = tuple((_stress_label(name), format_number(value)) for name, value in values.items())
-            pages.append(InspectionPage(
-                "结果", (("结果位置", "单元质心"),),
-                (InspectionTable("单元结果", ("分量", "数值"), rows),),
-            ))
+            rows = tuple(
+                (_stress_label(name), format_number(value))
+                for name, value in values.items()
+            )
+            pages.append(
+                InspectionPage(
+                    "结果",
+                    (("结果位置", "单元质心"),),
+                    (
+                        InspectionTable(
+                            "单元结果",
+                            ("分量", "数值"),
+                            rows,
+                        ),
+                    ),
+                )
+            )
         return EntityInspection(f"单元 {element_id}", "element", element_id, tuple(pages))
+
+    def _provider_result_page(
+        self,
+        request: ResultInspectionRequest,
+    ) -> InspectionPage | None:
+        """Render only the provider's catalog-ordered typed inspection."""
+
+        provider = self.result_provider
+        if provider is None:
+            return None
+        try:
+            result = provider.inspect_result(request)
+        except ResultQueryValidationError:
+            return None
+        if type(result) is not ResultInspectionResult:
+            raise TypeError(
+                "ResultProvider.inspect_result() must return "
+                "ResultInspectionResult"
+            )
+        if not result.fields:
+            return None
+        return InspectionPage(
+            "结果",
+            tables=tuple(
+                _provider_result_table(field_entry)
+                for field_entry in result.fields
+            ),
+        )
 
     def _inspect_node_set(self, key: object) -> EntityInspection:
         name = str(key)
@@ -901,6 +1023,145 @@ class InspectionService:
                 }
                 names.append(f"{step.name} / {labels[reference.kind]} {index + 1}")
         return "、".join(names) or "—"
+
+
+def _require_result_provider(
+    value: ResultProvider | None,
+) -> ResultProvider | None:
+    if value is not None and type(value) is not ResultProvider:
+        raise TypeError("result_provider must be exactly ResultProvider or None")
+    return value
+
+
+def _provider_result_table(
+    field_entry: ResultInspectionField,
+) -> InspectionTable:
+    if type(field_entry) is not ResultInspectionField:
+        raise TypeError(
+            "provider result fields must be ResultInspectionField values"
+        )
+    availability = field_entry.availability
+    descriptor = availability.descriptor
+    state_label = _RESULT_STATE_LABELS[availability.state]
+    field_label = _localized_result_field(descriptor)
+    if descriptor.unit_label is not None:
+        field_label = f"{field_label} [{descriptor.unit_label}]"
+    title = f"{field_label}（{state_label}）"
+    diagnostic = _diagnostic_summary(availability.diagnostics)
+    if availability.state is not FieldState.READY:
+        variable = descriptor.field_id.variable.value
+        rows = tuple(
+            (
+                state_label,
+                _localized_result_component(component, variable),
+                "—",
+                "—",
+                "—",
+                "—",
+                "—",
+                "—",
+                "—",
+                diagnostic,
+            )
+            for component in descriptor.columns
+        )
+        return InspectionTable(
+            title,
+            _RESULT_COLUMNS,
+            rows,
+            tuple(None for _row in rows),
+        )
+
+    rows: list[tuple[str, ...]] = []
+    references: list[EntityReference | None] = []
+    variable = descriptor.field_id.variable.value
+    for component_result in field_entry.component_results:
+        component = _localized_result_component(
+            component_result.query.component,
+            variable,
+        )
+        if not component_result.records:
+            rows.append(
+                (
+                    state_label,
+                    component,
+                    "—",
+                    "—",
+                    "—",
+                    "—",
+                    "—",
+                    "—",
+                    "—",
+                    diagnostic,
+                )
+            )
+            references.append(None)
+            continue
+        for record in component_result.records:
+            location = record.location
+            rows.append(
+                (
+                    state_label,
+                    component,
+                    format_number(record.value),
+                    format_number(location.node_id),
+                    format_number(location.element_id),
+                    format_number(location.integration_point),
+                    format_number(location.local_node),
+                    (
+                        "—"
+                        if location.region_key is None
+                        else encode_result_region_key(location.region_key)
+                    ),
+                    _averaged_label(location.averaged),
+                    diagnostic,
+                )
+            )
+            references.append(_result_location_reference(location))
+    return InspectionTable(
+        title,
+        _RESULT_COLUMNS,
+        tuple(rows),
+        tuple(references),
+    )
+
+
+def _localized_result_component(component: str, variable: str) -> str:
+    if component == "Magnitude":
+        return {
+            "U": "位移模",
+            "RF": "反力模",
+        }.get(variable, "模")
+    return _RESULT_COMPONENT_LABELS.get(component, component)
+
+
+def _localized_result_field(descriptor: Any) -> str:
+    field_id = descriptor.field_id
+    base = _RESULT_VARIABLE_LABELS.get(
+        field_id.variable.value,
+        descriptor.label_key,
+    )
+    if field_id.position is FieldPosition.NODE:
+        return base
+    position = _RESULT_POSITION_LABELS.get(
+        field_id.position,
+        field_id.position.value,
+    )
+    return f"{base}（{position}）"
+
+
+def _averaged_label(value: bool | None) -> str:
+    if value is None:
+        return "—"
+    return "是" if value else "否"
+
+
+def _result_location_reference(location: Any) -> EntityReference | None:
+    if location.element_id is not None:
+        return EntityReference("element", int(location.element_id))
+    if location.node_id is not None:
+        return EntityReference("node", int(location.node_id))
+    return None
 
 
 def format_number(value: object) -> str:
