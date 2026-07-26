@@ -47,6 +47,8 @@ PUBLIC_GUI_WORKFLOW_ENTRYPOINTS = (
     "check_step",
     "submit_run",
     "select_run_result",
+    "export_result_csv",
+    "export_result_vtk",
 )
 
 

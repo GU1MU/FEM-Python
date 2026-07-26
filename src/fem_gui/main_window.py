@@ -55,7 +55,9 @@ from fem.application import (
 )
 from fem.application.preprocessing import generate_fem_model
 from fem.application.results import (
+    ResultExportSnapshot,
     build_solve_result_bundle,
+    prepare_result_export_snapshot,
     restore_result_provider,
 )
 from fem.core.model import (
@@ -84,6 +86,8 @@ from fem.geometry import (
     supports_structured_hexahedron,
 )
 from fem.io.project import load_project, save_project
+from fem.io.result_csv import write_result_csv
+from fem.io.result_vtk import write_result_vtk
 from fem.mesh.quality import analyze_mesh
 from fem.mesh.settings import MeshSettings
 from fem.solvers import static_linear
@@ -101,10 +105,13 @@ from .commands import (
     CloseSessionCommand,
     GuiCommandCompletion,
     GuiCommandDiagnostic,
+    GuiCommandOutcome,
     GuiCommandReceipt,
     MeshInputEdit,
     NativeGeometryEdit,
     NewNativeProjectCommand,
+    ResultCsvExportSpec,
+    ResultVtkExportSpec,
 )
 from .dialogs import CompactDoubleSpinBox, show_information
 from .model_dialogs import (
@@ -724,6 +731,169 @@ class FEMMainWindow(QMainWindow):
         if job is not None and job.has_result:
             self._activate_job_result(job)
         return receipt
+
+    def export_result_csv(
+        self,
+        path: str | Path,
+        spec: ResultCsvExportSpec,
+    ) -> GuiCommandReceipt:
+        """Export one exact ready scalar selection through canonical CSV I/O."""
+
+        command_id = self._next_command_id()
+        if self.busy:
+            return self._rejected_command(
+                command_id,
+                "task.busy",
+                "a background task is already running",
+            )
+        if type(spec) is not ResultCsvExportSpec:
+            return self._rejected_command(
+                command_id,
+                "command.type.invalid",
+                "spec must be ResultCsvExportSpec",
+            )
+        try:
+            target = Path(path)
+            if target.suffix.casefold() != ".csv":
+                raise ValueError(
+                    "canonical result CSV target must use the .csv extension"
+                )
+            export = self._prepare_result_export(spec)
+            completion = GuiCommandCompletion(command_id)
+
+            def workload(context: TaskContext) -> GuiCommandOutcome:
+                installed = write_result_csv(
+                    target,
+                    export,
+                    checkpoint=context.checkpoint,
+                )
+                return GuiCommandOutcome(
+                    output_path=installed,
+                    source=export.source,
+                    materialization_generation=(
+                        export.materialization_generation
+                    ),
+                    selection=export.selection,
+                    record_count=len(export.field.locations),
+                )
+
+            started = self._start_task(
+                workload,
+                lambda _outcome: self.status_panel.set_state(
+                    "CSV 导出完成",
+                    5000,
+                ),
+                "导出 CSV 失败",
+                task_name="CSV 导出",
+                completion=completion,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            return self._rejected_command(
+                command_id,
+                "result.csv_export.rejected",
+                error,
+            )
+        if not started:
+            return self._rejected_command(
+                command_id,
+                "task.start.rejected",
+                "the CSV export task could not be started",
+            )
+        return GuiCommandReceipt.pending(command_id, completion)
+
+    def export_result_vtk(
+        self,
+        path: str | Path,
+        spec: ResultVtkExportSpec,
+    ) -> GuiCommandReceipt:
+        """Export one exact ready scalar selection through canonical VTK I/O."""
+
+        command_id = self._next_command_id()
+        if self.busy:
+            return self._rejected_command(
+                command_id,
+                "task.busy",
+                "a background task is already running",
+            )
+        if type(spec) is not ResultVtkExportSpec:
+            return self._rejected_command(
+                command_id,
+                "command.type.invalid",
+                "spec must be ResultVtkExportSpec",
+            )
+        try:
+            target = Path(path)
+            if target.suffix.casefold() != ".vtk":
+                raise ValueError(
+                    "canonical result VTK target must use the .vtk extension"
+                )
+            export = self._prepare_result_export(spec)
+            completion = GuiCommandCompletion(command_id)
+
+            def workload(context: TaskContext) -> GuiCommandOutcome:
+                installed = write_result_vtk(
+                    target,
+                    export,
+                    spec.deformation_scale,
+                    checkpoint=context.checkpoint,
+                )
+                return GuiCommandOutcome(
+                    output_path=installed,
+                    source=export.source,
+                    materialization_generation=(
+                        export.materialization_generation
+                    ),
+                    selection=export.selection,
+                    record_count=len(export.field.locations),
+                )
+
+            started = self._start_task(
+                workload,
+                lambda _outcome: self.status_panel.set_state(
+                    "VTK 导出完成",
+                    5000,
+                ),
+                "导出 VTK 失败",
+                task_name="VTK 导出",
+                completion=completion,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            return self._rejected_command(
+                command_id,
+                "result.vtk_export.rejected",
+                error,
+            )
+        if not started:
+            return self._rejected_command(
+                command_id,
+                "task.start.rejected",
+                "the VTK export task could not be started",
+            )
+        return GuiCommandReceipt.pending(command_id, completion)
+
+    def _prepare_result_export(
+        self,
+        spec: ResultCsvExportSpec | ResultVtkExportSpec,
+    ) -> ResultExportSnapshot:
+        record = self.session.current_result()
+        if record is None:
+            raise RuntimeError("there is no current accepted result")
+        materialization = record.materialization
+        if materialization.source != spec.source:
+            raise RuntimeError(
+                "export source does not match the current accepted result"
+            )
+        if (
+            materialization.generation
+            != spec.materialization_generation
+        ):
+            raise RuntimeError(
+                "export generation does not match the current materialization"
+            )
+        return prepare_result_export_snapshot(
+            materialization,
+            spec.selection,
+        )
 
     def _apply_session_delta(
         self,
