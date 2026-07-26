@@ -462,12 +462,9 @@ def test_existing_output_request_is_read_only_and_deletable() -> None:
     )
 
     assert not dialog.step_combo.isEnabled()
-    assert not dialog.kind_combo.isEnabled()
-    assert not dialog.target_combo.isEnabled()
-    assert all(
-        not check.isEnabled()
-        for check in dialog.variable_checks.values()
-    )
+    assert dialog.kind_value.text() == "field"
+    assert dialog.target_value.text() == "node"
+    assert dialog.variables_value.text() == "U、RF"
     assert manager.select_definition(("output", 0, 0))
     assert manager.edit_button.text() == "查看"
     manager._delete()

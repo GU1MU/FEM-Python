@@ -69,6 +69,7 @@ def test_closed_and_busy_context_are_projected_without_qt() -> None:
     assert idle[GuiActionKey.OPEN].enabled
     assert not idle[GuiActionKey.GEOMETRY_SKETCH].enabled
     assert "请先新建模型" in idle[GuiActionKey.GEOMETRY_SKETCH].reason
+    assert not idle[GuiActionKey.OUTPUT_CREATE].enabled
     assert not busy[GuiActionKey.OPEN].enabled
     assert "后台任务" in busy[GuiActionKey.OPEN].reason
 
@@ -108,8 +109,16 @@ def test_native_targets_and_selection_drive_authoring_actions() -> None:
     assert not unselected[GuiActionKey.GEOMETRY_REGION].enabled
     assert selected[GuiActionKey.GEOMETRY_REGION].enabled
     assert selected[GuiActionKey.BOUNDARY_CREATE].enabled
-    assert not selected[GuiActionKey.OUTPUT_CREATE].enabled
-    assert "不会执行输出请求" in selected[GuiActionKey.OUTPUT_CREATE].reason
+    assert selected[GuiActionKey.OUTPUT_CREATE].enabled
+
+    busy = _by_key(
+        derive_action_availability(
+            snapshot,
+            projection,
+            GuiActionContext(busy=True),
+        )
+    )
+    assert not busy[GuiActionKey.OUTPUT_CREATE].enabled
 
 
 def test_geometry_selection_rejects_noncanonical_values() -> None:

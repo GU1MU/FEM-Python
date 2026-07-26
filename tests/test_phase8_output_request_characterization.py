@@ -279,9 +279,11 @@ def test_abaqus_same_layer_parameter_collision_fails_closed_case_insensitively(
     assert caught.value.code == "abaqus.keyword.parameter_duplicate"
 
 
-def test_existing_output_view_acceptance_rebuilds_and_normalizes_dto_current_oracle(
+def test_existing_output_view_acceptance_preserves_exact_dto_phase8_oracle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Superseded by the Phase 8 typed read-only view contract: accepting a
+    # viewer must not rebuild, normalize, or replace the saved request.
     application = _application()
     original = OutputRequest(
         "field",
@@ -306,11 +308,10 @@ def test_existing_output_view_acceptance_rebuilds_and_normalizes_dto_current_ora
     changed = manager.edit_definition(("output", 0, 0))
     after_view = manager.steps[0].outputs[0]
 
-    assert changed
-    assert after_view is not before_view
+    assert not changed
+    assert after_view is before_view
     assert before_view.variables == ("rf", "U", "U", "custom", "Custom")
-    assert after_view.variables == ("U", "RF", "custom", "Custom")
-    assert after_view.metadata == before_view.metadata
+    assert after_view == before_view
 
     manager.close()
     assert application is QApplication.instance()

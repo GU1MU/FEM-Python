@@ -65,6 +65,7 @@ from fem.core.model import (
     GravityLoad,
     LineLoad,
     NodalLoad,
+    OutputRequest,
     SurfaceLoad,
 )
 from fem.geometry import (
@@ -99,6 +100,7 @@ from .analysis_definition_dialogs import (
     AnalysisDefinitionManagerDialog,
     DisplacementDialog,
     LoadDialog,
+    OutputRequestDialog,
     StaticStepDialog,
 )
 from .commands import (
@@ -179,6 +181,12 @@ from .widgets.status_bar import CAEStatusBar
 from .widgets.viewport import FEMViewport
 from .widgets.viewport_toolbar import ViewportPanel
 from .workers import TaskContext
+
+
+_IMPORTED_OUTPUT_REQUEST_WARNING = (
+    "此修改只保留在当前 Session；"
+    "重新加载原 INP 后会恢复源文件中的输出请求。"
+)
 
 
 def initial_display_policy(element_count: int, node_count: int) -> dict[str, bool]:
@@ -3460,10 +3468,90 @@ class FEMMainWindow(QMainWindow):
         )
 
     def create_output_request(self) -> None:
-        self._show_error(
+        authoring = describe_session_authoring(self.document)
+        capability = authoring.operation("output_request.create")
+        if not capability.can_submit:
+            self._show_authoring_decision_error(
+                "创建输出请求",
+                capability,
+            )
+            return
+        catalog = authoring.output_request_catalog
+        candidates = () if catalog is None else catalog.candidates
+        if not candidates:
+            self._show_error(
+                "创建输出请求",
+                "当前结果能力目录没有受支持的输出请求候选。",
+            )
+            return
+        step_names = [
+            step.name
+            for step in self.document.steps
+            if step.name.strip().casefold() != "initial"
+        ]
+        dialog = OutputRequestDialog(
+            step_names,
+            self,
+            candidates=candidates,
+        )
+        if not dialog.exec():
+            return
+        try:
+            step_name, request = dialog.definition()
+        except (TypeError, ValueError) as error:
+            self._show_error("创建输出请求", str(error))
+            return
+        if type(request) is not OutputRequest:
+            self._show_error(
+                "创建输出请求",
+                "输出请求候选必须生成 typed OutputRequest。",
+            )
+            return
+        definitions = list(deepcopy(self.document.steps))
+        target = next(
+            (
+                step
+                for step in definitions
+                if step.name == step_name
+                and step.name.strip().casefold() != "initial"
+            ),
+            None,
+        )
+        if target is None:
+            self._show_error(
+                "创建输出请求",
+                f"分析步不存在或不可编辑：{step_name}",
+            )
+            return
+        target.outputs = tuple(target.outputs) + (deepcopy(request),)
+        self._warn_imported_output_overlay()
+        self._analysis_definitions_changed(
+            "输出请求已创建，模型需要重新检查",
+            definitions,
+        )
+
+    def _warn_imported_output_overlay(self) -> None:
+        if self.document.source_kind != "imported":
+            return
+        QMessageBox.warning(
+            self,
             "输出请求",
-            "当前求解链不会执行输出请求，因此不能新建；"
-            "既有请求仍可在分析定义管理中查看或删除。",
+            _IMPORTED_OUTPUT_REQUEST_WARNING,
+        )
+
+    @staticmethod
+    def _output_collections_changed(
+        before: object,
+        after: object,
+    ) -> bool:
+        return tuple(
+            (step.name, tuple(step.outputs))
+            for step in before
+            if step.outputs
+        ) != tuple(
+            (step.name, tuple(step.outputs))
+            for step in after
+            if step.outputs
         )
 
     def _analysis_manager_dialog(
@@ -3474,6 +3562,7 @@ class FEMMainWindow(QMainWindow):
         node_regions, edge_regions, face_regions, line_regions = (
             self._supported_load_regions()
         )
+        authoring = describe_session_authoring(self.document)
         capability_report = self._model_capability_report()
         dimensions = (
             capability_report.dofs_per_node
@@ -3506,6 +3595,12 @@ class FEMMainWindow(QMainWindow):
                 else ()
             ),
             candidate_evaluator=self._evaluate_line_load_candidate,
+            output_view_capability=authoring.operation(
+                "output_request.view"
+            ),
+            output_delete_capability=authoring.operation(
+                "output_request.delete"
+            ),
         )
 
     def _evaluate_line_load_candidate(
@@ -3548,10 +3643,20 @@ class FEMMainWindow(QMainWindow):
         if not dialog.exec():
             return
         values = dialog.values()
-        if tuple(values) == tuple(
-            self.document.steps
-        ):
+        current = tuple(self.document.steps)
+        if tuple(values) == current:
             return
+        if self._output_collections_changed(current, values):
+            capability = describe_session_authoring(
+                self.document
+            ).operation("output_request.delete")
+            if not capability.can_submit:
+                self._show_authoring_decision_error(
+                    "删除输出请求",
+                    capability,
+                )
+                return
+            self._warn_imported_output_overlay()
         self._analysis_definitions_changed(
             "分析步、边界、载荷或输出请求已修改，模型需要重新检查",
             values,

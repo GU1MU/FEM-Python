@@ -345,10 +345,8 @@ def test_native_analysis_actions_are_available_before_meshing():
     assert window.actions["step_create"].isEnabled()
     assert window.actions["boundary_create"].isEnabled()
     assert window.actions["load_create"].isEnabled()
-    assert not window.actions["output_create"].isEnabled()
-    assert "既有请求仅可查看或删除" in (
-        window.actions["output_create"].toolTip()
-    )
+    assert window.actions["output_create"].isEnabled()
+    assert window.actions["output_create"].toolTip() == "输出请求"
     assert window.actions["analysis_manager"].isEnabled()
     assert window.actions["close"].isEnabled()
     assert window.actions["model_info"].isEnabled()

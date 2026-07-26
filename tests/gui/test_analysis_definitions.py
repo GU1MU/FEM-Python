@@ -1,18 +1,28 @@
 from __future__ import annotations
 
+import ast
+import inspect
 import os
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog
 
 from fem.application import (
+    AuthoringCapability,
+    AuthoringStatus,
     ModelSession,
     NamedRegion,
     RegionAssignment,
     RegionRef,
     SectionDefinition,
+)
+from fem.application.results import (
+    ElementResultProfile,
+    ResultCapabilityCatalog,
+    ResultModelFamily,
 )
 from fem.application.preprocessing import generate_fem_model
 from fem.core.model import (
@@ -22,6 +32,7 @@ from fem.core.model import (
     MaterialDefinition,
     NodalLoad,
     OutputRequest,
+    OutputSourceEvidence,
 )
 from fem.geometry import ExtrudedGeometry, LogicalEntityRef, RectangleGeometry
 from fem.mesh.settings import MeshSettings
@@ -43,6 +54,50 @@ def _application() -> QApplication:
 
 def _regions(kind: str, *names: str) -> list[RegionRef]:
     return [RegionRef(kind, name) for name in names]
+
+
+def _output_candidates(
+    family: ResultModelFamily = ResultModelFamily.PLANE_CONTINUUM,
+):
+    values = {
+        ResultModelFamily.PLANE_CONTINUUM: (
+            ("Quad4",),
+            ("plane_continuum",),
+            ("U1", "U2"),
+            ("Fx", "Fy"),
+        ),
+        ResultModelFamily.BEAM: (
+            ("Beam2",),
+            ("beam",),
+            ("U1", "U2", "U3", "UR1", "UR2", "UR3"),
+            ("Fx", "Fy", "Fz", "Mx", "My", "Mz"),
+        ),
+        ResultModelFamily.TRUSS: (
+            ("Truss2",),
+            ("truss",),
+            ("U1", "U2", "U3"),
+            ("Fx", "Fy", "Fz"),
+        ),
+    }
+    element_types, element_families, dofs, forces = values[family]
+    profile = ElementResultProfile(
+        family=family,
+        canonical_element_types=element_types,
+        element_families=element_families,
+        dofs_per_node=len(dofs),
+        dof_labels=dofs,
+        force_labels=forces,
+        primary_compatible=True,
+        stress_compatible=True,
+    )
+    return ResultCapabilityCatalog.from_profile(profile).candidates
+
+
+def _output_capability(
+    operation: str,
+    status: AuthoringStatus,
+) -> AuthoringCapability:
+    return AuthoringCapability(operation, status)
 
 
 @pytest.mark.gmsh
@@ -106,11 +161,14 @@ def test_analysis_dialogs_define_only_supported_kernel_objects():
     assert step_name == "Load"
     assert load.edge == "TOP"
     assert load_dialog.component_combo.itemText(0) == "Fx"
-    output_dialog = OutputRequestDialog(["Load"])
+    candidates = _output_candidates()
+    output_dialog = OutputRequestDialog(
+        ["Load"],
+        candidates=candidates,
+    )
     step_name, output = output_dialog.definition()
     assert step_name == "Load"
-    assert output.variables == ("U", "RF")
-    assert output_dialog.kind_combo.findData("history") == -1
+    assert output == candidates[0].authoring_request
 
 
 def test_analysis_dialog_region_catalogs_reject_untyped_strings():
@@ -441,29 +499,36 @@ def test_load_dialog_validates_region_and_builds_pressure():
     assert load.magnitude == 12.5
 
 
-def test_output_request_uses_supported_target_specific_variables():
+@pytest.mark.parametrize(
+    "family",
+    (
+        ResultModelFamily.PLANE_CONTINUUM,
+        ResultModelFamily.TRUSS,
+        ResultModelFamily.BEAM,
+    ),
+)
+def test_output_request_uses_only_published_candidate_order_and_dto(
+    family,
+):
     _application()
-    dialog = OutputRequestDialog(["Load"])
-
-    assert not dialog.variable_checks["U"].isHidden()
-    assert not dialog.variable_checks["RF"].isHidden()
-    assert dialog.variable_checks["S"].isHidden()
-
-    dialog.target_combo.setCurrentIndex(
-        dialog.target_combo.findData("element")
+    candidates = _output_candidates(family)
+    dialog = OutputRequestDialog(
+        ["Load"],
+        candidates=candidates,
     )
-    step_name, output = dialog.definition()
 
-    assert step_name == "Load"
-    assert output.kind == "field"
-    assert output.target == "element"
-    assert output.variables == ("S",)
-    assert dialog.variable_checks["U"].isHidden()
-    assert not dialog.variable_checks["S"].isHidden()
+    assert dialog.candidate_combo.count() == len(candidates)
+    for index, candidate in enumerate(candidates):
+        dialog.candidate_combo.setCurrentIndex(index)
+        step_name, output = dialog.definition()
+        assert step_name == "Load"
+        assert output == candidate.authoring_request
+        assert output is not candidate.authoring_request
 
-    dialog.variable_checks["S"].setChecked(False)
-    with pytest.raises(ValueError, match="至少选择"):
-        dialog.definition()
+    assert tuple(
+        dialog.candidate_combo.itemData(index)
+        for index in range(dialog.candidate_combo.count())
+    ) == tuple(range(len(candidates)))
 
 
 def test_output_request_preserves_parsed_inp_history_metadata():
@@ -471,20 +536,29 @@ def test_output_request_preserves_parsed_inp_history_metadata():
     current = OutputRequest(
         "history",
         "preselect",
-        ("PRESELECT",),
+        ("PRESELECT", "PRESELECT", "Future"),
         {"variable": "PRESELECT"},
+        OutputSourceEvidence(
+            "abaqus",
+            parent_parameters=(("frequency", "2"),),
+            child_flags=("preselect",),
+        ),
     )
     dialog = OutputRequestDialog(["Load"], current=current)
 
     step_name, output = dialog.definition()
 
     assert step_name == "Load"
-    assert output.kind == "history"
-    assert output.target == "preselect"
-    assert output.variables == ("PRESELECT",)
-    assert output.metadata == {"variable": "PRESELECT"}
-    assert not dialog.kind_combo.isEnabled()
-    assert "PRESELECT" in dialog.preserved_label.text()
+    assert output == current
+    assert output is not current
+    assert not dialog.step_combo.isEnabled()
+    assert dialog.kind_value.text() == "history"
+    assert dialog.target_value.text() == "preselect"
+    assert dialog.variables_value.text() == (
+        "PRESELECT、PRESELECT、Future"
+    )
+    assert "variable=PRESELECT" in dialog.metadata_value.text()
+    assert "frequency" in dialog.source_evidence_value.text()
 
 
 def test_analysis_manager_uses_readable_definition_summaries():
@@ -504,3 +578,157 @@ def test_analysis_manager_uses_readable_definition_summaries():
     assert manager.table.item(1, 3).text() == "U1 = 0"
     assert manager.table.item(2, 0).text() == "字段输出"
     assert manager.table.item(2, 2).text() == "节点"
+
+
+def test_output_view_is_read_only_and_preserves_unsupported_request(
+    monkeypatch,
+) -> None:
+    _application()
+    output = OutputRequest(
+        "history",
+        "preselect",
+        ("Future", "Future", "PRESELECT"),
+        {"future": {"mode": "opaque"}},
+        OutputSourceEvidence(
+            "abaqus",
+            parent_flags=("history",),
+            child_parameters=(("variable", "PRESELECT"),),
+        ),
+    )
+    step = static("Load")
+    step.outputs = (output,)
+    manager = AnalysisDefinitionManagerDialog(
+        [step],
+        [],
+        [],
+        [],
+        2,
+        output_view_capability=_output_capability(
+            "output_request.view",
+            AuthoringStatus.READ_ONLY,
+        ),
+        output_delete_capability=_output_capability(
+            "output_request.delete",
+            AuthoringStatus.UNAVAILABLE,
+        ),
+    )
+    monkeypatch.setattr(
+        OutputRequestDialog,
+        "exec",
+        lambda _dialog: QDialog.DialogCode.Accepted,
+    )
+    before = manager.values()
+
+    assert manager.select_definition(("output", 0, 0))
+    assert manager.edit_button.text() == "查看"
+    assert manager.edit_button.isEnabled()
+    assert not manager.delete_button.isEnabled()
+    assert not manager.edit_definition(("output", 0, 0))
+    assert manager.values() == before
+    assert manager.values()[0].outputs[0] == output
+
+
+def test_output_delete_uses_independent_capability_and_protects_initial() -> None:
+    _application()
+    output = OutputRequest("history", "preselect", ("Future",))
+    load = static("Load")
+    load.outputs = (output,)
+    denied = AnalysisDefinitionManagerDialog(
+        [load],
+        [],
+        [],
+        [],
+        2,
+        output_view_capability=_output_capability(
+            "output_request.view",
+            AuthoringStatus.UNAVAILABLE,
+        ),
+        output_delete_capability=_output_capability(
+            "output_request.delete",
+            AuthoringStatus.UNAVAILABLE,
+        ),
+    )
+    assert denied.select_definition(("output", 0, 0))
+    assert not denied.edit_button.isEnabled()
+    assert not denied.delete_button.isEnabled()
+    denied._delete()
+    assert denied.values()[0].outputs == (output,)
+
+    allowed = AnalysisDefinitionManagerDialog(
+        [load],
+        [],
+        [],
+        [],
+        2,
+        output_view_capability=_output_capability(
+            "output_request.view",
+            AuthoringStatus.UNAVAILABLE,
+        ),
+        output_delete_capability=_output_capability(
+            "output_request.delete",
+            AuthoringStatus.ENABLED,
+        ),
+    )
+    assert allowed.select_definition(("output", 0, 0))
+    assert not allowed.edit_button.isEnabled()
+    assert allowed.delete_button.isEnabled()
+    allowed._delete()
+    assert allowed.values()[0].outputs == ()
+
+    initial = static("Initial")
+    initial.outputs = (output,)
+    protected = AnalysisDefinitionManagerDialog(
+        [initial],
+        [],
+        [],
+        [],
+        2,
+        output_delete_capability=_output_capability(
+            "output_request.delete",
+            AuthoringStatus.ENABLED,
+        ),
+    )
+    assert protected.select_definition(("output", 0, 0))
+    assert not protected.delete_button.isEnabled()
+    protected._delete()
+    assert protected.values()[0].outputs == (output,)
+    assert protected.select_definition(("step", 0, None))
+    assert not protected.delete_button.isEnabled()
+    protected._delete()
+    assert len(protected.values()) == 1
+    assert protected.values()[0].outputs == (output,)
+
+
+def test_output_dialog_has_no_gui_support_matrix_or_dto_rebuild() -> None:
+    source_path = Path(inspect.getsourcefile(OutputRequestDialog) or "")
+    module = ast.parse(source_path.read_text(encoding="utf-8"))
+    class_node = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.ClassDef)
+        and node.name == "OutputRequestDialog"
+    )
+    string_values = {
+        node.value
+        for node in ast.walk(class_node)
+        if isinstance(node, ast.Constant)
+        and type(node.value) is str
+    }
+    output_request_calls = [
+        node
+        for node in ast.walk(class_node)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "OutputRequest"
+    ]
+    attributes = {
+        node.attr
+        for node in ast.walk(class_node)
+        if isinstance(node, ast.Attribute)
+    }
+
+    assert string_values.isdisjoint({"U", "UR", "RF", "RM", "S"})
+    assert output_request_calls == []
+    assert attributes.isdisjoint(
+        {"upper", "split", "startswith", "endswith"}
+    )

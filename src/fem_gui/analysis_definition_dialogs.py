@@ -29,9 +29,11 @@ from PySide6.QtWidgets import (
 
 from fem.application import (
     AuthoringCapability,
+    AuthoringStatus,
     RegionRef,
     require_region_kind,
 )
+from fem.application.results import OutputRequestProjection
 from fem.core.immutable_json import thaw_json_mapping
 from fem.core.model import (
     AnalysisStep,
@@ -687,155 +689,158 @@ class LoadDialog(QDialog):
 
 
 class OutputRequestDialog(QDialog):
-    _VARIABLES = (
-        ("U", "位移 U", "node"),
-        ("RF", "反力 RF", "node"),
-        ("S", "应力 S", "element"),
-    )
-
     def __init__(
         self,
         step_names: list[str],
         parent=None,
         *,
+        candidates: Sequence[OutputRequestProjection] = (),
         current: OutputRequest | None = None,
     ) -> None:
         super().__init__(parent)
+        if any(type(name) is not str or not name.strip() for name in step_names):
+            raise TypeError("step_names must contain nonblank strings")
+        candidate_values = tuple(candidates)
+        if any(
+            type(candidate) is not OutputRequestProjection
+            for candidate in candidate_values
+        ):
+            raise TypeError(
+                "candidates must contain OutputRequestProjection values"
+            )
+        if any(not candidate.executable for candidate in candidate_values):
+            raise ValueError("output request candidates must be executable")
+        if current is not None and type(current) is not OutputRequest:
+            raise TypeError("current must be exactly OutputRequest or None")
+        if current is not None and candidate_values:
+            raise ValueError(
+                "read-only output request views cannot accept candidates"
+            )
+
+        self._candidates = deepcopy(candidate_values)
+        self._current = deepcopy(current)
         self.setWindowTitle(
             "查看输出请求" if current is not None else "创建输出请求"
         )
         self.step_combo = QComboBox(self)
-        self.kind_combo = QComboBox(self)
-        self.target_combo = QComboBox(self)
         self.step_combo.addItems(step_names)
-        self.kind_combo.addItem("字段输出", "field")
-        if current is not None and current.kind != "field":
-            self.kind_combo.addItem("历史输出（来自 INP）", current.kind)
-        self.target_combo.addItem("节点", "node")
-        self.target_combo.addItem("单元", "element")
-        if (
-            current is not None
-            and self.target_combo.findData(current.target) < 0
+        self.candidate_combo = QComboBox(self)
+        for index, candidate in enumerate(self._candidates):
+            self.candidate_combo.addItem(
+                _output_request_summary(candidate.authoring_request),
+                index,
+            )
+        self.kind_value = QLabel("", self)
+        self.target_value = QLabel("", self)
+        self.variables_value = QLabel("", self)
+        self.metadata_value = QLabel("", self)
+        self.source_evidence_value = QLabel("", self)
+        for label in (
+            self.variables_value,
+            self.metadata_value,
+            self.source_evidence_value,
         ):
-            self.target_combo.addItem(
-                f"{current.target}（来自 INP）",
-                current.target,
-            )
-        self.variable_checks: dict[str, QCheckBox] = {}
-        variable_widget = QWidget(self)
-        variable_layout = QVBoxLayout(variable_widget)
-        variable_layout.setContentsMargins(0, 0, 0, 0)
-        for variable, label, _target in self._VARIABLES:
-            check = QCheckBox(label, variable_widget)
-            self.variable_checks[variable] = check
-            variable_layout.addWidget(check)
-        self.preserved_label = QLabel("", variable_widget)
-        self.preserved_label.setWordWrap(True)
-        variable_layout.addWidget(self.preserved_label)
-        self._preserved_signature = (
-            (current.kind, current.target) if current is not None else None
-        )
-        self._preserved_metadata = (
-            thaw_json_mapping(current.metadata)
-            if current is not None
-            else {}
-        )
-        known_variables = set(self.variable_checks)
-        self._preserved_variables = (
-            tuple(
-                variable
-                for variable in current.variables
-                if variable.upper() not in known_variables
-            )
-            if current is not None
-            else ()
-        )
-        if current is not None:
-            self.kind_combo.setCurrentIndex(
-                max(0, self.kind_combo.findData(current.kind))
-            )
-            self.target_combo.setCurrentIndex(
-                max(0, self.target_combo.findData(current.target))
-            )
-            selected = {variable.upper() for variable in current.variables}
-            for variable, check in self.variable_checks.items():
-                check.setChecked(variable in selected)
-        else:
-            self.variable_checks["U"].setChecked(True)
-            self.variable_checks["RF"].setChecked(True)
-        self.kind_combo.setEnabled(
-            current is None or current.kind == "field"
-        )
-        self.target_combo.setEnabled(
-            current is None or current.target in {"node", "element"}
-        )
-        if current is not None:
-            self.step_combo.setEnabled(False)
-            self.kind_combo.setEnabled(False)
-            self.target_combo.setEnabled(False)
-            for check in self.variable_checks.values():
-                check.setEnabled(False)
-        self.kind_combo.currentIndexChanged.connect(self._refresh_variables)
-        self.target_combo.currentIndexChanged.connect(self._target_changed)
+            label.setWordWrap(True)
+
         form = QFormLayout()
         configure_form_layout(form)
         form.addRow("分析步", self.step_combo)
-        form.addRow("输出类型", self.kind_combo)
-        form.addRow("输出位置", self.target_combo)
-        form.addRow("输出变量", variable_widget)
+        if self._current is None:
+            form.addRow("候选输出", self.candidate_combo)
+        form.addRow("输出类型", self.kind_value)
+        form.addRow("输出位置", self.target_value)
+        form.addRow("输出变量", self.variables_value)
+        form.addRow("元数据", self.metadata_value)
+        form.addRow("源证据", self.source_evidence_value)
         layout = QVBoxLayout(self)
         layout.addLayout(form)
-        layout.addWidget(_buttons(self))
+        if self._current is None:
+            layout.addWidget(_buttons(self))
+            self.candidate_combo.currentIndexChanged.connect(
+                self._refresh_request
+            )
+        else:
+            self.step_combo.setEnabled(False)
+            self.candidate_combo.setVisible(False)
+            buttons = QDialogButtonBox(
+                QDialogButtonBox.StandardButton.Close,
+                self,
+            )
+            buttons.button(
+                QDialogButtonBox.StandardButton.Close
+            ).setText("关闭")
+            buttons.rejected.connect(self.reject)
+            layout.addWidget(buttons)
         self.setMinimumWidth(330)
-        self._refresh_variables()
+        self._refresh_request()
 
     def definition(self) -> tuple[str, OutputRequest]:
         step_name = self.step_combo.currentText().strip()
         if not step_name:
             raise ValueError("请选择分析步")
-        kind = str(self.kind_combo.currentData())
-        target = str(self.target_combo.currentData())
-        variables = tuple(
-            variable
-            for variable, _label, variable_target in self._VARIABLES
-            if variable_target == target
-            and self.variable_checks[variable].isChecked()
-        )
-        if self._preserved_signature == (kind, target):
-            variables += self._preserved_variables
-            metadata = self._preserved_metadata
-        else:
-            metadata = {}
-        if not variables:
-            raise ValueError("至少选择一个输出变量")
-        return step_name, OutputRequest(kind, target, variables, metadata)
-
-    def _target_changed(self) -> None:
-        target = str(self.target_combo.currentData())
-        for variable, _label, variable_target in self._VARIABLES:
-            self.variable_checks[variable].setChecked(
-                variable_target == target
+        if self._current is not None:
+            return step_name, deepcopy(self._current)
+        index = self.candidate_combo.currentData()
+        if type(index) is not int or not 0 <= index < len(self._candidates):
+            raise ValueError("请选择受支持的输出请求")
+        request = deepcopy(self._candidates[index].authoring_request)
+        if type(request) is not OutputRequest:
+            raise TypeError(
+                "candidate authoring_request must be exactly OutputRequest"
             )
-        self._refresh_variables()
+        return step_name, request
 
-    def _refresh_variables(self) -> None:
-        kind = str(self.kind_combo.currentData())
-        target = str(self.target_combo.currentData())
-        for variable, _label, variable_target in self._VARIABLES:
-            self.variable_checks[variable].setVisible(
-                kind == "field" and target == variable_target
+    def _refresh_request(self) -> None:
+        request = self._selected_request()
+        self.kind_value.setText("" if request is None else request.kind)
+        self.target_value.setText("" if request is None else request.target)
+        self.variables_value.setText(
+            ""
+            if request is None
+            else "、".join(request.variables)
+        )
+        self.metadata_value.setText(
+            ""
+            if request is None
+            else _output_metadata_text(request)
+        )
+        self.source_evidence_value.setText(
+            ""
+            if request is None
+            else (
+                "—"
+                if request.source_evidence is None
+                else repr(request.source_evidence)
             )
-        preserved = (
-            self._preserved_variables
-            if self._preserved_signature == (kind, target)
-            else ()
         )
-        self.preserved_label.setText(
-            "保留 INP 变量：" + "、".join(preserved)
-            if preserved
-            else ""
-        )
-        self.preserved_label.setVisible(bool(preserved))
+
+    def _selected_request(self) -> OutputRequest | None:
+        if self._current is not None:
+            return self._current
+        index = self.candidate_combo.currentData()
+        if type(index) is not int or not 0 <= index < len(self._candidates):
+            return None
+        return self._candidates[index].authoring_request
+
+
+def _output_request_summary(request: OutputRequest) -> str:
+    if type(request) is not OutputRequest:
+        raise TypeError("request must be exactly OutputRequest")
+    values = [request.kind, request.target, "、".join(request.variables)]
+    metadata = _output_metadata_text(request)
+    if metadata != "—":
+        values.append(metadata)
+    return " · ".join(values)
+
+
+def _output_metadata_text(request: OutputRequest) -> str:
+    metadata = thaw_json_mapping(request.metadata)
+    if not metadata:
+        return "—"
+    return "；".join(
+        f"{key}={value}"
+        for key, value in metadata.items()
+    )
 
 
 class AnalysisDefinitionManagerDialog(QDialog):
@@ -855,6 +860,8 @@ class AnalysisDefinitionManagerDialog(QDialog):
         dof_labels: Sequence[str] | None = None,
         force_labels: Sequence[str] | None = None,
         candidate_evaluator: Callable[..., AuthoringCapability] | None = None,
+        output_view_capability: AuthoringCapability | None = None,
+        output_delete_capability: AuthoringCapability | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("分析定义管理")
@@ -871,6 +878,16 @@ class AnalysisDefinitionManagerDialog(QDialog):
             str(label) for label in force_labels or ()
         )
         self._candidate_evaluator = candidate_evaluator
+        self._output_view_capability = _manager_output_capability(
+            output_view_capability,
+            operation="output_request.view",
+            default_status=AuthoringStatus.READ_ONLY,
+        )
+        self._output_delete_capability = _manager_output_capability(
+            output_delete_capability,
+            operation="output_request.delete",
+            default_status=AuthoringStatus.ENABLED,
+        )
         self.spatial_dimensions = int(
             spatial_dimensions
             if spatial_dimensions is not None
@@ -1278,26 +1295,16 @@ class AnalysisDefinitionManagerDialog(QDialog):
             self._append_load(self._step(target_step), value)
         else:
             current = step.outputs[int(item_index)]
+            if not self._output_view_capability.can_enter:
+                return
             dialog = OutputRequestDialog(
                 [item.name for item in self.steps],
                 self,
                 current=current,
             )
             dialog.step_combo.setCurrentText(step.name)
-            if not dialog.exec():
-                return
-            try:
-                target_step, value = dialog.definition()
-            except ValueError as error:
-                QMessageBox.warning(self, "分析定义", str(error))
-                return
-            step.outputs = tuple(
-                item
-                for index, item in enumerate(step.outputs)
-                if index != item_index
-            )
-            target = self._step(target_step)
-            target.outputs = tuple(target.outputs) + (value,)
+            dialog.exec()
+            return
         self._refresh(row)
 
     def _delete(self) -> None:
@@ -1306,6 +1313,18 @@ class AnalysisDefinitionManagerDialog(QDialog):
             return
         kind, step_index, item_index = selected
         step = self.steps[step_index]
+        initial_output_owner = (
+            step.name.strip().casefold() == "initial"
+            and bool(step.outputs)
+        )
+        if (
+            kind == "output"
+            and not self._output_delete_capability.can_submit
+        ) or (
+            kind in {"step", "output"}
+            and initial_output_owner
+        ):
+            return
         if kind == "step":
             del self.steps[step_index]
         else:
@@ -1351,13 +1370,64 @@ class AnalysisDefinitionManagerDialog(QDialog):
 
     def _update_buttons(self) -> None:
         selected = self._selected()
-        self.edit_button.setEnabled(selected is not None)
+        is_output = selected is not None and selected[0] == "output"
+        deletes_initial_outputs = (
+            selected is not None
+            and selected[0] in {"step", "output"}
+            and self.steps[selected[1]].name.strip().casefold()
+            == "initial"
+            and bool(self.steps[selected[1]].outputs)
+        )
+        output_step_is_editable = (
+            is_output
+            and self.steps[selected[1]].name.strip().casefold()
+            != "initial"
+        )
+        self.edit_button.setEnabled(
+            selected is not None
+            and (
+                not is_output
+                or self._output_view_capability.can_enter
+            )
+        )
         self.edit_button.setText(
             "查看"
-            if selected is not None and selected[0] == "output"
+            if is_output
             else "编辑"
         )
-        self.delete_button.setEnabled(selected is not None)
+        self.delete_button.setEnabled(
+            selected is not None
+            and not deletes_initial_outputs
+            and (
+                not is_output
+                or (
+                    output_step_is_editable
+                    and self._output_delete_capability.can_submit
+                )
+            )
+        )
 
     def values(self) -> list[AnalysisStep]:
         return deepcopy(self.steps)
+
+
+def _manager_output_capability(
+    value: AuthoringCapability | None,
+    *,
+    operation: str,
+    default_status: AuthoringStatus,
+) -> AuthoringCapability:
+    capability = (
+        AuthoringCapability(operation, default_status)
+        if value is None
+        else value
+    )
+    if type(capability) is not AuthoringCapability:
+        raise TypeError(
+            f"{operation} capability must be AuthoringCapability"
+        )
+    if capability.operation != operation:
+        raise ValueError(
+            f"expected {operation} capability, got {capability.operation}"
+        )
+    return capability

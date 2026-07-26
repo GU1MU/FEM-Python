@@ -470,12 +470,13 @@ def derive_action_availability(
         has_step and bool(load_targets or has_native_geometry) and not busy,
         load_reason,
     )
+    output_create = authoring.operation("output_request.create")
     set_state(
         GuiActionKey.OUTPUT_CREATE,
-        False,
+        output_create.can_submit and not busy,
         _capability_reason(
-            authoring.report.operation("output_request.create"),
-            "当前求解链不会执行输出请求；既有请求仅可查看或删除",
+            output_create,
+            "当前 Session 不允许创建输出请求",
         ),
     )
     set_state(
