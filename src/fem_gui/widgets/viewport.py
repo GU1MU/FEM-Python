@@ -15,7 +15,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QLabel, QStackedLayout, QVBoxLayout, QWidget
 
 from fem.application import RegionRef
-from fem.application.results import FieldLocation, ResultValueLayout
+from fem.application.results import FieldLocation, ResultCellKind, ResultValueLayout
 from fem.boundary.step import boundary_for_step, get_step
 from fem.geometry import LogicalEntityRef, logical_ref_sort_key
 from fem.post.stress import dispatch, field
@@ -50,6 +50,7 @@ _backend_attempted = False
 
 BEAM_FRAME_GLYPH_LIMIT = 64
 BEAM_FRAME_CACHE_LIMIT = 256
+_TYPED_RESULT_GRID_NAME = "typed_result_grid"
 
 
 def _effective_line_load_vector(
@@ -184,39 +185,11 @@ def _require_result_render_payload(
 ) -> ResultRenderPayload:
     """Validate the exact typed viewport boundary without eagerly loading VTK."""
 
-    from ..visualization.result_renderer import ResultRenderPayload
+    from ..visualization.result_renderer import (
+        validate_result_render_payload,
+    )
 
-    if type(payload) is not ResultRenderPayload:
-        raise TypeError("payload must be exactly ResultRenderPayload")
-    topology = payload.topology
-    dataset = payload.dataset
-    if int(dataset.n_points) != len(topology.point_locations):
-        raise ValueError("payload point provenance must match dataset points")
-    if int(dataset.n_cells) != len(topology.cell_locations):
-        raise ValueError("payload cell provenance must match dataset cells")
-    scalar_name = payload.scalar_name
-    in_points = scalar_name in dataset.point_data
-    in_cells = scalar_name in dataset.cell_data
-    if topology.value_layout is ResultValueLayout.POINT:
-        values = dataset.point_data[scalar_name] if in_points else None
-        expected_values = int(dataset.n_points)
-    elif topology.value_layout is ResultValueLayout.CELL:
-        values = dataset.cell_data[scalar_name] if in_cells else None
-        expected_values = int(dataset.n_cells)
-    else:
-        raise TypeError("payload value_layout must be exactly ResultValueLayout")
-    if values is None or in_points == in_cells:
-        raise ValueError(
-            "payload scalar association must exactly match topology value_layout"
-        )
-    scalar_values = np.asarray(values)
-    if scalar_values.shape != (expected_values,):
-        raise ValueError("payload scalar must be one-dimensional")
-    if dataset.active_scalars_name != scalar_name:
-        raise ValueError("payload scalar must be the active dataset scalar")
-    if not np.array_equal(scalar_values, topology.values, equal_nan=True):
-        raise ValueError("payload scalar values must exactly match topology values")
-    return payload
+    return validate_result_render_payload(payload)
 
 
 def _point_to_segment_distance(
@@ -253,7 +226,7 @@ class FEMViewport(QWidget):
         self._result_grid = None
         self._result_scalar: ScalarField | None = None
         self._result_point_index_to_node_id: dict[int, int] = {}
-        self._result_point_index_to_element_id: dict[int, int | None] = {}
+        self._result_point_index_to_element_id: dict[int, int] = {}
         self._result_cell_index_to_element_id: dict[int, int] = {}
         self._model = None
         self._geometry: ModelGeometry | None = None
@@ -274,6 +247,9 @@ class FEMViewport(QWidget):
         self._pick_locators: dict[int, tuple[int, Any]] = {}
         self._result_data: ResultData | None = None
         self._result_render_payload: ResultRenderPayload | None = None
+        # Runtime revalidation follows VTK Modified notifications. Full
+        # representation validation still runs unconditionally on install/render.
+        self._result_render_validated_mtime: int | None = None
         self._artifact_id: str | None = None
         self._run_id: str | None = None
         self._actors: dict[str, Any] = {}
@@ -583,6 +559,7 @@ class FEMViewport(QWidget):
         self._pick_locators.clear()
         self._result_data = None
         self._result_render_payload = None
+        self._result_render_validated_mtime = None
         self._selected_kind = None
         self._selected_id = None
         self._selection_highlight_visible = True
@@ -634,6 +611,7 @@ class FEMViewport(QWidget):
         self._pick_locators.clear()
         self._result_data = None
         self._result_render_payload = None
+        self._result_render_validated_mtime = None
         self._display = DisplayState()
         self._overlay_undeformed = False
         self._selected_kind = None
@@ -781,6 +759,7 @@ class FEMViewport(QWidget):
         """Install the compatibility cache used by the legacy render path."""
 
         self._result_render_payload = None
+        self._result_render_validated_mtime = None
         self._result_data = data
         self._run_id = data.run_id
         if self._display.field_key not in data.fields:
@@ -803,6 +782,9 @@ class FEMViewport(QWidget):
                 "payload artifact provenance does not match the viewport model"
             )
         self._result_render_payload = checked
+        self._result_render_validated_mtime = int(
+            checked.dataset.GetMTime()
+        )
         self._result_data = None
         self._artifact_id = source.artifact_id
         self._run_id = source.run_id
@@ -812,10 +794,9 @@ class FEMViewport(QWidget):
         self,
         payload: ResultRenderPayload,
     ) -> None:
-        """Expose typed locations through the existing viewport pick indexes."""
+        """Index locations from a payload validated by the current caller."""
 
-        checked = _require_result_render_payload(payload)
-        topology = checked.topology
+        topology = payload.topology
         self._result_point_index_to_node_id = {
             index: int(location.node_id)
             for index, location in enumerate(topology.point_locations)
@@ -850,6 +831,91 @@ class FEMViewport(QWidget):
             for index, element_id in enumerate(cell_ids)
             if element_id > 0
         }
+
+    def _rendered_result_payload(self) -> ResultRenderPayload | None:
+        """Return the rendered payload, honoring VTK-reported modifications.
+
+        Mutations that bypass VTK's ``Modified`` protocol are detected at the
+        next unconditional install/render boundary, not on every hover read.
+        """
+
+        payload = self._result_render_payload
+        if payload is None or self._result_grid is not payload.dataset:
+            return None
+        modified = int(payload.dataset.GetMTime())
+        if self._result_render_validated_mtime != modified:
+            payload = _require_result_render_payload(payload)
+            self._result_render_validated_mtime = modified
+        return payload
+
+    @staticmethod
+    def _provenance_ids(
+        length: int,
+        index_to_id: dict[int, int],
+    ) -> np.ndarray:
+        return np.fromiter(
+            (index_to_id.get(index, 0) for index in range(length)),
+            dtype=np.int64,
+            count=length,
+        )
+
+    def _typed_result_point_ids(self, dataset: Any) -> np.ndarray:
+        return self._provenance_ids(
+            int(dataset.n_points),
+            self._result_point_index_to_node_id,
+        )
+
+    def _typed_result_point_element_ids(self, dataset: Any) -> np.ndarray:
+        return self._provenance_ids(
+            int(dataset.n_points),
+            self._result_point_index_to_element_id,
+        )
+
+    def _typed_result_cell_ids(self, dataset: Any) -> np.ndarray:
+        return self._provenance_ids(
+            int(dataset.n_cells),
+            self._result_cell_index_to_element_id,
+        )
+
+    def _typed_result_node_points(
+        self,
+        node_ids: tuple[int, ...],
+    ) -> np.ndarray | None:
+        payload = self._rendered_result_payload()
+        if payload is None:
+            return None
+        ids = self._typed_result_point_ids(payload.dataset)
+        requested = frozenset(int(node_id) for node_id in node_ids)
+        available = frozenset(int(node_id) for node_id in ids if node_id > 0)
+        if not requested or not requested.issubset(available):
+            return None
+        indices = np.flatnonzero(
+            np.isin(ids, np.asarray(tuple(requested), dtype=np.int64))
+        )
+        if len(indices) == 0:
+            return None
+        return np.asarray(payload.dataset.points)[indices]
+
+    def _typed_result_element_cells(
+        self,
+        element_ids: tuple[int, ...],
+    ) -> Any | None:
+        payload = self._rendered_result_payload()
+        if payload is None:
+            return None
+        ids = self._typed_result_cell_ids(payload.dataset)
+        requested = frozenset(int(element_id) for element_id in element_ids)
+        available = frozenset(
+            int(element_id) for element_id in ids if element_id > 0
+        )
+        if not requested or not requested.issubset(available):
+            return None
+        indices = np.flatnonzero(
+            np.isin(ids, np.asarray(tuple(requested), dtype=np.int64))
+        )
+        if len(indices) == 0:
+            return None
+        return payload.dataset.extract_cells(indices)
 
     def set_selection_mode(self, mode: str) -> None:
         previous = self._selection_mode
@@ -992,7 +1058,13 @@ class FEMViewport(QWidget):
         self._remove_actor("selection")
         self._clear_beam_frame_preview(render=False)
         if self._plotter is not None and _pyvista is not None:
-            point = _pyvista.PolyData(self._model_display_points()[[index]])
+            result_points = self._typed_result_node_points((int(node_id),))
+            points = (
+                self._model_display_points()[[index]]
+                if result_points is None
+                else result_points
+            )
+            point = _pyvista.PolyData(points)
             self._actors["selection"] = self._plotter.add_mesh(
                 point, color="#d69a3a", point_size=14, render_points_as_spheres=True,
                 name="selection", reset_camera=False,
@@ -1009,7 +1081,9 @@ class FEMViewport(QWidget):
         self._selection_highlight_visible = True
         self._remove_actor("selection")
         if self._pick_grid is not None and self._plotter is not None:
-            selected = self._pick_grid.extract_cells([index])
+            selected = self._typed_result_element_cells((int(element_id),))
+            if selected is None:
+                selected = self._pick_grid.extract_cells([index])
             self._actors["selection"] = self._plotter.add_mesh(
                 selected, color="#d69a3a", style="wireframe", line_width=3,
                 name="selection", reset_camera=False,
@@ -1026,8 +1100,20 @@ class FEMViewport(QWidget):
         self._remove_actor("set_highlight")
         self._clear_beam_frame_preview(render=False)
         if indices:
+            result_points = self._typed_result_node_points(
+                tuple(
+                    int(node_id)
+                    for node_id in node_ids
+                    if node_id in self._geometry.node_id_to_point_index
+                )
+            )
+            points = (
+                self._model_display_points()[indices]
+                if result_points is None
+                else result_points
+            )
             self._actors["set_highlight"] = self._plotter.add_mesh(
-                _pyvista.PolyData(self._model_display_points()[indices]), color="#4f8fa8",
+                _pyvista.PolyData(points), color="#4f8fa8",
                 point_size=12, render_points_as_spheres=True, name="set_highlight",
                 reset_camera=False,
             )
@@ -1040,8 +1126,17 @@ class FEMViewport(QWidget):
         self._remove_actor("set_highlight")
         self._clear_beam_frame_preview(render=False)
         if indices:
+            selected = self._typed_result_element_cells(
+                tuple(
+                    int(element_id)
+                    for element_id in element_ids
+                    if element_id in self._geometry.element_id_to_cell_index
+                )
+            )
+            if selected is None:
+                selected = self._pick_grid.extract_cells(indices)
             self._actors["set_highlight"] = self._plotter.add_mesh(
-                self._pick_grid.extract_cells(indices), color="#4f8fa8", style="wireframe",
+                selected, color="#4f8fa8", style="wireframe",
                 line_width=3, name="set_highlight", reset_camera=False,
             )
         self._render()
@@ -2267,14 +2362,18 @@ class FEMViewport(QWidget):
         """Render an already-selected and already-deformed typed payload."""
 
         checked = _require_result_render_payload(payload)
+        self._result_render_validated_mtime = int(
+            checked.dataset.GetMTime()
+        )
         self._index_result_render_provenance(checked)
         if self._plotter is None:
             return
         dataset = checked.dataset
         self._result_grid = dataset
-        self._pick_grid = dataset
         self._pick_locators.clear()
         self._clear_preselection(render=False)
+        self._remove_actor("set_highlight")
+        self._remove_actor("selection")
         base = self._actors.get("mesh_surface")
         if base is not None:
             base.SetVisibility(False)
@@ -2320,6 +2419,7 @@ class FEMViewport(QWidget):
         ):
             self._add_result_render_payload_extrema_labels(checked)
         self._refresh_undeformed_overlay()
+        self._restore_selection()
         self._render()
 
     def _add_result_render_payload_extrema_labels(
@@ -2690,6 +2790,22 @@ class FEMViewport(QWidget):
                 return replace(hit, pick_id=body_pick_id)
             return hit
         if mode == "node":
+            payload = self._rendered_result_payload()
+            if payload is not None:
+                ids = self._typed_result_point_ids(payload.dataset)
+                if bool(np.any(ids > 0)):
+                    hit = self._pick_screen_point(
+                        x,
+                        y,
+                        payload.dataset,
+                        "node_id",
+                        _TYPED_RESULT_GRID_NAME,
+                        payload.dataset,
+                        8.0,
+                        provenance_ids=ids,
+                    )
+                    if hit is not None:
+                        return hit
             return self._pick_screen_point(
                 x,
                 y,
@@ -2700,6 +2816,40 @@ class FEMViewport(QWidget):
                 8.0,
             )
         if mode == "element":
+            payload = self._rendered_result_payload()
+            if payload is not None:
+                ids = self._typed_result_cell_ids(payload.dataset)
+                if bool(np.any(ids > 0)):
+                    if all(
+                        kind is ResultCellKind.SAMPLE_VERTEX
+                        for kind in payload.topology.cell_kinds
+                    ):
+                        point_ids = self._typed_result_point_element_ids(
+                            payload.dataset
+                        )
+                        hit = self._pick_screen_point(
+                            x,
+                            y,
+                            payload.dataset,
+                            "element_id",
+                            _TYPED_RESULT_GRID_NAME,
+                            payload.dataset,
+                            8.0,
+                            provenance_ids=point_ids,
+                        )
+                        if hit is not None:
+                            return hit
+                    hit = self._pick_cell(
+                        x,
+                        y,
+                        payload.dataset,
+                        "element_id",
+                        _TYPED_RESULT_GRID_NAME,
+                        mode,
+                        provenance_ids=ids,
+                    )
+                    if hit is not None:
+                        return hit
             return self._pick_cell(
                 x,
                 y,
@@ -2719,19 +2869,19 @@ class FEMViewport(QWidget):
         dataset_name: str,
         occluder: Any,
         tolerance: float,
+        *,
+        provenance_ids: np.ndarray | None = None,
     ) -> PickHit | None:
         if dataset is None:
             return None
-        if id_array in dataset.point_data:
+        if provenance_ids is not None:
+            ids = np.asarray(provenance_ids, dtype=np.int64)
+            if ids.shape != (int(dataset.n_points),):
+                raise ValueError(
+                    "point provenance ids must match dataset points"
+                )
+        elif id_array in dataset.point_data:
             ids = np.asarray(dataset.point_data[id_array], dtype=np.int64)
-        elif dataset is self._result_grid and id_array == "node_id":
-            ids = np.asarray(
-                tuple(
-                    self._result_point_index_to_node_id.get(index, 0)
-                    for index in range(int(dataset.n_points))
-                ),
-                dtype=np.int64,
-            )
         else:
             return None
         mouse = np.asarray((float(x), float(y)), dtype=float)
@@ -2879,19 +3029,19 @@ class FEMViewport(QWidget):
         id_array: str,
         dataset_name: str,
         kind: str,
+        *,
+        provenance_ids: np.ndarray | None = None,
     ) -> PickHit | None:
         if dataset is None:
             return None
-        if id_array in dataset.cell_data:
+        if provenance_ids is not None:
+            ids = np.asarray(provenance_ids, dtype=np.int64)
+            if ids.shape != (int(dataset.n_cells),):
+                raise ValueError(
+                    "cell provenance ids must match dataset cells"
+                )
+        elif id_array in dataset.cell_data:
             ids = np.asarray(dataset.cell_data[id_array], dtype=np.int64)
-        elif dataset is self._result_grid and id_array == "element_id":
-            ids = np.asarray(
-                tuple(
-                    self._result_cell_index_to_element_id.get(index, 0)
-                    for index in range(int(dataset.n_cells))
-                ),
-                dtype=np.int64,
-            )
         else:
             return None
         intersection = self._intersect_dataset(x, y, dataset)
@@ -3069,31 +3219,45 @@ class FEMViewport(QWidget):
                 if len(cells):
                     data = self._geometry_preview_surface.extract_cells(cells)
             kwargs = {"opacity": 0.38}
-        elif hit.kind == "node" and self._pick_grid is not None:
-            ids = np.asarray(
-                self._pick_grid.point_data["node_id"]
-                if "node_id" in self._pick_grid.point_data
-                else tuple(
-                    self._result_point_index_to_node_id.get(index, 0)
-                    for index in range(int(self._pick_grid.n_points))
-                )
-            )
+        elif hit.kind == "node":
+            if (
+                hit.dataset_name == _TYPED_RESULT_GRID_NAME
+                and self._rendered_result_payload() is not None
+            ):
+                dataset = self._result_grid
+                ids = self._typed_result_point_ids(dataset)
+            elif (
+                self._pick_grid is not None
+                and "node_id" in self._pick_grid.point_data
+            ):
+                dataset = self._pick_grid
+                ids = np.asarray(dataset.point_data["node_id"])
+            else:
+                dataset = None
+                ids = np.empty(0, dtype=np.int64)
             indices = np.flatnonzero(ids == hit.pick_id)
-            if len(indices):
-                data = _pyvista.PolyData(np.asarray(self._pick_grid.points)[indices])
+            if dataset is not None and len(indices):
+                data = _pyvista.PolyData(np.asarray(dataset.points)[indices])
                 kwargs = {"point_size": 11, "render_points_as_spheres": True}
-        elif hit.kind == "element" and self._pick_grid is not None:
-            ids = np.asarray(
-                self._pick_grid.cell_data["element_id"]
-                if "element_id" in self._pick_grid.cell_data
-                else tuple(
-                    self._result_cell_index_to_element_id.get(index, 0)
-                    for index in range(int(self._pick_grid.n_cells))
-                )
-            )
+        elif hit.kind == "element":
+            if (
+                hit.dataset_name == _TYPED_RESULT_GRID_NAME
+                and self._rendered_result_payload() is not None
+            ):
+                dataset = self._result_grid
+                ids = self._typed_result_cell_ids(dataset)
+            elif (
+                self._pick_grid is not None
+                and "element_id" in self._pick_grid.cell_data
+            ):
+                dataset = self._pick_grid
+                ids = np.asarray(dataset.cell_data["element_id"])
+            else:
+                dataset = None
+                ids = np.empty(0, dtype=np.int64)
             cells = np.flatnonzero(ids == hit.pick_id)
-            if len(cells):
-                data = self._pick_grid.extract_cells(cells)
+            if dataset is not None and len(cells):
+                data = dataset.extract_cells(cells)
                 kwargs = {"style": "wireframe", "line_width": 2}
         if data is None:
             self._render()

@@ -23,6 +23,7 @@ from fem.application.results import (
 from fem_gui.visualization.result_renderer import (
     RESULT_SCALAR_NAME,
     build_result_render_payload,
+    validate_result_render_payload,
 )
 
 
@@ -221,6 +222,57 @@ def test_dataset_owns_points_and_values_independently() -> None:
         payload.dataset.point_data[RESULT_SCALAR_NAME],
         (3.0, 4.0),
     )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        ("points", "points"),
+        ("connectivity", "connectivity"),
+        ("cell_types", "cell types"),
+        ("scalar", "scalar values"),
+    ),
+)
+def test_validation_rejects_mutated_dataset_representation(
+    mutation: str,
+    message: str,
+) -> None:
+    points = np.asarray(
+        (
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+        )
+    )
+    topology = _topology(
+        points=points,
+        cells=((0, 1, 2),),
+        cell_kinds=(ResultCellKind.FEM_ELEMENT,),
+        canonical_element_types=("Tri3",),
+        values=np.asarray((3.0, 4.0, 5.0)),
+        value_layout=ResultValueLayout.POINT,
+        point_locations=tuple(
+            _location(index + 1, tuple(point))
+            for index, point in enumerate(points)
+        ),
+        cell_locations=(None,),
+    )
+    payload = build_result_render_payload(topology)
+
+    if mutation == "points":
+        payload.dataset.points[0, 0] = 0.25
+    elif mutation == "connectivity":
+        connectivity = payload.dataset.GetCells().GetConnectivityArray()
+        connectivity.SetTuple1(1, 2)
+        payload.dataset.Modified()
+    elif mutation == "cell_types":
+        payload.dataset.celltypes[0] = 3
+        payload.dataset.Modified()
+    else:
+        payload.dataset.point_data[RESULT_SCALAR_NAME][0] = 99.0
+
+    with pytest.raises(ValueError, match=message):
+        validate_result_render_payload(payload)
 
 
 @pytest.mark.parametrize("value", [None, object()])
