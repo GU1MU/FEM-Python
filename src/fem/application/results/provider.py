@@ -129,10 +129,12 @@ class ResultProvider:
     ) -> FieldAvailability:
         """Return status for one exact full key without field-ID fallback."""
 
-        entry = _entry_for_key(self._profile, key)
+        if type(key) is not FieldMaterializationKey:
+            raise TypeError("key must be FieldMaterializationKey")
         for availability in self._catalog.fields:
             if availability.key == key:
                 return availability
+        entry = _entry_for_key(self._profile, key)
         return FieldAvailability(
             key=key,
             descriptor=entry.descriptor,
@@ -181,16 +183,12 @@ class ResultProvider:
                 key=field_materialization_sort_key,
             )
         )
-        entries = tuple(
-            (key, _entry_for_key(self._profile, key))
-            for key in unique
-        )
         ready_keys = {
             field_data.key for field_data in self._snapshot.fields
         }
         targets = tuple(
-            (key, entry)
-            for key, entry in entries
+            (key, _entry_for_key(self._profile, key))
+            for key in unique
             if key not in ready_keys
         )
         if not targets:
@@ -311,6 +309,54 @@ def build_result_provider(
     )
 
 
+def restore_result_provider(
+    result: ModelResult,
+    materialization: ResultMaterializationSnapshot,
+) -> ResultProvider:
+    """Rebuild a provider from one accepted materialization snapshot."""
+
+    if type(result) is not ModelResult:
+        raise TypeError("result must be ModelResult")
+    if type(materialization) is not ResultMaterializationSnapshot:
+        raise TypeError(
+            "materialization must be ResultMaterializationSnapshot"
+        )
+
+    owned_result = _deep_owned_result(result)
+    profile = classify_result_model(owned_result.model)
+    if not profile.primary_compatible:
+        raise ValueError(
+            "result model does not have one exact common primary DOF profile"
+        )
+
+    snapshot = _deep_owned_materialization(materialization)
+    expected_topology = _build_topology(
+        snapshot.source,
+        owned_result,
+        profile,
+    )
+    _require_exact_topology(snapshot.topology, expected_topology)
+
+    entries = catalog_entries(profile)
+    checked = _validate_restored_fields(
+        result=owned_result,
+        profile=profile,
+        entries=entries,
+        snapshot=snapshot,
+        expected_topology=expected_topology,
+    )
+    catalog = _catalog_with_ready_patch(
+        _build_catalog(snapshot.source, entries, snapshot),
+        checked,
+    )
+    return ResultProvider(
+        _owned_result=owned_result,
+        _profile=profile,
+        _catalog=catalog,
+        _snapshot=snapshot,
+    )
+
+
 def _deep_owned_result(result: ModelResult) -> ModelResult:
     memo: dict[int, Any] = {}
     owned_model = deepcopy(result.model, memo)
@@ -330,6 +376,144 @@ def _deep_owned_result(result: ModelResult) -> ModelResult:
     owned.U.setflags(write=False)
     owned.reactions.setflags(write=False)
     return owned
+
+
+def _deep_owned_materialization(
+    materialization: ResultMaterializationSnapshot,
+) -> ResultMaterializationSnapshot:
+    source = materialization.source
+    topology = materialization.topology
+    fields = materialization.fields
+    if type(source) is not ResultSourceKey:
+        raise TypeError("materialization source must be ResultSourceKey")
+    if type(topology) is not ResultTopologyProjection:
+        raise TypeError(
+            "materialization topology must be ResultTopologyProjection"
+        )
+    if topology.source != source:
+        raise ValueError(
+            "materialization topology source must match materialization source"
+        )
+    if type(fields) is not tuple:
+        raise TypeError("materialization fields must be a tuple")
+    for field_data in fields:
+        if type(field_data) is not FieldData:
+            raise TypeError(
+                "materialization fields must contain only FieldData values"
+            )
+        if field_data.source != source:
+            raise ValueError(
+                "materialization field source must match materialization source"
+            )
+
+    owned_source = deepcopy(source)
+    owned_topology = ResultTopologyProjection(
+        source=owned_source,
+        node_ids=deepcopy(topology.node_ids),
+        node_coordinates=topology.node_coordinates,
+        nodal_displacements=topology.nodal_displacements,
+        element_ids=deepcopy(topology.element_ids),
+        element_types=deepcopy(topology.element_types),
+        connectivity=deepcopy(topology.connectivity),
+        element_region_keys=deepcopy(topology.element_region_keys),
+    )
+    owned_fields = tuple(
+        FieldData(
+            descriptor=deepcopy(field_data.descriptor),
+            source=owned_source,
+            key=deepcopy(field_data.key),
+            locations=deepcopy(field_data.locations),
+            values=field_data.values,
+        )
+        for field_data in fields
+    )
+    return ResultMaterializationSnapshot(
+        source=owned_source,
+        generation=materialization.generation,
+        topology=owned_topology,
+        fields=owned_fields,
+    )
+
+
+def _require_exact_topology(
+    actual: ResultTopologyProjection,
+    expected: ResultTopologyProjection,
+) -> None:
+    matches = (
+        actual.source == expected.source
+        and actual.node_ids == expected.node_ids
+        and np.array_equal(
+            actual.node_coordinates,
+            expected.node_coordinates,
+        )
+        and np.array_equal(
+            actual.nodal_displacements,
+            expected.nodal_displacements,
+        )
+        and actual.element_ids == expected.element_ids
+        and actual.element_types == expected.element_types
+        and actual.connectivity == expected.connectivity
+        and actual.element_region_keys == expected.element_region_keys
+    )
+    if not matches:
+        raise ValueError(
+            "materialization topology does not exactly match the result model"
+        )
+
+
+def _validate_restored_fields(
+    *,
+    result: ModelResult,
+    profile: ElementResultProfile,
+    entries: tuple[FieldRegistryEntry, ...],
+    snapshot: ResultMaterializationSnapshot,
+    expected_topology: ResultTopologyProjection,
+) -> tuple[tuple[FieldData, FieldRegistryEntry], ...]:
+    checked: list[tuple[FieldData, FieldRegistryEntry]] = []
+    for field_data in snapshot.fields:
+        entry = _entry_for_request(profile, field_data.key.request)
+        if field_data.descriptor != entry.descriptor:
+            raise ValueError(
+                "materialization field descriptor does not match the "
+                "current registry"
+            )
+        checked.append((field_data, entry))
+
+    expected_primary = {
+        field_data.key: field_data
+        for field_data in (
+            _primary_field(
+                snapshot.source,
+                result,
+                expected_topology,
+                profile,
+                entry,
+            )
+            for entry in entries
+            if entry.recovery_kind is FieldRecoveryKind.PRIMARY
+        )
+    }
+    actual_by_key = {
+        field_data.key: field_data for field_data, _entry in checked
+    }
+    if not set(expected_primary).issubset(actual_by_key):
+        raise ValueError(
+            "materialization must contain every current eager primary field key"
+        )
+    for key, expected in expected_primary.items():
+        actual = actual_by_key[key]
+        if (
+            actual.descriptor != expected.descriptor
+            or actual.source != expected.source
+            or actual.key != expected.key
+            or actual.locations != expected.locations
+            or not np.array_equal(actual.values, expected.values)
+        ):
+            raise ValueError(
+                "materialization eager primary field does not exactly match "
+                "the result model"
+            )
+    return tuple(checked)
 
 
 def _build_topology(
@@ -783,4 +967,5 @@ def _finite_number(value: Any, *, label: str) -> float:
 __all__ = [
     "ResultProvider",
     "build_result_provider",
+    "restore_result_provider",
 ]
