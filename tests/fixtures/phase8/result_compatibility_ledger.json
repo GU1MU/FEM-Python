@@ -1,0 +1,283 @@
+{
+  "schema_version": 1,
+  "phase": 8,
+  "entries": [
+    {
+      "id": "post.continuum.stress_recovery",
+      "symbol": "fem.post.stress.StressRecovery",
+      "visibility": "public",
+      "current_callers": [
+        "src/fem_gui/visualization/result_adapter.py"
+      ],
+      "target_batch": "Batch 1",
+      "disposition": "retain_as_canonical_continuum_numeric_oracle",
+      "known_divergences": [
+        "nodal rows are always averaged per region without a threshold",
+        "isolated mesh nodes do not produce nodal rows",
+        "single-sample nodal rows do not retain element/local-node provenance"
+      ],
+      "golden_tests": [
+        "tests/characterization/test_phase8_current_results.py::test_three_current_continuum_nodal_oracles_are_known_to_diverge"
+      ]
+    },
+    {
+      "id": "post.continuum.threshold_resolver",
+      "symbol": "fem.post.stress.field.resolve",
+      "visibility": "public",
+      "current_callers": [
+        "src/fem/post/stress/nodal.py"
+      ],
+      "target_batch": "Batch 1",
+      "disposition": "replace_with_the_single_typed_nodal_policy",
+      "known_divergences": [
+        "a multi-region node preserves every raw row instead of averaging within each region",
+        "an isolated node receives a synthetic zero row",
+        "a single sample keeps element/local-node provenance at every threshold"
+      ],
+      "golden_tests": [
+        "tests/characterization/test_phase8_current_results.py::test_three_current_continuum_nodal_oracles_are_known_to_diverge"
+      ]
+    },
+    {
+      "id": "post.beam.nodal_envelope",
+      "symbol": "fem.post.stress.beam.nodal_envelope",
+      "visibility": "public",
+      "current_callers": [
+        "src/fem_gui/visualization/result_adapter.py",
+        "src/fem_agent/tools/results.py",
+        "src/fem/post/stress/beam.py"
+      ],
+      "target_batch": "Batch 1",
+      "disposition": "retain_numeric_kernel_and_add_section_end_provenance",
+      "known_divergences": [
+        "the current envelope drops source element and beam-end provenance"
+      ],
+      "golden_tests": [
+        "tests/characterization/test_phase8_current_results.py::test_current_beam_gui_field_keys_order_and_numeric_oracle"
+      ]
+    },
+    {
+      "id": "post.stress.canonical_csv",
+      "symbol": "fem.post.stress.export.csv",
+      "visibility": "public",
+      "current_callers": [
+        "tests/test_post.py"
+      ],
+      "target_batch": "Batch 6",
+      "disposition": "retain_as_thin_legacy_post_adapter",
+      "known_divergences": [
+        "its schema and provenance differ from the planned current-result CSV contract"
+      ],
+      "golden_tests": [
+        "tests/test_post.py::test_canonical_csv_defaults_to_integration_points_and_writes_s33"
+      ]
+    },
+    {
+      "id": "post.stress.legacy_element_csv",
+      "symbol": "fem.post.stress.export.element",
+      "visibility": "legacy_public",
+      "current_callers": [
+        "tests/test_post.py"
+      ],
+      "target_batch": "Batch 6",
+      "disposition": "retain_as_deprecated_thin_compatibility_wrapper",
+      "known_divergences": [
+        "the exported stress position depends on element family"
+      ],
+      "golden_tests": [
+        "tests/test_post.py::test_deprecated_stress_export_wrappers_emit_explicit_warnings"
+      ]
+    },
+    {
+      "id": "post.stress.legacy_nodal_csv",
+      "symbol": "fem.post.stress.export.nodal",
+      "visibility": "legacy_public",
+      "current_callers": [
+        "tests/test_post.py",
+        "tests/test_line_io_post.py"
+      ],
+      "target_batch": "Batch 6",
+      "disposition": "retain_as_deprecated_thin_compatibility_wrapper",
+      "known_divergences": [
+        "it uses field.resolve threshold semantics and cannot recover Beam2 without ModelResult context"
+      ],
+      "golden_tests": [
+        "tests/test_post.py::test_deprecated_stress_export_wrappers_emit_explicit_warnings",
+        "tests/test_line_io_post.py::test_beam2_direct_nodal_export_requires_result_load_context"
+      ]
+    },
+    {
+      "id": "post.displacement.legacy_csv",
+      "symbol": "fem.post.displacement.export.nodal",
+      "visibility": "legacy_public",
+      "current_callers": [
+        "src/fem/post/vtk/export.py",
+        "src/fem_agent/tools/exports.py"
+      ],
+      "target_batch": "Batch 6",
+      "disposition": "retain_as_thin_compatibility_wrapper",
+      "known_divergences": [
+        "its displacement-only schema lacks run, artifact, and field provenance"
+      ],
+      "golden_tests": [
+        "tests/test_line_io_post.py::test_truss2_result_export_writes_3d_displacement_element_stress_and_vtk"
+      ]
+    },
+    {
+      "id": "post.vtk.legacy_from_csv",
+      "symbol": "fem.post.vtk.export.from_csv",
+      "visibility": "legacy_public",
+      "current_callers": [
+        "src/fem/post/vtk/export.py",
+        "tests/test_post.py"
+      ],
+      "target_batch": "Batch 6",
+      "disposition": "retain_as_isolated_file_import_compatibility_adapter",
+      "known_divergences": [
+        "CSV rows drive topology duplication and missing scalar values may become zero"
+      ],
+      "golden_tests": [
+        "tests/characterization/test_phase8_legacy_exports.py::test_legacy_vtk_from_csv_semantics_match_golden"
+      ]
+    },
+    {
+      "id": "post.vtk.current_from_result",
+      "symbol": "fem.post.vtk.export.from_result",
+      "visibility": "public",
+      "current_callers": [
+        "src/fem_agent/tools/exports.py",
+        "tests/test_abaqus.py",
+        "tests/test_post.py"
+      ],
+      "target_batch": "Batch 4",
+      "disposition": "replace_current_result_path_with_direct_provider_serialization",
+      "known_divergences": [
+        "the current result path materializes CSV files and reads them back before writing VTK"
+      ],
+      "golden_tests": [
+        "tests/test_post.py::test_vtk_export_from_result_materializes_missing_csvs",
+        "tests/characterization/test_phase8_legacy_exports.py::test_legacy_vtk_from_csv_semantics_match_golden"
+      ]
+    },
+    {
+      "id": "gui.result_data",
+      "symbol": "fem_gui.visualization.result_adapter.ResultData",
+      "visibility": "gui_legacy",
+      "current_callers": [
+        "src/fem_gui/main_window.py",
+        "src/fem_gui/visualization/query.py",
+        "src/fem_gui/visualization/csv_export.py"
+      ],
+      "target_batch": "Batch 6",
+      "disposition": "delete_after_all_gui_consumers_use_result_provider",
+      "known_divergences": [
+        "a frozen dataclass owns mutable overlapping engineering dictionaries and a mutable recovery cache"
+      ],
+      "golden_tests": [
+        "tests/characterization/test_phase8_current_results.py::test_current_beam_gui_field_keys_order_and_numeric_oracle"
+      ]
+    },
+    {
+      "id": "gui.result_builder",
+      "symbol": "fem_gui.visualization.result_adapter.build_result_data",
+      "visibility": "gui_legacy",
+      "current_callers": [
+        "src/fem_gui/main_window.py"
+      ],
+      "target_batch": "Batch 5",
+      "disposition": "replace_with_result_provider_projection",
+      "known_divergences": [
+        "Beam rotations use R rather than target field id UR",
+        "multi-region and isolated nodal values are represented as missing NaN slots"
+      ],
+      "golden_tests": [
+        "tests/characterization/test_phase8_current_results.py::test_current_truss_gui_field_keys_order_and_numeric_oracle",
+        "tests/characterization/test_phase8_current_results.py::test_current_beam_gui_field_keys_order_and_numeric_oracle",
+        "tests/characterization/test_phase8_current_results.py::test_three_current_continuum_nodal_oracles_are_known_to_diverge"
+      ]
+    },
+    {
+      "id": "gui.line_stress",
+      "symbol": "fem_gui.visualization.result_adapter._line_stress",
+      "visibility": "gui_legacy",
+      "current_callers": [
+        "src/fem_gui/visualization/result_adapter.py"
+      ],
+      "target_batch": "Batch 1",
+      "disposition": "move_numeric_recovery_to_fem_post_then_delete",
+      "known_divergences": [
+        "Truss2 recovery and Beam2 envelope projection are owned by the GUI"
+      ],
+      "golden_tests": [
+        "tests/characterization/test_phase8_current_results.py::test_current_truss_gui_field_keys_order_and_numeric_oracle",
+        "tests/characterization/test_phase8_current_results.py::test_current_beam_gui_field_keys_order_and_numeric_oracle"
+      ]
+    },
+    {
+      "id": "gui.tensor_resolver",
+      "symbol": "fem_gui.visualization.stress_adapter.build_stress_render_geometry",
+      "visibility": "gui_legacy",
+      "current_callers": [
+        "src/fem_gui/widgets/viewport.py"
+      ],
+      "target_batch": "Batch 5",
+      "disposition": "replace_with_neutral_provider_topology_projection",
+      "known_divergences": [
+        "threshold decisions are made per node-region rather than per node",
+        "single-region samples lose element provenance even at threshold zero",
+        "isolated nodes are omitted from render topology"
+      ],
+      "golden_tests": [
+        "tests/characterization/test_phase8_current_results.py::test_three_current_continuum_nodal_oracles_are_known_to_diverge"
+      ]
+    },
+    {
+      "id": "gui.current_csv",
+      "symbol": "fem_gui.visualization.csv_export.export_field_csv",
+      "visibility": "gui_legacy",
+      "current_callers": [
+        "src/fem_gui/main_window.py"
+      ],
+      "target_batch": "Batch 5",
+      "disposition": "replace_with_headless_canonical_csv_serializer",
+      "known_divergences": [
+        "the current flat GUI schema uses VTK point/cell association terms and CRLF records"
+      ],
+      "golden_tests": [
+        "tests/characterization/test_phase8_legacy_exports.py::test_current_gui_csv_legacy_bytes_are_frozen"
+      ]
+    },
+    {
+      "id": "agent.result_query",
+      "symbol": "fem_agent.tools.results.query_results",
+      "visibility": "deferred_public",
+      "current_callers": [
+        "src/fem_agent/worker.py"
+      ],
+      "target_batch": "Deferred: Agent Integration",
+      "disposition": "adopt_result_provider_in_a_later_phase",
+      "known_divergences": [
+        "Agent query retains an independent field and recovery path during Phase 8"
+      ],
+      "golden_tests": [
+        "tests/test_agent_result_queries.py::test_query_results_matches_direct_displacement_and_reaction_apis"
+      ]
+    },
+    {
+      "id": "agent.result_export",
+      "symbol": "fem_agent.tools.exports.export_results",
+      "visibility": "deferred_public",
+      "current_callers": [
+        "src/fem_agent/worker.py"
+      ],
+      "target_batch": "Deferred: Agent Integration",
+      "disposition": "adopt_result_provider_in_a_later_phase",
+      "known_divergences": [
+        "Agent export retains the legacy post CSV and VTK path during Phase 8"
+      ],
+      "golden_tests": [
+        "tests/test_agent_exports.py::test_vtk_export_registers_vtk_and_materialized_csv_dependencies"
+      ]
+    }
+  ]
+}

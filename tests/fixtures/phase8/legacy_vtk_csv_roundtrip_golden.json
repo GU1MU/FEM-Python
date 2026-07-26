@@ -1,0 +1,45 @@
+{
+  "format": {
+    "version": "# vtk DataFile Version 3.0",
+    "title": "FEM results from CSV",
+    "encoding": "ASCII",
+    "dataset": "DATASET UNSTRUCTURED_GRID"
+  },
+  "points": [
+    [0.0, 0.0, 0.0],
+    [1.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0],
+    [0.0, 1.0, 0.0],
+    [-1.0, 0.0, 0.0],
+    [0.0, -1.0, 0.0]
+  ],
+  "cells": [
+    [3, 0, 1, 2],
+    [3, 3, 4, 5]
+  ],
+  "cell_types": [5, 5],
+  "point_data": {
+    "count": 6,
+    "vectors": {
+      "displacement": [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [3.0, 4.0, 0.0],
+        [3.0, 4.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0]
+      ]
+    },
+    "scalars": {
+      "sig_x": [0.0, 1.0, 10.0, 20.0, 4.0, 5.0],
+      "mises": [0.0, 1.0, 10.0, 20.0, 4.0, 5.0]
+    }
+  },
+  "cell_data": {
+    "count": 2,
+    "scalars": {
+      "sig_x": [100.0, 200.0],
+      "mises": [111.0, 222.0]
+    }
+  }
+}
