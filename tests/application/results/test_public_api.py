@@ -14,6 +14,14 @@ from fem.application.results.provider import (
     build_result_provider,
     restore_result_provider,
 )
+from fem.application.results.inspection import (
+    ElementResultInspectionRequest,
+    NodeResultInspectionRequest,
+    ResultInspectionField,
+    ResultInspectionRequest,
+    ResultInspectionResult,
+    inspect_result_snapshot,
+)
 from fem.application.results.query import ResultQuery
 from fem.application.results.topology import (
     ResultCellKind,
@@ -36,10 +44,15 @@ from fem.application.results.workflow import (
 def test_result_package_exports_provider_query_projection_and_execution() -> None:
     expected = {
         "ElementResultProfile": ElementResultProfile,
+        "ElementResultInspectionRequest": ElementResultInspectionRequest,
+        "NodeResultInspectionRequest": NodeResultInspectionRequest,
         "ResultCapabilityCatalog": ResultCapabilityCatalog,
         "ResultCellKind": ResultCellKind,
         "ResultExecutionReport": ResultExecutionReport,
         "ResultFieldTopology": ResultFieldTopology,
+        "ResultInspectionField": ResultInspectionField,
+        "ResultInspectionRequest": ResultInspectionRequest,
+        "ResultInspectionResult": ResultInspectionResult,
         "ResultProvider": ResultProvider,
         "ResultQuery": ResultQuery,
         "ResultValueLayout": ResultValueLayout,
@@ -49,6 +62,7 @@ def test_result_package_exports_provider_query_projection_and_execution() -> Non
         "catalog_entries": catalog_entries,
         "classify_result_model": classify_result_model,
         "execute_output_requests": execute_output_requests,
+        "inspect_result_snapshot": inspect_result_snapshot,
         "project_output_request": project_output_request,
         "project_scalar_field_topology": project_scalar_field_topology,
         "restore_result_provider": restore_result_provider,

@@ -50,6 +50,11 @@ from .query import (
     ResultQueryResult,
     evaluate_result_query,
 )
+from .inspection import (
+    ResultInspectionRequest,
+    ResultInspectionResult,
+    inspect_result_snapshot,
+)
 from ._materializers import (
     check_cancellation,
     materialize_derived_fields,
@@ -168,6 +173,18 @@ class ResultProvider:
         """Evaluate one exact scalar query over this immutable snapshot."""
 
         return evaluate_result_query(self._snapshot, query)
+
+    def inspect_result(
+        self,
+        request: ResultInspectionRequest,
+    ) -> ResultInspectionResult:
+        """Inspect catalog fields relevant to one typed FEM entity."""
+
+        return inspect_result_snapshot(
+            self._snapshot,
+            self._catalog,
+            request,
+        )
 
     def materialize(
         self,

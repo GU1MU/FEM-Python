@@ -46,6 +46,14 @@ from .provider import (
     build_result_provider,
     restore_result_provider,
 )
+from .inspection import (
+    ElementResultInspectionRequest,
+    NodeResultInspectionRequest,
+    ResultInspectionField,
+    ResultInspectionRequest,
+    ResultInspectionResult,
+    inspect_result_snapshot,
+)
 from .query import (
     ResultQuery,
     ResultQueryRecord,
@@ -82,6 +90,7 @@ from .workflow import (
 
 __all__ = [
     "ElementResultProfile",
+    "ElementResultInspectionRequest",
     "ExecutableOutputRequest",
     "FieldAssociation",
     "FieldAvailability",
@@ -94,6 +103,7 @@ __all__ = [
     "FieldRegistryEntry",
     "FieldRequest",
     "FieldState",
+    "NodeResultInspectionRequest",
     "OutputExecutionOutcome",
     "OutputExecutionStatus",
     "OutputRequestExecution",
@@ -110,6 +120,9 @@ __all__ = [
     "ResultExportSnapshot",
     "ResultFieldTopology",
     "ResultFieldId",
+    "ResultInspectionField",
+    "ResultInspectionRequest",
+    "ResultInspectionResult",
     "ResultMaterializationPatch",
     "ResultMaterializationSnapshot",
     "ResultModelFamily",
@@ -136,6 +149,7 @@ __all__ = [
     "execute_output_requests",
     "evaluate_result_query",
     "field_materialization_sort_key",
+    "inspect_result_snapshot",
     "prepare_result_export_snapshot",
     "project_scalar_field_topology",
     "project_output_request",
