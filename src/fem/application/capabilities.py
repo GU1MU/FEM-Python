@@ -18,6 +18,12 @@ from .diagnostics import (
     PreflightSeverity,
     PreflightStage,
 )
+from .results.output_requests import (
+    OutputRequestProjection,
+    ResultCapabilityCatalog,
+    project_output_request,
+)
+from .results.registry import classify_result_model
 
 if TYPE_CHECKING:
     from fem.core.model import LineLoad
@@ -30,6 +36,10 @@ _REGION_KINDS = frozenset(
 )
 _DISTRIBUTED_LOAD_KINDS = frozenset({"edge", "surface", "line"})
 _EXPLICIT_BEAM_ORIENTATION_REQUIREMENT = "beam.orientation.explicit"
+
+# Batch 2 characterizes the canonical result-support path without exposing
+# execution or authoring.  Batch 3 owns the lifecycle switch.
+output_execution_installed = False
 
 
 class AuthoringStatus(str, Enum):
@@ -270,6 +280,79 @@ class ModelCapabilityReport:
             self.section_presets,
             section_type,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class _OutputSupportEvaluation:
+    """Private compatibility projection through the canonical result catalog."""
+
+    catalog: ResultCapabilityCatalog | None
+    projections: tuple[OutputRequestProjection, ...]
+    request_count: int
+    complete: bool
+
+    @property
+    def supports_output_authoring(self) -> bool:
+        """Whether the catalog proves at least one output field combination."""
+
+        return (
+            self.catalog is not None
+            and bool(self.catalog.entries)
+        )
+
+
+def _evaluate_output_requests(
+    model: Any,
+    outputs: Iterable[Any],
+) -> _OutputSupportEvaluation:
+    """Evaluate authoring values through the sole result support projection."""
+
+    try:
+        profile = classify_result_model(model)
+        catalog = ResultCapabilityCatalog.from_profile(profile)
+    except Exception:
+        return _OutputSupportEvaluation(None, (), 0, False)
+
+    try:
+        requests = tuple(outputs)
+    except Exception:
+        return _OutputSupportEvaluation(catalog, (), 0, False)
+
+    projections: list[OutputRequestProjection] = []
+    for request_index, request in enumerate(requests):
+        try:
+            projection = project_output_request(
+                request,
+                catalog,
+                request_index=request_index,
+            )
+        except Exception:
+            return _OutputSupportEvaluation(
+                catalog,
+                tuple(projections),
+                len(requests),
+                False,
+            )
+        projections.append(projection)
+    return _OutputSupportEvaluation(
+        catalog,
+        tuple(projections),
+        len(requests),
+        True,
+    )
+
+
+def _model_output_requests(model: Any) -> Iterable[Any]:
+    """Yield preserved requests without assigning support semantics here."""
+
+    for step in getattr(model, "steps", ()):
+        yield from getattr(step, "outputs", ())
+
+
+def _output_execution_gate_open() -> bool:
+    """Return the single Batch 2/3 output lifecycle feature gate."""
+
+    return output_execution_installed
 
 
 def require_region_kind(region: RegionRef, expected_kind: str) -> str:
@@ -633,6 +716,10 @@ def _unsupported_candidate(
 def describe_model_capabilities(model: Any) -> ModelCapabilityReport:
     """Describe intrinsic facts and installed Phase 4 authoring policy."""
 
+    output_support = _evaluate_output_requests(
+        model,
+        _model_output_requests(model),
+    )
     elements = tuple(getattr(getattr(model, "mesh", None), "elements", ()))
     aggregate = _aggregate_capabilities(
         (getattr(element, "type", "") for element in elements),
@@ -670,6 +757,13 @@ def describe_model_capabilities(model: Any) -> ModelCapabilityReport:
         path=("analysis", "outputs"),
         remediation="可查看或删除既有输出请求；当前版本不能新建。",
     )
+    output_authoring_available = (
+        _output_execution_gate_open()
+        and output_support.supports_output_authoring
+    )
+    output_diagnostics = (
+        () if output_authoring_available else (output_diagnostic,)
+    )
     section_status = (
         AuthoringStatus.UNAVAILABLE
         if not aggregate.compatible or not aggregate.section_families
@@ -697,13 +791,17 @@ def describe_model_capabilities(model: Any) -> ModelCapabilityReport:
         AuthoringCapability("line_load.create", line_status),
         AuthoringCapability(
             "output_request.create",
-            AuthoringStatus.UNAVAILABLE,
-            (output_diagnostic,),
+            (
+                AuthoringStatus.ENABLED
+                if output_authoring_available
+                else AuthoringStatus.UNAVAILABLE
+            ),
+            output_diagnostics,
         ),
         AuthoringCapability(
             "output_request.existing",
             AuthoringStatus.READ_ONLY,
-            (output_diagnostic,),
+            output_diagnostics,
         ),
     )
     return ModelCapabilityReport(

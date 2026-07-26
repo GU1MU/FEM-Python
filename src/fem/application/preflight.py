@@ -18,6 +18,8 @@ from .capabilities import (
     RegionRef,
     _assumed_orientation_diagnostic,
     _diagnostic_for_operation,
+    _evaluate_output_requests,
+    _output_execution_gate_open,
     _requires_explicit_beam_orientation,
     describe_model_capabilities,
 )
@@ -170,6 +172,7 @@ def run_static_preflight(
                 )
 
     _append_output_diagnostic(
+        owned_model,
         selected_step,
         diagnostics,
         report_step_name,
@@ -591,12 +594,24 @@ def _validate_static_procedure(
 
 
 def _append_output_diagnostic(
+    model: Any,
     step: Any,
     diagnostics: list[PreflightDiagnostic],
     step_name: str,
 ) -> None:
     outputs = tuple(getattr(step, "outputs", ())) if step is not None else ()
     if not outputs:
+        return
+    output_support = _evaluate_output_requests(model, outputs)
+    if (
+        _output_execution_gate_open()
+        and output_support.complete
+    ):
+        _append_projected_output_diagnostics(
+            output_support.projections,
+            diagnostics,
+            step_name,
+        )
         return
     diagnostics.append(
         PreflightDiagnostic(
@@ -613,6 +628,36 @@ def _append_output_diagnostic(
             details={"count": len(outputs)},
         )
     )
+
+
+def _append_projected_output_diagnostics(
+    projections: tuple[Any, ...],
+    diagnostics: list[PreflightDiagnostic],
+    step_name: str,
+) -> None:
+    """Adapt canonical result diagnostics only after the lifecycle gate opens."""
+
+    for projection in projections:
+        for diagnostic in projection.diagnostics:
+            diagnostics.append(
+                PreflightDiagnostic(
+                    code=diagnostic.code,
+                    severity=PreflightSeverity.WARNING,
+                    stage=PreflightStage.OUTPUT,
+                    message=diagnostic.message,
+                    subject=step_name,
+                    path=(
+                        "steps",
+                        step_name,
+                        *(
+                            str(part)
+                            for part in diagnostic.path
+                        ),
+                    ),
+                    remediation=diagnostic.remediation,
+                    details=dict(diagnostic.details),
+                )
+            )
 
 
 def _preflight_facts(

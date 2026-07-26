@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import fem.application.preflight as preflight_module
 from fem.abaqus import read
 from fem.application import (
     PreflightDiagnostic,
@@ -21,6 +22,7 @@ from fem.core.model import (
     DisplacementConstraint,
     LineLoad,
     NodalLoad,
+    OutputRequest,
     SectionAssignment,
 )
 from fem.elements import BEAM_LOCAL_Y_REFERENCE_KEY
@@ -415,6 +417,52 @@ def test_output_request_warning_does_not_create_a_false_failure() -> None:
     )
 
     assert warning.severity is PreflightSeverity.WARNING
+    assert report.passed
+
+
+def test_preflight_projects_each_output_before_emitting_legacy_blanket_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _read("truss2_tension.inp")
+    step = next(item for item in model.steps if item.name == "Tension")
+    step.outputs = (
+        OutputRequest("field", "node", ("U",)),
+        OutputRequest("field", "node", ("Future",)),
+    )
+    observed = []
+    original = preflight_module._evaluate_output_requests
+
+    def evaluate(candidate_model, outputs):
+        requests = tuple(outputs)
+        evaluation = original(candidate_model, requests)
+        observed.append((requests, evaluation))
+        return evaluation
+
+    monkeypatch.setattr(
+        preflight_module,
+        "_evaluate_output_requests",
+        evaluate,
+    )
+
+    report = run_static_preflight(model, "Tension")
+    output_diagnostics = tuple(
+        diagnostic
+        for diagnostic in report.diagnostics
+        if diagnostic.stage is PreflightStage.OUTPUT
+    )
+
+    assert not preflight_module._output_execution_gate_open()
+    assert len(observed) == 1
+    requests, evaluation = observed[0]
+    assert requests == step.outputs
+    assert evaluation.complete
+    assert tuple(
+        projection.executable
+        for projection in evaluation.projections
+    ) == (True, False)
+    assert len(output_diagnostics) == 1
+    assert output_diagnostics[0].code == "output.request.not_executed"
+    assert output_diagnostics[0].details == (("count", 2),)
     assert report.passed
 
 

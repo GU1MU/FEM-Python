@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import fem.application.capabilities as capabilities_module
 from fem.abaqus import read
 from fem.application import (
     AuthoringStatus,
@@ -368,3 +369,42 @@ def test_output_request_create_is_unavailable_with_stable_reason() -> None:
     assert create.status is AuthoringStatus.UNAVAILABLE
     assert existing.status is AuthoringStatus.READ_ONLY
     assert create.diagnostics[0].code == "output.request.not_executed"
+
+
+def test_output_capability_uses_canonical_result_projection_behind_closed_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = read(_FIXTURES / "truss2_tension.inp")
+    observed = []
+    original = capabilities_module.project_output_request
+
+    def project(request, catalog, *, request_index):
+        projection = original(
+            request,
+            catalog,
+            request_index=request_index,
+        )
+        observed.append((catalog, projection))
+        return projection
+
+    monkeypatch.setattr(
+        capabilities_module,
+        "project_output_request",
+        project,
+    )
+
+    report = describe_model_capabilities(model)
+    create = report.operation("output_request.create")
+    existing = report.operation("output_request.existing")
+
+    assert capabilities_module.output_execution_installed is False
+    assert len(observed) == 2
+    assert len({id(catalog) for catalog, _projection in observed}) == 1
+    assert observed[0][0].profile.family.value == "truss"
+    assert all(projection.executable for _catalog, projection in observed)
+    assert create.status is AuthoringStatus.UNAVAILABLE
+    assert existing.status is AuthoringStatus.READ_ONLY
+    assert {
+        diagnostic.code
+        for diagnostic in (*create.diagnostics, *existing.diagnostics)
+    } == {"output.request.not_executed"}
