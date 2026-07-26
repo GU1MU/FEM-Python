@@ -20,7 +20,12 @@ from fem.geometry.recipes import BoxGeometry
 from tests.helpers.preflight_builders import passing_preflight_report
 
 
-_FIXTURES = Path(__file__).parents[1] / "fixtures" / "inp"
+_FIXTURES = (
+    Path(__file__).parents[1]
+    / "fixtures"
+    / "inp"
+    / "abaqus_standard"
+)
 
 
 def _model(*step_names: str) -> SimpleNamespace:

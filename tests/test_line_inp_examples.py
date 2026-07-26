@@ -11,7 +11,12 @@ from fem.post.stress import beam
 from fem.solvers.static_linear import solve
 
 
-FIXTURES = Path(__file__).resolve().parent / "fixtures" / "inp"
+FIXTURES = (
+    Path(__file__).resolve().parent
+    / "fixtures"
+    / "inp"
+    / "abaqus_standard"
+)
 
 
 def test_truss2_tension_inp_solves_to_the_expected_axial_stress():

@@ -1,5 +1,5 @@
 *Heading
-Beam2 rectangular cantilever under a global-Y tip load
+Standard B31 rectangular cantilever under a global-Y tip load
 *Node
 1, 0.0, 0.0, 0.0
 2, 0.5, 0.0, 0.0
@@ -18,7 +18,9 @@ Beam2 rectangular cantilever under a global-Y tip load
 *Material, name=STEEL
 *Elastic
 2.10e11, 0.3
-*Beam Section, elset=BEAM, material=STEEL, section=rectangle, height=0.10, width=0.02
+*Beam Section, elset=BEAM, material=STEEL, section=RECT
+0.10, 0.02
+0.0, 1.0, 0.0
 *Boundary
 FIXED, ENCASTRE
 *Step, name=TipLoad

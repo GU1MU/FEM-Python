@@ -27,7 +27,12 @@ from fem.elements import BEAM_LOCAL_Y_REFERENCE_KEY
 from fem.mesh.settings import MeshSettings
 
 
-_FIXTURES = Path(__file__).parents[1] / "fixtures" / "inp"
+_FIXTURES = (
+    Path(__file__).parents[1]
+    / "fixtures"
+    / "inp"
+    / "abaqus_standard"
+)
 
 
 def _element(
@@ -136,6 +141,10 @@ def test_line_element_report_separates_topology_and_spatial_dimension() -> None:
 def test_installed_rectangle_orientation_is_contextual() -> None:
     model = read(_FIXTURES / "beam2_rectangle_uniform_load.inp")
     target = RegionRef("element_set", "BEAM")
+    model.sections[0].properties.pop(
+        BEAM_LOCAL_Y_REFERENCE_KEY,
+        None,
+    )
 
     automatic = describe_model_capabilities(model)
     automatic_region = automatic.region(target)
@@ -200,6 +209,7 @@ def test_mixed_explicit_and_automatic_region_reports_only_automatic_ids() -> Non
     model.element_sets["TAIL"] = ElementSet("TAIL", (3, 4))
     original = model.sections[0]
     properties = dict(original.properties)
+    properties.pop(BEAM_LOCAL_Y_REFERENCE_KEY, None)
     model.sections = [
         SectionAssignment(
             "HEAD",

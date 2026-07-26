@@ -500,6 +500,11 @@ def _declared_orientation_diagnostics(
                         assignment,
                     )
                 )
+            except (AttributeError, KeyError, TypeError, ValueError):
+                # Connectivity and geometry failures are reported by the
+                # effective-frame pass below.  This preliminary pass exists
+                # only to retain diagnostics for shadowed declarations.
+                continue
     return tuple(diagnostics)
 
 

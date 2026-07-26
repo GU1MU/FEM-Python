@@ -1,0 +1,13 @@
+*Heading
+** Standard B31 THICK PIPE contract: geometry is outer radius, wall thickness.
+*Node
+1, 0.0, 0.0, 0.0
+2, 1.0, 0.0, 0.0
+*Element, type=B31, elset=BEAM
+1, 1, 2
+*Material, name=STEEL
+*Elastic
+2.10E11, 0.30
+*Beam Section, elset=BEAM, material=STEEL, section=THICK PIPE
+0.10, 0.025
+0.0, 1.0, 0.0

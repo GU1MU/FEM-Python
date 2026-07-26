@@ -1,0 +1,11 @@
+*Heading
+** Retired FEM-Python wire dialect: use standard *SOLID SECTION data instead.
+*Node
+1, 0.0, 0.0, 0.0
+2, 1.0, 0.0, 0.0
+*Element, type=T3D2, elset=TRUSS
+1, 1, 2
+*Material, name=STEEL
+*Elastic
+2.10E11, 0.30
+*Truss Section, elset=TRUSS, material=STEEL, area=0.01

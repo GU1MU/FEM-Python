@@ -1,0 +1,24 @@
+*Heading
+** Standard Abaqus T3D2 contract: *SOLID SECTION data is the truss area.
+*Node
+1, 0.0, 0.0, 0.0
+2, 2.0, 0.0, 0.0
+*Element, type=T3D2, elset=TRUSS
+1, 1, 2
+*Nset, nset=FIXED
+1
+*Nset, nset=TIP
+2
+*Material, name=STEEL
+*Elastic
+2.10E11, 0.30
+*Solid Section, elset=TRUSS, material=STEEL
+1.0E-4
+*Boundary
+FIXED, 1, 3, 0.0
+TIP, 2, 3, 0.0
+*Step, name=TENSION
+*Static
+*Cload
+TIP, 1, 2.10E4
+*End Step

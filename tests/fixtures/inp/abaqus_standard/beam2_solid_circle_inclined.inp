@@ -1,5 +1,5 @@
 *Heading
-Inclined Beam2 with a solid circular section and global-Z tip load
+Inclined standard B31 with a solid circular section and global-Z tip load
 *Node
 1, 0.0, 0.0, 0.0
 2, 0.5, 0.5, 0.0
@@ -18,7 +18,9 @@ Inclined Beam2 with a solid circular section and global-Z tip load
 *Material, name=STEEL
 *Elastic
 2.10e11, 0.3
-*Beam Section, elset=BEAM, material=STEEL, section=solid_circle, radius=0.04
+*Beam Section, elset=BEAM, material=STEEL, section=CIRC
+0.04
+-1.0, 1.0, 0.0
 *Boundary
 FIXED, ENCASTRE
 *Step, name=TipLoad

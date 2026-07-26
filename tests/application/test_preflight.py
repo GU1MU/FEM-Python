@@ -26,7 +26,12 @@ from fem.core.model import (
 from fem.elements import BEAM_LOCAL_Y_REFERENCE_KEY
 
 
-_FIXTURES = Path(__file__).parents[1] / "fixtures" / "inp"
+_FIXTURES = (
+    Path(__file__).parents[1]
+    / "fixtures"
+    / "inp"
+    / "abaqus_standard"
+)
 
 
 def _read(name: str):
@@ -70,8 +75,13 @@ def test_valid_collinear_truss_uses_actual_stiffness_and_passes() -> None:
 
 
 def test_valid_beam_reports_orientation_limitation_without_blocking() -> None:
+    model = _read("beam2_rectangle_uniform_load.inp")
+    model.sections[0].properties.pop(
+        BEAM_LOCAL_Y_REFERENCE_KEY,
+        None,
+    )
     report = run_static_preflight(
-        _read("beam2_rectangle_uniform_load.inp"),
+        model,
         "UniformLoad",
     )
 

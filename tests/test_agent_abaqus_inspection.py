@@ -13,7 +13,12 @@ from tests.helpers.abaqus_builders import write_perforated_plate_style_inp
 from tests.helpers.file_builders import write_inp
 
 
-LINE_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "inp"
+LINE_FIXTURES = (
+    Path(__file__).resolve().parent
+    / "fixtures"
+    / "inp"
+    / "abaqus_standard"
+)
 
 
 def _codes(result) -> set[str]:
@@ -25,7 +30,7 @@ def _codes(result) -> set[str]:
     (
         ("truss2_tension.inp", "Truss2", 3),
         ("beam2_rectangle_uniform_load.inp", "Beam2", 6),
-        ("beam2_hollow_circle_uniform_load.inp", "Beam2", 6),
+        ("beam2_solid_circle_inclined.inp", "Beam2", 6),
     ),
 )
 def test_inspection_accepts_supported_line_element_inputs(

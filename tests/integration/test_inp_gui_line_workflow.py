@@ -22,7 +22,12 @@ from fem_gui.inspection_service import InspectionService
 from fem_gui.widgets.viewport import _effective_line_load_vector
 
 
-FIXTURES = Path(__file__).parents[1] / "fixtures" / "inp"
+FIXTURES = (
+    Path(__file__).parents[1]
+    / "fixtures"
+    / "inp"
+    / "abaqus_standard"
+)
 
 
 def _import_fixture(name: str) -> ModelSession:

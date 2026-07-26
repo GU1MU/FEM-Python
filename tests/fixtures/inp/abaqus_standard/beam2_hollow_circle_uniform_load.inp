@@ -1,5 +1,5 @@
 *Heading
-Beam2 hollow circular cantilever under a global-Z uniform line load
+Standard B31 hollow circular cantilever under a global-Z uniform line load
 *Node
 1, 0.0, 0.0, 0.0
 2, 0.5, 0.0, 0.0
@@ -16,13 +16,15 @@ Beam2 hollow circular cantilever under a global-Z uniform line load
 *Material, name=ALUMINUM
 *Elastic
 7.00e10, 0.33
-*Beam Section, elset=BEAM, material=ALUMINUM, section=hollow_circle, outer_radius=0.05, inner_radius=0.04
+*Beam Section, elset=BEAM, material=ALUMINUM, section=THICK PIPE
+0.05, 0.01
+0.0, 1.0, 0.0
 *Boundary
 FIXED, ENCASTRE
 *Step, name=UniformLoad
 *Static
 *Dload
-BEAM, QGLOBAL, 0.0, 0.0, -300.0
+BEAM, PZ, -300.0
 *Output, field
 *Node Output
 U, RF

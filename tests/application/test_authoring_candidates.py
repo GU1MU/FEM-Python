@@ -15,13 +15,23 @@ from fem.application import (
     evaluate_authoring_candidate,
 )
 from fem.core.model import LineLoad
+from fem.elements import BEAM_LOCAL_Y_REFERENCE_KEY
 
 
-_FIXTURES = Path(__file__).parents[1] / "fixtures" / "inp"
+_FIXTURES = (
+    Path(__file__).parents[1]
+    / "fixtures"
+    / "inp"
+    / "abaqus_standard"
+)
 
 
 def _beam_model_and_definitions():
     model = read(_FIXTURES / "beam2_rectangle_uniform_load.inp")
+    model.sections[0].properties.pop(
+        BEAM_LOCAL_Y_REFERENCE_KEY,
+        None,
+    )
     return model, definitions_from_model(model)
 
 
