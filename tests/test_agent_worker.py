@@ -4,6 +4,7 @@ import shutil
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -386,7 +387,18 @@ def test_worker_terminates_when_combined_logs_exceed_the_effective_limit(
         launched.append(process)
         return process
 
-    monkeypatch.setattr(worker_module.subprocess, "Popen", launch_flood)
+    process_api = SimpleNamespace(
+        Popen=launch_flood,
+        CREATE_NO_WINDOW=getattr(
+            worker_module.subprocess,
+            "CREATE_NO_WINDOW",
+            0,
+        ),
+        DEVNULL=worker_module.subprocess.DEVNULL,
+        PIPE=worker_module.subprocess.PIPE,
+        TimeoutExpired=worker_module.subprocess.TimeoutExpired,
+    )
+    monkeypatch.setattr(worker_module, "subprocess", process_api)
     worker = IsolatedFEMWorker(workspace)
     response = worker.run(
         record.session_id,
