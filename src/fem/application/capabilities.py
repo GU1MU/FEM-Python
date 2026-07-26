@@ -374,7 +374,9 @@ def _output_authoring_capabilities(
         ),
         subject="output_request",
         path=("analysis", "outputs"),
-        remediation="可查看或删除既有输出请求；当前版本不能新建。",
+        remediation=(
+            "当前求解链不会执行输出请求；既有请求仅可查看或删除"
+        ),
     )
     available = _output_execution_gate_open() and supports_candidate
     diagnostics = () if available else (diagnostic,)
