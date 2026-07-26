@@ -7,6 +7,18 @@ from typing import Any
 
 import numpy as np
 
+from fem.application.results import (
+    FieldAssociation,
+    FieldData,
+    FieldPosition,
+    FieldState,
+    ResultModelFamily,
+    ResultProvider,
+    ResultTopologyProjection,
+    ResultVariable,
+    ScalarFieldSelection,
+)
+from fem.core.result import ModelResult
 from fem.post.stress import beam, dispatch, field, truss
 from .model_adapter import ModelGeometry
 
@@ -67,6 +79,15 @@ class ResultData:
     )
     run_id: str | None = dataclass_field(
         default=None, repr=False, compare=False
+    )
+    result_id: str | None = dataclass_field(
+        default=None, repr=False, compare=False
+    )
+    materialization_generation: int | None = dataclass_field(
+        default=None, repr=False, compare=False
+    )
+    field_selections: dict[str, ScalarFieldSelection] = dataclass_field(
+        default_factory=dict, repr=False, compare=False
     )
 
     def field_ready(self, key: str) -> bool:
@@ -301,6 +322,312 @@ def build_result_data(
     )
     _register_stress_catalog(data)
     return data
+
+
+def build_result_data_from_provider(
+    provider: ResultProvider,
+    geometry: ModelGeometry,
+    *,
+    legacy_result: ModelResult | None = None,
+) -> ResultData:
+    """Adapt one accepted provider into the temporary legacy GUI container."""
+
+    if type(provider) is not ResultProvider:
+        raise TypeError("provider must be exactly ResultProvider")
+    if type(geometry) is not ModelGeometry:
+        raise TypeError("geometry must be exactly ModelGeometry")
+    if legacy_result is not None and type(legacy_result) is not ModelResult:
+        raise TypeError("legacy_result must be exactly ModelResult or None")
+
+    topology = provider.snapshot.topology
+    _require_matching_provider_geometry(topology, geometry)
+    displacement = _provider_displacement_vectors(topology, geometry)
+    reactions = np.zeros_like(displacement)
+    fields: dict[str, ScalarField] = {}
+    selections: dict[str, ScalarFieldSelection] = {}
+    nodal_values = {
+        int(node_id): {}
+        for node_id in geometry.node_id_to_point_index
+    }
+
+    for availability in provider.catalog().fields:
+        if availability.state is FieldState.UNAVAILABLE:
+            continue
+        descriptor = availability.descriptor
+        field_data = (
+            provider.field(availability.key)
+            if availability.state is FieldState.READY
+            else None
+        )
+        for column, component in enumerate(descriptor.columns):
+            shortcut = _legacy_field_shortcut(
+                descriptor.field_id.variable,
+                descriptor.field_id.position,
+                component,
+            )
+            selection = ScalarFieldSelection(
+                field_key=availability.key,
+                component=component,
+            )
+            if shortcut in selections:
+                raise ValueError(
+                    "legacy ResultData cannot represent multiple complete "
+                    f"field keys as {shortcut!r}"
+                )
+            selections[shortcut] = selection
+            values = (
+                _legacy_field_values(field_data, column, geometry)
+                if field_data is not None
+                else np.empty(0, dtype=float)
+            )
+            fields[shortcut] = ScalarField(
+                key=shortcut,
+                label=_legacy_field_label(shortcut),
+                association=_legacy_association(descriptor.association),
+                values=values,
+                ready=field_data is not None,
+            )
+            if (
+                field_data is not None
+                and descriptor.field_id.position is FieldPosition.NODE
+                and descriptor.field_id.variable
+                in {
+                    ResultVariable.U,
+                    ResultVariable.UR,
+                    ResultVariable.RF,
+                    ResultVariable.RM,
+                }
+            ):
+                _install_primary_nodal_values(
+                    nodal_values,
+                    geometry,
+                    shortcut,
+                    values,
+                )
+                _install_reaction_component(
+                    reactions,
+                    descriptor.field_id.variable,
+                    component,
+                    values,
+                )
+
+    stress_position_labels = dict(_DEFAULT_STRESS_POSITION_LABELS)
+    if provider.profile.family is ResultModelFamily.BEAM:
+        stress_position_labels["NODAL"] = "节点包络"
+    source = provider.source
+    return ResultData(
+        displacement_vectors=displacement,
+        reaction_vectors=reactions,
+        fields=fields,
+        nodal_values=nodal_values,
+        element_stress={},
+        nodal_stress={},
+        nodal_stress_samples={},
+        _source_result=legacy_result,
+        _source_geometry=geometry,
+        stress_position_labels=stress_position_labels,
+        artifact_id=source.artifact_id,
+        run_id=source.run_id,
+        result_id=source.result_id,
+        materialization_generation=provider.snapshot.generation,
+        field_selections=selections,
+    )
+
+
+def _require_matching_provider_geometry(
+    topology: ResultTopologyProjection,
+    geometry: ModelGeometry,
+) -> None:
+    if set(topology.node_ids) != set(geometry.node_id_to_point_index):
+        raise ValueError(
+            "provider topology node IDs must match the GUI geometry"
+        )
+    if set(topology.element_ids) != set(geometry.element_id_to_cell_index):
+        raise ValueError(
+            "provider topology element IDs must match the GUI geometry"
+        )
+    if len(geometry.point_index_to_node_id) != len(topology.node_ids):
+        raise ValueError("GUI geometry node mappings must be one-to-one")
+    if len(geometry.cell_index_to_element_id) != len(topology.element_ids):
+        raise ValueError("GUI geometry element mappings must be one-to-one")
+
+
+def _provider_displacement_vectors(
+    topology: ResultTopologyProjection,
+    geometry: ModelGeometry,
+) -> np.ndarray:
+    result = np.zeros((len(geometry.points), 3), dtype=float)
+    displacements = topology.nodal_displacements
+    for source_index, node_id in enumerate(topology.node_ids):
+        result[geometry.node_id_to_point_index[node_id]] = displacements[
+            source_index
+        ]
+    return result
+
+
+def _legacy_field_shortcut(
+    variable: ResultVariable,
+    position: FieldPosition,
+    component: str,
+) -> str:
+    if position is FieldPosition.NODE:
+        if variable is ResultVariable.U:
+            if component == "Magnitude":
+                return "U"
+            if component in {"U1", "U2", "U3"}:
+                return component
+        elif variable is ResultVariable.UR:
+            if component in {"UR1", "UR2", "UR3"}:
+                return f"R{component[2:]}"
+        elif variable is ResultVariable.RF:
+            if component == "Magnitude":
+                return "RF"
+            if component in {"RF1", "RF2", "RF3"}:
+                return component
+        elif variable is ResultVariable.RM:
+            if component in {"RM1", "RM2", "RM3"}:
+                return component
+        raise ValueError(
+            f"legacy ResultData does not support {variable.value} "
+            f"component {component!r} at node"
+        )
+
+    prefixes = {
+        (ResultVariable.LE, FieldPosition.CENTROID): "CENTROID",
+        (ResultVariable.S, FieldPosition.INTEGRATION_POINT): "IP",
+        (ResultVariable.S, FieldPosition.CENTROID): "CENTROID",
+        (ResultVariable.S, FieldPosition.ELEMENT_NODAL): "EN",
+        (ResultVariable.S, FieldPosition.NODE_REGION): "NR",
+        (ResultVariable.S, FieldPosition.RESOLVED_NODAL): "NODAL",
+        (ResultVariable.S, FieldPosition.SECTION_END): "EN",
+        (
+            ResultVariable.S,
+            FieldPosition.SECTION_NODE_ENVELOPE,
+        ): "NODAL",
+    }
+    try:
+        prefix = prefixes[(variable, position)]
+    except KeyError as error:
+        raise ValueError(
+            "legacy ResultData has no shortcut for "
+            f"{variable.value} at {position.value}"
+        ) from error
+    return f"{prefix}:{component}"
+
+
+def _legacy_field_label(shortcut: str) -> str:
+    labels = {
+        "U": "总位移",
+        "RF": "总反力",
+    }
+    if shortcut in labels:
+        return labels[shortcut]
+    if shortcut.startswith("R") and not shortcut.startswith(("RF", "RM")):
+        return f"转角 {shortcut}"
+    if shortcut.startswith("RM"):
+        return f"反力矩 {shortcut}"
+    if ":" not in shortcut:
+        return shortcut
+    prefix, component = shortcut.split(":", 1)
+    component_label = _STRESS_LABELS.get(component, component)
+    if prefix == "IP":
+        return f"积分点{component_label}"
+    if prefix == "EN":
+        return f"单元节点（不平均）{component_label}"
+    if prefix == "NR":
+        return f"节点区域{component_label}"
+    if prefix == "NODAL":
+        return f"节点平均{component_label}"
+    return component_label
+
+
+def _legacy_association(association: FieldAssociation) -> str:
+    associations = {
+        FieldAssociation.NODE: "point",
+        FieldAssociation.ELEMENT: "cell",
+        FieldAssociation.INTEGRATION_POINT: "integration_point",
+        FieldAssociation.ELEMENT_NODE: "element_node",
+        FieldAssociation.NODE_REGION: "node_region",
+        FieldAssociation.RESOLVED_NODAL: "resolved_nodal",
+    }
+    try:
+        return associations[association]
+    except KeyError as error:
+        raise ValueError(
+            "legacy ResultData has no association for "
+            f"{association.value}"
+        ) from error
+
+
+def _legacy_field_values(
+    field_data: FieldData,
+    column: int,
+    geometry: ModelGeometry,
+) -> np.ndarray:
+    values = field_data.values[:, column].copy()
+    association = field_data.descriptor.association
+    if association is FieldAssociation.NODE:
+        result = np.full(len(geometry.points), np.nan, dtype=float)
+        for location, value in zip(
+            field_data.locations,
+            values,
+            strict=True,
+        ):
+            node_id = location.node_id
+            if node_id not in geometry.node_id_to_point_index:
+                raise ValueError(
+                    "provider field references a node outside GUI geometry"
+                )
+            result[geometry.node_id_to_point_index[node_id]] = value
+        return result
+    if association is FieldAssociation.ELEMENT:
+        result = np.full(len(geometry.cells), np.nan, dtype=float)
+        for location, value in zip(
+            field_data.locations,
+            values,
+            strict=True,
+        ):
+            element_id = location.element_id
+            if element_id not in geometry.element_id_to_cell_index:
+                raise ValueError(
+                    "provider field references an element outside GUI geometry"
+                )
+            result[geometry.element_id_to_cell_index[element_id]] = value
+        return result
+    return values
+
+
+def _install_primary_nodal_values(
+    nodal_values: dict[int, dict[str, float]],
+    geometry: ModelGeometry,
+    shortcut: str,
+    values: np.ndarray,
+) -> None:
+    if values.shape != (len(geometry.points),) or not np.isfinite(values).all():
+        raise ValueError(
+            "provider primary field must cover every GUI geometry node"
+        )
+    for point_index, value in enumerate(values):
+        node_id = geometry.point_index_to_node_id[point_index]
+        nodal_values[node_id][shortcut] = float(value)
+
+
+def _install_reaction_component(
+    reactions: np.ndarray,
+    variable: ResultVariable,
+    component: str,
+    values: np.ndarray,
+) -> None:
+    if variable is not ResultVariable.RF or component == "Magnitude":
+        return
+    component_indices = {"RF1": 0, "RF2": 1, "RF3": 2}
+    try:
+        component_index = component_indices[component]
+    except KeyError as error:
+        raise ValueError(
+            f"legacy ResultData does not support reaction {component!r}"
+        ) from error
+    reactions[:, component_index] = values
 
 
 _STRESS_LABELS = {

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import os
+from time import monotonic
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -12,11 +12,19 @@ from fem.application.results import build_solve_result_bundle
 from fem.solvers.static_linear import solve
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.visualization.model_adapter import build_model_geometry
-from fem_gui.visualization.result_adapter import build_result_data
 
 
 def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def _wait_for_tasks(window: FEMMainWindow) -> None:
+    deadline = monotonic() + 5.0
+    application = _application()
+    while window.busy and monotonic() < deadline:
+        application.processEvents()
+    application.processEvents()
+    assert not window.busy
 
 
 def _solved_window(path) -> FEMMainWindow:
@@ -39,14 +47,6 @@ def _install_result(window) -> None:
     window._job_succeeded(
         task.token,
         (build_solve_result_bundle(task, result), {}),
-    )
-    accepted = window.session.current_result()
-    window._install_result_projection(
-        replace(
-            build_result_data(accepted.result, window.geometry),
-            artifact_id=accepted.provenance.artifact_id,
-            run_id=accepted.provenance.run_id,
-        )
     )
 
 
@@ -115,15 +115,18 @@ def test_result_ribbon_selects_real_fields_and_deformation_scale(gui_inp_path):
     stress_index = window.result_variable_combo.findData("S")
     window.result_variable_combo.setCurrentIndex(stress_index)
     window._result_variable_changed(stress_index)
+    _wait_for_tasks(window)
     assert window.result_position_combo.currentData() == "IP"
     assert str(window.result_component_combo.currentData()).startswith("IP:")
     unaveraged_index = window.result_position_combo.findData("EN")
     window.result_position_combo.setCurrentIndex(unaveraged_index)
     window._result_position_changed(unaveraged_index)
+    _wait_for_tasks(window)
     assert str(window.result_component_combo.currentData()).startswith("EN:")
     center_index = window.result_position_combo.findData("CENTROID")
     window.result_position_combo.setCurrentIndex(center_index)
     window._result_position_changed(center_index)
+    _wait_for_tasks(window)
     assert str(window.result_component_combo.currentData()).startswith("CENTROID:")
 
     custom_index = window.result_scale_combo.findData("custom")

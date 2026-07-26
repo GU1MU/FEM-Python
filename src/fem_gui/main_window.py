@@ -54,7 +54,10 @@ from fem.application import (
     safe_static_preflight,
 )
 from fem.application.preprocessing import generate_fem_model
-from fem.application.results import build_solve_result_bundle
+from fem.application.results import (
+    build_solve_result_bundle,
+    restore_result_provider,
+)
 from fem.core.model import (
     EdgeLoad,
     GravityLoad,
@@ -154,8 +157,11 @@ from .viewport_background_dialog import ViewportBackgroundDialog
 from .visualization.model_adapter import ModelGeometry, build_model_geometry
 from .visualization.csv_export import export_field_csv
 from .visualization.result_adapter import (
-    ResultData, automatic_deformation_scale, build_result_data,
-    field_family, recovered_stress_data,
+    ResultData,
+    automatic_deformation_scale,
+    build_result_data_from_provider,
+    field_family,
+    recovered_stress_data,
 )
 from .visualization.selection import SelectionState
 from .visualization.scene import DisplayState
@@ -814,24 +820,33 @@ class FEMMainWindow(QMainWindow):
             and artifact is not None
             and result_projection.artifact_id == artifact.artifact_id
             and result_projection.run_id == current_run_id
+            and result_projection.result_id == current_result.result_id
+            and result_projection.materialization_generation
+            == current_result.materialization.generation
         ):
             self._install_result_projection(result_projection)
         elif (
-            self.result_data is None
-            or self.result_data.run_id != current_run_id
-            or self.result_data.artifact_id != artifact.artifact_id
+            artifact is not None
+            and (
+                self.result_data is None
+                or self.result_data.run_id != current_run_id
+                or self.result_data.artifact_id != artifact.artifact_id
+                or self.result_data.result_id != current_result.result_id
+                or self.result_data.materialization_generation
+                != current_result.materialization.generation
+            )
         ):
             core_result = current_result.result
             if core_result is not None and self.geometry is not None:
+                provider = restore_result_provider(
+                    core_result,
+                    current_result.materialization,
+                )
                 self._install_result_projection(
-                    replace(
-                        build_result_data(
-                            core_result,
-                            self.geometry,
-                            include_stress=False,
-                        ),
-                        artifact_id=artifact.artifact_id,
-                        run_id=current_run_id,
+                    build_result_data_from_provider(
+                        provider,
+                        self.geometry,
+                        legacy_result=core_result,
                     )
                 )
         elif (
@@ -871,6 +886,9 @@ class FEMMainWindow(QMainWindow):
             current_result is None
             or current_result.provenance.run_id
             != result_projection.run_id
+            or current_result.result_id != result_projection.result_id
+            or current_result.materialization.generation
+            != result_projection.materialization_generation
         ):
             return True
         artifact = self.document.artifact
@@ -3867,14 +3885,14 @@ class FEMMainWindow(QMainWindow):
             projection = self.session.prepare_result_projection(job.run_id)
             if self.geometry is None:
                 return
-            data = replace(
-                build_result_data(
-                    projection.record.result,
-                    self.geometry,
-                    include_stress=False,
-                ),
-                artifact_id=projection.token.artifact_id,
-                run_id=projection.run_id,
+            provider = restore_result_provider(
+                projection.record.result,
+                projection.record.materialization,
+            )
+            data = build_result_data_from_provider(
+                provider,
+                self.geometry,
+                legacy_result=projection.record.result,
             )
             if not self._apply_revision_neutral_task_receipt(
                 self.session.accept_result_projection(
@@ -4347,6 +4365,9 @@ class FEMMainWindow(QMainWindow):
         if (
             provenance.artifact_id != artifact.artifact_id
             or provenance.run_id != data.run_id
+            or record.result_id != data.result_id
+            or record.materialization.generation
+            != data.materialization_generation
             or data.artifact_id != artifact.artifact_id
             or self.geometry is None
             or self.geometry.artifact_id != artifact.artifact_id

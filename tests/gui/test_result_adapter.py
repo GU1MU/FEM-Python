@@ -6,6 +6,16 @@ import numpy as np
 import pytest
 
 from fem.abaqus import read
+from fem.application.results import (
+    FieldPosition,
+    FieldRequest,
+    ResultFieldId,
+    ResultProvider,
+    ResultSourceKey,
+    ResultVariable,
+    ScalarFieldSelection,
+    build_result_provider,
+)
 from fem.core.mesh import Element3D, Mesh3D, Node3D
 from fem.core.model import FEMModel
 from fem.core.result import ModelResult
@@ -13,11 +23,140 @@ from fem.solvers.static_linear import solve
 from fem_gui.visualization.model_adapter import build_model_geometry
 from fem_gui.visualization.result_adapter import (
     ResultData, ScalarField, StressSample, automatic_deformation_scale,
-    build_result_data, deformed_points, ensure_stress_data, field_family,
+    build_result_data, build_result_data_from_provider, deformed_points,
+    ensure_stress_data, field_family,
 )
 from fem_gui.visualization import result_adapter as result_adapter_module
 from fem_gui.visualization.model_adapter import ModelGeometry
 from fem_gui.visualization.stress_adapter import build_stress_render_geometry
+
+
+def _accepted_provider(result: ModelResult) -> ResultProvider:
+    return build_result_provider(
+        ResultSourceKey(
+            result_id="result-accepted",
+            session_id="session-provider-adapter",
+            artifact_id="artifact-provider-adapter",
+            model_revision=7,
+            step_name=str(getattr(result.step, "name", "Static-1")),
+            run_id="run-provider-adapter",
+        ),
+        result,
+    )
+
+
+def test_provider_adapter_reads_primary_fields_without_recovery(
+    monkeypatch,
+    gui_inp_path,
+):
+    model = read(gui_inp_path)
+    result = solve(model)
+    provider = _accepted_provider(result)
+    geometry = build_model_geometry(model)
+
+    def reject_recovery(*_args, **_kwargs):
+        raise AssertionError("provider adaptation must not recover fields")
+
+    monkeypatch.setattr(
+        result_adapter_module.dispatch,
+        "resolve_type_keys",
+        reject_recovery,
+    )
+    monkeypatch.setattr(
+        result_adapter_module.field,
+        "StressRecovery",
+        reject_recovery,
+    )
+    monkeypatch.setattr(
+        result_adapter_module.truss,
+        "recover",
+        reject_recovery,
+    )
+    monkeypatch.setattr(
+        result_adapter_module.beam,
+        "recover_section_end_stress",
+        reject_recovery,
+    )
+
+    data = build_result_data_from_provider(
+        provider,
+        geometry,
+        legacy_result=result,
+    )
+
+    u_availability = next(
+        item
+        for item in provider.catalog().fields
+        if item.descriptor.field_id.variable is ResultVariable.U
+    )
+    u_field = provider.field(u_availability.key)
+    u_values = u_field.values
+    u1_column = u_field.descriptor.columns.index("U1")
+    magnitude_column = u_field.descriptor.columns.index("Magnitude")
+    assert data.fields["U1"].values == pytest.approx(
+        u_values[:, u1_column]
+    )
+    assert data.fields["U"].values == pytest.approx(
+        u_values[:, magnitude_column]
+    )
+    assert data.displacement_vectors == pytest.approx(
+        provider.snapshot.topology.nodal_displacements
+    )
+    assert data.field_selections["U"] == ScalarFieldSelection(
+        u_availability.key,
+        "Magnitude",
+    )
+    assert not data.field_ready("IP:Mises")
+    assert data._source_result is result
+    assert data.artifact_id == provider.source.artifact_id
+    assert data.run_id == provider.source.run_id
+    assert data.result_id == provider.source.result_id
+    assert data.materialization_generation == 0
+
+
+def test_provider_adapter_keeps_the_legacy_lazy_recovery_fallback(
+    gui_inp_path,
+):
+    model = read(gui_inp_path)
+    result = solve(model)
+    provider = _accepted_provider(result)
+    data = build_result_data_from_provider(
+        provider,
+        build_model_geometry(model),
+        legacy_result=result,
+    )
+
+    assert not data.field_ready("CENTROID:Mises")
+    assert ensure_stress_data(data, "CENTROID")
+    assert data.field_ready("CENTROID:Mises")
+
+
+def test_provider_adapter_fails_closed_when_complete_keys_share_a_shortcut(
+    gui_inp_path,
+):
+    model = read(gui_inp_path)
+    result = solve(model)
+    provider = _accepted_provider(result)
+    explicit_key = provider.resolve_request(
+        FieldRequest(
+            ResultFieldId(
+                ResultVariable.S,
+                FieldPosition.INTEGRATION_POINT,
+            ),
+            gauss_order=1,
+        )
+    )
+    draft = provider.apply(provider.materialize((explicit_key,)))
+
+    with pytest.raises(
+        ValueError,
+        match="cannot represent multiple complete field keys",
+    ):
+        build_result_data_from_provider(
+            draft,
+            build_model_geometry(model),
+            legacy_result=result,
+        )
 
 
 def test_displacement_reaction_stress_and_deformation_coordinates(gui_inp_path):
