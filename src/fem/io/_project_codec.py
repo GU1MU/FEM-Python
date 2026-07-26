@@ -48,6 +48,7 @@ from ._project_errors import (
     ProjectDecodeError,
     ProjectEncodeError,
 )
+from ._atomic_text import atomic_write_verified_text
 
 
 _VerifiedT = TypeVar("_VerifiedT")
@@ -210,114 +211,22 @@ def atomic_write_project(
     replace_func: Callable[[str | Path, str | Path], Any] | None = None,
     unlink_func: Callable[[Path], Any] | None = None,
 ) -> Path:
-    """Install serialized project text only after durable write and verification.
+    """Install serialized project text through the shared atomic foundation."""
 
-    Cleanup failures are attached to an in-flight primary exception with
-    ``BaseException.add_note`` so they cannot hide the operation that failed.
-    """
-
-    if not isinstance(serialized, str):
-        raise TypeError("serialized 必须是 str")
-    target = Path(path)
-    expected = deepcopy(expected_semantic)
-    replace = os.replace if replace_func is None else replace_func
-    unlink = (
-        (lambda temporary: temporary.unlink())
-        if unlink_func is None
-        else unlink_func
-    )
-
-    descriptor = -1
-    temporary: Path | None = None
-    installed = False
-    primary_error: BaseException | None = None
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temporary_name = tempfile.mkstemp(
-            dir=target.parent,
-            prefix=f".{target.name}.",
-            suffix=".tmp",
-        )
-        temporary = Path(temporary_name)
-        stream = os.fdopen(
-            descriptor,
-            "w",
-            encoding="utf-8",
-            newline="\n",
-        )
-        descriptor = -1
-        stream_error: BaseException | None = None
-        try:
-            stream.write(serialized)
-            stream.flush()
-            os.fsync(stream.fileno())
-        except BaseException as exc:
-            stream_error = exc
-            raise
-        finally:
-            try:
-                stream.close()
-            except BaseException as cleanup_error:
-                if stream_error is None:
-                    raise
-                _add_cleanup_note(
-                    stream_error,
-                    cleanup_error,
-                    action="关闭临时项目文件",
-                    temporary=temporary,
-                )
-
-        verified = verifier(temporary)
-        actual_semantic = semantic_encoder(verified)
-        if actual_semantic != expected:
-            raise error_type(mismatch_message)
-
-        replace(temporary, target)
-        installed = True
-        return target
-    except BaseException as exc:
-        primary_error = exc
-        raise
-    finally:
-        if descriptor >= 0:
-            try:
-                os.close(descriptor)
-            except BaseException as cleanup_error:
-                if primary_error is None:
-                    raise
-                _add_cleanup_note(
-                    primary_error,
-                    cleanup_error,
-                    action="关闭临时项目文件描述符",
-                    temporary=temporary,
-                )
-        if temporary is not None and not installed:
-            try:
-                unlink(temporary)
-            except FileNotFoundError:
-                pass
-            except BaseException as cleanup_error:
-                if primary_error is None:
-                    raise
-                _add_cleanup_note(
-                    primary_error,
-                    cleanup_error,
-                    action="删除临时项目文件",
-                    temporary=temporary,
-                )
-
-
-def _add_cleanup_note(
-    primary_error: BaseException,
-    cleanup_error: BaseException,
-    *,
-    action: str,
-    temporary: Path | None,
-) -> None:
-    location = "<尚未创建>" if temporary is None else str(temporary)
-    primary_error.add_note(
-        f"{action}失败；临时路径 {location}；"
-        f"{type(cleanup_error).__name__}: {cleanup_error}"
+    return atomic_write_verified_text(
+        path,
+        serialized,
+        verifier=verifier,
+        semantic_encoder=semantic_encoder,
+        expected_semantic=expected_semantic,
+        error_type=error_type,
+        mismatch_message=mismatch_message,
+        replace_func=os.replace if replace_func is None else replace_func,
+        unlink_func=unlink_func,
+        _mkstemp_func=tempfile.mkstemp,
+        _fdopen_func=os.fdopen,
+        _fsync_func=os.fsync,
+        _close_func=os.close,
     )
 
 
