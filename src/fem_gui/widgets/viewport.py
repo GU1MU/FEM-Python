@@ -7,7 +7,7 @@ import logging
 import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from PySide6.QtCore import QEvent, QTimer, Qt, Signal
@@ -15,6 +15,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QLabel, QStackedLayout, QVBoxLayout, QWidget
 
 from fem.application import RegionRef
+from fem.application.results import FieldLocation, ResultValueLayout
 from fem.boundary.step import boundary_for_step, get_step
 from fem.geometry import LogicalEntityRef, logical_ref_sort_key
 from fem.post.stress import dispatch, field
@@ -38,6 +39,9 @@ from ..visualization.symbols import (
     sample_polyline,
     symbol_length,
 )
+
+if TYPE_CHECKING:
+    from ..visualization.result_renderer import ResultRenderPayload
 
 _pyvista = None
 _QtInteractor = None
@@ -175,6 +179,46 @@ class PickHit:
     vtk_cell_id: int | None = None
 
 
+def _require_result_render_payload(
+    payload: object,
+) -> ResultRenderPayload:
+    """Validate the exact typed viewport boundary without eagerly loading VTK."""
+
+    from ..visualization.result_renderer import ResultRenderPayload
+
+    if type(payload) is not ResultRenderPayload:
+        raise TypeError("payload must be exactly ResultRenderPayload")
+    topology = payload.topology
+    dataset = payload.dataset
+    if int(dataset.n_points) != len(topology.point_locations):
+        raise ValueError("payload point provenance must match dataset points")
+    if int(dataset.n_cells) != len(topology.cell_locations):
+        raise ValueError("payload cell provenance must match dataset cells")
+    scalar_name = payload.scalar_name
+    in_points = scalar_name in dataset.point_data
+    in_cells = scalar_name in dataset.cell_data
+    if topology.value_layout is ResultValueLayout.POINT:
+        values = dataset.point_data[scalar_name] if in_points else None
+        expected_values = int(dataset.n_points)
+    elif topology.value_layout is ResultValueLayout.CELL:
+        values = dataset.cell_data[scalar_name] if in_cells else None
+        expected_values = int(dataset.n_cells)
+    else:
+        raise TypeError("payload value_layout must be exactly ResultValueLayout")
+    if values is None or in_points == in_cells:
+        raise ValueError(
+            "payload scalar association must exactly match topology value_layout"
+        )
+    scalar_values = np.asarray(values)
+    if scalar_values.shape != (expected_values,):
+        raise ValueError("payload scalar must be one-dimensional")
+    if dataset.active_scalars_name != scalar_name:
+        raise ValueError("payload scalar must be the active dataset scalar")
+    if not np.array_equal(scalar_values, topology.values, equal_nan=True):
+        raise ValueError("payload scalar values must exactly match topology values")
+    return payload
+
+
 def _point_to_segment_distance(
     point: np.ndarray,
     start: np.ndarray,
@@ -229,6 +273,7 @@ class FEMViewport(QWidget):
         self._pick_grid = None
         self._pick_locators: dict[int, tuple[int, Any]] = {}
         self._result_data: ResultData | None = None
+        self._result_render_payload: ResultRenderPayload | None = None
         self._artifact_id: str | None = None
         self._run_id: str | None = None
         self._actors: dict[str, Any] = {}
@@ -537,6 +582,7 @@ class FEMViewport(QWidget):
         self._pick_grid = None
         self._pick_locators.clear()
         self._result_data = None
+        self._result_render_payload = None
         self._selected_kind = None
         self._selected_id = None
         self._selection_highlight_visible = True
@@ -587,6 +633,7 @@ class FEMViewport(QWidget):
         self._pick_grid = None
         self._pick_locators.clear()
         self._result_data = None
+        self._result_render_payload = None
         self._display = DisplayState()
         self._overlay_undeformed = False
         self._selected_kind = None
@@ -731,11 +778,78 @@ class FEMViewport(QWidget):
         }
 
     def set_result_data(self, data: ResultData) -> None:
+        """Install the compatibility cache used by the legacy render path."""
+
+        self._result_render_payload = None
         self._result_data = data
         self._run_id = data.run_id
         if self._display.field_key not in data.fields:
             field_key = "U" if "U" in data.fields else next(iter(data.fields), None)
             self._display = replace(self._display, field_key=field_key)
+
+    def set_result_render_payload(
+        self,
+        payload: ResultRenderPayload,
+    ) -> None:
+        """Install one already-projected scalar topology for direct rendering."""
+
+        checked = _require_result_render_payload(payload)
+        source = checked.topology.source
+        if (
+            self._artifact_id is not None
+            and self._artifact_id != source.artifact_id
+        ):
+            raise ValueError(
+                "payload artifact provenance does not match the viewport model"
+            )
+        self._result_render_payload = checked
+        self._result_data = None
+        self._artifact_id = source.artifact_id
+        self._run_id = source.run_id
+        self._index_result_render_provenance(checked)
+
+    def _index_result_render_provenance(
+        self,
+        payload: ResultRenderPayload,
+    ) -> None:
+        """Expose typed locations through the existing viewport pick indexes."""
+
+        checked = _require_result_render_payload(payload)
+        topology = checked.topology
+        self._result_point_index_to_node_id = {
+            index: int(location.node_id)
+            for index, location in enumerate(topology.point_locations)
+            if location is not None and location.node_id is not None
+        }
+        self._result_point_index_to_element_id = {
+            index: int(location.element_id)
+            for index, location in enumerate(topology.point_locations)
+            if location is not None and location.element_id is not None
+        }
+        cell_ids: list[int] = []
+        for cell, location in zip(
+            topology.cells,
+            topology.cell_locations,
+            strict=True,
+        ):
+            if location is not None and location.element_id is not None:
+                cell_ids.append(int(location.element_id))
+                continue
+            candidates = {
+                int(point_location.element_id)
+                for point_index in cell
+                if (
+                    (point_location := topology.point_locations[point_index])
+                    is not None
+                    and point_location.element_id is not None
+                )
+            }
+            cell_ids.append(candidates.pop() if len(candidates) == 1 else 0)
+        self._result_cell_index_to_element_id = {
+            index: element_id
+            for index, element_id in enumerate(cell_ids)
+            if element_id > 0
+        }
 
     def set_selection_mode(self, mode: str) -> None:
         previous = self._selection_mode
@@ -1969,6 +2083,11 @@ class FEMViewport(QWidget):
         self._remove_scalar_bars()
         self._result_grid = None
         self._result_scalar = None
+        if self._result_render_payload is not None:
+            self._update_result_render_payload_layer(
+                self._result_render_payload
+            )
+            return
         self._result_point_index_to_node_id.clear()
         self._result_point_index_to_element_id.clear()
         self._result_cell_index_to_element_id.clear()
@@ -2140,6 +2259,137 @@ class FEMViewport(QWidget):
             self._add_extrema_labels(grid, render_scalar)
         self._refresh_geometry_dependent_layers()
         self._refresh_undeformed_overlay()
+
+    def _update_result_render_payload_layer(
+        self,
+        payload: ResultRenderPayload,
+    ) -> None:
+        """Render an already-selected and already-deformed typed payload."""
+
+        checked = _require_result_render_payload(payload)
+        self._index_result_render_provenance(checked)
+        if self._plotter is None:
+            return
+        dataset = checked.dataset
+        self._result_grid = dataset
+        self._pick_grid = dataset
+        self._pick_locators.clear()
+        self._clear_preselection(render=False)
+        base = self._actors.get("mesh_surface")
+        if base is not None:
+            base.SetVisibility(False)
+        kwargs: dict[str, Any] = {
+            "name": "result",
+            "reset_camera": False,
+            "line_width": self._element_line_width(),
+            "show_edges": False,
+        }
+        if self._display.contour_enabled:
+            kwargs.update(
+                scalars=checked.scalar_name,
+                cmap=self._contour["colormap"],
+                n_colors=(
+                    256
+                    if self._contour.get("style") == "continuous"
+                    else int(self._contour["levels"])
+                ),
+                interpolate_before_map=self._contour.get("style")
+                == "continuous",
+                show_scalar_bar=self._contour["legend"],
+                scalar_bar_args={
+                    "title": checked.topology.selection.component,
+                    "vertical": self._contour["orientation"] == "vertical",
+                    "fmt": self._scalar_format(),
+                    "color": self._background_settings.foreground_color,
+                },
+            )
+            if self._contour["manual"]:
+                kwargs["clim"] = (
+                    self._contour["minimum"],
+                    self._contour["maximum"],
+                )
+        else:
+            kwargs["color"] = self._visual_palette()["result"]
+        self._actors["result"] = self._plotter.add_mesh(dataset, **kwargs)
+        if (
+            self._display.contour_enabled
+            and (
+                self._contour["show_minimum"]
+                or self._contour["show_maximum"]
+            )
+        ):
+            self._add_result_render_payload_extrema_labels(checked)
+        self._refresh_undeformed_overlay()
+        self._render()
+
+    def _add_result_render_payload_extrema_labels(
+        self,
+        payload: ResultRenderPayload,
+    ) -> None:
+        """Label extrema from payload scalar and typed location provenance."""
+
+        checked = _require_result_render_payload(payload)
+        topology = checked.topology
+        if topology.value_layout is ResultValueLayout.POINT:
+            values = np.asarray(
+                checked.dataset.point_data[checked.scalar_name]
+            )
+            points = np.asarray(checked.dataset.points)
+            locations = topology.point_locations
+        else:
+            values = np.asarray(
+                checked.dataset.cell_data[checked.scalar_name]
+            )
+            points = np.asarray(checked.dataset.cell_centers().points)
+            locations = topology.cell_locations
+        finite = np.flatnonzero(np.isfinite(values))
+        if len(finite) == 0:
+            return
+        minimum_index = int(finite[np.argmin(values[finite])])
+        maximum_index = int(finite[np.argmax(values[finite])])
+        entries: list[tuple[int, str]] = []
+        for enabled, index, title in (
+            (self._contour["show_minimum"], minimum_index, "最小值"),
+            (self._contour["show_maximum"], maximum_index, "最大值"),
+        ):
+            if not enabled:
+                continue
+            label = f"{title} {self._format_scalar(float(values[index]))}"
+            if self._contour["show_ids"]:
+                identity = self._result_location_identity(locations[index])
+                if identity:
+                    label += f"（{identity}）"
+            entries.append((index, label))
+        if not entries:
+            return
+        palette = self._visual_palette()
+        self._actors["extrema"] = self._plotter.add_point_labels(
+            points[[entry[0] for entry in entries]],
+            [entry[1] for entry in entries],
+            point_size=7,
+            font_size=10,
+            shape_color=palette["label_background"],
+            text_color=self._background_settings.foreground_color,
+            name="extrema",
+            reset_camera=False,
+        )
+
+    @staticmethod
+    def _result_location_identity(
+        location: FieldLocation | None,
+    ) -> str:
+        if location is None:
+            return ""
+        values = []
+        if location.node_id is not None:
+            values.append(f"节点 {int(location.node_id)}")
+        if location.element_id is not None:
+            values.append(f"单元 {int(location.element_id)}")
+        if location.integration_point is not None:
+            values.append(f"积分点 {int(location.integration_point)}")
+        if location.local_node is not None:
+            values.append(f"局部节点 {int(location.local_node)}")
+        return "，".join(values)
 
     def _add_extrema_labels(self, grid: Any, scalar: ScalarField) -> None:
         finite = np.flatnonzero(np.isfinite(scalar.values))
@@ -2470,11 +2720,22 @@ class FEMViewport(QWidget):
         occluder: Any,
         tolerance: float,
     ) -> PickHit | None:
-        if dataset is None or id_array not in dataset.point_data:
+        if dataset is None:
+            return None
+        if id_array in dataset.point_data:
+            ids = np.asarray(dataset.point_data[id_array], dtype=np.int64)
+        elif dataset is self._result_grid and id_array == "node_id":
+            ids = np.asarray(
+                tuple(
+                    self._result_point_index_to_node_id.get(index, 0)
+                    for index in range(int(dataset.n_points))
+                ),
+                dtype=np.int64,
+            )
+        else:
             return None
         mouse = np.asarray((float(x), float(y)), dtype=float)
         threshold = float(tolerance) * self._device_pixel_ratio()
-        ids = np.asarray(dataset.point_data[id_array], dtype=np.int64)
         world_points = np.asarray(dataset.points, dtype=float)
         display_points = self._world_points_to_display(world_points)
         if display_points is None:
@@ -2485,6 +2746,7 @@ class FEMViewport(QWidget):
             & (distances <= threshold)
             & (display_points[:, 2] >= 0.0)
             & (display_points[:, 2] <= 1.0)
+            & (ids > 0)
         )
         if not len(candidates):
             return None
@@ -2618,14 +2880,25 @@ class FEMViewport(QWidget):
         dataset_name: str,
         kind: str,
     ) -> PickHit | None:
-        if dataset is None or id_array not in dataset.cell_data:
+        if dataset is None:
+            return None
+        if id_array in dataset.cell_data:
+            ids = np.asarray(dataset.cell_data[id_array], dtype=np.int64)
+        elif dataset is self._result_grid and id_array == "element_id":
+            ids = np.asarray(
+                tuple(
+                    self._result_cell_index_to_element_id.get(index, 0)
+                    for index in range(int(dataset.n_cells))
+                ),
+                dtype=np.int64,
+            )
+        else:
             return None
         intersection = self._intersect_dataset(x, y, dataset)
         if intersection is None:
             return None
         cell_id, world = intersection
-        ids = np.asarray(dataset.cell_data[id_array], dtype=np.int64)
-        if not 0 <= cell_id < len(ids):
+        if not 0 <= cell_id < len(ids) or int(ids[cell_id]) <= 0:
             return None
         return PickHit(
             kind,
@@ -2797,13 +3070,27 @@ class FEMViewport(QWidget):
                     data = self._geometry_preview_surface.extract_cells(cells)
             kwargs = {"opacity": 0.38}
         elif hit.kind == "node" and self._pick_grid is not None:
-            ids = np.asarray(self._pick_grid.point_data["node_id"])
+            ids = np.asarray(
+                self._pick_grid.point_data["node_id"]
+                if "node_id" in self._pick_grid.point_data
+                else tuple(
+                    self._result_point_index_to_node_id.get(index, 0)
+                    for index in range(int(self._pick_grid.n_points))
+                )
+            )
             indices = np.flatnonzero(ids == hit.pick_id)
             if len(indices):
                 data = _pyvista.PolyData(np.asarray(self._pick_grid.points)[indices])
                 kwargs = {"point_size": 11, "render_points_as_spheres": True}
         elif hit.kind == "element" and self._pick_grid is not None:
-            ids = np.asarray(self._pick_grid.cell_data["element_id"])
+            ids = np.asarray(
+                self._pick_grid.cell_data["element_id"]
+                if "element_id" in self._pick_grid.cell_data
+                else tuple(
+                    self._result_cell_index_to_element_id.get(index, 0)
+                    for index in range(int(self._pick_grid.n_cells))
+                )
+            )
             cells = np.flatnonzero(ids == hit.pick_id)
             if len(cells):
                 data = self._pick_grid.extract_cells(cells)
@@ -2924,6 +3211,15 @@ class FEMViewport(QWidget):
 
     def _refresh_extrema_for_background(self) -> None:
         self._remove_actor("extrema")
+        payload = self._result_render_payload
+        if (
+            payload is not None
+            and self._result_grid is payload.dataset
+            and self._display.contour_enabled
+            and (self._contour["show_minimum"] or self._contour["show_maximum"])
+        ):
+            self._add_result_render_payload_extrema_labels(payload)
+            return
         if (
             self._result_grid is not None
             and self._result_scalar is not None
