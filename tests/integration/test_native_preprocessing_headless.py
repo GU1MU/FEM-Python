@@ -7,6 +7,10 @@ import pytest
 
 from fem import geometry
 from fem.application import ModelSession, NamedRegion, NativePart
+from fem.application.native_regions import (
+    NativeRegionValidationError,
+    RecipeRegionSelector,
+)
 from fem.application.preprocessing import (
     LogicalRecipeTopologyResolver,
     TopologyResolutionError,
@@ -14,6 +18,7 @@ from fem.application.preprocessing import (
 )
 from fem.application.recipe_compiler import compile_recipe
 from fem.core.model import FEMModel
+from fem.geometry import LogicalEntityRef
 from fem.geometry.recipes import (
     BooleanGeometry,
     BoxGeometry,
@@ -25,6 +30,7 @@ from fem.geometry.recipes import (
     RotatedGeometry,
 )
 from fem.mesh.settings import LocalMeshControl, MeshSettings
+from fem.mesh.settings import MeshSizeFalloff
 
 
 @pytest.mark.parametrize(
@@ -82,10 +88,17 @@ def test_mesh_task_snapshot_generates_and_installs_named_refined_region(
     session.replace_mesh_settings(
         MeshSettings(
             0.5,
-            local_controls=(LocalMeshControl("edge", 2, 0.1),),
+            local_controls=(LocalMeshControl(LogicalEntityRef("edge:right"), 0.1),),
         )
     )
-    session.replace_named_regions((NamedRegion("RefinedEdge", "edge", (2,)),))
+    session.replace_named_regions(
+        (
+            NamedRegion(
+                "RefinedEdge",
+                (LogicalEntityRef("edge:right"),),
+            ),
+        )
+    )
     task = session.prepare_mesh_generation()
 
     model = generate_fem_model(task)
@@ -149,11 +162,20 @@ def test_box_logical_edges_ignore_unrelated_backend_tag_order(real_gmsh) -> None
 
         compiled = compile_recipe(cad, recipe)
 
-        edges = tuple(compiled.resolve("edge", index) for index in range(1, 13))
+        edges = tuple(
+            compiled.resolve(LogicalEntityRef(entity.logical_id))
+            for entity in compiled.catalog.entities_of("edge")
+        )
         assert all(len(group) == 1 for group in edges)
         assert len({group[0] for group in edges}) == 12
-        points = tuple(compiled.resolve("point", index)[0] for index in range(1, 9))
-        faces = tuple(compiled.resolve("face", index)[0] for index in range(1, 7))
+        points = tuple(
+            compiled.resolve(LogicalEntityRef(entity.logical_id))[0]
+            for entity in compiled.catalog.entities_of("point")
+        )
+        faces = tuple(
+            compiled.resolve(LogicalEntityRef(entity.logical_id))[0]
+            for entity in compiled.catalog.entities_of("face")
+        )
         assert len(set(points)) == 8
         assert len(set(faces)) == 6
         first_bounds = cad.bounding_box(edges[0][0])
@@ -161,41 +183,40 @@ def test_box_logical_edges_ignore_unrelated_backend_tag_order(real_gmsh) -> None
         assert first_bounds[2] == pytest.approx(0.0, abs=1.0e-7)
         assert first_bounds[4] == pytest.approx(0.0, abs=1.0e-7)
         assert first_bounds[5] == pytest.approx(0.0, abs=1.0e-7)
-        for kind, count, dimension in (
-            ("point", 8, 0),
-            ("edge", 12, 1),
-            ("face", 6, 2),
-            ("body", 1, 3),
+        for kind, dimension in (
+            ("point", 0),
+            ("edge", 1),
+            ("face", 2),
+            ("body", 3),
         ):
-            for entity_id in range(1, count + 1):
-                entities = compiled.resolve(kind, entity_id)
+            for logical in compiled.catalog.entities_of(kind):
+                entities = compiled.resolve(LogicalEntityRef(logical.logical_id))
                 assert entities
                 assert {entity.dimension for entity in entities} == {dimension}
 
 
-@pytest.mark.parametrize("invalid_id", (True, 1.9, "1"))
-def test_logical_resolver_rejects_coercible_entity_ids(real_gmsh, invalid_id) -> None:
+@pytest.mark.parametrize("invalid_reference", (True, 1.9, "edge:right"))
+def test_logical_resolver_accepts_only_typed_references(
+    real_gmsh,
+    invalid_reference,
+) -> None:
     del real_gmsh
     with geometry.model("mapped-strict-id-session", dimension=2) as cad:
         compiled = compile_recipe(cad, RectangleGeometry("strict-id", 2.0, 1.0))
 
-        with pytest.raises(TopologyResolutionError, match="已失效"):
-            compiled.resolve("edge", invalid_id)
+        with pytest.raises(TypeError, match="LogicalEntityRef"):
+            compiled.resolve(invalid_reference)
 
         with pytest.raises(TopologyResolutionError, match="已失效"):
-            compiled.resolve("curve", 1)
+            compiled.resolve(LogicalEntityRef("edge:missing"))
 
 
-def test_named_region_rejects_coercible_entity_id(real_gmsh) -> None:
+def test_named_region_and_local_control_reject_untyped_references(real_gmsh) -> None:
     del real_gmsh
-    with pytest.raises(TopologyResolutionError, match="编号 True"):
-        generate_fem_model(
-            RectangleGeometry("strict-region", 2.0, 1.0),
-            MeshSettings(0.4),
-            named_regions=(NamedRegion("Unsafe", "edge", (True,)),),
-        )
-    with pytest.raises(ValueError, match="大于零的整数"):
-        LocalMeshControl("edge", True, 0.2)
+    with pytest.raises(TypeError, match="LogicalEntityRef"):
+        NamedRegion("Unsafe", (True,))
+    with pytest.raises(TypeError, match="LogicalEntityRef"):
+        LocalMeshControl(True, 0.2)
 
 
 @pytest.mark.parametrize("reserved_name", ("DOMAIN", "LEFT"))
@@ -204,11 +225,16 @@ def test_named_regions_cannot_override_builtin_groups(
     reserved_name,
 ) -> None:
     del real_gmsh
-    with pytest.raises(ValueError, match="与内建区域冲突"):
+    with pytest.raises(NativeRegionValidationError, match="conflicts"):
         generate_fem_model(
             RectangleGeometry("reserved-region", 2.0, 1.0),
             MeshSettings(0.4),
-            named_regions=(NamedRegion(reserved_name, "edge", (1,)),),
+            named_regions=(
+                NamedRegion(
+                    reserved_name,
+                    (LogicalEntityRef("edge:bottom"),),
+                ),
+            ),
         )
 
 
@@ -219,15 +245,9 @@ def test_named_region_and_local_control_share_one_resolver_mapping(real_gmsh) ->
         def __init__(self) -> None:
             self.calls = []
 
-        def resolve(self, cad, recipe, topology, entity_kind, entity_id):
-            entities = super().resolve(
-                cad,
-                recipe,
-                topology,
-                entity_kind,
-                entity_id,
-            )
-            self.calls.append((entity_kind, entity_id, entities))
+        def resolve(self, cad, recipe, topology, reference):
+            entities = super().resolve(cad, recipe, topology, reference)
+            self.calls.append((reference, entities))
             return entities
 
     resolver = RecordingResolver()
@@ -235,20 +255,80 @@ def test_named_region_and_local_control_share_one_resolver_mapping(real_gmsh) ->
         RectangleGeometry("shared-resolver", 2.0, 1.0),
         MeshSettings(
             0.4,
-            local_controls=(LocalMeshControl("edge", 2, 0.15),),
+            local_controls=(LocalMeshControl(LogicalEntityRef("edge:right"), 0.15),),
         ),
-        named_regions=(NamedRegion("Selected", "edge", (2,)),),
+        named_regions=(
+            NamedRegion(
+                "Selected",
+                (LogicalEntityRef("edge:right"),),
+            ),
+        ),
         resolver=resolver,
     )
 
     selected = [
         entities
-        for kind, entity_id, entities in resolver.calls
-        if kind == "edge" and entity_id == 2
+        for reference, entities in resolver.calls
+        if reference == LogicalEntityRef("edge:right")
     ]
     assert len(selected) == 2
     assert selected[0] == selected[1]
     assert model.edges["Selected"].edges
+
+
+def test_global_and_target_radius_falloff_use_their_frozen_scales(
+    real_gmsh,
+    monkeypatch,
+) -> None:
+    del real_gmsh
+    from fem.mesh import gmsh as gmsh_meshing
+
+    calls = []
+    original = gmsh_meshing.Mesher.threshold_field
+
+    def recording_threshold(self, distance, **kwargs):
+        calls.append(dict(kwargs))
+        return original(self, distance, **kwargs)
+
+    monkeypatch.setattr(
+        gmsh_meshing.Mesher,
+        "threshold_field",
+        recording_threshold,
+    )
+    target = LogicalEntityRef("edge:hole-loop")
+    generate_fem_model(
+        PlateWithHoleGeometry("falloff", 2.0, 1.0, 1.0, 0.5, 0.2),
+        MeshSettings(
+            0.4,
+            local_controls=(
+                LocalMeshControl(
+                    target,
+                    0.1,
+                    MeshSizeFalloff("target_radius", 0.25, 2.0),
+                ),
+                LocalMeshControl(
+                    target,
+                    0.12,
+                    MeshSizeFalloff("global_size", 0.0, 2.0),
+                ),
+            ),
+        ),
+    )
+
+    assert calls == [
+        {
+            "size_min": 0.12,
+            "size_max": 0.4,
+            "dist_min": 0.0,
+            "dist_max": 0.8,
+        },
+        {
+            "size_min": 0.1,
+            "size_max": 0.4,
+            "dist_min": 0.05,
+            "dist_max": 0.4,
+        },
+    ]
 
 
 def test_rigid_transform_keeps_lower_logical_entities_live(real_gmsh) -> None:
@@ -266,9 +346,9 @@ def test_rigid_transform_keeps_lower_logical_entities_live(real_gmsh) -> None:
         compiled = compile_recipe(cad, recipe)
 
         entities = tuple(
-            compiled.resolve(kind, entity_id)
-            for kind, count in (("point", 4), ("edge", 4), ("face", 1))
-            for entity_id in range(1, count + 1)
+            compiled.resolve(LogicalEntityRef(logical.logical_id))
+            for kind in ("point", "edge", "face")
+            for logical in compiled.catalog.entities_of(kind)
         )
 
         assert all(group for group in entities)
@@ -276,7 +356,7 @@ def test_rigid_transform_keeps_lower_logical_entities_live(real_gmsh) -> None:
             for entity in group:
                 cad.bounding_box(entity)
                 cad.center_of_mass(entity)
-        bottom = cad.bounding_box(compiled.resolve("edge", 1)[0])
+        bottom = cad.bounding_box(compiled.resolve(LogicalEntityRef("edge:bottom"))[0])
         assert bottom[0] == pytest.approx(3.0, abs=1.0e-7)
         assert bottom[3] == pytest.approx(3.0, abs=1.0e-7)
         assert bottom[1] == pytest.approx(-2.0, abs=1.0e-7)
@@ -293,22 +373,40 @@ def test_extrusion_recovers_caps_sides_top_edges_and_verticals(real_gmsh) -> Non
         compiled = compile_recipe(cad, recipe)
 
         assert (
-            len({compiled.resolve("edge", entity_id)[0] for entity_id in range(1, 13)})
+            len(
+                {
+                    compiled.resolve(LogicalEntityRef(entity.logical_id))[0]
+                    for entity in compiled.catalog.entities_of("edge")
+                }
+            )
             == 12
         )
         assert (
-            len({compiled.resolve("face", entity_id)[0] for entity_id in range(1, 7)})
+            len(
+                {
+                    compiled.resolve(LogicalEntityRef(entity.logical_id))[0]
+                    for entity in compiled.catalog.entities_of("face")
+                }
+            )
             == 6
         )
-        for entity_id in range(1, 9):
-            point = compiled.resolve("point", entity_id)
+        for entity in compiled.catalog.entities_of("point"):
+            point = compiled.resolve(LogicalEntityRef(entity.logical_id))
             assert len(point) == 1
             assert point[0].dimension == 0
-        bottom_edge = cad.bounding_box(compiled.resolve("edge", 1)[0])
-        top_edge = cad.bounding_box(compiled.resolve("edge", 5)[0])
-        vertical = cad.bounding_box(compiled.resolve("edge", 9)[0])
-        bottom_face = cad.bounding_box(compiled.resolve("face", 1)[0])
-        top_face = cad.bounding_box(compiled.resolve("face", 2)[0])
+        bottom_edge = cad.bounding_box(
+            compiled.resolve(LogicalEntityRef("edge:bottom/bottom"))[0]
+        )
+        top_edge = cad.bounding_box(
+            compiled.resolve(LogicalEntityRef("edge:top/bottom"))[0]
+        )
+        vertical = cad.bounding_box(
+            compiled.resolve(LogicalEntityRef("edge:vertical/bottom-left"))[0]
+        )
+        bottom_face = cad.bounding_box(
+            compiled.resolve(LogicalEntityRef("face:bottom"))[0]
+        )
+        top_face = cad.bounding_box(compiled.resolve(LogicalEntityRef("face:top"))[0])
         assert bottom_edge[2] == pytest.approx(0.0, abs=1.0e-7)
         assert bottom_edge[5] == pytest.approx(0.0, abs=1.0e-7)
         assert top_edge[2] == pytest.approx(0.5, abs=1.0e-6)
@@ -330,26 +428,25 @@ def test_perforated_extrusion_keeps_inner_and_outer_side_groups_distinct(
     with geometry.model("mapped-perforated-session", dimension=3) as cad:
         compiled = compile_recipe(cad, recipe)
 
-        hole_side = set(compiled.resolve("face", 3))
-        outer_sides = set(compiled.resolve("face", 4))
+        hole_side = set(compiled.resolve(LogicalEntityRef("face:side/hole-loop")))
+        outer_sides = set(compiled.resolve(LogicalEntityRef("face:side/outer-loop")))
 
         assert len(hole_side) == 1
         assert len(outer_sides) == 4
         assert hole_side.isdisjoint(outer_sides)
-        assert len(compiled.resolve("edge", 1)) == 1
-        assert len(compiled.resolve("edge", 2)) == 4
-        assert set(compiled.groups["HOLE"]) == hole_side
-        assert set(compiled.groups["OUTER"]) == outer_sides
-        assert set(compiled.hole_boundary) == hole_side
+        assert len(compiled.resolve(LogicalEntityRef("edge:bottom/hole-loop"))) == 1
+        assert len(compiled.resolve(LogicalEntityRef("edge:bottom/outer-loop"))) == 4
+        assert set(compiled.region_bindings[RecipeRegionSelector.HOLE]) == hole_side
+        assert set(compiled.region_bindings[RecipeRegionSelector.OUTER]) == outer_sides
+        assert not hasattr(compiled, "groups")
+        assert not hasattr(compiled, "hole_boundary")
 
     model = generate_fem_model(recipe, MeshSettings(0.3))
     hole_faces = {
-        (face.elem_id, face.local_index)
-        for face in model.surfaces["HOLE"].faces
+        (face.elem_id, face.local_index) for face in model.surfaces["HOLE"].faces
     }
     outer_faces = {
-        (face.elem_id, face.local_index)
-        for face in model.surfaces["OUTER"].faces
+        (face.elem_id, face.local_index) for face in model.surfaces["OUTER"].faces
     }
     assert hole_faces
     assert outer_faces
@@ -369,22 +466,32 @@ def test_unproven_subentities_fail_closed_but_domain_meshing_remains_available(
     with geometry.model("mapped-unproven-session", dimension=2) as cad:
         compiled = compile_recipe(cad, recipe)
         with pytest.raises(TopologyResolutionError, match="不可用于建模"):
-            compiled.resolve("edge", 1)
+            compiled.resolve(LogicalEntityRef("edge:missing"))
 
     model = generate_fem_model(recipe, MeshSettings(0.4))
     assert model.element_sets["DOMAIN"].element_ids
-    with pytest.raises(TopologyResolutionError):
+    with pytest.raises(NativeRegionValidationError):
         generate_fem_model(
             recipe,
             MeshSettings(0.4),
-            named_regions=(NamedRegion("Unsafe", "edge", (1,)),),
+            named_regions=(
+                NamedRegion(
+                    "Unsafe",
+                    (LogicalEntityRef("body:result"),),
+                ),
+            ),
         )
-    with pytest.raises(TopologyResolutionError):
+    with pytest.raises(NativeRegionValidationError):
         generate_fem_model(
             recipe,
             MeshSettings(
                 0.4,
-                local_controls=(LocalMeshControl("edge", 1, 0.2),),
+                local_controls=(
+                    LocalMeshControl(
+                        LogicalEntityRef("edge:missing"),
+                        0.2,
+                    ),
+                ),
             ),
         )
 
@@ -399,7 +506,7 @@ def test_periodic_display_points_are_absent_from_cad_point_contract(
             CylinderGeometry("mapped-cylinder", 0.5, 1.0),
         )
 
-        with pytest.raises(TopologyResolutionError, match="编号 1"):
-            compiled.resolve("point", 1)
-        assert len(compiled.resolve("edge", 1)) == 1
-        assert len(compiled.resolve("edge", 2)) == 1
+        with pytest.raises(TopologyResolutionError, match="已失效"):
+            compiled.resolve(LogicalEntityRef("point:seam"))
+        assert len(compiled.resolve(LogicalEntityRef("edge:bottom-rim"))) == 1
+        assert len(compiled.resolve(LogicalEntityRef("edge:top-rim"))) == 1

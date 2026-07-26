@@ -94,7 +94,7 @@ _PNG_FILES = {
     "named_region_create": "named_region_create.png",
     "named_region_manager": "named_region_manager.png",
     "mesh_settings": "mesh_settings.png",
-    "mesh_local_size": "mesh_local_size.png",
+    "mesh_local_control": "mesh_local_control.png",
     "mesh_controls": "mesh_controls.png",
     "mesh_clear": "mesh_clear.png",
     "mesh_verify": "mesh_verify.png",

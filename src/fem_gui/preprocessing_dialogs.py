@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -23,8 +22,11 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from fem.application import NamedRegion, derive_geometry_feature_rows
+from fem.geometry import LogicalEntityRef, logical_ref_sort_key
+from fem.mesh import settings as mesh_settings_api
+
 from .dialogs import CompactDoubleSpinBox, configure_form_layout
-from .document import NamedRegion
 from .preprocessing import (
     BoxGeometry,
     BooleanGeometry,
@@ -39,7 +41,6 @@ from .preprocessing import (
     SketchCircle,
     SketchGeometry,
     SketchRectangle,
-    geometry_feature_rows,
     LocalMeshControl,
 )
 
@@ -558,7 +559,7 @@ class GeometryManagerDialog(QDialog):
         self.setMinimumWidth(400)
         self.operation: str | None = None
         self.feature_list = QListWidget(self)
-        self.feature_list.addItems(geometry_feature_rows(recipe))
+        self.feature_list.addItems(derive_geometry_feature_rows(recipe))
         self.feature_list.setCurrentRow(self.feature_list.count() - 1)
         self._can_edit_base = bool(can_edit_base)
         self.selected_row = self.feature_list.currentRow()
@@ -649,7 +650,7 @@ class MeshControlsDialog(QDialog):
         kind_names = {"point": "点", "edge": "边", "face": "面"}
         for index, control in enumerate(self.local_controls, start=1):
             self.control_list.addItem(
-                f"局部控制 {index}  类型={kind_names[control.entity_kind]}"
+                f"局部控制 {index}  类型={kind_names[control.target.kind]}"
                 f"  尺寸={control.size:g}"
             )
         if self.local_controls:
@@ -668,11 +669,11 @@ class MeshControlsDialog(QDialog):
             return
         current = self.local_controls[index]
         dialog = LocalMeshControlDialog(
-            current.entity_kind,
-            current.entity_id,
+            current.target,
             self._settings.size,
             self,
             current_size=current.size,
+            falloff=current.falloff,
         )
         if dialog.exec():
             self.local_controls[index] = dialog.control()
@@ -700,7 +701,6 @@ class MeshControlsDialog(QDialog):
             self._settings.size,
             self._settings.order,
             self._settings.cell_shape,
-            local_size=None,
             local_controls=tuple(self.local_controls),
         )
 
@@ -710,17 +710,29 @@ class LocalMeshControlDialog(QDialog):
 
     def __init__(
         self,
-        entity_kind: str,
-        entity_id: int,
+        target: LogicalEntityRef,
         global_size: float,
         parent=None,
         *,
         current_size: float | None = None,
+        falloff: object | None = None,
     ) -> None:
         super().__init__(parent)
+        if type(target) is not LogicalEntityRef:
+            raise TypeError(
+                "局部网格控制对话框只接受 LogicalEntityRef"
+            )
         self.setWindowTitle("设置局部网格")
-        self._entity_kind = str(entity_kind)
-        self._entity_id = int(entity_id)
+        self._target = target
+        self._falloff = (
+            falloff
+            if falloff is not None
+            else mesh_settings_api.MeshSizeFalloff(
+                "global_size",
+                0.0,
+                2.0,
+            )
+        )
         names = {"point": "点", "edge": "边", "face": "面"}
         self.size_spin = _positive_spin_box(
             self,
@@ -734,7 +746,7 @@ class LocalMeshControlDialog(QDialog):
         form.addRow(
             "选择对象",
             QLabel(
-                f"已选择 1 个{names.get(entity_kind, entity_kind)}",
+                f"已选择 1 个{names.get(target.kind, target.kind)}",
                 self,
             ),
         )
@@ -754,9 +766,9 @@ class LocalMeshControlDialog(QDialog):
 
     def control(self) -> LocalMeshControl:
         return LocalMeshControl(
-            self._entity_kind,
-            self._entity_id,
+            self._target,
             self.size_spin.value(),
+            self._falloff,
         )
 
 
@@ -765,8 +777,7 @@ class NamedRegionDialog(QDialog):
 
     def __init__(
         self,
-        entity_kind: str,
-        entity_id: int | tuple[int, ...],
+        references: tuple[LogicalEntityRef, ...],
         parent=None,
         *,
         suggested_name: str | None = None,
@@ -774,11 +785,28 @@ class NamedRegionDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("创建命名区域")
         names = {"point": "点", "edge": "边", "face": "面", "body": "体"}
-        entity_ids = (
-            (int(entity_id),)
-            if isinstance(entity_id, int)
-            else tuple(sorted({int(value) for value in entity_id}))
+        if any(
+            type(reference) is not LogicalEntityRef
+            for reference in references
+        ):
+            raise TypeError(
+                "命名区域对话框只接受 LogicalEntityRef"
+            )
+        canonical_references = tuple(
+            sorted(
+                set(references),
+                key=logical_ref_sort_key,
+            )
         )
+        if not canonical_references:
+            raise ValueError("命名区域至少需要一个几何引用")
+        kinds = {
+            reference.kind
+            for reference in canonical_references
+        }
+        if len(kinds) != 1:
+            raise ValueError("命名区域只能包含同一种几何实体")
+        entity_kind = canonical_references[0].kind
         default_names = {
             "point": "PointSet-1",
             "edge": "EdgeSet-1",
@@ -797,7 +825,7 @@ class NamedRegionDialog(QDialog):
         form.addRow(
             "选择对象",
             QLabel(
-                f"已选择 {len(entity_ids)} 个"
+                f"已选择 {len(canonical_references)} 个"
                 f"{names.get(entity_kind, entity_kind)}",
                 self,
             ),
@@ -884,7 +912,7 @@ class NamedRegionManagerDialog(QDialog):
             values = (
                 region.name,
                 type_names.get(region.entity_kind, region.entity_kind),
-                f"{len(region.entity_ids)} 个",
+                f"{len(region.references)} 个",
             )
             for column, value in enumerate(values):
                 self.table.setItem(row, column, QTableWidgetItem(value))
@@ -919,8 +947,7 @@ class NamedRegionManagerDialog(QDialog):
             new_name,
             NamedRegion(
                 new_name,
-                region.entity_kind,
-                region.entity_ids,
+                region.references,
             ),
         )
         self.regions = dict(items)
@@ -1223,6 +1250,5 @@ class MeshSettingsDialog(QDialog):
             size=self.size_spin.value(),
             order=int(self.order_combo.currentData()),
             cell_shape=str(self.shape_combo.currentData()),
-            local_size=None,
             local_controls=self._local_controls,
         )

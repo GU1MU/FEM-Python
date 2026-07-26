@@ -7,6 +7,7 @@ import pytest
 
 from fem.application import ModelSession, NativePart, TokenStatus
 from fem.core.model import AnalysisStep
+from fem.geometry.recipes import BoxGeometry
 from tests.helpers.preflight_builders import (
     failing_preflight_report,
     passing_preflight_report,
@@ -27,7 +28,9 @@ def _model(*step_names: str) -> SimpleNamespace:
 def _session() -> ModelSession:
     session = ModelSession()
     session.new_native_project()
-    session.replace_geometry((NativePart(),), {"kind": "box"})
+    session.replace_geometry(
+        (NativePart(),), BoxGeometry("Box", 1.0, 1.0, 1.0)
+    )
     session.replace_model_definitions(
         (), (), (), (AnalysisStep("Step-A"), AnalysisStep("Step-B"))
     )

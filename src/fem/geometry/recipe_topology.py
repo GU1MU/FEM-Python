@@ -17,6 +17,11 @@ from dataclasses import dataclass
 import math
 from typing import Literal
 
+from .references import (
+    EntityKind,
+    LogicalEntityRef,
+    logical_ref_sort_key,
+)
 from .recipes import (
     BooleanGeometry,
     BoxGeometry,
@@ -36,11 +41,10 @@ from .recipes import (
 )
 
 
-EntityKind = Literal["point", "edge", "face", "body"]
 TransitionRelation = Literal["preserved", "derived"]
 
 _ENTITY_KINDS = ("point", "edge", "face", "body")
-_KIND_ORDER = {kind: index for index, kind in enumerate(_ENTITY_KINDS)}
+TOPOLOGY_REFERENCE_CONTRACT = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +121,74 @@ class TopologySignature:
             entity_kind == kind and (selectable or not selectable_only)
             for entity_kind, _logical_id, _role, selectable in self.entity_keys
         )
+
+
+@dataclass(frozen=True, slots=True)
+class TopologyFingerprintEntity:
+    """One canonical entity record in a topology compatibility fingerprint."""
+
+    kind: EntityKind
+    logical_id: str
+    semantic_role: str
+    selectable: bool
+
+    def __post_init__(self) -> None:
+        reference = LogicalEntityRef(self.logical_id)
+        if self.kind != reference.kind:
+            raise ValueError(
+                f"fingerprint entity kind {self.kind!r} does not match "
+                f"logical ID {self.logical_id!r}"
+            )
+        if type(self.semantic_role) is not str or not self.semantic_role.strip():
+            raise ValueError("fingerprint semantic role must be a non-empty string")
+        if type(self.selectable) is not bool:
+            raise TypeError("fingerprint selectable must be a boolean")
+
+
+@dataclass(frozen=True, slots=True)
+class TopologyFingerprint:
+    """Canonical structured evidence for one logical topology contract."""
+
+    dimension: Literal[2, 3]
+    exact: bool
+    entities: tuple[TopologyFingerprintEntity, ...]
+    contract: int = TOPOLOGY_REFERENCE_CONTRACT
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.contract, bool)
+            or not isinstance(self.contract, int)
+            or self.contract != TOPOLOGY_REFERENCE_CONTRACT
+        ):
+            raise ValueError(
+                "unsupported logical topology reference contract: "
+                f"{self.contract!r}"
+            )
+        if (
+            isinstance(self.dimension, bool)
+            or not isinstance(self.dimension, int)
+            or self.dimension not in {2, 3}
+        ):
+            raise ValueError("topology fingerprint dimension must be 2 or 3")
+        if type(self.exact) is not bool:
+            raise TypeError("topology fingerprint exact must be a boolean")
+        records = tuple(self.entities)
+        if any(type(record) is not TopologyFingerprintEntity for record in records):
+            raise TypeError(
+                "topology fingerprint entities must be TopologyFingerprintEntity values"
+            )
+        logical_ids = tuple(record.logical_id for record in records)
+        if len(logical_ids) != len(set(logical_ids)):
+            raise ValueError("topology fingerprint contains duplicate logical IDs")
+        ordered = tuple(
+            sorted(
+                records,
+                key=lambda record: logical_ref_sort_key(
+                    LogicalEntityRef(record.logical_id)
+                ),
+            )
+        )
+        object.__setattr__(self, "entities", ordered)
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,32 +296,6 @@ class RecipeTopology:
                 return entity
         raise KeyError(logical_id)
 
-    def logical_entity(
-        self,
-        kind: EntityKind,
-        entity_id: int,
-    ) -> LogicalEntity:
-        """Adapt a one-based persisted/display ID to one logical entity.
-
-        Integer IDs are compatibility ordinals only.  Engineering references
-        should persist ``LogicalEntity.logical_id`` whenever their schema
-        permits it.
-        """
-        if kind not in _ENTITY_KINDS:
-            raise ValueError(f"Unsupported logical entity kind: {kind!r}")
-        if isinstance(entity_id, bool) or not isinstance(entity_id, int):
-            raise TypeError("Logical entity integer ID must be an integer")
-        candidates = self.entities_of(kind)
-        if entity_id <= 0 or entity_id > len(candidates):
-            raise KeyError((kind, entity_id))
-        return candidates[entity_id - 1]
-
-    def logical_index(self, logical_id: str) -> int:
-        """Return the one-based compatibility ordinal for ``logical_id``."""
-        entity = self.entity(logical_id)
-        return self.entities_of(entity.kind).index(entity) + 1
-
-
 def describe_recipe_topology(recipe: NativeGeometry) -> RecipeTopology:
     """Return the conservative logical topology catalog for ``recipe``.
 
@@ -281,6 +327,34 @@ def describe_recipe_topology(recipe: NativeGeometry) -> RecipeTopology:
     raise TypeError(f"Unsupported native geometry recipe: {type(recipe).__name__}")
 
 
+def topology_fingerprint_from_topology(
+    topology: RecipeTopology,
+) -> TopologyFingerprint:
+    """Canonicalize a complete recipe topology as structured contract evidence."""
+
+    if type(topology) is not RecipeTopology:
+        raise TypeError("topology must be a RecipeTopology")
+    return TopologyFingerprint(
+        dimension=topology.dimension,
+        exact=topology.exact,
+        entities=tuple(
+            TopologyFingerprintEntity(
+                entity.kind,
+                entity.logical_id,
+                entity.semantic_role,
+                entity.selectable,
+            )
+            for entity in topology.entities
+        ),
+    )
+
+
+def topology_fingerprint_for_recipe(recipe: NativeGeometry) -> TopologyFingerprint:
+    """Recompute canonical topology evidence from one geometry recipe."""
+
+    return topology_fingerprint_from_topology(describe_recipe_topology(recipe))
+
+
 def can_preserve_logical_references(before: object, after: object) -> bool:
     """Return whether logical references remain valid across a recipe edit.
 
@@ -294,12 +368,12 @@ def can_preserve_logical_references(before: object, after: object) -> bool:
         NATIVE_GEOMETRY_TYPES,
     ):
         return False
-    before_topology = describe_recipe_topology(before)
-    after_topology = describe_recipe_topology(after)
+    before_fingerprint = topology_fingerprint_for_recipe(before)
+    after_fingerprint = topology_fingerprint_for_recipe(after)
     return (
-        before_topology.exact
-        and after_topology.exact
-        and before_topology.signature == after_topology.signature
+        before_fingerprint.exact
+        and after_fingerprint.exact
+        and before_fingerprint == after_fingerprint
     )
 
 
@@ -1025,11 +1099,16 @@ __all__ = [
     "EntityKind",
     "LogicalEntity",
     "RecipeTopology",
+    "TOPOLOGY_REFERENCE_CONTRACT",
     "TopologyDiagnostic",
+    "TopologyFingerprint",
+    "TopologyFingerprintEntity",
     "TopologyMapping",
     "TopologySignature",
     "TopologyTransition",
     "TransitionRelation",
     "can_preserve_logical_references",
     "describe_recipe_topology",
+    "topology_fingerprint_for_recipe",
+    "topology_fingerprint_from_topology",
 ]

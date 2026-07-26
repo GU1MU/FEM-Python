@@ -16,6 +16,7 @@ from fem.application import (
     TokenStatus,
 )
 from fem.core.model import AnalysisStep
+from fem.geometry.recipes import BoxGeometry
 from tests.helpers.preflight_builders import passing_preflight_report
 
 
@@ -36,7 +37,9 @@ def _model(*step_names: str) -> SimpleNamespace:
 def _session() -> ModelSession:
     session = ModelSession()
     session.new_native_project()
-    session.replace_geometry((NativePart(),), {"kind": "box"})
+    session.replace_geometry(
+        (NativePart(),), BoxGeometry("Box", 1.0, 1.0, 1.0)
+    )
     session.replace_model_definitions((), (), (), (AnalysisStep("Step-A"),))
     mesh = session.prepare_mesh_generation()
     session.accept_generated_model(mesh.token, _model("Step-A"))
@@ -82,9 +85,13 @@ def test_import_token_is_stale_after_any_session_transition() -> None:
 def test_mesh_token_uses_mesh_input_revision() -> None:
     session = ModelSession()
     session.new_native_project()
-    session.replace_geometry((NativePart(),), {"version": 1})
+    session.replace_geometry(
+        (NativePart(),), BoxGeometry("Box", 1.0, 1.0, 1.0)
+    )
     task = session.prepare_mesh_generation()
-    session.replace_geometry((NativePart(),), {"version": 2})
+    session.replace_geometry(
+        (NativePart(),), BoxGeometry("Box", 2.0, 1.0, 1.0)
+    )
 
     delta = session.accept_generated_model(task.token, _model("Step-A"))
 
@@ -96,7 +103,9 @@ def test_mesh_token_uses_mesh_input_revision() -> None:
 def test_clear_generated_model_rejects_an_issued_mesh_token() -> None:
     session = ModelSession()
     session.new_native_project()
-    session.replace_geometry((NativePart(),), {"version": 1})
+    session.replace_geometry(
+        (NativePart(),), BoxGeometry("Box", 1.0, 1.0, 1.0)
+    )
     task = session.prepare_mesh_generation()
 
     session.clear_generated_model()
@@ -236,7 +245,9 @@ def test_close_and_load_identity_reject_old_validation_token() -> None:
 def test_generic_failure_and_cancellation_consume_current_tokens() -> None:
     failed_session = ModelSession()
     failed_session.new_native_project()
-    failed_session.replace_geometry((NativePart(),), {"kind": "box"})
+    failed_session.replace_geometry(
+        (NativePart(),), BoxGeometry("Box", 1.0, 1.0, 1.0)
+    )
     mesh = failed_session.prepare_mesh_generation()
     failed = failed_session.accept_task_failed(mesh.token, "mesher failed")
     repeated = failed_session.accept_task_failed(mesh.token, "again")

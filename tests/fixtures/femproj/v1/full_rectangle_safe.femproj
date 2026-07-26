@@ -1,0 +1,124 @@
+{
+  "schema": 1,
+  "logical_topology_version": 1,
+  "source": "native",
+  "parts": [
+    {
+      "name": "Plate",
+      "body_name": "Body"
+    }
+  ],
+  "geometry": {
+    "type": "RectangleGeometry",
+    "name": "矩形板",
+    "width": 10.0,
+    "height": 5.0
+  },
+  "mesh_settings": {
+    "size": 1.0,
+    "order": 2,
+    "cell_shape": "quadrilateral",
+    "local_size": null,
+    "local_controls": [
+      {
+        "entity_kind": "edge",
+        "entity_id": 1,
+        "size": 0.5
+      }
+    ]
+  },
+  "feature_history": [
+    {
+      "name": "Base-1",
+      "kind": "base",
+      "payload": {
+        "summary": "10 × 5"
+      }
+    }
+  ],
+  "named_regions": [
+    {
+      "name": "LEFT",
+      "entity_kind": "edge",
+      "entity_ids": [
+        1
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "name": "Steel",
+      "properties": {
+        "E": 210000.0,
+        "nu": 0.3,
+        "label": "结构钢"
+      }
+    }
+  ],
+  "sections": [
+    {
+      "name": "Solid",
+      "material": "Steel",
+      "section_type": "solid",
+      "properties": {
+        "thickness": 2.0
+      }
+    }
+  ],
+  "assignments": [
+    {
+      "section_name": "Solid",
+      "region_name": "DOMAIN"
+    }
+  ],
+  "steps": [
+    {
+      "name": "Load",
+      "procedure": "static",
+      "metadata": {
+        "increments": [
+          1,
+          2
+        ]
+      },
+      "boundaries": [],
+      "cloads": [],
+      "edge_loads": [
+        {
+          "edge": "LEFT",
+          "vector": [
+            0.0,
+            -2.0,
+            0.0
+          ],
+          "magnitude": null,
+          "load_type": "traction"
+        }
+      ],
+      "surface_loads": [],
+      "line_loads": [],
+      "gravity_loads": [
+        {
+          "acceleration": [
+            0.0,
+            -9.81,
+            0.0
+          ],
+          "target": null
+        }
+      ],
+      "outputs": [
+        {
+          "kind": "field",
+          "target": "node",
+          "variables": [
+            "U"
+          ],
+          "metadata": {
+            "frequency": 1
+          }
+        }
+      ]
+    }
+  ]
+}

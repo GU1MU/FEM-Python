@@ -16,6 +16,7 @@ from fem.core.model import (
     NodalLoad,
 )
 from fem.geometry.recipes import SketchGeometry, SketchRectangle
+from fem.geometry.references import LogicalEntityRef
 from fem.mesh.settings import MeshSettings
 from fem_gui.main_window import FEMMainWindow
 
@@ -66,8 +67,8 @@ def test_native_authoring_mesh_check_solve_then_clear_fully_invalidates(
     assert window._apply_session_delta(
         window.session.replace_named_regions(
             (
-                NamedRegion("Fixed", "edge", (4,)),
-                NamedRegion("Loaded", "edge", (2,)),
+                NamedRegion("Fixed", (LogicalEntityRef("edge:left"),)),
+                NamedRegion("Loaded", (LogicalEntityRef("edge:right"),)),
             )
         )
     )

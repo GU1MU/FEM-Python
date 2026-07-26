@@ -497,6 +497,7 @@ def test_gui_preprocessing_contains_only_display_authoring_helpers():
     path = GUI_ROOT / "preprocessing.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
     allowed_fem_modules = {
+        "fem.geometry",
         "fem.geometry.recipe_topology",
         "fem.geometry.recipes",
         "fem.mesh.settings",
@@ -619,10 +620,7 @@ def _is_snapshot_owned_chain(chain):
 
 
 def test_gui_session_adapters_do_not_mutate_snapshots_or_legacy_workflow():
-    paths = (
-        GUI_ROOT / "main_window.py",
-        GUI_ROOT / "project_io.py",
-    )
+    paths = (GUI_ROOT / "main_window.py",)
     mutating_methods = {
         "add",
         "append",
@@ -718,6 +716,46 @@ def test_gui_uses_only_public_model_session_commands():
             )
 
     assert offenders == []
+
+
+def test_gui_project_save_gates_only_use_session_can_save_projection():
+    path = GUI_ROOT / "main_window.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    functions = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    update_states = functions["_update_action_states"]
+    save_action_call = next(
+        node
+        for node in ast.walk(update_states)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_set_action_available"
+        and len(node.args) >= 2
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "save_project"
+    )
+    gate_nodes = {
+        "save action": save_action_call.args[1],
+        "save handler": functions["save_native_project"],
+        "discard confirmation": functions["_confirm_discard_changes"],
+    }
+    forbidden_attributes = {"source_kind", "geometry_recipe"}
+
+    for label, node in gate_nodes.items():
+        chains = {
+            _attribute_chain(descendant)
+            for descendant in ast.walk(node)
+            if isinstance(descendant, ast.Attribute)
+        }
+        assert ("self", "document", "can_save") in chains, label
+        assert not any(
+            chain and chain[-1] in forbidden_attributes
+            for chain in chains
+        ), label
 
 
 def _literal_strings(node):
@@ -1034,3 +1072,251 @@ def test_project_v1_writer_contains_explicit_orientation_fail_closed_guard():
     assert "beam_orientation" in source
     assert "ProjectV1EncodeError" in source
     assert "v1 不支持 Beam orientation" in source
+
+
+def test_project_v2_production_path_has_no_v1_specific_import():
+    path = SRC_ROOT / "fem" / "io" / "project_v2.py"
+    imports = {
+        target
+        for target, _lineno in _resolved_import_targets(
+            path,
+            "fem.io.project_v2",
+        )
+    }
+
+    assert not any(
+        target == "fem.io.project_v1"
+        or target.startswith("fem.io.project_v1.")
+        for target in imports
+    )
+
+
+def test_project_field_codecs_have_one_shared_implementation():
+    shared_path = SRC_ROOT / "fem" / "io" / "_project_codec.py"
+    adapter_paths = (
+        SRC_ROOT / "fem" / "io" / "project_v1.py",
+        SRC_ROOT / "fem" / "io" / "project_v2.py",
+    )
+    field_stems = {
+        "assignment",
+        "boundary",
+        "cload",
+        "contour",
+        "edge_load",
+        "geometry",
+        "gravity_load",
+        "line_load",
+        "material",
+        "output",
+        "section",
+        "step",
+        "surface_load",
+    }
+    expected_shared = {
+        f"{operation}_{stem}_field"
+        for operation in ("decode", "encode")
+        for stem in field_stems
+    }
+    shared_tree = ast.parse(shared_path.read_text(encoding="utf-8"))
+    shared_definitions = {
+        node.name
+        for node in ast.walk(shared_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert expected_shared.issubset(shared_definitions)
+    for path in adapter_paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        duplicate_names = {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name.lstrip("_").removesuffix("_v1").removesuffix("_v2")
+            in {
+                f"{operation}_{stem}"
+                for operation in ("decode", "encode")
+                for stem in field_stems
+            }
+            and node.name not in {
+                "decode_assignment_v2",
+                "encode_assignment_v2",
+            }
+        }
+        assert duplicate_names == set(), path.relative_to(PROJECT_ROOT)
+
+
+def test_project_field_codec_policies_are_explicit_per_version():
+    v1_source = (
+        SRC_ROOT / "fem" / "io" / "project_v1.py"
+    ).read_text(encoding="utf-8")
+    v2_source = (
+        SRC_ROOT / "fem" / "io" / "project_v2.py"
+    ).read_text(encoding="utf-8")
+
+    assert "ProjectFieldCodecPolicy" in v1_source
+    assert "require_current_fields=False" in v1_source
+    assert "assignment_orientation=False" in v1_source
+    assert "ProjectFieldCodecPolicy" in v2_source
+    assert "require_current_fields=True" in v2_source
+    assert "assignment_orientation=True" in v2_source
+
+
+def test_native_authoring_domain_has_no_integer_geometry_identity():
+    topology_path = GEOMETRY_ROOT / "recipe_topology.py"
+    compiler_path = APPLICATION_ROOT / "recipe_compiler.py"
+    preprocessing_path = APPLICATION_ROOT / "preprocessing.py"
+    definitions_path = APPLICATION_ROOT / "definitions.py"
+    settings_path = MESH_ROOT / "settings.py"
+
+    topology_tree = ast.parse(topology_path.read_text(encoding="utf-8"))
+    topology_methods = {
+        node.name
+        for node in ast.walk(topology_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "logical_entity" not in topology_methods
+    assert "logical_index" not in topology_methods
+
+    compiler_source = compiler_path.read_text(encoding="utf-8")
+    preprocessing_source = preprocessing_path.read_text(encoding="utf-8")
+    definitions_source = definitions_path.read_text(encoding="utf-8")
+    settings_source = settings_path.read_text(encoding="utf-8")
+    assert "entity_id" not in compiler_source
+    assert "entity_id" not in preprocessing_source
+    assert "entity_ids" not in definitions_source
+    assert "entity_id" not in settings_source
+
+
+def test_geometry_preview_pick_tokens_are_viewport_private():
+    preview_path = GUI_ROOT / "preprocessing.py"
+    preview_tree = ast.parse(preview_path.read_text(encoding="utf-8"))
+    preview_class = next(
+        node
+        for node in preview_tree.body
+        if isinstance(node, ast.ClassDef)
+        and node.name == "GeometryPreview"
+    )
+    field_names = {
+        node.target.id
+        for node in preview_class.body
+        if isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+    }
+    forbidden_fields = {
+        "face_pick_ids",
+        "edge_pick_ids",
+        "point_pick_ids",
+        "body_pick_id",
+    }
+
+    assert field_names.isdisjoint(forbidden_fields)
+    assert "geometry_pick_id" not in preview_path.read_text(encoding="utf-8")
+    assert all(
+        "geometry_pick_id" not in path.read_text(encoding="utf-8")
+        for path in GUI_ROOT.rglob("*.py")
+        if path != GUI_ROOT / "widgets" / "viewport.py"
+    )
+
+
+def test_native_preprocessing_uses_typed_region_catalog_and_one_control_path():
+    compiler_source = (
+        APPLICATION_ROOT / "recipe_compiler.py"
+    ).read_text(encoding="utf-8")
+    preprocessing_source = (
+        APPLICATION_ROOT / "preprocessing.py"
+    ).read_text(encoding="utf-8")
+    settings_source = (MESH_ROOT / "settings.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "region_bindings" in compiler_source
+    assert "RecipeRegionSelector" in compiler_source
+    assert "CompiledDomainRegionSource" in preprocessing_source
+    assert "RecipeRegionSource" in preprocessing_source
+    assert "LogicalReferencesRegionSource" in preprocessing_source
+    assert "describe_native_regions" in (
+        APPLICATION_ROOT / "native_regions.py"
+    ).read_text(encoding="utf-8")
+    assert "topology.groups" not in preprocessing_source
+    assert "local_size" not in preprocessing_source
+    assert "local_size" not in settings_source
+
+
+def test_gui_native_region_choices_delegate_to_application_catalog():
+    path = GUI_ROOT / "main_window.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "describe_native_regions"
+    ]
+    assert len(calls) == 1
+    assert _attribute_chain(calls[0].func) == (
+        "application_api",
+        "describe_native_regions",
+    )
+
+    built_in_names = {
+        "DOMAIN",
+        "BOTTOM",
+        "RIGHT",
+        "TOP",
+        "LEFT",
+        "FRONT",
+        "BACK",
+        "OUTER",
+        "HOLE",
+    }
+    hardcoded = {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value in built_in_names
+    }
+    assert hardcoded == set()
+
+
+def test_application_and_gui_avoid_versioned_project_codecs():
+    forbidden_roots = {
+        "fem.io.project_v1",
+        "fem.io.project_v2",
+    }
+    offenders = []
+    for package_root in (APPLICATION_ROOT, GUI_ROOT):
+        for path in sorted(package_root.rglob("*.py")):
+            for target, lineno in _resolved_import_targets(
+                path,
+                _module_name(path),
+            ):
+                if any(
+                    target == root or target.startswith(f"{root}.")
+                    for root in forbidden_roots
+                ):
+                    offenders.append(
+                        f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> "
+                        f"{target}"
+                    )
+
+    assert offenders == []
+
+
+def test_transitional_gui_document_adapter_is_removed():
+    adapter = GUI_ROOT / "document.py"
+    offenders = []
+    for path in sorted(GUI_ROOT.rglob("*.py")):
+        for target, lineno in _resolved_import_targets(
+            path,
+            _module_name(path),
+        ):
+            if target == "fem_gui.document" or target.startswith(
+                "fem_gui.document."
+            ):
+                offenders.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+                )
+
+    assert not adapter.exists()
+    assert offenders == []

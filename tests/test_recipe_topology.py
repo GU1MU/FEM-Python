@@ -49,20 +49,16 @@ def test_rectangle_has_stable_four_point_four_edge_topology() -> None:
         "body:domain",
     }
     assert first.selectable_entities() == first.entities
-    assert first.logical_entity("point", 1).dimension == 0
-    assert first.logical_entity("edge", 1).dimension == 1
-    assert first.logical_entity("face", 1).dimension == 2
-    assert first.logical_entity("body", 1).dimension == 2
-    assert tuple(
-        first.logical_entity("edge", entity_id).logical_id
-        for entity_id in range(1, 5)
-    ) == (
+    assert first.entity("point:bottom-left").dimension == 0
+    assert first.entity("edge:bottom").dimension == 1
+    assert first.entity("face:domain").dimension == 2
+    assert first.entity("body:domain").dimension == 2
+    assert tuple(entity.logical_id for entity in first.entities_of("edge")) == (
         "edge:bottom",
         "edge:right",
         "edge:top",
         "edge:left",
     )
-    assert first.logical_index("edge:right") == 2
 
 
 @pytest.mark.parametrize(
@@ -121,10 +117,7 @@ def test_box_exposes_all_eight_points_twelve_edges_and_six_faces() -> None:
     assert topology.entity("face:front").semantic_role == "boundary.front"
     assert topology.entity("body:domain").selectable is True
     assert topology.entity("body:domain").dimension == 3
-    assert tuple(
-        topology.logical_entity("edge", entity_id).logical_id
-        for entity_id in range(1, 13)
-    ) == (
+    assert tuple(entity.logical_id for entity in topology.entities_of("edge")) == (
         "edge:bottom-front",
         "edge:bottom-right",
         "edge:bottom-back",
@@ -138,10 +131,7 @@ def test_box_exposes_all_eight_points_twelve_edges_and_six_faces() -> None:
         "edge:vertical-back-right",
         "edge:vertical-back-left",
     )
-    assert tuple(
-        topology.logical_entity("face", entity_id).logical_id
-        for entity_id in range(1, 7)
-    ) == (
+    assert tuple(entity.logical_id for entity in topology.entities_of("face")) == (
         "face:bottom",
         "face:top",
         "face:front",
@@ -176,8 +166,10 @@ def test_plate_with_hole_uses_inner_and_outer_compatibility_groups() -> None:
     )
 
     assert _counts(topology) == (4, 2, 1, 1)
-    assert topology.logical_entity("edge", 1).logical_id == "edge:hole-loop"
-    assert topology.logical_entity("edge", 2).logical_id == "edge:outer-loop"
+    assert tuple(entity.logical_id for entity in topology.entities_of("edge")) == (
+        "edge:hole-loop",
+        "edge:outer-loop",
+    )
     assert topology.entity("edge:hole-loop").semantic_role == "boundary.hole-loop"
     assert topology.signature.exact is True
 
@@ -229,8 +221,10 @@ def test_strictly_contained_sketch_cut_uses_grouped_hole_topology(
 
     assert topology.exact is True
     assert _counts(topology) == (expected_point_count, 2, 1, 1)
-    assert topology.logical_entity("edge", 1).logical_id == "edge:hole-loop"
-    assert topology.logical_entity("edge", 2).logical_id == "edge:outer-loop"
+    assert tuple(entity.logical_id for entity in topology.entities_of("edge")) == (
+        "edge:hole-loop",
+        "edge:outer-loop",
+    )
     assert topology.transition.operation == operation
     assert topology.transition.proven is True
 
@@ -247,8 +241,12 @@ def test_proven_sketch_hole_topology_propagates_through_extrusion() -> None:
     topology = describe_recipe_topology(ExtrudedGeometry(sketch, 2.0))
 
     assert _counts(topology) == (8, 8, 4, 1)
-    assert topology.logical_entity("face", 3).logical_id == "face:side/hole-loop"
-    assert topology.logical_entity("face", 4).logical_id == "face:side/outer-loop"
+    assert tuple(entity.logical_id for entity in topology.entities_of("face")) == (
+        "face:bottom",
+        "face:top",
+        "face:side/hole-loop",
+        "face:side/outer-loop",
+    )
 
 
 def test_composite_sketch_fails_closed_with_an_unselectable_diagnostic() -> None:
@@ -353,10 +351,7 @@ def test_disk_and_plate_with_hole_extrusions_keep_only_proven_semantics() -> Non
         "face:top",
     }
     assert _counts(perforated) == (8, 8, 4, 1)
-    assert tuple(
-        perforated.logical_entity("edge", entity_id).logical_id
-        for entity_id in range(1, 9)
-    ) == (
+    assert tuple(entity.logical_id for entity in perforated.entities_of("edge")) == (
         "edge:bottom/hole-loop",
         "edge:bottom/outer-loop",
         "edge:top/hole-loop",
@@ -366,10 +361,7 @@ def test_disk_and_plate_with_hole_extrusions_keep_only_proven_semantics() -> Non
         "edge:vertical/top-right",
         "edge:vertical/top-left",
     )
-    assert tuple(
-        perforated.logical_entity("face", entity_id).logical_id
-        for entity_id in range(1, 5)
-    ) == (
+    assert tuple(entity.logical_id for entity in perforated.entities_of("face")) == (
         "face:bottom",
         "face:top",
         "face:side/hole-loop",
@@ -407,8 +399,10 @@ def test_contained_circle_cut_has_a_proven_hole_transition() -> None:
     assert topology.exact is True
     assert _counts(topology) == (4, 2, 1, 1)
     assert topology.entity("edge:hole-loop").selectable is True
-    assert topology.logical_entity("edge", 1).logical_id == "edge:hole-loop"
-    assert topology.logical_entity("edge", 2).logical_id == "edge:outer-loop"
+    assert tuple(entity.logical_id for entity in topology.entities_of("edge")) == (
+        "edge:hole-loop",
+        "edge:outer-loop",
+    )
     assert set(topology.transition.preserved_logical_ids) == {
         "point:bottom-left",
         "point:bottom-right",
@@ -442,8 +436,10 @@ def test_contained_rectangle_cut_has_proven_inner_points_and_edges() -> None:
     assert topology.exact is True
     assert _counts(topology) == (8, 2, 1, 1)
     assert topology.entity("point:hole-bottom-left").selectable is True
-    assert topology.logical_entity("edge", 1).logical_id == "edge:hole-loop"
-    assert topology.logical_entity("edge", 2).logical_id == "edge:outer-loop"
+    assert tuple(entity.logical_id for entity in topology.entities_of("edge")) == (
+        "edge:hole-loop",
+        "edge:outer-loop",
+    )
 
 
 @pytest.mark.parametrize("operation", ["fuse", "fragment"])
@@ -487,12 +483,8 @@ def test_signature_is_hashable_and_queries_reject_unknown_kinds() -> None:
         topology.entities_of("curve")  # type: ignore[arg-type]
     with pytest.raises(KeyError):
         topology.entity("edge:missing")
-    with pytest.raises(KeyError):
-        topology.logical_entity("edge", 0)
-    with pytest.raises(KeyError):
-        topology.logical_entity("edge", 5)
-    with pytest.raises(TypeError, match="must be an integer"):
-        topology.logical_entity("edge", True)
+    assert not hasattr(topology, "logical_entity")
+    assert not hasattr(topology, "logical_index")
 
 
 def test_unsupported_objects_are_rejected_without_cad_execution() -> None:

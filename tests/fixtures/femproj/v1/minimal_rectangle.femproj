@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "source": "native",
+  "geometry": {
+    "type": "RectangleGeometry",
+    "name": "Legacy Minimal",
+    "width": 4.0,
+    "height": 2.0
+  }
+}

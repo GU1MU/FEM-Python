@@ -94,7 +94,7 @@ def build_actions(owner: Any) -> dict[str, QAction]:
         "mesh_local_control",
         "局部网格",
         owner.set_local_mesh_control,
-        icon_name="mesh_local_size",
+        icon_name="mesh_local_control",
     )
     add("mesh_statistics", "网格统计", owner.show_mesh_statistics, icon_name="mesh_statistics")
     add("mesh_quality", "质量检查", owner.show_mesh_quality, icon_name="mesh_quality")

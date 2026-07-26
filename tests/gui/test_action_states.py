@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,10 +13,14 @@ from PySide6.QtWidgets import QApplication
 from fem.application import NamedRegion, RegionAssignment, SectionDefinition
 from fem.abaqus import read
 from fem.core.model import (
+    AnalysisStep,
     DisplacementConstraint,
+    GravityLoad,
     MaterialDefinition,
     NodalLoad,
 )
+from fem.geometry import LogicalEntityRef
+from fem.mesh import settings as mesh_settings_api
 from fem.solvers.static_linear import solve
 from fem.steps.factory import static
 import fem_gui.main_window as main_window_module
@@ -34,6 +39,28 @@ from fem_gui.visualization.result_adapter import build_result_data
 
 def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def _named_region(name: str, *logical_ids: str) -> NamedRegion:
+    return NamedRegion(
+        name,
+        tuple(LogicalEntityRef(logical_id) for logical_id in logical_ids),
+    )
+
+
+def _global_local_control(
+    logical_id: str,
+    size: float,
+) -> LocalMeshControl:
+    return LocalMeshControl(
+        LogicalEntityRef(logical_id),
+        size,
+        mesh_settings_api.MeshSizeFalloff(
+            "global_size",
+            0.0,
+            2.0,
+        ),
+    )
 
 
 def test_actions_follow_document_and_result_context(gui_inp_path):
@@ -122,6 +149,94 @@ def test_new_model_unlocks_model_definition_and_sketch_commands():
     window.close()
 
 
+def test_project_save_ui_follows_can_save_in_all_session_states(
+    gui_inp_path,
+    monkeypatch,
+) -> None:
+    _application()
+    window = FEMMainWindow()
+    message_boxes = []
+
+    class FakeMessageBox:
+        class Icon:
+            Warning = object()
+
+        class ButtonRole:
+            AcceptRole = object()
+            DestructiveRole = object()
+            RejectRole = object()
+
+        def __init__(self, _parent) -> None:
+            self.buttons = []
+            self._clicked = None
+            message_boxes.append(self)
+
+        def setWindowTitle(self, _title) -> None:
+            pass
+
+        def setIcon(self, _icon) -> None:
+            pass
+
+        def setText(self, _text) -> None:
+            pass
+
+        def addButton(self, text, role):
+            button = object()
+            self.buttons.append((text, role, button))
+            if role is self.ButtonRole.DestructiveRole:
+                self._clicked = button
+            return button
+
+        def setDefaultButton(self, _button) -> None:
+            pass
+
+        def exec(self) -> None:
+            pass
+
+        def clickedButton(self):
+            return self._clicked
+
+    monkeypatch.setattr(main_window_module, "QMessageBox", FakeMessageBox)
+
+    def assert_save_ui(expected: bool) -> None:
+        snapshot = window.session.snapshot()
+        assert snapshot.can_save is expected
+        window.document = replace(snapshot, dirty=True)
+        window._update_action_states()
+
+        assert window.actions["save_project"].isEnabled() is expected
+        if not expected:
+            assert not window.save_native_project()
+
+        previous_count = len(message_boxes)
+        assert window._confirm_discard_changes()
+        assert len(message_boxes) == previous_count + 1
+        labels = {text for text, _role, _button in message_boxes[-1].buttons}
+        assert ("保存" in labels) is expected
+
+    assert_save_ui(False)
+
+    model = read(gui_inp_path)
+    window._model_loaded(
+        gui_inp_path,
+        (model, build_model_geometry(model)),
+    )
+    assert_save_ui(False)
+
+    window.close_model(confirm=False)
+    window._apply_session_delta(window.session.new_native_project())
+    assert_save_ui(False)
+
+    window._set_native_geometry(
+        RectangleGeometry("Plate", 2.0, 1.0),
+        "矩形",
+    )
+    assert_save_ui(True)
+
+    window.close_model(confirm=False)
+    window.close()
+
+
 def test_every_disabled_action_explains_why_it_is_unavailable():
     _application()
     window = FEMMainWindow()
@@ -205,7 +320,7 @@ def test_native_analysis_actions_are_available_before_meshing():
     window._set_native_geometry(RectangleGeometry("Plate", 2.0, 1.0), "矩形")
     window._apply_session_delta(
         window.session.replace_named_regions(
-            (NamedRegion("Fixed", "edge", (1,)),)
+            (_named_region("Fixed", "edge:bottom"),)
         )
     )
     window._apply_session_delta(
@@ -270,10 +385,10 @@ def test_window_title_shows_source_and_unsaved_state(gui_inp_path):
     window.close()
 
 
-def test_boundary_action_requests_a_viewport_region_before_opening_parameters(
+def test_boundary_action_uses_native_region_catalog_before_meshing(
     monkeypatch,
 ):
-    application = _application()
+    _application()
     window = FEMMainWindow()
     window._set_native_geometry(RectangleGeometry("Plate", 2.0, 1.0), "矩形")
     window._apply_session_delta(
@@ -284,26 +399,45 @@ def test_boundary_action_requests_a_viewport_region_before_opening_parameters(
             (static("Load"),),
         )
     )
+    captured: dict[str, object] = {}
+
+    class Dialog:
+        def __init__(
+            self,
+            step_names,
+            node_regions,
+            dimensions,
+            parent,
+            **_kwargs,
+        ):
+            captured.update(
+                step_names=step_names,
+                node_regions=node_regions,
+                dimensions=dimensions,
+                parent=parent,
+            )
+
+        @staticmethod
+        def exec():
+            return False
+
+    monkeypatch.setattr(
+        main_window_module,
+        "DisplacementDialog",
+        Dialog,
+    )
 
     window.create_displacement_boundary()
 
-    assert window._pending_analysis_selection == "boundary"
-    assert window.viewport._selection_mode == "geometry_edge"
-    calls: list[bool] = []
-    monkeypatch.setattr(
-        window,
-        "create_displacement_boundary",
-        lambda: calls.append(True),
-    )
-    window._on_viewport_pick("geometry_edge", 1)
-    application.processEvents()
-
-    assert calls == []
-    assert window._pending_analysis_selection == "boundary"
-    window._confirm_guided_selection()
-    application.processEvents()
-
-    assert calls == [True]
+    assert captured["step_names"] == ["Load"]
+    assert captured["node_regions"] == [
+        "BOTTOM",
+        "RIGHT",
+        "TOP",
+        "LEFT",
+    ]
+    assert captured["dimensions"] == 2
+    assert captured["parent"] is window
     assert window._pending_analysis_selection is None
     window.close()
 
@@ -336,14 +470,17 @@ def test_geometry_parameter_edits_preserve_topology_references(before, after):
     window._set_native_geometry(before, "变换后的")
     window._apply_session_delta(
         window.session.replace_named_regions(
-            (NamedRegion("Fixed", "edge", (1,)),)
+            (
+                _named_region("Fixed", "edge:bottom"),
+                _named_region("SolidDomain", "body:domain"),
+            )
         )
     )
     window._apply_session_delta(
         window.session.replace_model_definitions(
             (MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3}),),
             (SectionDefinition("Solid", "Steel"),),
-            (RegionAssignment("Solid", "Fixed"),),
+            (RegionAssignment("Solid", "SolidDomain"),),
             (),
         )
     )
@@ -351,21 +488,21 @@ def test_geometry_parameter_edits_preserve_topology_references(before, after):
         window.session.replace_mesh_settings(
             MeshSettings(
                 0.2,
-                local_size=0.15,
-                local_controls=(LocalMeshControl("edge", 1, 0.1),),
+                local_controls=(
+                    _global_local_control("edge:bottom", 0.1),
+                ),
             )
         )
     )
 
     window._set_native_geometry(after, "参数修改后的")
 
-    assert tuple(window.document.named_regions) == ("Fixed",)
+    assert set(window.document.named_regions) == {"Fixed", "SolidDomain"}
     assert window.document.region_assignments == (
-        RegionAssignment("Solid", "Fixed"),
+        RegionAssignment("Solid", "SolidDomain"),
     )
-    assert window.document.mesh_settings.local_size == 0.15
     assert window.document.mesh_settings.local_controls == (
-        LocalMeshControl("edge", 1, 0.1),
+        _global_local_control("edge:bottom", 0.1),
     )
     assert "已有拓扑引用已保留" in window.status_panel.state_label.text()
     assert "旧命名区域已失效" not in window.status_panel.state_label.text()
@@ -381,15 +518,16 @@ def test_geometry_topology_change_reports_cleared_references():
     )
     window._apply_session_delta(
         window.session.replace_named_regions(
-            (NamedRegion("Fixed", "edge", (1,)),)
+            (_named_region("Fixed", "edge:bottom-front"),)
         )
     )
     window._apply_session_delta(
         window.session.replace_mesh_settings(
             MeshSettings(
                 0.2,
-                local_size=0.15,
-                local_controls=(LocalMeshControl("edge", 1, 0.1),),
+                local_controls=(
+                    _global_local_control("edge:bottom-front", 0.1),
+                ),
             )
         )
     )
@@ -400,11 +538,91 @@ def test_geometry_topology_change_reports_cleared_references():
     )
 
     assert window.document.named_regions == {}
-    assert window.document.mesh_settings.local_size is None
     assert window.document.mesh_settings.local_controls == ()
     message = window.status_panel.state_label.text()
     assert "1 个旧命名区域已失效" in message
     assert "旧局部网格设置已失效" in message
+    window.close()
+
+
+def test_geometry_topology_change_does_not_report_preserved_steps():
+    _application()
+    window = FEMMainWindow()
+    window._set_native_geometry(
+        BoxGeometry("Box", 2.0, 1.0, 0.5),
+        "长方体",
+    )
+    empty = AnalysisStep("Empty")
+    global_gravity = AnalysisStep(
+        "Global Gravity",
+        gravity_loads=(GravityLoad((0.0, -9.81, 0.0)),),
+    )
+    window._apply_session_delta(
+        window.session.replace_model_definitions(
+            (),
+            (),
+            (),
+            (empty, global_gravity),
+        )
+    )
+
+    window._set_native_geometry(
+        RectangleGeometry("Plate", 2.0, 1.0),
+        "矩形",
+    )
+
+    assert window.document.analysis_definitions == (
+        empty,
+        global_gravity,
+    )
+    assert (
+        "依赖旧拓扑的区域分配和分析步已失效"
+        not in window.status_panel.state_label.text()
+    )
+    window.close()
+
+
+def test_geometry_topology_change_reports_invalidated_region_target_step():
+    _application()
+    window = FEMMainWindow()
+    window._set_native_geometry(
+        BoxGeometry("Box", 2.0, 1.0, 0.5),
+        "长方体",
+    )
+    window._apply_session_delta(
+        window.session.replace_named_regions(
+            (_named_region("SolidDomain", "body:domain"),)
+        )
+    )
+    window._apply_session_delta(
+        window.session.replace_model_definitions(
+            (),
+            (),
+            (),
+            (
+                AnalysisStep(
+                    "Region Gravity",
+                    gravity_loads=(
+                        GravityLoad(
+                            (0.0, -9.81, 0.0),
+                            "SolidDomain",
+                        ),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    window._set_native_geometry(
+        RectangleGeometry("Plate", 2.0, 1.0),
+        "矩形",
+    )
+
+    assert window.document.analysis_definitions == ()
+    assert (
+        "依赖旧拓扑的区域分配和分析步已失效"
+        in window.status_panel.state_label.text()
+    )
     window.close()
 
 
@@ -437,18 +655,20 @@ def test_geometry_ctrl_selection_accumulates_same_kind_entities(monkeypatch):
         "矩形",
     )
     monkeypatch.setattr(window, "_geometry_pick_is_additive", lambda: False)
-    window._on_viewport_pick("geometry_edge", 1)
+    bottom = LogicalEntityRef("edge:bottom")
+    top = LogicalEntityRef("edge:top")
+    window._on_geometry_entity_pick(bottom)
     monkeypatch.setattr(window, "_geometry_pick_is_additive", lambda: True)
-    window._on_viewport_pick("geometry_edge", 3)
+    window._on_geometry_entity_pick(top)
 
-    assert window._selected_geometry_kind == "edge"
-    assert window._selected_geometry_ids == {1, 3}
+    assert window._geometry_selection_kind() == "edge"
+    assert window._selected_geometry_refs == {bottom, top}
+    assert window._canonical_geometry_selection() == (bottom, top)
     assert window.status_panel.object_label.text() == "对象：已选择 2 个边"
     assert window.actions["geometry_region"].isEnabled()
 
-    window._on_viewport_pick("geometry_edge", 3)
-    assert window._selected_geometry_ids == {1}
-    assert window._selected_geometry_id == 1
+    window._on_geometry_entity_pick(top)
+    assert window._selected_geometry_refs == {bottom}
     window.close()
 
 
@@ -463,14 +683,14 @@ def test_switching_geometry_selection_kind_clears_incompatible_selection(
     )
     monkeypatch.setattr(window, "_geometry_pick_is_additive", lambda: False)
     window._set_geometry_selection_mode("edge")
-    window._on_viewport_pick("geometry_edge", 1)
+    window._on_geometry_entity_pick(
+        LogicalEntityRef("edge:bottom")
+    )
 
     window._set_geometry_selection_mode("face")
 
     assert window.viewport._selection_mode == "geometry_face"
-    assert window._selected_geometry_kind is None
-    assert window._selected_geometry_id is None
-    assert window._selected_geometry_ids == set()
+    assert window._selected_geometry_refs == set()
     assert "geometry_selection" not in window.viewport._actors
     window.close()
 
@@ -505,13 +725,16 @@ def test_local_mesh_control_applies_once_to_all_selected_edges(monkeypatch):
         RectangleGeometry("Plate", 2.0, 1.0),
         "矩形",
     )
-    window._selected_geometry_kind = "edge"
-    window._selected_geometry_id = 1
-    window._selected_geometry_ids = {1, 3}
+    bottom = LogicalEntityRef("edge:bottom")
+    top = LogicalEntityRef("edge:top")
+    window._selected_geometry_refs = {bottom, top}
 
     class AcceptedLocalMeshDialog:
-        def __init__(self, kind, entity_id, global_size, parent):
-            self._control = LocalMeshControl(kind, entity_id, global_size / 2.0)
+        def __init__(self, target, global_size, parent):
+            self._control = _global_local_control(
+                target.logical_id,
+                global_size / 2.0,
+            )
 
         def exec(self):
             return True
@@ -528,9 +751,9 @@ def test_local_mesh_control_applies_once_to_all_selected_edges(monkeypatch):
     window.set_local_mesh_control()
 
     controls = window.document.mesh_settings.local_controls
-    assert {(item.entity_kind, item.entity_id) for item in controls} == {
-        ("edge", 1),
-        ("edge", 3),
+    assert {item.target for item in controls} == {
+        bottom,
+        top,
     }
     assert {item.size for item in controls} == {
         window.document.mesh_settings.size / 2.0
@@ -541,15 +764,66 @@ def test_local_mesh_control_applies_once_to_all_selected_edges(monkeypatch):
 def test_named_region_default_names_do_not_expose_topology_ids():
     _application()
     window = FEMMainWindow()
-    window._apply_session_delta(window.session.new_native_project())
+    window._set_native_geometry(
+        RectangleGeometry("Plate", 2.0, 1.0),
+        "矩形",
+    )
     window._apply_session_delta(
         window.session.replace_named_regions(
-            (NamedRegion("Surface-1", "face", (4,)),)
+            (_named_region("Surface-1", "face:domain"),)
         )
     )
 
     assert window._next_named_region_name("face") == "Surface-2"
     assert window._next_named_region_name("edge") == "EdgeSet-1"
+    window.close()
+
+
+def test_named_region_builtin_name_collision_is_reported_atomically(
+    monkeypatch,
+):
+    _application()
+    window = FEMMainWindow()
+    window._set_native_geometry(
+        RectangleGeometry("Plate", 2.0, 1.0),
+        "矩形",
+    )
+    selected = LogicalEntityRef("edge:bottom")
+    window._selected_geometry_refs = {selected}
+    before = window.session.snapshot()
+    shown: list[tuple[str, str]] = []
+
+    class ConflictingRegionDialog:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def exec(self):
+            return True
+
+        def region_name(self):
+            return "bottom"
+
+    monkeypatch.setattr(
+        main_window_module,
+        "NamedRegionDialog",
+        ConflictingRegionDialog,
+    )
+    monkeypatch.setattr(
+        window,
+        "_show_error",
+        lambda title, message: shown.append((title, message)),
+    )
+
+    assert window._create_region_from_current_geometry_selection() is None
+    assert shown == [
+        (
+            "创建命名区域",
+            "named region 'bottom' conflicts with 'BOTTOM'",
+        )
+    ]
+    assert window.session.snapshot() == before
+    assert window.document == before
+    assert window._selected_geometry_refs == {selected}
     window.close()
 
 
@@ -564,7 +838,10 @@ def test_named_region_rename_updates_analysis_and_section_references(
     )
     window._apply_session_delta(
         window.session.replace_named_regions(
-            (NamedRegion("Fixed", "edge", (1, 3)),)
+            (
+                _named_region("Fixed", "edge:bottom", "edge:top"),
+                _named_region("Volume", "body:domain"),
+            )
         )
     )
     step = static("Load")
@@ -574,7 +851,7 @@ def test_named_region_rename_updates_analysis_and_section_references(
         window.session.replace_model_definitions(
             (MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3}),),
             (SectionDefinition("Solid", "Steel"),),
-            (RegionAssignment("Solid", "Fixed"),),
+            (RegionAssignment("Solid", "Volume"),),
             (step,),
         )
     )
@@ -588,7 +865,15 @@ def test_named_region_rename_updates_analysis_and_section_references(
 
         def values(self):
             return {
-                "Support": NamedRegion("Support", "edge", (1, 3)),
+                "Support": _named_region(
+                    "Support",
+                    "edge:bottom",
+                    "edge:top",
+                ),
+                "SolidDomain": _named_region(
+                    "SolidDomain",
+                    "body:domain",
+                ),
             }
 
     monkeypatch.setattr(
@@ -597,8 +882,14 @@ def test_named_region_rename_updates_analysis_and_section_references(
     )
     window.show_named_region_manager()
 
-    assert tuple(window.document.named_regions) == ("Support",)
-    assert window.document.region_assignments[0].region_name == "Support"
+    assert set(window.document.named_regions) == {
+        "Support",
+        "SolidDomain",
+    }
+    assert (
+        window.document.region_assignments[0].region_name
+        == "SolidDomain"
+    )
     renamed_step = window.document.analysis_definitions[0]
     assert renamed_step.boundaries[0].target == "Support"
     assert renamed_step.cloads[0].target == "Support"

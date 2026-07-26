@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "logical_topology_version": 1,
+  "source": "native",
+  "parts": [
+    {
+      "name": "Part-1",
+      "body_name": "Body-1"
+    }
+  ],
+  "geometry": {
+    "type": "RectangleGeometry",
+    "name": "Beam-like plate",
+    "width": 4.0,
+    "height": 2.0
+  },
+  "steps": [
+    {
+      "name": "Load",
+      "line_loads": [
+        {
+          "target": "DOMAIN",
+          "vector": [
+            1.0,
+            2.0,
+            3.0
+          ],
+          "coordinate_system": "local"
+        }
+      ],
+      "outputs": [
+        {
+          "kind": "field",
+          "target": "element",
+          "variables": [
+            "S"
+          ],
+          "metadata": {
+            "frequency": 2,
+            "note": "legacy line-load fixture"
+          }
+        }
+      ]
+    }
+  ]
+}

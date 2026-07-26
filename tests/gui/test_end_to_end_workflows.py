@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication
 from fem.abaqus import read
 from fem.application import NamedRegion, RegionAssignment, SectionDefinition
 from fem.core.model import DisplacementConstraint, MaterialDefinition, NodalLoad
+from fem.geometry import LogicalEntityRef
 from fem.steps.factory import static
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.preprocessing import MeshSettings, SketchGeometry, SketchRectangle
@@ -48,8 +49,14 @@ def test_native_preprocess_check_job_result_workflow(monkeypatch):
         window,
         window.session.replace_named_regions(
             (
-                NamedRegion("Fixed", "edge", (4,)),
-                NamedRegion("Loaded", "edge", (2,)),
+                NamedRegion(
+                    "Fixed",
+                    (LogicalEntityRef("edge:left"),),
+                ),
+                NamedRegion(
+                    "Loaded",
+                    (LogicalEntityRef("edge:right"),),
+                ),
             )
         ),
     )
@@ -179,7 +186,12 @@ def test_model_check_rejects_an_underconstrained_native_model(monkeypatch):
     _apply(
         window,
         window.session.replace_named_regions(
-            (NamedRegion("Fixed", "edge", (4,)),)
+            (
+                NamedRegion(
+                    "Fixed",
+                    (LogicalEntityRef("edge:left"),),
+                ),
+            )
         ),
     )
     step = static("Load")

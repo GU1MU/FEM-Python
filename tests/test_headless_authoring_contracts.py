@@ -13,6 +13,7 @@ from fem.application.definitions import (
     RegionAssignment,
     SectionDefinition,
 )
+from fem.geometry import LogicalEntityRef
 from fem.geometry import recipes
 from fem.mesh.settings import LocalMeshControl, MeshSettings
 
@@ -40,22 +41,21 @@ def test_gui_preprocessing_reexports_the_headless_contract_types() -> None:
     assert preprocessing.MeshSettings is MeshSettings
 
 
-def test_gui_document_reexports_the_headless_definition_types() -> None:
-    from fem_gui import document
-
-    assert document.NativePart is NativePart
-    assert document.FeatureRecord is FeatureRecord
-    assert document.NamedRegion is NamedRegion
-    assert document.SectionDefinition is SectionDefinition
-    assert document.RegionAssignment is RegionAssignment
-
-
 @pytest.mark.parametrize(
     ("value", "field_name"),
     (
         (NativePart(), "name"),
         (FeatureRecord("Sketch-1", "sketch"), "kind"),
-        (NamedRegion("Fixed", "edge", (1, 3)), "name"),
+        (
+            NamedRegion(
+                "Fixed",
+                (
+                    LogicalEntityRef("edge:left"),
+                    LogicalEntityRef("edge:right"),
+                ),
+            ),
+            "name",
+        ),
         (SectionDefinition("Section-1", "Steel"), "material"),
         (RegionAssignment("Section-1", "DOMAIN"), "region_name"),
     ),
@@ -72,10 +72,20 @@ def test_definition_serialisation_shape_remains_compatible() -> None:
         "kind": "sketch",
         "payload": {},
     }
-    assert asdict(NamedRegion("Fixed", "edge", (1, 3))) == {
+    assert asdict(
+        NamedRegion(
+            "Fixed",
+            (
+                LogicalEntityRef("edge:left"),
+                LogicalEntityRef("edge:right"),
+            ),
+        )
+    ) == {
         "name": "Fixed",
-        "entity_kind": "edge",
-        "entity_ids": (1, 3),
+        "references": (
+            {"logical_id": "edge:left"},
+            {"logical_id": "edge:right"},
+        ),
     }
     assert asdict(SectionDefinition("Section-1", "Steel")) == {
         "name": "Section-1",

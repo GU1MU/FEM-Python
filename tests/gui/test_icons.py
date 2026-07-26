@@ -35,7 +35,7 @@ GEOMETRY_SELECTION_BATCH = (
 )
 
 MESH_WORKFLOW_BATCH = (
-    "mesh_settings", "mesh_local_size", "mesh_controls", "mesh_clear",
+    "mesh_settings", "mesh_local_control", "mesh_controls", "mesh_clear",
     "mesh_verify", "mesh_statistics", "mesh_quality",
 )
 

@@ -7,9 +7,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QHeaderView, QToolButton
 
+from fem.application import NamedRegion, SectionDefinition
 from fem.core.model import MaterialDefinition
+from fem.geometry import LogicalEntityRef
 from fem_gui.analysis_definition_dialogs import LoadDialog, OutputRequestDialog
-from fem_gui.document import NamedRegion, SectionDefinition
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.model_dialogs import (
     MaterialEditDialog,
@@ -65,7 +66,12 @@ def test_manager_dialogs_use_compact_initial_sizes_and_content_columns():
     material_manager = MaterialManagerDialog([material])
     section_manager = SectionManagerDialog([material], [section])
     region_manager = NamedRegionManagerDialog(
-        {"EdgeSet-1": NamedRegion("EdgeSet-1", "edge", (1,))}
+        {
+            "EdgeSet-1": NamedRegion(
+                "EdgeSet-1",
+                (LogicalEntityRef("edge:bottom"),),
+            )
+        }
     )
 
     assert _show(material_edit) <= 430

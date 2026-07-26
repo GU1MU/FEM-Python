@@ -25,6 +25,7 @@ from fem.core.model import (
     SectionAssignment,
 )
 from fem.elements import BeamOrientation
+from fem.geometry.recipes import BoxGeometry
 
 
 def _base_model() -> SimpleNamespace:
@@ -636,7 +637,9 @@ def test_projection_rejects_orientation_on_non_beam_target() -> None:
 def test_failed_session_definitions_command_is_atomic() -> None:
     session = ModelSession()
     session.new_native_project()
-    session.replace_geometry((NativePart(),), {"kind": "box"})
+    session.replace_geometry(
+        (NativePart(),), BoxGeometry("Box", 1.0, 1.0, 1.0)
+    )
     session.replace_model_definitions(
         _definitions().materials,
         _definitions().sections,

@@ -6,7 +6,6 @@ import json
 import pytest
 
 from fem.application import (
-    FeatureRecord,
     ModelSession,
     NamedRegion,
     NativePart,
@@ -15,19 +14,19 @@ from fem.application import (
     SectionDefinition,
     TokenStatus,
 )
+from fem.application.feature_history import derive_feature_history
 from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
     EdgeLoad,
     GravityLoad,
-    LineLoad,
     MaterialDefinition,
     NodalLoad,
     OutputRequest,
-    SurfaceLoad,
 )
-from fem.geometry.recipes import RectangleGeometry
 from fem.elements import BeamOrientation
+from fem.geometry.recipes import PlateWithHoleGeometry
+from fem.geometry.references import LogicalEntityRef
 from fem.io import project_v1
 from fem.io.project_v1 import (
     ProjectV1DecodeError,
@@ -39,40 +38,51 @@ from fem.io.project_v1 import (
     loads_project_v1,
     save_project_v1,
 )
-from fem.mesh.settings import LocalMeshControl, MeshSettings
+from fem.mesh.settings import LocalMeshControl, MeshSettings, MeshSizeFalloff
 
 
 def _project_snapshot() -> ProjectSnapshot:
     step = AnalysisStep(
         "Load",
-        boundaries=(DisplacementConstraint("Fixed", 1, 2, 0.0),),
-        cloads=(NodalLoad("Loaded", 1, 100.0),),
-        edge_loads=(EdgeLoad("Loaded", (0.0, -2.0, 0.0)),),
-        surface_loads=(SurfaceLoad("Top", (0.0, -3.0, 0.0)),),
-        line_loads=(LineLoad("Beam", (1.0, 2.0, 3.0), "local"),),
+        boundaries=(DisplacementConstraint("LEFT", 1, 2, 0.0),),
+        cloads=(NodalLoad("RIGHT", 1, 100.0),),
+        edge_loads=(EdgeLoad("LOADED_EDGE", (0.0, -2.0, 0.0)),),
         gravity_loads=(GravityLoad((0.0, -9.81)),),
         outputs=(OutputRequest("field", "node", ("U",), {"frequency": 1}),),
         metadata={"increments": [1, 2]},
     )
+    geometry = PlateWithHoleGeometry(
+        "Plate",
+        10.0,
+        5.0,
+        5.0,
+        2.5,
+        1.0,
+    )
+    hole = LogicalEntityRef("edge:hole-loop")
     return ProjectSnapshot(
         source_kind="native",
         parts=(NativePart("Plate", "Body"),),
-        geometry_recipe=RectangleGeometry("Plate", 10.0, 5.0),
+        geometry_recipe=geometry,
         mesh_settings=MeshSettings(
             1.0,
             order=2,
             cell_shape="quadrilateral",
-            local_size=0.25,
-            local_controls=(LocalMeshControl("edge", 2, 0.5),),
+            local_controls=(
+                LocalMeshControl(hole, 0.5),
+                LocalMeshControl(
+                    hole,
+                    0.25,
+                    MeshSizeFalloff("target_radius", 0.25, 2.0),
+                ),
+            ),
         ),
-        feature_history=(
-            FeatureRecord("Base-1", "base", {"summary": "10 × 5"}),
-        ),
+        feature_history=derive_feature_history(geometry),
         named_regions=(
-            NamedRegion("Fixed", "edge", (1,)),
-            NamedRegion("Loaded", "edge", (2,)),
-            NamedRegion("Top", "face", (1,)),
-            NamedRegion("Beam", "edge", (3,)),
+            NamedRegion(
+                "LOADED_EDGE",
+                (LogicalEntityRef("edge:outer-loop"),),
+            ),
         ),
         material_definitions=(
             MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3}),
@@ -89,18 +99,18 @@ def _project_snapshot() -> ProjectSnapshot:
     )
 
 
-def test_v1_round_trip_preserves_line_loads_local_size_and_editable_inputs():
+def test_v1_round_trip_preserves_legacy_local_size_and_editable_inputs():
     original = _project_snapshot()
 
     payload = encode_project_v1(original)
     reopened = loads_project_v1(dumps_project_v1(original))
 
     assert payload["mesh_settings"]["local_size"] == 0.25
-    assert payload["steps"][0]["line_loads"] == [
+    assert payload["mesh_settings"]["local_controls"] == [
         {
-            "target": "Beam",
-            "vector": [1.0, 2.0, 3.0],
-            "coordinate_system": "local",
+            "entity_kind": "edge",
+            "entity_id": 1,
+            "size": 0.5,
         }
     ]
     assert payload["assignments"] == [
@@ -116,15 +126,13 @@ def test_v1_round_trip_preserves_line_loads_local_size_and_editable_inputs():
 def test_old_v1_missing_new_keys_uses_compatible_defaults():
     payload = encode_project_v1(_project_snapshot())
     payload["mesh_settings"].pop("local_size")
-    payload["steps"][0].pop("line_loads")
 
     reopened = decode_project_v1(payload)
 
-    assert reopened.mesh_settings.local_size is None
     assert reopened.analysis_definitions[0].line_loads == ()
     assert reopened.region_assignments[0].beam_orientation is None
     assert reopened.mesh_settings.local_controls == (
-        LocalMeshControl("edge", 2, 0.5),
+        LocalMeshControl(LogicalEntityRef("edge:hole-loop"), 0.5),
     )
 
 
@@ -152,11 +160,18 @@ def test_legacy_v1_without_topology_references_remains_loadable():
     payload.pop("logical_topology_version")
     payload["named_regions"] = []
     payload["mesh_settings"]["local_controls"] = []
+    payload["steps"][0]["edge_loads"] = []
 
     reopened = decode_project_v1(payload)
 
     assert reopened.named_regions == ()
-    assert reopened.mesh_settings.local_controls == ()
+    assert reopened.mesh_settings.local_controls == (
+        LocalMeshControl(
+            LogicalEntityRef("edge:hole-loop"),
+            0.25,
+            MeshSizeFalloff("target_radius", 0.25, 2.0),
+        ),
+    )
 
 
 def test_unknown_logical_topology_version_is_rejected():
@@ -184,7 +199,7 @@ def test_invalid_detached_decode_leaves_current_session_field_equal():
     session.replace_from_snapshot(_project_snapshot())
     before = session.snapshot()
     payload = encode_project_v1(_project_snapshot())
-    payload["steps"][0]["line_loads"][0]["vector"] = [1.0, float("nan")]
+    payload["steps"][0]["edge_loads"][0]["vector"] = [1.0, float("nan")]
 
     with pytest.raises(ProjectV1DecodeError, match="有限数值"):
         decode_project_v1(payload)
@@ -206,7 +221,7 @@ def test_successful_decode_can_be_installed_with_one_cas_replacement():
     assert delta.accepted
     assert current.session_id != initial.session_id
     assert current.geometry_recipe == decoded.geometry_recipe
-    assert current.steps[0].line_loads == decoded.analysis_definitions[0].line_loads
+    assert current.steps[0].edge_loads == decoded.analysis_definitions[0].edge_loads
     assert not current.dirty
 
 
@@ -219,9 +234,13 @@ def test_atomic_save_validates_temp_then_replaces_target(tmp_path):
     assert returned == target
     reopened = load_project_v1(target)
     assert reopened.source_path == target
-    assert reopened.mesh_settings.local_size == 0.25
-    assert reopened.analysis_definitions[0].line_loads == (
-        LineLoad("Beam", (1.0, 2.0, 3.0), "local"),
+    assert reopened.mesh_settings.local_controls == (
+        LocalMeshControl(LogicalEntityRef("edge:hole-loop"), 0.5),
+        LocalMeshControl(
+            LogicalEntityRef("edge:hole-loop"),
+            0.25,
+            MeshSizeFalloff("target_radius", 0.25, 2.0),
+        ),
     )
     assert list(tmp_path.glob(f".{target.name}.*.tmp")) == []
 
@@ -258,7 +277,10 @@ def test_save_snapshot_does_not_mark_changed_session_clean(tmp_path):
     assert delta.token_status is TokenStatus.STALE_REVISION
     assert session.snapshot().dirty
     saved = load_project_v1(target)
-    assert saved.mesh_settings.local_size == 0.25
+    assert any(
+        control.falloff.reference == "target_radius"
+        for control in saved.mesh_settings.local_controls
+    )
     assert session.snapshot().mesh_settings == MeshSettings(2.0)
 
 
@@ -279,7 +301,9 @@ def test_save_snapshot_exposes_only_detached_copies(tmp_path):
     assert delta.accepted
     assert saved.material_definitions[0].properties["E"] == 210000.0
     assert saved.section_definitions[0].properties["thickness"] == 2.0
-    assert saved.feature_history[0].payload["summary"] == "10 × 5"
+    assert saved.feature_history == derive_feature_history(
+        saved.geometry_recipe
+    )
     assert saved.analysis_definitions[0].metadata["increments"] == [1, 2]
     assert not session.snapshot().dirty
 
@@ -291,8 +315,8 @@ def test_save_snapshot_exposes_only_detached_copies(tmp_path):
         lambda payload: payload["named_regions"].append(
             dict(payload["named_regions"][0])
         ),
-        lambda payload: payload["steps"][0]["line_loads"][0].update(
-            {"coordinate_system": "cylindrical"}
+        lambda payload: payload["steps"][0]["edge_loads"][0].update(
+            {"unexpected": "field"}
         ),
     ],
 )

@@ -23,9 +23,11 @@ from fem.application import (
     DefinitionRejected,
     ModelCapabilityReport,
     ModelSession,
+    NamedRegion,
     PreflightDiagnostic,
     PreflightReport,
     RegionRef,
+    analysis_steps_have_native_region_targets,
     describe_model_capabilities,
     describe_native_authoring_capabilities,
     safe_static_preflight,
@@ -38,9 +40,10 @@ from fem.core.model import (
     NodalLoad,
     SurfaceLoad,
 )
+from fem.geometry import LogicalEntityRef, logical_ref_sort_key
 from fem.geometry.recipe_topology import can_preserve_logical_references
+from fem.io.project import load_project, save_project
 from fem.solvers import static_linear
-from fem.io.project_v1 import load_project_v1, save_project_v1
 
 from .actions import build_actions
 from .analysis_dialogs import JobManagerDialog, JobSubmitDialog
@@ -52,7 +55,6 @@ from .analysis_definition_dialogs import (
 )
 from .analysis_jobs import AnalysisJob, JobStatus
 from .dialogs import CompactDoubleSpinBox, show_information
-from .document import FeatureRecord, NamedRegion
 from .model_dialogs import (
     MaterialEditDialog,
     MaterialManagerDialog,
@@ -85,7 +87,6 @@ from .preprocessing import (
     build_geometry_preview,
     geometry_characteristic_size,
     geometry_dimension,
-    geometry_feature_rows,
     supports_hexahedron,
 )
 from .preprocessing_dialogs import (
@@ -141,37 +142,6 @@ def initial_display_policy(element_count: int, node_count: int) -> dict[str, boo
     }
 
 
-def native_feature_history(recipe: Any) -> list[FeatureRecord]:
-    """Derive stable, shallow feature names from the existing recipe chain."""
-    records: list[FeatureRecord] = []
-    counters: dict[str, int] = {}
-
-    def add(kind: str, row: str) -> None:
-        counters[kind] = counters.get(kind, 0) + 1
-        records.append(FeatureRecord(f"{kind}-{counters[kind]}", kind.casefold(), {"summary": row}))
-
-    def visit(item: Any) -> None:
-        if isinstance(item, SketchGeometry):
-            add("Sketch", geometry_feature_rows(item)[0])
-        elif isinstance(item, MovedGeometry):
-            visit(item.base)
-            add("Move", geometry_feature_rows(item)[-1])
-        elif isinstance(item, RotatedGeometry):
-            visit(item.base)
-            add("Rotate", geometry_feature_rows(item)[-1])
-        elif isinstance(item, ExtrudedGeometry):
-            visit(item.base)
-            add("Extrude", geometry_feature_rows(item)[-1])
-        elif isinstance(item, BooleanGeometry):
-            visit(item.object_geometry)
-            add({"fuse": "Fuse", "cut": "Cut", "fragment": "Partition"}[item.operation], geometry_feature_rows(item)[-1])
-        else:
-            add("Base", geometry_feature_rows(item)[0])
-
-    visit(recipe)
-    return records
-
-
 class FEMMainWindow(QMainWindow):
     """只暴露当前内核已经实现的有限元工作流。"""
 
@@ -188,9 +158,7 @@ class FEMMainWindow(QMainWindow):
         self.inspection_service: InspectionService | None = None
         self._inspection_windows: list[QWidget] = []
         self._mesh_browser: MeshBrowserDialog | None = None
-        self._selected_geometry_kind: str | None = None
-        self._selected_geometry_id: int | None = None
-        self._selected_geometry_ids: set[int] = set()
+        self._selected_geometry_refs: set[LogicalEntityRef] = set()
         self._geometry_selection_mode = "body"
         self._pending_local_mesh_selection = False
         self._pending_analysis_selection: str | None = None
@@ -718,6 +686,9 @@ class FEMMainWindow(QMainWindow):
         self.model_tree.editRequested.connect(self._edit_tree_entry)
         self.result_tree.fieldActivated.connect(self._activate_result_field)
         self.viewport.entityPicked.connect(self._on_viewport_pick)
+        self.viewport.geometryEntityPicked.connect(
+            self._on_geometry_entity_pick
+        )
         self.viewport.selectionMissed.connect(self._on_viewport_pick_missed)
         self.viewport.selectionConfirmed.connect(self._confirm_guided_selection)
         self.viewport.selectionCancelled.connect(self._cancel_guided_selection)
@@ -937,9 +908,7 @@ class FEMMainWindow(QMainWindow):
         self._set_action_available("open_project", not busy, "后台任务运行时不能打开项目")
         self._set_action_available(
             "save_project",
-            source_kind == "native"
-            and self.document.geometry_recipe is not None
-            and not busy,
+            self.document.can_save and not busy,
             "请先创建自主草图或几何；INP 模型保持原文件工作流",
         )
         self._set_action_available(
@@ -1016,8 +985,7 @@ class FEMMainWindow(QMainWindow):
         self._set_action_available(
             "geometry_region",
             has_native_geometry
-            and self._selected_geometry_kind in {"point", "edge", "face", "body"}
-            and bool(self._selected_geometry_ids)
+            and bool(self._selected_geometry_refs)
             and not busy,
             "请先在视口中选择点、边、面或体",
         )
@@ -1086,7 +1054,9 @@ class FEMMainWindow(QMainWindow):
             source_kind is not None and not busy,
             "请先新建模型或打开 INP",
         )
-        native_analysis_regions = bool(self._native_analysis_region_names())
+        native_analysis_regions = bool(
+            self._native_region_names("node_set")
+        )
         self._set_action_available(
             "boundary_create",
             has_step
@@ -1491,9 +1461,7 @@ class FEMMainWindow(QMainWindow):
         if not isinstance(self.document.geometry_recipe, NATIVE_GEOMETRY_TYPES):
             return
         self._apply_session_delta(self.session.clear_geometry())
-        self._selected_geometry_kind = None
-        self._selected_geometry_id = None
-        self._selected_geometry_ids.clear()
+        self._selected_geometry_refs.clear()
         self.viewport_panel.set_geometry_context(False)
         self.status_panel.set_state("当前几何已删除", 5000)
 
@@ -1519,42 +1487,32 @@ class FEMMainWindow(QMainWindow):
             prior_recipe is not None
             and not preserve_topology_references
             and isinstance(current_settings, MeshSettings)
-            and (
-                current_settings.local_size is not None
-                or bool(current_settings.local_controls)
-            )
-        )
-        invalidated_definitions = (
-            prior_recipe is not None
-            and not preserve_topology_references
-            and bool(
-                self.document.region_assignments
-                or self.document.analysis_definitions
-            )
+            and bool(current_settings.local_controls)
         )
         preserved_references = preserve_topology_references and bool(
             self.document.named_regions
             or self.document.region_assignments
-            or self.document.analysis_definitions
+            or analysis_steps_have_native_region_targets(
+                self.document.analysis_definitions
+            )
             or (
                 isinstance(current_settings, MeshSettings)
-                and (
-                    current_settings.local_size is not None
-                    or bool(current_settings.local_controls)
-                )
+                and bool(current_settings.local_controls)
             )
         )
         delta = self.session.replace_geometry(
             tuple(self.document.parts),
             recipe,
-            feature_history=tuple(native_feature_history(recipe)),
         )
         self._apply_session_delta(delta)
+        invalidated_definitions = (
+            prior_recipe is not None
+            and not preserve_topology_references
+            and application_api.ChangeKind.DEFINITIONS in delta.changed
+        )
         self._pending_local_mesh_selection = False
         self._pending_analysis_selection = None
-        self._selected_geometry_kind = None
-        self._selected_geometry_id = None
-        self._selected_geometry_ids.clear()
+        self._selected_geometry_refs.clear()
         dimension = geometry_dimension(recipe)
         target_shape = "tetrahedron" if dimension == 3 else "triangle"
         if isinstance(current_settings, MeshSettings):
@@ -1570,11 +1528,6 @@ class FEMMainWindow(QMainWindow):
             settings = replace(
                 current_settings,
                 cell_shape=current_settings.cell_shape if valid_shape else target_shape,
-                local_size=(
-                    current_settings.local_size
-                    if preserve_topology_references
-                    else None
-                ),
                 local_controls=(
                     current_settings.local_controls
                     if preserve_topology_references
@@ -1615,16 +1568,15 @@ class FEMMainWindow(QMainWindow):
         self._create_region_from_current_geometry_selection()
 
     def _create_region_from_current_geometry_selection(self) -> str | None:
-        kind, entity_id = self._selected_geometry_kind, self._selected_geometry_id
-        if kind not in {"point", "edge", "face", "body"} or entity_id is None:
+        references = self._canonical_geometry_selection()
+        if not references:
             return None
-        entity_ids = tuple(sorted(self._selected_geometry_ids or {entity_id}))
+        kind = references[0].kind
         for region in self.document.named_regions.values():
-            if region.entity_kind == kind and region.entity_ids == entity_ids:
+            if region.references == references:
                 return region.name
         dialog = NamedRegionDialog(
-            kind,
-            entity_ids,
+            references,
             self,
             suggested_name=self._next_named_region_name(kind),
         )
@@ -1639,9 +1591,14 @@ class FEMMainWindow(QMainWindow):
             self._show_error("创建命名区域", f"区域名称已存在：{name}")
             return None
         regions = dict(self.document.named_regions)
-        regions[name] = NamedRegion(name, kind, entity_ids)
+        try:
+            regions[name] = NamedRegion(name, references)
+            delta = self.session.replace_named_regions(regions)
+        except (TypeError, ValueError) as error:
+            self._show_error("创建命名区域", str(error))
+            return None
         self._apply_session_delta(
-            self.session.replace_named_regions(regions)
+            delta
         )
         self.status_panel.set_state(
             f"已创建几何区域 {name}；网格生成后可使用对应的网格集合进行分配和分析",
@@ -1666,14 +1623,20 @@ class FEMMainWindow(QMainWindow):
             index += 1
         return f"{prefix}-{index}"
 
-    def _native_analysis_region_names(
-        self,
-        kinds: set[str] | None = None,
-    ) -> list[str]:
+    def _native_region_catalog(self) -> tuple[Any, ...]:
+        recipe = self.document.geometry_recipe
+        if not isinstance(recipe, NATIVE_GEOMETRY_TYPES):
+            return ()
+        return application_api.describe_native_regions(
+            recipe,
+            self.document.named_regions,
+        )
+
+    def _native_region_names(self, product: str) -> list[str]:
         return [
-            region.name
-            for region in self.document.named_regions.values()
-            if kinds is None or region.entity_kind in kinds
+            descriptor.name
+            for descriptor in self._native_region_catalog()
+            if product in descriptor.products
         ]
 
     def _referenced_region_names(self) -> set[str]:
@@ -1707,11 +1670,11 @@ class FEMMainWindow(QMainWindow):
             return
         updated = dialog.values()
         old_by_signature = {
-            (region.entity_kind, region.entity_ids): name
+            region.references: name
             for name, region in previous.items()
         }
         new_by_signature = {
-            (region.entity_kind, region.entity_ids): name
+            region.references: name
             for name, region in updated.items()
         }
         renames = {
@@ -1747,20 +1710,45 @@ class FEMMainWindow(QMainWindow):
         self,
     ) -> tuple[list[str], list[str], list[str]]:
         model = self.document.model
-        node_regions = list(model.node_sets) if model is not None else []
-        edge_regions = list(model.edges) if model is not None else []
-        face_regions = list(model.surfaces) if model is not None else []
+        recipe = self.document.geometry_recipe
+        if isinstance(recipe, NATIVE_GEOMETRY_TYPES):
+            node_regions = self._native_region_names("node_set")
+            edge_regions = self._native_region_names("edge")
+            face_regions = self._native_region_names("surface")
+        else:
+            node_regions = list(model.node_sets) if model is not None else []
+            edge_regions = list(model.edges) if model is not None else []
+            face_regions = list(model.surfaces) if model is not None else []
 
         def extend_unique(target: list[str], values: list[str]) -> None:
             target.extend(value for value in values if value not in target)
 
-        extend_unique(
-            node_regions,
-            self._native_analysis_region_names({"point", "edge", "face"}),
-        )
-        extend_unique(edge_regions, self._native_analysis_region_names({"edge"}))
-        extend_unique(face_regions, self._native_analysis_region_names({"face"}))
+        if model is not None and isinstance(recipe, NATIVE_GEOMETRY_TYPES):
+            extend_unique(node_regions, list(model.node_sets))
+            extend_unique(edge_regions, list(model.edges))
+            extend_unique(face_regions, list(model.surfaces))
         return node_regions, edge_regions, face_regions
+
+    def _analysis_element_regions(
+        self,
+        capability_report: ModelCapabilityReport | None = None,
+    ) -> list[RegionRef]:
+        regions = [
+            RegionRef("element_set", descriptor.name)
+            for descriptor in self._native_region_catalog()
+            if "element_set" in descriptor.products
+        ]
+        report = capability_report or self._model_capability_report()
+        if report is not None:
+            regions.extend(
+                item.region
+                for item in report.regions
+                if (
+                    item.region.kind == "element_set"
+                    and item.region not in regions
+                )
+            )
+        return regions
 
     def _model_capability_report(
         self,
@@ -1870,9 +1858,10 @@ class FEMMainWindow(QMainWindow):
         ):
             return
         supported_kinds = {"point", "edge", "face"}
+        selected_references = self._canonical_geometry_selection()
         if (
-            self._selected_geometry_kind not in supported_kinds
-            or self._selected_geometry_id is None
+            not selected_references
+            or selected_references[0].kind not in supported_kinds
         ):
             self._pending_local_mesh_selection = True
             self.viewport_panel.set_geometry_context(True)
@@ -1885,31 +1874,29 @@ class FEMMainWindow(QMainWindow):
                 0,
             )
             return
-        selected_id = self._selected_geometry_id
         dialog = LocalMeshControlDialog(
-            self._selected_geometry_kind,
-            selected_id,
+            selected_references[0],
             settings.size,
             self,
         )
         if not dialog.exec():
             return
         control = dialog.control()
-        selected_ids = tuple(sorted(
-            self._selected_geometry_ids
-            if self._selected_geometry_kind == control.entity_kind
-            else {control.entity_id}
-        ))
+        selected_references = (
+            selected_references
+            if selected_references[0].kind == control.target.kind
+            else (control.target,)
+        )
         controls = tuple(
             item
             for item in settings.local_controls
             if not (
-                item.entity_kind == control.entity_kind
-                and item.entity_id in selected_ids
+                item.target in selected_references
+                and item.falloff == control.falloff
             )
         ) + tuple(
-            replace(control, entity_id=entity_id)
-            for entity_id in selected_ids
+            replace(control, target=reference)
+            for reference in selected_references
         )
         self._apply_session_delta(
             self.session.replace_mesh_settings(
@@ -1920,7 +1907,7 @@ class FEMMainWindow(QMainWindow):
             "point": "点",
             "edge": "边",
             "face": "面",
-        }.get(control.entity_kind, "实体")
+        }.get(control.target.kind, "实体")
         self.status_panel.set_state(
             f"已设置所选{kind_name}的局部尺寸，请重新生成网格",
             5000,
@@ -1936,9 +1923,7 @@ class FEMMainWindow(QMainWindow):
         self._apply_session_delta(
             self.session.clear_generated_model()
         )
-        self._selected_geometry_kind = None
-        self._selected_geometry_id = None
-        self._selected_geometry_ids.clear()
+        self._selected_geometry_refs.clear()
         self.setWindowTitle(f"有限元分析 — {recipe.name}（几何）")
         self.status_panel.set_state("网格已清除，几何与网格控制已保留", 5000)
 
@@ -2109,22 +2094,35 @@ class FEMMainWindow(QMainWindow):
             return
         expected_revision = self.document.session_revision
         try:
-            project = load_project_v1(path)
+            loaded = load_project(path)
             delta = self.session.replace_from_snapshot(
-                project,
+                loaded.snapshot,
                 expected_session_revision=expected_revision,
             )
-            self._apply_session_delta(
+            installed = self._apply_session_delta(
                 delta,
                 source_label=Path(path).name,
             )
-            self.status_panel.set_state("自主项目已打开，请生成网格并检查模型", 6000)
+            if not installed:
+                return
+            if loaded.notices:
+                self.status_panel.set_state(
+                    "；".join(
+                        notice.message for notice in loaded.notices
+                    ),
+                    12000,
+                )
+            else:
+                self.status_panel.set_state(
+                    "自主项目已打开，请生成网格并检查模型",
+                    6000,
+                )
             self.ribbon.set_current("几何")
         except Exception as error:
             self._show_error("打开自主项目失败", str(error))
 
     def save_native_project(self) -> bool:
-        if self.document.source_kind != "native" or self.document.geometry_recipe is None:
+        if not self.document.can_save:
             return False
         path = self.document.project_path
         if path is None:
@@ -2140,7 +2138,7 @@ class FEMMainWindow(QMainWindow):
         marked_clean = False
         try:
             save_snapshot = self.session.prepare_project_save()
-            target = save_project_v1(path, save_snapshot)
+            target = save_project(path, save_snapshot)
             marked_clean = self._apply_session_delta(
                 self.session.accept_project_saved(
                     save_snapshot.token,
@@ -2403,10 +2401,7 @@ class FEMMainWindow(QMainWindow):
         box.setIcon(QMessageBox.Icon.Warning)
         box.setText("当前模型包含尚未保存的修改。")
         save_button = None
-        if (
-            self.document.source_kind == "native"
-            and self.document.geometry_recipe is not None
-        ):
+        if self.document.can_save:
             save_button = box.addButton(
                 "保存",
                 QMessageBox.ButtonRole.AcceptRole,
@@ -2432,9 +2427,7 @@ class FEMMainWindow(QMainWindow):
         if confirm and not self._confirm_discard_changes():
             return False
         self._apply_session_delta(self.session.close())
-        self._selected_geometry_kind = None
-        self._selected_geometry_id = None
-        self._selected_geometry_ids.clear()
+        self._selected_geometry_refs.clear()
         self._display = DisplayState()
         self._overlay_undeformed = False
         self.actions["undeformed"].setChecked(True)
@@ -2743,21 +2736,7 @@ class FEMMainWindow(QMainWindow):
         assignment_index: int | None = None,
     ) -> RegionAssignmentDialog | None:
         capability_report = self._model_capability_report()
-        regions: list[RegionRef] = []
-        if capability_report is not None:
-            regions.extend(
-                item.region
-                for item in capability_report.regions
-                if item.region.kind == "element_set"
-            )
-        if isinstance(self.document.geometry_recipe, NATIVE_GEOMETRY_TYPES):
-            domain = RegionRef("element_set", "DOMAIN")
-            if domain not in regions:
-                regions.insert(0, domain)
-            for name in self._native_analysis_region_names({"body"}):
-                reference = RegionRef("element_set", name)
-                if reference not in regions:
-                    regions.append(reference)
+        regions = self._analysis_element_regions(capability_report)
         if current is not None:
             existing = RegionRef(
                 "element_set",
@@ -2929,10 +2908,10 @@ class FEMMainWindow(QMainWindow):
         if not self.session.runnable_step_names():
             return
         selected_region = None
+        selected_geometry_kind = self._geometry_selection_kind()
         if (
             self.document.source_kind == "native"
-            and self._selected_geometry_kind in {"point", "edge", "face"}
-            and self._selected_geometry_id is not None
+            and selected_geometry_kind in {"point", "edge", "face"}
         ):
             selected_region = self._create_region_from_current_geometry_selection()
             if selected_region is None:
@@ -2989,16 +2968,16 @@ class FEMMainWindow(QMainWindow):
         capability_report = self._model_capability_report()
         if capability_report is None:
             return
+        selected_geometry_kind = self._geometry_selection_kind()
         if (
             self.document.source_kind == "native"
-            and self._selected_geometry_kind in {"point", "edge", "face"}
-            and self._selected_geometry_id is not None
+            and selected_geometry_kind in {"point", "edge", "face"}
         ):
             preferred_kind = {
                 "point": "node",
                 "edge": "edge",
                 "face": "surface",
-            }[self._selected_geometry_kind]
+            }[selected_geometry_kind]
             if preferred_kind not in capability_report.load_kinds:
                 self._show_error(
                     "创建载荷",
@@ -3909,16 +3888,37 @@ class FEMMainWindow(QMainWindow):
     def _toggle_symbols(self, checked: bool) -> None:
         self.viewport.set_symbols_visible(checked)
 
+    def _canonical_geometry_selection(
+        self,
+    ) -> tuple[LogicalEntityRef, ...]:
+        return tuple(
+            sorted(
+                self._selected_geometry_refs,
+                key=logical_ref_sort_key,
+            )
+        )
+
+    def _geometry_selection_kind(self) -> str | None:
+        kinds = {
+            reference.kind
+            for reference in self._selected_geometry_refs
+        }
+        if not kinds:
+            return None
+        if len(kinds) != 1:
+            raise RuntimeError(
+                "geometry selection contains incompatible entity kinds"
+            )
+        return next(iter(kinds))
+
     def _set_selection_mode(self, mode: str) -> None:
         normalized = "element" if mode == "element" else "node"
         if (
-            self._selected_geometry_kind is not None
+            self._selected_geometry_refs
             or self.viewport._selection_mode != normalized
         ):
             self.selection.clear()
-            self._selected_geometry_kind = None
-            self._selected_geometry_id = None
-            self._selected_geometry_ids.clear()
+            self._selected_geometry_refs.clear()
             self.viewport.clear_selection()
             self.status_panel.set_object()
             self.actions["selected_info"].setEnabled(False)
@@ -3935,13 +3935,11 @@ class FEMMainWindow(QMainWindow):
         if (
             has_fem_selection
             or (
-                self._selected_geometry_kind is not None
-                and self._selected_geometry_kind != normalized
+                self._selected_geometry_refs
+                and self._geometry_selection_kind() != normalized
             )
         ):
-            self._selected_geometry_kind = None
-            self._selected_geometry_id = None
-            self._selected_geometry_ids.clear()
+            self._selected_geometry_refs.clear()
             self.viewport.clear_selection()
             self.status_panel.set_object()
         self.selection.clear()
@@ -3954,9 +3952,7 @@ class FEMMainWindow(QMainWindow):
         self.selection.clear()
         self._pending_local_mesh_selection = False
         self._pending_analysis_selection = None
-        self._selected_geometry_kind = None
-        self._selected_geometry_id = None
-        self._selected_geometry_ids.clear()
+        self._selected_geometry_refs.clear()
         self.viewport.clear_selection()
         self.status_panel.set_object()
         self.actions["selected_info"].setEnabled(False)
@@ -3970,50 +3966,16 @@ class FEMMainWindow(QMainWindow):
         )
 
     def _on_viewport_pick(self, kind: str, key: int) -> None:
-        if kind.startswith("geometry_"):
-            geometry_kind = kind.removeprefix("geometry_")
-            additive = self._geometry_pick_is_additive()
-            if self._selected_geometry_kind != geometry_kind or not additive:
-                self._selected_geometry_ids = {int(key)}
-            elif int(key) in self._selected_geometry_ids:
-                self._selected_geometry_ids.remove(int(key))
-            else:
-                self._selected_geometry_ids.add(int(key))
-            self._selected_geometry_kind = geometry_kind
-            self._selected_geometry_id = (
-                int(key)
-                if int(key) in self._selected_geometry_ids
-                else min(self._selected_geometry_ids, default=None)
-            )
-            self.viewport.highlight_geometry_entities(
-                kind,
-                tuple(self._selected_geometry_ids),
-            )
-            labels = {
-                "geometry_point": "点",
-                "geometry_edge": "边",
-                "geometry_face": "面",
-                "geometry_body": "体",
-            }
-            self.status_panel.set_selection_mode(kind)
-            selected_count = len(self._selected_geometry_ids)
-            self.status_panel.set_object(
-                (
-                    f"已选择 {selected_count} 个"
-                    f"{labels.get(kind, '几何实体')}"
-                )
-                if selected_count
-                else "—"
-            )
-            self.actions["selected_info"].setEnabled(False)
-            self._update_action_states()
-            return
         if kind == "node":
             self.selection.select_node(key)
             self.viewport.highlight_node(key)
-        else:
+        elif kind == "element":
             self.selection.select_element(key)
             self.viewport.highlight_element(key)
+        else:
+            raise ValueError(
+                "entityPicked 只接受 FEM node 或 element"
+            )
         self.model_tree.select_entity(kind, key)
         self.status_panel.set_selection_mode(kind)
         self.status_panel.set_object(
@@ -4022,14 +3984,52 @@ class FEMMainWindow(QMainWindow):
         )
         self.actions["selected_info"].setEnabled(True)
 
+    def _on_geometry_entity_pick(
+        self,
+        reference: LogicalEntityRef,
+    ) -> None:
+        if type(reference) is not LogicalEntityRef:
+            raise TypeError(
+                "geometryEntityPicked 必须携带 LogicalEntityRef"
+            )
+        additive = self._geometry_pick_is_additive()
+        if (
+            self._geometry_selection_kind() != reference.kind
+            or not additive
+        ):
+            self._selected_geometry_refs = {reference}
+        elif reference in self._selected_geometry_refs:
+            self._selected_geometry_refs.remove(reference)
+        else:
+            self._selected_geometry_refs.add(reference)
+        references = self._canonical_geometry_selection()
+        self.viewport.highlight_geometry_entities(references)
+        mode = f"geometry_{reference.kind}"
+        labels = {
+            "point": "点",
+            "edge": "边",
+            "face": "面",
+            "body": "体",
+        }
+        self.status_panel.set_selection_mode(mode)
+        selected_count = len(references)
+        self.status_panel.set_object(
+            (
+                f"已选择 {selected_count} 个"
+                f"{labels.get(reference.kind, '几何实体')}"
+            )
+            if selected_count
+            else "—"
+        )
+        self.actions["selected_info"].setEnabled(False)
+        self._update_action_states()
+
     def _on_viewport_pick_missed(self, kind: str) -> None:
         """Clear a replace-selection click without cancelling guided selection."""
         if self._geometry_pick_is_additive():
             return
         if kind.startswith("geometry_"):
-            self._selected_geometry_kind = None
-            self._selected_geometry_id = None
-            self._selected_geometry_ids.clear()
+            self._selected_geometry_refs.clear()
         else:
             self.selection.clear()
         self.viewport.clear_selection()
@@ -4038,7 +4038,7 @@ class FEMMainWindow(QMainWindow):
         self._update_action_states()
 
     def _confirm_guided_selection(self) -> None:
-        if not self._selected_geometry_ids:
+        if not self._selected_geometry_refs:
             if self._pending_local_mesh_selection or self._pending_analysis_selection:
                 self.status_panel.set_state("请先选择至少一个几何对象", 3000)
             return

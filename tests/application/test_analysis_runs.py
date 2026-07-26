@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from fem.application import ModelSession, NativePart, RunStatus
 from fem.core.model import AnalysisStep
+from fem.geometry.recipes import BoxGeometry
 from tests.helpers.preflight_builders import passing_preflight_report
 
 
@@ -21,7 +22,9 @@ def _model() -> SimpleNamespace:
 def _session() -> ModelSession:
     session = ModelSession()
     session.new_native_project()
-    session.replace_geometry((NativePart(),), {"kind": "box"})
+    session.replace_geometry(
+        (NativePart(),), BoxGeometry("Box", 1.0, 1.0, 1.0)
+    )
     session.replace_model_definitions((), (), (), (AnalysisStep("Step-A"),))
     mesh = session.prepare_mesh_generation()
     session.accept_generated_model(mesh.token, _model())

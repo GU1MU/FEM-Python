@@ -46,6 +46,7 @@ GEOMETRY_PUBLIC_API = [
     "BooleanResult",
     "CurveLoopRef",
     "EntityOwnershipError",
+    "EntityKind",
     "EntityRef",
     "FeatureResult",
     "GeometryError",
@@ -54,11 +55,16 @@ GEOMETRY_PUBLIC_API = [
     "LoftContinuity",
     "LoftParametrization",
     "LoftResult",
+    "LogicalEntityRef",
     "OrientedCurveRef",
     "StaleEntityError",
     "SweepFrame",
+    "TargetRadiusResolutionError",
     "WireRef",
+    "logical_ref_sort_key",
     "model",
+    "resolve_legacy_hole_target",
+    "resolve_target_radius",
 ]
 
 

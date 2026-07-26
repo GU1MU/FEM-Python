@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
 from fem.core.model import MaterialDefinition, SectionAssignment
 from fem.elements import (
@@ -16,6 +16,7 @@ from fem.elements import (
     parse_beam_orientation,
     resolve_beam_frame,
 )
+from fem.geometry.references import LogicalEntityRef, logical_ref_sort_key
 
 from .capabilities import RegionRef
 from .diagnostics import (
@@ -32,6 +33,13 @@ class NativePart:
     name: str = "Part-1"
     body_name: str = "Body-1"
 
+    def __post_init__(self) -> None:
+        for field_name in ("name", "body_name"):
+            value = getattr(self, field_name)
+            if type(value) is not str or not value.strip():
+                raise ValueError(f"NativePart.{field_name} must be a non-empty string")
+            object.__setattr__(self, field_name, value.strip())
+
 
 @dataclass(frozen=True, slots=True)
 class FeatureRecord:
@@ -47,8 +55,41 @@ class NamedRegion:
     """A logical native region mapped to mesh sets after regeneration."""
 
     name: str
-    entity_kind: Literal["point", "edge", "face", "body"]
-    entity_ids: tuple[int, ...] = ()
+    references: tuple[LogicalEntityRef, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.name) is not str or not self.name.strip():
+            raise ValueError("named region name must be a non-empty string")
+        references = tuple(self.references)
+        if not references:
+            raise ValueError("named region references must not be empty")
+        if any(type(reference) is not LogicalEntityRef for reference in references):
+            raise TypeError(
+                "named region references must contain only LogicalEntityRef values"
+            )
+        if len(set(references)) != len(references):
+            raise ValueError("named region references must be unique")
+        kinds = {reference.kind for reference in references}
+        if len(kinds) != 1:
+            raise ValueError("one named region cannot mix logical entity kinds")
+        object.__setattr__(self, "name", self.name.strip())
+        object.__setattr__(
+            self,
+            "references",
+            tuple(sorted(references, key=logical_ref_sort_key)),
+        )
+
+    @property
+    def entity_kind(self) -> str:
+        """Return the single kind derived from the canonical references."""
+
+        return self.references[0].kind
+
+    @property
+    def logical_ids(self) -> tuple[str, ...]:
+        """Return stable IDs for display-only consumers."""
+
+        return tuple(reference.logical_id for reference in self.references)
 
 
 @dataclass(frozen=True, slots=True)

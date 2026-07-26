@@ -11,6 +11,7 @@ from fem.application import (
     ModelSession,
     NamedRegion,
     RegionAssignment,
+    RegionRef,
     SectionDefinition,
 )
 from fem.application.preprocessing import generate_fem_model
@@ -22,6 +23,7 @@ from fem.core.model import (
     NodalLoad,
     OutputRequest,
 )
+from fem.geometry import LogicalEntityRef
 from fem.solvers.static_linear import solve, validate_problem
 from fem.steps.factory import static
 from fem_gui.analysis_definition_dialogs import (
@@ -303,35 +305,98 @@ def test_main_window_filters_distributed_load_regions_by_model_dimension():
     _application()
     window = FEMMainWindow()
     rectangle = RectangleGeometry("plate", 2.0, 1.0)
-    regions = (
-        NamedRegion("NodeSet", "point", (1,)),
-        NamedRegion("EdgeSet", "edge", (1,)),
-        NamedRegion("Surface", "face", (1,)),
+    planar_regions = (
+        NamedRegion(
+            "NodeSet",
+            (LogicalEntityRef("point:bottom-left"),),
+        ),
+        NamedRegion(
+            "EdgeSet",
+            (LogicalEntityRef("edge:bottom"),),
+        ),
+        NamedRegion(
+            "Surface",
+            (LogicalEntityRef("face:domain"),),
+        ),
     )
     window._set_native_geometry(rectangle, "矩形")
     assert window._apply_session_delta(
-        window.session.replace_named_regions(regions)
+        window.session.replace_named_regions(planar_regions)
     )
 
     node_regions, edge_regions, face_regions, line_regions = (
         window._supported_load_regions()
     )
-    assert "NodeSet" in node_regions
-    assert edge_regions == ["EdgeSet"]
+    assert node_regions == [
+        "BOTTOM",
+        "RIGHT",
+        "TOP",
+        "LEFT",
+        "EdgeSet",
+        "NodeSet",
+    ]
+    assert edge_regions == [
+        "BOTTOM",
+        "RIGHT",
+        "TOP",
+        "LEFT",
+        "EdgeSet",
+    ]
     assert face_regions == []
     assert line_regions == []
 
     window._set_native_geometry(ExtrudedGeometry(rectangle, 1.0), "拉伸体")
+    solid_regions = (
+        NamedRegion(
+            "NodeSet",
+            (LogicalEntityRef("point:bottom/bottom-left"),),
+        ),
+        NamedRegion(
+            "EdgeSet",
+            (LogicalEntityRef("edge:bottom/bottom"),),
+        ),
+        NamedRegion(
+            "Surface",
+            (LogicalEntityRef("face:bottom"),),
+        ),
+    )
     assert window._apply_session_delta(
-        window.session.replace_named_regions(regions)
+        window.session.replace_named_regions(solid_regions)
     )
     node_regions, edge_regions, face_regions, line_regions = (
         window._supported_load_regions()
     )
-    assert "NodeSet" in node_regions
+    assert node_regions == [
+        "BOTTOM",
+        "TOP",
+        "OUTER",
+        "EdgeSet",
+        "NodeSet",
+        "Surface",
+    ]
     assert edge_regions == []
-    assert face_regions == ["Surface"]
+    assert face_regions == ["BOTTOM", "TOP", "OUTER", "Surface"]
     assert line_regions == []
+    window.close()
+
+
+def test_unmeshed_rectangle_publishes_exact_catalog_region_choices():
+    _application()
+    window = FEMMainWindow()
+    window._set_native_geometry(
+        RectangleGeometry("catalog-plate", 2.0, 1.0),
+        "矩形",
+    )
+
+    assert window.document.model is None
+    assert window._analysis_region_names() == (
+        ["BOTTOM", "RIGHT", "TOP", "LEFT"],
+        ["BOTTOM", "RIGHT", "TOP", "LEFT"],
+        [],
+    )
+    assert window._analysis_element_regions() == [
+        RegionRef("element_set", "DOMAIN")
+    ]
     window.close()
 
 

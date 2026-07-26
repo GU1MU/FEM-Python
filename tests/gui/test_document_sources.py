@@ -6,29 +6,14 @@ from pathlib import Path
 import pytest
 
 from fem.application import (
-    FeatureRecord,
     ModelSession,
     NamedRegion,
     NativePart,
-    ProjectSnapshot,
-    RegionAssignment,
-    SectionDefinition,
     SessionSnapshot,
 )
-from fem_gui import document
+from fem.geometry import LogicalEntityRef
+from fem.geometry.recipes import DiskGeometry, RectangleGeometry
 from tests.helpers.model_builders import make_static_pull_truss_model
-
-
-def test_document_module_is_only_a_headless_compatibility_facade() -> None:
-    assert document.FEMDocument is SessionSnapshot
-    assert document.ModelSession is ModelSession
-    assert document.ProjectSnapshot is ProjectSnapshot
-    assert document.NativePart is NativePart
-    assert document.FeatureRecord is FeatureRecord
-    assert document.NamedRegion is NamedRegion
-    assert document.SectionDefinition is SectionDefinition
-    assert document.RegionAssignment is RegionAssignment
-    assert not hasattr(document, "WorkflowState")
 
 
 def test_session_snapshot_has_no_stored_legacy_currentness_flags() -> None:
@@ -44,11 +29,15 @@ def test_document_snapshot_is_frozen_and_does_not_expose_mutable_collections() -
     session.new_native_project()
     session.replace_geometry(
         (NativePart(),),
-        {"shape": "rectangle"},
-        feature_history=(FeatureRecord("Sketch-1", "sketch"),),
+        RectangleGeometry("Plate", 2.0, 1.0),
     )
     session.replace_named_regions(
-        (NamedRegion("Fixed", "edge", (1,)),)
+        (
+            NamedRegion(
+                "Fixed",
+                (LogicalEntityRef("edge:bottom"),),
+            ),
+        )
     )
     snapshot = session.snapshot()
 
@@ -57,8 +46,7 @@ def test_document_snapshot_is_frozen_and_does_not_expose_mutable_collections() -
     with pytest.raises(TypeError):
         snapshot.named_regions["Loaded"] = NamedRegion(
             "Loaded",
-            "edge",
-            (2,),
+            (LogicalEntityRef("edge:right"),),
         )
 
     assert isinstance(snapshot.parts, tuple)
@@ -94,7 +82,7 @@ def test_geometry_change_drops_the_previous_model_artifact() -> None:
     session.new_native_project()
     session.replace_geometry(
         (NativePart(),),
-        {"shape": "rectangle"},
+        RectangleGeometry("Plate", 2.0, 1.0),
     )
     task = session.prepare_mesh_generation()
     session.accept_generated_model(
@@ -105,8 +93,7 @@ def test_geometry_change_drops_the_previous_model_artifact() -> None:
 
     session.replace_geometry(
         (NativePart(),),
-        {"shape": "circle"},
-        feature_history=(FeatureRecord("Sketch-1", "sketch"),),
+        DiskGeometry("Disk", 1.0),
     )
     snapshot = session.snapshot()
 
@@ -115,7 +102,7 @@ def test_geometry_change_drops_the_previous_model_artifact() -> None:
     assert not snapshot.has_result
     assert not snapshot.mesh_current
     assert [feature.name for feature in snapshot.feature_history] == [
-        "Sketch-1"
+        "Base-1"
     ]
 
 

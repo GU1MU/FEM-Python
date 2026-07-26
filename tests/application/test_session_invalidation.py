@@ -12,7 +12,6 @@ from fem.application import (
     BeamOrientation,
     ChangeKind,
     DefinitionRejected,
-    FeatureRecord,
     ModelSession,
     NamedRegion,
     NativePart,
@@ -22,14 +21,9 @@ from fem.application import (
 )
 from fem.core.model import (
     AnalysisStep,
-    DisplacementConstraint,
-    EdgeLoad,
     ElementSet,
     GravityLoad,
-    LineLoad,
     MaterialDefinition,
-    NodalLoad,
-    SurfaceLoad,
 )
 from fem.geometry.recipes import (
     BooleanGeometry,
@@ -37,11 +31,18 @@ from fem.geometry.recipes import (
     MovedGeometry,
     RectangleGeometry,
 )
+from fem.geometry import LogicalEntityRef
+from fem.geometry.recipe_topology import describe_recipe_topology
 from fem.mesh.settings import LocalMeshControl, MeshSettings
 from tests.helpers.preflight_builders import passing_preflight_report
 
 
 _FIXTURES = Path(__file__).parents[1] / "fixtures" / "inp"
+
+
+def _first_reference(recipe, kind: str) -> LogicalEntityRef:
+    entity = describe_recipe_topology(recipe).entities_of(kind)[0]
+    return LogicalEntityRef(entity.logical_id)
 
 
 def _model(*step_names: str) -> SimpleNamespace:
@@ -71,19 +72,20 @@ def _model(*step_names: str) -> SimpleNamespace:
 def _session_with_artifacts() -> ModelSession:
     session = ModelSession()
     session.new_native_project()
+    recipe = BoxGeometry("Box", 1.0, 1.0, 1.0)
     session.replace_geometry(
         (NativePart(),),
-        {"kind": "box"},
-        feature_history=(FeatureRecord("Base-1", "base"),),
+        recipe,
     )
     session.replace_named_regions(
-        (NamedRegion("Region-A", "body", (1,)),)
+        (NamedRegion("Region-A", (_first_reference(recipe, "body"),)),)
     )
     session.replace_mesh_settings(
         MeshSettings(
             1.0,
-            local_size=0.25,
-            local_controls=(LocalMeshControl("edge", 1, 0.2),),
+            local_controls=(
+                LocalMeshControl(_first_reference(recipe, "edge"), 0.2),
+            ),
         )
     )
     session.replace_model_definitions(
@@ -136,16 +138,16 @@ def _session_with_exact_geometry_artifacts(recipe) -> ModelSession:
     session.replace_geometry(
         (NativePart(),),
         recipe,
-        feature_history=(FeatureRecord("Base-1", "base"),),
     )
     session.replace_named_regions(
-        (NamedRegion("Region-A", "body", (1,)),)
+        (NamedRegion("Region-A", (_first_reference(recipe, "body"),)),)
     )
     session.replace_mesh_settings(
         MeshSettings(
             1.0,
-            local_size=0.25,
-            local_controls=(LocalMeshControl("edge", 1, 0.2),),
+            local_controls=(
+                LocalMeshControl(_first_reference(recipe, "edge"), 0.2),
+            ),
         )
     )
     session.replace_model_definitions(
@@ -187,11 +189,10 @@ def test_topology_compatible_geometry_edit_preserves_inputs_and_drops_artifacts(
         ChangeKind.DISPLAYED_RESULT,
     }
     assert snapshot.named_regions["Region-A"] == NamedRegion(
-        "Region-A", "body", (1,)
+        "Region-A", (LogicalEntityRef("body:domain"),)
     )
-    assert snapshot.mesh_settings.local_size == 0.25
     assert snapshot.mesh_settings.local_controls == (
-        LocalMeshControl("edge", 1, 0.2),
+        LocalMeshControl(LogicalEntityRef("edge:bottom"), 0.2),
     )
     assert snapshot.assignments == (RegionAssignment("Solid", "Region-A"),)
     assert tuple(step.name for step in snapshot.steps) == ("Step-A",)
@@ -249,20 +250,99 @@ def test_topology_incompatible_geometry_edit_clears_dependent_inputs(
         ChangeKind.RUNS,
         ChangeKind.DISPLAYED_RESULT,
     }
-    assert snapshot.mesh_settings.local_size is None
     assert snapshot.mesh_settings.local_controls == ()
     assert not snapshot.named_regions
     assert snapshot.assignments == ()
-    assert snapshot.steps == ()
+    assert tuple(step.name for step in snapshot.steps) == ("Step-A",)
     assert snapshot.artifact is None
+
+
+def test_topology_change_preserves_only_geometry_independent_steps() -> None:
+    session = ModelSession()
+    session.new_native_project()
+    recipe = BoxGeometry("Box", 2.0, 1.0, 0.5)
+    region = NamedRegion(
+        "Region-A",
+        (_first_reference(recipe, "body"),),
+    )
+    global_gravity = AnalysisStep(
+        "Global Gravity",
+        gravity_loads=(GravityLoad((0.0, -9.81, 0.0)),),
+    )
+    empty = AnalysisStep("Empty")
+    region_gravity = AnalysisStep(
+        "Region Gravity",
+        gravity_loads=(
+            GravityLoad((0.0, -9.81, 0.0), "Region-A"),
+        ),
+    )
+    session.replace_geometry((NativePart(),), recipe)
+    session.replace_named_regions((region,))
+    session.replace_mesh_settings(
+        MeshSettings(
+            1.0,
+            local_controls=(
+                LocalMeshControl(_first_reference(recipe, "edge"), 0.2),
+            ),
+        )
+    )
+    session.replace_model_definitions(
+        (MaterialDefinition("Steel", {"E": 1.0}),),
+        (SectionDefinition("Solid", "Steel"),),
+        (RegionAssignment("Solid", "Region-A"),),
+        (empty, global_gravity, region_gravity),
+    )
+    before = session.snapshot()
+
+    delta = session.replace_geometry(
+        (NativePart(),),
+        RectangleGeometry("Plate", 3.0, 2.0),
+    )
+    after = session.snapshot()
+
+    assert delta.session_revision == before.session_revision + 1
+    assert delta.changed == {
+        ChangeKind.PROJECT_INPUTS,
+        ChangeKind.GEOMETRY,
+        ChangeKind.MESH_SETTINGS,
+        ChangeKind.NAMED_REGIONS,
+        ChangeKind.DEFINITIONS,
+        ChangeKind.MODEL,
+        ChangeKind.VALIDATIONS,
+        ChangeKind.RUNS,
+        ChangeKind.DISPLAYED_RESULT,
+    }
+    assert delta.invalidated == {
+        ArtifactKind.MODEL,
+        ArtifactKind.VALIDATIONS,
+        ArtifactKind.RUNS,
+        ArtifactKind.RESULTS,
+        ArtifactKind.DISPLAYED_RESULT,
+    }
+    assert after.session_revision == before.session_revision + 1
+    assert after.project_revision == before.project_revision + 1
+    assert after.mesh_input_revision == before.mesh_input_revision + 1
+    assert after.model_revision == before.model_revision + 1
+    assert after.materials == before.materials
+    assert after.sections == before.sections
+    assert after.steps == (empty, global_gravity)
+    assert after.assignments == ()
+    assert not after.named_regions
+    assert after.mesh_settings.local_controls == ()
 
 
 @pytest.mark.parametrize(
     "operation",
     [
-        lambda session: session.replace_mesh_settings({"size": 0.25}),
+        lambda session: session.replace_mesh_settings(MeshSettings(0.25)),
         lambda session: session.replace_named_regions(
-            (NamedRegion("Region-A", "body", (1, 2)),)
+            (
+                session.snapshot().named_regions["Region-A"],
+                NamedRegion(
+                    "Region-B",
+                    (LogicalEntityRef("point:bottom-front-left"),),
+                ),
+            )
         ),
         lambda session: session.clear_generated_model(),
     ],
@@ -400,28 +480,24 @@ def test_parallel_orientation_rejection_preserves_all_accepted_state() -> None:
 def test_clear_geometry_removes_all_topology_dependent_inputs() -> None:
     session = ModelSession()
     session.new_native_project()
+    recipe = BoxGeometry("Box", 1.0, 1.0, 1.0)
     session.replace_geometry(
         (NativePart(),),
-        {"kind": "box"},
-        feature_history=(FeatureRecord("Base-1", "base"),),
+        recipe,
     )
     session.replace_named_regions(
-        (NamedRegion("Region-A", "body", (1,)),)
+        (NamedRegion("Region-A", (_first_reference(recipe, "body"),)),)
     )
     session.replace_mesh_settings(
         MeshSettings(
             1.0,
-            local_size=0.25,
-            local_controls=(LocalMeshControl("edge", 1, 0.2),),
+            local_controls=(
+                LocalMeshControl(_first_reference(recipe, "edge"), 0.2),
+            ),
         )
     )
     step = AnalysisStep(
         "Step-A",
-        boundaries=(DisplacementConstraint("Region-A", 1, 1),),
-        cloads=(NodalLoad("Region-A", 1, 1.0),),
-        edge_loads=(EdgeLoad("Region-A", (1.0, 0.0)),),
-        surface_loads=(SurfaceLoad("Region-A", (1.0, 0.0)),),
-        line_loads=(LineLoad("Region-A", (1.0, 0.0, 0.0)),),
         gravity_loads=(GravityLoad((0.0, -9.81), "Region-A"),),
     )
     session.replace_model_definitions(
@@ -438,7 +514,6 @@ def test_clear_geometry_removes_all_topology_dependent_inputs() -> None:
     assert snapshot.geometry_recipe is None
     assert snapshot.feature_history == ()
     assert snapshot.mesh_settings.size == 1.0
-    assert snapshot.mesh_settings.local_size is None
     assert snapshot.mesh_settings.local_controls == ()
     assert not snapshot.named_regions
     assert snapshot.assignments == ()
@@ -448,7 +523,9 @@ def test_clear_geometry_removes_all_topology_dependent_inputs() -> None:
     assert not snapshot.runs
     assert snapshot.displayed_result is None
 
-    session.replace_geometry((), {"kind": "new-box"})
+    session.replace_geometry(
+        (), BoxGeometry("New Box", 2.0, 1.0, 1.0)
+    )
     recreated = session.snapshot()
     assert recreated.parts == (NativePart(),)
     assert not recreated.named_regions
@@ -459,17 +536,13 @@ def test_clear_geometry_removes_all_topology_dependent_inputs() -> None:
 def test_named_region_rename_updates_every_reference_atomically() -> None:
     session = ModelSession()
     session.new_native_project()
-    session.replace_geometry((NativePart(),), {"kind": "box"})
+    recipe = BoxGeometry("Box", 1.0, 1.0, 1.0)
+    session.replace_geometry((NativePart(),), recipe)
     session.replace_named_regions(
-        (NamedRegion("Region-A", "body", (1,)),)
+        (NamedRegion("Region-A", (_first_reference(recipe, "body"),)),)
     )
     step = AnalysisStep(
         "Step-A",
-        boundaries=(DisplacementConstraint("Region-A", 1, 1),),
-        cloads=(NodalLoad("Region-A", 1, 1.0),),
-        edge_loads=(EdgeLoad("Region-A", (1.0, 0.0)),),
-        surface_loads=(SurfaceLoad("Region-A", (1.0, 0.0)),),
-        line_loads=(LineLoad("Region-A", (1.0, 0.0, 0.0)),),
         gravity_loads=(GravityLoad((0.0, -9.81), "Region-A"),),
     )
     session.replace_model_definitions(
@@ -480,7 +553,7 @@ def test_named_region_rename_updates_every_reference_atomically() -> None:
     )
 
     session.replace_named_regions(
-        (NamedRegion("Region-B", "body", (1,)),),
+        (NamedRegion("Region-B", (_first_reference(recipe, "body"),)),),
         renames={"Region-A": "Region-B"},
     )
     snapshot = session.snapshot()
@@ -488,20 +561,16 @@ def test_named_region_rename_updates_every_reference_atomically() -> None:
 
     assert tuple(snapshot.named_regions) == ("Region-B",)
     assert snapshot.assignments[0].region_name == "Region-B"
-    assert renamed_step.boundaries[0].target == "Region-B"
-    assert renamed_step.cloads[0].target == "Region-B"
-    assert renamed_step.edge_loads[0].edge == "Region-B"
-    assert renamed_step.surface_loads[0].surface == "Region-B"
-    assert renamed_step.line_loads[0].target == "Region-B"
     assert renamed_step.gravity_loads[0].target == "Region-B"
 
 
 def test_removing_a_referenced_named_region_is_rejected_without_side_effects() -> None:
     session = ModelSession()
     session.new_native_project()
-    session.replace_geometry((NativePart(),), {"kind": "box"})
+    recipe = BoxGeometry("Box", 1.0, 1.0, 1.0)
+    session.replace_geometry((NativePart(),), recipe)
     session.replace_named_regions(
-        (NamedRegion("Region-A", "body", (1,)),)
+        (NamedRegion("Region-A", (_first_reference(recipe, "body"),)),)
     )
     session.replace_model_definitions(
         (MaterialDefinition("Steel", {}),),
@@ -527,9 +596,13 @@ def test_snapshots_and_task_inputs_do_not_expose_authoritative_mutable_objects()
     snapshot.model.materials["Steel"].properties["E"] = 99.0
     snapshot.sections[0].properties["tag"] = "changed"
     with pytest.raises(FrozenInstanceError):
-        snapshot.named_regions["Region-A"].entity_ids += (99,)
+        snapshot.named_regions["Region-A"].references += (
+            LogicalEntityRef("body:other"),
+        )
     with pytest.raises(TypeError):
-        snapshot.named_regions["Other"] = NamedRegion("Other", "body", ())
+        snapshot.named_regions["Other"] = NamedRegion(
+            "Other", (LogicalEntityRef("body:domain"),)
+        )
 
     validation = session.prepare_validation("Step-A")
     validation.model.materials["Steel"].properties["E"] = 77.0
@@ -537,4 +610,6 @@ def test_snapshots_and_task_inputs_do_not_expose_authoritative_mutable_objects()
     fresh = session.snapshot()
     assert fresh.model.materials["Steel"].properties["E"] == 1.0
     assert "tag" not in fresh.sections[0].properties
-    assert fresh.named_regions["Region-A"].entity_ids == (1,)
+    assert fresh.named_regions["Region-A"].references == (
+        LogicalEntityRef("body:domain"),
+    )

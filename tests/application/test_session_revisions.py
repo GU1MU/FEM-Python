@@ -14,6 +14,8 @@ from fem.application import (
     SectionDefinition,
 )
 from fem.core.model import AnalysisStep, MaterialDefinition
+from fem.geometry.recipes import BoxGeometry
+from fem.mesh.settings import MeshSettings
 from tests.helpers.preflight_builders import passing_preflight_report
 
 
@@ -31,7 +33,9 @@ def _model(*step_names: str) -> SimpleNamespace:
 def _native_session(*step_names: str) -> ModelSession:
     session = ModelSession()
     session.new_native_project()
-    session.replace_geometry((NativePart(),), {"kind": "box"})
+    session.replace_geometry(
+        (NativePart(),), BoxGeometry("Box", 1.0, 1.0, 1.0)
+    )
     session.replace_model_definitions(
         (), (), (), tuple(AnalysisStep(name) for name in step_names)
     )
@@ -40,6 +44,32 @@ def _native_session(*step_names: str) -> ModelSession:
         task.token, _model(*step_names)
     ).accepted
     return session
+
+
+def test_can_save_requires_an_open_native_project_with_geometry() -> None:
+    session = ModelSession()
+
+    assert not session.can_save
+    assert not session.snapshot().can_save
+
+    import_task = session.prepare_import(Path("model.inp"))
+    assert session.accept_imported_model(
+        import_task.token,
+        _model(),
+    ).accepted
+    assert not session.can_save
+    assert not session.snapshot().can_save
+
+    session.close()
+    session.new_native_project()
+    assert not session.can_save
+    assert not session.snapshot().can_save
+
+    session.replace_geometry(
+        (NativePart(),), BoxGeometry("Box", 1.0, 1.0, 1.0)
+    )
+    assert session.can_save
+    assert session.snapshot().can_save
 
 
 def test_domain_revisions_advance_only_for_their_semantics() -> None:
@@ -52,7 +82,9 @@ def test_domain_revisions_advance_only_for_their_semantics() -> None:
     assert opened_snapshot.session_id != first_id
     assert not opened_snapshot.dirty
 
-    geometry = session.replace_geometry((NativePart(),), {"kind": "box"})
+    geometry = session.replace_geometry(
+        (NativePart(),), BoxGeometry("Box", 1.0, 1.0, 1.0)
+    )
     after_geometry = session.snapshot()
     assert geometry.session_revision == opened.session_revision + 1
     assert after_geometry.project_revision == opened_snapshot.project_revision + 1
@@ -132,7 +164,9 @@ def test_new_close_and_snapshot_replace_change_session_identity() -> None:
 def test_successful_save_only_marks_its_project_revision_clean() -> None:
     session = ModelSession()
     session.new_native_project()
-    session.replace_geometry((NativePart(),), {"kind": "box"})
+    session.replace_geometry(
+        (NativePart(),), BoxGeometry("Box", 1.0, 1.0, 1.0)
+    )
     prepared = session.prepare_project_save()
     project_revision = session.project_revision
     before_session_revision = session.session_revision
@@ -152,9 +186,11 @@ def test_successful_save_only_marks_its_project_revision_clean() -> None:
 def test_save_completion_is_stale_if_inputs_changed() -> None:
     session = ModelSession()
     session.new_native_project()
-    session.replace_geometry((NativePart(),), {"kind": "box"})
+    session.replace_geometry(
+        (NativePart(),), BoxGeometry("Box", 1.0, 1.0, 1.0)
+    )
     prepared = session.prepare_project_save()
-    session.replace_mesh_settings({"size": 0.5})
+    session.replace_mesh_settings(MeshSettings(0.5))
     before = session.snapshot()
 
     delta = session.accept_project_saved(
@@ -176,7 +212,7 @@ def test_invalid_snapshot_install_is_atomic() -> None:
         source_kind="native",
         source_path=Path("invalid.femproj"),
         parts=(NativePart(),),
-        geometry_recipe={"kind": "box"},
+        geometry_recipe=BoxGeometry("Box", 1.0, 1.0, 1.0),
         material_definitions=(MaterialDefinition("Steel", {}),),
         section_definitions=(SectionDefinition("Solid", "Missing"),),
         region_assignments=(RegionAssignment("Solid", "All"),),

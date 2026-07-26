@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QLabel, QStackedLayout, QVBoxLayout, QWidget
 
 from fem.application import RegionRef
 from fem.boundary.step import boundary_for_step, get_step
+from fem.geometry import LogicalEntityRef, logical_ref_sort_key
 from fem.post.stress import dispatch, field
 from ..preprocessing import GeometryPreview
 from ..viewport_background import ViewportBackgroundSettings
@@ -100,18 +101,23 @@ def is_offscreen_environment() -> bool:
     ).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _geometry_edge_polydata(pyvista, points: np.ndarray, preview: GeometryPreview):
+def _geometry_edge_polydata(
+    pyvista,
+    points: np.ndarray,
+    preview: GeometryPreview,
+    pick_ids: tuple[int, ...],
+):
     """Build line-only PolyData so logical edge ids match VTK cells exactly."""
+    if len(pick_ids) != len(preview.edges):
+        raise ValueError("edge pick tokens 必须与 display cells 数量一致")
     line_cells = np.hstack(
         [np.asarray((len(edge), *edge), dtype=np.int64) for edge in preview.edges]
     )
     edge_mesh = pyvista.PolyData()
     edge_mesh.points = points
     edge_mesh.lines = line_cells
-    edge_mesh.cell_data["geometry_entity_id"] = np.asarray(
-        preview.edge_ids
-        if len(preview.edge_ids) == len(preview.edges)
-        else (0,) * len(preview.edges),
+    edge_mesh.cell_data["geometry_pick_id"] = np.asarray(
+        pick_ids,
         dtype=np.int64,
     )
     edge_mesh.set_active_scalars(None)
@@ -122,17 +128,15 @@ def _geometry_point_polydata(
     pyvista,
     points: np.ndarray,
     preview: GeometryPreview,
+    pick_ids: tuple[int, ...],
 ):
     """Build pickable points from logical vertices, excluding display samples."""
-    point_ids = np.asarray(
-        preview.point_ids
-        if len(preview.point_ids) == len(points)
-        else (0,) * len(points),
-        dtype=np.int64,
-    )
+    if len(pick_ids) != len(points):
+        raise ValueError("point pick tokens 必须与 display points 数量一致")
+    point_ids = np.asarray(pick_ids, dtype=np.int64)
     selectable = point_ids > 0
     point_mesh = pyvista.PolyData(points[selectable])
-    point_mesh.point_data["geometry_entity_id"] = point_ids[selectable]
+    point_mesh.point_data["geometry_pick_id"] = point_ids[selectable]
     return point_mesh
 
 
@@ -140,16 +144,17 @@ def _geometry_surface_polydata(
     pyvista,
     points: np.ndarray,
     preview: GeometryPreview,
+    pick_ids: tuple[int, ...],
 ):
     """Triangulate display faces while preserving their logical geometry ids."""
+    if len(pick_ids) != len(preview.faces):
+        raise ValueError("face pick tokens 必须与 display cells 数量一致")
     face_cells = np.hstack(
         [np.asarray((len(face), *face), dtype=np.int64) for face in preview.faces]
     )
     surface = pyvista.PolyData(points, faces=face_cells)
-    surface.cell_data["geometry_entity_id"] = np.asarray(
-        preview.face_ids
-        if len(preview.face_ids) == len(preview.faces)
-        else (0,) * len(preview.faces),
+    surface.cell_data["geometry_pick_id"] = np.asarray(
+        pick_ids,
         dtype=np.int64,
     )
     surface = surface.triangulate()
@@ -162,7 +167,7 @@ class PickHit:
     """One resolved selectable object shared by hover and click."""
 
     kind: str
-    entity_id: int
+    pick_id: int
     dataset_name: str
     display_position: tuple[float, float]
     world_position: tuple[float, float, float]
@@ -191,6 +196,7 @@ class FEMViewport(QWidget):
     """维护网格、标注、选择、载荷与结果等独立 Actor。"""
 
     entityPicked = Signal(str, int)
+    geometryEntityPicked = Signal(object)
     selectionMissed = Signal(str)
     selectionConfirmed = Signal()
     selectionCancelled = Signal()
@@ -211,6 +217,15 @@ class FEMViewport(QWidget):
         self._geometry_preview_surface = None
         self._geometry_preview_edges = None
         self._geometry_preview_points = None
+        self._geometry_pick_to_ref: dict[int, LogicalEntityRef] = {}
+        self._geometry_ref_to_pick_ids: dict[
+            LogicalEntityRef,
+            tuple[int, ...],
+        ] = {}
+        self._geometry_face_pick_ids: tuple[int, ...] = ()
+        self._geometry_edge_pick_ids: tuple[int, ...] = ()
+        self._geometry_point_pick_ids: tuple[int, ...] = ()
+        self._geometry_body_pick_id = 0
         self._pick_grid = None
         self._pick_locators: dict[int, tuple[int, Any]] = {}
         self._result_data: ResultData | None = None
@@ -513,6 +528,12 @@ class FEMViewport(QWidget):
         self._geometry_preview_surface = None
         self._geometry_preview_edges = None
         self._geometry_preview_points = None
+        self._geometry_pick_to_ref.clear()
+        self._geometry_ref_to_pick_ids.clear()
+        self._geometry_face_pick_ids = ()
+        self._geometry_edge_pick_ids = ()
+        self._geometry_point_pick_ids = ()
+        self._geometry_body_pick_id = 0
         self._pick_grid = None
         self._pick_locators.clear()
         self._result_data = None
@@ -557,6 +578,12 @@ class FEMViewport(QWidget):
         self._geometry_preview_surface = None
         self._geometry_preview_edges = None
         self._geometry_preview_points = None
+        self._geometry_pick_to_ref.clear()
+        self._geometry_ref_to_pick_ids.clear()
+        self._geometry_face_pick_ids = ()
+        self._geometry_edge_pick_ids = ()
+        self._geometry_point_pick_ids = ()
+        self._geometry_body_pick_id = 0
         self._pick_grid = None
         self._pick_locators.clear()
         self._result_data = None
@@ -591,6 +618,7 @@ class FEMViewport(QWidget):
     def show_geometry_preview(self, preview: GeometryPreview) -> None:
         """Display CAD-like shaded geometry without creating FE elements."""
         self._geometry_preview = preview
+        self._install_geometry_pick_bindings(preview)
         if is_offscreen_environment():
             self._message.setText("几何预览已更新（当前环境未启用三维渲染）")
             self._stack.setCurrentWidget(self._message)
@@ -599,7 +627,12 @@ class FEMViewport(QWidget):
             return
         self._remove_all_layers(render=False)
         points = np.asarray(preview.points, dtype=float)
-        surface = _geometry_surface_polydata(_pyvista, points, preview)
+        surface = _geometry_surface_polydata(
+            _pyvista,
+            points,
+            preview,
+            self._geometry_face_pick_ids,
+        )
         self._geometry_preview_surface = surface
         self._actors["geometry_surface"] = self._plotter.add_mesh(
             surface,
@@ -611,7 +644,12 @@ class FEMViewport(QWidget):
             reset_camera=False,
         )
         if preview.edges:
-            edge_mesh = _geometry_edge_polydata(_pyvista, points, preview)
+            edge_mesh = _geometry_edge_polydata(
+                _pyvista,
+                points,
+                preview,
+                self._geometry_edge_pick_ids,
+            )
             self._geometry_preview_edges = edge_mesh
             self._actors["geometry_edges"] = self._plotter.add_mesh(
                 edge_mesh,
@@ -621,7 +659,12 @@ class FEMViewport(QWidget):
                 name="geometry_edges",
                 reset_camera=False,
             )
-        point_mesh = _geometry_point_polydata(_pyvista, points, preview)
+        point_mesh = _geometry_point_polydata(
+            _pyvista,
+            points,
+            preview,
+            self._geometry_point_pick_ids,
+        )
         self._geometry_preview_points = point_mesh
         if point_mesh.n_points:
             self._actors["geometry_points"] = self._plotter.add_mesh(
@@ -641,6 +684,51 @@ class FEMViewport(QWidget):
         self._clear_preselection(render=False)
         self._plotter.reset_camera()
         self._render()
+
+    def _install_geometry_pick_bindings(
+        self,
+        preview: GeometryPreview,
+    ) -> None:
+        pick_to_ref: dict[int, LogicalEntityRef] = {}
+        ref_to_pick_ids: dict[LogicalEntityRef, set[int]] = {}
+        next_pick_id = 1
+
+        def allocate(
+            logical_ids: tuple[str | None, ...],
+        ) -> tuple[int, ...]:
+            nonlocal next_pick_id
+            tokens: list[int] = []
+            for logical_id in logical_ids:
+                if logical_id is None:
+                    tokens.append(0)
+                    continue
+                reference = LogicalEntityRef(logical_id)
+                pick_id = next_pick_id
+                next_pick_id += 1
+                tokens.append(pick_id)
+                pick_to_ref[pick_id] = reference
+                ref_to_pick_ids.setdefault(reference, set()).add(pick_id)
+            return tuple(tokens)
+
+        self._geometry_point_pick_ids = allocate(
+            preview.point_logical_ids
+        )
+        self._geometry_edge_pick_ids = allocate(preview.edge_logical_ids)
+        self._geometry_face_pick_ids = allocate(preview.face_logical_ids)
+        if preview.body_logical_id is None:
+            self._geometry_body_pick_id = 0
+        else:
+            body_reference = LogicalEntityRef(preview.body_logical_id)
+            self._geometry_body_pick_id = next_pick_id
+            pick_to_ref[next_pick_id] = body_reference
+            ref_to_pick_ids.setdefault(body_reference, set()).add(
+                next_pick_id
+            )
+        self._geometry_pick_to_ref = pick_to_ref
+        self._geometry_ref_to_pick_ids = {
+            reference: tuple(sorted(pick_ids))
+            for reference, pick_ids in ref_to_pick_ids.items()
+        }
 
     def set_result_data(self, data: ResultData) -> None:
         self._result_data = data
@@ -675,31 +763,64 @@ class FEMViewport(QWidget):
         self._clear_preselection(render=False)
         self._render()
 
-    def highlight_geometry(self, kind: str, key: int) -> None:
-        """Highlight one logical preview point, edge, face, or the whole body."""
-        self.highlight_geometry_entities(kind, (key,))
+    def highlight_geometry(self, reference: LogicalEntityRef) -> None:
+        """Highlight one stable logical preview reference."""
+        self.highlight_geometry_entities((reference,))
 
     def highlight_geometry_entities(
         self,
-        kind: str,
-        keys: tuple[int, ...],
+        references: Iterable[LogicalEntityRef],
     ) -> None:
-        """Highlight one or more logical preview entities of the same kind."""
+        """Map logical refs back to every matching preview display cell."""
         self._remove_actor("geometry_selection")
         self._clear_beam_frame_preview(render=False)
+        raw_references = tuple(references)
+        if any(
+            type(reference) is not LogicalEntityRef
+            for reference in raw_references
+        ):
+            raise TypeError(
+                "geometry highlight 只接受 LogicalEntityRef"
+            )
+        canonical_refs = tuple(
+            sorted(
+                set(raw_references),
+                key=logical_ref_sort_key,
+            )
+        )
         if (
             self._plotter is None
             or self._geometry_preview is None
-            or not keys
+            or not canonical_refs
         ):
             return
-        entity_ids = tuple(sorted({int(key) for key in keys}))
+        kinds = {reference.kind for reference in canonical_refs}
+        if len(kinds) != 1:
+            raise ValueError("geometry highlight 只能包含同一种实体类型")
+        kind = f"geometry_{canonical_refs[0].kind}"
+        pick_ids = tuple(
+            sorted(
+                {
+                    pick_id
+                    for reference in canonical_refs
+                    for pick_id in self._geometry_ref_to_pick_ids.get(
+                        reference,
+                        (),
+                    )
+                }
+            )
+        )
+        if not pick_ids:
+            return
         if kind == "geometry_point" and self._geometry_preview_points is not None:
             ids = np.asarray(
-                self._geometry_preview_points.point_data["geometry_entity_id"],
+                self._geometry_preview_points.point_data["geometry_pick_id"],
                 dtype=np.int64,
             )
-            indices = tuple(int(index) for index in np.flatnonzero(np.isin(ids, entity_ids)))
+            indices = tuple(
+                int(index)
+                for index in np.flatnonzero(np.isin(ids, pick_ids))
+            )
             if not indices:
                 return
             data = _pyvista.PolyData(
@@ -711,20 +832,20 @@ class FEMViewport(QWidget):
             kwargs = {"point_size": 13, "render_points_as_spheres": True}
         elif kind == "geometry_edge" and self._geometry_preview_edges is not None:
             ids = np.asarray(
-                self._geometry_preview_edges.cell_data["geometry_entity_id"],
+                self._geometry_preview_edges.cell_data["geometry_pick_id"],
                 dtype=np.int64,
             )
-            cells = np.flatnonzero(np.isin(ids, entity_ids))
+            cells = np.flatnonzero(np.isin(ids, pick_ids))
             if not len(cells):
                 return
             data = self._geometry_preview_edges.extract_cells(cells)
             kwargs = {"line_width": 5}
         elif kind == "geometry_face" and self._geometry_preview_surface is not None:
             ids = np.asarray(
-                self._geometry_preview_surface.cell_data["geometry_entity_id"],
+                self._geometry_preview_surface.cell_data["geometry_pick_id"],
                 dtype=np.int64,
             )
-            cells = np.flatnonzero(np.isin(ids, entity_ids))
+            cells = np.flatnonzero(np.isin(ids, pick_ids))
             if not len(cells):
                 return
             data = self._geometry_preview_surface.extract_cells(cells)
@@ -2229,16 +2350,36 @@ class FEMViewport(QWidget):
             return
         logging.debug(
             "viewport pick mode=%s dataset=%s vtk_point_id=%s "
-            "vtk_cell_id=%s entity_id=%s world=%s display=%s",
+            "vtk_cell_id=%s pick_id=%s world=%s display=%s",
             hit.kind,
             hit.dataset_name,
             hit.vtk_point_id,
             hit.vtk_cell_id,
-            hit.entity_id,
+            hit.pick_id,
             hit.world_position,
             hit.display_position,
         )
-        self.entityPicked.emit(hit.kind, hit.entity_id)
+        if hit.kind.startswith("geometry_"):
+            reference = self._geometry_pick_to_ref.get(hit.pick_id)
+            if reference is None:
+                self.selectionMissed.emit(self._selection_mode)
+                return
+            if hit.kind != f"geometry_{reference.kind}":
+                raise ValueError(
+                    "geometry pick kind 与 logical reference 不一致"
+                )
+            self.geometryEntityPicked.emit(reference)
+            return
+        if hit.kind not in {"node", "element"}:
+            raise ValueError(
+                "entityPicked 只接受 FEM node 或 element"
+            )
+        if isinstance(hit.pick_id, bool) or not isinstance(
+            hit.pick_id,
+            int,
+        ):
+            raise TypeError("FEM entity pick id 必须是整数")
+        self.entityPicked.emit(hit.kind, hit.pick_id)
 
     def _device_pixel_ratio(self) -> float:
         if self._plotter is None:
@@ -2274,7 +2415,7 @@ class FEMViewport(QWidget):
                 x,
                 y,
                 self._geometry_preview_points,
-                "geometry_entity_id",
+                "geometry_pick_id",
                 "geometry_points",
                 self._geometry_preview_surface,
                 8.0,
@@ -2286,14 +2427,17 @@ class FEMViewport(QWidget):
                 x,
                 y,
                 self._geometry_preview_surface,
-                "geometry_entity_id",
+                "geometry_pick_id",
                 "geometry_surface",
                 mode,
             )
-            if hit is not None and hit.entity_id <= 0:
+            if hit is not None and hit.pick_id <= 0:
                 return None
             if hit is not None and mode == "geometry_body":
-                return replace(hit, entity_id=1)
+                body_pick_id = self._geometry_body_pick_id
+                if body_pick_id <= 0:
+                    return None
+                return replace(hit, pick_id=body_pick_id)
             return hit
         if mode == "node":
             return self._pick_screen_point(
@@ -2386,13 +2530,13 @@ class FEMViewport(QWidget):
         if (
             preview is None
             or dataset is None
-            or "geometry_entity_id" not in dataset.cell_data
+            or "geometry_pick_id" not in dataset.cell_data
         ):
             return None
         mouse = np.asarray((float(x), float(y)), dtype=float)
         threshold = float(tolerance) * self._device_pixel_ratio()
         points = np.asarray(preview.points, dtype=float)
-        ids = np.asarray(dataset.cell_data["geometry_entity_id"], dtype=np.int64)
+        ids = np.asarray(dataset.cell_data["geometry_pick_id"], dtype=np.int64)
         display_points = self._world_points_to_display(points)
         if display_points is None:
             return None
@@ -2625,9 +2769,9 @@ class FEMViewport(QWidget):
         kwargs: dict[str, Any] = {}
         if hit.kind == "geometry_point" and self._geometry_preview_points is not None:
             ids = np.asarray(
-                self._geometry_preview_points.point_data["geometry_entity_id"]
+                self._geometry_preview_points.point_data["geometry_pick_id"]
             )
-            indices = np.flatnonzero(ids == hit.entity_id)
+            indices = np.flatnonzero(ids == hit.pick_id)
             if len(indices):
                 data = _pyvista.PolyData(
                     np.asarray(self._geometry_preview_points.points)[indices]
@@ -2635,9 +2779,9 @@ class FEMViewport(QWidget):
                 kwargs = {"point_size": 11, "render_points_as_spheres": True}
         elif hit.kind == "geometry_edge" and self._geometry_preview_edges is not None:
             ids = np.asarray(
-                self._geometry_preview_edges.cell_data["geometry_entity_id"]
+                self._geometry_preview_edges.cell_data["geometry_pick_id"]
             )
-            cells = np.flatnonzero(ids == hit.entity_id)
+            cells = np.flatnonzero(ids == hit.pick_id)
             if len(cells):
                 data = self._geometry_preview_edges.extract_cells(cells)
                 kwargs = {"line_width": 4}
@@ -2646,21 +2790,21 @@ class FEMViewport(QWidget):
                 data = self._geometry_preview_surface
             else:
                 ids = np.asarray(
-                    self._geometry_preview_surface.cell_data["geometry_entity_id"]
+                    self._geometry_preview_surface.cell_data["geometry_pick_id"]
                 )
-                cells = np.flatnonzero(ids == hit.entity_id)
+                cells = np.flatnonzero(ids == hit.pick_id)
                 if len(cells):
                     data = self._geometry_preview_surface.extract_cells(cells)
             kwargs = {"opacity": 0.38}
         elif hit.kind == "node" and self._pick_grid is not None:
             ids = np.asarray(self._pick_grid.point_data["node_id"])
-            indices = np.flatnonzero(ids == hit.entity_id)
+            indices = np.flatnonzero(ids == hit.pick_id)
             if len(indices):
                 data = _pyvista.PolyData(np.asarray(self._pick_grid.points)[indices])
                 kwargs = {"point_size": 11, "render_points_as_spheres": True}
         elif hit.kind == "element" and self._pick_grid is not None:
             ids = np.asarray(self._pick_grid.cell_data["element_id"])
-            cells = np.flatnonzero(ids == hit.entity_id)
+            cells = np.flatnonzero(ids == hit.pick_id)
             if len(cells):
                 data = self._pick_grid.extract_cells(cells)
                 kwargs = {"style": "wireframe", "line_width": 2}

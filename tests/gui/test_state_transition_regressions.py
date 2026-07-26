@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 import os
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 from fem.application import (
+    ModelSession,
     NamedRegion,
     RegionAssignment,
     RunStatus,
@@ -21,7 +23,9 @@ from fem.core.model import (
     MaterialDefinition,
     NodalLoad,
 )
+from fem.geometry import LogicalEntityRef
 from fem.geometry.recipes import RectangleGeometry
+from fem.io.project import save_project
 from fem.mesh.settings import LocalMeshControl, MeshSettings
 from fem.solvers.static_linear import solve
 import fem_gui.main_window as main_window_module
@@ -145,9 +149,18 @@ def test_delete_and_recreate_geometry_remove_all_topology_references() -> None:
     assert window._apply_session_delta(
         window.session.replace_named_regions(
             (
-                NamedRegion("Domain", "body", (1,)),
-                NamedRegion("Fixed", "edge", (4,)),
-                NamedRegion("Loaded", "edge", (2,)),
+                NamedRegion(
+                    "SolidDomain",
+                    (LogicalEntityRef("body:domain"),),
+                ),
+                NamedRegion(
+                    "Fixed",
+                    (LogicalEntityRef("edge:left"),),
+                ),
+                NamedRegion(
+                    "Loaded",
+                    (LogicalEntityRef("edge:right"),),
+                ),
             )
         )
     )
@@ -155,8 +168,12 @@ def test_delete_and_recreate_geometry_remove_all_topology_references() -> None:
         window.session.replace_mesh_settings(
             MeshSettings(
                 0.5,
-                local_size=0.2,
-                local_controls=(LocalMeshControl("edge", 2, 0.1),),
+                local_controls=(
+                    LocalMeshControl(
+                        LogicalEntityRef("edge:right"),
+                        0.1,
+                    ),
+                ),
             )
         )
     )
@@ -169,7 +186,7 @@ def test_delete_and_recreate_geometry_remove_all_topology_references() -> None:
         window.session.replace_model_definitions(
             (MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3}),),
             (SectionDefinition("Section-1", "Steel"),),
-            (RegionAssignment("Section-1", "Domain"),),
+            (RegionAssignment("Section-1", "SolidDomain"),),
             (step,),
         )
     )
@@ -183,7 +200,7 @@ def test_delete_and_recreate_geometry_remove_all_topology_references() -> None:
     assert not deleted.named_regions
     assert deleted.region_assignments == ()
     assert deleted.analysis_definitions == ()
-    assert deleted.mesh_settings.local_size is None
+    assert not hasattr(deleted.mesh_settings, "local_size")
     assert deleted.mesh_settings.local_controls == ()
     assert deleted.artifact is None
     assert window.geometry is None
@@ -210,15 +227,36 @@ def test_named_region_change_invalidates_model_validation_runs_and_results() -> 
     )
     assert window._apply_session_delta(
         window.session.replace_named_regions(
-            (NamedRegion("Old", "edge", (1,)),)
+            (
+                NamedRegion(
+                    "Old",
+                    (LogicalEntityRef("edge:bottom"),),
+                ),
+                NamedRegion(
+                    "FIXED",
+                    (LogicalEntityRef("edge:left"),),
+                ),
+                NamedRegion(
+                    "TIP",
+                    (LogicalEntityRef("edge:right"),),
+                ),
+            )
         )
+    )
+    step = AnalysisStep(
+        "pull",
+        boundaries=(
+            DisplacementConstraint("FIXED", 1, 3, 0.0),
+            DisplacementConstraint("TIP", 2, 3, 0.0),
+        ),
+        cloads=(NodalLoad("TIP", 1, 100.0),),
     )
     assert window._apply_session_delta(
         window.session.replace_model_definitions(
             (),
             (),
             (),
-            tuple(make_static_pull_truss_model().steps),
+            (step,),
         )
     )
     task = window.session.prepare_mesh_generation()
@@ -231,11 +269,28 @@ def test_named_region_change_invalidates_model_validation_runs_and_results() -> 
 
     assert window._apply_session_delta(
         window.session.replace_named_regions(
-            (NamedRegion("Changed", "edge", (2,)),)
+            (
+                NamedRegion(
+                    "Changed",
+                    (LogicalEntityRef("edge:right"),),
+                ),
+                NamedRegion(
+                    "FIXED",
+                    (LogicalEntityRef("edge:left"),),
+                ),
+                NamedRegion(
+                    "TIP",
+                    (LogicalEntityRef("edge:right"),),
+                ),
+            )
         )
     )
 
-    assert tuple(window.document.named_regions) == ("Changed",)
+    assert set(window.document.named_regions) == {
+        "Changed",
+        "FIXED",
+        "TIP",
+    }
     assert window.document.artifact is None
     assert not window.document.validations
     assert not window.document.runs
@@ -449,18 +504,57 @@ def test_stale_result_projection_callback_cannot_replace_current_cache() -> None
     window.close()
 
 
-def test_corrupt_project_open_preserves_session_tree_and_viewport(
+@pytest.mark.parametrize(
+    "failure_case",
+    (
+        "corrupt-v1-json",
+        "tampered-v2-topology",
+        "v1-migration",
+    ),
+)
+def test_failed_project_open_preserves_session_tree_and_viewport(
+    failure_case,
     tmp_path,
     monkeypatch,
 ) -> None:
     window = _new_window()
     _install_imported(window)
     _succeed_run(window)
-    corrupt = tmp_path / "corrupt.femproj"
-    corrupt.write_text('{"schema": 1, "geometry": ', encoding="utf-8")
+    corrupt = tmp_path / f"{failure_case}.femproj"
+    if failure_case == "corrupt-v1-json":
+        corrupt.write_text(
+            '{"schema": 1, "geometry": ',
+            encoding="utf-8",
+        )
+    elif failure_case == "tampered-v2-topology":
+        authoring = ModelSession()
+        authoring.new_native_project()
+        authoring.replace_geometry(
+            authoring.snapshot().parts,
+            RectangleGeometry("Plate", 2.0, 1.0),
+        )
+        save_project(corrupt, authoring.prepare_project_save())
+        payload = json.loads(corrupt.read_text(encoding="utf-8"))
+        payload["project"]["authoring"]["logical_topology"][
+            "signature"
+        ]["entities"][0]["logical_id"] = "point:tampered"
+        corrupt.write_text(
+            json.dumps(payload, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    else:
+        fixture = (
+            Path(__file__).parents[1]
+            / "fixtures"
+            / "femproj"
+            / "v1"
+            / "line_load_unsupported.femproj"
+        )
+        corrupt.write_bytes(fixture.read_bytes())
     errors: list[tuple[str, str]] = []
     before_document = window.document
     before = _projection_signature(window)
+    before_status = window.status_panel.state_label.text()
 
     monkeypatch.setattr(
         main_window_module.QFileDialog,
@@ -479,5 +573,11 @@ def test_corrupt_project_open_preserves_session_tree_and_viewport(
     assert errors
     assert window.document is before_document
     assert _projection_signature(window) == before
+    assert window.status_panel.state_label.text() == before_status
+    assert "下次显式保存" not in window.status_panel.state_label.text()
+    assert "schema 2" not in window.status_panel.state_label.text()
+    assert "compatibility migration" not in (
+        window.status_panel.state_label.text()
+    )
     assert window.actions["query"].isEnabled()
     window.close()

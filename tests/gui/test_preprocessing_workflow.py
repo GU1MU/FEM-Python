@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import os
 from time import monotonic
 
@@ -13,7 +12,9 @@ import pytest
 
 from fem.application import NamedRegion
 from fem.application.preprocessing import generate_fem_model
+from fem.geometry import LogicalEntityRef
 from fem.geometry.recipe_topology import describe_recipe_topology
+from fem.mesh.settings import MeshSizeFalloff
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.mesh_quality import analyze_mesh
 from fem_gui.preprocessing import (
@@ -31,7 +32,6 @@ from fem_gui.preprocessing import (
     SketchCircle,
     SketchGeometry,
     SketchRectangle,
-    _validate_preview_topology,
     build_geometry_preview,
     supports_hexahedron,
 )
@@ -228,7 +228,13 @@ def test_plate_with_hole_imports_named_boundary_and_local_refinement() -> None:
         0.20,
         order=1,
         cell_shape="triangle",
-        local_size=0.04,
+        local_controls=(
+            LocalMeshControl(
+                LogicalEntityRef("edge:hole-loop"),
+                0.04,
+                MeshSizeFalloff("target_radius", 0.25, 2.0),
+            ),
+        ),
     )
     _set_native_mesh_inputs(window, recipe, settings)
 
@@ -324,23 +330,21 @@ def test_cylinder_preview_edge_mesh_contains_only_logical_line_cells() -> None:
         pyvista,
         np.asarray(preview.points, dtype=float),
         preview,
+        tuple(range(1, len(preview.edges) + 1)),
     )
 
     assert edge_mesh.n_cells == len(preview.edges)
-    assert len(edge_mesh.cell_data["geometry_entity_id"]) == len(preview.edges)
+    assert len(edge_mesh.cell_data["geometry_pick_id"]) == len(preview.edges)
     assert edge_mesh.active_scalars_name is None
 
 
 def test_box_preview_exposes_all_twelve_logical_edges() -> None:
     recipe = BoxGeometry("preview-box-edges", 2.0, 1.0, 0.5)
     preview = build_geometry_preview(recipe)
-    topology = describe_recipe_topology(recipe)
 
     assert len(preview.edges) == 12
-    assert preview.edge_ids == tuple(
-        topology.logical_index(logical_id)
-        for logical_id in preview.edge_logical_ids
-    )
+    assert all(logical_id is not None for logical_id in preview.edge_logical_ids)
+    assert len(set(preview.edge_logical_ids)) == 12
     assert all(len(edge) == 2 for edge in preview.edges)
 
 
@@ -354,7 +358,6 @@ def test_rigidly_transformed_box_keeps_hexahedron_authoring_support() -> None:
 def test_rectangle_preview_cells_follow_catalog_semantics() -> None:
     recipe = RectangleGeometry("semantic-rectangle", 2.0, 1.0)
     preview = build_geometry_preview(recipe)
-    topology = describe_recipe_topology(recipe)
     point_by_index = dict(enumerate(preview.point_logical_ids))
 
     expected_points = {
@@ -382,16 +385,12 @@ def test_rectangle_preview_cells_follow_catalog_semantics() -> None:
             strict=True,
         )
     } == expected_edges
-    assert preview.edge_ids == tuple(
-        topology.logical_index(logical_id)
-        for logical_id in preview.edge_logical_ids
-    )
+    assert all(logical_id is not None for logical_id in preview.edge_logical_ids)
 
 
 def test_box_preview_cells_follow_catalog_semantics() -> None:
     recipe = BoxGeometry("semantic-box", 2.0, 1.0, 0.5)
     preview = build_geometry_preview(recipe)
-    topology = describe_recipe_topology(recipe)
     point_by_index = dict(enumerate(preview.point_logical_ids))
 
     expected_points = {
@@ -502,31 +501,22 @@ def test_box_preview_cells_follow_catalog_semantics() -> None:
             strict=True,
         )
     } == expected_faces
-    for kind, ids, logical_ids in (
-        ("point", preview.point_ids, preview.point_logical_ids),
-        ("edge", preview.edge_ids, preview.edge_logical_ids),
-        ("face", preview.face_ids, preview.face_logical_ids),
+    for kind, logical_ids in (
+        ("point", preview.point_logical_ids),
+        ("edge", preview.edge_logical_ids),
+        ("face", preview.face_logical_ids),
     ):
-        assert ids == tuple(
-            topology.logical_index(logical_id)
-            for logical_id in logical_ids
-        ), kind
+        assert all(logical_id is not None for logical_id in logical_ids), kind
 
 
-def test_preview_validation_rejects_a_silent_semantic_id_swap() -> None:
-    recipe = RectangleGeometry("swapped-preview-ids", 2.0, 1.0)
-    preview = build_geometry_preview(recipe)
-    swapped = replace(
-        preview,
-        edge_ids=(
-            preview.edge_ids[1],
-            preview.edge_ids[0],
-            *preview.edge_ids[2:],
-        ),
-    )
-
-    with pytest.raises(RuntimeError, match=r"cell\[0\].*应映射为"):
-        _validate_preview_topology(recipe, swapped)
+def test_preview_rejects_cell_map_with_wrong_length() -> None:
+    with pytest.raises(ValueError, match="face_logical_ids"):
+        viewport_module.GeometryPreview(
+            points=((0.0, 0.0, 0.0),) * 3,
+            faces=((0, 1, 2),),
+            edges=(),
+            face_logical_ids=("face:front", "face:back"),
+        )
 
 
 def test_large_plate_with_small_hole_keeps_corner_identity() -> None:
@@ -539,7 +529,6 @@ def test_large_plate_with_small_hole_keeps_corner_identity() -> None:
         1.0,
     )
     preview = build_geometry_preview(recipe, segments=16)
-    topology = describe_recipe_topology(recipe)
     expected = {
         "point:bottom-left": (0.0, 0.0, 0.0),
         "point:bottom-right": (1000.0, 0.0, 0.0),
@@ -550,7 +539,6 @@ def test_large_plate_with_small_hole_keeps_corner_identity() -> None:
     for logical_id, coordinates in expected.items():
         index = preview.point_logical_ids.index(logical_id)
         assert preview.points[index] == pytest.approx(coordinates, abs=1.0e-9)
-        assert preview.point_ids[index] == topology.logical_index(logical_id)
 
 
 @pytest.mark.parametrize(
@@ -576,19 +564,20 @@ def test_large_plate_with_small_hole_keeps_corner_identity() -> None:
         ExtrudedGeometry(RectangleGeometry("catalog-extrude", 2.0, 1.0), 0.5),
     ),
 )
-def test_selectable_preview_ordinals_come_from_recipe_catalog(recipe) -> None:
+def test_selectable_preview_logical_ids_match_recipe_catalog(recipe) -> None:
     preview = build_geometry_preview(recipe, segments=16)
     topology = describe_recipe_topology(recipe)
 
-    for ids, logical_ids in (
-        (preview.point_ids, preview.point_logical_ids),
-        (preview.edge_ids, preview.edge_logical_ids),
-        (preview.face_ids, preview.face_logical_ids),
+    for logical_ids in (
+        preview.point_logical_ids,
+        preview.edge_logical_ids,
+        preview.face_logical_ids,
     ):
-        assert ids == tuple(
-            0 if logical_id is None else topology.logical_index(logical_id)
-            for logical_id in logical_ids
-        )
+        for logical_id in logical_ids:
+            if logical_id is None:
+                continue
+            assert topology.entity(logical_id).selectable
+    assert preview.body_logical_id == "body:domain"
 
 
 @pytest.mark.parametrize(
@@ -606,6 +595,7 @@ def test_curved_display_samples_are_not_selectable_cad_points(recipe) -> None:
         pyvista,
         np.asarray(preview.points, dtype=float),
         preview,
+        (0,) * len(preview.points),
     )
 
     assert point_mesh.n_points == 0
@@ -622,9 +612,10 @@ def test_unproven_boolean_preview_has_no_selectable_subentities() -> None:
 
     preview = build_geometry_preview(recipe)
 
-    assert not any(preview.point_ids)
-    assert not any(preview.edge_ids)
-    assert not any(preview.face_ids)
+    assert not any(preview.point_logical_ids)
+    assert not any(preview.edge_logical_ids)
+    assert not any(preview.face_logical_ids)
+    assert preview.body_logical_id is None
 
 
 def test_geometry_preview_never_exposes_internal_entity_ids_as_a_legend(
@@ -760,9 +751,19 @@ def test_extruded_face_named_region_reuses_the_resolved_cad_face_groups() -> Non
         MeshSettings(
             0.3,
             cell_shape="tetrahedron",
-            local_controls=(LocalMeshControl("face", 4, 0.15),),
+            local_controls=(
+                LocalMeshControl(
+                    LogicalEntityRef("face:side/right"),
+                    0.15,
+                ),
+            ),
         ),
-        named_regions=(NamedRegion("LoadedFace", "face", (4,)),),
+        named_regions=(
+            NamedRegion(
+                "LoadedFace",
+                (LogicalEntityRef("face:side/right"),),
+            ),
+        ),
     )
 
     assert "LoadedFace" in model.node_sets
@@ -789,8 +790,14 @@ def test_extruded_hole_keeps_inner_and_outer_side_face_ids_distinct() -> None:
         recipe,
         MeshSettings(0.3, cell_shape="tetrahedron"),
         named_regions=(
-            NamedRegion("HoleSide", "face", (3,)),
-            NamedRegion("OuterSide", "face", (4,)),
+            NamedRegion(
+                "HoleSide",
+                (LogicalEntityRef("face:side/hole-loop"),),
+            ),
+            NamedRegion(
+                "OuterSide",
+                (LogicalEntityRef("face:side/outer-loop"),),
+            ),
         ),
     )
 
@@ -808,7 +815,12 @@ def test_selected_geometry_edge_can_drive_local_mesh_refinement() -> None:
         recipe,
         MeshSettings(
             0.25,
-            local_controls=(LocalMeshControl("edge", 1, 0.05),),
+            local_controls=(
+                LocalMeshControl(
+                    LogicalEntityRef("edge:outer"),
+                    0.05,
+                ),
+            ),
         ),
     )
 
@@ -831,7 +843,12 @@ def test_generic_hole_inner_edge_local_control_increases_mesh_density() -> None:
         recipe,
         MeshSettings(
             0.25,
-            local_controls=(LocalMeshControl("edge", 1, 0.05),),
+            local_controls=(
+                LocalMeshControl(
+                    LogicalEntityRef("edge:hole-loop"),
+                    0.05,
+                ),
+            ),
         ),
     )
 

@@ -24,6 +24,12 @@ from .definitions import (
     normalize_model_definitions,
 )
 from .diagnostics import PreflightReport, internal_error_report
+from .feature_history import derive_feature_history
+from .project_validation import (
+    analysis_step_has_native_region_target,
+    analysis_steps_have_native_region_targets,
+    validate_native_project_inputs,
+)
 from .revisions import (
     ImportTaskSnapshot,
     MeshTaskSnapshot,
@@ -433,7 +439,11 @@ class ModelSession:
 
     @property
     def can_save(self) -> bool:
-        return self._is_open and self._source_kind == "native"
+        return (
+            self._is_open
+            and self._source_kind == "native"
+            and self._geometry_recipe is not None
+        )
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -527,7 +537,6 @@ class ModelSession:
         )
         geometry_recipe = deepcopy(detached.geometry_recipe)
         mesh_settings = deepcopy(detached.mesh_settings)
-        feature_history = deepcopy(detached.feature_history)
         named_regions = _regions_by_name(detached.named_regions)
         definitions = normalize_model_definitions(
             detached.material_definitions,
@@ -539,6 +548,42 @@ class ModelSession:
         sections = definitions.sections
         assignments = definitions.assignments
         steps = definitions.steps
+        if source_kind == "native":
+            feature_history = (
+                ()
+                if geometry_recipe is None
+                else derive_feature_history(geometry_recipe)
+            )
+            if tuple(detached.feature_history) != tuple(feature_history):
+                raise ValueError(
+                    "project feature_history is not the canonical projection "
+                    "derived from geometry_recipe"
+                )
+            if geometry_recipe is not None:
+                validate_native_project_inputs(
+                    geometry_recipe,
+                    mesh_settings,
+                    tuple(named_regions.values()),
+                    materials,
+                    sections,
+                    assignments,
+                    steps,
+                )
+            elif (
+                named_regions
+                or (
+                    mesh_settings is not None
+                    and bool(getattr(mesh_settings, "local_controls", ()))
+                )
+                or assignments
+                or analysis_steps_have_native_region_targets(steps)
+            ):
+                raise ValueError(
+                    "native project inputs cannot reference geometry before "
+                    "a geometry recipe exists"
+                )
+        else:
+            feature_history = deepcopy(detached.feature_history)
         model = deepcopy(detached.model)
         if model is not None:
             model = compile_model_definitions(
@@ -594,7 +639,6 @@ class ModelSession:
         parts: Iterable[NativePart],
         recipe: Any,
         *,
-        feature_history: Iterable[FeatureRecord] | None = None,
         expected_session_revision: int | None = None,
     ) -> SessionDelta:
         self._check_expected(expected_session_revision)
@@ -603,10 +647,8 @@ class ModelSession:
         owned_recipe = deepcopy(recipe)
         if owned_recipe is not None and not owned_parts:
             owned_parts = (NativePart(),)
-        owned_history = deepcopy(
-            self._feature_history
-            if feature_history is None
-            else tuple(feature_history)
+        owned_history = (
+            () if owned_recipe is None else derive_feature_history(owned_recipe)
         )
         preserve_references = can_preserve_logical_references(
             self._geometry_recipe,
@@ -617,17 +659,36 @@ class ModelSession:
             if preserve_references
             else _without_mesh_topology_references(self._mesh_settings)
         )
+        candidate_steps = (
+            self._steps
+            if preserve_references
+            else _without_geometry_dependent_steps(self._steps)
+        )
         mesh_settings_changed = mesh_settings != self._mesh_settings
         named_regions_changed = (
             not preserve_references and bool(self._named_regions)
         )
         definitions_changed = (
             not self._definitions_explicit
-            or (
-                not preserve_references
-                and bool(self._assignments or self._steps)
-            )
+            or (not preserve_references and bool(self._assignments))
+            or candidate_steps != self._steps
         )
+        candidate_regions = (
+            tuple(self._named_regions.values())
+            if preserve_references
+            else ()
+        )
+        candidate_assignments = self._assignments if preserve_references else ()
+        if owned_recipe is not None:
+            validate_native_project_inputs(
+                owned_recipe,
+                mesh_settings,
+                candidate_regions,
+                self._materials,
+                self._sections,
+                candidate_assignments,
+                candidate_steps,
+            )
 
         self._parts = owned_parts
         self._geometry_recipe = owned_recipe
@@ -636,7 +697,7 @@ class ModelSession:
         if not preserve_references:
             self._named_regions = {}
             self._assignments = ()
-            self._steps = ()
+            self._steps = candidate_steps
         self._definitions_explicit = True
         self._drop_model_state()
         self._increment_domain_revisions(project=True, mesh=True, model=True)
@@ -702,6 +763,22 @@ class ModelSession:
         self._check_expected(expected_session_revision)
         self._require_native()
         owned = deepcopy(settings)
+        if self._geometry_recipe is not None:
+            validate_native_project_inputs(
+                self._geometry_recipe,
+                owned,
+                tuple(self._named_regions.values()),
+                self._materials,
+                self._sections,
+                self._assignments,
+                self._steps,
+            )
+        elif owned is not None and bool(
+            getattr(owned, "local_controls", ())
+        ):
+            raise ValueError(
+                "local mesh controls require a geometry recipe"
+            )
         self._mesh_settings = owned
         self._drop_model_state()
         self._increment_domain_revisions(project=True, mesh=True, model=True)
@@ -768,6 +845,21 @@ class ModelSession:
                 "named region replacement would remove referenced regions: "
                 + ", ".join(removed_references)
             )
+        if self._geometry_recipe is None:
+            if owned:
+                raise ValueError(
+                    "named regions require a geometry recipe"
+                )
+        else:
+            validate_native_project_inputs(
+                self._geometry_recipe,
+                self._mesh_settings,
+                tuple(owned.values()),
+                self._materials,
+                self._sections,
+                assignments,
+                steps,
+            )
 
         self._named_regions = owned
         self._assignments = assignments
@@ -805,6 +897,26 @@ class ModelSession:
             assignments,
             steps,
         )
+        if self._source_kind == "native":
+            if self._geometry_recipe is None:
+                if (
+                    owned.assignments
+                    or analysis_steps_have_native_region_targets(owned.steps)
+                ):
+                    raise ValueError(
+                        "native region assignments and named Step targets "
+                        "require a geometry recipe"
+                    )
+            else:
+                validate_native_project_inputs(
+                    self._geometry_recipe,
+                    self._mesh_settings,
+                    tuple(self._named_regions.values()),
+                    owned.materials,
+                    owned.sections,
+                    owned.assignments,
+                    owned.steps,
+                )
 
         compiled_model = None
         previous_artifact = self._artifact
@@ -1919,8 +2031,6 @@ def _without_mesh_topology_references(settings: Any) -> Any:
     updates: dict[str, Any] = {}
     if hasattr(owned, "local_controls"):
         updates["local_controls"] = ()
-    if hasattr(owned, "local_size"):
-        updates["local_size"] = None
     if updates:
         try:
             return replace(owned, **updates)
@@ -1929,6 +2039,16 @@ def _without_mesh_topology_references(settings: Any) -> Any:
     if isinstance(owned, dict):
         if "local_controls" in owned:
             owned["local_controls"] = ()
-        if "local_size" in owned:
-            owned["local_size"] = None
     return owned
+
+
+def _without_geometry_dependent_steps(
+    steps: Iterable[Any],
+) -> tuple[Any, ...]:
+    """Keep analysis steps whose inputs do not depend on geometry regions."""
+
+    return tuple(
+        step
+        for step in steps
+        if not analysis_step_has_native_region_target(step)
+    )

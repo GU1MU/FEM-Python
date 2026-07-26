@@ -16,7 +16,8 @@ from fem.core.model import (
     NodeSet,
     Surface,
 )
-from fem.geometry.recipe_topology import describe_recipe_topology
+from fem.geometry.measurements import resolve_target_radius
+from fem.geometry.references import LogicalEntityRef
 from fem.geometry.recipes import (
     BooleanGeometry,
     BoxGeometry,
@@ -29,7 +30,6 @@ from fem.geometry.recipes import (
     PlateWithHoleGeometry,
     RectangleGeometry,
     RotatedGeometry,
-    SketchCircle,
     SketchGeometry,
     SketchRectangle,
     geometry_dimension,
@@ -44,6 +44,13 @@ from .recipe_compiler import (
     CompiledRecipeTopology,
     TopologyResolutionError,
     compile_recipe,
+)
+from .native_regions import (
+    CompiledDomainRegionSource,
+    LogicalReferencesRegionSource,
+    NativeRegionDescriptor,
+    RecipeRegionSource,
+    validate_native_authoring_context,
 )
 from .revisions import MeshTaskSnapshot
 
@@ -64,8 +71,7 @@ class RecipeTopologyResolver(Protocol):
         cad: Any,
         recipe: NativeGeometry,
         topology: CompiledRecipeTopology,
-        entity_kind: str,
-        entity_id: int,
+        reference: LogicalEntityRef,
     ) -> tuple[Any, ...]:
         """Resolve one logical entity to live CAD references."""
         ...
@@ -94,11 +100,10 @@ class LogicalRecipeTopologyResolver:
         cad: Any,
         recipe: NativeGeometry,
         topology: CompiledRecipeTopology,
-        entity_kind: str,
-        entity_id: int,
+        reference: LogicalEntityRef,
     ) -> tuple[Any, ...]:
         del cad, recipe
-        return topology.resolve(entity_kind, entity_id)
+        return topology.resolve(reference)
 
     def characteristic_size(self, recipe: NativeGeometry) -> float:
         if isinstance(recipe, BooleanGeometry):
@@ -165,6 +170,11 @@ def generate_fem_model(
         settings,
         named_regions,
     )
+    region_descriptors = validate_native_authoring_context(
+        recipe,
+        regions,
+        local_controls=mesh_settings.local_controls,
+    )
     topology_resolver = resolver or DEFAULT_TOPOLOGY_RESOLVER
 
     try:
@@ -197,61 +207,30 @@ def generate_fem_model(
                     topology_resolver,
                 )
 
-            entity_groups: dict[str, tuple[Any, ...]] = {
-                "DOMAIN": topology.domain,
-                **{name: tuple(entities) for name, entities in topology.groups.items()},
-            }
-            if topology.hole_boundary:
-                entity_groups.setdefault("HOLE", topology.hole_boundary)
-            seen_region_names: set[str] = set()
-            for region in regions:
-                region_name = str(getattr(region, "name", "")).strip()
-                if not region_name:
-                    raise ValueError("命名区域名称不能为空")
-                if region_name in entity_groups:
-                    raise ValueError(f"命名区域名称 {region_name!r} 与内建区域冲突")
-                if region_name in seen_region_names:
-                    raise ValueError(f"命名区域名称 {region_name!r} 重复")
-                seen_region_names.add(region_name)
-                entity_kind = getattr(region, "entity_kind", "")
-                entity_ids = tuple(getattr(region, "entity_ids", ()))
-                entities = _resolve_named_region(
+            entity_groups = {
+                descriptor.name: _resolve_region_descriptor(
                     cad,
                     recipe,
                     topology,
                     topology_resolver,
-                    entity_kind,
-                    entity_ids,
+                    descriptor,
                 )
-                if entities:
-                    entity_groups[region_name] = entities
+                for descriptor in region_descriptors
+            }
 
             mesh_size = mesh_settings.size
             refinements: list[Any] = []
-            if topology.hole_boundary and mesh_settings.local_size is not None:
-                hole_radius = _hole_radius(recipe)
-                if hole_radius is None:
-                    raise TopologyResolutionError("局部孔边尺寸要求可证明的圆孔半径")
-                distance = mesher.distance_field(
-                    **_distance_field_sources(topology.hole_boundary),
-                    sampling=100,
-                )
-                refinements.append(
-                    mesher.threshold_field(
-                        distance,
-                        size_min=mesh_settings.local_size,
-                        size_max=mesh_settings.size,
-                        dist_min=hole_radius * 0.25,
-                        dist_max=hole_radius * 2.0,
-                    )
-                )
             for control in mesh_settings.local_controls:
                 entities = topology_resolver.resolve(
                     cad,
                     recipe,
                     topology,
-                    control.entity_kind,
-                    control.entity_id,
+                    control.target,
+                )
+                scale = (
+                    mesh_settings.size
+                    if control.falloff.reference == "global_size"
+                    else resolve_target_radius(recipe, control.target)
                 )
                 distance = mesher.distance_field(
                     **_distance_field_sources(entities),
@@ -262,8 +241,8 @@ def generate_fem_model(
                         distance,
                         size_min=control.size,
                         size_max=mesh_settings.size,
-                        dist_min=0.0,
-                        dist_max=mesh_settings.size * 2.0,
+                        dist_min=scale * control.falloff.start_factor,
+                        dist_max=scale * control.falloff.end_factor,
                     )
                 )
             if refinements:
@@ -357,26 +336,43 @@ def _configure_hexahedral_mesh(
     mesher.transfinite_volume(topology.domain[0])
 
 
-def _resolve_named_region(
+def _resolve_region_descriptor(
     cad: Any,
     recipe: NativeGeometry,
     topology: CompiledRecipeTopology,
     resolver: RecipeTopologyResolver,
-    entity_kind: str,
-    entity_ids: tuple[int, ...],
+    descriptor: NativeRegionDescriptor,
 ) -> tuple[Any, ...]:
+    source = descriptor.source
+    if isinstance(source, CompiledDomainRegionSource):
+        return tuple(topology.domain)
+    if isinstance(source, RecipeRegionSource):
+        entities = tuple(topology.region_bindings.get(source.selector, ()))
+        if not entities:
+            raise TopologyResolutionError(
+                f"内建区域 {descriptor.name!r} 没有对应的 CAD 实体"
+            )
+        return entities
+    if not isinstance(source, LogicalReferencesRegionSource):
+        raise TypeError(
+            f"不支持的 native region source: {type(source).__name__}"
+        )
     entities: list[Any] = []
-    for entity_id in entity_ids:
+    for reference in source.references:
         entities.extend(
             resolver.resolve(
                 cad,
                 recipe,
                 topology,
-                entity_kind,
-                entity_id,
+                reference,
             )
         )
-    return _unique_entities(entities)
+    resolved = _unique_entities(entities)
+    if not resolved:
+        raise TopologyResolutionError(
+            f"命名区域 {descriptor.name!r} 没有解析到 CAD 实体"
+        )
+    return resolved
 
 
 def _distance_field_sources(
@@ -459,31 +455,6 @@ def _build_native_fem_model(
                 ],
             )
     return model
-
-
-def _hole_radius(recipe: NativeGeometry) -> float | None:
-    if isinstance(recipe, PlateWithHoleGeometry):
-        return recipe.hole_radius
-    if isinstance(recipe, DiskGeometry):
-        return recipe.radius
-    if isinstance(recipe, (MovedGeometry, RotatedGeometry)):
-        return _hole_radius(recipe.base)
-    if isinstance(recipe, ExtrudedGeometry):
-        return _hole_radius(recipe.base)
-    if isinstance(recipe, BooleanGeometry):
-        if recipe.operation != "cut" or not describe_recipe_topology(recipe).exact:
-            return None
-        return _hole_radius(recipe.tool_geometry)
-    if isinstance(recipe, SketchGeometry):
-        if not describe_recipe_topology(recipe).exact:
-            return None
-        holes = tuple(
-            contour.radius
-            for contour in recipe.contours
-            if contour.operation == "cut" and isinstance(contour, SketchCircle)
-        )
-        return holes[0] if len(holes) == 1 else None
-    return None
 
 
 def _unique_entities(entities: Iterable[Any]) -> tuple[Any, ...]:

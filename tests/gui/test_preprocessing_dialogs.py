@@ -6,7 +6,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QDialogButtonBox, QLabel
 
-from fem_gui.document import NamedRegion
+from fem.application import NamedRegion
+from fem.geometry import LogicalEntityRef
+from fem.mesh import settings as mesh_settings_api
 from fem_gui.preprocessing import (
     LocalMeshControl,
     MeshSettings,
@@ -24,10 +26,36 @@ from fem_gui.preprocessing_dialogs import (
     NamedRegionManagerDialog,
     SketchContourDialog,
 )
+import fem_gui.preprocessing_dialogs as preprocessing_dialogs_module
 
 
 def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def _falloff(
+    reference: str = "global_size",
+    start_factor: float = 0.0,
+    end_factor: float = 2.0,
+):
+    return mesh_settings_api.MeshSizeFalloff(
+        reference,
+        start_factor,
+        end_factor,
+    )
+
+
+def _control(
+    logical_id: str,
+    size: float,
+    *,
+    falloff=None,
+) -> LocalMeshControl:
+    return LocalMeshControl(
+        LogicalEntityRef(logical_id),
+        size,
+        _falloff() if falloff is None else falloff,
+    )
 
 
 def test_sketch_contour_dialog_only_shows_shape_specific_dimensions() -> None:
@@ -59,7 +87,7 @@ def test_mesh_settings_has_no_special_hole_size_field() -> None:
     labels = {label.text() for label in dialog.findChildren(QLabel)}
 
     assert "孔边局部尺寸" not in labels
-    assert dialog.settings().local_size is None
+    assert not hasattr(dialog.settings(), "local_size")
 
 
 def test_mesh_settings_method_exposes_only_supported_element_shape() -> None:
@@ -89,12 +117,12 @@ def test_mesh_settings_method_exposes_only_supported_element_shape() -> None:
 def test_local_mesh_dialog_records_the_viewport_selected_edge() -> None:
     _application()
     dialog = LocalMeshControlDialog(
-        "edge",
-        2,
+        LogicalEntityRef("edge:right"),
         5.0,
     )
 
-    assert dialog.control().entity_id == 2
+    assert dialog.control().target == LogicalEntityRef("edge:right")
+    assert dialog.control().falloff == _falloff()
     labels = {label.text() for label in dialog.findChildren(QLabel)}
     assert "已选择 1 个边" in labels
     assert "边 2" not in labels
@@ -102,21 +130,29 @@ def test_local_mesh_dialog_records_the_viewport_selected_edge() -> None:
 
 def test_named_region_dialog_and_manager_support_multiple_entities() -> None:
     _application()
-    create_dialog = NamedRegionDialog("edge", (1, 3, 4))
+    references = tuple(
+        LogicalEntityRef(logical_id)
+        for logical_id in (
+            "edge:bottom",
+            "edge:top",
+            "edge:left",
+        )
+    )
+    create_dialog = NamedRegionDialog(references)
     assert create_dialog.name_edit.text() == "EdgeSet-1"
     assert "已选择 3 个边" in {
         label.text() for label in create_dialog.findChildren(QLabel)
     }
 
     manager = NamedRegionManagerDialog({
-        "Fixed": NamedRegion("Fixed", "edge", (1, 3, 4)),
+        "Fixed": NamedRegion("Fixed", references),
     })
     assert manager.table.item(0, 2).text() == "3 个"
     manager.name_edit.setText("Support")
     manager._rename()
 
     assert tuple(manager.values()) == ("Support",)
-    assert manager.values()["Support"].entity_ids == (1, 3, 4)
+    assert set(manager.values()["Support"].references) == set(references)
 
 
 def test_mesh_control_manager_deletes_only_the_selected_local_control() -> None:
@@ -125,8 +161,8 @@ def test_mesh_control_manager_deletes_only_the_selected_local_control() -> None:
         MeshSettings(
             1.0,
             local_controls=(
-                LocalMeshControl("edge", 1, 0.25),
-                LocalMeshControl("edge", 3, 0.5),
+                _control("edge:bottom", 0.25),
+                _control("edge:top", 0.5),
             ),
         )
     )
@@ -135,9 +171,62 @@ def test_mesh_control_manager_deletes_only_the_selected_local_control() -> None:
 
     controls = dialog.settings().local_controls
     assert len(controls) == 1
-    assert controls[0].entity_id == 3
+    assert controls[0].target == LogicalEntityRef("edge:top")
     assert controls[0].size == 0.5
     assert "边 3" not in dialog.control_list.item(3).text()
+
+
+def test_mesh_control_manager_edit_preserves_target_radius_falloff(
+    monkeypatch,
+) -> None:
+    _application()
+    falloff = _falloff("target_radius", 0.25, 2.0)
+    current = _control(
+        "edge:hole-loop",
+        0.25,
+        falloff=falloff,
+    )
+    dialog = MeshControlsDialog(
+        MeshSettings(1.0, local_controls=(current,))
+    )
+
+    class AcceptedDialog:
+        def __init__(
+            self,
+            target,
+            _global_size,
+            _parent,
+            *,
+            current_size,
+            falloff,
+        ) -> None:
+            assert target == current.target
+            assert current_size == current.size
+            assert falloff == current.falloff
+            self._control = LocalMeshControl(
+                target,
+                0.2,
+                falloff,
+            )
+
+        def exec(self):
+            return True
+
+        def control(self):
+            return self._control
+
+    monkeypatch.setattr(
+        preprocessing_dialogs_module,
+        "LocalMeshControlDialog",
+        AcceptedDialog,
+    )
+    dialog.control_list.setCurrentRow(3)
+
+    dialog._edit()
+
+    edited = dialog.settings().local_controls[0]
+    assert edited.size == 0.2
+    assert edited.falloff == falloff
 
 
 def test_feature_manager_only_edits_the_base_and_deletes_the_last_feature():

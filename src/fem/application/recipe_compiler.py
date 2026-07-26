@@ -12,6 +12,7 @@ from fem.geometry.recipe_topology import (
     RecipeTopology,
     describe_recipe_topology,
 )
+from fem.geometry.references import LogicalEntityRef
 from fem.geometry.recipes import (
     BooleanGeometry,
     BoxGeometry,
@@ -30,6 +31,8 @@ from fem.geometry.recipes import (
     geometry_dimension,
 )
 
+from .native_regions import RecipeRegionSelector
+
 
 class TopologyResolutionError(ValueError):
     """A logical authoring entity cannot be proven in the current CAD model."""
@@ -43,23 +46,27 @@ class CompiledRecipeTopology:
     boundary: tuple[Any, ...]
     catalog: RecipeTopology
     logical_entities: Mapping[str, tuple[Any, ...]]
-    groups: Mapping[str, tuple[Any, ...]]
-    hole_boundary: tuple[Any, ...] = ()
+    region_bindings: Mapping[RecipeRegionSelector, tuple[Any, ...]]
 
-    def resolve(self, entity_kind: str, entity_id: int) -> tuple[Any, ...]:
-        """Resolve one persisted one-based ID without consulting backend tags."""
-        kind = entity_kind
+    def resolve(self, reference: LogicalEntityRef) -> tuple[Any, ...]:
+        """Resolve one stable logical reference without consulting backend tags."""
+        if type(reference) is not LogicalEntityRef:
+            raise TypeError("reference must be a LogicalEntityRef")
         try:
-            logical = self.catalog.logical_entity(kind, entity_id)
-        except (KeyError, TypeError, ValueError) as error:
+            logical = self.catalog.entity(reference.logical_id)
+        except KeyError as error:
             if not self.catalog.exact and self.catalog.diagnostics:
                 raise TopologyResolutionError(
-                    f"几何{_kind_label(kind)}编号 {entity_id!r} "
+                    f"逻辑实体 {reference.logical_id!r} "
                     f"不可用于建模：{self.catalog.diagnostics[0].message}"
                 ) from error
             raise TopologyResolutionError(
-                f"几何{_kind_label(kind)}编号 {entity_id!r} 已失效，请重新选择"
+                f"逻辑实体 {reference.logical_id!r} 已失效，请重新选择"
             ) from error
+        if logical.kind != reference.kind:
+            raise TopologyResolutionError(
+                f"逻辑实体 {reference.logical_id!r} 的类型不匹配"
+            )
         if not logical.selectable:
             diagnostic = next(
                 (
@@ -70,12 +77,12 @@ class CompiledRecipeTopology:
                 "当前几何操作无法证明该实体的拓扑身份",
             )
             raise TopologyResolutionError(
-                f"几何{_kind_label(kind)}编号 {entity_id} 不可用于建模：{diagnostic}"
+                f"逻辑实体 {reference.logical_id!r} 不可用于建模：{diagnostic}"
             )
         entities = tuple(self.logical_entities.get(logical.logical_id, ()))
         if not entities:
             raise TopologyResolutionError(
-                f"几何{_kind_label(kind)}编号 {entity_id} 无法解析，请重新选择"
+                f"逻辑实体 {reference.logical_id!r} 无法解析，请重新选择"
             )
         return entities
 
@@ -84,7 +91,7 @@ class CompiledRecipeTopology:
 class _CompiledDraft:
     domain: tuple[Any, ...]
     logical_entities: dict[str, tuple[Any, ...]]
-    groups: dict[str, tuple[Any, ...]]
+    region_bindings: dict[RecipeRegionSelector, tuple[Any, ...]]
     hole_boundary: tuple[Any, ...] = ()
 
 
@@ -181,13 +188,13 @@ def _compile_rectangle(cad: Any, recipe: RectangleGeometry) -> _CompiledDraft:
         "face:domain": domain,
         "body:domain": domain,
     }
-    groups = {
-        "BOTTOM": edges[0],
-        "RIGHT": edges[1],
-        "TOP": edges[2],
-        "LEFT": edges[3],
+    region_bindings = {
+        RecipeRegionSelector.BOTTOM: edges[0],
+        RecipeRegionSelector.RIGHT: edges[1],
+        RecipeRegionSelector.TOP: edges[2],
+        RecipeRegionSelector.LEFT: edges[3],
     }
-    return _CompiledDraft(domain, logical, groups)
+    return _CompiledDraft(domain, logical, region_bindings)
 
 
 def _compile_disk(cad: Any, recipe: DiskGeometry) -> _CompiledDraft:
@@ -202,7 +209,7 @@ def _compile_disk(cad: Any, recipe: DiskGeometry) -> _CompiledDraft:
             "face:domain": domain,
             "body:domain": domain,
         },
-        {"OUTER": outer},
+        {RecipeRegionSelector.OUTER: outer},
     )
 
 
@@ -254,13 +261,14 @@ def _compile_plate_with_hole(
         "face:domain": domain,
         "body:domain": domain,
     }
-    groups = {
-        "BOTTOM": outer[0],
-        "RIGHT": outer[1],
-        "TOP": outer[2],
-        "LEFT": outer[3],
+    region_bindings = {
+        RecipeRegionSelector.BOTTOM: outer[0],
+        RecipeRegionSelector.RIGHT: outer[1],
+        RecipeRegionSelector.TOP: outer[2],
+        RecipeRegionSelector.LEFT: outer[3],
+        RecipeRegionSelector.HOLE: hole_boundary,
     }
-    return _CompiledDraft(domain, logical, groups, hole_boundary)
+    return _CompiledDraft(domain, logical, region_bindings, hole_boundary)
 
 
 def _compile_box(cad: Any, recipe: BoxGeometry) -> _CompiledDraft:
@@ -363,15 +371,15 @@ def _compile_box(cad: Any, recipe: BoxGeometry) -> _CompiledDraft:
             "body:domain": domain,
         }
     )
-    groups = {
-        "BOTTOM": bottom,
-        "TOP": top,
-        "FRONT": front,
-        "RIGHT": right,
-        "BACK": back,
-        "LEFT": left,
+    region_bindings = {
+        RecipeRegionSelector.BOTTOM: bottom,
+        RecipeRegionSelector.TOP: top,
+        RecipeRegionSelector.FRONT: front,
+        RecipeRegionSelector.RIGHT: right,
+        RecipeRegionSelector.BACK: back,
+        RecipeRegionSelector.LEFT: left,
     }
-    return _CompiledDraft(domain, logical, groups)
+    return _CompiledDraft(domain, logical, region_bindings)
 
 
 def _compile_cylinder(cad: Any, recipe: CylinderGeometry) -> _CompiledDraft:
@@ -408,9 +416,9 @@ def _compile_cylinder(cad: Any, recipe: CylinderGeometry) -> _CompiledDraft:
             "body:domain": domain,
         },
         {
-            "BOTTOM": bottom,
-            "TOP": top,
-            "OUTER": outer,
+            RecipeRegionSelector.BOTTOM: bottom,
+            RecipeRegionSelector.TOP: top,
+            RecipeRegionSelector.OUTER: outer,
         },
     )
 
@@ -501,10 +509,11 @@ def _compile_boolean(cad: Any, recipe: BooleanGeometry) -> _CompiledDraft:
         domain,
         logical,
         {
-            "BOTTOM": outer_edges[0],
-            "RIGHT": outer_edges[1],
-            "TOP": outer_edges[2],
-            "LEFT": outer_edges[3],
+            RecipeRegionSelector.BOTTOM: outer_edges[0],
+            RecipeRegionSelector.RIGHT: outer_edges[1],
+            RecipeRegionSelector.TOP: outer_edges[2],
+            RecipeRegionSelector.LEFT: outer_edges[3],
+            RecipeRegionSelector.HOLE: hole_edges,
         },
         hole_edges,
     )
@@ -606,14 +615,14 @@ def _compile_extrusion(cad: Any, recipe: ExtrudedGeometry) -> _CompiledDraft:
         if boundaries & hole_sources
     )
     outer_sides = _unique(side for side in sides if side not in set(hole_sides))
-    groups = {
-        "BOTTOM": bottom,
-        "TOP": top,
-        "OUTER": outer_sides,
+    region_bindings = {
+        RecipeRegionSelector.BOTTOM: bottom,
+        RecipeRegionSelector.TOP: top,
+        RecipeRegionSelector.OUTER: outer_sides,
     }
     if hole_sides:
-        groups["HOLE"] = hole_sides
-    return _CompiledDraft(domain, logical, groups, hole_sides)
+        region_bindings[RecipeRegionSelector.HOLE] = hole_sides
+    return _CompiledDraft(domain, logical, region_bindings, hole_sides)
 
 
 def _finalize(
@@ -637,11 +646,10 @@ def _finalize(
         catalog,
         logical,
         {
-            name: _unique(entities)
-            for name, entities in draft.groups.items()
+            selector: _unique(entities)
+            for selector, entities in draft.region_bindings.items()
             if entities
         },
-        _unique(draft.hole_boundary),
     )
 
 
@@ -852,15 +860,6 @@ def _axis_aligned_rectangle(
     ):
         return _axis_aligned_rectangle(recipe.base)
     return None
-
-
-def _kind_label(kind: str) -> str:
-    return {
-        "point": "点",
-        "edge": "边",
-        "face": "面",
-        "body": "体",
-    }.get(kind, "实体")
 
 
 __all__ = [

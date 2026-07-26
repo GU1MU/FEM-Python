@@ -25,7 +25,12 @@ from PySide6.QtWidgets import (
 )
 
 import fem.application as application_api
-from fem.application import RegionRef, require_region_kind
+from fem.application import (
+    RegionAssignment,
+    RegionRef,
+    SectionDefinition,
+    require_region_kind,
+)
 from fem.core.model import MaterialDefinition
 from fem.materials import (
     resolve_section_preset_properties,
@@ -33,7 +38,6 @@ from fem.materials import (
 )
 
 from .dialogs import CompactDoubleSpinBox, configure_form_layout
-from .document import RegionAssignment, SectionDefinition
 
 
 def _number(parent: QDialog, value: float, *, minimum: float = 0.0) -> QDoubleSpinBox:

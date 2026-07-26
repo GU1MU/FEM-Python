@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 
+from fem.geometry import LogicalEntityRef
 # Compatibility re-exports for GUI dialogs and existing callers.  The value
 # types themselves have one headless implementation in fem.
 from fem.geometry.recipe_topology import (
@@ -44,40 +45,40 @@ class GeometryPreview:
     points: tuple[tuple[float, float, float], ...]
     faces: tuple[tuple[int, ...], ...]
     edges: tuple[tuple[int, ...], ...]
-    face_ids: tuple[int, ...] = ()
-    edge_ids: tuple[int, ...] = ()
-    point_ids: tuple[int, ...] = ()
     face_logical_ids: tuple[str | None, ...] = ()
     edge_logical_ids: tuple[str | None, ...] = ()
     point_logical_ids: tuple[str | None, ...] = ()
+    body_logical_id: str | None = None
 
     def __post_init__(self) -> None:
-        for name, ids, cells in (
-            ("face_ids", self.face_ids, self.faces),
-            ("edge_ids", self.edge_ids, self.edges),
-            ("point_ids", self.point_ids, self.points),
-            ("face_logical_ids", self.face_logical_ids, self.faces),
-            ("edge_logical_ids", self.edge_logical_ids, self.edges),
-            ("point_logical_ids", self.point_logical_ids, self.points),
+        for logical_name, cells in (
+            ("face_logical_ids", self.faces),
+            ("edge_logical_ids", self.edges),
+            ("point_logical_ids", self.points),
         ):
-            if ids and len(ids) != len(cells):
-                raise ValueError(f"{name} 必须与对应显示实体数量一致")
-            if name.endswith("_ids") and not name.endswith("_logical_ids") and any(
-                int(value) < 0 for value in ids
-            ):
-                raise ValueError(f"{name} 只能使用非负逻辑编号")
+            logical_ids = tuple(getattr(self, logical_name))
+            if not logical_ids:
+                logical_ids = (None,) * len(cells)
+                object.__setattr__(self, logical_name, logical_ids)
+            if len(logical_ids) != len(cells):
+                raise ValueError(f"{logical_name} 必须与对应显示实体数量一致")
+            for logical_id in logical_ids:
+                if logical_id is not None:
+                    LogicalEntityRef(logical_id)
+        if self.body_logical_id is not None:
+            reference = LogicalEntityRef(self.body_logical_id)
+            if reference.kind != "body":
+                raise ValueError("body_logical_id 必须引用 body")
 
 
-def _preview_entity_ids(
+def _validate_preview_logical_ids(
     topology: RecipeTopology,
     recipe_type: str,
     kind: EntityKind,
     logical_ids: tuple[str | None, ...],
-) -> tuple[int, ...]:
-    result = []
+) -> None:
     for logical_id in logical_ids:
         if logical_id is None:
-            result.append(0)
             continue
         try:
             entity = topology.entity(logical_id)
@@ -91,8 +92,6 @@ def _preview_entity_ids(
                 f"{recipe_type} 预览引用了不可选的 {kind} "
                 f"logical_id: {logical_id}"
             )
-        result.append(topology.logical_index(logical_id))
-    return tuple(result)
 
 
 def _make_preview(
@@ -104,19 +103,34 @@ def _make_preview(
     edge_logical_ids: tuple[str | None, ...],
     point_logical_ids: tuple[str | None, ...],
 ) -> GeometryPreview:
-    """Materialize display ordinals exclusively from the recipe catalog."""
+    """Build a display preview containing stable logical identity only."""
     topology = describe_recipe_topology(recipe)
     recipe_type = type(recipe).__name__
+    for kind, logical_ids in (
+        ("point", point_logical_ids),
+        ("edge", edge_logical_ids),
+        ("face", face_logical_ids),
+    ):
+        _validate_preview_logical_ids(
+            topology,
+            recipe_type,
+            kind,
+            logical_ids,
+        )
+    selectable_bodies = topology.entities_of("body", selectable_only=True)
+    body_logical_id = (
+        selectable_bodies[0].logical_id
+        if len(selectable_bodies) == 1
+        else None
+    )
     return GeometryPreview(
-        points,
-        faces,
-        edges,
-        _preview_entity_ids(topology, recipe_type, "face", face_logical_ids),
-        _preview_entity_ids(topology, recipe_type, "edge", edge_logical_ids),
-        _preview_entity_ids(topology, recipe_type, "point", point_logical_ids),
-        face_logical_ids,
-        edge_logical_ids,
-        point_logical_ids,
+        points=points,
+        faces=faces,
+        edges=edges,
+        face_logical_ids=face_logical_ids,
+        edge_logical_ids=edge_logical_ids,
+        point_logical_ids=point_logical_ids,
+        body_logical_id=body_logical_id,
     )
 
 
@@ -158,45 +172,6 @@ def supports_hexahedron(recipe: NativeGeometry) -> bool:
         and isinstance(contours[0], SketchRectangle)
         and contours[0].operation == "material"
     )
-
-
-def geometry_feature_rows(recipe: NativeGeometry) -> tuple[str, ...]:
-    """Return a flat, user-facing feature history for the manager dialog."""
-    if isinstance(recipe, SketchGeometry):
-        material_count = sum(item.operation == "material" for item in recipe.contours)
-        cut_count = len(recipe.contours) - material_count
-        return (
-            f"草图  轮廓={len(recipe.contours)}，材料={material_count}，切除={cut_count}",
-        )
-    if isinstance(recipe, MovedGeometry):
-        return geometry_feature_rows(recipe.base) + (
-            f"移动  X={recipe.dx:g}，Y={recipe.dy:g}，Z={recipe.dz:g}",
-        )
-    if isinstance(recipe, RotatedGeometry):
-        return geometry_feature_rows(recipe.base) + (
-            f"旋转  {recipe.axis.upper()} 轴，{recipe.angle_degrees:g}°",
-        )
-    if isinstance(recipe, ExtrudedGeometry):
-        return geometry_feature_rows(recipe.base) + (f"拉伸  高度={recipe.height:g}",)
-    if isinstance(recipe, BooleanGeometry):
-        names = {"fuse": "合并", "cut": "切除", "fragment": "分割"}
-        return geometry_feature_rows(recipe.object_geometry) + (
-            f"{names[recipe.operation]}  工具体={recipe.tool_geometry.name}",
-        )
-    if isinstance(recipe, RectangleGeometry):
-        description = f"矩形  {recipe.width:g} × {recipe.height:g}"
-    elif isinstance(recipe, DiskGeometry):
-        description = f"圆盘  半径={recipe.radius:g}"
-    elif isinstance(recipe, PlateWithHoleGeometry):
-        description = (
-            f"带孔板  {recipe.width:g} × {recipe.height:g}，"
-            f"孔半径={recipe.hole_radius:g}"
-        )
-    elif isinstance(recipe, BoxGeometry):
-        description = f"长方体  {recipe.width:g} × {recipe.depth:g} × {recipe.height:g}"
-    else:
-        description = f"圆柱  半径={recipe.radius:g}，高度={recipe.height:g}"
-    return (f"基础体  {description}",)
 
 
 def build_geometry_preview(
@@ -733,45 +708,51 @@ def _validate_preview_topology(
     preview: GeometryPreview,
 ) -> None:
     topology = describe_recipe_topology(recipe)
-    for kind, raw_ids, logical_ids in (
-        ("point", preview.point_ids, preview.point_logical_ids),
-        ("edge", preview.edge_ids, preview.edge_logical_ids),
-        ("face", preview.face_ids, preview.face_logical_ids),
+    for kind, cells, logical_ids in (
+        ("point", preview.points, preview.point_logical_ids),
+        ("edge", preview.edges, preview.edge_logical_ids),
+        ("face", preview.faces, preview.face_logical_ids),
     ):
-        if len(logical_ids) != len(raw_ids):
+        if len(logical_ids) != len(cells):
             raise RuntimeError(
                 f"{type(recipe).__name__} 预览的 {kind} cell 缺少 logical_id 绑定"
             )
-        for index, (entity_id, logical_id) in enumerate(
-            zip(raw_ids, logical_ids, strict=True)
-        ):
-            expected_id = (
-                0
-                if logical_id is None
-                else _preview_entity_ids(
-                    topology,
-                    type(recipe).__name__,
-                    kind,
-                    (logical_id,),
-                )[0]
-            )
-            if int(entity_id) != expected_id:
-                raise RuntimeError(
-                    f"{type(recipe).__name__} 预览的 {kind} cell[{index}] "
-                    f"logical_id={logical_id!r} 应映射为 {expected_id}，"
-                    f"实际为 {entity_id}"
-                )
-        actual = {int(entity_id) for entity_id in raw_ids if int(entity_id) > 0}
+        _validate_preview_logical_ids(
+            topology,
+            type(recipe).__name__,
+            kind,
+            logical_ids,
+        )
+        actual = {
+            logical_id
+            for logical_id in logical_ids
+            if logical_id is not None
+        }
         expected = {
-            topology.logical_index(entity.logical_id)
+            entity.logical_id
             for entity in topology.entities_of(kind, selectable_only=True)
         }
         if actual != expected:
             raise RuntimeError(
-                f"{type(recipe).__name__} 预览的 {kind} 逻辑编号"
+                f"{type(recipe).__name__} 预览的 {kind} logical ID"
                 f"与 recipe topology 不一致: {sorted(actual)} != "
                 f"{sorted(expected)}"
             )
+    actual_body = (
+        set()
+        if preview.body_logical_id is None
+        else {preview.body_logical_id}
+    )
+    expected_body = {
+        entity.logical_id
+        for entity in topology.entities_of("body", selectable_only=True)
+    }
+    if actual_body != expected_body:
+        raise RuntimeError(
+            f"{type(recipe).__name__} 预览的 body logical ID"
+            f"与 recipe topology 不一致: {sorted(actual_body)} != "
+            f"{sorted(expected_body)}"
+        )
 
 
 def _compile_sketch(recipe: SketchGeometry) -> NativeGeometry:
@@ -915,6 +896,5 @@ __all__ = [
     "build_geometry_preview",
     "geometry_characteristic_size",
     "geometry_dimension",
-    "geometry_feature_rows",
     "supports_hexahedron",
 ]
