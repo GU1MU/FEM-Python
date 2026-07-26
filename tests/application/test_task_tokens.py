@@ -340,6 +340,38 @@ def test_result_projection_acceptance_is_single_use() -> None:
     assert repeated.token_status is TokenStatus.ALREADY_COMPLETED
 
 
+@pytest.mark.parametrize("terminal", ("failed", "cancelled"))
+def test_result_projection_terminal_receipts_are_revision_neutral(
+    terminal: str,
+) -> None:
+    session = _session()
+    solve = session.prepare_solve("Step-A", "Job-1")
+    session.begin_run(solve.token)
+    session.accept_run_succeeded(
+        solve.token,
+        make_solve_result_bundle(solve, marker=1.0),
+    )
+    projection = session.prepare_result_projection(solve.run_id)
+    before_revision = session.session_revision
+
+    if terminal == "failed":
+        receipt = session.accept_task_failed(
+            projection.token,
+            "projection failed",
+        )
+    else:
+        receipt = session.accept_task_cancelled(projection.token)
+
+    assert receipt.accepted
+    assert receipt.changed == frozenset()
+    assert receipt.invalidated == frozenset()
+    assert session.session_revision == before_revision
+    assert (
+        session.validate_task_token(projection.token)
+        is TokenStatus.ALREADY_COMPLETED
+    )
+
+
 def test_result_projection_survives_display_and_save_transitions() -> None:
     session = _session()
     solve = session.prepare_solve("Step-A", "Job-1")

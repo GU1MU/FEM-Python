@@ -849,13 +849,13 @@ class FEMMainWindow(QMainWindow):
         self._applied_session_revision = revision
         return True
 
-    def _apply_result_projection_receipt(
+    def _apply_revision_neutral_task_receipt(
         self,
         receipt: SessionDelta,
         *,
         result_projection: ResultData | None = None,
     ) -> bool:
-        """Consume a revision-neutral projection receipt without rebuilding."""
+        """Consume a no-state-change receipt and optionally install a projection."""
 
         if (
             type(receipt) is not SessionDelta
@@ -3876,7 +3876,7 @@ class FEMMainWindow(QMainWindow):
                 artifact_id=projection.token.artifact_id,
                 run_id=projection.run_id,
             )
-            if not self._apply_result_projection_receipt(
+            if not self._apply_revision_neutral_task_receipt(
                 self.session.accept_result_projection(
                     projection.token
                 )
@@ -3961,15 +3961,21 @@ class FEMMainWindow(QMainWindow):
         title: str,
         message: str,
     ) -> None:
-        if self._apply_session_delta(
-            self.session.accept_task_failed(token, message)
-        ):
+        delta = self.session.accept_task_failed(token, message)
+        applied = (
+            self._apply_revision_neutral_task_receipt(delta)
+            if not delta.changed and not delta.invalidated
+            else self._apply_session_delta(delta)
+        )
+        if applied:
             self._show_error(title, message)
 
     def _session_task_cancelled(self, token: object) -> None:
-        self._apply_session_delta(
-            self.session.accept_task_cancelled(token)
-        )
+        delta = self.session.accept_task_cancelled(token)
+        if not delta.changed and not delta.invalidated:
+            self._apply_revision_neutral_task_receipt(delta)
+            return
+        self._apply_session_delta(delta)
 
     def _start_task(
         self,
@@ -4440,7 +4446,7 @@ class FEMMainWindow(QMainWindow):
 
         def succeeded(value: object) -> None:
             delta, updated = value
-            if not self._apply_result_projection_receipt(
+            if not self._apply_revision_neutral_task_receipt(
                 delta,
                 result_projection=updated,
             ):

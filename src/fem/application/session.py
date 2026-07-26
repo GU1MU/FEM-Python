@@ -18,8 +18,12 @@ from fem.geometry.recipe_topology import can_preserve_logical_references
 from fem.mesh.settings import MeshSettings
 
 from .results import (
+    FieldMaterializationKey,
+    ResultMaterializationPatch,
     ResultSourceKey,
     SolveResultBundle,
+    advance_materialization,
+    field_materialization_sort_key,
     validate_solve_result_model_identity,
 )
 from .changes import (
@@ -58,6 +62,7 @@ from .revisions import (
     ImportTaskSnapshot,
     MeshTaskSnapshot,
     ModelArtifact,
+    ResultMaterializationTaskSnapshot,
     ResultTaskSnapshot,
     SolveTaskSnapshot,
     TaskToken,
@@ -132,6 +137,15 @@ class _IssuedSolvePayload:
 
     model: Any
     step: Any
+
+
+@dataclass(frozen=True, slots=True)
+class _IssuedMaterializationPayload:
+    """Expected patch identity for one generation-bound recovery task."""
+
+    source: ResultSourceKey
+    generation: int
+    expected_patch_keys: tuple[FieldMaterializationKey, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1643,7 +1657,13 @@ class ModelSession:
             )
         token = self._issue_token(
             "result_projection",
-            (("model_revision", self._model_revision),),
+            (
+                (
+                    "materialization_generation",
+                    record.materialization.generation,
+                ),
+                ("model_revision", self._model_revision),
+            ),
             artifact_id=record.provenance.artifact_id,
             step_name=record.provenance.step_name,
             run_id=record.provenance.run_id,
@@ -1665,6 +1685,134 @@ class ModelSession:
         return SessionDelta(
             session_revision=self._session_revision,
             reason="result projection accepted",
+        )
+
+    def prepare_result_materialization(
+        self,
+        run_id: str,
+        field_keys: Iterable[FieldMaterializationKey],
+    ) -> ResultMaterializationTaskSnapshot:
+        """Bind lazy field recovery to one exact accepted generation."""
+
+        record = self._current_result_record(str(run_id))
+        if record is None:
+            raise SessionStateError(
+                f"run {run_id!r} has no current successful result"
+            )
+        try:
+            requested = tuple(field_keys)
+        except TypeError as error:
+            raise TypeError(
+                "field_keys must be an iterable of "
+                "FieldMaterializationKey values"
+            ) from error
+        if not requested:
+            raise ValueError("field_keys must not be empty")
+        if any(type(key) is not FieldMaterializationKey for key in requested):
+            raise TypeError(
+                "field_keys must contain only FieldMaterializationKey values"
+            )
+        ordered = tuple(
+            sorted(
+                set(requested),
+                key=field_materialization_sort_key,
+            )
+        )
+        ready_keys = {
+            field_data.key for field_data in record.materialization.fields
+        }
+        expected_patch_keys = tuple(
+            key for key in ordered if key not in ready_keys
+        )
+        generation = record.materialization.generation
+        token = self._issue_token(
+            "result_materialization",
+            (
+                ("materialization_generation", generation),
+                ("model_revision", self._model_revision),
+            ),
+            artifact_id=record.provenance.artifact_id,
+            step_name=record.provenance.step_name,
+            run_id=record.provenance.run_id,
+            result_id=record.result_id,
+        )
+        self._task_data[token.task_id] = _IssuedMaterializationPayload(
+            source=record.materialization.source,
+            generation=generation,
+            expected_patch_keys=expected_patch_keys,
+        )
+        return ResultMaterializationTaskSnapshot(
+            token=token,
+            run_id=str(run_id),
+            record=detached_result_record(record),
+            field_keys=deepcopy(ordered),
+        )
+
+    def accept_result_materialization(
+        self,
+        token: TaskToken,
+        patch: ResultMaterializationPatch,
+    ) -> SessionDelta:
+        """Install one complete patch through a generation compare-and-swap."""
+
+        status = self._token_status_for(token, "result_materialization")
+        if status is not TokenStatus.CURRENT:
+            return self._rejected(status, "stale result materialization")
+        if type(patch) is not ResultMaterializationPatch:
+            raise TypeError(
+                "patch must be exactly ResultMaterializationPatch"
+            )
+        record = self._current_result_record(token.run_id)
+        payload = self._task_data.get(token.task_id)
+        if record is None or type(payload) is not _IssuedMaterializationPayload:
+            raise SessionStateError(
+                "result materialization task has no current issued payload"
+            )
+        if (
+            patch.source != payload.source
+            or patch.source != record.materialization.source
+        ):
+            raise ValueError(
+                "materialization patch source must match the target result"
+            )
+        if record.materialization.generation != payload.generation:
+            return self._rejected(
+                TokenStatus.STALE_REVISION,
+                "stale result materialization generation",
+            )
+        patch_keys = tuple(field_data.key for field_data in patch.fields)
+        if patch_keys != payload.expected_patch_keys:
+            raise ValueError(
+                "materialization patch fields must exactly match the "
+                "requested lazy keys"
+            )
+        if not patch.fields:
+            self._complete_token(token)
+            return SessionDelta(
+                session_revision=self._session_revision,
+                reason="result materialization cache hit",
+            )
+
+        advanced = advance_materialization(
+            record.materialization,
+            patch,
+        )
+        updated_record = replace(
+            record,
+            materialization=advanced,
+        )
+        self._results[str(token.run_id)] = updated_record
+        for task_id, issued in self._issued_tokens.items():
+            if (
+                issued.task_kind == "result_materialization"
+                and issued.run_id == token.run_id
+            ):
+                self._task_data.pop(task_id, None)
+        self._complete_token(token)
+        return self._emit(
+            {ChangeKind.RESULTS},
+            frozenset(),
+            "result materialization advanced",
         )
 
     def accept_task_failed(
@@ -1690,6 +1838,14 @@ class ModelSession:
             )
             return self.accept_validation_failed(token, report)
         self._complete_token(token)
+        if token.task_kind in {
+            "result_materialization",
+            "result_projection",
+        }:
+            return SessionDelta(
+                session_revision=self._session_revision,
+                reason=f"{token.task_kind} task failed",
+            )
         return self._emit(
             {ChangeKind.SESSION},
             frozenset(),
@@ -1705,6 +1861,14 @@ class ModelSession:
         if token.task_kind == "solve":
             return self.accept_run_cancelled(token)
         self._complete_token(token)
+        if token.task_kind in {
+            "result_materialization",
+            "result_projection",
+        }:
+            return SessionDelta(
+                session_revision=self._session_revision,
+                reason=f"{token.task_kind} task cancelled",
+            )
         return self._emit(
             {ChangeKind.SESSION},
             frozenset(),
@@ -1896,6 +2060,15 @@ class ModelSession:
         if token.task_id in self._completed_task_ids:
             return TokenStatus.ALREADY_COMPLETED
         for name, revision in token.dependency_revisions:
+            if name == "materialization_generation":
+                record = self._current_result_record(token.run_id)
+                if (
+                    record is None
+                    or record.result_id != token.result_id
+                    or record.materialization.generation != revision
+                ):
+                    return TokenStatus.STALE_REVISION
+                continue
             if self._revision_value(name) != revision:
                 return TokenStatus.STALE_REVISION
         if token.artifact_id is not None:
@@ -2010,7 +2183,10 @@ class ModelSession:
 
     def _drop_computations(self) -> None:
         for task_id, token in self._issued_tokens.items():
-            if token.task_kind == "solve":
+            if token.task_kind in {
+                "result_materialization",
+                "solve",
+            }:
                 self._task_data.pop(task_id, None)
         self._validations.clear()
         self._runs.clear()

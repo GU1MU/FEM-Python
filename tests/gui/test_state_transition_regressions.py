@@ -16,6 +16,7 @@ from fem.application import (
     RegionAssignment,
     RunStatus,
     SectionDefinition,
+    TokenStatus,
 )
 from fem.core.model import (
     AnalysisStep,
@@ -504,7 +505,7 @@ def test_revision_neutral_projection_receipt_preserves_current_cache() -> None:
 
     receipt = window.session.accept_result_projection(stale.token)
     assert receipt.accepted
-    assert window._apply_result_projection_receipt(receipt)
+    assert window._apply_revision_neutral_task_receipt(receipt)
     assert _projection_signature(window) == before
     assert window.result_data.run_id == run_id
     window.close()
@@ -523,13 +524,49 @@ def test_hidden_run_projection_receipt_cannot_replace_current_cache() -> None:
     receipt = window.session.accept_result_projection(projection.token)
 
     assert receipt.accepted
-    assert window._apply_result_projection_receipt(
+    assert window._apply_revision_neutral_task_receipt(
         receipt,
         result_projection=data_a,
     )
     assert _projection_signature(window) == before
     assert window.result_data is not None
     assert window.result_data.run_id == run_b
+    window.close()
+
+
+def test_projection_failure_and_cancel_receipts_are_revision_neutral(
+    monkeypatch,
+) -> None:
+    window = _new_window()
+    _install_imported(window)
+    run_id = _succeed_run(window)
+    failed = window.session.prepare_result_projection(run_id)
+    cancelled = window.session.prepare_result_projection(run_id)
+    shown: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        window,
+        "_show_error",
+        lambda title, message: shown.append((title, message)),
+    )
+    revision = window.session.session_revision
+
+    window._session_task_failed(
+        failed.token,
+        "应力结果恢复失败",
+        "recovery failed",
+    )
+    window._session_task_cancelled(cancelled.token)
+
+    assert shown == [("应力结果恢复失败", "recovery failed")]
+    assert window.session.session_revision == revision
+    assert (
+        window.session.validate_task_token(failed.token)
+        is TokenStatus.ALREADY_COMPLETED
+    )
+    assert (
+        window.session.validate_task_token(cancelled.token)
+        is TokenStatus.ALREADY_COMPLETED
+    )
     window.close()
 
 

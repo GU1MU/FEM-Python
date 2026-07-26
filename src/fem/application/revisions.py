@@ -5,8 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    from .results.data import ResultMaterializationSnapshot
+    from .results.fields import FieldMaterializationKey
+    from .runs import ResultRecord
 
 
 class TokenStatus(str, Enum):
@@ -129,4 +134,18 @@ class ResultTaskSnapshot:
     token: TaskToken
     run_id: str
     record: Any
+
+
+@dataclass(frozen=True, slots=True)
+class ResultMaterializationTaskSnapshot:
+    """Detached provider input for one generation-bound field recovery."""
+
+    token: TaskToken
+    run_id: str
+    record: ResultRecord
+    field_keys: tuple[FieldMaterializationKey, ...]
+
+    @property
+    def materialization(self) -> ResultMaterializationSnapshot:
+        return self.record.materialization
 
