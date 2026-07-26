@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 import json
 import math
 from typing import Any
+
+import numpy as np
+
+
+MATERIAL_SIGNATURE_KEY = "_stress_material_signature"
+SECTION_SIGNATURE_KEY = "_stress_section_signature"
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -114,6 +121,136 @@ def result_region_sort_key(region_key: ResultRegionKey) -> tuple[str, str]:
     return (
         region_key.material_signature.canonical_json,
         region_key.section_signature.canonical_json,
+    )
+
+
+def result_region_key_for_element(element: Any) -> ResultRegionKey:
+    """Interpret and deep-own the canonical result-region identity of an element.
+
+    Explicit assignment signatures take precedence.  Elements without those
+    signatures retain the historical material-name, material-id, or effective
+    ``E``/``nu``/``rho`` identity and the remaining section properties.
+    """
+
+    props = dict(getattr(element, "props", {}))
+    material_signature = props.get(MATERIAL_SIGNATURE_KEY)
+    if material_signature is None:
+        if "material" in props:
+            material_signature = ("material", props["material"])
+        elif "material_id" in props:
+            material_signature = ("material_id", props["material_id"])
+        else:
+            material_signature = (
+                "effective",
+                tuple(
+                    (name, props[name])
+                    for name in ("E", "nu", "rho")
+                    if name in props
+                ),
+            )
+
+    section_signature = props.get(SECTION_SIGNATURE_KEY)
+    if section_signature is None:
+        excluded = {
+            MATERIAL_SIGNATURE_KEY,
+            SECTION_SIGNATURE_KEY,
+            "material",
+            "material_id",
+            "E",
+            "nu",
+            "rho",
+            "section_type",
+        }
+        section_properties = {
+            key: value for key, value in props.items() if key not in excluded
+        }
+        section_signature = (
+            "section",
+            props.get("section_type"),
+            section_properties,
+        )
+
+    return _result_region_key_from_compatible_signatures(
+        material_signature,
+        section_signature,
+    )
+
+
+def _result_region_key_from_compatible_signatures(
+    material_signature: Any,
+    section_signature: Any,
+) -> ResultRegionKey:
+    return ResultRegionKey(
+        _coerce_compatible_region_signature(material_signature),
+        _coerce_compatible_region_signature(section_signature),
+    )
+
+
+def _coerce_compatible_region_signature(value: Any) -> ResultRegionSignature:
+    if type(value) is ResultRegionSignature:
+        return value
+    compatible = _compatible_signature_json(
+        value,
+        path="$",
+        ancestors=set(),
+    )
+    return make_result_region_signature(compatible)
+
+
+def _compatible_signature_json(
+    value: Any,
+    *,
+    path: str,
+    ancestors: set[int],
+) -> Any:
+    """Translate historical tuple signatures without repr/hash fallbacks."""
+
+    if isinstance(value, np.generic):
+        return _compatible_signature_json(
+            value.item(),
+            path=path,
+            ancestors=ancestors,
+        )
+    if value is None or type(value) in {bool, int, float, str}:
+        return value
+    if isinstance(value, Mapping):
+        identity = id(value)
+        if identity in ancestors:
+            raise ValueError(f"{path} contains a cyclic result-region signature")
+        ancestors.add(identity)
+        try:
+            converted: dict[str, Any] = {}
+            for key, item in value.items():
+                if type(key) is not str:
+                    raise TypeError(
+                        "result-region signature mapping keys must be strings"
+                    )
+                converted[key] = _compatible_signature_json(
+                    item,
+                    path=f"{path}.{key}",
+                    ancestors=ancestors,
+                )
+            return converted
+        finally:
+            ancestors.remove(identity)
+    if isinstance(value, (list, tuple)):
+        identity = id(value)
+        if identity in ancestors:
+            raise ValueError(f"{path} contains a cyclic result-region signature")
+        ancestors.add(identity)
+        try:
+            return [
+                _compatible_signature_json(
+                    item,
+                    path=f"{path}[{index}]",
+                    ancestors=ancestors,
+                )
+                for index, item in enumerate(value)
+            ]
+        finally:
+            ancestors.remove(identity)
+    raise TypeError(
+        "result-region signatures must contain only finite JSON values"
     )
 
 
@@ -231,11 +368,14 @@ def _reject_json_constant(value: str) -> Any:
 
 
 __all__ = [
+    "MATERIAL_SIGNATURE_KEY",
     "ResultRegionKey",
     "ResultRegionSignature",
+    "SECTION_SIGNATURE_KEY",
     "decode_result_region_key",
     "decode_result_region_signature",
     "encode_result_region_key",
     "make_result_region_signature",
+    "result_region_key_for_element",
     "result_region_sort_key",
 ]

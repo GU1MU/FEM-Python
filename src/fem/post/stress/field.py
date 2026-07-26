@@ -9,9 +9,11 @@ import numpy as np
 from ...elements import get_element_kernel
 from ..averaging import NodalAveragingPolicy, resolve_nodal_stress
 from ..fields import (
+    MATERIAL_SIGNATURE_KEY as MATERIAL_SIGNATURE_KEY,
     ResultRegionKey,
-    ResultRegionSignature,
-    make_result_region_signature,
+    SECTION_SIGNATURE_KEY as SECTION_SIGNATURE_KEY,
+    _result_region_key_from_compatible_signatures,
+    result_region_key_for_element,
     result_region_sort_key,
 )
 from . import dispatch
@@ -34,8 +36,6 @@ SOLID_COMPONENT_NAMES = (
 )
 CANONICAL_PLANE_COMPONENT_NAMES = ("S11", "S22", "S33", "S12")
 CANONICAL_SOLID_COMPONENT_NAMES = ("S11", "S22", "S33", "S12", "S23", "S13")
-MATERIAL_SIGNATURE_KEY = "_stress_material_signature"
-SECTION_SIGNATURE_KEY = "_stress_section_signature"
 
 
 class StressPosition(str, Enum):
@@ -53,9 +53,9 @@ def StressRegionKey(
 ) -> ResultRegionKey:
     """Compatibility factory returning the sole result-region identity type."""
 
-    return ResultRegionKey(
-        _coerce_region_signature(material_signature),
-        _coerce_region_signature(section_signature),
+    return _result_region_key_from_compatible_signatures(
+        material_signature,
+        section_signature,
     )
 
 
@@ -315,7 +315,7 @@ def _collect_element_integration_points(
                 gauss_order=order,
                 natural_coordinates=np.asarray(natural, dtype=float),
                 components=complete,
-                region_key=_region_key(elem),
+                region_key=result_region_key_for_element(elem),
                 weight=float(weight),
             )
         )
@@ -849,73 +849,4 @@ def _canonical_field_from_legacy(
             tuple(records),
         ),
         metadata,
-    )
-
-
-def _region_key(elem: Any) -> ResultRegionKey:
-    props = dict(getattr(elem, "props", {}))
-    material_signature = props.get(MATERIAL_SIGNATURE_KEY)
-    if material_signature is None:
-        if "material" in props:
-            material_signature = ("material", props["material"])
-        elif "material_id" in props:
-            material_signature = ("material_id", props["material_id"])
-        else:
-            material_signature = (
-                "effective",
-                tuple(
-                    (name, props[name])
-                    for name in ("E", "nu", "rho")
-                    if name in props
-                ),
-            )
-
-    section_signature = props.get(SECTION_SIGNATURE_KEY)
-    if section_signature is None:
-        excluded = {
-            MATERIAL_SIGNATURE_KEY,
-            SECTION_SIGNATURE_KEY,
-            "material",
-            "material_id",
-            "E",
-            "nu",
-            "rho",
-            "section_type",
-        }
-        section_properties = {
-            key: value for key, value in props.items() if key not in excluded
-        }
-        section_signature = (
-            "section",
-            props.get("section_type"),
-            section_properties,
-        )
-
-    return StressRegionKey(material_signature, section_signature)
-
-
-def _coerce_region_signature(value: Any) -> ResultRegionSignature:
-    if type(value) is ResultRegionSignature:
-        return value
-    return make_result_region_signature(_legacy_signature_json(value))
-
-
-def _legacy_signature_json(value: Any) -> Any:
-    """Translate historical tuple signatures without repr/hash fallbacks."""
-
-    if isinstance(value, np.generic):
-        return _legacy_signature_json(value.item())
-    if value is None or type(value) in {bool, int, float, str}:
-        return value
-    if isinstance(value, Mapping):
-        converted: dict[str, Any] = {}
-        for key, item in value.items():
-            if type(key) is not str:
-                raise TypeError("result-region signature mapping keys must be strings")
-            converted[key] = _legacy_signature_json(item)
-        return converted
-    if isinstance(value, (list, tuple)):
-        return [_legacy_signature_json(item) for item in value]
-    raise TypeError(
-        "result-region signatures must contain only finite JSON values"
     )
