@@ -45,6 +45,11 @@ from .registry import (
     classify_result_model,
     registry_entry_for,
 )
+from .query import (
+    ResultQuery,
+    ResultQueryResult,
+    evaluate_result_query,
+)
 from ._materializers import (
     check_cancellation,
     materialize_derived_fields,
@@ -158,6 +163,11 @@ class ResultProvider:
                 "catalog READY state does not match materialization snapshot"
             )
         return matches[0]
+
+    def query(self, query: ResultQuery) -> ResultQueryResult:
+        """Evaluate one exact scalar query over this immutable snapshot."""
+
+        return evaluate_result_query(self._snapshot, query)
 
     def materialize(
         self,

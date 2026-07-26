@@ -1,4 +1,4 @@
-"""Typed result-query values without evaluation or presentation policy."""
+"""Typed, deterministic result queries over accepted materialization snapshots."""
 
 from __future__ import annotations
 
@@ -8,8 +8,16 @@ from numbers import Real
 
 from fem.post.fields import ResultRegionKey
 
-from .data import FieldLocation
+from .data import FieldLocation, ResultMaterializationSnapshot
 from .fields import FieldMaterializationKey, ResultSourceKey
+
+
+class ResultQueryValidationError(ValueError):
+    """Typed validation failure for one snapshot-bound result query."""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = _require_nonblank_string(code, label="code")
+        super().__init__(message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +106,111 @@ class ResultQueryResult:
                 )
 
 
+def evaluate_result_query(
+    materialization: ResultMaterializationSnapshot,
+    query: ResultQuery,
+) -> ResultQueryResult:
+    """Read one exact scalar field without recovery, averaging, or reordering."""
+
+    if type(materialization) is not ResultMaterializationSnapshot:
+        raise TypeError(
+            "materialization must be ResultMaterializationSnapshot"
+        )
+    if type(query) is not ResultQuery:
+        raise TypeError("query must be ResultQuery")
+
+    fields = tuple(
+        field_data
+        for field_data in materialization.fields
+        if field_data.key == query.field_key
+    )
+    if len(fields) != 1:
+        raise ResultQueryValidationError(
+            "result.query.field_not_materialized",
+            "query field key is not materialized in the snapshot",
+        )
+    field_data = fields[0]
+    try:
+        component_index = field_data.descriptor.columns.index(
+            query.component
+        )
+    except ValueError as error:
+        raise ResultQueryValidationError(
+            "result.query.component_not_available",
+            f"query component {query.component!r} is not available",
+        ) from error
+
+    _validate_topology_filters(materialization, query)
+    values = field_data.values
+    records = tuple(
+        ResultQueryRecord(
+            source=materialization.source,
+            location=location,
+            value=values[index, component_index],
+        )
+        for index, location in enumerate(field_data.locations)
+        if _matches_filters(location, query)
+    )
+    return ResultQueryResult(
+        source=materialization.source,
+        materialization_generation=materialization.generation,
+        query=query,
+        records=records,
+    )
+
+
+def _validate_topology_filters(
+    materialization: ResultMaterializationSnapshot,
+    query: ResultQuery,
+) -> None:
+    topology = materialization.topology
+    topology_node_ids = frozenset(topology.node_ids)
+    unknown_node_ids = tuple(
+        node_id
+        for node_id in query.node_ids
+        if node_id not in topology_node_ids
+    )
+    if unknown_node_ids:
+        raise ResultQueryValidationError(
+            "result.query.unknown_node_ids",
+            f"query contains unknown node IDs: {unknown_node_ids!r}",
+        )
+
+    topology_element_ids = frozenset(topology.element_ids)
+    unknown_element_ids = tuple(
+        element_id
+        for element_id in query.element_ids
+        if element_id not in topology_element_ids
+    )
+    if unknown_element_ids:
+        raise ResultQueryValidationError(
+            "result.query.unknown_element_ids",
+            f"query contains unknown element IDs: {unknown_element_ids!r}",
+        )
+
+    topology_regions = frozenset(topology.element_region_keys)
+    unknown_region_keys = tuple(
+        region_key
+        for region_key in query.region_keys
+        if region_key not in topology_regions
+    )
+    if unknown_region_keys:
+        raise ResultQueryValidationError(
+            "result.query.unknown_region_keys",
+            "query contains region keys outside the result topology",
+        )
+
+
+def _matches_filters(location: FieldLocation, query: ResultQuery) -> bool:
+    if query.node_ids and location.node_id not in query.node_ids:
+        return False
+    if query.element_ids and location.element_id not in query.element_ids:
+        return False
+    if query.region_keys and location.region_key not in query.region_keys:
+        return False
+    return True
+
+
 def _identity_filter(
     values: object,
     *,
@@ -146,4 +259,6 @@ __all__ = [
     "ResultQuery",
     "ResultQueryRecord",
     "ResultQueryResult",
+    "ResultQueryValidationError",
+    "evaluate_result_query",
 ]

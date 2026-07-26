@@ -46,7 +46,13 @@ from .provider import (
     build_result_provider,
     restore_result_provider,
 )
-from .query import ResultQuery, ResultQueryRecord, ResultQueryResult
+from .query import (
+    ResultQuery,
+    ResultQueryRecord,
+    ResultQueryResult,
+    ResultQueryValidationError,
+    evaluate_result_query,
+)
 from .output_requests import (
     ExecutableOutputRequest,
     OutputRequestProjection,
@@ -103,6 +109,7 @@ __all__ = [
     "ResultQuery",
     "ResultQueryRecord",
     "ResultQueryResult",
+    "ResultQueryValidationError",
     "ResultSourceKey",
     "ResultTopologyProjection",
     "ResultVariable",
@@ -118,6 +125,7 @@ __all__ = [
     "classify_result_model",
     "descriptor_for",
     "execute_output_requests",
+    "evaluate_result_query",
     "field_materialization_sort_key",
     "prepare_result_export_snapshot",
     "project_output_request",
