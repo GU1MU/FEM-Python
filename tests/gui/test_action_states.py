@@ -10,7 +10,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from fem.application import NamedRegion, RegionAssignment, SectionDefinition
+from fem.application import (
+    DeleteIntent,
+    NamedRegion,
+    RegionAssignment,
+    RegionRef,
+    RenameIntent,
+    SectionDefinition,
+)
 from fem.abaqus import read
 from fem.core.model import (
     AnalysisStep,
@@ -19,20 +26,19 @@ from fem.core.model import (
     MaterialDefinition,
     NodalLoad,
 )
-from fem.geometry import LogicalEntityRef
-from fem.mesh import settings as mesh_settings_api
-from fem.solvers.static_linear import solve
-from fem.steps.factory import static
-import fem_gui.main_window as main_window_module
-from fem_gui.main_window import FEMMainWindow
-from fem_gui.preprocessing import (
+from fem.geometry import (
     BoxGeometry,
-    LocalMeshControl,
-    MeshSettings,
+    LogicalEntityRef,
     MovedGeometry,
     RectangleGeometry,
     RotatedGeometry,
 )
+from fem.mesh import settings as mesh_settings_api
+from fem.mesh.settings import LocalMeshControl, MeshSettings
+from fem.solvers.static_linear import solve
+from fem.steps.factory import static
+import fem_gui.main_window as main_window_module
+from fem_gui.main_window import FEMMainWindow
 from fem_gui.visualization.model_adapter import build_model_geometry
 from fem_gui.visualization.result_adapter import build_result_data
 
@@ -277,7 +283,10 @@ def test_load_action_uses_the_same_dimension_filtered_regions_as_dialog():
     window._update_action_states()
 
     assert not window.actions["load_create"].isEnabled()
-    assert "capability report" in window.actions["load_create"].toolTip()
+    assert "[step.reference.invalid]" in window.actions["load_create"].toolTip()
+    assert "请选择当前模型中存在的同类命名区域" in (
+        window.actions["load_create"].toolTip()
+    )
     window.close()
 
 
@@ -431,10 +440,10 @@ def test_boundary_action_uses_native_region_catalog_before_meshing(
 
     assert captured["step_names"] == ["Load"]
     assert captured["node_regions"] == [
-        "BOTTOM",
-        "RIGHT",
-        "TOP",
-        "LEFT",
+        RegionRef("node_set", "BOTTOM"),
+        RegionRef("node_set", "LEFT"),
+        RegionRef("node_set", "RIGHT"),
+        RegionRef("node_set", "TOP"),
     ]
     assert captured["dimensions"] == 2
     assert captured["parent"] is window
@@ -498,7 +507,7 @@ def test_geometry_parameter_edits_preserve_topology_references(before, after):
     window._set_native_geometry(after, "参数修改后的")
 
     assert set(window.document.named_regions) == {"Fixed", "SolidDomain"}
-    assert window.document.region_assignments == (
+    assert window.document.assignments == (
         RegionAssignment("Solid", "SolidDomain"),
     )
     assert window.document.mesh_settings.local_controls == (
@@ -571,7 +580,7 @@ def test_geometry_topology_change_does_not_report_preserved_steps():
         "矩形",
     )
 
-    assert window.document.analysis_definitions == (
+    assert window.document.steps == (
         empty,
         global_gravity,
     )
@@ -618,7 +627,7 @@ def test_geometry_topology_change_reports_invalidated_region_target_step():
         "矩形",
     )
 
-    assert window.document.analysis_definitions == ()
+    assert window.document.steps == ()
     assert (
         "依赖旧拓扑的区域分配和分析步已失效"
         in window.status_panel.state_label.text()
@@ -876,6 +885,17 @@ def test_named_region_rename_updates_analysis_and_section_references(
                 ),
             }
 
+        @staticmethod
+        def rename_intents() -> tuple[RenameIntent, ...]:
+            return (
+                RenameIntent("Fixed", "Support"),
+                RenameIntent("Volume", "SolidDomain"),
+            )
+
+        @staticmethod
+        def delete_intents() -> tuple[DeleteIntent, ...]:
+            return ()
+
     monkeypatch.setattr(
         "fem_gui.main_window.NamedRegionManagerDialog",
         FakeRegionManager,
@@ -887,10 +907,10 @@ def test_named_region_rename_updates_analysis_and_section_references(
         "SolidDomain",
     }
     assert (
-        window.document.region_assignments[0].region_name
+        window.document.assignments[0].region_name
         == "SolidDomain"
     )
-    renamed_step = window.document.analysis_definitions[0]
+    renamed_step = window.document.steps[0]
     assert renamed_step.boundaries[0].target == "Support"
     assert renamed_step.cloads[0].target == "Support"
     window.close()

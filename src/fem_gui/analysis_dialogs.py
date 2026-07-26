@@ -21,17 +21,18 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from .analysis_jobs import AnalysisJob, JobStatus
+from fem.application import AnalysisRun, RunStatus
+
 from .dialogs import configure_form_layout
 
 
 SESSION_NOTICE = "作业记录、日志和结果仅保留在当前会话中；关闭、重新加载或更换模型后将被清除。"
 _STATUS_LABELS = {
-    JobStatus.PENDING: "等待中",
-    JobStatus.RUNNING: "运行中",
-    JobStatus.SUCCEEDED: "已完成",
-    JobStatus.FAILED: "失败",
-    JobStatus.CANCELLED: "已取消",
+    RunStatus.PENDING: "等待中",
+    RunStatus.RUNNING: "运行中",
+    RunStatus.SUCCEEDED: "已完成",
+    RunStatus.FAILED: "失败",
+    RunStatus.CANCELLED: "已取消",
 }
 
 
@@ -93,7 +94,7 @@ class JobManagerDialog(QDialog):
     resubmitRequested = Signal(str)
     openResultRequested = Signal(str)
 
-    def __init__(self, jobs: Iterable[AnalysisJob], parent=None) -> None:
+    def __init__(self, jobs: Iterable[AnalysisRun], parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("jobManagerDialog")
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
@@ -138,7 +139,7 @@ class JobManagerDialog(QDialog):
         self._timer.start()
         self.refresh(jobs)
 
-    def refresh(self, jobs: Iterable[AnalysisJob] | None = None) -> None:
+    def refresh(self, jobs: Iterable[AnalysisRun] | None = None) -> None:
         """刷新表格并保留原选择。"""
         if jobs is not None:
             self._jobs = list(jobs)
@@ -170,7 +171,7 @@ class JobManagerDialog(QDialog):
         item = self.table.item(self.table.currentRow(), 0)
         return None if item is None else str(item.data(Qt.ItemDataRole.UserRole))
 
-    def _selected_job(self) -> AnalysisJob | None:
+    def _selected_job(self) -> AnalysisRun | None:
         name = self.selected_job_name()
         return next((job for job in getattr(self, "_jobs", []) if job.name == name), None)
 
@@ -190,7 +191,7 @@ class JobManagerDialog(QDialog):
         self.resubmit_button.setEnabled(
             job is not None
             and job.status
-            in {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}
+            in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED}
         )
         self.open_result_button.setEnabled(job is not None and job.has_result)
 
@@ -205,6 +206,6 @@ class JobManagerDialog(QDialog):
             self.openResultRequested.emit(name)
 
 
-def _elapsed_text(job: AnalysisJob) -> str:
+def _elapsed_text(job: AnalysisRun) -> str:
     elapsed = job.elapsed_seconds
     return "—" if elapsed is None else f"{elapsed:.2f} s"

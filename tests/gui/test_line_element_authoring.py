@@ -13,6 +13,14 @@ from PySide6.QtWidgets import (
     QPushButton,
 )
 
+from fem.application import (
+    AuthoringCapability,
+    AuthoringStatus,
+    PreflightDiagnostic,
+    PreflightSeverity,
+    PreflightStage,
+    RegionRef,
+)
 from fem.core.model import (
     DisplacementConstraint,
     LineLoad,
@@ -31,6 +39,40 @@ from fem_gui.widgets.model_tree import ModelTree, ROLE_KIND
 
 def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def _regions(kind: str, *names: str) -> list[RegionRef]:
+    return [RegionRef(kind, name) for name in names]
+
+
+def _line_candidate(
+    status: AuthoringStatus,
+    *,
+    code: str | None = None,
+    message: str = "",
+    blocking: bool = False,
+) -> AuthoringCapability:
+    diagnostics = (
+        (
+            PreflightDiagnostic(
+                code=code,
+                severity=(
+                    PreflightSeverity.ERROR
+                    if blocking
+                    else PreflightSeverity.WARNING
+                ),
+                stage=PreflightStage.CAPABILITY,
+                message=message,
+            ),
+        )
+        if code is not None
+        else ()
+    )
+    return AuthoringCapability(
+        operation="load.line.local",
+        status=status,
+        diagnostics=diagnostics,
+    )
 
 
 def _tree_items(tree: ModelTree) -> list[object]:
@@ -59,7 +101,7 @@ def test_line_load_dialog_uses_capability_regions_and_three_components() -> None
         [],
         6,
         spatial_dimensions=1,
-        line_regions=["BEAM-SET"],
+        line_regions=_regions("element_set", "BEAM-SET"),
         preferred_kind="line",
     )
 
@@ -104,6 +146,11 @@ def test_line_load_dialog_edits_local_load_and_explains_local_axes() -> None:
         [],
         6,
         current=current,
+        candidate_evaluator=lambda _candidate, _step: _line_candidate(
+            AuthoringStatus.LIMITED,
+            code="beam.orientation.assumed",
+            message="旧载荷不可保存",
+        ),
     )
 
     assert dialog.kind_combo.currentData() == "line"
@@ -127,15 +174,10 @@ def test_local_line_load_requires_an_enabled_nonblocking_candidate() -> None:
 
     def evaluate(candidate, step_name):
         decisions.append((candidate, step_name))
-        return SimpleNamespace(
-            status=SimpleNamespace(value="limited"),
-            diagnostics=(
-                SimpleNamespace(
-                    code="beam.orientation.assumed",
-                    message="BEAM-SET 缺少显式方向",
-                    blocking=False,
-                ),
-            ),
+        return _line_candidate(
+            AuthoringStatus.LIMITED,
+            code="beam.orientation.assumed",
+            message="BEAM-SET 缺少显式方向",
         )
 
     dialog = LoadDialog(
@@ -145,7 +187,7 @@ def test_local_line_load_requires_an_enabled_nonblocking_candidate() -> None:
         [],
         6,
         spatial_dimensions=3,
-        line_regions=["BEAM-SET"],
+        line_regions=_regions("element_set", "BEAM-SET"),
         preferred_kind="line",
         candidate_evaluator=evaluate,
     )
@@ -178,17 +220,13 @@ def test_enabled_candidate_with_blocking_diagnostic_is_not_writable() -> None:
         [],
         [],
         6,
-        line_regions=["BEAM-SET"],
+        line_regions=_regions("element_set", "BEAM-SET"),
         preferred_kind="line",
-        candidate_evaluator=lambda _candidate, _step, **_context: SimpleNamespace(
-            status=SimpleNamespace(value="enabled"),
-            diagnostics=(
-                SimpleNamespace(
-                    code="beam.orientation.parallel",
-                    message="参考方向与单元平行",
-                    blocking=True,
-                ),
-            ),
+        candidate_evaluator=lambda _candidate, _step, **_context: _line_candidate(
+            AuthoringStatus.ENABLED,
+            code="beam.orientation.parallel",
+            message="参考方向与单元平行",
+            blocking=True,
         ),
     )
     dialog.coordinate_system_combo.setCurrentIndex(
@@ -200,17 +238,40 @@ def test_enabled_candidate_with_blocking_diagnostic_is_not_writable() -> None:
     ).isEnabled()
 
 
+def test_boolean_candidate_result_disables_local_line_load_submission() -> None:
+    _application()
+    dialog = LoadDialog(
+        ["Step-A"],
+        [],
+        [],
+        [],
+        6,
+        line_regions=_regions("element_set", "BEAM-SET"),
+        preferred_kind="line",
+        candidate_evaluator=lambda _candidate, _step: True,
+    )
+
+    dialog.coordinate_system_combo.setCurrentIndex(
+        dialog.coordinate_system_combo.findData("local")
+    )
+
+    assert not dialog.buttons.button(
+        QDialogButtonBox.StandardButton.Ok
+    ).isEnabled()
+    assert "AuthoringCapability" in dialog.candidate_diagnostic_label.text()
+
+
 def test_beam_component_labels_support_capability_overrides() -> None:
     _application()
     displacement = DisplacementDialog(
         ["Step-A"],
-        ["NODES"],
+        _regions("node_set", "NODES"),
         6,
         labels=("DX", "DY", "DZ", "RX", "RY", "RZ"),
     )
     load = LoadDialog(
         ["Step-A"],
-        ["NODES"],
+        _regions("node_set", "NODES"),
         [],
         [],
         6,
@@ -218,10 +279,16 @@ def test_beam_component_labels_support_capability_overrides() -> None:
     )
     default_displacement = DisplacementDialog(
         ["Step-A"],
-        ["NODES"],
+        _regions("node_set", "NODES"),
         6,
     )
-    default_load = LoadDialog(["Step-A"], ["NODES"], [], [], 6)
+    default_load = LoadDialog(
+        ["Step-A"],
+        _regions("node_set", "NODES"),
+        [],
+        [],
+        6,
+    )
 
     assert [
         displacement.component_checks[index].text()
@@ -254,15 +321,16 @@ def test_manager_lists_moves_and_deletes_line_loads(monkeypatch) -> None:
     step_b = static("Step-B")
     manager = AnalysisDefinitionManagerDialog(
         [step_a, step_b],
-        ["NODES"],
+        _regions("node_set", "NODES"),
         [],
         [],
         6,
         spatial_dimensions=3,
-        line_regions=["BEAM-SET"],
-        candidate_evaluator=lambda _candidate, _step, **_context: SimpleNamespace(
-            status=SimpleNamespace(value="enabled"),
-            diagnostics=(),
+        line_regions=_regions("element_set", "BEAM-SET"),
+        candidate_evaluator=(
+            lambda _candidate, _step, **_context: _line_candidate(
+                AuthoringStatus.ENABLED,
+            )
         ),
     )
 
@@ -321,16 +389,11 @@ def test_manager_does_not_resave_a_limited_legacy_local_load(
         [],
         [],
         6,
-        line_regions=["BEAM-SET"],
-        candidate_evaluator=lambda _candidate, _step: SimpleNamespace(
-            status=SimpleNamespace(value="limited"),
-            diagnostics=(
-                SimpleNamespace(
-                    code="beam.orientation.assumed",
-                    message="legacy compatibility frame",
-                    blocking=False,
-                ),
-            ),
+        line_regions=_regions("element_set", "BEAM-SET"),
+        candidate_evaluator=lambda _candidate, _step, **_context: _line_candidate(
+            AuthoringStatus.LIMITED,
+            code="beam.orientation.assumed",
+            message="legacy compatibility frame",
         ),
     )
     warnings = []
@@ -364,10 +427,9 @@ def test_limited_legacy_local_load_can_be_changed_to_global(
         [],
         [],
         6,
-        line_regions=["BEAM-SET"],
-        candidate_evaluator=lambda *_args, **_kwargs: SimpleNamespace(
-            status=SimpleNamespace(value="limited"),
-            diagnostics=(),
+        line_regions=_regions("element_set", "BEAM-SET"),
+        candidate_evaluator=lambda *_args, **_kwargs: _line_candidate(
+            AuthoringStatus.LIMITED,
         ),
     )
 

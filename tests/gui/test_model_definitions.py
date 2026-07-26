@@ -31,7 +31,13 @@ def test_material_and_section_dialogs_use_modal_parameter_fields_only():
     material = material_dialog.material()
     elastic_dialog = ElasticBehaviorDialog(material.properties)
     density_dialog = DensityBehaviorDialog(material.properties)
-    section_dialog = SectionEditDialog([material])
+    section_dialog = SectionEditDialog(
+        [material],
+        section_presets=(
+            "solid_plane_stress",
+            "solid_plane_strain",
+        ),
+    )
     section = section_dialog.section()
 
     assert material.name == "Aluminium"
@@ -49,8 +55,17 @@ def test_section_dialog_uses_dimension_specific_supported_parameters():
         "Steel",
         {"E": 210000.0, "nu": 0.3},
     )
-    plane = SectionEditDialog([material], model_dimension=2)
-    plane.type_combo.setCurrentIndex(plane.type_combo.findData("strain"))
+    plane = SectionEditDialog(
+        [material],
+        model_dimension=2,
+        section_presets=(
+            "solid_plane_stress",
+            "solid_plane_strain",
+        ),
+    )
+    plane.type_combo.setCurrentIndex(
+        plane.type_combo.findData("solid_plane_strain")
+    )
     plane_section = plane.section()
 
     assert plane.type_combo.itemText(0) == "平面应力"
@@ -59,7 +74,11 @@ def test_section_dialog_uses_dimension_specific_supported_parameters():
     assert plane_section.properties["plane_type"] == "strain"
     assert plane.form.isRowVisible(plane.thickness_spin)
 
-    solid = SectionEditDialog([material], model_dimension=3)
+    solid = SectionEditDialog(
+        [material],
+        model_dimension=3,
+        section_presets=("solid",),
+    )
     solid_section = solid.section()
 
     assert solid.type_combo.itemText(0) == "三维实体"

@@ -640,6 +640,7 @@ class IsolatedFEMInspector:
             deadline = time.monotonic() + _WORKER_LOG_JOIN_SECONDS
             for reader in readers:
                 reader.join(max(0.0, deadline - time.monotonic()))
+            _close_process_pipes(process)
         if any(reader.is_alive() for reader in readers) or capture.failure is not None:
             raise InspectionWorkerError(
                 "The isolated Abaqus inspection output could not be captured safely."
@@ -813,6 +814,7 @@ class IsolatedFEMResultQuerier:
             deadline = time.monotonic() + _WORKER_LOG_JOIN_SECONDS
             for reader in readers:
                 reader.join(max(0.0, deadline - time.monotonic()))
+            _close_process_pipes(process)
         if any(reader.is_alive() for reader in readers) or capture.failure is not None:
             raise ResultQueryWorkerError(
                 "The isolated result query output could not be captured safely."
@@ -1280,6 +1282,15 @@ class IsolatedFEMWorker:
             )
             if process is not None and process.poll() is None:
                 process_may_be_active = not _terminate_process(process)
+        finally:
+            if process is not None and process.poll() is None:
+                process_may_be_active = not _terminate_process(process)
+            join_deadline = time.monotonic() + _WORKER_LOG_JOIN_SECONDS
+            for thread in log_threads:
+                thread.join(
+                    timeout=max(0.0, join_deadline - time.monotonic())
+                )
+            _close_process_pipes(process)
 
         supervisor_resource_violation = (
             reason is not None
@@ -2920,6 +2931,22 @@ def _terminate_process(process: subprocess.Popen[bytes]) -> bool:
     except (OSError, subprocess.TimeoutExpired):
         return process.poll() is not None
     return True
+
+
+def _close_process_pipes(
+    process: subprocess.Popen[bytes] | None,
+) -> None:
+    """Close parent-owned subprocess pipe objects after capture threads stop."""
+    if process is None:
+        return
+    for name in ("stdin", "stdout", "stderr"):
+        stream = getattr(process, name, None)
+        if stream is None:
+            continue
+        try:
+            stream.close()
+        except OSError:
+            pass
 
 
 def _utc_now() -> str:

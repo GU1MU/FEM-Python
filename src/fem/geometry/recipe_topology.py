@@ -14,9 +14,13 @@ placeholder and a diagnostic instead of guessing an entity ordering.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 from typing import Literal
 
+from .recipe_analysis import (
+    axis_aligned_rectangle,
+    expand_sketch_recipe,
+    transformed_circle,
+)
 from .references import (
     EntityKind,
     LogicalEntityRef,
@@ -34,9 +38,7 @@ from .recipes import (
     PlateWithHoleGeometry,
     RectangleGeometry,
     RotatedGeometry,
-    SketchCircle,
     SketchGeometry,
-    SketchRectangle,
     geometry_dimension,
 )
 
@@ -607,14 +609,16 @@ def _cylinder_topology(recipe: CylinderGeometry) -> RecipeTopology:
 
 def _sketch_topology(recipe: SketchGeometry) -> RecipeTopology:
     """Resolve the proven single-domain sketch whitelist exactly."""
-    if len(recipe.contours) == 1 and recipe.contours[0].operation == "material":
-        contour = recipe.contours[0]
-        if isinstance(contour, SketchRectangle):
+    expanded = expand_sketch_recipe(recipe)
+    if len(recipe.contours) == 1:
+        if axis_aligned_rectangle(expanded) is not None:
             entities = _rectangle_entities()
-        elif isinstance(contour, SketchCircle):
+        elif transformed_circle(expanded) is not None:
             entities = _disk_entities()
-        else:  # pragma: no cover - SketchGeometry validates contour types
-            raise TypeError(f"Unsupported sketch contour: {type(contour).__name__}")
+        else:  # pragma: no cover - expansion owns the validated contour catalog
+            raise TypeError(
+                f"Unsupported expanded sketch recipe: {type(expanded).__name__}"
+            )
         return _make_topology(
             recipe,
             entities,
@@ -622,25 +626,13 @@ def _sketch_topology(recipe: SketchGeometry) -> RecipeTopology:
             operation="sketch.single-contour",
         )
 
-    material = tuple(
-        contour for contour in recipe.contours if contour.operation == "material"
-    )
-    cuts = tuple(contour for contour in recipe.contours if contour.operation == "cut")
-    if (
-        len(material) == 1
-        and isinstance(material[0], SketchRectangle)
-        and len(cuts) == 1
-    ):
-        outer = (
-            material[0].x,
-            material[0].y,
-            material[0].width,
-            material[0].height,
-        )
-        cut = cuts[0]
-        if isinstance(cut, SketchCircle) and _circle_strictly_inside_rectangle(
-            (cut.x, cut.y, cut.radius),
-            outer,
+    if isinstance(expanded, BooleanGeometry) and expanded.operation == "cut":
+        outer = axis_aligned_rectangle(expanded.object_geometry)
+        circle = transformed_circle(expanded.tool_geometry)
+        if (
+            outer is not None
+            and circle is not None
+            and outer.strictly_contains_circle(circle)
         ):
             return _make_topology(
                 recipe,
@@ -648,11 +640,11 @@ def _sketch_topology(recipe: SketchGeometry) -> RecipeTopology:
                 exact=True,
                 operation="sketch.cut-contained-circle",
             )
-        if isinstance(cut, SketchRectangle) and (
-            _rectangle_strictly_inside_rectangle(
-                (cut.x, cut.y, cut.width, cut.height),
-                outer,
-            )
+        rectangle = axis_aligned_rectangle(expanded.tool_geometry)
+        if (
+            outer is not None
+            and rectangle is not None
+            and outer.strictly_contains_rectangle(rectangle)
         ):
             return _make_topology(
                 recipe,
@@ -841,12 +833,12 @@ def _boolean_topology(recipe: BooleanGeometry) -> RecipeTopology:
     )
 
     if recipe.operation == "cut":
-        object_frame = _axis_aligned_rectangle(recipe.object_geometry)
-        circle_frame = _translated_circle(recipe.tool_geometry)
+        object_frame = axis_aligned_rectangle(recipe.object_geometry)
+        circle_frame = transformed_circle(recipe.tool_geometry)
         if (
             object_frame is not None
             and circle_frame is not None
-            and _circle_strictly_inside_rectangle(circle_frame, object_frame)
+            and object_frame.strictly_contains_circle(circle_frame)
         ):
             entities = _grouped_hole_entities(include_hole_points=False)
             mappings = _outer_group_mappings(object_topology) + (
@@ -866,11 +858,11 @@ def _boolean_topology(recipe: BooleanGeometry) -> RecipeTopology:
                 mappings=mappings,
             )
 
-        tool_frame = _axis_aligned_rectangle(recipe.tool_geometry)
+        tool_frame = axis_aligned_rectangle(recipe.tool_geometry)
         if (
             object_frame is not None
             and tool_frame is not None
-            and _rectangle_strictly_inside_rectangle(tool_frame, object_frame)
+            and object_frame.strictly_contains_rectangle(tool_frame)
         ):
             entities = _grouped_hole_entities(include_hole_points=True)
             tool_mappings = _rectangular_hole_mappings()
@@ -969,79 +961,6 @@ def _rectangular_hole_mappings() -> tuple[TopologyMapping, ...]:
         for name in edge_names
     )
     return point_mappings + edge_mappings
-
-
-def _axis_aligned_rectangle(
-    recipe: NativeGeometry,
-) -> tuple[float, float, float, float] | None:
-    if isinstance(recipe, RectangleGeometry):
-        return 0.0, 0.0, recipe.width, recipe.height
-    if isinstance(recipe, MovedGeometry):
-        frame = _axis_aligned_rectangle(recipe.base)
-        if frame is None or recipe.dz != 0.0:
-            return None
-        x, y, width, height = frame
-        return x + recipe.dx, y + recipe.dy, width, height
-    if isinstance(recipe, RotatedGeometry) and math.isclose(
-        recipe.angle_degrees % 360.0,
-        0.0,
-        abs_tol=1.0e-12,
-    ):
-        return _axis_aligned_rectangle(recipe.base)
-    return None
-
-
-def _translated_circle(
-    recipe: NativeGeometry,
-) -> tuple[float, float, float] | None:
-    if isinstance(recipe, DiskGeometry):
-        return 0.0, 0.0, recipe.radius
-    if isinstance(recipe, MovedGeometry):
-        circle = _translated_circle(recipe.base)
-        if circle is None or recipe.dz != 0.0:
-            return None
-        x, y, radius = circle
-        return x + recipe.dx, y + recipe.dy, radius
-    if isinstance(recipe, RotatedGeometry):
-        circle = _translated_circle(recipe.base)
-        if circle is None:
-            return None
-        x, y, radius = circle
-        angle = math.radians(recipe.angle_degrees)
-        return (
-            x * math.cos(angle) - y * math.sin(angle),
-            x * math.sin(angle) + y * math.cos(angle),
-            radius,
-        )
-    return None
-
-
-def _circle_strictly_inside_rectangle(
-    circle: tuple[float, float, float],
-    rectangle: tuple[float, float, float, float],
-) -> bool:
-    center_x, center_y, radius = circle
-    x, y, width, height = rectangle
-    return (
-        x < center_x - radius
-        and center_x + radius < x + width
-        and y < center_y - radius
-        and center_y + radius < y + height
-    )
-
-
-def _rectangle_strictly_inside_rectangle(
-    inner: tuple[float, float, float, float],
-    outer: tuple[float, float, float, float],
-) -> bool:
-    inner_x, inner_y, inner_width, inner_height = inner
-    outer_x, outer_y, outer_width, outer_height = outer
-    return (
-        outer_x < inner_x
-        and inner_x + inner_width < outer_x + outer_width
-        and outer_y < inner_y
-        and inner_y + inner_height < outer_y + outer_height
-    )
 
 
 def _unknown_topology(

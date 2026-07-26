@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QHeaderView, QToolButton
 
-from fem.application import NamedRegion, SectionDefinition
+from fem.application import NamedRegion, RegionRef, SectionDefinition
 from fem.core.model import MaterialDefinition
 from fem.geometry import LogicalEntityRef
 from fem_gui.analysis_definition_dialogs import LoadDialog, OutputRequestDialog
@@ -44,8 +44,23 @@ def test_parameter_dialogs_do_not_force_sparse_content_wide():
     section = SectionDefinition("Section-1", "Steel")
     dialogs = (
         (SectionEditDialog([material], section), 350),
-        (RegionAssignmentDialog([section], ["DOMAIN"]), 310),
-        (LoadDialog(["Step-1"], ["Loaded"], [], [], 2), 360),
+        (
+            RegionAssignmentDialog(
+                [section],
+                [RegionRef("element_set", "DOMAIN")],
+            ),
+            310,
+        ),
+        (
+            LoadDialog(
+                ["Step-1"],
+                [RegionRef("node_set", "Loaded")],
+                [],
+                [],
+                2,
+            ),
+            360,
+        ),
         (OutputRequestDialog(["Step-1"]), 340),
         (SketchContourDialog(), 350),
     )

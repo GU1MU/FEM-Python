@@ -12,6 +12,11 @@ from PySide6.QtWidgets import QApplication, QFileDialog
 
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.postprocessing_dialogs import ResultDisplaySettings
+from fem_gui.task_controller import (
+    BackgroundTaskState,
+    TaskApplyStatus,
+    TaskCompletion,
+)
 from fem_gui.visualization.symbols import SymbolSettings
 
 
@@ -23,27 +28,20 @@ def _application() -> QApplication:
 
 
 def _wait_for_task(window: FEMMainWindow) -> None:
-    assert window._thread is not None
+    controller = window.task_controller
+    assert controller.busy
     deadline = monotonic() + 10.0
     application = QApplication.instance()
-    while window.busy and monotonic() < deadline:
+    while controller.busy and monotonic() < deadline:
         application.processEvents()
         QThread.msleep(1)
     application.processEvents()
-    assert not window.busy
+    assert not controller.busy
 
 
 def test_background_import_solve_and_result_state(gui_inp_path):
     _application()
     window = FEMMainWindow()
-    callback_threads: list[QThread] = []
-    original_model_loaded = window._model_loaded
-
-    def record_model_loaded(path, value, **kwargs):
-        callback_threads.append(QThread.currentThread())
-        original_model_loaded(path, value, **kwargs)
-
-    window._model_loaded = record_model_loaded
 
     window._load_path(gui_inp_path)
     assert not window.actions["open"].isEnabled()
@@ -51,7 +49,11 @@ def test_background_import_solve_and_result_state(gui_inp_path):
     _wait_for_task(window)
 
     assert window.document.has_model
-    assert callback_threads == [window.thread()]
+    completion = window.task_controller.last_completion
+    assert isinstance(completion, TaskCompletion)
+    assert completion.task_name == "INP 导入"
+    assert completion.state is BackgroundTaskState.SUCCEEDED
+    assert completion.apply_status is TaskApplyStatus.ACCEPTED
     assert not window.actions["submit_job"].isEnabled()
     assert window.check_current_model(show_success=False)
     assert window.actions["submit_job"].isEnabled()

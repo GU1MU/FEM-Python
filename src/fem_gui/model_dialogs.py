@@ -24,10 +24,13 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-import fem.application as application_api
 from fem.application import (
+    AuthoringCapability,
+    BeamOrientation,
+    DeleteIntent,
     RegionAssignment,
     RegionRef,
+    RenameIntent,
     SectionDefinition,
     require_region_kind,
 )
@@ -92,15 +95,9 @@ _REGION_KIND_LABELS = {
 
 
 def _section_presets(
-    values: Sequence[str] | None,
+    values: Sequence[str],
     model_dimension: int,
 ) -> tuple[str, ...]:
-    if values is None:
-        if model_dimension == 2:
-            return ("solid_plane_stress", "solid_plane_strain")
-        if model_dimension == 3:
-            return ("solid",)
-        return ()
     normalized: list[str] = []
     for value in values:
         preset = str(value).strip().casefold()
@@ -349,6 +346,10 @@ class MaterialManagerDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("材料管理")
         self.materials = deepcopy(materials)
+        self._original_names: tuple[str, ...] = tuple(
+            material.name for material in materials
+        )
+        self._origins: list[str | None] = list(self._original_names)
         self.table = QTableWidget(0, 2, self)
         self.table.setHorizontalHeaderLabels(("名称", "材料行为"))
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -425,6 +426,7 @@ class MaterialManagerDialog(QDialog):
             raise ValueError(f"材料名称已存在：{value.name}")
         if row is None:
             self.materials.append(value)
+            self._origins.append(None)
         else:
             self.materials[row] = value
         self._refresh()
@@ -452,6 +454,7 @@ class MaterialManagerDialog(QDialog):
         row = self._selected_row()
         if row >= 0:
             del self.materials[row]
+            del self._origins[row]
             self._refresh()
 
     def _update_buttons(self) -> None:
@@ -462,6 +465,21 @@ class MaterialManagerDialog(QDialog):
     def values(self) -> list[MaterialDefinition]:
         return deepcopy(self.materials)
 
+    def rename_intents(self) -> tuple[RenameIntent, ...]:
+        return tuple(
+            RenameIntent(origin, material.name)
+            for origin, material in zip(self._origins, self.materials)
+            if origin is not None and origin != material.name
+        )
+
+    def delete_intents(self) -> tuple[DeleteIntent, ...]:
+        retained = {origin for origin in self._origins if origin is not None}
+        return tuple(
+            DeleteIntent(name)
+            for name in self._original_names
+            if name not in retained
+        )
+
 
 class SectionEditDialog(QDialog):
     def __init__(
@@ -471,12 +489,11 @@ class SectionEditDialog(QDialog):
         parent=None,
         *,
         model_dimension: int = 2,
-        section_presets: Sequence[str] | None = None,
+        section_presets: Sequence[str] = (),
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("编辑截面" if section else "新建截面")
         self.model_dimension = int(model_dimension)
-        self._legacy_dimension_mode = section_presets is None
         self.section_presets = _section_presets(
             section_presets,
             self.model_dimension,
@@ -688,19 +705,10 @@ class SectionEditDialog(QDialog):
         return {}
 
     def _combo_data_for_preset(self, preset: str) -> str:
-        if not self._legacy_dimension_mode:
-            return preset
-        return {
-            "solid_plane_stress": "stress",
-            "solid_plane_strain": "strain",
-        }.get(preset, preset)
+        return preset
 
     def _current_preset(self) -> str:
-        value = str(self.type_combo.currentData() or "").casefold()
-        return {
-            "stress": "solid_plane_stress",
-            "strain": "solid_plane_strain",
-        }.get(value, value)
+        return str(self.type_combo.currentData() or "").casefold()
 
     def _preset_for_section(
         self,
@@ -786,18 +794,18 @@ class SectionManagerDialog(QDialog):
         parent=None,
         *,
         model_dimension: int = 2,
-        section_presets: Sequence[str] | None = None,
+        section_presets: Sequence[str] = (),
         authoring_enabled: bool = True,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("截面管理")
         self.materials, self.sections = deepcopy(materials), deepcopy(sections)
-        self.model_dimension = int(model_dimension)
-        self._section_presets_arg = (
-            None
-            if section_presets is None
-            else tuple(section_presets)
+        self._original_names: tuple[str, ...] = tuple(
+            section.name for section in sections
         )
+        self._origins: list[str | None] = list(self._original_names)
+        self.model_dimension = int(model_dimension)
+        self._section_presets_arg = tuple(section_presets)
         self.section_presets = _section_presets(
             section_presets,
             self.model_dimension,
@@ -892,6 +900,7 @@ class SectionManagerDialog(QDialog):
             raise ValueError(f"截面名称已存在：{value.name}")
         if row is None:
             self.sections.append(value)
+            self._origins.append(None)
         else:
             self.sections[row] = value
         self._refresh()
@@ -935,6 +944,7 @@ class SectionManagerDialog(QDialog):
         row = self.table.currentRow()
         if row >= 0:
             del self.sections[row]
+            del self._origins[row]
             self._refresh()
 
     def _update_buttons(self) -> None:
@@ -945,21 +955,38 @@ class SectionManagerDialog(QDialog):
     def values(self) -> list[SectionDefinition]:
         return deepcopy(self.sections)
 
+    def rename_intents(self) -> tuple[RenameIntent, ...]:
+        return tuple(
+            RenameIntent(origin, section.name)
+            for origin, section in zip(self._origins, self.sections)
+            if origin is not None and origin != section.name
+        )
+
+    def delete_intents(self) -> tuple[DeleteIntent, ...]:
+        retained = {origin for origin in self._origins if origin is not None}
+        return tuple(
+            DeleteIntent(name)
+            for name in self._original_names
+            if name not in retained
+        )
+
 
 class RegionAssignmentDialog(QDialog):
     def __init__(
         self,
         sections: Sequence[SectionDefinition],
-        regions: Sequence[RegionRef | str] = (),
+        regions: Sequence[RegionRef] = (),
         parent=None,
         *,
         compatible_targets: Mapping[
             str,
-            Sequence[RegionRef | str],
+            Sequence[RegionRef],
         ]
         | None = None,
         current: RegionAssignment | None = None,
-        candidate_evaluator: Callable[[RegionAssignment], object] | None = None,
+        candidate_evaluator: (
+            Callable[[RegionAssignment], AuthoringCapability] | None
+        ) = None,
         explicit_reference: Sequence[float] | None = None,
         orientation_suggester: Callable[[RegionRef], object] | None = None,
     ) -> None:
@@ -974,7 +1001,7 @@ class RegionAssignmentDialog(QDialog):
         self._orientation_suggester = orientation_suggester
         self._conversion_message = ""
         self._last_candidate: RegionAssignment | None = None
-        self._last_candidate_decision: object | None = None
+        self._last_candidate_decision: AuthoringCapability | None = None
         self._compatible_targets = (
             None
             if compatible_targets is None
@@ -1094,7 +1121,7 @@ class RegionAssignmentDialog(QDialog):
             beam_orientation=orientation,
         )
 
-    def beam_orientation(self) -> object | None:
+    def beam_orientation(self) -> BeamOrientation | None:
         if (
             not self._selected_section_is_beam()
             or self.orientation_mode_combo.currentData() != "explicit"
@@ -1105,14 +1132,7 @@ class RegionAssignmentDialog(QDialog):
             raise ValueError("梁截面参考方向必须包含三个有限分量")
         if not any(value != 0.0 for value in reference):
             raise ValueError("梁截面参考方向不能为零向量")
-        orientation_type = getattr(
-            application_api,
-            "BeamOrientation",
-            None,
-        )
-        if orientation_type is None:
-            raise ValueError("当前运行时尚未提供 Beam orientation contract")
-        return orientation_type(reference)
+        return BeamOrientation(reference)
 
     def reference_vector(self) -> tuple[float, float, float]:
         return tuple(
@@ -1127,18 +1147,21 @@ class RegionAssignmentDialog(QDialog):
     def candidate_decision(
         self,
         candidate: RegionAssignment | None = None,
-    ) -> object | None:
+    ) -> AuthoringCapability:
         value = self.assignment() if candidate is None else candidate
         if (
             self._last_candidate is not None
             and value == self._last_candidate
         ):
             return self._last_candidate_decision
-        decision = (
-            None
-            if self._candidate_evaluator is None
-            else self._candidate_evaluator(value)
-        )
+        if self._candidate_evaluator is None:
+            raise RuntimeError("region assignment candidate evaluator is required")
+        decision = self._candidate_evaluator(value)
+        if type(decision) is not AuthoringCapability:
+            raise TypeError(
+                "region assignment candidate evaluator must return "
+                "AuthoringCapability"
+            )
         self._last_candidate = deepcopy(value)
         self._last_candidate_decision = decision
         return decision
@@ -1163,17 +1186,16 @@ class RegionAssignmentDialog(QDialog):
 
     @staticmethod
     def _normalize_regions(
-        values: Sequence[RegionRef | str],
+        values: Sequence[RegionRef],
     ) -> tuple[RegionRef, ...]:
         normalized: list[RegionRef] = []
         for value in values:
-            reference = (
-                value
-                if isinstance(value, RegionRef)
-                else RegionRef("element_set", str(value))
-            )
-            if reference not in normalized:
-                normalized.append(reference)
+            if type(value) is not RegionRef:
+                raise TypeError("assignment regions must contain RegionRef values")
+            if value.kind != "element_set":
+                raise ValueError("assignment regions must use element_set namespace")
+            if value not in normalized:
+                normalized.append(value)
         return tuple(normalized)
 
     def _refresh_regions(self) -> None:
@@ -1335,25 +1357,16 @@ class RegionAssignmentDialog(QDialog):
         self._last_candidate_decision = None
 
     @staticmethod
-    def _decision_enabled(decision: object | None) -> bool:
-        if decision is None:
-            return False
-        if isinstance(decision, bool):
-            return decision
-        status = getattr(decision, "status", None)
-        value = getattr(status, "value", status)
-        diagnostics = tuple(getattr(decision, "diagnostics", ()))
-        return (
-            str(value).strip().casefold() == "enabled"
-            and not any(
-                bool(getattr(item, "blocking", False))
-                for item in diagnostics
-            )
-        )
+    def _decision_enabled(decision: AuthoringCapability) -> bool:
+        if type(decision) is not AuthoringCapability:
+            raise TypeError("candidate decision must be AuthoringCapability")
+        return decision.can_submit
 
     @staticmethod
-    def _decision_text(decision: object | None) -> str:
-        diagnostics = tuple(getattr(decision, "diagnostics", ()))
+    def _decision_text(decision: AuthoringCapability) -> str:
+        if type(decision) is not AuthoringCapability:
+            raise TypeError("candidate decision must be AuthoringCapability")
+        diagnostics = decision.diagnostics
         lines = []
         for diagnostic in diagnostics:
             code = str(getattr(diagnostic, "code", "")).strip()

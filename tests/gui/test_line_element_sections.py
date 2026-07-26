@@ -7,7 +7,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication, QDialogButtonBox
 import pytest
 
-from fem.application import RegionAssignment, RegionRef, SectionDefinition
+from fem.application import (
+    AuthoringCapability,
+    AuthoringStatus,
+    RegionAssignment,
+    RegionRef,
+    SectionDefinition,
+)
 from fem.core.model import MaterialDefinition
 from fem.elements import BeamOrientation
 from fem.materials import MaterialPropertyError, SectionPropertyError
@@ -220,23 +226,20 @@ def test_region_assignment_uses_per_section_typed_compatible_targets():
     assert dialog.assignment() == RegionAssignment("Beam", "BEAM_SET")
 
 
-def test_region_assignment_preserves_namespaces_and_legacy_strings():
+def test_region_assignment_requires_typed_element_set_regions():
     _application()
     section = SectionDefinition("Section", "Steel")
     node = RegionRef("node_set", "SAME")
     elements = RegionRef("element_set", "SAME")
-    typed = RegionAssignmentDialog([section], [node, elements])
 
-    assert typed.region_combo.itemText(0) == "SAME（节点集）"
-    assert typed.region_combo.itemText(1) == "SAME（单元集）"
     with pytest.raises(ValueError, match="element_set"):
-        typed.assignment()
+        RegionAssignmentDialog([section], [node, elements])
+    with pytest.raises(TypeError, match="RegionRef"):
+        RegionAssignmentDialog([section], ["DOMAIN"])
 
-    typed.region_combo.setCurrentIndex(1)
+    typed = RegionAssignmentDialog([section], [elements])
+    assert typed.region_combo.currentData() == elements
     assert typed.assignment() == RegionAssignment("Section", "SAME")
-
-    legacy = RegionAssignmentDialog([section], ["DOMAIN"])
-    assert legacy.assignment() == RegionAssignment("Section", "DOMAIN")
 
 
 def test_region_assignment_edits_preserves_and_clears_explicit_orientation():
@@ -288,11 +291,15 @@ def test_region_assignment_explicit_vector_validation_and_candidate_seam():
         {"radius": 1.0},
     )
     evaluated = []
+    enabled = AuthoringCapability(
+        "assignment.create",
+        AuthoringStatus.ENABLED,
+    )
     dialog = RegionAssignmentDialog(
         [section],
-        ["BEAM_SET"],
+        [RegionRef("element_set", "BEAM_SET")],
         candidate_evaluator=lambda candidate: (
-            evaluated.append(candidate) or True
+            evaluated.append(candidate) or enabled
         ),
     )
     dialog.orientation_mode_combo.setCurrentIndex(
@@ -311,8 +318,8 @@ def test_region_assignment_explicit_vector_validation_and_candidate_seam():
     assert dialog.buttons.button(
         QDialogButtonBox.StandardButton.Ok
     ).isEnabled()
-    assert dialog.candidate_decision(candidate) is True
-    assert dialog.candidate_decision(candidate) is True
+    assert dialog.candidate_decision(candidate) is enabled
+    assert dialog.candidate_decision(candidate) is enabled
     assert evaluated == [candidate]
 
 
@@ -327,7 +334,7 @@ def test_region_assignment_uses_domain_suggestion_when_switching_to_explicit():
     requested = []
     dialog = RegionAssignmentDialog(
         [section],
-        ["BEAM_SET"],
+        [RegionRef("element_set", "BEAM_SET")],
         orientation_suggester=lambda region: (
             requested.append(region)
             or BeamOrientation((0.0, 0.0, 1.0))

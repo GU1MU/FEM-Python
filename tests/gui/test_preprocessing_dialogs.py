@@ -7,16 +7,15 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication, QDialogButtonBox, QLabel
 
 from fem.application import NamedRegion
-from fem.geometry import LogicalEntityRef
-from fem.mesh import settings as mesh_settings_api
-from fem_gui.preprocessing import (
-    LocalMeshControl,
-    MeshSettings,
+from fem.geometry import (
     ExtrudedGeometry,
-    SketchGeometry,
+    LogicalEntityRef,
     SketchCircle,
+    SketchGeometry,
     SketchRectangle,
 )
+from fem.mesh import settings as mesh_settings_api
+from fem.mesh.settings import LocalMeshControl, MeshSettings
 from fem_gui.preprocessing_dialogs import (
     GeometryManagerDialog,
     LocalMeshControlDialog,

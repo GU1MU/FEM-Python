@@ -76,6 +76,75 @@ class AuthoringCapability:
             and not any(item.blocking for item in self.diagnostics)
         )
 
+    @property
+    def can_enter(self) -> bool:
+        """Return whether a manager may expose this operation for inspection."""
+
+        return self.status is not AuthoringStatus.UNAVAILABLE
+
+
+@dataclass(frozen=True, slots=True)
+class AuthoringTarget:
+    """One namespace-preserving target and its contextual operations."""
+
+    region: RegionRef
+    operations: tuple[AuthoringCapability, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.region) is not RegionRef:
+            raise TypeError("authoring target region must be RegionRef")
+        operations = tuple(self.operations)
+        if any(type(item) is not AuthoringCapability for item in operations):
+            raise TypeError(
+                "authoring target operations must be AuthoringCapability values"
+            )
+        names = tuple(item.operation for item in operations)
+        if len(names) != len(set(names)):
+            raise ValueError("authoring target operation names must be unique")
+        object.__setattr__(self, "operations", operations)
+
+    def operation(self, name: str) -> AuthoringCapability:
+        normalized = str(name).strip().casefold()
+        for capability in self.operations:
+            if capability.operation == normalized:
+                return capability
+        return AuthoringCapability(normalized, AuthoringStatus.UNAVAILABLE)
+
+
+@dataclass(frozen=True, slots=True)
+class StepLifecycleProjection:
+    """Detached check/submit state for one effective analysis Step."""
+
+    step_name: str
+    can_check: bool
+    can_submit: bool
+    check_reason: str
+    submit_reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class SessionAuthoringProjection:
+    """Complete headless authoring projection for one Session snapshot."""
+
+    report: ModelCapabilityReport
+    targets: tuple[AuthoringTarget, ...]
+    step_lifecycle: tuple[StepLifecycleProjection, ...]
+
+    def target(self, region: RegionRef) -> AuthoringTarget:
+        if type(region) is not RegionRef:
+            raise TypeError("authoring projection target lookup requires RegionRef")
+        for target in self.targets:
+            if target.region == region:
+                return target
+        return AuthoringTarget(region, ())
+
+    def step(self, step_name: str | None) -> StepLifecycleProjection | None:
+        normalized = str(step_name or "").strip()
+        for item in self.step_lifecycle:
+            if item.step_name == normalized:
+                return item
+        return None
+
 
 @dataclass(frozen=True, slots=True)
 class RegionCapability:
@@ -100,7 +169,7 @@ class RegionCapability:
 
     @property
     def status(self) -> AuthoringStatus:
-        if any(item.blocking for item in self.diagnostics):
+        if not self.compatible or any(item.blocking for item in self.diagnostics):
             return AuthoringStatus.UNAVAILABLE
         if self.diagnostics:
             return AuthoringStatus.LIMITED
@@ -170,7 +239,7 @@ class ModelCapabilityReport:
 
     @property
     def status(self) -> AuthoringStatus:
-        if any(item.blocking for item in self.diagnostics):
+        if not self.compatible or any(item.blocking for item in self.diagnostics):
             return AuthoringStatus.UNAVAILABLE
         if self.diagnostics:
             return AuthoringStatus.LIMITED
@@ -764,6 +833,199 @@ def describe_native_authoring_capabilities(
                     if aggregate.compatible
                     else AuthoringStatus.UNAVAILABLE
                 ),
+            ),
+        ),
+    )
+
+
+def describe_session_authoring(snapshot: Any) -> SessionAuthoringProjection:
+    """Project one detached Session snapshot into typed authoring facts.
+
+    This function owns target namespace construction and Step lifecycle
+    decisions for front ends.  It is intentionally Qt-free and never mutates
+    the supplied snapshot or any model it references.
+    """
+
+    if snapshot is None or not hasattr(snapshot, "source_kind"):
+        raise TypeError("snapshot must be a SessionSnapshot-compatible value")
+
+    model = getattr(snapshot, "model", None)
+    recipe = getattr(snapshot, "geometry_recipe", None)
+    mesh_settings = getattr(snapshot, "mesh_settings", None)
+    if model is not None:
+        report = describe_model_capabilities(model)
+    elif recipe is not None and getattr(snapshot, "source_kind", None) == "native":
+        report = describe_native_authoring_capabilities(recipe, mesh_settings)
+    else:
+        report = _empty_model_capability_report()
+
+    target_regions: list[tuple[RegionRef, frozenset[str]]] = []
+    if recipe is not None and getattr(snapshot, "source_kind", None) == "native":
+        from .native_regions import describe_native_regions
+
+        descriptors = describe_native_regions(
+            recipe,
+            getattr(snapshot, "named_regions", ()),
+        )
+        for descriptor in descriptors:
+            for product, kind in (
+                ("node_set", "node_set"),
+                ("element_set", "element_set"),
+                ("beam_element_set", "element_set"),
+                ("edge", "edge"),
+                ("surface", "surface"),
+            ):
+                if product in descriptor.products:
+                    _append_target_region(
+                        target_regions,
+                        RegionRef(kind, descriptor.name),
+                        descriptor.products,
+                    )
+
+    for item in report.regions:
+        _append_target_region(
+            target_regions,
+            item.region,
+            frozenset({item.region.kind}),
+        )
+
+    targets = tuple(
+        AuthoringTarget(
+            region,
+            _operations_for_target(region, products, report),
+        )
+        for region, products in sorted(
+            target_regions,
+            key=lambda item: (
+                {"node_set": 0, "element_set": 1, "edge": 2, "surface": 3}[
+                    item[0].kind
+                ],
+                item[0].name.casefold(),
+                item[0].name,
+            ),
+        )
+    )
+
+    model_current = bool(getattr(snapshot, "model_current", False))
+    lifecycles: list[StepLifecycleProjection] = []
+    for name in tuple(getattr(snapshot, "runnable_step_names")()):
+        can_check = model_current
+        validation_current = bool(
+            getattr(snapshot, "validation_current")(name)
+        ) if can_check else False
+        check_reason = (
+            "当前模型制品可检查"
+            if can_check
+            else "请先生成网格或打开包含分析步的 INP 模型"
+        )
+        submit_reason = (
+            "当前分析步已通过模型检查"
+            if validation_current
+            else (
+                "请先通过当前分析步的模型检查"
+                if can_check
+                else check_reason
+            )
+        )
+        lifecycles.append(
+            StepLifecycleProjection(
+                step_name=name,
+                can_check=can_check,
+                can_submit=validation_current,
+                check_reason=check_reason,
+                submit_reason=submit_reason,
+            )
+        )
+    return SessionAuthoringProjection(report, targets, tuple(lifecycles))
+
+
+def _append_target_region(
+    target_regions: list[tuple[RegionRef, frozenset[str]]],
+    region: RegionRef,
+    products: frozenset[str],
+) -> None:
+    for index, (current, current_products) in enumerate(target_regions):
+        if current == region:
+            target_regions[index] = (current, current_products | products)
+            return
+    target_regions.append((region, products))
+
+
+def _operations_for_target(
+    region: RegionRef,
+    products: frozenset[str],
+    report: ModelCapabilityReport,
+) -> tuple[AuthoringCapability, ...]:
+    region_report = next(
+        (item for item in report.regions if item.region == region),
+        None,
+    )
+    diagnostics = () if region_report is None else region_report.diagnostics
+    compatible = report.compatible and (
+        region_report is None or region_report.compatible
+    )
+    load_kinds = set(report.load_kinds)
+    operations: list[AuthoringCapability] = []
+
+    def add(name: str, enabled: bool) -> None:
+        operations.append(
+            AuthoringCapability(
+                name,
+                AuthoringStatus.ENABLED if enabled else AuthoringStatus.UNAVAILABLE,
+                diagnostics if not enabled else (),
+            )
+        )
+
+    if region.kind == "node_set" or "node_set" in products:
+        add("boundary.displacement", True)
+        add("load.node", compatible and "node" in load_kinds)
+    if region.kind == "edge" or "edge" in products:
+        add("load.edge", compatible and "edge" in load_kinds)
+    if region.kind == "surface" or "surface" in products:
+        add("load.surface", compatible and "surface" in load_kinds)
+    if region.kind == "element_set" or "element_set" in products:
+        add("section.assignment", compatible and bool(report.section_families))
+        line_enabled = bool(
+            region_report is not None
+            and region_report.supports_distributed_load("line")
+        )
+        add("load.line.global", line_enabled)
+        local = (
+            None
+            if region_report is None
+            else region_report.operation("load.line.local")
+        )
+        if local is not None and local.status is not AuthoringStatus.UNAVAILABLE:
+            operations[-1] = region_report.operation("load.line.global")
+            operations.append(local)
+
+    if region_report is not None:
+        by_name = {item.operation: item for item in operations}
+        by_name.update({item.operation: item for item in region_report.operations})
+        operations = list(by_name.values())
+    return tuple(operations)
+
+
+def _empty_model_capability_report() -> ModelCapabilityReport:
+    return ModelCapabilityReport(
+        canonical_element_types=(),
+        families=(),
+        compatible=False,
+        topological_dimension=None,
+        spatial_dimension=None,
+        dofs_per_node=None,
+        dof_labels=(),
+        force_labels=(),
+        section_families=(),
+        section_presets=(),
+        load_kinds=(),
+        diagnostics=(),
+        regions=(),
+        authoring=(
+            AuthoringCapability("section.create", AuthoringStatus.UNAVAILABLE),
+            AuthoringCapability(
+                "output_request.create",
+                AuthoringStatus.UNAVAILABLE,
             ),
         ),
     )
@@ -1485,12 +1747,16 @@ def _missing_region_capability(
 __all__ = [
     "AuthoringCapability",
     "AuthoringStatus",
+    "AuthoringTarget",
     "ModelCapabilityReport",
     "RegionCapability",
     "RegionRef",
+    "SessionAuthoringProjection",
+    "StepLifecycleProjection",
     "describe_model_capabilities",
     "describe_native_authoring_capabilities",
     "describe_region_capabilities",
+    "describe_session_authoring",
     "evaluate_authoring_candidate",
     "require_region_kind",
 ]

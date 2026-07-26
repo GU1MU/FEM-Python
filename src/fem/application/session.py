@@ -9,9 +9,28 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from fem.geometry import (
+    geometry_dimension,
+    recipe_characteristic_size,
+    supports_structured_hexahedron,
+)
 from fem.geometry.recipe_topology import can_preserve_logical_references
+from fem.mesh.settings import MeshSettings
 
-from .changes import ArtifactKind, ChangeKind, SessionDelta
+from .changes import (
+    ArtifactKind,
+    ChangeKind,
+    SessionDelta,
+    TransitionEffect,
+)
+from .commands import (
+    UNSET,
+    DefinitionEditBatch,
+    DeleteIntent,
+    NamedRegionEditBatch,
+    RenameIntent,
+    Unset,
+)
 from .definitions import (
     FeatureRecord,
     ModelDefinitions,
@@ -207,10 +226,6 @@ class ProjectSaveSnapshot:
 
         return deepcopy(self._snapshot)
 
-    @property
-    def project(self) -> ProjectSnapshot:
-        return self.snapshot
-
 
 @dataclass(frozen=True, slots=True)
 class SessionSnapshot:
@@ -251,42 +266,8 @@ class SessionSnapshot:
         return self.project_path
 
     @property
-    def native_project_path(self) -> Path | None:
-        return self.project_path
-
-    @property
-    def material_definitions(self) -> tuple[Any, ...]:
-        return self.materials
-
-    @property
-    def section_definitions(self) -> tuple[SectionDefinition, ...]:
-        return self.sections
-
-    @property
-    def region_assignments(self) -> tuple[RegionAssignment, ...]:
-        return self.assignments
-
-    @property
-    def analysis_definitions(self) -> tuple[Any, ...]:
-        return self.steps
-
-    @property
     def model(self) -> Any | None:
         return None if self.artifact is None else self.artifact.model
-
-    @property
-    def result(self) -> Any | None:
-        if self.displayed_result is None:
-            return None
-        return self.displayed_result.result
-
-    @property
-    def jobs(self) -> tuple[AnalysisRun, ...]:
-        return self.runs
-
-    @property
-    def revision(self) -> int:
-        return self.session_revision
 
     @property
     def has_model(self) -> bool:
@@ -639,8 +620,28 @@ class ModelSession:
         parts: Iterable[NativePart],
         recipe: Any,
         *,
+        mesh_settings: MeshSettings | None | Unset = UNSET,
         expected_session_revision: int | None = None,
     ) -> SessionDelta:
+        """Compatibility spelling for the atomic native-input command."""
+
+        return self.replace_native_geometry_inputs(
+            parts,
+            recipe,
+            mesh_settings=mesh_settings,
+            expected_session_revision=expected_session_revision,
+        )
+
+    def replace_native_geometry_inputs(
+        self,
+        parts: Iterable[NativePart],
+        recipe: Any,
+        *,
+        mesh_settings: MeshSettings | None | Unset = UNSET,
+        expected_session_revision: int | None = None,
+    ) -> SessionDelta:
+        """Replace geometry and mesh inputs in one validated Session commit."""
+
         self._check_expected(expected_session_revision)
         self._require_native()
         owned_parts = deepcopy(tuple(parts))
@@ -654,24 +655,29 @@ class ModelSession:
             self._geometry_recipe,
             owned_recipe,
         )
-        mesh_settings = (
-            self._mesh_settings
-            if preserve_references
-            else _without_mesh_topology_references(self._mesh_settings)
+        candidate_mesh_settings, mesh_effects = _transition_mesh_settings(
+            self._mesh_settings,
+            owned_recipe,
+            preserve_references=preserve_references,
+            requested=mesh_settings,
         )
         candidate_steps = (
             self._steps
             if preserve_references
             else _without_geometry_dependent_steps(self._steps)
         )
-        mesh_settings_changed = mesh_settings != self._mesh_settings
+        mesh_settings_changed = candidate_mesh_settings != self._mesh_settings
         named_regions_changed = (
             not preserve_references and bool(self._named_regions)
         )
+        assignments_cleared = (
+            not preserve_references and bool(self._assignments)
+        )
+        steps_cleared = candidate_steps != self._steps
         definitions_changed = (
             not self._definitions_explicit
-            or (not preserve_references and bool(self._assignments))
-            or candidate_steps != self._steps
+            or assignments_cleared
+            or steps_cleared
         )
         candidate_regions = (
             tuple(self._named_regions.values())
@@ -682,7 +688,7 @@ class ModelSession:
         if owned_recipe is not None:
             validate_native_project_inputs(
                 owned_recipe,
-                mesh_settings,
+                candidate_mesh_settings,
                 candidate_regions,
                 self._materials,
                 self._sections,
@@ -693,7 +699,7 @@ class ModelSession:
         self._parts = owned_parts
         self._geometry_recipe = owned_recipe
         self._feature_history = owned_history
-        self._mesh_settings = mesh_settings
+        self._mesh_settings = candidate_mesh_settings
         if not preserve_references:
             self._named_regions = {}
             self._assignments = ()
@@ -715,10 +721,20 @@ class ModelSession:
             changed.add(ChangeKind.NAMED_REGIONS)
         if definitions_changed:
             changed.add(ChangeKind.DEFINITIONS)
+        effects = set(mesh_effects)
+        if preserve_references:
+            effects.add(TransitionEffect.REFERENCES_PRESERVED)
+        if named_regions_changed:
+            effects.add(TransitionEffect.NAMED_REGIONS_CLEARED)
+        if assignments_cleared:
+            effects.add(TransitionEffect.ASSIGNMENTS_CLEARED)
+        if steps_cleared:
+            effects.add(TransitionEffect.STEPS_CLEARED)
         return self._emit(
             changed,
             _MODEL_INVALIDATIONS,
             "geometry replaced",
+            effects=effects,
         )
 
     def clear_geometry(
@@ -880,6 +896,80 @@ class ModelSession:
             "named regions replaced",
         )
 
+    def apply_named_region_edit(
+        self,
+        batch: NamedRegionEditBatch,
+    ) -> SessionDelta:
+        """Atomically apply one explicit named-region post-state and ledger."""
+
+        if type(batch) is not NamedRegionEditBatch:
+            raise TypeError("batch must be a NamedRegionEditBatch")
+        self._check_expected(batch.base_session_revision)
+        self._require_native()
+
+        owned = _regions_by_name(batch.regions)
+        rename_map = _validate_edit_ledger(
+            tuple(self._named_regions.values()),
+            tuple(owned.values()),
+            batch.renames,
+            batch.deletes,
+            label="named region",
+        )
+        delete_names = {intent.name for intent in batch.deletes}
+        referenced_deletes = sorted(
+            delete_names
+            & _region_references(self._assignments, self._steps)
+        )
+        if referenced_deletes:
+            raise ValueError(
+                "cannot delete referenced named regions: "
+                + ", ".join(referenced_deletes)
+            )
+
+        assignments = tuple(
+            replace(
+                assignment,
+                region_name=rename_map.get(
+                    str(assignment.region_name),
+                    str(assignment.region_name),
+                ),
+            )
+            for assignment in self._assignments
+        )
+        steps = _rename_step_region_references(self._steps, rename_map)
+        if self._geometry_recipe is None:
+            if owned:
+                raise ValueError("named regions require a geometry recipe")
+        else:
+            validate_native_project_inputs(
+                self._geometry_recipe,
+                self._mesh_settings,
+                tuple(owned.values()),
+                self._materials,
+                self._sections,
+                assignments,
+                steps,
+            )
+
+        self._named_regions = owned
+        self._assignments = assignments
+        self._steps = steps
+        self._drop_model_state()
+        self._increment_domain_revisions(project=True, mesh=True, model=True)
+        return self._emit(
+            {
+                ChangeKind.PROJECT_INPUTS,
+                ChangeKind.NAMED_REGIONS,
+                ChangeKind.DEFINITIONS,
+                ChangeKind.MODEL,
+                ChangeKind.VALIDATIONS,
+                ChangeKind.RUNS,
+                ChangeKind.DISPLAYED_RESULT,
+            },
+            _MODEL_INVALIDATIONS,
+            "named region edit applied",
+        )
+
     def replace_model_definitions(
         self,
         materials: Mapping[str, Any] | Iterable[Any],
@@ -897,6 +987,105 @@ class ModelSession:
             assignments,
             steps,
         )
+        return self._commit_model_definitions(
+            owned,
+            reason="model definitions replaced",
+        )
+
+    def apply_definition_edit(
+        self,
+        batch: DefinitionEditBatch,
+    ) -> SessionDelta:
+        """Atomically apply an explicit material/section definition batch."""
+
+        if type(batch) is not DefinitionEditBatch:
+            raise TypeError("batch must be a DefinitionEditBatch")
+        self._check_expected(batch.base_session_revision)
+        self._require_open()
+
+        material_renames = _validate_edit_ledger(
+            self._materials,
+            batch.materials,
+            batch.material_renames,
+            batch.material_deletes,
+            label="material",
+        )
+        section_renames = _validate_edit_ledger(
+            self._sections,
+            batch.sections,
+            batch.section_renames,
+            batch.section_deletes,
+            label="section",
+        )
+        deleted_materials = {
+            intent.name for intent in batch.material_deletes
+        }
+        referenced_materials = {
+            str(section.material) for section in self._sections
+        }
+        invalid_material_deletes = sorted(
+            deleted_materials & referenced_materials
+        )
+        if invalid_material_deletes:
+            raise ValueError(
+                "cannot delete referenced materials: "
+                + ", ".join(invalid_material_deletes)
+            )
+        deleted_sections = {
+            intent.name for intent in batch.section_deletes
+        }
+        assigned_sections = {
+            str(assignment.section_name)
+            for assignment in self._assignments
+        }
+        invalid_section_deletes = sorted(
+            deleted_sections & assigned_sections
+        )
+        if invalid_section_deletes:
+            raise ValueError(
+                "cannot delete assigned sections: "
+                + ", ".join(invalid_section_deletes)
+            )
+
+        sections = tuple(
+            replace(
+                section,
+                material=material_renames.get(
+                    str(section.material),
+                    str(section.material),
+                ),
+            )
+            for section in batch.sections
+        )
+        assignments = tuple(
+            replace(
+                assignment,
+                section_name=section_renames.get(
+                    str(assignment.section_name),
+                    str(assignment.section_name),
+                ),
+            )
+            for assignment in batch.assignments
+        )
+        owned = normalize_model_definitions(
+            batch.materials,
+            sections,
+            assignments,
+            batch.steps,
+        )
+        return self._commit_model_definitions(
+            owned,
+            reason="definition edit applied",
+        )
+
+    def _commit_model_definitions(
+        self,
+        owned: ModelDefinitions,
+        *,
+        reason: str,
+    ) -> SessionDelta:
+        """Validate and commit one already-owned definitions post-state."""
+
         if self._source_kind == "native":
             if self._geometry_recipe is None:
                 if (
@@ -957,7 +1146,7 @@ class ModelSession:
                 if previous_artifact is not None
                 else frozenset()
             ),
-            "model definitions replaced",
+            reason,
         )
 
     def clear_generated_model(
@@ -1707,6 +1896,8 @@ class ModelSession:
         changed: Iterable[ChangeKind],
         invalidated: Iterable[ArtifactKind],
         reason: str,
+        *,
+        effects: Iterable[TransitionEffect] = (),
     ) -> SessionDelta:
         self._session_revision += 1
         return SessionDelta(
@@ -1714,6 +1905,7 @@ class ModelSession:
             changed=frozenset(changed),
             invalidated=frozenset(invalidated),
             reason=reason,
+            effects=frozenset(effects),
         )
 
     def _rejected(
@@ -1941,6 +2133,114 @@ def _regions_by_name(
     return result
 
 
+def _validate_edit_ledger(
+    before: Iterable[Any],
+    after: Iterable[Any],
+    renames: Iterable[RenameIntent],
+    deletes: Iterable[DeleteIntent],
+    *,
+    label: str,
+) -> dict[str, str]:
+    """Validate explicit identity intents against a detached full post-state."""
+
+    before_names = tuple(_edit_value_name(value, label) for value in before)
+    after_names = tuple(_edit_value_name(value, label) for value in after)
+    _require_unique_edit_names(before_names, f"existing {label}")
+    _require_unique_edit_names(after_names, f"replacement {label}")
+    before_set = set(before_names)
+    after_set = set(after_names)
+    before_by_fold = {name.casefold(): name for name in before_names}
+
+    rename_values = tuple(renames)
+    delete_values = tuple(deletes)
+    if any(type(intent) is not RenameIntent for intent in rename_values):
+        raise TypeError("renames must contain only RenameIntent values")
+    if any(type(intent) is not DeleteIntent for intent in delete_values):
+        raise TypeError("deletes must contain only DeleteIntent values")
+
+    rename_old_names = tuple(intent.old_name for intent in rename_values)
+    rename_new_names = tuple(intent.new_name for intent in rename_values)
+    delete_names = tuple(intent.name for intent in delete_values)
+    _require_unique_edit_names(rename_old_names, f"{label} rename source")
+    _require_unique_edit_names(rename_new_names, f"{label} rename target")
+    _require_unique_edit_names(delete_names, f"{label} delete target")
+
+    overlap = set(rename_old_names) & set(delete_names)
+    if overlap:
+        raise ValueError(
+            f"{label} rename and delete intents overlap: "
+            + ", ".join(sorted(overlap))
+        )
+
+    rename_map: dict[str, str] = {}
+    for intent in rename_values:
+        old_name = intent.old_name
+        new_name = intent.new_name
+        if old_name not in before_set:
+            raise KeyError(f"unknown {label} to rename: {old_name}")
+        if old_name in after_set:
+            raise ValueError(
+                f"renamed {label} {old_name!r} must be absent from replacement"
+            )
+        if new_name not in after_set:
+            raise ValueError(
+                f"renamed {label} {new_name!r} is absent from replacement"
+            )
+        occupied = before_by_fold.get(new_name.casefold())
+        if occupied is not None and occupied != old_name:
+            raise ValueError(
+                f"{label} rename target {new_name!r} collides with "
+                f"existing {occupied!r}"
+            )
+        rename_map[old_name] = new_name
+
+    for name in delete_names:
+        if name not in before_set:
+            raise KeyError(f"unknown {label} to delete: {name}")
+        if name in after_set:
+            raise ValueError(
+                f"deleted {label} {name!r} must be absent from replacement"
+            )
+
+    removed = before_set - after_set
+    explained = set(rename_old_names) | set(delete_names)
+    missing = sorted(removed - explained)
+    if missing:
+        raise ValueError(
+            f"removed {label} names require an explicit rename or delete intent: "
+            + ", ".join(missing)
+        )
+    unexpected = sorted(explained - removed)
+    if unexpected:
+        raise ValueError(
+            f"{label} intents do not describe removed names: "
+            + ", ".join(unexpected)
+        )
+    return rename_map
+
+
+def _edit_value_name(value: Any, label: str) -> str:
+    name = getattr(value, "name", None)
+    if type(name) is not str or not name.strip():
+        raise ValueError(f"{label} name must be a non-empty string")
+    return name.strip()
+
+
+def _require_unique_edit_names(
+    names: Iterable[str],
+    label: str,
+) -> None:
+    seen: dict[str, str] = {}
+    for name in names:
+        folded = name.casefold()
+        if folded in seen:
+            raise ValueError(
+                f"{label} names must be unique ignoring case: "
+                f"{seen[folded]!r} and {name!r}"
+            )
+        seen[folded] = name
+
+
 def _token_dependency(token: TaskToken, name: str) -> int | None:
     for dependency_name, value in token.dependency_revisions:
         if dependency_name == name:
@@ -2020,6 +2320,118 @@ def _region_references(
                 if isinstance(target, str):
                     references.add(target)
     return references
+
+
+def _transition_mesh_settings(
+    current: Any,
+    recipe: Any,
+    *,
+    preserve_references: bool,
+    requested: MeshSettings | None | Unset,
+) -> tuple[MeshSettings | None, frozenset[TransitionEffect]]:
+    """Apply the three-state mesh-input policy without mutating Session state."""
+
+    if not isinstance(requested, Unset):
+        if requested is None:
+            effects = (
+                frozenset({TransitionEffect.LOCAL_CONTROLS_CLEARED})
+                if _has_local_mesh_controls(current)
+                else frozenset()
+            )
+            return None, effects
+        if type(requested) is not MeshSettings:
+            raise TypeError(
+                "mesh_settings must be MeshSettings, None, or UNSET"
+            )
+        owned = deepcopy(requested)
+        _validate_explicit_mesh_settings(owned, recipe)
+        effects = (
+            frozenset({TransitionEffect.LOCAL_CONTROLS_CLEARED})
+            if _has_local_mesh_controls(current)
+            and not owned.local_controls
+            else frozenset()
+        )
+        return owned, effects
+
+    if recipe is None:
+        transitioned = _without_mesh_topology_references(current)
+        effects: set[TransitionEffect] = set()
+        if _has_local_mesh_controls(current) and not _has_local_mesh_controls(
+            transitioned
+        ):
+            effects.add(TransitionEffect.LOCAL_CONTROLS_CLEARED)
+        if transitioned is not None and type(transitioned) is not MeshSettings:
+            raise TypeError("existing mesh_settings must be MeshSettings or None")
+        return transitioned, frozenset(effects)
+
+    if current is None:
+        return _default_mesh_settings(recipe), frozenset()
+    if type(current) is not MeshSettings:
+        raise TypeError("existing mesh_settings must be MeshSettings or None")
+
+    controls = current.local_controls if preserve_references else ()
+    transitioned = replace(deepcopy(current), local_controls=controls)
+    effects = set()
+    if current.local_controls and not controls:
+        effects.add(TransitionEffect.LOCAL_CONTROLS_CLEARED)
+    if not _mesh_shape_supported(transitioned.cell_shape, recipe):
+        transitioned = replace(
+            transitioned,
+            cell_shape=_default_cell_shape(recipe),
+        )
+        effects.add(TransitionEffect.MESH_SHAPE_NORMALIZED)
+    return transitioned, frozenset(effects)
+
+
+def _validate_explicit_mesh_settings(
+    settings: MeshSettings,
+    recipe: Any,
+) -> None:
+    if recipe is None:
+        if settings.local_controls:
+            raise ValueError(
+                "local mesh controls require a geometry recipe"
+            )
+        return
+    if not _mesh_shape_supported(settings.cell_shape, recipe):
+        raise ValueError(
+            f"mesh cell shape {settings.cell_shape!r} is not supported "
+            "by the submitted geometry recipe"
+        )
+
+
+def _mesh_shape_supported(cell_shape: str, recipe: Any) -> bool:
+    dimension = geometry_dimension(recipe)
+    if dimension == 2:
+        return cell_shape in {"triangle", "quadrilateral"}
+    if cell_shape == "tetrahedron":
+        return True
+    return (
+        cell_shape == "hexahedron"
+        and supports_structured_hexahedron(recipe)
+    )
+
+
+def _default_mesh_settings(recipe: Any) -> MeshSettings:
+    return MeshSettings(
+        recipe_characteristic_size(recipe) / 10.0,
+        cell_shape=_default_cell_shape(recipe),
+    )
+
+
+def _default_cell_shape(recipe: Any) -> str:
+    return (
+        "tetrahedron"
+        if geometry_dimension(recipe) == 3
+        else "triangle"
+    )
+
+
+def _has_local_mesh_controls(settings: Any) -> bool:
+    return bool(
+        settings is not None
+        and getattr(settings, "local_controls", ())
+    )
 
 
 def _without_mesh_topology_references(settings: Any) -> Any:

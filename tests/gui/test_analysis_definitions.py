@@ -23,7 +23,8 @@ from fem.core.model import (
     NodalLoad,
     OutputRequest,
 )
-from fem.geometry import LogicalEntityRef
+from fem.geometry import ExtrudedGeometry, LogicalEntityRef, RectangleGeometry
+from fem.mesh.settings import MeshSettings
 from fem.solvers.static_linear import solve, validate_problem
 from fem.steps.factory import static
 from fem_gui.analysis_definition_dialogs import (
@@ -34,15 +35,14 @@ from fem_gui.analysis_definition_dialogs import (
     StaticStepDialog,
 )
 from fem_gui.main_window import FEMMainWindow
-from fem_gui.preprocessing import (
-    ExtrudedGeometry,
-    MeshSettings,
-    RectangleGeometry,
-)
 
 
 def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def _regions(kind: str, *names: str) -> list[RegionRef]:
+    return [RegionRef(kind, name) for name in names]
 
 
 @pytest.mark.gmsh
@@ -86,20 +86,20 @@ def test_analysis_dialogs_define_only_supported_kernel_objects():
     assert step_dialog.step().procedure == "static"
     boundary_dialog = DisplacementDialog(
         ["Load"],
-        ["LEFT", "Fixed"],
+        _regions("node_set", "LEFT", "Fixed"),
         2,
-        selected_region="Fixed",
+        selected_region=RegionRef("node_set", "Fixed"),
     )
-    step_name, boundary = boundary_dialog.definition()
+    step_name, boundaries = boundary_dialog.definitions()
     assert step_name == "Load"
-    assert boundary.target == "Fixed"
+    assert boundaries[0].target == "Fixed"
     load_dialog = LoadDialog(
         ["Load"],
-        ["RIGHT"],
-        ["TOP"],
+        _regions("node_set", "RIGHT"),
+        _regions("edge", "TOP"),
         [],
         2,
-        selected_region="TOP",
+        selected_region=RegionRef("edge", "TOP"),
         preferred_kind="edge",
     )
     step_name, load = load_dialog.definition()
@@ -113,9 +113,23 @@ def test_analysis_dialogs_define_only_supported_kernel_objects():
     assert output_dialog.kind_combo.findData("history") == -1
 
 
+def test_analysis_dialog_region_catalogs_reject_untyped_strings():
+    _application()
+
+    with pytest.raises(TypeError, match="RegionRef"):
+        DisplacementDialog(["Load"], ["Fixed"], 2)
+
+    with pytest.raises(TypeError, match="RegionRef"):
+        LoadDialog(["Load"], ["Loaded"], [], [], 2)
+
+
 def test_displacement_dialog_creates_independent_checked_dofs():
     _application()
-    dialog = DisplacementDialog(["Load"], ["Fixed"], 3)
+    dialog = DisplacementDialog(
+        ["Load"],
+        _regions("node_set", "Fixed"),
+        3,
+    )
     dialog.component_checks[1].setChecked(False)
     dialog.component_checks[2].setChecked(True)
     dialog.component_values[2].setValue(0.25)
@@ -138,8 +152,8 @@ def test_analysis_manager_uses_a_copy_and_deletes_selected_definition():
     step.cloads = (NodalLoad("Loaded", 1, 10.0),)
     manager = AnalysisDefinitionManagerDialog(
         [step],
-        ["Fixed", "Loaded"],
-        ["Loaded"],
+        _regions("node_set", "Fixed", "Loaded"),
+        _regions("edge", "Loaded"),
         [],
         2,
     )
@@ -158,7 +172,7 @@ def test_load_dialog_can_edit_an_existing_distributed_load():
     dialog = LoadDialog(
         ["Load"],
         [],
-        ["Loaded"],
+        _regions("edge", "Loaded"),
         [],
         2,
         current=EdgeLoad("Loaded", (2.0, -3.0), load_type="traction"),
@@ -198,7 +212,7 @@ def test_load_dialog_keeps_gravity_and_distributed_vectors_separate():
     dialog = LoadDialog(
         ["Load"],
         [],
-        ["EdgeSet"],
+        _regions("edge", "EdgeSet"),
         [],
         2,
         spatial_dimensions=2,
@@ -242,8 +256,8 @@ def test_load_dialog_only_shows_parameters_for_the_selected_load_kind():
     _application()
     dialog = LoadDialog(
         ["Load"],
-        ["NodeSet"],
-        ["EdgeSet"],
+        _regions("node_set", "NodeSet"),
+        _regions("edge", "EdgeSet"),
         [],
         2,
     )
@@ -276,7 +290,7 @@ def test_load_dialog_separates_nodal_dofs_from_spatial_vector_dimension():
     _application()
     dialog = LoadDialog(
         ["Load"],
-        ["NodeSet"],
+        _regions("node_set", "NodeSet"),
         [],
         [],
         6,
@@ -292,7 +306,7 @@ def test_load_dialog_separates_nodal_dofs_from_spatial_vector_dimension():
         ["Load"],
         [],
         [],
-        ["Surface"],
+        _regions("surface", "Surface"),
         6,
         spatial_dimensions=3,
     )
@@ -328,19 +342,19 @@ def test_main_window_filters_distributed_load_regions_by_model_dimension():
         window._supported_load_regions()
     )
     assert node_regions == [
-        "BOTTOM",
-        "RIGHT",
-        "TOP",
-        "LEFT",
-        "EdgeSet",
-        "NodeSet",
+        RegionRef("node_set", "BOTTOM"),
+        RegionRef("node_set", "EdgeSet"),
+        RegionRef("node_set", "LEFT"),
+        RegionRef("node_set", "NodeSet"),
+        RegionRef("node_set", "RIGHT"),
+        RegionRef("node_set", "TOP"),
     ]
     assert edge_regions == [
-        "BOTTOM",
-        "RIGHT",
-        "TOP",
-        "LEFT",
-        "EdgeSet",
+        RegionRef("edge", "BOTTOM"),
+        RegionRef("edge", "EdgeSet"),
+        RegionRef("edge", "LEFT"),
+        RegionRef("edge", "RIGHT"),
+        RegionRef("edge", "TOP"),
     ]
     assert face_regions == []
     assert line_regions == []
@@ -367,15 +381,20 @@ def test_main_window_filters_distributed_load_regions_by_model_dimension():
         window._supported_load_regions()
     )
     assert node_regions == [
-        "BOTTOM",
-        "TOP",
-        "OUTER",
-        "EdgeSet",
-        "NodeSet",
-        "Surface",
+        RegionRef("node_set", "BOTTOM"),
+        RegionRef("node_set", "EdgeSet"),
+        RegionRef("node_set", "NodeSet"),
+        RegionRef("node_set", "OUTER"),
+        RegionRef("node_set", "Surface"),
+        RegionRef("node_set", "TOP"),
     ]
     assert edge_regions == []
-    assert face_regions == ["BOTTOM", "TOP", "OUTER", "Surface"]
+    assert face_regions == [
+        RegionRef("surface", "BOTTOM"),
+        RegionRef("surface", "OUTER"),
+        RegionRef("surface", "Surface"),
+        RegionRef("surface", "TOP"),
+    ]
     assert line_regions == []
     window.close()
 
@@ -390,8 +409,8 @@ def test_unmeshed_rectangle_publishes_exact_catalog_region_choices():
 
     assert window.document.model is None
     assert window._analysis_region_names() == (
-        ["BOTTOM", "RIGHT", "TOP", "LEFT"],
-        ["BOTTOM", "RIGHT", "TOP", "LEFT"],
+        _regions("node_set", "BOTTOM", "LEFT", "RIGHT", "TOP"),
+        _regions("edge", "BOTTOM", "LEFT", "RIGHT", "TOP"),
         [],
     )
     assert window._analysis_element_regions() == [
@@ -402,12 +421,13 @@ def test_unmeshed_rectangle_publishes_exact_catalog_region_choices():
 
 def test_load_dialog_validates_region_and_builds_pressure():
     _application()
-    missing_region = LoadDialog(["Load"], [], ["Loaded"], [], 2)
+    edge_regions = _regions("edge", "Loaded")
+    missing_region = LoadDialog(["Load"], [], edge_regions, [], 2)
     missing_region.region_combo.clear()
     with pytest.raises(ValueError, match="载荷区域"):
         missing_region.definition()
 
-    dialog = LoadDialog(["Load"], [], ["Loaded"], [], 2)
+    dialog = LoadDialog(["Load"], [], edge_regions, [], 2)
     dialog.load_type_combo.setCurrentIndex(
         dialog.load_type_combo.findData("pressure")
     )
@@ -474,7 +494,7 @@ def test_analysis_manager_uses_readable_definition_summaries():
     step.outputs = (OutputRequest("field", "node", ("U", "RF")),)
     manager = AnalysisDefinitionManagerDialog(
         [step],
-        ["Fixed"],
+        _regions("node_set", "Fixed"),
         [],
         [],
         2,

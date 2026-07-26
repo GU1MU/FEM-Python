@@ -162,15 +162,54 @@ def _export_csvs(
 
     if elem_csv_path is not None and (overwrite or not elem_csv_path.exists()):
         elem_csv_path.parent.mkdir(parents=True, exist_ok=True)
-        stress.export.element(mesh, U, elem_csv_path)
+        _write_element_stress_csv(
+            stress,
+            mesh,
+            U,
+            elem_csv_path,
+        )
 
     if nodal_stress_csv_path is not None and (overwrite or not nodal_stress_csv_path.exists()):
         nodal_stress_csv_path.parent.mkdir(parents=True, exist_ok=True)
-        if result is None:
-            stress.export.nodal(mesh, U, nodal_stress_csv_path, threshold=threshold)
-        else:
+        type_keys = stress.dispatch.resolve_type_keys(mesh, None)
+        if type_keys == ("beam2",):
+            if result is None:
+                raise ValueError(
+                    "Beam2 nodal stress export requires ModelResult load context; "
+                    "use from_result(result, ...)"
+                )
             stress.export.nodal_from_result(
                 result,
                 nodal_stress_csv_path,
                 threshold=threshold,
             )
+        elif len(type_keys) == 1:
+            stress.nodal.by_type(
+                type_keys[0],
+                mesh,
+                U,
+                nodal_stress_csv_path,
+                threshold=threshold,
+            )
+        else:
+            stress.nodal.mixed(
+                type_keys,
+                mesh,
+                U,
+                nodal_stress_csv_path,
+                threshold=threshold,
+            )
+
+
+def _write_element_stress_csv(
+    stress: Any,
+    mesh: Any,
+    U: Sequence[float],
+    path: Path,
+) -> None:
+    """Write the current element-stress CSV without compatibility wrappers."""
+    type_keys = stress.dispatch.resolve_type_keys(mesh, None)
+    if len(type_keys) == 1:
+        stress.element.by_type(type_keys[0], mesh, U, path)
+        return
+    stress.element.mixed(type_keys, mesh, U, path)

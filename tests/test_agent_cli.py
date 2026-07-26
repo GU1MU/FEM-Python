@@ -334,12 +334,19 @@ def test_run_chat_routes_default_tty_io_through_prompt_toolkit(
     assert cli.run_chat(_args(tmp_path)) == 17
 
 
+@pytest.mark.optional_runtime
 def test_prompt_toolkit_chat_passes_patched_stdout_to_chat_loop(
     monkeypatch,
     tmp_path,
 ):
-    prompt_toolkit = pytest.importorskip("prompt_toolkit")
-    patch_stdout_module = pytest.importorskip("prompt_toolkit.patch_stdout")
+    prompt_toolkit = pytest.importorskip(
+        "prompt_toolkit",
+        reason="[optional-native-runtime] prompt-toolkit is unavailable",
+    )
+    patch_stdout_module = pytest.importorskip(
+        "prompt_toolkit.patch_stdout",
+        reason="[optional-native-runtime] prompt-toolkit is unavailable",
+    )
 
     captured = {}
 
@@ -397,6 +404,19 @@ def test_cli_runs_attachment_inspection_as_a_background_operation(
         ("*Boundary", "Set-right, 1, 1, 0.05"),
     )
     monkeypatch.setattr(cli, "_provider_from_args", lambda args: FakeProvider())
+    inspection_entered = threading.Event()
+    release_inspection = threading.Event()
+
+    def inspect_in_background(self, artifact_id, *, replace_existing=False):
+        inspection_entered.set()
+        assert release_inspection.wait(2)
+        return ()
+
+    monkeypatch.setattr(
+        AgentSessionEngine,
+        "_attach_artifact",
+        inspect_in_background,
+    )
     output = CompletionOutput()
     command_index = 0
 
@@ -406,6 +426,8 @@ def test_cli_runs_attachment_inspection_as_a_background_operation(
         if command_index == 1:
             return f'/attach "{source}"'
         if command_index == 2:
+            assert inspection_entered.wait(2)
+            release_inspection.set()
             assert output.inspection_completed.wait(5)
             return "/status"
         return "/exit"
@@ -448,23 +470,22 @@ def test_cli_does_not_render_attachment_diagnostic_inside_active_prompt(
     prompt_active = threading.Event()
     inspection_finished = threading.Event()
     ignored_metadata_produced = threading.Event()
-    original_attach = AgentSessionEngine._attach_artifact
 
     def attach_after_next_prompt(self, artifact_id, *, replace_existing=False):
         assert prompt_active.wait(2)
         try:
-            events = original_attach(
-                self,
-                artifact_id,
-                replace_existing=replace_existing,
+            event = self._event(
+                cli.EngineEventType.DIAGNOSTIC,
+                {
+                    "diagnostic": {
+                        "severity": "info",
+                        "code": "IGNORED_METADATA",
+                        "message": "Ignored input metadata.",
+                    }
+                },
             )
-            if any(
-                event.event == cli.EngineEventType.DIAGNOSTIC
-                and event.data["diagnostic"]["code"] == "IGNORED_METADATA"
-                for event in events
-            ):
-                ignored_metadata_produced.set()
-            return events
+            ignored_metadata_produced.set()
+            return (event,)
         finally:
             inspection_finished.set()
 

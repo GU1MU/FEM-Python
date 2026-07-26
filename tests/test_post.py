@@ -48,6 +48,61 @@ def _make_beam_dispatch_mesh():
     )
 
 
+def _write_current_element_stress(
+    mesh,
+    displacement,
+    path,
+    element_type=None,
+    gauss_order=None,
+):
+    type_keys = dispatch.resolve_type_keys(mesh, element_type)
+    if len(type_keys) == 1:
+        stress.element.by_type(
+            type_keys[0],
+            mesh,
+            displacement,
+            path,
+            gauss_order,
+        )
+        return
+    stress.element.mixed(
+        type_keys,
+        mesh,
+        displacement,
+        path,
+        gauss_order,
+    )
+
+
+def _write_current_nodal_stress(
+    mesh,
+    displacement,
+    path,
+    element_type=None,
+    gauss_order=None,
+    threshold=75.0,
+):
+    type_keys = dispatch.resolve_type_keys(mesh, element_type)
+    if len(type_keys) == 1:
+        stress.nodal.by_type(
+            type_keys[0],
+            mesh,
+            displacement,
+            path,
+            gauss_order,
+            threshold,
+        )
+        return
+    stress.nodal.mixed(
+        type_keys,
+        mesh,
+        displacement,
+        path,
+        gauss_order,
+        threshold,
+    )
+
+
 def test_nodal_stress_field_collects_ordered_element_contributions():
     mesh = make_mixed_tri3_quad4_mesh()
 
@@ -201,6 +256,30 @@ def test_canonical_csv_defaults_to_integration_points_and_writes_s33(tmp_path):
     assert {row["position"] for row in rows} == {"integration_point"}
     assert all(row["integration_point"] for row in rows)
     assert all(row["S33"] for row in rows)
+
+
+def test_deprecated_stress_export_wrappers_emit_explicit_warnings(tmp_path):
+    mesh = make_unit_hex8_mesh()
+    displacement = np.zeros(mesh.num_dofs)
+
+    with pytest.warns(
+        DeprecationWarning,
+        match=r"stress\.export\.element\(\) is deprecated",
+    ):
+        stress.export.element(
+            mesh,
+            displacement,
+            tmp_path / "compat-element.csv",
+        )
+    with pytest.warns(
+        DeprecationWarning,
+        match=r"stress\.export\.nodal\(\) is deprecated",
+    ):
+        stress.export.nodal(
+            mesh,
+            displacement,
+            tmp_path / "compat-nodal.csv",
+        )
 
 
 def _stress_contribution(node_id, elem_id, components, region=None, weight=1.0):
@@ -378,7 +457,12 @@ def test_nodal_stress_csv_preserves_material_boundary_contributions(tmp_path):
     )
     csv_path = tmp_path / "material_boundary.csv"
 
-    stress.export.nodal(mesh, np.zeros(mesh.num_dofs), csv_path, threshold=100.0)
+    _write_current_nodal_stress(
+        mesh,
+        np.zeros(mesh.num_dofs),
+        csv_path,
+        threshold=100.0,
+    )
 
     with csv_path.open("r", encoding="utf-8") as stream:
         assert list(csv.reader(stream)) == [
@@ -475,13 +559,9 @@ def test_vtk_from_result_uses_threshold_for_csv_and_topology(tmp_path):
         threshold=0.0,
     )
 
-    csv_rows = list(
-        csv.DictReader(
-            (tmp_path / "threshold_zero_nodal_stress.csv").open(
-                "r", encoding="utf-8"
-            )
-        )
-    )
+    stress_path = tmp_path / "threshold_zero_nodal_stress.csv"
+    with stress_path.open("r", encoding="utf-8") as stream:
+        csv_rows = list(csv.DictReader(stream))
     shared_rows = [row for row in csv_rows if row["node_id"] == "3"]
     vtk_lines = (tmp_path / "threshold_zero.vtk").read_text(encoding="utf-8").splitlines()
     assert [(row["elem_id"], row["averaged"]) for row in shared_rows] == [
@@ -860,7 +940,8 @@ def test_path_general_reader_keeps_last_duplicate_row_and_invalid_scalar_zero(tm
         disp_csv_path=disp_path,
     )
 
-    row = next(csv.DictReader(out_path.open("r", encoding="utf-8")))
+    with out_path.open("r", encoding="utf-8") as stream:
+        row = next(csv.DictReader(stream))
     assert float(row["ux"]) == 0.0
 
 
@@ -900,7 +981,8 @@ def test_polar_csv_conversion_accepts_current_stress_metadata(tmp_path):
 
     convert_nodal_solution_into_polar_coord(csv_path, (0.0, 0.0), out_path)
 
-    row = next(csv.DictReader(out_path.open("r", encoding="utf-8")))
+    with out_path.open("r", encoding="utf-8") as stream:
+        row = next(csv.DictReader(stream))
     assert float(row["sig_r"]) == pytest.approx(10.0)
     assert float(row["sig_t"]) == pytest.approx(2.0)
     assert float(row["tau_rt"]) == pytest.approx(3.0)
@@ -938,7 +1020,8 @@ def test_averaged_whitespace_provenance_is_accepted_across_stress_entries(tmp_pa
         path=path_out,
         stress_csv_path=path_stress_path,
     )
-    path_row = next(csv.DictReader(path_out.open("r", encoding="utf-8")))
+    with path_out.open("r", encoding="utf-8") as stream:
+        path_row = next(csv.DictReader(stream))
     assert float(path_row["sig_x"]) == pytest.approx(10.0)
 
     polar_out = tmp_path / "polar.csv"
@@ -947,7 +1030,8 @@ def test_averaged_whitespace_provenance_is_accepted_across_stress_entries(tmp_pa
         (0.0, 0.0),
         polar_out,
     )
-    polar_rows = list(csv.DictReader(polar_out.open("r", encoding="utf-8")))
+    with polar_out.open("r", encoding="utf-8") as stream:
+        polar_rows = list(csv.DictReader(stream))
     assert [float(row["sig_r"]) for row in polar_rows] == pytest.approx(
         [10.0, 20.0, 30.0]
     )
@@ -965,7 +1049,8 @@ def test_polar_csv_conversion_keeps_displacement_schema_unchanged(tmp_path):
 
     convert_nodal_solution_into_polar_coord(csv_path, (0.0, 0.0), out_path)
 
-    row = next(csv.DictReader(out_path.open("r", encoding="utf-8")))
+    with out_path.open("r", encoding="utf-8") as stream:
+        row = next(csv.DictReader(stream))
     assert float(row["ur"]) == pytest.approx(0.0)
     assert float(row["ut"]) == pytest.approx(-2.0)
 
@@ -1039,8 +1124,8 @@ def test_stress_export_infers_single_element_type_from_mesh(tmp_path):
     elem_path = tmp_path / "test_post_stress_element.csv"
     nodal_path = tmp_path / "test_post_stress_nodal.csv"
 
-    stress.export.element(mesh, np.zeros(mesh.num_dofs), elem_path)
-    stress.export.nodal(mesh, np.zeros(mesh.num_dofs), nodal_path)
+    _write_current_element_stress(mesh, np.zeros(mesh.num_dofs), elem_path)
+    _write_current_nodal_stress(mesh, np.zeros(mesh.num_dofs), nodal_path)
 
     with elem_path.open("r", encoding="utf-8") as f:
         elem_rows = list(csv.reader(f))
@@ -1061,7 +1146,12 @@ def test_explicit_hex8_nodal_stress_subset_exports_mixed_mesh_to_vtk(tmp_path):
     vtk_path = tmp_path / "mixed_subset.vtk"
 
     displacement.export.nodal(mesh, U, disp_path)
-    stress.export.nodal(mesh, U, stress_path, element_type="hex8")
+    _write_current_nodal_stress(
+        mesh,
+        U,
+        stress_path,
+        element_type="hex8",
+    )
 
     nodal_data = vtk.fields.read_nodal_stress_rows(stress_path)
     topology = vtk.cells.build_result(mesh, nodal_data.rows)
@@ -1111,8 +1201,8 @@ def test_hex20_stress_exports_write_one_element_and_twenty_nodes(tmp_path):
     elem_path = tmp_path / "hex20_element_stress.csv"
     nodal_path = tmp_path / "hex20_nodal_stress.csv"
 
-    stress.export.element(mesh, U, elem_path)
-    stress.export.nodal(mesh, U, nodal_path)
+    _write_current_element_stress(mesh, U, elem_path)
+    _write_current_nodal_stress(mesh, U, nodal_path)
 
     with elem_path.open("r", encoding="utf-8") as f:
         elem_rows = list(csv.reader(f))
@@ -1151,7 +1241,7 @@ def test_mixed_solid_element_export_uses_hex20_and_tet4_centroids(tmp_path):
     U = np.linspace(0.01, 0.01 * mesh.num_dofs, mesh.num_dofs)
     csv_path = tmp_path / "mixed_hex20_tet4_element_stress.csv"
 
-    stress.export.element(mesh, U, csv_path)
+    _write_current_element_stress(mesh, U, csv_path)
 
     with csv_path.open("r", encoding="utf-8") as f:
         rows = list(csv.reader(f))
@@ -1409,8 +1499,8 @@ def test_mixed_stress_exports_write_element_and_nodal_rows(
     elem_path = tmp_path / f"{name}_element_stress.csv"
     nodal_path = tmp_path / f"{name}_nodal_stress.csv"
 
-    stress.export.element(mesh, np.zeros(mesh.num_dofs), elem_path)
-    stress.export.nodal(mesh, np.zeros(mesh.num_dofs), nodal_path)
+    _write_current_element_stress(mesh, np.zeros(mesh.num_dofs), elem_path)
+    _write_current_nodal_stress(mesh, np.zeros(mesh.num_dofs), nodal_path)
     with elem_path.open("r", encoding="utf-8") as f:
         elem_rows = list(csv.reader(f))
     with nodal_path.open("r", encoding="utf-8") as f:
@@ -1432,11 +1522,27 @@ def test_stress_exports_cover_higher_order_mixed_types(tmp_path):
     plane_elem = tmp_path / "mixed_quad_element_stress.csv"
     plane_nodal = tmp_path / "mixed_quad_nodal_stress.csv"
 
-    stress.export.element(solid_mesh, np.zeros(solid_mesh.num_dofs), solid_elem)
-    stress.export.nodal(solid_mesh, np.zeros(solid_mesh.num_dofs), solid_nodal)
+    _write_current_element_stress(
+        solid_mesh,
+        np.zeros(solid_mesh.num_dofs),
+        solid_elem,
+    )
+    _write_current_nodal_stress(
+        solid_mesh,
+        np.zeros(solid_mesh.num_dofs),
+        solid_nodal,
+    )
     vtk.export.from_result(solid_vtk, output_dir=tmp_path)
-    stress.export.element(plane_mesh, np.zeros(plane_mesh.num_dofs), plane_elem)
-    stress.export.nodal(plane_mesh, np.zeros(plane_mesh.num_dofs), plane_nodal)
+    _write_current_element_stress(
+        plane_mesh,
+        np.zeros(plane_mesh.num_dofs),
+        plane_elem,
+    )
+    _write_current_nodal_stress(
+        plane_mesh,
+        np.zeros(plane_mesh.num_dofs),
+        plane_nodal,
+    )
 
     with solid_elem.open("r", encoding="utf-8") as f:
         solid_elem_rows = list(csv.reader(f))
@@ -1476,8 +1582,8 @@ def test_mixed_hex20_stress_and_vtk_exports_have_exact_rows_and_cell_types(
     element_path = tmp_path / f"{name}_direct_element_stress.csv"
     nodal_path = tmp_path / f"{name}_direct_nodal_stress.csv"
 
-    stress.export.element(mesh, U, element_path)
-    stress.export.nodal(mesh, U, nodal_path)
+    _write_current_element_stress(mesh, U, element_path)
+    _write_current_nodal_stress(mesh, U, nodal_path)
     vtk.export.from_result(make_zero_result(mesh, name), output_dir=tmp_path)
 
     with element_path.open("r", encoding="utf-8") as f:

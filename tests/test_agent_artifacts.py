@@ -132,6 +132,7 @@ def test_artifact_metadata_cannot_redirect_outside_session(tmp_path: Path) -> No
         store.resolve_artifact(session_id, record.artifact_id)
 
 
+@pytest.mark.platform
 def test_stored_file_symlink_escape_is_rejected_when_supported(
     tmp_path: Path,
 ) -> None:
@@ -147,7 +148,9 @@ def test_stored_file_symlink_escape_is_rejected_when_supported(
     try:
         os.symlink(outside, copied)
     except OSError as exc:
-        pytest.skip(f"file symlinks are unavailable: {exc}")
+        pytest.skip(
+            f"[platform-capability] file symlinks are unavailable: {exc}"
+        )
 
     with pytest.raises(UnsafePathError):
         store.resolve_artifact(session_id, record.artifact_id)

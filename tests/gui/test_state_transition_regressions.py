@@ -198,8 +198,8 @@ def test_delete_and_recreate_geometry_remove_all_topology_references() -> None:
     assert deleted.parts == ()
     assert deleted.feature_history == ()
     assert not deleted.named_regions
-    assert deleted.region_assignments == ()
-    assert deleted.analysis_definitions == ()
+    assert deleted.assignments == ()
+    assert deleted.steps == ()
     assert not hasattr(deleted.mesh_settings, "local_size")
     assert deleted.mesh_settings.local_controls == ()
     assert deleted.artifact is None
@@ -213,8 +213,8 @@ def test_delete_and_recreate_geometry_remove_all_topology_references() -> None:
     recreated = window.document
     assert recreated.geometry_recipe.name == "Replacement"
     assert not recreated.named_regions
-    assert recreated.region_assignments == ()
-    assert recreated.analysis_definitions == ()
+    assert recreated.assignments == ()
+    assert recreated.steps == ()
     window.close()
 
 
@@ -307,13 +307,13 @@ def test_definition_change_replaces_artifact_and_invalidates_check_and_result() 
     _succeed_run(window)
     old_artifact_id = window.document.artifact.artifact_id
 
-    materials = tuple(window.document.material_definitions)
+    materials = tuple(window.document.materials)
     assert window._apply_session_delta(
         window.session.replace_model_definitions(
             materials,
-            window.document.section_definitions,
-            window.document.region_assignments,
-            window.document.analysis_definitions,
+            window.document.sections,
+            window.document.assignments,
+            window.document.steps,
         )
     )
 
@@ -393,10 +393,10 @@ def test_stale_import_callback_cannot_change_projection() -> None:
     stale = window.session.prepare_import("late.inp")
     assert window._apply_session_delta(
         window.session.replace_model_definitions(
-            window.document.material_definitions,
-            window.document.section_definitions,
-            window.document.region_assignments,
-            window.document.analysis_definitions,
+            window.document.materials,
+            window.document.sections,
+            window.document.assignments,
+            window.document.steps,
         )
     )
     before = _projection_signature(window)
@@ -440,10 +440,10 @@ def test_stale_validation_callback_cannot_change_projection() -> None:
     stale = window.session.prepare_validation("pull")
     assert window._apply_session_delta(
         window.session.replace_model_definitions(
-            window.document.material_definitions,
-            window.document.section_definitions,
-            window.document.region_assignments,
-            window.document.analysis_definitions,
+            window.document.materials,
+            window.document.sections,
+            window.document.assignments,
+            window.document.steps,
         )
     )
     before = _projection_signature(window)
@@ -468,10 +468,10 @@ def test_stale_solve_callback_cannot_restore_invalidated_result() -> None:
     assert window._apply_session_delta(window.session.begin_run(stale.token))
     assert window._apply_session_delta(
         window.session.replace_model_definitions(
-            window.document.material_definitions,
-            window.document.section_definitions,
-            window.document.region_assignments,
-            window.document.analysis_definitions,
+            window.document.materials,
+            window.document.sections,
+            window.document.assignments,
+            window.document.steps,
         )
     )
     before = _projection_signature(window)

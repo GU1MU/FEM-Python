@@ -3085,8 +3085,12 @@ def test_generated_handle_rejects_same_name_replacement_and_preserves_it(
     assert backend.model.current == "prior"
 
 
+@pytest.mark.optional_runtime
 def test_real_gmsh_same_name_replacement_cannot_satisfy_old_reference() -> None:
-    native_gmsh = pytest.importorskip("gmsh")
+    native_gmsh = pytest.importorskip(
+        "gmsh",
+        reason="[optional-native-runtime] Gmsh is unavailable",
+    )
     from fem.io import gmsh as gmsh_io
 
     owns_session = not bool(native_gmsh.isInitialized())

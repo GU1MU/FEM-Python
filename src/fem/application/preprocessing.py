@@ -17,21 +17,14 @@ from fem.core.model import (
     Surface,
 )
 from fem.geometry.measurements import resolve_target_radius
+from fem.geometry.recipe_analysis import (
+    recipe_characteristic_size,
+    supports_structured_hexahedron,
+)
 from fem.geometry.references import LogicalEntityRef
 from fem.geometry.recipes import (
-    BooleanGeometry,
-    BoxGeometry,
-    CylinderGeometry,
-    DiskGeometry,
-    ExtrudedGeometry,
-    MovedGeometry,
     NATIVE_GEOMETRY_TYPES,
     NativeGeometry,
-    PlateWithHoleGeometry,
-    RectangleGeometry,
-    RotatedGeometry,
-    SketchGeometry,
-    SketchRectangle,
     geometry_dimension,
 )
 from fem.io import gmsh as gmsh_io
@@ -106,52 +99,10 @@ class LogicalRecipeTopologyResolver:
         return topology.resolve(reference)
 
     def characteristic_size(self, recipe: NativeGeometry) -> float:
-        if isinstance(recipe, BooleanGeometry):
-            return min(
-                self.characteristic_size(recipe.object_geometry),
-                self.characteristic_size(recipe.tool_geometry),
-            )
-        if isinstance(recipe, (MovedGeometry, RotatedGeometry)):
-            return self.characteristic_size(recipe.base)
-        if isinstance(recipe, ExtrudedGeometry):
-            return min(
-                self.characteristic_size(recipe.base),
-                recipe.height,
-            )
-        if isinstance(recipe, SketchGeometry):
-            sizes = tuple(
-                min(contour.width, contour.height)
-                if isinstance(contour, SketchRectangle)
-                else 2.0 * contour.radius
-                for contour in recipe.contours
-            )
-            return min(sizes)
-        if isinstance(recipe, (RectangleGeometry, PlateWithHoleGeometry)):
-            return min(recipe.width, recipe.height)
-        if isinstance(recipe, DiskGeometry):
-            return 2.0 * recipe.radius
-        if isinstance(recipe, BoxGeometry):
-            return min(recipe.width, recipe.depth, recipe.height)
-        if isinstance(recipe, CylinderGeometry):
-            return min(2.0 * recipe.radius, recipe.height)
-        raise TypeError(f"不支持的几何配方: {type(recipe).__name__}")
+        return recipe_characteristic_size(recipe)
 
     def supports_hexahedron(self, recipe: NativeGeometry) -> bool:
-        if isinstance(recipe, (MovedGeometry, RotatedGeometry)):
-            return self.supports_hexahedron(recipe.base)
-        if isinstance(recipe, BoxGeometry):
-            return True
-        if not isinstance(recipe, ExtrudedGeometry) or not isinstance(
-            recipe.base,
-            SketchGeometry,
-        ):
-            return False
-        contours = recipe.base.contours
-        return (
-            len(contours) == 1
-            and isinstance(contours[0], SketchRectangle)
-            and contours[0].operation == "material"
-        )
+        return supports_structured_hexahedron(recipe)
 
 
 DEFAULT_TOPOLOGY_RESOLVER: RecipeTopologyResolver = LogicalRecipeTopologyResolver()

@@ -12,19 +12,13 @@ import pytest
 
 from fem.application import NamedRegion
 from fem.application.preprocessing import generate_fem_model
-from fem.geometry import LogicalEntityRef
-from fem.geometry.recipe_topology import describe_recipe_topology
-from fem.mesh.settings import MeshSizeFalloff
-from fem_gui.main_window import FEMMainWindow
-from fem_gui.mesh_quality import analyze_mesh
-from fem_gui.preprocessing import (
-    BoxGeometry,
+from fem.geometry import (
     BooleanGeometry,
+    BoxGeometry,
     CylinderGeometry,
     DiskGeometry,
     ExtrudedGeometry,
-    LocalMeshControl,
-    MeshSettings,
+    LogicalEntityRef,
     MovedGeometry,
     PlateWithHoleGeometry,
     RectangleGeometry,
@@ -32,9 +26,13 @@ from fem_gui.preprocessing import (
     SketchCircle,
     SketchGeometry,
     SketchRectangle,
-    build_geometry_preview,
-    supports_hexahedron,
+    supports_structured_hexahedron,
 )
+from fem.geometry.recipe_topology import describe_recipe_topology
+from fem.mesh.quality import analyze_mesh
+from fem.mesh.settings import LocalMeshControl, MeshSettings, MeshSizeFalloff
+from fem_gui.geometry_preview import build_geometry_preview
+from fem_gui.main_window import FEMMainWindow
 from fem_gui.widgets import viewport as viewport_module
 from fem_gui.widgets.viewport import (
     FEMViewport,
@@ -98,7 +96,7 @@ def test_native_rectangle_mesh_joins_the_existing_model_workflow() -> None:
     assert window.actions["mesh_clear"].isEnabled()
     assert window.actions["mesh_quality"].isEnabled()
 
-    report = analyze_mesh(window.document.model)
+    report = analyze_mesh(window.document.model.mesh)
     assert report.checked_count == report.element_count
     assert 0.0 < report.minimum <= report.mean <= report.maximum <= 1.0
 
@@ -351,8 +349,10 @@ def test_box_preview_exposes_all_twelve_logical_edges() -> None:
 def test_rigidly_transformed_box_keeps_hexahedron_authoring_support() -> None:
     box = BoxGeometry("hex-box", 2.0, 1.0, 0.5)
 
-    assert supports_hexahedron(MovedGeometry(box, 4.0, -2.0, 1.0))
-    assert supports_hexahedron(RotatedGeometry(box, "z", 35.0))
+    assert supports_structured_hexahedron(
+        MovedGeometry(box, 4.0, -2.0, 1.0)
+    )
+    assert supports_structured_hexahedron(RotatedGeometry(box, "z", 35.0))
 
 
 def test_rectangle_preview_cells_follow_catalog_semantics() -> None:
@@ -697,17 +697,23 @@ def test_selecting_a_solid_geometry_prepares_tetrahedral_settings_and_preview() 
 def test_renderer_failure_cannot_leave_valid_geometry_actions_disabled(monkeypatch) -> None:
     _application()
     window = FEMMainWindow()
+    render_preview = window.viewport.show_geometry_preview
+    calls = 0
 
-    def fail_preview(_preview) -> None:
-        raise RuntimeError("preview backend failed")
+    def fail_preview(preview) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("preview backend failed")
+        render_preview(preview)
 
     monkeypatch.setattr(window.viewport, "show_geometry_preview", fail_preview)
-    with pytest.raises(RuntimeError, match="preview backend failed"):
-        window._set_native_geometry(
-            CylinderGeometry("renderer-failure", 0.5, 1.0),
-            "圆柱",
-        )
+    window._set_native_geometry(
+        CylinderGeometry("renderer-failure", 0.5, 1.0),
+        "圆柱",
+    )
 
+    assert calls == 2
     assert window.actions["geometry_move"].isEnabled()
     assert window.actions["geometry_select_face"].isEnabled()
     assert window.actions["mesh_settings"].isEnabled()

@@ -10,6 +10,7 @@ __pycache__/
 .env
 ex.py
 *.txt
+!/tests/fixtures/**
 data/
 scripts/
 docs/

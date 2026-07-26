@@ -223,16 +223,48 @@ def _generate_csv_bundle(result: Any, staging: Path, prefix: str) -> None:
         return
 
     if post.stress.dispatch.element_stress_supported(type_keys):
-        post.stress.export.element(
+        _write_element_stress_csv(
+            type_keys,
             mesh,
             result.U,
             staging / f"{prefix}_element_stress.csv",
         )
     if post.stress.dispatch.nodal_stress_supported(type_keys):
-        post.stress.export.nodal_from_result(
-            result,
-            staging / f"{prefix}_nodal_stress.csv",
+        nodal_path = staging / f"{prefix}_nodal_stress.csv"
+        if type_keys == ("beam2",):
+            post.stress.export.nodal_from_result(result, nodal_path)
+        elif len(type_keys) == 1:
+            post.stress.nodal.by_type(
+                type_keys[0],
+                mesh,
+                result.U,
+                nodal_path,
+            )
+        else:
+            post.stress.nodal.mixed(
+                type_keys,
+                mesh,
+                result.U,
+                nodal_path,
+            )
+
+
+def _write_element_stress_csv(
+    type_keys: tuple[str, ...],
+    mesh: Any,
+    displacement: Any,
+    path: Path,
+) -> None:
+    """Write current element stress without entering deprecated wrappers."""
+    if len(type_keys) == 1:
+        post.stress.element.by_type(
+            type_keys[0],
+            mesh,
+            displacement,
+            path,
         )
+        return
+    post.stress.element.mixed(type_keys, mesh, displacement, path)
 
 
 def _validated_staged_files(

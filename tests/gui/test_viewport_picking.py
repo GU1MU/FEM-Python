@@ -9,13 +9,8 @@ import numpy as np
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from fem.geometry import LogicalEntityRef
-from fem_gui.preprocessing import (
-    BoxGeometry,
-    CylinderGeometry,
-    GeometryPreview,
-    build_geometry_preview,
-)
+from fem.geometry import BoxGeometry, CylinderGeometry, LogicalEntityRef
+from fem_gui.geometry_preview import GeometryPreview, build_geometry_preview
 from fem_gui.widgets import viewport as viewport_module
 from fem_gui.widgets.viewport import (
     FEMViewport,
@@ -25,7 +20,12 @@ from fem_gui.widgets.viewport import (
     _geometry_surface_polydata,
 )
 
-pv = pytest.importorskip("pyvista")
+pytestmark = pytest.mark.optional_runtime
+
+pv = pytest.importorskip(
+    "pyvista",
+    reason="[optional-native-runtime] PyVista is unavailable",
+)
 
 
 def _application() -> QApplication:

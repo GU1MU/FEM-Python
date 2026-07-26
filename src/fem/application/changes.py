@@ -36,6 +36,17 @@ class ArtifactKind(str, Enum):
     TASKS = "tasks"
 
 
+class TransitionEffect(str, Enum):
+    """One UI-neutral consequence of an accepted application transition."""
+
+    REFERENCES_PRESERVED = "references_preserved"
+    NAMED_REGIONS_CLEARED = "named_regions_cleared"
+    LOCAL_CONTROLS_CLEARED = "local_controls_cleared"
+    ASSIGNMENTS_CLEARED = "assignments_cleared"
+    STEPS_CLEARED = "steps_cleared"
+    MESH_SHAPE_NORMALIZED = "mesh_shape_normalized"
+
+
 @dataclass(frozen=True, slots=True)
 class SessionDelta:
     """Ordered, UI-agnostic description of one accepted transition.
@@ -51,10 +62,14 @@ class SessionDelta:
     reason: str = ""
     accepted: bool = True
     token_status: TokenStatus | None = None
+    effects: frozenset[TransitionEffect] = frozenset()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "session_revision", int(self.session_revision))
         object.__setattr__(self, "changed", frozenset(self.changed))
         object.__setattr__(self, "invalidated", frozenset(self.invalidated))
         object.__setattr__(self, "reason", str(self.reason))
-
+        effects = frozenset(self.effects)
+        if any(type(effect) is not TransitionEffect for effect in effects):
+            raise TypeError("effects must contain only TransitionEffect values")
+        object.__setattr__(self, "effects", effects)

@@ -197,11 +197,11 @@ def test_orientation_edit_rejects_old_validation_and_solve_callbacks() -> None:
     solve = session.prepare_solve("UniformLoad", "Beam-Job")
     session.begin_run(solve.token)
     before = session.snapshot()
-    assignment = before.region_assignments[0]
+    assignment = before.assignments[0]
 
     session.replace_model_definitions(
-        before.material_definitions,
-        before.section_definitions,
+        before.materials,
+        before.sections,
         (
             RegionAssignment(
                 assignment.section_name,
@@ -209,7 +209,7 @@ def test_orientation_edit_rejects_old_validation_and_solve_callbacks() -> None:
                 BeamOrientation((0.0, 1.0, 0.0)),
             ),
         ),
-        before.analysis_definitions,
+        before.steps,
     )
     after_edit = session.snapshot()
 

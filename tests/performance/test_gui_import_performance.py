@@ -16,7 +16,10 @@ pytestmark = [
     pytest.mark.slow,
     pytest.mark.skipif(
         os.environ.get("FEM_RUN_SLOW_PERF") != "1",
-        reason="set FEM_RUN_SLOW_PERF=1 to run scalability benchmarks",
+        reason=(
+            "[slow-opt-in] set FEM_RUN_SLOW_PERF=1 to run "
+            "scalability benchmarks"
+        ),
     ),
 ]
 

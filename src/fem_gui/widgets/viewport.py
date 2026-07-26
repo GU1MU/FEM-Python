@@ -18,7 +18,7 @@ from fem.application import RegionRef
 from fem.boundary.step import boundary_for_step, get_step
 from fem.geometry import LogicalEntityRef, logical_ref_sort_key
 from fem.post.stress import dispatch, field
-from ..preprocessing import GeometryPreview
+from ..geometry_preview import GeometryPreview
 from ..viewport_background import ViewportBackgroundSettings
 from ..visualization.model_adapter import ModelGeometry, pyvista_cell_array
 from ..visualization.result_adapter import ResultData, ScalarField, deformed_points

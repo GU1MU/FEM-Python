@@ -29,14 +29,15 @@ def _application() -> QApplication:
 
 
 def _wait_for_task(window: FEMMainWindow) -> None:
-    assert window._thread is not None
+    controller = window.task_controller
+    assert controller.busy
     deadline = monotonic() + 10.0
     application = QApplication.instance()
-    while window.busy and monotonic() < deadline:
+    while controller.busy and monotonic() < deadline:
         application.processEvents()
         QThread.msleep(1)
     application.processEvents()
-    assert not window.busy
+    assert not controller.busy
 
 
 def _validated_session() -> ModelSession:
@@ -231,7 +232,7 @@ def test_submit_resubmit_open_history_and_reload_clear(gui_inp_path):
     assert window.document.displayed_result_run_id == job1.run_id
     window.reload_model()
     _wait_for_task(window)
-    assert window.document.jobs == ()
+    assert window.document.runs == ()
     assert window.document.active_job_name is None
     window.close()
 
@@ -355,7 +356,7 @@ def test_solver_defensive_validation_failure_is_reported_by_job(monkeypatch):
     _wait_for_task(window)
     job = window.session.find_run(started.run_id)
     assert job is not None
-    assert tuple(run.run_id for run in window.document.jobs) == (job.run_id,)
+    assert tuple(run.run_id for run in window.document.runs) == (job.run_id,)
     assert job.status is RunStatus.FAILED
     assert job.error == "模型引用错误"
     assert shown == [("分析运行失败", "模型引用错误")]
@@ -371,7 +372,7 @@ def test_submit_rejects_busy_empty_and_duplicate_names(monkeypatch, gui_inp_path
     shown: list[tuple[str, str]] = []
     monkeypatch.setattr(window, "_show_error", lambda title, message: shown.append((title, message)))
     assert window._submit_job("   ", "Static-1") is None
-    assert window.document.jobs == ()
+    assert window.document.runs == ()
 
     first = window._submit_job("Job-1", "Static-1")
     assert first is not None
@@ -395,7 +396,7 @@ def test_job_workflow_creates_no_job_files(monkeypatch, tmp_path, gui_inp_path):
     for name in ("jobs", "job.json", "solver.log", "result.npz"):
         assert not (tmp_path / name).exists()
     window.close_model()
-    assert window.document.jobs == ()
+    assert window.document.runs == ()
     window.close()
 
 

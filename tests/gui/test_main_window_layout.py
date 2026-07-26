@@ -186,7 +186,7 @@ def test_standard_views_use_coordinate_plane_names():
 def test_viewport_toolbar_switches_to_geometry_selection_after_creation():
     _application()
     window = FEMMainWindow()
-    from fem_gui.preprocessing import RectangleGeometry
+    from fem.geometry import RectangleGeometry
 
     window._set_native_geometry(RectangleGeometry("toolbar-geometry", 2.0, 1.0), "矩形")
 

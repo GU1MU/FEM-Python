@@ -17,40 +17,37 @@ from fem_agent.providers.base import (
 from fem_agent.providers.deepseek import DeepSeekProvider
 
 
-TEST_CONFIG_PATH = Path(__file__).with_name(TEST_CONFIG_NAME)
+CLOUD_SMOKE_OPT_IN_ENV = "FEM_AGENT_CLOUD_SMOKE"
+CLOUD_SMOKE_CONFIG_ENV = "FEM_AGENT_CLOUD_SMOKE_CONFIG"
+_CLOUD_OPT_IN_REASON = (
+    "[cloud-opt-in] set FEM_AGENT_CLOUD_SMOKE=1 and "
+    "FEM_AGENT_CLOUD_SMOKE_CONFIG to an absolute external config path"
+)
 
 
 def _cloud_smoke_config(
-    path: Path,
     environ: Mapping[str, str],
 ) -> tuple[LocalAgentConfig | None, str | None]:
-    file_config = (
-        LocalAgentConfig.load(path)
-        if path.is_file()
-        else LocalAgentConfig(
-            model="deepseek-v4-flash",
-            timeout_seconds=30,
-            max_retries=0,
-            max_output_tokens=256,
+    if environ.get(CLOUD_SMOKE_OPT_IN_ENV) != "1":
+        return None, _CLOUD_OPT_IN_REASON
+    raw_path = environ.get(CLOUD_SMOKE_CONFIG_ENV)
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None, _CLOUD_OPT_IN_REASON
+
+    path = Path(raw_path)
+    if not path.is_absolute():
+        raise ConfigError(
+            "the cloud smoke config path must be absolute"
         )
-    )
-    opted_in = (
-        environ.get("FEM_AGENT_CLOUD_SMOKE") == "1"
-        or (path.is_file() and file_config.enabled)
-    )
-    if not opted_in:
-        return None, (
-            f"set enabled=true in {path.name} or "
-            "FEM_AGENT_CLOUD_SMOKE=1 to enable the paid cloud smoke test"
-        )
+    file_config = LocalAgentConfig.load(path)
 
     resolved = resolve_local_config(file_config, environ=environ)
     if resolved.provider.casefold() != "deepseek":
         raise ConfigError("the cloud smoke test requires provider='deepseek'")
     if not resolved.has_api_key:
         return None, (
-            f"set api_key in {path.name} or DEEPSEEK_API_KEY for the "
-            "cloud smoke test"
+            "[cloud-opt-in] configure api_key in the explicit cloud smoke "
+            "config or set DEEPSEEK_API_KEY"
         )
     return (
         LocalAgentConfig(
@@ -68,14 +65,30 @@ def _cloud_smoke_config(
     )
 
 
-def test_cloud_smoke_config_is_disabled_without_explicit_opt_in(tmp_path):
-    config, reason = _cloud_smoke_config(
-        tmp_path / TEST_CONFIG_NAME,
+@pytest.mark.parametrize(
+    "environ",
+    (
         {},
+        {CLOUD_SMOKE_OPT_IN_ENV: "1"},
+        {CLOUD_SMOKE_CONFIG_ENV: "ignored.json"},
+    ),
+)
+def test_cloud_smoke_config_requires_both_explicit_gates_without_reading_config(
+    monkeypatch,
+    environ,
+):
+    def fail_if_loaded(_cls, _path):
+        raise AssertionError("cloud config must not be read before both gates")
+
+    monkeypatch.setattr(
+        LocalAgentConfig,
+        "load",
+        classmethod(fail_if_loaded),
     )
+    config, reason = _cloud_smoke_config(environ)
 
     assert config is None
-    assert "enable the paid cloud smoke test" in reason
+    assert reason == _CLOUD_OPT_IN_REASON
 
 
 def test_cloud_smoke_config_caps_cost_and_keeps_key_out_of_environment(
@@ -99,7 +112,10 @@ def test_cloud_smoke_config_caps_cost_and_keeps_key_out_of_environment(
         encoding="utf-8",
     )
 
-    config, reason = _cloud_smoke_config(path, {})
+    config, reason = _cloud_smoke_config({
+        CLOUD_SMOKE_OPT_IN_ENV: "1",
+        CLOUD_SMOKE_CONFIG_ENV: str(path),
+    })
 
     assert reason is None
     assert config is not None
@@ -127,13 +143,73 @@ def test_cloud_smoke_config_rejects_nonofficial_endpoint_before_network(
     )
 
     with pytest.raises(ConfigError, match="official HTTPS API endpoint"):
-        _cloud_smoke_config(path, {})
+        _cloud_smoke_config({
+            CLOUD_SMOKE_OPT_IN_ENV: "1",
+            CLOUD_SMOKE_CONFIG_ENV: str(path),
+        })
 
 
+def test_cloud_smoke_config_requires_an_absolute_external_path():
+    with pytest.raises(ConfigError, match="must be absolute"):
+        _cloud_smoke_config({
+            CLOUD_SMOKE_OPT_IN_ENV: "1",
+            CLOUD_SMOKE_CONFIG_ENV: TEST_CONFIG_NAME,
+        })
+
+
+def test_cloud_smoke_diagnostics_do_not_echo_config_values(tmp_path):
+    secret = "cloud-smoke-secret-value"
+    path = tmp_path / TEST_CONFIG_NAME
+    path.write_text(
+        f"""
+{{
+  "provider": "{secret}",
+  "api_key": "{secret}"
+}}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError) as captured:
+        _cloud_smoke_config({
+            CLOUD_SMOKE_OPT_IN_ENV: "1",
+            CLOUD_SMOKE_CONFIG_ENV: str(path),
+        })
+
+    failure_output = f"invalid cloud smoke configuration: {captured.value}"
+    assert secret not in failure_output
+    assert secret not in _CLOUD_OPT_IN_REASON
+
+
+def test_cloud_smoke_skip_reason_does_not_echo_config_values(tmp_path):
+    secret = "cloud-smoke-model-secret"
+    path = tmp_path / TEST_CONFIG_NAME
+    path.write_text(
+        f"""
+{{
+  "provider": "deepseek",
+  "model": "{secret}"
+}}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    config, reason = _cloud_smoke_config({
+        CLOUD_SMOKE_OPT_IN_ENV: "1",
+        CLOUD_SMOKE_CONFIG_ENV: str(path),
+    })
+
+    assert config is None
+    assert reason is not None
+    assert reason.startswith("[cloud-opt-in]")
+    assert secret not in reason
+
+
+@pytest.mark.cloud
 @pytest.mark.integration
 def test_opt_in_deepseek_tool_call_smoke():
     try:
-        config, reason = _cloud_smoke_config(TEST_CONFIG_PATH, os.environ)
+        config, reason = _cloud_smoke_config(os.environ)
     except ConfigError as error:
         pytest.fail(f"invalid cloud smoke configuration: {error}")
     if config is None:

@@ -13,14 +13,12 @@ from fem.application.definitions import (
     RegionAssignment,
     SectionDefinition,
 )
+import fem.geometry as geometry
 from fem.geometry import LogicalEntityRef
 from fem.geometry import recipes
-from fem.mesh.settings import LocalMeshControl, MeshSettings
 
 
-def test_gui_preprocessing_reexports_the_headless_contract_types() -> None:
-    from fem_gui import preprocessing
-
+def test_geometry_package_exports_the_headless_contract_types() -> None:
     names = (
         "RectangleGeometry",
         "DiskGeometry",
@@ -36,9 +34,7 @@ def test_gui_preprocessing_reexports_the_headless_contract_types() -> None:
         "BooleanGeometry",
     )
     for name in names:
-        assert getattr(preprocessing, name) is getattr(recipes, name)
-    assert preprocessing.LocalMeshControl is LocalMeshControl
-    assert preprocessing.MeshSettings is MeshSettings
+        assert getattr(geometry, name) is getattr(recipes, name)
 
 
 @pytest.mark.parametrize(

@@ -337,7 +337,7 @@ assert "gmsh" not in sys.modules
 
 
 def test_gmsh_meshing_recursively_depends_only_on_public_geometry_contracts():
-    paths = sorted(MESH_ROOT.rglob("*.py"))
+    paths = sorted(GMSH_MESH_ROOT.rglob("*.py"))
     assert paths
 
     offenders = []
@@ -493,19 +493,17 @@ def test_application_layer_has_no_qt_pyvista_or_gui_dependency():
     assert offenders == []
 
 
-def test_gui_preprocessing_contains_only_display_authoring_helpers():
-    path = GUI_ROOT / "preprocessing.py"
+def test_gui_geometry_preview_contains_only_display_authoring_helpers():
+    path = GUI_ROOT / "geometry_preview.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
     allowed_fem_modules = {
         "fem.geometry",
         "fem.geometry.recipe_topology",
-        "fem.geometry.recipes",
-        "fem.mesh.settings",
     }
     offenders = []
     for target, lineno in _resolved_import_targets(
         path,
-        "fem_gui.preprocessing",
+        "fem_gui.geometry_preview",
     ):
         allowed_fem_target = any(
             target == module or target.startswith(f"{module}.")
@@ -530,6 +528,74 @@ def test_gui_preprocessing_contains_only_display_authoring_helpers():
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and node.name in forbidden_functions
     )
+
+    assert offenders == []
+
+
+def test_batch1_recipe_analysis_and_mesh_quality_have_one_owner():
+    recipe_analysis_path = GEOMETRY_ROOT / "recipe_analysis.py"
+    mesh_quality_path = MESH_ROOT / "quality.py"
+    assert recipe_analysis_path.is_file()
+    assert mesh_quality_path.is_file()
+    assert not (GUI_ROOT / "preprocessing.py").exists()
+    assert not (GUI_ROOT / "mesh_quality.py").exists()
+
+    helper_names = {
+        "expand_sketch_recipe",
+        "axis_aligned_rectangle",
+        "transformed_circle",
+        "recipe_characteristic_size",
+        "supports_structured_hexahedron",
+    }
+    owners = {name: [] for name in helper_names}
+    for path in sorted(SRC_ROOT.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name in owners:
+                    owners[node.name].append(path.relative_to(PROJECT_ROOT))
+
+    expected_owner = recipe_analysis_path.relative_to(PROJECT_ROOT)
+    assert owners == {
+        name: [expected_owner] for name in helper_names
+    }
+
+    quality_owners = []
+    for path in sorted(SRC_ROOT.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        if any(
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "analyze_mesh"
+            for node in ast.walk(tree)
+        ):
+            quality_owners.append(path.relative_to(PROJECT_ROOT))
+    assert quality_owners == [mesh_quality_path.relative_to(PROJECT_ROOT)]
+
+
+def test_recipe_analysis_owner_is_backend_and_runtime_independent():
+    path = GEOMETRY_ROOT / "recipe_analysis.py"
+    forbidden_roots = {
+        "PySide6",
+        "fem.application",
+        "fem.mesh",
+        "fem.solvers",
+        "fem_gui",
+        "gmsh",
+        "pyvista",
+        "pyvistaqt",
+    }
+    offenders = []
+    for target, lineno in _resolved_import_targets(
+        path,
+        "fem.geometry.recipe_analysis",
+    ):
+        if any(
+            target == root or target.startswith(f"{root}.")
+            for root in forbidden_roots
+        ):
+            offenders.append(
+                f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
+            )
 
     assert offenders == []
 
@@ -719,24 +785,30 @@ def test_gui_uses_only_public_model_session_commands():
 
 
 def test_gui_project_save_gates_only_use_session_can_save_projection():
-    path = GUI_ROOT / "main_window.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    main_path = GUI_ROOT / "main_window.py"
+    main_tree = ast.parse(main_path.read_text(encoding="utf-8"))
     functions = {
         node.name: node
-        for node in ast.walk(tree)
+        for node in ast.walk(main_tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-
-    update_states = functions["_update_action_states"]
+    projector_path = GUI_ROOT / "action_state.py"
+    projector_tree = ast.parse(projector_path.read_text(encoding="utf-8"))
+    projector = next(
+        node
+        for node in ast.walk(projector_tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "derive_action_availability"
+    )
     save_action_call = next(
         node
-        for node in ast.walk(update_states)
+        for node in ast.walk(projector)
         if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "_set_action_available"
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "set_state"
         and len(node.args) >= 2
-        and isinstance(node.args[0], ast.Constant)
-        and node.args[0].value == "save_project"
+        and isinstance(node.args[0], ast.Attribute)
+        and node.args[0].attr == "SAVE_PROJECT"
     )
     gate_nodes = {
         "save action": save_action_call.args[1],
@@ -751,7 +823,12 @@ def test_gui_project_save_gates_only_use_session_can_save_projection():
             for descendant in ast.walk(node)
             if isinstance(descendant, ast.Attribute)
         }
-        assert ("self", "document", "can_save") in chains, label
+        expected_can_save = (
+            ("snapshot", "can_save")
+            if label == "save action"
+            else ("self", "document", "can_save")
+        )
+        assert expected_can_save in chains, label
         assert not any(
             chain and chain[-1] in forbidden_attributes
             for chain in chains
@@ -1188,7 +1265,7 @@ def test_native_authoring_domain_has_no_integer_geometry_identity():
 
 
 def test_geometry_preview_pick_tokens_are_viewport_private():
-    preview_path = GUI_ROOT / "preprocessing.py"
+    preview_path = GUI_ROOT / "geometry_preview.py"
     preview_tree = ast.parse(preview_path.read_text(encoding="utf-8"))
     preview_class = next(
         node
@@ -1242,21 +1319,27 @@ def test_native_preprocessing_uses_typed_region_catalog_and_one_control_path():
     assert "local_size" not in settings_source
 
 
-def test_gui_native_region_choices_delegate_to_application_catalog():
+def test_gui_native_region_choices_delegate_to_authoring_projection():
     path = GUI_ROOT / "main_window.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    calls = [
-        node
+    functions = {
+        node.name: node
         for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "describe_native_regions"
-    ]
-    assert len(calls) == 1
-    assert _attribute_chain(calls[0].func) == (
-        "application_api",
-        "describe_native_regions",
-    )
+        if isinstance(node, ast.FunctionDef)
+    }
+    for name in (
+        "_analysis_region_names",
+        "_analysis_element_regions",
+        "_supported_load_regions",
+    ):
+        calls = [
+            node
+            for node in ast.walk(functions[name])
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "describe_session_authoring"
+        ]
+        assert len(calls) == 1, name
 
     built_in_names = {
         "DOMAIN",

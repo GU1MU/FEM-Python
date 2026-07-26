@@ -12,6 +12,7 @@ from fem.core.model import (
     MaterialDefinition,
     NodalLoad,
 )
+from fem.solvers import static_linear
 from fem_gui.analysis_definition_dialogs import (
     DisplacementDialog,
     LoadDialog,
@@ -19,6 +20,7 @@ from fem_gui.analysis_definition_dialogs import (
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.model_dialogs import MaterialEditDialog
 from fem_gui.visualization.model_adapter import build_model_geometry
+from fem_gui.visualization.result_adapter import build_result_data
 from fem_gui.widgets.model_tree import ROLE_KIND
 from tests.helpers.preflight_builders import passing_preflight_report
 
@@ -40,13 +42,21 @@ def _find_kind(tree, kind):
 
 def _seed_current_result(window: FEMMainWindow, step_name: str) -> None:
     validation = window.session.prepare_validation(step_name)
-    window.session.accept_validation(
-        validation.token,
-        passing_preflight_report(validation.token),
+    assert window._apply_session_delta(
+        window.session.accept_validation(
+            validation.token,
+            passing_preflight_report(validation.token),
+        )
     )
     solve = window.session.prepare_solve(step_name, "Seed-Result")
-    window.session.begin_run(solve.token)
-    window.session.accept_run_result(solve.token, object())
+    if solve.delta is not None:
+        assert window._apply_session_delta(solve.delta)
+    assert window._apply_session_delta(window.session.begin_run(solve.token))
+    result = static_linear.solve(solve.model, step_name)
+    window._job_succeeded(
+        solve.token,
+        (result, build_result_data(result, window.geometry)),
+    )
     assert window.session.current_result() is not None
 
 

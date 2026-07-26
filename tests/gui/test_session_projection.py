@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from fem.abaqus import read
-from fem.application import RegionAssignment
+from fem.application import RegionAssignment, describe_session_authoring
 from fem.solvers.static_linear import solve
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.model_dialogs import RegionAssignmentDialog
@@ -139,10 +139,10 @@ def test_artifact_and_run_mismatches_never_leave_stale_gui_caches() -> None:
     )
 
     delta = window.session.replace_model_definitions(
-        window.document.material_definitions,
-        window.document.section_definitions,
-        window.document.region_assignments,
-        window.document.analysis_definitions,
+        window.document.materials,
+        window.document.sections,
+        window.document.assignments,
+        window.document.steps,
     )
     assert window._apply_session_delta(delta)
 
@@ -162,44 +162,30 @@ def test_artifact_and_run_mismatches_never_leave_stale_gui_caches() -> None:
     window.close()
 
 
-def test_action_gates_delegate_validation_decisions_to_session_queries(
-    monkeypatch,
-) -> None:
+def test_action_gates_use_the_session_authoring_lifecycle_projection() -> None:
     window = _window_with_imported_model()
-    calls: list[tuple[str, str | None]] = []
-
-    monkeypatch.setattr(
-        window.session,
-        "can_check",
-        lambda step=None: calls.append(("check", step)) or False,
-    )
-    monkeypatch.setattr(
-        window.session,
-        "can_submit",
-        lambda step=None: calls.append(("submit", step)) or False,
-    )
     window._update_action_states()
+    initial = describe_session_authoring(window.document).step("pull")
 
-    assert ("check", "pull") in calls
-    assert ("submit", "pull") in calls
-    assert not window.actions["check_model"].isEnabled()
+    assert initial is not None
+    assert initial.can_check
+    assert not initial.can_submit
+    assert window.actions["check_model"].isEnabled()
     assert not window.actions["submit_job"].isEnabled()
 
-    calls.clear()
-    monkeypatch.setattr(
-        window.session,
-        "can_check",
-        lambda step=None: calls.append(("check", step)) or True,
-    )
-    monkeypatch.setattr(
-        window.session,
-        "can_submit",
-        lambda step=None: calls.append(("submit", step)) or True,
+    validation = window.session.prepare_validation("pull")
+    assert window._apply_session_delta(
+        window.session.accept_validation(
+            validation.token,
+            passing_preflight_report(validation.token),
+        )
     )
     window._update_action_states()
+    validated = describe_session_authoring(window.document).step("pull")
 
-    assert ("check", "pull") in calls
-    assert ("submit", "pull") in calls
+    assert validated is not None
+    assert validated.can_check
+    assert validated.can_submit
     assert window.actions["check_model"].isEnabled()
     assert window.actions["submit_job"].isEnabled()
     window.close()
@@ -216,8 +202,8 @@ def test_assignment_edit_replaces_the_selected_index_through_session(
         (model, build_model_geometry(model)),
     )
     before = window.document
-    original_section = before.section_definitions[0]
-    original_assignment = before.region_assignments[0]
+    original_section = before.sections[0]
+    original_assignment = before.assignments[0]
     second_section = replace(original_section, name="Section-2")
     second_assignment = RegionAssignment(
         second_section.name,
@@ -225,10 +211,10 @@ def test_assignment_edit_replaces_the_selected_index_through_session(
     )
     assert window._apply_session_delta(
         window.session.replace_model_definitions(
-            before.material_definitions,
-            (*before.section_definitions, second_section),
-            (*before.region_assignments, second_assignment),
-            before.analysis_definitions,
+            before.materials,
+            (*before.sections, second_section),
+            (*before.assignments, second_assignment),
+            before.steps,
         )
     )
     revision = window.document.session_revision
@@ -256,7 +242,7 @@ def test_assignment_edit_replaces_the_selected_index_through_session(
     window.edit_region_assignment(0)
 
     assert window.document.session_revision == revision + 1
-    assert window.document.region_assignments == (
+    assert window.document.assignments == (
         replacement,
         second_assignment,
     )

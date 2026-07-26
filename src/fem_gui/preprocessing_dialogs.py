@@ -22,27 +22,32 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from fem.application import NamedRegion, derive_geometry_feature_rows
-from fem.geometry import LogicalEntityRef, logical_ref_sort_key
-from fem.mesh import settings as mesh_settings_api
-
-from .dialogs import CompactDoubleSpinBox, configure_form_layout
-from .preprocessing import (
-    BoxGeometry,
+from fem.application import (
+    DeleteIntent,
+    NamedRegion,
+    RenameIntent,
+    derive_geometry_feature_rows,
+)
+from fem.geometry import (
     BooleanGeometry,
+    BoxGeometry,
     CylinderGeometry,
     DiskGeometry,
-    MeshSettings,
+    ExtrudedGeometry,
+    LogicalEntityRef,
     MovedGeometry,
     PlateWithHoleGeometry,
     RectangleGeometry,
     RotatedGeometry,
-    ExtrudedGeometry,
     SketchCircle,
     SketchGeometry,
     SketchRectangle,
-    LocalMeshControl,
+    logical_ref_sort_key,
 )
+from fem.mesh import settings as mesh_settings_api
+from fem.mesh.settings import LocalMeshControl, MeshSettings
+
+from .dialogs import CompactDoubleSpinBox, configure_form_layout
 
 
 def _positive_spin_box(parent: QDialog, value: float) -> QDoubleSpinBox:
@@ -861,6 +866,10 @@ class NamedRegionManagerDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("命名区域管理")
         self.regions = deepcopy(regions)
+        self._original_names: tuple[str, ...] = tuple(regions)
+        self._origins: dict[str, str | None] = {
+            name: name for name in regions
+        }
         self.table = QTableWidget(0, 3, self)
         self.table.setHorizontalHeaderLabels(("名称", "类型", "实体数量"))
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -951,6 +960,8 @@ class NamedRegionManagerDialog(QDialog):
             ),
         )
         self.regions = dict(items)
+        origin = self._origins.pop(old_name)
+        self._origins[new_name] = origin
         self._refresh(row)
 
     def _delete(self) -> None:
@@ -959,10 +970,26 @@ class NamedRegionManagerDialog(QDialog):
             return
         row = self.table.currentRow()
         del self.regions[name]
+        del self._origins[name]
         self._refresh(max(0, row - 1))
 
     def values(self) -> dict[str, NamedRegion]:
         return deepcopy(self.regions)
+
+    def rename_intents(self) -> tuple[RenameIntent, ...]:
+        return tuple(
+            RenameIntent(origin, current_name)
+            for current_name, origin in self._origins.items()
+            if origin is not None and origin != current_name
+        )
+
+    def delete_intents(self) -> tuple[DeleteIntent, ...]:
+        retained = {origin for origin in self._origins.values() if origin is not None}
+        return tuple(
+            DeleteIntent(name)
+            for name in self._original_names
+            if name not in retained
+        )
 
 
 class BooleanGeometryDialog(QDialog):

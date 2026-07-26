@@ -1,41 +1,32 @@
-"""Display-only helpers for native geometry authoring."""
+"""Deterministic display tessellation for native geometry recipes."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 import math
 
-from fem.geometry import LogicalEntityRef
-# Compatibility re-exports for GUI dialogs and existing callers.  The value
-# types themselves have one headless implementation in fem.
-from fem.geometry.recipe_topology import (
-    EntityKind,
-    RecipeTopology,
-    describe_recipe_topology,
-)
-from fem.geometry.recipes import (  # noqa: F401
-    BASE_GEOMETRY_TYPES,
+from fem.geometry import (
     BooleanGeometry,
     BoxGeometry,
     CylinderGeometry,
     DiskGeometry,
     ExtrudedGeometry,
+    LogicalEntityRef,
     MovedGeometry,
-    NATIVE_GEOMETRY_TYPES,
     NativeGeometry,
-    PRIMITIVE_GEOMETRY_TYPES,
     PlateWithHoleGeometry,
-    PrimitiveGeometry,
     RectangleGeometry,
     RotatedGeometry,
-    SKETCH_CONTOUR_TYPES,
-    SketchCircle,
-    SketchContour,
     SketchGeometry,
-    SketchRectangle,
-    geometry_dimension,
+    axis_aligned_rectangle,
+    expand_sketch_recipe,
+    transformed_circle,
 )
-from fem.mesh.settings import LocalMeshControl, MeshSettings  # noqa: F401
+from fem.geometry.recipe_topology import (
+    EntityKind,
+    RecipeTopology,
+    describe_recipe_topology,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,46 +125,6 @@ def _make_preview(
     )
 
 
-def geometry_characteristic_size(recipe: NativeGeometry) -> float:
-    if isinstance(recipe, BooleanGeometry):
-        return min(
-            geometry_characteristic_size(recipe.object_geometry),
-            geometry_characteristic_size(recipe.tool_geometry),
-        )
-    if isinstance(recipe, (MovedGeometry, RotatedGeometry)):
-        return geometry_characteristic_size(recipe.base)
-    if isinstance(recipe, ExtrudedGeometry):
-        return min(geometry_characteristic_size(recipe.base), recipe.height)
-    if isinstance(recipe, SketchGeometry):
-        return geometry_characteristic_size(_compile_sketch(recipe))
-    if isinstance(recipe, (RectangleGeometry, PlateWithHoleGeometry)):
-        return min(recipe.width, recipe.height)
-    if isinstance(recipe, DiskGeometry):
-        return 2.0 * recipe.radius
-    if isinstance(recipe, BoxGeometry):
-        return min(recipe.width, recipe.depth, recipe.height)
-    return min(2.0 * recipe.radius, recipe.height)
-
-
-def supports_hexahedron(recipe: NativeGeometry) -> bool:
-    """Return whether the structured box workflow can mesh this recipe."""
-    if isinstance(recipe, (MovedGeometry, RotatedGeometry)):
-        return supports_hexahedron(recipe.base)
-    if isinstance(recipe, BoxGeometry):
-        return True
-    if not isinstance(recipe, ExtrudedGeometry) or not isinstance(
-        recipe.base,
-        SketchGeometry,
-    ):
-        return False
-    contours = recipe.base.contours
-    return (
-        len(contours) == 1
-        and isinstance(contours[0], SketchRectangle)
-        and contours[0].operation == "material"
-    )
-
-
 def build_geometry_preview(
     recipe: NativeGeometry,
     *,
@@ -190,7 +141,7 @@ def _build_geometry_preview(
     segments: int,
 ) -> GeometryPreview:
     if isinstance(recipe, SketchGeometry):
-        preview = _build_geometry_preview(_compile_sketch(recipe), segments)
+        preview = _build_geometry_preview(expand_sketch_recipe(recipe), segments)
         return _make_preview(
             recipe,
             preview.points,
@@ -256,11 +207,16 @@ def _boolean_preview(
     segments: int,
 ) -> GeometryPreview:
     if recipe.operation == "cut":
-        outer = _axis_aligned_rectangle(recipe.object_geometry)
-        inner_rectangle = _axis_aligned_rectangle(recipe.tool_geometry)
+        outer = axis_aligned_rectangle(recipe.object_geometry)
+        inner_rectangle = axis_aligned_rectangle(recipe.tool_geometry)
         if outer is not None and inner_rectangle is not None:
-            x, y, width, height = outer
-            inner_x, inner_y, inner_width, inner_height = inner_rectangle
+            x, y = outer.x, outer.y
+            width, height = outer.width, outer.height
+            inner_x, inner_y = inner_rectangle.x, inner_rectangle.y
+            inner_width, inner_height = (
+                inner_rectangle.width,
+                inner_rectangle.height,
+            )
             if (
                 x < inner_x < inner_x + inner_width < x + width
                 and y < inner_y < inner_y + inner_height < y + height
@@ -309,10 +265,15 @@ def _boolean_preview(
                         "point:hole-top-left",
                     ),
                 )
-        circle = _axis_aligned_circle(recipe.tool_geometry)
+        circle = transformed_circle(recipe.tool_geometry)
         if outer is not None and circle is not None:
-            x, y, width, height = outer
-            center_x, center_y, radius = circle
+            x, y = outer.x, outer.y
+            width, height = outer.width, outer.height
+            center_x, center_y, radius = (
+                circle.center_x,
+                circle.center_y,
+                circle.radius,
+            )
             local_x, local_y = center_x - x, center_y - y
             if radius < local_x < width - radius and radius < local_y < height - radius:
                 ring = _plate_with_hole_preview(
@@ -755,87 +716,6 @@ def _validate_preview_topology(
         )
 
 
-def _compile_sketch(recipe: SketchGeometry) -> NativeGeometry:
-    def contour_geometry(
-        contour: SketchContour,
-        index: int,
-    ) -> NativeGeometry:
-        name = f"{recipe.name}-Contour-{index}"
-        if isinstance(contour, SketchRectangle):
-            result: NativeGeometry = RectangleGeometry(
-                name,
-                contour.width,
-                contour.height,
-            )
-        else:
-            result = DiskGeometry(name, contour.radius)
-        if contour.x != 0.0 or contour.y != 0.0:
-            result = MovedGeometry(result, contour.x, contour.y)
-        return result
-
-    material = [
-        contour_geometry(contour, index)
-        for index, contour in enumerate(recipe.contours, start=1)
-        if contour.operation == "material"
-    ]
-    cuts = [
-        contour_geometry(contour, index)
-        for index, contour in enumerate(recipe.contours, start=1)
-        if contour.operation == "cut"
-    ]
-    result = material[0]
-    for tool in material[1:]:
-        result = BooleanGeometry(recipe.name, "fuse", result, tool)
-    for tool in cuts:
-        result = BooleanGeometry(recipe.name, "cut", result, tool)
-    return result
-
-
-def _axis_aligned_rectangle(
-    recipe: NativeGeometry,
-) -> tuple[float, float, float, float] | None:
-    if isinstance(recipe, RectangleGeometry):
-        return 0.0, 0.0, recipe.width, recipe.height
-    if isinstance(recipe, MovedGeometry):
-        base = _axis_aligned_rectangle(recipe.base)
-        if base is None or recipe.dz != 0.0:
-            return None
-        x, y, width, height = base
-        return x + recipe.dx, y + recipe.dy, width, height
-    if isinstance(recipe, RotatedGeometry) and math.isclose(
-        recipe.angle_degrees % 360.0,
-        0.0,
-        abs_tol=1.0e-12,
-    ):
-        return _axis_aligned_rectangle(recipe.base)
-    return None
-
-
-def _axis_aligned_circle(
-    recipe: NativeGeometry,
-) -> tuple[float, float, float] | None:
-    if isinstance(recipe, DiskGeometry):
-        return 0.0, 0.0, recipe.radius
-    if isinstance(recipe, MovedGeometry):
-        base = _axis_aligned_circle(recipe.base)
-        if base is None or recipe.dz != 0.0:
-            return None
-        x, y, radius = base
-        return x + recipe.dx, y + recipe.dy, radius
-    if isinstance(recipe, RotatedGeometry):
-        base = _axis_aligned_circle(recipe.base)
-        if base is None:
-            return None
-        x, y, radius = base
-        angle = math.radians(recipe.angle_degrees)
-        return (
-            x * math.cos(angle) - y * math.sin(angle),
-            x * math.sin(angle) + y * math.cos(angle),
-            radius,
-        )
-    return None
-
-
 def _rectangle_hole_rays(
     recipe: PlateWithHoleGeometry,
     segments: int,
@@ -877,24 +757,6 @@ def _angles(count: int) -> tuple[float, ...]:
 
 
 __all__ = [
-    "BooleanGeometry",
-    "BoxGeometry",
-    "CylinderGeometry",
-    "DiskGeometry",
-    "ExtrudedGeometry",
     "GeometryPreview",
-    "LocalMeshControl",
-    "MeshSettings",
-    "MovedGeometry",
-    "NATIVE_GEOMETRY_TYPES",
-    "PlateWithHoleGeometry",
-    "RectangleGeometry",
-    "RotatedGeometry",
-    "SketchCircle",
-    "SketchGeometry",
-    "SketchRectangle",
     "build_geometry_preview",
-    "geometry_characteristic_size",
-    "geometry_dimension",
-    "supports_hexahedron",
 ]

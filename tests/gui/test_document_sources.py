@@ -51,10 +51,10 @@ def test_document_snapshot_is_frozen_and_does_not_expose_mutable_collections() -
 
     assert isinstance(snapshot.parts, tuple)
     assert isinstance(snapshot.feature_history, tuple)
-    assert isinstance(snapshot.material_definitions, tuple)
-    assert isinstance(snapshot.section_definitions, tuple)
-    assert isinstance(snapshot.region_assignments, tuple)
-    assert isinstance(snapshot.analysis_definitions, tuple)
+    assert isinstance(snapshot.materials, tuple)
+    assert isinstance(snapshot.sections, tuple)
+    assert isinstance(snapshot.assignments, tuple)
+    assert isinstance(snapshot.steps, tuple)
 
 
 def test_imported_session_derives_reload_and_mesh_current_from_artifact() -> None:

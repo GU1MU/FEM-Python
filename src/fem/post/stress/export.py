@@ -132,17 +132,17 @@ def nodal(
 ) -> None:
     """Compatibility export for nodal-averaged continuum stress output."""
     type_keys = dispatch.resolve_type_keys(mesh, element_type)
-    if "beam2" in type_keys:
-        raise ValueError(
-            "Beam2 nodal stress export requires ModelResult load context; "
-            "use nodal_from_result(result, path)"
-        )
     warnings.warn(
         "stress.export.nodal() is deprecated; use stress.export.csv("
         "... position='nodal')",
         DeprecationWarning,
         stacklevel=2,
     )
+    if "beam2" in type_keys:
+        raise ValueError(
+            "Beam2 nodal stress export requires ModelResult load context; "
+            "use nodal_from_result(result, path)"
+        )
     if len(type_keys) == 1:
         nodal_export.by_type(type_keys[0], mesh, U, path, gauss_order, threshold)
         return

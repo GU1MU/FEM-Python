@@ -1,14 +1,21 @@
+"""Public-command characterization of the native GUI workflow."""
+
 from __future__ import annotations
 
 import os
-from time import monotonic
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication
 
-from fem.application import NamedRegion, RegionAssignment, SectionDefinition
+from fem.application import (
+    DefinitionEditBatch,
+    NamedRegion,
+    NamedRegionEditBatch,
+    NativePart,
+    RegionAssignment,
+    SectionDefinition,
+)
 from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
@@ -18,136 +25,200 @@ from fem.core.model import (
 from fem.geometry.recipes import SketchGeometry, SketchRectangle
 from fem.geometry.references import LogicalEntityRef
 from fem.mesh.settings import MeshSettings
+from fem_gui.commands import (
+    CloseSessionCommand,
+    MeshInputEdit,
+    NativeGeometryEdit,
+    NewNativeProjectCommand,
+)
 from fem_gui.main_window import FEMMainWindow
+from tests.helpers.gui_command_receipts import (
+    await_succeeded,
+    require_accepted,
+)
+
+
+PUBLIC_GUI_WORKFLOW_ENTRYPOINTS = (
+    "new_native_project",
+    "apply_native_geometry_edit",
+    "apply_named_region_edit",
+    "apply_mesh_input_edit",
+    "apply_definition_edit",
+    "generate_mesh",
+    "check_step",
+    "submit_run",
+    "save_project_path",
+    "close_session",
+    "open_project_path",
+)
 
 
 def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def _wait_for_task(window: FEMMainWindow, timeout: float = 30.0) -> None:
-    deadline = monotonic() + timeout
-    application = _application()
-    while window.busy and monotonic() < deadline:
-        application.processEvents()
-        QThread.msleep(1)
-    application.processEvents()
-    assert not window.busy
-
-
-def test_native_authoring_mesh_check_solve_then_clear_fully_invalidates(
-    monkeypatch,
-) -> None:
-    _application()
-    window = FEMMainWindow()
-    errors: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        window,
-        "_show_error",
-        lambda title, message: errors.append((title, message)),
-    )
-
-    window.new_native_model()
-    assert window.document.source_kind == "native"
-    window._set_native_geometry(
-        SketchGeometry(
-            "Plate",
-            (
-                SketchRectangle(
-                    "material",
-                    0.0,
-                    0.0,
-                    2.0,
-                    1.0,
-                ),
+def _install_native_authoring(window: FEMMainWindow) -> None:
+    recipe = SketchGeometry(
+        "Plate",
+        (
+            SketchRectangle(
+                "material",
+                0.0,
+                0.0,
+                2.0,
+                1.0,
             ),
         ),
-        "草图",
     )
-    assert window._apply_session_delta(
-        window.session.replace_named_regions(
-            (
-                NamedRegion("Fixed", (LogicalEntityRef("edge:left"),)),
-                NamedRegion("Loaded", (LogicalEntityRef("edge:right"),)),
+    require_accepted(
+        window.apply_native_geometry_edit(
+            NativeGeometryEdit(
+                base_session_revision=window.document.session_revision,
+                parts=(NativePart("Plate", "Body"),),
+                recipe=recipe,
             )
         )
     )
-    assert window._apply_session_delta(
-        window.session.replace_mesh_settings(MeshSettings(0.5))
+    require_accepted(
+        window.apply_named_region_edit(
+            NamedRegionEditBatch(
+                base_session_revision=window.document.session_revision,
+                regions=(
+                    NamedRegion(
+                        "Fixed",
+                        (LogicalEntityRef("edge:left"),),
+                    ),
+                    NamedRegion(
+                        "Loaded",
+                        (LogicalEntityRef("edge:right"),),
+                    ),
+                ),
+            )
+        )
+    )
+    require_accepted(
+        window.apply_mesh_input_edit(
+            MeshInputEdit(
+                base_session_revision=window.document.session_revision,
+                settings=MeshSettings(0.5),
+            )
+        )
     )
     step = AnalysisStep(
         "Load",
         boundaries=(DisplacementConstraint("Fixed", 1, 2, 0.0),),
         cloads=(NodalLoad("Loaded", 1, 10.0),),
     )
-    assert window._apply_session_delta(
-        window.session.replace_model_definitions(
-            (MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3}),),
-            (
-                SectionDefinition(
-                    "Section-1",
-                    "Steel",
-                    properties={
-                        "plane_type": "stress",
-                        "thickness": 1.0,
-                    },
+    require_accepted(
+        window.apply_definition_edit(
+            DefinitionEditBatch(
+                base_session_revision=window.document.session_revision,
+                materials=(
+                    MaterialDefinition(
+                        "Steel",
+                        {"E": 210000.0, "nu": 0.3},
+                    ),
                 ),
-            ),
-            (RegionAssignment("Section-1", "DOMAIN"),),
-            (step,),
+                sections=(
+                    SectionDefinition(
+                        "Section-1",
+                        "Steel",
+                        properties={
+                            "plane_type": "stress",
+                            "thickness": 1.0,
+                        },
+                    ),
+                ),
+                assignments=(
+                    RegionAssignment("Section-1", "DOMAIN"),
+                ),
+                steps=(step,),
+            )
         )
     )
 
-    window.generate_native_mesh()
-    _wait_for_task(window)
 
-    assert errors == []
-    assert window.document.artifact is not None
-    assert window.document.artifact.source_kind == "native"
-    assert window.geometry.artifact_id == window.document.artifact.artifact_id
-    assert window.viewport.artifact_id == window.document.artifact.artifact_id
-    assert window.document.model.materials["Steel"].properties["E"] == 210000.0
-    assert window.document.model.sections[0].element_set == "DOMAIN"
-    assert window.document.model.steps[0].boundaries[0].target == "Fixed"
-    assert window.document.model.steps[0].cloads[0].target == "Loaded"
+def _mesh_check_and_solve(
+    window: FEMMainWindow,
+    *,
+    run_name: str,
+) -> str:
+    await_succeeded(window.generate_mesh())
+    artifact = window.document.artifact
+    assert artifact is not None and artifact.source_kind == "native"
+    assert window.geometry is not None
+    assert window.geometry.artifact_id == artifact.artifact_id
+    assert window.viewport.artifact_id == artifact.artifact_id
+    assert window.actions["check_model"].isEnabled()
 
-    assert window.check_current_model(show_success=False), errors
-    assert window.session.can_submit("Load")
-    run = window._submit_job("Job-1", "Load")
-    assert run is not None
-    _wait_for_task(window)
+    await_succeeded(window.check_step("Load"))
+    assert window.document.validation_current("Load")
+    assert window.actions["submit_job"].isEnabled()
 
-    assert errors == []
+    await_succeeded(window.submit_run(run_name, "Load"))
+    run = window.session.find_run(run_name)
+    assert run is not None and run.has_result
     result = window.session.current_result()
     assert result is not None
     assert result.provenance.run_id == run.run_id
+    assert result.provenance.artifact_id == artifact.artifact_id
+    assert window.result_data is not None
     assert window.result_data.run_id == run.run_id
+    assert window.result_data.field_ready("U")
     assert window.viewport.run_id == run.run_id
     assert window.actions["query"].isEnabled()
+    return run.run_id
 
-    window.delete_geometry()
 
-    assert window.document.geometry_recipe is None
-    assert not window.document.named_regions
-    assert window.document.region_assignments == ()
-    assert window.document.analysis_definitions == ()
-    assert window.document.artifact is None
-    assert not window.document.validations
+def test_native_public_workflow_saves_reopens_remeshes_and_resolves(
+    tmp_path,
+) -> None:
+    _application()
+    window = FEMMainWindow()
+
+    require_accepted(
+        window.new_native_project(NewNativeProjectCommand("Plate Project"))
+    )
+    assert window.document.source_kind == "native"
+    assert window.actions["geometry_sketch"].isEnabled()
+
+    _install_native_authoring(window)
+    assert window.document.dirty
+    assert window.actions["mesh_generate"].isEnabled()
+    first_run_id = _mesh_check_and_solve(window, run_name="Job-1")
+
+    project_path = tmp_path / "plate-public.femproj"
+    require_accepted(window.save_project_path(project_path))
+    assert project_path.is_file()
+    assert window.document.project_path == project_path
+    assert not window.document.dirty
+
+    require_accepted(
+        window.close_session(
+            CloseSessionCommand(window.document.session_revision)
+        )
+    )
+    assert window.document.source_kind is None
+    assert window.result_data is None
+    assert window.viewport.run_id is None
+
+    require_accepted(window.open_project_path(project_path))
+    assert window.document.source_kind == "native"
+    assert window.document.project_path == project_path
+    assert window.document.geometry_recipe is not None
+    assert window.document.mesh_settings == MeshSettings(0.5)
     assert window.document.runs == ()
     assert window.session.current_result() is None
-    assert window.geometry is None
-    assert window.result_data is None
-    assert window.viewport.artifact_id is None
-    assert window.viewport.run_id is None
-    assert window.inspection_service is None
-    assert window.result_tree.topLevelItem(0).text(0) == "尚无分析结果"
-    for name in (
-        "undeformed",
-        "deformed",
-        "contour",
-        "field",
-        "query",
-        "export",
-    ):
-        assert not window.actions[name].isEnabled()
+
+    reopened_run_id = _mesh_check_and_solve(
+        window,
+        run_name="Job-Reopened",
+    )
+    assert reopened_run_id != first_run_id
+
+    require_accepted(
+        window.close_session(
+            CloseSessionCommand(window.document.session_revision)
+        )
+    )
     window.close()

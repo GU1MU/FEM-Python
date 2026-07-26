@@ -403,11 +403,11 @@ def test_beam_orientation_edit_and_clear_recompile_and_invalidate() -> None:
         None,
     ):
         before = session.snapshot()
-        assignment = before.region_assignments[0]
+        assignment = before.assignments[0]
 
         delta = session.replace_model_definitions(
-            before.material_definitions,
-            before.section_definitions,
+            before.materials,
+            before.sections,
             (
                 RegionAssignment(
                     assignment.section_name,
@@ -415,7 +415,7 @@ def test_beam_orientation_edit_and_clear_recompile_and_invalidate() -> None:
                     orientation,
                 ),
             ),
-            before.analysis_definitions,
+            before.steps,
         )
         current = session.snapshot()
 
@@ -426,7 +426,7 @@ def test_beam_orientation_edit_and_clear_recompile_and_invalidate() -> None:
         assert current.artifact.artifact_id != (
             before.artifact.artifact_id
         )
-        assert current.region_assignments[0].beam_orientation == (
+        assert current.assignments[0].beam_orientation == (
             orientation
         )
         assert not current.validations
@@ -448,12 +448,12 @@ def test_parallel_orientation_rejection_preserves_all_accepted_state() -> None:
     session = _beam_session_with_artifacts()
     validation = session.prepare_validation("UniformLoad")
     before = session.snapshot()
-    assignment = before.region_assignments[0]
+    assignment = before.assignments[0]
 
     with pytest.raises(DefinitionRejected) as caught:
         session.replace_model_definitions(
-            before.material_definitions,
-            before.section_definitions,
+            before.materials,
+            before.sections,
             (
                 RegionAssignment(
                     assignment.section_name,
@@ -461,7 +461,7 @@ def test_parallel_orientation_rejection_preserves_all_accepted_state() -> None:
                     BeamOrientation((1.0, 0.0, 0.0)),
                 ),
             ),
-            before.analysis_definitions,
+            before.steps,
         )
 
     after = session.snapshot()
@@ -472,7 +472,7 @@ def test_parallel_orientation_rejection_preserves_all_accepted_state() -> None:
     assert after.project_revision == before.project_revision
     assert after.model_revision == before.model_revision
     assert after.artifact.artifact_id == before.artifact.artifact_id
-    assert after.region_assignments == before.region_assignments
+    assert after.assignments == before.assignments
     assert after.validations == before.validations
     assert after.runs == before.runs
     assert after.displayed_result == before.displayed_result

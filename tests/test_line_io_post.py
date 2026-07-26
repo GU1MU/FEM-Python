@@ -176,10 +176,14 @@ def test_truss2_result_export_writes_3d_displacement_element_stress_and_vtk(tmp_
     displacement_path = tmp_path / "line_result_nodal_displacement.csv"
     stress_path = tmp_path / "line_result_element_stress.csv"
     vtk_path = tmp_path / "line_result.vtk"
-    assert next(csv.reader(displacement_path.open(encoding="utf-8"))) == [
+    with displacement_path.open(encoding="utf-8") as stream:
+        displacement_header = next(csv.reader(stream))
+    with stress_path.open(encoding="utf-8") as stream:
+        stress_header = next(csv.reader(stream))
+    assert displacement_header == [
         "node_id", "x", "y", "z", "ux", "uy", "uz"
     ]
-    assert next(csv.reader(stress_path.open(encoding="utf-8"))) == [
+    assert stress_header == [
         "elem_id", "node_i", "node_j", "axial_strain", "axial_stress", "mises"
     ]
     assert "VECTORS displacement float" in vtk_path.read_text(encoding="utf-8")
@@ -210,7 +214,8 @@ def test_beam2_result_export_writes_six_components_rotation_vector_and_no_elemen
     vtk.export.from_result(result, tmp_path, overwrite=True)
 
     displacement_path = tmp_path / "line_result_nodal_displacement.csv"
-    rows = list(csv.reader(displacement_path.open(encoding="utf-8")))
+    with displacement_path.open(encoding="utf-8") as stream:
+        rows = list(csv.reader(stream))
     assert rows[0] == ["node_id", "x", "y", "z", "ux", "uy", "uz", "rx", "ry", "rz"]
     vtk_text = (tmp_path / "line_result.vtk").read_text(encoding="utf-8")
     assert "VECTORS displacement float" in vtk_text
@@ -218,7 +223,8 @@ def test_beam2_result_export_writes_six_components_rotation_vector_and_no_elemen
     assert "0.1 0.2 0.3" in vtk_text
     assert not (tmp_path / "line_result_element_stress.csv").exists()
     stress_path = tmp_path / "line_result_nodal_stress.csv"
-    stress_rows = list(csv.reader(stress_path.open(encoding="utf-8")))
+    with stress_path.open(encoding="utf-8") as stream:
+        stress_rows = list(csv.reader(stream))
     assert stress_rows[0] == [
         "node_id",
         "x",
@@ -259,8 +265,12 @@ def test_beam2_direct_nodal_export_requires_result_load_context(tmp_path):
     result = _result(mesh, np.zeros(mesh.num_dofs))
     path = tmp_path / "beam_nodal_stress.csv"
 
-    with pytest.raises(ValueError, match="ModelResult.*load context"):
-        stress.export.nodal(mesh, result.U, path)
+    with pytest.warns(
+        DeprecationWarning,
+        match=r"stress\.export\.nodal\(\) is deprecated",
+    ):
+        with pytest.raises(ValueError, match="ModelResult.*load context"):
+            stress.export.nodal(mesh, result.U, path)
 
     stress.export.nodal_from_result(result, path)
 
@@ -292,10 +302,8 @@ def test_beam2_nodal_stress_csv_contains_every_mesh_node_once(tmp_path):
 
     vtk.export.from_result(_result(mesh, np.zeros(mesh.num_dofs)), tmp_path)
 
-    rows = list(
-        csv.DictReader(
-            (tmp_path / "line_result_nodal_stress.csv").open(encoding="utf-8")
-        )
-    )
+    stress_path = tmp_path / "line_result_nodal_stress.csv"
+    with stress_path.open(encoding="utf-8") as stream:
+        rows = list(csv.DictReader(stream))
     assert [int(row["node_id"]) for row in rows] == [1, 2, 3]
     assert float(rows[2]["axial_stress_abs_max"]) == pytest.approx(0.0)

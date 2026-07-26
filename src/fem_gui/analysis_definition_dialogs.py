@@ -27,7 +27,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fem.application import RegionRef, require_region_kind
+from fem.application import (
+    AuthoringCapability,
+    RegionRef,
+    require_region_kind,
+)
 from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
@@ -64,49 +68,49 @@ def _buttons(dialog: QDialog) -> QDialogButtonBox:
     return buttons
 
 
-def _region_ref(value: RegionRef | str, kind: str) -> RegionRef:
-    return value if isinstance(value, RegionRef) else RegionRef(kind, str(value))
-
-
 def _select_region(
     combo: QComboBox,
-    value: RegionRef | str | None,
+    value: RegionRef | None,
 ) -> None:
     if value is None:
         return
-    name = value.name if isinstance(value, RegionRef) else str(value)
+    if type(value) is not RegionRef:
+        raise TypeError("selected region must be RegionRef")
     for index in range(combo.count()):
         reference = combo.itemData(index)
-        if (
-            isinstance(reference, RegionRef)
-            and reference.name == name
-        ):
+        if reference == value:
             combo.setCurrentIndex(index)
             return
 
 
-def _authoring_candidate_enabled(decision: object | None) -> bool:
+def _typed_regions(
+    values: Sequence[RegionRef],
+    expected_kind: str,
+) -> tuple[RegionRef, ...]:
+    result: list[RegionRef] = []
+    for value in values:
+        if type(value) is not RegionRef:
+            raise TypeError("dialog regions must contain RegionRef values")
+        require_region_kind(value, expected_kind)
+        if value not in result:
+            result.append(value)
+    return tuple(result)
+
+
+def _authoring_candidate_enabled(decision: AuthoringCapability) -> bool:
     """Allow candidate writes only for an explicit, non-blocking ENABLED result."""
 
-    if decision is None:
-        return False
-    if isinstance(decision, bool):
-        return decision
-    status = getattr(decision, "status", None)
-    status_value = getattr(status, "value", status)
-    diagnostics = tuple(getattr(decision, "diagnostics", ()))
-    return (
-        str(status_value).strip().casefold() == "enabled"
-        and not any(bool(getattr(item, "blocking", False)) for item in diagnostics)
-    )
+    if type(decision) is not AuthoringCapability:
+        raise TypeError("candidate decision must be AuthoringCapability")
+    return decision.can_submit
 
 
-def _authoring_candidate_message(decision: object | None) -> str:
+def _authoring_candidate_message(decision: AuthoringCapability) -> str:
     """Render an application decision without reimplementing its policy."""
 
-    if decision is None:
-        return "当前无法验证局部梁线载荷；该定义不可保存。"
-    diagnostics = tuple(getattr(decision, "diagnostics", ()))
+    if type(decision) is not AuthoringCapability:
+        raise TypeError("candidate decision must be AuthoringCapability")
+    diagnostics = decision.diagnostics
     if diagnostics:
         return "\n".join(
             (
@@ -115,10 +119,7 @@ def _authoring_candidate_message(decision: object | None) -> str:
             )
             for item in diagnostics
         )
-    status = getattr(decision, "status", None)
-    status_value = getattr(status, "value", status)
-    return f"当前候选状态为 {status_value or 'unknown'}；只有 ENABLED 才可保存。"
-    combo.setCurrentText(name)
+    return f"当前候选状态为 {decision.status.value}；只有 ENABLED 才可保存。"
 
 
 class StaticStepDialog(QDialog):
@@ -146,11 +147,11 @@ class DisplacementDialog(QDialog):
     def __init__(
         self,
         step_names: list[str],
-        regions: Sequence[RegionRef | str],
+        regions: Sequence[RegionRef],
         dimensions: int,
         parent=None,
         *,
-        selected_region: RegionRef | str | None = None,
+        selected_region: RegionRef | None = None,
         current: DisplacementConstraint | None = None,
         labels: Sequence[str] | None = None,
     ) -> None:
@@ -158,10 +159,7 @@ class DisplacementDialog(QDialog):
         self.setWindowTitle("位移边界条件")
         self.region_combo = QComboBox(self)
         self.step_combo = QComboBox(self)
-        references = tuple(
-            _region_ref(region, "node_set")
-            for region in regions
-        )
+        references = _typed_regions(regions, "node_set")
         for reference in references:
             self.region_combo.addItem(reference.name, reference)
         self.step_combo.addItems(step_names)
@@ -192,7 +190,10 @@ class DisplacementDialog(QDialog):
         if self.component_checks:
             self.component_checks[1].setChecked(True)
         if current is not None:
-            _select_region(self.region_combo, str(current.target))
+            _select_region(
+                self.region_combo,
+                RegionRef("node_set", str(current.target)),
+            )
             for component, check in self.component_checks.items():
                 selected = (
                     current.first_component
@@ -234,39 +235,21 @@ class DisplacementDialog(QDialog):
             raise ValueError("至少勾选一个位移自由度")
         return step_name, values
 
-    def definition(self) -> tuple[str, DisplacementConstraint]:
-        """Return the compact legacy form when selected values can be combined."""
-        step_name, values = self.definitions()
-        components = [value.first_component for value in values]
-        displacement_values = {value.value for value in values}
-        if (
-            components == list(range(components[0], components[-1] + 1))
-            and len(displacement_values) == 1
-        ):
-            return step_name, DisplacementConstraint(
-                values[0].target,
-                components[0],
-                components[-1],
-                values[0].value,
-            )
-        raise ValueError("不同自由度的位移值不能合并为一个边界条件")
-
-
 class LoadDialog(QDialog):
     _COMPONENT_LABELS = ("Fx", "Fy", "Fz", "Mx", "My", "Mz")
 
     def __init__(
         self,
         step_names: list[str],
-        node_regions: Sequence[RegionRef | str],
-        edge_regions: Sequence[RegionRef | str],
-        face_regions: Sequence[RegionRef | str],
+        node_regions: Sequence[RegionRef],
+        edge_regions: Sequence[RegionRef],
+        face_regions: Sequence[RegionRef],
         dimensions: int,
         parent=None,
         *,
         spatial_dimensions: int | None = None,
-        line_regions: Sequence[RegionRef | str] | None = None,
-        selected_region: RegionRef | str | None = None,
+        line_regions: Sequence[RegionRef] | None = None,
+        selected_region: RegionRef | None = None,
         preferred_kind: str | None = None,
         current: (
             NodalLoad
@@ -278,18 +261,17 @@ class LoadDialog(QDialog):
         ) = None,
         labels: Sequence[str] | None = None,
         candidate_evaluator: (
-            Callable[[LineLoad, str], object | None] | None
+            Callable[[LineLoad, str], AuthoringCapability] | None
         ) = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("编辑载荷" if current is not None else "创建载荷")
         self._candidate_evaluator = candidate_evaluator
         self._candidate_signature: tuple[str, LineLoad] | None = None
-        self._candidate_result: object | None = None
-        resolved_line_regions = [
-            _region_ref(region, "element_set")
-            for region in line_regions or ()
-        ]
+        self._candidate_result: AuthoringCapability | None = None
+        resolved_line_regions = list(
+            _typed_regions(line_regions or (), "element_set")
+        )
         if (
             isinstance(current, LineLoad)
             and str(current.target)
@@ -299,18 +281,9 @@ class LoadDialog(QDialog):
                 RegionRef("element_set", str(current.target))
             )
         self._regions = {
-            "node": [
-                _region_ref(region, "node_set")
-                for region in node_regions
-            ],
-            "edge": [
-                _region_ref(region, "edge")
-                for region in edge_regions
-            ],
-            "surface": [
-                _region_ref(region, "surface")
-                for region in face_regions
-            ],
+            "node": list(_typed_regions(node_regions, "node_set")),
+            "edge": list(_typed_regions(edge_regions, "edge")),
+            "surface": list(_typed_regions(face_regions, "surface")),
             "line": resolved_line_regions,
         }
         self.dimensions = dimensions
@@ -403,12 +376,12 @@ class LoadDialog(QDialog):
                 max(0, self.component_combo.findData(current.component))
             )
             self.value_spin.setValue(current.value)
-            selected_region = str(current.target)
+            selected_region = RegionRef("node_set", str(current.target))
         elif isinstance(current, EdgeLoad):
             self.kind_combo.setCurrentIndex(
                 max(0, self.kind_combo.findData("edge"))
             )
-            selected_region = current.edge
+            selected_region = RegionRef("edge", current.edge)
             self.load_type_combo.setCurrentIndex(
                 max(0, self.load_type_combo.findData(current.load_type))
             )
@@ -418,7 +391,7 @@ class LoadDialog(QDialog):
             self.kind_combo.setCurrentIndex(
                 max(0, self.kind_combo.findData("surface"))
             )
-            selected_region = current.surface
+            selected_region = RegionRef("surface", current.surface)
             self.load_type_combo.setCurrentIndex(
                 max(0, self.load_type_combo.findData(current.load_type))
             )
@@ -428,7 +401,7 @@ class LoadDialog(QDialog):
             self.kind_combo.setCurrentIndex(
                 max(0, self.kind_combo.findData("line"))
             )
-            selected_region = str(current.target)
+            selected_region = RegionRef("element_set", str(current.target))
             coordinate_index = self.coordinate_system_combo.findData(
                 current.coordinate_system
             )
@@ -503,7 +476,7 @@ class LoadDialog(QDialog):
             kind if kind in self._vector_values else None
         )
         gravity = kind == "gravity"
-        current = self.region_combo.currentText()
+        current = self.region_combo.currentData()
         self.region_combo.clear()
         if gravity:
             if self._gravity_target is not None:
@@ -570,17 +543,17 @@ class LoadDialog(QDialog):
         self,
         candidate: LineLoad | None = None,
         step_name: str | None = None,
-    ) -> object | None:
+    ) -> AuthoringCapability:
         """Return the cached application decision for one local LineLoad."""
 
         if candidate is None:
             selected_step, selected = self.definition()
             if not isinstance(selected, LineLoad):
-                return None
+                raise ValueError("candidate is not a LineLoad")
             candidate = selected
             step_name = selected_step
         if candidate.coordinate_system != "local":
-            return None
+            raise ValueError("candidate is not a local LineLoad")
         step = str(
             self.step_combo.currentText()
             if step_name is None
@@ -590,11 +563,13 @@ class LoadDialog(QDialog):
         if signature == self._candidate_signature:
             return self._candidate_result
         self._candidate_signature = signature
-        self._candidate_result = (
-            self._candidate_evaluator(candidate, step)
-            if callable(self._candidate_evaluator)
-            else None
-        )
+        if self._candidate_evaluator is None:
+            raise RuntimeError("line-load candidate evaluator is required")
+        self._candidate_result = self._candidate_evaluator(candidate, step)
+        if type(self._candidate_result) is not AuthoringCapability:
+            raise TypeError(
+                "line-load candidate evaluator must return AuthoringCapability"
+            )
         return self._candidate_result
 
     def _update_candidate_state(self) -> None:
@@ -866,27 +841,27 @@ class AnalysisDefinitionManagerDialog(QDialog):
     def __init__(
         self,
         steps: list[AnalysisStep],
-        node_regions: list[str],
-        edge_regions: list[str],
-        face_regions: list[str],
+        node_regions: Sequence[RegionRef],
+        edge_regions: Sequence[RegionRef],
+        face_regions: Sequence[RegionRef],
         dimensions: int,
         parent=None,
         *,
         spatial_dimensions: int | None = None,
-        line_regions: Sequence[str] | None = None,
+        line_regions: Sequence[RegionRef] | None = None,
         dof_labels: Sequence[str] | None = None,
         force_labels: Sequence[str] | None = None,
-        candidate_evaluator: (
-            Callable[..., object | None] | None
-        ) = None,
+        candidate_evaluator: Callable[..., AuthoringCapability] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("分析定义管理")
         self.steps = deepcopy(steps)
-        self.node_regions = list(node_regions)
-        self.edge_regions = list(edge_regions)
-        self.face_regions = list(face_regions)
-        self.line_regions = list(line_regions or ())
+        self.node_regions = list(_typed_regions(node_regions, "node_set"))
+        self.edge_regions = list(_typed_regions(edge_regions, "edge"))
+        self.face_regions = list(_typed_regions(face_regions, "surface"))
+        self.line_regions = list(
+            _typed_regions(line_regions or (), "element_set")
+        )
         self.dimensions = int(dimensions)
         self.dof_labels = tuple(str(label) for label in dof_labels or ())
         self.force_labels = tuple(
@@ -1131,10 +1106,17 @@ class AnalysisDefinitionManagerDialog(QDialog):
         return self.steps != previous
 
     @staticmethod
-    def _with_existing(values: list[str], existing: str) -> list[str]:
+    def _with_existing(
+        values: Sequence[RegionRef],
+        existing: RegionRef | None,
+    ) -> list[RegionRef]:
+        if any(type(value) is not RegionRef for value in values):
+            raise TypeError("manager regions must contain RegionRef values")
+        if existing is not None and type(existing) is not RegionRef:
+            raise TypeError("existing manager region must be RegionRef")
         return (
             list(values)
-            if not existing or existing in values
+            if existing is None or existing in values
             else [*values, existing]
         )
 
@@ -1170,7 +1152,10 @@ class AnalysisDefinitionManagerDialog(QDialog):
             current = step.boundaries[int(item_index)]
             dialog = DisplacementDialog(
                 [item.name for item in self.steps],
-                self._with_existing(self.node_regions, str(current.target)),
+                self._with_existing(
+                    self.node_regions,
+                    RegionRef("node_set", str(current.target)),
+                ),
                 self.dimensions,
                 self,
                 current=current,
@@ -1212,30 +1197,30 @@ class AnalysisDefinitionManagerDialog(QDialog):
                 [item.name for item in self.steps],
                 self._with_existing(
                     self.node_regions,
-                    (
-                        str(getattr(current, "target", ""))
-                        if kind == "node_load"
-                        else ""
-                    ),
+                    RegionRef("node_set", str(current.target))
+                    if kind == "node_load"
+                    else None,
                 ),
                 self._with_existing(
                     self.edge_regions,
-                    str(getattr(current, "edge", "")),
+                    RegionRef("edge", str(current.edge))
+                    if kind == "edge_load"
+                    else None,
                 ),
                 self._with_existing(
                     self.face_regions,
-                    str(getattr(current, "surface", "")),
+                    RegionRef("surface", str(current.surface))
+                    if kind == "surface_load"
+                    else None,
                 ),
                 self.dimensions,
                 self,
                 spatial_dimensions=self.spatial_dimensions,
                 line_regions=self._with_existing(
                     self.line_regions,
-                    (
-                        str(getattr(current, "target", ""))
-                        if kind == "line_load"
-                        else ""
-                    ),
+                    RegionRef("element_set", str(current.target))
+                    if kind == "line_load"
+                    else None,
                 ),
                 current=current,
                 labels=self.force_labels,

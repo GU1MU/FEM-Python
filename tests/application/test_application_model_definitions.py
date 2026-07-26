@@ -650,10 +650,10 @@ def test_failed_session_definitions_command_is_atomic() -> None:
 
     try:
         session.replace_model_definitions(
-            before.material_definitions,
-            before.section_definitions,
+            before.materials,
+            before.sections,
             (RegionAssignment("Missing", "DOMAIN"),),
-            before.analysis_definitions,
+            before.steps,
         )
     except DefinitionRejected:
         pass
@@ -664,10 +664,10 @@ def test_failed_session_definitions_command_is_atomic() -> None:
     assert after.session_revision == before.session_revision
     assert after.project_revision == before.project_revision
     assert after.model_revision == before.model_revision
-    assert after.material_definitions == before.material_definitions
-    assert after.section_definitions == before.section_definitions
-    assert after.region_assignments == before.region_assignments
-    assert after.analysis_definitions == before.analysis_definitions
+    assert after.materials == before.materials
+    assert after.sections == before.sections
+    assert after.assignments == before.assignments
+    assert after.steps == before.steps
 
 
 def test_failed_compile_preserves_artifact_validation_token_and_revisions() -> None:
@@ -714,16 +714,16 @@ def test_parallel_orientation_session_command_is_atomic() -> None:
 
     with pytest.raises(DefinitionRejected) as caught:
         session.replace_model_definitions(
-            before.material_definitions,
-            before.section_definitions,
+            before.materials,
+            before.sections,
             (
                 RegionAssignment(
-                    before.region_assignments[0].section_name,
+                    before.assignments[0].section_name,
                     "BEAMS",
                     BeamOrientation((1.0, 0.0, 0.0)),
                 ),
             ),
-            before.analysis_definitions,
+            before.steps,
         )
 
     assert caught.value.diagnostics[0].code == (
@@ -733,5 +733,5 @@ def test_parallel_orientation_session_command_is_atomic() -> None:
     assert after.session_revision == before.session_revision
     assert after.project_revision == before.project_revision
     assert after.model_revision == before.model_revision
-    assert after.region_assignments == before.region_assignments
+    assert after.assignments == before.assignments
     assert after.artifact.artifact_id == before.artifact.artifact_id

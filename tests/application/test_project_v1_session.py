@@ -413,8 +413,8 @@ def test_explicit_orientation_save_failure_keeps_session_dirty(
     session.replace_from_snapshot(_project_snapshot())
     before_edit = session.snapshot()
     session.replace_model_definitions(
-        before_edit.material_definitions,
-        before_edit.section_definitions,
+        before_edit.materials,
+        before_edit.sections,
         (
             RegionAssignment(
                 "Section-1",
@@ -422,7 +422,7 @@ def test_explicit_orientation_save_failure_keeps_session_dirty(
                 BeamOrientation((0.0, 1.0, 0.0)),
             ),
         ),
-        before_edit.analysis_definitions,
+        before_edit.steps,
     )
     before_save = session.snapshot()
     save_snapshot = session.prepare_project_save()

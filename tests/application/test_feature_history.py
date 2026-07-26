@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fem.application.feature_history import (
     derive_feature_history,
     derive_geometry_feature_rows,
@@ -64,8 +66,5 @@ def test_feature_history_module_has_no_gui_dependency() -> None:
     assert "fem_gui" not in feature_history.__file__
     assert (
         "fem_gui"
-        not in open(
-            feature_history.__file__,
-            encoding="utf-8",
-        ).read()
+        not in Path(feature_history.__file__).read_text(encoding="utf-8")
     )

@@ -1424,6 +1424,7 @@ def test_worker_cancellation_returns_a_cancelled_response_and_manifest(tmp_path)
 
 
 @pytest.mark.integration
+@pytest.mark.platform
 def test_worker_crash_is_normalized_without_terminating_the_parent(tmp_path):
     workspace, artifacts, revisions, record = _prepared_revision(tmp_path)
     ConfirmationStore(workspace, revisions).confirm(
@@ -1433,7 +1434,10 @@ def test_worker_crash_is_normalized_without_terminating_the_parent(tmp_path):
     )
     crash_executable = shutil.which("false") or shutil.which("where")
     if crash_executable is None:
-        pytest.skip("no harmless always-failing executable is available")
+        pytest.skip(
+            "[platform-capability] no harmless always-failing executable "
+            "is available"
+        )
 
     response = IsolatedFEMWorker(
         workspace,

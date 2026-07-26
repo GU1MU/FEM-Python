@@ -27,7 +27,13 @@ agent = [
     "prompt-toolkit>=3.0.52,<4",
 ]
 test = [
-    "pytest>=9",
+    "httpx[socks]>=0.28,<1",
+    "openai>=2.46,<3",
+    "prompt-toolkit>=3.0.52,<4",
+    "PySide6>=6.8,<7",
+    "pytest>=9,<10",
+    "pyvista>=0.46,<1",
+    "pyvistaqt>=0.11,<1",
 ]
 gui = [
     "PySide6>=6.8,<7",
@@ -44,8 +50,16 @@ fem_gui = ["resources/icons/*.png"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-p no:cacheprovider --strict-markers"
+pythonpath = ["."]
+filterwarnings = [
+    "error",
+    "ignore:Setting the shape on a NumPy array has been deprecated in NumPy 2\\.5\\.:DeprecationWarning:vtkmodules\\.util\\.numpy_support$",
+]
 markers = [
     "integration: tests that cross package or external-runtime boundaries",
     "gmsh: tests that require the optional native Gmsh runtime",
-    "slow: opt-in performance and scalability tests",
+    "slow: tests gated by the slow-opt-in contract",
+    "cloud: tests gated by the cloud-opt-in contract",
+    "platform: tests gated by a platform capability",
+    "optional_runtime: tests gated by an optional native runtime",
 ]

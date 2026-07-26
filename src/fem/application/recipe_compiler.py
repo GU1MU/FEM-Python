@@ -7,6 +7,10 @@ from dataclasses import dataclass
 import math
 from typing import Any
 
+from fem.geometry.recipe_analysis import (
+    axis_aligned_rectangle,
+    expand_sketch_recipe,
+)
 from fem.geometry.recipe_topology import (
     LogicalEntity,
     RecipeTopology,
@@ -24,10 +28,7 @@ from fem.geometry.recipes import (
     PlateWithHoleGeometry,
     RectangleGeometry,
     RotatedGeometry,
-    SketchCircle,
-    SketchContour,
     SketchGeometry,
-    SketchRectangle,
     geometry_dimension,
 )
 
@@ -114,7 +115,7 @@ def compile_recipe(
 
 def _compile_exact(cad: Any, recipe: NativeGeometry) -> _CompiledDraft:
     if isinstance(recipe, SketchGeometry):
-        return _compile_exact(cad, _compile_sketch(recipe))
+        return _compile_exact(cad, expand_sketch_recipe(recipe))
     if isinstance(recipe, RectangleGeometry):
         return _compile_rectangle(cad, recipe)
     if isinstance(recipe, DiskGeometry):
@@ -437,10 +438,10 @@ def _compile_boolean(cad: Any, recipe: BooleanGeometry) -> _CompiledDraft:
     catalog = describe_recipe_topology(recipe)
     if not catalog.exact:
         return _CompiledDraft(domain, {}, {})
-    outer = _axis_aligned_rectangle(recipe.object_geometry)
+    outer = axis_aligned_rectangle(recipe.object_geometry)
     if outer is None:
         raise TopologyResolutionError("无法证明布尔结果的外轮廓")
-    x, y, width, height = outer
+    x, y, width, height = outer.x, outer.y, outer.width, outer.height
     boundary = tuple(cad.boundary(domain))
     outer_edges = _rectangle_edges(cad, boundary, x, y, width, height)
     outer_set = set(_flatten(outer_edges))
@@ -473,9 +474,12 @@ def _compile_boolean(cad: Any, recipe: BooleanGeometry) -> _CompiledDraft:
         "face:domain": domain,
         "body:domain": domain,
     }
-    inner = _axis_aligned_rectangle(recipe.tool_geometry)
+    inner = axis_aligned_rectangle(recipe.tool_geometry)
     if inner is not None:
-        inner_x, inner_y, inner_width, inner_height = inner
+        inner_x = inner.x
+        inner_y = inner.y
+        inner_width = inner.width
+        inner_height = inner.height
         inner_points = _boundary_of(cad, (hole_edges,))
         logical.update(
             {
@@ -672,7 +676,7 @@ def _validate_logical_entities(
 
 def _build_domain_only(cad: Any, recipe: NativeGeometry) -> tuple[Any, ...]:
     if isinstance(recipe, SketchGeometry):
-        return _build_domain_only(cad, _compile_sketch(recipe))
+        return _build_domain_only(cad, expand_sketch_recipe(recipe))
     if isinstance(recipe, BooleanGeometry):
         objects = _build_domain_only(cad, recipe.object_geometry)
         tools = _build_domain_only(cad, recipe.tool_geometry)
@@ -754,44 +758,6 @@ def _build_domain_only(cad: Any, recipe: NativeGeometry) -> tuple[Any, ...]:
     raise TypeError(f"不支持的几何配方: {type(recipe).__name__}")
 
 
-def _compile_sketch(recipe: SketchGeometry) -> NativeGeometry:
-    def contour_geometry(
-        contour: SketchContour,
-        index: int,
-    ) -> NativeGeometry:
-        name = f"{recipe.name}-Contour-{index}"
-        if isinstance(contour, SketchRectangle):
-            result: NativeGeometry = RectangleGeometry(
-                name,
-                contour.width,
-                contour.height,
-            )
-        elif isinstance(contour, SketchCircle):
-            result = DiskGeometry(name, contour.radius)
-        else:  # pragma: no cover - recipe validation owns contour types
-            raise TypeError(f"不支持的草图轮廓: {type(contour).__name__}")
-        if contour.x != 0.0 or contour.y != 0.0:
-            result = MovedGeometry(result, contour.x, contour.y)
-        return result
-
-    material = [
-        contour_geometry(contour, index)
-        for index, contour in enumerate(recipe.contours, start=1)
-        if contour.operation == "material"
-    ]
-    cuts = [
-        contour_geometry(contour, index)
-        for index, contour in enumerate(recipe.contours, start=1)
-        if contour.operation == "cut"
-    ]
-    result = material[0]
-    for tool in material[1:]:
-        result = BooleanGeometry(recipe.name, "fuse", result, tool)
-    for tool in cuts:
-        result = BooleanGeometry(recipe.name, "cut", result, tool)
-    return result
-
-
 def _rectangle_edges(
     cad: Any,
     candidates: tuple[Any, ...],
@@ -840,26 +806,6 @@ def _unique(entities) -> tuple[Any, ...]:
 
 def _logical_name(entity: LogicalEntity) -> str:
     return entity.logical_id.split(":", 1)[1]
-
-
-def _axis_aligned_rectangle(
-    recipe: NativeGeometry,
-) -> tuple[float, float, float, float] | None:
-    if isinstance(recipe, RectangleGeometry):
-        return 0.0, 0.0, recipe.width, recipe.height
-    if isinstance(recipe, MovedGeometry):
-        frame = _axis_aligned_rectangle(recipe.base)
-        if frame is None or recipe.dz != 0.0:
-            return None
-        x, y, width, height = frame
-        return x + recipe.dx, y + recipe.dy, width, height
-    if isinstance(recipe, RotatedGeometry) and math.isclose(
-        recipe.angle_degrees % 360.0,
-        0.0,
-        abs_tol=1.0e-12,
-    ):
-        return _axis_aligned_rectangle(recipe.base)
-    return None
 
 
 __all__ = [

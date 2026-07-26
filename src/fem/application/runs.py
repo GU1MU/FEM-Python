@@ -18,7 +18,6 @@ class RunStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
     SUCCEEDED = "succeeded"
-    COMPLETED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
@@ -74,8 +73,4 @@ class ResultRecord:
     provenance: ResultProvenance
     result: Any
     created_at: datetime = field(default_factory=utc_now)
-
-    @property
-    def model_result(self) -> Any:
-        return self.result
 

@@ -210,10 +210,10 @@ def test_literal_standard_t3d2_main_window_open_check_solve_result(
             str(element.type)
             for element in window.document.model.mesh.elements
         } == {"Truss2"}
-        section = window.document.section_definitions[0]
+        section = window.document.sections[0]
         assert section.section_type == "truss"
         assert section.properties["area"] == pytest.approx(1.0e-4)
-        assignment = window.document.region_assignments[0]
+        assignment = window.document.assignments[0]
         assert assignment.region_name == "TRUSS"
         assert assignment.beam_orientation is None
         assert window.import_notices == ()
@@ -246,13 +246,13 @@ def test_literal_standard_b31_main_window_open_check_solve_result(
             str(element.type)
             for element in window.document.model.mesh.elements
         } == {"Beam2"}
-        section = window.document.section_definitions[0]
+        section = window.document.sections[0]
         assert section.section_type == "rectangle"
         assert section.properties == {
             "height": pytest.approx(0.20),
             "width": pytest.approx(0.10),
         }
-        assignment = window.document.region_assignments[0]
+        assignment = window.document.assignments[0]
         assert assignment.region_name == "BEAM"
         assert assignment.beam_orientation == BeamOrientation(
             (0.0, 1.0, 0.0)
@@ -264,7 +264,7 @@ def test_literal_standard_b31_main_window_open_check_solve_result(
 
         step = next(
             item
-            for item in window.document.analysis_definitions
+            for item in window.document.steps
             if item.name == "STANDARD_LINE_LOADS"
         )
         assert step.line_loads == (
@@ -438,7 +438,7 @@ def test_notices_survive_edit_check_solve_stale_and_failed_import(
         assert window.session.current_result() is not None
         assert window.import_notices == (current_notice,)
 
-        section = window.document.section_definitions[0]
+        section = window.document.sections[0]
         properties = dict(section.properties)
         properties["area"] = 2.5
         assert window._apply_model_definition_changes(

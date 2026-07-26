@@ -178,9 +178,12 @@ def camera_facing_offset(
 def _convex_hull_indices(points: np.ndarray) -> list[int]:
     """Return counter-clockwise hull vertices for projected support points."""
     def cross(origin: int, first: int, second: int) -> float:
-        return float(np.cross(
-            points[first] - points[origin], points[second] - points[origin]
-        ))
+        first_edge = points[first] - points[origin]
+        second_edge = points[second] - points[origin]
+        return float(
+            first_edge[0] * second_edge[1]
+            - first_edge[1] * second_edge[0]
+        )
 
     ordered = sorted(range(len(points)), key=lambda index: (points[index, 0], points[index, 1]))
     lower: list[int] = []

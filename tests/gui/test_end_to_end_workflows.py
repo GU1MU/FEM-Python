@@ -12,10 +12,10 @@ from PySide6.QtWidgets import QApplication
 from fem.abaqus import read
 from fem.application import NamedRegion, RegionAssignment, SectionDefinition
 from fem.core.model import DisplacementConstraint, MaterialDefinition, NodalLoad
-from fem.geometry import LogicalEntityRef
+from fem.geometry import LogicalEntityRef, SketchGeometry, SketchRectangle
+from fem.mesh.settings import MeshSettings
 from fem.steps.factory import static
 from fem_gui.main_window import FEMMainWindow
-from fem_gui.preprocessing import MeshSettings, SketchGeometry, SketchRectangle
 from fem_gui.visualization.model_adapter import build_model_geometry
 
 
