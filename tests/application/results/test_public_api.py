@@ -15,6 +15,12 @@ from fem.application.results.provider import (
     restore_result_provider,
 )
 from fem.application.results.query import ResultQuery
+from fem.application.results.topology import (
+    ResultCellKind,
+    ResultFieldTopology,
+    ResultValueLayout,
+    project_scalar_field_topology,
+)
 from fem.application.results.registry import (
     ElementResultProfile,
     catalog_entries,
@@ -31,9 +37,12 @@ def test_result_package_exports_provider_query_projection_and_execution() -> Non
     expected = {
         "ElementResultProfile": ElementResultProfile,
         "ResultCapabilityCatalog": ResultCapabilityCatalog,
+        "ResultCellKind": ResultCellKind,
         "ResultExecutionReport": ResultExecutionReport,
+        "ResultFieldTopology": ResultFieldTopology,
         "ResultProvider": ResultProvider,
         "ResultQuery": ResultQuery,
+        "ResultValueLayout": ResultValueLayout,
         "SolveResultBundle": SolveResultBundle,
         "build_result_provider": build_result_provider,
         "build_solve_result_bundle": build_solve_result_bundle,
@@ -41,6 +50,7 @@ def test_result_package_exports_provider_query_projection_and_execution() -> Non
         "classify_result_model": classify_result_model,
         "execute_output_requests": execute_output_requests,
         "project_output_request": project_output_request,
+        "project_scalar_field_topology": project_scalar_field_topology,
         "restore_result_provider": restore_result_provider,
         "validate_solve_result_model_identity": (
             validate_solve_result_model_identity

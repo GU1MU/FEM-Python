@@ -53,6 +53,12 @@ from .query import (
     ResultQueryValidationError,
     evaluate_result_query,
 )
+from .topology import (
+    ResultCellKind,
+    ResultFieldTopology,
+    ResultValueLayout,
+    project_scalar_field_topology,
+)
 from .output_requests import (
     ExecutableOutputRequest,
     OutputRequestProjection,
@@ -98,9 +104,11 @@ __all__ = [
     "RECOVERY_CONTRACT",
     "ResultCatalog",
     "ResultCapabilityCatalog",
+    "ResultCellKind",
     "ResultDiagnostic",
     "ResultExecutionReport",
     "ResultExportSnapshot",
+    "ResultFieldTopology",
     "ResultFieldId",
     "ResultMaterializationPatch",
     "ResultMaterializationSnapshot",
@@ -112,6 +120,7 @@ __all__ = [
     "ResultQueryValidationError",
     "ResultSourceKey",
     "ResultTopologyProjection",
+    "ResultValueLayout",
     "ResultVariable",
     "ScalarFieldSelection",
     "SolveResultBundle",
@@ -128,6 +137,7 @@ __all__ = [
     "evaluate_result_query",
     "field_materialization_sort_key",
     "prepare_result_export_snapshot",
+    "project_scalar_field_topology",
     "project_output_request",
     "registry_entry_for",
     "restore_result_provider",
