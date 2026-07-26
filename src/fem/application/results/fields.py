@@ -84,7 +84,12 @@ _CONTINUUM_STRESS_RECOVERY_POSITIONS = frozenset(
 )
 
 _VARIABLE_ORDER = {
-    value: index for index, value in enumerate(ResultVariable)
+    ResultVariable.U: 0,
+    ResultVariable.UR: 1,
+    ResultVariable.RF: 2,
+    ResultVariable.RM: 3,
+    ResultVariable.LE: 4,
+    ResultVariable.S: 5,
 }
 _POSITION_ORDER = {
     value: index for index, value in enumerate(FieldPosition)

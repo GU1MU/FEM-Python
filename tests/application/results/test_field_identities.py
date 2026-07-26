@@ -396,3 +396,21 @@ def test_materialization_sort_key_uses_the_complete_contract_identity() -> None:
     ) == len(keys)
     with pytest.raises(TypeError):
         field_materialization_sort_key(object())  # type: ignore[arg-type]
+
+
+def test_materialization_sort_key_follows_registry_variable_order() -> None:
+    strain = _key(
+        variable=ResultVariable.LE,
+        position=FieldPosition.CENTROID,
+        recovery_contract=1,
+    )
+    stress = _key(
+        variable=ResultVariable.S,
+        position=FieldPosition.CENTROID,
+        recovery_contract=1,
+    )
+
+    assert sorted(
+        (stress, strain),
+        key=field_materialization_sort_key,
+    ) == [strain, stress]
