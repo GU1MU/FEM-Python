@@ -61,7 +61,15 @@ def test_shape_and_contour_are_independent_for_all_four_states(gui_inp_path):
             window._toggle_contour(contour_enabled)
             assert window._display.shape_mode == shape_mode
             assert window._display.contour_enabled is contour_enabled
-            assert window.viewport._display == window._display
+            assert window.viewport._display.shape_mode == shape_mode
+            assert (
+                window.viewport._display.contour_enabled
+                is contour_enabled
+            )
+            assert (
+                window.viewport._result_render_payload.topology.selection
+                == window.result_selection
+            )
             assert ("无云图" not in window.status_panel.result_label.text()) is contour_enabled
     window.close()
 
@@ -135,7 +143,10 @@ def test_result_ribbon_selects_real_fields_and_deformation_scale(gui_inp_path):
     window.result_scale_value.setValue(8.0)
     assert window.result_scale_value.text() == "8.00"
     assert window._scale_mode == "custom"
-    assert window.viewport._deformation_scale == 8.0
+    assert (
+        window.viewport._result_render_payload.topology.deformation_scale
+        == 8.0
+    )
 
     real_index = window.result_scale_combo.findData("real")
     window.result_scale_combo.setCurrentIndex(real_index)

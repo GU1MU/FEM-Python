@@ -9,6 +9,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable
 
+import numpy as np
 from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
@@ -55,11 +56,15 @@ from fem.application import (
 )
 from fem.application.preprocessing import generate_fem_model
 from fem.application.results import (
+    FieldAvailability,
+    FieldState,
     ResultExportSnapshot,
+    ResultProvider,
     ResultSourceKey,
     ScalarFieldSelection,
     build_solve_result_bundle,
     prepare_result_export_snapshot,
+    project_scalar_field_topology,
     restore_result_provider,
 )
 from fem.core.model import (
@@ -130,9 +135,10 @@ from .mesh_browser import MeshBrowserDialog
 from .geometry_preview import build_geometry_preview
 from .postprocessing_dialogs import (
     ContourSettingsDialog,
-    ResultDisplayDialog,
     ResultDisplaySettings,
     ResultQueryDialog,
+    TypedResultDisplayDialog,
+    TypedResultDisplaySettings,
 )
 from .preprocessing_dialogs import (
     BoxGeometryDialog,
@@ -168,10 +174,13 @@ from .viewport_background_dialog import ViewportBackgroundDialog
 from .visualization.model_adapter import ModelGeometry, build_model_geometry
 from .visualization.result_adapter import (
     ResultData,
-    automatic_deformation_scale,
     build_result_data_from_provider,
     field_family,
     recovered_stress_data,
+)
+from .visualization.result_renderer import (
+    ResultRenderPayload,
+    build_result_render_payload,
 )
 from .visualization.selection import SelectionState
 from .visualization.scene import DisplayState
@@ -214,6 +223,8 @@ class FEMMainWindow(QMainWindow):
         self._import_notices: tuple[object, ...] = ()
         self._current_step_name: str | None = None
         self.geometry: ModelGeometry | None = None
+        self.result_provider: ResultProvider | None = None
+        self.result_selection: ScalarFieldSelection | None = None
         self.result_data: ResultData | None = None
         self.inspection_service: InspectionService | None = None
         self._inspection_windows: list[QWidget] = []
@@ -741,6 +752,93 @@ class FEMMainWindow(QMainWindow):
             self._activate_job_result(job)
         return receipt
 
+    def select_result_field(
+        self,
+        selection: ScalarFieldSelection,
+    ) -> GuiCommandReceipt:
+        """Synchronously install one exact READY scalar field selection."""
+
+        command_id = self._next_command_id()
+        if type(selection) is not ScalarFieldSelection:
+            return self._rejected_command(
+                command_id,
+                "command.type.invalid",
+                "selection must be a ScalarFieldSelection",
+            )
+        if self.busy:
+            return self._rejected_command(
+                command_id,
+                "task.busy",
+                "a background task is already running",
+            )
+        provider = self._current_result_provider()
+        if provider is None:
+            return self._rejected_command(
+                command_id,
+                "result.current.unavailable",
+                "there is no current accepted result provider",
+            )
+        try:
+            availability = self._catalog_availability_for_selection(
+                provider,
+                selection,
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            return self._rejected_command(
+                command_id,
+                "result.field.selection.invalid",
+                error,
+            )
+        if availability.state is FieldState.LAZY:
+            return self._rejected_command(
+                command_id,
+                "result.field.lazy",
+                "the selected field requires background materialization",
+                "请等待后续按需加载命令，当前显示保持不变",
+            )
+        if availability.state is FieldState.UNAVAILABLE:
+            diagnostic = next(
+                (
+                    item
+                    for item in availability.diagnostics
+                    if item.message.strip()
+                ),
+                None,
+            )
+            return self._rejected_command(
+                command_id,
+                "result.field.unavailable",
+                (
+                    diagnostic.message
+                    if diagnostic is not None
+                    else "the selected field is unavailable"
+                ),
+                (
+                    diagnostic.remediation
+                    if diagnostic is not None
+                    else ""
+                ),
+            )
+
+        outcome = self._result_selection_outcome(provider, selection)
+        if self.result_selection == selection:
+            return GuiCommandReceipt.accepted(
+                command_id,
+                outcome=outcome,
+            )
+        try:
+            self._install_ready_result_selection(provider, selection)
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            return self._rejected_command(
+                command_id,
+                "result.field.projection.failed",
+                error,
+            )
+        return GuiCommandReceipt.accepted(
+            command_id,
+            outcome=outcome,
+        )
+
     def export_result_csv(
         self,
         path: str | Path,
@@ -987,55 +1085,93 @@ class FEMMainWindow(QMainWindow):
             )
 
         current_result = self.session.current_result()
-        current_run_id = (
-            current_result.provenance.run_id
-            if current_result is not None
-            else None
-        )
-        if current_run_id is None:
+        if current_result is None:
             self._clear_result_projection()
-        elif (
-            result_projection is not None
-            and artifact is not None
-            and result_projection.artifact_id == artifact.artifact_id
-            and result_projection.run_id == current_run_id
-            and result_projection.result_id == current_result.result_id
-            and result_projection.materialization_generation
-            == current_result.materialization.generation
-        ):
-            self._install_result_projection(result_projection)
-        elif (
-            artifact is not None
-            and (
-                self.result_data is None
-                or self.result_data.run_id != current_run_id
-                or self.result_data.artifact_id != artifact.artifact_id
-                or self.result_data.result_id != current_result.result_id
-                or self.result_data.materialization_generation
-                != current_result.materialization.generation
+        elif artifact is not None and self.geometry is not None:
+            materialization = current_result.materialization
+            provider = self.result_provider
+            provider_changed = (
+                type(provider) is not ResultProvider
+                or provider.source != materialization.source
+                or provider.snapshot.generation != materialization.generation
             )
-        ):
-            core_result = current_result.result
-            if core_result is not None and self.geometry is not None:
+            if provider_changed:
                 provider = restore_result_provider(
-                    core_result,
-                    current_result.materialization,
+                    current_result.result,
+                    materialization,
                 )
-                self._install_result_projection(
-                    build_result_data_from_provider(
-                        provider,
-                        self.geometry,
-                        legacy_result=core_result,
-                    )
+
+            supplied_projection = (
+                result_projection
+                if (
+                    result_projection is not None
+                    and result_projection.artifact_id
+                    == materialization.source.artifact_id
+                    and result_projection.run_id
+                    == materialization.source.run_id
+                    and result_projection.result_id
+                    == materialization.source.result_id
+                    and result_projection.materialization_generation
+                    == materialization.generation
                 )
-        elif (
-            self.viewport.run_id != current_run_id
-            or (
-                self.inspection_service is not None
-                and self.inspection_service.result_data is not self.result_data
+                else None
             )
-        ):
-            self._install_result_projection(self.result_data)
+            legacy_projection = supplied_projection
+            if legacy_projection is None:
+                current_legacy = self.result_data
+                if (
+                    current_legacy is not None
+                    and current_legacy.artifact_id
+                    == materialization.source.artifact_id
+                    and current_legacy.run_id
+                    == materialization.source.run_id
+                    and current_legacy.result_id
+                    == materialization.source.result_id
+                    and current_legacy.materialization_generation
+                    == materialization.generation
+                ):
+                    legacy_projection = current_legacy
+                else:
+                    try:
+                        legacy_projection = build_result_data_from_provider(
+                            provider,
+                            self.geometry,
+                            legacy_result=current_result.result,
+                        )
+                    except (
+                        KeyError,
+                        RuntimeError,
+                        TypeError,
+                        ValueError,
+                    ) as error:
+                        logging.info(
+                            "temporary ResultData projection unavailable: %s",
+                            error,
+                        )
+                        legacy_projection = None
+
+            selection_is_current = self._selection_belongs_to_catalog(
+                provider,
+                self.result_selection,
+            )
+            consumers_are_current = (
+                self.result_provider is provider
+                and selection_is_current
+                and self.viewport.run_id == provider.source.run_id
+                and (
+                    self.inspection_service is None
+                    or self.inspection_service.result_provider is provider
+                )
+            )
+            if (
+                provider_changed
+                or supplied_projection is not None
+                or not consumers_are_current
+            ):
+                self._install_result_provider_projection(
+                    provider,
+                    legacy_projection=legacy_projection,
+                )
 
         self._sync_step_combos()
         self._refresh_result_controls()
@@ -1117,6 +1253,8 @@ class FEMMainWindow(QMainWindow):
         self._close_job_manager()
         self.inspection_service = None
         self.geometry = None
+        self.result_provider = None
+        self.result_selection = None
         self.result_data = None
         self.selection.clear()
         self._display = DisplayState()
@@ -1130,13 +1268,21 @@ class FEMMainWindow(QMainWindow):
     def _clear_result_projection(self) -> None:
         if self.inspection_service is not None:
             self.inspection_service.update_result_data(None)
-        if self.result_data is None and self.viewport.run_id is None:
-            self.result_tree.clear_result()
-            return
+            self.inspection_service.update_result_provider(None)
+        had_projection = not (
+            self.result_provider is None
+            and self.result_data is None
+            and self.viewport.run_id is None
+        )
+        self.result_provider = None
+        self.result_selection = None
         self.result_data = None
         self._display = DisplayState()
         self.result_tree.clear_result()
         self.navigation.show_model()
+        self.status_panel.set_result()
+        if not had_projection:
+            return
         if self.document.artifact is not None and self.geometry is not None:
             self.viewport.set_model(
                 self.document.artifact.model,
@@ -1151,24 +1297,117 @@ class FEMMainWindow(QMainWindow):
             )
             self.viewport.show_boundary_and_loads(render=False)
             self.viewport.render()
-        self.status_panel.set_result()
 
-    def _install_result_projection(self, data: ResultData) -> None:
+    def _install_result_provider_projection(
+        self,
+        provider: ResultProvider,
+        *,
+        legacy_projection: ResultData | None,
+    ) -> None:
+        """Install one exact provider, with an optional compatibility view."""
+
+        if type(provider) is not ResultProvider:
+            raise TypeError("provider must be exactly ResultProvider")
+        if (
+            legacy_projection is not None
+            and type(legacy_projection) is not ResultData
+        ):
+            raise TypeError(
+                "legacy_projection must be exactly ResultData or None"
+            )
+        record = self.session.current_result()
+        if (
+            record is None
+            or provider.source != record.materialization.source
+            or provider.snapshot.generation
+            != record.materialization.generation
+        ):
+            raise RuntimeError(
+                "provider does not match the current accepted result"
+            )
+        source = provider.source
         if (
             self.document.artifact is None
-            or data.artifact_id != self.document.artifact.artifact_id
+            or source.artifact_id
+            != self.document.artifact.artifact_id
             or self.geometry is None
-            or self.geometry.artifact_id != data.artifact_id
-            or self.viewport.artifact_id != data.artifact_id
+            or self.geometry.artifact_id != source.artifact_id
+            or self.viewport.artifact_id != source.artifact_id
+            or (
+                legacy_projection is not None
+                and (
+                    legacy_projection.artifact_id != source.artifact_id
+                    or legacy_projection.run_id != source.run_id
+                    or legacy_projection.result_id != source.result_id
+                    or legacy_projection.materialization_generation
+                    != provider.snapshot.generation
+                )
+            )
         ):
-            return
-        self.result_data = data
-        if self.inspection_service is not None:
-            self.inspection_service.update_result_data(data)
-        self.viewport.set_result_data(data)
+            raise RuntimeError(
+                "provider projection does not match the current model"
+            )
+
+        catalog = provider.catalog()
+        selection = (
+            self.result_selection
+            if (
+                type(self.result_provider) is ResultProvider
+                and self.result_provider.source == provider.source
+                and self._selection_belongs_to_catalog(
+                    provider,
+                    self.result_selection,
+                )
+            )
+            else catalog.default_selection
+        )
+        payload = self._build_result_render_payload(
+            provider,
+            selection,
+        )
         step_name = self._current_step_name or self.session.default_step_name()
-        self.result_tree.set_result(step_name or "", data)
-        self.status_panel.set_result("分析结果")
+        self.result_tree.set_catalog(step_name or "", catalog)
+        if not self.result_tree.select_selection(selection):
+            raise RuntimeError(
+                "installed selection is missing from the result tree"
+            )
+
+        self.result_provider = provider
+        self.result_selection = selection
+        self.result_data = legacy_projection
+        if self.inspection_service is not None:
+            self.inspection_service.update_result_data(None)
+            self.inspection_service.update_result_provider(provider)
+        self.viewport.set_result_render_payload(payload)
+        self.viewport.set_display(
+            self._display.shape_mode,
+            self._display.contour_enabled,
+        )
+        self.status_panel.set_result(self._result_status_text())
+
+    def _install_result_projection(self, data: ResultData) -> None:
+        """Install a legacy adapter beside the canonical current provider."""
+
+        if type(data) is not ResultData:
+            raise TypeError("data must be exactly ResultData")
+        record = self.session.current_result()
+        if record is None:
+            return
+        provider = self.result_provider
+        if (
+            type(provider) is not ResultProvider
+            or provider.source != record.materialization.source
+            or provider.snapshot.generation
+            != record.materialization.generation
+        ):
+            provider = restore_result_provider(
+                record.result,
+                record.materialization,
+            )
+        self._install_result_provider_projection(
+            provider,
+            legacy_projection=data,
+        )
 
     def _build_actions(self) -> None:
         self.actions = build_actions(self)
@@ -1441,6 +1680,9 @@ class FEMMainWindow(QMainWindow):
         self.model_tree.informationRequested.connect(self._show_entry_information)
         self.model_tree.editRequested.connect(self._edit_tree_entry)
         self.result_tree.fieldActivated.connect(self._activate_result_field)
+        self.result_tree.fieldSelectionActivated.connect(
+            self._activate_result_selection
+        )
         self.viewport.entityPicked.connect(self._on_viewport_pick)
         self.viewport.geometryEntityPicked.connect(
             self._on_geometry_entity_pick
@@ -1659,6 +1901,20 @@ class FEMMainWindow(QMainWindow):
             if self.selection.element_id is not None
             else None
         )
+        provider = self._current_result_provider()
+        selected_availability: FieldAvailability | None = None
+        if provider is not None and type(
+            self.result_selection
+        ) is ScalarFieldSelection:
+            try:
+                selected_availability = (
+                    self._catalog_availability_for_selection(
+                        provider,
+                        self.result_selection,
+                    )
+                )
+            except (KeyError, TypeError, ValueError):
+                selected_availability = None
         context = GuiActionContext(
             busy=self.busy,
             selected_step_name=self._current_step_name,
@@ -1675,6 +1931,23 @@ class FEMMainWindow(QMainWindow):
                 if self._job_manager is not None
                 else frozenset()
             ),
+            result_source_current=provider is not None,
+            catalog_available=(
+                provider is not None
+                and bool(provider.catalog().fields)
+            ),
+            selected_field_exists=selected_availability is not None,
+            selected_field_state=(
+                None
+                if selected_availability is None
+                else selected_availability.state
+            ),
+            materialization_pending=False,
+            result_task_busy=False,
+            viewport_scene_available=(
+                provider is not None
+                and self.viewport.run_id == provider.source.run_id
+            ),
         )
         for availability in derive_action_availability(
             self.document,
@@ -1686,7 +1959,7 @@ class FEMMainWindow(QMainWindow):
                 availability.enabled,
                 availability.reason,
             )
-        has_result = self.document.displayed_result is not None
+        has_result = provider is not None
         self.result_variable_combo.setEnabled(has_result and not self.busy)
         self.result_component_combo.setEnabled(has_result and not self.busy)
         self.result_position_combo.setEnabled(has_result and not self.busy)
@@ -2779,6 +3052,8 @@ class FEMMainWindow(QMainWindow):
         self._close_inspection_windows()
         self._close_job_manager()
         self.geometry = geometry
+        self.result_provider = None
+        self.result_selection = None
         self.result_data = None
         self.selection.clear()
         self._display = DisplayState()
@@ -4181,10 +4456,28 @@ class FEMMainWindow(QMainWindow):
                 result_projection=data,
             )
         self._set_current_step(job.step_name)
-        data = self.result_data
-        if data is None or data.run_id != job.run_id:
+        provider = self._current_result_provider()
+        selection = self.result_selection
+        if (
+            provider is None
+            or provider.source.run_id != job.run_id
+            or type(selection) is not ScalarFieldSelection
+        ):
             return
-        field_key = "U" if "U" in data.fields else next(iter(data.fields), None)
+        data = self.result_data
+        field_key = (
+            next(
+                (
+                    key
+                    for key, candidate
+                    in data.field_selections.items()
+                    if candidate == selection
+                ),
+                None,
+            )
+            if data is not None
+            else None
+        )
         self._display = DisplayState("deformed", True, field_key)
         self._apply_scale()
         self.actions["deformed"].setChecked(True)
@@ -4197,7 +4490,14 @@ class FEMMainWindow(QMainWindow):
         self.viewport.set_element_labels_visible(False)
         self.viewport.hide_selection_highlight(render=False)
         self._apply_display()
-        self.result_tree.set_result(f"{job.name} · {job.step_name}", data)
+        self.result_tree.set_catalog(
+            f"{job.name} · {job.step_name}",
+            provider.catalog(),
+        )
+        if not self.result_tree.select_selection(selection):
+            raise RuntimeError(
+                "current result selection is missing from the result tree"
+            )
         self._refresh_result_controls()
         self._sync_step_combos()
         self.status_panel.set_result(self._result_status_text())
@@ -4631,6 +4931,250 @@ class FEMMainWindow(QMainWindow):
             }
             self.status_panel.set_object(f"{names.get(kind, '对象')} {key}")
 
+    def _current_result_provider(self) -> ResultProvider | None:
+        """Return the exact provider for the currently displayed Session result."""
+
+        provider = self.result_provider
+        record = self.session.current_result()
+        artifact = self.document.artifact
+        geometry = self.geometry
+        if (
+            type(provider) is not ResultProvider
+            or record is None
+            or artifact is None
+            or geometry is None
+            or provider.source != record.materialization.source
+            or provider.snapshot.generation
+            != record.materialization.generation
+            or provider.source.artifact_id != artifact.artifact_id
+            or geometry.artifact_id != artifact.artifact_id
+        ):
+            return None
+        return provider
+
+    @staticmethod
+    def _catalog_availability_for_selection(
+        provider: ResultProvider,
+        selection: ScalarFieldSelection,
+    ) -> FieldAvailability:
+        if type(provider) is not ResultProvider:
+            raise TypeError("provider must be exactly ResultProvider")
+        if type(selection) is not ScalarFieldSelection:
+            raise TypeError("selection must be a ScalarFieldSelection")
+        matches = tuple(
+            availability
+            for availability in provider.catalog().fields
+            if availability.key == selection.field_key
+        )
+        if len(matches) != 1:
+            raise KeyError("selection is outside the current result catalog")
+        availability = matches[0]
+        if selection.component not in availability.descriptor.columns:
+            raise ValueError(
+                "selection component is outside the field descriptor"
+            )
+        return availability
+
+    @classmethod
+    def _selection_belongs_to_catalog(
+        cls,
+        provider: ResultProvider,
+        selection: ScalarFieldSelection | None,
+    ) -> bool:
+        if type(selection) is not ScalarFieldSelection:
+            return False
+        try:
+            cls._catalog_availability_for_selection(
+                provider,
+                selection,
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
+        return True
+
+    @staticmethod
+    def _result_selection_outcome(
+        provider: ResultProvider,
+        selection: ScalarFieldSelection,
+    ) -> GuiCommandOutcome:
+        field_data = provider.field(selection.field_key)
+        return GuiCommandOutcome(
+            source=provider.source,
+            materialization_generation=provider.snapshot.generation,
+            selection=selection,
+            record_count=len(field_data.locations),
+        )
+
+    def _result_deformation_scale(
+        self,
+        provider: ResultProvider,
+        *,
+        shape_mode: str | None = None,
+        scale_mode: str | None = None,
+        scale_value: float | None = None,
+    ) -> float:
+        shape = self._display.shape_mode if shape_mode is None else shape_mode
+        if shape != "deformed":
+            return 0.0
+        mode = self._scale_mode if scale_mode is None else scale_mode
+        if mode == "real":
+            return 1.0
+        if mode == "custom":
+            value = self._scale_value if scale_value is None else scale_value
+            scale = float(value)
+            if not np.isfinite(scale) or scale < 0.0:
+                raise ValueError(
+                    "custom deformation scale must be finite and non-negative"
+                )
+            return scale
+        if mode != "auto":
+            raise ValueError("unknown deformation scale mode")
+        topology = provider.snapshot.topology
+        coordinates = topology.node_coordinates
+        displacements = topology.nodal_displacements
+        if len(coordinates) == 0:
+            return 1.0
+        span = float(np.linalg.norm(np.ptp(coordinates, axis=0)))
+        maximum = float(
+            np.max(np.linalg.norm(displacements, axis=1))
+        )
+        return (
+            1.0
+            if maximum <= 0.0 or span <= 0.0
+            else 0.1 * span / maximum
+        )
+
+    def _build_result_render_payload(
+        self,
+        provider: ResultProvider,
+        selection: ScalarFieldSelection,
+        *,
+        shape_mode: str | None = None,
+        scale_mode: str | None = None,
+        scale_value: float | None = None,
+    ) -> ResultRenderPayload:
+        availability = self._catalog_availability_for_selection(
+            provider,
+            selection,
+        )
+        if availability.state is not FieldState.READY:
+            raise KeyError("only a READY catalog field can be rendered")
+        export = prepare_result_export_snapshot(
+            provider.snapshot,
+            selection,
+        )
+        topology = project_scalar_field_topology(
+            export,
+            deformation_scale=self._result_deformation_scale(
+                provider,
+                shape_mode=shape_mode,
+                scale_mode=scale_mode,
+                scale_value=scale_value,
+            ),
+        )
+        return build_result_render_payload(topology)
+
+    def _install_ready_result_selection(
+        self,
+        provider: ResultProvider,
+        selection: ScalarFieldSelection,
+    ) -> None:
+        if provider is not self._current_result_provider():
+            raise RuntimeError("provider is no longer current")
+        payload = self._build_result_render_payload(
+            provider,
+            selection,
+        )
+        if not self.result_tree.has_selection(selection):
+            raise RuntimeError(
+                "selected field is missing from the result tree"
+            )
+        legacy_field = None
+        if self.result_data is not None:
+            legacy_field = next(
+                (
+                    key
+                    for key, candidate in self.result_data.field_selections.items()
+                    if candidate == selection
+                ),
+                None,
+            )
+        self._install_viewport_result_payload(
+            payload,
+            shape_mode=self._display.shape_mode,
+            contour_enabled=self._display.contour_enabled,
+        )
+        self.result_selection = selection
+        if legacy_field is not None:
+            self._display = replace(
+                self._display,
+                field_key=legacy_field,
+            )
+        if not self.result_tree.select_selection(selection):
+            raise RuntimeError(
+                "selected field disappeared from the result tree"
+            )
+        self._refresh_result_controls()
+        self.status_panel.set_result(self._result_status_text())
+        self._update_action_states()
+
+    def _install_viewport_result_payload(
+        self,
+        payload: ResultRenderPayload,
+        *,
+        shape_mode: str,
+        contour_enabled: bool,
+    ) -> None:
+        """Install one payload and restore the prior scene on renderer failure."""
+
+        previous_payload = self.viewport._result_render_payload
+        previous_display = self.viewport._display
+        try:
+            self.viewport.set_result_render_payload(payload)
+            self.viewport.set_display(
+                shape_mode,
+                contour_enabled,
+            )
+        except Exception:
+            if previous_payload is not None:
+                try:
+                    FEMViewport.set_result_render_payload(
+                        self.viewport,
+                        previous_payload,
+                    )
+                    FEMViewport.set_display(
+                        self.viewport,
+                        previous_display.shape_mode,
+                        previous_display.contour_enabled,
+                    )
+                except Exception:
+                    logging.exception(
+                        "failed to restore viewport result payload"
+                    )
+            raise
+
+    def _activate_result_selection(
+        self,
+        selection: ScalarFieldSelection,
+    ) -> None:
+        receipt = self.select_result_field(selection)
+        if receipt.diagnostic is not None:
+            self.status_panel.set_state(
+                receipt.diagnostic.message,
+                5000,
+            )
+            return
+        self._display = replace(
+            self._display,
+            contour_enabled=True,
+        )
+        self.actions["contour"].setChecked(True)
+        self.viewport.set_display(
+            self._display.shape_mode,
+            True,
+        )
+        self.status_panel.set_result(self._result_status_text())
+
     def _current_result_projection(self) -> ResultData | None:
         record = self.session.current_result()
         data = self.result_data
@@ -4654,16 +5198,15 @@ class FEMMainWindow(QMainWindow):
         return data
 
     def set_shape_mode(self, shape_mode: str) -> None:
-        if self._current_result_projection() is None:
+        if self._current_result_provider() is None:
             return
         shape = "deformed" if shape_mode == "deformed" else "undeformed"
         self._display = replace(self._display, shape_mode=shape)
         self.actions[shape].setChecked(True)
-        self._apply_scale()
         self._apply_display()
 
     def _toggle_contour(self, checked: bool) -> None:
-        if self._current_result_projection() is None:
+        if self._current_result_provider() is None:
             return
         self._display = replace(self._display, contour_enabled=bool(checked))
         self._apply_display()
@@ -4673,8 +5216,17 @@ class FEMMainWindow(QMainWindow):
         self.viewport.set_undeformed_overlay_visible(checked)
 
     def _apply_display(self) -> None:
-        if self._current_result_projection() is None:
+        provider = self._current_result_provider()
+        selection = self.result_selection
+        if (
+            provider is None
+            or type(selection) is not ScalarFieldSelection
+        ):
             return
+        payload = self._build_result_render_payload(
+            provider,
+            selection,
+        )
         show_edges = (
             bool(self._contour_options["edges"])
             if self._display.contour_enabled
@@ -4682,10 +5234,10 @@ class FEMMainWindow(QMainWindow):
         )
         self.actions["edges"].setChecked(show_edges)
         self.viewport.set_edges_visible(show_edges, render=False)
+        self.viewport.set_result_render_payload(payload)
         self.viewport.set_display(
             self._display.shape_mode,
             self._display.contour_enabled,
-            self._display.field_key,
         )
         self.status_panel.set_result(self._result_status_text())
 
@@ -4693,6 +5245,29 @@ class FEMMainWindow(QMainWindow):
         data = self._current_result_projection()
         if data is None or field_key not in data.fields:
             return
+        selection = data.field_selections.get(field_key)
+        provider = self._current_result_provider()
+        if (
+            provider is not None
+            and type(selection) is ScalarFieldSelection
+        ):
+            try:
+                availability = self._catalog_availability_for_selection(
+                    provider,
+                    selection,
+                )
+            except (KeyError, TypeError, ValueError):
+                availability = None
+            if (
+                availability is not None
+                and availability.state is FieldState.READY
+            ):
+                self._display = replace(
+                    self._display,
+                    field_key=field_key,
+                )
+                self._activate_result_selection(selection)
+                return
         if not data.field_ready(field_key):
             prefix = field_key.split(":", 1)[0]
             self._ensure_result_stress(
@@ -4782,32 +5357,41 @@ class FEMMainWindow(QMainWindow):
         return False
 
     def _result_status_text(self) -> str:
-        if self._current_result_projection() is None:
+        provider = self._current_result_provider()
+        selection = self.result_selection
+        if (
+            provider is None
+            or type(selection) is not ScalarFieldSelection
+        ):
             return "—"
         shape = "变形" if self._display.shape_mode == "deformed" else "未变形"
         if not self._display.contour_enabled:
             return f"{shape} / 无云图"
-        field = self.result_data.fields.get(self._display.field_key or "")
-        if field is None:
+        try:
+            availability = self._catalog_availability_for_selection(
+                provider,
+                selection,
+            )
+        except (KeyError, TypeError, ValueError):
             return f"{shape} / 云图"
-        prefix = (self._display.field_key or "").split(":", 1)[0]
-        position = (
-            self.result_data.stress_position_label(prefix)
-            if ":" in (self._display.field_key or "")
-            else None
+        field_id = availability.descriptor.field_id
+        result_name = (
+            f"{field_id.variable.value} {selection.component}"
+            f"（{field_id.position.value}）"
         )
-        component = (self._display.field_key or "").split(":", 1)[-1]
-        result_name = f"S {component}（{position}）" if position else field.label
         return f"{shape} / {result_name}"
 
     def show_result_display_dialog(self) -> None:
-        if self._current_result_projection() is None:
+        provider = self._current_result_provider()
+        selection = self.result_selection
+        if (
+            provider is None
+            or type(selection) is not ScalarFieldSelection
+        ):
             return
-        step_name = self._current_step_name or "分析结果"
-        dialog = ResultDisplayDialog(
-            self.result_data.fields,
-            step_name=step_name,
-            current_field=self._display.field_key,
+        dialog = TypedResultDisplayDialog(
+            provider.catalog(),
+            current_selection=selection,
             shape_mode=self._display.shape_mode,
             contour_enabled=self._display.contour_enabled,
             scale_mode=self._scale_mode,
@@ -4816,8 +5400,144 @@ class FEMMainWindow(QMainWindow):
             show_edges=self.actions["edges"].isChecked(),
             parent=self,
         )
-        dialog.applyRequested.connect(self._apply_result_display_settings)
+        dialog.applyRequested.connect(
+            lambda settings, source=provider.source: (
+                self._apply_typed_result_display_settings(
+                    settings,
+                    expected_source=source,
+                )
+            )
+        )
         dialog.exec()
+
+    def _apply_typed_result_display_settings(
+        self,
+        settings: TypedResultDisplaySettings,
+        *,
+        expected_source: ResultSourceKey | None = None,
+    ) -> None:
+        if type(settings) is not TypedResultDisplaySettings:
+            raise TypeError(
+                "settings must be TypedResultDisplaySettings"
+            )
+        if (
+            expected_source is not None
+            and type(expected_source) is not ResultSourceKey
+        ):
+            raise TypeError(
+                "expected_source must be ResultSourceKey or None"
+            )
+        provider = self._current_result_provider()
+        if provider is None:
+            return
+        if (
+            expected_source is not None
+            and provider.source != expected_source
+        ):
+            self.status_panel.set_state(
+                "结果已切换，请重新打开显示设置",
+                5000,
+            )
+            return
+        try:
+            availability = self._catalog_availability_for_selection(
+                provider,
+                settings.selection,
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            self._show_error("结果显示失败", str(error))
+            return
+        if availability.state is not FieldState.READY:
+            receipt = self.select_result_field(settings.selection)
+            if receipt.diagnostic is not None:
+                self.status_panel.set_state(
+                    receipt.diagnostic.message,
+                    5000,
+                )
+            return
+        try:
+            payload = self._build_result_render_payload(
+                provider,
+                settings.selection,
+                shape_mode=settings.shape_mode,
+                scale_mode=settings.scale_mode,
+                scale_value=settings.scale_value,
+            )
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            self._show_error("结果显示失败", str(error))
+            return
+        if not self.result_tree.has_selection(settings.selection):
+            self._show_error(
+                "结果显示失败",
+                "selected field is missing from the result tree",
+            )
+            return
+
+        legacy_field = None
+        if self.result_data is not None:
+            legacy_field = next(
+                (
+                    key
+                    for key, candidate in self.result_data.field_selections.items()
+                    if candidate == settings.selection
+                ),
+                None,
+            )
+        try:
+            self._install_viewport_result_payload(
+                payload,
+                shape_mode=settings.shape_mode,
+                contour_enabled=settings.contour_enabled,
+            )
+        except (RuntimeError, TypeError, ValueError) as error:
+            self._show_error("结果显示失败", str(error))
+            return
+
+        self.result_selection = settings.selection
+        self._display = DisplayState(
+            settings.shape_mode,
+            settings.contour_enabled,
+            legacy_field,
+        )
+        self._scale_mode = settings.scale_mode
+        self._scale_value = settings.scale_value
+        self._overlay_undeformed = settings.overlay_undeformed
+        if not self.result_tree.select_selection(settings.selection):
+            raise RuntimeError(
+                "selected field disappeared from the result tree"
+            )
+        self.viewport.set_undeformed_overlay_visible(
+            settings.overlay_undeformed
+        )
+        self.viewport.set_edges_visible(
+            settings.show_edges,
+            render=False,
+        )
+        self.actions[settings.shape_mode].setChecked(True)
+        self.actions["contour"].setChecked(
+            settings.contour_enabled
+        )
+        self.actions["overlay"].setChecked(
+            settings.overlay_undeformed
+        )
+        if settings.contour_enabled:
+            self._contour_options["edges"] = settings.show_edges
+        else:
+            self._model_edges_visible = settings.show_edges
+        self.actions["edges"].setChecked(settings.show_edges)
+        self.result_scale_combo.setCurrentIndex(
+            max(
+                0,
+                self.result_scale_combo.findData(settings.scale_mode),
+            )
+        )
+        self.result_scale_value.setValue(settings.scale_value)
+        self.result_scale_value.setEnabled(
+            settings.scale_mode == "custom"
+        )
+        self._refresh_result_controls()
+        self.status_panel.set_result(self._result_status_text())
+        self._update_action_states()
 
     def _apply_result_display_settings(self, settings: ResultDisplaySettings) -> None:
         if (
@@ -4856,13 +5576,12 @@ class FEMMainWindow(QMainWindow):
         self._apply_display()
 
     def _apply_scale(self) -> None:
-        if self.geometry is None or self._current_result_projection() is None:
+        if self._current_result_provider() is None:
             return
-        scale = automatic_deformation_scale(self.geometry, self.result_data) if self._scale_mode == "auto" else 1.0 if self._scale_mode == "real" else self._scale_value
-        self.viewport.set_deformation_scale(scale)
+        self._apply_display()
 
     def show_contour_dialog(self) -> None:
-        if self._current_result_projection() is None:
+        if self._current_result_provider() is None:
             return
         dialog = ContourSettingsDialog(dict(self._contour_options), self)
         dialog.applyRequested.connect(self._set_contour_options)
@@ -5013,47 +5732,47 @@ class FEMMainWindow(QMainWindow):
         self,
         error_title: str,
     ) -> tuple[ResultSourceKey, int, ScalarFieldSelection, str] | None:
-        data = self._current_result_projection()
-        if data is None:
+        provider = self._current_result_provider()
+        selection = self.result_selection
+        if (
+            provider is None
+            or type(selection) is not ScalarFieldSelection
+        ):
             return None
-        field_key = self._display.field_key
-        scalar = data.fields.get(field_key or "")
-        if field_key is None or scalar is None:
-            self._show_error(error_title, "请先选择一个结果字段")
+        try:
+            availability = self._catalog_availability_for_selection(
+                provider,
+                selection,
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            self._show_error(error_title, str(error))
             return None
-        if not scalar.ready:
+        if availability.state is not FieldState.READY:
             self._show_error(error_title, "当前结果字段尚未就绪")
             return None
-        selection = data.field_selections.get(field_key)
-        if selection is None:
-            self._show_error(error_title, "当前结果字段缺少规范化选择标识")
-            return None
-        record = self.session.current_result()
-        if record is None:
-            return None
-        materialization = record.materialization
+        field_id = availability.descriptor.field_id
+        field_label = "_".join(
+            (
+                field_id.variable.value,
+                field_id.position.value,
+                selection.component,
+            )
+        )
         return (
-            materialization.source,
-            materialization.generation,
+            provider.source,
+            provider.snapshot.generation,
             selection,
-            field_key,
+            field_label,
         )
 
     def _current_result_export_deformation_scale(self) -> float:
-        if (
-            self._display.shape_mode != "deformed"
-            or self.geometry is None
-            or self.result_data is None
-        ):
+        provider = self._current_result_provider()
+        if provider is None:
             return 0.0
-        if self._scale_mode == "auto":
-            return automatic_deformation_scale(self.geometry, self.result_data)
-        if self._scale_mode == "real":
-            return 1.0
-        return float(self._scale_value)
+        return self._result_deformation_scale(provider)
 
     def export_viewport_image(self) -> None:
-        if self._current_result_projection() is None:
+        if self._current_result_provider() is None:
             return
         default = (self.document.path.stem if self.document.path else "viewport") + ".png"
         path, _filter = QFileDialog.getSaveFileName(
@@ -5139,19 +5858,6 @@ class FEMMainWindow(QMainWindow):
     def show_entity_information(self, kind: str, key: object) -> EntityInfoDialog | None:
         if self.inspection_service is None:
             return
-        if self.result_data is not None and kind in {"node", "element"}:
-            prefix = "N" if kind == "node" else "E"
-            if any(
-                field_key.startswith(f"{prefix}:") and not scalar.ready
-                for field_key, scalar in self.result_data.fields.items()
-            ):
-                self._ensure_result_stress(
-                    (prefix,),
-                    lambda entity_kind=kind, entity_key=key: self.show_entity_information(
-                        entity_kind, entity_key
-                    ),
-                )
-                return None
         dialog = EntityInfoDialog(self.inspection_service.inspect(kind, key), self)
         dialog.highlightRequested.connect(self.highlight_entity)
         dialog.locateRequested.connect(self.locate_entity)

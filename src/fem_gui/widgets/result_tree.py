@@ -153,6 +153,55 @@ class ResultTree(QTreeWidget):
         root.setExpanded(True)
         step.setExpanded(True)
 
+    def select_selection(
+        self,
+        selection: ScalarFieldSelection,
+    ) -> bool:
+        """Select the exact catalog component without rebuilding the tree."""
+
+        item = self._selection_item(selection)
+        if item is None:
+            return False
+        parent = item.parent()
+        while parent is not None:
+            parent.setExpanded(True)
+            parent = parent.parent()
+        self.setCurrentItem(item)
+        return True
+
+    def has_selection(
+        self,
+        selection: ScalarFieldSelection,
+    ) -> bool:
+        """Return whether the exact component is present without changing UI."""
+
+        return self._selection_item(selection) is not None
+
+    def _selection_item(
+        self,
+        selection: ScalarFieldSelection,
+    ) -> QTreeWidgetItem | None:
+        if type(selection) is not ScalarFieldSelection:
+            raise TypeError("selection must be a ScalarFieldSelection")
+        pending = [
+            self.topLevelItem(index)
+            for index in range(self.topLevelItemCount())
+        ]
+        fallback: QTreeWidgetItem | None = None
+        while pending:
+            item = pending.pop(0)
+            if item.data(0, ROLE_SELECTION) == selection:
+                if item.childCount() == 0:
+                    fallback = item
+                    break
+                if fallback is None:
+                    fallback = item
+            pending.extend(
+                item.child(index)
+                for index in range(item.childCount())
+            )
+        return fallback
+
     @staticmethod
     def _families(data: ResultData) -> tuple[tuple[str, str], ...]:
         # Compatibility logic remains isolated from the typed catalog path.

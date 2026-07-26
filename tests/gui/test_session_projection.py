@@ -124,7 +124,15 @@ def test_one_delta_projects_result_to_every_gui_consumer() -> None:
     assert window.viewport.artifact_id == artifact_id
     assert window.viewport.run_id == run_id
     assert window.inspection_service is not None
-    assert window.inspection_service.result_data is window.result_data
+    assert window.result_provider is not None
+    assert window.result_selection is not None
+    assert window.result_provider.source == record.materialization.source
+    assert window.result_provider.snapshot.generation == 0
+    assert (
+        window.inspection_service.result_provider
+        is window.result_provider
+    )
+    assert window.inspection_service.result_data is None
     assert run_id in {
         window.document.displayed_result_run_id,
         window.result_data.run_id,
@@ -141,8 +149,12 @@ def test_same_run_generation_rebuilds_projection_and_preserves_ready_fields() ->
     window = _window_with_imported_model()
     run_id = _install_successful_result(window)
     before = window.result_data
+    provider_before = window.result_provider
+    selection_before = window.result_selection
     record = window.session.current_result()
     assert before is not None
+    assert provider_before is not None
+    assert selection_before is not None
     assert record is not None
     assert before.materialization_generation == 0
     assert not before.field_ready("CENTROID:S11")
@@ -181,7 +193,21 @@ def test_same_run_generation_rebuilds_projection_and_preserves_ready_fields() ->
     assert after.field_ready("CENTROID:S11")
     assert after.field_selections["CENTROID:S11"].field_key == key
     assert window.inspection_service is not None
-    assert window.inspection_service.result_data is after
+    assert window.result_provider is not None
+    assert window.result_provider is not provider_before
+    assert window.result_provider.snapshot.generation == 1
+    assert window.result_provider.field(key).key == key
+    assert window.result_selection == selection_before
+    payload = window.viewport._result_render_payload
+    assert payload is not None
+    assert payload.topology.source == window.result_provider.source
+    assert payload.topology.materialization_generation == 1
+    assert payload.topology.selection == selection_before
+    assert (
+        window.inspection_service.result_provider
+        is window.result_provider
+    )
+    assert window.inspection_service.result_data is None
     assert window.viewport.run_id == run_id
     window.close()
 
@@ -196,22 +222,35 @@ def test_hidden_run_materialization_does_not_replace_displayed_actor(
     key_a = _centroid_stress_key(record_a)
     task_a = window.session.prepare_result_materialization(run_a, (key_a,))
     patch_a = _materialize_task(task_a)
+    provider_a = window.result_provider
+    assert provider_a is not None
 
     run_b = _install_successful_result(window, run_name="Job-B")
     displayed_b = window.result_data
+    provider_b = window.result_provider
+    selection_b = window.result_selection
+    payload_b = window.viewport._result_render_payload
     assert displayed_b is not None
+    assert provider_b is not None
+    assert selection_b is not None
+    assert payload_b is not None
+    assert provider_b is not provider_a
+    assert provider_b.source.run_id == run_b
+    assert selection_b == provider_b.catalog().default_selection
     assert displayed_b.run_id == run_b
-    set_result_calls = []
-    original_set_result_data = window.viewport.set_result_data
+    render_calls = []
+    original_set_result_render_payload = (
+        window.viewport.set_result_render_payload
+    )
 
-    def record_set_result_data(data):
-        set_result_calls.append(data)
-        original_set_result_data(data)
+    def record_set_result_render_payload(payload):
+        render_calls.append(payload)
+        original_set_result_render_payload(payload)
 
     monkeypatch.setattr(
         window.viewport,
-        "set_result_data",
-        record_set_result_data,
+        "set_result_render_payload",
+        record_set_result_render_payload,
     )
 
     delta = window.session.accept_result_materialization(
@@ -220,8 +259,11 @@ def test_hidden_run_materialization_does_not_replace_displayed_actor(
     )
 
     assert window._apply_session_delta(delta)
-    assert set_result_calls == []
+    assert render_calls == []
     assert window.document.displayed_result_run_id == run_b
+    assert window.result_provider is provider_b
+    assert window.result_selection == selection_b
+    assert window.viewport._result_render_payload is payload_b
     assert window.result_data is displayed_b
     assert window.viewport.run_id == run_b
     assert window.result_data.run_id == run_b
@@ -241,6 +283,47 @@ def test_hidden_run_materialization_does_not_replace_displayed_actor(
     assert projected_a.result_id == projection_a.record.result_id
     assert projected_a.materialization_generation == 1
     assert projected_a.field_ready("CENTROID:S11")
+    window.close()
+
+
+def test_canonical_projection_survives_legacy_bridge_failure(
+    monkeypatch,
+) -> None:
+    window = _window_with_imported_model()
+    run_id = _install_successful_result(window)
+    record = window.session.current_result()
+    assert record is not None
+    key = _centroid_stress_key(record)
+    task = window.session.prepare_result_materialization(run_id, (key,))
+
+    def fail_legacy_bridge(*_args, **_kwargs):
+        raise ValueError(
+            "legacy ResultData cannot represent complete field keys"
+        )
+
+    monkeypatch.setattr(
+        "fem_gui.main_window.build_result_data_from_provider",
+        fail_legacy_bridge,
+    )
+    delta = window.session.accept_result_materialization(
+        task.token,
+        _materialize_task(task),
+    )
+
+    assert window._apply_session_delta(delta)
+    assert window.result_data is None
+    assert window.result_provider is not None
+    assert window.result_provider.snapshot.generation == 1
+    assert window.result_provider.field(key).key == key
+    payload = window.viewport._result_render_payload
+    assert payload is not None
+    assert payload.topology.source == window.result_provider.source
+    assert payload.topology.materialization_generation == 1
+    assert window.inspection_service is not None
+    assert (
+        window.inspection_service.result_provider
+        is window.result_provider
+    )
     window.close()
 
 
@@ -308,6 +391,9 @@ def test_artifact_and_run_mismatches_never_leave_stale_gui_caches() -> None:
     assert window.session.find_run(old_run_id) is None
     assert window.inspection_service is not None
     assert window.inspection_service.result_data is None
+    assert window.inspection_service.result_provider is None
+    assert window.result_provider is None
+    assert window.result_selection is None
     assert not window.actions["query"].isEnabled()
     assert not window.result_variable_combo.isEnabled()
     window.close()

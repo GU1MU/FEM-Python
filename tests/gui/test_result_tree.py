@@ -260,6 +260,23 @@ def test_set_catalog_requires_exact_typed_inputs() -> None:
         tree.set_catalog("Static-1", object())  # type: ignore[arg-type]
 
 
+def test_select_selection_prefers_the_exact_component_leaf() -> None:
+    _application()
+    tree = ResultTree()
+    catalog = _catalog()
+    tree.set_catalog("Static-1", catalog)
+
+    selection = ScalarFieldSelection(
+        catalog.fields[0].key,
+        catalog.fields[0].descriptor.default_component,
+    )
+
+    assert tree.select_selection(selection)
+    assert tree.currentItem().childCount() == 0
+    assert tree.currentItem().text(0) == "Magnitude"
+    assert tree.currentItem().data(0, ROLE_SELECTION) == selection
+
+
 def test_typed_catalog_path_has_no_legacy_parsing_or_gui_field_order() -> None:
     module_path = Path(inspect.getsourcefile(ResultTree) or "")
     module = ast.parse(module_path.read_text(encoding="utf-8"))

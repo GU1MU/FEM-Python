@@ -8,7 +8,12 @@ from PySide6.QtCore import QSize
 from PySide6.QtWidgets import QApplication, QLabel, QMenu, QToolBar, QToolButton
 
 from fem.abaqus import read
-from fem.application.results import build_solve_result_bundle
+from fem.application.results import (
+    FieldState,
+    ResultVariable,
+    ScalarFieldSelection,
+    build_solve_result_bundle,
+)
 from fem.solvers.static_linear import solve
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.visualization.model_adapter import build_model_geometry
@@ -279,14 +284,33 @@ def test_result_navigation_refreshes_and_activates_real_field(gui_inp_path):
         item = stack.pop()
         text.append(item.text(0))
         stack.extend(item.child(index) for index in range(item.childCount()))
-    assert "位移 U" in text
-    assert "反力 RF" in text
-    assert "应力 S" in text
+    assert any(label.startswith("位移 U（") for label in text)
+    assert any(label.startswith("反力 RF（") for label in text)
+    assert any(label.startswith("应力 S（") for label in text)
 
     window.ribbon.set_current("结果")
     assert window.navigation.tabs.currentWidget() is window.result_tree
-    window.result_tree.fieldActivated.emit("U")
-    assert window._display.field_key == "U"
+    provider = window.result_provider
+    assert provider is not None
+    reaction = next(
+        availability
+        for availability in provider.catalog().fields
+        if (
+            availability.state is FieldState.READY
+            and availability.descriptor.field_id.variable
+            is ResultVariable.RF
+        )
+    )
+    selection = ScalarFieldSelection(
+        reaction.key,
+        reaction.descriptor.default_component,
+    )
+    window.result_tree.fieldSelectionActivated.emit(selection)
+    assert window.result_selection == selection
+    assert (
+        window.viewport._result_render_payload.topology.selection
+        == selection
+    )
     assert window._display.contour_enabled
     assert window.actions["contour"].isChecked()
     window.ribbon.set_current("模型")
