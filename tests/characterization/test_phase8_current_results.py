@@ -32,16 +32,16 @@ def _rendered_rows_for_node(rendered: object, node_id: int) -> list[tuple[float,
 @pytest.mark.parametrize(
     ("threshold", "expected_gui_center"),
     [
-        (0.0, [(10.0, 1), (30.0, 2), (50.0, None)]),
-        (75.0, [(10.0, 1), (30.0, 2), (50.0, None)]),
-        (100.0, [(20.0, None), (50.0, None)]),
+        (0.0, [(10.0, 1), (30.0, 2), (50.0, 3)]),
+        (75.0, [(10.0, 1), (30.0, 2), (50.0, 3)]),
+        (100.0, [(20.0, None), (50.0, 3)]),
     ],
 )
 def test_three_current_continuum_nodal_oracles_are_known_to_diverge(
     threshold: float,
     expected_gui_center: list[tuple[float, int | None]],
 ) -> None:
-    """Freeze the three current nodal meanings before Phase 8 unifies them."""
+    """Track compatibility views while the current GUI uses the Phase 8 oracle."""
 
     result = make_continuum_nodal_semantics_result()
     mesh = result.model.mesh
@@ -85,11 +85,11 @@ def test_three_current_continuum_nodal_oracles_are_known_to_diverge(
         for record in resolved_center
     ] == [(1, 1, False), (2, 1, False), (3, 1, False)]
 
-    # Known divergence: the GUI resolves each (node, region) independently.
-    # Its single-sample second region loses element provenance even at 0%.
+    # Phase 8 migration: current GUI mapping consumes the canonical tensor
+    # resolver, including raw provenance for every single-sample region.
     assert gui_center == pytest.approx(expected_gui_center)
 
-    # Known divergence: the core resolver synthesizes an isolated zero row,
+    # Known divergence: the compatibility resolver synthesizes an isolated zero row,
     # StressRecovery omits it, and the GUI scalar cache carries NaN while its
     # render topology omits the isolated point.
     assert _records_for_node(recovered_nodal.records, 8) == []
@@ -104,8 +104,9 @@ def test_three_current_continuum_nodal_oracles_are_known_to_diverge(
     assert np.isnan(gui_data.fields["NODAL:S11"].values[isolated_index])
     assert 8 not in rendered.point_index_to_node_id.values()
 
-    # Known divergence: a one-sample node retains exact provenance in
-    # field.resolve, while StressRecovery and the GUI present a region value.
+    # A one-sample node retains exact provenance in the compatibility resolver
+    # and the current GUI canonical resolver; StressRecovery remains a raw
+    # recovery view without threshold policy.
     recovered_single = _records_for_node(recovered_nodal.records, 2)
     resolved_single = _records_for_node(resolved.rows, 2)
     gui_single = _rendered_rows_for_node(rendered, 2)
@@ -116,7 +117,7 @@ def test_three_current_continuum_nodal_oracles_are_known_to_diverge(
         (record.components[0], record.elem_id, record.local_node, record.averaged)
         for record in resolved_single
     ] == [(10.0, 1, 2, False)]
-    assert gui_single == pytest.approx([(10.0, None)])
+    assert gui_single == pytest.approx([(10.0, 1)])
 
 
 def test_current_truss_gui_field_keys_order_and_numeric_oracle() -> None:

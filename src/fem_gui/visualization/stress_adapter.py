@@ -7,6 +7,9 @@ from itertools import chain
 
 import numpy as np
 
+from fem.post.averaging import NodalAveragingPolicy, resolve_nodal_stress
+from fem.post.stress import field
+
 from .model_adapter import ModelGeometry
 from .result_adapter import ResultData, StressSample
 
@@ -36,15 +39,17 @@ def build_stress_render_geometry(
     prefix, component = field_key.split(":", 1)
     if prefix not in {"N", "NODAL", "EN"}:
         raise ValueError(f"不支持的应力绘图位置：{prefix}")
-    threshold = float(threshold)
-    if not 0.0 <= threshold <= 100.0:
-        raise ValueError("平均阈值必须位于 0 到 100 之间")
+    averaging_policy = NodalAveragingPolicy(threshold)
 
     samples = _sample_lookup(data, component)
     nodal_mode = prefix in {"N", "NODAL"}
     if nodal_mode and not samples and data.nodal_stress:
         return _direct_nodal_geometry(geometry, data, component)
-    decisions = _average_decisions(data, component, threshold) if nodal_mode else {}
+    decisions = (
+        _average_decisions(geometry, data, component, averaging_policy)
+        if nodal_mode
+        else {}
+    )
     point_keys: dict[tuple[object, ...], int] = {}
     points: list[np.ndarray] = []
     values: list[float] = []
@@ -130,71 +135,59 @@ def _sample_lookup(data: ResultData, component: str) -> dict[tuple[int, int], St
 
 
 def _average_decisions(
+    geometry: ModelGeometry,
     data: ResultData,
     component: str,
-    threshold: float,
+    policy: NodalAveragingPolicy,
 ) -> dict[tuple[int, object], tuple[bool, float]]:
     """Choose canonical tensor-averaged N values or unaveraged EN values."""
-    if data.nodal_stress_by_region:
-        return _tensor_average_decisions(data, component, threshold)
-    return _legacy_average_decisions(data, component, threshold)
+    if field.StressPosition.ELEMENT_NODAL in data.stress_fields:
+        return _canonical_average_decisions(
+            geometry,
+            data,
+            component,
+            policy,
+        )
+    return _legacy_average_decisions(
+        data,
+        component,
+        policy.threshold_percent,
+    )
 
 
-def _tensor_average_decisions(
+def _canonical_average_decisions(
+    geometry: ModelGeometry,
     data: ResultData,
     component: str,
-    threshold: float,
+    policy: NodalAveragingPolicy,
 ) -> dict[tuple[int, object], tuple[bool, float]]:
-    tensor_components = ("S11", "S22", "S33", "S12", "S13", "S23")
-    region_values: dict[tuple[object, str], list[float]] = {}
-    node_regions: dict[tuple[int, object], list[StressSample]] = {}
-    for node_id, rows in data.nodal_stress_samples.items():
-        for sample in rows:
-            node_regions.setdefault((node_id, sample.region_key), []).append(sample)
-            for name in tensor_components:
-                if name in sample.values:
-                    region_values.setdefault(
-                        (sample.region_key, name), []
-                    ).append(sample.values[name])
+    """Map the post-processing resolver's tensor-level decisions for drawing."""
 
-    region_ranges = {
-        key: float(np.ptp(np.asarray(values, dtype=float)))
-        for key, values in region_values.items()
-    }
+    element_nodal = data.stress_fields[field.StressPosition.ELEMENT_NODAL]
+    node_ids = tuple(
+        geometry.point_index_to_node_id[index]
+        for index in range(len(geometry.points))
+    )
+    element_ids = tuple(
+        geometry.cell_index_to_element_id[index]
+        for index in range(len(geometry.cells))
+    )
+    resolved = resolve_nodal_stress(
+        element_nodal,
+        policy,
+        node_ids=node_ids,
+        element_ids=element_ids,
+    )
     decisions: dict[tuple[int, object], tuple[bool, float]] = {}
-    for key, rows in node_regions.items():
-        passed = True
-        for name in tensor_components:
-            scalars = np.asarray(
-                [row.values[name] for row in rows if name in row.values],
-                dtype=float,
-            )
-            if len(scalars) <= 1:
-                continue
-            region_range = region_ranges.get((key[1], name), 0.0)
-            tolerance = (
-                np.finfo(float).eps
-                * max(1.0, float(np.max(np.abs(scalars))))
-                * 32.0
-            )
-            relative = (
-                0.0
-                if region_range <= tolerance
-                else 100.0 * float(np.ptp(scalars)) / region_range
-            )
-            if threshold <= 0.0 or relative > threshold:
-                passed = False
-                break
-        averaged_values = data.nodal_stress_by_region.get(key)
-        averaged = (
-            passed
-            and averaged_values is not None
-            and component in averaged_values
-        )
-        decisions[key] = (
-            averaged,
-            float(averaged_values[component]) if averaged else float("nan"),
-        )
+    for record in resolved.records:
+        if record.node_id is None or record.region_key is None:
+            raise ValueError("canonical nodal stress rows require node and region ids")
+        key = (record.node_id, record.region_key)
+        if record.averaged:
+            values = record.values(resolved.component_names)
+            decisions[key] = (True, float(values[component]))
+        else:
+            decisions.setdefault(key, (False, float("nan")))
     return decisions
 
 
