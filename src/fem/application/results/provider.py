@@ -1,7 +1,8 @@
-"""Immutable headless provider for topology and eager primary result fields."""
+"""Immutable headless provider for primary and lazily derived result fields."""
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from copy import deepcopy
 from dataclasses import dataclass, field
 import math
@@ -20,6 +21,7 @@ from .data import (
     FieldLocation,
     FieldState,
     ResultCatalog,
+    ResultMaterializationPatch,
     ResultMaterializationSnapshot,
     ResultTopologyProjection,
     build_initial_materialization,
@@ -27,6 +29,7 @@ from .data import (
 from .fields import (
     FieldAssociation,
     FieldMaterializationKey,
+    FieldPosition,
     FieldRequest,
     ResultSourceKey,
     ResultVariable,
@@ -37,9 +40,14 @@ from .registry import (
     ElementResultProfile,
     FieldRecoveryKind,
     FieldRegistryEntry,
+    ResultModelFamily,
     catalog_entries,
     classify_result_model,
     registry_entry_for,
+)
+from ._materializers import (
+    check_cancellation,
+    materialize_derived_fields,
 )
 
 
@@ -147,6 +155,120 @@ class ResultProvider:
                 "catalog READY state does not match materialization snapshot"
             )
         return matches[0]
+
+    def materialize(
+        self,
+        keys: Iterable[FieldMaterializationKey],
+        *,
+        cancellation: object | None = None,
+    ) -> ResultMaterializationPatch:
+        """Recover one atomic set; ready cache hits are omitted."""
+
+        check_cancellation(cancellation)
+        try:
+            requested = tuple(keys)
+        except TypeError as error:
+            raise TypeError(
+                "keys must be an iterable of FieldMaterializationKey values"
+            ) from error
+        if any(type(key) is not FieldMaterializationKey for key in requested):
+            raise TypeError(
+                "keys must contain only FieldMaterializationKey values"
+            )
+        unique = tuple(
+            sorted(
+                set(requested),
+                key=field_materialization_sort_key,
+            )
+        )
+        entries = tuple(
+            (key, _entry_for_key(self._profile, key))
+            for key in unique
+        )
+        ready_keys = {
+            field_data.key for field_data in self._snapshot.fields
+        }
+        targets = tuple(
+            (key, entry)
+            for key, entry in entries
+            if key not in ready_keys
+        )
+        if not targets:
+            check_cancellation(cancellation)
+            return ResultMaterializationPatch(
+                source=self.source,
+                fields=(),
+            )
+        if any(
+            entry.recovery_kind is FieldRecoveryKind.PRIMARY
+            for _key, entry in targets
+        ):
+            raise RuntimeError(
+                "provider snapshot is missing an eager primary field"
+            )
+        fields = materialize_derived_fields(
+            source=self.source,
+            result=self._owned_result,
+            topology=self._snapshot.topology,
+            profile=self._profile,
+            targets=targets,
+            cancellation=cancellation,
+        )
+        return ResultMaterializationPatch(
+            source=self.source,
+            fields=fields,
+        )
+
+    def apply(
+        self,
+        patch: ResultMaterializationPatch,
+    ) -> ResultProvider:
+        """Return a same-generation worker draft with a validated field overlay."""
+
+        if type(patch) is not ResultMaterializationPatch:
+            raise TypeError("patch must be ResultMaterializationPatch")
+        if patch.source != self.source:
+            raise ValueError("patch source must match provider source")
+        if not patch.fields:
+            return self
+
+        existing_keys = {
+            field_data.key for field_data in self._snapshot.fields
+        }
+        checked: list[tuple[FieldData, FieldRegistryEntry]] = []
+        for field_data in patch.fields:
+            entry = _entry_for_key(self._profile, field_data.key)
+            if field_data.key in existing_keys:
+                raise ValueError("patch cannot replace a READY field")
+            if field_data.descriptor != entry.descriptor:
+                raise ValueError(
+                    "patch descriptor must match the contextual registry"
+                )
+            checked.append((field_data, entry))
+
+        combined = tuple(
+            sorted(
+                self._snapshot.fields
+                + tuple(field_data for field_data, _entry in checked),
+                key=lambda item: field_materialization_sort_key(item.key),
+            )
+        )
+        draft_snapshot = ResultMaterializationSnapshot(
+            source=self.source,
+            generation=self._snapshot.generation,
+            topology=self._snapshot.topology,
+            fields=combined,
+        )
+        draft_catalog = _catalog_with_ready_patch(
+            self._catalog,
+            tuple(checked),
+        )
+        return ResultProvider(
+            _owned_result=self._owned_result,
+            _profile=self._profile,
+            _catalog=draft_catalog,
+            _snapshot=draft_snapshot,
+        )
 
 
 def build_result_provider(
@@ -442,6 +564,32 @@ def _build_catalog(
     )
 
 
+def _catalog_with_ready_patch(
+    catalog: ResultCatalog,
+    checked: tuple[tuple[FieldData, FieldRegistryEntry], ...],
+) -> ResultCatalog:
+    by_key = {availability.key: availability for availability in catalog.fields}
+    for field_data, entry in checked:
+        by_key[field_data.key] = FieldAvailability(
+            key=field_data.key,
+            descriptor=entry.descriptor,
+            state=FieldState.READY,
+        )
+    fields = tuple(
+        sorted(
+            by_key.values(),
+            key=lambda availability: field_materialization_sort_key(
+                availability.key
+            ),
+        )
+    )
+    return ResultCatalog(
+        source=catalog.source,
+        fields=fields,
+        default_selection=catalog.default_selection,
+    )
+
+
 def _entry_for_request(
     profile: ElementResultProfile,
     request: FieldRequest,
@@ -457,6 +605,22 @@ def _entry_for_request(
         raise ValueError(
             "gauss_order is unavailable for this contextual result family"
         )
+    if request.gauss_order is not None:
+        supported = _common_gauss_orders(
+            profile,
+            request.field_id.position,
+        )
+        if request.gauss_order not in supported:
+            if supported:
+                detail = ", ".join(str(value) for value in sorted(supported))
+                raise ValueError(
+                    f"gauss_order {request.gauss_order} is unavailable for "
+                    f"this model and position; supported orders: {detail}"
+                )
+            raise ValueError(
+                "explicit gauss_order is unavailable for this model and "
+                "position"
+            )
     return entry
 
 
@@ -470,6 +634,53 @@ def _entry_for_key(
     if key.recovery_contract != entry.recovery_contract:
         raise KeyError(key)
     return entry
+
+
+def _common_gauss_orders(
+    profile: ElementResultProfile,
+    position: FieldPosition,
+) -> frozenset[int]:
+    if profile.family not in {
+        ResultModelFamily.PLANE_CONTINUUM,
+        ResultModelFamily.SOLID_CONTINUUM,
+    }:
+        return frozenset()
+    per_type = tuple(
+        _gauss_orders_for_type(element_type, position)
+        for element_type in profile.canonical_element_types
+    )
+    if not per_type:
+        return frozenset()
+    common = set(per_type[0])
+    for orders in per_type[1:]:
+        common.intersection_update(orders)
+    return frozenset(common)
+
+
+def _gauss_orders_for_type(
+    element_type: str,
+    position: FieldPosition,
+) -> frozenset[int]:
+    if element_type in {"Tri3", "Tet4", "Tet10"}:
+        return frozenset()
+    if element_type == "Tri6":
+        return frozenset({3})
+    if element_type == "Quad4":
+        if position in {
+            FieldPosition.INTEGRATION_POINT,
+            FieldPosition.CENTROID,
+        }:
+            return frozenset({1, 2})
+        return frozenset({2})
+    if element_type == "Quad8":
+        return frozenset({2, 3})
+    if element_type == "Hex8":
+        return frozenset({2})
+    if element_type == "Hex20":
+        return frozenset({3})
+    raise ValueError(
+        f"no contextual gauss-order contract for {element_type!r}"
+    )
 
 
 def _node_coordinates(node: Any) -> tuple[float, float, float]:
