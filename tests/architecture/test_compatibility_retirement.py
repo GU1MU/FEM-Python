@@ -40,6 +40,14 @@ def test_run_result_and_save_aliases_are_absent() -> None:
     assert "snapshot" in ProjectSaveSnapshot.__dict__
 
 
+def test_result_projection_task_snapshot_alias_is_absent() -> None:
+    application = importlib.import_module("fem.application")
+    revisions = importlib.import_module("fem.application.revisions")
+
+    assert not hasattr(application, "ResultProjectionTaskSnapshot")
+    assert not hasattr(revisions, "ResultProjectionTaskSnapshot")
+
+
 def test_session_snapshot_legacy_aliases_are_absent() -> None:
     removed = {
         "native_project_path",

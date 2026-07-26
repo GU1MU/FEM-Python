@@ -130,6 +130,3 @@ class ResultTaskSnapshot:
     run_id: str
     record: Any
 
-
-ResultProjectionTaskSnapshot = ResultTaskSnapshot
-
