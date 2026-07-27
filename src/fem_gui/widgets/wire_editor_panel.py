@@ -7,7 +7,6 @@ import math
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
@@ -111,10 +110,6 @@ class WireEditorPanel(QWidget):
         self.offset_spin = _finite_spin_box(self)
         self.offset_spin.setObjectName("wireWorkPlaneOffset")
         self.offset_spin.valueChanged.connect(self._work_plane_offset_changed)
-        self.snap_check = QCheckBox("吸附", self)
-        self.snap_check.setObjectName("wireGridSnapCheck")
-        self.snap_check.setChecked(True)
-        self.snap_check.toggled.connect(self._grid_settings_changed)
         self.spacing_spin = QDoubleSpinBox(self)
         self.spacing_spin.setObjectName("wireGridSpacing")
         self.spacing_spin.setDecimals(2)
@@ -184,12 +179,7 @@ class WireEditorPanel(QWidget):
         form.addRow("线体名称", self.name_edit)
         form.addRow("工作平面", self.work_plane_combo)
         form.addRow("平面偏移", self.offset_spin)
-        grid_row = QHBoxLayout()
-        grid_row.setSpacing(0)
-        grid_row.addWidget(self.snap_check)
-        grid_row.addWidget(QLabel("间距", self))
-        grid_row.addWidget(self.spacing_spin, 1)
-        form.addRow("网格", grid_row)
+        form.addRow("吸附间距", self.spacing_spin)
 
         mode_row = QHBoxLayout()
         mode_row.addWidget(self.point_mode_button)
@@ -331,7 +321,7 @@ class WireEditorPanel(QWidget):
                 data,
                 work_plane=self.work_plane_combo.currentData(),
                 offset=self.offset_spin.value(),
-                snap=self.snap_check.isChecked(),
+                snap=True,
                 spacing=self.spacing_spin.value(),
             )
         else:
@@ -470,7 +460,7 @@ class WireEditorPanel(QWidget):
             self._viewport.set_wire_work_plane(
                 plane,
                 self.offset_spin.value(),
-                snap=self.snap_check.isChecked(),
+                snap=True,
                 spacing=self.spacing_spin.value(),
             )
 
@@ -480,7 +470,7 @@ class WireEditorPanel(QWidget):
         self._viewport.set_wire_work_plane(
             str(self.work_plane_combo.currentData()),
             value,
-            snap=self.snap_check.isChecked(),
+            snap=True,
             spacing=self.spacing_spin.value(),
         )
 
@@ -492,7 +482,7 @@ class WireEditorPanel(QWidget):
             self._viewport.set_wire_work_plane(
                 str(self.work_plane_combo.currentData()),
                 self.offset_spin.value(),
-                snap=self.snap_check.isChecked(),
+                snap=True,
                 spacing=spacing,
             )
         except ValueError:
@@ -508,14 +498,13 @@ class WireEditorPanel(QWidget):
             plane = str(self.work_plane_combo.currentData())
             fixed_axis = {"XY": 2, "XZ": 1, "YZ": 0}[plane]
             coordinates[fixed_axis] = float(self.offset_spin.value())
-            if self.snap_check.isChecked():
-                coordinates = list(
-                    snap_work_plane_point(
-                        coordinates,
-                        plane,
-                        self.spacing_spin.value(),
-                    )
+            coordinates = list(
+                snap_work_plane_point(
+                    coordinates,
+                    plane,
+                    self.spacing_spin.value(),
                 )
+            )
             x, y, z = coordinates
             created = self._controller.add_point(None, x, y, z)
         except (TypeError, ValueError) as error:

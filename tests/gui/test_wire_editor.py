@@ -108,7 +108,9 @@ def test_wire_editor_panel_uses_clear_chinese_actions_without_bottom_explanation
     assert panel.spacing_spin.decimals() == 2
     assert panel.spacing_spin.minimum() == 0.01
     assert panel.spacing_spin.value() == 0.1
-    assert panel.snap_check.isChecked()
+    assert not hasattr(panel, "snap_check")
+    form = panel.layout().itemAt(0).layout()
+    assert form.labelForField(panel.spacing_spin).text() == "吸附间距"
     assert "工作平面" in panel.point_mode_button.toolTip()
     assert "两个已有点" in panel.member_mode_button.toolTip()
     assert "点或杆件" in panel.select_mode_button.toolTip()
@@ -233,7 +235,6 @@ def test_new_and_table_selected_points_request_viewport_highlighting() -> None:
     viewport = FEMViewport()
     panel.entityFocusRequested.connect(viewport.focus_wire_draft_entity)
     panel.begin(viewport)
-    panel.snap_check.setChecked(True)
     panel.spacing_spin.setValue(0.25)
 
     panel.add_point()
