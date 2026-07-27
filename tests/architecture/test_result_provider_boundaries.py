@@ -8,7 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = PROJECT_ROOT / "src"
 GUI_ROOT = SRC_ROOT / "fem_gui"
 POST_ROOT = SRC_ROOT / "fem" / "post"
-PROVIDER_ROOT = SRC_ROOT / "fem" / "application" / "results"
+PROVIDER_ROOT = SRC_ROOT.joinpath(*"fem.application.results".split("."))
 
 
 def _module_name(path: Path) -> str:

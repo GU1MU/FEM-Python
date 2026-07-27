@@ -238,7 +238,7 @@ def test_lazy_and_unavailable_fields_remain_explicit_without_recovery(
         code="result.field.unavailable",
         severity="warning",
         message="Field is unavailable for inspection.",
-        path=("results",),
+        path=("field",),
         remediation="Choose another field.",
         details={"position": "centroid"},
     )
