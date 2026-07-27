@@ -793,8 +793,8 @@ class SectionEditDialog(QDialog):
 class SectionManagerDialog(QDialog):
     def __init__(
         self,
-        materials: list[MaterialDefinition],
-        sections: list[SectionDefinition],
+        materials: Sequence[MaterialDefinition],
+        sections: Sequence[SectionDefinition],
         parent=None,
         *,
         model_dimension: int = 2,
@@ -803,7 +803,8 @@ class SectionManagerDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("截面管理")
-        self.materials, self.sections = deepcopy(materials), deepcopy(sections)
+        self.materials = deepcopy(materials)
+        self.sections: list[SectionDefinition] = deepcopy(list(sections))
         self._original_names: tuple[str, ...] = tuple(
             section.name for section in sections
         )

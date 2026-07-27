@@ -182,3 +182,15 @@ def test_material_manager_creates_mutable_copy_from_snapshot_tuple():
         "Aluminum",
     ]
     assert [material.name for material in original] == ["Steel"]
+
+
+def test_section_manager_creates_mutable_copy_from_snapshot_tuple():
+    _application()
+    materials = (MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3}),)
+    original = (SectionDefinition("Solid", "Steel"),)
+    dialog = SectionManagerDialog(materials, original)
+
+    dialog._store(SectionDefinition("Shell", "Steel"))
+
+    assert [section.name for section in dialog.values()] == ["Solid", "Shell"]
+    assert [section.name for section in original] == ["Solid"]
