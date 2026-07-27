@@ -173,20 +173,23 @@ def test_alias_and_canonical_name_return_the_same_descriptor(
 
 def test_descriptors_statuses_requirements_and_limitations_are_immutable():
     beam = get_element_capabilities("Beam2")
-    requirement = beam.requirements[0]
+    validity, explicit = beam.requirements
 
-    assert isinstance(requirement, ElementCapabilityRequirement)
+    assert isinstance(validity, ElementCapabilityRequirement)
+    assert isinstance(explicit, ElementCapabilityRequirement)
     assert beam.status is ElementCapabilityStatus.SUPPORTED
     assert beam.limitations == ()
-    assert requirement.code == "beam.orientation.explicit"
-    assert requirement.operations == ("section.rectangle", "load.line.local")
+    assert validity.code == "beam.orientation.valid"
+    assert validity.operations == ("section.rectangle", "load.line.local")
+    assert explicit.code == "beam.orientation.explicit"
+    assert explicit.operations == ("load.line.local",)
     assert get_element_capabilities("Truss2").status is (
         ElementCapabilityStatus.SUPPORTED
     )
     with pytest.raises(FrozenInstanceError):
         beam.node_count = 3
     with pytest.raises(FrozenInstanceError):
-        requirement.code = "changed"
+        validity.code = "changed"
 
 
 @pytest.mark.parametrize("element_type", ["Unknown42", "C3D8R", "C3D4T"])

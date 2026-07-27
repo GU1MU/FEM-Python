@@ -168,6 +168,17 @@ def test_beam2_rectangle_uses_height_and_width_dimensions():
     )
 
 
+def test_beam2_automatic_frame_maps_rectangle_height_to_local_y():
+    mesh = _beam_mesh(props={"height": 4.0, "width": 1.0})
+    frame = resolve_beam_frame(mesh, mesh.elements[0])
+    section = parse_beam2_section(mesh.elements[0].props)
+
+    assert frame.local_y == pytest.approx((0.0, 1.0, 0.0))
+    assert frame.local_z == pytest.approx((0.0, 0.0, 1.0))
+    assert section.Iyy == pytest.approx(4.0 * 1.0**3 / 12.0)
+    assert section.Izz == pytest.approx(1.0 * 4.0**3 / 12.0)
+
+
 def test_beam2_rectangle_dimension_swap_swaps_bending_inertias_only():
     tall = parse_beam2_section(
         {"section_type": "rectangle", "height": 4.0, "width": 1.0}

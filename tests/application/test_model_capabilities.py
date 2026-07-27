@@ -121,9 +121,7 @@ def test_line_element_report_separates_topology_and_spatial_dimension() -> None:
     assert region.distributed_load_kinds == ("line",)
     assert region.status is AuthoringStatus.ENABLED
     assert region.diagnostics == ()
-    assert region.status_for("section.rectangle") is (
-        AuthoringStatus.LIMITED
-    )
+    assert region.status_for("section.rectangle") is AuthoringStatus.ENABLED
     assert region.status_for("load.line.local") is (
         AuthoringStatus.LIMITED
     )
@@ -133,10 +131,7 @@ def test_line_element_report_separates_topology_and_spatial_dimension() -> None:
     assert region.status_for("section.solid_circle") is (
         AuthoringStatus.ENABLED
     )
-    assert {
-        item.code
-        for item in region.diagnostics_for("section.rectangle")
-    } == {"beam.orientation.assumed"}
+    assert region.diagnostics_for("section.rectangle") == ()
 
 
 def test_installed_rectangle_orientation_is_contextual() -> None:
@@ -150,11 +145,15 @@ def test_installed_rectangle_orientation_is_contextual() -> None:
     automatic = describe_model_capabilities(model)
     automatic_region = automatic.region(target)
 
-    assert automatic.status is AuthoringStatus.LIMITED
-    assert automatic_region.status is AuthoringStatus.LIMITED
-    assert {
-        item.code for item in automatic.diagnostics
-    } == {"beam.orientation.assumed"}
+    assert automatic.status is AuthoringStatus.ENABLED
+    assert automatic_region.status is AuthoringStatus.ENABLED
+    assert automatic.diagnostics == ()
+    assert automatic_region.status_for("section.rectangle") is (
+        AuthoringStatus.ENABLED
+    )
+    assert automatic_region.status_for("load.line.local") is (
+        AuthoringStatus.LIMITED
+    )
 
     model.sections[0].properties[
         BEAM_LOCAL_Y_REFERENCE_KEY
@@ -196,9 +195,7 @@ def test_circle_with_global_load_has_no_irrelevant_orientation_warning() -> None
     assert report.status is AuthoringStatus.ENABLED
     assert region.status is AuthoringStatus.ENABLED
     assert report.diagnostics == ()
-    assert region.status_for("section.rectangle") is (
-        AuthoringStatus.LIMITED
-    )
+    assert region.status_for("section.rectangle") is AuthoringStatus.ENABLED
     assert region.status_for("load.line.local") is (
         AuthoringStatus.LIMITED
     )

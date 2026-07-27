@@ -57,7 +57,7 @@ def _with_orientation(
     )
 
 
-def test_automatic_rectangle_and_local_load_candidates_are_limited() -> None:
+def test_automatic_rectangle_is_enabled_but_local_load_is_limited() -> None:
     model, definitions = _beam_model_and_definitions()
 
     assignment = evaluate_authoring_candidate(
@@ -79,11 +79,11 @@ def test_automatic_rectangle_and_local_load_candidates_are_limited() -> None:
         step_name="UniformLoad",
     )
 
-    assert assignment.status is AuthoringStatus.LIMITED
+    assert assignment.status is AuthoringStatus.ENABLED
     assert line_load.status is AuthoringStatus.LIMITED
-    assert not assignment.can_submit
+    assert assignment.can_submit
     assert not line_load.can_submit
-    assert assignment.diagnostics[0].code == "beam.orientation.assumed"
+    assert assignment.diagnostics == ()
     assert line_load.diagnostics[0].code == "beam.orientation.assumed"
 
 
@@ -253,7 +253,7 @@ def test_assignment_candidate_index_preserves_last_assignment_wins() -> None:
     )
 
     assert edit.status is AuthoringStatus.ENABLED
-    assert create.status is AuthoringStatus.LIMITED
+    assert create.status is AuthoringStatus.ENABLED
 
 
 def test_candidate_evaluation_does_not_mutate_inputs() -> None:

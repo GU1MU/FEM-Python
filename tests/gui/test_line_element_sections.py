@@ -4,7 +4,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QDialogButtonBox
+from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox
 import pytest
 
 from fem.application import (
@@ -321,6 +321,30 @@ def test_region_assignment_explicit_vector_validation_and_candidate_seam():
     assert dialog.candidate_decision(candidate) is enabled
     assert dialog.candidate_decision(candidate) is enabled
     assert evaluated == [candidate]
+
+
+def test_region_assignment_accepts_automatic_rectangle_without_diagnostic():
+    _application()
+    section = SectionDefinition(
+        "Beam",
+        "Steel",
+        "rectangle",
+        {"height": 1.0, "width": 0.5},
+    )
+    dialog = RegionAssignmentDialog(
+        [section],
+        [RegionRef("element_set", "BEAM_SET")],
+        candidate_evaluator=lambda _candidate: AuthoringCapability(
+            "section.rectangle",
+            AuthoringStatus.ENABLED,
+        ),
+    )
+
+    dialog.accept()
+
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert not dialog.form.isRowVisible(dialog.orientation_diagnostic_label)
+    assert dialog.orientation_diagnostic_label.text() == ""
 
 
 def test_region_assignment_uses_domain_suggestion_when_switching_to_explicit():

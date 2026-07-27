@@ -263,7 +263,11 @@ def _evaluate_beam_orientation(
     assignments: tuple[RegionAssignment, ...],
     capability_report: ModelCapabilityReport,
 ) -> AuthoringCapability:
-    if not _requires_explicit_orientation(capability_report, operation):
+    if not _requires_orientation_requirement(
+        capability_report,
+        operation,
+        "beam.orientation.valid",
+    ):
         return AuthoringCapability(
             operation,
             AuthoringStatus.ENABLED,
@@ -334,7 +338,11 @@ def _evaluate_beam_orientation(
             AuthoringStatus.UNAVAILABLE,
             tuple(parallel),
         )
-    if missing:
+    if missing and _requires_orientation_requirement(
+        capability_report,
+        operation,
+        "beam.orientation.explicit",
+    ):
         diagnostic = PreflightDiagnostic(
             code="beam.orientation.assumed",
             severity=PreflightSeverity.WARNING,
@@ -471,12 +479,13 @@ def _rotate_point(
     return x * cosine - y * sine, x * sine + y * cosine, z
 
 
-def _requires_explicit_orientation(
+def _requires_orientation_requirement(
     capability_report: ModelCapabilityReport,
     operation: str,
+    requirement_code: str,
 ) -> bool:
     return any(
-        requirement.code == "beam.orientation.explicit"
+        requirement.code == requirement_code
         and operation in requirement.operations
         for element_type in capability_report.canonical_element_types
         for requirement in get_element_capabilities(element_type).requirements

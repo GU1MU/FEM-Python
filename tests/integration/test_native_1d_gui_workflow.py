@@ -197,8 +197,8 @@ def test_native_1d_public_gui_workflow_persists_checks_solves_and_displays(
                 BeamOrientation((1.0, 0.0, 0.0)),
             )
         )
-        assert automatic.status is AuthoringStatus.LIMITED
-        assert automatic.diagnostics[0].code == "beam.orientation.assumed"
+        assert automatic.status is AuthoringStatus.ENABLED
+        assert automatic.diagnostics == ()
         assert parallel.status is AuthoringStatus.UNAVAILABLE
         assert parallel.diagnostics[0].code == "beam.orientation.parallel"
     assignment_decision = evaluate_native_assignment_candidate(

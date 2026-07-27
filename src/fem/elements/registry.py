@@ -162,9 +162,13 @@ _SPATIAL_DOF_LABELS = ("U1", "U2", "U3")
 _SPATIAL_FORCE_LABELS = ("Fx", "Fy", "Fz")
 _BEAM_DOF_LABELS = ("U1", "U2", "U3", "UR1", "UR2", "UR3")
 _BEAM_FORCE_LABELS = ("Fx", "Fy", "Fz", "Mx", "My", "Mz")
-_BEAM_ORIENTATION_REQUIREMENT = ElementCapabilityRequirement(
-    code="beam.orientation.explicit",
+_BEAM_ORIENTATION_VALIDITY_REQUIREMENT = ElementCapabilityRequirement(
+    code="beam.orientation.valid",
     operations=("section.rectangle", "load.line.local"),
+)
+_BEAM_EXPLICIT_ORIENTATION_REQUIREMENT = ElementCapabilityRequirement(
+    code="beam.orientation.explicit",
+    operations=("load.line.local",),
 )
 
 
@@ -258,7 +262,10 @@ def _register_builtin_capabilities() -> None:
             load_kinds=("node", "line", "gravity"),
             dof_labels=_BEAM_DOF_LABELS,
             force_labels=_BEAM_FORCE_LABELS,
-            requirements=(_BEAM_ORIENTATION_REQUIREMENT,),
+            requirements=(
+                _BEAM_ORIENTATION_VALIDITY_REQUIREMENT,
+                _BEAM_EXPLICIT_ORIENTATION_REQUIREMENT,
+            ),
         ),
     )
 

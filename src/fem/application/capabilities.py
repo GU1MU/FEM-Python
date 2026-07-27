@@ -43,6 +43,7 @@ _REGION_KINDS = frozenset(
     {"node_set", "element_set", "edge", "surface"}
 )
 _DISTRIBUTED_LOAD_KINDS = frozenset({"edge", "surface", "line"})
+_BEAM_ORIENTATION_VALIDITY_REQUIREMENT = "beam.orientation.valid"
 _EXPLICIT_BEAM_ORIENTATION_REQUIREMENT = "beam.orientation.explicit"
 
 class AuthoringStatus(str, Enum):
@@ -673,7 +674,7 @@ def _evaluate_compiled_orientation_operation(
             subject=target,
             message=f"target does not support {operation!r}",
         )
-    if not _requires_explicit_beam_orientation(
+    if not _requires_valid_beam_orientation(
         model,
         target,
         operation,
@@ -703,7 +704,11 @@ def _evaluate_compiled_orientation_operation(
         for entry in report.entries
         if entry.frame.source != "explicit"
     )
-    if automatic:
+    if automatic and _requires_explicit_beam_orientation(
+        model,
+        target,
+        operation,
+    ):
         warning = _assumed_orientation_diagnostic(
             target,
             operation,
@@ -1780,6 +1785,33 @@ def _requires_explicit_beam_orientation(
     target: RegionRef | int,
     operation: str,
 ) -> bool:
+    return _requires_beam_orientation_requirement(
+        model,
+        target,
+        operation,
+        _EXPLICIT_BEAM_ORIENTATION_REQUIREMENT,
+    )
+
+
+def _requires_valid_beam_orientation(
+    model: Any,
+    target: RegionRef | int,
+    operation: str,
+) -> bool:
+    return _requires_beam_orientation_requirement(
+        model,
+        target,
+        operation,
+        _BEAM_ORIENTATION_VALIDITY_REQUIREMENT,
+    )
+
+
+def _requires_beam_orientation_requirement(
+    model: Any,
+    target: RegionRef | int,
+    operation: str,
+    requirement_code: str,
+) -> bool:
     elements = tuple(
         getattr(getattr(model, "mesh", None), "elements", ())
     )
@@ -1811,7 +1843,7 @@ def _requires_explicit_beam_orientation(
         and aggregate.families == ("beam",)
         and _aggregate_requires(
             aggregate,
-            _EXPLICIT_BEAM_ORIENTATION_REQUIREMENT,
+            requirement_code,
             operation,
         )
     )
