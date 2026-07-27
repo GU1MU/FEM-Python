@@ -415,16 +415,38 @@ def derive_action_availability(
         "请先创建自主草图；INP 模型保留已有网格，不能反向编辑 CAD",
     )
     has_mesh_settings = isinstance(snapshot.mesh_settings, MeshSettings)
-    for key in (
+    mesh_inputs_ready = has_native_geometry and has_mesh_settings and not busy
+    truss_member_policy = bool(
+        has_mesh_settings
+        and snapshot.mesh_settings.line_element_type == "Truss2"
+    )
+    truss_controls_conflict = bool(
+        truss_member_policy
+        and snapshot.mesh_settings.local_controls
+    )
+    set_state(
         GuiActionKey.MESH_GENERATE,
+        mesh_inputs_ready and not truss_controls_conflict,
+        (
+            "Truss2 每个 Wire member 固定生成一个单元，请先在网格控制中删除局部尺寸"
+            if truss_controls_conflict
+            else "请先创建自主几何并设置网格参数"
+        ),
+    )
+    set_state(
         GuiActionKey.MESH_CONTROLS,
+        mesh_inputs_ready,
+        "请先创建自主几何并设置网格参数",
+    )
+    set_state(
         GuiActionKey.MESH_LOCAL_CONTROL,
-    ):
-        set_state(
-            key,
-            has_native_geometry and has_mesh_settings and not busy,
-            "请先创建自主几何并设置网格参数",
-        )
+        mesh_inputs_ready and not truss_member_policy,
+        (
+            "Truss2 每个 Wire member 固定生成一个单元，不支持局部尺寸控制"
+            if truss_member_policy
+            else "请先创建自主几何并设置网格参数"
+        ),
+    )
     set_state(
         GuiActionKey.MESH_CLEAR,
         snapshot.source_kind == "native" and has_model and not busy,

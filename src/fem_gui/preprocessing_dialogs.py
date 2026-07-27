@@ -649,7 +649,12 @@ class MeshControlsDialog(QDialog):
             "tetrahedron": "四面体",
             "hexahedron": "六面体（结构化）",
         }
-        self.control_list.addItem(f"全局尺寸  {self._settings.size:g}")
+        if self._settings.line_element_type == "Truss2":
+            self.control_list.addItem(
+                "Truss2 网格  每个 Wire member 固定生成 1 个单元"
+            )
+        else:
+            self.control_list.addItem(f"全局尺寸  {self._settings.size:g}")
         self.control_list.addItem(f"单元阶次  {self._settings.order} 阶")
         self.control_list.addItem(
             f"网格方法  {shape_names.get(self._settings.cell_shape, self._settings.cell_shape)}"
@@ -1260,6 +1265,7 @@ class MeshSettingsDialog(QDialog):
         method_index = self.method_combo.findData(current_method)
         self.method_combo.setCurrentIndex(max(0, method_index))
         self.formulation_combo = None
+        self.line_policy_label = None
         if self._mesh_dimension == 1:
             self.formulation_combo = QComboBox(self)
             self.formulation_combo.setObjectName("lineElementFormulationCombo")
@@ -1281,6 +1287,8 @@ class MeshSettingsDialog(QDialog):
             self.formulation_combo.currentIndexChanged.connect(
                 self._refresh_line_acceptance
             )
+            self.line_policy_label = QLabel(self)
+            self.line_policy_label.setWordWrap(True)
         self.method_combo.currentIndexChanged.connect(self._refresh_shape_options)
         self._refresh_shape_options()
         form = QFormLayout()
@@ -1290,6 +1298,8 @@ class MeshSettingsDialog(QDialog):
         form.addRow("单元阶次", self.order_combo)
         if self.formulation_combo is not None:
             form.addRow("Element formulation", self.formulation_combo)
+        if self.line_policy_label is not None:
+            form.addRow("Line mesh policy", self.line_policy_label)
         form.addRow("全局尺寸", self.size_spin)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
@@ -1335,6 +1345,11 @@ class MeshSettingsDialog(QDialog):
             )
             if formulation not in {"Truss2", "Beam2"}:
                 raise ValueError("select Truss2 or Beam2 for a line mesh")
+            if formulation == "Truss2" and self._local_controls:
+                raise ValueError(
+                    "Truss2 uses one element per Wire member; remove local "
+                    "mesh controls before switching formulations"
+                )
             return MeshSettings(
                 size=self.size_spin.value(),
                 order=1,
@@ -1353,8 +1368,27 @@ class MeshSettingsDialog(QDialog):
         if self._mesh_dimension != 1:
             return
         formulation = self.formulation_combo.currentData()
+        truss_policy = formulation == "Truss2"
+        self.size_spin.setEnabled(not truss_policy)
+        if self.line_policy_label is not None:
+            if truss_policy:
+                self.line_policy_label.setText(
+                    "Truss2 uses exactly one element per declared Wire member. "
+                    "Create additional connected Wire members when structural "
+                    "joints are required; local mesh-size controls are unavailable."
+                )
+            elif formulation == "Beam2":
+                self.line_policy_label.setText(
+                    "Beam2 member subdivision follows the global and local "
+                    "mesh-size controls."
+                )
+            else:
+                self.line_policy_label.setText(
+                    "Select Truss2 or Beam2 to choose the line-mesh policy."
+                )
         self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(
             formulation in {"Truss2", "Beam2"}
+            and not (truss_policy and self._local_controls)
         )
 
     def _accept(self) -> None:

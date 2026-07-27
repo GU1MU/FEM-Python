@@ -32,11 +32,17 @@ from fem.core.model import (
     NodalLoad,
 )
 from fem.geometry import LogicalEntityRef
-from fem.geometry.recipes import WireGeometry, WireMember, WirePoint
+from fem.geometry.recipes import (
+    MovedGeometry,
+    RotatedGeometry,
+    WireGeometry,
+    WireMember,
+    WirePoint,
+)
 from fem.io.result_csv import read_result_csv, write_result_csv
 from fem.io.result_vtk import read_result_vtk, write_result_vtk
 from fem.io.project_v3 import load_project_v3, save_project_v3
-from fem.mesh.settings import MeshSettings
+from fem.mesh.settings import LocalMeshControl, MeshSettings
 from fem.solvers.static_linear import solve
 
 
@@ -70,12 +76,20 @@ def test_connected_wire_truss_has_stable_point_and_member_sets(real_gmsh) -> Non
 
     model = generate_fem_model(
         _connected_wire(),
-        MeshSettings(0.4, cell_shape="line", line_element_type="Truss2"),
+        MeshSettings(
+            0.4,
+            cell_shape="line",
+            local_controls=(
+                LocalMeshControl(LogicalEntityRef("edge:M1"), 0.05),
+            ),
+            line_element_type="Truss2",
+        ),
         named_regions=_wire_regions(),
     )
 
     assert model.mesh.dofs_per_node == 3
     assert {element.type for element in model.mesh.elements} == {"Truss2"}
+    assert len(model.mesh.elements) == len(_connected_wire().members)
     assert len(model.node_sets["Joint"].node_ids) == 1
     member_ids = {
         *model.element_sets["Member1"].element_ids,
@@ -87,6 +101,29 @@ def test_connected_wire_truss_has_stable_point_and_member_sets(real_gmsh) -> Non
     )
     assert not model.edges
     assert not model.surfaces
+
+
+def test_transformed_truss_wire_keeps_one_element_per_member(real_gmsh) -> None:
+    del real_gmsh
+    recipe = RotatedGeometry(
+        MovedGeometry(_connected_wire(), 2.0, -1.0, 0.5),
+        "z",
+        30.0,
+    )
+
+    model = generate_fem_model(
+        recipe,
+        MeshSettings(
+            0.05,
+            cell_shape="line",
+            line_element_type="Truss2",
+        ),
+        named_regions=_wire_regions(),
+    )
+
+    assert len(model.mesh.elements) == len(_connected_wire().members)
+    assert {element.type for element in model.mesh.elements} == {"Truss2"}
+    assert len(model.node_sets["Joint"].node_ids) == 1
 
 
 def test_coincident_disconnected_wire_points_remain_distinct(real_gmsh) -> None:
@@ -183,9 +220,11 @@ def test_truss2_headless_vertical_slice_matches_axial_bar_solution(real_gmsh) ->
     )
     model = generate_fem_model(
         recipe,
-        MeshSettings(2.0, cell_shape="line", line_element_type="Truss2"),
+        MeshSettings(0.05, cell_shape="line", line_element_type="Truss2"),
         named_regions=named_regions,
     )
+    assert len(model.mesh.nodes) == 2
+    assert len(model.mesh.elements) == 1
     definitions = ModelDefinitions(
         materials=(MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3}),),
         sections=(

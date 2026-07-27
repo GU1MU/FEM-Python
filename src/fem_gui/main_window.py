@@ -51,6 +51,8 @@ from fem.application import (
     describe_native_authoring_capabilities,
     describe_session_authoring,
     evaluate_authoring_candidate,
+    evaluate_native_assignment_candidate,
+    evaluate_native_line_load_candidate,
     resolve_effective_beam_frames,
     safe_static_preflight,
 )
@@ -3273,6 +3275,7 @@ class FEMMainWindow(QMainWindow):
             return describe_native_authoring_capabilities(
                 recipe,
                 settings,
+                named_regions=tuple(self.document.named_regions.values()),
             )
         return None
 
@@ -3383,6 +3386,13 @@ class FEMMainWindow(QMainWindow):
             recipe,
             NATIVE_GEOMETRY_TYPES,
         ):
+            return
+        local_control_action = self.actions["mesh_local_control"]
+        if not local_control_action.isEnabled():
+            self.status_panel.set_state(
+                local_control_action.statusTip(),
+                6000,
+            )
             return
         is_wire = geometry_dimension(recipe) == 1
         supported_kinds = {"point", "edge"} if is_wire else {"point", "edge", "face"}
@@ -4380,9 +4390,6 @@ class FEMMainWindow(QMainWindow):
     ) -> AuthoringCapability:
         if type(candidate) is not RegionAssignment:
             raise TypeError("candidate must be RegionAssignment")
-        model = self.document.model
-        if model is None:
-            raise RuntimeError("region assignment candidate requires a model")
         section = next(
             (
                 item
@@ -4398,6 +4405,14 @@ class FEMMainWindow(QMainWindow):
             section_type = str(
                 section.properties.get("section_type", section_type)
             ).strip().casefold()
+        operation = f"section.{section_type}"
+        model = self.document.model
+        if model is None:
+            return evaluate_native_assignment_candidate(
+                self.document,
+                candidate,
+                candidate_index=candidate_index,
+            )
         definitions = ModelDefinitions(
             materials=tuple(self.document.materials),
             sections=tuple(self.document.sections),
@@ -4407,7 +4422,7 @@ class FEMMainWindow(QMainWindow):
         return evaluate_authoring_candidate(
             model,
             definitions,
-            operation=f"section.{section_type}",
+            operation=operation,
             candidate=candidate,
             candidate_index=candidate_index,
         )
@@ -4787,7 +4802,12 @@ class FEMMainWindow(QMainWindow):
     ) -> AuthoringCapability:
         model = self.document.model
         if model is None:
-            raise RuntimeError("line-load candidate requires a model")
+            return evaluate_native_line_load_candidate(
+                self.document,
+                candidate,
+                step_name,
+                candidate_index=candidate_index,
+            )
         definitions = ModelDefinitions(
             materials=tuple(self.document.materials),
             sections=tuple(self.document.sections),

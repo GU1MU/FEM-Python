@@ -73,6 +73,10 @@ from .native_mesh_contract import (
     describe_native_mesh_contract,
     require_complete_native_mesh_contract,
 )
+from .native_candidates import (
+    evaluate_native_assignment_candidate,
+    evaluate_native_line_load_candidate,
+)
 from .diagnostics import (
     PreflightDiagnostic,
     PreflightFacts,
@@ -199,6 +203,8 @@ __all__ = [
     "describe_region_capabilities",
     "describe_session_authoring",
     "evaluate_authoring_candidate",
+    "evaluate_native_assignment_candidate",
+    "evaluate_native_line_load_candidate",
     "derive_feature_history",
     "derive_geometry_feature_rows",
     "definitions_from_model",

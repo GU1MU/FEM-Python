@@ -23,8 +23,10 @@ from fem.geometry.recipe_analysis import (
 )
 from fem.geometry.references import LogicalEntityRef
 from fem.geometry.recipes import (
+    MovedGeometry,
     NATIVE_GEOMETRY_TYPES,
     NativeGeometry,
+    RotatedGeometry,
     WireGeometry,
 )
 from fem.io import gmsh as gmsh_io
@@ -136,6 +138,7 @@ def generate_fem_model(
         mesh_contract=contract,
     )
     topology_resolver = resolver or DEFAULT_TOPOLOGY_RESOLVER
+    wire_recipe = _wire_recipe(recipe)
 
     try:
         import gmsh
@@ -157,6 +160,15 @@ def generate_fem_model(
         with geometry.model(recipe.name, dimension=dimension) as cad:
             topology = topology_resolver.build(cad, recipe)
             mesher = gmsh_meshing.Mesher(cad)
+            if (
+                wire_recipe is not None
+                and contract.line_element_type == "Truss2"
+            ):
+                _configure_truss_member_mesh(
+                    mesher,
+                    wire_recipe,
+                    topology,
+                )
             if mesh_settings.cell_shape == "hexahedron":
                 _configure_hexahedral_mesh(
                     cad,
@@ -226,9 +238,9 @@ def generate_fem_model(
                 native_mesh,
                 line_element_type=contract.line_element_type,
             )
-            if isinstance(recipe, WireGeometry):
+            if wire_recipe is not None:
                 _audit_native_wire_mesh(
-                    recipe,
+                    wire_recipe,
                     topology,
                     native_mesh,
                     mesh,
@@ -282,6 +294,39 @@ def _normalize_inputs(
         else tuple(region_source)
     )
     return recipe, mesh_settings, regions
+
+
+def _wire_recipe(recipe: NativeGeometry) -> WireGeometry | None:
+    current: object = recipe
+    while isinstance(current, (MovedGeometry, RotatedGeometry)):
+        current = current.base
+    return current if isinstance(current, WireGeometry) else None
+
+
+def _configure_truss_member_mesh(
+    mesher: Any,
+    recipe: WireGeometry,
+    topology: CompiledRecipeTopology,
+) -> None:
+    """Generate exactly one Truss2 element for every declared member.
+
+    Subdividing a straight spatial truss member introduces collinear internal
+    nodes whose transverse translational DOFs have zero stiffness.  The
+    current linear solver therefore treats the authored Wire graph itself as
+    the truss discretization.
+    """
+
+    for member in recipe.members:
+        logical_id = f"edge:{member.name}"
+        curves = _unique_entities(
+            topology.logical_entities.get(logical_id, ())
+        )
+        if len(curves) != 1 or curves[0].dimension != 1:
+            raise TopologyResolutionError(
+                f"{logical_id} must resolve to exactly one CAD curve for "
+                "Truss2 member meshing"
+            )
+        mesher.transfinite_curve(curves[0], num_nodes=2)
 
 
 def _configure_hexahedral_mesh(
@@ -601,6 +646,18 @@ def _audit_native_wire_mesh(
         raise TopologyResolutionError(
             "body:domain 的 CAD 所有权与声明 member 单元并集不一致"
         )
+    if contract.line_element_type == "Truss2":
+        subdivided = tuple(
+            logical_id
+            for logical_id, ids in member_element_ids.items()
+            if len(ids) != 1
+        )
+        if subdivided:
+            raise TopologyResolutionError(
+                "native Truss2 requires exactly one element per declared "
+                "Wire member; unexpected subdivisions: "
+                + ", ".join(subdivided)
+            )
 
 
 def _first_duplicate_value(values: Mapping[str, int]) -> str:

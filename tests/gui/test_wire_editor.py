@@ -6,8 +6,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QDialogButtonBox
 
-from fem.geometry import WireGeometry, WireMember, WirePoint
-from fem.mesh.settings import MeshSettings
+from fem.geometry import LogicalEntityRef, WireGeometry, WireMember, WirePoint
+from fem.mesh.settings import LocalMeshControl, MeshSettings
 from fem_gui.geometry_preview import build_geometry_preview
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.preprocessing_dialogs import MeshControlsDialog, MeshSettingsDialog
@@ -107,6 +107,54 @@ def test_line_mesh_dialog_requires_explicit_formulation_and_controls_preserve_it
     dialog = MeshControlsDialog(settings)
     assert dialog.settings().line_element_type == "Truss2"
     assert "Line mesh" in dialog.control_list.item(2).text()
+
+
+def test_truss_mesh_dialog_exposes_fixed_member_policy() -> None:
+    _application()
+    settings = MeshSettings(
+        0.25,
+        cell_shape="line",
+        line_element_type="Truss2",
+    )
+    dialog = MeshSettingsDialog(
+        settings,
+        mesh_dimension=1,
+        suggested_size=0.25,
+    )
+
+    assert not dialog.size_spin.isEnabled()
+    assert "one element per declared Wire member" in (
+        dialog.line_policy_label.text()
+    )
+    assert dialog._buttons.button(
+        QDialogButtonBox.StandardButton.Ok
+    ).isEnabled()
+
+    beam_index = dialog.formulation_combo.findData("Beam2")
+    dialog.formulation_combo.setCurrentIndex(beam_index)
+    assert dialog.size_spin.isEnabled()
+    assert "global and local" in dialog.line_policy_label.text()
+
+
+def test_truss_mesh_dialog_rejects_legacy_local_controls() -> None:
+    _application()
+    settings = MeshSettings(
+        0.25,
+        cell_shape="line",
+        local_controls=(
+            LocalMeshControl(LogicalEntityRef("edge:M1"), 0.1),
+        ),
+        line_element_type="Truss2",
+    )
+    dialog = MeshSettingsDialog(
+        settings,
+        mesh_dimension=1,
+        suggested_size=0.25,
+    )
+
+    assert not dialog._buttons.button(
+        QDialogButtonBox.StandardButton.Ok
+    ).isEnabled()
 
 
 def test_main_window_can_commit_a_wire_after_detached_edit() -> None:

@@ -33,6 +33,9 @@ from fem.geometry import (
     MovedGeometry,
     RectangleGeometry,
     RotatedGeometry,
+    WireGeometry,
+    WireMember,
+    WirePoint,
 )
 from fem.mesh import settings as mesh_settings_api
 from fem.mesh.settings import LocalMeshControl, MeshSettings
@@ -371,6 +374,55 @@ def test_native_analysis_actions_are_available_before_meshing():
     assert window.actions["close"].isEnabled()
     assert window.actions["model_info"].isEnabled()
     assert not window.actions["check_model"].isEnabled()
+    window.close()
+
+
+def test_truss_member_policy_disables_only_local_mesh_control():
+    _application()
+    window = FEMMainWindow()
+    window._set_native_geometry(
+        WireGeometry(
+            "Bar",
+            (
+                WirePoint("P1", 0.0, 0.0, 0.0),
+                WirePoint("P2", 1.0, 0.0, 0.0),
+            ),
+            (WireMember("M1", "P1", "P2"),),
+        ),
+        "Wire",
+    )
+    window._apply_session_delta(
+        window.session.replace_mesh_settings(
+            MeshSettings(
+                0.1,
+                cell_shape="line",
+                line_element_type="Truss2",
+            )
+        )
+    )
+
+    assert window.actions["mesh_generate"].isEnabled()
+    assert window.actions["mesh_controls"].isEnabled()
+    assert not window.actions["mesh_local_control"].isEnabled()
+    assert "固定生成一个单元" in window.actions[
+        "mesh_local_control"
+    ].toolTip()
+
+    window._apply_session_delta(
+        window.session.replace_mesh_settings(
+            MeshSettings(
+                0.1,
+                cell_shape="line",
+                local_controls=(
+                    _global_local_control("edge:M1", 0.05),
+                ),
+                line_element_type="Truss2",
+            )
+        )
+    )
+    assert not window.actions["mesh_generate"].isEnabled()
+    assert "删除局部尺寸" in window.actions["mesh_generate"].toolTip()
+    assert window.actions["mesh_controls"].isEnabled()
     window.close()
 
 

@@ -30,6 +30,7 @@ from fem.geometry.recipes import (
     RotatedGeometry,
     SketchGeometry,
     WireGeometry,
+    WirePoint,
     geometry_dimension,
 )
 
@@ -115,6 +116,9 @@ def compile_recipe(
 
 
 def _compile_exact(cad: Any, recipe: NativeGeometry) -> _CompiledDraft:
+    transformed_wire = _transformed_wire_recipe(recipe)
+    if transformed_wire is not None:
+        return _compile_wire(cad, transformed_wire)
     if isinstance(recipe, SketchGeometry):
         return _compile_exact(cad, expand_sketch_recipe(recipe))
     if isinstance(recipe, RectangleGeometry):
@@ -127,8 +131,6 @@ def _compile_exact(cad: Any, recipe: NativeGeometry) -> _CompiledDraft:
         return _compile_box(cad, recipe)
     if isinstance(recipe, CylinderGeometry):
         return _compile_cylinder(cad, recipe)
-    if isinstance(recipe, WireGeometry):
-        return _compile_wire(cad, recipe)
     if isinstance(recipe, MovedGeometry):
         draft = _compile_exact(cad, recipe.base)
         draft.domain = tuple(
@@ -158,6 +160,52 @@ def _compile_exact(cad: Any, recipe: NativeGeometry) -> _CompiledDraft:
     if isinstance(recipe, BooleanGeometry):
         return _compile_boolean(cad, recipe)
     raise TypeError(f"不支持的几何配方: {type(recipe).__name__}")
+
+
+def _transformed_wire_recipe(recipe: object) -> WireGeometry | None:
+    if isinstance(recipe, WireGeometry):
+        return recipe
+    if isinstance(recipe, MovedGeometry):
+        wire = _transformed_wire_recipe(recipe.base)
+        if wire is None:
+            return None
+        return WireGeometry(
+            wire.name,
+            tuple(
+                WirePoint(
+                    point.name,
+                    point.x + recipe.dx,
+                    point.y + recipe.dy,
+                    point.z + recipe.dz,
+                )
+                for point in wire.points
+            ),
+            wire.members,
+        )
+    if isinstance(recipe, RotatedGeometry):
+        wire = _transformed_wire_recipe(recipe.base)
+        if wire is None:
+            return None
+        angle = math.radians(recipe.angle_degrees)
+        cosine, sine = math.cos(angle), math.sin(angle)
+
+        def rotate(point: WirePoint) -> tuple[float, float, float]:
+            x, y, z = point.x, point.y, point.z
+            if recipe.axis == "x":
+                return x, y * cosine - z * sine, y * sine + z * cosine
+            if recipe.axis == "y":
+                return x * cosine + z * sine, y, -x * sine + z * cosine
+            return x * cosine - y * sine, x * sine + y * cosine, z
+
+        return WireGeometry(
+            wire.name,
+            tuple(
+                WirePoint(point.name, *rotate(point))
+                for point in wire.points
+            ),
+            wire.members,
+        )
+    return None
 
 
 def _compile_wire(cad: Any, recipe: WireGeometry) -> _CompiledDraft:
