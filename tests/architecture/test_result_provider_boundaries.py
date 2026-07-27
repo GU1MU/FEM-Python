@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 
 
@@ -9,6 +10,26 @@ SRC_ROOT = PROJECT_ROOT / "src"
 GUI_ROOT = SRC_ROOT / "fem_gui"
 POST_ROOT = SRC_ROOT / "fem" / "post"
 PROVIDER_ROOT = SRC_ROOT.joinpath(*"fem.application.results".split("."))
+AGENT_ROOT = SRC_ROOT / "fem_agent"
+COMPATIBILITY_LEDGER = (
+    PROJECT_ROOT
+    / "tests"
+    / "fixtures"
+    / "phase8"
+    / "result_compatibility_ledger.json"
+)
+DEFERRED_AGENT_RESULT_ENTRYPOINTS = {
+    "fem_agent.tools.results.query_results": (
+        Path("src/fem_agent/worker.py"),
+    ),
+    "fem_agent.tools.exports.export_results": (
+        Path("src/fem_agent/worker.py"),
+    ),
+}
+DEFERRED_AGENT_RESULT_IMPLEMENTATIONS = {
+    Path("src/fem_agent/tools/results.py"),
+    Path("src/fem_agent/tools/exports.py"),
+}
 
 
 def _module_name(path: Path) -> str:
@@ -64,7 +85,9 @@ def _forbidden_imports(
     offenders: list[tuple[Path, str]] = []
     for path in _python_files(root):
         for imported_module, imported_symbol in _resolved_imports(path):
-            if imported_module.startswith(prefixes):
+            if imported_module.startswith(
+                prefixes
+            ) or imported_symbol.startswith(prefixes):
                 offenders.append(
                     (path.relative_to(PROJECT_ROOT), imported_symbol)
                 )
@@ -182,3 +205,61 @@ def test_fem_and_gui_do_not_import_deferred_agent_implementation() -> None:
     ]
 
     assert offenders == []
+
+
+def test_deferred_agent_result_implementation_allowlist_is_exact() -> None:
+    entrypoint_names = {
+        symbol.rpartition(".")[2]
+        for symbol in DEFERRED_AGENT_RESULT_ENTRYPOINTS
+    }
+    definitions: set[str] = set()
+    callers = {
+        symbol: set()
+        for symbol in DEFERRED_AGENT_RESULT_ENTRYPOINTS
+    }
+    for path in _python_files(AGENT_ROOT):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        module = _module_name(path)
+        definitions.update(
+            f"{module}.{node.name}"
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name in entrypoint_names
+        )
+        for _, imported_symbol in _resolved_imports(path):
+            if imported_symbol in callers:
+                callers[imported_symbol].add(
+                    path.relative_to(PROJECT_ROOT)
+                )
+
+    assert definitions == set(DEFERRED_AGENT_RESULT_ENTRYPOINTS)
+    assert {
+        symbol: tuple(sorted(paths))
+        for symbol, paths in callers.items()
+    } == DEFERRED_AGENT_RESULT_ENTRYPOINTS
+
+    post_consumers = {
+        path
+        for path, _ in _forbidden_imports(AGENT_ROOT, ("fem.post",))
+    }
+    assert post_consumers == DEFERRED_AGENT_RESULT_IMPLEMENTATIONS
+
+    ledger = json.loads(COMPATIBILITY_LEDGER.read_text(encoding="utf-8"))
+    deferred_entries = {
+        entry["symbol"]: {
+            "visibility": entry["visibility"],
+            "current_callers": tuple(
+                Path(caller)
+                for caller in entry["current_callers"]
+            ),
+        }
+        for entry in ledger["entries"]
+        if entry["target_batch"] == "Deferred: Agent Integration"
+    }
+    assert deferred_entries == {
+        symbol: {
+            "visibility": "deferred_public",
+            "current_callers": callers,
+        }
+        for symbol, callers in DEFERRED_AGENT_RESULT_ENTRYPOINTS.items()
+    }
