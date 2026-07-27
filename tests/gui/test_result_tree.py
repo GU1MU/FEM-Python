@@ -159,6 +159,7 @@ def test_catalog_tree_preserves_published_field_and_component_order() -> None:
 
     tree.set_catalog("Job-1 · Static-1", catalog)
 
+    assert tree.catalog is catalog
     step = _step_item(tree)
     assert step.text(0) == "Job-1 · Static-1"
     assert [step.child(index).text(0) for index in range(3)] == [
@@ -258,6 +259,7 @@ def test_set_catalog_requires_exact_typed_inputs() -> None:
         tree.set_catalog(None, catalog)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="ResultCatalog"):
         tree.set_catalog("Static-1", object())  # type: ignore[arg-type]
+    assert tree.catalog is None
 
 
 def test_select_selection_prefers_the_exact_component_leaf() -> None:

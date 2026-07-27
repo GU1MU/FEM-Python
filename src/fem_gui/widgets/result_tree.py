@@ -59,9 +59,17 @@ class ResultTree(QTreeWidget):
         self.setHeaderHidden(True)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.itemDoubleClicked.connect(self._activate_item)
+        self._catalog: ResultCatalog | None = None
         self.clear_result()
 
+    @property
+    def catalog(self) -> ResultCatalog | None:
+        """Return the exact immutable catalog installed in this view."""
+
+        return self._catalog
+
     def clear_result(self) -> None:
+        self._catalog = None
         self.clear()
         item = QTreeWidgetItem(["尚无分析结果"])
         item.setData(0, ROLE_FIELD, None)
@@ -76,6 +84,7 @@ class ResultTree(QTreeWidget):
             raise TypeError("catalog must be a ResultCatalog")
 
         self.clear()
+        self._catalog = None
         root = QTreeWidgetItem(["分析结果"])
         step = QTreeWidgetItem([step_name or "当前分析步"])
         root.addChild(step)
@@ -96,6 +105,7 @@ class ResultTree(QTreeWidget):
         if default_item is not None:
             default_item.parent().setExpanded(True)
             self.setCurrentItem(default_item)
+        self._catalog = catalog
 
     @staticmethod
     def _catalog_field_item(
@@ -141,6 +151,7 @@ class ResultTree(QTreeWidget):
     def set_result(self, step_name: str, data: ResultData) -> None:
         """Populate the legacy string-key projection during migration."""
 
+        self._catalog = None
         self.clear()
         root = QTreeWidgetItem(["分析结果"])
         step = QTreeWidgetItem([step_name or "当前分析步"])

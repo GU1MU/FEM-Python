@@ -293,7 +293,7 @@ def test_job_completes_with_primary_results_and_recovers_stress_on_demand(
     revision = window.session.session_revision
     window._activate_result_field("CENTROID:Mises")
     _wait_for_task(window)
-    assert window.session.session_revision == revision
+    assert window.session.session_revision == revision + 1
     assert not data.field_ready("CENTROID:Mises")
     assert window.result_data is not data
     assert window.result_data is not None

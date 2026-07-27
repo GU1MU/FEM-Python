@@ -59,6 +59,7 @@ from fem.application.results import (
     FieldAvailability,
     FieldState,
     ResultExportSnapshot,
+    ResultMaterializationPatch,
     ResultProvider,
     ResultSourceKey,
     ScalarFieldSelection,
@@ -116,6 +117,7 @@ from .commands import (
     GuiCommandDiagnostic,
     GuiCommandOutcome,
     GuiCommandReceipt,
+    GuiCommandStatus,
     MeshInputEdit,
     NativeGeometryEdit,
     NewNativeProjectCommand,
@@ -225,6 +227,9 @@ class FEMMainWindow(QMainWindow):
         self.geometry: ModelGeometry | None = None
         self.result_provider: ResultProvider | None = None
         self.result_selection: ScalarFieldSelection | None = None
+        self._pending_result_selection: ScalarFieldSelection | None = None
+        self._pending_result_source: ResultSourceKey | None = None
+        self._pending_result_generation: int | None = None
         self.result_data: ResultData | None = None
         self.inspection_service: InspectionService | None = None
         self._inspection_windows: list[QWidget] = []
@@ -756,7 +761,7 @@ class FEMMainWindow(QMainWindow):
         self,
         selection: ScalarFieldSelection,
     ) -> GuiCommandReceipt:
-        """Synchronously install one exact READY scalar field selection."""
+        """Select one exact scalar field, materializing LAZY data on demand."""
 
         command_id = self._next_command_id()
         if type(selection) is not ScalarFieldSelection:
@@ -790,11 +795,10 @@ class FEMMainWindow(QMainWindow):
                 error,
             )
         if availability.state is FieldState.LAZY:
-            return self._rejected_command(
+            return self._begin_result_field_materialization(
                 command_id,
-                "result.field.lazy",
-                "the selected field requires background materialization",
-                "请等待后续按需加载命令，当前显示保持不变",
+                provider,
+                selection,
             )
         if availability.state is FieldState.UNAVAILABLE:
             diagnostic = next(
@@ -838,6 +842,216 @@ class FEMMainWindow(QMainWindow):
             command_id,
             outcome=outcome,
         )
+
+    def _begin_result_field_materialization(
+        self,
+        command_id: int,
+        provider: ResultProvider,
+        selection: ScalarFieldSelection,
+    ) -> GuiCommandReceipt:
+        """Start one exact-key, generation-bound lazy field request."""
+
+        task = None
+        try:
+            task = self.session.prepare_result_materialization(
+                provider.source.run_id,
+                (selection.field_key,),
+            )
+            completion = GuiCommandCompletion(command_id)
+            accepted_delta: SessionDelta | None = None
+            self._pending_result_selection = selection
+            self._pending_result_source = task.materialization.source
+            self._pending_result_generation = (
+                task.materialization.generation
+            )
+            self._update_action_states()
+
+            def workload(
+                context: TaskContext,
+            ) -> ResultMaterializationPatch:
+                context.report("正在按需加载结果字段……")
+                detached_provider = restore_result_provider(
+                    task.record.result,
+                    task.materialization,
+                )
+                return detached_provider.materialize(
+                    task.field_keys,
+                    cancellation=context,
+                )
+
+            def apply_result(value: object) -> TaskApplyOutcome:
+                nonlocal accepted_delta
+                if type(value) is not ResultMaterializationPatch:
+                    raise TypeError(
+                        "result materialization worker must return "
+                        "ResultMaterializationPatch"
+                    )
+                delta = self.session.accept_result_materialization(
+                    task.token,
+                    value,
+                )
+                if not delta.accepted:
+                    status = delta.token_status
+                    message = delta.reason or (
+                        status.value
+                        if status is not None
+                        else "result materialization was rejected"
+                    )
+                    if status in {
+                        TokenStatus.WRONG_KIND,
+                        TokenStatus.INVALID_STATE,
+                    }:
+                        return TaskApplyOutcome.rejected(message)
+                    return TaskApplyOutcome.stale(message)
+
+                accepted_delta = delta
+                materialized = next(
+                    (
+                        field_data
+                        for field_data in value.fields
+                        if field_data.key == selection.field_key
+                    ),
+                    None,
+                )
+                outcome = GuiCommandOutcome(
+                    source=task.materialization.source,
+                    materialization_generation=(
+                        task.materialization.generation
+                        + (1 if value.fields else 0)
+                    ),
+                    selection=selection,
+                    record_count=(
+                        None
+                        if materialized is None
+                        else len(materialized.locations)
+                    ),
+                )
+                return TaskApplyOutcome.accepted(outcome)
+
+            def succeeded(value: object) -> None:
+                if (
+                    type(value) is not GuiCommandOutcome
+                    or accepted_delta is None
+                ):
+                    raise RuntimeError(
+                        "accepted result materialization has no outcome"
+                    )
+                if not self._apply_session_delta(accepted_delta):
+                    raise RuntimeError(
+                        "accepted result materialization could not be projected"
+                    )
+                current = self._current_result_provider()
+                if (
+                    current is not None
+                    and current.source == value.source
+                    and current.snapshot.generation
+                    == value.materialization_generation
+                ):
+                    self._install_ready_result_selection(
+                        current,
+                        selection,
+                    )
+                self._refresh_job_manager()
+                self.status_panel.set_state(
+                    "结果字段按需加载完成",
+                    4000,
+                )
+
+            started = self._start_task(
+                workload,
+                succeeded,
+                "结果字段按需加载失败",
+                lambda message: self._session_task_failed(
+                    task.token,
+                    "结果字段按需加载失败",
+                    message,
+                ),
+                task_name="结果字段按需加载",
+                on_cancelled=lambda: self._session_task_cancelled(
+                    task.token
+                ),
+                apply_result=apply_result,
+                completion=completion,
+            )
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            if task is not None:
+                failure = self.session.accept_task_failed(
+                    task.token,
+                    error,
+                )
+                self._apply_revision_neutral_task_receipt(failure)
+            self._clear_pending_result_materialization()
+            self._update_action_states()
+            return self._rejected_command(
+                command_id,
+                "result.field.materialization.rejected",
+                error,
+            )
+
+        if not started:
+            cancelled = self.session.accept_task_cancelled(task.token)
+            self._apply_revision_neutral_task_receipt(cancelled)
+            self._clear_pending_result_materialization()
+            self._update_action_states()
+            return self._rejected_command(
+                command_id,
+                "task.start.rejected",
+                "the result materialization task could not be started",
+            )
+
+        def finished(terminal: TaskCompletion) -> None:
+            self._finish_result_field_materialization(
+                selection,
+                task.materialization.source,
+                task.materialization.generation,
+                terminal,
+            )
+
+        completion.observe(finished)
+        return GuiCommandReceipt.pending(command_id, completion)
+
+    def _finish_result_field_materialization(
+        self,
+        selection: ScalarFieldSelection,
+        source: ResultSourceKey,
+        generation: int,
+        terminal: TaskCompletion,
+    ) -> None:
+        if (
+            self._pending_result_selection != selection
+            or self._pending_result_source != source
+            or self._pending_result_generation != generation
+        ):
+            return
+        self._clear_pending_result_materialization()
+        projected = self.result_provider
+        restore_generation = (
+            generation + 1
+            if (
+                terminal.state is BackgroundTaskState.SUCCEEDED
+                and terminal.projection_error is not None
+            )
+            else generation
+        )
+        if (
+            (
+                terminal.state is not BackgroundTaskState.SUCCEEDED
+                or terminal.projection_error is not None
+            )
+            and type(projected) is ResultProvider
+            and projected.source == source
+            and projected.snapshot.generation
+            in {generation, restore_generation}
+        ):
+            current_selection = self.result_selection
+            if type(current_selection) is ScalarFieldSelection:
+                self.result_tree.select_selection(current_selection)
+        self._update_action_states()
+
+    def _clear_pending_result_materialization(self) -> None:
+        self._pending_result_selection = None
+        self._pending_result_source = None
+        self._pending_result_generation = None
 
     def export_result_csv(
         self,
@@ -1154,10 +1368,22 @@ class FEMMainWindow(QMainWindow):
                 provider,
                 self.result_selection,
             )
+            viewport_payload = self.viewport._result_render_payload
+            viewport_is_current = (
+                type(viewport_payload) is ResultRenderPayload
+                and viewport_payload.topology.source == provider.source
+                and viewport_payload.topology.materialization_generation
+                == provider.snapshot.generation
+                and viewport_payload.topology.selection
+                == self.result_selection
+                and self.viewport.run_id == provider.source.run_id
+            )
             consumers_are_current = (
                 self.result_provider is provider
                 and selection_is_current
-                and self.viewport.run_id == provider.source.run_id
+                and viewport_is_current
+                and self.result_tree.catalog is provider.catalog()
+                and self.result_tree.has_selection(self.result_selection)
                 and (
                     self.inspection_service is None
                     or self.inspection_service.result_provider is provider
@@ -1366,23 +1592,65 @@ class FEMMainWindow(QMainWindow):
             selection,
         )
         step_name = self._current_step_name or self.session.default_step_name()
-        self.result_tree.set_catalog(step_name or "", catalog)
-        if not self.result_tree.select_selection(selection):
-            raise RuntimeError(
-                "installed selection is missing from the result tree"
+        previous_catalog = self.result_tree.catalog
+        previous_selection = self.result_selection
+        inspection = self.inspection_service
+        previous_inspection_data = (
+            None if inspection is None else inspection.result_data
+        )
+        previous_inspection_provider = (
+            None if inspection is None else inspection.result_provider
+        )
+        try:
+            self.result_tree.set_catalog(step_name or "", catalog)
+            if not self.result_tree.select_selection(selection):
+                raise RuntimeError(
+                    "installed selection is missing from the result tree"
+                )
+            if inspection is not None:
+                inspection.update_result_data(None)
+                inspection.update_result_provider(provider)
+            self._install_viewport_result_payload(
+                payload,
+                shape_mode=self._display.shape_mode,
+                contour_enabled=self._display.contour_enabled,
             )
-
+        except Exception:
+            try:
+                if previous_catalog is None:
+                    self.result_tree.clear_result()
+                else:
+                    self.result_tree.set_catalog(
+                        previous_catalog.source.step_name,
+                        previous_catalog,
+                    )
+                    if type(previous_selection) is ScalarFieldSelection:
+                        self.result_tree.select_selection(
+                            previous_selection
+                        )
+            except Exception:
+                logging.exception(
+                    "failed to restore the previous result tree"
+                )
+            if (
+                inspection is not None
+                and inspection is self.inspection_service
+            ):
+                try:
+                    inspection.update_result_data(
+                        previous_inspection_data
+                    )
+                    inspection.update_result_provider(
+                        previous_inspection_provider
+                    )
+                except Exception:
+                    logging.exception(
+                        "failed to restore the previous inspection result"
+                    )
+            raise
         self.result_provider = provider
         self.result_selection = selection
         self.result_data = legacy_projection
-        if self.inspection_service is not None:
-            self.inspection_service.update_result_data(None)
-            self.inspection_service.update_result_provider(provider)
-        self.viewport.set_result_render_payload(payload)
-        self.viewport.set_display(
-            self._display.shape_mode,
-            self._display.contour_enabled,
-        )
         self.status_panel.set_result(self._result_status_text())
 
     def _install_result_projection(self, data: ResultData) -> None:
@@ -1903,14 +2171,23 @@ class FEMMainWindow(QMainWindow):
         )
         provider = self._current_result_provider()
         selected_availability: FieldAvailability | None = None
+        action_selection = (
+            self._pending_result_selection
+            if (
+                self._pending_result_selection is not None
+                and provider is not None
+                and provider.source == self._pending_result_source
+            )
+            else self.result_selection
+        )
         if provider is not None and type(
-            self.result_selection
+            action_selection
         ) is ScalarFieldSelection:
             try:
                 selected_availability = (
                     self._catalog_availability_for_selection(
                         provider,
-                        self.result_selection,
+                        action_selection,
                     )
                 )
             except (KeyError, TypeError, ValueError):
@@ -1942,8 +2219,12 @@ class FEMMainWindow(QMainWindow):
                 if selected_availability is None
                 else selected_availability.state
             ),
-            materialization_pending=False,
-            result_task_busy=False,
+            materialization_pending=(
+                self._pending_result_selection is not None
+            ),
+            result_task_busy=(
+                self._pending_result_selection is not None
+            ),
             viewport_scene_available=(
                 provider is not None
                 and self.viewport.run_id == provider.source.run_id
@@ -5128,6 +5409,7 @@ class FEMMainWindow(QMainWindow):
         """Install one payload and restore the prior scene on renderer failure."""
 
         previous_payload = self.viewport._result_render_payload
+        previous_data = self.viewport._result_data
         previous_display = self.viewport._display
         try:
             self.viewport.set_result_render_payload(payload)
@@ -5151,18 +5433,122 @@ class FEMMainWindow(QMainWindow):
                     logging.exception(
                         "failed to restore viewport result payload"
                     )
+            elif previous_data is not None:
+                try:
+                    FEMViewport.set_result_data(
+                        self.viewport,
+                        previous_data,
+                    )
+                    FEMViewport.set_display(
+                        self.viewport,
+                        previous_display.shape_mode,
+                        previous_display.contour_enabled,
+                    )
+                except Exception:
+                    logging.exception(
+                        "failed to restore legacy viewport result data"
+                    )
+            else:
+                try:
+                    self._restore_viewport_model_scene()
+                except Exception:
+                    logging.exception(
+                        "failed to restore the model viewport scene"
+                    )
             raise
+
+    def _restore_viewport_model_scene(self) -> None:
+        artifact = self.document.artifact
+        geometry = self.geometry
+        if artifact is None or geometry is None:
+            FEMViewport.clear_model(self.viewport)
+            return
+        FEMViewport.set_model(
+            self.viewport,
+            artifact.model,
+            geometry,
+            refresh_symbols=False,
+            render=False,
+        )
+        FEMViewport.set_symbol_settings(
+            self.viewport,
+            self._symbol_settings,
+            refresh=False,
+            render=False,
+        )
+        FEMViewport.show_boundary_and_loads(
+            self.viewport,
+            render=False,
+        )
+        FEMViewport.render(self.viewport)
 
     def _activate_result_selection(
         self,
         selection: ScalarFieldSelection,
     ) -> None:
+        provider = self._current_result_provider()
         receipt = self.select_result_field(selection)
         if receipt.diagnostic is not None:
+            current = self._current_result_provider()
+            installed = self.result_selection
+            if (
+                current is provider
+                and type(installed) is ScalarFieldSelection
+            ):
+                self.result_tree.select_selection(installed)
             self.status_panel.set_state(
                 receipt.diagnostic.message,
                 5000,
             )
+            return
+        if receipt.status is GuiCommandStatus.PENDING:
+            completion = receipt.completion
+            if completion is not None and provider is not None:
+                def finished(terminal: TaskCompletion) -> None:
+                    self._finish_activated_result_selection(
+                        selection,
+                        provider.source,
+                        completion,
+                        terminal,
+                    )
+
+                completion.observe(finished)
+            self.status_panel.set_state(
+                "正在按需加载结果字段……",
+                4000,
+            )
+            return
+        self._display = replace(
+            self._display,
+            contour_enabled=True,
+        )
+        self.actions["contour"].setChecked(True)
+        self.viewport.set_display(
+            self._display.shape_mode,
+            True,
+        )
+        self.status_panel.set_result(self._result_status_text())
+
+    def _finish_activated_result_selection(
+        self,
+        selection: ScalarFieldSelection,
+        source: ResultSourceKey,
+        completion: GuiCommandCompletion,
+        terminal: TaskCompletion,
+    ) -> None:
+        provider = self._current_result_provider()
+        outcome = completion.outcome
+        if (
+            terminal.state is not BackgroundTaskState.SUCCEEDED
+            or terminal.projection_error is not None
+            or type(outcome) is not GuiCommandOutcome
+            or outcome.source != source
+            or provider is None
+            or provider.source != source
+            or provider.snapshot.generation
+            != outcome.materialization_generation
+            or self.result_selection != selection
+        ):
             return
         self._display = replace(
             self._display,
@@ -5260,12 +5646,9 @@ class FEMMainWindow(QMainWindow):
                 availability = None
             if (
                 availability is not None
-                and availability.state is FieldState.READY
+                and availability.state
+                in {FieldState.READY, FieldState.LAZY}
             ):
-                self._display = replace(
-                    self._display,
-                    field_key=field_key,
-                )
                 self._activate_result_selection(selection)
                 return
         if not data.field_ready(field_key):
@@ -5415,6 +5798,7 @@ class FEMMainWindow(QMainWindow):
         settings: TypedResultDisplaySettings,
         *,
         expected_source: ResultSourceKey | None = None,
+        _materialization_completion: bool = False,
     ) -> None:
         if type(settings) is not TypedResultDisplaySettings:
             raise TypeError(
@@ -5427,6 +5811,12 @@ class FEMMainWindow(QMainWindow):
             raise TypeError(
                 "expected_source must be ResultSourceKey or None"
             )
+        if self.busy and not _materialization_completion:
+            self.status_panel.set_state(
+                "结果任务正在运行，请等待完成后再应用显示设置",
+                5000,
+            )
+            return
         provider = self._current_result_provider()
         if provider is None:
             return
@@ -5453,6 +5843,19 @@ class FEMMainWindow(QMainWindow):
                 self.status_panel.set_state(
                     receipt.diagnostic.message,
                     5000,
+                )
+            elif (
+                receipt.status is GuiCommandStatus.PENDING
+                and receipt.completion is not None
+            ):
+                receipt.completion.observe(
+                    lambda terminal, value=settings, source=provider.source: (
+                        self._finish_typed_result_display_materialization(
+                            terminal,
+                            value,
+                            source,
+                        )
+                    )
                 )
             return
         try:
@@ -5538,6 +5941,22 @@ class FEMMainWindow(QMainWindow):
         self._refresh_result_controls()
         self.status_panel.set_result(self._result_status_text())
         self._update_action_states()
+
+    def _finish_typed_result_display_materialization(
+        self,
+        terminal: TaskCompletion,
+        settings: TypedResultDisplaySettings,
+        source: ResultSourceKey,
+    ) -> None:
+        if (
+            terminal.state is BackgroundTaskState.SUCCEEDED
+            and terminal.projection_error is None
+        ):
+            self._apply_typed_result_display_settings(
+                settings,
+                expected_source=source,
+                _materialization_completion=True,
+            )
 
     def _apply_result_display_settings(self, settings: ResultDisplaySettings) -> None:
         if (
