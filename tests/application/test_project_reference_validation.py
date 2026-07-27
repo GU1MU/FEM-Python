@@ -4,15 +4,26 @@ from dataclasses import replace
 
 import pytest
 
-from fem.application import ModelSession, NamedRegion, NativePart, ProjectSnapshot
+from fem.application import (
+    ModelSession,
+    NamedRegion,
+    NativePart,
+    ProjectSnapshot,
+    RegionAssignment,
+    SectionDefinition,
+)
 from fem.application.feature_history import derive_feature_history
 from fem.application.project_validation import NativeProjectValidationError
-from fem.core.model import AnalysisStep, DisplacementConstraint
+from fem.core.model import AnalysisStep, DisplacementConstraint, MaterialDefinition
 from fem.geometry import LogicalEntityRef
 from fem.geometry.recipes import (
     BoxGeometry,
+    ExtrudedGeometry,
     PlateWithHoleGeometry,
     RectangleGeometry,
+    SketchCircle,
+    SketchGeometry,
+    SketchRectangle,
 )
 from fem.mesh.settings import LocalMeshControl, MeshSettings, MeshSizeFalloff
 
@@ -180,6 +191,33 @@ def test_fingerprint_change_clears_every_geometry_reference() -> None:
 
     assert not after.named_regions
     assert after.mesh_settings.local_controls == ()
+
+
+def test_nonexact_3d_recipe_accepts_solid_section_on_compiled_domain() -> None:
+    recipe = ExtrudedGeometry(
+        SketchGeometry(
+            "Composite",
+            (
+                SketchRectangle("material", 0.0, 0.0, 4.0, 3.0),
+                SketchCircle("cut", 0.5, 1.5, 0.5),
+            ),
+        ),
+        2.0,
+    )
+    session = ModelSession()
+    session.new_native_project()
+    session.replace_geometry((NativePart(),), recipe)
+
+    session.replace_model_definitions(
+        (MaterialDefinition("Steel", {}),),
+        (SectionDefinition("Solid", "Steel", "solid"),),
+        (RegionAssignment("Solid", "DOMAIN"),),
+        (),
+    )
+
+    assert session.snapshot().assignments == (
+        RegionAssignment("Solid", "DOMAIN"),
+    )
 
 
 @pytest.mark.parametrize("target", [1, True])

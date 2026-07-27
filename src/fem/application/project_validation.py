@@ -89,12 +89,11 @@ def validate_native_project_inputs(
             mesh_settings is not None
             and bool(mesh_settings.local_controls)
         )
-        or assignment_values
         or analysis_steps_have_native_region_targets(step_values)
     ):
         raise NativeProjectValidationError(
             "non-exact topology cannot carry NamedRegion, LocalMeshControl, "
-            "RegionAssignment, or a named AnalysisStep target"
+            "or a named AnalysisStep target"
         )
 
     sections_by_name = {

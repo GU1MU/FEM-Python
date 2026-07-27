@@ -808,10 +808,6 @@ def test_v2_unselectable_named_reference_has_contextual_path_and_cause():
             ),
         ),
         (
-            "assignment",
-            r"non-exact topology cannot carry NamedRegion",
-        ),
-        (
             "named_step_target",
             r"non-exact topology cannot carry NamedRegion",
         ),
@@ -844,27 +840,6 @@ def test_v2_nonexact_recipe_rejects_every_reference_consumer(
                 }
             ],
         }
-    elif case == "assignment":
-        authoring["definitions"].update(
-            {
-                "materials": [{"name": "Steel", "properties": {}}],
-                "sections": [
-                    {
-                        "name": "Solid",
-                        "material": "Steel",
-                        "section_type": "solid",
-                        "properties": {},
-                    }
-                ],
-                "assignments": [
-                    {
-                        "section_name": "Solid",
-                        "region_name": "DOMAIN",
-                        "beam_orientation": None,
-                    }
-                ],
-            }
-        )
     else:
         authoring["definitions"]["steps"] = [
             {
@@ -892,6 +867,36 @@ def test_v2_nonexact_recipe_rejects_every_reference_consumer(
         decode_project_v2(payload)
 
     assert isinstance(caught.value.__cause__, ValueError)
+
+
+def test_v2_nonexact_recipe_accepts_domain_section_assignment():
+    payload = _nonexact_payload()
+    payload["project"]["authoring"]["definitions"].update(
+        {
+            "materials": [{"name": "Steel", "properties": {}}],
+            "sections": [
+                {
+                    "name": "Solid",
+                    "material": "Steel",
+                    "section_type": "solid",
+                    "properties": {},
+                }
+            ],
+            "assignments": [
+                {
+                    "section_name": "Solid",
+                    "region_name": "DOMAIN",
+                    "beam_orientation": None,
+                }
+            ],
+        }
+    )
+
+    decoded = decode_project_v2(payload)
+
+    assert decoded.region_assignments == (
+        RegionAssignment("Solid", "DOMAIN"),
+    )
 
 
 def _nonexact_payload():
