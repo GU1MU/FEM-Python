@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -15,7 +16,9 @@ from fem.application import (
     NativePart,
     RegionAssignment,
     SectionDefinition,
+    describe_session_authoring,
 )
+from fem.application.results import OutputExecutionStatus, ResultVariable
 from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
@@ -215,6 +218,88 @@ def test_native_public_workflow_saves_reopens_remeshes_and_resolves(
         run_name="Job-Reopened",
     )
     assert reopened_run_id != first_run_id
+
+    require_accepted(
+        window.close_session(
+            CloseSessionCommand(window.document.session_revision)
+        )
+    )
+    window.close()
+
+
+def test_native_output_request_survives_save_reopen_and_executes(
+    tmp_path,
+) -> None:
+    _application()
+    window = FEMMainWindow()
+    require_accepted(
+        window.new_native_project(NewNativeProjectCommand("Output Project"))
+    )
+    _install_native_authoring(window)
+
+    snapshot = window.document
+    authoring = describe_session_authoring(snapshot)
+    catalog = authoring.output_request_catalog
+    assert catalog is not None
+    request = next(
+        candidate.authoring_request
+        for candidate in catalog.candidates
+        if candidate.authoring_request.variables == ("S",)
+        and candidate.authoring_request.metadata.get("position")
+        == "element_nodal"
+    )
+    edited_steps = tuple(
+        replace(step, outputs=(*step.outputs, request))
+        if step.name == "Load"
+        else step
+        for step in snapshot.steps
+    )
+    require_accepted(
+        window.apply_definition_edit(
+            DefinitionEditBatch(
+                base_session_revision=snapshot.session_revision,
+                materials=snapshot.materials,
+                sections=snapshot.sections,
+                assignments=snapshot.assignments,
+                steps=edited_steps,
+            )
+        )
+    )
+    assert window.document.steps[0].outputs == (request,)
+
+    project_path = tmp_path / "output-request-public.femproj"
+    require_accepted(window.save_project_path(project_path))
+    require_accepted(
+        window.close_session(
+            CloseSessionCommand(window.document.session_revision)
+        )
+    )
+    require_accepted(window.open_project_path(project_path))
+    assert window.document.steps[0].outputs == (request,)
+
+    _mesh_check_and_solve(window, run_name="Output-Reopened")
+    record = window.session.current_result()
+    assert record is not None
+    assert len(record.output_report.requests) == 1
+    execution = record.output_report.requests[0]
+    assert execution.status is OutputExecutionStatus.EXECUTED
+    assert tuple(
+        variable.canonical_variable for variable in execution.variables
+    ) == (ResultVariable.S,)
+    assert execution.executable_request is not None
+    field_keys = tuple(
+        key
+        for variable in execution.variables
+        for key in variable.field_keys
+    )
+    assert field_keys
+    assert tuple(key.request for key in field_keys) == (
+        execution.executable_request.field_requests
+    )
+    materialized_keys = {
+        field.key for field in record.materialization.fields
+    }
+    assert set(field_keys).issubset(materialized_keys)
 
     require_accepted(
         window.close_session(

@@ -19,6 +19,7 @@ from fem.application import (
     describe_session_authoring,
     evaluate_authoring_candidate,
 )
+from fem.application.results import OutputExecutionStatus, ResultVariable
 from fem.core.model import LineLoad
 from fem_gui.commands import CloseSessionCommand
 from fem_gui.main_window import FEMMainWindow
@@ -182,6 +183,114 @@ def test_imported_t3d2_public_edit_check_solve_and_reload(
     assert window.result_data is None
     assert window.viewport.run_id is None
     assert window.import_notices == ()
+
+    require_accepted(
+        window.close_session(
+            CloseSessionCommand(window.document.session_revision)
+        )
+    )
+    window.close()
+
+
+def test_imported_output_overlay_executes_then_reload_restores_source() -> None:
+    _application()
+    window = FEMMainWindow()
+    source_path = _open_fixture(window, "truss2_tension.inp")
+    source_step = next(
+        step for step in window.document.steps if step.name == "Tension"
+    )
+    source_outputs = tuple(source_step.outputs)
+    assert tuple(output.variables for output in source_outputs) == (
+        ("U", "RF"),
+        ("S",),
+    )
+
+    snapshot = window.document
+    authoring = describe_session_authoring(snapshot)
+    catalog = authoring.output_request_catalog
+    assert catalog is not None
+    created = next(
+        candidate.authoring_request
+        for candidate in catalog.candidates
+        if candidate.authoring_request.target == "node"
+        and candidate.authoring_request.variables == ("U",)
+    )
+    overlay_outputs = (source_outputs[1], created)
+    edited_steps = tuple(
+        replace(step, outputs=overlay_outputs)
+        if step.name == "Tension"
+        else step
+        for step in snapshot.steps
+    )
+    require_accepted(
+        window.apply_definition_edit(
+            DefinitionEditBatch(
+                base_session_revision=snapshot.session_revision,
+                materials=snapshot.materials,
+                sections=snapshot.sections,
+                assignments=snapshot.assignments,
+                steps=edited_steps,
+            )
+        )
+    )
+    assert next(
+        step for step in window.document.steps if step.name == "Tension"
+    ).outputs == overlay_outputs
+
+    run_id = _check_and_solve(
+        window,
+        step_name="Tension",
+        run_name="Truss-Output-Overlay",
+    )
+    record = window.session.current_result()
+    assert record is not None
+    assert tuple(
+        execution.status for execution in record.output_report.requests
+    ) == (
+        OutputExecutionStatus.EXECUTED,
+        OutputExecutionStatus.EXECUTED,
+    )
+    assert tuple(
+        tuple(
+            variable.canonical_variable
+            for variable in execution.variables
+        )
+        for execution in record.output_report.requests
+    ) == (
+        (ResultVariable.S,),
+        (ResultVariable.U,),
+    )
+    field_keys = tuple(
+        key
+        for execution in record.output_report.requests
+        for variable in execution.variables
+        for key in variable.field_keys
+    )
+    assert field_keys
+    for execution in record.output_report.requests:
+        assert execution.executable_request is not None
+        assert tuple(
+            key.request
+            for variable in execution.variables
+            for key in variable.field_keys
+        ) == execution.executable_request.field_requests
+    materialized_keys = {
+        field.key for field in record.materialization.fields
+    }
+    assert set(field_keys).issubset(materialized_keys)
+
+    await_succeeded(window.reload_imported_source())
+    restored_step = next(
+        step for step in window.document.steps if step.name == "Tension"
+    )
+    assert window.document.source_path == source_path
+    assert restored_step.outputs == source_outputs
+    assert window.document.runs == ()
+    assert window.session.find_run(run_id) is None
+    assert window.session.current_result() is None
+    assert window.result_provider is None
+    assert window.result_selection is None
+    assert window.viewport._result_render_payload is None
 
     require_accepted(
         window.close_session(
