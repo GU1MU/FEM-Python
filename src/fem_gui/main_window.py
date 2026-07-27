@@ -13,7 +13,7 @@ import numpy as np
 from PySide6.QtCore import QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFileDialog, QGridLayout,
+    QApplication, QComboBox, QDialog, QFileDialog, QGridLayout,
     QLabel, QMainWindow, QMessageBox, QSizePolicy, QSplitter, QVBoxLayout, QWidget,
 )
 
@@ -2822,6 +2822,7 @@ class FEMMainWindow(QMainWindow):
         self._wire_editor_base_revision = None
         self.main_splitter.setSizes([260, 1020, 0])
         self._update_action_states()
+        QTimer.singleShot(0, self.viewport.fit)
 
     def _confirm_wire_editor_discard(self) -> bool:
         answer = QMessageBox.question(
@@ -5613,6 +5614,14 @@ class FEMMainWindow(QMainWindow):
     def viewport_fit(self) -> None:
         self.viewport.fit()
 
+    def _fit_viewport_when_dialog_finishes(self, dialog: QDialog) -> None:
+        """Restore full-model framing after a view-affecting dialog closes."""
+
+        dialog.finished.connect(self._fit_viewport_after_dialog)
+
+    def _fit_viewport_after_dialog(self, _result: int = 0) -> None:
+        self.viewport.fit()
+
     def _toggle_edges(self, checked: bool) -> None:
         if self._display.contour_enabled:
             self._contour_options["edges"] = bool(checked)
@@ -6271,6 +6280,7 @@ class FEMMainWindow(QMainWindow):
                 )
             )
         )
+        self._fit_viewport_when_dialog_finishes(dialog)
         dialog.exec()
 
     def _apply_typed_result_display_settings(
@@ -6437,6 +6447,7 @@ class FEMMainWindow(QMainWindow):
             return
         dialog = ContourSettingsDialog(dict(self._contour_options), self)
         dialog.applyRequested.connect(self._set_contour_options)
+        self._fit_viewport_when_dialog_finishes(dialog)
         dialog.exec()
 
     def _set_contour_options(self, options: dict[str, Any]) -> None:
@@ -6456,6 +6467,7 @@ class FEMMainWindow(QMainWindow):
             self,
         )
         dialog.applyRequested.connect(self._apply_symbol_settings)
+        self._fit_viewport_when_dialog_finishes(dialog)
         dialog.exec()
 
     def show_viewport_background_dialog(self) -> None:
@@ -6762,6 +6774,7 @@ class FEMMainWindow(QMainWindow):
         dialog.highlightRequested.connect(self.highlight_entity)
         dialog.locateRequested.connect(self.locate_entity)
         dialog.entityRequested.connect(self.show_entity_information)
+        self._fit_viewport_when_dialog_finishes(dialog)
         self._track_inspection_window(dialog)
         dialog.show()
         return dialog
@@ -6777,6 +6790,7 @@ class FEMMainWindow(QMainWindow):
         dialog.entityInformationRequested.connect(self.show_entity_information)
         dialog.highlightRequested.connect(self.highlight_entity)
         dialog.locateRequested.connect(self.locate_entity)
+        self._fit_viewport_when_dialog_finishes(dialog)
         dialog.destroyed.connect(lambda: setattr(self, "_mesh_browser", None))
         self._mesh_browser = dialog
         self._track_inspection_window(dialog)
