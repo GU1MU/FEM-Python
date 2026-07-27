@@ -48,3 +48,12 @@ def test_combo_theme_draws_a_visible_down_arrow():
     application.setStyleSheet(previous_stylesheet)
 
     assert arrow_pixels > 0
+
+
+def test_spin_box_theme_hides_increment_and_decrement_buttons():
+    stylesheet = build_stylesheet()
+
+    assert "QSpinBox::up-button" in stylesheet
+    assert "QSpinBox::down-button" in stylesheet
+    assert "QDoubleSpinBox::up-button" in stylesheet
+    assert "QDoubleSpinBox::down-button" in stylesheet
