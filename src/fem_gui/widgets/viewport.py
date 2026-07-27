@@ -3453,10 +3453,6 @@ class FEMViewport(QWidget):
                 target.setMouseTracking(True)
                 target.installEventFilter(self)
             self._update_pickable_actors()
-            self._plotter.setToolTip(
-                "左键选择；Ctrl+Alt+左键旋转；Ctrl+Alt+中键平移；"
-                "Ctrl+Alt+右键缩放；滚轮缩放"
-            )
         except Exception:
             return
 
