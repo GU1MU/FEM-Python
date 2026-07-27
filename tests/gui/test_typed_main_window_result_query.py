@@ -600,11 +600,6 @@ def test_query_action_open_and_cancel_never_recovers_fields(
         raise AssertionError("opening a query dialog must not recover fields")
 
     monkeypatch.setattr(
-        window,
-        "_ensure_result_stress",
-        fail_recovery,
-    )
-    monkeypatch.setattr(
         ResultProvider,
         "materialize",
         fail_recovery,

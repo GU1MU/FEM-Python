@@ -57,6 +57,7 @@ from fem.application import (
 from fem.application.preprocessing import generate_fem_model
 from fem.application.results import (
     FieldAvailability,
+    FieldPosition,
     FieldState,
     ResultQuery,
     ResultQueryResult,
@@ -65,6 +66,7 @@ from fem.application.results import (
     ResultMaterializationPatch,
     ResultProvider,
     ResultSourceKey,
+    ResultVariable,
     ScalarFieldSelection,
     advance_materialization,
     build_solve_result_bundle,
@@ -141,7 +143,6 @@ from .mesh_browser import MeshBrowserDialog
 from .geometry_preview import build_geometry_preview
 from .postprocessing_dialogs import (
     ContourSettingsDialog,
-    ResultDisplaySettings,
     TypedResultDisplayDialog,
     TypedResultDisplaySettings,
     TypedResultQueryDialog,
@@ -181,8 +182,6 @@ from .visualization.model_adapter import ModelGeometry, build_model_geometry
 from .visualization.result_adapter import (
     ResultData,
     build_result_data_from_provider,
-    field_family,
-    recovered_stress_data,
 )
 from .visualization.result_renderer import (
     ResultRenderPayload,
@@ -204,6 +203,29 @@ _IMPORTED_OUTPUT_REQUEST_WARNING = (
     "重新加载原 INP 后会恢复源文件中的输出请求。"
 )
 
+_RESULT_VARIABLE_LABELS = {
+    ResultVariable.U: "位移 U",
+    ResultVariable.UR: "转角 UR",
+    ResultVariable.RF: "反力 RF",
+    ResultVariable.RM: "反力矩 RM",
+    ResultVariable.LE: "对数应变 LE",
+    ResultVariable.S: "应力 S",
+}
+_RESULT_POSITION_LABELS = {
+    FieldPosition.NODE: "节点",
+    FieldPosition.INTEGRATION_POINT: "积分点",
+    FieldPosition.CENTROID: "单元质心",
+    FieldPosition.ELEMENT_NODAL: "单元节点",
+    FieldPosition.NODE_REGION: "节点区域",
+    FieldPosition.RESOLVED_NODAL: "平均节点",
+    FieldPosition.SECTION_END: "截面端点",
+    FieldPosition.SECTION_NODE_ENVELOPE: "截面节点包络",
+}
+_RESULT_FIELD_STATE_LABELS = {
+    FieldState.LAZY: "按需加载",
+    FieldState.UNAVAILABLE: "不可用",
+}
+
 
 def initial_display_policy(element_count: int, node_count: int) -> dict[str, bool]:
     """Return the explicit first-display degradation policy for large models."""
@@ -214,6 +236,58 @@ def initial_display_policy(element_count: int, node_count: int) -> dict[str, boo
         "show_labels": False,
         "simplified": int(element_count) > 100_000 or int(node_count) > 200_000,
     }
+
+
+class _ExactDataComboBox(QComboBox):
+    """Keep typed Python user data from being coerced by QVariant."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._exact_user_data: list[object] = []
+
+    def addItem(self, text: str, user_data: object = None) -> None:
+        super().addItem(text)
+        self._exact_user_data.append(user_data)
+
+    def clear(self) -> None:
+        super().clear()
+        self._exact_user_data.clear()
+
+    def itemData(
+        self,
+        index: int,
+        role: int = Qt.ItemDataRole.UserRole,
+    ) -> object:
+        if role == Qt.ItemDataRole.UserRole:
+            if 0 <= index < len(self._exact_user_data):
+                return self._exact_user_data[index]
+            return None
+        return super().itemData(index, role)
+
+    def currentData(
+        self,
+        role: int = Qt.ItemDataRole.UserRole,
+    ) -> object:
+        return self.itemData(self.currentIndex(), role)
+
+    def findData(
+        self,
+        data: object,
+        role: int = Qt.ItemDataRole.UserRole,
+        flags: Qt.MatchFlag = (
+            Qt.MatchFlag.MatchExactly | Qt.MatchFlag.MatchCaseSensitive
+        ),
+    ) -> int:
+        if role == Qt.ItemDataRole.UserRole:
+            return next(
+                (
+                    index
+                    for index, candidate in enumerate(self._exact_user_data)
+                    if type(candidate) is type(data) and candidate == data
+                ),
+                -1,
+            )
+        return super().findData(data, role, flags)
 
 
 class FEMMainWindow(QMainWindow):
@@ -1055,6 +1129,7 @@ class FEMMainWindow(QMainWindow):
             current_selection = self.result_selection
             if type(current_selection) is ScalarFieldSelection:
                 self.result_tree.select_selection(current_selection)
+        self._refresh_result_controls()
         self._update_action_states()
 
     def _clear_pending_result_materialization(self) -> None:
@@ -2164,11 +2239,11 @@ class FEMMainWindow(QMainWindow):
         field_layout.setContentsMargins(4, 0, 4, 0)
         field_layout.setHorizontalSpacing(5)
         field_layout.setVerticalSpacing(4)
-        self.result_variable_combo = QComboBox(field_host)
+        self.result_variable_combo = _ExactDataComboBox(field_host)
         self.result_variable_combo.setObjectName("resultVariableCombo")
-        self.result_component_combo = QComboBox(field_host)
+        self.result_component_combo = _ExactDataComboBox(field_host)
         self.result_component_combo.setObjectName("resultComponentCombo")
-        self.result_position_combo = QComboBox(field_host)
+        self.result_position_combo = _ExactDataComboBox(field_host)
         self.result_position_combo.setObjectName("resultPositionCombo")
         for combo in (
             self.result_variable_combo,
@@ -2299,7 +2374,6 @@ class FEMMainWindow(QMainWindow):
         self.model_tree.highlightRequested.connect(self._highlight_tree_entry)
         self.model_tree.informationRequested.connect(self._show_entry_information)
         self.model_tree.editRequested.connect(self._edit_tree_entry)
-        self.result_tree.fieldActivated.connect(self._activate_result_field)
         self.result_tree.fieldSelectionActivated.connect(
             self._activate_result_selection
         )
@@ -2369,135 +2443,219 @@ class FEMMainWindow(QMainWindow):
         self.status_panel.set_state(f"已选择分析步：{name}", 4000)
         self._update_action_states()
 
-    @staticmethod
-    def _field_family(field_key: str) -> str:
-        return field_family(field_key)
-
     def _refresh_result_controls(self) -> None:
-        data = self.result_data
-        current_field = self._display.field_key
+        provider = self._current_result_provider()
+        selection = (
+            self.result_selection
+            if (
+                provider is not None
+                and self._selection_belongs_to_catalog(
+                    provider,
+                    self.result_selection,
+                )
+            )
+            else None
+        )
         self.result_variable_combo.blockSignals(True)
         self.result_variable_combo.clear()
-        if data is None or not data.fields:
+        if provider is None or not provider.catalog().fields:
             self.result_variable_combo.addItem("—", None)
-            self.result_component_combo.clear()
-            self.result_component_combo.addItem("—", None)
+            self.result_variable_combo.blockSignals(False)
+            self.result_position_combo.blockSignals(True)
             self.result_position_combo.clear()
             self.result_position_combo.addItem("—", None)
-            self.result_variable_combo.blockSignals(False)
+            self.result_position_combo.blockSignals(False)
+            self.result_component_combo.blockSignals(True)
+            self.result_component_combo.clear()
+            self.result_component_combo.addItem("—", None)
+            self.result_component_combo.blockSignals(False)
             return
-        available = {self._field_family(key) for key in data.fields}
-        for family, label in (
-            ("U", "位移 U"),
-            ("R", "转角 R"),
-            ("RF", "反力 RF"),
-            ("RM", "反力矩 RM"),
-            ("S", "应力 S"),
-        ):
-            if family in available:
-                self.result_variable_combo.addItem(label, family)
-        family = self._field_family(current_field) if current_field in data.fields else str(self.result_variable_combo.itemData(0))
-        self.result_variable_combo.setCurrentIndex(max(0, self.result_variable_combo.findData(family)))
-        self.result_variable_combo.blockSignals(False)
-        self._populate_result_positions(current_field)
-        self._populate_result_components(current_field)
 
-    def _populate_result_positions(self, preferred_field: str | None = None) -> None:
+        variables: list[ResultVariable] = []
+        for availability in provider.catalog().fields:
+            if availability.state is FieldState.UNAVAILABLE:
+                continue
+            variable = availability.descriptor.field_id.variable
+            if variable not in variables:
+                variables.append(variable)
+                self.result_variable_combo.addItem(
+                    _RESULT_VARIABLE_LABELS.get(
+                        variable,
+                        variable.value,
+                    ),
+                    variable,
+                )
+        preferred_variable = (
+            None
+            if selection is None
+            else selection.field_key.request.field_id.variable
+        )
+        variable_index = self.result_variable_combo.findData(
+            preferred_variable
+        )
+        self.result_variable_combo.setCurrentIndex(
+            variable_index if variable_index >= 0 else 0
+        )
+        self.result_variable_combo.blockSignals(False)
+        self._populate_result_positions(selection)
+        self._populate_result_components(
+            preferred_selection=selection,
+        )
+
+    def _populate_result_positions(
+        self,
+        preferred_selection: ScalarFieldSelection | None = None,
+    ) -> None:
         self.result_position_combo.blockSignals(True)
         self.result_position_combo.clear()
-        family = str(self.result_variable_combo.currentData())
-        if family == "S" and self.result_data is not None:
-            prefixes = self.result_data.available_stress_prefixes()
-            for prefix in prefixes:
+        provider = self._current_result_provider()
+        variable = self.result_variable_combo.currentData()
+        if (
+            provider is None
+            or type(variable) is not ResultVariable
+        ):
+            self.result_position_combo.addItem("—", None)
+            self.result_position_combo.blockSignals(False)
+            return
+
+        positions: list[FieldPosition] = []
+        for availability in provider.catalog().fields:
+            if availability.state is FieldState.UNAVAILABLE:
+                continue
+            field_id = availability.descriptor.field_id
+            if (
+                field_id.variable is variable
+                and field_id.position not in positions
+            ):
+                positions.append(field_id.position)
                 self.result_position_combo.addItem(
-                    self.result_data.stress_position_label(prefix),
-                    prefix,
+                    _RESULT_POSITION_LABELS.get(
+                        field_id.position,
+                        field_id.position.value,
+                    ),
+                    field_id.position,
                 )
-            preferred = (
-                preferred_field.split(":", 1)[0]
-                if preferred_field and ":" in preferred_field
-                else prefixes[0] if prefixes else ""
+        preferred_position = None
+        if (
+            type(preferred_selection) is ScalarFieldSelection
+            and preferred_selection.field_key.request.field_id.variable
+            is variable
+        ):
+            preferred_position = (
+                preferred_selection.field_key.request.field_id.position
             )
-        else:
-            self.result_position_combo.addItem("节点", "")
-            preferred = ""
-        index = self.result_position_combo.findData(preferred)
-        self.result_position_combo.setCurrentIndex(index if index >= 0 else 0)
+        position_index = self.result_position_combo.findData(
+            preferred_position
+        )
+        self.result_position_combo.setCurrentIndex(
+            position_index if position_index >= 0 else 0
+        )
         self.result_position_combo.blockSignals(False)
 
-    def _populate_result_components(self, preferred_field: str | None = None) -> None:
+    def _populate_result_components(
+        self,
+        *,
+        preferred_selection: ScalarFieldSelection | None = None,
+        preferred_component: str | None = None,
+    ) -> None:
         self.result_component_combo.blockSignals(True)
         self.result_component_combo.clear()
-        if self.result_data is not None:
-            family = str(self.result_variable_combo.currentData())
-            position = str(self.result_position_combo.currentData() or "")
-            records = [
-                (key, field)
-                for key, field in self.result_data.fields.items()
-                if self._field_family(key) == family
-                and (family != "S" or key.startswith(f"{position}:"))
-            ]
-            records.sort(key=lambda item: self._field_sort_key(item[0]))
-            for key, field in records:
-                label = field.label
-                if family == "S":
-                    label = key.split(":", 1)[1]
-                    label = {
-                        "MaxPrincipal": "最大主应力",
-                        "MidPrincipal": "中间主应力",
-                        "MinPrincipal": "最小主应力",
-                        "LE11": "轴向应变",
-                        "S11Max": "最大轴向应力",
-                        "S11Min": "最小轴向应力",
-                        "S11AbsMax": "最大绝对值轴向应力",
-                    }.get(label, label)
-                self.result_component_combo.addItem(label, key)
-            index = self.result_component_combo.findData(preferred_field)
-            if index < 0 and family == "S":
-                index = self.result_component_combo.findData(
-                    f"{position}:S11AbsMax"
+        provider = self._current_result_provider()
+        variable = self.result_variable_combo.currentData()
+        position = self.result_position_combo.currentData()
+        if (
+            provider is None
+            or type(variable) is not ResultVariable
+            or type(position) is not FieldPosition
+        ):
+            self.result_component_combo.addItem("—", None)
+            self.result_component_combo.blockSignals(False)
+            return
+
+        availabilities = tuple(
+            availability
+            for availability in provider.catalog().fields
+            if (
+                availability.state is not FieldState.UNAVAILABLE
+                and availability.descriptor.field_id.variable is variable
+                and availability.descriptor.field_id.position is position
+            )
+        )
+        component_counts: dict[str, int] = {}
+        for availability in availabilities:
+            for component in availability.descriptor.columns:
+                component_counts[component] = (
+                    component_counts.get(component, 0) + 1
                 )
-            self.result_component_combo.setCurrentIndex(index if index >= 0 else 0)
+        fallback_index = -1
+        for availability in availabilities:
+            for component in availability.descriptor.columns:
+                selection = ScalarFieldSelection(
+                    availability.key,
+                    component,
+                )
+                label = component
+                if component_counts[component] > 1:
+                    label = (
+                        f"{label} · contract "
+                        f"{availability.key.recovery_contract}"
+                    )
+                state_label = _RESULT_FIELD_STATE_LABELS.get(
+                    availability.state
+                )
+                if state_label is not None:
+                    label = f"{label}（{state_label}）"
+                self.result_component_combo.addItem(label, selection)
+                if (
+                    fallback_index < 0
+                    and component == preferred_component
+                ):
+                    fallback_index = (
+                        self.result_component_combo.count() - 1
+                    )
+
+        selection_index = self.result_component_combo.findData(
+            preferred_selection
+        )
+        if selection_index < 0:
+            selection_index = fallback_index
+        self.result_component_combo.setCurrentIndex(
+            selection_index if selection_index >= 0 else 0
+        )
         self.result_component_combo.blockSignals(False)
 
-    @staticmethod
-    def _field_sort_key(field_key: str) -> tuple[int, int]:
-        component = field_key.split(":", 1)[-1]
-        order = (
-            "U", "U1", "U2", "U3", "R1", "R2", "R3",
-            "RF", "RF1", "RF2", "RF3", "RM1", "RM2", "RM3",
-            "S11", "S22", "S33", "S12", "S13", "S23",
-            "Mises", "MaxPrincipal", "MidPrincipal", "MinPrincipal", "LE11",
-            "S11Max", "S11Min", "S11AbsMax",
-        )
-        prefix = field_key.split(":", 1)[0] if ":" in field_key else ""
-        association_order = {
-            "IP": 0,
-            "CENTROID": 1,
-            "EN": 2,
-            "NODAL": 3,
-        }.get(prefix, 0)
-        return (order.index(component) if component in order else len(order), association_order)
-
     def _result_variable_changed(self, _index: int) -> None:
+        current = self.result_selection
         self._populate_result_positions()
-        self._populate_result_components()
-        self._result_component_changed(self.result_component_combo.currentIndex())
+        self._populate_result_components(
+            preferred_component=(
+                None
+                if current is None
+                else current.component
+            )
+        )
+        self._result_component_changed(
+            self.result_component_combo.currentIndex()
+        )
 
     def _result_position_changed(self, _index: int) -> None:
-        component = None
         current = self.result_component_combo.currentData()
-        if current:
-            component = str(current).split(":", 1)[-1]
-        prefix = str(self.result_position_combo.currentData() or "")
-        self._populate_result_components(f"{prefix}:{component}" if prefix and component else None)
-        self._result_component_changed(self.result_component_combo.currentIndex())
+        self._populate_result_components(
+            preferred_component=(
+                current.component
+                if type(current) is ScalarFieldSelection
+                else None
+            )
+        )
+        self._result_component_changed(
+            self.result_component_combo.currentIndex()
+        )
 
     def _result_component_changed(self, _index: int) -> None:
-        field_key = self.result_component_combo.currentData()
-        if self.result_data is None or field_key not in self.result_data.fields:
+        selection = self.result_component_combo.currentData()
+        if type(selection) is not ScalarFieldSelection:
             return
-        self._activate_result_field(str(field_key))
+        self._activate_result_selection(selection)
 
     def _result_scale_mode_changed(self, _index: int) -> None:
         self._scale_mode = str(self.result_scale_combo.currentData())
@@ -5099,21 +5257,7 @@ class FEMMainWindow(QMainWindow):
             or type(selection) is not ScalarFieldSelection
         ):
             return
-        data = self.result_data
-        field_key = (
-            next(
-                (
-                    key
-                    for key, candidate
-                    in data.field_selections.items()
-                    if candidate == selection
-                ),
-                None,
-            )
-            if data is not None
-            else None
-        )
-        self._display = DisplayState("deformed", True, field_key)
+        self._display = DisplayState("deformed", True, None)
         self._apply_scale()
         self.actions["deformed"].setChecked(True)
         self.actions["contour"].setChecked(True)
@@ -5724,27 +5868,12 @@ class FEMMainWindow(QMainWindow):
             raise RuntimeError(
                 "selected field is missing from the result tree"
             )
-        legacy_field = None
-        if self.result_data is not None:
-            legacy_field = next(
-                (
-                    key
-                    for key, candidate in self.result_data.field_selections.items()
-                    if candidate == selection
-                ),
-                None,
-            )
         self._install_viewport_result_payload(
             payload,
             shape_mode=self._display.shape_mode,
             contour_enabled=self._display.contour_enabled,
         )
         self.result_selection = selection
-        if legacy_field is not None:
-            self._display = replace(
-                self._display,
-                field_key=legacy_field,
-            )
         if not self.result_tree.select_selection(selection):
             raise RuntimeError(
                 "selected field disappeared from the result tree"
@@ -5854,6 +5983,7 @@ class FEMMainWindow(QMainWindow):
                 receipt.diagnostic.message,
                 5000,
             )
+            self._refresh_result_controls()
             return
         if receipt.status is GuiCommandStatus.PENDING:
             completion = receipt.completion
@@ -5915,28 +6045,6 @@ class FEMMainWindow(QMainWindow):
         )
         self.status_panel.set_result(self._result_status_text())
 
-    def _current_result_projection(self) -> ResultData | None:
-        record = self.session.current_result()
-        data = self.result_data
-        artifact = self.document.artifact
-        if record is None or data is None or artifact is None:
-            return None
-        provenance = record.provenance
-        if (
-            provenance.artifact_id != artifact.artifact_id
-            or provenance.run_id != data.run_id
-            or record.result_id != data.result_id
-            or record.materialization.generation
-            != data.materialization_generation
-            or data.artifact_id != artifact.artifact_id
-            or self.geometry is None
-            or self.geometry.artifact_id != artifact.artifact_id
-            or self.viewport.artifact_id != artifact.artifact_id
-            or self.viewport.run_id != provenance.run_id
-        ):
-            return None
-        return data
-
     def set_shape_mode(self, shape_mode: str) -> None:
         if self._current_result_provider() is None:
             return
@@ -5980,118 +6088,6 @@ class FEMMainWindow(QMainWindow):
             self._display.contour_enabled,
         )
         self.status_panel.set_result(self._result_status_text())
-
-    def _activate_result_field(self, field_key: str) -> None:
-        data = self._current_result_projection()
-        if data is None or field_key not in data.fields:
-            return
-        selection = data.field_selections.get(field_key)
-        provider = self._current_result_provider()
-        if (
-            provider is not None
-            and type(selection) is ScalarFieldSelection
-        ):
-            try:
-                availability = self._catalog_availability_for_selection(
-                    provider,
-                    selection,
-                )
-            except (KeyError, TypeError, ValueError):
-                availability = None
-            if (
-                availability is not None
-                and availability.state
-                in {FieldState.READY, FieldState.LAZY}
-            ):
-                self._activate_result_selection(selection)
-                return
-        if not data.field_ready(field_key):
-            prefix = field_key.split(":", 1)[0]
-            self._ensure_result_stress(
-                (prefix,),
-                lambda key=field_key: self._activate_result_field(key),
-            )
-            return
-        self._display = replace(self._display, field_key=field_key, contour_enabled=True)
-        self.actions["contour"].setChecked(True)
-        self._refresh_result_controls()
-        self._apply_display()
-
-    def _ensure_result_stress(
-        self,
-        prefixes: tuple[str, ...],
-        on_ready: Callable[[], None],
-    ) -> bool:
-        """Recover requested stress fields once in the existing background worker."""
-        data = self.result_data
-        if data is None:
-            return False
-        required = tuple(
-            prefix
-            for prefix in prefixes
-            if any(
-                key.startswith(f"{prefix}:") and not scalar.ready
-                for key, scalar in data.fields.items()
-            )
-        )
-        if not required:
-            on_ready()
-            return True
-        if self.busy:
-            self.status_panel.set_state("当前任务完成后才能恢复应力结果", 4000)
-            return False
-
-        if data.run_id is None:
-            return False
-        projection = self.session.prepare_result_projection(data.run_id)
-        self.status_panel.set_state("正在恢复应力结果……")
-
-        def workload(context: TaskContext) -> tuple[ResultData, float]:
-            context.report("正在恢复应力结果……")
-            started = perf_counter()
-            updated = recovered_stress_data(data, required)
-            context.checkpoint()
-            return updated, perf_counter() - started
-
-        def succeeded(value: object) -> None:
-            delta, updated = value
-            if not self._apply_revision_neutral_task_receipt(
-                delta,
-                result_projection=updated,
-            ):
-                raise RuntimeError("已接受的应力恢复结果无法投影")
-            if (
-                self.result_data is None
-                or self.result_data.run_id != projection.run_id
-            ):
-                return
-            self._refresh_job_manager()
-            self.status_panel.set_state("应力结果恢复完成", 4000)
-            on_ready()
-
-        def apply_result(value: object) -> TaskApplyOutcome:
-            updated, _seconds = value
-            return self._session_task_outcome(
-                self.session.accept_result_projection(projection.token),
-                updated,
-            )
-
-        self._start_task(
-            workload,
-            succeeded,
-            "应力结果恢复失败",
-            lambda message: self._session_task_failed(
-                projection.token,
-                "应力结果恢复失败",
-                message,
-            ),
-            task_name="应力恢复",
-            on_cancelled=lambda: self._session_task_cancelled(
-                projection.token
-            ),
-            apply_result=apply_result,
-        )
-        return False
 
     def _result_status_text(self) -> str:
         provider = self._current_result_provider()
@@ -6230,16 +6226,6 @@ class FEMMainWindow(QMainWindow):
             )
             return
 
-        legacy_field = None
-        if self.result_data is not None:
-            legacy_field = next(
-                (
-                    key
-                    for key, candidate in self.result_data.field_selections.items()
-                    if candidate == settings.selection
-                ),
-                None,
-            )
         try:
             self._install_viewport_result_payload(
                 payload,
@@ -6254,7 +6240,7 @@ class FEMMainWindow(QMainWindow):
         self._display = DisplayState(
             settings.shape_mode,
             settings.contour_enabled,
-            legacy_field,
+            None,
         )
         self._scale_mode = settings.scale_mode
         self._scale_value = settings.scale_value
@@ -6311,42 +6297,6 @@ class FEMMainWindow(QMainWindow):
                 expected_source=source,
                 _materialization_completion=True,
             )
-
-    def _apply_result_display_settings(self, settings: ResultDisplaySettings) -> None:
-        if (
-            settings.contour_enabled
-            and self.result_data is not None
-            and settings.field_key in self.result_data.fields
-            and not self.result_data.field_ready(settings.field_key)
-        ):
-            prefix = settings.field_key.split(":", 1)[0]
-            self._ensure_result_stress(
-                (prefix,),
-                lambda value=settings: self._apply_result_display_settings(value),
-            )
-            return
-        self._display = DisplayState(
-            settings.shape_mode,
-            settings.contour_enabled,
-            settings.field_key,
-        )
-        self._scale_mode = settings.scale_mode
-        self._scale_value = settings.scale_value
-        self._overlay_undeformed = settings.overlay_undeformed
-        self.actions[settings.shape_mode].setChecked(True)
-        self.actions["contour"].setChecked(settings.contour_enabled)
-        self.actions["overlay"].setChecked(settings.overlay_undeformed)
-        if settings.contour_enabled:
-            self._contour_options["edges"] = settings.show_edges
-        else:
-            self._model_edges_visible = settings.show_edges
-        self._apply_scale()
-        self.viewport.set_undeformed_overlay_visible(settings.overlay_undeformed)
-        self.result_scale_combo.setCurrentIndex(max(0, self.result_scale_combo.findData(settings.scale_mode)))
-        self.result_scale_value.setValue(settings.scale_value)
-        self.result_scale_value.setEnabled(settings.scale_mode == "custom")
-        self._refresh_result_controls()
-        self._apply_display()
 
     def _apply_scale(self) -> None:
         if self._current_result_provider() is None:

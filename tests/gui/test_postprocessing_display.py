@@ -8,7 +8,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from fem.abaqus import read
-from fem.application.results import build_solve_result_bundle
+from fem.application.results import (
+    FieldPosition,
+    ResultVariable,
+    ScalarFieldSelection,
+    build_solve_result_bundle,
+)
 from fem.solvers.static_linear import solve
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.visualization.model_adapter import build_model_geometry
@@ -50,6 +55,32 @@ def _install_result(window) -> None:
     )
 
 
+def _assert_current_ribbon_selection(
+    window: FEMMainWindow,
+    *,
+    variable: ResultVariable,
+    position: FieldPosition,
+) -> ScalarFieldSelection:
+    provider = window._current_result_provider()
+    selection = window.result_component_combo.currentData()
+    assert provider is not None
+    assert type(window.result_variable_combo.currentData()) is ResultVariable
+    assert window.result_variable_combo.currentData() is variable
+    assert type(window.result_position_combo.currentData()) is FieldPosition
+    assert window.result_position_combo.currentData() is position
+    assert type(selection) is ScalarFieldSelection
+    assert selection == window.result_selection
+    assert selection.field_key.request.field_id.variable is variable
+    assert selection.field_key.request.field_id.position is position
+    availability = provider.field_status(selection.field_key)
+    assert selection.component in availability.descriptor.columns
+    assert (
+        window.viewport._result_render_payload.topology.selection
+        == selection
+    )
+    return selection
+
+
 def test_shape_and_contour_are_independent_for_all_four_states(gui_inp_path):
     _application()
     window = _solved_window(gui_inp_path)
@@ -86,7 +117,14 @@ def test_analysis_uses_clean_deformed_displacement_contour_defaults(gui_inp_path
 
     assert window._display.shape_mode == "deformed"
     assert window._display.contour_enabled
-    assert window._display.field_key == "U"
+    selection = _assert_current_ribbon_selection(
+        window,
+        variable=ResultVariable.U,
+        position=FieldPosition.NODE,
+    )
+    provider = window._current_result_provider()
+    assert provider is not None
+    assert selection == provider.catalog().default_selection
     assert window._contour_options["style"] == "continuous"
     assert window._contour_options["colormap"] == "jet"
     assert window._contour_options["decimals"] == 5
@@ -111,31 +149,67 @@ def test_result_ribbon_selects_real_fields_and_deformation_scale(gui_inp_path):
     _application()
     window = _solved_window(gui_inp_path)
 
-    assert window.result_variable_combo.currentData() == "U"
-    assert window.result_component_combo.currentData() == "U"
-    reaction_index = window.result_variable_combo.findData("RF")
+    default_selection = _assert_current_ribbon_selection(
+        window,
+        variable=ResultVariable.U,
+        position=FieldPosition.NODE,
+    )
+    provider = window._current_result_provider()
+    assert provider is not None
+    assert default_selection == provider.catalog().default_selection
+
+    reaction_index = window.result_variable_combo.findData(ResultVariable.RF)
+    assert reaction_index >= 0
     window.result_variable_combo.setCurrentIndex(reaction_index)
     window._result_variable_changed(reaction_index)
-    assert window.result_component_combo.currentData() == "RF"
-    assert window._display.field_key == "RF"
+    reaction_selection = _assert_current_ribbon_selection(
+        window,
+        variable=ResultVariable.RF,
+        position=FieldPosition.NODE,
+    )
+    assert reaction_selection != default_selection
     assert window._display.contour_enabled
 
-    stress_index = window.result_variable_combo.findData("S")
+    stress_index = window.result_variable_combo.findData(ResultVariable.S)
+    assert stress_index >= 0
     window.result_variable_combo.setCurrentIndex(stress_index)
     window._result_variable_changed(stress_index)
     _wait_for_tasks(window)
-    assert window.result_position_combo.currentData() == "IP"
-    assert str(window.result_component_combo.currentData()).startswith("IP:")
-    unaveraged_index = window.result_position_combo.findData("EN")
+    integration_point_selection = _assert_current_ribbon_selection(
+        window,
+        variable=ResultVariable.S,
+        position=FieldPosition.INTEGRATION_POINT,
+    )
+
+    unaveraged_index = window.result_position_combo.findData(
+        FieldPosition.ELEMENT_NODAL
+    )
+    assert unaveraged_index >= 0
     window.result_position_combo.setCurrentIndex(unaveraged_index)
     window._result_position_changed(unaveraged_index)
     _wait_for_tasks(window)
-    assert str(window.result_component_combo.currentData()).startswith("EN:")
-    center_index = window.result_position_combo.findData("CENTROID")
+    element_nodal_selection = _assert_current_ribbon_selection(
+        window,
+        variable=ResultVariable.S,
+        position=FieldPosition.ELEMENT_NODAL,
+    )
+    assert element_nodal_selection.component == integration_point_selection.component
+    assert element_nodal_selection.field_key != integration_point_selection.field_key
+
+    center_index = window.result_position_combo.findData(
+        FieldPosition.CENTROID
+    )
+    assert center_index >= 0
     window.result_position_combo.setCurrentIndex(center_index)
     window._result_position_changed(center_index)
     _wait_for_tasks(window)
-    assert str(window.result_component_combo.currentData()).startswith("CENTROID:")
+    centroid_selection = _assert_current_ribbon_selection(
+        window,
+        variable=ResultVariable.S,
+        position=FieldPosition.CENTROID,
+    )
+    assert centroid_selection.component == element_nodal_selection.component
+    assert centroid_selection.field_key != element_nodal_selection.field_key
 
     custom_index = window.result_scale_combo.findData("custom")
     window.result_scale_combo.setCurrentIndex(custom_index)
