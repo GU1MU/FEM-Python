@@ -155,7 +155,7 @@ ACTION_DESCRIPTORS: tuple[GuiActionDescriptor, ...] = (
     _d(GuiActionKey.SECTION_MANAGER, "截面管理", "show_section_manager", "section"),
     _d(GuiActionKey.SECTION_ASSIGN, "截面分配", "assign_section_to_region", "section_assign"),
     _d(GuiActionKey.GEOMETRY_SKETCH, "新建草图", "create_sketch_geometry", "sketch"),
-    _d(GuiActionKey.GEOMETRY_WIRE, "New Wire", "start_wire_geometry", "wire"),
+    _d(GuiActionKey.GEOMETRY_WIRE, "新建线体", "start_wire_geometry", "wire"),
     _d(GuiActionKey.GEOMETRY_MOVE, "移动", "move_geometry", "geometry_move"),
     _d(GuiActionKey.GEOMETRY_ROTATE, "旋转", "rotate_geometry", "geometry_rotate"),
     _d(GuiActionKey.GEOMETRY_EXTRUDE, "拉伸", "extrude_geometry", "extrude"),
@@ -428,7 +428,7 @@ def derive_action_availability(
         GuiActionKey.MESH_GENERATE,
         mesh_inputs_ready and not truss_controls_conflict,
         (
-            "Truss2 每个 Wire member 固定生成一个单元，请先在网格控制中删除局部尺寸"
+            "桁架单元中每根线体杆件固定生成一个单元，请先在网格控制中删除局部尺寸"
             if truss_controls_conflict
             else "请先创建自主几何并设置网格参数"
         ),
@@ -442,7 +442,7 @@ def derive_action_availability(
         GuiActionKey.MESH_LOCAL_CONTROL,
         mesh_inputs_ready and not truss_member_policy,
         (
-            "Truss2 每个 Wire member 固定生成一个单元，不支持局部尺寸控制"
+            "桁架单元中每根线体杆件固定生成一个单元，不支持局部尺寸控制"
             if truss_member_policy
             else "请先创建自主几何并设置网格参数"
         ),
@@ -686,14 +686,14 @@ def derive_action_availability(
             GuiActionKey.JOB_MANAGER,
         )
         for key in mutation_keys:
-            set_state(key, False, "Finish or cancel the active Wire editor first")
+            set_state(key, False, "请先完成或取消当前线体编辑")
         for key in (
             GuiActionKey.GEOMETRY_SELECT_POINT,
             GuiActionKey.GEOMETRY_SELECT_EDGE,
             GuiActionKey.GEOMETRY_SELECT_FACE,
             GuiActionKey.GEOMETRY_SELECT_BODY,
         ):
-            set_state(key, False, "Finish or cancel the active Wire editor first")
+            set_state(key, False, "请先完成或取消当前线体编辑")
         for key in (
             GuiActionKey.FIT,
             GuiActionKey.TOP,

@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -32,7 +33,7 @@ from .viewport import WireDraftRenderData
 def _finite_spin_box(parent: QWidget, value: float = 0.0) -> QDoubleSpinBox:
     editor = QDoubleSpinBox(parent)
     editor.setRange(-1.0e12, 1.0e12)
-    editor.setDecimals(6)
+    editor.setDecimals(2)
     editor.setSingleStep(1.0)
     editor.setValue(float(value))
     return editor
@@ -82,9 +83,12 @@ class WireEditorPanel(QWidget):
         self.name_edit.setObjectName("wireNameEdit")
         self.name_edit.editingFinished.connect(self._wire_name_changed)
 
-        self.point_mode_button = QPushButton("Point", self)
-        self.member_mode_button = QPushButton("Member", self)
-        self.select_mode_button = QPushButton("Select", self)
+        self.point_mode_button = QPushButton("添加点", self)
+        self.member_mode_button = QPushButton("连接杆件", self)
+        self.select_mode_button = QPushButton("选择对象", self)
+        self.point_mode_button.setToolTip("在视图区的工作平面上单击以添加点")
+        self.member_mode_button.setToolTip("在视图区依次单击两个已有点以连接杆件")
+        self.select_mode_button.setToolTip("在视图区单击已有点或杆件以选中对象")
         self._mode_buttons = {
             "point": self.point_mode_button,
             "member": self.member_mode_button,
@@ -106,24 +110,28 @@ class WireEditorPanel(QWidget):
         self.offset_spin = _finite_spin_box(self)
         self.offset_spin.setObjectName("wireWorkPlaneOffset")
         self.offset_spin.valueChanged.connect(self._work_plane_offset_changed)
-        self.snap_check = QCheckBox("Snap", self)
+        self.snap_check = QCheckBox("吸附", self)
         self.snap_check.setObjectName("wireGridSnapCheck")
         self.snap_check.toggled.connect(self._grid_settings_changed)
         self.spacing_spin = QDoubleSpinBox(self)
         self.spacing_spin.setObjectName("wireGridSpacing")
-        self.spacing_spin.setRange(1.0e-9, 1.0e12)
-        self.spacing_spin.setDecimals(6)
+        self.spacing_spin.setDecimals(2)
+        self.spacing_spin.setRange(0.01, 1.0e12)
+        self.spacing_spin.setSingleStep(0.1)
         self.spacing_spin.setValue(1.0)
         self.spacing_spin.valueChanged.connect(self._grid_settings_changed)
 
         self.points_table = QTableWidget(0, 4, self)
         self.points_table.setObjectName("wirePointsTable")
-        self.points_table.setHorizontalHeaderLabels(("Name", "X", "Y", "Z"))
+        self.points_table.setHorizontalHeaderLabels(("名称", "X", "Y", "Z"))
         self.points_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
         )
         self.points_table.setSelectionMode(
             QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.points_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
         )
         self.points_table.verticalHeader().setVisible(False)
         self.points_table.itemChanged.connect(self._point_item_changed)
@@ -131,19 +139,24 @@ class WireEditorPanel(QWidget):
         self.points_table.cellDoubleClicked.connect(
             lambda row, _column: self._focus_point_row(row)
         )
-        self.add_point_button = QPushButton("Add point", self)
-        self.delete_point_button = QPushButton("Delete point", self)
+        self.add_point_button = QPushButton("新增", self)
+        self.delete_point_button = QPushButton("删除", self)
+        self.add_point_button.setToolTip("新增一个坐标默认为零的点，可在表格中修改坐标")
+        self.delete_point_button.setToolTip("删除表格中当前选中的点")
         self.add_point_button.clicked.connect(self.add_point)
         self.delete_point_button.clicked.connect(self.delete_point)
 
         self.members_table = QTableWidget(0, 3, self)
         self.members_table.setObjectName("wireMembersTable")
-        self.members_table.setHorizontalHeaderLabels(("Name", "Start", "End"))
+        self.members_table.setHorizontalHeaderLabels(("名称", "起点", "终点"))
         self.members_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
         )
         self.members_table.setSelectionMode(
             QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.members_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
         )
         self.members_table.verticalHeader().setVisible(False)
         self.members_table.itemChanged.connect(self._member_item_changed)
@@ -151,42 +164,30 @@ class WireEditorPanel(QWidget):
         self.members_table.cellDoubleClicked.connect(
             lambda row, _column: self._focus_member_row(row)
         )
-        self.add_member_button = QPushButton("Add member", self)
-        self.delete_member_button = QPushButton("Delete member", self)
+        self.add_member_button = QPushButton("新增", self)
+        self.delete_member_button = QPushButton("删除", self)
+        self.add_member_button.setToolTip("新增一根杆件，并在表格中选择它的起点和终点")
+        self.delete_member_button.setToolTip("删除表格中当前选中的杆件")
         self.add_member_button.clicked.connect(self.add_member)
         self.delete_member_button.clicked.connect(self.delete_member)
 
-        self.hint_label = QLabel(
-            "Crossing members and equal coordinates do not create a joint. "
-            "Connect members through the same named point.",
-            self,
-        )
-        self.hint_label.setWordWrap(True)
-        self.validation_label = QLabel(self)
-        self.validation_label.setObjectName("wireValidationLabel")
-        self.validation_label.setWordWrap(True)
-        self.coincident_confirm = QCheckBox(
-            "Keep coincident named points disconnected", self
-        )
-        self.coincident_confirm.setObjectName("wireCoincidentConfirm")
-        self.coincident_confirm.toggled.connect(self._update_validation)
-
-        self.finish_button = QPushButton("Finish", self)
-        self.cancel_button = QPushButton("Cancel", self)
+        self.finish_button = QPushButton("完成创建", self)
+        self.cancel_button = QPushButton("取消", self)
         self.finish_button.setObjectName("wireFinishButton")
         self.cancel_button.setObjectName("wireCancelButton")
         self.finish_button.clicked.connect(self.try_finish)
         self.cancel_button.clicked.connect(self.cancelRequested.emit)
 
         form = QFormLayout()
-        form.addRow("Wire name", self.name_edit)
-        form.addRow("Work plane", self.work_plane_combo)
-        form.addRow("Offset", self.offset_spin)
+        form.addRow("线体名称", self.name_edit)
+        form.addRow("工作平面", self.work_plane_combo)
+        form.addRow("平面偏移", self.offset_spin)
         grid_row = QHBoxLayout()
+        grid_row.setSpacing(0)
         grid_row.addWidget(self.snap_check)
-        grid_row.addWidget(QLabel("Spacing", self))
+        grid_row.addWidget(QLabel("间距", self))
         grid_row.addWidget(self.spacing_spin, 1)
-        form.addRow("Grid", grid_row)
+        form.addRow("网格", grid_row)
 
         mode_row = QHBoxLayout()
         mode_row.addWidget(self.point_mode_button)
@@ -205,16 +206,14 @@ class WireEditorPanel(QWidget):
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
+        layout.addWidget(QLabel("视图区操作", self))
         layout.addLayout(mode_row)
-        layout.addWidget(QLabel("Points", self))
+        layout.addWidget(QLabel("点坐标", self))
         layout.addWidget(self.points_table, 1)
         layout.addLayout(points_buttons)
-        layout.addWidget(QLabel("Members", self))
+        layout.addWidget(QLabel("杆件连接", self))
         layout.addWidget(self.members_table, 1)
         layout.addLayout(members_buttons)
-        layout.addWidget(self.hint_label)
-        layout.addWidget(self.validation_label)
-        layout.addWidget(self.coincident_confirm)
         layout.addLayout(bottom)
 
     def set_controller(
@@ -291,7 +290,12 @@ class WireEditorPanel(QWidget):
             button.blockSignals(False)
         if self._viewport is not None:
             self._viewport.set_wire_authoring_mode(normalized)
-        self._set_status(f"Wire mode: {normalized}")
+        labels = {
+            "point": "添加点",
+            "member": "连接杆件",
+            "select": "选择对象",
+        }
+        self._set_status(f"视图区操作：{labels[normalized]}")
 
     def render_data(self) -> WireDraftRenderData:
         if self._controller is None:
@@ -332,12 +336,25 @@ class WireEditorPanel(QWidget):
             self._viewport.update_wire_draft(data)
         self.draftChanged.emit(self._controller.snapshot())
 
-    def _refresh(self, *, selected_point: str | None = None) -> None:
+    def _refresh(
+        self,
+        *,
+        selected_point: str | None = None,
+        selected_member: str | None = None,
+    ) -> None:
         controller = self._controller
         if controller is None:
-            self.validation_label.clear()
             self.finish_button.setEnabled(False)
+            self.finish_button.setToolTip("当前没有可完成的线体草图")
             return
+        if selected_point is None and selected_member is None:
+            selection = controller.selection
+            if selection is not None:
+                kind, name = selection
+                if kind == "point":
+                    selected_point = name
+                elif kind == "member":
+                    selected_member = name
         snapshot = controller.snapshot()
         self._refreshing = True
         try:
@@ -345,7 +362,12 @@ class WireEditorPanel(QWidget):
             self.points_table.setRowCount(0)
             for row, point in enumerate(snapshot.points):
                 self.points_table.insertRow(row)
-                values = (point.name, f"{point.x:.6g}", f"{point.y:.6g}", f"{point.z:.6g}")
+                values = (
+                    point.name,
+                    f"{point.x:.2f}",
+                    f"{point.y:.2f}",
+                    f"{point.z:.2f}",
+                )
                 for column, value in enumerate(values):
                     self.points_table.setItem(row, column, QTableWidgetItem(value))
             self.members_table.setRowCount(0)
@@ -370,42 +392,45 @@ class WireEditorPanel(QWidget):
             self._update_validation()
             if selected_point is not None:
                 self._select_table_row(self.points_table, snapshot.points, selected_point)
+            elif selected_member is not None:
+                self._select_table_row(
+                    self.members_table,
+                    snapshot.members,
+                    selected_member,
+                )
         finally:
             self._refreshing = False
         self._send_render_data()
+        if selected_point is not None:
+            self.entityFocusRequested.emit("point", selected_point)
+        elif selected_member is not None:
+            self.entityFocusRequested.emit("member", selected_member)
 
     def _update_validation(self) -> None:
         controller = self._controller
         if controller is None:
             return
         diagnostics = controller.finish_diagnostics()
-        coincident = controller.coincident_point_groups()
-        lines = [item.message for item in diagnostics]
-        if coincident:
-            groups = "; ".join(", ".join(group) for group in coincident)
-            lines.append(
-                "Coincident points remain separate unless members share their names: "
-                + groups
+        self.finish_button.setEnabled(controller.can_finish)
+        if diagnostics:
+            self.finish_button.setToolTip(
+                "请先处理以下问题：\n"
+                + "\n".join(item.message for item in diagnostics)
             )
-        self.validation_label.setText("\n".join(lines) or "Ready to finish")
-        self.coincident_confirm.setVisible(bool(coincident))
-        self.finish_button.setEnabled(
-            controller.can_finish
-            and (not coincident or self.coincident_confirm.isChecked())
-        )
+        else:
+            self.finish_button.setToolTip("完成线体创建")
 
     def _set_status(self, message: str) -> None:
         self.statusChanged.emit(str(message))
-        self.validation_label.setText(str(message))
 
     def _pending_member_start(self, name: str) -> None:
-        self._set_status(f"Pending member start: {name}")
+        self._set_status(f"已选择杆件起点：{name}，请再选择终点")
 
     def _authoring_missed(self, reason: str) -> None:
         self._set_status(self._miss_message(reason))
 
     def _pending_cancelled(self) -> None:
-        self._set_status("Pending interaction cancelled")
+        self._set_status("已取消当前视图区操作")
 
     def _authoring_cancelled(self) -> None:
         self.cancelRequested.emit()
@@ -418,12 +443,12 @@ class WireEditorPanel(QWidget):
     @staticmethod
     def _miss_message(reason: str) -> str:
         return {
-            "point.ray": "Could not project the click onto the work plane.",
-            "point.parallel": "The display ray is parallel to the work plane.",
-            "member": "Member mode requires an existing point.",
-            "member.same_endpoint": "A member requires two distinct points.",
-            "select": "No draft point or member was selected.",
-        }.get(str(reason), f"Wire authoring miss: {reason}")
+            "point.ray": "无法将单击位置投影到工作平面",
+            "point.parallel": "当前视线与工作平面平行，无法添加点",
+            "member": "请单击一个已有点来连接杆件",
+            "member.same_endpoint": "杆件的起点和终点必须是两个不同的点",
+            "select": "当前位置没有可选择的点或杆件",
+        }.get(str(reason), f"视图区操作未完成：{reason}")
 
     def _wire_name_changed(self) -> None:
         if self._refreshing or self._controller is None:
@@ -460,18 +485,22 @@ class WireEditorPanel(QWidget):
     def _grid_settings_changed(self, _value: object = None) -> None:
         if self._refreshing or self._viewport is None:
             return
-        self._viewport.set_wire_work_plane(
-            str(self.work_plane_combo.currentData()),
-            self.offset_spin.value(),
-            snap=self.snap_check.isChecked(),
-            spacing=self.spacing_spin.value(),
-        )
+        spacing = max(self.spacing_spin.minimum(), self.spacing_spin.value())
+        try:
+            self._viewport.set_wire_work_plane(
+                str(self.work_plane_combo.currentData()),
+                self.offset_spin.value(),
+                snap=self.snap_check.isChecked(),
+                spacing=spacing,
+            )
+        except ValueError:
+            self._set_status("吸附间距必须大于零")
 
     def _point_from_viewport(self, point: object) -> None:
         if self._controller is None:
             return
         try:
-            x, y, z = tuple(float(value) for value in point)
+            x, y, z = tuple(round(float(value), 2) for value in point)
             created = self._controller.add_point(None, x, y, z)
         except (TypeError, ValueError) as error:
             self._set_status(str(error))
@@ -512,12 +541,7 @@ class WireEditorPanel(QWidget):
         except (TypeError, ValueError) as error:
             self._set_status(str(error))
             return
-        self._refresh()
-        self._select_table_row(
-            self.members_table,
-            self._controller.snapshot().members,
-            member.name,
-        )
+        self._refresh(selected_member=member.name)
 
     def add_point(self) -> None:
         if self._controller is None:
@@ -542,8 +566,8 @@ class WireEditorPanel(QWidget):
     def add_member(self) -> None:
         if self._controller is None:
             return
-        self._controller.add_member()
-        self._refresh()
+        member = self._controller.add_member()
+        self._refresh(selected_member=member.name)
 
     def delete_member(self) -> None:
         if self._controller is None:
@@ -571,9 +595,9 @@ class WireEditorPanel(QWidget):
             if column == 0:
                 self._controller.rename_point(point.name, item.text())
             else:
-                value = float(item.text())
+                value = round(float(item.text()), 2)
                 if not math.isfinite(value):
-                    raise ValueError("point coordinates must be finite")
+                    raise ValueError("点坐标必须是有限数值")
                 self._controller.update_point(
                     point.name,
                     x=value if column == 1 else None,
@@ -624,9 +648,12 @@ class WireEditorPanel(QWidget):
         snapshot = self._controller.snapshot()
         if 0 <= row < len(snapshot.points):
             try:
-                self._controller.select_point(snapshot.points[row].name)
+                name = snapshot.points[row].name
+                self._controller.select_point(name)
             except KeyError:
                 pass
+            else:
+                self.entityFocusRequested.emit("point", name)
 
     def _member_row_selected(self) -> None:
         if self._refreshing or self._controller is None:
@@ -635,9 +662,12 @@ class WireEditorPanel(QWidget):
         snapshot = self._controller.snapshot()
         if 0 <= row < len(snapshot.members):
             try:
-                self._controller.select_member(snapshot.members[row].name)
+                name = snapshot.members[row].name
+                self._controller.select_member(name)
             except KeyError:
                 pass
+            else:
+                self.entityFocusRequested.emit("member", name)
 
     def _focus_point_row(self, row: int) -> None:
         if self._controller is None:
@@ -665,15 +695,7 @@ class WireEditorPanel(QWidget):
             return
         self._update_validation()
         if not self._controller.can_finish:
-            self._set_status("Finish is unavailable until all diagnostics are resolved.")
-            return
-        if (
-            self._controller.coincident_point_groups()
-            and not self.coincident_confirm.isChecked()
-        ):
-            self._set_status(
-                "Confirm that coincident named points remain disconnected."
-            )
+            self._set_status("请先补全点和杆件，并处理草图中的无效数据")
             return
         try:
             self._controller.to_geometry()

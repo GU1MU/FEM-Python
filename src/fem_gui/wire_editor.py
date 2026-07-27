@@ -86,7 +86,7 @@ class WireDraftValidationError(ValueError):
     def __init__(self, diagnostics: Sequence[WireDraftDiagnostic]):
         self.diagnostics = tuple(diagnostics)
         message = "; ".join(item.message for item in self.diagnostics)
-        super().__init__(message or "wire draft is not complete")
+        super().__init__(message or "线体草图尚未完成")
 
 
 def _plane_name(plane: str) -> str:
@@ -153,7 +153,10 @@ def snap_work_plane_point(
     for index in range(3):
         if index == fixed_axis:
             continue
-        snapped[index] = math.floor(values[index] / grid + 0.5) * grid
+        snapped[index] = round(
+            math.floor(values[index] / grid + 0.5) * grid,
+            12,
+        )
         if abs(snapped[index]) <= 1.0e-15:
             snapped[index] = 0.0
     return tuple(snapped)
@@ -181,7 +184,7 @@ class WireDraftController:
         snapshot: WireDraftSnapshot | None = None,
         *,
         root: WireGeometry | None = None,
-        name: str = "Wire-1",
+        name: str = "线体-1",
     ) -> None:
         if snapshot is not None and root is not None:
             raise ValueError("provide either snapshot or root, not both")
@@ -323,7 +326,7 @@ class WireDraftController:
         )
         if references:
             raise ValueError(
-                f"cannot delete point {name!r}; members reference it: "
+                f"无法删除点 {name!r}，以下杆件仍在使用该点："
                 + ", ".join(references)
             )
         del self._points[index]
@@ -412,7 +415,7 @@ class WireDraftController:
         diagnostics: list[WireDraftDiagnostic] = []
         if not self._name.strip():
             diagnostics.append(
-                WireDraftDiagnostic("wire.name.empty", "Wire name is required", False)
+                WireDraftDiagnostic("wire.name.empty", "线体名称不能为空", False)
             )
         point_names = [point.name for point in self._points]
         member_names = [member.name for member in self._members]
@@ -421,7 +424,7 @@ class WireDraftController:
                 diagnostics.append(
                     WireDraftDiagnostic(
                         "point.name.empty",
-                        "Point names must not be blank",
+                        "点名称不能为空",
                     )
                 )
         for name in member_names:
@@ -429,16 +432,16 @@ class WireDraftController:
                 diagnostics.append(
                     WireDraftDiagnostic(
                         "member.name.empty",
-                        "Member names must not be blank",
+                        "杆件名称不能为空",
                     )
                 )
         if len({name.casefold() for name in point_names}) != len(point_names):
             diagnostics.append(
-                WireDraftDiagnostic("point.name.duplicate", "Point names must be unique")
+                WireDraftDiagnostic("point.name.duplicate", "点名称不能重复")
             )
         if len({name.casefold() for name in member_names}) != len(member_names):
             diagnostics.append(
-                WireDraftDiagnostic("member.name.duplicate", "Member names must be unique")
+                WireDraftDiagnostic("member.name.duplicate", "杆件名称不能重复")
             )
         return tuple(diagnostics)
 
@@ -446,11 +449,11 @@ class WireDraftController:
         diagnostics = list(self.editing_diagnostics())
         if len(self._points) < 2:
             diagnostics.append(
-                WireDraftDiagnostic("wire.points.minimum", "A wire requires at least two points")
+                WireDraftDiagnostic("wire.points.minimum", "线体至少需要两个点")
             )
         if not self._members:
             diagnostics.append(
-                WireDraftDiagnostic("wire.members.minimum", "A wire requires at least one member")
+                WireDraftDiagnostic("wire.members.minimum", "线体至少需要一根杆件")
             )
         point_names = {point.name for point in self._points}
         used_points: set[str] = set()
@@ -461,7 +464,7 @@ class WireDraftController:
                 diagnostics.append(
                     WireDraftDiagnostic(
                         "point.coordinate.nonfinite",
-                        f"Point {point.name!r} coordinates must be finite",
+                        f"点 {point.name!r} 的坐标必须是有限数值",
                     )
                 )
         for member in self._members:
@@ -469,7 +472,7 @@ class WireDraftController:
                 diagnostics.append(
                     WireDraftDiagnostic(
                         "member.endpoint.unknown",
-                        f"Member {member.name!r} references an unknown point",
+                        f"杆件 {member.name!r} 引用了不存在的点",
                     )
                 )
                 continue
@@ -478,7 +481,7 @@ class WireDraftController:
                 diagnostics.append(
                     WireDraftDiagnostic(
                         "member.endpoint.same",
-                        f"Member {member.name!r} must use two distinct points",
+                        f"杆件 {member.name!r} 的起点和终点必须不同",
                     )
                 )
                 continue
@@ -488,7 +491,7 @@ class WireDraftController:
                 diagnostics.append(
                     WireDraftDiagnostic(
                         "member.length.zero",
-                        f"Member {member.name!r} has zero length",
+                        f"杆件 {member.name!r} 的长度为零",
                     )
                 )
             pair = frozenset((member.start, member.end))
@@ -496,7 +499,7 @@ class WireDraftController:
                 diagnostics.append(
                     WireDraftDiagnostic(
                         "member.endpoint.duplicate",
-                        f"Member {member.name!r} duplicates an undirected endpoint pair",
+                        f"杆件 {member.name!r} 与已有杆件连接了同一对端点",
                     )
                 )
             endpoint_pairs.add(pair)
@@ -505,7 +508,7 @@ class WireDraftController:
             diagnostics.append(
                 WireDraftDiagnostic(
                     "point.unused",
-                    "Every point must be used by at least one member: "
+                    "以下点尚未连接到任何杆件："
                     + ", ".join(unused),
                 )
             )

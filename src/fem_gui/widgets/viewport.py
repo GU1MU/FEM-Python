@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import math
 import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
@@ -216,6 +217,140 @@ class WireDraftRenderData:
         object.__setattr__(self, "member_names", member_names)
 
 
+@dataclass(frozen=True, slots=True)
+class _ViewportCameraState:
+    """Camera values that control framing and on-screen magnification."""
+
+    position: tuple[float, float, float]
+    focal_point: tuple[float, float, float]
+    view_up: tuple[float, float, float]
+    parallel_scale: float
+    view_angle: float
+    parallel_projection: int
+
+
+@dataclass(frozen=True, slots=True)
+class _WireGridLayout:
+    """A work-plane grid whose visible lines stay on snap coordinates."""
+
+    axes: tuple[int, int, int]
+    center: tuple[float, float, float]
+    plane_size: float
+    resolution: int
+    visible_spacing: float
+
+
+def _wire_grid_layout(
+    points: np.ndarray,
+    plane: str,
+    offset: float,
+    snap_spacing: float,
+) -> _WireGridLayout:
+    """Size and align a bounded work-plane grid without losing snap alignment."""
+
+    axes = {"XY": (0, 1, 2), "XZ": (0, 2, 1), "YZ": (1, 2, 0)}[plane]
+    spacing = float(snap_spacing)
+    spans = (
+        tuple(float(np.ptp(points[:, axis])) for axis in axes[:2])
+        if len(points)
+        else (0.0, 0.0)
+    )
+    target_size = max(10.0, max(spans, default=0.0) + 2.0 * spacing)
+    requested_intervals = max(1, int(math.ceil(target_size / spacing)))
+    major_factor = max(1, int(math.ceil(requested_intervals / 2000)))
+    visible_spacing = spacing * major_factor
+    resolution = max(2, int(math.ceil(target_size / visible_spacing)))
+    if resolution % 2:
+        resolution += 1
+    plane_size = resolution * visible_spacing
+    center = np.mean(points, axis=0) if len(points) else np.zeros(3, dtype=float)
+    center = np.asarray(center, dtype=float)
+    for axis in axes[:2]:
+        center[axis] = (
+            math.floor(center[axis] / visible_spacing + 0.5) * visible_spacing
+        )
+    center[axes[2]] = float(offset)
+    return _WireGridLayout(
+        axes,
+        tuple(float(value) for value in center),
+        float(plane_size),
+        resolution,
+        float(visible_spacing),
+    )
+
+
+def _wire_grid_polydata(pyvista, layout: _WireGridLayout):
+    """Build exact-spacing grid lines without creating a dense surface mesh."""
+
+    center = np.asarray(layout.center, dtype=float)
+    half_size = 0.5 * layout.plane_size
+    first_axis, second_axis, _normal_axis = layout.axes
+    points: list[np.ndarray] = []
+    lines: list[tuple[int, int, int]] = []
+    offsets = np.linspace(
+        -half_size,
+        half_size,
+        layout.resolution + 1,
+    )
+    for offset in offsets:
+        first_start = center.copy()
+        first_end = center.copy()
+        first_start[first_axis] -= half_size
+        first_end[first_axis] += half_size
+        first_start[second_axis] += offset
+        first_end[second_axis] += offset
+        first_index = len(points)
+        points.extend((first_start, first_end))
+        lines.append((2, first_index, first_index + 1))
+
+        second_start = center.copy()
+        second_end = center.copy()
+        second_start[second_axis] -= half_size
+        second_end[second_axis] += half_size
+        second_start[first_axis] += offset
+        second_end[first_axis] += offset
+        second_index = len(points)
+        points.extend((second_start, second_end))
+        lines.append((2, second_index, second_index + 1))
+    grid = pyvista.PolyData()
+    grid.points = np.asarray(points, dtype=float)
+    grid.lines = np.asarray(lines, dtype=np.int64)
+    return grid
+
+
+def _capture_camera_state(plotter: object) -> _ViewportCameraState | None:
+    """Capture framing before transient actors are rebuilt."""
+
+    try:
+        camera = plotter.camera
+        return _ViewportCameraState(
+            tuple(float(value) for value in camera.GetPosition()),
+            tuple(float(value) for value in camera.GetFocalPoint()),
+            tuple(float(value) for value in camera.GetViewUp()),
+            float(camera.GetParallelScale()),
+            float(camera.GetViewAngle()),
+            int(camera.GetParallelProjection()),
+        )
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _restore_camera_state(plotter: object, state: _ViewportCameraState) -> None:
+    """Restore framing while allowing the clipping range to follow new actors."""
+
+    camera = plotter.camera
+    camera.SetPosition(*state.position)
+    camera.SetFocalPoint(*state.focal_point)
+    camera.SetViewUp(*state.view_up)
+    camera.SetParallelScale(state.parallel_scale)
+    camera.SetViewAngle(state.view_angle)
+    camera.SetParallelProjection(state.parallel_projection)
+    camera.OrthogonalizeViewUp()
+    reset_clipping = getattr(plotter, "reset_camera_clipping_range", None)
+    if reset_clipping is not None:
+        reset_clipping()
+
+
 def _require_result_render_payload(
     payload: object,
 ) -> ResultRenderPayload:
@@ -333,6 +468,7 @@ class FEMViewport(QWidget):
         self._wire_draft_render_data: WireDraftRenderData | None = None
         self._wire_pending_member_start: str | None = None
         self._wire_authoring_selection: tuple[str, str] | None = None
+        self._wire_authoring_hover: tuple[str, str] | None = None
         self._hover_timer = QTimer(self)
         self._hover_timer.setSingleShot(True)
         self._hover_timer.setInterval(40)
@@ -456,6 +592,14 @@ class FEMViewport(QWidget):
             if self._abaqus_view_button is not None:
                 return False
             if self._wire_authoring_active:
+                position = self._plotter_event_position(watched, event)
+                vtk_x, vtk_y = self._qt_to_vtk_position(
+                    position.x(),
+                    position.y(),
+                )
+                self._set_wire_authoring_hover(
+                    self._wire_hover_at(vtk_x, vtk_y)
+                )
                 return True
             if self._selection_press_position is not None:
                 position = self._plotter_event_position(watched, event)
@@ -512,6 +656,8 @@ class FEMViewport(QWidget):
         if event_type == QEvent.Type.Leave:
             self._pending_hover_position = None
             self._hover_timer.stop()
+            if self._wire_authoring_active:
+                self._set_wire_authoring_hover(None)
             self._clear_preselection(render=True)
 
         return super().eventFilter(watched, event)
@@ -759,10 +905,11 @@ class FEMViewport(QWidget):
         self._wire_grid_spacing = float(spacing)
         self._wire_pending_member_start = render_data.pending_member_start
         self._wire_authoring_selection = None
+        self._wire_authoring_hover = None
         self._wire_draft_render_data = render_data
         self._clear_preselection(render=False)
         self._remove_all_layers(render=False)
-        self._show_wire_draft(render=False)
+        self._show_wire_draft(render=False, reset_camera=True)
 
     def update_wire_draft(self, render_data: WireDraftRenderData) -> None:
         if type(render_data) is not WireDraftRenderData:
@@ -771,7 +918,27 @@ class FEMViewport(QWidget):
             return
         self._wire_draft_render_data = render_data
         self._wire_pending_member_start = render_data.pending_member_start
-        self._show_wire_draft(render=True)
+        selected = self._wire_authoring_selection
+        if selected is not None:
+            kind, name = selected
+            names = (
+                render_data.point_names
+                if kind == "point"
+                else render_data.member_names
+            )
+            if name not in names:
+                self._wire_authoring_selection = None
+        hovered = self._wire_authoring_hover
+        if hovered is not None:
+            kind, name = hovered
+            names = (
+                render_data.point_names
+                if kind == "point"
+                else render_data.member_names
+            )
+            if name not in names:
+                self._wire_authoring_hover = None
+        self._show_wire_draft(render=True, reset_camera=False)
 
     def set_wire_authoring_mode(self, mode: str) -> None:
         normalized = str(mode).strip().casefold()
@@ -781,6 +948,7 @@ class FEMViewport(QWidget):
         self._wire_authoring_mode = aliases[normalized]
         self._wire_pending_member_start = None
         self._wire_authoring_selection = None
+        self._wire_authoring_hover = None
         if self._wire_draft_render_data is not None:
             self._wire_draft_render_data = replace(
                 self._wire_draft_render_data,
@@ -834,16 +1002,24 @@ class FEMViewport(QWidget):
 
         for name in (
             "wire_work_plane_grid",
+            "wire_work_plane_axis_0",
+            "wire_work_plane_axis_1",
+            "wire_work_plane_origin",
+            "wire_work_plane_axis_labels",
             "wire_draft_members",
             "wire_draft_points",
             "wire_pending_member_start",
             "wire_authoring_selection",
+            "wire_authoring_selection_label",
+            "wire_authoring_hover",
+            "wire_authoring_hover_label",
         ):
             self._remove_actor(name)
         self._wire_authoring_active = False
         self._wire_draft_render_data = None
         self._wire_pending_member_start = None
         self._wire_authoring_selection = None
+        self._wire_authoring_hover = None
         self._clear_preselection(render=False)
         self._render()
 
@@ -866,20 +1042,37 @@ class FEMViewport(QWidget):
         self._wire_authoring_selection = (kind, name)
         self._show_wire_draft(render=True)
 
-    def _show_wire_draft(self, *, render: bool) -> None:
+    def _show_wire_draft(
+        self,
+        *,
+        render: bool,
+        reset_camera: bool = False,
+    ) -> None:
         data = self._wire_draft_render_data
         if data is None:
             return
+        camera_state = (
+            None
+            if reset_camera or self._plotter is None
+            else _capture_camera_state(self._plotter)
+        )
         for name in (
             "wire_work_plane_grid",
+            "wire_work_plane_axis_0",
+            "wire_work_plane_axis_1",
+            "wire_work_plane_origin",
+            "wire_work_plane_axis_labels",
             "wire_draft_members",
             "wire_draft_points",
             "wire_pending_member_start",
             "wire_authoring_selection",
+            "wire_authoring_selection_label",
+            "wire_authoring_hover",
+            "wire_authoring_hover_label",
         ):
             self._remove_actor(name)
         if is_offscreen_environment():
-            self._message.setText("Wire 编辑中（当前环境未启用三维渲染）")
+            self._message.setText("线体编辑中（当前环境未启用三维渲染）")
             self._stack.setCurrentWidget(self._message)
             return
         if not self._ensure_plotter():
@@ -887,43 +1080,70 @@ class FEMViewport(QWidget):
         if _pyvista is None:
             return
         points = np.asarray(data.points, dtype=float).reshape((-1, 3))
-        if len(points):
-            axes = {"XY": (0, 1, 2), "XZ": (0, 2, 1), "YZ": (1, 2, 0)}[
-                self._wire_work_plane
-            ]
-            spans = [
-                float(np.ptp(points[:, axis])) if len(points) else 0.0
-                for axis in axes[:2]
-            ]
-            plane_size = max(10.0, *(span for span in spans if span > 0.0))
-            center = np.mean(points, axis=0)
-        else:
-            axes = {"XY": (0, 1, 2), "XZ": (0, 2, 1), "YZ": (1, 2, 0)}[
-                self._wire_work_plane
-            ]
-            plane_size = 10.0
-            center = np.zeros(3, dtype=float)
-        center[axes[2]] = self._wire_plane_offset
-        normal = np.zeros(3, dtype=float)
-        normal[axes[2]] = 1.0
+        grid_layout = _wire_grid_layout(
+            points,
+            self._wire_work_plane,
+            self._wire_plane_offset,
+            self._wire_grid_spacing,
+        )
+        axes = grid_layout.axes
         try:
-            grid = _pyvista.Plane(
-                center=tuple(center),
-                direction=tuple(normal),
-                i_size=plane_size,
-                j_size=plane_size,
-                i_resolution=max(1, min(40, int(round(plane_size / self._wire_grid_spacing)))),
-                j_resolution=max(1, min(40, int(round(plane_size / self._wire_grid_spacing)))),
-            )
+            grid = _wire_grid_polydata(_pyvista, grid_layout)
             self._actors["wire_work_plane_grid"] = self._plotter.add_mesh(
                 grid,
-                color="#9aa8b5",
-                style="wireframe",
-                opacity=0.25,
-                line_width=1,
+                color="#7f8f9f",
+                opacity=0.45,
+                line_width=2,
                 name="wire_work_plane_grid",
                 reset_camera=False,
                 pickable=False,
+            )
+            center = np.asarray(grid_layout.center, dtype=float)
+            origin = np.zeros(3, dtype=float)
+            origin[axes[2]] = self._wire_plane_offset
+            half_size = 0.5 * grid_layout.plane_size
+            axis_colors = ("#d9534f", "#45a049", "#3b82c4")
+            label_points = [origin]
+            axis_labels = ["O"]
+            for index, axis in enumerate(axes[:2]):
+                start = origin.copy()
+                end = origin.copy()
+                start[axis] = center[axis] - half_size
+                end[axis] = center[axis] + half_size
+                axis_line = _pyvista.PolyData()
+                axis_line.points = np.asarray((start, end), dtype=float)
+                axis_line.lines = np.asarray((2, 0, 1), dtype=np.int64)
+                actor_name = f"wire_work_plane_axis_{index}"
+                self._actors[actor_name] = self._plotter.add_mesh(
+                    axis_line,
+                    color=axis_colors[axis],
+                    line_width=4,
+                    name=actor_name,
+                    reset_camera=False,
+                    pickable=False,
+                )
+                label_points.append(end)
+                axis_labels.append("XYZ"[axis])
+            self._actors["wire_work_plane_origin"] = self._plotter.add_mesh(
+                _pyvista.PolyData(np.asarray((origin,), dtype=float)),
+                color="#ff8c00",
+                point_size=13,
+                render_points_as_spheres=True,
+                name="wire_work_plane_origin",
+                reset_camera=False,
+                pickable=False,
+            )
+            self._actors["wire_work_plane_axis_labels"] = (
+                self._plotter.add_point_labels(
+                    np.asarray(label_points, dtype=float),
+                    axis_labels,
+                    point_size=0,
+                    font_size=11,
+                    shape=None,
+                    text_color="#ff8c00",
+                    name="wire_work_plane_axis_labels",
+                    reset_camera=False,
+                )
             )
         except Exception:
             logging.exception("failed to render wire work plane")
@@ -931,7 +1151,8 @@ class FEMViewport(QWidget):
             line_cells = np.hstack(
                 [np.asarray((2, *member), dtype=np.int64) for member in data.members]
             )
-            members = _pyvista.PolyData(points)
+            members = _pyvista.PolyData()
+            members.points = points
             members.lines = line_cells
             members.cell_data["draft_member_index"] = np.arange(
                 len(data.members), dtype=np.int64
@@ -973,39 +1194,62 @@ class FEMViewport(QWidget):
                     pickable=False,
                 )
         selected = self._wire_authoring_selection
+        selection_label_point = None
         if selected is not None:
             kind, name = selected
             if kind == "point" and name in data.point_names:
-                selected_point = _pyvista.PolyData(
-                    points[[data.point_names.index(name)]]
-                )
+                selected_points = points[[data.point_names.index(name)]]
+                selected_point = _pyvista.PolyData(selected_points)
                 self._actors["wire_authoring_selection"] = self._plotter.add_mesh(
                     selected_point,
-                    color="#f5a623",
-                    point_size=15,
+                    color="#ff8c00",
+                    point_size=20,
                     render_points_as_spheres=True,
                     name="wire_authoring_selection",
                     reset_camera=False,
                     pickable=False,
                 )
+                selection_label_point = selected_points
             elif kind == "member" and name in data.member_names:
                 member_index = data.member_names.index(name)
                 start, end = data.members[member_index]
-                selected_member = _pyvista.PolyData(points)
+                selected_member = _pyvista.PolyData()
+                selected_member.points = points
                 selected_member.lines = np.asarray(
                     (2, start, end),
                     dtype=np.int64,
                 )
                 self._actors["wire_authoring_selection"] = self._plotter.add_mesh(
                     selected_member,
-                    color="#f5a623",
-                    line_width=6,
+                    color="#ff8c00",
+                    line_width=8,
                     name="wire_authoring_selection",
                     reset_camera=False,
                     pickable=False,
                 )
-        if not render:
+                selection_label_point = np.mean(
+                    points[[start, end]],
+                    axis=0,
+                    keepdims=True,
+                )
+            if selection_label_point is not None:
+                self._actors["wire_authoring_selection_label"] = (
+                    self._plotter.add_point_labels(
+                        selection_label_point,
+                        [name],
+                        point_size=0,
+                        font_size=11,
+                        shape=None,
+                        text_color="#ff8c00",
+                        name="wire_authoring_selection_label",
+                        reset_camera=False,
+                    )
+                )
+        self._show_wire_authoring_hover(render=False)
+        if reset_camera:
             self._plotter.reset_camera()
+        elif camera_state is not None:
+            _restore_camera_state(self._plotter, camera_state)
         if render:
             self._render()
 
@@ -1050,7 +1294,93 @@ class FEMViewport(QWidget):
             return None
         return data.member_names[min(candidates)[1]]
 
+    def _wire_hover_at(self, x: int, y: int) -> tuple[str, str] | None:
+        point = self._wire_point_at(x, y)
+        if point is not None:
+            return ("point", point)
+        if self._wire_authoring_mode == "select":
+            member = self._wire_member_at(x, y)
+            if member is not None:
+                return ("member", member)
+        return None
+
+    def _set_wire_authoring_hover(
+        self,
+        hovered: tuple[str, str] | None,
+    ) -> None:
+        if hovered == self._wire_authoring_hover:
+            return
+        self._wire_authoring_hover = hovered
+        self._show_wire_authoring_hover(render=True)
+
+    def _show_wire_authoring_hover(self, *, render: bool) -> None:
+        for actor_name in (
+            "wire_authoring_hover",
+            "wire_authoring_hover_label",
+        ):
+            self._remove_actor(actor_name)
+        data = self._wire_draft_render_data
+        hovered = self._wire_authoring_hover
+        if (
+            hovered is None
+            or data is None
+            or self._plotter is None
+            or _pyvista is None
+        ):
+            if render and self._plotter is not None:
+                self._render()
+            return
+        points = np.asarray(data.points, dtype=float).reshape((-1, 3))
+        kind, name = hovered
+        label_point = None
+        if kind == "point" and name in data.point_names:
+            label_point = points[[data.point_names.index(name)]]
+            self._actors["wire_authoring_hover"] = self._plotter.add_mesh(
+                _pyvista.PolyData(label_point),
+                color="#00bcd4",
+                point_size=17,
+                render_points_as_spheres=True,
+                name="wire_authoring_hover",
+                reset_camera=False,
+                pickable=False,
+            )
+        elif kind == "member" and name in data.member_names:
+            member_index = data.member_names.index(name)
+            start, end = data.members[member_index]
+            hovered_member = _pyvista.PolyData()
+            hovered_member.points = points
+            hovered_member.lines = np.asarray((2, start, end), dtype=np.int64)
+            self._actors["wire_authoring_hover"] = self._plotter.add_mesh(
+                hovered_member,
+                color="#00bcd4",
+                line_width=6,
+                name="wire_authoring_hover",
+                reset_camera=False,
+                pickable=False,
+            )
+            label_point = np.mean(
+                points[[start, end]],
+                axis=0,
+                keepdims=True,
+            )
+        if label_point is not None:
+            self._actors["wire_authoring_hover_label"] = (
+                self._plotter.add_point_labels(
+                    label_point,
+                    [name],
+                    point_size=0,
+                    font_size=11,
+                    shape=None,
+                    text_color="#00bcd4",
+                    name="wire_authoring_hover_label",
+                    reset_camera=False,
+                )
+            )
+        if render:
+            self._render()
+
     def _wire_authoring_click(self, x: int, y: int) -> None:
+        self._set_wire_authoring_hover(None)
         if self._wire_authoring_mode == "select":
             point = self._wire_point_at(x, y)
             if point is not None:
@@ -1105,6 +1435,7 @@ class FEMViewport(QWidget):
         if existing is not None:
             self._wire_authoring_selection = ("point", existing)
             self.wireDraftPointSelected.emit(existing)
+            self._show_wire_draft(render=True)
             return
         if self._wire_grid_snap:
             point = snap_work_plane_point(

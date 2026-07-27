@@ -15,6 +15,7 @@ from fem_gui.widgets import viewport as viewport_module
 from fem_gui.widgets.viewport import (
     FEMViewport,
     PickHit,
+    WireDraftRenderData,
     _geometry_edge_polydata,
     _geometry_point_polydata,
     _geometry_surface_polydata,
@@ -46,6 +47,41 @@ def _rendered_viewport() -> tuple[FEMViewport, object]:
         devicePixelRatioF=lambda: 1.0,
     )
     return viewport, plotter
+
+
+def test_single_wire_point_and_selection_render_as_a_highlight(monkeypatch) -> None:
+    _application()
+    plotter = pv.Plotter(off_screen=True, window_size=(400, 400))
+    viewport = FEMViewport()
+    viewport._plotter = plotter
+    viewport._ensure_plotter = lambda: True
+    viewport._wire_work_plane = "XY"
+    viewport._wire_plane_offset = 0.0
+    viewport._wire_grid_spacing = 0.1
+    viewport._wire_draft_render_data = WireDraftRenderData(
+        ((0.2, 0.7, 0.0), (1.2, 0.7, 0.0)),
+        ("P1", "P2"),
+        ((0, 1),),
+        ("M1",),
+    )
+    viewport._wire_authoring_selection = ("point", "P1")
+    monkeypatch.setattr(viewport_module, "_pyvista", pv)
+    monkeypatch.setattr(viewport_module, "is_offscreen_environment", lambda: False)
+
+    viewport._show_wire_draft(render=True, reset_camera=False)
+
+    assert "wire_work_plane_grid" in viewport._actors
+    assert "wire_work_plane_axis_0" in viewport._actors
+    assert "wire_work_plane_axis_1" in viewport._actors
+    assert "wire_work_plane_origin" in viewport._actors
+    assert "wire_draft_members" in viewport._actors
+    assert "wire_draft_points" in viewport._actors
+    assert "wire_authoring_selection" in viewport._actors
+    assert "wire_authoring_selection_label" in viewport._actors
+    viewport._set_wire_authoring_hover(("point", "P2"))
+    assert "wire_authoring_hover" in viewport._actors
+    assert "wire_authoring_hover_label" in viewport._actors
+    plotter.close()
 
 
 def test_triangulated_geometry_faces_preserve_logical_ids() -> None:

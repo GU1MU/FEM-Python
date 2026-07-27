@@ -501,7 +501,7 @@ class FEMMainWindow(QMainWindow):
             return self._rejected_command(
                 command_id,
                 "wire_editor.active",
-                "Finish or cancel the active Wire editor before opening a project",
+                "请先完成或取消当前线体编辑，再打开项目",
             )
         target = Path(path)
         try:
@@ -2282,6 +2282,9 @@ class FEMMainWindow(QMainWindow):
     def _build_status_bar(self) -> None:
         self.status_panel = CAEStatusBar(self)
         self.status_panel.cancelRequested.connect(self.cancel_current_task)
+        self.wire_editor_panel.statusChanged.connect(
+            lambda message: self.status_panel.set_state(message, 5000)
+        )
         self.setStatusBar(self.status_panel)
 
     def _on_module_changed(self, module_name: str) -> None:
@@ -2705,8 +2708,8 @@ class FEMMainWindow(QMainWindow):
             return
         if self.document.source_kind != "native":
             self._show_error(
-                "New Wire",
-                "Create a native model before authoring a Wire.",
+                "新建线体",
+                "请先新建自主模型，再创建线体。",
             )
             return
         current = self.document.geometry_recipe
@@ -2728,7 +2731,7 @@ class FEMMainWindow(QMainWindow):
         controller = (
             WireDraftController(root=root)
             if root is not None
-            else WireDraftController(name="Wire-1")
+            else WireDraftController(name="线体-1")
         )
         self._wire_editor_controller = controller
         self._wire_editor_original_recipe = original_recipe
@@ -2744,7 +2747,7 @@ class FEMMainWindow(QMainWindow):
         self.main_splitter.setSizes([260, 760, 360])
         self.ribbon.set_current("几何")
         self.status_panel.set_state(
-            "Wire editor active. Finish a valid graph to commit it to Session.",
+            "线体编辑已启动，请在视图区添加点并连接杆件",
             0,
         )
         self._update_action_states()
@@ -2754,8 +2757,8 @@ class FEMMainWindow(QMainWindow):
             return True
         answer = QMessageBox.question(
             self,
-            "Replace geometry",
-            "Creating a Wire replaces the current native geometry. Continue?",
+            "替换几何",
+            "创建线体会替换当前自主几何，是否继续？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -2792,7 +2795,7 @@ class FEMMainWindow(QMainWindow):
             return
         self._exit_wire_editor()
         self.status_panel.set_state(
-            "Wire geometry committed. Choose Truss2 or Beam2 in Mesh Settings.",
+            "线体几何已创建，请在网格设置中选择桁架或梁单元",
             6000,
         )
         self.ribbon.set_current("几何")
@@ -2805,7 +2808,7 @@ class FEMMainWindow(QMainWindow):
             return
         self._exit_wire_editor()
         self._rebuild_full_projection()
-        self.status_panel.set_state("Wire editor cancelled.", 4000)
+        self.status_panel.set_state("已取消线体编辑", 4000)
 
     def _exit_wire_editor(self) -> None:
         self.wire_editor_panel.end()
@@ -2818,8 +2821,8 @@ class FEMMainWindow(QMainWindow):
     def _confirm_wire_editor_discard(self) -> bool:
         answer = QMessageBox.question(
             self,
-            "Discard Wire draft",
-            "The Wire draft has unsaved changes. Discard them?",
+            "放弃线体草图",
+            "线体草图包含未保存的修改，是否放弃这些修改？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -4499,7 +4502,7 @@ class FEMMainWindow(QMainWindow):
         elif is_wire and selected_geometry_kind in {"edge", "body"}:
             self._show_error(
                 "位移边界条件",
-                "Wire displacement boundaries require a selected joint (point).",
+                "线体的位移边界条件需要选择一个连接点。",
             )
             return
         node_regions, _edge_regions, _face_regions = self._analysis_region_names()
@@ -5759,9 +5762,9 @@ class FEMMainWindow(QMainWindow):
         ):
             semantic_name = reference.logical_id.partition(":")[2]
             wire_single_label = {
-                "point": f"Joint {semantic_name}",
-                "edge": f"Member {semantic_name}",
-                "body": "Wire domain",
+                "point": f"连接点 {semantic_name}",
+                "edge": f"杆件 {semantic_name}",
+                "body": "线体区域",
             }.get(reference.kind)
         self.status_panel.set_object(
             wire_single_label
