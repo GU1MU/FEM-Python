@@ -228,12 +228,17 @@ _RESULT_FIELD_STATE_LABELS = {
 }
 
 
-def initial_display_policy(element_count: int, node_count: int) -> dict[str, bool]:
+def initial_display_policy(
+    element_count: int,
+    node_count: int,
+    *,
+    line_mesh: bool = False,
+) -> dict[str, bool]:
     """Return the explicit first-display degradation policy for large models."""
     return {
         "show_edges": int(element_count) <= 100_000,
         "show_symbols": int(element_count) <= 200_000,
-        "show_nodes": False,
+        "show_nodes": bool(line_mesh) and int(node_count) <= 20_000,
         "show_labels": False,
         "simplified": int(element_count) > 100_000 or int(node_count) > 200_000,
     }
@@ -3958,7 +3963,11 @@ class FEMMainWindow(QMainWindow):
         self.navigation.show_model()
         element_count = len(model.mesh.elements)
         node_count = len(model.mesh.nodes)
-        policy = initial_display_policy(element_count, node_count)
+        policy = initial_display_policy(
+            element_count,
+            node_count,
+            line_mesh=geometry.is_line_mesh,
+        )
         simplified = policy["simplified"]
         self._model_edges_visible = policy["show_edges"]
         self.actions["edges"].setChecked(policy["show_edges"])
@@ -3976,6 +3985,7 @@ class FEMMainWindow(QMainWindow):
             effective_frame_query=frame_query,
         )
         self.viewport.set_edges_visible(self.actions["edges"].isChecked(), render=False)
+        self.viewport.set_nodes_visible(self.actions["nodes"].isChecked(), render=False)
         timings["视口网格创建"] = perf_counter() - started
         self.viewport.set_symbol_settings(self._symbol_settings, refresh=False, render=False)
         self.viewport.set_symbols_visible(

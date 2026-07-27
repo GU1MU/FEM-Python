@@ -275,6 +275,8 @@ def test_native_1d_public_gui_workflow_persists_checks_solves_and_displays(
     assert model is not None
     assert {element.type for element in model.mesh.elements} == {formulation}
     assert model.mesh.dofs_per_node == (3 if formulation == "Truss2" else 6)
+    assert window.actions["nodes"].isChecked()
+    assert window.viewport._show_nodes
     if formulation == "Truss2":
         assert len(model.mesh.nodes) == 2
         assert len(model.mesh.elements) == 1

@@ -53,6 +53,8 @@ _backend_attempted = False
 BEAM_FRAME_GLYPH_LIMIT = 64
 BEAM_FRAME_CACHE_LIMIT = 256
 _TYPED_RESULT_GRID_NAME = "typed_result_grid"
+_LINE_ELEMENT_WIDTH = 5
+_LINE_NODE_POINT_SIZE = 11
 
 
 def _effective_line_load_vector(
@@ -2225,9 +2227,9 @@ class FEMViewport(QWidget):
         if render:
             self._render()
 
-    def set_nodes_visible(self, visible: bool) -> None:
+    def set_nodes_visible(self, visible: bool, *, render: bool = True) -> None:
         self._show_nodes = bool(visible)
-        self._refresh_node_layer()
+        self._refresh_node_layer(render=render)
 
     def set_node_labels_visible(self, visible: bool) -> None:
         self._show_node_labels = bool(visible)
@@ -2975,24 +2977,49 @@ class FEMViewport(QWidget):
         self._clear_preselection(render=False)
 
     def _element_line_width(self) -> int:
-        if (
-            self._geometry is not None
-            and len(self._geometry.cell_types) > 0
-            and np.all(np.asarray(self._geometry.cell_types) == 3)
-        ):
-            return 3
+        if self._is_line_mesh():
+            return _LINE_ELEMENT_WIDTH
         return 1
+
+    def _is_line_mesh(self) -> bool:
+        if self._geometry is None:
+            return False
+        declared = getattr(self._geometry, "is_line_mesh", None)
+        if declared is not None:
+            return bool(declared)
+        cell_types = np.asarray(getattr(self._geometry, "cell_types", ()))
+        return bool(len(cell_types)) and bool(np.all(cell_types == 3))
+
+    def _line_render_options(self) -> dict[str, bool]:
+        if self._is_line_mesh():
+            return {"render_lines_as_tubes": True}
+        return {}
+
+    def _node_point_size(self) -> int:
+        return _LINE_NODE_POINT_SIZE if self._is_line_mesh() else 7
+
+    def _mesh_layer_color(self, palette: dict[str, str]) -> str:
+        return palette["line_mesh"] if self._is_line_mesh() else palette["mesh"]
+
+    def _node_layer_color(self, palette: dict[str, str]) -> str:
+        return palette["line_node"] if self._is_line_mesh() else palette["node"]
 
     def _add_base_layers(self, reset_camera: bool, *, render: bool = True) -> None:
         palette = self._visual_palette()
+        line_options = self._line_render_options()
+        mesh_color = self._mesh_layer_color(palette)
         self._actors["mesh_surface"] = self._plotter.add_mesh(
-            self._grid, color=palette["mesh"], show_edges=False, name="mesh_surface",
+            self._grid, color=mesh_color, show_edges=False, name="mesh_surface",
             line_width=self._element_line_width(), reset_camera=False,
+            **line_options,
         )
         self._actors["element_edges"] = self._plotter.add_mesh(
-            self._grid, color=palette["edge"], style="wireframe",
+            self._grid,
+            color=mesh_color if self._is_line_mesh() else palette["edge"],
+            style="wireframe",
             line_width=self._element_line_width(),
             name="element_edges", reset_camera=False,
+            **line_options,
         )
         self._refresh_node_layer(render=False)
         self._refresh_labels(render=False)
@@ -3042,6 +3069,7 @@ class FEMViewport(QWidget):
             "reset_camera": False,
             "line_width": self._element_line_width(),
             "show_edges": False,
+            **self._line_render_options(),
         }
         if self._display.contour_enabled:
             kwargs.update(
@@ -3154,10 +3182,18 @@ class FEMViewport(QWidget):
     def _refresh_geometry_dependent_layers(self, *, render: bool = True) -> None:
         self._remove_actor("element_edges")
         self._remove_actor("set_highlight")
+        palette = self._visual_palette()
         self._actors["element_edges"] = self._plotter.add_mesh(
-            self._grid, color=self._visual_palette()["edge"], style="wireframe",
+            self._grid,
+            color=(
+                self._mesh_layer_color(palette)
+                if self._is_line_mesh()
+                else palette["edge"]
+            ),
+            style="wireframe",
             line_width=self._element_line_width(),
             name="element_edges", reset_camera=False,
+            **self._line_render_options(),
         )
         self._actors["element_edges"].SetVisibility(self._show_edges)
         self._refresh_node_layer(render=False)
@@ -3185,6 +3221,7 @@ class FEMViewport(QWidget):
             opacity=0.65,
             name="undeformed_overlay",
             reset_camera=False,
+            **self._line_render_options(),
         )
 
     def _restore_selection(self) -> None:
@@ -3216,6 +3253,7 @@ class FEMViewport(QWidget):
     def _refresh_node_layer(self, *, render: bool = True) -> None:
         self._remove_actor("nodes")
         if self._show_nodes and self._plotter is not None and _pyvista is not None and self._geometry is not None:
+            palette = self._visual_palette()
             node_data = _pyvista.PolyData(self._model_display_points())
             node_data.point_data["node_id"] = np.asarray(
                 [
@@ -3226,12 +3264,27 @@ class FEMViewport(QWidget):
             )
             self._actors["nodes"] = self._plotter.add_mesh(
                 node_data,
-                color=self._visual_palette()["node"], point_size=7,
+                color=self._node_layer_color(palette),
+                point_size=self._node_point_size(),
                 render_points_as_spheres=True, name="nodes", reset_camera=False,
             )
             self._update_pickable_actors()
         if render:
             self._render()
+
+    def _label_render_options(self, kind: str) -> dict[str, Any]:
+        if kind not in {"node", "element"}:
+            raise ValueError("label kind must be 'node' or 'element'")
+        return {
+            "show_points": False,
+            "font_size": 11 if self._is_line_mesh() else 10,
+            "shape": None,
+            "shadow": True,
+            "always_visible": True,
+            "justification_vertical": "bottom" if kind == "node" else "top",
+            "text_color": self._background_settings.foreground_color,
+            "reset_camera": False,
+        }
 
     def _refresh_labels(self, *, render: bool = True) -> None:
         self._remove_actor("node_labels")
@@ -3241,17 +3294,19 @@ class FEMViewport(QWidget):
         if self._show_node_labels:
             labels = [str(self._geometry.point_index_to_node_id[index]) for index in range(len(self._geometry.points))]
             self._actors["node_labels"] = self._plotter.add_point_labels(
-                self._model_display_points(), labels, point_size=0, font_size=10,
-                shape=None, text_color=self._background_settings.foreground_color,
-                name="node_labels", reset_camera=False,
+                self._model_display_points(),
+                labels,
+                name="node_labels",
+                **self._label_render_options("node"),
             )
         if self._show_element_labels:
             centers = self._pick_grid.cell_centers().points
             labels = [str(self._geometry.cell_index_to_element_id[index]) for index in range(len(self._geometry.cells))]
             self._actors["element_labels"] = self._plotter.add_point_labels(
-                centers, labels, point_size=0, font_size=10, shape=None,
-                text_color=self._background_settings.foreground_color,
-                name="element_labels", reset_camera=False,
+                centers,
+                labels,
+                name="element_labels",
+                **self._label_render_options("element"),
             )
         if render:
             self._render()
@@ -3992,11 +4047,13 @@ class FEMViewport(QWidget):
         if dark:
             return {
                 "mesh": "#718797", "edge": "#d9e2e8", "node": "#f0f3f5",
+                "line_mesh": "#58c7f3", "line_node": "#ffbd59",
                 "result": "#8295a5", "overlay": "#e0e6ea",
                 "label_background": "#263746",
             }
         return {
             "mesh": "#d8dde2", "edge": "#4f5963", "node": "#35495e",
+            "line_mesh": "#1769aa", "line_node": "#b45309",
             "result": "#b9c6d2", "overlay": "#7f8c8d",
             "label_background": "#ffffff",
         }

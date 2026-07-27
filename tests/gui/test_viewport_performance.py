@@ -154,10 +154,22 @@ def test_line_elements_are_drawn_thicker_than_continuum_edges():
     _application()
     viewport = FEMViewport()
     viewport._geometry = build_model_geometry(make_static_pull_truss_model())
-    assert viewport._element_line_width() == 3
+    assert viewport._element_line_width() == 5
+    assert viewport._line_render_options() == {"render_lines_as_tubes": True}
+    assert viewport._node_point_size() == 11
+    assert viewport._mesh_layer_color(viewport._visual_palette()) == "#1769aa"
+    assert viewport._node_layer_color(viewport._visual_palette()) == "#b45309"
+    node_labels = viewport._label_render_options("node")
+    element_labels = viewport._label_render_options("element")
+    assert node_labels["always_visible"]
+    assert node_labels["show_points"] is False
+    assert node_labels["justification_vertical"] == "bottom"
+    assert element_labels["justification_vertical"] == "top"
 
     viewport._geometry = None
     assert viewport._element_line_width() == 1
+    assert viewport._line_render_options() == {}
+    assert viewport._node_point_size() == 7
 
 
 @pytest.mark.parametrize(
@@ -205,6 +217,12 @@ def test_model_load_batches_symbol_rebuild_and_final_render(monkeypatch):
 
     assert len(rebuilds) == 1
     assert len(renders) == 1
+    assert window.actions["nodes"].isChecked()
+    assert window.viewport._show_nodes
+    window.actions["node_labels"].trigger()
+    window.actions["element_labels"].trigger()
+    assert window.viewport._show_node_labels
+    assert window.viewport._show_element_labels
     window.close()
 
 
@@ -216,3 +234,5 @@ def test_large_model_first_display_policy_has_explicit_thresholds():
     assert initial_display_policy(10, 200_001)["simplified"]
     assert not initial_display_policy(10, 200_001)["show_nodes"]
     assert not initial_display_policy(10, 200_001)["show_labels"]
+    assert initial_display_policy(10, 20_000, line_mesh=True)["show_nodes"]
+    assert not initial_display_policy(10, 20_001, line_mesh=True)["show_nodes"]

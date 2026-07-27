@@ -25,6 +25,14 @@ class ModelGeometry:
     cell_index_to_element_id: dict[int, int]
     artifact_id: str | None = None
 
+    @property
+    def is_line_mesh(self) -> bool:
+        """Return whether every converted cell is a first-order VTK line."""
+
+        return bool(len(self.cell_types)) and bool(
+            np.all(np.asarray(self.cell_types) == 3)
+        )
+
 
 def build_model_geometry(model: Any) -> ModelGeometry:
     """使用正式 VTK 单元映射构造 GUI 几何。"""
