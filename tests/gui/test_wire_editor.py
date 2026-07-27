@@ -333,10 +333,11 @@ def test_line_mesh_dialog_requires_explicit_formulation_and_controls_preserve_it
     )
     dialog = MeshControlsDialog(settings)
     assert dialog.settings().line_element_type == "Truss2"
-    assert "Line mesh" in dialog.control_list.item(2).text()
+    assert "线网格" in dialog.control_list.item(2).text()
+    assert "单元形式" in dialog.control_list.item(3).text()
 
 
-def test_truss_mesh_dialog_exposes_fixed_member_policy() -> None:
+def test_line_mesh_dialog_uses_chinese_text_without_policy_description() -> None:
     _application()
     settings = MeshSettings(
         0.25,
@@ -350,9 +351,10 @@ def test_truss_mesh_dialog_exposes_fixed_member_policy() -> None:
     )
 
     assert not dialog.size_spin.isEnabled()
-    assert "one element per declared Wire member" in (
-        dialog.line_policy_label.text()
-    )
+    assert dialog.method_combo.currentText() == "线网格"
+    assert dialog.shape_combo.currentText() == "线网格"
+    assert dialog.formulation_combo.currentText() == "Truss2"
+    assert not hasattr(dialog, "line_policy_label")
     assert dialog._buttons.button(
         QDialogButtonBox.StandardButton.Ok
     ).isEnabled()
@@ -360,7 +362,7 @@ def test_truss_mesh_dialog_exposes_fixed_member_policy() -> None:
     beam_index = dialog.formulation_combo.findData("Beam2")
     dialog.formulation_combo.setCurrentIndex(beam_index)
     assert dialog.size_spin.isEnabled()
-    assert "global and local" in dialog.line_policy_label.text()
+    assert dialog.formulation_combo.currentText() == "Beam2"
 
 
 def test_truss_mesh_dialog_rejects_legacy_local_controls() -> None:
