@@ -95,6 +95,7 @@ from fem.geometry import (
     RectangleGeometry,
     RotatedGeometry,
     SketchGeometry,
+    WireGeometry,
     geometry_dimension,
     logical_ref_sort_key,
     recipe_characteristic_size,
@@ -178,6 +179,7 @@ from .viewport_background import (
     save_background_settings,
 )
 from .viewport_background_dialog import ViewportBackgroundDialog
+from .wire_editor import WireDraftController, WireDraftValidationError
 from .visualization.model_adapter import ModelGeometry, build_model_geometry
 from .visualization.result_renderer import (
     ResultRenderPayload,
@@ -188,6 +190,7 @@ from .visualization.scene import DisplayState
 from .visualization.symbols import SymbolSettings
 from .widgets.navigation_panel import NavigationPanel
 from .widgets.ribbon import RibbonPage, RibbonWidget
+from .widgets.wire_editor_panel import WireEditorPanel
 from .widgets.status_bar import CAEStatusBar
 from .widgets.viewport import FEMViewport
 from .widgets.viewport_toolbar import ViewportPanel
@@ -316,6 +319,9 @@ class FEMMainWindow(QMainWindow):
         self._geometry_selection_mode = "body"
         self._pending_local_mesh_selection = False
         self._pending_analysis_selection: str | None = None
+        self._wire_editor_controller: WireDraftController | None = None
+        self._wire_editor_original_recipe: object | None = None
+        self._wire_editor_base_revision: int | None = None
         self.selection = SelectionState()
         self.actions: dict[str, QAction] = {}
         self.task_controller = BackgroundTaskController(self)
@@ -489,20 +495,15 @@ class FEMMainWindow(QMainWindow):
                 "task.busy",
                 "a background task is already running",
             )
+        if self._wire_editor_controller is not None:
+            return self._rejected_command(
+                command_id,
+                "wire_editor.active",
+                "Finish or cancel the active Wire editor before opening a project",
+            )
         target = Path(path)
         try:
             loaded = load_project(target)
-            if (
-                loaded.snapshot.source_kind == "native"
-                and loaded.snapshot.geometry_recipe is not None
-                and geometry_dimension(loaded.snapshot.geometry_recipe) == 1
-            ):
-                return self._rejected_command(
-                    command_id,
-                    "native_1d.gui_pending",
-                    "原生 1D wire 项目当前只能通过 headless API 使用，GUI 编辑将在 Phase 3 提供。",
-                    "请使用 headless API 生成、求解和导出此项目；当前 Session 与视口保持不变。",
-                )
             delta = self.session.replace_from_snapshot(
                 loaded.snapshot,
                 expected_session_revision=self.document.session_revision,
@@ -1701,6 +1702,15 @@ class FEMMainWindow(QMainWindow):
                         else "Part-1"
                     ),
                 )
+                if (
+                    geometry_dimension(recipe) == 1
+                    and self._geometry_selection_mode == "face"
+                ):
+                    self._selected_geometry_refs.clear()
+                    self._geometry_selection_mode = "body"
+                    self.actions["geometry_select_body"].setChecked(True)
+                    self.actions["geometry_select_face"].setChecked(False)
+                    self.viewport.set_selection_mode("geometry_body")
                 try:
                     self.viewport.show_geometry_preview(
                         build_geometry_preview(recipe)
@@ -2025,7 +2035,7 @@ class FEMMainWindow(QMainWindow):
             ("输出", ("export_csv", "export_vtk"), ()),
         ), step_group="分析")
         self._add_ribbon_page("几何", (
-            ("创建", ("geometry_sketch",), ("geometry_sketch",)),
+            ("创建", ("geometry_sketch", "geometry_wire"), ("geometry_sketch", "geometry_wire")),
             (
                 "特征",
                 ("geometry_extrude", "geometry_move", "geometry_rotate"),
@@ -2223,14 +2233,20 @@ class FEMMainWindow(QMainWindow):
         self.viewport = FEMViewport(self)
         self.viewport.set_background_settings(self._background_settings)
         self.viewport_panel = ViewportPanel(self.viewport, self.actions, self)
+        self.wire_editor_panel = WireEditorPanel(parent=self)
+        self.wire_editor_panel.hide()
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
         splitter.setObjectName("mainSplitter")
         splitter.addWidget(self.navigation)
         splitter.addWidget(self.viewport_panel)
+        splitter.addWidget(self.wire_editor_panel)
         splitter.setSizes([260, 1020])
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
+        splitter.setStretchFactor(2, 0)
         splitter.setCollapsible(0, False)
+        splitter.setCollapsible(2, True)
+        self.main_splitter = splitter
         host = QWidget(self)
         host.setObjectName("centralWorkspace")
         layout = QVBoxLayout(host)
@@ -2252,6 +2268,14 @@ class FEMMainWindow(QMainWindow):
         self.viewport.selectionMissed.connect(self._on_viewport_pick_missed)
         self.viewport.selectionConfirmed.connect(self._confirm_guided_selection)
         self.viewport.selectionCancelled.connect(self._cancel_guided_selection)
+        self.wire_editor_panel.finishRequested.connect(self.finish_wire_geometry)
+        self.wire_editor_panel.cancelRequested.connect(self.cancel_wire_geometry)
+        self.wire_editor_panel.workPlaneChanged.connect(
+            self._wire_editor_work_plane_changed
+        )
+        self.wire_editor_panel.entityFocusRequested.connect(
+            self.viewport.focus_wire_draft_entity
+        )
 
     def _build_status_bar(self) -> None:
         self.status_panel = CAEStatusBar(self)
@@ -2609,6 +2633,7 @@ class FEMMainWindow(QMainWindow):
                 provider is not None
                 and self.viewport.run_id == provider.source.run_id
             ),
+            wire_editor_active=self._wire_editor_controller is not None,
         )
         for availability in derive_action_availability(
             self.document,
@@ -2670,6 +2695,139 @@ class FEMMainWindow(QMainWindow):
         message = str(reason).strip() or "当前状态不可用"
         action.setToolTip(f"{action.text()}（{message}）")
         action.setStatusTip(message)
+
+    def start_wire_geometry(self) -> None:
+        """Start a detached Wire draft from the Geometry ribbon."""
+
+        if self.busy or self._wire_editor_controller is not None:
+            return
+        if self.document.source_kind != "native":
+            self._show_error(
+                "New Wire",
+                "Create a native model before authoring a Wire.",
+            )
+            return
+        current = self.document.geometry_recipe
+        if current is not None and not self._confirm_wire_replacement():
+            return
+        self._begin_wire_editor(
+            None,
+            original_recipe=None,
+        )
+
+    def _begin_wire_editor(
+        self,
+        root: WireGeometry | None,
+        *,
+        original_recipe: object | None,
+    ) -> None:
+        if self._wire_editor_controller is not None:
+            return
+        controller = (
+            WireDraftController(root=root)
+            if root is not None
+            else WireDraftController(name="Wire-1")
+        )
+        self._wire_editor_controller = controller
+        self._wire_editor_original_recipe = original_recipe
+        self._wire_editor_base_revision = self.document.session_revision
+        self.wire_editor_panel.set_controller(
+            controller,
+            base_snapshot=controller.snapshot(),
+        )
+        self.wire_editor_panel.begin(self.viewport)
+        self._wire_editor_work_plane_changed(
+            str(self.wire_editor_panel.work_plane_combo.currentData())
+        )
+        self.main_splitter.setSizes([260, 760, 360])
+        self.ribbon.set_current("几何")
+        self.status_panel.set_state(
+            "Wire editor active. Finish a valid graph to commit it to Session.",
+            0,
+        )
+        self._update_action_states()
+
+    def _confirm_wire_replacement(self) -> bool:
+        if self.document.geometry_recipe is None:
+            return True
+        answer = QMessageBox.question(
+            self,
+            "Replace geometry",
+            "Creating a Wire replaces the current native geometry. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def finish_wire_geometry(self) -> None:
+        controller = self._wire_editor_controller
+        base_revision = self._wire_editor_base_revision
+        if controller is None or base_revision is None:
+            return
+        try:
+            root = controller.to_geometry()
+        except WireDraftValidationError as error:
+            self.wire_editor_panel.show_status(str(error))
+            return
+        original = self._wire_editor_original_recipe
+        recipe = (
+            self._replace_root_geometry(original, root)
+            if original is not None
+            else root
+        )
+        receipt = self.apply_native_geometry_edit(
+            NativeGeometryEdit(
+                base_session_revision=base_revision,
+                parts=tuple(self.document.parts) or (NativePart(),),
+                recipe=recipe,
+                mesh_settings=UNSET,
+            )
+        )
+        if receipt.diagnostic is not None:
+            self.wire_editor_panel.show_status(
+                f"{receipt.diagnostic.code}: {receipt.diagnostic.message}"
+            )
+            return
+        self._exit_wire_editor()
+        self.status_panel.set_state(
+            "Wire geometry committed. Choose Truss2 or Beam2 in Mesh Settings.",
+            6000,
+        )
+        self.ribbon.set_current("几何")
+
+    def cancel_wire_geometry(self) -> None:
+        controller = self._wire_editor_controller
+        if controller is None:
+            return
+        if controller.dirty and not self._confirm_wire_editor_discard():
+            return
+        self._exit_wire_editor()
+        self._rebuild_full_projection()
+        self.status_panel.set_state("Wire editor cancelled.", 4000)
+
+    def _exit_wire_editor(self) -> None:
+        self.wire_editor_panel.end()
+        self._wire_editor_controller = None
+        self._wire_editor_original_recipe = None
+        self._wire_editor_base_revision = None
+        self.main_splitter.setSizes([260, 1020, 0])
+        self._update_action_states()
+
+    def _confirm_wire_editor_discard(self) -> bool:
+        answer = QMessageBox.question(
+            self,
+            "Discard Wire draft",
+            "The Wire draft has unsaved changes. Discard them?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _wire_editor_work_plane_changed(self, plane: str) -> None:
+        views = {"XY": "top", "XZ": "front", "YZ": "left"}
+        view = views.get(str(plane).upper())
+        if view is not None:
+            self.viewport.set_view(view)
 
     def create_sketch_geometry(self) -> None:
         if self.document.source_kind == "imported":
@@ -2740,7 +2898,7 @@ class FEMMainWindow(QMainWindow):
         dialog = MoveGeometryDialog(
             current,
             self,
-            is_3d=geometry_dimension(current) == 3,
+            is_3d=geometry_dimension(current) != 2,
         )
         if dialog.exec():
             self._set_native_geometry(dialog.recipe(), "移动后的")
@@ -2752,7 +2910,7 @@ class FEMMainWindow(QMainWindow):
         dialog = RotateGeometryDialog(
             current,
             self,
-            is_3d=geometry_dimension(current) == 3,
+            is_3d=geometry_dimension(current) != 2,
         )
         if dialog.exec():
             self._set_native_geometry(dialog.recipe(), "旋转后的")
@@ -2849,7 +3007,12 @@ class FEMMainWindow(QMainWindow):
         dialog = GeometryManagerDialog(
             current,
             self,
-            can_edit_base=isinstance(root, SketchGeometry),
+            can_edit_base=isinstance(root, (SketchGeometry, WireGeometry)),
+            base_label=(
+                "Edit base geometry"
+                if isinstance(root, WireGeometry)
+                else "编辑基础草图"
+            ),
         )
         if not dialog.exec():
             return
@@ -2861,6 +3024,8 @@ class FEMMainWindow(QMainWindow):
                     editor.recipe(),
                 )
                 self._set_native_geometry(rebuilt, "重新生成后的")
+        elif dialog.operation == "edit" and isinstance(root, WireGeometry):
+            self._begin_wire_editor(root, original_recipe=current)
         elif dialog.operation == "delete" and isinstance(
             current,
             (MovedGeometry, RotatedGeometry, ExtrudedGeometry),
@@ -2998,6 +3163,21 @@ class FEMMainWindow(QMainWindow):
         return name
 
     def _next_named_region_name(self, kind: str) -> str:
+        if (
+            isinstance(self.document.geometry_recipe, NATIVE_GEOMETRY_TYPES)
+            and geometry_dimension(self.document.geometry_recipe) == 1
+        ):
+            prefixes = {
+                "point": "JointSet",
+                "edge": "MemberSet",
+                "body": "DomainSet",
+            }
+            prefix = prefixes.get(kind, "Region")
+            existing = {name.casefold() for name in self.document.named_regions}
+            index = 1
+            while f"{prefix}-{index}".casefold() in existing:
+                index += 1
+            return f"{prefix}-{index}"
         prefixes = {
             "point": "PointSet",
             "edge": "EdgeSet",
@@ -3128,7 +3308,13 @@ class FEMMainWindow(QMainWindow):
         if not isinstance(recipe, NATIVE_GEOMETRY_TYPES):
             return
         self._pending_analysis_selection = operation
-        default_kind = "face" if geometry_dimension(recipe) == 3 else "edge"
+        default_kind = (
+            "face"
+            if geometry_dimension(recipe) == 3
+            else "point"
+            if geometry_dimension(recipe) == 1
+            else "edge"
+        )
         self.actions[f"geometry_select_{default_kind}"].setChecked(True)
         self._set_geometry_selection_mode(default_kind)
         label = "边界条件" if operation == "boundary" else "载荷"
@@ -3144,7 +3330,7 @@ class FEMMainWindow(QMainWindow):
         if not isinstance(recipe, NATIVE_GEOMETRY_TYPES):
             return
         current = self.document.mesh_settings
-        if not isinstance(current, MeshSettings):
+        if not isinstance(current, MeshSettings) and geometry_dimension(recipe) != 1:
             current = MeshSettings(
                 recipe_characteristic_size(recipe) / 10.0,
                 cell_shape="tetrahedron" if geometry_dimension(recipe) == 3 else "triangle",
@@ -3154,6 +3340,7 @@ class FEMMainWindow(QMainWindow):
             self,
             mesh_dimension=geometry_dimension(recipe),
             allow_hexahedron=supports_structured_hexahedron(recipe),
+            suggested_size=recipe_characteristic_size(recipe) / 10.0,
         )
         if not dialog.exec():
             return
@@ -3197,15 +3384,23 @@ class FEMMainWindow(QMainWindow):
             NATIVE_GEOMETRY_TYPES,
         ):
             return
-        supported_kinds = {"point", "edge", "face"}
+        is_wire = geometry_dimension(recipe) == 1
+        supported_kinds = {"point", "edge"} if is_wire else {"point", "edge", "face"}
         selected_references = self._canonical_geometry_selection()
         if (
             not selected_references
             or selected_references[0].kind not in supported_kinds
+            or (is_wire and len(selected_references) != 1)
         ):
             self._pending_local_mesh_selection = True
             self.viewport_panel.set_geometry_context(True)
-            default_kind = "face" if geometry_dimension(recipe) == 3 else "edge"
+            default_kind = (
+                "face"
+                if geometry_dimension(recipe) == 3
+                else "point"
+                if is_wire
+                else "edge"
+            )
             self.actions[f"geometry_select_{default_kind}"].setChecked(True)
             self._set_geometry_selection_mode(default_kind)
             self.status_panel.set_state(
@@ -3457,7 +3652,10 @@ class FEMMainWindow(QMainWindow):
             return
         self.model_tree.set_geometry_preview("Model-1", (), part_name="Part-1")
         self.viewport_panel.set_geometry_context(True)
-        self.status_panel.set_state("已新建自主模型，请进入几何模块创建草图", 5000)
+        self.status_panel.set_state(
+            "Native model created. Create a sketch, solid, or wire in Geometry.",
+            5000,
+        )
         self.ribbon.set_current("几何")
 
     def open_native_project(self) -> None:
@@ -3799,7 +3997,14 @@ class FEMMainWindow(QMainWindow):
         self._update_action_states()
 
     def _confirm_discard_changes(self) -> bool:
+        editor_active = self._wire_editor_controller is not None
+        if editor_active and self._wire_editor_controller.dirty:
+            if not self._confirm_wire_editor_discard():
+                return False
         if not self.document.dirty:
+            if editor_active:
+                self._exit_wire_editor()
+                self._rebuild_full_projection()
             return True
         box = QMessageBox(self)
         box.setWindowTitle("未保存的修改")
@@ -3823,8 +4028,13 @@ class FEMMainWindow(QMainWindow):
         box.exec()
         clicked = box.clickedButton()
         if clicked is save_button:
-            return self.save_native_project()
-        return clicked is discard_button
+            accepted = self.save_native_project()
+        else:
+            accepted = clicked is discard_button
+        if accepted and editor_active:
+            self._exit_wire_editor()
+            self._rebuild_full_projection()
+        return accepted
 
     def close_model(self, *, confirm: bool = True) -> bool:
         if self.busy:
@@ -4255,14 +4465,28 @@ class FEMMainWindow(QMainWindow):
             return
         selected_region = None
         selected_geometry_kind = self._geometry_selection_kind()
+        is_wire = (
+            isinstance(self.document.geometry_recipe, NATIVE_GEOMETRY_TYPES)
+            and geometry_dimension(self.document.geometry_recipe) == 1
+        )
         if (
             self.document.source_kind == "native"
-            and selected_geometry_kind in {"point", "edge", "face"}
+            and selected_geometry_kind in (
+                {"point"}
+                if is_wire
+                else {"point", "edge", "face"}
+            )
         ):
             selected_name = self._create_region_from_current_geometry_selection()
             if selected_name is None:
                 return
             selected_region = RegionRef("node_set", selected_name)
+        elif is_wire and selected_geometry_kind in {"edge", "body"}:
+            self._show_error(
+                "位移边界条件",
+                "Wire displacement boundaries require a selected joint (point).",
+            )
+            return
         node_regions, _edge_regions, _face_regions = self._analysis_region_names()
         if not node_regions and isinstance(
             self.document.geometry_recipe,
@@ -4316,15 +4540,29 @@ class FEMMainWindow(QMainWindow):
         if capability_report is None:
             return
         selected_geometry_kind = self._geometry_selection_kind()
+        is_wire = (
+            isinstance(self.document.geometry_recipe, NATIVE_GEOMETRY_TYPES)
+            and geometry_dimension(self.document.geometry_recipe) == 1
+        )
         if (
             self.document.source_kind == "native"
-            and selected_geometry_kind in {"point", "edge", "face"}
+            and selected_geometry_kind
+            in (
+                {"point", "edge", "body"}
+                if is_wire
+                else {"point", "edge", "face"}
+            )
         ):
-            preferred_kind = {
-                "point": "node",
-                "edge": "edge",
-                "face": "surface",
-            }[selected_geometry_kind]
+            if is_wire:
+                preferred_kind = (
+                    "node" if selected_geometry_kind == "point" else "line"
+                )
+            else:
+                preferred_kind = {
+                    "point": "node",
+                    "edge": "edge",
+                    "face": "surface",
+                }[selected_geometry_kind]
             if preferred_kind not in capability_report.load_kinds:
                 self._show_error(
                     "创建载荷",
@@ -4339,6 +4577,7 @@ class FEMMainWindow(QMainWindow):
                     "node": "node_set",
                     "edge": "edge",
                     "surface": "surface",
+                    "line": "element_set",
                 }[preferred_kind],
                 selected_name,
             )
@@ -5400,6 +5639,13 @@ class FEMMainWindow(QMainWindow):
 
     def _set_geometry_selection_mode(self, mode: str) -> None:
         normalized = mode if mode in {"point", "edge", "face", "body"} else "body"
+        recipe = self.document.geometry_recipe
+        if (
+            normalized == "face"
+            and isinstance(recipe, NATIVE_GEOMETRY_TYPES)
+            and geometry_dimension(recipe) == 1
+        ):
+            normalized = "body"
         has_fem_selection = (
             self.selection.node_id is not None
             or self.selection.element_id is not None
@@ -5485,8 +5731,22 @@ class FEMMainWindow(QMainWindow):
         }
         self.status_panel.set_selection_mode(mode)
         selected_count = len(references)
+        wire_single_label = None
+        if (
+            selected_count == 1
+            and isinstance(self.document.geometry_recipe, NATIVE_GEOMETRY_TYPES)
+            and geometry_dimension(self.document.geometry_recipe) == 1
+        ):
+            semantic_name = reference.logical_id.partition(":")[2]
+            wire_single_label = {
+                "point": f"Joint {semantic_name}",
+                "edge": f"Member {semantic_name}",
+                "body": "Wire domain",
+            }.get(reference.kind)
         self.status_panel.set_object(
-            (
+            wire_single_label
+            if wire_single_label is not None
+            else (
                 f"已选择 {selected_count} 个"
                 f"{labels.get(reference.kind, '几何实体')}"
             )

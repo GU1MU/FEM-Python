@@ -166,9 +166,10 @@ def test_new_preprocessing_modules_do_not_change_the_existing_model_page():
     }
     assert geometry_actions == {
         window.actions[name]
-        for name in (
-            "geometry_sketch",
-            "geometry_extrude",
+            for name in (
+                "geometry_sketch",
+                "geometry_wire",
+                "geometry_extrude",
             "geometry_move",
             "geometry_rotate",
             "geometry_fuse",

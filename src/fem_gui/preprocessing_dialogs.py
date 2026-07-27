@@ -558,6 +558,7 @@ class GeometryManagerDialog(QDialog):
         parent=None,
         *,
         can_edit_base: bool = False,
+        base_label: str = "编辑基础草图",
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("几何管理")
@@ -568,7 +569,7 @@ class GeometryManagerDialog(QDialog):
         self.feature_list.setCurrentRow(self.feature_list.count() - 1)
         self._can_edit_base = bool(can_edit_base)
         self.selected_row = self.feature_list.currentRow()
-        self.edit_button = QPushButton("编辑基础草图", self)
+        self.edit_button = QPushButton(base_label, self)
         self.delete_button = QPushButton("删除最后特征", self)
         self.clear_button = QPushButton("清空几何", self)
         self.close_button = QPushButton("关闭", self)
@@ -642,6 +643,7 @@ class MeshControlsDialog(QDialog):
     def _refresh(self, selected: int = 0) -> None:
         self.control_list.clear()
         shape_names = {
+            "line": "Line mesh",
             "triangle": "三角形",
             "quadrilateral": "四边形",
             "tetrahedron": "四面体",
@@ -650,9 +652,15 @@ class MeshControlsDialog(QDialog):
         self.control_list.addItem(f"全局尺寸  {self._settings.size:g}")
         self.control_list.addItem(f"单元阶次  {self._settings.order} 阶")
         self.control_list.addItem(
-            f"网格方法  {shape_names[self._settings.cell_shape]}"
+            f"网格方法  {shape_names.get(self._settings.cell_shape, self._settings.cell_shape)}"
         )
+        if self._settings.cell_shape == "line":
+            self.control_list.addItem(
+                "Element formulation  "
+                f"{self._settings.line_element_type}"
+            )
         kind_names = {"point": "点", "edge": "边", "face": "面"}
+        local_offset = 4 if self._settings.cell_shape == "line" else 3
         for index, control in enumerate(self.local_controls, start=1):
             self.control_list.addItem(
                 f"局部控制 {index}  类型={kind_names[control.target.kind]}"
@@ -660,12 +668,13 @@ class MeshControlsDialog(QDialog):
             )
         if self.local_controls:
             self.control_list.setCurrentRow(
-                3 + min(selected, len(self.local_controls) - 1)
+                local_offset + min(selected, len(self.local_controls) - 1)
             )
         self._update_buttons()
 
     def _selected_local_index(self) -> int | None:
-        index = self.control_list.currentRow() - 3
+        offset = 4 if self._settings.cell_shape == "line" else 3
+        index = self.control_list.currentRow() - offset
         return index if 0 <= index < len(self.local_controls) else None
 
     def _edit(self) -> None:
@@ -707,6 +716,7 @@ class MeshControlsDialog(QDialog):
             self._settings.order,
             self._settings.cell_shape,
             local_controls=tuple(self.local_controls),
+            line_element_type=self._settings.line_element_type,
         )
 
 
@@ -1208,14 +1218,17 @@ class MeshSettingsDialog(QDialog):
         *,
         mesh_dimension: int = 2,
         allow_hexahedron: bool = False,
+        suggested_size: float = 5.0,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("网格设置")
-        current = settings or MeshSettings(5.0)
         self._mesh_dimension = int(mesh_dimension)
         self._allow_hexahedron = bool(allow_hexahedron)
-        self.size_spin = _positive_spin_box(self, current.size)
-        self._local_controls = current.local_controls
+        current_size = (
+            settings.size if settings is not None else float(suggested_size)
+        )
+        self.size_spin = _positive_spin_box(self, current_size)
+        self._local_controls = () if settings is None else settings.local_controls
         if self._local_controls:
             self.size_spin.setMinimum(
                 max(control.size for control in self._local_controls) + 1.0e-9
@@ -1223,20 +1236,51 @@ class MeshSettingsDialog(QDialog):
         self.order_combo = QComboBox(self)
         self.order_combo.addItem("一阶", 1)
         self.order_combo.addItem("二阶", 2)
-        self.order_combo.setCurrentIndex(0 if current.order == 1 else 1)
+        self.order_combo.setCurrentIndex(
+            0 if settings is None or settings.order == 1 else 1
+        )
         self.method_combo = QComboBox(self)
-        self.method_combo.addItem("自由网格", "free")
-        if self._mesh_dimension == 2:
-            self.method_combo.addItem("四边形重组", "recombine")
-        elif self._allow_hexahedron:
-            self.method_combo.addItem("结构化网格", "structured")
+        if self._mesh_dimension == 1:
+            self.method_combo.addItem("Line mesh", "line")
+        else:
+            self.method_combo.addItem("自由网格", "free")
+            if self._mesh_dimension == 2:
+                self.method_combo.addItem("四边形重组", "recombine")
+            elif self._allow_hexahedron:
+                self.method_combo.addItem("结构化网格", "structured")
         self.shape_combo = QComboBox(self)
-        current_method = {
-            "quadrilateral": "recombine",
-            "hexahedron": "structured",
-        }.get(current.cell_shape, "free")
+        current_method = (
+            "line"
+            if self._mesh_dimension == 1
+            else {
+                "quadrilateral": "recombine",
+                "hexahedron": "structured",
+            }.get(settings.cell_shape if settings is not None else "", "free")
+        )
         method_index = self.method_combo.findData(current_method)
         self.method_combo.setCurrentIndex(max(0, method_index))
+        self.formulation_combo = None
+        if self._mesh_dimension == 1:
+            self.formulation_combo = QComboBox(self)
+            self.formulation_combo.setObjectName("lineElementFormulationCombo")
+            self.formulation_combo.addItem("Select formulation", None)
+            self.formulation_combo.addItem(
+                "Truss2 — 3 translational DOFs, truss area section",
+                "Truss2",
+            )
+            self.formulation_combo.addItem(
+                "Beam2 — 6 DOFs, beam profile and optional orientation",
+                "Beam2",
+            )
+            if settings is not None:
+                index = self.formulation_combo.findData(
+                    settings.line_element_type
+                )
+                if index >= 0:
+                    self.formulation_combo.setCurrentIndex(index)
+            self.formulation_combo.currentIndexChanged.connect(
+                self._refresh_line_acceptance
+            )
         self.method_combo.currentIndexChanged.connect(self._refresh_shape_options)
         self._refresh_shape_options()
         form = QFormLayout()
@@ -1244,6 +1288,8 @@ class MeshSettingsDialog(QDialog):
         form.addRow("网格方法", self.method_combo)
         form.addRow("单元类型", self.shape_combo)
         form.addRow("单元阶次", self.order_combo)
+        if self.formulation_combo is not None:
+            form.addRow("Element formulation", self.formulation_combo)
         form.addRow("全局尺寸", self.size_spin)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
@@ -1252,17 +1298,25 @@ class MeshSettingsDialog(QDialog):
         )
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
-        buttons.accepted.connect(self.accept)
+        buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
+        self._buttons = buttons
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(buttons)
+        if self._mesh_dimension == 1:
+            self.method_combo.setEnabled(False)
+            self.shape_combo.setEnabled(False)
+            self.order_combo.setEnabled(False)
+            self._refresh_line_acceptance()
 
     def _refresh_shape_options(self) -> None:
         """Expose only element shapes implemented by the selected backend method."""
         method = str(self.method_combo.currentData())
         self.shape_combo.clear()
-        if self._mesh_dimension == 3:
+        if self._mesh_dimension == 1:
+            self.shape_combo.addItem("Line mesh", "line")
+        elif self._mesh_dimension == 3:
             if method == "structured" and self._allow_hexahedron:
                 self.shape_combo.addItem("六面体", "hexahedron")
             else:
@@ -1273,9 +1327,40 @@ class MeshSettingsDialog(QDialog):
             self.shape_combo.addItem("三角形", "triangle")
 
     def settings(self) -> MeshSettings:
+        if self._mesh_dimension == 1:
+            formulation = (
+                None
+                if self.formulation_combo is None
+                else self.formulation_combo.currentData()
+            )
+            if formulation not in {"Truss2", "Beam2"}:
+                raise ValueError("select Truss2 or Beam2 for a line mesh")
+            return MeshSettings(
+                size=self.size_spin.value(),
+                order=1,
+                cell_shape="line",
+                local_controls=self._local_controls,
+                line_element_type=str(formulation),
+            )
         return MeshSettings(
             size=self.size_spin.value(),
             order=int(self.order_combo.currentData()),
             cell_shape=str(self.shape_combo.currentData()),
             local_controls=self._local_controls,
         )
+
+    def _refresh_line_acceptance(self) -> None:
+        if self._mesh_dimension != 1:
+            return
+        formulation = self.formulation_combo.currentData()
+        self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(
+            formulation in {"Truss2", "Beam2"}
+        )
+
+    def _accept(self) -> None:
+        try:
+            self.settings()
+        except (TypeError, ValueError):
+            self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(False)
+            return
+        self.accept()

@@ -36,6 +36,7 @@ class GuiActionKey(str, Enum):
     SECTION_MANAGER = "section_manager"
     SECTION_ASSIGN = "section_assign"
     GEOMETRY_SKETCH = "geometry_sketch"
+    GEOMETRY_WIRE = "geometry_wire"
     GEOMETRY_MOVE = "geometry_move"
     GEOMETRY_ROTATE = "geometry_rotate"
     GEOMETRY_EXTRUDE = "geometry_extrude"
@@ -154,6 +155,7 @@ ACTION_DESCRIPTORS: tuple[GuiActionDescriptor, ...] = (
     _d(GuiActionKey.SECTION_MANAGER, "截面管理", "show_section_manager", "section"),
     _d(GuiActionKey.SECTION_ASSIGN, "截面分配", "assign_section_to_region", "section_assign"),
     _d(GuiActionKey.GEOMETRY_SKETCH, "新建草图", "create_sketch_geometry", "sketch"),
+    _d(GuiActionKey.GEOMETRY_WIRE, "New Wire", "start_wire_geometry", "wire"),
     _d(GuiActionKey.GEOMETRY_MOVE, "移动", "move_geometry", "geometry_move"),
     _d(GuiActionKey.GEOMETRY_ROTATE, "旋转", "rotate_geometry", "geometry_rotate"),
     _d(GuiActionKey.GEOMETRY_EXTRUDE, "拉伸", "extrude_geometry", "extrude"),
@@ -245,6 +247,7 @@ class GuiActionContext:
     materialization_pending: bool = False
     result_task_busy: bool = False
     viewport_scene_available: bool = False
+    wire_editor_active: bool = False
 
     def __post_init__(self) -> None:
         for name in (
@@ -257,6 +260,7 @@ class GuiActionContext:
             "materialization_pending",
             "result_task_busy",
             "viewport_scene_available",
+            "wire_editor_active",
         ):
             if type(getattr(self, name)) is not bool:
                 raise TypeError(f"{name} must be a bool")
@@ -311,6 +315,7 @@ def derive_action_availability(
         and not context.result_task_busy
     )
     recipe = snapshot.geometry_recipe
+    wire_editor_active = context.wire_editor_active
     has_native_geometry = (
         snapshot.source_kind == "native"
         and isinstance(recipe, NATIVE_GEOMETRY_TYPES)
@@ -344,6 +349,11 @@ def derive_action_availability(
         snapshot.source_kind == "native" and not busy,
         geometry_reason,
     )
+    set_state(
+        GuiActionKey.GEOMETRY_WIRE,
+        snapshot.source_kind == "native" and not busy,
+        geometry_reason,
+    )
     for key in (
         GuiActionKey.GEOMETRY_MOVE,
         GuiActionKey.GEOMETRY_ROTATE,
@@ -352,7 +362,17 @@ def derive_action_availability(
         GuiActionKey.GEOMETRY_FUSE,
         GuiActionKey.GEOMETRY_CUT,
     ):
-        set_state(key, has_native_geometry and not busy, "请先创建自主几何")
+        set_state(
+            key,
+            has_native_geometry
+            and (
+                key
+                not in {GuiActionKey.GEOMETRY_FUSE, GuiActionKey.GEOMETRY_CUT}
+                or geometry_dimension(recipe) != 1
+            )
+            and not busy,
+            "One-dimensional wire geometry does not support this feature",
+        )
     set_state(
         GuiActionKey.GEOMETRY_EXTRUDE,
         has_native_geometry and geometry_dimension(recipe) == 2 and not busy,
@@ -373,6 +393,12 @@ def derive_action_availability(
         GuiActionKey.GEOMETRY_SELECT_BODY,
     ):
         set_state(key, has_native_geometry and not busy, "请先创建自主几何")
+    if has_native_geometry and geometry_dimension(recipe) == 1:
+        set_state(
+            GuiActionKey.GEOMETRY_SELECT_FACE,
+            False,
+            "One-dimensional wire geometry has no selectable faces.",
+        )
     set_state(
         GuiActionKey.GEOMETRY_REGION,
         has_native_geometry and bool(context.geometry_selection) and not busy,
@@ -595,6 +621,70 @@ def derive_action_availability(
         and not context.viewport_capture_active,
         "当前视口没有可捕获场景，或截图后端不可用",
     )
+
+    if wire_editor_active:
+        mutation_keys = (
+            GuiActionKey.OPEN,
+            GuiActionKey.NEW_NATIVE,
+            GuiActionKey.OPEN_PROJECT,
+            GuiActionKey.SAVE_PROJECT,
+            GuiActionKey.RELOAD,
+            GuiActionKey.CLOSE,
+            GuiActionKey.MATERIAL_MANAGER,
+            GuiActionKey.SECTION_MANAGER,
+            GuiActionKey.SECTION_ASSIGN,
+            GuiActionKey.GEOMETRY_SKETCH,
+            GuiActionKey.GEOMETRY_WIRE,
+            GuiActionKey.GEOMETRY_MOVE,
+            GuiActionKey.GEOMETRY_ROTATE,
+            GuiActionKey.GEOMETRY_EXTRUDE,
+            GuiActionKey.GEOMETRY_FUSE,
+            GuiActionKey.GEOMETRY_CUT,
+            GuiActionKey.GEOMETRY_MANAGER,
+            GuiActionKey.GEOMETRY_UNDO,
+            GuiActionKey.GEOMETRY_DELETE,
+            GuiActionKey.GEOMETRY_REGION,
+            GuiActionKey.GEOMETRY_REGIONS,
+            GuiActionKey.MESH_SETTINGS,
+            GuiActionKey.MESH_GENERATE,
+            GuiActionKey.MESH_CLEAR,
+            GuiActionKey.MESH_CONTROLS,
+            GuiActionKey.MESH_LOCAL_CONTROL,
+            GuiActionKey.MESH_STATISTICS,
+            GuiActionKey.MESH_QUALITY,
+            GuiActionKey.MESH_VERIFY,
+            GuiActionKey.STEP_CREATE,
+            GuiActionKey.BOUNDARY_CREATE,
+            GuiActionKey.LOAD_CREATE,
+            GuiActionKey.OUTPUT_CREATE,
+            GuiActionKey.ANALYSIS_MANAGER,
+            GuiActionKey.CHECK_MODEL,
+            GuiActionKey.SUBMIT_JOB,
+            GuiActionKey.RESUBMIT_JOB,
+            GuiActionKey.JOB_MANAGER,
+        )
+        for key in mutation_keys:
+            set_state(key, False, "Finish or cancel the active Wire editor first")
+        for key in (
+            GuiActionKey.GEOMETRY_SELECT_POINT,
+            GuiActionKey.GEOMETRY_SELECT_EDGE,
+            GuiActionKey.GEOMETRY_SELECT_FACE,
+            GuiActionKey.GEOMETRY_SELECT_BODY,
+        ):
+            set_state(key, False, "Finish or cancel the active Wire editor first")
+        for key in (
+            GuiActionKey.FIT,
+            GuiActionKey.TOP,
+            GuiActionKey.BOTTOM,
+            GuiActionKey.FRONT,
+            GuiActionKey.BACK,
+            GuiActionKey.LEFT,
+            GuiActionKey.RIGHT,
+            GuiActionKey.ISO,
+            GuiActionKey.ORTHOGRAPHIC,
+            GuiActionKey.PERSPECTIVE,
+        ):
+            set_state(key, not busy, "后台任务运行时不可操作视图")
 
     for raw_key in context.open_dialog_keys:
         try:

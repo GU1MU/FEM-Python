@@ -194,7 +194,7 @@ def test_main_window_opens_current_v3_project(tmp_path, monkeypatch) -> None:
     window.close()
 
 
-def test_main_window_rejects_wire_project_before_session_replacement(tmp_path) -> None:
+def test_main_window_opens_wire_project_and_projects_preview(tmp_path) -> None:
     _application()
     recipe = WireGeometry(
         "Wire",
@@ -216,15 +216,13 @@ def test_main_window_rejects_wire_project_before_session_replacement(tmp_path) -
         ),
     )
     window = FEMMainWindow()
-    before = window.session.snapshot()
-
     receipt = window.open_project_path(source)
 
-    assert receipt.diagnostic is not None
-    assert receipt.diagnostic.code == "native_1d.gui_pending"
-    assert window.session.snapshot() == before
-    assert window.document.source_kind is None
-    assert window.document.project_path is None
+    assert receipt.diagnostic is None
+    assert window.document.source_kind == "native"
+    assert window.document.geometry_recipe == recipe
+    assert window.viewport._geometry_preview is not None
+    assert window.viewport._geometry_preview.dimension == 1
     window.close()
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+from typing import Literal
 
 from fem.geometry import (
     BooleanGeometry,
@@ -18,8 +19,10 @@ from fem.geometry import (
     RectangleGeometry,
     RotatedGeometry,
     SketchGeometry,
+    WireGeometry,
     axis_aligned_rectangle,
     expand_sketch_recipe,
+    geometry_dimension,
     transformed_circle,
 )
 from fem.geometry.recipe_topology import (
@@ -40,8 +43,17 @@ class GeometryPreview:
     edge_logical_ids: tuple[str | None, ...] = ()
     point_logical_ids: tuple[str | None, ...] = ()
     body_logical_id: str | None = None
+    topological_dimension: Literal[1, 2, 3] = 2
 
     def __post_init__(self) -> None:
+        if (
+            isinstance(self.topological_dimension, bool)
+            or not isinstance(self.topological_dimension, int)
+            or self.topological_dimension not in {1, 2, 3}
+        ):
+            raise ValueError(
+                "geometry preview topological_dimension must be 1, 2, or 3"
+            )
         for logical_name, cells in (
             ("face_logical_ids", self.faces),
             ("edge_logical_ids", self.edges),
@@ -60,6 +72,12 @@ class GeometryPreview:
             reference = LogicalEntityRef(self.body_logical_id)
             if reference.kind != "body":
                 raise ValueError("body_logical_id 必须引用 body")
+
+    @property
+    def dimension(self) -> int:
+        """Return the display topology dimension used by legacy callers."""
+
+        return self.topological_dimension
 
 
 def _validate_preview_logical_ids(
@@ -122,6 +140,7 @@ def _make_preview(
         edge_logical_ids=edge_logical_ids,
         point_logical_ids=point_logical_ids,
         body_logical_id=body_logical_id,
+        topological_dimension=geometry_dimension(recipe),
     )
 
 
@@ -191,6 +210,8 @@ def _build_geometry_preview(
         )
     if isinstance(recipe, ExtrudedGeometry):
         return _extruded_preview(recipe, segments)
+    if isinstance(recipe, WireGeometry):
+        return _wire_preview(recipe)
     if isinstance(recipe, RectangleGeometry):
         return _rectangle_preview(recipe)
     if isinstance(recipe, BoxGeometry):
@@ -200,6 +221,28 @@ def _build_geometry_preview(
     if isinstance(recipe, PlateWithHoleGeometry):
         return _plate_with_hole_preview(recipe, segments)
     return _cylinder_preview(recipe, segments)
+
+
+def _wire_preview(recipe: WireGeometry) -> GeometryPreview:
+    """Build an exact, face-free preview for one named spatial wire."""
+
+    point_indices = {
+        point.name: index for index, point in enumerate(recipe.points)
+    }
+    points = tuple((point.x, point.y, point.z) for point in recipe.points)
+    edges = tuple(
+        (point_indices[member.start], point_indices[member.end])
+        for member in recipe.members
+    )
+    return _make_preview(
+        recipe,
+        points,
+        (),
+        edges,
+        (),
+        tuple(f"edge:{member.name}" for member in recipe.members),
+        tuple(f"point:{point.name}" for point in recipe.points),
+    )
 
 
 def _boolean_preview(
@@ -669,6 +712,11 @@ def _validate_preview_topology(
     preview: GeometryPreview,
 ) -> None:
     topology = describe_recipe_topology(recipe)
+    if preview.topological_dimension != topology.dimension:
+        raise RuntimeError(
+            f"{type(recipe).__name__} 预览 dimension 与 recipe topology 不一致: "
+            f"{preview.topological_dimension} != {topology.dimension}"
+        )
     for kind, cells, logical_ids in (
         ("point", preview.points, preview.point_logical_ids),
         ("edge", preview.edges, preview.edge_logical_ids),
