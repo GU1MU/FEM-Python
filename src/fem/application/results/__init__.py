@@ -60,6 +60,7 @@ from .query import (
     ResultQueryResult,
     ResultQueryValidationError,
     evaluate_result_query,
+    validate_result_query_filters,
 )
 from .topology import (
     ResultCellKind,
@@ -155,5 +156,6 @@ __all__ = [
     "project_output_request",
     "registry_entry_for",
     "restore_result_provider",
+    "validate_result_query_filters",
     "validate_solve_result_model_identity",
 ]

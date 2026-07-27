@@ -48,7 +48,9 @@ from .registry import (
 from .query import (
     ResultQuery,
     ResultQueryResult,
+    ResultQueryValidationError,
     evaluate_result_query,
+    validate_result_query_filters,
 )
 from .inspection import (
     ResultInspectionRequest,
@@ -173,6 +175,35 @@ class ResultProvider:
         """Evaluate one exact scalar query over this immutable snapshot."""
 
         return evaluate_result_query(self._snapshot, query)
+
+    def validate_query(self, query: ResultQuery) -> FieldAvailability:
+        """Validate one catalog-bound query without reading or recovering data."""
+
+        if type(query) is not ResultQuery:
+            raise TypeError("query must be ResultQuery")
+        matches = tuple(
+            availability
+            for availability in self._catalog.fields
+            if availability.key == query.field_key
+        )
+        if len(matches) != 1:
+            raise ResultQueryValidationError(
+                "result.query.field_not_available",
+                "query field key is outside the provider catalog",
+            )
+        availability = matches[0]
+        if availability.state is FieldState.UNAVAILABLE:
+            raise ResultQueryValidationError(
+                "result.query.field_unavailable",
+                "query field is unavailable for this result",
+            )
+        if query.component not in availability.descriptor.columns:
+            raise ResultQueryValidationError(
+                "result.query.component_not_available",
+                f"query component {query.component!r} is not available",
+            )
+        validate_result_query_filters(self._snapshot, query)
+        return availability
 
     def inspect_result(
         self,

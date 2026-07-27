@@ -6,6 +6,7 @@ from fem.application.results import (
     FieldMaterializationKey,
     FieldPosition,
     FieldRequest,
+    FieldState,
     ResultFieldId,
     ResultProvider,
     ResultQuery,
@@ -265,3 +266,80 @@ def test_lazy_query_fails_without_materializing_or_falling_back(
 
     assert captured.value.code == "result.query.field_not_materialized"
     assert calls == []
+
+
+def test_provider_validates_ready_and_lazy_queries_without_field_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider()
+    ready_key = _key(provider, ResultVariable.U, FieldPosition.NODE)
+    lazy_key = _key(
+        provider,
+        ResultVariable.S,
+        FieldPosition.CENTROID,
+    )
+
+    def unexpected_field_access(*_args, **_kwargs):
+        raise AssertionError("query validation must not read or recover fields")
+
+    monkeypatch.setattr(ResultProvider, "field", unexpected_field_access)
+    monkeypatch.setattr(
+        ResultProvider,
+        "materialize",
+        unexpected_field_access,
+    )
+
+    ready = provider.validate_query(ResultQuery(ready_key, "U1"))
+    lazy = provider.validate_query(ResultQuery(lazy_key, "S11"))
+
+    assert ready.state is FieldState.READY
+    assert ready.key == ready_key
+    assert lazy.state is FieldState.LAZY
+    assert lazy.key == lazy_key
+
+
+@pytest.mark.parametrize(
+    ("query", "code"),
+    (
+        (
+            ResultQuery(
+                FieldMaterializationKey(
+                    FieldRequest(
+                        ResultFieldId(
+                            ResultVariable.U,
+                            FieldPosition.NODE,
+                        )
+                    ),
+                    999,
+                ),
+                "U1",
+            ),
+            "result.query.field_not_available",
+        ),
+        (
+            ResultQuery(
+                _key(_provider(), ResultVariable.U, FieldPosition.NODE),
+                "u1",
+            ),
+            "result.query.component_not_available",
+        ),
+        (
+            ResultQuery(
+                _key(_provider(), ResultVariable.U, FieldPosition.NODE),
+                "U1",
+                node_ids=(999,),
+            ),
+            "result.query.unknown_node_ids",
+        ),
+    ),
+)
+def test_provider_query_validation_rejects_before_materialization(
+    query: ResultQuery,
+    code: str,
+) -> None:
+    provider = _provider()
+
+    with pytest.raises(ResultQueryValidationError) as captured:
+        provider.validate_query(query)
+
+    assert captured.value.code == code

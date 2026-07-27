@@ -140,7 +140,7 @@ def evaluate_result_query(
             f"query component {query.component!r} is not available",
         ) from error
 
-    _validate_topology_filters(materialization, query)
+    validate_result_query_filters(materialization, query)
     values = field_data.values
     records = tuple(
         ResultQueryRecord(
@@ -159,10 +159,19 @@ def evaluate_result_query(
     )
 
 
-def _validate_topology_filters(
+def validate_result_query_filters(
     materialization: ResultMaterializationSnapshot,
     query: ResultQuery,
 ) -> None:
+    """Validate query topology filters without reading a result field."""
+
+    if type(materialization) is not ResultMaterializationSnapshot:
+        raise TypeError(
+            "materialization must be ResultMaterializationSnapshot"
+        )
+    if type(query) is not ResultQuery:
+        raise TypeError("query must be ResultQuery")
+
     topology = materialization.topology
     topology_node_ids = frozenset(topology.node_ids)
     unknown_node_ids = tuple(
@@ -261,4 +270,5 @@ __all__ = [
     "ResultQueryResult",
     "ResultQueryValidationError",
     "evaluate_result_query",
+    "validate_result_query_filters",
 ]
