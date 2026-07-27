@@ -18,12 +18,9 @@ from fem.application import RegionRef
 from fem.application.results import FieldLocation, ResultCellKind, ResultValueLayout
 from fem.boundary.step import boundary_for_step, get_step
 from fem.geometry import LogicalEntityRef, logical_ref_sort_key
-from fem.post.stress import dispatch, field
 from ..geometry_preview import GeometryPreview
 from ..viewport_background import ViewportBackgroundSettings
 from ..visualization.model_adapter import ModelGeometry, pyvista_cell_array
-from ..visualization.result_adapter import ResultData, ScalarField, deformed_points
-from ..visualization.stress_adapter import build_stress_render_geometry
 from ..visualization.scene import DisplayState
 from ..visualization.symbols import (
     SymbolSettings,
@@ -224,7 +221,6 @@ class FEMViewport(QWidget):
         self._plotter = None
         self._grid = None
         self._result_grid = None
-        self._result_scalar: ScalarField | None = None
         self._result_point_index_to_node_id: dict[int, int] = {}
         self._result_point_index_to_element_id: dict[int, int] = {}
         self._result_cell_index_to_element_id: dict[int, int] = {}
@@ -245,7 +241,6 @@ class FEMViewport(QWidget):
         self._geometry_body_pick_id = 0
         self._pick_grid = None
         self._pick_locators: dict[int, tuple[int, Any]] = {}
-        self._result_data: ResultData | None = None
         self._result_render_payload: ResultRenderPayload | None = None
         # Runtime revalidation follows VTK Modified notifications. Full
         # representation validation still runs unconditionally on install/render.
@@ -262,7 +257,6 @@ class FEMViewport(QWidget):
         self._show_node_labels = False
         self._show_element_labels = False
         self._display = DisplayState()
-        self._deformation_scale = 1.0
         self._overlay_undeformed = False
         self._symbol_settings = SymbolSettings()
         self._symbols_visible = True
@@ -292,7 +286,6 @@ class FEMViewport(QWidget):
             "number_format": "general", "decimals": 5,
             "orientation": "horizontal", "show_minimum": False,
             "show_maximum": False, "show_ids": False,
-            "averaging_threshold": 75.0,
         }
         self._message = QLabel("", self)
         self._message.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -557,7 +550,6 @@ class FEMViewport(QWidget):
         self._geometry_body_pick_id = 0
         self._pick_grid = None
         self._pick_locators.clear()
-        self._result_data = None
         self._result_render_payload = None
         self._result_render_validated_mtime = None
         self._selected_kind = None
@@ -609,7 +601,6 @@ class FEMViewport(QWidget):
         self._geometry_body_pick_id = 0
         self._pick_grid = None
         self._pick_locators.clear()
-        self._result_data = None
         self._result_render_payload = None
         self._result_render_validated_mtime = None
         self._display = DisplayState()
@@ -632,7 +623,6 @@ class FEMViewport(QWidget):
         self._last_symbol_camera_position = None
         self._grid = None
         self._result_grid = None
-        self._result_scalar = None
         self._result_point_index_to_node_id.clear()
         self._result_point_index_to_element_id.clear()
         self._result_cell_index_to_element_id.clear()
@@ -755,17 +745,6 @@ class FEMViewport(QWidget):
             for reference, pick_ids in ref_to_pick_ids.items()
         }
 
-    def set_result_data(self, data: ResultData) -> None:
-        """Install the compatibility cache used by the legacy render path."""
-
-        self._result_render_payload = None
-        self._result_render_validated_mtime = None
-        self._result_data = data
-        self._run_id = data.run_id
-        if self._display.field_key not in data.fields:
-            field_key = "U" if "U" in data.fields else next(iter(data.fields), None)
-            self._display = replace(self._display, field_key=field_key)
-
     def set_result_render_payload(
         self,
         payload: ResultRenderPayload,
@@ -785,7 +764,6 @@ class FEMViewport(QWidget):
         self._result_render_validated_mtime = int(
             checked.dataset.GetMTime()
         )
-        self._result_data = None
         self._artifact_id = source.artifact_id
         self._run_id = source.run_id
         self._index_result_render_provenance(checked)
@@ -1327,33 +1305,14 @@ class FEMViewport(QWidget):
         self,
         shape_mode: str,
         contour_enabled: bool,
-        field_key: str | None = None,
     ) -> None:
-        """独立设置几何形状、云图开关和主结果字段。"""
+        """独立设置已投影结果的几何形状和云图开关。"""
         shape = "deformed" if shape_mode == "deformed" else "undeformed"
         self._display = DisplayState(
             shape_mode=shape,
             contour_enabled=bool(contour_enabled),
-            field_key=field_key if field_key is not None else self._display.field_key,
         )
         self._update_result_layer()
-
-    def show_display(self, mode: str, field_key: str | None = None) -> None:
-        """兼容旧调用，并将其转换为独立的形状与着色状态。"""
-        if mode == "contour":
-            self.set_display(self._display.shape_mode, True, field_key)
-        else:
-            self.set_display(mode, False, field_key)
-
-    def set_field(self, key: str) -> None:
-        self._display = replace(self._display, field_key=key)
-        if self._display.contour_enabled:
-            self._update_result_layer()
-
-    def set_deformation_scale(self, scale: float) -> None:
-        self._deformation_scale = float(scale)
-        if self._display.shape_mode == "deformed":
-            self._update_result_layer()
 
     def set_contour_options(self, options: dict[str, Any]) -> None:
         self._contour.update(options)
@@ -2125,15 +2084,6 @@ class FEMViewport(QWidget):
     def _model_display_points(self) -> np.ndarray:
         if self._geometry is None:
             return np.empty((0, 3), dtype=float)
-        if (
-            self._display.shape_mode == "deformed"
-            and self._result_data is not None
-        ):
-            return deformed_points(
-                self._geometry,
-                self._result_data,
-                self._deformation_scale,
-            )
         return np.asarray(self._geometry.points, dtype=float)
 
     def _refresh_pick_grid(self, points: np.ndarray | None = None) -> None:
@@ -2177,7 +2127,6 @@ class FEMViewport(QWidget):
         self._remove_actor("extrema")
         self._remove_scalar_bars()
         self._result_grid = None
-        self._result_scalar = None
         if self._result_render_payload is not None:
             self._update_result_render_payload_layer(
                 self._result_render_payload
@@ -2186,174 +2135,6 @@ class FEMViewport(QWidget):
         self._result_point_index_to_node_id.clear()
         self._result_point_index_to_element_id.clear()
         self._result_cell_index_to_element_id.clear()
-        if self._plotter is None or self._geometry is None or self._result_data is None:
-            return
-        base = self._actors.get("mesh_surface")
-        use_deformed = self._display.shape_mode == "deformed"
-        use_contour = self._display.contour_enabled
-        if not use_deformed and not use_contour:
-            if base is not None:
-                base.SetVisibility(True)
-            self._grid = self._make_grid(self._geometry.points)
-            self._refresh_pick_grid(self._geometry.points)
-            self._refresh_geometry_dependent_layers()
-            self._refresh_undeformed_overlay()
-            return
-        points = (
-            deformed_points(self._geometry, self._result_data, self._deformation_scale)
-            if use_deformed
-            else self._geometry.points
-        )
-        grid = self._make_grid(points)
-        self._grid = grid
-        self._refresh_pick_grid(points)
-        if base is not None:
-            base.SetVisibility(False)
-        kwargs: dict[str, Any] = {
-            "name": "result",
-            "reset_camera": False,
-            "line_width": self._element_line_width(),
-        }
-        field_key = self._display.field_key
-        render_scalar: ScalarField | None = None
-        if (
-            use_contour
-            and field_key in self._result_data.fields
-            and self._result_data.fields[field_key].ready
-        ):
-            scalar: ScalarField = self._result_data.fields[field_key]
-            render_scalar = scalar
-            if field_key.startswith("IP:"):
-                integration_field = self._result_data.stress_fields.get(
-                    field.StressPosition.INTEGRATION_POINT
-                )
-                if integration_field is None:
-                    raise RuntimeError("积分点应力字段尚未恢复")
-                stress_points = np.zeros(
-                    (len(integration_field.records), 3),
-                    dtype=float,
-                )
-                element_lookup = (
-                    {
-                        int(element.id): element
-                        for element in self._model.mesh.elements
-                    }
-                    if use_deformed
-                    else {}
-                )
-                for point_index, record in enumerate(integration_field.records):
-                    stress_points[
-                        point_index, :len(record.coordinates)
-                    ] = record.coordinates
-                    if record.elem_id is not None:
-                        self._result_point_index_to_element_id[
-                            point_index
-                        ] = record.elem_id
-                        if use_deformed and record.natural_coordinates is not None:
-                            element = element_lookup[record.elem_id]
-                            type_key = dispatch.type_key_from_name(element.type)
-                            if type_key is None:
-                                raise RuntimeError(
-                                    f"无法识别积分点单元类型：{element.type}"
-                                )
-                            weights = field.natural_shape_values(
-                                type_key,
-                                record.natural_coordinates,
-                            )
-                            nodal_displacements = np.asarray([
-                                self._result_data.displacement_vectors[
-                                    self._geometry.node_id_to_point_index[
-                                        int(node_id)
-                                    ]
-                                ]
-                                for node_id in element.node_ids
-                            ])
-                            stress_points[point_index] += (
-                                self._deformation_scale
-                                * (weights @ nodal_displacements)
-                            )
-                grid = _pyvista.PolyData(stress_points)
-                render_scalar = ScalarField(
-                    scalar.key,
-                    scalar.label,
-                    "point",
-                    scalar.values,
-                )
-                kwargs.update(
-                    point_size=10,
-                    render_points_as_spheres=True,
-                )
-            elif field_key.startswith(("NODAL:", "EN:")):
-                stress_geometry = build_stress_render_geometry(
-                    self._geometry,
-                    self._result_data,
-                    field_key,
-                    float(self._contour.get("averaging_threshold", 75.0)),
-                )
-                stress_points = np.asarray(stress_geometry.points, dtype=float).copy()
-                if use_deformed:
-                    for point_index, node_id in stress_geometry.point_index_to_node_id.items():
-                        source = self._geometry.node_id_to_point_index[node_id]
-                        stress_points[point_index] += (
-                            self._deformation_scale
-                            * self._result_data.displacement_vectors[source]
-                        )
-                grid = _pyvista.UnstructuredGrid(
-                    stress_geometry.cell_array,
-                    stress_geometry.cell_types,
-                    stress_points,
-                )
-                render_scalar = ScalarField(
-                    scalar.key, scalar.label, "point", stress_geometry.values
-                )
-                self._result_point_index_to_node_id = dict(
-                    stress_geometry.point_index_to_node_id
-                )
-                self._result_point_index_to_element_id = dict(
-                    stress_geometry.point_index_to_element_id
-                )
-                self._result_cell_index_to_element_id = dict(
-                    stress_geometry.cell_index_to_element_id
-                )
-            if render_scalar.association == "point":
-                grid.point_data[render_scalar.key] = render_scalar.values
-            else:
-                grid.cell_data[render_scalar.key] = render_scalar.values
-            kwargs.update(
-                scalars=scalar.key, cmap=self._contour["colormap"],
-                n_colors=(
-                    256
-                    if self._contour.get("style") == "continuous"
-                    else int(self._contour["levels"])
-                ),
-                interpolate_before_map=self._contour.get("style") == "continuous",
-                show_scalar_bar=self._contour["legend"],
-                scalar_bar_args={
-                    "title": scalar.label,
-                    "vertical": self._contour["orientation"] == "vertical",
-                    "fmt": self._scalar_format(),
-                    "color": self._background_settings.foreground_color,
-                },
-            )
-            if self._contour["manual"]:
-                kwargs["clim"] = (self._contour["minimum"], self._contour["maximum"])
-        else:
-            kwargs.update(color=self._visual_palette()["result"])
-        # 单元边由独立 Actor 管理，避免与结果 Actor 重复绘制。
-        kwargs["show_edges"] = False
-        self._result_grid = grid
-        self._result_scalar = render_scalar
-        self._actors["result"] = self._plotter.add_mesh(grid, **kwargs)
-        if (
-            use_contour
-            and (self._contour["show_minimum"] or self._contour["show_maximum"])
-            and field_key in self._result_data.fields
-            and self._result_data.fields[field_key].ready
-            and render_scalar is not None
-        ):
-            self._add_extrema_labels(grid, render_scalar)
-        self._refresh_geometry_dependent_layers()
-        self._refresh_undeformed_overlay()
 
     def _update_result_render_payload_layer(
         self,
@@ -2490,50 +2271,6 @@ class FEMViewport(QWidget):
         if location.local_node is not None:
             values.append(f"局部节点 {int(location.local_node)}")
         return "，".join(values)
-
-    def _add_extrema_labels(self, grid: Any, scalar: ScalarField) -> None:
-        finite = np.flatnonzero(np.isfinite(scalar.values))
-        if len(finite) == 0:
-            return
-        minimum_index = int(finite[np.argmin(scalar.values[finite])])
-        maximum_index = int(finite[np.argmax(scalar.values[finite])])
-        points = grid.points if scalar.association == "point" else grid.cell_centers().points
-        entries: list[tuple[int, str]] = []
-        for enabled, index, title in (
-            (self._contour["show_minimum"], minimum_index, "最小值"),
-            (self._contour["show_maximum"], maximum_index, "最大值"),
-        ):
-            if not enabled:
-                continue
-            label = f"{title} {self._format_scalar(float(scalar.values[index]))}"
-            if self._contour["show_ids"]:
-                object_id = (
-                    self._result_point_index_to_node_id.get(
-                        index, self._geometry.point_index_to_node_id.get(index, "—")
-                    )
-                    if scalar.association == "point"
-                    else self._result_cell_index_to_element_id.get(
-                        index, self._geometry.cell_index_to_element_id.get(index, "—")
-                    )
-                )
-                kind = "节点" if scalar.association == "point" else "单元"
-                label += f"（{kind} {object_id}）"
-                if scalar.key.startswith("EN:"):
-                    element_id = self._result_point_index_to_element_id.get(index)
-                    if element_id is not None:
-                        label = label.removesuffix("）") + f"，单元 {element_id}）"
-            entries.append((index, label))
-        indices = [entry[0] for entry in entries]
-        labels = [entry[1] for entry in entries]
-        if not entries:
-            return
-        palette = self._visual_palette()
-        self._actors["extrema"] = self._plotter.add_point_labels(
-            np.asarray(points)[indices], labels, point_size=7, font_size=10,
-            shape_color=palette["label_background"],
-            text_color=self._background_settings.foreground_color, name="extrema",
-            reset_camera=False,
-        )
 
     def _refresh_geometry_dependent_layers(self, *, render: bool = True) -> None:
         self._remove_actor("element_edges")
@@ -3383,17 +3120,6 @@ class FEMViewport(QWidget):
             and (self._contour["show_minimum"] or self._contour["show_maximum"])
         ):
             self._add_result_render_payload_extrema_labels(payload)
-            return
-        if (
-            self._result_grid is not None
-            and self._result_scalar is not None
-            and self._display.contour_enabled
-            and (self._contour["show_minimum"] or self._contour["show_maximum"])
-        ):
-            self._add_extrema_labels(
-                self._result_grid,
-                self._result_scalar,
-            )
 
     def _update_scalar_bar_text_color(self) -> None:
         if self._plotter is None:

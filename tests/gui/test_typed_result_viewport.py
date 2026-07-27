@@ -445,8 +445,7 @@ def test_typed_payload_renders_owned_dataset_without_reprojection(
     model_pick_grid = object()
     viewport._plotter = plotter
     viewport._pick_grid = model_pick_grid
-    viewport._display = DisplayState("deformed", True, "ignored")
-    viewport._deformation_scale = 99.0
+    viewport._display = DisplayState("deformed", True)
 
     viewport.set_result_render_payload(payload)
     viewport._update_result_layer()
@@ -455,7 +454,9 @@ def test_typed_payload_renders_owned_dataset_without_reprojection(
     assert rendered is payload.dataset
     assert viewport._result_grid is payload.dataset
     assert viewport._pick_grid is model_pick_grid
-    assert viewport._result_scalar is None
+    assert not hasattr(viewport, "_result_data")
+    assert not hasattr(viewport, "_result_scalar")
+    assert not hasattr(viewport, "_deformation_scale")
     assert options["scalars"] == RESULT_SCALAR_NAME
     assert payload.topology.value_layout is expected_layout
     np.testing.assert_array_equal(payload.dataset.points, original_points)
@@ -855,7 +856,7 @@ def test_typed_payload_refresh_clears_batch_and_restores_persistent_selection(
         node_ids=(10, 20, 30, 40),
         element_ids=(201, 202),
     )
-    viewport._display = DisplayState("deformed", True, "ignored")
+    viewport._display = DisplayState("deformed", True)
     viewport.set_result_render_payload(_duplicate_point_payload())
     viewport._update_result_layer()
     viewport.highlight_node(10)
@@ -877,7 +878,7 @@ def test_typed_payload_refresh_clears_batch_and_restores_persistent_selection(
 
     viewport.highlight_nodes((10, 30))
     assert "set_highlight" in viewport._actors
-    viewport.set_deformation_scale(9.0)
+    viewport.set_display("deformed", False)
 
     assert "set_highlight" not in viewport._actors
     assert "selection" in viewport._actors
@@ -947,7 +948,7 @@ def test_background_refresh_reuses_installed_typed_payload(
     viewport = FEMViewport()
     viewport.set_result_render_payload(payload)
     viewport._result_grid = payload.dataset
-    viewport._display = DisplayState("deformed", True, "ignored")
+    viewport._display = DisplayState("deformed", True)
     viewport._contour["show_maximum"] = True
     calls = []
     monkeypatch.setattr(
@@ -964,7 +965,8 @@ def test_background_refresh_reuses_installed_typed_payload(
 
 def test_typed_viewport_path_has_no_engineering_or_materialization_calls() -> None:
     path = Path(__file__).parents[2] / "src" / "fem_gui" / "widgets" / "viewport.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    module_source = path.read_text(encoding="utf-8")
+    tree = ast.parse(module_source)
     typed_names = {
         "_require_result_render_payload",
         "set_result_render_payload",
@@ -986,7 +988,7 @@ def test_typed_viewport_path_has_no_engineering_or_materialization_calls() -> No
     }
     segments = {
         node.name: ast.get_source_segment(
-            path.read_text(encoding="utf-8"),
+            module_source,
             node,
         )
         for node in ast.walk(tree)
@@ -1011,3 +1013,19 @@ def test_typed_viewport_path_has_no_engineering_or_materialization_calls() -> No
     ):
         assert forbidden not in source
     assert "_pick_grid = dataset" not in source
+    for forbidden in (
+        "ResultData",
+        "ScalarField",
+        "deformed_points",
+        "stress_adapter",
+        "fem.post.stress",
+        "build_stress_render_geometry",
+        "averaging_threshold",
+        "_result_data",
+        "_result_scalar",
+        "_deformation_scale",
+        "set_result_data",
+        "set_deformation_scale",
+        "_add_extrema_labels",
+    ):
+        assert forbidden not in module_source

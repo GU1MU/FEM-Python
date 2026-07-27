@@ -7,7 +7,7 @@
       "symbol": "fem.post.stress.StressRecovery",
       "visibility": "public",
       "current_callers": [
-        "src/fem_gui/visualization/result_adapter.py"
+        "src/fem/application/results/_materializers.py"
       ],
       "target_batch": "Batch 1",
       "disposition": "retain_as_canonical_continuum_numeric_oracle",
@@ -17,7 +17,7 @@
         "single-sample nodal rows do not retain element/local-node provenance"
       ],
       "golden_tests": [
-        "tests/characterization/test_phase8_current_results.py::test_three_current_continuum_nodal_oracles_are_known_to_diverge"
+        "tests/post/test_continuum_recovery.py::test_canonical_continuum_resolution_unifies_threshold_oracle"
       ]
     },
     {
@@ -35,7 +35,7 @@
         "a single sample keeps element/local-node provenance at every threshold"
       ],
       "golden_tests": [
-        "tests/characterization/test_phase8_current_results.py::test_three_current_continuum_nodal_oracles_are_known_to_diverge"
+        "tests/post/test_continuum_recovery.py::test_canonical_continuum_resolution_unifies_threshold_oracle"
       ]
     },
     {
@@ -43,7 +43,6 @@
       "symbol": "fem.post.stress.beam.nodal_envelope",
       "visibility": "public",
       "current_callers": [
-        "src/fem_gui/visualization/result_adapter.py",
         "src/fem_agent/tools/results.py",
         "src/fem/post/stress/beam.py"
       ],
@@ -53,7 +52,7 @@
         "the current envelope drops source element and beam-end provenance"
       ],
       "golden_tests": [
-        "tests/characterization/test_phase8_current_results.py::test_current_beam_gui_field_keys_order_and_numeric_oracle"
+        "tests/post/test_beam_recovery.py::test_canonical_node_envelope_omits_isolated_nodes_and_keeps_shared_extrema"
       ]
     },
     {
@@ -157,94 +156,6 @@
       "golden_tests": [
         "tests/test_post.py::test_vtk_export_from_result_materializes_missing_csvs",
         "tests/characterization/test_phase8_legacy_exports.py::test_legacy_vtk_from_csv_semantics_match_golden"
-      ]
-    },
-    {
-      "id": "gui.result_data",
-      "symbol": "fem_gui.visualization.result_adapter.ResultData",
-      "visibility": "gui_legacy",
-      "current_callers": [
-        "src/fem_gui/main_window.py",
-        "src/fem_gui/visualization/query.py",
-        "src/fem_gui/visualization/csv_export.py"
-      ],
-      "target_batch": "Batch 6",
-      "disposition": "delete_after_all_gui_consumers_use_result_provider",
-      "known_divergences": [
-        "a frozen dataclass owns mutable overlapping engineering dictionaries and a mutable recovery cache"
-      ],
-      "golden_tests": [
-        "tests/characterization/test_phase8_current_results.py::test_current_beam_gui_field_keys_order_and_numeric_oracle"
-      ]
-    },
-    {
-      "id": "gui.result_builder",
-      "symbol": "fem_gui.visualization.result_adapter.build_result_data",
-      "visibility": "gui_legacy",
-      "current_callers": [
-        "src/fem_gui/main_window.py"
-      ],
-      "target_batch": "Batch 5",
-      "disposition": "replace_with_result_provider_projection",
-      "known_divergences": [
-        "Beam rotations use R rather than target field id UR",
-        "multi-region and isolated nodal values are represented as missing NaN slots"
-      ],
-      "golden_tests": [
-        "tests/characterization/test_phase8_current_results.py::test_current_truss_gui_field_keys_order_and_numeric_oracle",
-        "tests/characterization/test_phase8_current_results.py::test_current_beam_gui_field_keys_order_and_numeric_oracle",
-        "tests/characterization/test_phase8_current_results.py::test_three_current_continuum_nodal_oracles_are_known_to_diverge"
-      ]
-    },
-    {
-      "id": "gui.line_stress",
-      "symbol": "fem_gui.visualization.result_adapter._line_stress",
-      "visibility": "gui_legacy",
-      "current_callers": [
-        "src/fem_gui/visualization/result_adapter.py"
-      ],
-      "target_batch": "Batch 1",
-      "disposition": "move_numeric_recovery_to_fem_post_then_delete",
-      "known_divergences": [
-        "Truss2 recovery and Beam2 envelope projection are owned by the GUI"
-      ],
-      "golden_tests": [
-        "tests/characterization/test_phase8_current_results.py::test_current_truss_gui_field_keys_order_and_numeric_oracle",
-        "tests/characterization/test_phase8_current_results.py::test_current_beam_gui_field_keys_order_and_numeric_oracle"
-      ]
-    },
-    {
-      "id": "gui.tensor_resolver",
-      "symbol": "fem_gui.visualization.stress_adapter.build_stress_render_geometry",
-      "visibility": "gui_legacy",
-      "current_callers": [
-        "src/fem_gui/widgets/viewport.py"
-      ],
-      "target_batch": "Batch 5",
-      "disposition": "replace_with_neutral_provider_topology_projection",
-      "known_divergences": [
-        "threshold decisions are made per node-region rather than per node",
-        "single-region samples lose element provenance even at threshold zero",
-        "isolated nodes are omitted from render topology"
-      ],
-      "golden_tests": [
-        "tests/characterization/test_phase8_current_results.py::test_three_current_continuum_nodal_oracles_are_known_to_diverge"
-      ]
-    },
-    {
-      "id": "gui.current_csv",
-      "symbol": "fem_gui.visualization.csv_export.export_field_csv",
-      "visibility": "gui_legacy",
-      "current_callers": [
-        "src/fem_gui/main_window.py"
-      ],
-      "target_batch": "Batch 5",
-      "disposition": "replace_with_headless_canonical_csv_serializer",
-      "known_divergences": [
-        "the current flat GUI schema uses VTK point/cell association terms and CRLF records"
-      ],
-      "golden_tests": [
-        "tests/characterization/test_phase8_legacy_exports.py::test_current_gui_csv_legacy_bytes_are_frozen"
       ]
     },
     {

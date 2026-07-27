@@ -5,12 +5,6 @@ from pathlib import Path
 
 from fem.core.mesh import Element2D, Mesh2D, Node2D
 from fem.post import vtk
-from fem_gui.visualization.csv_export import export_field_csv
-from fem_gui.visualization.model_adapter import build_model_geometry
-from fem_gui.visualization.result_adapter import build_result_data
-from tests.helpers.phase8_result_characterization import (
-    make_truss_field_characterization_result,
-)
 
 
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "phase8"
@@ -124,25 +118,6 @@ def _parse_legacy_vtk_semantics(path: Path) -> dict[str, object]:
             "scalars": cell_scalars,
         },
     }
-
-
-def test_current_gui_csv_legacy_bytes_are_frozen(tmp_path: Path) -> None:
-    result = make_truss_field_characterization_result()
-    data = build_result_data(result, build_model_geometry(result.model))
-
-    target = export_field_csv(
-        data,
-        "CENTROID:S11",
-        tmp_path / "current-gui.csv",
-    )
-
-    # Current GUI bytes are a compatibility oracle: UTF-8 BOM, exact flat
-    # header, CRLF records, and one final record terminator on every platform.
-    assert target.read_bytes() == (
-        b"\xef\xbb\xbffield,position,association,node_id,elem_id,"
-        b"integration_point,local_node,x,y,z,value\r\n"
-        b"S11,centroid,cell,,30,,,1,0,0,10\r\n"
-    )
 
 
 def test_legacy_vtk_from_csv_semantics_match_golden(tmp_path: Path) -> None:

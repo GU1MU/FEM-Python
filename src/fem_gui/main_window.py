@@ -5099,7 +5099,7 @@ class FEMMainWindow(QMainWindow):
             or type(selection) is not ScalarFieldSelection
         ):
             return
-        self._display = DisplayState("deformed", True, None)
+        self._display = DisplayState("deformed", True)
         self._apply_scale()
         self.actions["deformed"].setChecked(True)
         self.actions["contour"].setChecked(True)
@@ -6066,7 +6066,6 @@ class FEMMainWindow(QMainWindow):
         self._display = DisplayState(
             settings.shape_mode,
             settings.contour_enabled,
-            None,
         )
         self._scale_mode = settings.scale_mode
         self._scale_value = settings.scale_value

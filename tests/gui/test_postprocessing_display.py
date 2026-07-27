@@ -225,7 +225,10 @@ def test_result_ribbon_selects_real_fields_and_deformation_scale(gui_inp_path):
     real_index = window.result_scale_combo.findData("real")
     window.result_scale_combo.setCurrentIndex(real_index)
     window._result_scale_mode_changed(real_index)
-    assert window.viewport._deformation_scale == 1.0
+    assert (
+        window.viewport._result_render_payload.topology.deformation_scale
+        == 1.0
+    )
     window.close()
 
 

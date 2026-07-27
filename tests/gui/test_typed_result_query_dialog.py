@@ -409,14 +409,19 @@ def test_typed_dialog_ast_has_no_legacy_query_dependencies_or_support_map() -> N
         for comparator in node.comparators
     )
 
-    lines = source.splitlines()
-    typed_source = "\n".join(
-        lines[class_node.lineno - 1 : next(
-            node.lineno - 1
-            for node in module.body
-            if isinstance(node, ast.FunctionDef)
-            and node.name == "_field_records"
-        )]
+    top_level_names = {
+        node.name
+        for node in module.body
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef))
+    }
+    assert top_level_names.isdisjoint(
+        {
+            "ResultQueryDialog",
+            "ResultDisplayDialog",
+            "ResultDisplaySettings",
+            "_field_records",
+            "_component_label",
+        }
     )
-    assert "visualization.query" not in typed_source
-    assert "result_adapter" not in typed_source
+    assert "visualization.query" not in source
+    assert "result_adapter" not in source

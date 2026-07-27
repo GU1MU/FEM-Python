@@ -11,8 +11,7 @@ ShapeMode = Literal["undeformed", "deformed"]
 
 @dataclass(frozen=True, slots=True)
 class DisplayState:
-    """描述当前几何形状、云图开关和主结果字段。"""
+    """描述当前几何形状和云图开关。"""
 
     shape_mode: ShapeMode = "undeformed"
     contour_enabled: bool = False
-    field_key: str | None = None

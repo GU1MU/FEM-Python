@@ -72,8 +72,15 @@ def test_phase8_result_compatibility_ledger_is_machine_readable_and_complete() -
         "fem.post.stress.field.resolve",
         "fem.post.vtk.export.from_csv",
         "fem.post.vtk.export.from_result",
-        "fem_gui.visualization.result_adapter.ResultData",
-        "fem_gui.visualization.csv_export.export_field_csv",
         "fem_agent.tools.results.query_results",
         "fem_agent.tools.exports.export_results",
     }.issubset(symbols)
+    assert symbols.isdisjoint(
+        {
+            "fem_gui.visualization.result_adapter.ResultData",
+            "fem_gui.visualization.result_adapter.build_result_data",
+            "fem_gui.visualization.result_adapter._line_stress",
+            "fem_gui.visualization.stress_adapter.build_stress_render_geometry",
+            "fem_gui.visualization.csv_export.export_field_csv",
+        }
+    )
