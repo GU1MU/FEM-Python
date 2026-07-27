@@ -164,3 +164,21 @@ def test_definition_managers_edit_copies_and_use_read_only_tables():
     assert [item.name for item in sections] == ["Solid"]
     assert material_dialog.values() == []
     assert section_dialog.values() == []
+
+
+def test_material_manager_creates_mutable_copy_from_snapshot_tuple():
+    _application()
+    original = (
+        MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3}),
+    )
+    dialog = MaterialManagerDialog(original)
+
+    dialog._store(
+        MaterialDefinition("Aluminum", {"E": 70000.0, "nu": 0.33})
+    )
+
+    assert [material.name for material in dialog.values()] == [
+        "Steel",
+        "Aluminum",
+    ]
+    assert [material.name for material in original] == ["Steel"]

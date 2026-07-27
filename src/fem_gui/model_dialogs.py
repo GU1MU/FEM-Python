@@ -342,12 +342,16 @@ class MaterialEditDialog(QDialog):
 
 
 class MaterialManagerDialog(QDialog):
-    def __init__(self, materials: list[MaterialDefinition], parent=None) -> None:
+    def __init__(
+        self,
+        materials: Sequence[MaterialDefinition],
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("材料管理")
-        self.materials = deepcopy(materials)
+        self.materials: list[MaterialDefinition] = deepcopy(list(materials))
         self._original_names: tuple[str, ...] = tuple(
-            material.name for material in materials
+            material.name for material in self.materials
         )
         self._origins: list[str | None] = list(self._original_names)
         self.table = QTableWidget(0, 2, self)
