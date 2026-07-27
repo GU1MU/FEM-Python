@@ -2237,9 +2237,54 @@ class FEMViewport(QWidget):
         self._show_element_labels = bool(visible)
         self._refresh_labels()
 
+    def _fit_bounds(self) -> tuple[float, float, float, float, float, float] | None:
+        """Return bounds for the displayed model, excluding auxiliary actors."""
+
+        points: object | None = None
+        if self._wire_authoring_active:
+            if (
+                self._wire_draft_render_data is None
+                or not self._wire_draft_render_data.points
+            ):
+                return None
+            points = self._wire_draft_render_data.points
+        elif self._geometry_preview is not None:
+            points = self._geometry_preview.points
+        elif self._result_grid is not None and "result" in self._actors:
+            points = self._result_grid.points
+        elif self._grid is not None:
+            points = self._grid.points
+        if points is None:
+            return None
+
+        values = np.asarray(points, dtype=float)
+        if values.size == 0 or values.size % 3:
+            return None
+        values = values.reshape((-1, 3))
+        values = values[np.all(np.isfinite(values), axis=1)]
+        if len(values) == 0:
+            return None
+
+        minimum = np.min(values, axis=0)
+        maximum = np.max(values, axis=0)
+        if not np.any(maximum > minimum):
+            reference = max(float(np.max(np.abs(values))), 1.0)
+            padding = reference * 1.0e-6
+            minimum -= padding
+            maximum += padding
+        return tuple(
+            float(value)
+            for axis in range(3)
+            for value in (minimum[axis], maximum[axis])
+        )
+
     def fit(self) -> None:
         if self._plotter is not None:
-            self._plotter.reset_camera()
+            bounds = self._fit_bounds()
+            if bounds is None:
+                self._plotter.reset_camera(render=False)
+            else:
+                self._plotter.reset_camera(bounds=bounds, render=False)
             self._refresh_symbols_for_camera(render=False)
             self._render()
 

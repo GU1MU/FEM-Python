@@ -66,6 +66,18 @@ class _Plotter(QWidget):
         self.render_count += 1
 
 
+class _FitPlotter:
+    def __init__(self) -> None:
+        self.reset_calls = []
+        self.render_count = 0
+
+    def reset_camera(self, *, bounds=None, render=True) -> None:
+        self.reset_calls.append((bounds, render))
+
+    def render(self) -> None:
+        self.render_count += 1
+
+
 class _MouseEvent:
     def __init__(
         self,
@@ -169,6 +181,49 @@ def test_model_clear_resets_partial_mouse_gesture() -> None:
     assert not viewport._selection_dragged
     assert viewport._abaqus_view_button is None
     assert viewport._trackball_vector is None
+
+
+def test_fit_uses_stable_model_bounds_and_renders_once() -> None:
+    _application()
+    viewport = FEMViewport()
+    plotter = _FitPlotter()
+    viewport._plotter = plotter
+    viewport._grid = SimpleNamespace(
+        points=np.asarray(
+            (
+                (10.0, -4.0, 2.0),
+                (14.0, 8.0, 6.0),
+                (11.0, 3.0, 5.0),
+            )
+        )
+    )
+
+    viewport.fit()
+    viewport.fit()
+
+    expected = (10.0, 14.0, -4.0, 8.0, 2.0, 6.0)
+    assert plotter.reset_calls == [(expected, False), (expected, False)]
+    assert plotter.render_count == 2
+
+
+def test_fit_prefers_deformed_result_bounds_over_base_grid() -> None:
+    _application()
+    viewport = FEMViewport()
+    plotter = _FitPlotter()
+    viewport._plotter = plotter
+    viewport._grid = SimpleNamespace(
+        points=np.asarray(((0.0, 0.0, 0.0), (1.0, 1.0, 0.0)))
+    )
+    viewport._result_grid = SimpleNamespace(
+        points=np.asarray(((20.0, 10.0, -2.0), (30.0, 15.0, 4.0)))
+    )
+    viewport._actors["result"] = object()
+
+    viewport.fit()
+
+    assert plotter.reset_calls == [
+        ((20.0, 30.0, 10.0, 15.0, -2.0, 4.0), False)
+    ]
 
 
 def test_child_widget_mouse_move_uses_plotter_coordinates() -> None:
