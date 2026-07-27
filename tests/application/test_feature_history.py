@@ -13,6 +13,9 @@ from fem.geometry.recipes import (
     MovedGeometry,
     RectangleGeometry,
     RotatedGeometry,
+    WireGeometry,
+    WireMember,
+    WirePoint,
 )
 
 
@@ -57,6 +60,30 @@ def test_boolean_history_projects_object_chain_and_current_tool_summary() -> Non
     assert derive_geometry_feature_rows(recipe) == (
         "基础体  矩形  4 × 2",
         "切除  工具体=Hole",
+    )
+
+
+def test_wire_history_uses_the_canonical_headless_summary() -> None:
+    recipe = WireGeometry(
+        "Portal",
+        (
+            WirePoint("P1", 0.0, 0.0),
+            WirePoint("P2", 0.0, 3.0),
+            WirePoint("P3", 4.0, 3.0),
+        ),
+        (
+            WireMember("M1", "P1", "P2"),
+            WireMember("M2", "P2", "P3"),
+        ),
+    )
+
+    history = derive_feature_history(recipe)
+
+    assert tuple((record.name, record.kind) for record in history) == (
+        ("Wire-1", "wire"),
+    )
+    assert derive_geometry_feature_rows(recipe) == (
+        "线框  节点=3，杆件=2",
     )
 
 

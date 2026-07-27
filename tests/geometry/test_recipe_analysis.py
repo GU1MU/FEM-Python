@@ -16,6 +16,9 @@ from fem.geometry import (
     SketchCircle,
     SketchGeometry,
     SketchRectangle,
+    WireGeometry,
+    WireMember,
+    WirePoint,
     axis_aligned_rectangle,
     expand_sketch_recipe,
     recipe_characteristic_size,
@@ -109,6 +112,21 @@ def test_transformed_circle_tracks_move_rotation_and_sketch_expansion() -> None:
         (BoxGeometry("Box", 4.0, 3.0, 2.0), 2.0),
         (CylinderGeometry("Cylinder", 2.0, 3.0), 3.0),
         (
+            WireGeometry(
+                "Wire",
+                (
+                    WirePoint("P1", 0.0, 0.0, 0.0),
+                    WirePoint("P2", 3.0, 4.0, 0.0),
+                    WirePoint("P3", 3.0, 4.0, 12.0),
+                ),
+                (
+                    WireMember("M1", "P1", "P2"),
+                    WireMember("M2", "P2", "P3"),
+                ),
+            ),
+            12.0,
+        ),
+        (
             SketchGeometry(
                 "Sketch",
                 (
@@ -168,6 +186,13 @@ def test_structured_hexahedron_eligibility_matches_native_mesher() -> None:
     assert not supports_structured_hexahedron(cut_extrusion)
     assert not supports_structured_hexahedron(
         ExtrudedGeometry(RectangleGeometry("Rectangle", 2.0, 1.0), 3.0)
+    )
+    assert not supports_structured_hexahedron(
+        WireGeometry(
+            "Wire",
+            (WirePoint("P1", 0.0, 0.0), WirePoint("P2", 1.0, 0.0)),
+            (WireMember("M1", "P1", "P2"),),
+        )
     )
 
 

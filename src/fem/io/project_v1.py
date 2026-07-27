@@ -793,9 +793,19 @@ def _encode_mesh_settings(
     _exact_dataclass(
         settings,
         MeshSettings,
-        {"size", "order", "cell_shape", "local_controls"},
+        {
+            "size",
+            "order",
+            "cell_shape",
+            "local_controls",
+            "line_element_type",
+        },
         path,
     )
+    if settings.line_element_type is not None:
+        raise ProjectV1EncodeError(
+            f"{path}.line_element_type 无法由 v1 无损表示"
+        )
     size = _number(settings.size, f"{path}.size", ProjectV1EncodeError)
     if size <= 0:
         raise ProjectV1EncodeError(f"{path}.size 必须大于零")

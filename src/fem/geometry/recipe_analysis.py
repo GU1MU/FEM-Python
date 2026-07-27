@@ -21,6 +21,7 @@ from .recipes import (
     SketchContour,
     SketchGeometry,
     SketchRectangle,
+    WireGeometry,
 )
 
 
@@ -253,6 +254,16 @@ def recipe_characteristic_size(recipe: NativeGeometry) -> float:
         return min(recipe_characteristic_size(recipe.base), recipe.height)
     if isinstance(recipe, SketchGeometry):
         return recipe_characteristic_size(expand_sketch_recipe(recipe))
+    if isinstance(recipe, WireGeometry):
+        points = {point.name: point for point in recipe.points}
+        return max(
+            math.hypot(
+                points[member.start].x - points[member.end].x,
+                points[member.start].y - points[member.end].y,
+                points[member.start].z - points[member.end].z,
+            )
+            for member in recipe.members
+        )
     if isinstance(recipe, (RectangleGeometry, PlateWithHoleGeometry)):
         return min(recipe.width, recipe.height)
     if isinstance(recipe, DiskGeometry):

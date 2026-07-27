@@ -26,6 +26,9 @@ from fem.geometry.recipes import (
     BoxGeometry,
     CylinderGeometry,
     RectangleGeometry,
+    WireGeometry,
+    WireMember,
+    WirePoint,
 )
 from fem.mesh.settings import LocalMeshControl, MeshSettings
 from tests.helpers.preflight_builders import passing_preflight_report
@@ -38,6 +41,29 @@ from tests.helpers.result_builders import (
 def _reference(recipe, kind: str) -> LogicalEntityRef:
     entity = describe_recipe_topology(recipe).entities_of(kind)[0]
     return LogicalEntityRef(entity.logical_id)
+
+
+def _wire_recipe(
+    *,
+    moved: bool = False,
+    extra_member: bool = False,
+    reconnected: bool = False,
+) -> WireGeometry:
+    points = (
+        WirePoint("P1", 0.0 if not moved else 10.0, 0.0),
+        WirePoint("P2", 1.0 if not moved else 11.0, 0.0),
+        WirePoint("P3", 1.0 if not moved else 11.0, 1.0),
+    )
+    members = [
+        WireMember("M1", "P1", "P2"),
+        WireMember("M2", "P2", "P3"),
+    ]
+    if extra_member:
+        points = (*points, WirePoint("P4", 2.0, 1.0))
+        members.append(WireMember("M3", "P3", "P4"))
+    if reconnected:
+        members[1] = WireMember("M2", "P1", "P3")
+    return WireGeometry("Wire", points, tuple(members))
 
 
 def test_new_geometry_creates_dimension_aware_default_mesh_settings() -> None:
@@ -62,6 +88,202 @@ def test_new_geometry_creates_dimension_aware_default_mesh_settings() -> None:
     )
     assert ChangeKind.GEOMETRY in delta.changed
     assert ChangeKind.MESH_SETTINGS in delta.changed
+
+
+def test_new_wire_without_explicit_mesh_settings_keeps_mesh_intent_unset() -> None:
+    session = ModelSession()
+    session.new_native_project()
+
+    session.replace_native_geometry_inputs(
+        (NativePart(),),
+        _wire_recipe(),
+    )
+
+    assert session.snapshot().mesh_settings is None
+
+
+def test_wire_with_explicit_line_settings_is_installed_atomically() -> None:
+    session = ModelSession()
+    session.new_native_project()
+    settings = MeshSettings(
+        0.25,
+        cell_shape="line",
+        line_element_type="Beam2",
+    )
+
+    session.replace_native_geometry_inputs(
+        (NativePart(),),
+        _wire_recipe(),
+        mesh_settings=settings,
+    )
+
+    after = session.snapshot()
+    assert after.geometry_recipe == _wire_recipe()
+    assert after.mesh_settings == settings
+
+
+def test_wire_coordinate_edit_preserves_line_settings_and_local_controls() -> None:
+    session = ModelSession()
+    session.new_native_project()
+    first = _wire_recipe()
+    settings = MeshSettings(
+        0.5,
+        cell_shape="line",
+        line_element_type="Truss2",
+        local_controls=(
+            LocalMeshControl(LogicalEntityRef("edge:M1"), 0.2),
+        ),
+    )
+    session.replace_native_geometry_inputs(
+        (NativePart(),),
+        first,
+        mesh_settings=settings,
+    )
+
+    delta = session.replace_native_geometry_inputs(
+        (NativePart(),),
+        _wire_recipe(moved=True),
+    )
+
+    assert session.snapshot().mesh_settings == settings
+    assert delta.effects == {TransitionEffect.REFERENCES_PRESERVED}
+
+
+def test_wire_topology_edit_keeps_formulation_but_clears_entity_controls() -> None:
+    session = ModelSession()
+    session.new_native_project()
+    first = _wire_recipe()
+    session.replace_native_geometry_inputs(
+        (NativePart(),),
+        first,
+        mesh_settings=MeshSettings(
+            0.5,
+            cell_shape="line",
+            line_element_type="Beam2",
+            local_controls=(
+                LocalMeshControl(LogicalEntityRef("edge:M1"), 0.2),
+            ),
+        ),
+    )
+
+    delta = session.replace_native_geometry_inputs(
+        (NativePart(),),
+        _wire_recipe(extra_member=True),
+    )
+
+    assert session.snapshot().mesh_settings == MeshSettings(
+        0.5,
+        cell_shape="line",
+        line_element_type="Beam2",
+    )
+    assert delta.effects == {
+        TransitionEffect.LOCAL_CONTROLS_CLEARED,
+    }
+
+
+def test_wire_member_reconnection_clears_entity_controls() -> None:
+    session = ModelSession()
+    session.new_native_project()
+    session.replace_native_geometry_inputs(
+        (NativePart(),),
+        _wire_recipe(),
+        mesh_settings=MeshSettings(
+            0.5,
+            cell_shape="line",
+            line_element_type="Truss2",
+            local_controls=(
+                LocalMeshControl(LogicalEntityRef("edge:M1"), 0.2),
+            ),
+        ),
+    )
+
+    delta = session.replace_native_geometry_inputs(
+        (NativePart(),),
+        _wire_recipe(reconnected=True),
+    )
+
+    assert session.snapshot().mesh_settings == MeshSettings(
+        0.5,
+        cell_shape="line",
+        line_element_type="Truss2",
+    )
+    assert delta.effects == {TransitionEffect.LOCAL_CONTROLS_CLEARED}
+
+
+def test_dimension_transitions_clear_or_remove_line_intent_atomically() -> None:
+    session = ModelSession()
+    session.new_native_project()
+    continuum = RectangleGeometry("Plate", 2.0, 1.0)
+    session.replace_native_geometry_inputs((NativePart(),), continuum)
+    session.replace_native_geometry_inputs(
+        (NativePart(),),
+        _wire_recipe(),
+    )
+    assert session.snapshot().mesh_settings is None
+
+    session.replace_native_geometry_inputs(
+        (NativePart(),),
+        _wire_recipe(),
+        mesh_settings=MeshSettings(
+            0.25,
+            cell_shape="line",
+            line_element_type="Truss2",
+        ),
+    )
+    session.replace_native_geometry_inputs(
+        (NativePart(),),
+        continuum,
+    )
+
+    assert session.snapshot().mesh_settings == MeshSettings(
+        0.25,
+        cell_shape="triangle",
+    )
+
+
+def test_wire_rejects_continuum_mesh_shape_without_mutating_session() -> None:
+    session = ModelSession()
+    session.new_native_project()
+    session.replace_native_geometry_inputs(
+        (NativePart(),),
+        _wire_recipe(),
+        mesh_settings=MeshSettings(
+            0.25,
+            cell_shape="line",
+            line_element_type="Beam2",
+        ),
+    )
+    before = session.snapshot()
+
+    with pytest.raises(ValueError, match="not supported"):
+        session.replace_native_geometry_inputs(
+            (NativePart(),),
+            _wire_recipe(moved=True),
+            mesh_settings=MeshSettings(0.25, cell_shape="triangle"),
+        )
+
+    assert session.snapshot() == before
+
+
+def test_continuum_rejects_line_mesh_settings_without_mutating_session() -> None:
+    session = ModelSession()
+    session.new_native_project()
+    session.replace_native_geometry_inputs(
+        (NativePart(),),
+        RectangleGeometry("Plate", 2.0, 1.0),
+    )
+    before = session.snapshot()
+
+    with pytest.raises(ValueError, match="not supported"):
+        session.replace_mesh_settings(
+            MeshSettings(
+                0.25,
+                cell_shape="line",
+                line_element_type="Truss2",
+            )
+        )
+
+    assert session.snapshot() == before
 
 
 def test_explicit_none_clears_mesh_settings_in_the_geometry_commit() -> None:

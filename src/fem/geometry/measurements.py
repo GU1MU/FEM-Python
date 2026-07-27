@@ -18,6 +18,7 @@ from .recipes import (
     RotatedGeometry,
     SketchCircle,
     SketchGeometry,
+    WireGeometry,
 )
 
 
@@ -33,6 +34,12 @@ def resolve_target_radius(
 
     topology = _validated_topology(recipe, target)
     entity = topology.entity(target.logical_id)
+
+    if _contains_wire(recipe):
+        raise TargetRadiusResolutionError(
+            "target_radius falloff is not supported for wire point or member "
+            "targets"
+        )
 
     if isinstance(recipe, PlateWithHoleGeometry):
         if entity.semantic_role == "boundary.hole-loop" and entity.kind == "edge":
@@ -242,6 +249,14 @@ def _unique_entity_with_role(
         and entity.selectable
     )
     return candidates[0] if len(candidates) == 1 else None
+
+
+def _contains_wire(recipe: NativeGeometry) -> bool:
+    if isinstance(recipe, WireGeometry):
+        return True
+    if isinstance(recipe, (MovedGeometry, RotatedGeometry)):
+        return _contains_wire(recipe.base)
+    return False
 
 
 __all__ = [

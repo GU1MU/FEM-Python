@@ -4,7 +4,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+from numbers import Real
 from typing import Literal
+
+
+def _normalize_wire_name(value: object, field_name: str) -> str:
+    if type(value) is not str:
+        raise TypeError(f"{field_name} must be a string")
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{field_name} must not be empty")
+    return normalized
+
+
+def _normalize_wire_coordinate(value: object, field_name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise TypeError(f"{field_name} must be a finite real number")
+    normalized = float(value)
+    if not math.isfinite(normalized):
+        raise ValueError(f"{field_name} must be a finite real number")
+    return normalized
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +103,117 @@ class CylinderGeometry:
         object.__setattr__(self, "name", normalized_name)
         object.__setattr__(self, "radius", dimensions[0])
         object.__setattr__(self, "height", dimensions[1])
+
+
+@dataclass(frozen=True, slots=True)
+class WirePoint:
+    """One named point in a spatial straight-member wire recipe."""
+
+    name: str
+    x: float
+    y: float
+    z: float = 0.0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", _normalize_wire_name(self.name, "point name"))
+        for field_name in ("x", "y", "z"):
+            object.__setattr__(
+                self,
+                field_name,
+                _normalize_wire_coordinate(getattr(self, field_name), field_name),
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class WireMember:
+    """One named straight member between two named wire points."""
+
+    name: str
+    start: str
+    end: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", _normalize_wire_name(self.name, "member name"))
+        object.__setattr__(
+            self,
+            "start",
+            _normalize_wire_name(self.start, "member start"),
+        )
+        object.__setattr__(
+            self,
+            "end",
+            _normalize_wire_name(self.end, "member end"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class WireGeometry:
+    """A validated graph of named spatial points and straight members."""
+
+    name: str
+    points: tuple[WirePoint, ...]
+    members: tuple[WireMember, ...]
+
+    def __post_init__(self) -> None:
+        normalized_name = _normalize_wire_name(self.name, "wire name")
+        points = tuple(self.points)
+        members = tuple(self.members)
+        if len(points) < 2:
+            raise ValueError("a wire requires at least two points")
+        if not members:
+            raise ValueError("a wire requires at least one member")
+        if any(type(point) is not WirePoint for point in points):
+            raise TypeError("wire points must contain only WirePoint values")
+        if any(type(member) is not WireMember for member in members):
+            raise TypeError("wire members must contain only WireMember values")
+
+        point_names: dict[str, WirePoint] = {}
+        point_name_keys: set[str] = set()
+        for point in points:
+            folded = point.name.casefold()
+            if folded in point_name_keys:
+                raise ValueError(f"duplicate wire point name: {point.name!r}")
+            point_name_keys.add(folded)
+            point_names[point.name] = point
+
+        member_names: set[str] = set()
+        endpoint_pairs: set[frozenset[str]] = set()
+        used_points: set[str] = set()
+        for member in members:
+            folded = member.name.casefold()
+            if folded in member_names:
+                raise ValueError(f"duplicate wire member name: {member.name!r}")
+            member_names.add(folded)
+            if member.start not in point_names or member.end not in point_names:
+                raise ValueError(
+                    f"wire member {member.name!r} references an unknown point"
+                )
+            if member.start == member.end:
+                raise ValueError(
+                    f"wire member {member.name!r} cannot use the same point twice"
+                )
+            start = point_names[member.start]
+            end = point_names[member.end]
+            if (start.x, start.y, start.z) == (end.x, end.y, end.z):
+                raise ValueError(f"wire member {member.name!r} has zero length")
+            pair = frozenset((member.start, member.end))
+            if pair in endpoint_pairs:
+                raise ValueError(
+                    f"wire members cannot duplicate endpoint pair: "
+                    f"{member.start!r}, {member.end!r}"
+                )
+            endpoint_pairs.add(pair)
+            used_points.update((member.start, member.end))
+
+        unused = set(point_names) - used_points
+        if unused:
+            raise ValueError(
+                "every wire point must participate in a member: "
+                + ", ".join(sorted(unused))
+            )
+        object.__setattr__(self, "name", normalized_name)
+        object.__setattr__(self, "points", points)
+        object.__setattr__(self, "members", members)
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,7 +338,7 @@ PRIMITIVE_GEOMETRY_TYPES = (
     BoxGeometry,
     CylinderGeometry,
 )
-BASE_GEOMETRY_TYPES = (*PRIMITIVE_GEOMETRY_TYPES, SketchGeometry)
+BASE_GEOMETRY_TYPES = (*PRIMITIVE_GEOMETRY_TYPES, SketchGeometry, WireGeometry)
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,9 +467,11 @@ class BooleanGeometry:
             self.tool_geometry, supported
         ):
             raise TypeError("布尔操作需要两个已有几何")
-        if geometry_dimension(self.object_geometry) != geometry_dimension(
-            self.tool_geometry
-        ):
+        object_dimension = geometry_dimension(self.object_geometry)
+        tool_dimension = geometry_dimension(self.tool_geometry)
+        if object_dimension == 1:
+            raise ValueError("布尔操作不支持一维线框几何")
+        if object_dimension != tool_dimension:
             raise ValueError("布尔操作的主体和工具体维度必须一致")
         object.__setattr__(self, "name", normalized_name)
 
@@ -347,6 +479,7 @@ class BooleanGeometry:
 NativeGeometry = (
     PrimitiveGeometry
     | SketchGeometry
+    | WireGeometry
     | MovedGeometry
     | RotatedGeometry
     | ExtrudedGeometry
@@ -355,6 +488,7 @@ NativeGeometry = (
 NATIVE_GEOMETRY_TYPES = (
     *PRIMITIVE_GEOMETRY_TYPES,
     SketchGeometry,
+    WireGeometry,
     MovedGeometry,
     RotatedGeometry,
     ExtrudedGeometry,
@@ -362,7 +496,7 @@ NATIVE_GEOMETRY_TYPES = (
 )
 
 
-def geometry_dimension(recipe: NativeGeometry) -> Literal[2, 3]:
+def geometry_dimension(recipe: NativeGeometry) -> Literal[1, 2, 3]:
     """Return the topological dimension of a native geometry recipe."""
     if isinstance(recipe, BooleanGeometry):
         return geometry_dimension(recipe.object_geometry)
@@ -370,6 +504,8 @@ def geometry_dimension(recipe: NativeGeometry) -> Literal[2, 3]:
         return 3
     if isinstance(recipe, (MovedGeometry, RotatedGeometry)):
         return geometry_dimension(recipe.base)
+    if isinstance(recipe, WireGeometry):
+        return 1
     return 3 if isinstance(recipe, (BoxGeometry, CylinderGeometry)) else 2
 
 
@@ -393,5 +529,8 @@ __all__ = [
     "SketchContour",
     "SketchGeometry",
     "SketchRectangle",
+    "WireGeometry",
+    "WireMember",
+    "WirePoint",
     "geometry_dimension",
 ]

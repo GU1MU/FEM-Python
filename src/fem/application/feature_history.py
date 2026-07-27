@@ -17,6 +17,7 @@ from fem.geometry.recipes import (
     RectangleGeometry,
     RotatedGeometry,
     SketchGeometry,
+    WireGeometry,
 )
 
 from .definitions import FeatureRecord
@@ -40,7 +41,9 @@ def derive_feature_history(recipe: NativeGeometry) -> tuple[FeatureRecord, ...]:
         )
 
     def visit(item: NativeGeometry) -> None:
-        if isinstance(item, SketchGeometry):
+        if isinstance(item, WireGeometry):
+            add("Wire", derive_geometry_feature_rows(item)[0])
+        elif isinstance(item, SketchGeometry):
             add("Sketch", derive_geometry_feature_rows(item)[0])
         elif isinstance(item, MovedGeometry):
             visit(item.base)
@@ -81,6 +84,8 @@ def derive_geometry_feature_rows(
             f"草图  轮廓={len(recipe.contours)}，材料={material_count}，"
             f"切除={cut_count}",
         )
+    if isinstance(recipe, WireGeometry):
+        return (f"线框  节点={len(recipe.points)}，杆件={len(recipe.members)}",)
     if isinstance(recipe, MovedGeometry):
         return derive_geometry_feature_rows(recipe.base) + (
             f"移动  X={recipe.dx:g}，Y={recipe.dy:g}，Z={recipe.dz:g}",

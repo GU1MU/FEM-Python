@@ -39,6 +39,7 @@ from .recipes import (
     RectangleGeometry,
     RotatedGeometry,
     SketchGeometry,
+    WireGeometry,
     geometry_dimension,
 )
 
@@ -64,6 +65,7 @@ class LogicalEntity:
     semantic_role: str
     selectable: bool = True
     diagnostic_code: str | None = None
+    topology_links: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.kind not in _ENTITY_KINDS:
@@ -74,8 +76,10 @@ class LogicalEntity:
                 f"Logical {self.kind} entities must have CAD dimension "
                 f"{expected_dimension}"
             )
-        if self.kind == "body" and self.dimension not in {2, 3}:
-            raise ValueError("Logical body entities must have CAD dimension 2 or 3")
+        if self.kind == "body" and self.dimension not in {1, 2, 3}:
+            raise ValueError(
+                "Logical body entities must have CAD dimension 1, 2, or 3"
+            )
         if not self.logical_id.startswith(f"{self.kind}:"):
             raise ValueError(
                 f"Logical id {self.logical_id!r} must start with {self.kind!r}"
@@ -107,7 +111,7 @@ class TopologyDiagnostic:
 class TopologySignature:
     """Hashable structural signature independent of recipe dimensions and tags."""
 
-    dimension: Literal[2, 3]
+    dimension: Literal[1, 2, 3]
     entity_keys: tuple[tuple[EntityKind, str, str, bool], ...]
     exact: bool
 
@@ -133,6 +137,7 @@ class TopologyFingerprintEntity:
     logical_id: str
     semantic_role: str
     selectable: bool
+    topology_links: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         reference = LogicalEntityRef(self.logical_id)
@@ -145,13 +150,18 @@ class TopologyFingerprintEntity:
             raise ValueError("fingerprint semantic role must be a non-empty string")
         if type(self.selectable) is not bool:
             raise TypeError("fingerprint selectable must be a boolean")
+        if type(self.topology_links) is not tuple or any(
+            type(link) is not str or not link.strip()
+            for link in self.topology_links
+        ):
+            raise TypeError("fingerprint topology links must be non-empty strings")
 
 
 @dataclass(frozen=True, slots=True)
 class TopologyFingerprint:
     """Canonical structured evidence for one logical topology contract."""
 
-    dimension: Literal[2, 3]
+    dimension: Literal[1, 2, 3]
     exact: bool
     entities: tuple[TopologyFingerprintEntity, ...]
     contract: int = TOPOLOGY_REFERENCE_CONTRACT
@@ -169,9 +179,9 @@ class TopologyFingerprint:
         if (
             isinstance(self.dimension, bool)
             or not isinstance(self.dimension, int)
-            or self.dimension not in {2, 3}
+            or self.dimension not in {1, 2, 3}
         ):
-            raise ValueError("topology fingerprint dimension must be 2 or 3")
+            raise ValueError("topology fingerprint dimension must be 1, 2, or 3")
         if type(self.exact) is not bool:
             raise TypeError("topology fingerprint exact must be a boolean")
         records = tuple(self.entities)
@@ -253,7 +263,7 @@ class RecipeTopology:
     """Logical entities, signature, transition, and diagnostics for one recipe."""
 
     recipe_type: str
-    dimension: Literal[2, 3]
+    dimension: Literal[1, 2, 3]
     entities: tuple[LogicalEntity, ...]
     signature: TopologySignature
     transition: TopologyTransition
@@ -316,6 +326,8 @@ def describe_recipe_topology(recipe: NativeGeometry) -> RecipeTopology:
         return _box_topology(recipe)
     if isinstance(recipe, CylinderGeometry):
         return _cylinder_topology(recipe)
+    if isinstance(recipe, WireGeometry):
+        return _wire_topology(recipe)
     if isinstance(recipe, SketchGeometry):
         return _sketch_topology(recipe)
     if isinstance(recipe, MovedGeometry):
@@ -345,6 +357,7 @@ def topology_fingerprint_from_topology(
                 entity.logical_id,
                 entity.semantic_role,
                 entity.selectable,
+                entity.topology_links,
             )
             for entity in topology.entities
         ),
@@ -387,6 +400,7 @@ def _logical_entity(
     dimension: Literal[0, 1, 2, 3] | None = None,
     selectable: bool = True,
     diagnostic_code: str | None = None,
+    topology_links: tuple[str, ...] = (),
 ) -> LogicalEntity:
     if dimension is None:
         if kind == "body":
@@ -399,6 +413,7 @@ def _logical_entity(
         role,
         selectable,
         diagnostic_code,
+        topology_links,
     )
 
 
@@ -604,6 +619,38 @@ def _cylinder_topology(recipe: CylinderGeometry) -> RecipeTopology:
         _cylinder_entities(),
         exact=True,
         operation="primitive.cylinder",
+    )
+
+
+def _wire_topology(recipe: WireGeometry) -> RecipeTopology:
+    entities = (
+        tuple(
+            _logical_entity("point", point.name, "wire.point")
+            for point in recipe.points
+        )
+        + tuple(
+            _logical_entity(
+                "edge",
+                member.name,
+                "wire.member",
+                topology_links=tuple(
+                    sorted(
+                        (
+                            f"point:{member.start}",
+                            f"point:{member.end}",
+                        )
+                    )
+                ),
+            )
+            for member in recipe.members
+        )
+        + (_logical_entity("body", "domain", "domain", dimension=1),)
+    )
+    return _make_topology(
+        recipe,
+        entities,
+        exact=True,
+        operation="primitive.wire",
     )
 
 
@@ -972,7 +1019,18 @@ def _unknown_topology(
     source_signatures: tuple[tuple[str, TopologySignature], ...] = (),
 ) -> RecipeTopology:
     dimension = geometry_dimension(recipe)
-    if dimension == 2:
+    if dimension == 1:
+        entities = (
+            _logical_entity(
+                "body",
+                "result",
+                "result.unproven",
+                dimension=1,
+                selectable=False,
+                diagnostic_code=code,
+            ),
+        )
+    elif dimension == 2:
         entities = (
             _logical_entity(
                 "face",

@@ -40,6 +40,9 @@ from fem.geometry.recipes import (
     SketchCircle,
     SketchGeometry,
     SketchRectangle,
+    WireGeometry,
+    WireMember,
+    WirePoint,
 )
 from fem.geometry.references import LogicalEntityRef
 from fem.io._project_errors import ProjectDecodeError, ProjectEncodeError
@@ -128,6 +131,7 @@ def test_v2_native_authoring_round_trip_is_canonical_and_utf8():
     assert "\"feature_history\"" not in dumped
     assert "\"local_size\"" not in dumped
     assert "\"entity_id\"" not in dumped
+    assert "\"line_element_type\"" not in dumped
     assert dumps_project_v2(reopened) == dumped
 
 
@@ -200,6 +204,25 @@ def test_v2_nonexact_recipe_without_geometry_references_round_trips():
 
     assert reopened.geometry_recipe == _nonexact_recipe()
     assert encode_project_v2(reopened) == payload
+
+
+def test_v2_rejects_wire_snapshots_without_emitting_partial_geometry() -> None:
+    recipe = WireGeometry(
+        "Wire",
+        (WirePoint("P1", 0.0, 0.0), WirePoint("P2", 1.0, 0.0)),
+        (WireMember("M1", "P1", "P2"),),
+    )
+    snapshot = replace(
+        _geometry_only_snapshot(recipe),
+        mesh_settings=MeshSettings(
+            0.25,
+            cell_shape="line",
+            line_element_type="Beam2",
+        ),
+    )
+
+    with pytest.raises(ProjectV2EncodeError, match="WireGeometry"):
+        encode_project_v2(snapshot)
 
 
 @pytest.mark.parametrize(

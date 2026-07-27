@@ -37,6 +37,9 @@ from .recipes import (
     SketchContour,
     SketchGeometry,
     SketchRectangle,
+    WireGeometry,
+    WireMember,
+    WirePoint,
     geometry_dimension,
 )
 from .measurements import (
@@ -99,6 +102,9 @@ __all__ = [
     "SweepFrame",
     "TargetRadiusResolutionError",
     "WireRef",
+    "WireGeometry",
+    "WireMember",
+    "WirePoint",
     "axis_aligned_rectangle",
     "expand_sketch_recipe",
     "geometry_dimension",

@@ -5,6 +5,7 @@ import pytest
 from fem.geometry.recipe_topology import (
     can_preserve_logical_references,
     describe_recipe_topology,
+    topology_fingerprint_for_recipe,
 )
 from fem.geometry.recipes import (
     BooleanGeometry,
@@ -19,7 +20,29 @@ from fem.geometry.recipes import (
     SketchCircle,
     SketchGeometry,
     SketchRectangle,
+    WireGeometry,
+    WireMember,
+    WirePoint,
 )
+
+
+def _wire(points=None, members=None) -> WireGeometry:
+    return WireGeometry(
+        "Wire",
+        (
+            WirePoint("P1", 0.0, 0.0, 0.0),
+            WirePoint("P2", 1.0, 0.0, 0.0),
+            WirePoint("P3", 1.0, 2.0, 0.0),
+        )
+        if points is None
+        else points,
+        (
+            WireMember("M1", "P1", "P2"),
+            WireMember("M2", "P2", "P3"),
+        )
+        if members is None
+        else members,
+    )
 
 
 def _counts(topology) -> tuple[int, int, int, int]:
@@ -490,3 +513,94 @@ def test_signature_is_hashable_and_queries_reject_unknown_kinds() -> None:
 def test_unsupported_objects_are_rejected_without_cad_execution() -> None:
     with pytest.raises(TypeError, match="Unsupported native geometry recipe"):
         describe_recipe_topology(object())  # type: ignore[arg-type]
+
+
+def test_wire_exposes_named_points_members_and_one_domain_body() -> None:
+    topology = describe_recipe_topology(_wire())
+
+    assert topology.dimension == 1
+    assert topology.exact is True
+    assert _counts(topology) == (3, 2, 0, 1)
+    assert tuple(entity.logical_id for entity in topology.entities_of("point")) == (
+        "point:P1",
+        "point:P2",
+        "point:P3",
+    )
+    assert tuple(entity.logical_id for entity in topology.entities_of("edge")) == (
+        "edge:M1",
+        "edge:M2",
+    )
+    assert topology.entity("point:P1").semantic_role == "wire.point"
+    assert topology.entity("edge:M1").semantic_role == "wire.member"
+    assert topology.entity("body:domain").dimension == 1
+    assert topology.entity("body:domain").semantic_role == "domain"
+    assert topology.transition.operation == "primitive.wire"
+
+
+def test_wire_fingerprint_is_order_independent_but_identity_sensitive() -> None:
+    original = _wire()
+    reordered = _wire(
+        points=(
+            WirePoint("P3", 1.0, 2.0, 0.0),
+            WirePoint("P1", 0.0, 0.0, 0.0),
+            WirePoint("P2", 1.0, 0.0, 0.0),
+        ),
+        members=(
+            WireMember("M2", "P2", "P3"),
+            WireMember("M1", "P1", "P2"),
+        ),
+    )
+    moved = WireGeometry(
+        "Other",
+        (
+            WirePoint("P1", 10.0, 10.0, 0.0),
+            WirePoint("P2", 11.0, 10.0, 0.0),
+            WirePoint("P3", 11.0, 12.0, 0.0),
+        ),
+        original.members,
+    )
+    renamed = WireGeometry(
+        "Other",
+        (
+            WirePoint("P1", 0.0, 0.0, 0.0),
+            WirePoint("P2", 1.0, 0.0, 0.0),
+            WirePoint("P3-renamed", 1.0, 2.0, 0.0),
+        ),
+        (
+            WireMember("M1", "P1", "P2"),
+            WireMember("M2", "P2", "P3-renamed"),
+        ),
+    )
+    reversed_member = _wire(
+        members=(
+            WireMember("M1", "P1", "P2"),
+            WireMember("M2", "P3", "P2"),
+        )
+    )
+    reconnected = _wire(
+        members=(
+            WireMember("M1", "P1", "P2"),
+            WireMember("M2", "P1", "P3"),
+        )
+    )
+
+    assert topology_fingerprint_for_recipe(original) == (
+        topology_fingerprint_for_recipe(reordered)
+    )
+    assert topology_fingerprint_for_recipe(original) == (
+        topology_fingerprint_for_recipe(reversed_member)
+    )
+    assert can_preserve_logical_references(original, reordered)
+    assert can_preserve_logical_references(original, moved)
+    assert not can_preserve_logical_references(original, renamed)
+    assert not can_preserve_logical_references(original, reconnected)
+
+
+def test_wire_rigid_transforms_preserve_logical_references() -> None:
+    original = _wire()
+    transformed = RotatedGeometry(MovedGeometry(original, 3.0, 4.0, 5.0), "y", 35.0)
+
+    assert describe_recipe_topology(transformed).entities == (
+        describe_recipe_topology(original).entities
+    )
+    assert can_preserve_logical_references(original, transformed)

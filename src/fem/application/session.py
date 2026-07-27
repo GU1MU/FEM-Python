@@ -569,6 +569,15 @@ class ModelSession:
                     "derived from geometry_recipe"
                 )
             if geometry_recipe is not None:
+                if (
+                    mesh_settings is not None
+                    and type(mesh_settings) is MeshSettings
+                    and (
+                        geometry_dimension(geometry_recipe) == 1
+                        or mesh_settings.cell_shape == "line"
+                    )
+                ):
+                    _validate_explicit_mesh_settings(mesh_settings, geometry_recipe)
                 validate_native_project_inputs(
                     geometry_recipe,
                     mesh_settings,
@@ -808,6 +817,15 @@ class ModelSession:
         self._require_native()
         owned = deepcopy(settings)
         if self._geometry_recipe is not None:
+            if (
+                owned is not None
+                and type(owned) is MeshSettings
+                and (
+                    geometry_dimension(self._geometry_recipe) == 1
+                    or owned.cell_shape == "line"
+                )
+            ):
+                _validate_explicit_mesh_settings(owned, self._geometry_recipe)
             validate_native_project_inputs(
                 self._geometry_recipe,
                 owned,
@@ -2639,14 +2657,29 @@ def _transition_mesh_settings(
         raise TypeError("existing mesh_settings must be MeshSettings or None")
 
     controls = current.local_controls if preserve_references else ()
+    if geometry_dimension(recipe) == 1:
+        if current.cell_shape == "line":
+            transitioned = replace(deepcopy(current), local_controls=controls)
+            effects = set()
+            if current.local_controls and not controls:
+                effects.add(TransitionEffect.LOCAL_CONTROLS_CLEARED)
+            return transitioned, frozenset(effects)
+        effects = {TransitionEffect.MESH_SHAPE_NORMALIZED}
+        if current.local_controls:
+            effects.add(TransitionEffect.LOCAL_CONTROLS_CLEARED)
+        return None, frozenset(effects)
+
     transitioned = replace(deepcopy(current), local_controls=controls)
     effects = set()
     if current.local_controls and not controls:
         effects.add(TransitionEffect.LOCAL_CONTROLS_CLEARED)
     if not _mesh_shape_supported(transitioned.cell_shape, recipe):
+        updates = {"cell_shape": _default_cell_shape(recipe)}
+        if geometry_dimension(recipe) != 1:
+            updates["line_element_type"] = None
         transitioned = replace(
             transitioned,
-            cell_shape=_default_cell_shape(recipe),
+            **updates,
         )
         effects.add(TransitionEffect.MESH_SHAPE_NORMALIZED)
     return transitioned, frozenset(effects)
@@ -2671,6 +2704,8 @@ def _validate_explicit_mesh_settings(
 
 def _mesh_shape_supported(cell_shape: str, recipe: Any) -> bool:
     dimension = geometry_dimension(recipe)
+    if dimension == 1:
+        return cell_shape == "line"
     if dimension == 2:
         return cell_shape in {"triangle", "quadrilateral"}
     if cell_shape == "tetrahedron":
@@ -2681,7 +2716,9 @@ def _mesh_shape_supported(cell_shape: str, recipe: Any) -> bool:
     )
 
 
-def _default_mesh_settings(recipe: Any) -> MeshSettings:
+def _default_mesh_settings(recipe: Any) -> MeshSettings | None:
+    if geometry_dimension(recipe) == 1:
+        return None
     return MeshSettings(
         recipe_characteristic_size(recipe) / 10.0,
         cell_shape=_default_cell_shape(recipe),
@@ -2689,11 +2726,10 @@ def _default_mesh_settings(recipe: Any) -> MeshSettings:
 
 
 def _default_cell_shape(recipe: Any) -> str:
-    return (
-        "tetrahedron"
-        if geometry_dimension(recipe) == 3
-        else "triangle"
-    )
+    dimension = geometry_dimension(recipe)
+    if dimension == 1:
+        return "line"
+    return "tetrahedron" if dimension == 3 else "triangle"
 
 
 def _has_local_mesh_controls(settings: Any) -> bool:

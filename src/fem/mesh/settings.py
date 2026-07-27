@@ -86,9 +86,10 @@ class MeshSettings:
     size: float
     order: Literal[1, 2] = 1
     cell_shape: Literal[
-        "triangle", "quadrilateral", "tetrahedron", "hexahedron"
+        "line", "triangle", "quadrilateral", "tetrahedron", "hexahedron"
     ] = "triangle"
     local_controls: tuple[LocalMeshControl, ...] = ()
+    line_element_type: Literal["Truss2", "Beam2"] | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -100,13 +101,30 @@ class MeshSettings:
             raise ValueError("全局网格尺寸必须大于零")
         if isinstance(self.order, bool) or self.order not in (1, 2):
             raise ValueError("单元阶次只能是一阶或二阶")
-        if self.cell_shape not in {
+        if type(self.cell_shape) is not str or self.cell_shape not in {
+            "line",
             "triangle",
             "quadrilateral",
             "tetrahedron",
             "hexahedron",
         }:
-            raise ValueError("网格类型只能是三角形、四边形、四面体或六面体")
+            raise ValueError(
+                "网格类型只能是线、三角形、四边形、四面体或六面体"
+            )
+        if self.cell_shape == "line":
+            if type(self.line_element_type) is not str or self.line_element_type not in {
+                "Truss2",
+                "Beam2",
+            }:
+                raise ValueError(
+                    "线网格必须显式指定 Truss2 或 Beam2 单元类型"
+                )
+            if self.order != 1:
+                raise ValueError("线网格只支持一阶两节点单元")
+        elif self.line_element_type is not None:
+            raise ValueError(
+                "只有线网格可以指定 Truss2 或 Beam2 单元类型"
+            )
         controls = tuple(self.local_controls)
         if any(type(control) is not LocalMeshControl for control in controls):
             raise TypeError(

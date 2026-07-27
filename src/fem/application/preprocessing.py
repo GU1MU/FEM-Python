@@ -121,6 +121,10 @@ def generate_fem_model(
         settings,
         named_regions,
     )
+    if geometry_dimension(recipe) == 1:
+        raise NotImplementedError(
+            "native 1D preprocessing is not enabled until Phase 2"
+        )
     region_descriptors = validate_native_authoring_context(
         recipe,
         regions,

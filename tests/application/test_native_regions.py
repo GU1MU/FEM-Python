@@ -25,6 +25,9 @@ from fem.geometry.recipes import (
     ExtrudedGeometry,
     PlateWithHoleGeometry,
     RectangleGeometry,
+    WireGeometry,
+    WireMember,
+    WirePoint,
 )
 
 
@@ -197,3 +200,54 @@ def test_authoring_context_validates_target_radius_and_requirements() -> None:
         )
         is RecipeRegionSelector.HOLE
     )
+
+
+def test_wire_regions_expose_points_as_nodes_and_members_as_elements() -> None:
+    recipe = WireGeometry(
+        "Wire",
+        (
+            WirePoint("P1", 0.0, 0.0),
+            WirePoint("P2", 1.0, 0.0),
+            WirePoint("P3", 1.0, 1.0),
+        ),
+        (
+            WireMember("M1", "P1", "P2"),
+            WireMember("M2", "P2", "P3"),
+        ),
+    )
+    regions = (
+        _Region("Node", (LogicalEntityRef("point:P1"),)),
+        _Region("Member", (LogicalEntityRef("edge:M1"),)),
+    )
+
+    descriptors = describe_native_regions(recipe, regions)
+
+    assert tuple(descriptor.name for descriptor in descriptors) == (
+        "DOMAIN",
+        "Member",
+        "Node",
+    )
+    assert next(item for item in descriptors if item.name == "DOMAIN").products == (
+        frozenset({"element_set"})
+    )
+    assert next(item for item in descriptors if item.name == "Node").products == (
+        frozenset({"node_set"})
+    )
+    assert next(item for item in descriptors if item.name == "Member").products == (
+        frozenset({"element_set"})
+    )
+
+
+def test_wire_target_radius_falloff_reports_unsupported_measure() -> None:
+    recipe = WireGeometry(
+        "Wire",
+        (WirePoint("P1", 0.0, 0.0), WirePoint("P2", 1.0, 0.0)),
+        (WireMember("M1", "P1", "P2"),),
+    )
+    control = SimpleNamespace(
+        target=LogicalEntityRef("edge:M1"),
+        falloff=SimpleNamespace(reference="target_radius"),
+    )
+
+    with pytest.raises(ValueError, match="target_radius.*not supported"):
+        validate_native_authoring_context(recipe, local_controls=(control,))
