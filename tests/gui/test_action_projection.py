@@ -130,7 +130,10 @@ def test_result_action_descriptors_use_canonical_export_keys_and_handlers() -> N
     descriptors = {item.key: item for item in ACTION_DESCRIPTORS}
 
     assert descriptors[GuiActionKey.FIELD].handler == ("show_result_display_dialog")
-    assert descriptors[GuiActionKey.QUERY].handler == "query_result"
+    assert (
+        descriptors[GuiActionKey.QUERY].handler
+        == "show_result_query_dialog"
+    )
     assert descriptors[GuiActionKey.EXPORT_CSV].handler == "export_csv"
     assert descriptors[GuiActionKey.EXPORT_VTK].handler == "export_vtk"
     assert descriptors[GuiActionKey.SCREENSHOT].handler == ("export_viewport_image")

@@ -853,6 +853,7 @@ class TypedResultQueryDialog(QDialog):
         self._element_ids = provider.snapshot.topology.element_ids
         self._last_query: ResultQuery | None = None
         self._displayed_generation: int | None = None
+        self._query_pending = False
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -938,6 +939,40 @@ class TypedResultQueryDialog(QDialog):
 
         return self._catalog
 
+    @property
+    def source(self) -> ResultSourceKey:
+        """返回 dialog 打开时绑定的完整结果来源。"""
+
+        return self._source
+
+    @property
+    def query_pending(self) -> bool:
+        """返回是否已有一个 typed query 正在执行。"""
+
+        return self._query_pending
+
+    def set_query_pending(self, pending: bool) -> None:
+        """在一个查询生命周期内冻结所有 query intent 控件。"""
+
+        if type(pending) is not bool:
+            raise TypeError("pending must be a bool")
+        self._query_pending = pending
+        enabled = not pending
+        self.association_combo.setEnabled(enabled)
+        self.field_combo.setEnabled(enabled)
+        self.component_combo.setEnabled(enabled)
+        self.ids_edit.setEnabled(enabled)
+        if pending:
+            self.result_summary.setText("正在查询……")
+        self._refresh_availability()
+
+    def set_query_message(self, message: str) -> None:
+        """显示不携带 records 的查询状态消息。"""
+
+        if type(message) is not str:
+            raise TypeError("message must be a string")
+        self.result_summary.setText(message.strip() or "结果查询未完成")
+
     def current_availability(self) -> FieldAvailability:
         """返回当前字段的 typed catalog entry。"""
 
@@ -993,6 +1028,8 @@ class TypedResultQueryDialog(QDialog):
     def request_query(self, *_args: object) -> None:
         """把 selection/query 交给外层，不在 dialog 内恢复或读取字段。"""
 
+        if self._query_pending:
+            return
         try:
             selection = self.current_selection()
             query = self.current_query()
@@ -1085,16 +1122,22 @@ class TypedResultQueryDialog(QDialog):
         QApplication.clipboard().setText(self._table_text("\t"))
 
     def _association_changed(self, *_args: object) -> None:
+        if self._query_pending:
+            return
         self._last_query = None
         self._sync_fields(emit_selection=True)
 
     def _field_changed(self, *_args: object) -> None:
+        if self._query_pending:
+            return
         self._last_query = None
         self._sync_components()
         self._refresh_availability()
         self._emit_selection_requested()
 
     def _component_changed(self, *_args: object) -> None:
+        if self._query_pending:
+            return
         self._last_query = None
         self._emit_selection_requested()
 
@@ -1170,7 +1213,8 @@ class TypedResultQueryDialog(QDialog):
             _typed_availability_text(availability)
         )
         self.query_button.setEnabled(
-            availability.state is not FieldState.UNAVAILABLE
+            not self._query_pending
+            and availability.state is not FieldState.UNAVAILABLE
         )
 
     def _emit_selection_requested(self) -> None:

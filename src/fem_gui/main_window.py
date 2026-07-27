@@ -10,7 +10,7 @@ from time import perf_counter
 from typing import Any, Callable
 
 import numpy as np
-from PySide6.QtCore import QSettings, Qt, QTimer
+from PySide6.QtCore import QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QGridLayout,
@@ -58,11 +58,15 @@ from fem.application.preprocessing import generate_fem_model
 from fem.application.results import (
     FieldAvailability,
     FieldState,
+    ResultQuery,
+    ResultQueryResult,
+    ResultQueryValidationError,
     ResultExportSnapshot,
     ResultMaterializationPatch,
     ResultProvider,
     ResultSourceKey,
     ScalarFieldSelection,
+    advance_materialization,
     build_solve_result_bundle,
     prepare_result_export_snapshot,
     project_scalar_field_topology,
@@ -138,9 +142,9 @@ from .geometry_preview import build_geometry_preview
 from .postprocessing_dialogs import (
     ContourSettingsDialog,
     ResultDisplaySettings,
-    ResultQueryDialog,
     TypedResultDisplayDialog,
     TypedResultDisplaySettings,
+    TypedResultQueryDialog,
 )
 from .preprocessing_dialogs import (
     BoxGeometryDialog,
@@ -215,6 +219,8 @@ def initial_display_policy(element_count: int, node_count: int) -> dict[str, boo
 class FEMMainWindow(QMainWindow):
     """只暴露当前内核已经实现的有限元工作流。"""
 
+    resultQueryCompleted = Signal(object)
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("有限元分析")
@@ -230,6 +236,9 @@ class FEMMainWindow(QMainWindow):
         self._pending_result_selection: ScalarFieldSelection | None = None
         self._pending_result_source: ResultSourceKey | None = None
         self._pending_result_generation: int | None = None
+        self._pending_result_query: ResultQuery | None = None
+        self._pending_result_query_source: ResultSourceKey | None = None
+        self._pending_result_query_generation: int | None = None
         self.result_data: ResultData | None = None
         self.inspection_service: InspectionService | None = None
         self._inspection_windows: list[QWidget] = []
@@ -1052,6 +1061,349 @@ class FEMMainWindow(QMainWindow):
         self._pending_result_selection = None
         self._pending_result_source = None
         self._pending_result_generation = None
+
+    def query_result(
+        self,
+        query: ResultQuery,
+    ) -> GuiCommandReceipt:
+        """Query one exact typed field without reading GUI selection state."""
+
+        return self._submit_result_query(query)
+
+    def _submit_result_query(
+        self,
+        query: ResultQuery,
+        *,
+        expected_source: ResultSourceKey | None = None,
+    ) -> GuiCommandReceipt:
+        command_id = self._next_command_id()
+        if type(query) is not ResultQuery:
+            return self._rejected_command(
+                command_id,
+                "command.type.invalid",
+                "query must be a ResultQuery",
+            )
+        if (
+            expected_source is not None
+            and type(expected_source) is not ResultSourceKey
+        ):
+            return self._rejected_command(
+                command_id,
+                "command.type.invalid",
+                "expected_source must be a ResultSourceKey or None",
+            )
+        provider = self._current_result_provider()
+        if provider is None:
+            return self._rejected_command(
+                command_id,
+                "result.current.unavailable",
+                "there is no current accepted result provider",
+            )
+        if (
+            expected_source is not None
+            and provider.source != expected_source
+        ):
+            return self._rejected_command(
+                command_id,
+                "result.query.source.stale",
+                "the query dialog source is no longer current",
+            )
+        if self.busy:
+            return self._rejected_command(
+                command_id,
+                "task.busy",
+                "a background task is already running",
+            )
+
+        try:
+            availability = provider.validate_query(query)
+        except ResultQueryValidationError as error:
+            return self._rejected_command(
+                command_id,
+                error.code,
+                error,
+            )
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            return self._rejected_command(
+                command_id,
+                "result.query.validation.rejected",
+                error,
+            )
+
+        if availability.state is FieldState.LAZY:
+            return self._begin_result_query_materialization(
+                command_id,
+                provider,
+                query,
+            )
+        if availability.state is not FieldState.READY:
+            return self._rejected_command(
+                command_id,
+                "result.query.field.unavailable",
+                "the selected query field is unavailable",
+            )
+
+        try:
+            result = provider.query(query)
+            self._validate_result_query_result(
+                provider,
+                query,
+                result,
+            )
+        except ResultQueryValidationError as error:
+            return self._rejected_command(
+                command_id,
+                error.code,
+                error,
+            )
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            return self._rejected_command(
+                command_id,
+                "result.query.rejected",
+                error,
+            )
+
+        outcome = self._result_query_outcome(result)
+        self.resultQueryCompleted.emit(result)
+        return GuiCommandReceipt.accepted(
+            command_id,
+            outcome=outcome,
+        )
+
+    def _begin_result_query_materialization(
+        self,
+        command_id: int,
+        provider: ResultProvider,
+        query: ResultQuery,
+    ) -> GuiCommandReceipt:
+        """Materialize one lazy query field through the Session CAS gate."""
+
+        task = None
+        try:
+            task = self.session.prepare_result_materialization(
+                provider.source.run_id,
+                (query.field_key,),
+            )
+            completion = GuiCommandCompletion(command_id)
+            accepted_delta: SessionDelta | None = None
+            accepted_result: ResultQueryResult | None = None
+            self._pending_result_query = query
+            self._pending_result_query_source = (
+                task.materialization.source
+            )
+            self._pending_result_query_generation = (
+                task.materialization.generation
+            )
+            self._update_action_states()
+
+            def workload(
+                context: TaskContext,
+            ) -> ResultMaterializationPatch:
+                context.report("正在按需加载查询字段……")
+                detached_provider = restore_result_provider(
+                    task.record.result,
+                    task.materialization,
+                )
+                return detached_provider.materialize(
+                    task.field_keys,
+                    cancellation=context,
+                )
+
+            def apply_result(value: object) -> TaskApplyOutcome:
+                nonlocal accepted_delta, accepted_result
+                if type(value) is not ResultMaterializationPatch:
+                    raise TypeError(
+                        "result query worker must return "
+                        "ResultMaterializationPatch"
+                    )
+                delta = self.session.accept_result_materialization(
+                    task.token,
+                    value,
+                )
+                if not delta.accepted:
+                    status = delta.token_status
+                    message = delta.reason or (
+                        status.value
+                        if status is not None
+                        else "result query materialization was rejected"
+                    )
+                    if status in {
+                        TokenStatus.WRONG_KIND,
+                        TokenStatus.INVALID_STATE,
+                    }:
+                        return TaskApplyOutcome.rejected(message)
+                    return TaskApplyOutcome.stale(message)
+
+                accepted_delta = delta
+                try:
+                    materialization = advance_materialization(
+                        task.materialization,
+                        value,
+                    )
+                    accepted_provider = restore_result_provider(
+                        task.record.result,
+                        materialization,
+                    )
+                    result = accepted_provider.query(query)
+                    self._validate_result_query_result(
+                        accepted_provider,
+                        query,
+                        result,
+                    )
+                except Exception:
+                    self._project_accepted_result_query_delta(delta)
+                    raise
+
+                accepted_result = result
+                return TaskApplyOutcome.accepted(
+                    self._result_query_outcome(result)
+                )
+
+            def succeeded(value: object) -> None:
+                if (
+                    type(value) is not GuiCommandOutcome
+                    or accepted_delta is None
+                    or accepted_result is None
+                ):
+                    raise RuntimeError(
+                        "accepted result query has no typed outcome"
+                    )
+                if not self._project_accepted_result_query_delta(
+                    accepted_delta
+                ):
+                    raise RuntimeError(
+                        "accepted result query could not be projected"
+                    )
+                current = self._current_result_provider()
+                if (
+                    current is not None
+                    and current.source == accepted_result.source
+                    and current.snapshot.generation
+                    == accepted_result.materialization_generation
+                ):
+                    self.resultQueryCompleted.emit(accepted_result)
+                self._refresh_job_manager()
+                self.status_panel.set_state(
+                    "结果查询完成",
+                    4000,
+                )
+
+            started = self._start_task(
+                workload,
+                succeeded,
+                "结果查询失败",
+                lambda message: self._session_task_failed(
+                    task.token,
+                    "结果查询失败",
+                    message,
+                ),
+                task_name="结果查询",
+                on_cancelled=lambda: self._session_task_cancelled(
+                    task.token
+                ),
+                apply_result=apply_result,
+                completion=completion,
+            )
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            if task is not None:
+                failure = self.session.accept_task_failed(
+                    task.token,
+                    error,
+                )
+                self._apply_revision_neutral_task_receipt(failure)
+            self._clear_pending_result_query_materialization()
+            self._update_action_states()
+            return self._rejected_command(
+                command_id,
+                "result.query.materialization.rejected",
+                error,
+            )
+
+        if not started:
+            cancelled = self.session.accept_task_cancelled(task.token)
+            self._apply_revision_neutral_task_receipt(cancelled)
+            self._clear_pending_result_query_materialization()
+            self._update_action_states()
+            return self._rejected_command(
+                command_id,
+                "task.start.rejected",
+                "the result query task could not be started",
+            )
+
+        def finished(terminal: TaskCompletion) -> None:
+            self._finish_result_query_materialization(
+                query,
+                task.materialization.source,
+                task.materialization.generation,
+                terminal,
+            )
+
+        completion.observe(finished)
+        return GuiCommandReceipt.pending(command_id, completion)
+
+    def _finish_result_query_materialization(
+        self,
+        query: ResultQuery,
+        source: ResultSourceKey,
+        generation: int,
+        _terminal: TaskCompletion,
+    ) -> None:
+        if (
+            self._pending_result_query != query
+            or self._pending_result_query_source != source
+            or self._pending_result_query_generation != generation
+        ):
+            return
+        self._clear_pending_result_query_materialization()
+        self._update_action_states()
+
+    def _clear_pending_result_query_materialization(self) -> None:
+        self._pending_result_query = None
+        self._pending_result_query_source = None
+        self._pending_result_query_generation = None
+
+    def _project_accepted_result_query_delta(
+        self,
+        delta: SessionDelta,
+    ) -> bool:
+        if delta.changed or delta.invalidated:
+            return self._apply_session_delta(delta)
+        return self._apply_revision_neutral_task_receipt(delta)
+
+    @staticmethod
+    def _validate_result_query_result(
+        provider: ResultProvider,
+        query: ResultQuery,
+        result: ResultQueryResult,
+    ) -> None:
+        if type(result) is not ResultQueryResult:
+            raise TypeError("provider query must return ResultQueryResult")
+        if (
+            result.source != provider.source
+            or result.materialization_generation
+            != provider.snapshot.generation
+            or result.query != query
+        ):
+            raise ValueError(
+                "query result must match the provider source, "
+                "generation, and exact query"
+            )
+
+    @staticmethod
+    def _result_query_outcome(
+        result: ResultQueryResult,
+    ) -> GuiCommandOutcome:
+        return GuiCommandOutcome(
+            source=result.source,
+            materialization_generation=(
+                result.materialization_generation
+            ),
+            selection=ScalarFieldSelection(
+                result.query.field_key,
+                result.query.component,
+            ),
+            record_count=len(result.records),
+        )
 
     def export_result_csv(
         self,
@@ -2221,9 +2573,11 @@ class FEMMainWindow(QMainWindow):
             ),
             materialization_pending=(
                 self._pending_result_selection is not None
+                or self._pending_result_query is not None
             ),
             result_task_busy=(
                 self._pending_result_selection is not None
+                or self._pending_result_query is not None
             ),
             viewport_scene_available=(
                 provider is not None
@@ -6059,37 +6413,85 @@ class FEMMainWindow(QMainWindow):
         self.status_panel.set_step(self._current_step_name)
         self._update_action_states()
 
-    def query_result(self) -> None:
-        if self._current_result_projection() is None or self.geometry is None:
-            return
-        prefixes = self.result_data.available_stress_prefixes()
-        if any(
-            not scalar.ready
-            for key, scalar in self.result_data.fields.items()
-            if key.split(":", 1)[0] in prefixes
-        ):
-            self._ensure_result_stress(prefixes, self.query_result)
-            return
-        selected_kind = None
-        selected_id = None
-        if self.selection.node_id is not None:
-            selected_kind, selected_id = "node", self.selection.node_id
-        elif self.selection.element_id is not None:
-            selected_kind, selected_id = "element", self.selection.element_id
-        dialog = ResultQueryDialog(
-            self.result_data,
-            step_name=self._current_step_name or "分析结果",
-            node_ids=tuple(self.geometry.node_id_to_point_index),
-            element_ids=tuple(self.geometry.element_id_to_cell_index),
-            selected_kind=selected_kind,
-            selected_id=selected_id,
-            parent=self,
-        )
-        dialog.locateRequested.connect(self._on_query_locate)
-        dialog.exec()
+    def show_result_query_dialog(self) -> None:
+        """Open a catalog-only query dialog without eager recovery."""
 
-    def _on_query_locate(self, kind: str, identifier: int) -> None:
-        self._on_viewport_pick(kind, identifier)
+        provider = self._current_result_provider()
+        if provider is None:
+            return
+        source = provider.source
+        dialog = TypedResultQueryDialog(provider, parent=self)
+        closed = False
+        active_query: ResultQuery | None = None
+
+        def deliver_result(result: object) -> None:
+            if (
+                closed
+                or type(result) is not ResultQueryResult
+                or result.query != active_query
+            ):
+                return
+            current = self._current_result_provider()
+            if (
+                current is None
+                or current.source != source
+                or result.source != source
+                or current.snapshot.generation
+                != result.materialization_generation
+            ):
+                return
+            dialog.set_query_result(result)
+
+        def submit_query(query: object) -> None:
+            nonlocal active_query
+            if type(query) is not ResultQuery:
+                return
+            active_query = query
+            dialog.set_query_pending(True)
+            receipt = self._submit_result_query(
+                query,
+                expected_source=source,
+            )
+            if receipt.status is GuiCommandStatus.REJECTED:
+                dialog.set_query_pending(False)
+                diagnostic = receipt.diagnostic
+                if diagnostic is not None:
+                    dialog.set_query_message(diagnostic.message)
+                    self.status_panel.set_state(
+                        diagnostic.message,
+                        5000,
+                    )
+                return
+            if receipt.status is GuiCommandStatus.ACCEPTED:
+                dialog.set_query_pending(False)
+                return
+
+            completion = receipt.completion
+            if completion is None:
+                dialog.set_query_pending(False)
+                return
+
+            def query_finished(terminal: TaskCompletion) -> None:
+                if closed:
+                    return
+                dialog.set_query_pending(False)
+                if terminal.state is not BackgroundTaskState.SUCCEEDED:
+                    dialog.set_query_message(
+                        terminal.message or "结果查询未完成"
+                    )
+
+            completion.observe(query_finished)
+
+        self.resultQueryCompleted.connect(deliver_result)
+        dialog.queryRequested.connect(submit_query)
+        try:
+            dialog.exec()
+        finally:
+            closed = True
+            try:
+                self.resultQueryCompleted.disconnect(deliver_result)
+            except (RuntimeError, TypeError):
+                pass
 
     def export_csv(self) -> None:
         export_identity = self._current_result_export_identity("导出 CSV 失败")

@@ -219,6 +219,42 @@ def test_ready_and_lazy_selections_emit_exact_typed_requests_without_recovery(
     dialog.close()
 
 
+def test_pending_query_freezes_intent_without_overwriting_latest_query(
+    result_provider,
+) -> None:
+    _application()
+    _result, provider = result_provider
+    dialog = TypedResultQueryDialog(provider)
+    queries: list[ResultQuery] = []
+    dialog.queryRequested.connect(queries.append)
+    dialog.request_query()
+    submitted = queries[-1]
+
+    dialog.set_query_pending(True)
+
+    assert dialog.source == provider.source
+    assert dialog.query_pending
+    assert not dialog.association_combo.isEnabled()
+    assert not dialog.field_combo.isEnabled()
+    assert not dialog.component_combo.isEnabled()
+    assert not dialog.ids_edit.isEnabled()
+    assert not dialog.query_button.isEnabled()
+    dialog.request_query()
+    assert queries == [submitted]
+
+    dialog.set_query_pending(False)
+
+    assert not dialog.query_pending
+    assert dialog.association_combo.isEnabled()
+    assert dialog.field_combo.isEnabled()
+    assert dialog.component_combo.isEnabled()
+    assert dialog.ids_edit.isEnabled()
+    assert dialog.query_button.isEnabled()
+    dialog.set_query_message("查询已取消")
+    assert dialog.result_summary.text() == "查询已取消"
+    dialog.close()
+
+
 def test_query_result_keeps_multi_region_and_provenance_rows_in_order(
     result_provider,
 ) -> None:

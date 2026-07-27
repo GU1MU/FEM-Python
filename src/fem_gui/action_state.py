@@ -206,7 +206,12 @@ ACTION_DESCRIPTORS: tuple[GuiActionDescriptor, ...] = (
     _d(GuiActionKey.FIELD, "结果变量和分量", "show_result_display_dialog", "field"),
     _d(GuiActionKey.SCALE, "变形比例", "show_result_display_dialog", "scale"),
     _d(GuiActionKey.CONTOUR_OPTIONS, "云图设置", "show_contour_dialog", "settings"),
-    _d(GuiActionKey.QUERY, "查询结果", "query_result", "query"),
+    _d(
+        GuiActionKey.QUERY,
+        "查询结果",
+        "show_result_query_dialog",
+        "query",
+    ),
     _d(GuiActionKey.EXPORT_CSV, "导出 CSV", "export_csv", "export"),
     _d(GuiActionKey.EXPORT_VTK, "导出 VTK", "export_vtk", "export"),
     _d(GuiActionKey.SCREENSHOT, "保存视口图片", "export_viewport_image", "image"),
