@@ -165,10 +165,16 @@ def _mesh_check_and_solve(
     assert result is not None
     assert result.provenance.run_id == run.run_id
     assert result.provenance.artifact_id == artifact.artifact_id
-    assert window.result_data is not None
-    assert window.result_data.run_id == run.run_id
-    assert window.result_data.field_ready("U")
-    assert window.viewport.run_id == run.run_id
+    provider = window.result_provider
+    selection = window.result_selection
+    payload = window.viewport._result_render_payload
+    assert provider is not None
+    assert selection is not None
+    assert payload is not None
+    assert provider.source.run_id == run.run_id
+    assert selection.field_key.request.field_id.variable is ResultVariable.U
+    assert provider.field(selection.field_key).key == selection.field_key
+    assert payload.topology.source == provider.source
     assert window.actions["query"].isEnabled()
     return run.run_id
 
@@ -202,8 +208,9 @@ def test_native_public_workflow_saves_reopens_remeshes_and_resolves(
         )
     )
     assert window.document.source_kind is None
-    assert window.result_data is None
-    assert window.viewport.run_id is None
+    assert window.result_provider is None
+    assert window.result_selection is None
+    assert window.viewport._result_render_payload is None
 
     require_accepted(window.open_project_path(project_path))
     assert window.document.source_kind == "native"

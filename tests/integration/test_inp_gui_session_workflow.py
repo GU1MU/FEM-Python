@@ -96,10 +96,16 @@ def _check_and_solve(
     assert result.provenance.artifact_id == (
         window.document.artifact.artifact_id
     )
-    assert window.result_data is not None
-    assert window.result_data.run_id == run.run_id
-    assert window.result_data.field_ready("U")
-    assert window.viewport.run_id == run.run_id
+    provider = window.result_provider
+    selection = window.result_selection
+    payload = window.viewport._result_render_payload
+    assert provider is not None
+    assert selection is not None
+    assert payload is not None
+    assert provider.source.run_id == run.run_id
+    assert selection.field_key.request.field_id.variable is ResultVariable.U
+    assert provider.field(selection.field_key).key == selection.field_key
+    assert payload.topology.source == provider.source
     assert window.actions["query"].isEnabled()
     return run.run_id
 
@@ -180,8 +186,9 @@ def test_imported_t3d2_public_edit_check_solve_and_reload(
     assert window.document.runs == ()
     assert window.session.find_run(first_run_id) is None
     assert window.session.current_result() is None
-    assert window.result_data is None
-    assert window.viewport.run_id is None
+    assert window.result_provider is None
+    assert window.result_selection is None
+    assert window.viewport._result_render_payload is None
     assert window.import_notices == ()
 
     require_accepted(

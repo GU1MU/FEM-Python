@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -33,7 +32,6 @@ from fem.solvers.static_linear import solve
 import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.visualization.model_adapter import build_model_geometry
-from fem_gui.visualization.result_adapter import build_result_data
 from tests.helpers.model_builders import (
     make_static_pull_truss_model,
     make_two_step_static_pull_truss_model,
@@ -107,12 +105,7 @@ def _succeed_run(
         window.session.accept_run_succeeded(
             task.token,
             build_solve_result_bundle(task, result),
-        ),
-        result_projection=replace(
-            build_result_data(result, window.geometry),
-            artifact_id=task.token.artifact_id,
-            run_id=task.run_id,
-        ),
+        )
     )
     return task.run_id
 
@@ -129,9 +122,17 @@ def _projection_signature(window: FEMMainWindow) -> tuple[object, ...]:
         artifact_id,
         window.document.displayed_result_run_id,
         window.geometry.artifact_id if window.geometry is not None else None,
-        window.result_data.run_id if window.result_data is not None else None,
+        (
+            window.result_provider.source.run_id
+            if window.result_provider is not None
+            else None
+        ),
         window.viewport.artifact_id,
-        window.viewport.run_id,
+        (
+            window.viewport._result_render_payload.topology.source.run_id
+            if window.viewport._result_render_payload is not None
+            else None
+        ),
         window.model_tree.topLevelItem(0).text(0),
         window.result_tree.topLevelItem(0).text(0),
     )
@@ -301,8 +302,9 @@ def test_named_region_change_invalidates_model_validation_runs_and_results() -> 
     assert not window.document.validations
     assert not window.document.runs
     assert window.session.find_run(run_id) is None
-    assert window.result_data is None
-    assert window.viewport.run_id is None
+    assert window.result_provider is None
+    assert window.result_selection is None
+    assert window.viewport._result_render_payload is None
     _assert_result_entries_disabled(window)
     window.close()
 
@@ -327,7 +329,8 @@ def test_definition_change_replaces_artifact_and_invalidates_check_and_result() 
     assert not window.document.validations
     assert not window.document.runs
     assert window.session.current_result() is None
-    assert window.result_data is None
+    assert window.result_provider is None
+    assert window.result_selection is None
     assert not window.actions["submit_job"].isEnabled()
     _assert_result_entries_disabled(window)
     window.close()
@@ -366,7 +369,12 @@ def test_failed_or_cancelled_job_preserves_previous_displayed_result(
     window = _new_window()
     _install_imported(window)
     first_run_id = _succeed_run(window, run_name="Job-1")
-    first_result_data = window.result_data
+    first_provider = window.result_provider
+    first_selection = window.result_selection
+    first_payload = window.viewport._result_render_payload
+    assert first_provider is not None
+    assert first_selection is not None
+    assert first_payload is not None
 
     task = window.session.prepare_solve("pull", "Job-2")
     assert task.delta is not None
@@ -387,8 +395,9 @@ def test_failed_or_cancelled_job_preserves_previous_displayed_result(
     assert window.session.find_run(task.run_id).status is expected_status
     assert window.document.displayed_result_run_id == first_run_id
     assert window.session.current_result().provenance.run_id == first_run_id
-    assert window.result_data is first_result_data
-    assert window.viewport.run_id == first_run_id
+    assert window.result_provider is first_provider
+    assert window.result_selection == first_selection
+    assert window.viewport._result_render_payload is first_payload
     assert window.actions["query"].isEnabled()
     window.close()
 
@@ -508,7 +517,8 @@ def test_revision_neutral_projection_receipt_preserves_current_cache() -> None:
     assert receipt.accepted
     assert window._apply_revision_neutral_task_receipt(receipt)
     assert _projection_signature(window) == before
-    assert window.result_data.run_id == run_id
+    assert window.result_provider is not None
+    assert window.result_provider.source.run_id == run_id
     window.close()
 
 
@@ -517,21 +527,18 @@ def test_hidden_run_projection_receipt_cannot_replace_current_cache() -> None:
     _install_imported(window)
     run_a = _succeed_run(window, run_name="Job-A")
     projection = window.session.prepare_result_projection(run_a)
-    data_a = window.result_data
-    assert data_a is not None and data_a.run_id == run_a
+    provider_a = window.result_provider
+    assert provider_a is not None and provider_a.source.run_id == run_a
     run_b = _succeed_run(window, run_name="Job-B")
     before = _projection_signature(window)
 
     receipt = window.session.accept_result_projection(projection.token)
 
     assert receipt.accepted
-    assert window._apply_revision_neutral_task_receipt(
-        receipt,
-        result_projection=data_a,
-    )
+    assert window._apply_revision_neutral_task_receipt(receipt)
     assert _projection_signature(window) == before
-    assert window.result_data is not None
-    assert window.result_data.run_id == run_b
+    assert window.result_provider is not None
+    assert window.result_provider.source.run_id == run_b
     window.close()
 
 

@@ -41,10 +41,7 @@ from fem.core.model import (
     SectionAssignment,
 )
 from fem.post.averaging import NodalAveragingPolicy
-from fem.solvers.static_linear import solve
 from fem_gui.inspection_service import InspectionService
-from fem_gui.visualization.model_adapter import build_model_geometry
-from fem_gui.visualization.result_adapter import build_result_data
 from tests.helpers.phase8_result_characterization import (
     make_continuum_nodal_semantics_result,
 )
@@ -199,27 +196,6 @@ def test_collection_material_section_and_step_information_is_structured(gui_inp_
     assert _page(step, "输出请求").tables[0].rows[0][1:] == ("场输出", "节点", "U, RF")
 
 
-def test_result_pages_use_existing_result_data_and_hide_missing_3d_components(gui_inp_path):
-    model = read(gui_inp_path)
-    geometry = build_model_geometry(model)
-    result = solve(model)
-    data = build_result_data(result, geometry)
-    service = InspectionService(model, data)
-
-    node_fields = _fields(_page(service.inspect("node", 2), "结果"))
-    assert "U1" in node_fields and "U2" in node_fields and "位移模" in node_fields
-    assert "RF1" in node_fields and "RF2" in node_fields and "反力模" in node_fields
-    assert "U3" not in node_fields and "RF3" not in node_fields
-    assert "Mises" in node_fields
-
-    element_result = _page(service.inspect("element", 1), "结果")
-    assert _fields(element_result)["结果位置"] == "单元质心"
-    values = dict(element_result.tables[0].rows)
-    assert "Mises" in values
-    assert "最大主应力" in values
-    assert "最小主应力" in values
-
-
 def test_typed_provider_drives_node_and_element_result_pages_in_catalog_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -233,15 +209,8 @@ def test_typed_provider_drives_node_and_element_result_pages_in_catalog_order(
 
     monkeypatch.setattr(ResultProvider, "inspect_result", inspect_result)
 
-    class LegacyResultBomb:
-        def __getattribute__(self, name):
-            raise AssertionError(
-                f"typed inspection read legacy ResultData attribute {name}"
-            )
-
     service = InspectionService(
         result.model,
-        LegacyResultBomb(),
         result_provider=provider,
     )
     node_page = _page(service.inspect("node", 1), "结果")
@@ -318,6 +287,8 @@ def test_typed_provider_update_is_exact_and_clearable() -> None:
     result, provider = _provider_with_all_continuum_fields()
     service = InspectionService(result.model)
 
+    with pytest.raises(TypeError, match="positional"):
+        InspectionService(result.model, object())
     with pytest.raises(TypeError, match="exactly ResultProvider"):
         InspectionService(result.model, result_provider=object())
     with pytest.raises(TypeError, match="exactly ResultProvider"):
@@ -373,7 +344,8 @@ def test_typed_inspection_path_has_no_legacy_or_support_order_dependency() -> No
     module_path = Path(
         InspectionService.__init__.__code__.co_filename
     )
-    tree = ast.parse(module_path.read_text(encoding="utf-8"))
+    source = module_path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
     imported_modules = {
         node.module
         for node in ast.walk(tree)
@@ -413,6 +385,33 @@ def test_typed_inspection_path_has_no_legacy_or_support_order_dependency() -> No
         "sorted(",
     ):
         assert forbidden not in typed_source
+
+    assert not hasattr(InspectionService, "update_result_data")
+    legacy_names = {
+        "ResultData",
+        "result_data",
+        "update_result_data",
+        "_node_result_fields",
+        "nodal_stress",
+        "element_stress",
+    }
+    names = {
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name)
+    }
+    attributes = {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+    }
+    functions = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert legacy_names.isdisjoint(names | attributes | functions)
+    assert all(name not in source for name in legacy_names)
 
 
 def test_beam_section_and_line_load_use_the_common_inspection_service():

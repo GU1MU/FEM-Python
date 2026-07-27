@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QAbstractItemView, QTreeWidget, QTreeWidgetItem
 
@@ -14,15 +12,9 @@ from fem.application.results import (
     ScalarFieldSelection,
 )
 
-if TYPE_CHECKING:
-    from ..visualization.result_adapter import ResultData
-
-
-# Compatibility role for the pre-Phase-8 string field path.
-ROLE_FIELD = int(Qt.ItemDataRole.UserRole)
-ROLE_SELECTION = ROLE_FIELD + 1
-ROLE_MATERIALIZATION_KEY = ROLE_FIELD + 2
-ROLE_FIELD_STATE = ROLE_FIELD + 3
+ROLE_SELECTION = int(Qt.ItemDataRole.UserRole)
+ROLE_MATERIALIZATION_KEY = ROLE_SELECTION + 1
+ROLE_FIELD_STATE = ROLE_SELECTION + 2
 
 
 _FIELD_LABELS = {
@@ -50,8 +42,6 @@ class ResultTree(QTreeWidget):
     """按位移、反力和应力组织当前单步结果。"""
 
     fieldSelectionActivated = Signal(ScalarFieldSelection)
-    # Compatibility signal for callers still projecting ResultData strings.
-    fieldActivated = Signal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -72,7 +62,6 @@ class ResultTree(QTreeWidget):
         self._catalog = None
         self.clear()
         item = QTreeWidgetItem(["尚无分析结果"])
-        item.setData(0, ROLE_FIELD, None)
         self.addTopLevelItem(item)
 
     def set_catalog(self, step_name: str, catalog: ResultCatalog) -> None:
@@ -148,22 +137,6 @@ class ResultTree(QTreeWidget):
                 _disable_item(field_item.child(index))
         return field_item, selected_component
 
-    def set_result(self, step_name: str, data: ResultData) -> None:
-        """Populate the legacy string-key projection during migration."""
-
-        self._catalog = None
-        self.clear()
-        root = QTreeWidgetItem(["分析结果"])
-        step = QTreeWidgetItem([step_name or "当前分析步"])
-        root.addChild(step)
-        for label, key in self._families(data):
-            item = QTreeWidgetItem([label])
-            item.setData(0, ROLE_FIELD, key)
-            step.addChild(item)
-        self.addTopLevelItem(root)
-        root.setExpanded(True)
-        step.setExpanded(True)
-
     def select_selection(
         self,
         selection: ScalarFieldSelection,
@@ -213,40 +186,6 @@ class ResultTree(QTreeWidget):
             )
         return fallback
 
-    @staticmethod
-    def _families(data: ResultData) -> tuple[tuple[str, str], ...]:
-        # Compatibility logic remains isolated from the typed catalog path.
-        from ..visualization.result_adapter import field_family
-
-        fields = data.fields
-        families: list[tuple[str, str]] = []
-        labels = {
-            "U": "位移 U",
-            "R": "转角 R",
-            "RF": "反力 RF",
-            "RM": "反力矩 RM",
-            "S": "应力 S",
-        }
-        for family in ("U", "R", "RF", "RM", "S"):
-            keys = [key for key in fields if field_family(key) == family]
-            if not keys:
-                continue
-            preferred = {
-                "U": "U",
-                "RF": "RF",
-            }.get(family)
-            selected = preferred if preferred in fields else keys[0]
-            if family == "S":
-                selected = next(
-                    (key for key in keys if key.endswith(":S11AbsMax")),
-                    next(
-                        (key for key in keys if key.endswith(":Mises")),
-                        keys[0],
-                    ),
-                )
-            families.append((labels[family], selected))
-        return tuple(families)
-
     def _activate_item(self, item: QTreeWidgetItem) -> None:
         selection = item.data(0, ROLE_SELECTION)
         state = item.data(0, ROLE_FIELD_STATE)
@@ -255,11 +194,6 @@ class ResultTree(QTreeWidget):
             and state != FieldState.UNAVAILABLE.value
         ):
             self.fieldSelectionActivated.emit(selection)
-            return
-
-        field = item.data(0, ROLE_FIELD)
-        if field:
-            self.fieldActivated.emit(str(field))
 
 
 def _set_typed_item_data(

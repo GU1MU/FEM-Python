@@ -292,18 +292,7 @@ def test_successful_solve_projects_one_typed_result_spine(
     )
     assert payload.topology.selection == selection
 
-    # The canonical consumers must remain functional with the migration-only
-    # engineering projection removed from the window.
-    window.result_data = None
-
-    def fail_legacy_inspection(*_args, **_kwargs):
-        raise AssertionError("typed inspection must not read ResultData")
-
-    monkeypatch.setattr(
-        inspection_service,
-        "_node_result_fields",
-        fail_legacy_inspection,
-    )
+    assert not hasattr(window, "result_data")
     node_id = provider.snapshot.topology.node_ids[0]
     inspection = inspection_service.inspect("node", node_id)
     assert any(page.title == "结果" for page in inspection.pages)
@@ -324,7 +313,6 @@ def test_ready_selection_is_revision_neutral_and_idempotent(
         raise AssertionError("READY field selection must not start a worker")
 
     monkeypatch.setattr(window, "_start_task", fail_worker)
-    window.result_data = None
     revision = window.document.session_revision
     document = window.document
     original_payload = _result_payload(window)
@@ -532,12 +520,10 @@ def test_first_provider_projection_failure_restores_the_model_only_scene(
 
     assert window.result_provider is None
     assert window.result_selection is None
-    assert window.result_data is None
+    assert not hasattr(window, "result_data")
     assert window.result_tree.catalog is None
     assert inspection.result_provider is None
     assert window.viewport._result_render_payload is None
-    assert window.viewport._result_data is None
-    assert window.viewport.run_id is None
 
 
 def test_typed_display_settings_reject_a_stale_dialog_source(
@@ -682,7 +668,6 @@ def test_invalid_selection_rejections_preserve_projection(
         raise AssertionError("rejected selection must not start a worker")
 
     monkeypatch.setattr(window, "_start_task", fail_worker)
-    window.result_data = None
     revision = window.document.session_revision
     payload = _result_payload(window)
 
@@ -1539,7 +1524,6 @@ def test_typed_render_uses_the_selected_display_deformation_scale(
     window = solved_window
     selection = window.result_selection
     assert type(selection) is ScalarFieldSelection
-    window.result_data = None
 
     window.set_shape_mode("undeformed")
     undeformed = _result_payload(window)
@@ -1581,7 +1565,6 @@ def test_export_actions_follow_exact_selected_field_readiness(
         ),
         ready.component,
     )
-    window.result_data = None
 
     window.result_selection = ready
     window._update_action_states()

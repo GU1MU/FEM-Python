@@ -609,8 +609,6 @@ def test_query_action_open_and_cancel_never_recovers_fields(
         "exec",
         lambda dialog: opened.append(dialog) or 0,
     )
-    window.result_data = None
-
     window.show_result_query_dialog()
 
     assert len(opened) == 1

@@ -20,6 +20,7 @@ from fem.application import (
     RegionRef,
     resolve_effective_beam_frames,
 )
+from fem.application.results import ResultVariable
 from fem.core.model import (
     ElementSet,
     LineLoad,
@@ -174,16 +175,19 @@ def _open_check_solve(
         current.provenance.artifact_id
         == window.document.artifact.artifact_id
     )
-    assert window.result_data is not None
-    assert window.result_data.run_id == run.run_id
-    assert (
-        window.result_data.artifact_id
-        == current.provenance.artifact_id
-    )
-    assert window.viewport.run_id == run.run_id
-    assert "U" in window.result_data.fields
-    assert np.isfinite(window.result_data.fields["U"].values).all()
-    assert np.max(np.abs(window.result_data.fields["U"].values)) > 0.0
+    provider = window.result_provider
+    selection = window.result_selection
+    payload = window.viewport._result_render_payload
+    assert provider is not None
+    assert selection is not None
+    assert payload is not None
+    assert provider.source.run_id == run.run_id
+    assert provider.source.artifact_id == current.provenance.artifact_id
+    assert selection.field_key.request.field_id.variable is ResultVariable.U
+    displacement = provider.field(selection.field_key)
+    assert np.isfinite(displacement.values).all()
+    assert np.max(np.abs(displacement.values)) > 0.0
+    assert payload.topology.source == provider.source
     assert window.actions["deformed"].isEnabled()
     assert window.actions["query"].isEnabled()
     assert window.result_tree.topLevelItem(0).text(0) != "尚无分析结果"

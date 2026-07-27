@@ -111,7 +111,6 @@ class InspectionService:
     def __init__(
         self,
         model: Any,
-        result_data: Any | None = None,
         *,
         result_provider: ResultProvider | None = None,
         definitions: Any | None = None,
@@ -120,7 +119,6 @@ class InspectionService:
         ) = None,
     ) -> None:
         self.model = model
-        self.result_data = result_data
         self.result_provider = _require_result_provider(result_provider)
         self.definitions = definitions
         self.section_definitions = tuple(
@@ -157,9 +155,6 @@ class InspectionService:
         self._beam_frame_report_cached = lru_cache(maxsize=4096)(
             self._query_effective_beam_frames
         )
-
-    def update_result_data(self, result_data: Any | None) -> None:
-        self.result_data = result_data
 
     def update_result_provider(
         self,
@@ -403,41 +398,17 @@ class InspectionService:
                     tuple(row[4] for row in self.node_analysis[node_id]),
                 ),),
             ))
-        if self.result_provider is not None:
-            result_page = self._provider_result_page(
-                NodeResultInspectionRequest(node_id)
-            )
-            if result_page is not None:
-                pages.append(result_page)
-        else:
-            result_fields = self._node_result_fields(node_id)
-            if result_fields:
-                pages.append(InspectionPage("结果", result_fields))
-        return EntityInspection(f"节点 {node_id}", "node", node_id, tuple(pages))
-
-    def _node_result_fields(self, node_id: int) -> tuple[tuple[str, str], ...]:
-        if self.result_data is None:
-            return ()
-        values = dict(self.result_data.nodal_values.get(node_id, {}))
-        values.update(self.result_data.nodal_stress.get(node_id, {}))
-        order = (
-            "U1", "U2", "U3", "U", "R1", "R2", "R3",
-            "RF1", "RF2", "RF3", "RF", "RM1", "RM2", "RM3",
-            "S11", "S22", "S33", "S12", "S13", "S23", "Mises",
-            "MaxPrincipal", "MidPrincipal", "MinPrincipal",
-            "S11Max", "S11Min", "S11AbsMax",
+        result_page = self._provider_result_page(
+            NodeResultInspectionRequest(node_id)
         )
-        labels = {
-            "U": "位移模",
-            "RF": "反力模",
-            "MaxPrincipal": "最大主应力",
-            "MidPrincipal": "中间主应力",
-            "MinPrincipal": "最小主应力",
-            "S11Max": "最大轴向应力",
-            "S11Min": "最小轴向应力",
-            "S11AbsMax": "最大绝对值轴向应力",
-        }
-        return tuple((labels.get(name, name), format_number(values[name])) for name in order if name in values)
+        if result_page is not None:
+            pages.append(result_page)
+        return EntityInspection(
+            f"节点 {node_id}",
+            "node",
+            node_id,
+            tuple(pages),
+        )
 
     def _inspect_element(self, key: object) -> EntityInspection:
         element_id = int(key)
@@ -527,34 +498,11 @@ class InspectionService:
             pages.append(
                 InspectionPage("Beam 局部坐标", tuple(frame_fields))
             )
-        if self.result_provider is not None:
-            result_page = self._provider_result_page(
-                ElementResultInspectionRequest(element_id)
-            )
-            if result_page is not None:
-                pages.append(result_page)
-        elif (
-            self.result_data is not None
-            and element_id in self.result_data.element_stress
-        ):
-            values = self.result_data.element_stress[element_id]
-            rows = tuple(
-                (_stress_label(name), format_number(value))
-                for name, value in values.items()
-            )
-            pages.append(
-                InspectionPage(
-                    "结果",
-                    (("结果位置", "单元质心"),),
-                    (
-                        InspectionTable(
-                            "单元结果",
-                            ("分量", "数值"),
-                            rows,
-                        ),
-                    ),
-                )
-            )
+        result_page = self._provider_result_page(
+            ElementResultInspectionRequest(element_id)
+        )
+        if result_page is not None:
+            pages.append(result_page)
         return EntityInspection(f"单元 {element_id}", "element", element_id, tuple(pages))
 
     def _provider_result_page(
@@ -1219,18 +1167,6 @@ def _property_label(name: str) -> str:
         "J": "扭转常数 J", "section_type": "截面类型",
         "height": "矩形高度（局部 y）", "width": "矩形宽度（局部 z）",
         "radius": "半径", "inner_radius": "内半径", "outer_radius": "外半径",
-    }.get(name, name)
-
-
-def _stress_label(name: str) -> str:
-    return {
-        "MaxPrincipal": "最大主应力",
-        "MidPrincipal": "中间主应力",
-        "MinPrincipal": "最小主应力",
-        "LE11": "轴向应变",
-        "S11Max": "最大轴向应力",
-        "S11Min": "最小轴向应力",
-        "S11AbsMax": "最大绝对值轴向应力",
     }.get(name, name)
 
 

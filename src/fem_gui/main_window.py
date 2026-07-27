@@ -179,10 +179,6 @@ from .viewport_background import (
 )
 from .viewport_background_dialog import ViewportBackgroundDialog
 from .visualization.model_adapter import ModelGeometry, build_model_geometry
-from .visualization.result_adapter import (
-    ResultData,
-    build_result_data_from_provider,
-)
 from .visualization.result_renderer import (
     ResultRenderPayload,
     build_result_render_payload,
@@ -313,7 +309,6 @@ class FEMMainWindow(QMainWindow):
         self._pending_result_query: ResultQuery | None = None
         self._pending_result_query_source: ResultSourceKey | None = None
         self._pending_result_query_generation: int | None = None
-        self.result_data: ResultData | None = None
         self.inspection_service: InspectionService | None = None
         self._inspection_windows: list[QWidget] = []
         self._mesh_browser: MeshBrowserDialog | None = None
@@ -1648,7 +1643,6 @@ class FEMMainWindow(QMainWindow):
         delta: object,
         *,
         model_geometry: ModelGeometry | None = None,
-        result_projection: ResultData | None = None,
         timings: dict[str, float] | None = None,
         source_label: str | None = None,
     ) -> bool:
@@ -1742,55 +1736,6 @@ class FEMMainWindow(QMainWindow):
                     materialization,
                 )
 
-            supplied_projection = (
-                result_projection
-                if (
-                    result_projection is not None
-                    and result_projection.artifact_id
-                    == materialization.source.artifact_id
-                    and result_projection.run_id
-                    == materialization.source.run_id
-                    and result_projection.result_id
-                    == materialization.source.result_id
-                    and result_projection.materialization_generation
-                    == materialization.generation
-                )
-                else None
-            )
-            legacy_projection = supplied_projection
-            if legacy_projection is None:
-                current_legacy = self.result_data
-                if (
-                    current_legacy is not None
-                    and current_legacy.artifact_id
-                    == materialization.source.artifact_id
-                    and current_legacy.run_id
-                    == materialization.source.run_id
-                    and current_legacy.result_id
-                    == materialization.source.result_id
-                    and current_legacy.materialization_generation
-                    == materialization.generation
-                ):
-                    legacy_projection = current_legacy
-                else:
-                    try:
-                        legacy_projection = build_result_data_from_provider(
-                            provider,
-                            self.geometry,
-                            legacy_result=current_result.result,
-                        )
-                    except (
-                        KeyError,
-                        RuntimeError,
-                        TypeError,
-                        ValueError,
-                    ) as error:
-                        logging.info(
-                            "temporary ResultData projection unavailable: %s",
-                            error,
-                        )
-                        legacy_projection = None
-
             selection_is_current = self._selection_belongs_to_catalog(
                 provider,
                 self.result_selection,
@@ -1818,13 +1763,9 @@ class FEMMainWindow(QMainWindow):
             )
             if (
                 provider_changed
-                or supplied_projection is not None
                 or not consumers_are_current
             ):
-                self._install_result_provider_projection(
-                    provider,
-                    legacy_projection=legacy_projection,
-                )
+                self._install_result_provider_projection(provider)
 
         self._sync_step_combos()
         self._refresh_result_controls()
@@ -1835,44 +1776,15 @@ class FEMMainWindow(QMainWindow):
     def _apply_revision_neutral_task_receipt(
         self,
         receipt: SessionDelta,
-        *,
-        result_projection: ResultData | None = None,
     ) -> bool:
-        """Consume a no-state-change receipt and optionally install a projection."""
+        """Consume an accepted no-state-change task receipt."""
 
-        if (
+        return not (
             type(receipt) is not SessionDelta
             or not receipt.accepted
             or receipt.changed
             or receipt.invalidated
-        ):
-            return False
-        if result_projection is None:
-            return True
-        current_result = self.session.current_result()
-        if (
-            current_result is None
-            or current_result.provenance.run_id
-            != result_projection.run_id
-            or current_result.result_id != result_projection.result_id
-            or current_result.materialization.generation
-            != result_projection.materialization_generation
-        ):
-            return True
-        artifact = self.document.artifact
-        if (
-            artifact is None
-            or self.geometry is None
-            or result_projection.artifact_id != artifact.artifact_id
-            or self.geometry.artifact_id != artifact.artifact_id
-        ):
-            return False
-        self._install_result_projection(result_projection)
-        if self.result_data is not result_projection:
-            return False
-        self._refresh_result_controls()
-        self._update_action_states()
-        return True
+        )
 
     def _session_source_label(self) -> str:
         path = self.document.source_path or self.document.project_path
@@ -1908,7 +1820,6 @@ class FEMMainWindow(QMainWindow):
         self.geometry = None
         self.result_provider = None
         self.result_selection = None
-        self.result_data = None
         self.selection.clear()
         self._display = DisplayState()
         self.model_tree.clear_model()
@@ -1920,16 +1831,13 @@ class FEMMainWindow(QMainWindow):
 
     def _clear_result_projection(self) -> None:
         if self.inspection_service is not None:
-            self.inspection_service.update_result_data(None)
             self.inspection_service.update_result_provider(None)
         had_projection = not (
             self.result_provider is None
-            and self.result_data is None
-            and self.viewport.run_id is None
+            and self.viewport._result_render_payload is None
         )
         self.result_provider = None
         self.result_selection = None
-        self.result_data = None
         self._display = DisplayState()
         self.result_tree.clear_result()
         self.navigation.show_model()
@@ -1954,20 +1862,11 @@ class FEMMainWindow(QMainWindow):
     def _install_result_provider_projection(
         self,
         provider: ResultProvider,
-        *,
-        legacy_projection: ResultData | None,
     ) -> None:
-        """Install one exact provider, with an optional compatibility view."""
+        """Install one exact provider across the typed GUI consumers."""
 
         if type(provider) is not ResultProvider:
             raise TypeError("provider must be exactly ResultProvider")
-        if (
-            legacy_projection is not None
-            and type(legacy_projection) is not ResultData
-        ):
-            raise TypeError(
-                "legacy_projection must be exactly ResultData or None"
-            )
         record = self.session.current_result()
         if (
             record is None
@@ -1986,16 +1885,6 @@ class FEMMainWindow(QMainWindow):
             or self.geometry is None
             or self.geometry.artifact_id != source.artifact_id
             or self.viewport.artifact_id != source.artifact_id
-            or (
-                legacy_projection is not None
-                and (
-                    legacy_projection.artifact_id != source.artifact_id
-                    or legacy_projection.run_id != source.run_id
-                    or legacy_projection.result_id != source.result_id
-                    or legacy_projection.materialization_generation
-                    != provider.snapshot.generation
-                )
-            )
         ):
             raise RuntimeError(
                 "provider projection does not match the current model"
@@ -2022,9 +1911,6 @@ class FEMMainWindow(QMainWindow):
         previous_catalog = self.result_tree.catalog
         previous_selection = self.result_selection
         inspection = self.inspection_service
-        previous_inspection_data = (
-            None if inspection is None else inspection.result_data
-        )
         previous_inspection_provider = (
             None if inspection is None else inspection.result_provider
         )
@@ -2035,7 +1921,6 @@ class FEMMainWindow(QMainWindow):
                     "installed selection is missing from the result tree"
                 )
             if inspection is not None:
-                inspection.update_result_data(None)
                 inspection.update_result_provider(provider)
             self._install_viewport_result_payload(
                 payload,
@@ -2064,9 +1949,6 @@ class FEMMainWindow(QMainWindow):
                 and inspection is self.inspection_service
             ):
                 try:
-                    inspection.update_result_data(
-                        previous_inspection_data
-                    )
                     inspection.update_result_provider(
                         previous_inspection_provider
                     )
@@ -2077,32 +1959,7 @@ class FEMMainWindow(QMainWindow):
             raise
         self.result_provider = provider
         self.result_selection = selection
-        self.result_data = legacy_projection
         self.status_panel.set_result(self._result_status_text())
-
-    def _install_result_projection(self, data: ResultData) -> None:
-        """Install a legacy adapter beside the canonical current provider."""
-
-        if type(data) is not ResultData:
-            raise TypeError("data must be exactly ResultData")
-        record = self.session.current_result()
-        if record is None:
-            return
-        provider = self.result_provider
-        if (
-            type(provider) is not ResultProvider
-            or provider.source != record.materialization.source
-            or provider.snapshot.generation
-            != record.materialization.generation
-        ):
-            provider = restore_result_provider(
-                record.result,
-                record.materialization,
-            )
-        self._install_result_provider_projection(
-            provider,
-            legacy_projection=data,
-        )
 
     def _build_actions(self) -> None:
         self.actions = build_actions(self)
@@ -3847,7 +3704,6 @@ class FEMMainWindow(QMainWindow):
         self.geometry = geometry
         self.result_provider = None
         self.result_selection = None
-        self.result_data = None
         self.selection.clear()
         self._display = DisplayState()
         self._overlay_undeformed = False
@@ -5227,27 +5083,13 @@ class FEMMainWindow(QMainWindow):
             return
         if self.document.displayed_result_run_id != job.run_id:
             projection = self.session.prepare_result_projection(job.run_id)
-            if self.geometry is None:
-                return
-            provider = restore_result_provider(
-                projection.record.result,
-                projection.record.materialization,
-            )
-            data = build_result_data_from_provider(
-                provider,
-                self.geometry,
-                legacy_result=projection.record.result,
-            )
             if not self._apply_revision_neutral_task_receipt(
                 self.session.accept_result_projection(
                     projection.token
                 )
             ):
                 return
-            self._apply_session_delta(
-                self.session.select_result(job.run_id),
-                result_projection=data,
-            )
+            self._apply_session_delta(self.session.select_result(job.run_id))
         self._set_current_step(job.step_name)
         provider = self._current_result_provider()
         selection = self.result_selection
@@ -5892,7 +5734,6 @@ class FEMMainWindow(QMainWindow):
         """Install one payload and restore the prior scene on renderer failure."""
 
         previous_payload = self.viewport._result_render_payload
-        previous_data = self.viewport._result_data
         previous_display = self.viewport._display
         try:
             self.viewport.set_result_render_payload(payload)
@@ -5915,21 +5756,6 @@ class FEMMainWindow(QMainWindow):
                 except Exception:
                     logging.exception(
                         "failed to restore viewport result payload"
-                    )
-            elif previous_data is not None:
-                try:
-                    FEMViewport.set_result_data(
-                        self.viewport,
-                        previous_data,
-                    )
-                    FEMViewport.set_display(
-                        self.viewport,
-                        previous_display.shape_mode,
-                        previous_display.contour_enabled,
-                    )
-                except Exception:
-                    logging.exception(
-                        "failed to restore legacy viewport result data"
                     )
             else:
                 try:

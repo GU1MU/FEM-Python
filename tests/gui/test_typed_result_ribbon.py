@@ -344,7 +344,7 @@ def test_ready_ribbon_selection_uses_public_exact_selection_without_result_data(
         if ScalarFieldSelection(availability.key, component) != current
     )
 
-    window.result_data = None
+    assert not hasattr(window, "result_data")
     window._refresh_result_controls()
     component_index = _prepare_ribbon_selection(window, target)
     submitted: list[ScalarFieldSelection] = []

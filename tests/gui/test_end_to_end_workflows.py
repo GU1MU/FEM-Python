@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication
 
 from fem.abaqus import read
 from fem.application import NamedRegion, RegionAssignment, SectionDefinition
+from fem.application.results import ResultVariable
 from fem.core.model import DisplacementConstraint, MaterialDefinition, NodalLoad
 from fem.geometry import LogicalEntityRef, SketchGeometry, SketchRectangle
 from fem.mesh.settings import MeshSettings
@@ -107,7 +108,12 @@ def test_native_preprocess_check_job_result_workflow(monkeypatch):
         current_result.provenance.model_revision
         == window.document.model_revision
     )
-    assert window.result_data is not None and "U" in window.result_data.fields
+    assert window.result_provider is not None
+    assert window.result_selection is not None
+    assert (
+        window.result_selection.field_key.request.field_id.variable
+        is ResultVariable.U
+    )
     window.close()
 
 

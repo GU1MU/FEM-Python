@@ -225,9 +225,7 @@ def test_ready_and_lazy_items_emit_typed_selection_while_unavailable_does_not() 
     tree = ResultTree()
     tree.set_catalog("Static-1", catalog)
     emitted: list[ScalarFieldSelection] = []
-    legacy: list[str] = []
     tree.fieldSelectionActivated.connect(emitted.append)
-    tree.fieldActivated.connect(legacy.append)
     step = _step_item(tree)
 
     ready_field = step.child(0)
@@ -244,7 +242,6 @@ def test_ready_and_lazy_items_emit_typed_selection_while_unavailable_does_not() 
         ScalarFieldSelection(catalog.fields[0].key, "U2"),
         ScalarFieldSelection(catalog.fields[1].key, "Magnitude"),
     ]
-    assert legacy == []
     unavailable_flags = unavailable_component.flags()
     assert not unavailable_flags & Qt.ItemFlag.ItemIsEnabled
     assert not unavailable_flags & Qt.ItemFlag.ItemIsSelectable
@@ -281,7 +278,8 @@ def test_select_selection_prefers_the_exact_component_leaf() -> None:
 
 def test_typed_catalog_path_has_no_legacy_parsing_or_gui_field_order() -> None:
     module_path = Path(inspect.getsourcefile(ResultTree) or "")
-    module = ast.parse(module_path.read_text(encoding="utf-8"))
+    source = module_path.read_text(encoding="utf-8")
+    module = ast.parse(source)
     typed_functions = {
         "set_catalog",
         "_catalog_field_item",
@@ -312,3 +310,15 @@ def test_typed_catalog_path_has_no_legacy_parsing_or_gui_field_order() -> None:
             }
         )
         assert attributes.isdisjoint({"split", "partition", "startswith", "endswith"})
+
+    assert not hasattr(ResultTree, "fieldActivated")
+    assert not hasattr(ResultTree, "set_result")
+    assert not hasattr(ResultTree, "_families")
+    module_names = {
+        node.id
+        for node in ast.walk(module)
+        if isinstance(node, ast.Name)
+    }
+    assert "ROLE_FIELD" not in module_names
+    for forbidden in ("ResultData", "field_family"):
+        assert forbidden not in source
