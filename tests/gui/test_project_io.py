@@ -31,6 +31,9 @@ from fem.geometry.recipes import (
     SketchCircle,
     SketchGeometry,
     SketchRectangle,
+    WireGeometry,
+    WireMember,
+    WirePoint,
 )
 from fem.io.project import (
     ProjectDecodeError,
@@ -130,7 +133,7 @@ def test_native_project_round_trip_returns_a_detached_snapshot(tmp_path) -> None
     reopened = loaded.snapshot
 
     assert isinstance(reopened, ProjectSnapshot)
-    assert loaded.source_schema == 2
+    assert loaded.source_schema == 3
     assert loaded.notices == ()
     assert reopened.source_kind == "native"
     assert reopened.source_path == target
@@ -161,7 +164,7 @@ def test_failed_detached_decode_cannot_change_a_live_session(tmp_path) -> None:
     assert session.snapshot() == before
 
 
-def test_main_window_opens_current_v2_project(tmp_path, monkeypatch) -> None:
+def test_main_window_opens_current_v3_project(tmp_path, monkeypatch) -> None:
     _application()
     source = save_project(
         tmp_path / "current.femproj",
@@ -188,6 +191,40 @@ def test_main_window_opens_current_v2_project(tmp_path, monkeypatch) -> None:
     assert "compatibility migration" not in (
         window.status_panel.state_label.text()
     )
+    window.close()
+
+
+def test_main_window_rejects_wire_project_before_session_replacement(tmp_path) -> None:
+    _application()
+    recipe = WireGeometry(
+        "Wire",
+        (WirePoint("P1", 0.0, 0.0), WirePoint("P2", 1.0, 0.0)),
+        (WireMember("M1", "P1", "P2"),),
+    )
+    source = save_project(
+        tmp_path / "wire.femproj",
+        ProjectSnapshot(
+            source_kind="native",
+            parts=(NativePart(),),
+            geometry_recipe=recipe,
+            mesh_settings=MeshSettings(
+                0.5,
+                cell_shape="line",
+                line_element_type="Truss2",
+            ),
+            feature_history=derive_feature_history(recipe),
+        ),
+    )
+    window = FEMMainWindow()
+    before = window.session.snapshot()
+
+    receipt = window.open_project_path(source)
+
+    assert receipt.diagnostic is not None
+    assert receipt.diagnostic.code == "native_1d.gui_pending"
+    assert window.session.snapshot() == before
+    assert window.document.source_kind is None
+    assert window.document.project_path is None
     window.close()
 
 
@@ -232,12 +269,12 @@ def test_main_window_v1_open_then_save_upgrades_the_same_path(
     assert source.read_bytes() == original
     upgrade_notice = window.status_panel.state_label.text()
     assert "下次显式保存" in upgrade_notice
-    assert "schema 2" in upgrade_notice
-    assert "v2" in upgrade_notice
+    assert "schema 3" in upgrade_notice
+    assert "v3" in upgrade_notice
 
     assert window.save_native_project()
-    assert json.loads(source.read_text(encoding="utf-8"))["schema"] == 2
-    assert load_project(source).source_schema == 2
+    assert json.loads(source.read_text(encoding="utf-8"))["schema"] == 3
+    assert load_project(source).source_schema == 3
     assert not window.document.dirty
     window.close()
 

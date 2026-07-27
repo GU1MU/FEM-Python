@@ -27,6 +27,11 @@ from .results.registry import (
     classify_result_element_types,
     classify_result_model,
 )
+from .native_mesh_contract import (
+    NativeMeshContract,
+    describe_native_mesh_contract,
+    describe_native_mesh_settings_contract,
+)
 
 if TYPE_CHECKING:
     from fem.core.model import LineLoad
@@ -895,49 +900,109 @@ def describe_region_capabilities(
 def describe_native_authoring_capabilities(
     recipe: Any,
     mesh_settings: Any,
+    *,
+    named_regions: Iterable[Any] = (),
 ) -> ModelCapabilityReport:
     """Describe a native recipe before a mesh artifact exists."""
 
-    shape = str(
-        getattr(mesh_settings, "cell_shape", "")
-    ).strip().casefold()
-    order = int(getattr(mesh_settings, "order", 1))
-    if not shape:
-        from fem.geometry.recipes import geometry_dimension
+    from fem.geometry.recipes import NATIVE_GEOMETRY_TYPES
 
-        shape = (
-            "tetrahedron"
-            if geometry_dimension(recipe) == 3
-            else "triangle"
+    if isinstance(recipe, NATIVE_GEOMETRY_TYPES):
+        contract = describe_native_mesh_contract(recipe, mesh_settings)
+        region_recipe = recipe
+    else:
+        # Keep the catalog-only compatibility seam used by existing callers
+        # that ask about a prospective continuum shape before a recipe has
+        # been constructed.  Resolve it through the same shared contract
+        # helper as real authoring paths.
+        from fem.mesh.settings import MeshSettings
+
+        prospective_settings = (
+            MeshSettings(1.0) if mesh_settings is None else mesh_settings
         )
-    canonical = {
-        ("triangle", 1): "Tri3",
-        ("triangle", 2): "Tri6",
-        ("quadrilateral", 1): "Quad4",
-        ("quadrilateral", 2): "Quad8",
-        ("tetrahedron", 1): "Tet4",
-        ("tetrahedron", 2): "Tet10",
-        ("hexahedron", 1): "Hex8",
-        ("hexahedron", 2): "Hex20",
-    }.get((shape, order))
-    if canonical is None:
-        aggregate = _aggregate_capabilities(("",), subject="native_mesh")
+        contract = describe_native_mesh_settings_contract(prospective_settings)
+        region_recipe = None
+    line_diagnostic = None
+    if not contract.complete:
+        line_diagnostic = PreflightDiagnostic(
+            code="native.line.formulation_required",
+            severity=PreflightSeverity.ERROR,
+            stage=PreflightStage.CAPABILITY,
+            message=(
+                "native 1D geometry requires an explicit Truss2 or Beam2 "
+                "line formulation before mesh generation"
+            ),
+            subject=getattr(recipe, "name", "native_mesh"),
+            path=("mesh_settings", "line_element_type"),
+            remediation="设置 MeshSettings.line_element_type 为 Truss2 或 Beam2。",
+        )
+        aggregate = _empty_capability_aggregate((line_diagnostic,))
         result_catalog = None
     else:
         aggregate = _aggregate_capabilities(
-            (canonical,),
+            (contract.canonical_element_type,),
             subject="native_mesh",
         )
         profile = classify_result_element_types(
-            (canonical,),
+            (contract.canonical_element_type,),
             dofs_per_node=aggregate.dofs_per_node,
         )
         result_catalog = ResultCapabilityCatalog.from_profile(profile)
+    native_regions = (
+        _native_region_capabilities(
+            region_recipe,
+            named_regions,
+            contract,
+            aggregate,
+            line_diagnostic,
+        )
+        if region_recipe is not None
+        else ()
+    )
     output_capabilities = _output_authoring_capabilities(
         supports_candidate=(
             result_catalog is not None and bool(result_catalog.candidates)
         ),
     )
+    unavailable_operations = (
+        "mesh.generate",
+        "model.validate",
+        "analysis.run",
+        "line_load.create",
+    )
+    if contract.complete:
+        authoring = (
+            AuthoringCapability(
+                "section.create",
+                (
+                    AuthoringStatus.ENABLED
+                    if aggregate.compatible
+                    else AuthoringStatus.UNAVAILABLE
+                ),
+            ),
+            AuthoringCapability(
+                "line_load.create",
+                (
+                    AuthoringStatus.ENABLED
+                    if aggregate.families == ("beam",)
+                    else AuthoringStatus.UNAVAILABLE
+                ),
+            ),
+            *output_capabilities,
+        )
+    else:
+        authoring = tuple(
+            AuthoringCapability(
+                operation,
+                AuthoringStatus.UNAVAILABLE,
+                (line_diagnostic,),
+            )
+            for operation in (
+                "section.create",
+                *unavailable_operations,
+                "output_request.create",
+            )
+        )
     return ModelCapabilityReport(
         canonical_element_types=aggregate.canonical_element_types,
         families=aggregate.families,
@@ -951,18 +1016,8 @@ def describe_native_authoring_capabilities(
         section_presets=aggregate.section_presets,
         load_kinds=aggregate.load_kinds,
         diagnostics=aggregate.diagnostics,
-        regions=(),
-        authoring=(
-            AuthoringCapability(
-                "section.create",
-                (
-                    AuthoringStatus.ENABLED
-                    if aggregate.compatible
-                    else AuthoringStatus.UNAVAILABLE
-                ),
-            ),
-            *output_capabilities,
-        ),
+        regions=native_regions,
+        authoring=authoring,
         output_request_catalog=result_catalog,
     )
 
@@ -984,7 +1039,11 @@ def describe_session_authoring(snapshot: Any) -> SessionAuthoringProjection:
     if model is not None:
         report = describe_model_capabilities(model)
     elif recipe is not None and getattr(snapshot, "source_kind", None) == "native":
-        report = describe_native_authoring_capabilities(recipe, mesh_settings)
+        report = describe_native_authoring_capabilities(
+            recipe,
+            mesh_settings,
+            named_regions=getattr(snapshot, "named_regions", ()),
+        )
     else:
         report = _empty_model_capability_report()
 
@@ -995,6 +1054,7 @@ def describe_session_authoring(snapshot: Any) -> SessionAuthoringProjection:
         descriptors = describe_native_regions(
             recipe,
             getattr(snapshot, "named_regions", ()),
+            mesh_settings=mesh_settings,
         )
         for descriptor in descriptors:
             for product, kind in (
@@ -1227,6 +1287,170 @@ def _empty_model_capability_report() -> ModelCapabilityReport:
             ),
         ),
         output_request_catalog=None,
+    )
+
+
+def _empty_capability_aggregate(
+    diagnostics: tuple[PreflightDiagnostic, ...],
+) -> _CapabilityAggregate:
+    return _CapabilityAggregate(
+        canonical_element_types=(),
+        families=(),
+        compatible=False,
+        topological_dimension=None,
+        spatial_dimension=None,
+        dofs_per_node=None,
+        dof_labels=(),
+        force_labels=(),
+        section_families=(),
+        section_presets=(),
+        load_kinds=(),
+        distributed_load_kinds=(),
+        requirements=(),
+        diagnostics=diagnostics,
+    )
+
+
+def _native_region_capabilities(
+    recipe: Any,
+    named_regions: Iterable[Any],
+    contract: NativeMeshContract,
+    aggregate: _CapabilityAggregate,
+    line_diagnostic: PreflightDiagnostic | None,
+) -> tuple[RegionCapability, ...]:
+    """Project stable pre-mesh region products into capability reports."""
+
+    from .native_regions import describe_native_regions
+
+    descriptors = describe_native_regions(
+        recipe,
+        named_regions,
+        mesh_contract=contract,
+    )
+    result: list[RegionCapability] = []
+    seen: set[RegionRef] = set()
+    diagnostics = (
+        (line_diagnostic,)
+        if line_diagnostic is not None
+        else aggregate.diagnostics
+    )
+    for descriptor in descriptors:
+        products = set(descriptor.products)
+        if "node_set" in products:
+            region = RegionRef("node_set", descriptor.name)
+            if region not in seen:
+                result.append(
+                    _native_region_capability(
+                        region,
+                        aggregate,
+                        diagnostics,
+                        contract,
+                    )
+                )
+                seen.add(region)
+        if "element_set" in products or "beam_element_set" in products:
+            region = RegionRef("element_set", descriptor.name)
+            if region not in seen:
+                result.append(
+                    _native_region_capability(
+                        region,
+                        aggregate,
+                        diagnostics,
+                        contract,
+                    )
+                )
+                seen.add(region)
+        for product in ("edge", "surface"):
+            if product not in products:
+                continue
+            region = RegionRef(product, descriptor.name)
+            if region in seen:
+                continue
+            result.append(
+                _native_region_capability(
+                    region,
+                    aggregate,
+                    diagnostics,
+                    contract,
+                )
+            )
+            seen.add(region)
+    return tuple(result)
+
+
+def _native_region_capability(
+    region: RegionRef,
+    aggregate: _CapabilityAggregate,
+    diagnostics: tuple[PreflightDiagnostic, ...],
+    contract: NativeMeshContract,
+) -> RegionCapability:
+    compatible = aggregate.compatible and not any(
+        item.blocking for item in diagnostics
+    )
+    operations: list[AuthoringCapability] = []
+
+    def add(name: str, enabled: bool, extra: tuple[PreflightDiagnostic, ...] = ()) -> None:
+        status = (
+            AuthoringStatus.LIMITED
+            if enabled and extra
+            else AuthoringStatus.ENABLED
+            if enabled
+            else AuthoringStatus.UNAVAILABLE
+        )
+        operations.append(
+            AuthoringCapability(
+                name,
+                status,
+                extra if enabled else diagnostics,
+            )
+        )
+
+    if region.kind == "node_set":
+        add("boundary.displacement", compatible)
+        add("load.node", compatible and "node" in aggregate.load_kinds)
+    elif region.kind == "element_set":
+        add(
+            "section.assignment",
+            compatible and bool(aggregate.section_families),
+        )
+        is_beam = compatible and aggregate.families == ("beam",)
+        add("load.line.global", is_beam and "line" in aggregate.load_kinds)
+        if is_beam:
+            automatic = PreflightDiagnostic(
+                code="beam.orientation.assumed",
+                severity=PreflightSeverity.WARNING,
+                stage=PreflightStage.CAPABILITY,
+                message=(
+                    "Beam2 local line-load authoring uses the automatic local "
+                    "frame until an explicit orientation is installed"
+                ),
+                subject=region,
+                path=("capabilities", "operations", "load.line.local"),
+                remediation="如需方向敏感的局部线载荷，请提供 Beam2 显式方向。",
+            )
+            add("load.line.local", True, (automatic,))
+    elif region.kind == "edge":
+        add("load.edge", compatible and "edge" in aggregate.load_kinds)
+    elif region.kind == "surface":
+        add("load.surface", compatible and "surface" in aggregate.load_kinds)
+
+    return RegionCapability(
+        region=region,
+        canonical_element_types=aggregate.canonical_element_types,
+        families=aggregate.families,
+        homogeneous=len(aggregate.families) == 1,
+        compatible=compatible,
+        topological_dimension=aggregate.topological_dimension,
+        spatial_dimension=aggregate.spatial_dimension,
+        dofs_per_node=aggregate.dofs_per_node,
+        dof_labels=aggregate.dof_labels,
+        force_labels=aggregate.force_labels,
+        section_families=aggregate.section_families,
+        section_presets=aggregate.section_presets,
+        load_kinds=aggregate.load_kinds,
+        distributed_load_kinds=aggregate.distributed_load_kinds,
+        diagnostics=diagnostics,
+        operations=tuple(operations),
     )
 
 

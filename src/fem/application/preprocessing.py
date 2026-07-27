@@ -25,7 +25,7 @@ from fem.geometry.references import LogicalEntityRef
 from fem.geometry.recipes import (
     NATIVE_GEOMETRY_TYPES,
     NativeGeometry,
-    geometry_dimension,
+    WireGeometry,
 )
 from fem.io import gmsh as gmsh_io
 from fem.mesh import gmsh as gmsh_meshing
@@ -37,6 +37,10 @@ from .recipe_compiler import (
     CompiledRecipeTopology,
     TopologyResolutionError,
     compile_recipe,
+)
+from .native_mesh_contract import (
+    NativeMeshContract,
+    require_complete_native_mesh_contract,
 )
 from .native_regions import (
     CompiledDomainRegionSource,
@@ -121,14 +125,15 @@ def generate_fem_model(
         settings,
         named_regions,
     )
-    if geometry_dimension(recipe) == 1:
-        raise NotImplementedError(
-            "native 1D preprocessing is not enabled until Phase 2"
-        )
+    contract = require_complete_native_mesh_contract(recipe, mesh_settings)
+    if mesh_settings is None:
+        raise TypeError("网格生成需要 MeshSettings")
     region_descriptors = validate_native_authoring_context(
         recipe,
         regions,
         local_controls=mesh_settings.local_controls,
+        mesh_settings=mesh_settings,
+        mesh_contract=contract,
     )
     topology_resolver = resolver or DEFAULT_TOPOLOGY_RESOLVER
 
@@ -148,7 +153,7 @@ def generate_fem_model(
             # thread. GUI callers intentionally execute this function in a
             # worker, so the application retains signal ownership.
             gmsh.initialize(interruptible=False)
-        dimension = geometry_dimension(recipe)
+        dimension = contract.dimension
         with geometry.model(recipe.name, dimension=dimension) as cad:
             topology = topology_resolver.build(cad, recipe)
             mesher = gmsh_meshing.Mesher(cad)
@@ -213,18 +218,35 @@ def generate_fem_model(
                 gmsh_meshing.MeshSpec(
                     size=mesh_size,
                     order=mesh_settings.order,
-                    recombine=mesh_settings.cell_shape
+                    recombine=contract.cell_shape
                     in {"quadrilateral", "hexahedron"},
                 )
             )
-            mesh = gmsh_io.read(native_mesh)
-            return _build_native_fem_model(
+            mesh = gmsh_io.read(
+                native_mesh,
+                line_element_type=contract.line_element_type,
+            )
+            if isinstance(recipe, WireGeometry):
+                _audit_native_wire_mesh(
+                    recipe,
+                    topology,
+                    native_mesh,
+                    mesh,
+                    contract,
+                )
+            model = _build_native_fem_model(
                 mesh,
                 native_mesh,
                 recipe.name,
                 dimension,
                 entity_groups,
             )
+            if dimension == 1 and (model.edges or model.surfaces):
+                raise TopologyResolutionError(
+                    "native wire model unexpectedly created FEM edge or surface "
+                    "collections"
+                )
+            return model
     finally:
         if owns_session and bool(gmsh.isInitialized()):
             gmsh.finalize()
@@ -234,7 +256,7 @@ def _normalize_inputs(
     recipe_or_snapshot: NativeGeometry | MeshTaskSnapshot,
     settings: MeshSettings | None,
     named_regions: Iterable[Any] | Mapping[str, Any] | None,
-) -> tuple[NativeGeometry, MeshSettings, tuple[Any, ...]]:
+) -> tuple[NativeGeometry, MeshSettings | None, tuple[Any, ...]]:
     if isinstance(recipe_or_snapshot, MeshTaskSnapshot):
         if settings is not None:
             raise TypeError("MeshTaskSnapshot 已包含网格设置，不能重复传入 settings")
@@ -252,7 +274,7 @@ def _normalize_inputs(
 
     if not isinstance(recipe, NATIVE_GEOMETRY_TYPES):
         raise TypeError("网格生成需要有效的原生几何配方")
-    if not isinstance(mesh_settings, MeshSettings):
+    if mesh_settings is not None and type(mesh_settings) is not MeshSettings:
         raise TypeError("网格生成需要 MeshSettings")
     regions = (
         tuple(region_source.values())
@@ -410,6 +432,185 @@ def _build_native_fem_model(
                 ],
             )
     return model
+
+
+def _audit_native_wire_mesh(
+    recipe: WireGeometry,
+    topology: CompiledRecipeTopology,
+    native_mesh: Any,
+    mesh: Any,
+    contract: NativeMeshContract,
+) -> None:
+    """Prove that imported topology still matches the declared wire graph."""
+
+    elements = tuple(getattr(mesh, "elements", ()))
+    element_by_id: dict[int, Any] = {}
+    for element in elements:
+        element_id = int(element.id)
+        if element_id in element_by_id:
+            raise TopologyResolutionError(
+                f"body:domain contains duplicate imported element ID {element_id!r}"
+            )
+        element_by_id[element_id] = element
+    element_ids = set(element_by_id)
+    if not elements:
+        raise TopologyResolutionError("body:domain 没有生成任何线单元")
+    unexpected = tuple(
+        element.type
+        for element in elements
+        if element.type != contract.canonical_element_type
+    )
+    if unexpected:
+        raise TopologyResolutionError(
+            f"body:domain 包含未预期的单元类型 {unexpected[0]!r}，"
+            f"要求 {contract.canonical_element_type!r}"
+        )
+
+    point_nodes: dict[str, int] = {}
+    for point in recipe.points:
+        logical_id = f"point:{point.name}"
+        entities = topology.logical_entities.get(logical_id, ())
+        node_ids = gmsh_io.entity_node_ids(native_mesh, entities)
+        if len(node_ids) != 1:
+            raise TopologyResolutionError(
+                f"{logical_id} 应解析为恰好一个网格节点，实际为 {node_ids!r}"
+            )
+        point_nodes[logical_id] = int(node_ids[0])
+    if len(set(point_nodes.values())) != len(point_nodes):
+        duplicate = _first_duplicate_value(point_nodes)
+        raise TopologyResolutionError(
+            f"{duplicate} 与另一个逻辑点共享网格节点，声明的图身份被改变"
+        )
+
+    member_element_ids: dict[str, set[int]] = {}
+    member_node_ids: dict[str, set[int]] = {}
+    member_endpoint_nodes: dict[str, set[int]] = {}
+    for member in recipe.members:
+        logical_id = f"edge:{member.name}"
+        entities = topology.logical_entities.get(logical_id, ())
+        ids = set(gmsh_io.entity_element_ids(native_mesh, entities))
+        if not ids:
+            raise TopologyResolutionError(f"{logical_id} 没有生成任何线单元")
+        if not ids.issubset(element_ids):
+            raise TopologyResolutionError(
+                f"{logical_id} 解析出了不属于导入模型的单元 ID"
+            )
+        member_element_ids[logical_id] = ids
+        for endpoint in (member.start, member.end):
+            endpoint_id = point_nodes[f"point:{endpoint}"]
+            if not any(
+                endpoint_id in tuple(element.node_ids)
+                for element in elements
+                if int(element.id) in ids
+            ):
+                raise TopologyResolutionError(
+                    f"{logical_id} 的端点 point:{endpoint} 未出现在其单元链中"
+                )
+
+    members_by_logical_id = {
+        f"edge:{member.name}": member for member in recipe.members
+    }
+    for logical_id, ids in member_element_ids.items():
+        member = members_by_logical_id[logical_id]
+        endpoint_nodes = {
+            point_nodes[f"point:{member.start}"],
+            point_nodes[f"point:{member.end}"],
+        }
+        member_endpoint_nodes[logical_id] = endpoint_nodes
+        adjacency: dict[int, set[int]] = {}
+        degree: dict[int, int] = {}
+        for element_id in ids:
+            element = element_by_id[element_id]
+            try:
+                node_ids = tuple(int(node_id) for node_id in element.node_ids)
+            except (TypeError, ValueError) as error:
+                raise TopologyResolutionError(
+                    f"{logical_id} contains an imported element with invalid node IDs"
+                ) from error
+            if len(node_ids) != 2 or node_ids[0] == node_ids[1]:
+                raise TopologyResolutionError(
+                    f"{logical_id} must resolve to first-order two-node line elements"
+                )
+            first, second = node_ids
+            adjacency.setdefault(first, set()).add(second)
+            adjacency.setdefault(second, set()).add(first)
+            degree[first] = degree.get(first, 0) + 1
+            degree[second] = degree.get(second, 0) + 1
+        visited: set[int] = set()
+        pending = [next(iter(adjacency))]
+        while pending:
+            node_id = pending.pop()
+            if node_id in visited:
+                continue
+            visited.add(node_id)
+            pending.extend(adjacency[node_id] - visited)
+        if visited != set(adjacency):
+            raise TopologyResolutionError(
+                f"{logical_id} is fragmented into disconnected element chains"
+            )
+        degree_one = {node_id for node_id, count in degree.items() if count == 1}
+        if degree_one != endpoint_nodes or any(
+            count > 2 for count in degree.values()
+        ):
+            raise TopologyResolutionError(
+                f"{logical_id} is not one endpoint-to-endpoint line chain"
+            )
+        member_nodes = set(adjacency)
+        internal_nodes = member_nodes - endpoint_nodes
+        if internal_nodes.intersection(point_nodes.values()):
+            raise TopologyResolutionError(
+                f"{logical_id} contains a declared point as an undeclared internal node"
+            )
+        member_node_ids[logical_id] = member_nodes
+
+    element_owners: dict[int, str] = {}
+    for logical_id, ids in member_element_ids.items():
+        for element_id in ids:
+            previous = element_owners.get(element_id)
+            if previous is not None:
+                raise TopologyResolutionError(
+                    f"{logical_id} shares imported element ID {element_id!r} "
+                    f"with {previous}"
+                )
+            element_owners[element_id] = logical_id
+    member_items = tuple(member_node_ids.items())
+    for index, (logical_id, node_ids) in enumerate(member_items):
+        for other_id, other_node_ids in member_items[index + 1 :]:
+            shared_nodes = node_ids.intersection(other_node_ids)
+            allowed_nodes = member_endpoint_nodes[logical_id].intersection(
+                member_endpoint_nodes[other_id]
+            )
+            unexpected_nodes = shared_nodes - allowed_nodes
+            if unexpected_nodes:
+                raise TopologyResolutionError(
+                    f"{logical_id} and {other_id} share undeclared mesh nodes "
+                    f"{sorted(unexpected_nodes)!r}"
+                )
+
+    union = set().union(*member_element_ids.values())
+    if union != element_ids:
+        missing = sorted(element_ids - union)
+        extra = sorted(union - element_ids)
+        raise TopologyResolutionError(
+            "body:domain 与声明 member 单元并集不一致："
+            f"missing={missing!r}, extra={extra!r}"
+        )
+    domain_entities = topology.logical_entities.get("body:domain", ())
+    domain_ids = set(gmsh_io.entity_element_ids(native_mesh, domain_entities))
+    if domain_ids != union:
+        raise TopologyResolutionError(
+            "body:domain 的 CAD 所有权与声明 member 单元并集不一致"
+        )
+
+
+def _first_duplicate_value(values: Mapping[str, int]) -> str:
+    seen: dict[int, str] = {}
+    for logical_id, node_id in values.items():
+        previous = seen.get(node_id)
+        if previous is not None:
+            return f"{logical_id} 与 {previous}"
+        seen[node_id] = logical_id
+    return "逻辑点"
 
 
 def _unique_entities(entities: Iterable[Any]) -> tuple[Any, ...]:

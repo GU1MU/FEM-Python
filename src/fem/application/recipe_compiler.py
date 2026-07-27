@@ -29,6 +29,7 @@ from fem.geometry.recipes import (
     RectangleGeometry,
     RotatedGeometry,
     SketchGeometry,
+    WireGeometry,
     geometry_dimension,
 )
 
@@ -126,6 +127,8 @@ def _compile_exact(cad: Any, recipe: NativeGeometry) -> _CompiledDraft:
         return _compile_box(cad, recipe)
     if isinstance(recipe, CylinderGeometry):
         return _compile_cylinder(cad, recipe)
+    if isinstance(recipe, WireGeometry):
+        return _compile_wire(cad, recipe)
     if isinstance(recipe, MovedGeometry):
         draft = _compile_exact(cad, recipe.base)
         draft.domain = tuple(
@@ -155,6 +158,48 @@ def _compile_exact(cad: Any, recipe: NativeGeometry) -> _CompiledDraft:
     if isinstance(recipe, BooleanGeometry):
         return _compile_boolean(cad, recipe)
     raise TypeError(f"不支持的几何配方: {type(recipe).__name__}")
+
+
+def _compile_wire(cad: Any, recipe: WireGeometry) -> _CompiledDraft:
+    """Compile the declared wire graph without inferring any extra topology."""
+
+    point_refs: dict[str, Any] = {}
+    for point in recipe.points:
+        try:
+            point_refs[point.name] = cad.point(point.x, point.y, point.z)
+        except (TypeError, ValueError) as error:
+            raise TopologyResolutionError(
+                f"无法创建 point:{point.name}：{error}"
+            ) from error
+
+    member_refs: dict[str, Any] = {}
+    for member in recipe.members:
+        try:
+            member_refs[member.name] = cad.line(
+                point_refs[member.start],
+                point_refs[member.end],
+            )
+        except (TypeError, ValueError) as error:
+            raise TopologyResolutionError(
+                f"无法创建 edge:{member.name}，端点 "
+                f"{member.start!r} 和 {member.end!r}：{error}"
+            ) from error
+
+    return _CompiledDraft(
+        tuple(member_refs.values()),
+        {
+            **{
+                f"point:{point.name}": (point_refs[point.name],)
+                for point in recipe.points
+            },
+            **{
+                f"edge:{member.name}": (member_refs[member.name],)
+                for member in recipe.members
+            },
+            "body:domain": tuple(member_refs.values()),
+        },
+        {},
+    )
 
 
 def _compile_rectangle(cad: Any, recipe: RectangleGeometry) -> _CompiledDraft:

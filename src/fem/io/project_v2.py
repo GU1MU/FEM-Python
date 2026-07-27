@@ -815,6 +815,7 @@ def _validate_native_project_inputs_v2(
             sections,
             assignments,
             steps,
+            enforce_formulation_compatibility=False,
         )
     except NativeProjectValidationError as error:
         message = str(error)

@@ -492,6 +492,17 @@ class FEMMainWindow(QMainWindow):
         target = Path(path)
         try:
             loaded = load_project(target)
+            if (
+                loaded.snapshot.source_kind == "native"
+                and loaded.snapshot.geometry_recipe is not None
+                and geometry_dimension(loaded.snapshot.geometry_recipe) == 1
+            ):
+                return self._rejected_command(
+                    command_id,
+                    "native_1d.gui_pending",
+                    "原生 1D wire 项目当前只能通过 headless API 使用，GUI 编辑将在 Phase 3 提供。",
+                    "请使用 headless API 生成、求解和导出此项目；当前 Session 与视口保持不变。",
+                )
             delta = self.session.replace_from_snapshot(
                 loaded.snapshot,
                 expected_session_revision=self.document.session_revision,

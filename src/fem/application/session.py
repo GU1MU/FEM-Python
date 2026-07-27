@@ -58,6 +58,7 @@ from .project_validation import (
     analysis_steps_have_native_region_targets,
     validate_native_project_inputs,
 )
+from .native_mesh_contract import require_complete_native_mesh_contract
 from .revisions import (
     ImportTaskSnapshot,
     MeshTaskSnapshot,
@@ -1268,6 +1269,19 @@ class ModelSession:
         self._require_native()
         if self._geometry_recipe is None:
             raise SessionStateError("mesh generation requires geometry")
+        require_complete_native_mesh_contract(
+            self._geometry_recipe,
+            self._mesh_settings,
+        )
+        validate_native_project_inputs(
+            self._geometry_recipe,
+            self._mesh_settings,
+            tuple(self._named_regions.values()),
+            self._materials,
+            self._sections,
+            self._assignments,
+            self._steps,
+        )
         token = self._issue_token(
             "mesh",
             (
@@ -2695,6 +2709,9 @@ def _validate_explicit_mesh_settings(
                 "local mesh controls require a geometry recipe"
             )
         return
+    from .native_mesh_contract import describe_native_mesh_contract
+
+    describe_native_mesh_contract(recipe, settings)
     if not _mesh_shape_supported(settings.cell_shape, recipe):
         raise ValueError(
             f"mesh cell shape {settings.cell_shape!r} is not supported "

@@ -42,6 +42,9 @@ from fem.geometry.recipes import (
     SketchCircle,
     SketchGeometry,
     SketchRectangle,
+    WireGeometry,
+    WireMember,
+    WirePoint,
 )
 
 from ._project_errors import (
@@ -63,6 +66,7 @@ class ProjectFieldCodecPolicy:
     encode_error: type[ProjectEncodeError]
     require_current_fields: bool
     assignment_orientation: bool
+    allow_wire_geometry: bool = False
 
 
 def loads_json_strict(
@@ -309,6 +313,56 @@ def decode_geometry_field(
             }
         )
         return _field_construct(recipe_type, path, policy, **arguments)
+    if kind == "WireGeometry":
+        if not policy.allow_wire_geometry:
+            raise policy.decode_error(
+                f"{path}.type 的几何类型无法由 {policy.version_label} "
+                "无损解码：'WireGeometry'"
+            )
+        _field_keys(
+            data,
+            path,
+            required={"type", "name", "points", "members"},
+            optional=set(),
+            policy=policy,
+            error_type=policy.decode_error,
+        )
+        points = tuple(
+            _decode_wire_point_field(
+                item,
+                f"{path}.points[{index}]",
+                policy=policy,
+            )
+            for index, item in enumerate(
+                _field_array(
+                    data["points"],
+                    f"{path}.points",
+                    policy.decode_error,
+                )
+            )
+        )
+        members = tuple(
+            _decode_wire_member_field(
+                item,
+                f"{path}.members[{index}]",
+                policy=policy,
+            )
+            for index, item in enumerate(
+                _field_array(
+                    data["members"],
+                    f"{path}.members",
+                    policy.decode_error,
+                )
+            )
+        )
+        return _field_construct(
+            WireGeometry,
+            path,
+            policy,
+            _field_string(data["name"], f"{path}.name", policy.decode_error),
+            points,
+            members,
+        )
     if kind == "SketchGeometry":
         _field_keys(
             data,
@@ -570,6 +624,98 @@ def decode_contour_field(
     raise policy.decode_error(f"{path}.type 是未知草图轮廓：{kind!r}")
 
 
+def _decode_wire_point_field(
+    value: Any,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> WirePoint:
+    data = _field_mapping(value, path, policy.decode_error)
+    _field_keys(
+        data,
+        path,
+        required={"name", "x", "y", "z"},
+        optional=set(),
+        policy=policy,
+        error_type=policy.decode_error,
+    )
+    return _field_construct(
+        WirePoint,
+        path,
+        policy,
+        _field_string(data["name"], f"{path}.name", policy.decode_error),
+        _field_number(data["x"], f"{path}.x", policy.decode_error, policy=policy),
+        _field_number(data["y"], f"{path}.y", policy.decode_error, policy=policy),
+        _field_number(data["z"], f"{path}.z", policy.decode_error, policy=policy),
+    )
+
+
+def _decode_wire_member_field(
+    value: Any,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> WireMember:
+    data = _field_mapping(value, path, policy.decode_error)
+    _field_keys(
+        data,
+        path,
+        required={"name", "start", "end"},
+        optional=set(),
+        policy=policy,
+        error_type=policy.decode_error,
+    )
+    return _field_construct(
+        WireMember,
+        path,
+        policy,
+        _field_string(data["name"], f"{path}.name", policy.decode_error),
+        _field_string(data["start"], f"{path}.start", policy.decode_error),
+        _field_string(data["end"], f"{path}.end", policy.decode_error),
+    )
+
+
+def _encode_wire_point_field(
+    point: Any,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> dict[str, Any]:
+    _field_exact_dataclass(
+        point,
+        WirePoint,
+        {"name", "x", "y", "z"},
+        path,
+        policy,
+    )
+    return {
+        "name": _field_string(point.name, f"{path}.name", policy.encode_error),
+        "x": _field_number(point.x, f"{path}.x", policy.encode_error, policy=policy),
+        "y": _field_number(point.y, f"{path}.y", policy.encode_error, policy=policy),
+        "z": _field_number(point.z, f"{path}.z", policy.encode_error, policy=policy),
+    }
+
+
+def _encode_wire_member_field(
+    member: Any,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> dict[str, Any]:
+    _field_exact_dataclass(
+        member,
+        WireMember,
+        {"name", "start", "end"},
+        path,
+        policy,
+    )
+    return {
+        "name": _field_string(member.name, f"{path}.name", policy.encode_error),
+        "start": _field_string(member.start, f"{path}.start", policy.encode_error),
+        "end": _field_string(member.end, f"{path}.end", policy.encode_error),
+    }
+
+
 def encode_geometry_field(
     recipe: Any,
     path: str,
@@ -617,6 +763,53 @@ def encode_geometry_field(
                 }
             )
             return result
+        if type(recipe) is WireGeometry:
+            if not policy.allow_wire_geometry:
+                raise policy.encode_error(
+                    f"{path} 的几何类型无法由 {policy.version_label} "
+                    "无损编码：WireGeometry"
+                )
+            _field_exact_dataclass(
+                recipe,
+                WireGeometry,
+                {"name", "points", "members"},
+                path,
+                policy,
+            )
+            points = _field_runtime_sequence(
+                recipe.points,
+                f"{path}.points",
+                policy,
+            )
+            members = _field_runtime_sequence(
+                recipe.members,
+                f"{path}.members",
+                policy,
+            )
+            return {
+                "type": "WireGeometry",
+                "name": _field_string(
+                    recipe.name,
+                    f"{path}.name",
+                    policy.encode_error,
+                ),
+                "points": [
+                    _encode_wire_point_field(
+                        point,
+                        f"{path}.points[{index}]",
+                        policy=policy,
+                    )
+                    for index, point in enumerate(points)
+                ],
+                "members": [
+                    _encode_wire_member_field(
+                        member,
+                        f"{path}.members[{index}]",
+                        policy=policy,
+                    )
+                    for index, member in enumerate(members)
+                ],
+            }
         if type(recipe) is SketchGeometry:
             _field_exact_dataclass(
                 recipe,

@@ -31,7 +31,12 @@ from fem.geometry.recipes import (
     RotatedGeometry,
     SketchGeometry,
 )
+from fem.mesh.settings import MeshSettings
 
+from .native_mesh_contract import (
+    NativeMeshContract,
+    describe_native_mesh_contract,
+)
 
 NativeRegionProduct = Literal[
     "node_set",
@@ -164,15 +169,24 @@ class NativeRegionDescriptor:
 def describe_native_regions(
     recipe: NativeGeometry,
     named_regions: Iterable[Any] | Mapping[str, Any] = (),
+    *,
+    mesh_settings: MeshSettings | None = None,
+    mesh_contract: NativeMeshContract | None = None,
 ) -> tuple[NativeRegionDescriptor, ...]:
     """Describe every built-in and user region without constructing CAD or mesh."""
 
+    contract = _resolve_mesh_contract(recipe, mesh_settings, mesh_contract)
     topology = describe_recipe_topology(recipe)
+    domain_products = _products_for_entity_dimension(
+        topology.dimension,
+        topology.dimension,
+        contract,
+    )
     descriptors: list[NativeRegionDescriptor] = [
         NativeRegionDescriptor(
             "DOMAIN",
             CompiledDomainRegionSource(),
-            frozenset({"element_set"}),
+            domain_products,
         )
     ]
     if topology.exact:
@@ -227,7 +241,7 @@ def describe_native_regions(
         descriptor = NativeRegionDescriptor(
             name,
             source,
-            _products_for_references(topology, validated),
+            _products_for_references(topology, validated, contract),
         )
         occupied[folded] = name
         user_descriptors.append(descriptor)
@@ -324,10 +338,17 @@ def validate_native_authoring_context(
     *,
     local_controls: Iterable[Any] = (),
     region_requirements: Iterable[tuple[str, NativeRegionProduct]] = (),
+    mesh_settings: MeshSettings | None = None,
+    mesh_contract: NativeMeshContract | None = None,
 ) -> tuple[NativeRegionDescriptor, ...]:
     """Validate detached regions, local controls, and named capabilities together."""
 
-    descriptors = describe_native_regions(recipe, named_regions)
+    contract = _resolve_mesh_contract(recipe, mesh_settings, mesh_contract)
+    descriptors = describe_native_regions(
+        recipe,
+        named_regions,
+        mesh_contract=contract,
+    )
     for control in local_controls:
         target = getattr(control, "target", None)
         validate_logical_reference(
@@ -337,6 +358,11 @@ def validate_native_authoring_context(
         )
         falloff = getattr(control, "falloff", None)
         if getattr(falloff, "reference", None) == "target_radius":
+            if contract.dimension == 1:
+                raise NativeRegionValidationError(
+                    "target_radius falloff is not supported for native line "
+                    "local mesh controls; use global_size"
+                )
             resolve_target_radius(recipe, target)
     for region_name, product in region_requirements:
         require_native_region_product(descriptors, region_name, product)
@@ -428,6 +454,7 @@ def _has_hole_boundary(topology: RecipeTopology) -> bool:
 def _products_for_references(
     topology: RecipeTopology,
     references: tuple[LogicalEntityRef, ...],
+    contract: NativeMeshContract,
 ) -> frozenset[NativeRegionProduct]:
     dimensions = {
         topology.entity(reference.logical_id).dimension for reference in references
@@ -435,15 +462,44 @@ def _products_for_references(
     if len(dimensions) != 1:
         raise NativeRegionValidationError("one native region cannot mix CAD dimensions")
     entity_dimension = next(iter(dimensions))
-    if entity_dimension == topology.dimension:
-        return frozenset({"element_set"})
+    return _products_for_entity_dimension(
+        entity_dimension,
+        topology.dimension,
+        contract,
+    )
+
+
+def _products_for_entity_dimension(
+    entity_dimension: int,
+    recipe_dimension: int,
+    contract: NativeMeshContract,
+) -> frozenset[NativeRegionProduct]:
+    if entity_dimension == recipe_dimension:
+        products: set[NativeRegionProduct] = {"element_set"}
+        if contract.line_element_type == "Beam2" and recipe_dimension == 1:
+            products.add("beam_element_set")
+        return frozenset(products)
     if entity_dimension == 0:
         return frozenset({"node_set"})
-    if topology.dimension == 2 and entity_dimension == 1:
+    if recipe_dimension == 2 and entity_dimension == 1:
         return frozenset({"node_set", "edge"})
-    if topology.dimension == 3 and entity_dimension == 2:
+    if recipe_dimension == 3 and entity_dimension == 2:
         return frozenset({"node_set", "surface"})
     return frozenset({"node_set"})
+
+
+def _resolve_mesh_contract(
+    recipe: NativeGeometry,
+    mesh_settings: MeshSettings | None,
+    mesh_contract: NativeMeshContract | None,
+) -> NativeMeshContract:
+    if mesh_contract is not None:
+        if type(mesh_contract) is not NativeMeshContract:
+            raise TypeError("mesh_contract must be NativeMeshContract or None")
+        return mesh_contract
+    # The helper intentionally returns an incomplete contract for an
+    # unconfigured wire, while keeping continuum defaults unchanged.
+    return describe_native_mesh_contract(recipe, mesh_settings)
 
 
 __all__ = [

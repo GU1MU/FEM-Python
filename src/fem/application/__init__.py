@@ -65,6 +65,14 @@ from .native_regions import (
     validate_logical_references,
     validate_native_authoring_context,
 )
+from .native_mesh_contract import (
+    LineElementType,
+    NativeDimension,
+    NativeMeshContract,
+    NativeMeshContractError,
+    describe_native_mesh_contract,
+    require_complete_native_mesh_contract,
+)
 from .diagnostics import (
     PreflightDiagnostic,
     PreflightFacts,
@@ -129,6 +137,7 @@ __all__ = [
     "ImportTaskSnapshot",
     "LogicalRecipeTopologyResolver",
     "LogicalReferencesRegionSource",
+    "LineElementType",
     "MeshTaskSnapshot",
     "ModelArtifact",
     "ModelCapabilityReport",
@@ -137,6 +146,9 @@ __all__ = [
     "NamedRegion",
     "NamedRegionEditBatch",
     "NativePart",
+    "NativeDimension",
+    "NativeMeshContract",
+    "NativeMeshContractError",
     "NativeRegionDescriptor",
     "NativeRegionProduct",
     "NativeRegionSource",
@@ -181,6 +193,7 @@ __all__ = [
     "compile_model_definitions",
     "compiled_model_snapshot",
     "describe_model_capabilities",
+    "describe_native_mesh_contract",
     "describe_native_regions",
     "describe_native_authoring_capabilities",
     "describe_region_capabilities",
@@ -193,6 +206,7 @@ __all__ = [
     "internal_error_report",
     "normalize_model_definitions",
     "require_native_region_product",
+    "require_complete_native_mesh_contract",
     "require_region_kind",
     "resolve_effective_beam_frames",
     "run_static_preflight",

@@ -1,7 +1,7 @@
 """Version-neutral native project persistence API.
 
-Readers dispatch schema 1 compatibility migration or the current schema 2
-codec after one strict JSON parse.  Writers always emit the current schema.
+Readers dispatch schema 1 compatibility migration or schema 2/schema 3
+codecs after one strict JSON parse.  Writers always emit the current schema.
 """
 
 from __future__ import annotations
@@ -22,15 +22,16 @@ from ._project_errors import (
 )
 from .project_migration import ProjectMigrationNotice
 from .project_v1 import _decode_project_v1_loaded
-from .project_v2 import (
-    decode_project_v2,
-    dumps_project_v2,
-    encode_project_v2,
-    save_project_v2,
+from .project_v2 import decode_project_v2
+from .project_v3 import (
+    decode_project_v3,
+    dumps_project_v3,
+    encode_project_v3,
+    save_project_v3,
 )
 
 
-CURRENT_PROJECT_SCHEMA = 2
+CURRENT_PROJECT_SCHEMA = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,7 +63,7 @@ class LoadedProject:
 
 
 def load_project(path: str | Path) -> LoadedProject:
-    """Read and decode a schema 1 or schema 2 project from *path*."""
+    """Read and decode a schema 1, schema 2, or schema 3 project from *path*."""
 
     source = Path(path)
     return loads_project(source.read_bytes(), source_path=source)
@@ -73,7 +74,7 @@ def loads_project(
     *,
     source_path: str | Path | None = None,
 ) -> LoadedProject:
-    """Strictly parse and decode a schema 1 or schema 2 JSON document."""
+    """Strictly parse and decode a schema 1, schema 2, or schema 3 JSON document."""
 
     payload = loads_json_strict(
         data,
@@ -111,8 +112,14 @@ def decode_project(
             payload,
             source_path=resolved_path,
         )
-    elif schema == CURRENT_PROJECT_SCHEMA:
+    elif schema == 2:
         snapshot = decode_project_v2(
+            payload,
+            source_path=resolved_path,
+        )
+        notices = ()
+    elif schema == CURRENT_PROJECT_SCHEMA:
+        snapshot = decode_project_v3(
             payload,
             source_path=resolved_path,
         )
@@ -120,7 +127,7 @@ def decode_project(
     else:
         raise UnsupportedProjectSchemaError(
             f"$.schema={schema!r} 不受支持；"
-            f"当前版本可读取 schema 1 和 {CURRENT_PROJECT_SCHEMA}"
+            f"当前版本可读取 schema 1、2 和 {CURRENT_PROJECT_SCHEMA}"
         )
     return LoadedProject(
         snapshot=snapshot,
@@ -135,7 +142,7 @@ def encode_project(
 ) -> dict[str, Any]:
     """Encode a detached snapshot using the current project schema."""
 
-    return encode_project_v2(snapshot)
+    return encode_project_v3(snapshot)
 
 
 def dumps_project(
@@ -143,7 +150,7 @@ def dumps_project(
 ) -> str:
     """Serialize a detached snapshot using canonical current-schema JSON."""
 
-    return dumps_project_v2(snapshot)
+    return dumps_project_v3(snapshot)
 
 
 def save_project(
@@ -152,7 +159,7 @@ def save_project(
 ) -> Path:
     """Atomically save a detached snapshot using the current schema."""
 
-    return save_project_v2(path, snapshot)
+    return save_project_v3(path, snapshot)
 
 
 __all__ = [

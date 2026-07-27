@@ -8,6 +8,8 @@ from typing import Any
 from fem.core.model import AnalysisStep, MaterialDefinition
 from fem.geometry.recipe_topology import topology_fingerprint_for_recipe
 from fem.mesh.settings import MeshSettings
+from fem.elements import get_element_capabilities
+from fem.materials.sections import section_family
 
 from .definitions import (
     NamedRegion,
@@ -20,6 +22,7 @@ from .native_regions import (
     require_native_region_product,
     validate_native_authoring_context,
 )
+from .native_mesh_contract import describe_native_mesh_contract
 
 
 class NativeProjectValidationError(ValueError):
@@ -34,6 +37,8 @@ def validate_native_project_inputs(
     sections: Sequence[SectionDefinition],
     assignments: Sequence[RegionAssignment],
     steps: Sequence[AnalysisStep],
+    *,
+    enforce_formulation_compatibility: bool = True,
 ) -> tuple[NativeRegionDescriptor, ...]:
     """Validate references, definition links, and native region capabilities."""
 
@@ -41,6 +46,10 @@ def validate_native_project_inputs(
         raise NativeProjectValidationError(
             "mesh_settings must be MeshSettings or None"
         )
+    try:
+        mesh_contract = describe_native_mesh_contract(recipe, mesh_settings)
+    except (TypeError, ValueError, NotImplementedError) as error:
+        raise NativeProjectValidationError(str(error)) from error
     region_values = tuple(named_regions)
     material_values = tuple(materials)
     section_values = tuple(sections)
@@ -65,6 +74,8 @@ def validate_native_project_inputs(
                 if mesh_settings is None
                 else tuple(mesh_settings.local_controls)
             ),
+            mesh_settings=mesh_settings,
+            mesh_contract=mesh_contract,
         )
     except NativeProjectValidationError:
         raise
@@ -89,6 +100,18 @@ def validate_native_project_inputs(
     sections_by_name = {
         section.name: section for section in section_values
     }
+    if not mesh_contract.complete and (assignment_values or step_values):
+        raise NativeProjectValidationError(
+            "incomplete native wire projects cannot persist region assignments "
+            "or analysis definitions before line_element_type is selected"
+        )
+
+    expected_section_family = None
+    if mesh_contract.complete and enforce_formulation_compatibility:
+        capabilities = get_element_capabilities(
+            mesh_contract.canonical_element_type
+        )
+        expected_section_family = capabilities.section_families[0]
     for index, assignment in enumerate(assignment_values):
         section = sections_by_name.get(assignment.section_name)
         if section is None:
@@ -96,20 +119,55 @@ def validate_native_project_inputs(
                 f"assignments[{index}].section_name references unknown section "
                 f"{assignment.section_name!r}"
             )
-        # Current native recipes produce continuum cells only. Future native
-        # line recipes must explicitly extend the catalog with
-        # ``beam_element_set`` rather than bypassing this detached gate.
-        if section.section_type != "solid":
+        if not enforce_formulation_compatibility and section.section_type != "solid":
             raise NativeProjectValidationError(
                 f"assignments[{index}] section type {section.section_type!r} "
                 "is incompatible with current native continuum recipes"
             )
+        if enforce_formulation_compatibility:
+            try:
+                assigned_family = section_family(section.section_type)
+            except (TypeError, ValueError) as error:
+                raise NativeProjectValidationError(
+                    f"assignments[{index}] section {section.name!r} has an "
+                    f"invalid section type {section.section_type!r}: {error}"
+                ) from error
+            if assigned_family != expected_section_family:
+                raise NativeProjectValidationError(
+                    f"assignments[{index}] section type {section.section_type!r} "
+                    f"belongs to family {assigned_family!r}, while native element "
+                    f"{mesh_contract.canonical_element_type!r} requires "
+                    f"section family {expected_section_family!r}"
+                )
+        target_product = (
+            "beam_element_set"
+            if enforce_formulation_compatibility
+            and expected_section_family == "beam"
+            else "element_set"
+        )
         _require_product(
             descriptors,
             assignment.region_name,
-            "element_set",
+            target_product,
             f"assignments[{index}].region_name",
         )
+        orientation = getattr(assignment, "beam_orientation", None)
+        if (
+            orientation is not None
+            and enforce_formulation_compatibility
+            and mesh_contract.dimension == 1
+        ):
+            if expected_section_family != "beam":
+                raise NativeProjectValidationError(
+                    f"assignments[{index}].beam_orientation is only valid "
+                    "for Beam2 assignments"
+                )
+            _require_product(
+                descriptors,
+                assignment.region_name,
+                "beam_element_set",
+                f"assignments[{index}].region_name",
+            )
 
     for step_index, step in enumerate(step_values):
         for index, boundary in enumerate(step.boundaries):

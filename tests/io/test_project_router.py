@@ -24,7 +24,11 @@ from fem.io.project import (
     loads_project,
     save_project,
 )
-from fem.io.project_v2 import ProjectV2DecodeError, load_project_v2
+from fem.io.project_v2 import (
+    dumps_project_v2,
+    load_project_v2,
+)
+from fem.io.project_v3 import ProjectV3DecodeError, load_project_v3
 from fem.mesh.settings import MeshSettings
 
 
@@ -50,14 +54,14 @@ def test_generic_writer_always_emits_current_schema(tmp_path: Path) -> None:
     dumped = dumps_project(snapshot)
     target = save_project(tmp_path / "current.femproj", snapshot)
 
-    assert CURRENT_PROJECT_SCHEMA == 2
+    assert CURRENT_PROJECT_SCHEMA == 3
     assert payload["schema"] == CURRENT_PROJECT_SCHEMA
     assert json.loads(dumped)["schema"] == CURRENT_PROJECT_SCHEMA
-    assert json.loads(target.read_text(encoding="utf-8"))["schema"] == 2
-    assert load_project_v2(target).source_path == target
+    assert json.loads(target.read_text(encoding="utf-8"))["schema"] == 3
+    assert load_project_v3(target).source_path == target
 
 
-def test_generic_v2_readers_return_loaded_project_with_path_invariant(
+def test_generic_v3_reader_returns_loaded_project_with_path_invariant(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "native.femproj"
@@ -68,8 +72,19 @@ def test_generic_v2_readers_return_loaded_project_with_path_invariant(
     assert type(loaded) is LoadedProject
     assert loaded.path == target
     assert loaded.snapshot.source_path == target
-    assert loaded.source_schema == 2
+    assert loaded.source_schema == 3
     assert loaded.notices == ()
+
+
+def test_generic_router_still_reads_frozen_v2_projects(tmp_path: Path) -> None:
+    target = tmp_path / "v2.femproj"
+    target.write_text(dumps_project_v2(_snapshot()), encoding="utf-8")
+
+    loaded = load_project(target)
+
+    assert loaded.source_schema == 2
+    assert loaded.snapshot.source_path == target
+    assert load_project_v2(target).source_path == target
 
 
 def test_generic_v1_reader_preserves_migration_notices_without_writing() -> None:
@@ -104,7 +119,7 @@ def test_router_requires_schema_and_rejects_future_schema() -> None:
         decode_project({})
     with pytest.raises(
         UnsupportedProjectSchemaError,
-        match=r"\$\.schema=99.*schema 1 和 2",
+        match=r"\$\.schema=99.*schema 1、2 和 3",
     ):
         decode_project({"schema": 99})
 
@@ -119,11 +134,11 @@ def test_decode_project_rejects_serialized_input() -> None:
         decode_project(b'{"schema": 2}')  # type: ignore[arg-type]
 
 
-def test_v2_format_error_keeps_concrete_version_error() -> None:
+def test_v3_format_error_keeps_concrete_version_error() -> None:
     payload = encode_project(_snapshot())
     payload["format"] = "wrong"
 
-    with pytest.raises(ProjectV2DecodeError, match=r"\$\.format"):
+    with pytest.raises(ProjectV3DecodeError, match=r"\$\.format"):
         decode_project(payload)
 
 
@@ -143,6 +158,10 @@ def test_fem_io_exports_generic_and_explicit_versioned_project_apis() -> None:
         "encode_project_v2",
         "load_project_v2",
         "save_project_v2",
+        "decode_project_v3",
+        "encode_project_v3",
+        "load_project_v3",
+        "save_project_v3",
         "ProjectMigrationNotice",
     }
 
