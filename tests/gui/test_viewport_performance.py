@@ -9,11 +9,16 @@ import numpy as np
 import pytest
 from PySide6.QtWidgets import QApplication
 
+from fem.core.model import FEMModel
 from fem_gui.main_window import FEMMainWindow, initial_display_policy
 from fem_gui.visualization.model_adapter import build_model_geometry
 from fem_gui.visualization.symbols import SymbolSettings
 from fem_gui.widgets import viewport as viewport_module
 from fem_gui.widgets.viewport import FEMViewport
+from tests.helpers.mesh_builders import (
+    make_selection_hex_mesh,
+    make_selection_quad_mesh,
+)
 from tests.helpers.model_builders import make_static_pull_truss_model
 
 
@@ -158,6 +163,7 @@ def test_line_elements_are_drawn_thicker_than_continuum_edges():
     assert viewport._line_render_options() == {"render_lines_as_tubes": True}
     assert viewport._node_point_size() == 11
     assert viewport._mesh_layer_color(viewport._visual_palette()) == "#1769aa"
+    assert viewport._element_layer_color(viewport._visual_palette()) == "#1769aa"
     assert viewport._node_layer_color(viewport._visual_palette()) == "#b45309"
     node_labels = viewport._label_render_options("node")
     element_labels = viewport._label_render_options("element")
@@ -170,6 +176,25 @@ def test_line_elements_are_drawn_thicker_than_continuum_edges():
     assert viewport._element_line_width() == 1
     assert viewport._line_render_options() == {}
     assert viewport._node_point_size() == 7
+    assert viewport._mesh_layer_color(viewport._visual_palette()) == "#d8dde2"
+    assert viewport._element_layer_color(viewport._visual_palette()) == "#1769aa"
+    assert viewport._node_layer_color(viewport._visual_palette()) == "#b45309"
+
+
+@pytest.mark.parametrize(
+    "mesh_factory",
+    [make_selection_quad_mesh, make_selection_hex_mesh],
+)
+def test_2d_and_3d_meshes_share_element_and_node_colors(mesh_factory):
+    _application()
+    viewport = FEMViewport()
+    viewport._geometry = build_model_geometry(FEMModel(mesh_factory()))
+    palette = viewport._visual_palette()
+
+    assert not viewport._is_line_mesh()
+    assert viewport._mesh_layer_color(palette) == "#d8dde2"
+    assert viewport._element_layer_color(palette) == "#1769aa"
+    assert viewport._node_layer_color(palette) == "#b45309"
 
 
 @pytest.mark.parametrize(

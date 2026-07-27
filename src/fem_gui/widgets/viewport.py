@@ -2324,9 +2324,9 @@ class FEMViewport(QWidget):
         self._apply_plotter_background()
         palette = self._visual_palette()
         for name, color in (
-            ("mesh_surface", palette["mesh"]),
-            ("element_edges", palette["edge"]),
-            ("nodes", palette["node"]),
+            ("mesh_surface", self._mesh_layer_color(palette)),
+            ("element_edges", self._element_layer_color(palette)),
+            ("nodes", self._node_layer_color(palette)),
             ("undeformed_overlay", palette["overlay"]),
         ):
             self._set_actor_color(name, color)
@@ -3119,10 +3119,18 @@ class FEMViewport(QWidget):
         return _LINE_NODE_POINT_SIZE if self._is_line_mesh() else 7
 
     def _mesh_layer_color(self, palette: dict[str, str]) -> str:
-        return palette["line_mesh"] if self._is_line_mesh() else palette["mesh"]
+        return (
+            self._element_layer_color(palette)
+            if self._is_line_mesh()
+            else palette["mesh"]
+        )
+
+    @staticmethod
+    def _element_layer_color(palette: dict[str, str]) -> str:
+        return palette["element"]
 
     def _node_layer_color(self, palette: dict[str, str]) -> str:
-        return palette["line_node"] if self._is_line_mesh() else palette["node"]
+        return palette["node"]
 
     def _add_base_layers(self, reset_camera: bool, *, render: bool = True) -> None:
         palette = self._visual_palette()
@@ -3135,7 +3143,7 @@ class FEMViewport(QWidget):
         )
         self._actors["element_edges"] = self._plotter.add_mesh(
             self._grid,
-            color=mesh_color if self._is_line_mesh() else palette["edge"],
+            color=self._element_layer_color(palette),
             style="wireframe",
             line_width=self._element_line_width(),
             name="element_edges", reset_camera=False,
@@ -3305,11 +3313,7 @@ class FEMViewport(QWidget):
         palette = self._visual_palette()
         self._actors["element_edges"] = self._plotter.add_mesh(
             self._grid,
-            color=(
-                self._mesh_layer_color(palette)
-                if self._is_line_mesh()
-                else palette["edge"]
-            ),
+            color=self._element_layer_color(palette),
             style="wireframe",
             line_width=self._element_line_width(),
             name="element_edges", reset_camera=False,
@@ -4170,14 +4174,12 @@ class FEMViewport(QWidget):
         dark = self._background_settings.is_dark and self._background_settings.auto_contrast
         if dark:
             return {
-                "mesh": "#718797", "edge": "#d9e2e8", "node": "#f0f3f5",
-                "line_mesh": "#58c7f3", "line_node": "#ffbd59",
+                "mesh": "#718797", "element": "#58c7f3", "node": "#ffbd59",
                 "result": "#8295a5", "overlay": "#e0e6ea",
                 "label_background": "#263746",
             }
         return {
-            "mesh": "#d8dde2", "edge": "#4f5963", "node": "#35495e",
-            "line_mesh": "#1769aa", "line_node": "#b45309",
+            "mesh": "#d8dde2", "element": "#1769aa", "node": "#b45309",
             "result": "#b9c6d2", "overlay": "#7f8c8d",
             "label_background": "#ffffff",
         }
