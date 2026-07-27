@@ -1016,8 +1016,8 @@ class RegionAssignmentDialog(QDialog):
         )
         self.section_combo, self.region_combo = QComboBox(self), QComboBox(self)
         self.orientation_mode_combo = QComboBox(self)
-        self.orientation_mode_combo.addItem("自动（兼容旧模型）", "automatic")
-        self.orientation_mode_combo.addItem("显式参考方向", "explicit")
+        self.orientation_mode_combo.addItem("自动", "automatic")
+        self.orientation_mode_combo.addItem("参考方向", "explicit")
         authored_orientation = (
             None
             if current is None
@@ -1044,12 +1044,6 @@ class RegionAssignmentDialog(QDialog):
         self.orientation_x_spin = _signed_number(self, reference_values[0])
         self.orientation_y_spin = _signed_number(self, reference_values[1])
         self.orientation_z_spin = _signed_number(self, reference_values[2])
-        self.orientation_help_label = QLabel(
-            "参考方向使用全局笛卡尔坐标，表示近似 Beam 局部 y 轴。",
-            self,
-        )
-        self.orientation_help_label.setWordWrap(True)
-        self.orientation_help_label.setMaximumWidth(280)
         self.orientation_diagnostic_label = QLabel(self)
         self.orientation_diagnostic_label.setWordWrap(True)
         self.section_combo.addItems(
@@ -1078,7 +1072,6 @@ class RegionAssignmentDialog(QDialog):
         self.form.addRow("截面", self.section_combo)
         self.form.addRow("单元区域", self.region_combo)
         self.form.addRow("梁截面方向", self.orientation_mode_combo)
-        self.form.addRow(self.orientation_help_label)
         self.form.addRow("参考方向 X", self.orientation_x_spin)
         self.form.addRow("参考方向 Y", self.orientation_y_spin)
         self.form.addRow("参考方向 Z", self.orientation_z_spin)
@@ -1329,7 +1322,6 @@ class RegionAssignmentDialog(QDialog):
             and self.orientation_mode_combo.currentData() == "explicit"
         )
         self.form.setRowVisible(self.orientation_mode_combo, beam_section)
-        self.form.setRowVisible(self.orientation_help_label, explicit)
         for spin in (
             self.orientation_x_spin,
             self.orientation_y_spin,
