@@ -127,7 +127,9 @@ def intersect_ray_with_work_plane(
     )
     if not all(math.isfinite(value) for value in point):
         return None
-    return point
+    exact_point = list(point)
+    exact_point[axis] = float(offset)
+    return tuple(exact_point)
 
 
 def snap_work_plane_point(

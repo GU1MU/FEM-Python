@@ -26,6 +26,7 @@ from ..wire_editor import (
     WORK_PLANES,
     WireDraftController,
     WireDraftSnapshot,
+    snap_work_plane_point,
 )
 from .viewport import WireDraftRenderData
 
@@ -112,13 +113,14 @@ class WireEditorPanel(QWidget):
         self.offset_spin.valueChanged.connect(self._work_plane_offset_changed)
         self.snap_check = QCheckBox("吸附", self)
         self.snap_check.setObjectName("wireGridSnapCheck")
+        self.snap_check.setChecked(True)
         self.snap_check.toggled.connect(self._grid_settings_changed)
         self.spacing_spin = QDoubleSpinBox(self)
         self.spacing_spin.setObjectName("wireGridSpacing")
         self.spacing_spin.setDecimals(2)
         self.spacing_spin.setRange(0.01, 1.0e12)
         self.spacing_spin.setSingleStep(0.1)
-        self.spacing_spin.setValue(1.0)
+        self.spacing_spin.setValue(0.1)
         self.spacing_spin.valueChanged.connect(self._grid_settings_changed)
 
         self.points_table = QTableWidget(0, 4, self)
@@ -500,7 +502,21 @@ class WireEditorPanel(QWidget):
         if self._controller is None:
             return
         try:
-            x, y, z = tuple(round(float(value), 2) for value in point)
+            coordinates = list(float(value) for value in point)
+            if len(coordinates) != 3:
+                raise ValueError("点坐标必须包含三个分量")
+            plane = str(self.work_plane_combo.currentData())
+            fixed_axis = {"XY": 2, "XZ": 1, "YZ": 0}[plane]
+            coordinates[fixed_axis] = float(self.offset_spin.value())
+            if self.snap_check.isChecked():
+                coordinates = list(
+                    snap_work_plane_point(
+                        coordinates,
+                        plane,
+                        self.spacing_spin.value(),
+                    )
+                )
+            x, y, z = coordinates
             created = self._controller.add_point(None, x, y, z)
         except (TypeError, ValueError) as error:
             self._set_status(str(error))

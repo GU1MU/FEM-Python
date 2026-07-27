@@ -77,6 +77,19 @@ def test_work_plane_intersection_and_snap_preserve_fixed_coordinate() -> None:
         1.0,
         3.5,
     )
+    decimal_offset = intersect_ray_with_work_plane(
+        (0.0, 0.0, -0.3),
+        (0.0, 0.0, 0.7),
+        "XY",
+        0.1,
+    )
+    assert decimal_offset is not None
+    assert decimal_offset[2] == 0.1
+    assert snap_work_plane_point(
+        (0.049999999, -0.049999999, 0.0),
+        "XY",
+        0.1,
+    ) == (0.0, 0.0, 0.0)
 
 
 def test_wire_editor_panel_uses_clear_chinese_actions_without_bottom_explanations() -> None:
@@ -94,6 +107,8 @@ def test_wire_editor_panel_uses_clear_chinese_actions_without_bottom_explanation
     assert panel.offset_spin.decimals() == 2
     assert panel.spacing_spin.decimals() == 2
     assert panel.spacing_spin.minimum() == 0.01
+    assert panel.spacing_spin.value() == 0.1
+    assert panel.snap_check.isChecked()
     assert "工作平面" in panel.point_mode_button.toolTip()
     assert "两个已有点" in panel.member_mode_button.toolTip()
     assert "点或杆件" in panel.select_mode_button.toolTip()
@@ -103,6 +118,17 @@ def test_wire_editor_panel_uses_clear_chinese_actions_without_bottom_explanation
     assert panel.findChild(QLabel, "wireValidationLabel") is None
     assert not hasattr(panel, "hint_label")
     assert not hasattr(panel, "coincident_confirm")
+
+
+def test_viewport_point_is_snapped_again_before_entering_the_draft() -> None:
+    _application()
+    controller = WireDraftController()
+    panel = WireEditorPanel(controller)
+
+    panel._point_from_viewport((0.049999999, -0.049999999, 1.0e-8))
+
+    created = controller.snapshot().points[0]
+    assert (created.x, created.y, created.z) == (0.0, 0.0, 0.0)
 
 
 def test_single_wire_point_builds_a_snap_aligned_grid_without_an_exception() -> None:
@@ -153,6 +179,33 @@ def test_wire_viewport_click_applies_enabled_grid_snapping() -> None:
     viewport._wire_authoring_click(10, 20)
 
     assert selected == [(0.25, 0.5, 0.0)]
+
+
+def test_point_hover_preview_and_click_share_the_same_snapped_coordinate() -> None:
+    _application()
+    viewport = FEMViewport()
+    viewport._wire_authoring_mode = "point"
+    viewport._wire_work_plane = "XY"
+    viewport._wire_plane_offset = 0.0
+    viewport._wire_grid_snap = True
+    viewport._wire_grid_spacing = 0.1
+    viewport._wire_draft_render_data = WireDraftRenderData((), (), (), ())
+    viewport._display_to_world = lambda _x, _y, depth: (
+        0.049999999,
+        -0.049999999,
+        -1.0 if depth == 0.0 else 1.0,
+    )
+    viewport._wire_point_at = lambda _x, _y: None
+    viewport._show_wire_authoring_hover = lambda **_options: None
+    selected: list[tuple[float, float, float]] = []
+    viewport.wireWorkPlanePointSelected.connect(selected.append)
+
+    viewport._update_wire_authoring_hover(10, 20)
+    preview = viewport._wire_authoring_preview_point
+    viewport._wire_authoring_click(10, 20)
+
+    assert preview == (0.0, 0.0, 0.0)
+    assert selected == [preview]
 
 
 def test_clicking_an_existing_wire_point_immediately_redraws_its_highlight() -> None:

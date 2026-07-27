@@ -19,6 +19,7 @@ from fem_gui.widgets.viewport import (
     _geometry_edge_polydata,
     _geometry_point_polydata,
     _geometry_surface_polydata,
+    _wire_coordinate_label,
 )
 
 pytestmark = pytest.mark.optional_runtime
@@ -47,6 +48,21 @@ def _rendered_viewport() -> tuple[FEMViewport, object]:
         devicePixelRatioF=lambda: 1.0,
     )
     return viewport, plotter
+
+
+def test_qt_to_vtk_position_has_no_high_dpi_one_pixel_offset() -> None:
+    _application()
+    viewport = FEMViewport()
+    viewport._plotter = SimpleNamespace(
+        height=lambda: 300,
+        _getPixelRatio=lambda: 2.0,
+    )
+
+    assert viewport._qt_to_vtk_position(10.0, 20.0) == (20, 559)
+
+
+def test_wire_hover_coordinate_label_has_visible_separators() -> None:
+    assert _wire_coordinate_label((0.3, 0.3, 0.0)) == "(0.30, 0.30, 0.00)"
 
 
 def test_single_wire_point_and_selection_render_as_a_highlight(monkeypatch) -> None:
@@ -79,6 +95,14 @@ def test_single_wire_point_and_selection_render_as_a_highlight(monkeypatch) -> N
     assert "wire_authoring_selection" in viewport._actors
     assert "wire_authoring_selection_label" in viewport._actors
     viewport._set_wire_authoring_hover(("point", "P2"))
+    assert "wire_authoring_hover_outline" in viewport._actors
+    assert "wire_authoring_hover" in viewport._actors
+    assert "wire_authoring_hover_label" in viewport._actors
+    viewport._set_wire_authoring_hover(
+        None,
+        preview_point=(0.0, 0.0, 0.0),
+    )
+    assert "wire_authoring_hover_outline" in viewport._actors
     assert "wire_authoring_hover" in viewport._actors
     assert "wire_authoring_hover_label" in viewport._actors
     plotter.close()
