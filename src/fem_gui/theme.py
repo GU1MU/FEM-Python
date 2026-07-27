@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 
 COLORS = {
     "background": "#f4f5f6",
@@ -17,6 +19,10 @@ COLORS = {
     "checked": "#edf3f7",
     "accent": "#4c7fa5",
 }
+
+_COMBO_DOWN_ARROW = (
+    Path(__file__).with_name("resources") / "icons" / "combo_down_arrow.svg"
+).resolve().as_posix()
 
 
 def build_stylesheet() -> str:
@@ -75,6 +81,7 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTableWidget, QTableView, QPlain
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus {{ border-color: {COLORS['accent']}; }}
 QComboBox {{ min-height: 22px; padding-right: 22px; }}
 QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: top right; width: 20px; border-left: 1px solid {COLORS['soft_border']}; background: {COLORS['chrome']}; }}
+QComboBox::down-arrow {{ image: url("{_COMBO_DOWN_ARROW}"); width: 8px; height: 5px; }}
 QTableView {{ alternate-background-color: #fafbfc; gridline-color: {COLORS['soft_border']}; padding: 0; }}
 QTableView::item {{ padding: 2px 5px; border: none; }}
 QTableView::item:hover {{ background: {COLORS['hover']}; }}
