@@ -40,7 +40,7 @@ def test_model_tree_is_compact_and_keeps_real_engineering_objects(gui_inp_path):
     kinds = [item.data(0, ROLE_KIND) for item in items]
 
     assert text[0] == model.name
-    assert "网格（4 节点，1 单元）" in text
+    assert "网格" in text
     assert "节点集 (2)" in text
     assert "单元集 (1)" in text
     assert "材料 (1)" in text
@@ -226,7 +226,7 @@ def test_native_meshed_tree_keeps_the_part_feature_history(gui_inp_path):
         "Sketch-1",
         "Extrude-1",
     ]
-    assert mesh.text(0).startswith("网格（")
+    assert mesh.text(0) == "网格"
     assert not mesh.isExpanded()
 
 

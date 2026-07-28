@@ -2077,7 +2077,7 @@ class FEMMainWindow(QMainWindow):
             ("划分", ("mesh_generate", "mesh_clear"), ("mesh_generate",)),
             (
                 "检查",
-                ("mesh_verify", "mesh_statistics", "mesh_quality"),
+                ("mesh_verify", "mesh_statistics"),
                 (),
             ),
         ))

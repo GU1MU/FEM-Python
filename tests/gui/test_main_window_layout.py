@@ -200,7 +200,6 @@ def test_new_preprocessing_modules_do_not_change_the_existing_model_page():
             "mesh_clear",
             "mesh_verify",
             "mesh_statistics",
-            "mesh_quality",
         )
     }
     window.close()

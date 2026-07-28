@@ -124,11 +124,7 @@ class ModelTree(QTreeWidget):
             for row in feature_rows:
                 part.addChild(self._item(str(row), "feature", None))
             root.addChild(part)
-        mesh = self._item(
-            f"网格（{len(model.mesh.nodes)} 节点，{len(model.mesh.elements)} 单元）",
-            "mesh",
-            None,
-        )
+        mesh = self._item("网格", "mesh", None)
         node_sets = self._category(mesh, "节点集", len(model.node_sets))
         for name, node_set in model.node_sets.items():
             node_sets.addChild(self._item(f"{name}  ({len(node_set.node_ids)})", "node_set", name))
