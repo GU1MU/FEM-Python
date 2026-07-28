@@ -23,6 +23,7 @@ from fem.geometry import (
     SketchCircle,
     SketchGeometry,
     StrictBodyBooleanPreview,
+    StrictPlanarBooleanPreview,
     SketchLine,
     WireGeometry,
     analyze_sketch_profiles,
@@ -259,6 +260,35 @@ def build_strict_body_boolean_previews(
                 max(12, int(segments)),
             )
     preview = _merge_multi_body_previews(recipe, local_by_body)
+    _validate_preview_topology(
+        recipe,
+        preview,
+        allow_occ_fallback=False,
+    )
+    return preview
+
+
+def build_strict_planar_boolean_preview(
+    recipe: NativeGeometry,
+    boolean_preview: StrictPlanarBooleanPreview,
+) -> GeometryPreview:
+    """Install exact OCC planar tessellation and logical pick identities."""
+
+    topology = describe_recipe_topology(recipe)
+    if topology.dimension != 2 or not topology.exact:
+        raise TypeError("strict planar preview requires exact 2D geometry")
+    if type(boolean_preview) is not StrictPlanarBooleanPreview:
+        raise TypeError("boolean_preview must be StrictPlanarBooleanPreview")
+    preview = GeometryPreview(
+        boolean_preview.points,
+        boolean_preview.faces,
+        boolean_preview.edges,
+        boolean_preview.face_logical_ids,
+        boolean_preview.edge_logical_ids,
+        boolean_preview.point_logical_ids,
+        "body:domain",
+        2,
+    )
     _validate_preview_topology(
         recipe,
         preview,
@@ -862,6 +892,8 @@ def _boolean_preview(
 ) -> GeometryPreview:
     if recipe.body_context is not None and recipe.body_context.proven:
         return _strict_body_boolean_preview(recipe, segments)
+    if recipe.planar_context is not None and recipe.planar_context.proven:
+        return _strict_body_boolean_preview(recipe, segments)
     if recipe.operation == "cut":
         outer = axis_aligned_rectangle(recipe.object_geometry)
         inner_rectangle = axis_aligned_rectangle(recipe.tool_geometry)
@@ -1034,6 +1066,12 @@ def _extruded_preview(
         for index, logical_id in enumerate(base.edge_logical_ids)
         if logical_id in selected_edges
     )
+    if (
+        not base_face_indices
+        and base.faces
+        and _contains_proven_strict_boolean(recipe.base)
+    ):
+        return _unselectable_extruded_fallback(recipe, base)
     required_point_indices = {
         point_index
         for face_index in base_face_indices
@@ -1155,6 +1193,47 @@ def _extruded_preview(
         tuple(face_logical_ids),
         tuple(edge_logical_ids),
         point_logical_ids,
+    )
+
+
+def _unselectable_extruded_fallback(
+    recipe: ExtrudedGeometry,
+    base: GeometryPreview,
+) -> GeometryPreview:
+    """Display the pre-Boolean sweep shape while exact OCC replay is pending."""
+
+    point_count = len(base.points)
+    points = base.points + tuple(
+        (x, y, z + recipe.height) for x, y, z in base.points
+    )
+    faces = [
+        *base.faces,
+        *(
+            tuple(reversed(tuple(index + point_count for index in face)))
+            for face in base.faces
+        ),
+    ]
+    for edge in base.edges:
+        faces.extend(
+            (start, end, end + point_count, start + point_count)
+            for start, end in zip(edge, edge[1:])
+        )
+    edges = [
+        *base.edges,
+        *(
+            tuple(index + point_count for index in edge)
+            for edge in base.edges
+        ),
+        *((index, index + point_count) for index in range(point_count)),
+    ]
+    return _make_preview(
+        recipe,
+        points,
+        tuple(faces),
+        tuple(edges),
+        (None,) * len(faces),
+        (None,) * len(edges),
+        (None,) * len(points),
     )
 
 
@@ -1486,6 +1565,9 @@ def _contains_proven_strict_boolean(recipe: object) -> bool:
         return (
             recipe.body_context is not None
             and recipe.body_context.proven
+        ) or (
+            recipe.planar_context is not None
+            and recipe.planar_context.proven
         ) or _contains_proven_strict_boolean(
             recipe.object_geometry
         ) or _contains_proven_strict_boolean(recipe.tool_geometry)
@@ -1544,5 +1626,6 @@ __all__ = [
     "build_geometry_preview",
     "build_strict_body_boolean_preview",
     "build_strict_body_boolean_previews",
+    "build_strict_planar_boolean_preview",
     "build_strict_sketch_draft_preview",
 ]

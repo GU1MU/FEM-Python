@@ -122,7 +122,6 @@ def test_imported_create_uses_catalog_candidate_and_reload_restores_source(
     authoring = describe_session_authoring(window.document)
     dialog_type = _accepted_candidate_dialog(
         lambda request: request.variables == ("S",)
-        and request.metadata.get("position") == "centroid"
     )
     monkeypatch.setattr(
         main_window_module,
@@ -139,8 +138,6 @@ def test_imported_create_uses_catalog_candidate_and_reload_restores_source(
         candidate.authoring_request
         for candidate in authoring.output_request_catalog.candidates
         if candidate.authoring_request.variables == ("S",)
-        and candidate.authoring_request.metadata.get("position")
-        == "centroid"
     )
     assert tuple(dialog_type.observed_candidates) == (
         authoring.output_request_catalog.candidates
@@ -295,7 +292,7 @@ def test_native_create_survives_project_save_and_reopen(
 ) -> None:
     _application()
     window = FEMMainWindow()
-    window.new_native_model()
+    window._create_native_model("Model-1")
     window._set_native_geometry(
         RectangleGeometry("Plate", 2.0, 1.0),
         "矩形",
@@ -306,7 +303,6 @@ def test_native_create_survives_project_save_and_reopen(
     )
     dialog_type = _accepted_candidate_dialog(
         lambda request: request.variables == ("S",)
-        and request.metadata.get("position") == "element_nodal"
     )
     monkeypatch.setattr(
         main_window_module,
@@ -319,7 +315,8 @@ def test_native_create_survives_project_save_and_reopen(
 
     created = window.document.steps[0].outputs[0]
     assert created.variables == ("S",)
-    assert created.metadata == {"position": "element_nodal"}
+    assert not created.metadata
+    assert created.source_evidence is None
     assert warnings == []
 
     target = tmp_path / "output-request.femproj"
@@ -342,10 +339,68 @@ def test_native_create_survives_project_save_and_reopen(
     _wait_for_task(reopened)
 
     assert reopened.document.steps[0].outputs == (created,)
-    assert reopened.document.steps[0].outputs[0].metadata == {
-        "position": "element_nodal"
-    }
+    assert not reopened.document.steps[0].outputs[0].metadata
+    assert reopened.document.steps[0].outputs[0].source_evidence is None
     reopened.close()
+
+
+def test_native_create_accepts_multiple_output_variables(
+    monkeypatch,
+) -> None:
+    _application()
+    window = FEMMainWindow()
+    window._create_native_model("Model-1")
+    window._set_native_geometry(
+        RectangleGeometry("Plate", 2.0, 1.0),
+        "矩形",
+    )
+    window._analysis_definitions_changed(
+        "测试分析步",
+        [static("Load")],
+    )
+
+    class AcceptedMultipleDialog:
+        def __init__(
+            self,
+            step_names,
+            _parent=None,
+            *,
+            candidates=(),
+            current=None,
+        ) -> None:
+            assert current is None
+            self._step_name = step_names[0]
+            self._requests = tuple(
+                deepcopy(
+                    next(
+                        candidate.authoring_request
+                        for candidate in candidates
+                        if candidate.authoring_request.variables
+                        == (variable,)
+                    )
+                )
+                for variable in ("U", "RF", "S")
+            )
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def definitions(self):
+            return self._step_name, self._requests
+
+    monkeypatch.setattr(
+        main_window_module,
+        "OutputRequestDialog",
+        AcceptedMultipleDialog,
+    )
+
+    window.create_output_request()
+
+    assert tuple(
+        request.variables
+        for request in window.document.steps[0].outputs
+    ) == (("U",), ("RF",), ("S",))
+    window.close()
 
 
 def test_create_capability_rejection_has_zero_mutation(monkeypatch) -> None:

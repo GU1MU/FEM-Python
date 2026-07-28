@@ -150,6 +150,12 @@ def derive_geometry_feature_rows(
         )
     if isinstance(recipe, BooleanGeometry):
         names = {"fuse": "合并", "cut": "切除", "fragment": "分割"}
+        if recipe.planar_context is not None:
+            return derive_geometry_feature_rows(recipe.object_geometry) + (
+                f"二维{names[recipe.operation]}  "
+                f"目标={recipe.planar_context.target_face_id}，"
+                f"工具 Profiles={len(recipe.planar_context.tool_face_ids)}",
+            )
         return derive_geometry_feature_rows(recipe.object_geometry) + (
             f"{names[recipe.operation]}  工具体={recipe.tool_geometry.name}",
         )

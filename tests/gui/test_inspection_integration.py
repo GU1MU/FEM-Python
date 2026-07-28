@@ -7,6 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from fem.abaqus import read
+from fem.application import NativePart
 from fem.application.results import build_solve_result_bundle
 from fem.core.model import (
     DisplacementConstraint,
@@ -14,6 +15,8 @@ from fem.core.model import (
     NodalLoad,
 )
 from fem.solvers import static_linear
+from fem.geometry import RectangleGeometry
+import fem_gui.main_window as main_window_module
 from fem_gui.analysis_definition_dialogs import (
     DisplacementDialog,
     LoadDialog,
@@ -21,7 +24,7 @@ from fem_gui.analysis_definition_dialogs import (
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.model_dialogs import MaterialEditDialog
 from fem_gui.visualization.model_adapter import build_model_geometry
-from fem_gui.widgets.model_tree import ROLE_KIND
+from fem_gui.widgets.model_tree import ROLE_KEY, ROLE_KIND
 from tests.helpers.preflight_builders import passing_preflight_report
 
 
@@ -73,6 +76,61 @@ def test_tree_double_click_opens_mesh_browser_and_entity_dialog(gui_inp_path):
     info = next(item for item in window._inspection_windows if item.objectName() == "entityInfoDialog")
     assert info.inspection.kind == "section"
     assert info.inspection.key == 0
+    window.close()
+
+
+def test_native_tree_keeps_model_name_and_supports_info_and_renames(
+    monkeypatch,
+):
+    _application()
+    window = FEMMainWindow()
+    window._apply_session_delta(
+        window.session.new_native_project("Model-1")
+    )
+    window._apply_session_delta(
+        window.session.replace_native_geometry_inputs(
+            (NativePart(),),
+            RectangleGeometry("Sketch-1", 2.0, 1.0),
+        )
+    )
+
+    root = window.model_tree.topLevelItem(0)
+    part = root.child(0)
+    feature = part.child(0)
+    assert root.text(0) == "Model-1"
+    assert part.text(0) == "Part-1"
+
+    information = []
+    monkeypatch.setattr(
+        window,
+        "_show_information",
+        lambda title, rows: information.append((title, rows)),
+    )
+    window._show_entry_information("model", None)
+    window._show_entry_information("part", None)
+    window._show_entry_information(
+        "feature",
+        feature.data(0, ROLE_KEY),
+    )
+    assert [title for title, _rows in information] == [
+        "模型概况",
+        "部件信息",
+        "特征信息",
+    ]
+
+    names = iter((("Bracket", True), ("Mount", True)))
+    monkeypatch.setattr(
+        main_window_module.QInputDialog,
+        "getText",
+        lambda *_args, **_kwargs: next(names),
+    )
+    window._rename_tree_entry("model", None)
+    window._rename_tree_entry("part", None)
+
+    assert window.document.model_name == "Bracket"
+    assert window.document.parts[0].name == "Mount"
+    assert window.model_tree.topLevelItem(0).text(0) == "Bracket"
+    assert window.model_tree.topLevelItem(0).child(0).text(0) == "Mount"
     window.close()
 
 

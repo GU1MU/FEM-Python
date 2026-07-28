@@ -113,7 +113,7 @@ def generate_fem_model(
     resolver: RecipeTopologyResolver | None = None,
 ) -> FEMModel:
     """Generate a canonical model from explicit inputs or a mesh task snapshot."""
-    recipe, mesh_settings, regions = _normalize_inputs(
+    recipe, mesh_settings, regions, model_name = _normalize_inputs(
         recipe_or_snapshot,
         settings,
         named_regions,
@@ -149,7 +149,7 @@ def generate_fem_model(
             # worker, so the application retains signal ownership.
             gmsh.initialize(interruptible=False)
         dimension = contract.dimension
-        with geometry.model(recipe.name, dimension=dimension) as cad:
+        with geometry.model(model_name, dimension=dimension) as cad:
             topology = topology_resolver.build(cad, recipe)
             mesher = gmsh_meshing.Mesher(cad)
             if (
@@ -230,7 +230,7 @@ def generate_fem_model(
             model = _build_native_fem_model(
                 mesh,
                 native_mesh,
-                recipe.name,
+                model_name,
                 dimension,
                 topology,
             )
@@ -255,7 +255,12 @@ def _normalize_inputs(
     recipe_or_snapshot: NativeGeometry | MeshTaskSnapshot,
     settings: MeshSettings | None,
     named_regions: Iterable[Any] | Mapping[str, Any] | None,
-) -> tuple[NativeGeometry, MeshSettings | None, tuple[Any, ...]]:
+) -> tuple[
+    NativeGeometry,
+    MeshSettings | None,
+    tuple[Any, ...],
+    str,
+]:
     if isinstance(recipe_or_snapshot, MeshTaskSnapshot):
         if settings is not None:
             raise TypeError("MeshTaskSnapshot 已包含网格设置，不能重复传入 settings")
@@ -266,21 +271,25 @@ def _normalize_inputs(
         recipe = recipe_or_snapshot.geometry_recipe
         mesh_settings = recipe_or_snapshot.mesh_settings
         region_source = recipe_or_snapshot.named_regions
+        model_name = str(recipe_or_snapshot.model_name).strip()
     else:
         recipe = recipe_or_snapshot
         mesh_settings = settings
         region_source = () if named_regions is None else named_regions
+        model_name = str(getattr(recipe, "name", "")).strip()
 
     if not isinstance(recipe, NATIVE_GEOMETRY_TYPES):
         raise TypeError("网格生成需要有效的原生几何配方")
     if mesh_settings is not None and type(mesh_settings) is not MeshSettings:
         raise TypeError("网格生成需要 MeshSettings")
+    if not model_name:
+        raise ValueError("网格生成需要非空模型名称")
     regions = (
         tuple(region_source.values())
         if isinstance(region_source, Mapping)
         else tuple(region_source)
     )
-    return recipe, mesh_settings, regions
+    return recipe, mesh_settings, regions, model_name
 
 
 def _wire_recipe(recipe: NativeGeometry) -> WireGeometry | None:

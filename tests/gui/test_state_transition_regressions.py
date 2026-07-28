@@ -160,7 +160,7 @@ def _assert_result_entries_disabled(window: FEMMainWindow) -> None:
 
 def test_delete_and_recreate_geometry_remove_all_topology_references() -> None:
     window = _new_window()
-    window.new_native_model()
+    window._create_native_model("Model-1")
     window._set_native_geometry(
         RectangleGeometry("Plate", 2.0, 1.0),
         "矩形",
@@ -239,7 +239,7 @@ def test_delete_and_recreate_geometry_remove_all_topology_references() -> None:
 
 def test_named_region_change_invalidates_model_validation_runs_and_results() -> None:
     window = _new_window()
-    window.new_native_model()
+    window._create_native_model("Model-1")
     window._set_native_geometry(
         RectangleGeometry("Plate", 2.0, 1.0),
         "矩形",
@@ -440,7 +440,7 @@ def test_stale_import_callback_cannot_change_projection() -> None:
 
 def test_stale_mesh_callback_cannot_change_projection() -> None:
     window = _new_window()
-    window.new_native_model()
+    window._create_native_model("Model-1")
     window._set_native_geometry(
         RectangleGeometry("Plate", 2.0, 1.0),
         "矩形",

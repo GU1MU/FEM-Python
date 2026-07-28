@@ -60,7 +60,41 @@ _EDITABLE_KINDS = {
 
 _DELETABLE_KINDS = {
     "boundary",
+    "cload",
+    "edge_load",
+    "surface_load",
+    "line_load",
+    "body_load",
+    "gravity_load",
 }
+
+_NATIVE_FEATURE_NAMES = {
+    "Wire": "线体",
+    "Sketch": "草图",
+    "Move": "移动",
+    "Rotate": "旋转",
+    "Extrude": "拉伸",
+    "Fuse": "合并",
+    "Cut": "切除",
+    "Partition": "分割",
+    "Base": "基础体",
+}
+
+
+def _native_feature_label(value: object) -> str:
+    """Translate canonical native-feature names for display only."""
+
+    text = str(value)
+    namespace, separator, leaf = text.rpartition("/")
+    prefix = f"{namespace}/" if separator else ""
+    for source, translated in _NATIVE_FEATURE_NAMES.items():
+        suffix = leaf.removeprefix(source)
+        if leaf == source or (
+            leaf.startswith(f"{source}-")
+            and suffix.removeprefix("-").isdigit()
+        ):
+            return f"{prefix}{translated}{suffix}"
+    return text
 
 
 def _section_label(section: Any, element: Any | None = None) -> str:
@@ -93,6 +127,7 @@ class ModelTree(QTreeWidget):
     informationRequested = Signal(str, object)
     editRequested = Signal(str, object)
     deleteRequested = Signal(str, object)
+    renameRequested = Signal(str, object)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -106,6 +141,8 @@ class ModelTree(QTreeWidget):
         self.clear_model()
 
     def clear_model(self) -> None:
+        self._renamable_kinds: frozenset[str] = frozenset()
+        self._non_highlightable_kinds: frozenset[str] = frozenset()
         self.clear()
         root = self._item("模型", "empty", None)
         root.addChild(self._item("未打开模型", "empty", None))
@@ -119,10 +156,21 @@ class ModelTree(QTreeWidget):
         *,
         feature_rows: tuple[str, ...] = (),
         part_name: str | None = None,
+        model_name: str | None = None,
         section_definitions: tuple[Any, ...] = (),
         region_assignments: tuple[Any, ...] = (),
         scope_names: Collection[str] | None = None,
     ) -> None:
+        self._renamable_kinds = (
+            frozenset({"model", "part"})
+            if part_name is not None
+            else frozenset()
+        )
+        self._non_highlightable_kinds = (
+            frozenset({"model", "part", "feature"})
+            if part_name is not None
+            else frozenset()
+        )
         self.clear()
         visible_scope_names = (
             None
@@ -140,12 +188,22 @@ class ModelTree(QTreeWidget):
                 )
             )
 
-        root = self._item(str(model.name or "模型"), "model", None)
+        root = self._item(
+            str(model_name or model.name or "模型"),
+            "model",
+            None,
+        )
         part = None
         if part_name is not None:
             part = self._item(str(part_name), "part", None)
             for row in feature_rows:
-                part.addChild(self._item(str(row), "feature", None))
+                part.addChild(
+                    self._item(
+                        _native_feature_label(row),
+                        "feature",
+                        str(row),
+                    )
+                )
             root.addChild(part)
         mesh = self._item("网格", "mesh", None)
         visible_node_sets = visible_items(model.node_sets)
@@ -295,10 +353,14 @@ class ModelTree(QTreeWidget):
         name: str,
         feature_rows: tuple[str, ...],
         *,
-        part_name: str = "Part-1",
+        part_name: str = "部件-1",
         bodies: tuple[tuple[str, str, tuple[str, ...]], ...] = (),
     ) -> None:
-        """Show Model → Part → Bodies → per-Body feature history."""
+        """显示模型、部件、实体及各实体的特征历史。"""
+        self._renamable_kinds = frozenset({"model", "part"})
+        self._non_highlightable_kinds = frozenset(
+            {"model", "part", "feature"}
+        )
         self.clear()
         root = self._item(str(name), "model", None)
         part = self._item(str(part_name), "part", None)
@@ -310,12 +372,24 @@ class ModelTree(QTreeWidget):
                     f"body:{body_id}",
                 )
                 for row in rows:
-                    body.addChild(self._item(str(row), "feature", None))
+                    body.addChild(
+                        self._item(
+                            _native_feature_label(row),
+                            "feature",
+                            str(row),
+                        )
+                    )
                 part.addChild(body)
                 body.setExpanded(True)
         else:
             for row in feature_rows:
-                part.addChild(self._item(str(row), "feature", None))
+                part.addChild(
+                    self._item(
+                        _native_feature_label(row),
+                        "feature",
+                        str(row),
+                    )
+                )
         root.addChild(part)
         self.addTopLevelItem(root)
         root.setExpanded(True)
@@ -376,7 +450,10 @@ class ModelTree(QTreeWidget):
 
     def _on_clicked(self, item: QTreeWidgetItem) -> None:
         entry = self._entry(item)
-        if entry is not None:
+        if (
+            entry is not None
+            and entry[0] not in self._non_highlightable_kinds
+        ):
             self.highlightRequested.emit(*entry)
 
     def _on_double_clicked(self, item: QTreeWidgetItem) -> None:
@@ -396,7 +473,16 @@ class ModelTree(QTreeWidget):
             return
         self.setCurrentItem(item)
         menu = QMenu(self)
-        highlight = menu.addAction("高亮")
+        highlight = (
+            menu.addAction("高亮")
+            if entry[0] not in self._non_highlightable_kinds
+            else None
+        )
+        rename = (
+            menu.addAction("重命名")
+            if entry[0] in self._renamable_kinds
+            else None
+        )
         edit = (
             menu.addAction("编辑")
             if entry[0] in _EDITABLE_KINDS
@@ -409,8 +495,10 @@ class ModelTree(QTreeWidget):
         )
         information = menu.addAction("查看信息")
         chosen = menu.exec(self.viewport().mapToGlobal(position))
-        if chosen is highlight:
+        if highlight is not None and chosen is highlight:
             self.highlightRequested.emit(*entry)
+        elif rename is not None and chosen is rename:
+            self.renameRequested.emit(*entry)
         elif edit is not None and chosen is edit:
             self.editRequested.emit(*entry)
         elif delete is not None and chosen is delete:

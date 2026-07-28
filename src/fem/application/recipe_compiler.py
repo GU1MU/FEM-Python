@@ -17,6 +17,16 @@ from fem.geometry.extrusion_selection import (
     extrusion_face_boundary_ids,
     resolve_extrusion_source_faces,
 )
+from fem.geometry.planar_boolean_lineage import (
+    PlanarBooleanLineageResolutionError,
+    capture_planar_operand_evidence,
+    resolve_planar_boolean_lineage,
+    validate_planar_boolean_input_map,
+)
+from fem.geometry.planar_boolean_selection import (
+    PlanarBooleanSelectionError,
+    resolve_planar_boolean_faces,
+)
 from fem.geometry.recipe_topology import (
     LogicalEntity,
     RecipeTopology,
@@ -811,6 +821,8 @@ def _compile_cylinder(cad: Any, recipe: CylinderGeometry) -> _CompiledDraft:
 def _compile_boolean(cad: Any, recipe: BooleanGeometry) -> _CompiledDraft:
     if recipe.body_context is not None:
         return _compile_strict_body_boolean(cad, recipe)
+    if recipe.planar_context is not None:
+        return _compile_strict_planar_boolean(cad, recipe)
     objects = tuple(_build_domain_only(cad, recipe.object_geometry))
     tools = tuple(_build_domain_only(cad, recipe.tool_geometry))
     operation = {
@@ -907,6 +919,150 @@ def _compile_boolean(cad: Any, recipe: BooleanGeometry) -> _CompiledDraft:
         },
         hole_edges,
     )
+
+
+def _compile_strict_planar_boolean(
+    cad: Any,
+    recipe: BooleanGeometry,
+) -> _CompiledDraft:
+    context = recipe.planar_context
+    if context is None or not context.proven:
+        raise TopologyResolutionError(
+            "planar-boolean.lineage.unproven: strict planar Boolean "
+            "lacks persisted proof"
+        )
+    object_draft = _compile_exact(cad, recipe.object_geometry)
+    tool_draft = _compile_exact(cad, recipe.tool_geometry)
+    object_compiled = _finalize(
+        cad,
+        recipe.object_geometry,
+        describe_recipe_topology(recipe.object_geometry),
+        object_draft,
+    )
+    tool_compiled = _finalize(
+        cad,
+        recipe.tool_geometry,
+        describe_recipe_topology(recipe.tool_geometry),
+        tool_draft,
+    )
+    try:
+        selection = resolve_planar_boolean_faces(
+            recipe.object_geometry,
+            context.target_face_id,
+            recipe.tool_geometry,
+            context.tool_face_ids,
+        )
+        target_surfaces = tuple(
+            object_compiled.logical_entities[selection.target_face_id]
+        )
+        tool_surfaces = tuple(
+            tool_compiled.logical_entities[face_id][0]
+            for face_id in selection.tool_face_ids
+        )
+        target_evidence = capture_planar_operand_evidence(
+            cad,
+            object_compiled,
+            (selection.target_face_id,),
+        )
+        tool_evidence = capture_planar_operand_evidence(
+            cad,
+            tool_compiled,
+            selection.tool_face_ids,
+        )
+        unaffected = _planar_unaffected_logical_entities(
+            object_compiled,
+            selection,
+        )
+        operation = cad.fuse if recipe.operation == "fuse" else cad.cut
+        result = operation(target_surfaces, tool_surfaces)
+        validate_planar_boolean_input_map(
+            result,
+            tool_count=len(tool_surfaces),
+            operation=recipe.operation,
+        )
+        proof = resolve_planar_boolean_lineage(
+            cad,
+            target_evidence,
+            tool_evidence,
+            result,
+            context,
+            operation=recipe.operation,
+            unaffected_logical_entities=unaffected,
+        )
+    except (
+        KeyError,
+        PlanarBooleanLineageResolutionError,
+        PlanarBooleanSelectionError,
+    ) as error:
+        raise TopologyResolutionError(str(error)) from error
+    if (
+        frozenset(proof.result_entities)
+        != frozenset(context.result_entities)
+        or frozenset(proof.topology_mappings)
+        != frozenset(context.topology_mappings)
+    ):
+        raise TopologyResolutionError(
+            "planar-boolean.lineage.catalog-mismatch: persisted proof "
+            "does not match the current OCC result"
+        )
+    return _CompiledDraft(
+        tuple(proof.logical_entities["body:domain"]),
+        dict(proof.logical_entities),
+        {},
+        _unique(
+            entity
+            for logical_id in proof.generated_intersections
+            if logical_id.startswith("edge:")
+            for entity in proof.logical_entities[logical_id]
+        ),
+    )
+
+
+def _planar_unaffected_logical_entities(
+    compiled: CompiledRecipeTopology,
+    selection: Any,
+) -> dict[str, tuple[Any, ...]]:
+    target_ids = {
+        selection.target_face_id,
+        *selection.target.boundary_edge_ids,
+        *selection.target.boundary_point_ids,
+    }
+    target_entities = {
+        entity
+        for logical_id in target_ids
+        for entity in compiled.logical_entities.get(logical_id, ())
+    }
+    unaffected: dict[str, tuple[Any, ...]] = {}
+    for item in compiled.catalog.selectable_entities():
+        if item.kind == "body":
+            continue
+        if _canonical_catalog_logical_id(compiled.catalog, item.logical_id) != (
+            item.logical_id
+        ):
+            continue
+        entities = tuple(compiled.logical_entities.get(item.logical_id, ()))
+        if not entities or any(entity in target_entities for entity in entities):
+            continue
+        unaffected[item.logical_id] = entities
+    return unaffected
+
+
+def _canonical_catalog_logical_id(catalog: RecipeTopology, logical_id: str) -> str:
+    current = logical_id
+    visited: set[str] = set()
+    kind = LogicalEntityRef(logical_id).kind
+    while current not in visited:
+        visited.add(current)
+        item = catalog.entity(current)
+        links = tuple(
+            link
+            for link in item.topology_links
+            if LogicalEntityRef(link).kind == kind
+        )
+        if len(links) != 1:
+            return current
+        current = links[0]
+    return logical_id
 
 
 def _compile_extrusion(cad: Any, recipe: ExtrudedGeometry) -> _CompiledDraft:

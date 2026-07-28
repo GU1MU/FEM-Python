@@ -89,6 +89,7 @@ _V5_FIELD_POLICY = ProjectFieldCodecPolicy(
     displacement_region_targets=True,
     body_force_loads=True,
     allow_multi_body=True,
+    allow_planar_boolean=False,
 )
 
 
@@ -109,6 +110,7 @@ def decode_project_v5(
     payload: Mapping[str, Any] | str | bytes | bytearray,
     *,
     source_path: str | Path | None = None,
+    _field_policy: ProjectFieldCodecPolicy = _V5_FIELD_POLICY,
 ) -> ProjectSnapshot:
     """Decode one detached canonical schema-v5 project."""
 
@@ -163,6 +165,12 @@ def decode_project_v5(
                 "definitions",
                 "boolean_undo_records",
             },
+            optional={"model_name"},
+        )
+        model_name = _v2._string(
+            authoring.get("model_name", "Model-1"),
+            "$.project.authoring.model_name",
+            ProjectV5DecodeError,
         )
         part = _decode_part_v5(
             authoring["part"],
@@ -171,7 +179,7 @@ def decode_project_v5(
         geometry = decode_geometry_field(
             authoring["geometry"],
             "$.project.authoring.geometry",
-            policy=_V5_FIELD_POLICY,
+            policy=_field_policy,
         )
         if not isinstance(geometry, NATIVE_GEOMETRY_TYPES):
             raise ProjectV5DecodeError(
@@ -222,21 +230,25 @@ def decode_project_v5(
             definitions["materials"],
             "$.project.authoring.definitions.materials",
             decode_material_field,
+            policy=_field_policy,
         )
         sections = _decode_array(
             definitions["sections"],
             "$.project.authoring.definitions.sections",
             decode_section_field,
+            policy=_field_policy,
         )
         assignments = _decode_array(
             definitions["assignments"],
             "$.project.authoring.definitions.assignments",
             decode_assignment_field,
+            policy=_field_policy,
         )
         steps = _decode_array(
             definitions["steps"],
             "$.project.authoring.definitions.steps",
             decode_step_field,
+            policy=_field_policy,
         )
         for values, path in (
             (materials, "$.project.authoring.definitions.materials"),
@@ -260,6 +272,7 @@ def decode_project_v5(
             _decode_boolean_undo_record(
                 item,
                 f"$.project.authoring.boolean_undo_records[{index}]",
+                policy=_field_policy,
             )
             for index, item in enumerate(
                 _v2._array(
@@ -293,6 +306,7 @@ def decode_project_v5(
         return ProjectSnapshot(
             source_kind="native",
             source_path=None if source_path is None else Path(source_path),
+            model_name=model_name,
             parts=(part,),
             geometry_recipe=geometry,
             mesh_settings=mesh_settings,
@@ -317,6 +331,8 @@ def decode_project_v5(
 
 def encode_project_v5(
     snapshot: ProjectSnapshot | ProjectSaveSnapshot,
+    *,
+    _field_policy: ProjectFieldCodecPolicy = _V5_FIELD_POLICY,
 ) -> dict[str, Any]:
     """Encode one detached snapshot as canonical schema v5."""
 
@@ -416,6 +432,11 @@ def encode_project_v5(
             "project": {
                 "kind": "native",
                 "authoring": {
+                    "model_name": _v2._string(
+                        project.model_name,
+                        "snapshot.model_name",
+                        ProjectV5EncodeError,
+                    ),
                     "part": _encode_part_v5(
                         parts[0],
                         "snapshot.parts[0]",
@@ -424,7 +445,7 @@ def encode_project_v5(
                         geometry,
                         "snapshot.geometry_recipe",
                         set(),
-                        policy=_V5_FIELD_POLICY,
+                        policy=_field_policy,
                     ),
                     "logical_topology": (
                         _v4._encode_topology_fingerprint_v4(
@@ -447,6 +468,7 @@ def encode_project_v5(
                         _encode_boolean_undo_record(
                             record,
                             f"snapshot.boolean_reference_undo_records[{index}]",
+                            policy=_field_policy,
                         )
                         for index, record in enumerate(
                             boolean_undo_records
@@ -457,21 +479,25 @@ def encode_project_v5(
                             materials,
                             "snapshot.material_definitions",
                             encode_material_field,
+                            policy=_field_policy,
                         ),
                         "sections": _encode_array(
                             sections,
                             "snapshot.section_definitions",
                             encode_section_field,
+                            policy=_field_policy,
                         ),
                         "assignments": _encode_array(
                             assignments,
                             "snapshot.region_assignments",
                             encode_assignment_field,
+                            policy=_field_policy,
                         ),
                         "steps": _encode_array(
                             steps,
                             "snapshot.analysis_definitions",
                             encode_step_field,
+                            policy=_field_policy,
                         ),
                     },
                 },
@@ -540,13 +566,15 @@ def _mapping_with_keys(
     value: Any,
     path: str,
     required: set[str],
+    *,
+    optional: set[str] | None = None,
 ) -> Mapping[str, Any]:
     data = _v2._mapping(value, path, ProjectV5DecodeError)
     _v2._keys(
         data,
         path,
         required=required,
-        optional=set(),
+        optional=set(optional or ()),
         error_type=ProjectV5DecodeError,
     )
     return data
@@ -578,18 +606,30 @@ def _encode_part_v5(part: Any, path: str) -> dict[str, Any]:
     }
 
 
-def _decode_array(value: Any, path: str, decoder) -> tuple[Any, ...]:
+def _decode_array(
+    value: Any,
+    path: str,
+    decoder,
+    *,
+    policy: ProjectFieldCodecPolicy = _V5_FIELD_POLICY,
+) -> tuple[Any, ...]:
     return tuple(
-        decoder(item, f"{path}[{index}]", policy=_V5_FIELD_POLICY)
+        decoder(item, f"{path}[{index}]", policy=policy)
         for index, item in enumerate(
             _v2._array(value, path, ProjectV5DecodeError)
         )
     )
 
 
-def _encode_array(values: tuple[Any, ...], path: str, encoder) -> list[Any]:
+def _encode_array(
+    values: tuple[Any, ...],
+    path: str,
+    encoder,
+    *,
+    policy: ProjectFieldCodecPolicy = _V5_FIELD_POLICY,
+) -> list[Any]:
     return [
-        encoder(item, f"{path}[{index}]", policy=_V5_FIELD_POLICY)
+        encoder(item, f"{path}[{index}]", policy=policy)
         for index, item in enumerate(values)
     ]
 
@@ -597,6 +637,8 @@ def _encode_array(values: tuple[Any, ...], path: str, encoder) -> list[Any]:
 def _decode_boolean_undo_record(
     value: Any,
     path: str,
+    *,
+    policy: ProjectFieldCodecPolicy = _V5_FIELD_POLICY,
 ) -> BooleanReferenceUndoRecord:
     data = _mapping_with_keys(
         value,
@@ -624,7 +666,7 @@ def _decode_boolean_undo_record(
         phase: decode_geometry_field(
             data[f"{phase}_geometry"],
             f"{path}.{phase}_geometry",
-            policy=_V5_FIELD_POLICY,
+            policy=policy,
         )
         for phase in ("before", "after")
     }
@@ -664,21 +706,25 @@ def _decode_boolean_undo_record(
             data[f"{phase}_materials"],
             f"{path}.{phase}_materials",
             decode_material_field,
+            policy=policy,
         )
         record_sections = _decode_array(
             data[f"{phase}_sections"],
             f"{path}.{phase}_sections",
             decode_section_field,
+            policy=policy,
         )
         assignments = _decode_array(
             data[f"{phase}_assignments"],
             f"{path}.{phase}_assignments",
             decode_assignment_field,
+            policy=policy,
         )
         steps = _decode_array(
             data[f"{phase}_steps"],
             f"{path}.{phase}_steps",
             decode_step_field,
+            policy=policy,
         )
         normalized = normalize_model_definitions(
             record_materials,
@@ -751,6 +797,8 @@ def _decode_boolean_undo_record(
 def _encode_boolean_undo_record(
     record: BooleanReferenceUndoRecord,
     path: str,
+    *,
+    policy: ProjectFieldCodecPolicy = _V5_FIELD_POLICY,
 ) -> dict[str, Any]:
     if type(record) is not BooleanReferenceUndoRecord:
         raise ProjectV5EncodeError(
@@ -790,7 +838,7 @@ def _encode_boolean_undo_record(
             geometry,
             f"{path}.{phase}_geometry",
             set(),
-            policy=_V5_FIELD_POLICY,
+            policy=policy,
         )
         payload[f"{phase}_named_regions"] = [
             _v2._encode_named_region(
@@ -810,21 +858,25 @@ def _encode_boolean_undo_record(
             record_materials,
             f"{path}.{phase}_materials",
             encode_material_field,
+            policy=policy,
         )
         payload[f"{phase}_sections"] = _encode_array(
             record_sections,
             f"{path}.{phase}_sections",
             encode_section_field,
+            policy=policy,
         )
         payload[f"{phase}_assignments"] = _encode_array(
             assignments,
             f"{path}.{phase}_assignments",
             encode_assignment_field,
+            policy=policy,
         )
         payload[f"{phase}_steps"] = _encode_array(
             steps,
             f"{path}.{phase}_steps",
             encode_step_field,
+            policy=policy,
         )
     return payload
 
@@ -836,17 +888,10 @@ def _require_boolean_undo_record_coverage(
     encode: bool,
 ) -> None:
     active_feature_ids = {
-        boolean.body_context.feature_id
-        for body in (
-            geometry.bodies
-            if isinstance(geometry, MultiBodyGeometry)
-            else ()
-        )
-        for _suffix, boolean, _owner in _strict_boolean_recipes(
-            body.recipe,
-            body.id,
-        )
-        if boolean.body_context is not None
+        context.feature_id
+        for boolean in _all_boolean_recipes(geometry)
+        for context in (boolean.body_context, boolean.planar_context)
+        if context is not None
     }
     record_ids = tuple(record.feature_id for record in records)
     error_type = ProjectV5EncodeError if encode else ProjectV5DecodeError
@@ -963,6 +1008,18 @@ def _require_v5_geometry(recipe: object, *, encode: bool) -> None:
                 f"{prefix}.retired_boolean_feature_ids conflicts with "
                 f"active feature {feature_id!r}"
             )
+    error_type = ProjectV5EncodeError if encode else ProjectV5DecodeError
+    prefix = (
+        "snapshot.geometry_recipe"
+        if encode
+        else "$.project.authoring.geometry"
+    )
+    for boolean in _all_boolean_recipes(recipe):
+        context = boolean.planar_context
+        if context is not None and not context.proven:
+            raise error_type(
+                f"{prefix}.planar_context must contain proven Boolean lineage"
+            )
 
 
 def _strict_boolean_recipes(
@@ -1004,6 +1061,24 @@ def _strict_boolean_recipes(
     return ()
 
 
+def _all_boolean_recipes(recipe: object) -> tuple[BooleanGeometry, ...]:
+    if isinstance(recipe, MultiBodyGeometry):
+        return tuple(
+            boolean
+            for body in recipe.bodies
+            for boolean in _all_boolean_recipes(body.recipe)
+        )
+    if isinstance(recipe, (MovedGeometry, RotatedGeometry, ExtrudedGeometry)):
+        return _all_boolean_recipes(recipe.base)
+    if isinstance(recipe, BooleanGeometry):
+        return (
+            recipe,
+            *_all_boolean_recipes(recipe.object_geometry),
+            *_all_boolean_recipes(recipe.tool_geometry),
+        )
+    return ()
+
+
 def _authenticate_v5_boolean_proofs(
     recipe: object,
     *,
@@ -1011,19 +1086,15 @@ def _authenticate_v5_boolean_proofs(
 ) -> None:
     """Replay strict OCC proofs before a decoded snapshot can be installed."""
 
-    if not isinstance(recipe, MultiBodyGeometry) or not any(
-        boolean.body_context is not None
-        for body in recipe.bodies
-        for _suffix, boolean, _owner in _strict_boolean_recipes(
-            body.recipe,
-            body.id,
-        )
+    if not any(
+        boolean.body_context is not None or boolean.planar_context is not None
+        for boolean in _all_boolean_recipes(recipe)
     ):
         return
     try:
         with geometry_model(
             "project-v5-boolean-proof-authentication",
-            dimension=3,
+            dimension=geometry_dimension(recipe),
         ) as cad:
             compile_recipe(cad, recipe)
     except Exception as error:

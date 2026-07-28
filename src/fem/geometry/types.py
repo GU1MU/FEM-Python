@@ -171,6 +171,27 @@ class StrictBodyBooleanPreview:
 
 
 @dataclass(frozen=True, slots=True)
+class StrictPlanarBooleanPreview:
+    """Detached true OCC planar result with exact logical identities."""
+
+    target_face_id: str
+    points: tuple[tuple[float, float, float], ...]
+    faces: tuple[tuple[int, ...], ...]
+    edges: tuple[tuple[int, ...], ...]
+    face_logical_ids: tuple[str, ...]
+    edge_logical_ids: tuple[str, ...]
+    point_logical_ids: tuple[str | None, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.faces) != len(self.face_logical_ids):
+            raise ValueError("planar Boolean preview faces and IDs must align")
+        if len(self.edges) != len(self.edge_logical_ids):
+            raise ValueError("planar Boolean preview edges and IDs must align")
+        if len(self.points) != len(self.point_logical_ids):
+            raise ValueError("planar Boolean preview points and IDs must align")
+
+
+@dataclass(frozen=True, slots=True)
 class FeatureResult:
     """Typed topology produced by one geometry feature operation.
 

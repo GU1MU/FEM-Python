@@ -69,6 +69,36 @@ def test_can_save_requires_an_open_native_project_with_geometry() -> None:
     assert session.snapshot().can_save
 
 
+def test_native_model_and_part_renames_are_project_metadata() -> None:
+    session = ModelSession()
+    session.new_native_project("Model-1")
+    session.replace_geometry(
+        (NativePart(),), BoxGeometry("Sketch-1", 1.0, 1.0, 1.0)
+    )
+    before = session.snapshot()
+
+    session.rename_native_model(
+        "Bracket",
+        expected_session_revision=before.session_revision,
+    )
+    after_model = session.snapshot()
+    session.rename_native_part(
+        "Mount",
+        expected_session_revision=after_model.session_revision,
+    )
+    renamed = session.snapshot()
+
+    assert renamed.model_name == "Bracket"
+    assert renamed.parts[0].name == "Mount"
+    assert renamed.geometry_recipe.name == "Sketch-1"
+    assert renamed.project_revision == before.project_revision + 2
+    assert renamed.mesh_input_revision == before.mesh_input_revision
+    assert renamed.model_revision == before.model_revision
+    saved = session.prepare_project_save().snapshot
+    assert saved.model_name == "Bracket"
+    assert saved.parts[0].name == "Mount"
+
+
 def test_domain_revisions_advance_only_for_their_semantics() -> None:
     session = ModelSession()
     first_id = session.session_id

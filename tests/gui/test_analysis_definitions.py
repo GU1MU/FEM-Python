@@ -8,6 +8,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox
 
 from fem.application import (
@@ -751,21 +752,40 @@ def test_output_request_uses_only_published_candidate_order_and_dto(
         candidates=candidates,
     )
 
-    assert dialog.candidate_combo.count() == len(candidates)
-    for index, candidate in enumerate(candidates):
-        dialog.candidate_combo.setCurrentIndex(index)
-        step_name, output = dialog.definition()
-        assert step_name == "Load"
-        assert output == candidate.authoring_request
-        assert output is not candidate.authoring_request
-
+    expected = tuple(
+        next(
+            candidate
+            for candidate in candidates
+            if candidate.authoring_request.variables == (variable,)
+        )
+        for variable in ("U", "RF", "S")
+    )
+    assert dialog.candidate_list.count() == len(expected)
     assert tuple(
-        dialog.candidate_combo.itemData(index)
-        for index in range(dialog.candidate_combo.count())
-    ) == tuple(range(len(candidates)))
+        dialog.candidate_list.item(index).text()
+        for index in range(dialog.candidate_list.count())
+    ) == ("U", "RF", "S")
+    assert all(
+        "position" not in dialog.candidate_list.item(index).text()
+        for index in range(dialog.candidate_list.count())
+    )
+    for index in range(dialog.candidate_list.count()):
+        dialog.candidate_list.item(index).setCheckState(
+            Qt.CheckState.Checked
+        )
+    step_name, outputs = dialog.definitions()
+    assert step_name == "Load"
+    assert outputs == tuple(
+        candidate.authoring_request
+        for candidate in expected
+    )
+    assert all(
+        output is not candidate.authoring_request
+        for output, candidate in zip(outputs, expected, strict=True)
+    )
 
 
-def test_output_request_preserves_parsed_inp_history_metadata():
+def test_output_request_discards_parsed_inp_details():
     _application()
     current = OutputRequest(
         "history",
@@ -783,16 +803,23 @@ def test_output_request_preserves_parsed_inp_history_metadata():
     step_name, output = dialog.definition()
 
     assert step_name == "Load"
-    assert output == current
+    assert output != current
     assert output is not current
+    assert output == OutputRequest(
+        "history",
+        "preselect",
+        ("PRESELECT", "PRESELECT", "Future"),
+    )
+    assert not output.metadata
+    assert output.source_evidence is None
     assert not dialog.step_combo.isEnabled()
     assert dialog.kind_value.text() == "history"
-    assert dialog.target_value.text() == "preselect"
     assert dialog.variables_value.text() == (
         "PRESELECT、PRESELECT、Future"
     )
-    assert "variable=PRESELECT" in dialog.metadata_value.text()
-    assert "frequency" in dialog.source_evidence_value.text()
+    assert not hasattr(dialog, "target_value")
+    assert not hasattr(dialog, "metadata_value")
+    assert not hasattr(dialog, "source_evidence_value")
 
 
 def test_analysis_manager_uses_readable_definition_summaries():
@@ -814,11 +841,14 @@ def test_analysis_manager_uses_readable_definition_summaries():
     assert manager.table.item(2, 2).text() == "节点"
 
 
-def test_model_tree_boundary_delete_preserves_other_definitions():
+def test_model_tree_boundary_and_load_delete_preserve_other_definitions():
     first = DisplacementConstraint("Fixed", 1, 1, 0.0)
     second = DisplacementConstraint("Roller", 2, 2, 0.0)
+    first_load = NodalLoad("Loaded", 1, 10.0)
+    second_load = NodalLoad("Loaded", 2, 20.0)
     step = static("Load")
     step.boundaries = (first, second)
+    step.cloads = (first_load, second_load)
     changes = []
 
     class WindowStub:
@@ -849,12 +879,20 @@ def test_model_tree_boundary_delete_preserves_other_definitions():
         "cload",
         (0, 0),
     )
+    assert changes[1][0] == "载荷已删除，模型需要重新检查"
+    assert changes[1][1][0].cloads == (second_load,)
+
+    FEMMainWindow.delete_analysis_definition(
+        window,
+        "output",
+        (0, 0),
+    )
     FEMMainWindow.delete_analysis_definition(
         window,
         "boundary",
         (9, 0),
     )
-    assert len(changes) == 1
+    assert len(changes) == 2
 
 
 def test_output_view_is_read_only_and_preserves_unsupported_request(

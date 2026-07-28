@@ -594,7 +594,7 @@ def test_successful_document_replacements_clear_import_notices(
             tmp_path / "before-new.inp",
             notices=(notice,),
         )
-        window.new_native_model()
+        window._create_native_model("Model-1")
         assert window.document.source_kind == "native"
         assert window.import_notices == ()
 

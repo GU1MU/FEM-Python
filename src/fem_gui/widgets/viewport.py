@@ -1442,6 +1442,47 @@ class FEMViewport(QWidget):
         self._sketch_draft_render_data = render_data
         self._show_sketch_draft(render=True)
 
+    def show_sketch_reference_preview(
+        self,
+        preview: GeometryPreview,
+        *,
+        render: bool = True,
+    ) -> None:
+        """Show a translucent, non-pickable reference below a tool sketch."""
+
+        if type(preview) is not GeometryPreview:
+            raise TypeError("preview must be a GeometryPreview")
+        if not self._sketch_authoring_active:
+            raise RuntimeError("sketch authoring must be active")
+        self._remove_actor("sketch_reference_surface")
+        if is_offscreen_environment():
+            return
+        if not preview.faces or not self._ensure_plotter() or _pyvista is None:
+            return
+        surface = _geometry_surface_polydata(
+            _pyvista,
+            np.asarray(preview.points, dtype=float),
+            preview,
+            (0,) * len(preview.faces),
+            (0,) * len(preview.faces),
+        )
+        actor = self._plotter.add_mesh(
+            surface,
+            color="#7194ab",
+            opacity=0.32,
+            smooth_shading=False,
+            show_edges=True,
+            edge_color="#527084",
+            line_width=1,
+            name="sketch_reference_surface",
+            reset_camera=False,
+        )
+        actor.SetPickable(False)
+        actor.SetPosition(0.0, 0.0, -1.0e-6)
+        self._actors["sketch_reference_surface"] = actor
+        if render:
+            self._render()
+
     def set_sketch_authoring_mode(self, mode: str) -> None:
         normalized = str(mode).strip().casefold()
         if normalized not in {
@@ -1514,6 +1555,7 @@ class FEMViewport(QWidget):
             "sketch_authoring_hover_outline",
             "sketch_authoring_hover",
             "sketch_authoring_hover_label",
+            "sketch_reference_surface",
         ):
             self._remove_actor(name)
         self._sketch_authoring_active = False

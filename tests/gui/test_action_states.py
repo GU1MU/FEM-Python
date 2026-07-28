@@ -181,6 +181,41 @@ def test_new_model_unlocks_model_definition_and_sketch_commands():
     window.close()
 
 
+def test_new_model_dialog_commits_entered_model_name_and_cancel_is_safe(
+    monkeypatch,
+):
+    _application()
+    responses = iter((("支架模型", True), ("", False)))
+    prompts = []
+
+    def get_text(_parent, title, prompt, **options):
+        prompts.append((title, prompt, options.get("text")))
+        return next(responses)
+
+    monkeypatch.setattr(
+        main_window_module.QInputDialog,
+        "getText",
+        get_text,
+    )
+    window = FEMMainWindow()
+
+    window.new_native_model()
+
+    assert prompts == [("新建模型", "模型名称：", "模型-1")]
+    assert window.document.model_name == "支架模型"
+    assert window.document.parts[0].name == "部件-1"
+    assert window.document.parts[0].body_name == "实体-1"
+    assert window.model_tree.topLevelItem(0).text(0) == "支架模型"
+    assert window.model_tree.topLevelItem(0).child(0).text(0) == "部件-1"
+    revision = window.document.session_revision
+
+    window.new_native_model()
+
+    assert window.document.session_revision == revision
+    assert window.document.model_name == "支架模型"
+    window.close()
+
+
 def test_project_save_ui_follows_can_save_in_all_session_states(
     gui_inp_path,
     monkeypatch,

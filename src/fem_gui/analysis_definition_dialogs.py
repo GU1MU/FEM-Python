@@ -6,6 +6,7 @@ from collections.abc import Callable, Sequence
 from copy import deepcopy
 from math import isfinite
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -19,6 +20,8 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -34,7 +37,6 @@ from fem.application import (
     require_region_kind,
 )
 from fem.application.results import OutputRequestProjection
-from fem.core.immutable_json import thaw_json_mapping
 from fem.core.model import (
     AnalysisStep,
     BodyForce,
@@ -902,51 +904,62 @@ class OutputRequestDialog(QDialog):
                 "read-only output request views cannot accept candidates"
             )
 
-        self._candidates = deepcopy(candidate_values)
-        self._current = deepcopy(current)
+        self._candidates = deepcopy(
+            _visible_output_request_candidates(candidate_values)
+        )
+        self._current = (
+            None
+            if current is None
+            else _compact_output_request(current)
+        )
         self.setWindowTitle(
             "查看输出请求" if current is not None else "创建输出请求"
         )
         self.step_combo = QComboBox(self)
         self.step_combo.addItems(step_names)
-        self.candidate_combo = QComboBox(self)
+        self.candidate_list = QListWidget(self)
+        self.candidate_list.setObjectName("outputRequestCandidateList")
+        self.candidate_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.NoSelection
+        )
+        self.candidate_list.setMinimumHeight(92)
         for index, candidate in enumerate(self._candidates):
-            self.candidate_combo.addItem(
+            item = QListWidgetItem(
                 _output_request_summary(candidate.authoring_request),
-                index,
+                self.candidate_list,
+            )
+            item.setData(Qt.ItemDataRole.UserRole, index)
+            item.setFlags(
+                item.flags()
+                | Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsUserCheckable
+            )
+            item.setCheckState(
+                Qt.CheckState.Checked
+                if index == 0
+                else Qt.CheckState.Unchecked
             )
         self.kind_value = QLabel("", self)
-        self.target_value = QLabel("", self)
         self.variables_value = QLabel("", self)
-        self.metadata_value = QLabel("", self)
-        self.source_evidence_value = QLabel("", self)
-        for label in (
-            self.variables_value,
-            self.metadata_value,
-            self.source_evidence_value,
-        ):
-            label.setWordWrap(True)
+        self.variables_value.setWordWrap(True)
 
         form = QFormLayout()
         configure_form_layout(form)
         form.addRow("分析步", self.step_combo)
         if self._current is None:
-            form.addRow("候选输出", self.candidate_combo)
+            form.addRow("候选输出", self.candidate_list)
         form.addRow("输出类型", self.kind_value)
-        form.addRow("输出位置", self.target_value)
         form.addRow("输出变量", self.variables_value)
-        form.addRow("元数据", self.metadata_value)
-        form.addRow("源证据", self.source_evidence_value)
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         if self._current is None:
             layout.addWidget(_buttons(self))
-            self.candidate_combo.currentIndexChanged.connect(
+            self.candidate_list.itemChanged.connect(
                 self._refresh_request
             )
         else:
             self.step_combo.setEnabled(False)
-            self.candidate_combo.setVisible(False)
+            self.candidate_list.setVisible(False)
             buttons = QDialogButtonBox(
                 QDialogButtonBox.StandardButton.Close,
                 self,
@@ -959,72 +972,102 @@ class OutputRequestDialog(QDialog):
         self.setMinimumWidth(330)
         self._refresh_request()
 
-    def definition(self) -> tuple[str, OutputRequest]:
+    def definitions(self) -> tuple[str, tuple[OutputRequest, ...]]:
         step_name = self.step_combo.currentText().strip()
         if not step_name:
             raise ValueError("请选择分析步")
         if self._current is not None:
-            return step_name, deepcopy(self._current)
-        index = self.candidate_combo.currentData()
-        if type(index) is not int or not 0 <= index < len(self._candidates):
-            raise ValueError("请选择受支持的输出请求")
-        request = deepcopy(self._candidates[index].authoring_request)
-        if type(request) is not OutputRequest:
+            return step_name, (deepcopy(self._current),)
+        requests = tuple(
+            _compact_output_request(candidate.authoring_request)
+            for candidate in self._selected_candidates()
+        )
+        if not requests:
+            raise ValueError("请至少选择一个受支持的输出请求")
+        if any(type(request) is not OutputRequest for request in requests):
             raise TypeError(
-                "candidate authoring_request must be exactly OutputRequest"
+                "candidate authoring_requests must be exactly OutputRequest"
             )
-        return step_name, request
+        return step_name, requests
 
-    def _refresh_request(self) -> None:
-        request = self._selected_request()
-        self.kind_value.setText("" if request is None else request.kind)
-        self.target_value.setText("" if request is None else request.target)
-        self.variables_value.setText(
-            ""
-            if request is None
-            else "、".join(request.variables)
-        )
-        self.metadata_value.setText(
-            ""
-            if request is None
-            else _output_metadata_text(request)
-        )
-        self.source_evidence_value.setText(
-            ""
-            if request is None
-            else (
-                "—"
-                if request.source_evidence is None
-                else repr(request.source_evidence)
+    def definition(self) -> tuple[str, OutputRequest]:
+        step_name, requests = self.definitions()
+        if len(requests) != 1:
+            raise ValueError("当前选择包含多个输出请求，请使用 definitions()")
+        return step_name, requests[0]
+
+    def _refresh_request(self, _item: QListWidgetItem | None = None) -> None:
+        requests = self._selected_requests()
+        kinds = tuple(dict.fromkeys(request.kind for request in requests))
+        self.kind_value.setText("、".join(kinds))
+        variables = (
+            tuple(self._current.variables)
+            if self._current is not None
+            else tuple(
+                dict.fromkeys(
+                    variable
+                    for request in requests
+                    for variable in request.variables
+                )
             )
         )
+        self.variables_value.setText("、".join(variables))
 
-    def _selected_request(self) -> OutputRequest | None:
+    def _selected_candidates(self) -> tuple[OutputRequestProjection, ...]:
         if self._current is not None:
-            return self._current
-        index = self.candidate_combo.currentData()
-        if type(index) is not int or not 0 <= index < len(self._candidates):
-            return None
-        return self._candidates[index].authoring_request
+            return ()
+        selected: list[OutputRequestProjection] = []
+        for row in range(self.candidate_list.count()):
+            item = self.candidate_list.item(row)
+            if item.checkState() != Qt.CheckState.Checked:
+                continue
+            index = item.data(Qt.ItemDataRole.UserRole)
+            if type(index) is not int or not 0 <= index < len(self._candidates):
+                raise RuntimeError("输出请求列表包含无效候选索引")
+            selected.append(self._candidates[index])
+        return tuple(selected)
+
+    def _selected_requests(self) -> tuple[OutputRequest, ...]:
+        if self._current is not None:
+            return (self._current,)
+        return tuple(
+            candidate.authoring_request
+            for candidate in self._selected_candidates()
+        )
 
 
 def _output_request_summary(request: OutputRequest) -> str:
     if type(request) is not OutputRequest:
         raise TypeError("request must be exactly OutputRequest")
-    values = [request.kind, request.target, "、".join(request.variables)]
-    metadata = _output_metadata_text(request)
-    if metadata != "—":
-        values.append(metadata)
-    return " · ".join(values)
+    return "、".join(request.variables)
 
 
-def _output_metadata_text(request: OutputRequest) -> str:
-    metadata = thaw_json_mapping(request.metadata)
-    if not metadata:
-        return "—"
-    return "；".join(
-        f"{key}={value}"
-        for key, value in metadata.items()
+def _compact_output_request(request: OutputRequest) -> OutputRequest:
+    if type(request) is not OutputRequest:
+        raise TypeError("request must be exactly OutputRequest")
+    return OutputRequest(
+        request.kind,
+        request.target,
+        tuple(request.variables),
+    )
+
+
+def _visible_output_request_candidates(
+    candidates: Sequence[OutputRequestProjection],
+) -> tuple[OutputRequestProjection, ...]:
+    allowed = ("U", "RF", "S")
+    first_by_variable: dict[str, OutputRequestProjection] = {}
+    for candidate in candidates:
+        variables = candidate.authoring_request.variables
+        if len(variables) != 1:
+            continue
+        variable = variables[0]
+        if variable in allowed and variable not in first_by_variable:
+            first_by_variable[variable] = candidate
+    return tuple(
+        first_by_variable[variable]
+        for variable in allowed
+        if variable in first_by_variable
     )
 
 

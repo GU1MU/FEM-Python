@@ -42,6 +42,7 @@ from fem.geometry.recipes import (
     MovedGeometry,
     MultiBodyGeometry,
     PlateWithHoleGeometry,
+    PlanarBooleanContext,
     RectangleGeometry,
     RotatedGeometry,
     SketchArc,
@@ -84,6 +85,7 @@ class ProjectFieldCodecPolicy:
     displacement_region_targets: bool = False
     body_force_loads: bool = False
     allow_multi_body: bool = False
+    allow_planar_boolean: bool = False
 
 
 def loads_json_strict(
@@ -603,7 +605,11 @@ def decode_geometry_field(
                 error_path = path
             raise policy.decode_error(f"{error_path} 无效：{error}") from error
     if kind == "BooleanGeometry":
-        optional = {"body_context"} if policy.allow_multi_body else set()
+        optional = set()
+        if policy.allow_multi_body:
+            optional.add("body_context")
+        if policy.allow_planar_boolean:
+            optional.add("planar_context")
         _field_keys(
             data,
             path,
@@ -643,6 +649,15 @@ def decode_geometry_field(
                     policy=policy,
                 )
                 if "body_context" in data
+                else None
+            ),
+            (
+                _decode_planar_boolean_context(
+                    data["planar_context"],
+                    f"{path}.planar_context",
+                    policy=policy,
+                )
+                if "planar_context" in data
                 else None
             ),
         )
@@ -1069,6 +1084,78 @@ def _decode_boolean_body_context(
         ),
         tuple(entities),
         tuple(mappings),
+    )
+
+
+def _decode_planar_boolean_context(
+    value: Any,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> PlanarBooleanContext | None:
+    if value is None:
+        return None
+    data = _field_mapping(value, path, policy.decode_error)
+    _field_keys(
+        data,
+        path,
+        required={
+            "feature_id",
+            "target_face_id",
+            "tool_face_ids",
+            "result_entities",
+            "topology_mappings",
+        },
+        optional=set(),
+        policy=policy,
+        error_type=policy.decode_error,
+    )
+    synthetic = {
+        "feature_id": "BF1",
+        "target_body_id": "B1",
+        "tool_body_id": "B2",
+        "tool_body_name": "Planar Tool",
+        "result_entities": data["result_entities"],
+        "topology_mappings": data["topology_mappings"],
+    }
+    lineage = _decode_boolean_body_context(
+        synthetic,
+        path,
+        policy=policy,
+    )
+    if lineage is None:
+        raise policy.decode_error(f"{path} must not be null")
+    tool_face_ids = tuple(
+        _field_string(
+            item,
+            f"{path}.tool_face_ids[{index}]",
+            policy.decode_error,
+        )
+        for index, item in enumerate(
+            _field_array(
+                data["tool_face_ids"],
+                f"{path}.tool_face_ids",
+                policy.decode_error,
+            )
+        )
+    )
+    return _field_construct(
+        PlanarBooleanContext,
+        path,
+        policy,
+        _field_string(
+            data["feature_id"],
+            f"{path}.feature_id",
+            policy.decode_error,
+        ),
+        _field_string(
+            data["target_face_id"],
+            f"{path}.target_face_id",
+            policy.decode_error,
+        ),
+        tool_face_ids,
+        lineage.result_entities,
+        lineage.topology_mappings,
     )
 
 
@@ -1559,6 +1646,7 @@ def encode_geometry_field(
                     "object_geometry",
                     "tool_geometry",
                     "body_context",
+                    "planar_context",
                 },
                 path,
                 policy,
@@ -1566,6 +1654,14 @@ def encode_geometry_field(
             if recipe.body_context is not None and not policy.allow_multi_body:
                 raise policy.encode_error(
                     f"{path}.body_context 无法由 "
+                    f"{policy.version_label} 无损表示"
+                )
+            if (
+                recipe.planar_context is not None
+                and not policy.allow_planar_boolean
+            ):
+                raise policy.encode_error(
+                    f"{path}.planar_context 无法由 "
                     f"{policy.version_label} 无损表示"
                 )
             encoded = {
@@ -1597,6 +1693,12 @@ def encode_geometry_field(
                 encoded["body_context"] = _encode_boolean_body_context(
                     recipe.body_context,
                     f"{path}.body_context",
+                    policy=policy,
+                )
+            if policy.allow_planar_boolean:
+                encoded["planar_context"] = _encode_planar_boolean_context(
+                    recipe.planar_context,
+                    f"{path}.planar_context",
                     policy=policy,
                 )
             return encoded
@@ -1733,6 +1835,42 @@ def _encode_boolean_body_context(
             }
             for item in context.topology_mappings
         ],
+    }
+
+
+def _encode_planar_boolean_context(
+    context: PlanarBooleanContext | None,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> dict[str, Any] | None:
+    if context is None:
+        return None
+    if type(context) is not PlanarBooleanContext:
+        raise policy.encode_error(
+            f"{path} must be PlanarBooleanContext or null"
+        )
+    synthetic = BooleanBodyContext(
+        "BF1",
+        "B1",
+        "B2",
+        "Planar Tool",
+        context.result_entities,
+        context.topology_mappings,
+    )
+    lineage = _encode_boolean_body_context(
+        synthetic,
+        path,
+        policy=policy,
+    )
+    if lineage is None:
+        raise policy.encode_error(f"{path} must not be null")
+    return {
+        "feature_id": context.feature_id,
+        "target_face_id": context.target_face_id,
+        "tool_face_ids": list(context.tool_face_ids),
+        "result_entities": lineage["result_entities"],
+        "topology_mappings": lineage["topology_mappings"],
     }
 
 

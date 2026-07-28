@@ -164,7 +164,7 @@ ACTION_DESCRIPTORS: tuple[GuiActionDescriptor, ...] = (
     _d(GuiActionKey.GEOMETRY_CREATE, "创建草图", "create_geometry", "sketch"),
     _d(GuiActionKey.GEOMETRY_SKETCH, "新建草图", "create_sketch_geometry", "sketch"),
     _d(GuiActionKey.GEOMETRY_WIRE, "新建线体", "start_wire_geometry", "wire"),
-    _d(GuiActionKey.GEOMETRY_ADD_BODY, "添加 Body", "add_body_geometry"),
+    _d(GuiActionKey.GEOMETRY_ADD_BODY, "添加实体", "add_body_geometry"),
     _d(GuiActionKey.GEOMETRY_MOVE, "移动", "move_geometry", "geometry_move"),
     _d(GuiActionKey.GEOMETRY_ROTATE, "旋转", "rotate_geometry", "geometry_rotate"),
     _d(GuiActionKey.GEOMETRY_EXTRUDE, "拉伸", "extrude_geometry", "extrude"),
@@ -389,7 +389,7 @@ def derive_action_availability(
     set_state(
         GuiActionKey.GEOMETRY_ADD_BODY,
         is_multi_body and not busy,
-        "请先创建一个三维 Body",
+        "请先创建一个三维实体",
     )
     for key in (
         GuiActionKey.GEOMETRY_MOVE,
@@ -410,9 +410,9 @@ def derive_action_availability(
                 else selected_body_count == 1
             ) and not busy and not editor_active
             reason = (
-                "实体布尔需要至少两个 Body"
+                "实体布尔需要至少两个实体"
                 if is_boolean
-                else "请先选择一个 Body"
+                else "请先选择一个实体"
             )
             set_state(key, enabled, reason)
             continue
@@ -424,8 +424,17 @@ def derive_action_availability(
                 not in {GuiActionKey.GEOMETRY_FUSE, GuiActionKey.GEOMETRY_CUT}
                 or geometry_dimension(recipe) != 1
             )
+            and (
+                key
+                not in {GuiActionKey.GEOMETRY_FUSE, GuiActionKey.GEOMETRY_CUT}
+                or not editor_active
+            )
             and not busy,
-            "One-dimensional wire geometry does not support this feature",
+            (
+                "请先完成当前几何编辑"
+                if editor_active
+                else "One-dimensional wire geometry does not support this feature"
+            ),
         )
     extrude_enabled = False
     extrude_reason = "请先创建二维草图或平面几何"
@@ -552,7 +561,7 @@ def derive_action_availability(
             "桁架单元中每根线体杆件固定生成一个单元，请先在网格控制中删除局部尺寸"
             if truss_controls_conflict
             else (
-                "请先通过 Boolean 解决 Body 重叠或接触"
+                "请先通过布尔运算解决实体重叠或接触"
                 if not body_relations_ready
                 else "请先创建自主几何并设置网格参数"
             )

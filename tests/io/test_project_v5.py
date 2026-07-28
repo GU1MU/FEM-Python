@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+from dataclasses import replace
 from functools import lru_cache
 
 import pytest
@@ -256,6 +258,21 @@ def test_v5_writer_rejects_legacy_alias_for_canonical_multi_body() -> None:
         match="canonical Body namespace",
     ):
         encode_project_v5(snapshot)
+
+
+def test_v5_round_trip_preserves_model_name_and_accepts_older_payloads() -> None:
+    snapshot = replace(
+        _multi_body_snapshot(body_count=1),
+        model_name="Bracket",
+    )
+    payload = encode_project_v5(snapshot)
+
+    assert payload["project"]["authoring"]["model_name"] == "Bracket"
+    assert decode_project_v5(payload).model_name == "Bracket"
+
+    legacy_payload = deepcopy(payload)
+    del legacy_payload["project"]["authoring"]["model_name"]
+    assert decode_project_v5(legacy_payload).model_name == "Model-1"
 
 
 def test_v5_reader_rejects_legacy_alias_with_reference_path() -> None:

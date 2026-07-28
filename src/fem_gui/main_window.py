@@ -50,6 +50,8 @@ from fem.application import (
     SessionDelta,
     StrictBodyBooleanPreview,
     StrictBodyBooleanResult,
+    StrictPlanarBooleanPreview,
+    StrictPlanarBooleanResult,
     TokenStatus,
     TransitionEffect,
     UNSET,
@@ -64,6 +66,8 @@ from fem.application import (
     safe_static_preflight,
     prepare_solid_body_boolean,
     prepare_strict_body_recipe_preview,
+    prepare_planar_boolean,
+    prepare_strict_planar_recipe_preview,
 )
 from fem.application.preprocessing import generate_fem_model
 from fem.application.recipe_compiler import compile_recipe
@@ -138,6 +142,7 @@ from fem.solvers import static_linear
 from .actions import build_actions
 from .action_state import GuiActionContext, derive_action_availability
 from .body_boolean import BodyBooleanController
+from .planar_boolean import PlanarBooleanController
 from .analysis_dialogs import JobManagerDialog, JobSubmitDialog
 from .analysis_definition_dialogs import (
     AnalysisDefinitionManagerDialog,
@@ -174,6 +179,7 @@ from .geometry_preview import (
     build_geometry_preview,
     build_strict_body_boolean_preview,
     build_strict_body_boolean_previews,
+    build_strict_planar_boolean_preview,
 )
 from .scope_selection import (
     ScopeSelectionTopology,
@@ -202,7 +208,6 @@ from .preprocessing_dialogs import (
     GeometryManagerDialog,
     GeometryCreationDialog,
     BooleanGeometryDialog,
-    SketchGeometryDialog,
     NamedRegionDialog,
     NamedRegionManagerDialog,
 )
@@ -231,6 +236,7 @@ from .visualization.scene import DisplayState
 from .visualization.symbols import SymbolSettings
 from .widgets.navigation_panel import NavigationPanel
 from .widgets.boolean_feature_panel import BooleanFeaturePanel
+from .widgets.planar_boolean_panel import PlanarBooleanPanel
 from .widgets.ribbon import RibbonPage, RibbonWidget
 from .widgets.sketch_editor_panel import SketchEditorPanel
 from .widgets.wire_editor_panel import WireEditorPanel
@@ -385,9 +391,15 @@ class FEMMainWindow(QMainWindow):
         self._sketch_editor_controller: SketchDraftController | None = None
         self._sketch_editor_original_recipe: object | None = None
         self._sketch_editor_base_revision: int | None = None
+        self._sketch_editor_part_name: str | None = None
         self._body_boolean_controller: BodyBooleanController | None = None
         self._body_boolean_preview_result: object | None = None
         self._body_boolean_preview_generation = 0
+        self._planar_boolean_controller: PlanarBooleanController | None = None
+        self._planar_boolean_preview_result: StrictPlanarBooleanResult | None = None
+        self._planar_boolean_preview_generation = 0
+        self._planar_boolean_original_selection: set[LogicalEntityRef] = set()
+        self._sketch_editor_is_planar_boolean_tool = False
         self._geometry_preview_cache: (
             tuple[str, object, GeometryPreview] | None
         ) = None
@@ -526,6 +538,8 @@ class FEMMainWindow(QMainWindow):
         try:
             delta = self.session.new_native_project(
                 command.name,
+                part_name=command.part_name,
+                body_name=command.body_name,
                 expected_session_revision=command.expected_session_revision,
             )
             receipt = self._accepted_command(command_id, delta)
@@ -581,6 +595,7 @@ class FEMMainWindow(QMainWindow):
             self._wire_editor_controller is not None
             or self._sketch_editor_controller is not None
             or self._body_boolean_controller is not None
+            or self._planar_boolean_controller is not None
         ):
             return self._rejected_command(
                 command_id,
@@ -1901,12 +1916,12 @@ class FEMMainWindow(QMainWindow):
                     if reference.logical_id in selectable_ids
                 }
                 self.model_tree.set_geometry_preview(
-                    recipe.name,
+                    str(snapshot.model_name or "模型-1"),
                     tuple(item.name for item in snapshot.feature_history),
                     part_name=(
                         snapshot.parts[0].name
                         if snapshot.parts
-                        else "Part-1"
+                        else "部件-1"
                     ),
                     bodies=(
                         tuple(
@@ -1954,10 +1969,18 @@ class FEMMainWindow(QMainWindow):
                         self.viewport.show_geometry_preview(preview)
                     if (
                         not cached_is_current
-                        and isinstance(recipe, MultiBodyGeometry)
-                        and any(
-                            self._recipe_contains_strict_boolean(body.recipe)
-                            for body in recipe.bodies
+                        and self._recipe_contains_strict_boolean(recipe)
+                        and (
+                            geometry_dimension(recipe) == 2
+                            or (
+                                isinstance(recipe, MultiBodyGeometry)
+                                and any(
+                                    self._recipe_contains_strict_boolean(
+                                        body.recipe
+                                    )
+                                    for body in recipe.bodies
+                                )
+                            )
                         )
                     ):
                         self._schedule_exact_boolean_preview(
@@ -2062,7 +2085,7 @@ class FEMMainWindow(QMainWindow):
             return Path(path).name
         recipe = self.document.geometry_recipe
         if recipe is not None:
-            return str(getattr(recipe, "name", "") or "Model-1")
+            return str(getattr(recipe, "name", "") or "模型-1")
         model = self.document.model
         return str(getattr(model, "name", "") or "模型")
 
@@ -2307,6 +2330,11 @@ class FEMMainWindow(QMainWindow):
 
     def _build_ribbon(self) -> None:
         self.ribbon = RibbonWidget(self)
+        scope_group = (
+            "作用域",
+            ("geometry_region", "geometry_regions"),
+            (),
+        )
         self._add_ribbon_page("项目", (
             ("文件", ("new_native", "open_project", "save_project", "open", "reload", "close"), ("new_native", "open")),
             ("信息", ("model_info",), ()),
@@ -2350,11 +2378,7 @@ class FEMMainWindow(QMainWindow):
                 ("mesh_settings",),
             ),
             ("划分", ("mesh_generate", "mesh_clear"), ("mesh_generate",)),
-            (
-                "作用域",
-                ("geometry_region", "geometry_regions"),
-                (),
-            ),
+            scope_group,
             (
                 "检查",
                 ("mesh_verify", "mesh_statistics"),
@@ -2363,12 +2387,14 @@ class FEMMainWindow(QMainWindow):
         ))
         self._add_ribbon_page("模型", (
             ("定义", ("material_manager", "section_manager", "section_assign"), ("material_manager",)),
+            scope_group,
             ("选择", ("select_node", "select_element", "select_edge", "selected_info"), ()),
             ("显示", ("nodes", "edges", "node_labels", "element_labels"), ()),
             ("符号", ("symbols", "symbol_settings"), ()),
         ))
         self._add_ribbon_page("分析", (
             ("分析步", ("step_create", "step_info"), ("step_create",)),
+            scope_group,
             ("边界与载荷", ("boundary_create", "load_create", "output_create"), ()),
             ("检查", ("check_model",), ()),
             ("作业", ("submit_job", "resubmit_job"), ("submit_job",)),
@@ -2546,6 +2572,7 @@ class FEMMainWindow(QMainWindow):
         combo.setObjectName(f"stepCombo_{module_name}")
         combo.setToolTip("当前分析步")
         combo.setFixedWidth(145)
+        combo.setMinimumWidth(100)
         combo.addItem("—", None)
         combo.activated.connect(lambda _index, source=combo: self._step_combo_changed(source))
         self._step_combos.append(combo)
@@ -2569,6 +2596,7 @@ class FEMMainWindow(QMainWindow):
         self.sketch_editor_panel = SketchEditorPanel(parent=self)
         self.sketch_editor_panel.hide()
         self.boolean_feature_panel = BooleanFeaturePanel(parent=self)
+        self.planar_boolean_panel = PlanarBooleanPanel(parent=self)
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
         splitter.setObjectName("mainSplitter")
         splitter.addWidget(self.navigation)
@@ -2576,16 +2604,19 @@ class FEMMainWindow(QMainWindow):
         splitter.addWidget(self.wire_editor_panel)
         splitter.addWidget(self.sketch_editor_panel)
         splitter.addWidget(self.boolean_feature_panel)
-        splitter.setSizes([260, 1020, 0, 0, 0])
+        splitter.addWidget(self.planar_boolean_panel)
+        splitter.setSizes([260, 1020, 0, 0, 0, 0])
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
         splitter.setStretchFactor(3, 0)
         splitter.setStretchFactor(4, 0)
+        splitter.setStretchFactor(5, 0)
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(2, True)
         splitter.setCollapsible(3, True)
         splitter.setCollapsible(4, True)
+        splitter.setCollapsible(5, True)
         self.main_splitter = splitter
         host = QWidget(self)
         host.setObjectName("centralWorkspace")
@@ -2599,6 +2630,7 @@ class FEMMainWindow(QMainWindow):
         self.model_tree.informationRequested.connect(self._show_entry_information)
         self.model_tree.editRequested.connect(self._edit_tree_entry)
         self.model_tree.deleteRequested.connect(self._delete_tree_entry)
+        self.model_tree.renameRequested.connect(self._rename_tree_entry)
         self.result_tree.fieldSelectionActivated.connect(
             self._activate_result_selection
         )
@@ -2646,6 +2678,21 @@ class FEMMainWindow(QMainWindow):
         )
         self.boolean_feature_panel.cancelRequested.connect(
             self.cancel_body_boolean
+        )
+        self.planar_boolean_panel.targetSelectionRequested.connect(
+            self._request_planar_boolean_target
+        )
+        self.planar_boolean_panel.toolSketchRequested.connect(
+            self._edit_planar_boolean_tool
+        )
+        self.planar_boolean_panel.operationChanged.connect(
+            self._planar_boolean_operation_changed
+        )
+        self.planar_boolean_panel.finishRequested.connect(
+            self.finish_planar_boolean
+        )
+        self.planar_boolean_panel.cancelRequested.connect(
+            self.cancel_planar_boolean
         )
 
     def _build_status_bar(self) -> None:
@@ -3043,7 +3090,10 @@ class FEMMainWindow(QMainWindow):
             ),
             wire_editor_active=self._wire_editor_controller is not None,
             sketch_editor_active=self._sketch_editor_controller is not None,
-            boolean_editor_active=self._body_boolean_controller is not None,
+            boolean_editor_active=(
+                self._body_boolean_controller is not None
+                or self._planar_boolean_controller is not None
+            ),
         )
         for availability in derive_action_availability(
             self.document,
@@ -3087,7 +3137,7 @@ class FEMMainWindow(QMainWindow):
             name = (
                 self.document.project_path.name
                 if self.document.project_path is not None
-                else recipe_name or "Model-1"
+                else recipe_name or "模型-1"
             )
             source_label = "自主"
         dirty_marker = " *" if self.document.dirty else ""
@@ -3139,6 +3189,7 @@ class FEMMainWindow(QMainWindow):
         if (
             self._wire_editor_controller is not None
             or self._sketch_editor_controller is not None
+            or self._planar_boolean_controller is not None
         ):
             return
         controller = (
@@ -3154,7 +3205,7 @@ class FEMMainWindow(QMainWindow):
             base_snapshot=controller.snapshot(),
         )
         self.wire_editor_panel.begin(self.viewport)
-        self.main_splitter.setSizes([260, 760, 360, 0, 0])
+        self.main_splitter.setSizes([260, 760, 360, 0, 0, 0])
         self._wire_editor_work_plane_changed(
             str(self.wire_editor_panel.work_plane_combo.currentData())
         )
@@ -3228,7 +3279,7 @@ class FEMMainWindow(QMainWindow):
         self._wire_editor_controller = None
         self._wire_editor_original_recipe = None
         self._wire_editor_base_revision = None
-        self.main_splitter.setSizes([260, 1020, 0, 0, 0])
+        self.main_splitter.setSizes([260, 1020, 0, 0, 0, 0])
         self._update_action_states()
         self._schedule_viewport_fit()
 
@@ -3301,13 +3352,35 @@ class FEMMainWindow(QMainWindow):
                 "请先新建自主模型，再创建二维草图。",
             )
             return
-        self._begin_sketch_editor(None, original_recipe=None)
+        current_part_name = (
+            self.document.parts[0].name
+            if self.document.parts
+            else "部件-1"
+        )
+        part_name, accepted = QInputDialog.getText(
+            self,
+            "新建二维草图",
+            "部件名称：",
+            text=current_part_name,
+        )
+        if not accepted:
+            return
+        part_name = part_name.strip()
+        if not part_name:
+            self._show_error("新建二维草图", "部件名称不能为空。")
+            return
+        self._begin_sketch_editor(
+            None,
+            original_recipe=None,
+            part_name=part_name,
+        )
 
     def _begin_sketch_editor(
         self,
         root: SketchGeometry | None,
         *,
         original_recipe: object | None,
+        part_name: str | None = None,
     ) -> None:
         if (
             self._wire_editor_controller is not None
@@ -3322,12 +3395,13 @@ class FEMMainWindow(QMainWindow):
         self._sketch_editor_controller = controller
         self._sketch_editor_original_recipe = original_recipe
         self._sketch_editor_base_revision = self.document.session_revision
+        self._sketch_editor_part_name = part_name
         self.sketch_editor_panel.set_controller(
             controller,
             base_snapshot=controller.snapshot(),
         )
         self.sketch_editor_panel.begin(self.viewport)
-        self.main_splitter.setSizes([260, 720, 0, 400, 0])
+        self.main_splitter.setSizes([260, 720, 0, 400, 0, 0])
         self.ribbon.set_current("几何")
         self.viewport.set_view("top")
         self.status_panel.set_state(
@@ -3358,6 +3432,29 @@ class FEMMainWindow(QMainWindow):
         except SketchDraftValidationError as error:
             self.sketch_editor_panel.show_status(str(error))
             return
+        if self._sketch_editor_is_planar_boolean_tool:
+            planar = self._planar_boolean_controller
+            if (
+                planar is None
+                or self.document.session_revision != planar.base_session_revision
+                or base_revision != planar.base_session_revision
+            ):
+                self.sketch_editor_panel.show_status(
+                    "项目已变化；工具草图未应用，请取消二维布尔后重试"
+                )
+                return
+            try:
+                planar.set_tool_recipe(root)
+            except (TypeError, ValueError) as error:
+                self.sketch_editor_panel.show_status(str(error))
+                return
+            self._exit_sketch_editor(return_to_planar_boolean=True)
+            self.planar_boolean_panel.refresh()
+            self.planar_boolean_panel.show_status(
+                f"工具草图已更新：{len(planar.tool_face_ids)} 个 Profiles"
+            )
+            self._refresh_planar_boolean_preview()
+            return
         if (
             self.document.geometry_recipe is not None
             and not self._confirm_sketch_replacement()
@@ -3379,10 +3476,16 @@ class FEMMainWindow(QMainWindow):
                 "或取消编辑后重新创建拉伸"
             )
             return
+        parts = tuple(self.document.parts) or (NativePart(),)
+        if self._sketch_editor_part_name is not None:
+            parts = (
+                replace(parts[0], name=self._sketch_editor_part_name),
+                *parts[1:],
+            )
         receipt = self.apply_native_geometry_edit(
             NativeGeometryEdit(
                 base_session_revision=base_revision,
-                parts=tuple(self.document.parts) or (NativePart(),),
+                parts=parts,
                 recipe=recipe,
                 mesh_settings=UNSET,
             )
@@ -3405,16 +3508,33 @@ class FEMMainWindow(QMainWindow):
             return
         if controller.dirty and not self._confirm_sketch_editor_discard():
             return
-        self._exit_sketch_editor()
-        self._rebuild_full_projection()
-        self.status_panel.set_state("已取消二维草图编辑", 4000)
+        tool_mode = self._sketch_editor_is_planar_boolean_tool
+        self._exit_sketch_editor(return_to_planar_boolean=tool_mode)
+        if tool_mode:
+            self.planar_boolean_panel.show_status(
+                "已取消工具草图；二维布尔草稿保持不变"
+            )
+            self.status_panel.set_state("已返回二维布尔面板", 4000)
+        else:
+            self._rebuild_full_projection()
+            self.status_panel.set_state("已取消二维草图编辑", 4000)
 
-    def _exit_sketch_editor(self) -> None:
+    def _exit_sketch_editor(
+        self,
+        *,
+        return_to_planar_boolean: bool = False,
+    ) -> None:
         self.sketch_editor_panel.end()
         self._sketch_editor_controller = None
         self._sketch_editor_original_recipe = None
         self._sketch_editor_base_revision = None
-        self.main_splitter.setSizes([260, 1020, 0, 0, 0])
+        self._sketch_editor_part_name = None
+        self._sketch_editor_is_planar_boolean_tool = False
+        self.main_splitter.setSizes(
+            [260, 720, 0, 0, 0, 400]
+            if return_to_planar_boolean
+            else [260, 1020, 0, 0, 0, 0]
+        )
         self._update_action_states()
         self._schedule_viewport_fit()
 
@@ -3479,14 +3599,14 @@ class FEMMainWindow(QMainWindow):
         if not self._exec_dialog(dialog):
             self._rebuild_full_projection()
             self.status_panel.set_state(
-                "已取消添加 Body；committed Bodies 保持不变",
+                "已取消添加实体；已提交的实体保持不变",
                 4000,
             )
             return
         candidate = add_solid_body(current, dialog.recipe())
         if not self._set_native_geometry(
             candidate,
-            "新增 Body",
+            "新增实体",
             base_session_revision=base_revision,
         ):
             self._rebuild_full_projection()
@@ -3526,7 +3646,7 @@ class FEMMainWindow(QMainWindow):
             return
         selected_body_id = self._selected_body_id(current)
         if isinstance(current, MultiBodyGeometry) and selected_body_id is None:
-            self.status_panel.set_state("请先选择一个 Body", 5000)
+            self.status_panel.set_state("请先选择一个实体", 5000)
             return
         source = (
             current.body(selected_body_id).recipe
@@ -3561,7 +3681,7 @@ class FEMMainWindow(QMainWindow):
             return
         selected_body_id = self._selected_body_id(current)
         if isinstance(current, MultiBodyGeometry) and selected_body_id is None:
-            self.status_panel.set_state("请先选择一个 Body", 5000)
+            self.status_panel.set_state("请先选择一个实体", 5000)
             return
         source = (
             current.body(selected_body_id).recipe
@@ -3662,27 +3782,8 @@ class FEMMainWindow(QMainWindow):
         if isinstance(current, MultiBodyGeometry):
             self._begin_body_boolean(operation)
             return
-        if isinstance(current, SketchGeometry):
-            if current.is_strict:
-                self._begin_sketch_editor(
-                    current,
-                    original_recipe=current,
-                )
-                action = "孔轮廓" if operation == "cut" else "材料轮廓"
-                self.status_panel.set_state(
-                    f"请绘制新的闭合{action}；轮廓嵌套关系将在完成草图时解析",
-                    0,
-                )
-                return
-            dialog = SketchGeometryDialog(
-                current,
-                self,
-                new_contour_operation=(
-                    "cut" if operation == "cut" else "material"
-                ),
-            )
-            if self._exec_dialog(dialog):
-                self._set_native_geometry(dialog.recipe(), label)
+        if geometry_dimension(current) == 2:
+            self._begin_planar_boolean(operation)
             return
         dialog = BooleanGeometryDialog(
             current,
@@ -3693,14 +3794,377 @@ class FEMMainWindow(QMainWindow):
         if self._exec_dialog(dialog):
             self._set_native_geometry(dialog.recipe(), label)
 
-    def _begin_body_boolean(self, operation: str) -> None:
+    def _begin_planar_boolean(self, operation: str) -> None:
         current = self.document.geometry_recipe
-        if not isinstance(current, MultiBodyGeometry) or len(current.bodies) < 2:
-            self.status_panel.set_state("实体布尔需要至少两个 Body", 5000)
+        if (
+            not isinstance(current, NATIVE_GEOMETRY_TYPES)
+            or geometry_dimension(current) != 2
+        ):
             return
         if (
             self._wire_editor_controller is not None
             or self._sketch_editor_controller is not None
+            or self._body_boolean_controller is not None
+        ):
+            self.status_panel.set_state(
+                "请先完成或取消当前几何编辑",
+                5000,
+            )
+            return
+        if self._planar_boolean_controller is not None:
+            self.cancel_planar_boolean()
+        selected = self._canonical_geometry_selection()
+        initial_target = (
+            selected[0].logical_id
+            if len(selected) == 1 and selected[0].kind == "face"
+            else None
+        )
+        try:
+            controller = PlanarBooleanController(
+                current,
+                self.document.session_revision,
+                operation,
+                target_face_id=initial_target,
+            )
+        except (TypeError, ValueError) as error:
+            self.status_panel.set_state(str(error), 5000)
+            return
+        self._planar_boolean_controller = controller
+        self._planar_boolean_preview_result = None
+        self._planar_boolean_preview_generation += 1
+        self._planar_boolean_original_selection = set(
+            self._selected_geometry_refs
+        )
+        self.planar_boolean_panel.begin(controller)
+        self._set_geometry_selection_mode("face")
+        self.main_splitter.setSizes([260, 720, 0, 0, 0, 400])
+        self.status_panel.set_state(
+            (
+                "二维布尔已打开；请绘制工具轮廓"
+                if initial_target is not None
+                else "二维布尔已打开；请选择目标 material Face"
+            ),
+            0,
+        )
+        self._update_action_states()
+
+    def _request_planar_boolean_target(self) -> None:
+        controller = self._planar_boolean_controller
+        if controller is None:
+            return
+        controller.request_target_selection()
+        self._planar_boolean_preview_result = None
+        self._planar_boolean_preview_generation += 1
+        self.planar_boolean_panel.set_preview_valid(False)
+        self._set_geometry_selection_mode("face")
+        self.planar_boolean_panel.show_status(
+            "请在视口中选择一个 material Face"
+        )
+
+    def _assign_planar_boolean_reference(
+        self,
+        reference: LogicalEntityRef,
+    ) -> bool:
+        controller = self._planar_boolean_controller
+        if controller is None or not controller.selecting_target:
+            return False
+        try:
+            controller.assign_reference(reference)
+        except (KeyError, TypeError, ValueError) as error:
+            self.planar_boolean_panel.show_status(str(error))
+            return True
+        self._planar_boolean_preview_result = None
+        self._planar_boolean_preview_generation += 1
+        self.planar_boolean_panel.set_preview_valid(False)
+        self.planar_boolean_panel.refresh()
+        self.planar_boolean_panel.show_status("目标面已设置")
+        if controller.ready:
+            self._refresh_planar_boolean_preview()
+        return True
+
+    def _edit_planar_boolean_tool(self) -> None:
+        controller = self._planar_boolean_controller
+        if controller is None:
+            return
+        if self.document.session_revision != controller.base_session_revision:
+            self.planar_boolean_panel.show_status(
+                "项目已变化；请取消后重新打开二维布尔"
+            )
+            return
+        root = controller.tool_geometry
+        draft = (
+            SketchDraftController(root=root)
+            if root is not None
+            else SketchDraftController(name="Boolean 工具草图")
+        )
+        self._sketch_editor_controller = draft
+        self._sketch_editor_original_recipe = None
+        self._sketch_editor_base_revision = controller.base_session_revision
+        self._sketch_editor_part_name = None
+        self._sketch_editor_is_planar_boolean_tool = True
+        self.sketch_editor_panel.set_controller(
+            draft,
+            base_snapshot=draft.snapshot(),
+        )
+        self.sketch_editor_panel.begin(
+            self.viewport,
+            purpose="planar_boolean_tool",
+        )
+        self.main_splitter.setSizes([260, 720, 0, 400, 0, 0])
+        self.viewport.set_view("top")
+        cached = self._geometry_preview_cache
+        source_preview = (
+            cached[2]
+            if cached is not None and cached[1] == controller.geometry
+            else build_geometry_preview(controller.geometry)
+        )
+        target_faces = tuple(
+            face
+            for face, logical_id in zip(
+                source_preview.faces,
+                source_preview.face_logical_ids,
+                strict=True,
+            )
+            if logical_id == controller.target_face_id
+        )
+        if not target_faces:
+            target_faces = source_preview.faces
+        if target_faces:
+            self.viewport.show_sketch_reference_preview(
+                GeometryPreview(
+                    source_preview.points,
+                    target_faces,
+                    (),
+                    (controller.target_face_id,) * len(target_faces),
+                    (),
+                    (),
+                    topological_dimension=2,
+                )
+            )
+        self.status_panel.set_state(
+            "请在只读目标的 XY 平面上绘制闭合工具 Profiles",
+            0,
+        )
+        self._update_action_states()
+
+    def _planar_boolean_operation_changed(self, operation: str) -> None:
+        controller = self._planar_boolean_controller
+        if controller is None:
+            return
+        controller.set_operation(operation)
+        self._planar_boolean_preview_result = None
+        self._planar_boolean_preview_generation += 1
+        self.planar_boolean_panel.set_preview_valid(False)
+        if controller.ready:
+            self._refresh_planar_boolean_preview()
+
+    def _refresh_planar_boolean_preview(self) -> None:
+        controller = self._planar_boolean_controller
+        if controller is None or not controller.ready:
+            return
+        if self.document.session_revision != controller.base_session_revision:
+            self.planar_boolean_panel.show_status(
+                "项目已变化；请取消后重新打开二维布尔"
+            )
+            return
+        if self.busy:
+            self.planar_boolean_panel.show_status(
+                "当前有后台任务正在运行，请稍后重试"
+            )
+            return
+        self._planar_boolean_preview_generation += 1
+        generation = self._planar_boolean_preview_generation
+        base_revision = controller.base_session_revision
+        operation = controller.operation
+        target_face_id = controller.target_face_id
+        tool_geometry = controller.tool_geometry
+        tool_face_ids = controller.tool_face_ids
+        source_geometry = controller.geometry
+        self._planar_boolean_preview_result = None
+        self.planar_boolean_panel.set_preview_valid(False)
+        self.planar_boolean_panel.set_preview_running(True)
+        self.planar_boolean_panel.show_status(
+            "正在执行临时 OCC 平面 Boolean 与 lineage proof…"
+        )
+
+        def workload(context: TaskContext) -> StrictPlanarBooleanResult:
+            context.report("正在执行平面 Boolean 与 exact topology proof…")
+            context.checkpoint()
+            with geometry_runtime.model(
+                f"{getattr(source_geometry, 'name', 'planar')}"
+                f"-{operation}-preview",
+                dimension=2,
+            ) as cad:
+                result = prepare_planar_boolean(
+                    cad,
+                    source_geometry,
+                    target_face_id,
+                    tool_geometry,
+                    tool_face_ids,
+                    operation,
+                )
+            context.checkpoint()
+            return result
+
+        def apply_result(payload: object) -> TaskApplyOutcome:
+            current = self._planar_boolean_controller
+            if (
+                type(payload) is not StrictPlanarBooleanResult
+                or current is not controller
+                or generation != self._planar_boolean_preview_generation
+                or self.document.session_revision != base_revision
+                or current.operation != operation
+                or current.target_face_id != target_face_id
+                or current.tool_geometry != tool_geometry
+                or current.tool_face_ids != tool_face_ids
+            ):
+                if current is controller:
+                    self.planar_boolean_panel.set_preview_running(False)
+                    self.planar_boolean_panel.set_preview_valid(False)
+                return TaskApplyOutcome.stale(
+                    "二维布尔 Preview 已过期，未应用"
+                )
+            return TaskApplyOutcome.accepted(payload)
+
+        def on_success(payload: object) -> None:
+            if type(payload) is not StrictPlanarBooleanResult:
+                raise TypeError(
+                    "strict planar Boolean task returned invalid data"
+                )
+            preview = build_strict_planar_boolean_preview(
+                payload.geometry,
+                payload.preview,
+            )
+            self._planar_boolean_preview_result = payload
+            self.viewport.show_geometry_preview(preview)
+            self.planar_boolean_panel.set_preview_running(False)
+            self.planar_boolean_panel.set_preview_valid(True)
+            self.planar_boolean_panel.show_status(
+                "Exact Preview 与 lineage proof 已通过，可以完成"
+            )
+
+        def on_failure(message: str) -> None:
+            if (
+                self._planar_boolean_controller is controller
+                and generation == self._planar_boolean_preview_generation
+            ):
+                self.planar_boolean_panel.set_preview_running(False)
+                self.planar_boolean_panel.set_preview_valid(False)
+                self.planar_boolean_panel.show_status(
+                    "OCC 平面 Boolean 或 lineage proof 失败；"
+                    f"committed geometry 未变化：\n{message}"
+                )
+                self._planar_boolean_preview_result = None
+
+        started = self._start_task(
+            workload,
+            on_success,
+            "二维布尔 Preview",
+            on_failure,
+            task_name="二维布尔 Preview",
+            on_cancelled=lambda: (
+                self.planar_boolean_panel.set_preview_running(False)
+                if self._planar_boolean_controller is controller
+                else None
+            ),
+            apply_result=apply_result,
+        )
+        if not started:
+            self.planar_boolean_panel.set_preview_running(False)
+
+    def finish_planar_boolean(self) -> None:
+        controller = self._planar_boolean_controller
+        result = self._planar_boolean_preview_result
+        if controller is None or not controller.ready:
+            return
+        if result is None:
+            self._refresh_planar_boolean_preview()
+            return
+        preview = build_strict_planar_boolean_preview(
+            result.geometry,
+            result.preview,
+        )
+        self._geometry_preview_cache = (
+            self.document.session_id,
+            result.geometry,
+            preview,
+        )
+        if not self._set_native_geometry(
+            result.geometry,
+            "二维布尔后的",
+            base_session_revision=controller.base_session_revision,
+        ):
+            self._geometry_preview_cache = None
+            self.planar_boolean_panel.show_status(
+                "提交失败；committed geometry 保持不变"
+            )
+            return
+        face_references = {
+            LogicalEntityRef(entity.logical_id)
+            for entity in result.proof.result_entities
+            if entity.kind == "face"
+        }
+        self._exit_planar_boolean()
+        self.viewport.show_geometry_preview(preview)
+        self._selected_geometry_refs = face_references
+        if face_references:
+            self.viewport.highlight_geometry_entities(
+                tuple(
+                    sorted(
+                        face_references,
+                        key=logical_ref_sort_key,
+                    )
+                )
+            )
+        self._update_action_states()
+
+    def cancel_planar_boolean(self) -> None:
+        if self._planar_boolean_controller is None:
+            return
+        original_selection = set(self._planar_boolean_original_selection)
+        self._planar_boolean_preview_generation += 1
+        self._exit_planar_boolean()
+
+        def restore_projection_and_selection() -> None:
+            self._rebuild_full_projection()
+            self._selected_geometry_refs = original_selection
+            if original_selection:
+                self.viewport.highlight_geometry_entities(
+                    tuple(
+                        sorted(
+                            original_selection,
+                            key=logical_ref_sort_key,
+                        )
+                    )
+                )
+            self.status_panel.set_state(
+                "已取消二维布尔；committed geometry 和选择保持不变",
+                4000,
+            )
+
+        if self.task_controller.current_task_name == "二维布尔 Preview":
+            if self.cancel_current_task(
+                after_cleanup=restore_projection_and_selection,
+            ):
+                return
+        restore_projection_and_selection()
+
+    def _exit_planar_boolean(self) -> None:
+        self.planar_boolean_panel.end()
+        self._planar_boolean_controller = None
+        self._planar_boolean_preview_result = None
+        self._planar_boolean_original_selection = set()
+        self.main_splitter.setSizes([260, 1020, 0, 0, 0, 0])
+
+    def _begin_body_boolean(self, operation: str) -> None:
+        current = self.document.geometry_recipe
+        if not isinstance(current, MultiBodyGeometry) or len(current.bodies) < 2:
+            self.status_panel.set_state("实体布尔需要至少两个实体", 5000)
+            return
+        if (
+            self._wire_editor_controller is not None
+            or self._sketch_editor_controller is not None
+            or self._planar_boolean_controller is not None
         ):
             self.status_panel.set_state("请先完成或取消当前几何编辑", 5000)
             return
@@ -3716,7 +4180,7 @@ class FEMMainWindow(QMainWindow):
         self._body_boolean_preview_generation += 1
         self.boolean_feature_panel.begin(controller)
         self._set_geometry_selection_mode("body")
-        self.main_splitter.setSizes([260, 720, 0, 0, 400])
+        self.main_splitter.setSizes([260, 720, 0, 0, 400, 0])
         self.status_panel.set_state(
             "实体布尔已打开；请在面板中分别选择目标体和工具体",
             0,
@@ -3739,7 +4203,7 @@ class FEMMainWindow(QMainWindow):
         self._set_geometry_selection_mode("body")
         role = "目标体" if slot == "target" else "工具体"
         self.boolean_feature_panel.show_status(
-            f"请在 viewport 或 model tree 中选择{role}"
+            f"请在视口或模型树中选择{role}"
         )
         self.status_panel.set_state(f"正在选择 Boolean {role}", 0)
 
@@ -3953,14 +4417,22 @@ class FEMMainWindow(QMainWindow):
         self.boolean_feature_panel.end()
         self._body_boolean_controller = None
         self._body_boolean_preview_result = None
-        self.main_splitter.setSizes([260, 1020, 0, 0, 0])
+        self.main_splitter.setSizes([260, 1020, 0, 0, 0, 0])
 
     @classmethod
     def _recipe_contains_strict_boolean(cls, recipe: object) -> bool:
+        if isinstance(recipe, MultiBodyGeometry):
+            return any(
+                cls._recipe_contains_strict_boolean(body.recipe)
+                for body in recipe.bodies
+            )
         if isinstance(recipe, BooleanGeometry):
             return (
                 recipe.body_context is not None
                 and recipe.body_context.proven
+            ) or (
+                recipe.planar_context is not None
+                and recipe.planar_context.proven
             ) or cls._recipe_contains_strict_boolean(
                 recipe.object_geometry
             ) or cls._recipe_contains_strict_boolean(recipe.tool_geometry)
@@ -3971,7 +4443,7 @@ class FEMMainWindow(QMainWindow):
     def _schedule_exact_boolean_preview(
         self,
         snapshot: object,
-        recipe: MultiBodyGeometry,
+        recipe: object,
     ) -> None:
         key = (
             str(getattr(snapshot, "session_id")),
@@ -3989,6 +4461,13 @@ class FEMMainWindow(QMainWindow):
             ):
                 if self._pending_exact_boolean_preview_key == key:
                     self._pending_exact_boolean_preview_key = None
+                return
+
+            if not isinstance(recipe, MultiBodyGeometry):
+                self._launch_exact_planar_boolean_preview(
+                    key,
+                    recipe,
+                )
                 return
 
             strict_bodies = tuple(
@@ -4086,6 +4565,75 @@ class FEMMainWindow(QMainWindow):
 
         QTimer.singleShot(0, launch)
 
+    def _launch_exact_planar_boolean_preview(
+        self,
+        key: tuple[str, int],
+        recipe: object,
+    ) -> None:
+        def workload(context: TaskContext) -> StrictPlanarBooleanPreview:
+            context.report("正在重建二维 Boolean OCC Preview…")
+            with geometry_runtime.model(
+                f"{getattr(recipe, 'name', 'planar')}-persisted-preview",
+                dimension=2,
+            ) as cad:
+                preview = prepare_strict_planar_recipe_preview(cad, recipe)
+            context.checkpoint()
+            return preview
+
+        def apply_result(payload: object) -> TaskApplyOutcome:
+            if (
+                self.document.session_id != key[0]
+                or self.document.project_revision != key[1]
+                or self.document.geometry_recipe != recipe
+                or type(payload) is not StrictPlanarBooleanPreview
+            ):
+                if self._pending_exact_boolean_preview_key == key:
+                    self._pending_exact_boolean_preview_key = None
+                return TaskApplyOutcome.stale(
+                    "二维 Boolean OCC Preview 重建结果已过期"
+                )
+            preview = build_strict_planar_boolean_preview(recipe, payload)
+            return TaskApplyOutcome.accepted(preview)
+
+        def on_success(payload: object) -> None:
+            if type(payload) is not GeometryPreview:
+                raise TypeError(
+                    "persisted planar Boolean preview returned invalid data"
+                )
+            self._pending_exact_boolean_preview_key = None
+            self._geometry_preview_cache = (key[0], recipe, payload)
+            if (
+                self.document.session_id == key[0]
+                and self.document.geometry_recipe == recipe
+                and self.document.artifact is None
+            ):
+                self.viewport.show_geometry_preview(payload)
+                self.status_panel.set_state(
+                    "二维 Boolean OCC Preview 已重建，可选择生成拓扑",
+                    4000,
+                )
+
+        def cleanup_failure(message: str | None = None) -> None:
+            if self._pending_exact_boolean_preview_key == key:
+                self._pending_exact_boolean_preview_key = None
+            if message:
+                self.status_panel.set_state(
+                    f"二维 Boolean OCC Preview 重建失败：{message}",
+                    6000,
+                )
+
+        started = self._start_task(
+            workload,
+            on_success,
+            "二维 Boolean OCC Preview",
+            cleanup_failure,
+            task_name="二维 Boolean OCC Preview 重建",
+            on_cancelled=cleanup_failure,
+            apply_result=apply_result,
+        )
+        if not started:
+            cleanup_failure()
+
     @staticmethod
     def _root_geometry(recipe: object) -> object:
         current = recipe
@@ -4132,14 +4680,14 @@ class FEMMainWindow(QMainWindow):
             body_id = self._selected_body_id(current)
             if body_id is None:
                 self.status_panel.set_state(
-                    "请在 model tree 或 viewport 中选择一个 Body",
+                    "请在模型树或视口中选择一个实体",
                     5000,
                 )
                 return
             body = current.body(body_id)
             name, accepted = QInputDialog.getText(
                 self,
-                "Body Manager",
+                "实体管理",
                 f"重命名 {body.name} [{body.id}]：",
                 text=body.name,
             )
@@ -4147,7 +4695,7 @@ class FEMMainWindow(QMainWindow):
                 try:
                     updated = rename_solid_body(current, body.id, name)
                 except (TypeError, ValueError) as error:
-                    self._show_error("Body Manager", str(error))
+                    self._show_error("实体管理", str(error))
                     return
                 self._set_native_geometry(updated, "重命名后的")
             return
@@ -4160,7 +4708,7 @@ class FEMMainWindow(QMainWindow):
             self,
             can_edit_base=isinstance(root, (SketchGeometry, WireGeometry)),
             base_label=(
-                "Edit base geometry"
+                "编辑基础几何"
                 if isinstance(root, WireGeometry)
                 else "编辑基础草图"
             ),
@@ -4187,7 +4735,7 @@ class FEMMainWindow(QMainWindow):
         if isinstance(current, MultiBodyGeometry):
             body_id = self._selected_body_id(current)
             if body_id is None:
-                self.status_panel.set_state("请先选择一个 Body", 5000)
+                self.status_panel.set_state("请先选择一个实体", 5000)
                 return
             try:
                 updated = undo_solid_body_feature(current, body_id)
@@ -4207,7 +4755,7 @@ class FEMMainWindow(QMainWindow):
         if isinstance(current, MultiBodyGeometry):
             body_id = self._selected_body_id(current)
             if body_id is None:
-                self.status_panel.set_state("请先选择要删除的 Body", 5000)
+                self.status_panel.set_state("请先选择要删除的实体", 5000)
                 return
             body = current.body(body_id)
             prefix = f"{body_id}/"
@@ -4243,11 +4791,11 @@ class FEMMainWindow(QMainWindow):
                 f"\n将移除 {len(impacted_regions)} 个命名区域、"
                 f"{len(impacted_controls)} 个局部网格控制。"
                 if impacted_regions or impacted_controls
-                else "\n当前没有直接引用此 Body 的命名区域或局部网格控制。"
+                else "\n当前没有直接引用此实体的命名区域或局部网格控制。"
             )
             answer = QMessageBox.question(
                 self,
-                "删除 Body",
+                "删除实体",
                 f"确认删除 {body.name} [{body.id}]？{impact}",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
@@ -4256,7 +4804,7 @@ class FEMMainWindow(QMainWindow):
                 return
             updated = delete_solid_body(current, body_id)
             if updated is not None:
-                self._set_native_geometry(updated, "删除 Body 后的")
+                self._set_native_geometry(updated, "删除实体后的")
                 return
         receipt = self.apply_native_geometry_edit(
             NativeGeometryEdit(
@@ -4291,7 +4839,7 @@ class FEMMainWindow(QMainWindow):
                 first_body_name=(
                     self.document.parts[0].body_name
                     if self.document.parts
-                    else "Body-1"
+                    else "实体-1"
                 ),
                 retired_body_ids=self.session.retired_body_ids,
                 retired_boolean_feature_ids=(
@@ -5135,16 +5683,45 @@ class FEMMainWindow(QMainWindow):
     def new_native_model(self) -> None:
         if self.busy:
             return
+        model_name, accepted = QInputDialog.getText(
+            self,
+            "新建模型",
+            "模型名称：",
+            text="模型-1",
+        )
+        if not accepted:
+            return
+        model_name = model_name.strip()
+        if not model_name:
+            self._show_error("新建模型", "模型名称不能为空。")
+            return
         if not self._confirm_discard_changes():
             return
-        receipt = self.new_native_project(NewNativeProjectCommand())
+        self._create_native_model(model_name)
+
+    def _create_native_model(self, model_name: str) -> None:
+        """Create a native project after its model name has been collected."""
+
+        if self.busy:
+            return
+        receipt = self.new_native_project(
+            NewNativeProjectCommand(model_name)
+        )
         if receipt.diagnostic is not None:
             self._show_command_rejection("新建自主项目", receipt)
             return
-        self.model_tree.set_geometry_preview("Model-1", (), part_name="Part-1")
+        self.model_tree.set_geometry_preview(
+            str(self.document.model_name or "模型-1"),
+            (),
+            part_name=(
+                self.document.parts[0].name
+                if self.document.parts
+                else "部件-1"
+            ),
+        )
         self.viewport_panel.set_geometry_context(True)
         self.status_panel.set_state(
-            "Native model created. Create a sketch, solid, or wire in Geometry.",
+            "自主模型已创建，请在“几何”中创建草图、实体或线体。",
             5000,
         )
         self.ribbon.set_current("几何")
@@ -5184,7 +5761,7 @@ class FEMMainWindow(QMainWindow):
         path = self.document.project_path
         if path is None:
             filename, _filter = QFileDialog.getSaveFileName(
-                self, "保存自主项目", "Model-1.femproj", "FEM 自主项目 (*.femproj)"
+                self, "保存自主项目", "模型-1.femproj", "FEM 自主项目 (*.femproj)"
             )
             if not filename:
                 return False
@@ -5411,6 +5988,7 @@ class FEMMainWindow(QMainWindow):
                     record.name for record in self.document.feature_history
                 ),
                 part_name=self.document.parts[0].name,
+                model_name=str(self.document.model_name or "模型-1"),
                 scope_names=frozenset(self.document.named_regions),
                 **definition_options,
             )
@@ -5524,7 +6102,14 @@ class FEMMainWindow(QMainWindow):
     def _confirm_discard_changes(self) -> bool:
         wire_editor_active = self._wire_editor_controller is not None
         sketch_editor_active = self._sketch_editor_controller is not None
-        editor_active = wire_editor_active or sketch_editor_active
+        body_boolean_active = self._body_boolean_controller is not None
+        planar_boolean_active = self._planar_boolean_controller is not None
+        editor_active = (
+            wire_editor_active
+            or sketch_editor_active
+            or body_boolean_active
+            or planar_boolean_active
+        )
         if wire_editor_active and self._wire_editor_controller.dirty:
             if not self._confirm_wire_editor_discard():
                 return False
@@ -5536,6 +6121,10 @@ class FEMMainWindow(QMainWindow):
                 self._exit_wire_editor()
             elif sketch_editor_active:
                 self._exit_sketch_editor()
+            if body_boolean_active:
+                self._exit_body_boolean()
+            if planar_boolean_active:
+                self._exit_planar_boolean()
             if editor_active:
                 self._rebuild_full_projection()
             return True
@@ -5569,6 +6158,12 @@ class FEMMainWindow(QMainWindow):
             self._rebuild_full_projection()
         elif accepted and sketch_editor_active:
             self._exit_sketch_editor()
+            self._rebuild_full_projection()
+        if accepted and body_boolean_active:
+            self._exit_body_boolean()
+            self._rebuild_full_projection()
+        if accepted and planar_boolean_active:
+            self._exit_planar_boolean()
             self._rebuild_full_projection()
         return accepted
 
@@ -6282,14 +6877,23 @@ class FEMMainWindow(QMainWindow):
         if not self._exec_dialog(dialog):
             return
         try:
-            step_name, request = dialog.definition()
+            definitions_method = getattr(dialog, "definitions", None)
+            if callable(definitions_method):
+                step_name, requests = definitions_method()
+            else:
+                step_name, request = dialog.definition()
+                requests = (request,)
         except (TypeError, ValueError) as error:
             self._show_error("创建输出请求", str(error))
             return
-        if type(request) is not OutputRequest:
+        if (
+            type(requests) is not tuple
+            or not requests
+            or any(type(request) is not OutputRequest for request in requests)
+        ):
             self._show_error(
                 "创建输出请求",
-                "输出请求候选必须生成 typed OutputRequest。",
+                "输出请求候选必须生成非空的 typed OutputRequest 元组。",
             )
             return
         definitions = list(deepcopy(self.document.steps))
@@ -6308,10 +6912,16 @@ class FEMMainWindow(QMainWindow):
                 f"分析步不存在或不可编辑：{step_name}",
             )
             return
-        target.outputs = tuple(target.outputs) + (deepcopy(request),)
+        target.outputs = tuple(target.outputs) + tuple(
+            deepcopy(request)
+            for request in requests
+        )
         self._warn_imported_output_overlay()
         self._analysis_definitions_changed(
-            "输出请求已创建，模型需要重新检查",
+            (
+                f"已创建 {len(requests)} 个输出请求，"
+                "模型需要重新检查"
+            ),
             definitions,
         )
 
@@ -6584,27 +7194,41 @@ class FEMMainWindow(QMainWindow):
 
     def delete_analysis_definition(self, kind: str, key: object) -> None:
         """Delete one supported definition selected in the model tree."""
-        if kind != "boundary":
+        collection_name = {
+            "boundary": "boundaries",
+            "cload": "cloads",
+            "edge_load": "edge_loads",
+            "surface_load": "surface_loads",
+            "line_load": "line_loads",
+            "body_load": "body_loads",
+            "gravity_load": "gravity_loads",
+        }.get(kind)
+        if collection_name is None:
             return
         if not isinstance(key, (tuple, list)) or len(key) != 2:
             return
         try:
-            step_index, boundary_index = (int(value) for value in key)
+            step_index, item_index = (int(value) for value in key)
         except (TypeError, ValueError):
             return
         definitions = list(deepcopy(self.document.steps))
         if not 0 <= step_index < len(definitions):
             return
         step = definitions[step_index]
-        boundaries = tuple(step.boundaries)
-        if not 0 <= boundary_index < len(boundaries):
+        collection = tuple(getattr(step, collection_name))
+        if not 0 <= item_index < len(collection):
             return
-        step.boundaries = (
-            boundaries[:boundary_index]
-            + boundaries[boundary_index + 1:]
+        setattr(
+            step,
+            collection_name,
+            collection[:item_index] + collection[item_index + 1:],
         )
         self._analysis_definitions_changed(
-            "边界条件已删除，模型需要重新检查",
+            (
+                "边界条件已删除，模型需要重新检查"
+                if kind == "boundary"
+                else "载荷已删除，模型需要重新检查"
+            ),
             definitions,
         )
 
@@ -7562,6 +8186,8 @@ class FEMMainWindow(QMainWindow):
             raise TypeError(
                 "geometryEntityPicked 必须携带 LogicalEntityRef"
             )
+        if self._assign_planar_boolean_reference(reference):
+            return
         if self._assign_body_boolean_reference(reference):
             return
         additive = self._geometry_pick_is_additive()
@@ -7796,6 +8422,8 @@ class FEMMainWindow(QMainWindow):
     def _highlight_tree_entry(self, kind: str, key: object) -> None:
         if kind == "geometry_body" and type(key) is str:
             reference = LogicalEntityRef(key)
+            if self._assign_planar_boolean_reference(reference):
+                return
             if self._assign_body_boolean_reference(reference):
                 return
             self._selected_geometry_refs = {reference}
@@ -7803,7 +8431,7 @@ class FEMMainWindow(QMainWindow):
             self.actions["geometry_select_body"].setChecked(True)
             self.viewport.set_selection_mode("geometry_body")
             self.viewport.highlight_geometry_entities((reference,))
-            self.status_panel.set_object(f"Body {key}")
+            self.status_panel.set_object(f"实体 {key}")
             self._update_action_states()
             return
         if self.inspection_service is None:
@@ -8908,12 +9536,20 @@ class FEMMainWindow(QMainWindow):
         self.status_panel.set_state("视口图片保存完成", 5000)
 
     def show_model_information(self) -> None:
-        if self.inspection_service is None:
+        if (
+            self.inspection_service is None
+            or self.document.source_kind == "native"
+        ):
             source = {
                 "native": "自主模型",
                 "imported": "INP 模型",
             }.get(self.document.source_kind, "未打开")
             self._show_information("模型概况", [
+                (
+                    "模型名称",
+                    self.document.model_name
+                    or getattr(self.document.model, "name", "—"),
+                ),
                 ("模型来源", source),
                 (
                     "几何状态",
@@ -8928,6 +9564,14 @@ class FEMMainWindow(QMainWindow):
                 ("材料数量", len(self.document.materials)),
                 ("截面数量", len(self.document.sections)),
                 ("分析步数量", len(self.document.steps)),
+                (
+                    "节点数量",
+                    len(getattr(getattr(self.document.model, "mesh", None), "nodes", ())),
+                ),
+                (
+                    "单元数量",
+                    len(getattr(getattr(self.document.model, "mesh", None), "elements", ())),
+                ),
                 (
                     "当前状态",
                     "未保存"
@@ -8952,10 +9596,101 @@ class FEMMainWindow(QMainWindow):
         )
 
     def _show_entry_information(self, kind: str, key: object) -> None:
-        if kind == "mesh":
+        if kind == "model":
+            self.show_model_information()
+        elif kind == "part":
+            part = self.document.parts[0] if self.document.parts else None
+            if part is None:
+                return
+            self._show_information("部件信息", [
+                ("名称", part.name),
+                ("所属模型", self.document.model_name or "模型-1"),
+                ("特征数量", len(self.document.feature_history)),
+                (
+                    "几何状态",
+                    "已创建" if self.document.has_native_geometry else "未创建",
+                ),
+            ])
+        elif kind == "feature":
+            record = next(
+                (
+                    item
+                    for item in self.document.feature_history
+                    if item.name == str(key)
+                ),
+                None,
+            )
+            rows: list[tuple[str, object]] = [("名称", str(key))]
+            if record is not None:
+                rows.append(("类型", record.kind))
+                summary = record.payload.get("summary")
+                if summary:
+                    rows.append(("摘要", summary))
+                body_name = record.payload.get("body_name")
+                if body_name:
+                    rows.append(("实体", body_name))
+            self._show_information("特征信息", rows)
+        elif kind == "geometry_body":
+            body_id = str(key).removeprefix("body:")
+            recipe = self.document.geometry_recipe
+            body = (
+                next(
+                    (
+                        item
+                        for item in recipe.bodies
+                        if item.id == body_id
+                    ),
+                    None,
+                )
+                if isinstance(recipe, MultiBodyGeometry)
+                else None
+            )
+            if body is None:
+                return
+            self._show_information("实体信息", [
+                ("名称", body.name),
+                ("标识", body.id),
+                ("特征数量", len(derive_geometry_feature_rows(body.recipe))),
+                ("几何类型", type(body.recipe).__name__),
+            ])
+        elif kind == "mesh":
             self.show_mesh_browser()
         else:
             self.show_entity_information(kind, key)
+
+    def _rename_tree_entry(self, kind: str, _key: object) -> None:
+        if self.busy or self.document.source_kind != "native":
+            return
+        if kind == "model":
+            current = str(self.document.model_name or "模型-1")
+            title = "重命名模型"
+            prompt = "模型名称："
+            rename = self.session.rename_native_model
+        elif kind == "part" and self.document.parts:
+            current = self.document.parts[0].name
+            title = "重命名部件"
+            prompt = "部件名称："
+            rename = self.session.rename_native_part
+        else:
+            return
+        name, accepted = QInputDialog.getText(
+            self,
+            title,
+            prompt,
+            text=current,
+        )
+        if not accepted:
+            return
+        try:
+            delta = rename(
+                name,
+                expected_session_revision=self.document.session_revision,
+            )
+            self._apply_session_delta(delta)
+            if self.document.artifact is not None:
+                self._refresh_model_tree(self.document.model)
+        except (RevisionConflictError, RuntimeError, TypeError, ValueError) as error:
+            self._show_error(title, str(error))
 
     def _edit_tree_entry(self, kind: str, key: object) -> None:
         if kind == "material":
@@ -8977,8 +9712,7 @@ class FEMMainWindow(QMainWindow):
             self.show_entity_information(kind, key)
 
     def _delete_tree_entry(self, kind: str, key: object) -> None:
-        if kind == "boundary":
-            self.delete_analysis_definition(kind, key)
+        self.delete_analysis_definition(kind, key)
 
     def show_entity_information(self, kind: str, key: object) -> EntityInfoDialog | None:
         if self.inspection_service is None:

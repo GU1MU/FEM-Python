@@ -150,7 +150,7 @@ def test_native_project_round_trip_returns_a_detached_snapshot(tmp_path) -> None
     reopened = loaded.snapshot
 
     assert isinstance(reopened, ProjectSnapshot)
-    assert loaded.source_schema == 5
+    assert loaded.source_schema == 6
     assert loaded.notices == ()
     assert reopened.source_kind == "native"
     assert reopened.source_path == target
@@ -290,13 +290,13 @@ def test_main_window_v1_open_then_save_upgrades_the_same_path(
     assert source.read_bytes() == original
     upgrade_notice = window.status_panel.state_label.text()
     assert "下次显式保存" in upgrade_notice
-    assert "schema 5" in upgrade_notice
-    assert "v5" in upgrade_notice
+    assert "schema 6" in upgrade_notice
+    assert "v6" in upgrade_notice
 
     assert window.save_native_project()
     _wait_for_task(window)
-    assert json.loads(source.read_text(encoding="utf-8"))["schema"] == 5
-    assert load_project(source).source_schema == 5
+    assert json.loads(source.read_text(encoding="utf-8"))["schema"] == 6
+    assert load_project(source).source_schema == 6
     assert not window.document.dirty
     window.close()
 

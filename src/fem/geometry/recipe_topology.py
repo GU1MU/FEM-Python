@@ -45,6 +45,7 @@ from .recipes import (
     NATIVE_GEOMETRY_TYPES,
     NativeGeometry,
     PlateWithHoleGeometry,
+    PlanarBooleanContext,
     RectangleGeometry,
     RotatedGeometry,
     SolidBody,
@@ -490,6 +491,32 @@ def logical_reference_transition_map(
         logical_id: {logical_id}
         for logical_id in surviving_logical_reference_ids(before, after)
     }
+    planar_forward = (
+        after
+        if isinstance(after, BooleanGeometry)
+        and after.planar_context is not None
+        and after.object_geometry == before
+        else None
+    )
+    planar_reverse = (
+        before
+        if isinstance(before, BooleanGeometry)
+        and before.planar_context is not None
+        and before.object_geometry == after
+        else None
+    )
+    if planar_forward is not None:
+        _extend_planar_boolean_reference_map(
+            rewrites,
+            planar_forward.planar_context,
+            reverse=False,
+        )
+    elif planar_reverse is not None:
+        _extend_planar_boolean_reference_map(
+            rewrites,
+            planar_reverse.planar_context,
+            reverse=True,
+        )
     if not isinstance(before, MultiBodyGeometry) or not isinstance(
         after,
         MultiBodyGeometry,
@@ -533,6 +560,47 @@ def logical_reference_transition_map(
         for source, targets in rewrites.items()
         if targets
     }
+
+
+def _extend_planar_boolean_reference_map(
+    rewrites: dict[str, set[str]],
+    context: PlanarBooleanContext,
+    *,
+    reverse: bool,
+) -> None:
+    candidates = tuple(
+        (
+            mapping.source_logical_id,
+            mapping.target_logical_id,
+        )
+        for mapping in context.topology_mappings
+        if mapping.source == "target"
+        and LogicalEntityRef(mapping.source_logical_id).kind
+        == LogicalEntityRef(mapping.target_logical_id).kind
+    )
+    if not reverse:
+        targets_by_source: dict[str, set[str]] = {}
+        for source, target in candidates:
+            targets_by_source.setdefault(source, set()).add(target)
+        for source, targets in targets_by_source.items():
+            kind = LogicalEntityRef(source).kind
+            if kind != "face" and len(targets) != 1:
+                # Face scopes expand across a proven split.  Lower-dimensional
+                # boundary scopes require one unique continuation.
+                continue
+            rewrites.setdefault(source, set()).update(targets)
+        return
+    sources_by_target: dict[str, set[str]] = {}
+    for source, target in candidates:
+        sources_by_target.setdefault(target, set()).add(source)
+    for target, sources in sources_by_target.items():
+        if len(sources) != 1:
+            continue
+        source = next(iter(sources))
+        existing = rewrites.get(target, set())
+        if existing and existing != {source}:
+            continue
+        rewrites.setdefault(target, set()).add(source)
 
 
 def _top_strict_body_boolean(recipe: object) -> BooleanGeometry | None:
@@ -1360,6 +1428,8 @@ def _extruded_topology(recipe: ExtrudedGeometry) -> RecipeTopology:
 def _boolean_topology(recipe: BooleanGeometry) -> RecipeTopology:
     if recipe.body_context is not None:
         return _strict_body_boolean_topology(recipe, recipe.body_context)
+    if recipe.planar_context is not None:
+        return _strict_planar_boolean_topology(recipe, recipe.planar_context)
     object_topology = describe_recipe_topology(recipe.object_geometry)
     tool_topology = describe_recipe_topology(recipe.tool_geometry)
     sources = (
@@ -1419,6 +1489,54 @@ def _boolean_topology(recipe: BooleanGeometry) -> RecipeTopology:
         ),
         operation=f"boolean.{recipe.operation}",
         source_signatures=sources,
+    )
+
+
+def _strict_planar_boolean_topology(
+    recipe: BooleanGeometry,
+    context: PlanarBooleanContext,
+) -> RecipeTopology:
+    target = describe_recipe_topology(recipe.object_geometry)
+    tool = describe_recipe_topology(recipe.tool_geometry)
+    sources = (("target", target.signature), ("tool", tool.signature))
+    if not context.proven:
+        return _unknown_topology(
+            recipe,
+            code="planar-boolean.lineage.unproven",
+            message=(
+                "Strict planar Boolean has not completed OCC lineage proof."
+            ),
+            operation=f"planar.boolean.{recipe.operation}",
+            source_signatures=sources,
+        )
+    entities = tuple(
+        LogicalEntity(
+            item.kind,
+            {"point": 0, "edge": 1, "face": 2, "body": 2}[item.kind],
+            item.logical_id,
+            item.semantic_role,
+            True,
+            None,
+            item.topology_links,
+        )
+        for item in context.result_entities
+    )
+    mappings = tuple(
+        TopologyMapping(
+            item.source,
+            item.source_logical_id,
+            item.target_logical_id,
+            item.relation,
+        )
+        for item in context.topology_mappings
+    )
+    return _make_topology(
+        recipe,
+        entities,
+        exact=True,
+        operation=f"planar.boolean.{recipe.operation}",
+        source_signatures=sources,
+        mappings=mappings,
     )
 
 

@@ -188,6 +188,8 @@ def test_model_page_replaces_clear_selection_with_edge_selection():
         "action_material_manager",
         "action_section_manager",
         "action_section_assign",
+        "action_geometry_region",
+        "action_geometry_regions",
     }
     geometry_page = window.ribbon.stack.widget(tab_names.index("几何"))
     mesh_page = window.ribbon.stack.widget(tab_names.index("网格"))
@@ -236,6 +238,35 @@ def test_model_page_replaces_clear_selection_with_edge_selection():
     }
     assert window.actions["geometry_region"].text() == "创建作用域"
     assert window.actions["geometry_regions"].text() == "作用域管理"
+    window.close()
+
+
+def test_scope_group_is_available_in_mesh_model_and_analysis_pages():
+    _application()
+    window = FEMMainWindow()
+    tab_names = [
+        window.ribbon.tab_bar.tabText(index)
+        for index in range(window.ribbon.tab_bar.count())
+    ]
+    expected_actions = {
+        window.actions["geometry_region"],
+        window.actions["geometry_regions"],
+    }
+
+    for page_name in ("网格", "模型", "分析"):
+        page = window.ribbon.stack.widget(tab_names.index(page_name))
+        title = next(
+            label
+            for label in page.findChildren(QLabel, "ribbonGroupTitle")
+            if label.text() == "作用域"
+        )
+        group_actions = {
+            button.defaultAction()
+            for button in title.parentWidget().findChildren(QToolButton)
+            if button.defaultAction() is not None
+        }
+        assert group_actions == expected_actions
+
     window.close()
 
 

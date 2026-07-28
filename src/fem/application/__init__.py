@@ -119,6 +119,13 @@ from .solid_boolean import (
     prepare_solid_body_boolean,
     prepare_strict_body_recipe_preview,
 )
+from .planar_boolean import (
+    StrictPlanarBooleanPreview,
+    StrictPlanarBooleanResult,
+    next_planar_boolean_feature_id,
+    prepare_planar_boolean,
+    prepare_strict_planar_recipe_preview,
+)
 from .session import (
     BooleanReferenceUndoRecord,
     ModelSession,
@@ -196,6 +203,8 @@ __all__ = [
     "StepLifecycleProjection",
     "StrictBodyBooleanResult",
     "StrictBodyBooleanPreview",
+    "StrictPlanarBooleanResult",
+    "StrictPlanarBooleanPreview",
     "TopologyResolutionError",
     "TokenStatus",
     "TransitionEffect",
@@ -225,6 +234,9 @@ __all__ = [
     "normalize_model_definitions",
     "prepare_solid_body_boolean",
     "prepare_strict_body_recipe_preview",
+    "next_planar_boolean_feature_id",
+    "prepare_planar_boolean",
+    "prepare_strict_planar_recipe_preview",
     "require_native_region_product",
     "require_complete_native_mesh_contract",
     "require_region_kind",

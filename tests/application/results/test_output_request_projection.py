@@ -135,9 +135,7 @@ def test_capability_catalog_exposes_registry_owned_profile_diagnostics() -> None
             (
                 ("node", "U", None),
                 ("node", "RF", None),
-                ("element", "S", "integration_point"),
-                ("element", "S", "centroid"),
-                ("element", "S", "element_nodal"),
+                ("element", "S", None),
             ),
         ),
         (
@@ -145,7 +143,7 @@ def test_capability_catalog_exposes_registry_owned_profile_diagnostics() -> None
             (
                 ("node", "U", None),
                 ("node", "RF", None),
-                ("element", "S", "centroid"),
+                ("element", "S", None),
             ),
         ),
         (
@@ -155,7 +153,7 @@ def test_capability_catalog_exposes_registry_owned_profile_diagnostics() -> None
                 ("node", "UR", None),
                 ("node", "RF", None),
                 ("node", "RM", None),
-                ("element", "S", "section_end"),
+                ("element", "S", None),
             ),
         ),
     ),
@@ -181,6 +179,10 @@ def test_capability_catalog_owns_only_legal_source_independent_candidates(
     assert all(candidate.executable for candidate in catalog.candidates)
     assert all(
         candidate.authoring_request.source_evidence is None
+        for candidate in catalog.candidates
+    )
+    assert all(
+        not candidate.authoring_request.metadata
         for candidate in catalog.candidates
     )
     with pytest.raises(FrozenInstanceError):

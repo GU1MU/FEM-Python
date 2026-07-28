@@ -143,6 +143,8 @@ def _persisted_strict_context(recipe: Any):
     if isinstance(recipe, BooleanGeometry):
         if recipe.body_context is not None:
             return recipe.body_context
+        if recipe.planar_context is not None:
+            return recipe.planar_context
         return (
             _persisted_strict_context(recipe.object_geometry)
             or _persisted_strict_context(recipe.tool_geometry)

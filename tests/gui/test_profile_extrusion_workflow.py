@@ -6,7 +6,7 @@ from dataclasses import replace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from fem.application import (
     ModelSession,
@@ -76,7 +76,7 @@ def test_multi_profile_action_requires_valid_face_selection() -> None:
     assert "非面" in wrong_kind.reason
 
 
-def test_dialog_lists_canonical_sources_and_builds_selected_recipe() -> None:
+def test_dialog_hides_source_descriptions_and_builds_selected_recipe() -> None:
     _application()
     sketch = two_profile_sketch()
     first = profile_face_id(sketch, "L1")
@@ -89,9 +89,10 @@ def test_dialog_lists_canonical_sources_and_builds_selected_recipe() -> None:
     dialog.height_spin.setValue(4.5)
     recipe = dialog.recipe()
 
-    assert dialog.source_profile_list.count() == 2
-    assert first in dialog.source_profile_list.item(0).text()
-    assert second in dialog.source_profile_list.item(1).text()
+    label_texts = {label.text() for label in dialog.findChildren(QLabel)}
+    assert "源 Profiles" not in label_texts
+    assert "+Z（Phase 2）" not in label_texts
+    assert "+Z" in label_texts
     assert recipe.height == 4.5
     assert recipe.source_face_ids == (first, second)
     dialog.close()

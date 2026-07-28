@@ -59,6 +59,7 @@ class SketchEditorPanel(QWidget):
         self._pending_points: list[tuple[float, float]] = []
         self._polyline_start_id: str | None = None
         self._polyline_first_id: str | None = None
+        self._authoring_purpose = "geometry"
         self._build_ui()
         if controller is not None:
             self.set_controller(controller)
@@ -299,9 +300,22 @@ class SketchEditorPanel(QWidget):
             except (RuntimeError, TypeError):
                 pass
 
-    def begin(self, viewport) -> None:
+    @property
+    def authoring_purpose(self) -> str:
+        return self._authoring_purpose
+
+    def begin(self, viewport, *, purpose: str = "geometry") -> None:
         if self._controller is None:
             raise RuntimeError("sketch editor requires a draft controller")
+        normalized = str(purpose).strip().casefold()
+        if normalized not in {"geometry", "planar_boolean_tool"}:
+            raise ValueError("unsupported sketch authoring purpose")
+        self._authoring_purpose = normalized
+        self.finish_button.setText(
+            "完成工具草图"
+            if normalized == "planar_boolean_tool"
+            else "完成草图"
+        )
         self.attach_viewport(viewport)
         self.show()
         viewport.start_sketch_authoring(
@@ -316,6 +330,8 @@ class SketchEditorPanel(QWidget):
             self._viewport.stop_sketch_authoring()
         self.hide()
         self._clear_pending()
+        self._authoring_purpose = "geometry"
+        self.finish_button.setText("完成草图")
 
     def set_mode(self, mode: str) -> None:
         normalized = str(mode).strip().casefold()

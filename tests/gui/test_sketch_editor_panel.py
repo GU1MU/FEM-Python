@@ -251,12 +251,25 @@ def test_panel_edits_circle_and_arc_parameters() -> None:
 def test_main_window_commits_strict_sketch_only_on_finish(monkeypatch) -> None:
     app = _application()
     window = FEMMainWindow()
-    window._apply_session_delta(window.session.new_native_project())
+    window._create_native_model("模型-1")
+    prompts = []
+
+    def get_text(_parent, title, prompt, **options):
+        prompts.append((title, prompt, options.get("text")))
+        return "支架部件", True
+
+    monkeypatch.setattr(
+        main_window_module.QInputDialog,
+        "getText",
+        get_text,
+    )
 
     window.start_sketch_geometry()
     controller = window._sketch_editor_controller
     assert controller is not None
+    assert prompts == [("新建二维草图", "部件名称：", "部件-1")]
     assert window.document.geometry_recipe is None
+    assert window.document.parts[0].name == "部件-1"
     assert window.sketch_editor_panel.isHidden() is False
     assert window.viewport.sketch_authoring_active
 
@@ -284,6 +297,11 @@ def test_main_window_commits_strict_sketch_only_on_finish(monkeypatch) -> None:
     recipe = window.document.geometry_recipe
     assert isinstance(recipe, SketchGeometry)
     assert recipe.is_strict
+    assert window.document.parts[0].name == "支架部件"
+    assert (
+        window.model_tree.topLevelItem(0).child(0).text(0)
+        == "支架部件"
+    )
     assert window._sketch_editor_controller is None
     assert window.sketch_editor_panel.isHidden()
     assert not window.viewport.sketch_authoring_active
@@ -298,7 +316,9 @@ def test_main_window_commits_strict_sketch_only_on_finish(monkeypatch) -> None:
     window.close()
 
 
-def test_new_sketch_defers_replacement_confirmation_until_finish() -> None:
+def test_new_sketch_defers_replacement_confirmation_until_finish(
+    monkeypatch,
+) -> None:
     _application()
     committed = SketchDraftController("committed")
     committed.add_rectangle((0.0, 0.0), (2.0, 1.0))
@@ -309,6 +329,11 @@ def test_new_sketch_defers_replacement_confirmation_until_finish() -> None:
     confirmations: list[bool] = []
     window._confirm_sketch_replacement = (
         lambda: confirmations.append(True) or False
+    )
+    monkeypatch.setattr(
+        main_window_module.QInputDialog,
+        "getText",
+        lambda *_args, **_options: ("Part-1", True),
     )
 
     window.start_sketch_geometry()
@@ -377,6 +402,11 @@ def test_unified_create_command_routes_2d_to_sketch_editor(
         "GeometryCreationDialog",
         _CreationDialog,
     )
+    monkeypatch.setattr(
+        main_window_module.QInputDialog,
+        "getText",
+        lambda *_args, **_options: ("Part-1", True),
+    )
     window = FEMMainWindow()
     window._apply_session_delta(window.session.new_native_project())
 
@@ -385,6 +415,28 @@ def test_unified_create_command_routes_2d_to_sketch_editor(
     assert window._sketch_editor_controller is not None
     assert window._wire_editor_controller is None
     window._exit_sketch_editor()
+    window.close_model(confirm=False)
+    window.close()
+
+
+def test_new_sketch_name_dialog_cancel_keeps_part_and_editor_unchanged(
+    monkeypatch,
+) -> None:
+    _application()
+    window = FEMMainWindow()
+    window._create_native_model("模型-1")
+    revision = window.document.session_revision
+    monkeypatch.setattr(
+        main_window_module.QInputDialog,
+        "getText",
+        lambda *_args, **_options: ("忽略", False),
+    )
+
+    window.start_sketch_geometry()
+
+    assert window._sketch_editor_controller is None
+    assert window.document.session_revision == revision
+    assert window.document.parts[0].name == "部件-1"
     window.close_model(confirm=False)
     window.close()
 
@@ -437,7 +489,7 @@ def test_unified_create_command_opens_separate_3d_solid_chooser(
     window.close()
 
 
-def test_strict_sketch_cut_reopens_interactive_profile_editor() -> None:
+def test_strict_sketch_cut_enters_detached_planar_boolean_workflow() -> None:
     _application()
     draft = SketchDraftController("cut-sketch")
     draft.add_rectangle((0.0, 0.0), (4.0, 2.0))
@@ -448,9 +500,12 @@ def test_strict_sketch_cut_reopens_interactive_profile_editor() -> None:
 
     window.cut_geometry()
 
-    assert window._sketch_editor_controller is not None
-    assert window._sketch_editor_original_recipe == recipe
-    assert "孔轮廓" in window.status_panel.state_label.text()
-    window._exit_sketch_editor()
+    assert window._sketch_editor_controller is None
+    assert window._planar_boolean_controller is not None
+    assert window._planar_boolean_controller.geometry == recipe
+    assert window.document.geometry_recipe == recipe
+    assert not window.planar_boolean_panel.isHidden()
+    window.cancel_planar_boolean()
+    assert window.document.geometry_recipe == recipe
     window.close_model(confirm=False)
     window.close()

@@ -487,30 +487,18 @@ def _project_source_independent_candidates(
 
     candidates: list[OutputRequestProjection] = []
     for variable in _VARIABLE_ORDER:
-        positions: tuple[FieldPosition | None, ...] = (
-            tuple(FieldPosition)
-            if variable is ResultVariable.S
-            else (None,)
+        request = OutputRequest(
+            "field",
+            _PRIMARY_TARGETS[variable],
+            (variable.value,),
         )
-        for position in positions:
-            metadata = (
-                {}
-                if position is None
-                else {"position": position.value}
-            )
-            request = OutputRequest(
-                "field",
-                _PRIMARY_TARGETS[variable],
-                (variable.value,),
-                metadata,
-            )
-            projection = project_output_request(
-                request,
-                capabilities,
-                request_index=len(candidates),
-            )
-            if projection.executable:
-                candidates.append(projection)
+        projection = project_output_request(
+            request,
+            capabilities,
+            request_index=len(candidates),
+        )
+        if projection.executable:
+            candidates.append(projection)
     return tuple(candidates)
 
 

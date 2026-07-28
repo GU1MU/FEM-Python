@@ -97,7 +97,7 @@ def test_native_rectangle_mesh_joins_the_existing_model_workflow() -> None:
     assert not window.actions["reload"].isEnabled()
     assert window.document.model is not None
     assert window.geometry is not None
-    assert window.document.model.name == recipe.name
+    assert window.document.model.name == window.document.model_name
     assert {element.type for element in window.document.model.mesh.elements} == {"Tri3"}
     assert not window.document.model.node_sets
     assert not window.document.model.element_sets
@@ -842,7 +842,10 @@ def test_selecting_a_solid_geometry_prepares_tetrahedral_settings_and_preview() 
     assert window.document.mesh_settings.cell_shape == "tetrahedron"
     assert window.viewport._geometry_preview is not None
     assert window.model_tree.topLevelItemCount() == 1
-    assert window.model_tree.topLevelItem(0).text(0) == geometry.name
+    assert (
+        window.model_tree.topLevelItem(0).text(0)
+        == window.document.model_name
+    )
     assert "未打开模型" not in window.model_tree.topLevelItem(0).text(0)
     assert window.actions["mesh_generate"].isEnabled()
     window.close()

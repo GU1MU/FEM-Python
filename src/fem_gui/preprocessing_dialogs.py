@@ -45,7 +45,6 @@ from fem.geometry import (
     SketchCircle,
     SketchGeometry,
     SketchRectangle,
-    analyze_sketch_profiles,
     resolve_extrusion_source_faces,
 )
 from fem.mesh import settings as mesh_settings_api
@@ -262,7 +261,7 @@ class SketchGeometryDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("新建草图" if recipe is None else "编辑草图")
         current = recipe or SketchGeometry(
-            "Sketch-1",
+            "草图-1",
             (SketchRectangle("material", 0.0, 0.0, 100.0, 50.0),),
         )
         self.name_edit = QLineEdit(current.name, self)
@@ -461,7 +460,7 @@ class BoxGeometryDialog(QDialog):
     def __init__(self, recipe: BoxGeometry | None = None, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("创建长方体几何")
-        current = recipe or BoxGeometry("Box-1", 100.0, 50.0, 20.0)
+        current = recipe or BoxGeometry("长方体-1", 100.0, 50.0, 20.0)
         self.name_edit = QLineEdit(current.name, self)
         self.width_spin = _positive_spin_box(self, current.width)
         self.depth_spin = _positive_spin_box(self, current.depth)
@@ -503,7 +502,7 @@ class CylinderGeometryDialog(QDialog):
     def __init__(self, recipe: CylinderGeometry | None = None, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("创建圆柱几何")
-        current = recipe or CylinderGeometry("Cylinder-1", 25.0, 50.0)
+        current = recipe or CylinderGeometry("圆柱-1", 25.0, 50.0)
         self.name_edit = QLineEdit(current.name, self)
         self.radius_spin = _positive_spin_box(self, current.radius)
         self.height_spin = _positive_spin_box(self, current.height)
@@ -541,12 +540,12 @@ class AddBodyGeometryDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("addBodyGeometryDialog")
-        self.setWindowTitle("添加 Body")
+        self.setWindowTitle("添加实体")
         self.kind_combo = QComboBox(self)
         self.kind_combo.setObjectName("addBodyKindCombo")
         self.kind_combo.addItem("长方体", "box")
         self.kind_combo.addItem("圆柱", "cylinder")
-        self.name_edit = QLineEdit("Body Source", self)
+        self.name_edit = QLineEdit("实体源-1", self)
         self.width_spin = _positive_spin_box(self, 100.0)
         self.depth_spin = _positive_spin_box(self, 50.0)
         self.radius_spin = _positive_spin_box(self, 25.0)
@@ -742,30 +741,10 @@ class ExtrudeGeometryDialog(QDialog):
             base,
             source_face_ids,
         ).face_ids
-        self.source_profile_list = QListWidget(self)
-        self.source_profile_list.setObjectName("extrusionSourceProfileList")
-        self.source_profile_list.setSelectionMode(
-            QAbstractItemView.SelectionMode.NoSelection
-        )
-        profiles_with_holes: set[str] = set()
-        if isinstance(base, SketchGeometry) and base.is_strict:
-            analysis = analyze_sketch_profiles(base)
-            profiles_with_holes = {
-                profile.parent_profile_id
-                for profile in analysis.profiles
-                if profile.is_hole and profile.parent_profile_id is not None
-            }
-        for index, logical_id in enumerate(self._source_face_ids, start=1):
-            profile_id = logical_id.split(":", 1)[1]
-            suffix = "（含孔）" if profile_id in profiles_with_holes else ""
-            self.source_profile_list.addItem(
-                f"{index}. {profile_id}{suffix}\n{logical_id}"
-            )
         self.height_spin = _positive_spin_box(self, 10.0)
         form = QFormLayout()
         configure_form_layout(form)
-        form.addRow("源 Profiles", self.source_profile_list)
-        form.addRow("方向", QLabel("+Z（Phase 2）", self))
+        form.addRow("方向", QLabel("+Z", self))
         form.addRow("高度", self.height_spin)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok

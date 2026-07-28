@@ -443,7 +443,7 @@ def test_truss_mesh_dialog_rejects_legacy_local_controls() -> None:
 def test_main_window_can_commit_a_wire_after_detached_edit() -> None:
     _application()
     window = FEMMainWindow()
-    window.new_native_model()
+    window._create_native_model("Model-1")
     assert window.actions["geometry_wire"].isEnabled()
     assert window.actions["geometry_wire"].text() == "新建线体"
     window.start_wire_geometry()

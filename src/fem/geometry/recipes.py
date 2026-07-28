@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from numbers import Real
 import re
@@ -1022,6 +1022,134 @@ class BooleanBodyContext:
 
 
 @dataclass(frozen=True, slots=True)
+class PlanarBooleanContext:
+    """Stable target/tool intent and optional proven planar lineage."""
+
+    feature_id: str
+    target_face_id: str
+    tool_face_ids: tuple[str, ...]
+    result_entities: tuple[BooleanLineageEntity, ...] = ()
+    topology_mappings: tuple[BooleanLineageMapping, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.feature_id) is not str:
+            raise TypeError("feature_id must be a string")
+        feature_id = self.feature_id.strip()
+        if re.fullmatch(r"PB[1-9][0-9]*", feature_id) is None:
+            raise ValueError("feature_id must use PB1, PB2, PB3, ...")
+        target = LogicalEntityRef(self.target_face_id)
+        if target.kind != "face":
+            raise ValueError("target_face_id must be a face logical ID")
+        if isinstance(self.tool_face_ids, (str, bytes, bytearray)):
+            raise TypeError("tool_face_ids must be a tuple of face logical IDs")
+        tool_face_ids = tuple(self.tool_face_ids)
+        if not tool_face_ids:
+            raise ValueError("tool_face_ids must contain at least one Profile")
+        if len(tool_face_ids) != len(set(tool_face_ids)):
+            raise ValueError("tool_face_ids must not contain duplicates")
+        if any(LogicalEntityRef(item).kind != "face" for item in tool_face_ids):
+            raise ValueError("tool_face_ids must contain only face logical IDs")
+        entities = tuple(self.result_entities)
+        mappings = tuple(self.topology_mappings)
+        if any(type(item) is not BooleanLineageEntity for item in entities):
+            raise TypeError(
+                "result_entities must contain BooleanLineageEntity values"
+            )
+        if any(type(item) is not BooleanLineageMapping for item in mappings):
+            raise TypeError(
+                "topology_mappings must contain BooleanLineageMapping values"
+            )
+        logical_ids = tuple(item.logical_id for item in entities)
+        if len(logical_ids) != len(set(logical_ids)):
+            raise ValueError("planar Boolean lineage contains duplicate logical IDs")
+        entity_ids = set(logical_ids)
+        if bool(entities) != bool(mappings):
+            raise ValueError(
+                "planar Boolean entities and mappings must be present together"
+            )
+        if entities:
+            body_ids = tuple(
+                item.logical_id for item in entities if item.kind == "body"
+            )
+            if body_ids != ("body:domain",):
+                raise ValueError(
+                    "proven planar Boolean lineage must contain body:domain"
+                )
+            if not any(item.kind == "face" for item in entities):
+                raise ValueError(
+                    "proven planar Boolean lineage must contain material Faces"
+                )
+            if any(item.target_logical_id not in entity_ids for item in mappings):
+                raise ValueError(
+                    "planar Boolean lineage mapping targets an unknown entity"
+                )
+            if {item.target_logical_id for item in mappings} != entity_ids:
+                raise ValueError(
+                    "proven planar Boolean lineage must map every result entity"
+                )
+            if {item.source for item in mappings} != {"target", "tool"}:
+                raise ValueError(
+                    "proven planar Boolean lineage requires target and tool evidence"
+                )
+            if any(
+                link not in entity_ids
+                for item in entities
+                for link in item.topology_links
+            ):
+                raise ValueError(
+                    "planar Boolean topology link targets an unknown entity"
+                )
+        object.__setattr__(self, "feature_id", feature_id)
+        object.__setattr__(
+            self,
+            "tool_face_ids",
+            tuple(
+                sorted(
+                    tool_face_ids,
+                    key=lambda item: logical_ref_sort_key(LogicalEntityRef(item)),
+                )
+            ),
+        )
+        object.__setattr__(
+            self,
+            "result_entities",
+            tuple(
+                sorted(
+                    entities,
+                    key=lambda item: logical_ref_sort_key(
+                        LogicalEntityRef(item.logical_id)
+                    ),
+                )
+            ),
+        )
+        object.__setattr__(
+            self,
+            "topology_mappings",
+            tuple(
+                sorted(
+                    mappings,
+                    key=lambda item: (
+                        item.source,
+                        logical_ref_sort_key(
+                            LogicalEntityRef(item.source_logical_id)
+                        ),
+                        logical_ref_sort_key(
+                            LogicalEntityRef(item.target_logical_id)
+                        ),
+                        item.relation,
+                    ),
+                )
+            ),
+        )
+
+    @property
+    def proven(self) -> bool:
+        """Return whether exact OCC lineage is persisted."""
+
+        return bool(self.result_entities)
+
+
+@dataclass(frozen=True, slots=True)
 class MovedGeometry:
     """A geometry feature translated in global coordinates."""
 
@@ -1158,6 +1286,7 @@ class BooleanGeometry:
     object_geometry: object
     tool_geometry: object
     body_context: BooleanBodyContext | None = None
+    planar_context: PlanarBooleanContext | None = None
 
     def __post_init__(self) -> None:
         normalized_name = str(self.name).strip()
@@ -1182,6 +1311,8 @@ class BooleanGeometry:
             raise ValueError("布尔操作不支持一维线框几何")
         if object_dimension != tool_dimension:
             raise ValueError("布尔操作的主体和工具体维度必须一致")
+        if self.body_context is not None and self.planar_context is not None:
+            raise ValueError("body_context and planar_context are mutually exclusive")
         if self.body_context is not None:
             if type(self.body_context) is not BooleanBodyContext:
                 raise TypeError(
@@ -1191,6 +1322,50 @@ class BooleanGeometry:
                 raise ValueError("strict Body Boolean only supports fuse or cut")
             if object_dimension != 3:
                 raise ValueError("strict Body Boolean requires 3D operands")
+        if self.planar_context is not None:
+            if type(self.planar_context) is not PlanarBooleanContext:
+                raise TypeError(
+                    "planar_context must be PlanarBooleanContext or None"
+                )
+            if self.operation not in {"fuse", "cut"}:
+                raise ValueError("strict planar Boolean only supports fuse or cut")
+            if object_dimension != 2:
+                raise ValueError("strict planar Boolean requires 2D operands")
+            from .planar_boolean_selection import resolve_planar_boolean_faces
+            from .recipe_topology import describe_recipe_topology
+
+            selection = resolve_planar_boolean_faces(
+                self.object_geometry,
+                self.planar_context.target_face_id,
+                self.tool_geometry,
+                self.planar_context.tool_face_ids,
+            )
+            object_topology = describe_recipe_topology(self.object_geometry)
+            tool_topology = describe_recipe_topology(self.tool_geometry)
+            if not object_topology.exact or not tool_topology.exact:
+                raise ValueError(
+                    "strict planar Boolean operands must have exact topology"
+                )
+            source_ids = {
+                "target": set(object_topology.signature.logical_ids),
+                "tool": set(tool_topology.signature.logical_ids),
+            }
+            if any(
+                mapping.source_logical_id not in source_ids[mapping.source]
+                for mapping in self.planar_context.topology_mappings
+            ):
+                raise ValueError(
+                    "planar Boolean lineage references an unknown source entity"
+                )
+            object.__setattr__(
+                self,
+                "planar_context",
+                replace(
+                    self.planar_context,
+                    target_face_id=selection.target_face_id,
+                    tool_face_ids=selection.tool_face_ids,
+                ),
+            )
         object.__setattr__(self, "name", normalized_name)
 
 
@@ -1374,6 +1549,7 @@ __all__ = [
     "NativeGeometry",
     "PRIMITIVE_GEOMETRY_TYPES",
     "PlateWithHoleGeometry",
+    "PlanarBooleanContext",
     "PrimitiveGeometry",
     "RectangleGeometry",
     "RotatedGeometry",

@@ -14,6 +14,7 @@ from fem.geometry import (
     BooleanGeometry,
     LogicalEntityRef,
     MultiBodyGeometry,
+    PlanarBooleanContext,
     geometry_dimension,
     historical_recipe_ids,
     recipe_characteristic_size,
@@ -166,10 +167,10 @@ class _IssuedMaterializationPayload:
 
 @dataclass(frozen=True, slots=True)
 class BooleanReferenceUndoRecord:
-    """Exact pre/post reference state for one reversible Body Boolean."""
+    """Exact pre/post reference state for one reversible strict Boolean."""
 
     feature_id: str
-    target_body_id: str
+    target_body_id: str  # Frozen schema field; stores a target Face for PB*.
     before_geometry: Any
     after_geometry: Any
     before_named_regions: tuple[NamedRegion, ...]
@@ -186,7 +187,7 @@ class BooleanReferenceUndoRecord:
     after_steps: tuple[Any, ...]
 
     def __post_init__(self) -> None:
-        transition = _strict_body_boolean_transition(
+        transition = _strict_boolean_transition(
             self.before_geometry,
             self.after_geometry,
         )
@@ -194,7 +195,7 @@ class BooleanReferenceUndoRecord:
             transition is None
             or transition[0] != "forward"
             or transition[1].feature_id != self.feature_id
-            or transition[1].target_body_id != self.target_body_id
+            or _boolean_context_target(transition[1]) != self.target_body_id
         ):
             raise ValueError(
                 "Boolean undo record geometries must describe its exact "
@@ -250,6 +251,7 @@ class ProjectSnapshot:
         BooleanReferenceUndoRecord,
         ...,
     ] = ()
+    model_name: str = "Model-1"
 
     def __post_init__(self) -> None:
         source_kind = _canonical_source_kind(self.source_kind)
@@ -300,7 +302,13 @@ class ProjectSnapshot:
         if len(feature_ids) != len(set(feature_ids)):
             raise ValueError("Boolean undo record feature IDs must be unique")
         canonical = tuple(
-            sorted(records, key=lambda record: int(record.feature_id[2:]))
+            sorted(
+                records,
+                key=lambda record: (
+                    record.feature_id[:2],
+                    int(record.feature_id[2:]),
+                ),
+            )
         )
         if records != canonical:
             raise ValueError("Boolean undo records must use canonical feature order")
@@ -309,6 +317,10 @@ class ProjectSnapshot:
             "boolean_reference_undo_records",
             deepcopy(records),
         )
+        model_name = str(self.model_name).strip()
+        if not model_name:
+            raise ValueError("ProjectSnapshot.model_name must not be empty")
+        object.__setattr__(self, "model_name", model_name)
 
     @property
     def project_path(self) -> Path | None:
@@ -374,6 +386,7 @@ class SessionSnapshot:
     source_kind: str | None
     source_path: Path | None
     project_path: Path | None
+    model_name: str | None
     geometry_recipe: Any | None
     mesh_settings: Any | None
     parts: tuple[NativePart, ...]
@@ -584,18 +597,22 @@ class ModelSession:
         self,
         name: str = "Model-1",
         *,
+        part_name: str = "Part-1",
+        body_name: str = "Body-1",
         expected_session_revision: int | None = None,
     ) -> SessionDelta:
         self._check_expected(expected_session_revision)
         project_name = str(name).strip()
         if not project_name:
             raise ValueError("project name must not be empty")
+        part = NativePart(part_name, body_name)
 
         self._session_id = new_identity("session")
         self._clear_content()
         self._is_open = True
         self._source_kind = "native"
-        self._parts = (NativePart(),)
+        self._model_name = project_name
+        self._parts = (part,)
         self._increment_domain_revisions(project=True, mesh=True, model=True)
         self._saved_project_revision = self._project_revision
         return self._emit(
@@ -660,6 +677,7 @@ class ModelSession:
                 snapshot.analysis_definitions,
                 getattr(snapshot, "model", None),
                 getattr(snapshot, "boolean_reference_undo_records", ()),
+                model_name=getattr(snapshot, "model_name", "Model-1"),
             )
         )
         # ProjectSnapshot already owns a detached copy; copy once more so the
@@ -738,6 +756,11 @@ class ModelSession:
         self._clear_content()
         self._is_open = True
         self._source_kind = source_kind
+        self._model_name = (
+            detached.model_name
+            if source_kind == "native"
+            else str(getattr(model, "name", "") or "").strip() or None
+        )
         if source_kind == "native":
             self._project_path = detached.source_path
         else:
@@ -803,6 +826,64 @@ class ModelSession:
             recipe,
             mesh_settings=mesh_settings,
             expected_session_revision=expected_session_revision,
+        )
+
+    def rename_native_model(
+        self,
+        name: str,
+        *,
+        expected_session_revision: int | None = None,
+    ) -> SessionDelta:
+        """Rename native-project model metadata without invalidating its mesh."""
+
+        self._check_expected(expected_session_revision)
+        self._require_native()
+        model_name = str(name).strip()
+        if not model_name:
+            raise ValueError("model name must not be empty")
+        if model_name == self._model_name:
+            return self._emit(frozenset(), frozenset(), "model name unchanged")
+        self._model_name = model_name
+        if self._artifact is not None:
+            renamed_model = deepcopy(self._artifact.model)
+            renamed_model.name = model_name
+            self._artifact = replace(
+                self._artifact,
+                model=renamed_model,
+            )
+        self._increment_domain_revisions(project=True)
+        return self._emit(
+            {ChangeKind.PROJECT_INPUTS},
+            frozenset(),
+            "native model renamed",
+        )
+
+    def rename_native_part(
+        self,
+        name: str,
+        *,
+        expected_session_revision: int | None = None,
+    ) -> SessionDelta:
+        """Rename the single native Part without invalidating its mesh."""
+
+        self._check_expected(expected_session_revision)
+        self._require_native()
+        if len(self._parts) != 1:
+            raise SessionStateError(
+                "native part rename requires exactly one part"
+            )
+        part_name = str(name).strip()
+        if not part_name:
+            raise ValueError("part name must not be empty")
+        current = self._parts[0]
+        if part_name == current.name:
+            return self._emit(frozenset(), frozenset(), "part name unchanged")
+        self._parts = (replace(current, name=part_name),)
+        self._increment_domain_revisions(project=True)
+        return self._emit(
+            {ChangeKind.PROJECT_INPUTS},
+            frozenset(),
+            "native part renamed",
         )
 
     def replace_native_geometry_inputs(
@@ -879,7 +960,7 @@ class ModelSession:
                 owned_recipe,
             )
         )
-        boolean_transition = _strict_body_boolean_transition(
+        boolean_transition = _strict_boolean_transition(
             self._geometry_recipe,
             owned_recipe,
         )
@@ -907,9 +988,13 @@ class ModelSession:
                 or self._assignments != reverse_undo_record.after_assignments
                 or self._steps != reverse_undo_record.after_steps
             ):
+                diagnostic = (
+                    "boolean.planar.undo-reference-conflict"
+                    if type(context) is PlanarBooleanContext
+                    else "boolean.body.undo-reference-conflict"
+                )
                 raise SessionStateError(
-                    "boolean.body.undo-reference-conflict: reference state "
-                    "changed after the Boolean"
+                    f"{diagnostic}: reference state changed after the Boolean"
                 )
         candidate_regions = (
             deepcopy(reverse_undo_record.before_named_regions)
@@ -1018,7 +1103,7 @@ class ModelSession:
                 )
             forward_undo_record = BooleanReferenceUndoRecord(
                 context.feature_id,
-                context.target_body_id,
+                _boolean_context_target(context),
                 deepcopy(self._geometry_recipe),
                 deepcopy(owned_recipe),
                 deepcopy(tuple(self._named_regions.values())),
@@ -1058,11 +1143,10 @@ class ModelSession:
                 reverse_undo_record.feature_id,
                 None,
             )
-        active_boolean_feature_ids = (
-            set(after_feature_ids) - set(explicit_feature_ids)
-            if isinstance(owned_recipe, MultiBodyGeometry)
-            else set()
-        )
+        active_boolean_feature_ids = {
+            context.feature_id
+            for context in _active_boolean_contexts(owned_recipe)
+        }
         self._boolean_reference_undo_records = {
             feature_id: record
             for feature_id, record in self._boolean_reference_undo_records.items()
@@ -1768,6 +1852,7 @@ class ModelSession:
         )
         return MeshTaskSnapshot(
             token=token,
+            model_name=str(self._model_name or "Model-1"),
             geometry_recipe=deepcopy(self._geometry_recipe),
             mesh_settings=deepcopy(self._mesh_settings),
             parts=deepcopy(self._parts),
@@ -2393,6 +2478,7 @@ class ModelSession:
         project = ProjectSnapshot(
             source_kind="native",
             source_path=self._project_path,
+            model_name=str(self._model_name or "Model-1"),
             parts=self._parts,
             geometry_recipe=self._geometry_recipe,
             mesh_settings=self._mesh_settings,
@@ -2406,7 +2492,7 @@ class ModelSession:
                 self._boolean_reference_undo_records[feature_id]
                 for feature_id in sorted(
                     self._boolean_reference_undo_records,
-                    key=lambda value: int(value[2:]),
+                    key=lambda value: (value[:2], int(value[2:])),
                 )
             ),
         )
@@ -2459,6 +2545,7 @@ class ModelSession:
             source_kind=self._source_kind,
             source_path=self._source_path,
             project_path=self._project_path,
+            model_name=self._model_name,
             geometry_recipe=deepcopy(self._geometry_recipe),
             mesh_settings=deepcopy(self._mesh_settings),
             parts=deepcopy(self._parts),
@@ -2619,6 +2706,7 @@ class ModelSession:
         self._source_kind: str | None = None
         self._source_path: Path | None = None
         self._project_path: Path | None = None
+        self._model_name: str | None = None
         self._geometry_recipe: Any | None = None
         self._retired_body_ids: set[str] = set()
         self._retired_boolean_feature_ids: set[str] = set()
@@ -3141,12 +3229,24 @@ def _rewrite_named_region(
     return replace(region, references=unique) if unique else None
 
 
-def _strict_body_boolean_transition(
+def _strict_boolean_transition(
     before: object,
     after: object,
-) -> tuple[str, BooleanBodyContext] | None:
+) -> tuple[str, BooleanBodyContext | PlanarBooleanContext] | None:
     """Identify one exact top-level strict Boolean commit or undo."""
 
+    if (
+        isinstance(after, BooleanGeometry)
+        and after.planar_context is not None
+        and after.object_geometry == before
+    ):
+        return "forward", after.planar_context
+    if (
+        isinstance(before, BooleanGeometry)
+        and before.planar_context is not None
+        and before.object_geometry == after
+    ):
+        return "reverse", before.planar_context
     if not isinstance(before, MultiBodyGeometry) or not isinstance(
         after,
         MultiBodyGeometry,
@@ -3193,6 +3293,42 @@ def _strict_body_boolean_transition(
             ):
                 matches.append(("reverse", context))
     return matches[0] if len(matches) == 1 else None
+
+
+def _boolean_context_target(
+    context: BooleanBodyContext | PlanarBooleanContext,
+) -> str:
+    if type(context) is BooleanBodyContext:
+        return context.target_body_id
+    if type(context) is PlanarBooleanContext:
+        return context.target_face_id
+    raise TypeError("unsupported strict Boolean context")
+
+
+def _active_boolean_contexts(
+    recipe: object | None,
+) -> tuple[BooleanBodyContext | PlanarBooleanContext, ...]:
+    contexts: list[BooleanBodyContext | PlanarBooleanContext] = []
+
+    def visit(item: object | None) -> None:
+        if isinstance(item, MultiBodyGeometry):
+            for body in item.bodies:
+                visit(body.recipe)
+            return
+        if isinstance(item, BooleanGeometry):
+            if item.body_context is not None:
+                contexts.append(item.body_context)
+            if item.planar_context is not None:
+                contexts.append(item.planar_context)
+            visit(item.object_geometry)
+            visit(item.tool_geometry)
+            return
+        base = getattr(item, "base", None)
+        if base is not None:
+            visit(base)
+
+    visit(recipe)
+    return tuple(contexts)
 
 
 def _same_active_multi_body_geometry(left: object, right: object) -> bool:

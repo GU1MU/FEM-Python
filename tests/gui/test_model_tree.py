@@ -110,7 +110,7 @@ def test_tree_click_and_double_click_keep_object_signals(gui_inp_path):
     assert tree.contextMenuPolicy() == Qt.ContextMenuPolicy.CustomContextMenu
 
 
-def test_boundary_context_menu_emits_delete_request(
+def test_boundary_and_load_context_menus_emit_delete_request(
     gui_inp_path,
     monkeypatch,
 ):
@@ -122,6 +122,12 @@ def test_boundary_context_menu_emits_delete_request(
         for item in _items(tree)
         if item.data(0, ROLE_KIND) == "boundary"
     )
+    load = next(
+        item
+        for item in _items(tree)
+        if item.data(0, ROLE_KIND) == "cload"
+    )
+    selected = [boundary]
     action_labels = []
 
     class Menu:
@@ -145,13 +151,20 @@ def test_boundary_context_menu_emits_delete_request(
     monkeypatch.setattr(
         ModelTree,
         "itemAt",
-        lambda _tree, _position: boundary,
+        lambda _tree, _position: selected[0],
     )
 
     tree._show_context_menu(QPoint())
 
     assert action_labels == ["高亮", "编辑", "删除", "查看信息"]
     assert deleted == [("boundary", boundary.data(0, ROLE_KEY))]
+
+    selected[0] = load
+    action_labels.clear()
+    tree._show_context_menu(QPoint())
+
+    assert action_labels == ["高亮", "编辑", "删除", "查看信息"]
+    assert deleted[-1] == ("cload", load.data(0, ROLE_KEY))
 
 
 def test_line_load_is_a_regular_load_tree_item():
@@ -216,19 +229,88 @@ def test_native_geometry_tree_is_shallow_model_part_feature_history():
     tree = ModelTree()
 
     tree.set_geometry_preview(
-        "Model-1",
+        "模型-1",
         ("Sketch-1", "Extrude-1", "Cut-1"),
-        part_name="Part-1",
+        part_name="部件-1",
     )
 
     root = tree.topLevelItem(0)
     part = root.child(0)
-    assert root.text(0) == "Model-1"
-    assert part.text(0) == "Part-1"
+    assert root.text(0) == "模型-1"
+    assert part.text(0) == "部件-1"
     assert [part.child(index).text(0) for index in range(part.childCount())] == [
-        "Sketch-1", "Extrude-1", "Cut-1",
+        "草图-1", "拉伸-1", "切除-1",
     ]
     assert len(_items(tree)) == 5
+
+
+def test_native_model_part_and_feature_menus_omit_highlight_and_route_actions(
+    monkeypatch,
+):
+    _application()
+    tree = ModelTree()
+    tree.set_geometry_preview(
+        "模型-1",
+        ("Sketch-1",),
+        part_name="部件-1",
+    )
+    root = tree.topLevelItem(0)
+    part = root.child(0)
+    feature = part.child(0)
+    selected = [root]
+    requested_action = ["重命名"]
+    action_labels: list[str] = []
+
+    class Menu:
+        def __init__(self, _parent):
+            self.actions = {}
+
+        def addAction(self, label):
+            action = object()
+            action_labels.append(label)
+            self.actions[label] = action
+            return action
+
+        def exec(self, _position):
+            return self.actions[requested_action[0]]
+
+    renamed = []
+    informed = []
+    highlighted = []
+    tree.renameRequested.connect(
+        lambda kind, key: renamed.append((kind, key))
+    )
+    tree.informationRequested.connect(
+        lambda kind, key: informed.append((kind, key))
+    )
+    tree.highlightRequested.connect(
+        lambda kind, key: highlighted.append((kind, key))
+    )
+    monkeypatch.setattr(model_tree_module, "QMenu", Menu)
+    monkeypatch.setattr(
+        ModelTree,
+        "itemAt",
+        lambda _tree, _position: selected[0],
+    )
+
+    tree._show_context_menu(QPoint())
+    assert action_labels == ["重命名", "查看信息"]
+    assert renamed == [("model", None)]
+
+    selected[0] = part
+    action_labels.clear()
+    tree._show_context_menu(QPoint())
+    assert action_labels == ["重命名", "查看信息"]
+    assert renamed[-1] == ("part", None)
+
+    selected[0] = feature
+    requested_action[0] = "查看信息"
+    action_labels.clear()
+    tree._show_context_menu(QPoint())
+    tree._on_clicked(feature)
+    assert action_labels == ["查看信息"]
+    assert informed == [("feature", "Sketch-1")]
+    assert highlighted == []
 
 
 def test_gravity_is_a_regular_load_tree_item(gui_inp_path):
@@ -260,16 +342,16 @@ def test_native_meshed_tree_keeps_the_part_feature_history(gui_inp_path):
     tree.set_model(
         read(gui_inp_path),
         feature_rows=("Sketch-1", "Extrude-1"),
-        part_name="Part-1",
+        part_name="部件-1",
     )
 
     root = tree.topLevelItem(0)
     part = root.child(0)
     mesh = root.child(1)
-    assert part.text(0) == "Part-1"
+    assert part.text(0) == "部件-1"
     assert [part.child(index).text(0) for index in range(part.childCount())] == [
-        "Sketch-1",
-        "Extrude-1",
+        "草图-1",
+        "拉伸-1",
     ]
     assert mesh.text(0) == "网格"
     assert not mesh.isExpanded()

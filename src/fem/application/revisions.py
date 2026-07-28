@@ -100,6 +100,7 @@ class ImportTaskSnapshot:
 @dataclass(frozen=True, slots=True)
 class MeshTaskSnapshot:
     token: TaskToken
+    model_name: str
     geometry_recipe: Any
     mesh_settings: Any
     parts: tuple[Any, ...]
