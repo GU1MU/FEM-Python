@@ -12,9 +12,9 @@ from PySide6.QtWidgets import QApplication
 
 from fem.application import (
     DeleteIntent,
+    MeshEntityRef,
     NamedRegion,
     RegionAssignment,
-    RegionRef,
     RenameIntent,
     SectionDefinition,
 )
@@ -76,6 +76,8 @@ def test_actions_follow_document_and_result_context(gui_inp_path):
     _application()
     window = FEMMainWindow()
     assert window.actions["open"].isEnabled()
+    assert not window.actions["geometry_create"].isEnabled()
+    assert "请先新建模型" in window.actions["geometry_create"].toolTip()
     assert not window.actions["geometry_sketch"].isEnabled()
     assert "请先新建模型" in window.actions["geometry_sketch"].toolTip()
     assert not window.actions["material_manager"].isEnabled()
@@ -172,6 +174,7 @@ def test_new_model_unlocks_model_definition_and_sketch_commands():
 
     window._apply_session_delta(window.session.new_native_project())
 
+    assert window.actions["geometry_create"].isEnabled()
     assert window.actions["geometry_sketch"].isEnabled()
     assert window.actions["material_manager"].isEnabled()
     assert window.actions["step_create"].isEnabled()
@@ -346,7 +349,7 @@ def test_generated_model_uses_the_shared_install_path_without_enabling_reload(
     window.close()
 
 
-def test_native_analysis_actions_are_available_before_meshing():
+def test_native_scope_dependent_actions_require_meshing():
     _application()
     window = FEMMainWindow()
     window._set_native_geometry(RectangleGeometry("Plate", 2.0, 1.0), "矩形")
@@ -364,10 +367,10 @@ def test_native_analysis_actions_are_available_before_meshing():
         )
     )
 
-    assert window.actions["section_assign"].isEnabled()
+    assert not window.actions["section_assign"].isEnabled()
     assert window.actions["step_create"].isEnabled()
-    assert window.actions["boundary_create"].isEnabled()
-    assert window.actions["load_create"].isEnabled()
+    assert not window.actions["boundary_create"].isEnabled()
+    assert not window.actions["load_create"].isEnabled()
     assert window.actions["output_create"].isEnabled()
     assert window.actions["output_create"].toolTip() == "输出请求"
     assert window.actions["analysis_manager"].isEnabled()
@@ -466,7 +469,7 @@ def test_window_title_shows_source_and_unsaved_state(gui_inp_path):
     window.close()
 
 
-def test_boundary_action_uses_native_region_catalog_before_meshing(
+def test_boundary_action_does_not_open_scope_dialog_before_meshing(
     monkeypatch,
 ):
     _application()
@@ -510,15 +513,7 @@ def test_boundary_action_uses_native_region_catalog_before_meshing(
 
     window.create_displacement_boundary()
 
-    assert captured["step_names"] == ["Load"]
-    assert captured["node_regions"] == [
-        RegionRef("node_set", "BOTTOM"),
-        RegionRef("node_set", "LEFT"),
-        RegionRef("node_set", "RIGHT"),
-        RegionRef("node_set", "TOP"),
-    ]
-    assert captured["dimensions"] == 2
-    assert captured["parent"] is window
+    assert captured == {}
     assert window._pending_analysis_selection is None
     window.close()
 
@@ -621,7 +616,7 @@ def test_geometry_topology_change_reports_cleared_references():
     assert window.document.named_regions == {}
     assert window.document.mesh_settings.local_controls == ()
     message = window.status_panel.state_label.text()
-    assert "1 个旧命名区域已失效" in message
+    assert "1 个旧作用域已失效" in message
     assert "旧局部网格设置已失效" in message
     window.close()
 
@@ -746,7 +741,7 @@ def test_geometry_ctrl_selection_accumulates_same_kind_entities(monkeypatch):
     assert window._selected_geometry_refs == {bottom, top}
     assert window._canonical_geometry_selection() == (bottom, top)
     assert window.status_panel.object_label.text() == "对象：已选择 2 个边"
-    assert window.actions["geometry_region"].isEnabled()
+    assert not window.actions["geometry_region"].isEnabled()
 
     window._on_geometry_entity_pick(top)
     assert window._selected_geometry_refs == {bottom}
@@ -860,21 +855,48 @@ def test_named_region_default_names_do_not_expose_topology_ids():
     window.close()
 
 
-def test_named_region_builtin_name_collision_is_reported_atomically(
+def test_mesh_scope_ctrl_pick_toggles_selected_entity(monkeypatch) -> None:
+    _application()
+    window = FEMMainWindow()
+    first = MeshEntityRef.node(1)
+    second = MeshEntityRef.node(2)
+    monkeypatch.setattr(window, "_geometry_pick_is_additive", lambda: False)
+    window._on_mesh_scope_entity_pick(first)
+    monkeypatch.setattr(window, "_geometry_pick_is_additive", lambda: True)
+    window._on_mesh_scope_entity_pick(second)
+
+    assert window._selected_mesh_scope_refs == {first, second}
+
+    window._on_mesh_scope_entity_pick(second)
+    assert window._selected_mesh_scope_refs == {first}
+    window.close()
+
+
+def test_former_builtin_region_name_can_be_created_as_a_mesh_scope(
     monkeypatch,
+    gui_inp_path,
 ):
     _application()
     window = FEMMainWindow()
+    model = read(gui_inp_path)
+    geometry = build_model_geometry(model)
+    settings = MeshSettings(0.25)
     window._set_native_geometry(
         RectangleGeometry("Plate", 2.0, 1.0),
         "矩形",
     )
-    selected = LogicalEntityRef("edge:bottom")
-    window._selected_geometry_refs = {selected}
-    before = window.session.snapshot()
-    shown: list[tuple[str, str]] = []
+    window._apply_session_delta(
+        window.session.replace_mesh_settings(settings)
+    )
+    task = window.session.prepare_mesh_generation()
+    window._generated_model_loaded(
+        (model, geometry),
+        token=task.token,
+    )
+    selected = MeshEntityRef.node(model.mesh.nodes[0].id)
+    window._selected_mesh_scope_refs = {selected}
 
-    class ConflictingRegionDialog:
+    class FormerBuiltinRegionDialog:
         def __init__(self, *_args, **_kwargs):
             pass
 
@@ -887,24 +909,14 @@ def test_named_region_builtin_name_collision_is_reported_atomically(
     monkeypatch.setattr(
         main_window_module,
         "NamedRegionDialog",
-        ConflictingRegionDialog,
-    )
-    monkeypatch.setattr(
-        window,
-        "_show_error",
-        lambda title, message: shown.append((title, message)),
+        FormerBuiltinRegionDialog,
     )
 
-    assert window._create_region_from_current_geometry_selection() is None
-    assert shown == [
-        (
-            "创建命名区域",
-            "named region 'bottom' conflicts with 'BOTTOM'",
-        )
-    ]
-    assert window.session.snapshot() == before
-    assert window.document == before
-    assert window._selected_geometry_refs == {selected}
+    assert window._create_region_from_current_mesh_selection() == "bottom"
+    assert window.document.named_regions["bottom"].references == (selected,)
+    assert window.document.model.node_sets["bottom"].node_ids == (
+        selected.node_id,
+    )
     window.close()
 
 

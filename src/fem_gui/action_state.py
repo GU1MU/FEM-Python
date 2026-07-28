@@ -35,6 +35,7 @@ class GuiActionKey(str, Enum):
     MATERIAL_MANAGER = "material_manager"
     SECTION_MANAGER = "section_manager"
     SECTION_ASSIGN = "section_assign"
+    GEOMETRY_CREATE = "geometry_create"
     GEOMETRY_SKETCH = "geometry_sketch"
     GEOMETRY_WIRE = "geometry_wire"
     GEOMETRY_MOVE = "geometry_move"
@@ -95,6 +96,7 @@ class GuiActionKey(str, Enum):
     SCREENSHOT = "screenshot"
     ABOUT = "about"
     SELECT_NODE = "select_node"
+    SELECT_EDGE = "select_edge"
     SELECT_ELEMENT = "select_element"
     GEOMETRY_SELECT_POINT = "geometry_select_point"
     GEOMETRY_SELECT_EDGE = "geometry_select_edge"
@@ -154,6 +156,7 @@ ACTION_DESCRIPTORS: tuple[GuiActionDescriptor, ...] = (
     _d(GuiActionKey.MATERIAL_MANAGER, "材料管理", "show_material_manager", "material"),
     _d(GuiActionKey.SECTION_MANAGER, "截面管理", "show_section_manager", "section"),
     _d(GuiActionKey.SECTION_ASSIGN, "截面分配", "assign_section_to_region", "section_assign"),
+    _d(GuiActionKey.GEOMETRY_CREATE, "创建草图", "create_geometry", "sketch"),
     _d(GuiActionKey.GEOMETRY_SKETCH, "新建草图", "create_sketch_geometry", "sketch"),
     _d(GuiActionKey.GEOMETRY_WIRE, "新建线体", "start_wire_geometry", "wire"),
     _d(GuiActionKey.GEOMETRY_MOVE, "移动", "move_geometry", "geometry_move"),
@@ -164,8 +167,8 @@ ACTION_DESCRIPTORS: tuple[GuiActionDescriptor, ...] = (
     _d(GuiActionKey.GEOMETRY_MANAGER, "编辑", "show_geometry_manager", "feature_edit"),
     _d(GuiActionKey.GEOMETRY_UNDO, "撤销特征", "undo_geometry_feature", "feature_undo"),
     _d(GuiActionKey.GEOMETRY_DELETE, "删除几何", "delete_geometry", "geometry_delete"),
-    _d(GuiActionKey.GEOMETRY_REGION, "创建命名区域", "create_named_geometry_region", "named_region_create"),
-    _d(GuiActionKey.GEOMETRY_REGIONS, "区域管理", "show_named_region_manager", "named_region_manager"),
+    _d(GuiActionKey.GEOMETRY_REGION, "创建作用域", "create_named_geometry_region", "named_region_create"),
+    _d(GuiActionKey.GEOMETRY_REGIONS, "作用域管理", "show_named_region_manager", "named_region_manager"),
     _d(GuiActionKey.MESH_SETTINGS, "网格设置", "edit_mesh_settings", "mesh_settings"),
     _d(GuiActionKey.MESH_GENERATE, "生成网格", "generate_native_mesh", "mesh"),
     _d(GuiActionKey.MESH_CLEAR, "清除网格", "clear_native_mesh", "mesh_clear"),
@@ -219,6 +222,7 @@ ACTION_DESCRIPTORS: tuple[GuiActionDescriptor, ...] = (
     _d(GuiActionKey.SCREENSHOT, "保存视口图片", "export_viewport_image", "image"),
     _d(GuiActionKey.ABOUT, "关于", "show_about"),
     _d(GuiActionKey.SELECT_NODE, "选择节点", "_set_selection_mode", "select_node", checkable=True, checked=True, group="selection", argument="node"),
+    _d(GuiActionKey.SELECT_EDGE, "选择边", "_start_edge_scope_selection", "clear_selection", checkable=True, group="selection"),
     _d(GuiActionKey.SELECT_ELEMENT, "选择单元", "_set_selection_mode", "select_element", checkable=True, group="selection", argument="element"),
     _d(GuiActionKey.GEOMETRY_SELECT_POINT, "选择点", "_set_geometry_selection_mode", "select_geometry_point", checkable=True, group="selection", argument="point"),
     _d(GuiActionKey.GEOMETRY_SELECT_EDGE, "选择边", "_set_geometry_selection_mode", "select_geometry_edge", checkable=True, group="selection", argument="edge"),
@@ -248,6 +252,7 @@ class GuiActionContext:
     result_task_busy: bool = False
     viewport_scene_available: bool = False
     wire_editor_active: bool = False
+    sketch_editor_active: bool = False
 
     def __post_init__(self) -> None:
         for name in (
@@ -261,6 +266,7 @@ class GuiActionContext:
             "result_task_busy",
             "viewport_scene_available",
             "wire_editor_active",
+            "sketch_editor_active",
         ):
             if type(getattr(self, name)) is not bool:
                 raise TypeError(f"{name} must be a bool")
@@ -315,7 +321,10 @@ def derive_action_availability(
         and not context.result_task_busy
     )
     recipe = snapshot.geometry_recipe
-    wire_editor_active = context.wire_editor_active
+    editor_active = (
+        context.wire_editor_active
+        or context.sketch_editor_active
+    )
     has_native_geometry = (
         snapshot.source_kind == "native"
         and isinstance(recipe, NATIVE_GEOMETRY_TYPES)
@@ -343,6 +352,11 @@ def derive_action_availability(
         "请先新建模型"
         if snapshot.source_kind is None
         else "INP 模型没有可编辑 CAD；请新建自主模型"
+    )
+    set_state(
+        GuiActionKey.GEOMETRY_CREATE,
+        snapshot.source_kind == "native" and not busy,
+        geometry_reason,
     )
     set_state(
         GuiActionKey.GEOMETRY_SKETCH,
@@ -401,13 +415,15 @@ def derive_action_availability(
         )
     set_state(
         GuiActionKey.GEOMETRY_REGION,
-        has_native_geometry and bool(context.geometry_selection) and not busy,
-        "请先在视口中选择点、边、面或体",
+        has_model and not busy,
+        "请先划分网格",
     )
     set_state(
         GuiActionKey.GEOMETRY_REGIONS,
-        has_native_geometry and bool(snapshot.named_regions) and not busy,
-        "当前没有命名区域",
+        has_model
+        and bool(snapshot.named_regions)
+        and not busy,
+        "请先划分网格并创建作用域",
     )
     set_state(
         GuiActionKey.MESH_SETTINGS,
@@ -473,18 +489,27 @@ def derive_action_availability(
         and not busy,
         _capability_reason(section_capability, "请先新建模型或打开 INP，并创建材料"),
     )
-    section_targets = tuple(
+    visible_targets = tuple(
         target
         for target in authoring.targets
+        if (
+            snapshot.source_kind != "native"
+            or target.region.name in snapshot.named_regions
+        )
+    )
+    section_targets = tuple(
+        target
+        for target in visible_targets
         if target.region.kind == "element_set"
         and target.operation("section.assignment").can_submit
     )
     set_state(
         GuiActionKey.SECTION_ASSIGN,
         bool(snapshot.sections)
-        and bool(section_targets or has_model or has_native_geometry)
+        and has_model
+        and bool(section_targets or snapshot.source_kind == "native")
         and not busy,
-        "请先创建几何或打开 INP，并创建截面",
+        "请先划分网格或打开 INP，并创建截面",
     )
 
     has_step = bool(authoring.step_lifecycle)
@@ -495,13 +520,16 @@ def derive_action_availability(
     )
     boundary_targets = tuple(
         target
-        for target in authoring.targets
+        for target in visible_targets
         if target.operation("boundary.displacement").can_submit
     )
     set_state(
         GuiActionKey.BOUNDARY_CREATE,
-        has_step and bool(boundary_targets or has_native_geometry) and not busy,
-        "请先创建分析步，并准备可选择的几何或节点区域",
+        has_step
+        and has_model
+        and bool(boundary_targets or has_native_geometry)
+        and not busy,
+        "请先创建分析步并划分网格",
     )
     load_operations = (
         "load.node",
@@ -512,7 +540,7 @@ def derive_action_availability(
     )
     load_targets = tuple(
         target
-        for target in authoring.targets
+        for target in visible_targets
         if any(target.operation(name).can_submit for name in load_operations)
     )
     load_reason = (
@@ -522,7 +550,10 @@ def derive_action_availability(
     )
     set_state(
         GuiActionKey.LOAD_CREATE,
-        has_step and bool(load_targets or has_native_geometry) and not busy,
+        has_step
+        and has_model
+        and bool(load_targets or has_native_geometry)
+        and not busy,
         load_reason,
     )
     output_create = authoring.operation("output_request.create")
@@ -573,6 +604,7 @@ def derive_action_availability(
         GuiActionKey.NODE_LABELS,
         GuiActionKey.ELEMENT_LABELS,
         GuiActionKey.SELECT_NODE,
+        GuiActionKey.SELECT_EDGE,
         GuiActionKey.SELECT_ELEMENT,
         GuiActionKey.SYMBOLS,
         GuiActionKey.SYMBOL_SETTINGS,
@@ -644,7 +676,7 @@ def derive_action_availability(
         "当前视口没有可捕获场景，或截图后端不可用",
     )
 
-    if wire_editor_active:
+    if editor_active:
         mutation_keys = (
             GuiActionKey.OPEN,
             GuiActionKey.NEW_NATIVE,
@@ -655,6 +687,7 @@ def derive_action_availability(
             GuiActionKey.MATERIAL_MANAGER,
             GuiActionKey.SECTION_MANAGER,
             GuiActionKey.SECTION_ASSIGN,
+            GuiActionKey.GEOMETRY_CREATE,
             GuiActionKey.GEOMETRY_SKETCH,
             GuiActionKey.GEOMETRY_WIRE,
             GuiActionKey.GEOMETRY_MOVE,
@@ -686,14 +719,14 @@ def derive_action_availability(
             GuiActionKey.JOB_MANAGER,
         )
         for key in mutation_keys:
-            set_state(key, False, "请先完成或取消当前线体编辑")
+            set_state(key, False, "请先完成或取消当前草图编辑")
         for key in (
             GuiActionKey.GEOMETRY_SELECT_POINT,
             GuiActionKey.GEOMETRY_SELECT_EDGE,
             GuiActionKey.GEOMETRY_SELECT_FACE,
             GuiActionKey.GEOMETRY_SELECT_BODY,
         ):
-            set_state(key, False, "请先完成或取消当前线体编辑")
+            set_state(key, False, "请先完成或取消当前草图编辑")
         for key in (
             GuiActionKey.FIT,
             GuiActionKey.TOP,

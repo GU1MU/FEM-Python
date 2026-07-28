@@ -157,10 +157,22 @@ class DisplacementDialog(QDialog):
         selected_region: RegionRef | None = None,
         current: DisplacementConstraint | None = None,
         labels: Sequence[str] | None = None,
+        allow_scope_selection: bool = False,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("位移边界条件")
+        self._scope_selection_request: str | None = None
         self.region_combo = QComboBox(self)
+        self.scope_pick_button = QPushButton("创建", self)
+        self.scope_pick_button.setEnabled(bool(allow_scope_selection))
+        self.scope_pick_button.clicked.connect(
+            self._request_scope_selection
+        )
+        region_widget = QWidget(self)
+        region_layout = QHBoxLayout(region_widget)
+        region_layout.setContentsMargins(0, 0, 0, 0)
+        region_layout.addWidget(self.region_combo, 1)
+        region_layout.addWidget(self.scope_pick_button)
         self.step_combo = QComboBox(self)
         references = _typed_regions(regions, "node_set")
         for reference in references:
@@ -208,18 +220,31 @@ class DisplacementDialog(QDialog):
                     self.component_values[component].setValue(current.value)
         form = QFormLayout()
         configure_form_layout(form)
-        form.addRow("选择区域", self.region_combo)
+        form.addRow("选择作用域", region_widget)
         form.addRow("分析步", self.step_combo)
         form.addRow("约束分量", component_widget)
         layout = QVBoxLayout(self)
         layout.addLayout(form)
-        layout.addWidget(_buttons(self))
+        self.buttons = _buttons(self)
+        self.buttons.button(
+            QDialogButtonBox.StandardButton.Ok
+        ).setEnabled(self.region_combo.count() > 0)
+        layout.addWidget(self.buttons)
         self.setMinimumWidth(350)
+
+    def _request_scope_selection(self) -> None:
+        if not self.scope_pick_button.isEnabled():
+            return
+        self._scope_selection_request = "node"
+        self.reject()
+
+    def requested_scope_kind(self) -> str | None:
+        return self._scope_selection_request
 
     def definitions(self) -> tuple[str, tuple[DisplacementConstraint, ...]]:
         region = self.region_combo.currentData()
         if not isinstance(region, RegionRef):
-            raise ValueError("请选择约束区域")
+            raise ValueError("请选择约束作用域")
         target = require_region_kind(region, "node_set")
         step_name = self.step_combo.currentText().strip()
         if not step_name:
@@ -266,9 +291,17 @@ class LoadDialog(QDialog):
         candidate_evaluator: (
             Callable[[LineLoad, str], AuthoringCapability] | None
         ) = None,
+        scope_selection_kinds: Sequence[str] = (),
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("编辑载荷" if current is not None else "创建载荷")
+        supported_scope_kinds = frozenset(
+            str(kind)
+            for kind in scope_selection_kinds
+            if str(kind) in {"node", "edge", "surface", "line"}
+        )
+        self._scope_selection_kinds = supported_scope_kinds
+        self._scope_selection_request: str | None = None
         self._candidate_evaluator = candidate_evaluator
         self._candidate_signature: tuple[str, LineLoad] | None = None
         self._candidate_result: AuthoringCapability | None = None
@@ -295,14 +328,23 @@ class LoadDialog(QDialog):
         )
         self.kind_combo = QComboBox(self)
         self.region_combo = QComboBox(self)
+        self.scope_pick_button = QPushButton("创建", self)
+        self.scope_pick_button.clicked.connect(
+            self._request_scope_selection
+        )
+        self.region_widget = QWidget(self)
+        region_layout = QHBoxLayout(self.region_widget)
+        region_layout.setContentsMargins(0, 0, 0, 0)
+        region_layout.addWidget(self.region_combo, 1)
+        region_layout.addWidget(self.scope_pick_button)
         self.step_combo = QComboBox(self)
-        if self._regions["node"]:
+        if self._regions["node"] or "node" in supported_scope_kinds:
             self.kind_combo.addItem("节点力", "node")
-        if self._regions["edge"]:
+        if self._regions["edge"] or "edge" in supported_scope_kinds:
             self.kind_combo.addItem("边载荷", "edge")
-        if self._regions["surface"]:
+        if self._regions["surface"] or "surface" in supported_scope_kinds:
             self.kind_combo.addItem("面载荷", "surface")
-        if resolved_line_regions:
+        if resolved_line_regions or "line" in supported_scope_kinds:
             self.kind_combo.addItem("梁线载荷", "line")
         self.kind_combo.addItem("重力", "gravity")
         self._gravity_target = (
@@ -346,7 +388,7 @@ class LoadDialog(QDialog):
         self.form = QFormLayout()
         configure_form_layout(self.form)
         self.form.addRow("载荷类别", self.kind_combo)
-        self.form.addRow("选择区域", self.region_combo)
+        self.form.addRow("选择作用域", self.region_widget)
         self.form.addRow("分析步", self.step_combo)
         self.form.addRow("载荷形式", self.load_type_combo)
         self.form.addRow("坐标系", self.coordinate_system_combo)
@@ -440,6 +482,16 @@ class LoadDialog(QDialog):
         _select_region(self.region_combo, selected_region)
         self._update_candidate_state()
 
+    def _request_scope_selection(self) -> None:
+        kind = str(self.kind_combo.currentData() or "")
+        if kind not in self._scope_selection_kinds:
+            return
+        self._scope_selection_request = kind
+        self.reject()
+
+    def requested_scope_kind(self) -> str | None:
+        return self._scope_selection_request
+
     def _set_distributed_values(
         self,
         vector: tuple[float, ...],
@@ -494,10 +546,14 @@ class LoadDialog(QDialog):
         distributed = kind in {"edge", "surface"}
         pressure = self.load_type_combo.currentData() == "pressure"
         self.form.setRowVisible(
-            self.region_combo,
+            self.region_widget,
             not gravity or self._gravity_target is not None,
         )
         self.region_combo.setEnabled(not gravity)
+        self.scope_pick_button.setVisible(not gravity)
+        self.scope_pick_button.setEnabled(
+            not gravity and kind in self._scope_selection_kinds
+        )
         self.form.setRowVisible(self.load_type_combo, distributed)
         line_load = kind == "line"
         self.form.setRowVisible(self.coordinate_system_combo, line_load)
@@ -585,10 +641,14 @@ class LoadDialog(QDialog):
         ok_button = self.buttons.button(
             QDialogButtonBox.StandardButton.Ok
         )
+        target_available = (
+            self.kind_combo.currentData() == "gravity"
+            or isinstance(self.region_combo.currentData(), RegionRef)
+        )
         if not local_line_load:
             self.candidate_diagnostic_label.clear()
             self.candidate_diagnostic_label.setVisible(False)
-            ok_button.setEnabled(True)
+            ok_button.setEnabled(target_available)
             return
         self.candidate_diagnostic_label.setVisible(True)
         try:
@@ -604,7 +664,7 @@ class LoadDialog(QDialog):
             if enabled
             else _authoring_candidate_message(decision)
         )
-        ok_button.setEnabled(enabled)
+        ok_button.setEnabled(target_available and enabled)
 
     def accept(self) -> None:
         try:
@@ -643,7 +703,7 @@ class LoadDialog(QDialog):
             )
         region = self.region_combo.currentData()
         if not isinstance(region, RegionRef):
-            raise ValueError("请选择载荷区域")
+            raise ValueError("请选择载荷作用域")
         expected_kind = {
             "node": "node_set",
             "edge": "edge",
@@ -651,7 +711,7 @@ class LoadDialog(QDialog):
             "line": "element_set",
         }.get(kind)
         if expected_kind is None:
-            raise ValueError("当前没有可用的载荷区域")
+            raise ValueError("当前没有可用的载荷作用域")
         target = require_region_kind(region, expected_kind)
         if kind == "node":
             component = self.component_combo.currentData()

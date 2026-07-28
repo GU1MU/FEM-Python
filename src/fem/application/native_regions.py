@@ -117,6 +117,38 @@ class LogicalReferencesRegionSource:
 
 
 @dataclass(frozen=True, slots=True)
+class MeshEntitiesRegionSource:
+    """A canonical non-empty group of generated-mesh entity references."""
+
+    references: tuple[Any, ...]
+
+    def __post_init__(self) -> None:
+        from .definitions import MeshEntityRef, mesh_entity_ref_sort_key
+
+        references = tuple(self.references)
+        if not references or any(
+            type(reference) is not MeshEntityRef
+            for reference in references
+        ):
+            raise TypeError(
+                "mesh-entity region source requires MeshEntityRef values"
+            )
+        if len(set(references)) != len(references):
+            raise NativeRegionValidationError(
+                "mesh-entity region source contains duplicate references"
+            )
+        if len({reference.kind for reference in references}) != 1:
+            raise NativeRegionValidationError(
+                "one native region cannot mix mesh entity kinds"
+            )
+        object.__setattr__(
+            self,
+            "references",
+            tuple(sorted(references, key=mesh_entity_ref_sort_key)),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class RecipeRegionSource:
     """One built-in region resolved by a typed recipe selector."""
 
@@ -128,7 +160,10 @@ class RecipeRegionSource:
 
 
 NativeRegionSource = (
-    CompiledDomainRegionSource | LogicalReferencesRegionSource | RecipeRegionSource
+    CompiledDomainRegionSource
+    | LogicalReferencesRegionSource
+    | MeshEntitiesRegionSource
+    | RecipeRegionSource
 )
 
 
@@ -154,6 +189,7 @@ class NativeRegionDescriptor:
             (
                 CompiledDomainRegionSource,
                 LogicalReferencesRegionSource,
+                MeshEntitiesRegionSource,
                 RecipeRegionSource,
             ),
         ):
@@ -177,19 +213,33 @@ def describe_native_regions(
 
     contract = _resolve_mesh_contract(recipe, mesh_settings, mesh_contract)
     topology = describe_recipe_topology(recipe)
+    raw_regions = (
+        tuple(named_regions.values())
+        if isinstance(named_regions, Mapping)
+        else tuple(named_regions)
+    )
+    from .definitions import MeshEntityRef
+
+    uses_mesh_scopes = any(
+        type(reference) is MeshEntityRef
+        for region in raw_regions
+        for reference in tuple(getattr(region, "references", ()))
+    )
     domain_products = _products_for_entity_dimension(
         topology.dimension,
         topology.dimension,
         contract,
     )
-    descriptors: list[NativeRegionDescriptor] = [
-        NativeRegionDescriptor(
-            "DOMAIN",
-            CompiledDomainRegionSource(),
-            domain_products,
+    descriptors: list[NativeRegionDescriptor] = []
+    if not uses_mesh_scopes:
+        descriptors.append(
+            NativeRegionDescriptor(
+                "DOMAIN",
+                CompiledDomainRegionSource(),
+                domain_products,
+            )
         )
-    ]
-    if topology.exact:
+    if topology.exact and not uses_mesh_scopes:
         boundary_products: frozenset[NativeRegionProduct] = (
             frozenset({"node_set", "edge"})
             if topology.dimension == 2
@@ -206,11 +256,6 @@ def describe_native_regions(
             if selector in selectors
         )
 
-    raw_regions = (
-        tuple(named_regions.values())
-        if isinstance(named_regions, Mapping)
-        else tuple(named_regions)
-    )
     user_descriptors: list[NativeRegionDescriptor] = []
     occupied = {
         descriptor.name.casefold(): descriptor.name for descriptor in descriptors
@@ -235,13 +280,24 @@ def describe_native_regions(
             raise NativeRegionValidationError(
                 f"named region {name!r} does not provide logical references"
             )
-        source = LogicalReferencesRegionSource(tuple(references))
-        validated = validate_logical_references(recipe, source.references)
-        source = LogicalReferencesRegionSource(validated)
+        if references and all(
+            type(reference) is MeshEntityRef
+            for reference in references
+        ):
+            source = MeshEntitiesRegionSource(tuple(references))
+            products = _products_for_mesh_kind(
+                source.references[0].kind,
+                contract,
+            )
+        else:
+            source = LogicalReferencesRegionSource(tuple(references))
+            validated = validate_logical_references(recipe, source.references)
+            source = LogicalReferencesRegionSource(validated)
+            products = _products_for_references(topology, validated, contract)
         descriptor = NativeRegionDescriptor(
             name,
             source,
-            _products_for_references(topology, validated, contract),
+            products,
         )
         occupied[folded] = name
         user_descriptors.append(descriptor)
@@ -488,6 +544,26 @@ def _products_for_entity_dimension(
     return frozenset({"node_set"})
 
 
+def _products_for_mesh_kind(
+    kind: str,
+    contract: NativeMeshContract,
+) -> frozenset[NativeRegionProduct]:
+    if kind == "node":
+        return frozenset({"node_set"})
+    if kind == "edge":
+        return frozenset({"edge"})
+    if kind == "face":
+        return frozenset({"surface"})
+    if kind == "element":
+        products: set[NativeRegionProduct] = {"element_set"}
+        if contract.dimension == 1 and contract.line_element_type == "Beam2":
+            products.add("beam_element_set")
+        return frozenset(products)
+    raise NativeRegionValidationError(
+        f"unsupported mesh region kind: {kind!r}"
+    )
+
+
 def _resolve_mesh_contract(
     recipe: NativeGeometry,
     mesh_settings: MeshSettings | None,
@@ -505,6 +581,7 @@ def _resolve_mesh_contract(
 __all__ = [
     "CompiledDomainRegionSource",
     "LogicalReferencesRegionSource",
+    "MeshEntitiesRegionSource",
     "NativeRegionDescriptor",
     "NativeRegionProduct",
     "NativeRegionSource",

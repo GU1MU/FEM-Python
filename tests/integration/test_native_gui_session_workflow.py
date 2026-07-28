@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication
 
 from fem.application import (
     DefinitionEditBatch,
+    MeshEntityRef,
     NamedRegion,
     NamedRegionEditBatch,
     NativePart,
@@ -26,7 +27,6 @@ from fem.core.model import (
     NodalLoad,
 )
 from fem.geometry.recipes import SketchGeometry, SketchRectangle
-from fem.geometry.references import LogicalEntityRef
 from fem.mesh.settings import MeshSettings
 from fem_gui.commands import (
     CloseSessionCommand,
@@ -83,27 +83,45 @@ def _install_native_authoring(window: FEMMainWindow) -> None:
         )
     )
     require_accepted(
+        window.apply_mesh_input_edit(
+            MeshInputEdit(
+                base_session_revision=window.document.session_revision,
+                settings=MeshSettings(0.5),
+            )
+        )
+    )
+    await_succeeded(window.generate_mesh())
+    generated = window.document.model
+    assert generated is not None
+    require_accepted(
         window.apply_named_region_edit(
             NamedRegionEditBatch(
                 base_session_revision=window.document.session_revision,
                 regions=(
                     NamedRegion(
                         "Fixed",
-                        (LogicalEntityRef("edge:left"),),
+                        tuple(
+                            MeshEntityRef.node(node.id)
+                            for node in generated.mesh.nodes
+                            if abs(float(node.x)) <= 1.0e-9
+                        ),
                     ),
                     NamedRegion(
                         "Loaded",
-                        (LogicalEntityRef("edge:right"),),
+                        tuple(
+                            MeshEntityRef.node(node.id)
+                            for node in generated.mesh.nodes
+                            if abs(float(node.x) - 2.0) <= 1.0e-9
+                        ),
+                    ),
+                    NamedRegion(
+                        "DOMAIN",
+                        tuple(
+                            MeshEntityRef.element(element.id)
+                            for element in generated.mesh.elements
+                        ),
                     ),
                 ),
-            )
-        )
-    )
-    require_accepted(
-        window.apply_mesh_input_edit(
-            MeshInputEdit(
-                base_session_revision=window.document.session_revision,
-                settings=MeshSettings(0.5),
             )
         )
     )
@@ -146,7 +164,8 @@ def _mesh_check_and_solve(
     *,
     run_name: str,
 ) -> str:
-    await_succeeded(window.generate_mesh())
+    if window.document.model is None:
+        await_succeeded(window.generate_mesh())
     artifact = window.document.artifact
     assert artifact is not None and artifact.source_kind == "native"
     assert window.geometry is not None

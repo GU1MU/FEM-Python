@@ -34,6 +34,7 @@ from .diagnostics import (
 from .native_regions import (
     CompiledDomainRegionSource,
     LogicalReferencesRegionSource,
+    MeshEntitiesRegionSource,
     describe_native_regions,
 )
 from .project_validation import validate_native_project_inputs
@@ -409,11 +410,92 @@ def _wire_regions_and_tangents(
                 for reference in descriptor.source.references
                 if reference.kind == "edge"
             )
+        elif isinstance(descriptor.source, MeshEntitiesRegionSource):
+            memberships[descriptor.name] = _mesh_scope_wire_members(
+                snapshot,
+                descriptor.source.references,
+                points,
+                members,
+            )
         else:
             raise ValueError(
                 f"unsupported native Wire region source: {descriptor.name}"
             )
     return memberships, tangents
+
+
+def _mesh_scope_wire_members(
+    snapshot: Any,
+    references: Iterable[Any],
+    points: Mapping[str, tuple[float, float, float]],
+    members: Mapping[str, tuple[str, str]],
+) -> frozenset[str]:
+    """Resolve selected line elements back to their authored wire members."""
+
+    model = getattr(snapshot, "model", None)
+    if model is None:
+        raise ValueError("mesh Wire scopes require a generated model")
+    selected_ids = {
+        int(reference.element_id)
+        for reference in references
+        if getattr(reference, "kind", None) == "element"
+    }
+    element_lookup = {
+        int(element.id): element
+        for element in model.mesh.elements
+    }
+    node_lookup = {
+        int(node.id): (
+            float(node.x),
+            float(node.y),
+            float(getattr(node, "z", 0.0)),
+        )
+        for node in model.mesh.nodes
+    }
+    missing = selected_ids.difference(element_lookup)
+    if missing:
+        raise ValueError(
+            f"mesh Wire scope references unknown element {min(missing)}"
+        )
+    result: set[str] = set()
+    for logical_id, (start_name, end_name) in members.items():
+        start = points[start_name]
+        end = points[end_name]
+        if any(
+            all(
+                _point_on_segment(node_lookup[int(node_id)], start, end)
+                for node_id in element_lookup[element_id].node_ids
+            )
+            for element_id in selected_ids
+        ):
+            result.add(logical_id)
+    return frozenset(result)
+
+
+def _point_on_segment(
+    point: tuple[float, float, float],
+    start: tuple[float, float, float],
+    end: tuple[float, float, float],
+) -> bool:
+    segment = tuple(end[index] - start[index] for index in range(3))
+    offset = tuple(point[index] - start[index] for index in range(3))
+    squared_length = sum(value * value for value in segment)
+    if squared_length <= 0.0:
+        return False
+    parameter = sum(
+        offset[index] * segment[index] for index in range(3)
+    ) / squared_length
+    tolerance = 1.0e-8
+    if parameter < -tolerance or parameter > 1.0 + tolerance:
+        return False
+    residual = tuple(
+        offset[index] - parameter * segment[index]
+        for index in range(3)
+    )
+    return _length(residual) <= tolerance * max(
+        1.0,
+        math.sqrt(squared_length),
+    )
 
 
 def _wire_geometry(

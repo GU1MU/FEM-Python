@@ -8,11 +8,12 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox
 
 from fem.application import (
     AuthoringCapability,
     AuthoringStatus,
+    MeshEntityRef,
     ModelSession,
     NamedRegion,
     RegionAssignment,
@@ -105,6 +106,35 @@ def test_native_linear_static_definition_reuses_the_existing_solver():
     recipe = RectangleGeometry("plate", 2.0, 1.0)
     settings = MeshSettings(0.5)
     model = generate_fem_model(recipe, settings)
+    x_coordinates = tuple(node.x for node in model.mesh.nodes)
+    x_min = min(x_coordinates)
+    x_max = max(x_coordinates)
+    tolerance = max(1.0, abs(x_min), abs(x_max)) * 1.0e-9
+    regions = (
+        NamedRegion(
+            "DOMAIN",
+            tuple(
+                MeshEntityRef.element(element.id)
+                for element in model.mesh.elements
+            ),
+        ),
+        NamedRegion(
+            "LEFT",
+            tuple(
+                MeshEntityRef.node(node.id)
+                for node in model.mesh.nodes
+                if abs(node.x - x_min) <= tolerance
+            ),
+        ),
+        NamedRegion(
+            "RIGHT",
+            tuple(
+                MeshEntityRef.node(node.id)
+                for node in model.mesh.nodes
+                if abs(node.x - x_max) <= tolerance
+            ),
+        ),
+    )
     step = static("Step-1")
     step.boundaries = (DisplacementConstraint("LEFT", 1, 2, 0.0),)
     step.cloads = (NodalLoad("RIGHT", 1, 10.0),)
@@ -112,6 +142,9 @@ def test_native_linear_static_definition_reuses_the_existing_solver():
     session.new_native_project()
     session.replace_geometry(session.snapshot().parts, recipe)
     session.replace_mesh_settings(settings)
+    mesh_task = session.prepare_mesh_generation()
+    session.accept_generated_model(mesh_task.token, model)
+    session.replace_named_regions(regions)
     session.replace_model_definitions(
         (MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3}),),
         (
@@ -124,8 +157,6 @@ def test_native_linear_static_definition_reuses_the_existing_solver():
         (RegionAssignment("Section-1", "DOMAIN"),),
         (step,),
     )
-    mesh_task = session.prepare_mesh_generation()
-    session.accept_generated_model(mesh_task.token, model)
     compiled_model = session.snapshot().model
 
     selected = validate_problem(compiled_model, "Step-1")
@@ -400,19 +431,11 @@ def test_main_window_filters_distributed_load_regions_by_model_dimension():
         window._supported_load_regions()
     )
     assert node_regions == [
-        RegionRef("node_set", "BOTTOM"),
         RegionRef("node_set", "EdgeSet"),
-        RegionRef("node_set", "LEFT"),
         RegionRef("node_set", "NodeSet"),
-        RegionRef("node_set", "RIGHT"),
-        RegionRef("node_set", "TOP"),
     ]
     assert edge_regions == [
-        RegionRef("edge", "BOTTOM"),
         RegionRef("edge", "EdgeSet"),
-        RegionRef("edge", "LEFT"),
-        RegionRef("edge", "RIGHT"),
-        RegionRef("edge", "TOP"),
     ]
     assert face_regions == []
     assert line_regions == []
@@ -439,19 +462,13 @@ def test_main_window_filters_distributed_load_regions_by_model_dimension():
         window._supported_load_regions()
     )
     assert node_regions == [
-        RegionRef("node_set", "BOTTOM"),
         RegionRef("node_set", "EdgeSet"),
         RegionRef("node_set", "NodeSet"),
-        RegionRef("node_set", "OUTER"),
         RegionRef("node_set", "Surface"),
-        RegionRef("node_set", "TOP"),
     ]
     assert edge_regions == []
     assert face_regions == [
-        RegionRef("surface", "BOTTOM"),
-        RegionRef("surface", "OUTER"),
         RegionRef("surface", "Surface"),
-        RegionRef("surface", "TOP"),
     ]
     assert line_regions == []
     window.close()
@@ -466,14 +483,8 @@ def test_unmeshed_rectangle_publishes_exact_catalog_region_choices():
     )
 
     assert window.document.model is None
-    assert window._analysis_region_names() == (
-        _regions("node_set", "BOTTOM", "LEFT", "RIGHT", "TOP"),
-        _regions("edge", "BOTTOM", "LEFT", "RIGHT", "TOP"),
-        [],
-    )
-    assert window._analysis_element_regions() == [
-        RegionRef("element_set", "DOMAIN")
-    ]
+    assert window._analysis_region_names() == ([], [], [])
+    assert window._analysis_element_regions() == []
     window.close()
 
 
@@ -482,7 +493,7 @@ def test_load_dialog_validates_region_and_builds_pressure():
     edge_regions = _regions("edge", "Loaded")
     missing_region = LoadDialog(["Load"], [], edge_regions, [], 2)
     missing_region.region_combo.clear()
-    with pytest.raises(ValueError, match="载荷区域"):
+    with pytest.raises(ValueError, match="载荷作用域"):
         missing_region.definition()
 
     dialog = LoadDialog(["Load"], [], edge_regions, [], 2)
@@ -497,6 +508,44 @@ def test_load_dialog_validates_region_and_builds_pressure():
     assert load.edge == "Loaded"
     assert load.load_type == "pressure"
     assert load.magnitude == 12.5
+
+
+def test_scope_pick_buttons_request_node_edge_and_surface_selection():
+    _application()
+    displacement = DisplacementDialog(
+        ["Load"],
+        [],
+        2,
+        allow_scope_selection=True,
+    )
+    assert not displacement.buttons.button(
+        QDialogButtonBox.StandardButton.Ok
+    ).isEnabled()
+    assert displacement.scope_pick_button.text() == "创建"
+    assert displacement.scope_pick_button.toolTip() == ""
+    displacement.scope_pick_button.click()
+    assert displacement.requested_scope_kind() == "node"
+
+    load = LoadDialog(
+        ["Load"],
+        [],
+        [],
+        [],
+        3,
+        scope_selection_kinds=("node", "edge", "surface"),
+    )
+    assert [
+        load.kind_combo.itemData(index)
+        for index in range(load.kind_combo.count())
+    ] == ["node", "edge", "surface", "gravity"]
+    for kind in ("node", "edge", "surface"):
+        load.kind_combo.setCurrentIndex(load.kind_combo.findData(kind))
+        assert load.scope_pick_button.isEnabled()
+        assert load.scope_pick_button.text() == "创建"
+        assert load.scope_pick_button.toolTip() == ""
+        load._scope_selection_request = None
+        load.scope_pick_button.click()
+        assert load.requested_scope_kind() == kind
 
 
 @pytest.mark.parametrize(

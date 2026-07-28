@@ -33,9 +33,10 @@ def test_native_1d_preprocessing_generates_a_truss_model() -> None:
 
     assert model.mesh.dofs_per_node == 3
     assert {element.type for element in model.mesh.elements} == {"Truss2"}
-    assert model.element_sets["DOMAIN"].element_ids
+    assert not model.element_sets
     assert not model.edges
     assert not model.surfaces
+    assert not model.node_sets
 
 
 def _wire_audit_fixture(

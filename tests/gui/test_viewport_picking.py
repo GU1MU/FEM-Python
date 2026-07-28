@@ -9,12 +9,22 @@ import numpy as np
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from fem.geometry import BoxGeometry, CylinderGeometry, LogicalEntityRef
+from fem.geometry import (
+    BoxGeometry,
+    CylinderGeometry,
+    LogicalEntityRef,
+    SketchCircle,
+    SketchGeometry,
+    SketchLine,
+    SketchPlane,
+    SketchPoint,
+)
 from fem_gui.geometry_preview import GeometryPreview, build_geometry_preview
 from fem_gui.widgets import viewport as viewport_module
 from fem_gui.widgets.viewport import (
     FEMViewport,
     PickHit,
+    SketchDraftRenderData,
     WireDraftRenderData,
     _geometry_edge_polydata,
     _geometry_point_polydata,
@@ -63,6 +73,119 @@ def test_qt_to_vtk_position_has_no_high_dpi_one_pixel_offset() -> None:
 
 def test_wire_hover_coordinate_label_has_visible_separators() -> None:
     assert _wire_coordinate_label((0.3, 0.3, 0.0)) == "(0.30, 0.30, 0.00)"
+
+
+def test_sketch_draft_picking_resolves_point_curve_and_profile() -> None:
+    _application()
+    viewport = FEMViewport()
+    viewport._sketch_draft_render_data = SketchDraftRenderData(
+        (
+            (0.0, 0.0, 0.0),
+            (10.0, 0.0, 0.0),
+            (10.0, 10.0, 0.0),
+            (0.0, 10.0, 0.0),
+        ),
+        ("P1", "P2", "P3", "P4"),
+        ((0, 1), (1, 2), (2, 3), (3, 0)),
+        ("L1", "L2", "L3", "L4"),
+        ((0, 1, 2), (0, 2, 3)),
+        ("profile/outer", "profile/outer"),
+    )
+    viewport._world_points_to_display = lambda points: np.column_stack(
+        (points[:, :2], np.full(len(points), 0.5))
+    )
+    viewport._device_pixel_ratio = lambda: 1.0
+
+    assert viewport._sketch_point_at(0, 0) == "P1"
+    assert viewport._sketch_curve_at(5, 0) == "L1"
+    assert viewport._sketch_profile_at(5, 5) == "profile/outer"
+    viewport.close()
+
+
+def test_sketch_authoring_click_emits_stable_draft_ids() -> None:
+    _application()
+    viewport = FEMViewport()
+    viewport._sketch_authoring_mode = "select"
+    viewport._sketch_point_at = lambda _x, _y: None
+    viewport._sketch_curve_at = lambda _x, _y: "L7"
+    selected: list[str] = []
+    viewport.sketchDraftCurveSelected.connect(selected.append)
+
+    viewport._sketch_authoring_click(10, 20)
+
+    assert selected == ["L7"]
+    viewport.close()
+
+
+def test_empty_sketch_shows_xy_axes_origin_and_cursor_coordinates(
+    monkeypatch,
+) -> None:
+    _application()
+    plotter = pv.Plotter(off_screen=True, window_size=(400, 400))
+    viewport = FEMViewport()
+    viewport._plotter = plotter
+    viewport._ensure_plotter = lambda: True
+    viewport._sketch_grid_spacing = 1.0
+    viewport._sketch_draft_render_data = SketchDraftRenderData(
+        (),
+        (),
+        (),
+        (),
+    )
+    monkeypatch.setattr(viewport_module, "_pyvista", pv)
+    monkeypatch.setattr(
+        viewport_module,
+        "is_offscreen_environment",
+        lambda: False,
+    )
+
+    viewport._show_sketch_draft(render=True, reset_camera=False)
+    viewport._set_sketch_authoring_preview_point((1.25, -2.5, 0.0))
+
+    assert "sketch_work_plane_grid" in viewport._actors
+    assert "sketch_work_plane_axis_0" in viewport._actors
+    assert "sketch_work_plane_axis_1" in viewport._actors
+    assert "sketch_work_plane_origin" in viewport._actors
+    assert "sketch_work_plane_axis_labels" in viewport._actors
+    assert "sketch_authoring_hover" in viewport._actors
+    assert "sketch_authoring_hover_label" in viewport._actors
+    plotter.close()
+    viewport.close()
+
+
+def test_sketch_second_point_preview_actor_is_cleared_on_cancel(
+    monkeypatch,
+) -> None:
+    _application()
+    plotter = pv.Plotter(off_screen=True, window_size=(400, 400))
+    viewport = FEMViewport()
+    viewport._plotter = plotter
+    viewport._ensure_plotter = lambda: True
+    viewport._sketch_authoring_active = True
+    viewport._sketch_authoring_mode = "rectangle"
+    monkeypatch.setattr(viewport_module, "_pyvista", pv)
+    monkeypatch.setattr(
+        viewport_module,
+        "is_offscreen_environment",
+        lambda: False,
+    )
+
+    viewport.set_sketch_pending_points(((0.0, 0.0, 0.0),))
+    viewport._set_sketch_authoring_preview_point((1.0, 0.5, 0.0))
+    assert "sketch_authoring_shape_preview" in viewport._actors
+
+    assert viewport.cancel_pending_sketch_interaction()
+    assert "sketch_authoring_shape_preview" not in viewport._actors
+
+    viewport._sketch_authoring_mode = "circle"
+    viewport.set_sketch_pending_points(((0.0, 0.0, 0.0),))
+    viewport._set_sketch_authoring_preview_point((0.0, 1.0, 0.0))
+    assert "sketch_authoring_shape_preview" in viewport._actors
+
+    viewport.stop_sketch_authoring()
+    assert "sketch_authoring_shape_preview" not in viewport._actors
+    plotter.close()
+    viewport.close()
 
 
 def test_single_wire_point_and_selection_render_as_a_highlight(monkeypatch) -> None:
@@ -366,6 +489,47 @@ def test_viewport_allocates_private_tokens_per_display_cell() -> None:
         )
         if logical_id is None
     )
+    viewport.close()
+
+
+def test_strict_sketch_preview_exposes_profile_hole_and_alias_pick_ids() -> None:
+    _application()
+    recipe = SketchGeometry(
+        "strict-preview",
+        SketchPlane.xy(),
+        (
+            SketchPoint("P1", 0.0, 0.0),
+            SketchPoint("P2", 4.0, 0.0),
+            SketchPoint("P3", 4.0, 3.0),
+            SketchPoint("P4", 0.0, 3.0),
+            SketchPoint("P5", 2.0, 1.5),
+        ),
+        (
+            SketchLine("L1", "P1", "P2"),
+            SketchLine("L2", "P2", "P3"),
+            SketchLine("L3", "P3", "P4"),
+            SketchLine("L4", "P4", "P1"),
+            SketchCircle("C1", "P5", 0.5),
+        ),
+    )
+
+    preview = build_geometry_preview(recipe, segments=24)
+    viewport = FEMViewport()
+    viewport._install_geometry_pick_bindings(preview)
+
+    assert preview.faces
+    assert "edge:C1" in preview.edge_logical_ids
+    assert "edge:hole-loop" in preview.edge_logical_ids
+    assert "edge:outer-loop" in preview.edge_logical_ids
+    assert "face:domain" in preview.face_logical_ids
+    assert any(
+        logical_id is not None and logical_id.startswith("face:profile/")
+        for logical_id in preview.face_logical_ids
+    )
+    assert LogicalEntityRef("point:P1") in viewport._geometry_ref_to_pick_ids
+    assert LogicalEntityRef("edge:C1") in viewport._geometry_ref_to_pick_ids
+    assert LogicalEntityRef("face:domain") in viewport._geometry_ref_to_pick_ids
+    assert LogicalEntityRef("body:domain") in viewport._geometry_ref_to_pick_ids
     viewport.close()
 
 

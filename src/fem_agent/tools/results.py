@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 import math
+from operator import attrgetter
 from typing import Any
 
 import numpy as np
@@ -478,11 +479,11 @@ def _beam_stress_values(
     canonical = _canonical_stress_measure(measure)
     rows = beam.nodal_envelope(result)
     if canonical in {"von_mises", "axial_stress_abs_max"}:
-        selector = lambda row: row.absolute_maximum
+        selector = attrgetter("absolute_maximum")
     elif canonical == "axial_stress_max":
-        selector = lambda row: row.maximum
+        selector = attrgetter("maximum")
     elif canonical == "axial_stress_min":
-        selector = lambda row: row.minimum
+        selector = attrgetter("minimum")
     else:
         raise ValueError(
             f"stress measure {measure!r} is unsupported for Beam2; available "

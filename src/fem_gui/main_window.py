@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import replace
 import logging
@@ -14,7 +15,8 @@ from PySide6.QtCore import QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QFileDialog, QGridLayout,
-    QLabel, QMainWindow, QMessageBox, QSizePolicy, QSplitter, QVBoxLayout, QWidget,
+    QInputDialog, QLabel, QMainWindow, QMessageBox, QSizePolicy, QSplitter,
+    QVBoxLayout, QWidget,
 )
 
 from fem.abaqus import (
@@ -32,6 +34,7 @@ from fem.application import (
     ModelCapabilityReport,
     ModelDefinitions,
     ModelSession,
+    MeshEntityRef,
     NamedRegion,
     NamedRegionEditBatch,
     NativePart,
@@ -46,7 +49,6 @@ from fem.application import (
     TokenStatus,
     TransitionEffect,
     UNSET,
-    describe_native_regions,
     describe_model_capabilities,
     describe_native_authoring_capabilities,
     describe_session_authoring,
@@ -144,6 +146,10 @@ from .inspection_dialogs import EntityInfoDialog
 from .inspection_service import InspectionService
 from .mesh_browser import MeshBrowserDialog
 from .geometry_preview import build_geometry_preview
+from .scope_selection import (
+    ScopeSelectionTopology,
+    build_scope_selection_topology,
+)
 from .postprocessing_dialogs import (
     ContourSettingsDialog,
     TypedResultDisplayDialog,
@@ -151,6 +157,7 @@ from .postprocessing_dialogs import (
     TypedResultQueryDialog,
 )
 from .preprocessing_dialogs import (
+    BasicSolidCreationDialog,
     BoxGeometryDialog,
     CylinderGeometryDialog,
     DiskGeometryDialog,
@@ -163,6 +170,7 @@ from .preprocessing_dialogs import (
     RotateGeometryDialog,
     ExtrudeGeometryDialog,
     GeometryManagerDialog,
+    GeometryCreationDialog,
     BooleanGeometryDialog,
     SketchGeometryDialog,
     NamedRegionDialog,
@@ -181,6 +189,7 @@ from .viewport_background import (
     save_background_settings,
 )
 from .viewport_background_dialog import ViewportBackgroundDialog
+from .sketch_editor import SketchDraftController, SketchDraftValidationError
 from .wire_editor import WireDraftController, WireDraftValidationError
 from .visualization.model_adapter import ModelGeometry, build_model_geometry
 from .visualization.result_renderer import (
@@ -192,6 +201,7 @@ from .visualization.scene import DisplayState
 from .visualization.symbols import SymbolSettings
 from .widgets.navigation_panel import NavigationPanel
 from .widgets.ribbon import RibbonPage, RibbonWidget
+from .widgets.sketch_editor_panel import SketchEditorPanel
 from .widgets.wire_editor_panel import WireEditorPanel
 from .widgets.status_bar import CAEStatusBar
 from .widgets.viewport import FEMViewport
@@ -323,17 +333,27 @@ class FEMMainWindow(QMainWindow):
         self._inspection_windows: list[QWidget] = []
         self._mesh_browser: MeshBrowserDialog | None = None
         self._selected_geometry_refs: set[LogicalEntityRef] = set()
+        self._selected_mesh_scope_refs: set[MeshEntityRef] = set()
         self._geometry_selection_mode = "body"
         self._pending_local_mesh_selection = False
         self._pending_analysis_selection: str | None = None
+        self._pending_scope_kind: str | None = None
+        self._scope_selection_overlay_active = False
+        self._scope_selection_topology_cache: (
+            ScopeSelectionTopology | None
+        ) = None
         self._wire_editor_controller: WireDraftController | None = None
         self._wire_editor_original_recipe: object | None = None
         self._wire_editor_base_revision: int | None = None
+        self._sketch_editor_controller: SketchDraftController | None = None
+        self._sketch_editor_original_recipe: object | None = None
+        self._sketch_editor_base_revision: int | None = None
         self.selection = SelectionState()
         self.actions: dict[str, QAction] = {}
         self.task_controller = BackgroundTaskController(self)
         self._command_counter = 0
         self._job_manager: JobManagerDialog | None = None
+        self._viewport_fit_pending = False
         self._display = DisplayState()
         self._model_edges_visible = True
         self._scale_mode = "auto"
@@ -502,11 +522,14 @@ class FEMMainWindow(QMainWindow):
                 "task.busy",
                 "a background task is already running",
             )
-        if self._wire_editor_controller is not None:
+        if (
+            self._wire_editor_controller is not None
+            or self._sketch_editor_controller is not None
+        ):
             return self._rejected_command(
                 command_id,
-                "wire_editor.active",
-                "请先完成或取消当前线体编辑，再打开项目",
+                "sketch_editor.active",
+                "请先完成或取消当前草图编辑，再打开项目",
             )
         target = Path(path)
         try:
@@ -750,6 +773,16 @@ class FEMMainWindow(QMainWindow):
                 "mesh.generate.unavailable",
                 "native geometry and mesh settings are required",
             )
+        if self.document.model is not None:
+            cleared = self.clear_generated_mesh(
+                self.document.session_revision
+            )
+            if cleared.diagnostic is not None:
+                return self._rejected_command(
+                    command_id,
+                    "mesh.generate.clear_failed",
+                    cleared.diagnostic.message,
+                )
         try:
             completion = GuiCommandCompletion(command_id)
             started = self._begin_mesh_generation(completion=completion)
@@ -1686,6 +1719,12 @@ class FEMMainWindow(QMainWindow):
             else None
         )
         self.document = snapshot
+        if (
+            snapshot.artifact is None
+            or previous_artifact_id
+            != snapshot.artifact.artifact_id
+        ):
+            self._scope_selection_topology_cache = None
 
         step_names = self.session.runnable_step_names()
         if self._current_step_name not in step_names:
@@ -1719,9 +1758,17 @@ class FEMMainWindow(QMainWindow):
                     self.actions["geometry_select_face"].setChecked(False)
                     self.viewport.set_selection_mode("geometry_body")
                 try:
-                    self.viewport.show_geometry_preview(
-                        build_geometry_preview(recipe)
-                    )
+                    preview = build_geometry_preview(recipe)
+                    if (
+                        self._sketch_editor_controller is not None
+                        or self._wire_editor_controller is not None
+                    ):
+                        self.viewport.show_geometry_preview(
+                            preview,
+                            render=False,
+                        )
+                    else:
+                        self.viewport.show_geometry_preview(preview)
                 finally:
                     # The Session transition is already committed.  Keep action
                     # gates aligned with it even when the optional renderer
@@ -1844,6 +1891,9 @@ class FEMMainWindow(QMainWindow):
     def _clear_model_projection(self) -> None:
         self._close_inspection_windows()
         self._close_job_manager()
+        self._pending_analysis_selection = None
+        self._pending_scope_kind = None
+        self.viewport_panel.scope_creation_bar.finish()
         self.inspection_service = None
         self.geometry = None
         self.result_provider = None
@@ -2000,7 +2050,7 @@ class FEMMainWindow(QMainWindow):
         file_menu.addAction(self.actions["exit"])
         edit_menu = self.menuBar().addMenu("编辑")
         edit_menu.setObjectName("menuEdit")
-        edit_menu.addActions([self.actions[name] for name in ("select_node", "select_element", "clear_selection")])
+        edit_menu.addActions([self.actions[name] for name in ("select_node", "select_element", "select_edge")])
         view_menu = self.menuBar().addMenu("视图")
         view_menu.setObjectName("menuView")
         view_menu.addActions([self.actions[name] for name in (
@@ -2042,7 +2092,7 @@ class FEMMainWindow(QMainWindow):
             ("输出", ("export_csv", "export_vtk"), ()),
         ), step_group="分析")
         self._add_ribbon_page("几何", (
-            ("创建", ("geometry_sketch", "geometry_wire"), ("geometry_sketch", "geometry_wire")),
+            ("创建", ("geometry_create",), ("geometry_create",)),
             (
                 "特征",
                 ("geometry_extrude", "geometry_move", "geometry_rotate"),
@@ -2058,7 +2108,6 @@ class FEMMainWindow(QMainWindow):
                 (
                     "geometry_select_point", "geometry_select_edge",
                     "geometry_select_face", "geometry_select_body",
-                    "geometry_region", "geometry_regions",
                 ),
                 (),
             ),
@@ -2076,6 +2125,11 @@ class FEMMainWindow(QMainWindow):
             ),
             ("划分", ("mesh_generate", "mesh_clear"), ("mesh_generate",)),
             (
+                "作用域",
+                ("geometry_region", "geometry_regions"),
+                (),
+            ),
+            (
                 "检查",
                 ("mesh_verify", "mesh_statistics"),
                 (),
@@ -2083,7 +2137,7 @@ class FEMMainWindow(QMainWindow):
         ))
         self._add_ribbon_page("模型", (
             ("定义", ("material_manager", "section_manager", "section_assign"), ("material_manager",)),
-            ("选择", ("select_node", "select_element", "clear_selection", "selected_info"), ()),
+            ("选择", ("select_node", "select_element", "select_edge", "selected_info"), ()),
             ("显示", ("nodes", "edges", "node_labels", "element_labels"), ()),
             ("符号", ("symbols", "symbol_settings"), ()),
         ))
@@ -2240,19 +2294,27 @@ class FEMMainWindow(QMainWindow):
         self.viewport = FEMViewport(self)
         self.viewport.set_background_settings(self._background_settings)
         self.viewport_panel = ViewportPanel(self.viewport, self.actions, self)
+        self.viewport_panel.scope_creation_bar.createRequested.connect(
+            self._complete_scope_creation_from_bar
+        )
         self.wire_editor_panel = WireEditorPanel(parent=self)
         self.wire_editor_panel.hide()
+        self.sketch_editor_panel = SketchEditorPanel(parent=self)
+        self.sketch_editor_panel.hide()
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
         splitter.setObjectName("mainSplitter")
         splitter.addWidget(self.navigation)
         splitter.addWidget(self.viewport_panel)
         splitter.addWidget(self.wire_editor_panel)
-        splitter.setSizes([260, 1020])
+        splitter.addWidget(self.sketch_editor_panel)
+        splitter.setSizes([260, 1020, 0, 0])
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
+        splitter.setStretchFactor(3, 0)
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(2, True)
+        splitter.setCollapsible(3, True)
         self.main_splitter = splitter
         host = QWidget(self)
         host.setObjectName("centralWorkspace")
@@ -2272,6 +2334,15 @@ class FEMMainWindow(QMainWindow):
         self.viewport.geometryEntityPicked.connect(
             self._on_geometry_entity_pick
         )
+        self.viewport.geometryEntitiesBoxSelected.connect(
+            self._on_geometry_entities_box_selected
+        )
+        self.viewport.meshEntityPicked.connect(
+            self._on_mesh_scope_entity_pick
+        )
+        self.viewport.meshEntitiesBoxSelected.connect(
+            self._on_mesh_entities_box_selected
+        )
         self.viewport.selectionMissed.connect(self._on_viewport_pick_missed)
         self.viewport.selectionConfirmed.connect(self._confirm_guided_selection)
         self.viewport.selectionCancelled.connect(self._cancel_guided_selection)
@@ -2283,11 +2354,23 @@ class FEMMainWindow(QMainWindow):
         self.wire_editor_panel.entityFocusRequested.connect(
             self.viewport.focus_wire_draft_entity
         )
+        self.sketch_editor_panel.finishRequested.connect(
+            self.finish_sketch_geometry
+        )
+        self.sketch_editor_panel.cancelRequested.connect(
+            self.cancel_sketch_geometry
+        )
+        self.sketch_editor_panel.entityFocusRequested.connect(
+            self.viewport.focus_sketch_draft_entity
+        )
 
     def _build_status_bar(self) -> None:
         self.status_panel = CAEStatusBar(self)
         self.status_panel.cancelRequested.connect(self.cancel_current_task)
         self.wire_editor_panel.statusChanged.connect(
+            lambda message: self.status_panel.set_state(message, 5000)
+        )
+        self.sketch_editor_panel.statusChanged.connect(
             lambda message: self.status_panel.set_state(message, 5000)
         )
         self.setStatusBar(self.status_panel)
@@ -2644,6 +2727,7 @@ class FEMMainWindow(QMainWindow):
                 and self.viewport.run_id == provider.source.run_id
             ),
             wire_editor_active=self._wire_editor_controller is not None,
+            sketch_editor_active=self._sketch_editor_controller is not None,
         )
         for availability in derive_action_availability(
             self.document,
@@ -2709,7 +2793,11 @@ class FEMMainWindow(QMainWindow):
     def start_wire_geometry(self) -> None:
         """Start a detached Wire draft from the Geometry ribbon."""
 
-        if self.busy or self._wire_editor_controller is not None:
+        if (
+            self.busy
+            or self._wire_editor_controller is not None
+            or self._sketch_editor_controller is not None
+        ):
             return
         if self.document.source_kind != "native":
             self._show_error(
@@ -2731,7 +2819,10 @@ class FEMMainWindow(QMainWindow):
         *,
         original_recipe: object | None,
     ) -> None:
-        if self._wire_editor_controller is not None:
+        if (
+            self._wire_editor_controller is not None
+            or self._sketch_editor_controller is not None
+        ):
             return
         controller = (
             WireDraftController(root=root)
@@ -2746,10 +2837,10 @@ class FEMMainWindow(QMainWindow):
             base_snapshot=controller.snapshot(),
         )
         self.wire_editor_panel.begin(self.viewport)
+        self.main_splitter.setSizes([260, 760, 360, 0])
         self._wire_editor_work_plane_changed(
             str(self.wire_editor_panel.work_plane_combo.currentData())
         )
-        self.main_splitter.setSizes([260, 760, 360])
         self.ribbon.set_current("几何")
         self.status_panel.set_state(
             "线体编辑已启动，请在视图区添加点并连接杆件",
@@ -2820,9 +2911,9 @@ class FEMMainWindow(QMainWindow):
         self._wire_editor_controller = None
         self._wire_editor_original_recipe = None
         self._wire_editor_base_revision = None
-        self.main_splitter.setSizes([260, 1020, 0])
+        self.main_splitter.setSizes([260, 1020, 0, 0])
         self._update_action_states()
-        QTimer.singleShot(0, self.viewport.fit)
+        self._schedule_viewport_fit()
 
     def _confirm_wire_editor_discard(self) -> bool:
         answer = QMessageBox.question(
@@ -2840,20 +2931,178 @@ class FEMMainWindow(QMainWindow):
         if view is not None:
             self.viewport.set_view(view)
 
-    def create_sketch_geometry(self) -> None:
-        if self.document.source_kind == "imported":
+    def create_geometry(self) -> None:
+        """Open the single 1D/2D/3D geometry creation entry point."""
+
+        if (
+            self.busy
+            or self._wire_editor_controller is not None
+            or self._sketch_editor_controller is not None
+        ):
+            return
+        if self.document.source_kind != "native":
             self._show_error(
-                "几何编辑不可用",
-                "当前 INP 只包含有限元模型和网格，不能反向转换为可编辑 CAD；请新建自主模型。",
+                "创建草图",
+                "请先新建自主模型；INP 模型不能反向转换为可编辑 CAD。",
             )
             return
-        current = self.document.geometry_recipe
-        dialog = SketchGeometryDialog(
-            current if isinstance(current, SketchGeometry) else None,
-            self,
+        dialog = GeometryCreationDialog(self)
+        if not self._exec_dialog(dialog):
+            return
+        creation_kind = dialog.creation_kind()
+        if creation_kind == "3d":
+            solid_dialog = BasicSolidCreationDialog(self)
+            if not self._exec_dialog(solid_dialog):
+                return
+            creation_kind = f"3d_{solid_dialog.solid_kind()}"
+        handlers = {
+            "1d": self.start_wire_geometry,
+            "2d": self.start_sketch_geometry,
+            "3d_box": self.create_box_geometry,
+            "3d_cylinder": self.create_cylinder_geometry,
+        }
+        handler = handlers.get(creation_kind)
+        if handler is None:
+            raise RuntimeError("geometry creation dialog returned an unknown kind")
+        handler()
+
+    def create_sketch_geometry(self) -> None:
+        """Compatibility action: enter the interactive 2D sketch workflow."""
+
+        self.start_sketch_geometry()
+
+    def start_sketch_geometry(self) -> None:
+        if (
+            self.busy
+            or self._wire_editor_controller is not None
+            or self._sketch_editor_controller is not None
+        ):
+            return
+        if self.document.source_kind != "native":
+            self._show_error(
+                "新建二维草图",
+                "请先新建自主模型，再创建二维草图。",
+            )
+            return
+        self._begin_sketch_editor(None, original_recipe=None)
+
+    def _begin_sketch_editor(
+        self,
+        root: SketchGeometry | None,
+        *,
+        original_recipe: object | None,
+    ) -> None:
+        if (
+            self._wire_editor_controller is not None
+            or self._sketch_editor_controller is not None
+        ):
+            return
+        controller = (
+            SketchDraftController(root=root)
+            if root is not None
+            else SketchDraftController(name="草图-1")
         )
-        if dialog.exec():
-            self._set_native_geometry(dialog.recipe(), "草图")
+        self._sketch_editor_controller = controller
+        self._sketch_editor_original_recipe = original_recipe
+        self._sketch_editor_base_revision = self.document.session_revision
+        self.sketch_editor_panel.set_controller(
+            controller,
+            base_snapshot=controller.snapshot(),
+        )
+        self.sketch_editor_panel.begin(self.viewport)
+        self.main_splitter.setSizes([260, 720, 0, 400])
+        self.ribbon.set_current("几何")
+        self.viewport.set_view("top")
+        self.status_panel.set_state(
+            "二维草图编辑已启动，请在 XY 工作平面绘制闭合轮廓",
+            0,
+        )
+        self._update_action_states()
+
+    def _confirm_sketch_replacement(self) -> bool:
+        if self.document.geometry_recipe is None:
+            return True
+        answer = QMessageBox.question(
+            self,
+            "替换几何",
+            "完成草图将替换当前自主几何，是否提交？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def finish_sketch_geometry(self) -> None:
+        controller = self._sketch_editor_controller
+        base_revision = self._sketch_editor_base_revision
+        if controller is None or base_revision is None:
+            return
+        try:
+            root = controller.to_sketch_geometry()
+        except SketchDraftValidationError as error:
+            self.sketch_editor_panel.show_status(str(error))
+            return
+        if (
+            self.document.geometry_recipe is not None
+            and not self._confirm_sketch_replacement()
+        ):
+            self.sketch_editor_panel.show_status(
+                "已保留当前草稿；可继续编辑后再次完成"
+            )
+            return
+        original = self._sketch_editor_original_recipe
+        recipe = (
+            self._replace_root_geometry(original, root)
+            if original is not None
+            else root
+        )
+        receipt = self.apply_native_geometry_edit(
+            NativeGeometryEdit(
+                base_session_revision=base_revision,
+                parts=tuple(self.document.parts) or (NativePart(),),
+                recipe=recipe,
+                mesh_settings=UNSET,
+            )
+        )
+        if receipt.diagnostic is not None:
+            self.sketch_editor_panel.show_status(
+                f"{receipt.diagnostic.code}: {receipt.diagnostic.message}"
+            )
+            return
+        self._exit_sketch_editor()
+        self.status_panel.set_state(
+            "二维草图已创建；可继续拉伸、布尔运算或设置网格",
+            6000,
+        )
+        self.ribbon.set_current("几何")
+
+    def cancel_sketch_geometry(self) -> None:
+        controller = self._sketch_editor_controller
+        if controller is None:
+            return
+        if controller.dirty and not self._confirm_sketch_editor_discard():
+            return
+        self._exit_sketch_editor()
+        self._rebuild_full_projection()
+        self.status_panel.set_state("已取消二维草图编辑", 4000)
+
+    def _exit_sketch_editor(self) -> None:
+        self.sketch_editor_panel.end()
+        self._sketch_editor_controller = None
+        self._sketch_editor_original_recipe = None
+        self._sketch_editor_base_revision = None
+        self.main_splitter.setSizes([260, 1020, 0, 0])
+        self._update_action_states()
+        self._schedule_viewport_fit()
+
+    def _confirm_sketch_editor_discard(self) -> bool:
+        answer = QMessageBox.question(
+            self,
+            "放弃二维草图",
+            "二维草图包含未保存的修改，是否放弃这些修改？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
 
     def create_rectangle_geometry(self) -> None:
         current = self.document.geometry_recipe
@@ -2861,7 +3110,7 @@ class FEMMainWindow(QMainWindow):
             current if isinstance(current, RectangleGeometry) else None,
             self,
         )
-        if not dialog.exec():
+        if not self._exec_dialog(dialog):
             return
         self._set_native_geometry(dialog.recipe(), "矩形")
 
@@ -2871,7 +3120,7 @@ class FEMMainWindow(QMainWindow):
             current if isinstance(current, DiskGeometry) else None,
             self,
         )
-        if dialog.exec():
+        if self._exec_dialog(dialog):
             self._set_native_geometry(dialog.recipe(), "圆盘")
 
     def create_box_geometry(self) -> None:
@@ -2880,7 +3129,7 @@ class FEMMainWindow(QMainWindow):
             current if isinstance(current, BoxGeometry) else None,
             self,
         )
-        if dialog.exec():
+        if self._exec_dialog(dialog):
             self._set_native_geometry(dialog.recipe(), "长方体")
 
     def create_cylinder_geometry(self) -> None:
@@ -2889,7 +3138,7 @@ class FEMMainWindow(QMainWindow):
             current if isinstance(current, CylinderGeometry) else None,
             self,
         )
-        if dialog.exec():
+        if self._exec_dialog(dialog):
             self._set_native_geometry(dialog.recipe(), "圆柱")
 
     def create_plate_with_hole_geometry(self) -> None:
@@ -2898,7 +3147,7 @@ class FEMMainWindow(QMainWindow):
             current if isinstance(current, PlateWithHoleGeometry) else None,
             self,
         )
-        if not dialog.exec():
+        if not self._exec_dialog(dialog):
             return
         self._set_native_geometry(dialog.recipe(), "带圆孔矩形板")
 
@@ -2911,7 +3160,7 @@ class FEMMainWindow(QMainWindow):
             self,
             is_3d=geometry_dimension(current) != 2,
         )
-        if dialog.exec():
+        if self._exec_dialog(dialog):
             self._set_native_geometry(dialog.recipe(), "移动后的")
 
     def rotate_geometry(self) -> None:
@@ -2923,7 +3172,7 @@ class FEMMainWindow(QMainWindow):
             self,
             is_3d=geometry_dimension(current) != 2,
         )
-        if dialog.exec():
+        if self._exec_dialog(dialog):
             self._set_native_geometry(dialog.recipe(), "旋转后的")
 
     def extrude_geometry(self) -> None:
@@ -2934,7 +3183,7 @@ class FEMMainWindow(QMainWindow):
         ):
             return
         dialog = ExtrudeGeometryDialog(current, self)
-        if dialog.exec():
+        if self._exec_dialog(dialog):
             self._set_native_geometry(dialog.recipe(), "拉伸实体")
 
     def fuse_geometry(self) -> None:
@@ -2948,6 +3197,17 @@ class FEMMainWindow(QMainWindow):
         if not isinstance(current, NATIVE_GEOMETRY_TYPES):
             return
         if isinstance(current, SketchGeometry):
+            if current.is_strict:
+                self._begin_sketch_editor(
+                    current,
+                    original_recipe=current,
+                )
+                action = "孔轮廓" if operation == "cut" else "材料轮廓"
+                self.status_panel.set_state(
+                    f"请绘制新的闭合{action}；轮廓嵌套关系将在完成草图时解析",
+                    0,
+                )
+                return
             dialog = SketchGeometryDialog(
                 current,
                 self,
@@ -2955,7 +3215,7 @@ class FEMMainWindow(QMainWindow):
                     "cut" if operation == "cut" else "material"
                 ),
             )
-            if dialog.exec():
+            if self._exec_dialog(dialog):
                 self._set_native_geometry(dialog.recipe(), label)
             return
         dialog = BooleanGeometryDialog(
@@ -2964,7 +3224,7 @@ class FEMMainWindow(QMainWindow):
             self,
             is_3d=geometry_dimension(current) == 3,
         )
-        if dialog.exec():
+        if self._exec_dialog(dialog):
             self._set_native_geometry(dialog.recipe(), label)
 
     @staticmethod
@@ -3010,9 +3270,7 @@ class FEMMainWindow(QMainWindow):
         if not isinstance(current, NATIVE_GEOMETRY_TYPES):
             return
         if isinstance(current, SketchGeometry):
-            dialog = SketchGeometryDialog(current, self)
-            if dialog.exec():
-                self._set_native_geometry(dialog.recipe(), "草图")
+            self._begin_sketch_editor(current, original_recipe=current)
             return
         root = self._root_geometry(current)
         dialog = GeometryManagerDialog(
@@ -3025,16 +3283,10 @@ class FEMMainWindow(QMainWindow):
                 else "编辑基础草图"
             ),
         )
-        if not dialog.exec():
+        if not self._exec_dialog(dialog):
             return
         if dialog.operation == "edit" and isinstance(root, SketchGeometry):
-            editor = SketchGeometryDialog(root, self)
-            if editor.exec():
-                rebuilt = self._replace_root_geometry(
-                    current,
-                    editor.recipe(),
-                )
-                self._set_native_geometry(rebuilt, "重新生成后的")
+            self._begin_sketch_editor(root, original_recipe=current)
         elif dialog.operation == "edit" and isinstance(root, WireGeometry):
             self._begin_wire_editor(root, original_recipe=current)
         elif dialog.operation == "delete" and isinstance(
@@ -3069,6 +3321,7 @@ class FEMMainWindow(QMainWindow):
             self._show_command_rejection("删除几何", receipt)
             return
         self._selected_geometry_refs.clear()
+        self._selected_mesh_scope_refs.clear()
         self.viewport_panel.set_geometry_context(False)
         self.status_panel.set_state("当前几何已删除", 5000)
 
@@ -3098,6 +3351,7 @@ class FEMMainWindow(QMainWindow):
         self._pending_local_mesh_selection = False
         self._pending_analysis_selection = None
         self._selected_geometry_refs.clear()
+        self._selected_mesh_scope_refs.clear()
         self._geometry_selection_mode = "body"
         self.actions["geometry_select_body"].setChecked(True)
         self.viewport.set_selection_mode("geometry_body")
@@ -3109,8 +3363,8 @@ class FEMMainWindow(QMainWindow):
         )
         if TransitionEffect.NAMED_REGIONS_CLEARED in delta.effects:
             message += (
-                f"；{prior_region_count} 个旧命名区域已失效，"
-                "请重新选择同名区域"
+                f"；{prior_region_count} 个旧作用域已失效，"
+                "请重新创建作用域"
             )
         if TransitionEffect.LOCAL_CONTROLS_CLEARED in delta.effects:
             message += "；旧局部网格设置已失效"
@@ -3126,30 +3380,95 @@ class FEMMainWindow(QMainWindow):
         self.status_panel.set_state(message, 6000)
 
     def create_named_geometry_region(self) -> None:
-        self._create_region_from_current_geometry_selection()
+        if self.document.model is None:
+            return
+        if self._pending_analysis_selection == "scope":
+            self._show_scope_creation_bar(
+                self._pending_scope_kind or "node"
+            )
+            return
+        kind = self._choose_mesh_scope_kind()
+        if kind is not None:
+            self._request_analysis_geometry_selection("scope", kind)
 
-    def _create_region_from_current_geometry_selection(self) -> str | None:
-        references = self._canonical_geometry_selection()
+    def _choose_mesh_scope_kind(self) -> str | None:
+        if self.document.model is None:
+            return None
+        topology = self._scope_selection_topology()
+        available_kinds = {
+            reference.kind
+            for reference in topology.mesh_references
+        }
+        kinds = [
+            ("Set", "node"),
+            *((("Edge", "edge"),) if "edge" in available_kinds else ()),
+            *((("Surface", "face"),) if "face" in available_kinds else ()),
+            *((("Volume", "body"),) if "body" in available_kinds else ()),
+        ]
+        labels = tuple(label for label, _kind in kinds)
+        selected, accepted = QInputDialog.getItem(
+            self,
+            "创建作用域",
+            "作用域类型",
+            labels,
+            0,
+            False,
+        )
+        self._schedule_viewport_fit()
+        if not accepted:
+            return None
+        return dict(kinds).get(str(selected))
+
+    def _scope_selection_topology(self) -> ScopeSelectionTopology:
+        model = self.document.model
+        if model is None:
+            raise RuntimeError("scope selection requires a generated mesh")
+        if self._scope_selection_topology_cache is None:
+            self._scope_selection_topology_cache = (
+                build_scope_selection_topology(
+                    model,
+                    self.document.geometry_recipe,
+                )
+            )
+        return self._scope_selection_topology_cache
+
+    def _start_edge_scope_selection(self) -> None:
+        if self.document.model is None:
+            return
+        self._request_analysis_geometry_selection("scope", "edge")
+
+    def _create_region_from_current_mesh_selection(
+        self,
+        *,
+        requested_name: str | None = None,
+    ) -> str | None:
+        references = self._canonical_mesh_scope_selection()
         if not references:
             return None
         kind = references[0].kind
         for region in self.document.named_regions.values():
             if region.references == references:
                 return region.name
-        dialog = NamedRegionDialog(
-            references,
-            self,
-            suggested_name=self._next_named_region_name(kind),
-        )
-        if not dialog.exec():
-            return None
-        try:
-            name = dialog.region_name()
-        except ValueError as error:
-            self._show_error("创建命名区域", str(error))
-            return None
+        if requested_name is None:
+            dialog = NamedRegionDialog(
+                references,
+                self,
+                suggested_name=self._next_named_region_name(kind),
+            )
+            if not self._exec_dialog(dialog):
+                return None
+            try:
+                name = dialog.region_name()
+            except ValueError as error:
+                self._show_error("创建作用域", str(error))
+                return None
+        else:
+            name = str(requested_name).strip()
+            if not name:
+                self._show_error("创建作用域", "作用域名称不能为空")
+                return None
         if name in self.document.named_regions:
-            self._show_error("创建命名区域", f"区域名称已存在：{name}")
+            self._show_error("创建作用域", f"作用域名称已存在：{name}")
             return None
         regions = dict(self.document.named_regions)
         base_revision = self.document.session_revision
@@ -3160,14 +3479,14 @@ class FEMMainWindow(QMainWindow):
                 regions=tuple(regions.values()),
             )
         except (TypeError, ValueError) as error:
-            self._show_error("创建命名区域", str(error))
+            self._show_error("创建作用域", str(error))
             return None
         receipt = self.apply_named_region_edit(batch)
         if receipt.diagnostic is not None:
-            self._show_command_rejection("创建命名区域", receipt)
+            self._show_command_rejection("创建作用域", receipt)
             return None
         self.status_panel.set_state(
-            f"已创建几何区域 {name}；网格生成后可使用对应的网格集合进行分配和分析",
+            f"已创建作用域 {name}",
             5000,
         )
         self._update_action_states()
@@ -3179,9 +3498,9 @@ class FEMMainWindow(QMainWindow):
             and geometry_dimension(self.document.geometry_recipe) == 1
         ):
             prefixes = {
-                "point": "JointSet",
-                "edge": "MemberSet",
-                "body": "DomainSet",
+                "node": "NodeSet",
+                "edge": "EdgeSet",
+                "element": "ElementSet",
             }
             prefix = prefixes.get(kind, "Region")
             existing = {name.casefold() for name in self.document.named_regions}
@@ -3190,10 +3509,11 @@ class FEMMainWindow(QMainWindow):
                 index += 1
             return f"{prefix}-{index}"
         prefixes = {
-            "point": "PointSet",
+            "node": "NodeSet",
             "edge": "EdgeSet",
             "face": "Surface",
-            "body": "BodySet",
+            "body": "Volume",
+            "element": "ElementSet",
         }
         prefix = prefixes.get(kind, "Region")
         existing = {
@@ -3204,22 +3524,6 @@ class FEMMainWindow(QMainWindow):
             index += 1
         return f"{prefix}-{index}"
 
-    def _native_region_catalog(self) -> tuple[Any, ...]:
-        recipe = self.document.geometry_recipe
-        if not isinstance(recipe, NATIVE_GEOMETRY_TYPES):
-            return ()
-        return describe_native_regions(
-            recipe,
-            self.document.named_regions,
-        )
-
-    def _native_region_names(self, product: str) -> list[str]:
-        return [
-            descriptor.name
-            for descriptor in self._native_region_catalog()
-            if product in descriptor.products
-        ]
-
     def show_named_region_manager(self) -> None:
         if not self.document.named_regions:
             return
@@ -3228,7 +3532,7 @@ class FEMMainWindow(QMainWindow):
             dict(self.document.named_regions),
             self,
         )
-        if not dialog.exec():
+        if not self._exec_dialog(dialog):
             return
         updated = dialog.values()
         try:
@@ -3239,21 +3543,41 @@ class FEMMainWindow(QMainWindow):
                 deletes=dialog.delete_intents(),
             )
         except (TypeError, ValueError) as error:
-            self._show_error("命名区域管理", str(error))
+            self._show_error("作用域管理", str(error))
             return
         receipt = self.apply_named_region_edit(batch)
         if receipt.diagnostic is not None:
-            self._show_command_rejection("命名区域管理", receipt)
+            self._show_command_rejection("作用域管理", receipt)
             return
         self.status_panel.set_state(
-            "命名区域已更新，请重新生成网格",
+            "作用域已更新",
             5000,
+        )
+
+    def _scope_authoring_targets(
+        self,
+        authoring: Any | None = None,
+    ) -> tuple[Any, ...]:
+        projection = (
+            authoring
+            if authoring is not None
+            else describe_session_authoring(self.document)
+        )
+        targets = projection.targets
+        if self.document.source_kind != "native":
+            return targets
+        authored_names = frozenset(self.document.named_regions)
+        return tuple(
+            target
+            for target in targets
+            if target.region.name in authored_names
         )
 
     def _analysis_region_names(
         self,
     ) -> tuple[list[RegionRef], list[RegionRef], list[RegionRef]]:
-        targets = describe_session_authoring(self.document).targets
+        authoring = describe_session_authoring(self.document)
+        targets = self._scope_authoring_targets(authoring)
         return tuple(
             [target.region for target in targets if target.region.kind == kind]
             for kind in ("node_set", "edge", "surface")
@@ -3264,9 +3588,10 @@ class FEMMainWindow(QMainWindow):
         capability_report: ModelCapabilityReport | None = None,
     ) -> list[RegionRef]:
         del capability_report
+        authoring = describe_session_authoring(self.document)
         return [
             target.region
-            for target in describe_session_authoring(self.document).targets
+            for target in self._scope_authoring_targets(authoring)
             if target.region.kind == "element_set"
         ]
 
@@ -3298,7 +3623,8 @@ class FEMMainWindow(QMainWindow):
     ]:
         """Return targets filtered by the application capability report."""
 
-        projection = describe_session_authoring(self.document)
+        authoring = describe_session_authoring(self.document)
+        targets = self._scope_authoring_targets(authoring)
         operations = (
             ("node_set", "load.node"),
             ("edge", "load.edge"),
@@ -3308,34 +3634,136 @@ class FEMMainWindow(QMainWindow):
         return tuple(
             [
                 target.region
-                for target in projection.targets
+                for target in targets
                 if target.region.kind == kind
                 and target.operation(operation).can_submit
             ]
             for kind, operation in operations
         )
 
-    def _request_analysis_geometry_selection(self, operation: str) -> None:
-        recipe = self.document.geometry_recipe
-        if not isinstance(recipe, NATIVE_GEOMETRY_TYPES):
+    def _request_analysis_geometry_selection(
+        self,
+        operation: str,
+        scope_kind: str | None = None,
+    ) -> None:
+        if self.document.model is None:
             return
         self._pending_analysis_selection = operation
-        default_kind = (
-            "face"
-            if geometry_dimension(recipe) == 3
-            else "point"
-            if geometry_dimension(recipe) == 1
-            else "edge"
+        topology = self._scope_selection_topology()
+        dimension = topology.preview.topological_dimension
+        domain_kind = {
+            1: "edge",
+            2: "face",
+            3: "body",
+        }[dimension]
+        requested_kind = {
+            "node": "node",
+            "edge": "edge",
+            "surface": "face",
+            "face": "face",
+            "body": "body",
+            "volume": "body",
+            "line": domain_kind,
+            "element": "element",
+            "element_set": domain_kind,
+        }.get(str(scope_kind or ""))
+        semantic_kinds = {
+            reference.kind
+            for reference in topology.mesh_references
+        }
+        default_kind = requested_kind or (
+            domain_kind if domain_kind in semantic_kinds else "node"
         )
-        self.actions[f"geometry_select_{default_kind}"].setChecked(True)
-        self._set_geometry_selection_mode(default_kind)
-        label = "边界条件" if operation == "boundary" else "载荷"
+        available = {"node", "element"} | semantic_kinds
+        if default_kind not in available:
+            self._show_error(
+                "创建作用域",
+                f"当前网格不支持 {default_kind} 作用域",
+            )
+            self._pending_analysis_selection = None
+            return
+        self._pending_scope_kind = default_kind
+        self.viewport_panel.set_geometry_context(False)
+        if default_kind in {"edge", "face", "body"}:
+            self._selected_geometry_refs.clear()
+            self._selected_mesh_scope_refs.clear()
+            self.viewport.show_geometry_preview(
+                topology.preview,
+                preserve_model=True,
+            )
+            self._scope_selection_overlay_active = True
+            self._set_geometry_selection_mode(default_kind)
+        else:
+            self._selected_geometry_refs.clear()
+            self._selected_mesh_scope_refs.clear()
+            self._set_mesh_scope_selection_mode(default_kind)
+        self._show_scope_creation_bar(default_kind)
+        label = {
+            "boundary": "边界条件",
+            "load": "载荷",
+            "scope": "作用域",
+            "section": "截面分配",
+        }.get(operation, "作用域")
+        kind_label = {
+            "node": "节点",
+            "edge": "边",
+            "face": "面",
+            "body": "体",
+            "element": "单元",
+        }[default_kind]
         self.status_panel.set_state(
-            f"请在视口中选择要施加{label}的"
-            f"{'面' if default_kind == 'face' else '边'}；"
-            "Ctrl 多选，Enter 完成，Esc 取消",
+            f"请选择用于{label}的{kind_label}；可点选或框选，"
+            "Ctrl 多选，使用视图底部的“创建”完成，Esc 取消",
             0,
         )
+
+    def _show_scope_creation_bar(self, semantic_kind: str) -> None:
+        type_label = {
+            "node": "Set",
+            "edge": "Edge",
+            "face": "Surface",
+            "body": "Volume",
+            "element": "Set",
+        }[semantic_kind]
+        bar = self.viewport_panel.scope_creation_bar
+        bar.begin(
+            type_label,
+            self._next_named_region_name(semantic_kind),
+        )
+        bar.set_selection_ready(
+            bool(self._canonical_mesh_scope_selection())
+        )
+
+    def _complete_scope_creation_from_bar(self) -> None:
+        if self._pending_analysis_selection is None:
+            return
+        if not self._canonical_mesh_scope_selection():
+            self.status_panel.set_state("请先选择至少一个对象", 3000)
+            return
+        bar = self.viewport_panel.scope_creation_bar
+        name = self._create_region_from_current_mesh_selection(
+            requested_name=bar.scope_name(),
+        )
+        if name is None:
+            return
+        operation = self._pending_analysis_selection
+        self._pending_analysis_selection = None
+        self._pending_scope_kind = None
+        if self._scope_selection_overlay_active:
+            self.viewport.hide_geometry_selection_overlay()
+            self._scope_selection_overlay_active = False
+        bar.finish()
+        callback = {
+            "boundary": self.create_displacement_boundary,
+            "load": self.create_load,
+            "section": self.assign_section_to_region,
+        }.get(operation)
+        if callback is not None:
+            QTimer.singleShot(0, callback)
+        elif operation != "scope":
+            raise RuntimeError(
+                f"unsupported guided scope operation: {operation}"
+            )
 
     def edit_mesh_settings(self) -> None:
         recipe = self.document.geometry_recipe
@@ -3354,7 +3782,7 @@ class FEMMainWindow(QMainWindow):
             allow_hexahedron=supports_structured_hexahedron(recipe),
             suggested_size=recipe_characteristic_size(recipe) / 10.0,
         )
-        if not dialog.exec():
+        if not self._exec_dialog(dialog):
             return
         receipt = self.apply_mesh_input_edit(
             MeshInputEdit(
@@ -3372,7 +3800,7 @@ class FEMMainWindow(QMainWindow):
         if not isinstance(settings, MeshSettings):
             return
         dialog = MeshControlsDialog(settings, self)
-        if not dialog.exec():
+        if not self._exec_dialog(dialog):
             return
         updated = dialog.settings()
         if updated == settings:
@@ -3433,7 +3861,7 @@ class FEMMainWindow(QMainWindow):
             settings.size,
             self,
         )
-        if not dialog.exec():
+        if not self._exec_dialog(dialog):
             return
         control = dialog.control()
         selected_references = (
@@ -3483,8 +3911,12 @@ class FEMMainWindow(QMainWindow):
             self._show_command_rejection("清除网格", receipt)
             return
         self._selected_geometry_refs.clear()
+        self._selected_mesh_scope_refs.clear()
         self.setWindowTitle(f"有限元分析 — {recipe.name}（几何）")
-        self.status_panel.set_state("网格已清除，几何与网格控制已保留", 5000)
+        self.status_panel.set_state(
+            "网格已清除；旧作用域及其依赖定义已失效",
+            5000,
+        )
 
     def show_mesh_statistics(self) -> None:
         self._start_mesh_analysis("statistics")
@@ -3533,7 +3965,7 @@ class FEMMainWindow(QMainWindow):
         report: object,
     ) -> None:
         if report_kind == "statistics":
-            show_information(self, "网格统计", [
+            self._show_information("网格统计", [
                 ("节点数", report.node_count),
                 ("单元数", report.element_count),
                 (
@@ -3552,7 +3984,7 @@ class FEMMainWindow(QMainWindow):
             for element_id, score in report.worst_elements
         ) or "无可检查单元"
         if report_kind == "quality":
-            show_information(self, "网格质量检查", [
+            self._show_information("网格质量检查", [
                 ("指标", "归一化形状质量（1 为理想，0 为退化）"),
                 ("已检查单元", f"{report.checked_count} / {report.element_count}"),
                 ("最小值", f"{report.minimum:.6f}"),
@@ -3561,7 +3993,7 @@ class FEMMainWindow(QMainWindow):
                 ("最差单元", worst),
             ])
             return
-        show_information(self, "检查网格", [
+        self._show_information("检查网格", [
             ("节点数", report.node_count),
             ("单元数", report.element_count),
             (
@@ -3913,6 +4345,7 @@ class FEMMainWindow(QMainWindow):
                     record.name for record in self.document.feature_history
                 ),
                 part_name=self.document.parts[0].name,
+                scope_names=frozenset(self.document.named_regions),
                 **definition_options,
             )
             return
@@ -3927,6 +4360,8 @@ class FEMMainWindow(QMainWindow):
         source_label: str,
     ) -> None:
         self.status_panel.set_state("正在初始化视口……")
+        self._scope_selection_overlay_active = False
+        self._scope_selection_topology_cache = None
         self._close_inspection_windows()
         self._close_job_manager()
         self.geometry = geometry
@@ -4021,13 +4456,21 @@ class FEMMainWindow(QMainWindow):
         self._update_action_states()
 
     def _confirm_discard_changes(self) -> bool:
-        editor_active = self._wire_editor_controller is not None
-        if editor_active and self._wire_editor_controller.dirty:
+        wire_editor_active = self._wire_editor_controller is not None
+        sketch_editor_active = self._sketch_editor_controller is not None
+        editor_active = wire_editor_active or sketch_editor_active
+        if wire_editor_active and self._wire_editor_controller.dirty:
             if not self._confirm_wire_editor_discard():
                 return False
+        if sketch_editor_active and self._sketch_editor_controller.dirty:
+            if not self._confirm_sketch_editor_discard():
+                return False
         if not self.document.dirty:
-            if editor_active:
+            if wire_editor_active:
                 self._exit_wire_editor()
+            elif sketch_editor_active:
+                self._exit_sketch_editor()
+            if editor_active:
                 self._rebuild_full_projection()
             return True
         box = QMessageBox(self)
@@ -4055,8 +4498,11 @@ class FEMMainWindow(QMainWindow):
             accepted = self.save_native_project()
         else:
             accepted = clicked is discard_button
-        if accepted and editor_active:
+        if accepted and wire_editor_active:
             self._exit_wire_editor()
+            self._rebuild_full_projection()
+        elif accepted and sketch_editor_active:
+            self._exit_sketch_editor()
             self._rebuild_full_projection()
         return accepted
 
@@ -4072,6 +4518,7 @@ class FEMMainWindow(QMainWindow):
             self._show_command_rejection("关闭模型", receipt)
             return False
         self._selected_geometry_refs.clear()
+        self._selected_mesh_scope_refs.clear()
         self._display = DisplayState()
         self._overlay_undeformed = False
         self.actions["undeformed"].setChecked(True)
@@ -4165,7 +4612,7 @@ class FEMMainWindow(QMainWindow):
     def show_material_manager(self) -> None:
         base_revision = self.document.session_revision
         dialog = MaterialManagerDialog(self.document.materials, self)
-        if not dialog.exec():
+        if not self._exec_dialog(dialog):
             return
         values = tuple(dialog.values())
         self._apply_model_definition_changes(
@@ -4195,7 +4642,7 @@ class FEMMainWindow(QMainWindow):
             self.document.materials[row],
             self,
         )
-        if not dialog.exec():
+        if not self._exec_dialog(dialog):
             return
         try:
             updated = dialog.material()
@@ -4255,7 +4702,7 @@ class FEMMainWindow(QMainWindow):
                 in {AuthoringStatus.ENABLED, AuthoringStatus.LIMITED}
             ),
         )
-        if not dialog.exec():
+        if not self._exec_dialog(dialog):
             return
         values = tuple(dialog.values())
         self._apply_model_definition_changes(
@@ -4269,8 +4716,25 @@ class FEMMainWindow(QMainWindow):
     def assign_section_to_region(self) -> None:
         if not self.document.sections:
             return
-        dialog = self._region_assignment_dialog()
-        if dialog is None or not dialog.exec():
+        selected_region_name = None
+        if self._mesh_scope_selection_kind() == "element":
+            selected_region_name = (
+                self._create_region_from_current_mesh_selection()
+            )
+            if selected_region_name is None:
+                return
+        dialog = self._region_assignment_dialog(
+            selected_region_name=selected_region_name,
+        )
+        if dialog is None:
+            return
+        if not self._exec_dialog(dialog):
+            requested_scope_kind = dialog.requested_scope_kind()
+            if requested_scope_kind is not None:
+                self._request_analysis_geometry_selection(
+                    "section",
+                    requested_scope_kind,
+                )
             return
         try:
             assignment = dialog.assignment()
@@ -4304,7 +4768,7 @@ class FEMMainWindow(QMainWindow):
             assignments[index],
             assignment_index=index,
         )
-        if dialog is None or not dialog.exec():
+        if dialog is None or not self._exec_dialog(dialog):
             return
         try:
             updated = dialog.assignment()
@@ -4326,6 +4790,7 @@ class FEMMainWindow(QMainWindow):
         current: object | None = None,
         *,
         assignment_index: int | None = None,
+        selected_region_name: str | None = None,
     ) -> RegionAssignmentDialog | None:
         capability_report = self._model_capability_report()
         regions = self._analysis_element_regions(capability_report)
@@ -4336,8 +4801,12 @@ class FEMMainWindow(QMainWindow):
             )
             if existing not in regions:
                 regions.append(existing)
-        if not regions:
-            self._show_error("截面分配", "当前模型没有可分配的单元区域")
+        allow_scope_selection = (
+            current is None
+            and self.document.model is not None
+        )
+        if not regions and not allow_scope_selection:
+            self._show_error("截面分配", "当前模型没有可分配的单元作用域")
             return None
         compatible_targets = {
             section.name: tuple(
@@ -4385,6 +4854,8 @@ class FEMMainWindow(QMainWindow):
                 )
             ),
             orientation_suggester=self._suggest_region_assignment_orientation,
+            allow_scope_selection=allow_scope_selection,
+            selected_region_name=selected_region_name,
         )
 
     def _suggest_region_assignment_orientation(
@@ -4469,7 +4940,7 @@ class FEMMainWindow(QMainWindow):
         definitions = list(deepcopy(self.document.steps))
         name = f"Step-{len(definitions) + 1}"
         dialog = StaticStepDialog(name, self)
-        if not dialog.exec():
+        if not self._exec_dialog(dialog):
             return
         try:
             step = dialog.step()
@@ -4492,37 +4963,17 @@ class FEMMainWindow(QMainWindow):
         model = self.document.model
         if not self.session.runnable_step_names():
             return
+        if self.document.source_kind == "native" and model is None:
+            return
         selected_region = None
-        selected_geometry_kind = self._geometry_selection_kind()
-        is_wire = (
-            isinstance(self.document.geometry_recipe, NATIVE_GEOMETRY_TYPES)
-            and geometry_dimension(self.document.geometry_recipe) == 1
-        )
         if (
-            self.document.source_kind == "native"
-            and selected_geometry_kind in (
-                {"point"}
-                if is_wire
-                else {"point", "edge", "face"}
-            )
+            self._mesh_scope_selection_kind() == "node"
         ):
-            selected_name = self._create_region_from_current_geometry_selection()
+            selected_name = self._create_region_from_current_mesh_selection()
             if selected_name is None:
                 return
             selected_region = RegionRef("node_set", selected_name)
-        elif is_wire and selected_geometry_kind in {"edge", "body"}:
-            self._show_error(
-                "位移边界条件",
-                "线体的位移边界条件需要选择一个连接点。",
-            )
-            return
         node_regions, _edge_regions, _face_regions = self._analysis_region_names()
-        if not node_regions and isinstance(
-            self.document.geometry_recipe,
-            NATIVE_GEOMETRY_TYPES,
-        ):
-            self._request_analysis_geometry_selection("boundary")
-            return
         capability_report = self._model_capability_report()
         dimensions = (
             capability_report.dofs_per_node
@@ -4543,8 +4994,21 @@ class FEMMainWindow(QMainWindow):
                 if capability_report is not None
                 else ()
             ),
+            allow_scope_selection=(
+                self.document.model is not None
+            ),
         )
-        if not dialog.exec():
+        if not self._exec_dialog(dialog):
+            requested_scope_kind = (
+                dialog.requested_scope_kind()
+                if hasattr(dialog, "requested_scope_kind")
+                else None
+            )
+            if requested_scope_kind is not None:
+                self._request_analysis_geometry_selection(
+                    "boundary",
+                    requested_scope_kind,
+                )
             return
         try:
             step_name, boundaries = dialog.definitions()
@@ -4563,42 +5027,30 @@ class FEMMainWindow(QMainWindow):
         model = self.document.model
         if not self.session.runnable_step_names():
             return
+        if self.document.source_kind == "native" and model is None:
+            return
         selected_region = None
         preferred_kind = None
         capability_report = self._model_capability_report()
         if capability_report is None:
             return
-        selected_geometry_kind = self._geometry_selection_kind()
-        is_wire = (
-            isinstance(self.document.geometry_recipe, NATIVE_GEOMETRY_TYPES)
-            and geometry_dimension(self.document.geometry_recipe) == 1
-        )
+        selected_mesh_kind = self._mesh_scope_selection_kind()
         if (
-            self.document.source_kind == "native"
-            and selected_geometry_kind
-            in (
-                {"point", "edge", "body"}
-                if is_wire
-                else {"point", "edge", "face"}
-            )
+            selected_mesh_kind in {"node", "edge", "face", "element"}
         ):
-            if is_wire:
-                preferred_kind = (
-                    "node" if selected_geometry_kind == "point" else "line"
-                )
-            else:
-                preferred_kind = {
-                    "point": "node",
-                    "edge": "edge",
-                    "face": "surface",
-                }[selected_geometry_kind]
+            preferred_kind = {
+                "node": "node",
+                "edge": "edge",
+                "face": "surface",
+                "element": "line",
+            }[selected_mesh_kind]
             if preferred_kind not in capability_report.load_kinds:
                 self._show_error(
                     "创建载荷",
                     "所选区域不支持当前模型的分布载荷契约。",
                 )
                 return
-            selected_name = self._create_region_from_current_geometry_selection()
+            selected_name = self._create_region_from_current_mesh_selection()
             if selected_name is None:
                 return
             selected_region = RegionRef(
@@ -4635,8 +5087,27 @@ class FEMMainWindow(QMainWindow):
             preferred_kind=preferred_kind,
             labels=capability_report.force_labels,
             candidate_evaluator=self._evaluate_line_load_candidate,
+            scope_selection_kinds=(
+                tuple(
+                    kind
+                    for kind in ("node", "edge", "surface", "line")
+                    if kind in capability_report.load_kinds
+                )
+                if self.document.model is not None
+                else ()
+            ),
         )
-        if not dialog.exec():
+        if not self._exec_dialog(dialog):
+            requested_scope_kind = (
+                dialog.requested_scope_kind()
+                if hasattr(dialog, "requested_scope_kind")
+                else None
+            )
+            if requested_scope_kind is not None:
+                self._request_analysis_geometry_selection(
+                    "load",
+                    requested_scope_kind,
+                )
             return
         try:
             step_name, load = dialog.definition()
@@ -4698,7 +5169,7 @@ class FEMMainWindow(QMainWindow):
             self,
             candidates=candidates,
         )
-        if not dialog.exec():
+        if not self._exec_dialog(dialog):
             return
         try:
             step_name, request = dialog.definition()
@@ -4849,7 +5320,7 @@ class FEMMainWindow(QMainWindow):
         dialog = self._analysis_manager_dialog()
         if dialog is None:
             return
-        if not dialog.exec():
+        if not self._exec_dialog(dialog):
             return
         values = dialog.values()
         current = tuple(self.document.steps)
@@ -4918,7 +5389,7 @@ class FEMMainWindow(QMainWindow):
             )
             if step is None:
                 return None
-            show_information(self, "分析步信息", [
+            self._show_information("分析步信息", [
                 ("名称", step.name),
                 ("过程", "线性静力" if step.procedure == "static" else step.procedure),
                 ("边界条件", len(step.boundaries)),
@@ -5112,7 +5583,7 @@ class FEMMainWindow(QMainWindow):
             f"[{item.code}] {item.message}"
             for item in report.warnings
         )
-        show_information(self, "模型检查", [
+        self._show_information("模型检查", [
             ("模型名称", facts.model_name or "未命名模型"),
             ("当前分析步", facts.step_name or "—"),
             ("分析类型", facts.procedure or "线性静力"),
@@ -5149,7 +5620,7 @@ class FEMMainWindow(QMainWindow):
             self._current_step_name,
             self,
         )
-        if dialog.exec():
+        if self._exec_dialog(dialog):
             receipt = self.submit_run(dialog.job_name, dialog.step_name)
             if receipt.diagnostic is not None:
                 self._show_command_rejection("创建作业失败", receipt)
@@ -5173,7 +5644,7 @@ class FEMMainWindow(QMainWindow):
             source.step_name,
             self,
         )
-        if dialog.exec():
+        if self._exec_dialog(dialog):
             receipt = self.submit_run(
                 dialog.job_name,
                 dialog.step_name,
@@ -5417,6 +5888,7 @@ class FEMMainWindow(QMainWindow):
             dialog = JobManagerDialog(self.document.runs, self)
             dialog.resubmitRequested.connect(self.resubmit_job)
             dialog.openResultRequested.connect(self.open_job_result)
+            self._fit_viewport_when_dialog_finishes(dialog)
             dialog.destroyed.connect(
                 lambda _object=None, target=dialog: self._forget_job_manager(target)
             )
@@ -5614,13 +6086,41 @@ class FEMMainWindow(QMainWindow):
     def viewport_fit(self) -> None:
         self.viewport.fit()
 
+    def _schedule_viewport_fit(self) -> None:
+        """Fit once after the current dialog/layout transition has settled."""
+
+        if self._viewport_fit_pending:
+            return
+        self._viewport_fit_pending = True
+        QTimer.singleShot(0, self._run_scheduled_viewport_fit)
+
+    def _run_scheduled_viewport_fit(self) -> None:
+        self._viewport_fit_pending = False
+        self.viewport.fit()
+
+    def _exec_dialog(self, dialog: QDialog) -> int:
+        """Execute one FEM dialog and fit after its caller finishes projection."""
+
+        try:
+            return int(dialog.exec())
+        finally:
+            self._schedule_viewport_fit()
+
+    def _show_information(
+        self,
+        title: str,
+        rows: Sequence[tuple[str, object]],
+    ) -> None:
+        show_information(self, title, rows)
+        self._schedule_viewport_fit()
+
     def _fit_viewport_when_dialog_finishes(self, dialog: QDialog) -> None:
         """Restore full-model framing after a view-affecting dialog closes."""
 
         dialog.finished.connect(self._fit_viewport_after_dialog)
 
     def _fit_viewport_after_dialog(self, _result: int = 0) -> None:
-        self.viewport.fit()
+        self._schedule_viewport_fit()
 
     def _toggle_edges(self, checked: bool) -> None:
         if self._display.contour_enabled:
@@ -5664,6 +6164,33 @@ class FEMMainWindow(QMainWindow):
             )
         return next(iter(kinds))
 
+    def _canonical_mesh_scope_selection(
+        self,
+    ) -> tuple[MeshEntityRef, ...]:
+        return tuple(
+            sorted(
+                self._selected_mesh_scope_refs,
+                key=lambda reference: (
+                    reference.kind,
+                    reference.identity,
+                    reference.node_ids,
+                ),
+            )
+        )
+
+    def _mesh_scope_selection_kind(self) -> str | None:
+        kinds = {
+            reference.kind
+            for reference in self._selected_mesh_scope_refs
+        }
+        if not kinds:
+            return None
+        if len(kinds) != 1:
+            raise RuntimeError(
+                "mesh scope selection contains incompatible entity kinds"
+            )
+        return next(iter(kinds))
+
     def _set_selection_mode(self, mode: str) -> None:
         normalized = "element" if mode == "element" else "node"
         if (
@@ -5672,6 +6199,7 @@ class FEMMainWindow(QMainWindow):
         ):
             self.selection.clear()
             self._selected_geometry_refs.clear()
+            self._selected_mesh_scope_refs.clear()
             self.viewport.clear_selection()
             self.status_panel.set_object()
             self.actions["selected_info"].setEnabled(False)
@@ -5708,11 +6236,36 @@ class FEMMainWindow(QMainWindow):
         self.viewport.set_selection_mode(f"geometry_{normalized}")
         self.status_panel.set_selection_mode(f"geometry_{normalized}")
 
+    def _set_mesh_scope_selection_mode(self, mode: str) -> None:
+        normalized = (
+            mode
+            if mode in {"node", "edge", "face", "element"}
+            else "node"
+        )
+        if (
+            self._selected_mesh_scope_refs
+            and self._mesh_scope_selection_kind() != normalized
+        ):
+            self._selected_mesh_scope_refs.clear()
+            self.viewport.clear_selection()
+            self.status_panel.set_object()
+        self.selection.clear()
+        self._selected_geometry_refs.clear()
+        self.actions["selected_info"].setEnabled(False)
+        self.viewport.set_selection_mode(f"mesh_{normalized}")
+        self.status_panel.set_selection_mode(f"mesh_{normalized}")
+
     def clear_selection(self) -> None:
         self.selection.clear()
         self._pending_local_mesh_selection = False
         self._pending_analysis_selection = None
+        self._pending_scope_kind = None
+        self.viewport_panel.scope_creation_bar.finish()
+        if self._scope_selection_overlay_active:
+            self.viewport.hide_geometry_selection_overlay()
+            self._scope_selection_overlay_active = False
         self._selected_geometry_refs.clear()
+        self._selected_mesh_scope_refs.clear()
         self.viewport.clear_selection()
         self.status_panel.set_object()
         self.actions["selected_info"].setEnabled(False)
@@ -5762,9 +6315,44 @@ class FEMMainWindow(QMainWindow):
             self._selected_geometry_refs.remove(reference)
         else:
             self._selected_geometry_refs.add(reference)
+        self._refresh_geometry_scope_selection(reference.kind)
+
+    def _on_geometry_entities_box_selected(
+        self,
+        references: object,
+    ) -> None:
+        selected = tuple(references)
+        if any(type(reference) is not LogicalEntityRef for reference in selected):
+            raise TypeError(
+                "geometry box selection requires LogicalEntityRef values"
+            )
+        if not selected:
+            self._on_viewport_pick_missed(
+                f"geometry_{self._geometry_selection_mode}"
+            )
+            return
+        kind = selected[0].kind
+        if any(reference.kind != kind for reference in selected):
+            raise ValueError(
+                "geometry box selection cannot mix entity kinds"
+            )
+        if self._geometry_pick_is_additive():
+            self._selected_geometry_refs.symmetric_difference_update(
+                selected
+            )
+        else:
+            self._selected_geometry_refs = set(selected)
+        self._refresh_geometry_scope_selection(kind)
+
+    def _refresh_geometry_scope_selection(self, kind: str) -> None:
         references = self._canonical_geometry_selection()
+        if self._pending_scope_kind in {"edge", "face", "body"}:
+            self._expand_semantic_scope_selection()
+        self.viewport_panel.scope_creation_bar.set_selection_ready(
+            bool(self._canonical_mesh_scope_selection())
+        )
         self.viewport.highlight_geometry_entities(references)
-        mode = f"geometry_{reference.kind}"
+        mode = f"geometry_{kind}"
         labels = {
             "point": "点",
             "edge": "边",
@@ -5779,20 +6367,105 @@ class FEMMainWindow(QMainWindow):
             and isinstance(self.document.geometry_recipe, NATIVE_GEOMETRY_TYPES)
             and geometry_dimension(self.document.geometry_recipe) == 1
         ):
+            reference = references[0]
             semantic_name = reference.logical_id.partition(":")[2]
             wire_single_label = {
                 "point": f"连接点 {semantic_name}",
                 "edge": f"杆件 {semantic_name}",
                 "body": "线体区域",
-            }.get(reference.kind)
+            }.get(kind)
         self.status_panel.set_object(
             wire_single_label
             if wire_single_label is not None
             else (
                 f"已选择 {selected_count} 个"
-                f"{labels.get(reference.kind, '几何实体')}"
+                f"{labels.get(kind, '几何实体')}"
             )
             if selected_count
+            else "—"
+        )
+        self.actions["selected_info"].setEnabled(False)
+        self._update_action_states()
+
+    def _expand_semantic_scope_selection(self) -> None:
+        kind = self._pending_scope_kind
+        if kind not in {"edge", "face", "body"}:
+            return
+        topology = self._scope_selection_topology()
+        expanded = {
+            mesh_reference
+            for logical_reference in self._selected_geometry_refs
+            for mesh_reference in topology.mesh_references.get(
+                logical_reference,
+                (),
+            )
+        }
+        self._selected_mesh_scope_refs = expanded
+
+    def _on_mesh_scope_entity_pick(
+        self,
+        reference: MeshEntityRef,
+    ) -> None:
+        if type(reference) is not MeshEntityRef:
+            raise TypeError(
+                "meshEntityPicked 必须携带 MeshEntityRef"
+            )
+        additive = self._geometry_pick_is_additive()
+        if (
+            self._mesh_scope_selection_kind() != reference.kind
+            or not additive
+        ):
+            self._selected_mesh_scope_refs = {reference}
+        elif reference in self._selected_mesh_scope_refs:
+            self._selected_mesh_scope_refs.remove(reference)
+        else:
+            self._selected_mesh_scope_refs.add(reference)
+        self._refresh_mesh_scope_selection(reference.kind)
+
+    def _on_mesh_entities_box_selected(
+        self,
+        references: object,
+    ) -> None:
+        selected = tuple(references)
+        if any(type(reference) is not MeshEntityRef for reference in selected):
+            raise TypeError(
+                "mesh box selection requires MeshEntityRef values"
+            )
+        if not selected:
+            self._on_viewport_pick_missed(
+                f"mesh_{self._pending_scope_kind or 'node'}"
+            )
+            return
+        kind = selected[0].kind
+        if any(reference.kind != kind for reference in selected):
+            raise ValueError("mesh box selection cannot mix entity kinds")
+        if self._geometry_pick_is_additive():
+            self._selected_mesh_scope_refs.symmetric_difference_update(
+                selected
+            )
+        else:
+            self._selected_mesh_scope_refs = set(selected)
+        self._refresh_mesh_scope_selection(kind)
+
+    def _refresh_mesh_scope_selection(self, kind: str) -> None:
+        references = self._canonical_mesh_scope_selection()
+        self.viewport_panel.scope_creation_bar.set_selection_ready(
+            bool(references)
+        )
+        self.viewport.highlight_mesh_entities(references)
+        labels = {
+            "node": "节点",
+            "edge": "单元边",
+            "face": "单元面",
+            "element": "单元",
+        }
+        self.status_panel.set_selection_mode(f"mesh_{kind}")
+        self.status_panel.set_object(
+            (
+                f"已选择 {len(references)} 个"
+                f"{labels.get(kind, '网格实体')}"
+            )
+            if references
             else "—"
         )
         self.actions["selected_info"].setEnabled(False)
@@ -5804,39 +6477,48 @@ class FEMMainWindow(QMainWindow):
             return
         if kind.startswith("geometry_"):
             self._selected_geometry_refs.clear()
+            if self._pending_scope_kind in {"edge", "face", "body"}:
+                self._selected_mesh_scope_refs.clear()
+        elif kind.startswith("mesh_"):
+            self._selected_mesh_scope_refs.clear()
         else:
             self.selection.clear()
         self.viewport.clear_selection()
+        self.viewport_panel.scope_creation_bar.set_selection_ready(False)
         self.status_panel.set_object()
         self.actions["selected_info"].setEnabled(False)
         self._update_action_states()
 
     def _confirm_guided_selection(self) -> None:
-        if not self._selected_geometry_refs:
+        pending_scope_selection = self._pending_analysis_selection is not None
+        active_selection = (
+            self._selected_mesh_scope_refs
+            if pending_scope_selection
+            else self._selected_geometry_refs
+        )
+        if not active_selection:
             if self._pending_local_mesh_selection or self._pending_analysis_selection:
-                self.status_panel.set_state("请先选择至少一个几何对象", 3000)
+                self.status_panel.set_state("请先选择至少一个对象", 3000)
             return
         if self._pending_local_mesh_selection:
             self._pending_local_mesh_selection = False
             QTimer.singleShot(0, self.set_local_mesh_control)
             return
         if self._pending_analysis_selection is not None:
-            operation = self._pending_analysis_selection
-            self._pending_analysis_selection = None
-            callback = (
-                self.create_displacement_boundary
-                if operation == "boundary"
-                else self.create_load
-            )
-            QTimer.singleShot(0, callback)
+            self._complete_scope_creation_from_bar()
 
     def _cancel_guided_selection(self) -> None:
         if not self._pending_local_mesh_selection and self._pending_analysis_selection is None:
             return
         self._pending_local_mesh_selection = False
         self._pending_analysis_selection = None
+        self._pending_scope_kind = None
+        self.viewport_panel.scope_creation_bar.finish()
+        if self._scope_selection_overlay_active:
+            self.viewport.hide_geometry_selection_overlay()
+            self._scope_selection_overlay_active = False
         self.clear_selection()
-        self.status_panel.set_state("已取消区域选择", 3000)
+        self.status_panel.set_state("已取消作用域选择", 3000)
 
     def _entity_coordinates(self, kind: str, key: int) -> str:
         if self.geometry is None:
@@ -6280,8 +6962,7 @@ class FEMMainWindow(QMainWindow):
                 )
             )
         )
-        self._fit_viewport_when_dialog_finishes(dialog)
-        dialog.exec()
+        self._exec_dialog(dialog)
 
     def _apply_typed_result_display_settings(
         self,
@@ -6447,8 +7128,7 @@ class FEMMainWindow(QMainWindow):
             return
         dialog = ContourSettingsDialog(dict(self._contour_options), self)
         dialog.applyRequested.connect(self._set_contour_options)
-        self._fit_viewport_when_dialog_finishes(dialog)
-        dialog.exec()
+        self._exec_dialog(dialog)
 
     def _set_contour_options(self, options: dict[str, Any]) -> None:
         self._contour_options.update(options)
@@ -6467,8 +7147,7 @@ class FEMMainWindow(QMainWindow):
             self,
         )
         dialog.applyRequested.connect(self._apply_symbol_settings)
-        self._fit_viewport_when_dialog_finishes(dialog)
-        dialog.exec()
+        self._exec_dialog(dialog)
 
     def show_viewport_background_dialog(self) -> None:
         """打开可实时预览的视口背景设置。"""
@@ -6479,7 +7158,7 @@ class FEMMainWindow(QMainWindow):
         )
         dialog.previewRequested.connect(self.viewport.set_background_settings)
         dialog.applyRequested.connect(self._apply_background_settings)
-        dialog.exec()
+        self._exec_dialog(dialog)
 
     def _apply_background_settings(
         self,
@@ -6576,7 +7255,7 @@ class FEMMainWindow(QMainWindow):
         self.resultQueryCompleted.connect(deliver_result)
         dialog.queryRequested.connect(submit_query)
         try:
-            dialog.exec()
+            self._exec_dialog(dialog)
         finally:
             closed = True
             try:
@@ -6711,7 +7390,7 @@ class FEMMainWindow(QMainWindow):
                 "native": "自主模型",
                 "imported": "INP 模型",
             }.get(self.document.source_kind, "未打开")
-            show_information(self, "模型概况", [
+            self._show_information("模型概况", [
                 ("模型来源", source),
                 (
                     "几何状态",
@@ -6740,7 +7419,14 @@ class FEMMainWindow(QMainWindow):
         self.show_entity_information("model", None)
 
     def show_about(self) -> None:
-        show_information(self, "关于", [("软件", "有限元分析"), ("功能", "Abaqus INP 线性静力分析与结果查看"), ("界面", "PySide6、PyVistaQt、VTK")])
+        self._show_information(
+            "关于",
+            [
+                ("软件", "有限元分析"),
+                ("功能", "Abaqus INP 线性静力分析与结果查看"),
+                ("界面", "PySide6、PyVistaQt、VTK"),
+            ],
+        )
 
     def _show_entry_information(self, kind: str, key: object) -> None:
         if kind == "mesh":

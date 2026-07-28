@@ -10,10 +10,15 @@ from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication
 
 from fem.abaqus import read
-from fem.application import NamedRegion, RegionAssignment, SectionDefinition
+from fem.application import (
+    MeshEntityRef,
+    NamedRegion,
+    RegionAssignment,
+    SectionDefinition,
+)
 from fem.application.results import ResultVariable
 from fem.core.model import DisplacementConstraint, MaterialDefinition, NodalLoad
-from fem.geometry import LogicalEntityRef, SketchGeometry, SketchRectangle
+from fem.geometry import SketchGeometry, SketchRectangle
 from fem.mesh.settings import MeshSettings
 from fem.steps.factory import static
 from fem_gui.main_window import FEMMainWindow
@@ -48,15 +53,38 @@ def test_native_preprocess_check_job_result_workflow(monkeypatch):
     )
     _apply(
         window,
+        window.session.replace_mesh_settings(MeshSettings(0.5)),
+    )
+    window.generate_native_mesh()
+    _wait(window)
+    generated = window.document.model
+    assert generated is not None
+    _apply(
+        window,
         window.session.replace_named_regions(
             (
                 NamedRegion(
                     "Fixed",
-                    (LogicalEntityRef("edge:left"),),
+                    tuple(
+                        MeshEntityRef.node(node.id)
+                        for node in generated.mesh.nodes
+                        if abs(float(node.x)) <= 1.0e-9
+                    ),
                 ),
                 NamedRegion(
                     "Loaded",
-                    (LogicalEntityRef("edge:right"),),
+                    tuple(
+                        MeshEntityRef.node(node.id)
+                        for node in generated.mesh.nodes
+                        if abs(float(node.x) - 2.0) <= 1.0e-9
+                    ),
+                ),
+                NamedRegion(
+                    "DOMAIN",
+                    tuple(
+                        MeshEntityRef.element(element.id)
+                        for element in generated.mesh.elements
+                    ),
                 ),
             )
         ),
@@ -79,12 +107,6 @@ def test_native_preprocess_check_job_result_workflow(monkeypatch):
             (step,),
         ),
     )
-    _apply(
-        window,
-        window.session.replace_mesh_settings(MeshSettings(0.5)),
-    )
-    window.generate_native_mesh()
-    _wait(window)
 
     model = window.document.model
     assert model is not None
@@ -191,11 +213,30 @@ def test_model_check_rejects_an_underconstrained_native_model(monkeypatch):
     )
     _apply(
         window,
+        window.session.replace_mesh_settings(MeshSettings(0.5)),
+    )
+    window.generate_native_mesh()
+    _wait(window)
+    generated = window.document.model
+    assert generated is not None
+    _apply(
+        window,
         window.session.replace_named_regions(
             (
                 NamedRegion(
                     "Fixed",
-                    (LogicalEntityRef("edge:left"),),
+                    tuple(
+                        MeshEntityRef.node(node.id)
+                        for node in generated.mesh.nodes
+                        if abs(float(node.x)) <= 1.0e-9
+                    ),
+                ),
+                NamedRegion(
+                    "DOMAIN",
+                    tuple(
+                        MeshEntityRef.element(element.id)
+                        for element in generated.mesh.elements
+                    ),
                 ),
             )
         ),
@@ -222,12 +263,6 @@ def test_model_check_rejects_an_underconstrained_native_model(monkeypatch):
             (step,),
         ),
     )
-    _apply(
-        window,
-        window.session.replace_mesh_settings(MeshSettings(0.5)),
-    )
-    window.generate_native_mesh()
-    _wait(window)
 
     assert not window.check_current_model(show_success=False)
     assert errors

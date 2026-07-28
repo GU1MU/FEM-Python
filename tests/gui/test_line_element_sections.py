@@ -242,6 +242,24 @@ def test_region_assignment_requires_typed_element_set_regions():
     assert typed.assignment() == RegionAssignment("Section", "SAME")
 
 
+def test_region_assignment_can_request_scope_selection():
+    _application()
+    dialog = RegionAssignmentDialog(
+        [SectionDefinition("Section", "Steel")],
+        [],
+        allow_scope_selection=True,
+    )
+
+    assert dialog.scope_pick_button.isEnabled()
+    assert dialog.scope_pick_button.text() == "创建"
+    assert dialog.scope_pick_button.toolTip() == ""
+    assert not dialog.buttons.button(
+        QDialogButtonBox.StandardButton.Ok
+    ).isEnabled()
+    dialog.scope_pick_button.click()
+    assert dialog.requested_scope_kind() == "element_set"
+
+
 def test_region_assignment_edits_preserves_and_clears_explicit_orientation():
     _application()
     section = SectionDefinition(

@@ -51,11 +51,128 @@ class FeatureRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class MeshEntityRef:
+    """Stable reference to one entity in one generated finite-element mesh."""
+
+    kind: str
+    node_id: int | None = None
+    element_id: int | None = None
+    local_index: int | None = None
+    node_ids: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"node", "edge", "face", "element"}:
+            raise ValueError(f"unsupported mesh entity kind: {self.kind!r}")
+        node_ids = tuple(int(node_id) for node_id in self.node_ids)
+        if len(set(node_ids)) != len(node_ids):
+            raise ValueError("mesh entity node_ids must be unique")
+        object.__setattr__(self, "node_ids", node_ids)
+        if self.kind == "node":
+            if (
+                isinstance(self.node_id, bool)
+                or not isinstance(self.node_id, int)
+                or self.element_id is not None
+                or self.local_index is not None
+                or node_ids
+            ):
+                raise ValueError("node reference requires only one integer node_id")
+            return
+        if (
+            isinstance(self.element_id, bool)
+            or not isinstance(self.element_id, int)
+            or self.node_id is not None
+        ):
+            raise ValueError(
+                f"{self.kind} reference requires one integer element_id"
+            )
+        if self.kind == "element":
+            if self.local_index is not None or node_ids:
+                raise ValueError(
+                    "element reference does not accept local_index or node_ids"
+                )
+            return
+        if (
+            isinstance(self.local_index, bool)
+            or not isinstance(self.local_index, int)
+            or self.local_index < 0
+            or not node_ids
+        ):
+            raise ValueError(
+                f"{self.kind} reference requires local_index and node_ids"
+            )
+
+    @classmethod
+    def node(cls, node_id: int) -> MeshEntityRef:
+        return cls("node", node_id=int(node_id))
+
+    @classmethod
+    def element(cls, element_id: int) -> MeshEntityRef:
+        return cls("element", element_id=int(element_id))
+
+    @classmethod
+    def edge(
+        cls,
+        element_id: int,
+        local_index: int,
+        node_ids: Iterable[int],
+    ) -> MeshEntityRef:
+        return cls(
+            "edge",
+            element_id=int(element_id),
+            local_index=int(local_index),
+            node_ids=tuple(int(node_id) for node_id in node_ids),
+        )
+
+    @classmethod
+    def face(
+        cls,
+        element_id: int,
+        local_index: int,
+        node_ids: Iterable[int],
+    ) -> MeshEntityRef:
+        return cls(
+            "face",
+            element_id=int(element_id),
+            local_index=int(local_index),
+            node_ids=tuple(int(node_id) for node_id in node_ids),
+        )
+
+    @property
+    def identity(self) -> tuple[int, int]:
+        """Return the integer identity used for canonical ordering."""
+
+        if self.kind == "node":
+            return int(self.node_id), -1
+        return int(self.element_id), (
+            -1 if self.local_index is None else int(self.local_index)
+        )
+
+
+def mesh_entity_ref_sort_key(
+    reference: MeshEntityRef,
+) -> tuple[int, int, int, tuple[int, ...]]:
+    """Return a deterministic ordering key for mesh entity references."""
+
+    kind_order = {"node": 0, "edge": 1, "face": 2, "element": 3}
+    primary, local_index = reference.identity
+    return (
+        kind_order[reference.kind],
+        primary,
+        local_index,
+        reference.node_ids,
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class NamedRegion:
-    """A logical native region mapped to mesh sets after regeneration."""
+    """One user-authored scope on a generated finite-element mesh.
+
+    Logical references remain readable for compatibility with older project
+    files. New GUI authoring always stores :class:`MeshEntityRef` values.
+    """
 
     name: str
-    references: tuple[LogicalEntityRef, ...]
+    references: tuple[MeshEntityRef | LogicalEntityRef, ...]
 
     def __post_init__(self) -> None:
         if type(self.name) is not str or not self.name.strip():
@@ -63,20 +180,31 @@ class NamedRegion:
         references = tuple(self.references)
         if not references:
             raise ValueError("named region references must not be empty")
-        if any(type(reference) is not LogicalEntityRef for reference in references):
+        reference_types = {type(reference) for reference in references}
+        if not reference_types.issubset({MeshEntityRef, LogicalEntityRef}):
             raise TypeError(
-                "named region references must contain only LogicalEntityRef values"
+                "named region references must contain MeshEntityRef or "
+                "LogicalEntityRef values"
+            )
+        if len(reference_types) != 1:
+            raise ValueError(
+                "one named region cannot mix mesh and logical references"
             )
         if len(set(references)) != len(references):
             raise ValueError("named region references must be unique")
         kinds = {reference.kind for reference in references}
         if len(kinds) != 1:
-            raise ValueError("one named region cannot mix logical entity kinds")
+            raise ValueError("one named region cannot mix entity kinds")
         object.__setattr__(self, "name", self.name.strip())
+        sort_key = (
+            mesh_entity_ref_sort_key
+            if reference_types == {MeshEntityRef}
+            else logical_ref_sort_key
+        )
         object.__setattr__(
             self,
             "references",
-            tuple(sorted(references, key=logical_ref_sort_key)),
+            tuple(sorted(references, key=sort_key)),
         )
 
     @property
@@ -87,9 +215,13 @@ class NamedRegion:
 
     @property
     def logical_ids(self) -> tuple[str, ...]:
-        """Return stable IDs for display-only consumers."""
+        """Return legacy logical IDs for compatibility consumers."""
 
-        return tuple(reference.logical_id for reference in self.references)
+        return tuple(
+            reference.logical_id
+            for reference in self.references
+            if type(reference) is LogicalEntityRef
+        )
 
 
 @dataclass(frozen=True, slots=True)

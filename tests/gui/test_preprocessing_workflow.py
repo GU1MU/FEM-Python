@@ -10,8 +10,17 @@ from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication
 import pytest
 
-from fem.application import NamedRegion
+from fem.application import (
+    DeleteIntent,
+    MeshEntityRef,
+    NamedRegion,
+    NamedRegionEditBatch,
+    RenameIntent,
+)
 from fem.application.preprocessing import generate_fem_model
+from fem.application.native_scope_materialization import (
+    materialize_native_scopes,
+)
 from fem.geometry import (
     BooleanGeometry,
     BoxGeometry,
@@ -31,6 +40,8 @@ from fem.geometry import (
 from fem.geometry.recipe_topology import describe_recipe_topology
 from fem.mesh.quality import analyze_mesh
 from fem.mesh.settings import LocalMeshControl, MeshSettings, MeshSizeFalloff
+from fem.selection import edges as mesh_edges
+from fem.selection import faces as mesh_faces
 from fem_gui.geometry_preview import build_geometry_preview
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.widgets import viewport as viewport_module
@@ -87,14 +98,18 @@ def test_native_rectangle_mesh_joins_the_existing_model_workflow() -> None:
     assert window.geometry is not None
     assert window.document.model.name == recipe.name
     assert {element.type for element in window.document.model.mesh.elements} == {"Tri3"}
-    assert "DOMAIN" in window.document.model.element_sets
-    assert {"LEFT", "RIGHT", "BOTTOM", "TOP"}.issubset(
-        window.document.model.node_sets
-    )
+    assert not window.document.model.node_sets
+    assert not window.document.model.element_sets
+    assert not window.document.model.edges
+    assert not window.document.model.surfaces
     assert window.ribbon.tab_bar.tabText(window.ribbon.tab_bar.currentIndex()) == "模型"
     assert window.actions["mesh_generate"].isEnabled()
     assert window.actions["mesh_clear"].isEnabled()
     assert window.actions["mesh_quality"].isEnabled()
+    assert window.actions["geometry_region"].isEnabled()
+    assert not window.actions["geometry_regions"].isEnabled()
+    assert window._analysis_region_names() == ([], [], [])
+    assert window._analysis_element_regions() == []
 
     report = analyze_mesh(window.document.model.mesh)
     assert report.checked_count == report.element_count
@@ -106,6 +121,80 @@ def test_native_rectangle_mesh_joins_the_existing_model_workflow() -> None:
     assert window.document.mesh_settings == settings
     assert window.viewport._geometry_preview is not None
     assert window.actions["mesh_generate"].isEnabled()
+    assert not window.actions["geometry_region"].isEnabled()
+    window.close()
+
+
+@pytest.mark.gmsh
+def test_scope_creation_starts_from_the_meshed_model() -> None:
+    _application()
+    window = FEMMainWindow()
+    recipe = RectangleGeometry("scope-plate", 2.0, 1.0)
+    _set_native_mesh_inputs(window, recipe, MeshSettings(0.25))
+    window.generate_native_mesh()
+    _wait_for_task(window)
+    before_nodes = tuple(window.document.model.mesh.nodes)
+    before_elements = tuple(window.document.model.mesh.elements)
+
+    window._request_analysis_geometry_selection("scope", "edge")
+    assert window._pending_analysis_selection == "scope"
+    assert window._scope_selection_overlay_active
+    topology = window._scope_selection_topology()
+    selected_geometry_edge = next(
+        reference
+        for reference in topology.mesh_references
+        if reference.kind == "edge"
+    )
+    expected_mesh_edges = topology.mesh_references[
+        selected_geometry_edge
+    ]
+    assert len(expected_mesh_edges) > 1
+    window._on_geometry_entity_pick(selected_geometry_edge)
+    window.viewport_panel.scope_creation_bar.name_edit.setText("Support")
+    window._confirm_guided_selection()
+    _application().processEvents()
+
+    assert tuple(window.document.named_regions) == ("Support",)
+    assert window.document.model is not None
+    assert tuple(window.document.model.mesh.nodes) == before_nodes
+    assert tuple(window.document.model.mesh.elements) == before_elements
+    assert "Support" in window.document.model.edges
+    node_regions, edge_regions, face_regions = (
+        window._analysis_region_names()
+    )
+    assert node_regions == []
+    assert [region.name for region in edge_regions] == ["Support"]
+    assert face_regions == []
+    assert not window._scope_selection_overlay_active
+
+    support = window.document.named_regions["Support"]
+    assert support.references == expected_mesh_edges
+    rename_receipt = window.apply_named_region_edit(
+        NamedRegionEditBatch(
+            window.document.session_revision,
+            (NamedRegion("Fixed", support.references),),
+            renames=(RenameIntent("Support", "Fixed"),),
+        )
+    )
+    assert rename_receipt.diagnostic is None
+    assert window.document.model is not None
+    assert tuple(window.document.model.mesh.nodes) == before_nodes
+    assert tuple(window.document.model.mesh.elements) == before_elements
+    assert "Support" not in window.document.model.edges
+    assert "Fixed" in window.document.model.edges
+
+    delete_receipt = window.apply_named_region_edit(
+        NamedRegionEditBatch(
+            window.document.session_revision,
+            (),
+            deletes=(DeleteIntent("Fixed"),),
+        )
+    )
+    assert delete_receipt.diagnostic is None
+    assert window.document.model is not None
+    assert tuple(window.document.model.mesh.nodes) == before_nodes
+    assert tuple(window.document.model.mesh.elements) == before_elements
+    assert "Fixed" not in window.document.model.edges
     window.close()
 
 
@@ -138,8 +227,10 @@ def test_generic_sketch_replaces_special_plate_with_hole_entry() -> None:
         for point in outer_points
     )
     assert {element.type for element in model.mesh.elements} == {"Tri3"}
-    assert "DOMAIN" in model.element_sets
-    assert "BOUNDARY" not in model.node_sets
+    assert not model.node_sets
+    assert not model.element_sets
+    assert not model.edges
+    assert not model.surfaces
 
 
 def test_rectangle_cut_preview_shows_an_open_frame() -> None:
@@ -180,7 +271,10 @@ def test_rectangle_sketch_extrusion_uses_existing_solid_mesh_workflow(
     )
 
     assert {element.type for element in model.mesh.elements} == {expected_type}
-    assert {"BOTTOM", "TOP", "OUTER"}.issubset(model.node_sets)
+    assert not model.node_sets
+    assert not model.element_sets
+    assert not model.edges
+    assert not model.surfaces
 
 
 @pytest.mark.gmsh
@@ -211,7 +305,7 @@ def test_quadrilateral_setting_reaches_the_same_gui_adapter() -> None:
 
 
 @pytest.mark.gmsh
-def test_plate_with_hole_imports_named_boundary_and_local_refinement() -> None:
+def test_plate_with_hole_applies_local_refinement_without_implicit_scopes() -> None:
     _application()
     window = FEMMainWindow()
     recipe = PlateWithHoleGeometry(
@@ -242,33 +336,32 @@ def test_plate_with_hole_imports_named_boundary_and_local_refinement() -> None:
     model = window.document.model
     assert model is not None
     assert {element.type for element in model.mesh.elements} == {"Tri3"}
-    assert "HOLE" in model.node_sets
-    assert "HOLE" in model.edges
-    assert len(model.node_sets["HOLE"].node_ids) >= 12
+    assert len(mesh_edges.boundary(model.mesh)) >= 12
+    assert not model.node_sets
+    assert not model.element_sets
+    assert not model.edges
+    assert not model.surfaces
     window.close()
 
 
 @pytest.mark.gmsh
 @pytest.mark.parametrize(
-    ("recipe", "expected_type", "boundary_names"),
+    ("recipe", "expected_type"),
     (
-        (DiskGeometry("gui-disk", 1.0), "Tri3", {"OUTER"}),
+        (DiskGeometry("gui-disk", 1.0), "Tri3"),
         (
             BoxGeometry("gui-box", 1.0, 0.8, 0.6),
             "Tet4",
-            {"LEFT", "RIGHT", "FRONT", "BACK", "BOTTOM", "TOP"},
         ),
         (
             CylinderGeometry("gui-cylinder", 0.5, 1.0),
             "Tet4",
-            {"BOTTOM", "TOP", "OUTER"},
         ),
     ),
 )
 def test_added_basic_geometries_generate_canonical_models(
     recipe,
     expected_type,
-    boundary_names,
 ) -> None:
     settings = MeshSettings(
         0.25,
@@ -278,8 +371,10 @@ def test_added_basic_geometries_generate_canonical_models(
     model = generate_fem_model(recipe, settings)
 
     assert {element.type for element in model.mesh.elements} == {expected_type}
-    assert "DOMAIN" in model.element_sets
-    assert boundary_names.issubset(model.node_sets)
+    assert not model.node_sets
+    assert not model.element_sets
+    assert not model.edges
+    assert not model.surfaces
 
 
 @pytest.mark.gmsh
@@ -292,9 +387,10 @@ def test_box_supports_structured_hexahedral_mesh() -> None:
     )
 
     assert {element.type for element in model.mesh.elements} == {"Hex8"}
-    assert {"LEFT", "RIGHT", "FRONT", "BACK", "BOTTOM", "TOP"}.issubset(
-        model.node_sets
-    )
+    assert not model.node_sets
+    assert not model.element_sets
+    assert not model.edges
+    assert not model.surfaces
 
 
 @pytest.mark.parametrize(
@@ -644,7 +740,7 @@ def test_geometry_preview_never_exposes_internal_entity_ids_as_a_legend(
         def remove_scalar_bar(self, title, **_kwargs):
             self.scalar_bars._scalar_bar_actors.pop(title, None)
 
-        def reset_camera(self):
+        def reset_camera(self, **_kwargs):
             pass
 
         def render(self):
@@ -739,11 +835,14 @@ def test_geometry_feature_chain_is_shared_by_preview_and_gmsh() -> None:
 
     assert any(point[2] == pytest.approx(0.4) for point in preview.points)
     assert {element.type for element in model.mesh.elements} == {"Tet4"}
-    assert {"BOTTOM", "TOP", "OUTER"}.issubset(model.node_sets)
+    assert not model.node_sets
+    assert not model.element_sets
+    assert not model.edges
+    assert not model.surfaces
 
 
 @pytest.mark.gmsh
-def test_extruded_face_named_region_reuses_the_resolved_cad_face_groups() -> None:
+def test_extruded_face_scope_is_created_from_mesh_faces() -> None:
     recipe = ExtrudedGeometry(
         SketchGeometry(
             "face-region",
@@ -764,23 +863,40 @@ def test_extruded_face_named_region_reuses_the_resolved_cad_face_groups() -> Non
                 ),
             ),
         ),
-        named_regions=(
+    )
+    nodes_by_id = {
+        int(node.id): node
+        for node in model.mesh.nodes
+    }
+    right_faces = tuple(
+        row
+        for row in mesh_faces.boundary(model.mesh)
+        if all(
+            float(nodes_by_id[int(node_id)].x)
+            == pytest.approx(2.0, abs=1.0e-8)
+            for node_id in row[2]
+        )
+    )
+
+    scoped = materialize_native_scopes(
+        model,
+        previous_names=(),
+        regions=(
             NamedRegion(
                 "LoadedFace",
-                (LogicalEntityRef("face:side/right"),),
+                tuple(MeshEntityRef.face(*row) for row in right_faces),
             ),
         ),
     )
 
-    assert "LoadedFace" in model.node_sets
-    assert model.node_sets["LoadedFace"].node_ids
-    assert set(model.node_sets["LoadedFace"].node_ids) < set(
-        model.node_sets["OUTER"].node_ids
-    )
+    assert right_faces
+    assert scoped.surfaces["LoadedFace"].faces
+    assert "LoadedFace" not in scoped.node_sets
+    assert not model.surfaces
 
 
 @pytest.mark.gmsh
-def test_extruded_hole_keeps_inner_and_outer_side_face_ids_distinct() -> None:
+def test_extruded_hole_mesh_face_scopes_keep_inner_and_outer_sides_distinct() -> None:
     recipe = ExtrudedGeometry(
         SketchGeometry(
             "extruded-hole-faces",
@@ -795,20 +911,58 @@ def test_extruded_hole_keeps_inner_and_outer_side_face_ids_distinct() -> None:
     model = generate_fem_model(
         recipe,
         MeshSettings(0.3, cell_shape="tetrahedron"),
-        named_regions=(
+    )
+    nodes_by_id = {
+        int(node.id): node
+        for node in model.mesh.nodes
+    }
+    side_faces = tuple(
+        row
+        for row in mesh_faces.boundary(model.mesh)
+        if (
+            max(float(nodes_by_id[int(node_id)].z) for node_id in row[2])
+            - min(float(nodes_by_id[int(node_id)].z) for node_id in row[2])
+            > 1.0e-8
+        )
+    )
+    hole_faces = tuple(
+        row
+        for row in side_faces
+        if all(
+            np.hypot(
+                float(nodes_by_id[int(node_id)].x) - 1.0,
+                float(nodes_by_id[int(node_id)].y) - 0.5,
+            )
+            == pytest.approx(0.2, abs=1.0e-7)
+            for node_id in row[2]
+        )
+    )
+    outer_faces = tuple(row for row in side_faces if row not in hole_faces)
+    scoped = materialize_native_scopes(
+        model,
+        previous_names=(),
+        regions=(
             NamedRegion(
                 "HoleSide",
-                (LogicalEntityRef("face:side/hole-loop"),),
+                tuple(MeshEntityRef.face(*row) for row in hole_faces),
             ),
             NamedRegion(
                 "OuterSide",
-                (LogicalEntityRef("face:side/outer-loop"),),
+                tuple(MeshEntityRef.face(*row) for row in outer_faces),
             ),
         ),
     )
 
-    hole_nodes = set(model.node_sets["HoleSide"].node_ids)
-    outer_nodes = set(model.node_sets["OuterSide"].node_ids)
+    hole_nodes = {
+        node_id
+        for face in scoped.surfaces["HoleSide"].faces
+        for node_id in face.node_ids
+    }
+    outer_nodes = {
+        node_id
+        for face in scoped.surfaces["OuterSide"].faces
+        for node_id in face.node_ids
+    }
     assert hole_nodes
     assert outer_nodes
     assert hole_nodes.isdisjoint(outer_nodes)
@@ -831,7 +985,9 @@ def test_selected_geometry_edge_can_drive_local_mesh_refinement() -> None:
     )
 
     assert {element.type for element in model.mesh.elements} == {"Tri3"}
-    assert len(model.node_sets["OUTER"].node_ids) >= 20
+    assert len(mesh_edges.boundary(model.mesh)) >= 20
+    assert not model.node_sets
+    assert not model.edges
 
 
 @pytest.mark.gmsh
@@ -913,5 +1069,7 @@ def test_boolean_features_are_meshed_by_the_same_native_workflow(operation) -> N
     assert preview.faces
     assert preview.edges
     assert {element.type for element in model.mesh.elements} == {"Tri3"}
-    assert "DOMAIN" in model.element_sets
-    assert "BOUNDARY" not in model.node_sets
+    assert not model.node_sets
+    assert not model.element_sets
+    assert not model.edges
+    assert not model.surfaces

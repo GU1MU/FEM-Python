@@ -42,6 +42,7 @@ from .commands import (
 )
 from .definitions import (
     FeatureRecord,
+    MeshEntityRef,
     ModelDefinitions,
     NamedRegion,
     NativePart,
@@ -59,6 +60,10 @@ from .project_validation import (
     validate_native_project_inputs,
 )
 from .native_mesh_contract import require_complete_native_mesh_contract
+from .native_scope_materialization import (
+    can_materialize_native_scopes,
+    materialize_native_scopes,
+)
 from .revisions import (
     ImportTaskSnapshot,
     MeshTaskSnapshot,
@@ -692,7 +697,7 @@ class ModelSession:
         preserve_references = can_preserve_logical_references(
             self._geometry_recipe,
             owned_recipe,
-        )
+        ) and not _regions_use_mesh_entities(self._named_regions.values())
         candidate_mesh_settings, mesh_effects = _transition_mesh_settings(
             self._mesh_settings,
             owned_recipe,
@@ -779,7 +784,7 @@ class ModelSession:
         self, *, expected_session_revision: int | None = None
     ) -> SessionDelta:
         self._check_expected(expected_session_revision)
-        self._require_native()
+        self._require_open()
         self._parts = ()
         self._geometry_recipe = None
         self._feature_history = ()
@@ -817,6 +822,21 @@ class ModelSession:
         self._check_expected(expected_session_revision)
         self._require_native()
         owned = deepcopy(settings)
+        clears_mesh_scopes = _regions_use_mesh_entities(
+            self._named_regions.values()
+        )
+        candidate_regions = () if clears_mesh_scopes else tuple(
+            self._named_regions.values()
+        )
+        candidate_assignments = () if clears_mesh_scopes else self._assignments
+        candidate_steps = (
+            _without_geometry_dependent_steps(self._steps)
+            if clears_mesh_scopes
+            else self._steps
+        )
+        had_regions = clears_mesh_scopes and bool(self._named_regions)
+        had_assignments = clears_mesh_scopes and bool(self._assignments)
+        steps_cleared = candidate_steps != self._steps
         if self._geometry_recipe is not None:
             if (
                 owned is not None
@@ -830,11 +850,11 @@ class ModelSession:
             validate_native_project_inputs(
                 self._geometry_recipe,
                 owned,
-                tuple(self._named_regions.values()),
+                candidate_regions,
                 self._materials,
                 self._sections,
-                self._assignments,
-                self._steps,
+                candidate_assignments,
+                candidate_steps,
             )
         elif owned is not None and bool(
             getattr(owned, "local_controls", ())
@@ -843,19 +863,36 @@ class ModelSession:
                 "local mesh controls require a geometry recipe"
             )
         self._mesh_settings = owned
+        if clears_mesh_scopes:
+            self._named_regions = {}
+            self._assignments = ()
+            self._steps = candidate_steps
+            self._definitions_explicit = True
         self._drop_model_state()
         self._increment_domain_revisions(project=True, mesh=True, model=True)
+        changed = {
+            ChangeKind.PROJECT_INPUTS,
+            ChangeKind.MESH_SETTINGS,
+            ChangeKind.MODEL,
+            ChangeKind.VALIDATIONS,
+            ChangeKind.RUNS,
+            ChangeKind.DISPLAYED_RESULT,
+        }
+        effects: set[TransitionEffect] = set()
+        if had_regions:
+            changed.add(ChangeKind.NAMED_REGIONS)
+            effects.add(TransitionEffect.NAMED_REGIONS_CLEARED)
+        if had_assignments or steps_cleared:
+            changed.add(ChangeKind.DEFINITIONS)
+        if had_assignments:
+            effects.add(TransitionEffect.ASSIGNMENTS_CLEARED)
+        if steps_cleared:
+            effects.add(TransitionEffect.STEPS_CLEARED)
         return self._emit(
-            {
-                ChangeKind.PROJECT_INPUTS,
-                ChangeKind.MESH_SETTINGS,
-                ChangeKind.MODEL,
-                ChangeKind.VALIDATIONS,
-                ChangeKind.RUNS,
-                ChangeKind.DISPLAYED_RESULT,
-            },
+            changed,
             _MODEL_INVALIDATIONS,
             "mesh settings replaced",
+            effects=effects,
         )
 
     def replace_named_regions(
@@ -909,11 +946,20 @@ class ModelSession:
                 + ", ".join(removed_references)
             )
         if self._geometry_recipe is None:
-            if owned:
+            if owned and (
+                self._source_kind != "imported"
+                or self._artifact is None
+                or not _regions_use_mesh_entities(owned.values())
+            ):
                 raise ValueError(
-                    "named regions require a geometry recipe"
+                    "named regions require a geometry recipe or imported mesh"
                 )
-        else:
+        elif (
+            _regions_use_mesh_entities(owned.values())
+            and self._artifact is None
+        ):
+            raise ValueError("mesh scopes require a generated mesh")
+        elif not _regions_use_mesh_entities(owned.values()):
             validate_native_project_inputs(
                 self._geometry_recipe,
                 self._mesh_settings,
@@ -924,22 +970,10 @@ class ModelSession:
                 steps,
             )
 
-        self._named_regions = owned
-        self._assignments = assignments
-        self._steps = steps
-        self._drop_model_state()
-        self._increment_domain_revisions(project=True, mesh=True, model=True)
-        return self._emit(
-            {
-                ChangeKind.PROJECT_INPUTS,
-                ChangeKind.NAMED_REGIONS,
-                ChangeKind.DEFINITIONS,
-                ChangeKind.MODEL,
-                ChangeKind.VALIDATIONS,
-                ChangeKind.RUNS,
-                ChangeKind.DISPLAYED_RESULT,
-            },
-            _MODEL_INVALIDATIONS,
+        return self._commit_named_region_state(
+            owned,
+            assignments,
+            steps,
             "named regions replaced",
         )
 
@@ -952,7 +986,7 @@ class ModelSession:
         if type(batch) is not NamedRegionEditBatch:
             raise TypeError("batch must be a NamedRegionEditBatch")
         self._check_expected(batch.base_session_revision)
-        self._require_native()
+        self._require_open()
 
         owned = _regions_by_name(batch.regions)
         rename_map = _validate_edit_ledger(
@@ -985,9 +1019,20 @@ class ModelSession:
         )
         steps = _rename_step_region_references(self._steps, rename_map)
         if self._geometry_recipe is None:
-            if owned:
-                raise ValueError("named regions require a geometry recipe")
-        else:
+            if owned and (
+                self._source_kind != "imported"
+                or self._artifact is None
+                or not _regions_use_mesh_entities(owned.values())
+            ):
+                raise ValueError(
+                    "named regions require a geometry recipe or imported mesh"
+                )
+        elif (
+            _regions_use_mesh_entities(owned.values())
+            and self._artifact is None
+        ):
+            raise ValueError("mesh scopes require a generated mesh")
+        elif not _regions_use_mesh_entities(owned.values()):
             validate_native_project_inputs(
                 self._geometry_recipe,
                 self._mesh_settings,
@@ -998,11 +1043,77 @@ class ModelSession:
                 steps,
             )
 
+        return self._commit_named_region_state(
+            owned,
+            assignments,
+            steps,
+            "named region edit applied",
+        )
+
+    def _commit_named_region_state(
+        self,
+        owned: dict[str, NamedRegion],
+        assignments: tuple[RegionAssignment, ...],
+        steps: tuple[Any, ...],
+        reason: str,
+    ) -> SessionDelta:
+        """Commit scope definitions, preserving an already-generated mesh."""
+
+        previous_artifact = self._artifact
+        compiled_model = None
+        if (
+            previous_artifact is not None
+            and can_materialize_native_scopes(
+                previous_artifact.model,
+                owned.values(),
+            )
+        ):
+            scoped_model = materialize_native_scopes(
+                previous_artifact.model,
+                previous_names=tuple(self._named_regions),
+                regions=tuple(owned.values()),
+            )
+            compiled_model = compile_model_definitions(
+                scoped_model,
+                ModelDefinitions(
+                    self._materials,
+                    self._sections,
+                    assignments,
+                    steps,
+                ),
+            ).require_model()
+
         self._named_regions = owned
         self._assignments = assignments
         self._steps = steps
-        self._drop_model_state()
-        self._increment_domain_revisions(project=True, mesh=True, model=True)
+        if compiled_model is None:
+            self._drop_model_state()
+        else:
+            self._drop_computations()
+        edits_mesh_scopes = (
+            _regions_use_mesh_entities(self._named_regions.values())
+            or _regions_use_mesh_entities(owned.values())
+        )
+        self._increment_domain_revisions(
+            project=True,
+            mesh=not edits_mesh_scopes,
+            model=True,
+        )
+        if compiled_model is not None:
+            self._artifact = self._new_artifact(
+                compiled_model,
+                (
+                    previous_artifact.source_kind
+                    if previous_artifact is not None
+                    else "native"
+                ),
+            )
+        invalidated = (
+            _MODEL_INVALIDATIONS
+            if compiled_model is None
+            else _COMPUTATION_INVALIDATIONS
+            | frozenset({ArtifactKind.MODEL})
+        )
         return self._emit(
             {
                 ChangeKind.PROJECT_INPUTS,
@@ -1013,8 +1124,8 @@ class ModelSession:
                 ChangeKind.RUNS,
                 ChangeKind.DISPLAYED_RESULT,
             },
-            _MODEL_INVALIDATIONS,
-            "named region edit applied",
+            invalidated,
+            reason,
         )
 
     def replace_model_definitions(
@@ -1201,18 +1312,50 @@ class ModelSession:
     ) -> SessionDelta:
         self._check_expected(expected_session_revision)
         self._require_native()
+        clears_mesh_scopes = _regions_use_mesh_entities(
+            self._named_regions.values()
+        )
+        candidate_steps = (
+            _without_geometry_dependent_steps(self._steps)
+            if clears_mesh_scopes
+            else self._steps
+        )
+        had_regions = clears_mesh_scopes and bool(self._named_regions)
+        had_assignments = clears_mesh_scopes and bool(self._assignments)
+        steps_cleared = candidate_steps != self._steps
+        if clears_mesh_scopes:
+            self._named_regions = {}
+            self._assignments = ()
+            self._steps = candidate_steps
+            self._definitions_explicit = True
         self._drop_model_state()
-        self._increment_domain_revisions(project=True, model=True)
+        self._increment_domain_revisions(
+            project=True,
+            mesh=clears_mesh_scopes,
+            model=True,
+        )
+        changed = {
+            ChangeKind.PROJECT_INPUTS,
+            ChangeKind.MODEL,
+            ChangeKind.VALIDATIONS,
+            ChangeKind.RUNS,
+            ChangeKind.DISPLAYED_RESULT,
+        }
+        effects: set[TransitionEffect] = set()
+        if had_regions:
+            changed.add(ChangeKind.NAMED_REGIONS)
+            effects.add(TransitionEffect.NAMED_REGIONS_CLEARED)
+        if had_assignments or steps_cleared:
+            changed.add(ChangeKind.DEFINITIONS)
+        if had_assignments:
+            effects.add(TransitionEffect.ASSIGNMENTS_CLEARED)
+        if steps_cleared:
+            effects.add(TransitionEffect.STEPS_CLEARED)
         return self._emit(
-            {
-                ChangeKind.PROJECT_INPUTS,
-                ChangeKind.MODEL,
-                ChangeKind.VALIDATIONS,
-                ChangeKind.RUNS,
-                ChangeKind.DISPLAYED_RESULT,
-            },
+            changed,
             _MODEL_INVALIDATIONS,
             "generated model cleared",
+            effects=effects,
         )
 
     # ------------------------------------------------------------------
@@ -1269,6 +1412,13 @@ class ModelSession:
         self._require_native()
         if self._geometry_recipe is None:
             raise SessionStateError("mesh generation requires geometry")
+        if (
+            _regions_use_mesh_entities(self._named_regions.values())
+            and self._artifact is not None
+        ):
+            raise SessionStateError(
+                "mesh scopes must be cleared before generating a new mesh"
+            )
         require_complete_native_mesh_contract(
             self._geometry_recipe,
             self._mesh_settings,
@@ -2785,4 +2935,14 @@ def _without_geometry_dependent_steps(
         step
         for step in steps
         if not analysis_step_has_native_region_target(step)
+    )
+
+
+def _regions_use_mesh_entities(regions: Iterable[Any]) -> bool:
+    """Return whether any supplied scope stores generated-mesh entities."""
+
+    return any(
+        type(reference) is MeshEntityRef
+        for region in regions
+        for reference in tuple(getattr(region, "references", ()))
     )

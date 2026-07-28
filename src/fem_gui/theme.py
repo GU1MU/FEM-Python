@@ -71,6 +71,11 @@ QTabWidget#inspectionTabs::pane, QTabWidget#meshBrowserTabs::pane {{ background:
 QTabWidget#inspectionTabs QTabBar::tab, QTabWidget#meshBrowserTabs QTabBar::tab {{ background: {COLORS['chrome']}; border: 1px solid {COLORS['border']}; border-bottom: none; min-width: 64px; height: 25px; padding: 0 9px; }}
 QTabWidget#inspectionTabs QTabBar::tab:selected, QTabWidget#meshBrowserTabs QTabBar::tab:selected {{ background: white; border-top: 2px solid {COLORS['accent']}; }}
 QWidget#viewportPanel {{ background: white; }}
+QWidget#scopeCreationBar {{ background: {COLORS['chrome']}; border-top: 1px solid {COLORS['border']}; }}
+QLabel#scopeCreationType {{ color: {COLORS['accent']}; font-weight: 600; min-width: 54px; }}
+QPushButton#scopeCreationSubmit {{ background: {COLORS['accent']}; color: white; border-color: {COLORS['accent']}; font-weight: 600; min-width: 72px; }}
+QPushButton#scopeCreationSubmit:hover {{ background: #3f6f92; }}
+QPushButton#scopeCreationSubmit:disabled {{ background: {COLORS['chrome']}; color: {COLORS['disabled']}; border-color: {COLORS['border']}; }}
 QPushButton {{ background: {COLORS['chrome']}; border: 1px solid {COLORS['border']}; border-radius: 2px; padding: 4px 12px; min-height: 23px; }}
 QPushButton:hover {{ background: {COLORS['hover']}; }}
 QPushButton:focus {{ border-color: {COLORS['accent']}; }}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import Any
 
 from PySide6.QtCore import QPoint, Qt, Signal
@@ -115,8 +116,25 @@ class ModelTree(QTreeWidget):
         part_name: str | None = None,
         section_definitions: tuple[Any, ...] = (),
         region_assignments: tuple[Any, ...] = (),
+        scope_names: Collection[str] | None = None,
     ) -> None:
         self.clear()
+        visible_scope_names = (
+            None
+            if scope_names is None
+            else frozenset(str(name) for name in scope_names)
+        )
+
+        def visible_items(values):
+            return tuple(
+                (name, value)
+                for name, value in values.items()
+                if (
+                    visible_scope_names is None
+                    or str(name) in visible_scope_names
+                )
+            )
+
         root = self._item(str(model.name or "模型"), "model", None)
         part = None
         if part_name is not None:
@@ -125,17 +143,21 @@ class ModelTree(QTreeWidget):
                 part.addChild(self._item(str(row), "feature", None))
             root.addChild(part)
         mesh = self._item("网格", "mesh", None)
-        node_sets = self._category(mesh, "节点集", len(model.node_sets))
-        for name, node_set in model.node_sets.items():
+        visible_node_sets = visible_items(model.node_sets)
+        node_sets = self._category(mesh, "节点集", len(visible_node_sets))
+        for name, node_set in visible_node_sets:
             node_sets.addChild(self._item(f"{name}  ({len(node_set.node_ids)})", "node_set", name))
-        element_sets = self._category(mesh, "单元集", len(model.element_sets))
-        for name, element_set in model.element_sets.items():
+        visible_element_sets = visible_items(model.element_sets)
+        element_sets = self._category(mesh, "单元集", len(visible_element_sets))
+        for name, element_set in visible_element_sets:
             element_sets.addChild(self._item(f"{name}  ({len(element_set.element_ids)})", "element_set", name))
-        surface_count = len(model.surfaces) + len(model.edges)
+        visible_surfaces = visible_items(model.surfaces)
+        visible_edges = visible_items(model.edges)
+        surface_count = len(visible_surfaces) + len(visible_edges)
         surfaces = self._category(mesh, "表面", surface_count)
-        for name, surface in model.surfaces.items():
+        for name, surface in visible_surfaces:
             surfaces.addChild(self._item(f"{name}  ({len(surface.faces)})", "surface", name))
-        for name, edge in model.edges.items():
+        for name, edge in visible_edges:
             surfaces.addChild(self._item(f"{name}  ({len(edge.edges)})", "edge", name))
         root.addChild(mesh)
 

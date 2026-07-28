@@ -18,8 +18,12 @@ from fem.geometry import (
     PlateWithHoleGeometry,
     RectangleGeometry,
     RotatedGeometry,
+    SketchArc,
+    SketchCircle,
     SketchGeometry,
+    SketchLine,
     WireGeometry,
+    analyze_sketch_profiles,
     axis_aligned_rectangle,
     expand_sketch_recipe,
     geometry_dimension,
@@ -155,11 +159,29 @@ def build_geometry_preview(
     return preview
 
 
+def build_strict_sketch_draft_preview(
+    recipe: SketchGeometry,
+    *,
+    segments: int = 48,
+) -> GeometryPreview:
+    """Preview analyzable profiles even while other draft curves are invalid."""
+
+    if type(recipe) is not SketchGeometry or not recipe.is_strict:
+        raise TypeError("draft preview requires a strict SketchGeometry")
+    return _strict_sketch_preview(
+        recipe,
+        max(12, int(segments)),
+        allow_partial=True,
+    )
+
+
 def _build_geometry_preview(
     recipe: NativeGeometry,
     segments: int,
 ) -> GeometryPreview:
     if isinstance(recipe, SketchGeometry):
+        if recipe.is_strict:
+            return _strict_sketch_preview(recipe, segments)
         preview = _build_geometry_preview(expand_sketch_recipe(recipe), segments)
         return _make_preview(
             recipe,
@@ -243,6 +265,422 @@ def _wire_preview(recipe: WireGeometry) -> GeometryPreview:
         tuple(f"edge:{member.name}" for member in recipe.members),
         tuple(f"point:{point.name}" for point in recipe.points),
     )
+
+
+def _strict_sketch_preview(
+    recipe: SketchGeometry,
+    segments: int,
+    *,
+    allow_partial: bool = False,
+) -> GeometryPreview:
+    """Tessellate a strict sketch while retaining every stable logical ID."""
+
+    if not recipe.is_strict or recipe.plane is None:
+        raise TypeError("strict sketch preview requires a curve-first sketch")
+    analysis = analyze_sketch_profiles(recipe)
+    if (
+        (analysis.blocking_diagnostics and not allow_partial)
+        or not analysis.profiles
+    ):
+        message = (
+            analysis.blocking_diagnostics[0].message
+            if analysis.blocking_diagnostics
+            else "严格草图没有可显示的 Profile"
+        )
+        raise ValueError(message)
+
+    points: list[tuple[float, float, float]] = [
+        recipe.plane.to_global(point.u, point.v)
+        for point in recipe.points
+    ]
+    local_points: list[tuple[float, float]] = [
+        (point.u, point.v) for point in recipe.points
+    ]
+    point_logical_ids: list[str | None] = [
+        f"point:{point.id}" for point in recipe.points
+    ]
+    point_indices = {
+        point.id: index for index, point in enumerate(recipe.points)
+    }
+    point_cells_by_id: dict[str, tuple[int, ...]] = {
+        f"point:{point.id}": (point_indices[point.id],)
+        for point in recipe.points
+    }
+
+    def add_tessellation_point(u: float, v: float) -> int:
+        index = len(points)
+        local_points.append((float(u), float(v)))
+        points.append(recipe.plane.to_global(u, v))
+        point_logical_ids.append(None)
+        return index
+
+    curve_paths: dict[str, tuple[int, ...]] = {}
+    for curve in recipe.curves:
+        if isinstance(curve, SketchLine):
+            path = (
+                point_indices[curve.start_point_id],
+                point_indices[curve.end_point_id],
+            )
+        elif isinstance(curve, SketchCircle):
+            if curve.center_point_id is None:
+                raise TypeError("strict circle center point is required")
+            center = recipe.point(curve.center_point_id)
+            perimeter = tuple(
+                add_tessellation_point(
+                    center.u + curve.radius * math.cos(angle),
+                    center.v + curve.radius * math.sin(angle),
+                )
+                for angle in _angles(segments)
+            )
+            path = perimeter + (perimeter[0],)
+        elif isinstance(curve, SketchArc):
+            start = recipe.point(curve.start_point_id)
+            center = recipe.point(curve.center_point_id)
+            end = recipe.point(curve.end_point_id)
+            start_angle = math.atan2(start.v - center.v, start.u - center.u)
+            end_angle = math.atan2(end.v - center.v, end.u - center.u)
+            if curve.orientation == "ccw":
+                sweep = (end_angle - start_angle) % (2.0 * math.pi)
+            else:
+                sweep = -((start_angle - end_angle) % (2.0 * math.pi))
+            count = max(
+                2,
+                int(math.ceil(segments * abs(sweep) / (2.0 * math.pi))),
+            )
+            radius = math.hypot(start.u - center.u, start.v - center.v)
+            path_values = [point_indices[curve.start_point_id]]
+            for index in range(1, count):
+                angle = start_angle + sweep * index / count
+                path_values.append(
+                    add_tessellation_point(
+                        center.u + radius * math.cos(angle),
+                        center.v + radius * math.sin(angle),
+                    )
+                )
+            path_values.append(point_indices[curve.end_point_id])
+            path = tuple(path_values)
+        else:  # pragma: no cover - strict SketchGeometry validates curve types
+            raise TypeError(f"Unsupported strict sketch curve: {type(curve).__name__}")
+        curve_paths[curve.id] = path
+
+    edges: list[tuple[int, ...]] = []
+    edge_logical_ids: list[str | None] = []
+    edge_cells_by_id: dict[str, tuple[int, ...]] = {}
+    for curve in recipe.curves:
+        cell_index = len(edges)
+        edges.append(curve_paths[curve.id])
+        logical_id = f"edge:{curve.id}"
+        edge_logical_ids.append(logical_id)
+        edge_cells_by_id[logical_id] = (cell_index,)
+
+    profile_rings = {
+        profile.id: _strict_profile_ring(profile.curve_ids, curve_paths)
+        for profile in analysis.profiles
+    }
+    material_profiles = tuple(
+        profile for profile in analysis.profiles if profile.is_material
+    )
+    hole_profiles = tuple(
+        profile for profile in analysis.profiles if profile.is_hole
+    )
+    faces: list[tuple[int, ...]] = []
+    face_logical_ids: list[str | None] = []
+    face_cells_by_id: dict[str, tuple[int, ...]] = {}
+    for profile in material_profiles:
+        holes = tuple(
+            profile_rings[hole.id]
+            for hole in hole_profiles
+            if hole.parent_profile_id == profile.id
+        )
+        triangles = _triangulate_strict_profile(
+            profile_rings[profile.id],
+            holes,
+            tuple(local_points),
+        )
+        logical_id = f"face:profile/{profile.id.split('/', 1)[-1]}"
+        start = len(faces)
+        faces.extend(triangles)
+        face_logical_ids.extend((logical_id,) * len(triangles))
+        face_cells_by_id[logical_id] = tuple(
+            range(start, start + len(triangles))
+        )
+
+    if not analysis.blocking_diagnostics:
+        topology = describe_recipe_topology(recipe)
+        _append_preview_alias_cells(
+            topology,
+            points,
+            point_logical_ids,
+            point_cells_by_id,
+            edges,
+            edge_logical_ids,
+            edge_cells_by_id,
+            faces,
+            face_logical_ids,
+            face_cells_by_id,
+        )
+    elif allow_partial:
+        return GeometryPreview(
+            tuple(points),
+            tuple(faces),
+            tuple(edges),
+            tuple(face_logical_ids),
+            tuple(edge_logical_ids),
+            tuple(point_logical_ids),
+            topological_dimension=2,
+        )
+    return _make_preview(
+        recipe,
+        tuple(points),
+        tuple(faces),
+        tuple(edges),
+        tuple(face_logical_ids),
+        tuple(edge_logical_ids),
+        tuple(point_logical_ids),
+    )
+
+
+def _strict_profile_ring(
+    signed_curve_ids: tuple[str, ...],
+    curve_paths: dict[str, tuple[int, ...]],
+) -> tuple[int, ...]:
+    ring: list[int] = []
+    for signed_curve_id in signed_curve_ids:
+        path = curve_paths[signed_curve_id.lstrip("-")]
+        if signed_curve_id.startswith("-"):
+            path = tuple(reversed(path))
+        if ring and ring[-1] == path[0]:
+            ring.extend(path[1:])
+        else:
+            ring.extend(path)
+    if len(ring) > 1 and ring[0] == ring[-1]:
+        ring.pop()
+    if len(ring) < 3:
+        raise ValueError("严格草图 Profile 至少需要三个显示顶点")
+    return tuple(ring)
+
+
+def _triangulate_strict_profile(
+    outer: tuple[int, ...],
+    holes: tuple[tuple[int, ...], ...],
+    local_points: tuple[tuple[float, float], ...],
+) -> tuple[tuple[int, int, int], ...]:
+    """Triangulate sampled planar rings and discard cells outside the region."""
+
+    from scipy.spatial import Delaunay
+
+    candidate_indices = tuple(
+        dict.fromkeys(
+            index
+            for ring in (outer, *holes)
+            for index in ring
+        )
+    )
+    coordinates = tuple(local_points[index] for index in candidate_indices)
+    if len(candidate_indices) < 3:
+        raise ValueError("严格草图 Profile 无法形成显示面")
+    if len(candidate_indices) == 3 and not holes:
+        return (tuple(candidate_indices),)
+    triangulation = Delaunay(coordinates)
+    boundary_segments = tuple(
+        (ring[index], ring[(index + 1) % len(ring)])
+        for ring in (outer, *holes)
+        for index in range(len(ring))
+    )
+
+    def in_region(point: tuple[float, float]) -> bool:
+        outer_state = _point_in_preview_ring(point, outer, local_points)
+        if outer_state == 0:
+            return False
+        return not any(
+            _point_in_preview_ring(point, hole, local_points) == 1
+            for hole in holes
+        )
+
+    accepted: list[tuple[int, int, int]] = []
+    for simplex in triangulation.simplices:
+        triangle = tuple(candidate_indices[int(index)] for index in simplex)
+        values = tuple(local_points[index] for index in triangle)
+        signed_area = _preview_triangle_area(*values)
+        if math.isclose(signed_area, 0.0, abs_tol=1.0e-14):
+            continue
+        if signed_area < 0.0:
+            triangle = (triangle[0], triangle[2], triangle[1])
+            values = (values[0], values[2], values[1])
+        probes = (
+            (
+                sum(value[0] for value in values) / 3.0,
+                sum(value[1] for value in values) / 3.0,
+            ),
+            *tuple(
+                (
+                    0.5 * (values[index][0] + values[(index + 1) % 3][0]),
+                    0.5 * (values[index][1] + values[(index + 1) % 3][1]),
+                )
+                for index in range(3)
+            ),
+        )
+        if not all(in_region(point) for point in probes):
+            continue
+        if any(
+            _preview_segment_crosses_boundary(
+                triangle[index],
+                triangle[(index + 1) % 3],
+                boundary_segments,
+                local_points,
+            )
+            for index in range(3)
+        ):
+            continue
+        accepted.append(triangle)
+    if not accepted:
+        raise ValueError("严格草图 Profile 无法生成有效显示三角形")
+    return tuple(sorted(set(accepted)))
+
+
+def _point_in_preview_ring(
+    point: tuple[float, float],
+    ring: tuple[int, ...],
+    local_points: tuple[tuple[float, float], ...],
+) -> int:
+    """Return 0 outside, 1 inside, or 2 on the sampled ring boundary."""
+
+    x, y = point
+    inside = False
+    for index in range(len(ring)):
+        start = local_points[ring[index]]
+        end = local_points[ring[(index + 1) % len(ring)]]
+        if _preview_point_on_segment(point, start, end):
+            return 2
+        if (start[1] > y) != (end[1] > y):
+            crossing_x = (
+                start[0]
+                + (y - start[1])
+                * (end[0] - start[0])
+                / (end[1] - start[1])
+            )
+            if crossing_x > x:
+                inside = not inside
+    return 1 if inside else 0
+
+
+def _preview_point_on_segment(
+    point: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> bool:
+    area = _preview_triangle_area(start, end, point)
+    if not math.isclose(area, 0.0, abs_tol=1.0e-10):
+        return False
+    return (
+        min(start[0], end[0]) - 1.0e-10
+        <= point[0]
+        <= max(start[0], end[0]) + 1.0e-10
+        and min(start[1], end[1]) - 1.0e-10
+        <= point[1]
+        <= max(start[1], end[1]) + 1.0e-10
+    )
+
+
+def _preview_triangle_area(
+    first: tuple[float, float],
+    second: tuple[float, float],
+    third: tuple[float, float],
+) -> float:
+    return 0.5 * (
+        (second[0] - first[0]) * (third[1] - first[1])
+        - (second[1] - first[1]) * (third[0] - first[0])
+    )
+
+
+def _preview_segment_crosses_boundary(
+    start_index: int,
+    end_index: int,
+    boundary_segments: tuple[tuple[int, int], ...],
+    local_points: tuple[tuple[float, float], ...],
+) -> bool:
+    start = local_points[start_index]
+    end = local_points[end_index]
+    for boundary_start_index, boundary_end_index in boundary_segments:
+        if {start_index, end_index} & {
+            boundary_start_index,
+            boundary_end_index,
+        }:
+            continue
+        boundary_start = local_points[boundary_start_index]
+        boundary_end = local_points[boundary_end_index]
+        first = _preview_triangle_area(start, end, boundary_start)
+        second = _preview_triangle_area(start, end, boundary_end)
+        third = _preview_triangle_area(
+            boundary_start,
+            boundary_end,
+            start,
+        )
+        fourth = _preview_triangle_area(
+            boundary_start,
+            boundary_end,
+            end,
+        )
+        if first * second < -1.0e-14 and third * fourth < -1.0e-14:
+            return True
+    return False
+
+
+def _append_preview_alias_cells(
+    topology: RecipeTopology,
+    points: list[tuple[float, float, float]],
+    point_logical_ids: list[str | None],
+    point_cells_by_id: dict[str, tuple[int, ...]],
+    edges: list[tuple[int, ...]],
+    edge_logical_ids: list[str | None],
+    edge_cells_by_id: dict[str, tuple[int, ...]],
+    faces: list[tuple[int, ...]],
+    face_logical_ids: list[str | None],
+    face_cells_by_id: dict[str, tuple[int, ...]],
+) -> None:
+    """Duplicate display cells for topology aliases required by validation."""
+
+    values = {
+        "point": (points, point_logical_ids, point_cells_by_id),
+        "edge": (edges, edge_logical_ids, edge_cells_by_id),
+        "face": (faces, face_logical_ids, face_cells_by_id),
+    }
+    for kind in ("point", "edge", "face"):
+        cells, logical_ids, cells_by_id = values[kind]
+        pending = {
+            entity.logical_id: entity
+            for entity in topology.entities_of(kind, selectable_only=True)
+            if entity.logical_id not in cells_by_id
+        }
+        progressed = True
+        while pending and progressed:
+            progressed = False
+            for logical_id, entity in tuple(pending.items()):
+                linked = tuple(
+                    cells_by_id.get(link, ())
+                    for link in entity.topology_links
+                    if link.startswith(f"{kind}:")
+                )
+                if not linked or any(not group for group in linked):
+                    continue
+                source_indices = tuple(
+                    index for group in linked for index in group
+                )
+                appended: list[int] = []
+                for source_index in source_indices:
+                    if kind == "point":
+                        source_point = cells[source_index]
+                        appended_index = len(points)
+                        points.append(source_point)
+                        point_logical_ids.append(logical_id)
+                    else:
+                        appended_index = len(cells)
+                        cells.append(cells[source_index])
+                        logical_ids.append(logical_id)
+                    appended.append(appended_index)
+                cells_by_id[logical_id] = tuple(appended)
+                del pending[logical_id]
+                progressed = True
 
 
 def _boolean_preview(
@@ -807,4 +1245,5 @@ def _angles(count: int) -> tuple[float, ...]:
 __all__ = [
     "GeometryPreview",
     "build_geometry_preview",
+    "build_strict_sketch_draft_preview",
 ]

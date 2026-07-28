@@ -12,6 +12,7 @@ from fem.elements import get_element_capabilities
 from fem.materials.sections import section_family
 
 from .definitions import (
+    MeshEntityRef,
     NamedRegion,
     RegionAssignment,
     SectionDefinition,
@@ -51,6 +52,14 @@ def validate_native_project_inputs(
     except (TypeError, ValueError, NotImplementedError) as error:
         raise NativeProjectValidationError(str(error)) from error
     region_values = tuple(named_regions)
+    logical_region_values = tuple(
+        region
+        for region in region_values
+        if any(
+            type(reference) is not MeshEntityRef
+            for reference in region.references
+        )
+    )
     material_values = tuple(materials)
     section_values = tuple(sections)
     assignment_values = tuple(assignments)
@@ -84,7 +93,7 @@ def validate_native_project_inputs(
 
     fingerprint = topology_fingerprint_for_recipe(recipe)
     if not fingerprint.exact and (
-        region_values
+        logical_region_values
         or (
             mesh_settings is not None
             and bool(mesh_settings.local_controls)
@@ -92,8 +101,8 @@ def validate_native_project_inputs(
         or analysis_steps_have_native_region_targets(step_values)
     ):
         raise NativeProjectValidationError(
-            "non-exact topology cannot carry NamedRegion, LocalMeshControl, "
-            "or a named AnalysisStep target"
+            "non-exact topology cannot carry NamedRegion with logical references, "
+            "LocalMeshControl, or a named AnalysisStep target"
         )
 
     sections_by_name = {

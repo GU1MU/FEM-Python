@@ -74,7 +74,26 @@ def test_closed_and_busy_context_are_projected_without_qt() -> None:
     assert "后台任务" in busy[GuiActionKey.OPEN].reason
 
 
-def test_native_targets_and_selection_drive_authoring_actions() -> None:
+def test_sketch_editor_context_gates_mutating_actions() -> None:
+    session = ModelSession()
+    session.new_native_project()
+    snapshot = session.snapshot()
+    states = _by_key(
+        derive_action_availability(
+            snapshot,
+            describe_session_authoring(snapshot),
+            GuiActionContext(sketch_editor_active=True),
+        )
+    )
+
+    assert not states[GuiActionKey.GEOMETRY_CREATE].enabled
+    assert not states[GuiActionKey.OPEN_PROJECT].enabled
+    assert not states[GuiActionKey.MESH_SETTINGS].enabled
+    assert "草图编辑" in states[GuiActionKey.GEOMETRY_CREATE].reason
+    assert states[GuiActionKey.TOP].enabled
+
+
+def test_native_scope_actions_remain_disabled_until_meshing() -> None:
     session = ModelSession()
     session.new_native_project()
     base = session.snapshot()
@@ -107,8 +126,8 @@ def test_native_targets_and_selection_drive_authoring_actions() -> None:
     assert unselected[GuiActionKey.SAVE_PROJECT].enabled
     assert unselected[GuiActionKey.MESH_GENERATE].enabled
     assert not unselected[GuiActionKey.GEOMETRY_REGION].enabled
-    assert selected[GuiActionKey.GEOMETRY_REGION].enabled
-    assert selected[GuiActionKey.BOUNDARY_CREATE].enabled
+    assert not selected[GuiActionKey.GEOMETRY_REGION].enabled
+    assert not selected[GuiActionKey.BOUNDARY_CREATE].enabled
     assert selected[GuiActionKey.OUTPUT_CREATE].enabled
 
     busy = _by_key(

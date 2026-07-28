@@ -8,6 +8,7 @@ import math
 from typing import Any
 
 from fem.geometry.recipe_analysis import (
+    analyze_sketch_profiles,
     axis_aligned_rectangle,
     expand_sketch_recipe,
 )
@@ -28,7 +29,10 @@ from fem.geometry.recipes import (
     PlateWithHoleGeometry,
     RectangleGeometry,
     RotatedGeometry,
+    SketchArc,
+    SketchCircle,
     SketchGeometry,
+    SketchLine,
     WireGeometry,
     WirePoint,
     geometry_dimension,
@@ -120,6 +124,8 @@ def _compile_exact(cad: Any, recipe: NativeGeometry) -> _CompiledDraft:
     if transformed_wire is not None:
         return _compile_wire(cad, transformed_wire)
     if isinstance(recipe, SketchGeometry):
+        if recipe.is_strict:
+            return _compile_strict_sketch(cad, recipe)
         return _compile_exact(cad, expand_sketch_recipe(recipe))
     if isinstance(recipe, RectangleGeometry):
         return _compile_rectangle(cad, recipe)
@@ -248,6 +254,277 @@ def _compile_wire(cad: Any, recipe: WireGeometry) -> _CompiledDraft:
         },
         {},
     )
+
+
+def _compile_strict_sketch(
+    cad: Any,
+    recipe: SketchGeometry,
+) -> _CompiledDraft:
+    """Compile one validated curve-first sketch without primitive expansion."""
+
+    if not recipe.is_strict or recipe.plane is None:
+        raise TypeError("strict sketch compilation requires a curve-first sketch")
+    analysis = analyze_sketch_profiles(recipe)
+    if analysis.blocking_diagnostics or not analysis.profiles:
+        message = (
+            analysis.blocking_diagnostics[0].message
+            if analysis.blocking_diagnostics
+            else "严格草图没有可构建的 Profile"
+        )
+        raise TopologyResolutionError(message)
+
+    point_refs: dict[str, Any] = {}
+    for point in recipe.points:
+        try:
+            point_refs[point.id] = cad.point(
+                *recipe.plane.to_global(point.u, point.v)
+            )
+        except (TypeError, ValueError) as error:
+            raise TopologyResolutionError(
+                f"无法创建 point:{point.id}：{error}"
+            ) from error
+
+    # Each semantic curve can compile to multiple OCC curves.  The boolean
+    # records whether the OCC curve must be reversed to traverse it in the
+    # semantic curve's forward direction.
+    curve_pieces: dict[str, tuple[tuple[Any, bool], ...]] = {}
+    for curve in recipe.curves:
+        try:
+            curve_pieces[curve.id] = _compile_strict_sketch_curve(
+                cad,
+                recipe,
+                curve,
+                point_refs,
+            )
+        except (TypeError, ValueError) as error:
+            raise TopologyResolutionError(
+                f"无法创建 edge:{curve.id}：{error}"
+            ) from error
+
+    loop_refs: dict[str, Any] = {}
+    for profile in analysis.profiles:
+        oriented = []
+        for signed_curve_id in profile.curve_ids:
+            reversed_curve = signed_curve_id.startswith("-")
+            curve_id = signed_curve_id.lstrip("-")
+            pieces = curve_pieces[curve_id]
+            if reversed_curve:
+                pieces = tuple(
+                    (entity, not forward_reversed)
+                    for entity, forward_reversed in reversed(pieces)
+                )
+            oriented.extend(
+                cad.orient(entity, reversed=forward_reversed)
+                for entity, forward_reversed in pieces
+            )
+        try:
+            loop_refs[profile.id] = cad.curve_loop(tuple(oriented))
+        except (TypeError, ValueError) as error:
+            raise TopologyResolutionError(
+                f"无法创建 Profile {profile.id!r} 的闭合曲线环：{error}"
+            ) from error
+
+    material_profiles = tuple(
+        profile for profile in analysis.profiles if profile.is_material
+    )
+    hole_profiles = tuple(
+        profile for profile in analysis.profiles if profile.is_hole
+    )
+    surfaces: dict[str, Any] = {}
+    for profile in material_profiles:
+        holes = tuple(
+            loop_refs[hole.id]
+            for hole in hole_profiles
+            if hole.parent_profile_id == profile.id
+        )
+        try:
+            surfaces[profile.id] = cad.plane_surface(
+                loop_refs[profile.id],
+                holes=holes,
+            )
+        except (TypeError, ValueError) as error:
+            raise TopologyResolutionError(
+                f"无法创建 face:profile/{profile.id.split('/', 1)[-1]}：{error}"
+            ) from error
+
+    domain = tuple(surfaces[profile.id] for profile in material_profiles)
+    logical: dict[str, tuple[Any, ...]] = {
+        **{
+            f"point:{point.id}": (point_refs[point.id],)
+            for point in recipe.points
+        },
+        **{
+            f"edge:{curve.id}": tuple(
+                entity for entity, _reversed in curve_pieces[curve.id]
+            )
+            for curve in recipe.curves
+        },
+        **{
+            f"face:profile/{profile.id.split('/', 1)[-1]}": (
+                surfaces[profile.id],
+            )
+            for profile in material_profiles
+        },
+        "body:domain": domain,
+    }
+    catalog = describe_recipe_topology(recipe)
+    _populate_linked_logical_aliases(catalog, logical)
+
+    region_bindings: dict[RecipeRegionSelector, tuple[Any, ...]] = {}
+    if "edge:outer-loop" in logical:
+        region_bindings[RecipeRegionSelector.OUTER] = logical["edge:outer-loop"]
+    if "edge:hole-loop" in logical:
+        region_bindings[RecipeRegionSelector.HOLE] = logical["edge:hole-loop"]
+    hole_boundary = _unique(
+        entity
+        for profile in hole_profiles
+        for entity in _strict_profile_curve_entities(
+            profile.curve_ids,
+            curve_pieces,
+        )
+    )
+    return _CompiledDraft(
+        domain,
+        logical,
+        region_bindings,
+        hole_boundary,
+    )
+
+
+def _compile_strict_sketch_curve(
+    cad: Any,
+    recipe: SketchGeometry,
+    curve: SketchLine | SketchArc | SketchCircle,
+    point_refs: Mapping[str, Any],
+) -> tuple[tuple[Any, bool], ...]:
+    if recipe.plane is None:
+        raise TypeError("strict sketch plane is required")
+    if isinstance(curve, SketchLine):
+        return (
+            (
+                cad.line(
+                    point_refs[curve.start_point_id],
+                    point_refs[curve.end_point_id],
+                ),
+                False,
+            ),
+        )
+    if isinstance(curve, SketchCircle):
+        if curve.center_point_id is None:
+            raise TypeError("strict circle center point is required")
+        center = recipe.point(curve.center_point_id)
+        perimeter = tuple(
+            cad.point(
+                *recipe.plane.to_global(
+                    center.u + curve.radius * math.cos(angle),
+                    center.v + curve.radius * math.sin(angle),
+                )
+            )
+            for angle in (
+                0.0,
+                0.5 * math.pi,
+                math.pi,
+                1.5 * math.pi,
+            )
+        )
+        center_ref = point_refs[curve.center_point_id]
+        return tuple(
+            (
+                cad.circular_arc(
+                    perimeter[index],
+                    center_ref,
+                    perimeter[(index + 1) % len(perimeter)],
+                ),
+                False,
+            )
+            for index in range(len(perimeter))
+        )
+
+    start = recipe.point(curve.start_point_id)
+    center = recipe.point(curve.center_point_id)
+    end = recipe.point(curve.end_point_id)
+    start_angle = math.atan2(start.v - center.v, start.u - center.u)
+    end_angle = math.atan2(end.v - center.v, end.u - center.u)
+    if curve.orientation == "ccw":
+        sweep = (end_angle - start_angle) % (2.0 * math.pi)
+    else:
+        sweep = -((start_angle - end_angle) % (2.0 * math.pi))
+    segment_count = max(
+        1,
+        int(math.ceil(abs(sweep) / (0.5 * math.pi))),
+    )
+    radius = math.hypot(start.u - center.u, start.v - center.v)
+    traversal_points = [point_refs[curve.start_point_id]]
+    for index in range(1, segment_count):
+        angle = start_angle + sweep * index / segment_count
+        traversal_points.append(
+            cad.point(
+                *recipe.plane.to_global(
+                    center.u + radius * math.cos(angle),
+                    center.v + radius * math.sin(angle),
+                )
+            )
+        )
+    traversal_points.append(point_refs[curve.end_point_id])
+    center_ref = point_refs[curve.center_point_id]
+    pieces: list[tuple[Any, bool]] = []
+    for start_ref, end_ref in zip(
+        traversal_points,
+        traversal_points[1:],
+    ):
+        if curve.orientation == "ccw":
+            pieces.append(
+                (cad.circular_arc(start_ref, center_ref, end_ref), False)
+            )
+        else:
+            pieces.append(
+                (cad.circular_arc(end_ref, center_ref, start_ref), True)
+            )
+    return tuple(pieces)
+
+
+def _strict_profile_curve_entities(
+    signed_curve_ids: tuple[str, ...],
+    curve_pieces: Mapping[str, tuple[tuple[Any, bool], ...]],
+) -> tuple[Any, ...]:
+    return _unique(
+        entity
+        for signed_curve_id in signed_curve_ids
+        for entity, _reversed in curve_pieces[signed_curve_id.lstrip("-")]
+    )
+
+
+def _populate_linked_logical_aliases(
+    catalog: RecipeTopology,
+    logical: dict[str, tuple[Any, ...]],
+) -> None:
+    """Resolve compatibility aliases whose links already have CAD mappings."""
+
+    pending = {
+        entity.logical_id: entity
+        for entity in catalog.selectable_entities()
+        if entity.logical_id not in logical and entity.topology_links
+    }
+    progressed = True
+    while pending and progressed:
+        progressed = False
+        for logical_id, entity in tuple(pending.items()):
+            linked_groups = tuple(
+                logical.get(link, ())
+                for link in entity.topology_links
+            )
+            if not linked_groups or any(not group for group in linked_groups):
+                continue
+            entities = _unique(
+                item for group in linked_groups for item in group
+            )
+            if not entities or any(
+                item.dimension != entity.dimension for item in entities
+            ):
+                continue
+            logical[logical_id] = entities
+            del pending[logical_id]
+            progressed = True
 
 
 def _compile_rectangle(cad: Any, recipe: RectangleGeometry) -> _CompiledDraft:
@@ -769,6 +1046,8 @@ def _validate_logical_entities(
 
 def _build_domain_only(cad: Any, recipe: NativeGeometry) -> tuple[Any, ...]:
     if isinstance(recipe, SketchGeometry):
+        if recipe.is_strict:
+            return _compile_strict_sketch(cad, recipe).domain
         return _build_domain_only(cad, expand_sketch_recipe(recipe))
     if isinstance(recipe, BooleanGeometry):
         objects = _build_domain_only(cad, recipe.object_geometry)

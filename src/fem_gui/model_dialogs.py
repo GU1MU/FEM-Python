@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
 from fem.application import (
@@ -994,6 +995,8 @@ class RegionAssignmentDialog(QDialog):
         ) = None,
         explicit_reference: Sequence[float] | None = None,
         orientation_suggester: Callable[[RegionRef], object] | None = None,
+        allow_scope_selection: bool = False,
+        selected_region_name: str | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(
@@ -1007,6 +1010,7 @@ class RegionAssignmentDialog(QDialog):
         self._conversion_message = ""
         self._last_candidate: RegionAssignment | None = None
         self._last_candidate_decision: AuthoringCapability | None = None
+        self._scope_selection_request: str | None = None
         self._compatible_targets = (
             None
             if compatible_targets is None
@@ -1016,6 +1020,16 @@ class RegionAssignmentDialog(QDialog):
             }
         )
         self.section_combo, self.region_combo = QComboBox(self), QComboBox(self)
+        self.scope_pick_button = QPushButton("创建", self)
+        self.scope_pick_button.setEnabled(bool(allow_scope_selection))
+        self.scope_pick_button.clicked.connect(
+            self._request_scope_selection
+        )
+        region_widget = QWidget(self)
+        region_layout = QHBoxLayout(region_widget)
+        region_layout.setContentsMargins(0, 0, 0, 0)
+        region_layout.addWidget(self.region_combo, 1)
+        region_layout.addWidget(self.scope_pick_button)
         self.orientation_mode_combo = QComboBox(self)
         self.orientation_mode_combo.addItem("自动", "automatic")
         self.orientation_mode_combo.addItem("参考方向", "explicit")
@@ -1071,7 +1085,7 @@ class RegionAssignmentDialog(QDialog):
         self.form = QFormLayout()
         configure_form_layout(self.form)
         self.form.addRow("截面", self.section_combo)
-        self.form.addRow("单元区域", self.region_combo)
+        self.form.addRow("单元作用域", region_widget)
         self.form.addRow("梁截面方向", self.orientation_mode_combo)
         self.form.addRow("参考方向 X", self.orientation_x_spin)
         self.form.addRow("参考方向 Y", self.orientation_y_spin)
@@ -1096,11 +1110,22 @@ class RegionAssignmentDialog(QDialog):
             if section_index >= 0:
                 self.section_combo.setCurrentIndex(section_index)
             self._select_region(current.region_name)
+        elif selected_region_name is not None:
+            self._select_region(selected_region_name)
         if authored_orientation is not None:
             self.orientation_mode_combo.setCurrentIndex(
                 self.orientation_mode_combo.findData("explicit")
             )
         self._update_orientation_fields()
+
+    def _request_scope_selection(self) -> None:
+        if not self.scope_pick_button.isEnabled():
+            return
+        self._scope_selection_request = "element_set"
+        self.reject()
+
+    def requested_scope_kind(self) -> str | None:
+        return self._scope_selection_request
 
     def assignment(self) -> RegionAssignment:
         section_name = self.section_combo.currentText().strip()
@@ -1108,7 +1133,7 @@ class RegionAssignmentDialog(QDialog):
             raise ValueError("截面不能为空")
         region = self.region_combo.currentData()
         if not isinstance(region, RegionRef):
-            raise ValueError("没有可分配的兼容单元区域")
+            raise ValueError("没有可分配的兼容单元作用域")
         region_name = require_region_kind(region, "element_set")
         orientation = self.beam_orientation()
         if orientation is None:

@@ -14,6 +14,7 @@ from fem.application import (
     AuthoringStatus,
     BeamOrientation,
     DefinitionEditBatch,
+    MeshEntityRef,
     NamedRegion,
     NamedRegionEditBatch,
     NativePart,
@@ -30,7 +31,6 @@ from fem.core.model import (
     MaterialDefinition,
     NodalLoad,
 )
-from fem.geometry import LogicalEntityRef
 from fem.geometry.recipes import WireGeometry, WireMember, WirePoint
 from fem.mesh.settings import MeshSettings
 from fem_gui.commands import (
@@ -76,11 +76,28 @@ def _wire() -> WireGeometry:
     )
 
 
-def _regions() -> tuple[NamedRegion, ...]:
+def _regions(model) -> tuple[NamedRegion, ...]:
+    nodes = tuple(model.mesh.nodes)
+    elements = tuple(model.mesh.elements)
+    root = min(nodes, key=lambda node: float(node.x))
+    tip = max(nodes, key=lambda node: float(node.x))
     return (
-        NamedRegion("Root", (LogicalEntityRef("point:RootPoint"),)),
-        NamedRegion("Tip", (LogicalEntityRef("point:TipPoint"),)),
-        NamedRegion("Member", (LogicalEntityRef("edge:Member"),)),
+        NamedRegion("Root", (MeshEntityRef.node(root.id),)),
+        NamedRegion("Tip", (MeshEntityRef.node(tip.id),)),
+        NamedRegion(
+            "Member",
+            tuple(
+                MeshEntityRef.element(element.id)
+                for element in elements
+            ),
+        ),
+        NamedRegion(
+            "DOMAIN",
+            tuple(
+                MeshEntityRef.element(element.id)
+                for element in elements
+            ),
+        ),
     )
 
 
@@ -113,14 +130,6 @@ def test_native_1d_public_gui_workflow_persists_checks_solves_and_displays(
             )
         )
     )
-    require_accepted(
-        window.apply_named_region_edit(
-            NamedRegionEditBatch(
-                base_session_revision=window.document.session_revision,
-                regions=_regions(),
-            )
-        )
-    )
     mesh_size = 0.05 if formulation == "Truss2" else 0.25
     require_accepted(
         window.apply_mesh_input_edit(
@@ -131,6 +140,17 @@ def test_native_1d_public_gui_workflow_persists_checks_solves_and_displays(
                     cell_shape="line",
                     line_element_type=formulation,
                 ),
+            )
+        )
+    )
+    await_succeeded(window.generate_mesh())
+    generated = window.document.model
+    assert generated is not None
+    require_accepted(
+        window.apply_named_region_edit(
+            NamedRegionEditBatch(
+                base_session_revision=window.document.session_revision,
+                regions=_regions(generated),
             )
         )
     )
@@ -180,7 +200,7 @@ def test_native_1d_public_gui_workflow_persists_checks_solves_and_displays(
             )
         )
     )
-    assert window.document.model is None
+    assert window.document.model is not None
     assert window.actions["section_assign"].isEnabled()
 
     assignment = RegionAssignment("Section", "DOMAIN", orientation)

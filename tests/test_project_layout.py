@@ -1395,7 +1395,7 @@ def test_geometry_preview_pick_tokens_are_viewport_private():
     )
 
 
-def test_native_preprocessing_uses_typed_region_catalog_and_one_control_path():
+def test_native_preprocessing_separates_controls_from_mesh_scopes():
     compiler_source = (
         APPLICATION_ROOT / "recipe_compiler.py"
     ).read_text(encoding="utf-8")
@@ -1408,12 +1408,13 @@ def test_native_preprocessing_uses_typed_region_catalog_and_one_control_path():
 
     assert "region_bindings" in compiler_source
     assert "RecipeRegionSelector" in compiler_source
-    assert "CompiledDomainRegionSource" in preprocessing_source
-    assert "RecipeRegionSource" in preprocessing_source
-    assert "LogicalReferencesRegionSource" in preprocessing_source
-    assert "describe_native_regions" in (
+    assert "validate_native_authoring_context" in preprocessing_source
+    assert "materialize_native_scopes" in preprocessing_source
+    native_regions_source = (
         APPLICATION_ROOT / "native_regions.py"
     ).read_text(encoding="utf-8")
+    assert "describe_native_regions" in native_regions_source
+    assert "MeshEntitiesRegionSource" in native_regions_source
     assert "topology.groups" not in preprocessing_source
     assert "local_size" not in preprocessing_source
     assert "local_size" not in settings_source

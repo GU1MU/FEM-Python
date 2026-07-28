@@ -11,7 +11,11 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from fem_gui.app import main
+
+def main() -> int:
+    from fem_gui.app import main as run_gui
+
+    return run_gui()
 
 
 if __name__ == "__main__":

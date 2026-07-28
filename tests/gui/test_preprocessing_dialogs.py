@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QDialogButtonBox, QLabel
 
-from fem.application import NamedRegion
+from fem.application import MeshEntityRef, NamedRegion
 from fem.geometry import (
     ExtrudedGeometry,
     LogicalEntityRef,
@@ -17,6 +17,8 @@ from fem.geometry import (
 from fem.mesh import settings as mesh_settings_api
 from fem.mesh.settings import LocalMeshControl, MeshSettings
 from fem_gui.preprocessing_dialogs import (
+    BasicSolidCreationDialog,
+    GeometryCreationDialog,
     GeometryManagerDialog,
     LocalMeshControlDialog,
     MeshControlsDialog,
@@ -55,6 +57,40 @@ def _control(
         size,
         _falloff() if falloff is None else falloff,
     )
+
+
+def test_geometry_creation_dialog_uses_dimension_list_without_3d_shape_field() -> None:
+    _application()
+    dialog = GeometryCreationDialog()
+
+    assert dialog.windowTitle() == "创建几何"
+    assert dialog.creation_kind() == "1d"
+    assert not hasattr(dialog, "dimension_combo")
+    assert not hasattr(dialog, "solid_combo")
+    assert dialog.dimension_list.count() == 3
+    assert all(
+        "1D 与 2D 将进入视口草图编辑器" not in label.text()
+        for label in dialog.findChildren(QLabel)
+    )
+    assert "建模维度" not in {
+        label.text() for label in dialog.findChildren(QLabel)
+    }
+
+    dialog.dimension_list.setCurrentRow(1)
+    assert dialog.creation_kind() == "2d"
+    dialog.dimension_list.setCurrentRow(2)
+    assert dialog.creation_kind() == "3d"
+
+
+def test_basic_solid_creation_is_a_separate_choice_dialog() -> None:
+    _application()
+    dialog = BasicSolidCreationDialog()
+
+    assert dialog.windowTitle() == "创建 3D 基本实体"
+    assert dialog.solid_combo.count() == 2
+    assert dialog.solid_kind() == "box"
+    dialog.solid_combo.setCurrentIndex(1)
+    assert dialog.solid_kind() == "cylinder"
 
 
 def test_sketch_contour_dialog_only_shows_shape_specific_dimensions() -> None:
@@ -129,13 +165,10 @@ def test_local_mesh_dialog_records_the_viewport_selected_edge() -> None:
 
 def test_named_region_dialog_and_manager_support_multiple_entities() -> None:
     _application()
-    references = tuple(
-        LogicalEntityRef(logical_id)
-        for logical_id in (
-            "edge:bottom",
-            "edge:top",
-            "edge:left",
-        )
+    references = (
+        MeshEntityRef.edge(1, 0, (1, 2)),
+        MeshEntityRef.edge(2, 1, (2, 3)),
+        MeshEntityRef.edge(3, 2, (3, 4)),
     )
     create_dialog = NamedRegionDialog(references)
     assert create_dialog.name_edit.text() == "EdgeSet-1"

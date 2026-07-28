@@ -1,7 +1,6 @@
 from fem_agent.artifacts import ArtifactStore
 from fem_agent.engine import AgentSessionEngine
 from fem_agent.providers.fake import FakeProvider
-from fem_agent.schemas import ImportAnalysisSpec
 from fem_agent.tools.registry import AgentToolRegistry, ToolExecutionContext
 from fem_agent.worker import InspectionWorkerError
 from tests.helpers.abaqus_builders import write_perforated_plate_style_inp

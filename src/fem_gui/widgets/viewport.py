@@ -11,14 +11,21 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from PySide6.QtCore import QEvent, QTimer, Qt, Signal
-from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QLabel, QStackedLayout, QVBoxLayout, QWidget
+from PySide6.QtCore import QEvent, QPoint, QRect, QTimer, Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPen
+from PySide6.QtWidgets import (
+    QLabel,
+    QStackedLayout,
+    QVBoxLayout,
+    QWidget,
+)
 
-from fem.application import RegionRef
+from fem.application import MeshEntityRef, RegionRef
 from fem.application.results import FieldLocation, ResultCellKind, ResultValueLayout
 from fem.boundary.step import boundary_for_step, get_step
 from fem.geometry import LogicalEntityRef, logical_ref_sort_key
+from fem.selection import edges as mesh_edges
+from fem.selection import faces as mesh_faces
 from ..geometry_preview import GeometryPreview
 from ..wire_editor import (
     intersect_ray_with_work_plane,
@@ -55,6 +62,48 @@ BEAM_FRAME_CACHE_LIMIT = 256
 _TYPED_RESULT_GRID_NAME = "typed_result_grid"
 _LINE_ELEMENT_WIDTH = 5
 _LINE_NODE_POINT_SIZE = 11
+
+
+class _SelectionRubberBand(QWidget):
+    """Draw a border-only selection rectangle over the viewport."""
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self._containment = True
+        self.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+            True,
+        )
+        self.setAttribute(
+            Qt.WidgetAttribute.WA_TranslucentBackground,
+            True,
+        )
+        self.setAutoFillBackground(False)
+        self.hide()
+
+    def set_containment(self, containment: bool) -> None:
+        normalized = bool(containment)
+        if normalized == self._containment:
+            return
+        self._containment = normalized
+        self.update()
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        del event
+        painter = QPainter(self)
+        pen = QPen(
+            QColor("#4c7fa5"),
+            2,
+            (
+                Qt.PenStyle.SolidLine
+                if self._containment
+                else Qt.PenStyle.DashLine
+            ),
+        )
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(self.rect().adjusted(1, 1, -1, -1))
 
 
 def _effective_line_load_vector(
@@ -171,6 +220,76 @@ def _geometry_surface_polydata(
     return surface
 
 
+def _mesh_edge_polydata(
+    pyvista,
+    geometry: ModelGeometry,
+    rows: tuple[tuple[int, int, tuple[int, ...]], ...],
+):
+    """Build one pickable display cell for every boundary element edge."""
+
+    cells = tuple(
+        tuple(
+            geometry.node_id_to_point_index[int(node_id)]
+            for node_id in node_ids
+        )
+        for _element_id, _local_index, node_ids in rows
+    )
+    line_cells = np.hstack(
+        [np.asarray((len(cell), *cell), dtype=np.int64) for cell in cells]
+    )
+    dataset = pyvista.PolyData()
+    dataset.points = geometry.points
+    dataset.lines = line_cells
+    dataset.cell_data["mesh_scope_pick_id"] = np.arange(
+        1,
+        len(rows) + 1,
+        dtype=np.int64,
+    )
+    dataset.set_active_scalars(None)
+    return dataset, cells
+
+
+def _mesh_face_polydata(
+    pyvista,
+    geometry: ModelGeometry,
+    rows: tuple[tuple[int, int, tuple[int, ...]], ...],
+):
+    """Build boundary-face polygons while retaining element-local identity."""
+
+    display_node_ids = tuple(
+        _face_display_node_ids(node_ids)
+        for _element_id, _local_index, node_ids in rows
+    )
+    cells = tuple(
+        tuple(
+            geometry.node_id_to_point_index[int(node_id)]
+            for node_id in node_ids
+        )
+        for node_ids in display_node_ids
+    )
+    face_cells = np.hstack(
+        [np.asarray((len(cell), *cell), dtype=np.int64) for cell in cells]
+    )
+    dataset = pyvista.PolyData(geometry.points, faces=face_cells)
+    dataset.cell_data["mesh_scope_pick_id"] = np.arange(
+        1,
+        len(rows) + 1,
+        dtype=np.int64,
+    )
+    dataset.set_active_scalars(None)
+    return dataset
+
+
+def _face_display_node_ids(node_ids: tuple[int, ...]) -> tuple[int, ...]:
+    """Return corner nodes in perimeter order for supported quadratic faces."""
+
+    if len(node_ids) == 8:
+        return node_ids[:4]
+    if len(node_ids) == 6:
+        return node_ids[:3]
+    return node_ids
+
+
 @dataclass(frozen=True, slots=True)
 class PickHit:
     """One resolved selectable object shared by hover and click."""
@@ -217,6 +336,63 @@ class WireDraftRenderData:
         object.__setattr__(self, "point_names", point_names)
         object.__setattr__(self, "members", members)
         object.__setattr__(self, "member_names", member_names)
+
+
+@dataclass(frozen=True, slots=True)
+class SketchDraftRenderData:
+    """Detached display data for an incomplete planar sketch draft."""
+
+    points: tuple[tuple[float, float, float], ...]
+    point_ids: tuple[str | None, ...]
+    curves: tuple[tuple[int, ...], ...]
+    curve_ids: tuple[str, ...]
+    faces: tuple[tuple[int, ...], ...] = ()
+    face_ids: tuple[str, ...] = ()
+    selected_kind: str | None = None
+    selected_id: str | None = None
+
+    def __post_init__(self) -> None:
+        points = tuple(
+            tuple(float(value) for value in point)
+            for point in self.points
+        )
+        point_ids = tuple(self.point_ids)
+        curves = tuple(
+            tuple(int(value) for value in curve)
+            for curve in self.curves
+        )
+        curve_ids = tuple(str(value) for value in self.curve_ids)
+        faces = tuple(
+            tuple(int(value) for value in face)
+            for face in self.faces
+        )
+        face_ids = tuple(str(value) for value in self.face_ids)
+        if len(points) != len(point_ids):
+            raise ValueError("sketch draft point IDs must match point coordinates")
+        if len(curves) != len(curve_ids):
+            raise ValueError("sketch draft curve IDs must match curve cells")
+        if len(faces) != len(face_ids):
+            raise ValueError("sketch draft face IDs must match face cells")
+        if any(len(curve) < 2 for curve in curves):
+            raise ValueError("sketch draft curves require at least two points")
+        if any(len(face) < 3 for face in faces):
+            raise ValueError("sketch draft faces require at least three points")
+        if any(
+            index < 0 or index >= len(points)
+            for cell in (*curves, *faces)
+            for index in cell
+        ):
+            raise ValueError("sketch draft cell index is outside point data")
+        if self.selected_kind not in {None, "point", "curve", "profile"}:
+            raise ValueError("invalid sketch draft selection kind")
+        if self.selected_id is None and self.selected_kind is not None:
+            raise ValueError("sketch selection kind requires an entity ID")
+        object.__setattr__(self, "points", points)
+        object.__setattr__(self, "point_ids", point_ids)
+        object.__setattr__(self, "curves", curves)
+        object.__setattr__(self, "curve_ids", curve_ids)
+        object.__setattr__(self, "faces", faces)
+        object.__setattr__(self, "face_ids", face_ids)
 
 
 @dataclass(frozen=True, slots=True)
@@ -327,6 +503,102 @@ def _wire_coordinate_label(point: Iterable[float]) -> str:
     return f"({x:.2f}, {y:.2f}, {z:.2f})"
 
 
+def _sketch_camera_bounds(
+    points: Iterable[tuple[float, float, float]],
+    spacing: float,
+) -> tuple[float, float, float, float, float, float]:
+    """Frame a useful XY authoring area independently of the full grid actor."""
+
+    clean_spacing = float(spacing)
+    if not np.isfinite(clean_spacing) or clean_spacing <= 0.0:
+        raise ValueError("sketch grid spacing must be positive")
+    values = np.asarray(tuple(points), dtype=float)
+    if values.size:
+        values = values.reshape((-1, 3))
+        values = values[np.all(np.isfinite(values), axis=1)]
+    else:
+        values = np.empty((0, 3), dtype=float)
+    if len(values):
+        minimum = np.min(values[:, :2], axis=0)
+        maximum = np.max(values[:, :2], axis=0)
+        center = 0.5 * (minimum + maximum)
+        spans = maximum - minimum
+    else:
+        center = np.zeros(2, dtype=float)
+        spans = np.zeros(2, dtype=float)
+    minimum_half_extent = max(20.0 * clean_spacing, 1.0)
+    padding = max(
+        4.0 * clean_spacing,
+        0.1 * float(np.max(spans)),
+        0.05,
+    )
+    half_extents = np.maximum(
+        0.5 * spans + padding,
+        minimum_half_extent,
+    )
+    depth = max(float(np.max(half_extents)) * 1.0e-6, 1.0e-6)
+    return (
+        float(center[0] - half_extents[0]),
+        float(center[0] + half_extents[0]),
+        float(center[1] - half_extents[1]),
+        float(center[1] + half_extents[1]),
+        -depth,
+        depth,
+    )
+
+
+def _sketch_shape_preview_points(
+    mode: str,
+    pending_points: Iterable[tuple[float, float, float]],
+    cursor_point: tuple[float, float, float] | None,
+) -> tuple[tuple[float, float, float], ...]:
+    """Build the transient rectangle or circle polyline for a second click."""
+
+    pending = tuple(
+        tuple(float(value) for value in point)
+        for point in pending_points
+    )
+    normalized_mode = str(mode).strip().casefold()
+    if (
+        normalized_mode not in {"rectangle", "circle"}
+        or len(pending) != 1
+        or cursor_point is None
+    ):
+        return ()
+    start = np.asarray(pending[0], dtype=float)
+    cursor = np.asarray(cursor_point, dtype=float)
+    if (
+        start.shape != (3,)
+        or cursor.shape != (3,)
+        or not np.all(np.isfinite(start))
+        or not np.all(np.isfinite(cursor))
+    ):
+        return ()
+    if normalized_mode == "rectangle":
+        if np.allclose(start[:2], cursor[:2], rtol=0.0, atol=1.0e-12):
+            return ()
+        z = float(start[2])
+        return (
+            (float(start[0]), float(start[1]), z),
+            (float(cursor[0]), float(start[1]), z),
+            (float(cursor[0]), float(cursor[1]), z),
+            (float(start[0]), float(cursor[1]), z),
+            (float(start[0]), float(start[1]), z),
+        )
+    radius = float(np.linalg.norm(cursor[:2] - start[:2]))
+    if radius <= 1.0e-12:
+        return ()
+    angles = np.linspace(0.0, 2.0 * math.pi, 65)
+    return tuple(
+        (
+            float(start[0] + radius * math.cos(angle)),
+            float(start[1] + radius * math.sin(angle)),
+            float(start[2]),
+        )
+        for angle in angles
+    )
+
+
 def _capture_camera_state(plotter: object) -> _ViewportCameraState | None:
     """Capture framing before transient actors are rebuilt."""
 
@@ -389,11 +661,46 @@ def _point_to_segment_distance(
     return float(np.linalg.norm(point - closest)), fraction
 
 
+def _display_point_in_polygon(
+    point: np.ndarray,
+    polygon: np.ndarray,
+) -> bool:
+    """Return whether one display-space point lies in a polygon cell."""
+
+    if len(polygon) < 3:
+        return False
+    x, y = float(point[0]), float(point[1])
+    inside = False
+    for index in range(len(polygon)):
+        start = polygon[index]
+        end = polygon[(index + 1) % len(polygon)]
+        distance, _fraction = _point_to_segment_distance(
+            np.asarray((x, y), dtype=float),
+            np.asarray(start[:2], dtype=float),
+            np.asarray(end[:2], dtype=float),
+        )
+        if distance <= 1.0:
+            return True
+        if (start[1] > y) != (end[1] > y):
+            crossing_x = (
+                start[0]
+                + (y - start[1])
+                * (end[0] - start[0])
+                / (end[1] - start[1])
+            )
+            if crossing_x > x:
+                inside = not inside
+    return inside
+
+
 class FEMViewport(QWidget):
     """维护网格、标注、选择、载荷与结果等独立 Actor。"""
 
     entityPicked = Signal(str, int)
     geometryEntityPicked = Signal(object)
+    geometryEntitiesBoxSelected = Signal(object)
+    meshEntityPicked = Signal(object)
+    meshEntitiesBoxSelected = Signal(object)
     selectionMissed = Signal(str)
     selectionConfirmed = Signal()
     selectionCancelled = Signal()
@@ -406,6 +713,15 @@ class FEMViewport(QWidget):
     wirePendingInteractionCancelled = Signal()
     wireAuthoringFinishRequested = Signal()
     wireAuthoringCancelled = Signal()
+    sketchWorkPlanePointSelected = Signal(object)
+    sketchDraftPointSelected = Signal(str)
+    sketchDraftCurveSelected = Signal(str)
+    sketchDraftProfileSelected = Signal(str)
+    sketchTrimRequested = Signal(str, object)
+    sketchAuthoringMissed = Signal(str)
+    sketchPendingInteractionCancelled = Signal()
+    sketchAuthoringFinishRequested = Signal()
+    sketchAuthoringCancelled = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -431,6 +747,14 @@ class FEMViewport(QWidget):
         self._geometry_edge_pick_ids: tuple[int, ...] = ()
         self._geometry_point_pick_ids: tuple[int, ...] = ()
         self._geometry_body_pick_id = 0
+        self._mesh_scope_edges = None
+        self._mesh_scope_faces = None
+        self._mesh_scope_edge_cells: tuple[tuple[int, ...], ...] = ()
+        self._mesh_scope_pick_to_ref: dict[
+            tuple[str, int],
+            MeshEntityRef,
+        ] = {}
+        self._mesh_scope_ref_to_pick_id: dict[MeshEntityRef, int] = {}
         self._pick_grid = None
         self._pick_locators: dict[int, tuple[int, Any]] = {}
         self._result_render_payload: ResultRenderPayload | None = None
@@ -463,6 +787,7 @@ class FEMViewport(QWidget):
         self._updating_symbol_scale = False
         self._selection_press_position: tuple[float, float] | None = None
         self._selection_dragged = False
+        self._selection_rubber_band: _SelectionRubberBand | None = None
         self._picker_event_targets: set[QWidget] = set()
         self._abaqus_view_button: Qt.MouseButton | None = None
         self._trackball_vector: np.ndarray | None = None
@@ -479,6 +804,15 @@ class FEMViewport(QWidget):
         self._wire_authoring_selection: tuple[str, str] | None = None
         self._wire_authoring_hover: tuple[str, str] | None = None
         self._wire_authoring_preview_point: tuple[float, float, float] | None = None
+        self._sketch_authoring_active = False
+        self._sketch_authoring_mode = "polyline"
+        self._sketch_grid_snap = True
+        self._sketch_grid_spacing = 0.1
+        self._sketch_draft_render_data: SketchDraftRenderData | None = None
+        self._sketch_pending_points: tuple[tuple[float, float, float], ...] = ()
+        self._sketch_authoring_preview_point: (
+            tuple[float, float, float] | None
+        ) = None
         self._hover_timer = QTimer(self)
         self._hover_timer.setSingleShot(True)
         self._hover_timer.setInterval(40)
@@ -540,6 +874,16 @@ class FEMViewport(QWidget):
 
         event_type = event.type()
         if event_type == QEvent.Type.KeyPress:
+            if self._sketch_authoring_active:
+                if event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
+                    if self.cancel_pending_sketch_interaction():
+                        return True
+                    self.sketchAuthoringFinishRequested.emit()
+                    return True
+                if event.key() == Qt.Key.Key_Escape:
+                    if not self.cancel_pending_sketch_interaction():
+                        self.sketchAuthoringCancelled.emit()
+                    return True
             if self._wire_authoring_active:
                 if event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
                     self.wireAuthoringFinishRequested.emit()
@@ -576,6 +920,16 @@ class FEMViewport(QWidget):
                     )
                     return True
                 return False
+            if self._sketch_authoring_active:
+                if button in {
+                    Qt.MouseButton.MiddleButton,
+                    Qt.MouseButton.RightButton,
+                }:
+                    self.cancel_pending_sketch_interaction()
+                    return True
+                if button == Qt.MouseButton.LeftButton:
+                    self._selection_press_position = None
+                    return True
             if self._wire_authoring_active:
                 if button in {
                     Qt.MouseButton.MiddleButton,
@@ -590,6 +944,7 @@ class FEMViewport(QWidget):
                 position = self._plotter_event_position(watched, event)
                 self._selection_press_position = (position.x(), position.y())
                 self._selection_dragged = False
+                self._hide_selection_rubber_band()
                 return True
             if button in {Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton}:
                 return True
@@ -601,6 +956,18 @@ class FEMViewport(QWidget):
                 return True
             if self._abaqus_view_button is not None:
                 return False
+            if self._sketch_authoring_active:
+                position = self._plotter_event_position(watched, event)
+                vtk_x, vtk_y = self._qt_to_vtk_position(
+                    position.x(),
+                    position.y(),
+                )
+                point, _reason = self._sketch_work_plane_point_at(
+                    vtk_x,
+                    vtk_y,
+                )
+                self._set_sketch_authoring_preview_point(point)
+                return True
             if self._wire_authoring_active:
                 position = self._plotter_event_position(watched, event)
                 vtk_x, vtk_y = self._qt_to_vtk_position(
@@ -615,6 +982,11 @@ class FEMViewport(QWidget):
                 if abs(position.x() - start_x) + abs(position.y() - start_y) > 4.0:
                     self._selection_dragged = True
                     self._clear_preselection(render=True)
+                if self._selection_dragged:
+                    self._show_selection_rubber_band(
+                        (start_x, start_y),
+                        (position.x(), position.y()),
+                    )
                 return True
             if event.buttons() & (
                 Qt.MouseButton.LeftButton
@@ -636,6 +1008,20 @@ class FEMViewport(QWidget):
                     self._refresh_symbols_for_camera(render=True)
                     return True
                 return False
+            if self._sketch_authoring_active:
+                if button == Qt.MouseButton.LeftButton:
+                    position = self._plotter_event_position(watched, event)
+                    vtk_x, vtk_y = self._qt_to_vtk_position(
+                        position.x(), position.y()
+                    )
+                    self._sketch_authoring_click(vtk_x, vtk_y)
+                    return True
+                if button in {
+                    Qt.MouseButton.MiddleButton,
+                    Qt.MouseButton.RightButton,
+                }:
+                    self.cancel_pending_sketch_interaction()
+                    return True
             if self._wire_authoring_active:
                 if button == Qt.MouseButton.LeftButton:
                     position = self._plotter_event_position(watched, event)
@@ -652,11 +1038,18 @@ class FEMViewport(QWidget):
                     return True
             if button == Qt.MouseButton.LeftButton and self._selection_press_position is not None:
                 position = self._plotter_event_position(watched, event)
+                start = self._selection_press_position
                 should_pick = not self._selection_dragged
                 self._selection_press_position = None
                 self._selection_dragged = False
+                self._hide_selection_rubber_band()
                 if should_pick:
                     self._pick_qt_position(position.x(), position.y())
+                else:
+                    self._box_select_qt_positions(
+                        start,
+                        (position.x(), position.y()),
+                    )
                 return True
             if button in {Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton}:
                 return True
@@ -664,11 +1057,58 @@ class FEMViewport(QWidget):
         if event_type == QEvent.Type.Leave:
             self._pending_hover_position = None
             self._hover_timer.stop()
+            if self._sketch_authoring_active:
+                self._set_sketch_authoring_preview_point(None)
             if self._wire_authoring_active:
                 self._set_wire_authoring_hover(None)
             self._clear_preselection(render=True)
 
         return super().eventFilter(watched, event)
+
+    def _show_selection_rubber_band(
+        self,
+        start: tuple[float, float],
+        end: tuple[float, float],
+    ) -> None:
+        if self._plotter is None:
+            return
+        if self._selection_rubber_band is None:
+            self._selection_rubber_band = _SelectionRubberBand(
+                self._plotter
+            )
+        self._selection_rubber_band.set_containment(
+            float(end[0]) >= float(start[0])
+        )
+        rectangle = QRect(
+            QPoint(int(round(start[0])), int(round(start[1]))),
+            QPoint(int(round(end[0])), int(round(end[1]))),
+        ).normalized()
+        self._selection_rubber_band.setGeometry(rectangle)
+        self._selection_rubber_band.raise_()
+        self._selection_rubber_band.show()
+
+    def _hide_selection_rubber_band(self) -> None:
+        if self._selection_rubber_band is not None:
+            self._selection_rubber_band.hide()
+
+    def _box_select_qt_positions(
+        self,
+        start: tuple[float, float],
+        end: tuple[float, float],
+    ) -> None:
+        if self._selection_mode == "mesh_node":
+            self.meshEntitiesBoxSelected.emit(
+                self._mesh_nodes_in_qt_rectangle(start, end)
+            )
+            return
+        if self._selection_mode in {
+            "geometry_edge",
+            "geometry_face",
+            "geometry_body",
+        }:
+            self.geometryEntitiesBoxSelected.emit(
+                self._geometry_entities_in_qt_rectangle(start, end)
+            )
 
     def _plotter_event_position(self, watched: object, event: object):
         """Return a mouse position in the outer QtInteractor coordinate system."""
@@ -793,6 +1233,7 @@ class FEMViewport(QWidget):
         self._geometry_edge_pick_ids = ()
         self._geometry_point_pick_ids = ()
         self._geometry_body_pick_id = 0
+        self._clear_mesh_scope_pick_bindings()
         self._pick_grid = None
         self._pick_locators.clear()
         self._result_render_payload = None
@@ -823,6 +1264,7 @@ class FEMViewport(QWidget):
         self._remove_all_layers(render=False)
         self._grid = self._make_grid(geometry.points)
         self._pick_grid = self._grid
+        self._install_mesh_scope_pick_bindings()
         self._add_base_layers(reset_camera=True, render=False)
         if refresh_symbols:
             self.show_boundary_and_loads(render=render)
@@ -830,8 +1272,10 @@ class FEMViewport(QWidget):
             self._render()
 
     def clear_model(self) -> None:
+        if self._sketch_authoring_active:
+            self.stop_sketch_authoring(render=False)
         if self._wire_authoring_active:
-            self.stop_wire_authoring()
+            self.stop_wire_authoring(render=False)
         self._model = None
         self._geometry = None
         self._artifact_id = None
@@ -846,6 +1290,7 @@ class FEMViewport(QWidget):
         self._geometry_edge_pick_ids = ()
         self._geometry_point_pick_ids = ()
         self._geometry_body_pick_id = 0
+        self._clear_mesh_scope_pick_bindings()
         self._pick_grid = None
         self._pick_locators.clear()
         self._result_render_payload = None
@@ -880,6 +1325,343 @@ class FEMViewport(QWidget):
     @property
     def wire_authoring_active(self) -> bool:
         return self._wire_authoring_active
+
+    @property
+    def sketch_authoring_active(self) -> bool:
+        return self._sketch_authoring_active
+
+    def start_sketch_authoring(
+        self,
+        render_data: SketchDraftRenderData,
+        *,
+        snap: bool = True,
+        spacing: float = 0.1,
+    ) -> None:
+        """Enter transient XY sketch authoring without touching Session state."""
+
+        if type(render_data) is not SketchDraftRenderData:
+            raise TypeError("render_data must be a SketchDraftRenderData")
+        if not np.isfinite(float(spacing)) or float(spacing) <= 0.0:
+            raise ValueError("sketch grid spacing must be positive")
+        if self._wire_authoring_active:
+            self.stop_wire_authoring()
+        self._sketch_authoring_active = True
+        self._sketch_authoring_mode = "polyline"
+        self._sketch_grid_snap = bool(snap)
+        self._sketch_grid_spacing = float(spacing)
+        self._sketch_draft_render_data = render_data
+        self._sketch_pending_points = ()
+        self._sketch_authoring_preview_point = None
+        self._clear_preselection(render=False)
+        self._remove_all_layers(render=False)
+        self._show_sketch_draft(render=False, reset_camera=True)
+
+    def update_sketch_draft(
+        self,
+        render_data: SketchDraftRenderData,
+    ) -> None:
+        if type(render_data) is not SketchDraftRenderData:
+            raise TypeError("render_data must be a SketchDraftRenderData")
+        if not self._sketch_authoring_active:
+            return
+        self._sketch_draft_render_data = render_data
+        self._show_sketch_draft(render=True)
+
+    def set_sketch_authoring_mode(self, mode: str) -> None:
+        normalized = str(mode).strip().casefold()
+        if normalized not in {
+            "select",
+            "polyline",
+            "rectangle",
+            "circle",
+            "arc",
+            "trim",
+        }:
+            raise ValueError("unsupported sketch authoring mode")
+        self._sketch_authoring_mode = normalized
+        self.cancel_pending_sketch_interaction()
+
+    def set_sketch_grid(
+        self,
+        *,
+        snap: bool | None = None,
+        spacing: float | None = None,
+    ) -> None:
+        if spacing is not None and (
+            not np.isfinite(float(spacing)) or float(spacing) <= 0.0
+        ):
+            raise ValueError("sketch grid spacing must be positive")
+        if snap is not None:
+            self._sketch_grid_snap = bool(snap)
+        if spacing is not None:
+            self._sketch_grid_spacing = float(spacing)
+        if self._sketch_authoring_active:
+            self._show_sketch_draft(render=True)
+
+    def set_sketch_pending_points(
+        self,
+        points: Iterable[tuple[float, float, float]],
+    ) -> None:
+        normalized = tuple(
+            tuple(float(value) for value in point)
+            for point in points
+        )
+        if normalized == self._sketch_pending_points:
+            return
+        self._sketch_pending_points = normalized
+        if self._sketch_authoring_active:
+            self._show_sketch_authoring_hover(render=True)
+
+    def cancel_pending_sketch_interaction(self) -> bool:
+        if not self._sketch_pending_points:
+            return False
+        self.set_sketch_pending_points(())
+        self.sketchPendingInteractionCancelled.emit()
+        return True
+
+    def stop_sketch_authoring(self, *, render: bool = True) -> None:
+        if (
+            not self._sketch_authoring_active
+            and self._sketch_draft_render_data is None
+        ):
+            return
+        for name in (
+            "sketch_work_plane_grid",
+            "sketch_work_plane_axis_0",
+            "sketch_work_plane_axis_1",
+            "sketch_work_plane_origin",
+            "sketch_work_plane_axis_labels",
+            "sketch_draft_faces",
+            "sketch_draft_curves",
+            "sketch_draft_points",
+            "sketch_authoring_selection",
+            "sketch_authoring_shape_preview",
+            "sketch_authoring_hover_outline",
+            "sketch_authoring_hover",
+            "sketch_authoring_hover_label",
+        ):
+            self._remove_actor(name)
+        self._sketch_authoring_active = False
+        self._sketch_draft_render_data = None
+        self._sketch_pending_points = ()
+        self._sketch_authoring_preview_point = None
+        self._clear_preselection(render=False)
+        if render:
+            self._render()
+
+    def focus_sketch_draft_entity(self, kind: str, entity_id: str) -> None:
+        data = self._sketch_draft_render_data
+        if data is None:
+            return
+        self._sketch_draft_render_data = replace(
+            data,
+            selected_kind=str(kind),
+            selected_id=str(entity_id),
+        )
+        self._show_sketch_draft(render=True)
+
+    def _show_sketch_draft(
+        self,
+        *,
+        render: bool,
+        reset_camera: bool = False,
+    ) -> None:
+        data = self._sketch_draft_render_data
+        if data is None:
+            return
+        for name in (
+            "sketch_work_plane_grid",
+            "sketch_work_plane_axis_0",
+            "sketch_work_plane_axis_1",
+            "sketch_work_plane_origin",
+            "sketch_work_plane_axis_labels",
+            "sketch_draft_faces",
+            "sketch_draft_curves",
+            "sketch_draft_points",
+            "sketch_authoring_selection",
+            "sketch_authoring_shape_preview",
+            "sketch_authoring_hover_outline",
+            "sketch_authoring_hover",
+            "sketch_authoring_hover_label",
+        ):
+            self._remove_actor(name)
+        if is_offscreen_environment():
+            self._message.setText("二维草图编辑中（当前环境未启用三维渲染）")
+            self._stack.setCurrentWidget(self._message)
+            return
+        if not self._ensure_plotter() or _pyvista is None:
+            return
+        coordinates = np.asarray(data.points, dtype=float).reshape((-1, 3))
+        grid_layout = _wire_grid_layout(
+            coordinates,
+            "XY",
+            0.0,
+            self._sketch_grid_spacing,
+        )
+        grid = _wire_grid_polydata(_pyvista, grid_layout)
+        self._actors["sketch_work_plane_grid"] = self._plotter.add_mesh(
+            grid,
+            color="#7f8f9f",
+            opacity=0.35,
+            line_width=1,
+            name="sketch_work_plane_grid",
+            reset_camera=False,
+            pickable=False,
+        )
+        center = np.asarray(grid_layout.center, dtype=float)
+        origin = np.zeros(3, dtype=float)
+        half_size = 0.5 * grid_layout.plane_size
+        label_points = [origin]
+        axis_labels = ["O"]
+        for index, axis in enumerate((0, 1)):
+            start = origin.copy()
+            end = origin.copy()
+            start[axis] = center[axis] - half_size
+            end[axis] = center[axis] + half_size
+            axis_line = _pyvista.PolyData()
+            axis_line.points = np.asarray((start, end), dtype=float)
+            axis_line.lines = np.asarray((2, 0, 1), dtype=np.int64)
+            actor_name = f"sketch_work_plane_axis_{index}"
+            self._actors[actor_name] = self._plotter.add_mesh(
+                axis_line,
+                color=("#d9534f", "#45a049")[index],
+                line_width=4,
+                name=actor_name,
+                reset_camera=False,
+                pickable=False,
+            )
+            label_points.append(end)
+            axis_labels.append(("X", "Y")[index])
+        self._actors["sketch_work_plane_origin"] = self._plotter.add_mesh(
+            _pyvista.PolyData(np.asarray((origin,), dtype=float)),
+            color="#ff8c00",
+            point_size=13,
+            render_points_as_spheres=True,
+            name="sketch_work_plane_origin",
+            reset_camera=False,
+            pickable=False,
+        )
+        self._actors["sketch_work_plane_axis_labels"] = (
+            self._plotter.add_point_labels(
+                np.asarray(label_points, dtype=float),
+                axis_labels,
+                point_size=0,
+                font_size=11,
+                shape=None,
+                text_color="#ff8c00",
+                name="sketch_work_plane_axis_labels",
+                reset_camera=False,
+            )
+        )
+        if data.faces:
+            surface = _pyvista.PolyData()
+            surface.points = coordinates
+            surface.faces = np.hstack(
+                tuple((len(face), *face) for face in data.faces)
+            ).astype(np.int64)
+            self._actors["sketch_draft_faces"] = self._plotter.add_mesh(
+                surface,
+                color="#80b9d8",
+                opacity=0.28,
+                show_edges=False,
+                name="sketch_draft_faces",
+                reset_camera=False,
+                pickable=False,
+            )
+        if data.curves:
+            curves = _pyvista.PolyData()
+            curves.points = coordinates
+            curves.lines = np.hstack(
+                tuple((len(curve), *curve) for curve in data.curves)
+            ).astype(np.int64)
+            self._actors["sketch_draft_curves"] = self._plotter.add_mesh(
+                curves,
+                color="#173443",
+                line_width=3,
+                name="sketch_draft_curves",
+                reset_camera=False,
+                pickable=False,
+            )
+        authoring_points = tuple(
+            index
+            for index, point_id in enumerate(data.point_ids)
+            if point_id is not None
+        )
+        if authoring_points:
+            self._actors["sketch_draft_points"] = self._plotter.add_mesh(
+                _pyvista.PolyData(coordinates[np.asarray(authoring_points)]),
+                color="#1976a8",
+                point_size=10,
+                render_points_as_spheres=True,
+                name="sketch_draft_points",
+                reset_camera=False,
+                pickable=False,
+            )
+        selection = self._sketch_selection_polydata(data, coordinates)
+        if selection is not None:
+            self._actors["sketch_authoring_selection"] = self._plotter.add_mesh(
+                selection,
+                color="#f5a623",
+                line_width=6,
+                point_size=15,
+                render_points_as_spheres=True,
+                opacity=0.75,
+                name="sketch_authoring_selection",
+                reset_camera=False,
+                pickable=False,
+            )
+        self._show_sketch_authoring_hover(render=False)
+        if reset_camera:
+            self._plotter.reset_camera(
+                bounds=_sketch_camera_bounds(
+                    data.points,
+                    self._sketch_grid_spacing,
+                ),
+                render=False,
+            )
+        if render:
+            self._render()
+
+    def _sketch_selection_polydata(
+        self,
+        data: SketchDraftRenderData,
+        coordinates: np.ndarray,
+    ):
+        if data.selected_id is None or _pyvista is None:
+            return None
+        if data.selected_kind == "point":
+            indices = tuple(
+                index
+                for index, point_id in enumerate(data.point_ids)
+                if point_id == data.selected_id
+            )
+            if indices:
+                return _pyvista.PolyData(coordinates[np.asarray(indices)])
+        if data.selected_kind == "curve" and data.selected_id in data.curve_ids:
+            index = data.curve_ids.index(data.selected_id)
+            result = _pyvista.PolyData()
+            result.points = coordinates
+            curve = data.curves[index]
+            result.lines = np.asarray((len(curve), *curve), dtype=np.int64)
+            return result
+        if data.selected_kind == "profile":
+            cells = tuple(
+                face
+                for face, face_id in zip(
+                    data.faces,
+                    data.face_ids,
+                    strict=True,
+                )
+                if face_id == data.selected_id
+            )
+            if cells:
+                result = _pyvista.PolyData()
+                result.points = coordinates
+                result.faces = np.hstack(
+                    tuple((len(face), *face) for face in cells)
+                ).astype(np.int64)
+                return result
+        return None
 
     @property
     def wire_work_plane(self) -> str:
@@ -1009,9 +1791,14 @@ class FEMViewport(QWidget):
         self.wirePendingInteractionCancelled.emit()
         return True
 
-    def stop_wire_authoring(self) -> None:
+    def stop_wire_authoring(self, *, render: bool = True) -> None:
         """Leave the wire tool and remove only its transient display actors."""
 
+        if (
+            not self._wire_authoring_active
+            and self._wire_draft_render_data is None
+        ):
+            return
         for name in (
             "wire_work_plane_grid",
             "wire_work_plane_axis_0",
@@ -1035,7 +1822,8 @@ class FEMViewport(QWidget):
         self._wire_authoring_hover = None
         self._wire_authoring_preview_point = None
         self._clear_preselection(render=False)
-        self._render()
+        if render:
+            self._render()
 
     def show_wire_draft(self, render_data: WireDraftRenderData) -> None:
         """Public alias used by the editor panel and focused tests."""
@@ -1267,6 +2055,219 @@ class FEMViewport(QWidget):
             _restore_camera_state(self._plotter, camera_state)
         if render:
             self._render()
+
+    def _set_sketch_authoring_preview_point(
+        self,
+        point: tuple[float, float, float] | None,
+    ) -> None:
+        normalized = (
+            None
+            if point is None
+            else tuple(float(value) for value in point)
+        )
+        if normalized == self._sketch_authoring_preview_point:
+            return
+        self._sketch_authoring_preview_point = normalized
+        self._show_sketch_authoring_hover(render=True)
+
+    def _show_sketch_authoring_hover(self, *, render: bool) -> None:
+        for actor_name in (
+            "sketch_authoring_shape_preview",
+            "sketch_authoring_hover_outline",
+            "sketch_authoring_hover",
+            "sketch_authoring_hover_label",
+        ):
+            self._remove_actor(actor_name)
+        point = self._sketch_authoring_preview_point
+        if (
+            point is None
+            or self._plotter is None
+            or _pyvista is None
+        ):
+            if render and self._plotter is not None:
+                self._render()
+            return
+        shape_points = _sketch_shape_preview_points(
+            self._sketch_authoring_mode,
+            self._sketch_pending_points,
+            point,
+        )
+        if shape_points:
+            shape = _pyvista.PolyData()
+            shape.points = np.asarray(shape_points, dtype=float)
+            shape.lines = np.asarray(
+                (len(shape_points), *range(len(shape_points))),
+                dtype=np.int64,
+            )
+            self._actors["sketch_authoring_shape_preview"] = (
+                self._plotter.add_mesh(
+                    shape,
+                    color="#00b8d4",
+                    line_width=4,
+                    name="sketch_authoring_shape_preview",
+                    reset_camera=False,
+                    pickable=False,
+                )
+            )
+        label_point = np.asarray((point,), dtype=float)
+        self._actors["sketch_authoring_hover_outline"] = (
+            self._plotter.add_mesh(
+                _pyvista.PolyData(label_point),
+                color="#173443",
+                point_size=24,
+                render_points_as_spheres=True,
+                name="sketch_authoring_hover_outline",
+                reset_camera=False,
+                pickable=False,
+            )
+        )
+        self._actors["sketch_authoring_hover"] = self._plotter.add_mesh(
+            _pyvista.PolyData(label_point),
+            color="#00e5ff",
+            point_size=16,
+            render_points_as_spheres=True,
+            name="sketch_authoring_hover",
+            reset_camera=False,
+            pickable=False,
+        )
+        self._actors["sketch_authoring_hover_label"] = (
+            self._plotter.add_point_labels(
+                label_point,
+                [_wire_coordinate_label(point)],
+                point_size=0,
+                font_size=11,
+                shape=None,
+                text_color="#00e5ff",
+                name="sketch_authoring_hover_label",
+                reset_camera=False,
+            )
+        )
+        if render:
+            self._render()
+
+    def _sketch_point_at(
+        self,
+        x: int,
+        y: int,
+        tolerance: float = 9.0,
+    ) -> str | None:
+        data = self._sketch_draft_render_data
+        if data is None or not data.points:
+            return None
+        display = self._world_points_to_display(
+            np.asarray(data.points, dtype=float)
+        )
+        if display is None:
+            return None
+        mouse = np.asarray((float(x), float(y)), dtype=float)
+        candidates: list[tuple[float, int]] = []
+        for index, point_id in enumerate(data.point_ids):
+            if point_id is None:
+                continue
+            distance = float(np.linalg.norm(display[index, :2] - mouse))
+            if distance <= tolerance * self._device_pixel_ratio():
+                candidates.append((distance, index))
+        if not candidates:
+            return None
+        return data.point_ids[min(candidates)[1]]
+
+    def _sketch_curve_at(
+        self,
+        x: int,
+        y: int,
+        tolerance: float = 7.0,
+    ) -> str | None:
+        data = self._sketch_draft_render_data
+        if data is None or not data.curves:
+            return None
+        display = self._world_points_to_display(
+            np.asarray(data.points, dtype=float)
+        )
+        if display is None:
+            return None
+        mouse = np.asarray((float(x), float(y)), dtype=float)
+        candidates: list[tuple[float, int]] = []
+        for curve_index, curve in enumerate(data.curves):
+            distance = min(
+                _point_to_segment_distance(
+                    mouse,
+                    display[start, :2],
+                    display[end, :2],
+                )[0]
+                for start, end in zip(curve, curve[1:])
+            )
+            if distance <= tolerance * self._device_pixel_ratio():
+                candidates.append((distance, curve_index))
+        if not candidates:
+            return None
+        return data.curve_ids[min(candidates)[1]]
+
+    def _sketch_profile_at(self, x: int, y: int) -> str | None:
+        data = self._sketch_draft_render_data
+        if data is None or not data.faces:
+            return None
+        display = self._world_points_to_display(
+            np.asarray(data.points, dtype=float)
+        )
+        if display is None:
+            return None
+        point = np.asarray((float(x), float(y)), dtype=float)
+        for face, face_id in reversed(
+            tuple(zip(data.faces, data.face_ids, strict=True))
+        ):
+            polygon = display[np.asarray(face), :2]
+            if _display_point_in_polygon(point, polygon):
+                return face_id
+        return None
+
+    def _sketch_work_plane_point_at(
+        self,
+        x: int,
+        y: int,
+    ) -> tuple[tuple[float, float, float] | None, str | None]:
+        near = self._display_to_world(float(x), float(y), 0.0)
+        far = self._display_to_world(float(x), float(y), 1.0)
+        if near is None or far is None:
+            return None, "point.ray"
+        point = intersect_ray_with_work_plane(near, far, "XY", 0.0)
+        if point is None:
+            return None, "point.parallel"
+        if self._sketch_grid_snap:
+            point = snap_work_plane_point(
+                point,
+                "XY",
+                self._sketch_grid_spacing,
+            )
+        return point, None
+
+    def _sketch_authoring_click(self, x: int, y: int) -> None:
+        if self._sketch_authoring_mode == "select":
+            point_id = self._sketch_point_at(x, y)
+            if point_id is not None:
+                self.sketchDraftPointSelected.emit(point_id)
+                return
+            curve_id = self._sketch_curve_at(x, y)
+            if curve_id is not None:
+                self.sketchDraftCurveSelected.emit(curve_id)
+                return
+            profile_id = self._sketch_profile_at(x, y)
+            if profile_id is not None:
+                self.sketchDraftProfileSelected.emit(profile_id)
+                return
+            self.sketchAuthoringMissed.emit("select")
+            return
+        point, reason = self._sketch_work_plane_point_at(x, y)
+        if point is None:
+            self.sketchAuthoringMissed.emit(reason or "point.ray")
+            return
+        if self._sketch_authoring_mode == "trim":
+            curve_id = self._sketch_curve_at(x, y)
+            if curve_id is None:
+                self.sketchAuthoringMissed.emit("trim")
+                return
+            self.sketchTrimRequested.emit(curve_id, point)
+            return
+        self.sketchWorkPlanePointSelected.emit(point)
 
     def _wire_point_at(self, x: int, y: int, tolerance: float = 9.0) -> str | None:
         data = self._wire_draft_render_data
@@ -1567,17 +2568,33 @@ class FEMViewport(QWidget):
             return
         self.wireWorkPlanePointSelected.emit(point)
 
-    def show_geometry_preview(self, preview: GeometryPreview) -> None:
-        """Display CAD-like shaded geometry without creating FE elements."""
+    def show_geometry_preview(
+        self,
+        preview: GeometryPreview,
+        *,
+        preserve_model: bool = False,
+        render: bool = True,
+    ) -> None:
+        """Display CAD geometry, optionally as a picking overlay on the mesh."""
         self._geometry_preview = preview
         self._install_geometry_pick_bindings(preview)
         if is_offscreen_environment():
             self._message.setText("几何预览已更新（当前环境未启用三维渲染）")
-            self._stack.setCurrentWidget(self._message)
+            if not preserve_model:
+                self._stack.setCurrentWidget(self._message)
             return
         if not self._ensure_plotter():
             return
-        self._remove_all_layers(render=False)
+        if preserve_model:
+            for name in (
+                "geometry_surface",
+                "geometry_edges",
+                "geometry_points",
+                "geometry_selection",
+            ):
+                self._remove_actor(name)
+        else:
+            self._remove_all_layers(render=False)
         points = np.asarray(preview.points, dtype=float)
         self._geometry_preview_surface = None
         self._geometry_preview_edges = None
@@ -1636,10 +2653,37 @@ class FEMViewport(QWidget):
                 preview.topological_dimension == 1
                 or self._selection_mode == "geometry_point"
             )
-        self._pick_grid = None
-        self._pick_locators.clear()
+        if not preserve_model:
+            self._pick_grid = None
+            self._pick_locators.clear()
         self._clear_preselection(render=False)
-        self._plotter.reset_camera()
+        self._update_pickable_actors()
+        if not preserve_model:
+            self._reset_camera_to_fit()
+        if render:
+            self._render()
+
+    def hide_geometry_selection_overlay(self) -> None:
+        """Remove a scope-picking overlay while preserving the current mesh."""
+        for name in (
+            "geometry_surface",
+            "geometry_edges",
+            "geometry_points",
+            "geometry_selection",
+        ):
+            self._remove_actor(name)
+        self._geometry_preview = None
+        self._geometry_preview_surface = None
+        self._geometry_preview_edges = None
+        self._geometry_preview_points = None
+        self._geometry_pick_to_ref.clear()
+        self._geometry_ref_to_pick_ids.clear()
+        self._geometry_face_pick_ids = ()
+        self._geometry_edge_pick_ids = ()
+        self._geometry_point_pick_ids = ()
+        self._geometry_body_pick_id = 0
+        self._clear_preselection(render=False)
+        self._update_pickable_actors()
         self._render()
 
     def _install_geometry_pick_bindings(
@@ -1686,6 +2730,65 @@ class FEMViewport(QWidget):
             reference: tuple(sorted(pick_ids))
             for reference, pick_ids in ref_to_pick_ids.items()
         }
+
+    def _install_mesh_scope_pick_bindings(self) -> None:
+        """Build boundary edge/face picking data from the displayed FEM mesh."""
+
+        self._clear_mesh_scope_pick_bindings()
+        if (
+            self._model is None
+            or self._geometry is None
+            or _pyvista is None
+        ):
+            return
+        edge_rows = tuple(
+            (
+                int(element_id),
+                int(local_index),
+                tuple(int(node_id) for node_id in node_ids),
+            )
+            for element_id, local_index, node_ids
+            in mesh_edges.boundary(self._model.mesh)
+        )
+        face_rows = tuple(
+            (
+                int(element_id),
+                int(local_index),
+                tuple(int(node_id) for node_id in node_ids),
+            )
+            for element_id, local_index, node_ids
+            in mesh_faces.boundary(self._model.mesh)
+        )
+        if edge_rows:
+            (
+                self._mesh_scope_edges,
+                self._mesh_scope_edge_cells,
+            ) = _mesh_edge_polydata(
+                _pyvista,
+                self._geometry,
+                edge_rows,
+            )
+            for pick_id, row in enumerate(edge_rows, start=1):
+                reference = MeshEntityRef.edge(*row)
+                self._mesh_scope_pick_to_ref[("edge", pick_id)] = reference
+                self._mesh_scope_ref_to_pick_id[reference] = pick_id
+        if face_rows:
+            self._mesh_scope_faces = _mesh_face_polydata(
+                _pyvista,
+                self._geometry,
+                face_rows,
+            )
+            for pick_id, row in enumerate(face_rows, start=1):
+                reference = MeshEntityRef.face(*row)
+                self._mesh_scope_pick_to_ref[("face", pick_id)] = reference
+                self._mesh_scope_ref_to_pick_id[reference] = pick_id
+
+    def _clear_mesh_scope_pick_bindings(self) -> None:
+        self._mesh_scope_edges = None
+        self._mesh_scope_faces = None
+        self._mesh_scope_edge_cells = ()
+        self._mesh_scope_pick_to_ref.clear()
+        self._mesh_scope_ref_to_pick_id.clear()
 
     def set_result_render_payload(
         self,
@@ -1841,6 +2944,7 @@ class FEMViewport(QWidget):
         previous = self._selection_mode
         if mode in {
             "geometry_point", "geometry_edge", "geometry_face", "geometry_body",
+            "mesh_node", "mesh_edge", "mesh_face", "mesh_element",
         }:
             self._selection_mode = mode
         else:
@@ -1860,11 +2964,13 @@ class FEMViewport(QWidget):
         self._render()
 
     def clear_selection(self) -> None:
+        self._hide_selection_rubber_band()
         self._selected_kind = None
         self._selected_id = None
         self._selection_highlight_visible = True
         self._remove_actor("selection")
         self._remove_actor("geometry_selection")
+        self._remove_actor("mesh_scope_selection")
         self._clear_beam_frame_preview(render=False)
         self._clear_preselection(render=False)
         self._render()
@@ -1979,6 +3085,93 @@ class FEMViewport(QWidget):
             **kwargs,
         )
         self._offset_highlight_actor(self._actors["geometry_selection"])
+        self._update_pickable_actors()
+        self._render()
+
+    def highlight_mesh_entities(
+        self,
+        references: Iterable[MeshEntityRef],
+    ) -> None:
+        """Highlight a homogeneous collection of generated-mesh entities."""
+
+        self._remove_actor("mesh_scope_selection")
+        canonical = tuple(sorted(set(references), key=lambda item: item.identity))
+        if self._plotter is None or _pyvista is None or not canonical:
+            self._render()
+            return
+        kinds = {reference.kind for reference in canonical}
+        if len(kinds) != 1:
+            raise ValueError("mesh scope highlight requires one entity kind")
+        kind = canonical[0].kind
+        data = None
+        kwargs: dict[str, Any] = {}
+        if kind == "node" and self._geometry is not None:
+            indices = tuple(
+                self._geometry.node_id_to_point_index[int(reference.node_id)]
+                for reference in canonical
+                if int(reference.node_id)
+                in self._geometry.node_id_to_point_index
+            )
+            if indices:
+                data = _pyvista.PolyData(
+                    np.asarray(self._geometry.points)[
+                        np.asarray(indices, dtype=np.int64)
+                    ]
+                )
+                kwargs = {
+                    "point_size": 13,
+                    "render_points_as_spheres": True,
+                }
+        elif kind == "element" and self._pick_grid is not None:
+            indices = tuple(
+                self._geometry.element_id_to_cell_index[
+                    int(reference.element_id)
+                ]
+                for reference in canonical
+                if self._geometry is not None
+                and int(reference.element_id)
+                in self._geometry.element_id_to_cell_index
+            )
+            if indices:
+                data = self._pick_grid.extract_cells(indices)
+                kwargs = {"style": "wireframe", "line_width": 3}
+        elif kind in {"edge", "face"}:
+            dataset = (
+                self._mesh_scope_edges
+                if kind == "edge"
+                else self._mesh_scope_faces
+            )
+            pick_ids = tuple(
+                self._mesh_scope_ref_to_pick_id[reference]
+                for reference in canonical
+                if reference in self._mesh_scope_ref_to_pick_id
+            )
+            if dataset is not None and pick_ids:
+                ids = np.asarray(
+                    dataset.cell_data["mesh_scope_pick_id"],
+                    dtype=np.int64,
+                )
+                cells = np.flatnonzero(np.isin(ids, pick_ids))
+                if len(cells):
+                    data = dataset.extract_cells(cells)
+                    kwargs = (
+                        {"line_width": 5}
+                        if kind == "edge"
+                        else {"opacity": 0.8}
+                    )
+        if data is None:
+            self._render()
+            return
+        self._actors["mesh_scope_selection"] = self._plotter.add_mesh(
+            data,
+            color="#f5a623",
+            show_edges=False,
+            show_scalar_bar=False,
+            name="mesh_scope_selection",
+            reset_camera=False,
+            **kwargs,
+        )
+        self._offset_highlight_actor(self._actors["mesh_scope_selection"])
         self._update_pickable_actors()
         self._render()
 
@@ -2363,6 +3556,12 @@ class FEMViewport(QWidget):
         """Return bounds for the displayed model, excluding auxiliary actors."""
 
         points: object | None = None
+        if self._sketch_authoring_active:
+            data = self._sketch_draft_render_data
+            return _sketch_camera_bounds(
+                () if data is None else data.points,
+                self._sketch_grid_spacing,
+            )
         if self._wire_authoring_active:
             if (
                 self._wire_draft_render_data is None
@@ -2400,13 +3599,20 @@ class FEMViewport(QWidget):
             for value in (minimum[axis], maximum[axis])
         )
 
+    def _reset_camera_to_fit(self) -> None:
+        """Frame stable display bounds without including auxiliary actors."""
+
+        if self._plotter is None:
+            return
+        bounds = self._fit_bounds()
+        if bounds is None:
+            self._plotter.reset_camera(render=False)
+        else:
+            self._plotter.reset_camera(bounds=bounds, render=False)
+
     def fit(self) -> None:
         if self._plotter is not None:
-            bounds = self._fit_bounds()
-            if bounds is None:
-                self._plotter.reset_camera(render=False)
-            else:
-                self._plotter.reset_camera(bounds=bounds, render=False)
+            self._reset_camera_to_fit()
             self._refresh_symbols_for_camera(render=False)
             self._render()
 
@@ -2532,41 +3738,33 @@ class FEMViewport(QWidget):
     def set_view(self, view: str) -> None:
         if self._plotter is None:
             return
-        methods = {
-            # Each tuple is (PyVista base view, camera-to-focal direction,
-            # screen-up axis).  The directions deliberately follow the arrows
-            # in the coordinate PNGs: positive X is left in XY/XZ, positive Y
-            # is left in YZ, and the paired labels swap the screen axes.
-            "front": ("view_xz", (0.0, -1.0, 0.0), (0.0, 0.0, 1.0)),  # XZ
-            "back": ("view_xz", (0.0, 1.0, 0.0), (1.0, 0.0, 0.0)),   # ZX
-            "left": ("view_yz", (1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),   # YZ
-            "right": ("view_yz", (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),  # ZY
-            "top": ("view_xy", (0.0, 0.0, 1.0), (0.0, 1.0, 0.0)),    # XY
-            "bottom": ("view_xy", (0.0, 0.0, -1.0), (1.0, 0.0, 0.0)), # YX
+        views = {
+            # Each tuple is (focal-to-camera direction, screen-up axis).
+            # The directions deliberately follow the arrows in the coordinate
+            # PNGs: positive X is left in XY/XZ, positive Y is left in YZ, and
+            # the paired labels swap the screen axes.
+            "front": ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),   # XZ
+            "back": ((0.0, -1.0, 0.0), (1.0, 0.0, 0.0)),   # ZX
+            "left": ((-1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),   # YZ
+            "right": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),   # ZY
+            "top": ((0.0, 0.0, -1.0), (0.0, 1.0, 0.0)),    # XY
+            "bottom": ((0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),  # YX
+            "iso": ((1.0, 1.0, 1.0), (-1.0, 2.0, -1.0)),
         }
-        if view == "iso":
-            self._plotter.view_isometric()
-            up = (-1.0, 2.0, -1.0)
-            camera = self._plotter.camera
-        else:
-            method_name, direction, up = methods[view]
-            getattr(self._plotter, method_name)()
-            camera = self._plotter.camera
-            focal = np.asarray(camera.GetFocalPoint(), dtype=float)
-            position = np.asarray(camera.GetPosition(), dtype=float)
-            distance = float(np.linalg.norm(position - focal))
-            if distance > 1.0e-12:
-                direction_array = np.asarray(direction, dtype=float)
-                direction_array /= np.linalg.norm(direction_array)
-                camera.SetPosition(*(focal - direction_array * distance))
+        direction, up = views[view]
+        camera = self._plotter.camera
+        focal = np.asarray(camera.GetFocalPoint(), dtype=float)
+        position = np.asarray(camera.GetPosition(), dtype=float)
+        distance = float(np.linalg.norm(position - focal))
+        direction_array = np.asarray(direction, dtype=float)
+        direction_array /= np.linalg.norm(direction_array)
+        camera.SetPosition(*(focal + direction_array * max(distance, 1.0)))
         camera.SetViewUp(*up)
         # VTK orthogonalizes the view-up vector against the current view
         # direction, avoiding a roll that would make the PNG legend disagree
         # with the actual screen axes.
         camera.OrthogonalizeViewUp()
-        reset_clipping = getattr(self._plotter, "reset_camera_clipping_range", None)
-        if reset_clipping is not None:
-            reset_clipping()
+        self._reset_camera_to_fit()
         self._refresh_symbols_for_camera(render=False)
         self._render()
 
@@ -3152,7 +4350,7 @@ class FEMViewport(QWidget):
         self._refresh_node_layer(render=False)
         self._refresh_labels(render=False)
         if reset_camera:
-            self._plotter.reset_camera()
+            self._reset_camera_to_fit()
         if render:
             self._render()
 
@@ -3511,6 +4709,21 @@ class FEMViewport(QWidget):
                 )
             self.geometryEntityPicked.emit(reference)
             return
+        if hit.kind.startswith("mesh_"):
+            kind = hit.kind.removeprefix("mesh_")
+            if kind == "node":
+                reference = MeshEntityRef.node(hit.pick_id)
+            elif kind == "element":
+                reference = MeshEntityRef.element(hit.pick_id)
+            else:
+                reference = self._mesh_scope_pick_to_ref.get(
+                    (kind, hit.pick_id)
+                )
+                if reference is None:
+                    self.selectionMissed.emit(self._selection_mode)
+                    return
+            self.meshEntityPicked.emit(reference)
+            return
         if hit.kind not in {"node", "element"}:
             raise ValueError(
                 "entityPicked 只接受 FEM node 或 element"
@@ -3540,6 +4753,157 @@ class FEMViewport(QWidget):
         return (
             int(round(float(x) * ratio)),
             height - int(round(float(y) * ratio)) - 1,
+        )
+
+    def _mesh_nodes_in_qt_rectangle(
+        self,
+        start: tuple[float, float],
+        end: tuple[float, float],
+    ) -> tuple[MeshEntityRef, ...]:
+        if self._geometry is None:
+            return ()
+        display = self._world_points_to_display(
+            self._model_display_points()
+        )
+        if display is None:
+            return ()
+        bounds, _containment = self._vtk_rectangle(start, end)
+        selected: list[MeshEntityRef] = []
+        for point_index, candidate in enumerate(display):
+            if not self._rectangle_contains_point(bounds, candidate):
+                continue
+            if not self._display_candidate_is_visible(
+                candidate,
+                self._pick_grid,
+            ):
+                continue
+            node_id = int(
+                self._geometry.point_index_to_node_id[point_index]
+            )
+            selected.append(MeshEntityRef.node(node_id))
+        return tuple(selected)
+
+    def _geometry_entities_in_qt_rectangle(
+        self,
+        start: tuple[float, float],
+        end: tuple[float, float],
+    ) -> tuple[LogicalEntityRef, ...]:
+        dataset = (
+            self._geometry_preview_edges
+            if self._selection_mode == "geometry_edge"
+            else self._geometry_preview_surface
+        )
+        if (
+            dataset is None
+            or "geometry_pick_id" not in dataset.cell_data
+        ):
+            return ()
+        display = self._world_points_to_display(
+            np.asarray(dataset.points, dtype=float)
+        )
+        if display is None:
+            return ()
+        bounds, containment = self._vtk_rectangle(start, end)
+        pick_ids = np.asarray(
+            dataset.cell_data["geometry_pick_id"],
+            dtype=np.int64,
+        )
+        if self._selection_mode == "geometry_body":
+            if self._geometry_body_pick_id <= 0:
+                return ()
+            pick_ids = np.full(
+                len(pick_ids),
+                self._geometry_body_pick_id,
+                dtype=np.int64,
+            )
+        cells_by_reference: dict[LogicalEntityRef, list[np.ndarray]] = {}
+        for cell_index, pick_id in enumerate(pick_ids):
+            if int(pick_id) <= 0:
+                continue
+            reference = self._geometry_pick_to_ref.get(int(pick_id))
+            if reference is None:
+                continue
+            cell = dataset.get_cell(cell_index)
+            point_ids = np.asarray(cell.point_ids, dtype=np.int64)
+            if not len(point_ids):
+                continue
+            cells_by_reference.setdefault(reference, []).append(
+                display[point_ids]
+            )
+        selected: list[LogicalEntityRef] = []
+        for reference, cells in sorted(
+            cells_by_reference.items(),
+            key=lambda item: item[0].logical_id,
+        ):
+            entity_points = np.vstack(cells)
+            if containment:
+                matches = all(
+                    self._rectangle_contains_point(bounds, point)
+                    for point in entity_points
+                )
+            else:
+                matches = self._rectangle_intersects_points(
+                    bounds,
+                    entity_points,
+                )
+            if not matches:
+                continue
+            if not any(
+                self._display_candidate_is_visible(
+                    np.mean(cell, axis=0),
+                    self._pick_grid,
+                )
+                for cell in cells
+            ):
+                continue
+            selected.append(reference)
+        return tuple(selected)
+
+    def _vtk_rectangle(
+        self,
+        start: tuple[float, float],
+        end: tuple[float, float],
+    ) -> tuple[tuple[float, float, float, float], bool]:
+        first = self._qt_to_vtk_position(*start)
+        second = self._qt_to_vtk_position(*end)
+        return (
+            (
+                float(min(first[0], second[0])),
+                float(max(first[0], second[0])),
+                float(min(first[1], second[1])),
+                float(max(first[1], second[1])),
+            ),
+            start[0] <= end[0],
+        )
+
+    @staticmethod
+    def _rectangle_contains_point(
+        bounds: tuple[float, float, float, float],
+        point: np.ndarray,
+    ) -> bool:
+        minimum_x, maximum_x, minimum_y, maximum_y = bounds
+        return (
+            minimum_x <= float(point[0]) <= maximum_x
+            and minimum_y <= float(point[1]) <= maximum_y
+            and 0.0 <= float(point[2]) <= 1.0
+        )
+
+    @staticmethod
+    def _rectangle_intersects_points(
+        bounds: tuple[float, float, float, float],
+        points: np.ndarray,
+    ) -> bool:
+        minimum_x, maximum_x, minimum_y, maximum_y = bounds
+        finite = points[np.isfinite(points).all(axis=1)]
+        if not len(finite):
+            return False
+        return (
+            float(np.max(finite[:, 0])) >= minimum_x
+            and float(np.min(finite[:, 0])) <= maximum_x
+            and float(np.max(finite[:, 1])) >= minimum_y
+            and float(np.min(finite[:, 1])) <= maximum_y
+            and float(np.max(finite[:, 2])) >= 0.0
+            and float(np.min(finite[:, 2])) <= 1.0
         )
 
     def _update_preselection(self) -> None:
@@ -3593,6 +4957,36 @@ class FEMViewport(QWidget):
                     return None
                 return replace(hit, pick_id=body_pick_id)
             return hit
+        if mode == "mesh_node":
+            return self._pick_screen_point(
+                x,
+                y,
+                self._pick_grid,
+                "node_id",
+                "model_pick_grid",
+                self._pick_grid,
+                8.0,
+            )
+        if mode == "mesh_edge":
+            return self._pick_mesh_scope_edge(x, y, 6.0)
+        if mode == "mesh_face":
+            return self._pick_cell(
+                x,
+                y,
+                self._mesh_scope_faces,
+                "mesh_scope_pick_id",
+                "mesh_scope_faces",
+                mode,
+            )
+        if mode == "mesh_element":
+            return self._pick_cell(
+                x,
+                y,
+                self._pick_grid,
+                "element_id",
+                "model_pick_grid",
+                mode,
+            )
         if mode == "node":
             payload = self._rendered_result_payload()
             if payload is not None:
@@ -3825,6 +5219,67 @@ class FEMViewport(QWidget):
             vtk_cell_id=cell_index,
         )
 
+    def _pick_mesh_scope_edge(
+        self,
+        x: int,
+        y: int,
+        tolerance: float,
+    ) -> PickHit | None:
+        dataset = self._mesh_scope_edges
+        if (
+            dataset is None
+            or not self._mesh_scope_edge_cells
+            or "mesh_scope_pick_id" not in dataset.cell_data
+        ):
+            return None
+        points = np.asarray(dataset.points, dtype=float)
+        display_points = self._world_points_to_display(points)
+        if display_points is None:
+            return None
+        mouse = np.asarray((float(x), float(y)), dtype=float)
+        threshold = float(tolerance) * self._device_pixel_ratio()
+        ids = np.asarray(
+            dataset.cell_data["mesh_scope_pick_id"],
+            dtype=np.int64,
+        )
+        candidates: list[tuple[float, float, int, np.ndarray]] = []
+        for cell_index, cell in enumerate(self._mesh_scope_edge_cells):
+            for start_index, end_index in zip(cell, cell[1:]):
+                start = display_points[start_index]
+                end = display_points[end_index]
+                distance, fraction = _point_to_segment_distance(
+                    mouse,
+                    start[:2],
+                    end[:2],
+                )
+                closest = start + fraction * (end - start)
+                if (
+                    distance <= threshold
+                    and 0.0 <= closest[2] <= 1.0
+                    and self._display_candidate_is_visible(
+                        closest,
+                        self._pick_grid,
+                    )
+                ):
+                    world = (
+                        points[start_index]
+                        + fraction * (points[end_index] - points[start_index])
+                    )
+                    candidates.append(
+                        (distance, float(closest[2]), cell_index, world)
+                    )
+        if not candidates:
+            return None
+        _distance, _depth, cell_index, world = min(candidates)
+        return PickHit(
+            self._selection_mode,
+            int(ids[cell_index]),
+            "mesh_scope_edges",
+            (float(x), float(y)),
+            tuple(float(value) for value in world),
+            vtk_cell_id=cell_index,
+        )
+
     def _pick_cell(
         self,
         x: int,
@@ -4032,7 +5487,26 @@ class FEMViewport(QWidget):
             ):
                 data = self._geometry_preview_edges
                 kwargs = {"line_width": 5}
-        elif hit.kind == "node":
+        elif hit.kind in {"mesh_edge", "mesh_face"}:
+            dataset = (
+                self._mesh_scope_edges
+                if hit.kind == "mesh_edge"
+                else self._mesh_scope_faces
+            )
+            if dataset is not None:
+                ids = np.asarray(
+                    dataset.cell_data["mesh_scope_pick_id"],
+                    dtype=np.int64,
+                )
+                cells = np.flatnonzero(ids == hit.pick_id)
+                if len(cells):
+                    data = dataset.extract_cells(cells)
+                    kwargs = (
+                        {"line_width": 4}
+                        if hit.kind == "mesh_edge"
+                        else {"opacity": 0.38}
+                    )
+        elif hit.kind in {"node", "mesh_node"}:
             if (
                 hit.dataset_name == _TYPED_RESULT_GRID_NAME
                 and self._rendered_result_payload() is not None
@@ -4052,7 +5526,7 @@ class FEMViewport(QWidget):
             if dataset is not None and len(indices):
                 data = _pyvista.PolyData(np.asarray(dataset.points)[indices])
                 kwargs = {"point_size": 11, "render_points_as_spheres": True}
-        elif hit.kind == "element":
+        elif hit.kind in {"element", "mesh_element"}:
             if (
                 hit.dataset_name == _TYPED_RESULT_GRID_NAME
                 and self._rendered_result_payload() is not None

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from fem import geometry
-from fem.application import ModelSession, NamedRegion, NativePart
+from fem.application import MeshEntityRef, ModelSession, NamedRegion, NativePart
 from fem.application.native_regions import (
     NativeRegionValidationError,
     RecipeRegionSelector,
@@ -28,9 +28,15 @@ from fem.geometry.recipes import (
     PlateWithHoleGeometry,
     RectangleGeometry,
     RotatedGeometry,
+    SketchCircle,
+    SketchGeometry,
+    SketchLine,
+    SketchPlane,
+    SketchPoint,
 )
 from fem.mesh.settings import LocalMeshControl, MeshSettings
 from fem.mesh.settings import MeshSizeFalloff
+from fem.selection import edges as mesh_edges
 
 
 @pytest.mark.parametrize(
@@ -70,12 +76,13 @@ def test_explicit_native_inputs_generate_canonical_models(
     assert isinstance(model, FEMModel)
     assert model.name == recipe.name
     assert {element.type for element in model.mesh.elements} == {expected_type}
-    assert set(model.element_sets["DOMAIN"].element_ids) == {
-        element.id for element in model.mesh.elements
-    }
+    assert not model.node_sets
+    assert not model.element_sets
+    assert not model.edges
+    assert not model.surfaces
 
 
-def test_mesh_task_snapshot_generates_and_installs_named_refined_region(
+def test_mesh_task_snapshot_generates_before_installing_a_refined_mesh_scope(
     real_gmsh,
 ) -> None:
     del real_gmsh
@@ -91,26 +98,36 @@ def test_mesh_task_snapshot_generates_and_installs_named_refined_region(
             local_controls=(LocalMeshControl(LogicalEntityRef("edge:right"), 0.1),),
         )
     )
+    task = session.prepare_mesh_generation()
+
+    model = generate_fem_model(task)
+    delta = session.accept_generated_model(task.token, model)
+    assert delta.accepted
+    nodes_by_id = {
+        int(node.id): node
+        for node in model.mesh.nodes
+    }
+    selected = tuple(
+        row
+        for row in mesh_edges.boundary(model.mesh)
+        if all(
+            abs(float(nodes_by_id[int(node_id)].x) - 2.0) <= 1.0e-8
+            for node_id in row[2]
+        )
+    )
     session.replace_named_regions(
         (
             NamedRegion(
                 "RefinedEdge",
-                (LogicalEntityRef("edge:right"),),
+                tuple(MeshEntityRef.edge(*row) for row in selected),
             ),
         )
     )
-    task = session.prepare_mesh_generation()
 
-    model = generate_fem_model(task)
-
-    assert model.node_sets["RefinedEdge"].node_ids
-    assert model.edges["RefinedEdge"].edges
-    assert len(model.node_sets["RefinedEdge"].node_ids) > len(
-        model.node_sets["LEFT"].node_ids
-    )
-    delta = session.accept_generated_model(task.token, model)
-    assert delta.accepted
+    assert selected
     assert session.snapshot().artifact is not None
+    assert session.snapshot().model.edges["RefinedEdge"].edges
+    assert "RefinedEdge" not in session.snapshot().model.node_sets
 
 
 def test_mesh_task_snapshot_rejects_named_region_override() -> None:
@@ -195,6 +212,54 @@ def test_box_logical_edges_ignore_unrelated_backend_tag_order(real_gmsh) -> None
                 assert {entity.dimension for entity in entities} == {dimension}
 
 
+def test_strict_sketch_compiles_profiles_and_stable_curve_groups(real_gmsh) -> None:
+    del real_gmsh
+    recipe = SketchGeometry(
+        "strict-plate",
+        SketchPlane.xy(),
+        (
+            SketchPoint("P1", 0.0, 0.0),
+            SketchPoint("P2", 4.0, 0.0),
+            SketchPoint("P3", 4.0, 3.0),
+            SketchPoint("P4", 0.0, 3.0),
+            SketchPoint("P5", 2.0, 1.5),
+        ),
+        (
+            SketchLine("L1", "P1", "P2"),
+            SketchLine("L2", "P2", "P3"),
+            SketchLine("L3", "P3", "P4"),
+            SketchLine("L4", "P4", "P1"),
+            SketchCircle("C1", "P5", 0.5),
+        ),
+    )
+
+    with geometry.model("strict-sketch-session", dimension=2) as cad:
+        compiled = compile_recipe(cad, recipe)
+
+        assert compiled.catalog.exact
+        assert len(compiled.domain) == 1
+        assert len(compiled.resolve(LogicalEntityRef("edge:C1"))) == 4
+        assert len(compiled.resolve(LogicalEntityRef("edge:outer-loop"))) == 4
+        assert len(compiled.resolve(LogicalEntityRef("edge:hole-loop"))) == 4
+        profile_faces = tuple(
+            entity
+            for entity in compiled.catalog.entities_of(
+                "face",
+                selectable_only=True,
+            )
+            if entity.semantic_role == "sketch.profile"
+        )
+        assert len(profile_faces) == 1
+        assert len(
+            compiled.resolve(LogicalEntityRef(profile_faces[0].logical_id))
+        ) == 1
+        assert compiled.resolve(LogicalEntityRef("body:domain")) == compiled.domain
+        for point in recipe.points:
+            assert len(
+                compiled.resolve(LogicalEntityRef(f"point:{point.id}"))
+            ) == 1
+
+
 @pytest.mark.parametrize("invalid_reference", (True, 1.9, "edge:right"))
 def test_logical_resolver_accepts_only_typed_references(
     real_gmsh,
@@ -219,26 +284,36 @@ def test_named_region_and_local_control_reject_untyped_references(real_gmsh) -> 
         LocalMeshControl(True, 0.2)
 
 
-@pytest.mark.parametrize("reserved_name", ("DOMAIN", "LEFT"))
-def test_named_regions_cannot_override_builtin_groups(
+@pytest.mark.parametrize("former_builtin_name", ("DOMAIN", "LEFT"))
+def test_former_builtin_names_are_available_for_mesh_scopes(
     real_gmsh,
-    reserved_name,
+    former_builtin_name,
 ) -> None:
     del real_gmsh
-    with pytest.raises(NativeRegionValidationError, match="conflicts"):
-        generate_fem_model(
-            RectangleGeometry("reserved-region", 2.0, 1.0),
-            MeshSettings(0.4),
-            named_regions=(
-                NamedRegion(
-                    reserved_name,
-                    (LogicalEntityRef("edge:bottom"),),
-                ),
+    recipe = RectangleGeometry("former-builtin-region", 2.0, 1.0)
+    settings = MeshSettings(0.4)
+    model = generate_fem_model(recipe, settings)
+    session = ModelSession()
+    session.new_native_project()
+    session.replace_geometry((NativePart(),), recipe)
+    session.replace_mesh_settings(settings)
+    task = session.prepare_mesh_generation()
+    session.accept_generated_model(task.token, model)
+    session.replace_named_regions(
+        (
+            NamedRegion(
+                former_builtin_name,
+                (MeshEntityRef.node(model.mesh.nodes[0].id),),
             ),
         )
+    )
+
+    assert former_builtin_name in session.snapshot().model.node_sets
 
 
-def test_named_region_and_local_control_share_one_resolver_mapping(real_gmsh) -> None:
+def test_mesh_scope_does_not_reuse_the_local_control_geometry_resolver(
+    real_gmsh,
+) -> None:
     del real_gmsh
 
     class RecordingResolver(LogicalRecipeTopologyResolver):
@@ -257,12 +332,6 @@ def test_named_region_and_local_control_share_one_resolver_mapping(real_gmsh) ->
             0.4,
             local_controls=(LocalMeshControl(LogicalEntityRef("edge:right"), 0.15),),
         ),
-        named_regions=(
-            NamedRegion(
-                "Selected",
-                (LogicalEntityRef("edge:right"),),
-            ),
-        ),
         resolver=resolver,
     )
 
@@ -271,9 +340,8 @@ def test_named_region_and_local_control_share_one_resolver_mapping(real_gmsh) ->
         for reference, entities in resolver.calls
         if reference == LogicalEntityRef("edge:right")
     ]
-    assert len(selected) == 2
-    assert selected[0] == selected[1]
-    assert model.edges["Selected"].edges
+    assert len(selected) == 1
+    assert not model.edges
 
 
 def test_global_and_target_radius_falloff_use_their_frozen_scales(
@@ -442,15 +510,11 @@ def test_perforated_extrusion_keeps_inner_and_outer_side_groups_distinct(
         assert not hasattr(compiled, "hole_boundary")
 
     model = generate_fem_model(recipe, MeshSettings(0.3))
-    hole_faces = {
-        (face.elem_id, face.local_index) for face in model.surfaces["HOLE"].faces
-    }
-    outer_faces = {
-        (face.elem_id, face.local_index) for face in model.surfaces["OUTER"].faces
-    }
-    assert hole_faces
-    assert outer_faces
-    assert hole_faces.isdisjoint(outer_faces)
+    assert model.mesh.elements
+    assert not model.node_sets
+    assert not model.element_sets
+    assert not model.edges
+    assert not model.surfaces
 
 
 def test_unproven_subentities_fail_closed_but_domain_meshing_remains_available(
@@ -469,7 +533,8 @@ def test_unproven_subentities_fail_closed_but_domain_meshing_remains_available(
             compiled.resolve(LogicalEntityRef("edge:missing"))
 
     model = generate_fem_model(recipe, MeshSettings(0.4))
-    assert model.element_sets["DOMAIN"].element_ids
+    assert model.mesh.elements
+    assert not model.element_sets
     with pytest.raises(NativeRegionValidationError):
         generate_fem_model(
             recipe,

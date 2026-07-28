@@ -8,10 +8,12 @@ import math
 from typing import Any
 
 from fem.application.definitions import (
+    MeshEntityRef,
     NamedRegion,
     NativePart,
     RegionAssignment,
     normalize_model_definitions,
+    mesh_entity_ref_sort_key,
 )
 from fem.application.feature_history import derive_feature_history
 from fem.application.native_regions import validate_logical_reference
@@ -617,7 +619,7 @@ def _decode_named_region(
         error_type=ProjectV2DecodeError,
     )
     references = tuple(
-        _decode_contextual_reference(
+        _decode_named_region_reference(
             item,
             f"{path}.references[{index}]",
             recipe,
@@ -635,6 +637,103 @@ def _decode_named_region(
             _string(data["name"], f"{path}.name", ProjectV2DecodeError),
             references,
         )
+    except (TypeError, ValueError) as error:
+        raise ProjectV2DecodeError(f"{path} 无效：{error}") from error
+
+
+def _decode_named_region_reference(
+    value: Any,
+    path: str,
+    recipe: Any,
+) -> MeshEntityRef | LogicalEntityRef:
+    if isinstance(value, Mapping):
+        return _decode_mesh_entity_reference(value, path)
+    return _decode_contextual_reference(value, path, recipe)
+
+
+def _decode_mesh_entity_reference(
+    value: Mapping[str, Any],
+    path: str,
+) -> MeshEntityRef:
+    kind = _string(
+        value.get("kind"),
+        f"{path}.kind",
+        ProjectV2DecodeError,
+    )
+    try:
+        if kind == "node":
+            _keys(
+                value,
+                path,
+                required={"kind", "node_id"},
+                optional=set(),
+                error_type=ProjectV2DecodeError,
+            )
+            return MeshEntityRef.node(
+                _integer(
+                    value["node_id"],
+                    f"{path}.node_id",
+                    ProjectV2DecodeError,
+                )
+            )
+        if kind == "element":
+            _keys(
+                value,
+                path,
+                required={"kind", "element_id"},
+                optional=set(),
+                error_type=ProjectV2DecodeError,
+            )
+            return MeshEntityRef.element(
+                _integer(
+                    value["element_id"],
+                    f"{path}.element_id",
+                    ProjectV2DecodeError,
+                )
+            )
+        if kind not in {"edge", "face"}:
+            raise ProjectV2DecodeError(
+                f"{path}.kind 不支持网格实体类型 {kind!r}"
+            )
+        _keys(
+            value,
+            path,
+            required={"kind", "element_id", "local_index", "node_ids"},
+            optional=set(),
+            error_type=ProjectV2DecodeError,
+        )
+        element_id = _integer(
+            value["element_id"],
+            f"{path}.element_id",
+            ProjectV2DecodeError,
+        )
+        local_index = _integer(
+            value["local_index"],
+            f"{path}.local_index",
+            ProjectV2DecodeError,
+        )
+        node_ids = tuple(
+            _integer(
+                node_id,
+                f"{path}.node_ids[{index}]",
+                ProjectV2DecodeError,
+            )
+            for index, node_id in enumerate(
+                _array(
+                    value["node_ids"],
+                    f"{path}.node_ids",
+                    ProjectV2DecodeError,
+                )
+            )
+        )
+        factory = (
+            MeshEntityRef.edge
+            if kind == "edge"
+            else MeshEntityRef.face
+        )
+        return factory(element_id, local_index, node_ids)
+    except ProjectV2Error:
+        raise
     except (TypeError, ValueError) as error:
         raise ProjectV2DecodeError(f"{path} 无效：{error}") from error
 
@@ -694,6 +793,8 @@ def _validate_encode_contextual_references(
 ) -> None:
     for region_index, region in enumerate(named_regions):
         for reference_index, reference in enumerate(region.references):
+            if type(reference) is MeshEntityRef:
+                continue
             _validate_contextual_reference(
                 reference,
                 (
@@ -845,10 +946,27 @@ def _encode_named_region(region: Any, path: str) -> dict[str, Any]:
     if type(region) is not NamedRegion:
         raise ProjectV2EncodeError(f"{path} 必须是 NamedRegion")
     references = tuple(region.references)
-    canonical = tuple(sorted(references, key=logical_ref_sort_key))
+    if all(type(reference) is MeshEntityRef for reference in references):
+        canonical = tuple(sorted(references, key=mesh_entity_ref_sort_key))
+        encoded_references = [
+            _encode_mesh_entity_reference(
+                reference,
+                f"{path}.references[{index}]",
+            )
+            for index, reference in enumerate(references)
+        ]
+    elif all(type(reference) is LogicalEntityRef for reference in references):
+        canonical = tuple(sorted(references, key=logical_ref_sort_key))
+        encoded_references = [
+            reference.logical_id for reference in references
+        ]
+    else:
+        raise ProjectV2EncodeError(
+            f"{path}.references 混用了网格与逻辑引用"
+        )
     if references != canonical:
         raise ProjectV2EncodeError(
-            f"{path}.references 不是 canonical logical-reference 顺序"
+            f"{path}.references 不是 canonical 顺序"
         )
     return {
         "name": _string(
@@ -856,7 +974,28 @@ def _encode_named_region(region: Any, path: str) -> dict[str, Any]:
             f"{path}.name",
             ProjectV2EncodeError,
         ),
-        "references": [reference.logical_id for reference in references],
+        "references": encoded_references,
+    }
+
+
+def _encode_mesh_entity_reference(
+    reference: MeshEntityRef,
+    path: str,
+) -> dict[str, Any]:
+    if type(reference) is not MeshEntityRef:
+        raise ProjectV2EncodeError(f"{path} 必须是 MeshEntityRef")
+    if reference.kind == "node":
+        return {"kind": "node", "node_id": int(reference.node_id)}
+    if reference.kind == "element":
+        return {
+            "kind": "element",
+            "element_id": int(reference.element_id),
+        }
+    return {
+        "kind": reference.kind,
+        "element_id": int(reference.element_id),
+        "local_index": int(reference.local_index),
+        "node_ids": [int(node_id) for node_id in reference.node_ids],
     }
 
 

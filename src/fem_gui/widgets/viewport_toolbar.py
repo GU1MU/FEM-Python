@@ -4,9 +4,19 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QMenu, QToolBar, QToolButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QPushButton,
+    QToolBar,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..icons import icon
 
@@ -46,7 +56,7 @@ class ViewportToolBar(QToolBar):
         self.addSeparator()
 
         self._model_selection_actions = (
-            "select_node", "select_element", "selected_info",
+            "select_node", "select_element", "select_edge", "selected_info",
         )
         self._geometry_selection_actions = (
             "geometry_select_point", "geometry_select_edge",
@@ -54,7 +64,6 @@ class ViewportToolBar(QToolBar):
         )
         self._add_group(actions, self._model_selection_actions)
         self._add_group(actions, self._geometry_selection_actions)
-        self._add_group(actions, ("clear_selection",))
         self.set_geometry_context(False)
         self.addSeparator()
         self._add_group(actions, ("nodes", "edges", "node_labels", "element_labels", "symbols"))
@@ -93,6 +102,51 @@ class ViewportToolBar(QToolBar):
                 widget.setVisible(enabled)
 
 
+class ScopeCreationBar(QWidget):
+    """Persistent completion controls for one guided scope selection."""
+
+    createRequested = Signal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("scopeCreationBar")
+        self.type_value = QLabel("—", self)
+        self.type_value.setObjectName("scopeCreationType")
+        self.name_edit = QLineEdit(self)
+        self.name_edit.setObjectName("scopeCreationName")
+        self.create_button = QPushButton("创建", self)
+        self.create_button.setObjectName("scopeCreationSubmit")
+        self.create_button.setEnabled(False)
+        self.create_button.clicked.connect(self.createRequested)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(8)
+        layout.addWidget(QLabel("类型", self))
+        layout.addWidget(self.type_value)
+        layout.addSpacing(12)
+        layout.addWidget(QLabel("作用域名称", self))
+        layout.addWidget(self.name_edit, 1)
+        layout.addWidget(self.create_button)
+        self.hide()
+
+    def begin(self, scope_type: str, suggested_name: str) -> None:
+        self.type_value.setText(str(scope_type))
+        self.name_edit.setText(str(suggested_name))
+        self.name_edit.selectAll()
+        self.create_button.setEnabled(False)
+        self.show()
+
+    def set_selection_ready(self, ready: bool) -> None:
+        self.create_button.setEnabled(bool(ready))
+
+    def scope_name(self) -> str:
+        return self.name_edit.text().strip()
+
+    def finish(self) -> None:
+        self.create_button.setEnabled(False)
+        self.hide()
+
+
 class ViewportPanel(QWidget):
     """组合常驻工具栏与有限元三维视口。"""
 
@@ -103,8 +157,10 @@ class ViewportPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         self.toolbar = ViewportToolBar(actions, self)
+        self.scope_creation_bar = ScopeCreationBar(self)
         layout.addWidget(self.toolbar)
         layout.addWidget(viewport, 1)
+        layout.addWidget(self.scope_creation_bar)
 
     def set_geometry_context(self, enabled: bool) -> None:
         self.toolbar.set_geometry_context(enabled)

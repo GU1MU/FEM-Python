@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from fem.application import (
+    MeshEntityRef,
     ModelDefinitions,
     ModelSession,
     NamedRegion,
@@ -12,6 +13,9 @@ from fem.application import (
     RegionAssignment,
     SectionDefinition,
     compile_model_definitions,
+)
+from fem.application.native_scope_materialization import (
+    materialize_native_scopes,
 )
 from fem.application.preflight import run_static_preflight
 from fem.application.preprocessing import generate_fem_model
@@ -61,13 +65,53 @@ def _connected_wire() -> WireGeometry:
     )
 
 
-def _wire_regions() -> tuple[NamedRegion, ...]:
+def _wire_regions(model) -> tuple[NamedRegion, ...]:
+    first, second = tuple(model.mesh.elements)
+    first_nodes = set(first.node_ids)
+    second_nodes = set(second.node_ids)
+    joint_id = next(iter(first_nodes & second_nodes))
+    root_id = next(iter(first_nodes - {joint_id}))
+    tip_id = next(iter(second_nodes - {joint_id}))
     return (
-        NamedRegion("Root", (LogicalEntityRef("point:P1"),)),
-        NamedRegion("Joint", (LogicalEntityRef("point:P2"),)),
-        NamedRegion("Tip", (LogicalEntityRef("point:P3"),)),
-        NamedRegion("Member1", (LogicalEntityRef("edge:M1"),)),
-        NamedRegion("Member2", (LogicalEntityRef("edge:M2"),)),
+        NamedRegion("Root", (MeshEntityRef.node(root_id),)),
+        NamedRegion("Joint", (MeshEntityRef.node(joint_id),)),
+        NamedRegion("Tip", (MeshEntityRef.node(tip_id),)),
+        NamedRegion("Member1", (MeshEntityRef.element(first.id),)),
+        NamedRegion("Member2", (MeshEntityRef.element(second.id),)),
+        NamedRegion(
+            "DOMAIN",
+            tuple(
+                MeshEntityRef.element(element.id)
+                for element in model.mesh.elements
+            ),
+        ),
+    )
+
+
+def _single_member_regions(
+    model,
+    *,
+    include_member: bool = False,
+) -> tuple[NamedRegion, ...]:
+    element = model.mesh.elements[0]
+    first_id, second_id = tuple(element.node_ids)
+    regions = [
+        NamedRegion("Root", (MeshEntityRef.node(first_id),)),
+        NamedRegion("Tip", (MeshEntityRef.node(second_id),)),
+        NamedRegion("DOMAIN", (MeshEntityRef.element(element.id),)),
+    ]
+    if include_member:
+        regions.append(
+            NamedRegion("Member", (MeshEntityRef.element(element.id),))
+        )
+    return tuple(regions)
+
+
+def _with_mesh_scopes(model, regions) -> object:
+    return materialize_native_scopes(
+        model,
+        previous_names=(),
+        regions=regions,
     )
 
 
@@ -84,8 +128,8 @@ def test_connected_wire_truss_has_stable_point_and_member_sets(real_gmsh) -> Non
             ),
             line_element_type="Truss2",
         ),
-        named_regions=_wire_regions(),
     )
+    model = _with_mesh_scopes(model, _wire_regions(model))
 
     assert model.mesh.dofs_per_node == 3
     assert {element.type for element in model.mesh.elements} == {"Truss2"}
@@ -118,8 +162,8 @@ def test_transformed_truss_wire_keeps_one_element_per_member(real_gmsh) -> None:
             cell_shape="line",
             line_element_type="Truss2",
         ),
-        named_regions=_wire_regions(),
     )
+    model = _with_mesh_scopes(model, _wire_regions(model))
 
     assert len(model.mesh.elements) == len(_connected_wire().members)
     assert {element.type for element in model.mesh.elements} == {"Truss2"}
@@ -141,15 +185,17 @@ def test_coincident_disconnected_wire_points_remain_distinct(real_gmsh) -> None:
             WireMember("BD", "B", "D"),
         ),
     )
-    regions = (
-        NamedRegion("A", (LogicalEntityRef("point:A"),)),
-        NamedRegion("B", (LogicalEntityRef("point:B"),)),
-    )
-
     model = generate_fem_model(
         recipe,
         MeshSettings(0.4, cell_shape="line", line_element_type="Truss2"),
-        named_regions=regions,
+    )
+    first, second = tuple(model.mesh.elements)
+    model = _with_mesh_scopes(
+        model,
+        (
+            NamedRegion("A", (MeshEntityRef.node(first.node_ids[0]),)),
+            NamedRegion("B", (MeshEntityRef.node(second.node_ids[0]),)),
+        ),
     )
 
     assert model.node_sets["A"].node_ids
@@ -176,15 +222,52 @@ def test_crossing_without_declared_joint_does_not_create_a_shared_member_set(
             WireMember("CD", "C", "D"),
         ),
     )
-    regions = (
-        NamedRegion("AB", (LogicalEntityRef("edge:AB"),)),
-        NamedRegion("CD", (LogicalEntityRef("edge:CD"),)),
-    )
-
     model = generate_fem_model(
         recipe,
         MeshSettings(0.5, cell_shape="line", line_element_type="Beam2"),
-        named_regions=regions,
+    )
+    nodes_by_id = {
+        int(node.id): node
+        for node in model.mesh.nodes
+    }
+    positive_slope = tuple(
+        element
+        for element in model.mesh.elements
+        if (
+            (
+                float(nodes_by_id[int(element.node_ids[1])].y)
+                - float(nodes_by_id[int(element.node_ids[0])].y)
+            )
+            * (
+                float(nodes_by_id[int(element.node_ids[1])].x)
+                - float(nodes_by_id[int(element.node_ids[0])].x)
+            )
+            > 0.0
+        )
+    )
+    negative_slope = tuple(
+        element
+        for element in model.mesh.elements
+        if element not in positive_slope
+    )
+    model = _with_mesh_scopes(
+        model,
+        (
+            NamedRegion(
+                "AB",
+                tuple(
+                    MeshEntityRef.element(element.id)
+                    for element in positive_slope
+                ),
+            ),
+            NamedRegion(
+                "CD",
+                tuple(
+                    MeshEntityRef.element(element.id)
+                    for element in negative_slope
+                ),
+            ),
+        ),
     )
 
     assert model.mesh.dofs_per_node == 6
@@ -206,10 +289,6 @@ def test_truss2_headless_vertical_slice_matches_axial_bar_solution(real_gmsh) ->
         ),
         (WireMember("BarMember", "RootPoint", "TipPoint"),),
     )
-    named_regions = (
-        NamedRegion("Root", (LogicalEntityRef("point:RootPoint"),)),
-        NamedRegion("Tip", (LogicalEntityRef("point:TipPoint"),)),
-    )
     step = AnalysisStep(
         "Load",
         boundaries=(
@@ -221,8 +300,8 @@ def test_truss2_headless_vertical_slice_matches_axial_bar_solution(real_gmsh) ->
     model = generate_fem_model(
         recipe,
         MeshSettings(0.05, cell_shape="line", line_element_type="Truss2"),
-        named_regions=named_regions,
     )
+    model = _with_mesh_scopes(model, _single_member_regions(model))
     assert len(model.mesh.nodes) == 2
     assert len(model.mesh.elements) == 1
     definitions = ModelDefinitions(
@@ -256,11 +335,6 @@ def test_beam2_headless_vertical_slice_has_spatial_dofs_and_bending_response(
         ),
         (WireMember("BeamMember", "RootPoint", "TipPoint"),),
     )
-    named_regions = (
-        NamedRegion("Root", (LogicalEntityRef("point:RootPoint"),)),
-        NamedRegion("Tip", (LogicalEntityRef("point:TipPoint"),)),
-        NamedRegion("Member", (LogicalEntityRef("edge:BeamMember"),)),
-    )
     step = AnalysisStep(
         "Load",
         boundaries=(DisplacementConstraint("Root", 1, 6),),
@@ -273,7 +347,10 @@ def test_beam2_headless_vertical_slice_has_spatial_dofs_and_bending_response(
     model = generate_fem_model(
         recipe,
         MeshSettings(2.0, cell_shape="line", line_element_type="Beam2"),
-        named_regions=named_regions,
+    )
+    model = _with_mesh_scopes(
+        model,
+        _single_member_regions(model, include_member=True),
     )
     definitions = ModelDefinitions(
         materials=(MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3}),),
@@ -313,10 +390,6 @@ def test_beam2_result_provider_csv_and_vtk_exports_preserve_line_topology(
         ),
         (WireMember("BeamMember", "RootPoint", "TipPoint"),),
     )
-    named_regions = (
-        NamedRegion("Root", (LogicalEntityRef("point:RootPoint"),)),
-        NamedRegion("Tip", (LogicalEntityRef("point:TipPoint"),)),
-    )
     step = AnalysisStep(
         "Load",
         boundaries=(DisplacementConstraint("Root", 1, 6),),
@@ -325,8 +398,8 @@ def test_beam2_result_provider_csv_and_vtk_exports_preserve_line_topology(
     model = generate_fem_model(
         recipe,
         MeshSettings(2.0, cell_shape="line", line_element_type="Beam2"),
-        named_regions=named_regions,
     )
+    model = _with_mesh_scopes(model, _single_member_regions(model))
     compiled = compile_model_definitions(
         model,
         ModelDefinitions(
@@ -391,10 +464,8 @@ def test_schema3_reopened_truss_regenerates_and_solves_without_old_artifacts(
         cell_shape="line",
         line_element_type="Truss2",
     )
-    named_regions = (
-        NamedRegion("Root", (LogicalEntityRef("point:RootPoint"),)),
-        NamedRegion("Tip", (LogicalEntityRef("point:TipPoint"),)),
-    )
+    reference_model = generate_fem_model(recipe, settings)
+    named_regions = _single_member_regions(reference_model)
     step = AnalysisStep(
         "Load",
         boundaries=(

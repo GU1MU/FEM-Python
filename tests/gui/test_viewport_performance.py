@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -87,20 +88,29 @@ class _ViewPlotter:
         self.camera = _ViewCamera()
         self.calls = []
 
-    def view_xy(self) -> None:
-        self.calls.append("xy")
+    def reset_camera(self, *, bounds=None, render=True) -> None:
+        self.calls.append(("reset", bounds, render))
+        if bounds is None:
+            return
+        focal = np.asarray(
+            (
+                0.5 * (bounds[0] + bounds[1]),
+                0.5 * (bounds[2] + bounds[3]),
+                0.5 * (bounds[4] + bounds[5]),
+            ),
+            dtype=float,
+        )
+        direction = (
+            np.asarray(self.camera.position, dtype=float)
+            - np.asarray(self.camera.focal_point, dtype=float)
+        )
+        direction /= np.linalg.norm(direction)
+        self.camera.focal_point = tuple(focal)
+        self.camera.position = tuple(focal + 10.0 * direction)
 
-    def view_xz(self) -> None:
-        self.calls.append("xz")
-
-    def view_yz(self) -> None:
-        self.calls.append("yz")
-
-    def view_isometric(self) -> None:
-        self.calls.append("iso")
-
-    def reset_camera_clipping_range(self) -> None:
-        self.calls.append("clip")
+    def add_mesh(self, _data, **kwargs):
+        self.calls.append(("mesh", kwargs["name"]))
+        return object()
 
     def render(self) -> None:
         self.calls.append("render")
@@ -198,29 +208,90 @@ def test_2d_and_3d_meshes_share_element_and_node_colors(mesh_factory):
 
 
 @pytest.mark.parametrize(
-    ("view", "base", "up", "position"),
+    ("view", "up", "direction"),
     [
-        ("top", "xy", (0.0, 1.0, 0.0), (0.0, 0.0, -10.0)),
-        ("bottom", "xy", (1.0, 0.0, 0.0), (0.0, 0.0, 10.0)),
-        ("front", "xz", (0.0, 0.0, 1.0), (0.0, 10.0, 0.0)),
-        ("back", "xz", (1.0, 0.0, 0.0), (0.0, -10.0, 0.0)),
-        ("left", "yz", (0.0, 0.0, 1.0), (-10.0, 0.0, 0.0)),
-        ("right", "yz", (0.0, 1.0, 0.0), (10.0, 0.0, 0.0)),
+        ("top", (0.0, 1.0, 0.0), (0.0, 0.0, -1.0)),
+        ("bottom", (1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+        ("front", (0.0, 0.0, 1.0), (0.0, 1.0, 0.0)),
+        ("back", (1.0, 0.0, 0.0), (0.0, -1.0, 0.0)),
+        ("left", (0.0, 0.0, 1.0), (-1.0, 0.0, 0.0)),
+        ("right", (0.0, 1.0, 0.0), (1.0, 0.0, 0.0)),
+        (
+            "iso",
+            (-1.0, 2.0, -1.0),
+            tuple(np.asarray((1.0, 1.0, 1.0)) / np.sqrt(3.0)),
+        ),
     ],
 )
-def test_coordinate_view_keeps_plane_and_swaps_screen_axes(view, base, up, position):
+def test_coordinate_view_keeps_axes_and_fits_off_origin_model(
+    view,
+    up,
+    direction,
+):
     _application()
     viewport = FEMViewport()
     plotter = _ViewPlotter()
     viewport._plotter = plotter
+    viewport._grid = SimpleNamespace(
+        points=np.asarray(
+            (
+                (10.0, -4.0, 2.0),
+                (14.0, 8.0, 6.0),
+            )
+        )
+    )
 
     viewport.set_view(view)
 
-    assert base in plotter.calls
+    bounds = (10.0, 14.0, -4.0, 8.0, 2.0, 6.0)
+    focal = np.asarray((12.0, 2.0, 4.0))
+    actual_direction = (
+        np.asarray(plotter.camera.position)
+        - np.asarray(plotter.camera.focal_point)
+    )
+    actual_direction /= np.linalg.norm(actual_direction)
+
+    assert plotter.calls == [("reset", bounds, False), "render"]
+    assert plotter.camera.focal_point == pytest.approx(focal)
     assert plotter.camera.up == up
-    assert plotter.camera.position == position
+    assert actual_direction == pytest.approx(direction)
     assert plotter.camera.orthogonalized
-    assert "clip" in plotter.calls
+
+
+def test_base_model_layers_fit_stable_bounds_without_intermediate_render(
+    monkeypatch,
+):
+    _application()
+    viewport = FEMViewport()
+    plotter = _ViewPlotter()
+    viewport._plotter = plotter
+    viewport._grid = SimpleNamespace(
+        points=np.asarray(
+            (
+                (20.0, -8.0, 3.0),
+                (24.0, 4.0, 9.0),
+            )
+        )
+    )
+    monkeypatch.setattr(
+        viewport,
+        "_refresh_node_layer",
+        lambda *, render: None,
+    )
+    monkeypatch.setattr(
+        viewport,
+        "_refresh_labels",
+        lambda *, render=False: None,
+    )
+
+    viewport._add_base_layers(reset_camera=True, render=False)
+
+    bounds = (20.0, 24.0, -8.0, 4.0, 3.0, 9.0)
+    assert plotter.calls == [
+        ("mesh", "mesh_surface"),
+        ("mesh", "element_edges"),
+        ("reset", bounds, False),
+    ]
 
 
 def test_model_load_batches_symbol_rebuild_and_final_render(monkeypatch):

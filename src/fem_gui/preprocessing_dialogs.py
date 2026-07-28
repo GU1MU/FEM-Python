@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QLabel,
     QListWidget,
+    QListWidgetItem,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -24,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from fem.application import (
     DeleteIntent,
+    MeshEntityRef,
     NamedRegion,
     RenameIntent,
     derive_geometry_feature_rows,
@@ -42,7 +45,6 @@ from fem.geometry import (
     SketchCircle,
     SketchGeometry,
     SketchRectangle,
-    logical_ref_sort_key,
 )
 from fem.mesh import settings as mesh_settings_api
 from fem.mesh.settings import LocalMeshControl, MeshSettings
@@ -64,6 +66,91 @@ def _signed_spin_box(parent: QDialog, value: float) -> QDoubleSpinBox:
     editor.setDecimals(6)
     editor.setValue(float(value))
     return editor
+
+
+class GeometryCreationDialog(QDialog):
+    """Route the unified geometry command to a 1D, 2D, or 3D workflow."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("geometryCreationDialog")
+        self.setWindowTitle("创建几何")
+
+        self.dimension_list = QListWidget(self)
+        self.dimension_list.setObjectName("geometryDimensionList")
+        self.dimension_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        for label, value in (
+            ("1D 线体草图", "1d"),
+            ("2D 平面草图", "2d"),
+            ("3D 基本实体", "3d"),
+        ):
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, value)
+            self.dimension_list.addItem(item)
+        self.dimension_list.setCurrentRow(0)
+        self.dimension_list.setMinimumHeight(116)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel,
+            self,
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("继续")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        self.dimension_list.itemDoubleClicked.connect(
+            lambda _item: self.accept()
+        )
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.dimension_list)
+        layout.addWidget(buttons)
+
+    def creation_kind(self) -> str:
+        item = self.dimension_list.currentItem()
+        if item is None:
+            raise RuntimeError("请选择建模维度")
+        return str(item.data(Qt.ItemDataRole.UserRole))
+
+
+class BasicSolidCreationDialog(QDialog):
+    """Choose a 3D primitive before opening its parameter dialog."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("basicSolidCreationDialog")
+        self.setWindowTitle("创建 3D 基本实体")
+
+        self.solid_combo = QComboBox(self)
+        self.solid_combo.setObjectName("basicSolidTypeCombo")
+        for label, value in (
+            ("长方体", "box"),
+            ("圆柱体", "cylinder"),
+        ):
+            self.solid_combo.addItem(label, value)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel,
+            self,
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("继续")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("实体类型", self))
+        layout.addWidget(self.solid_combo)
+        layout.addWidget(buttons)
+
+    def solid_kind(self) -> str:
+        if self.solid_combo.currentIndex() < 0:
+            raise RuntimeError("请选择 3D 基本实体")
+        return str(self.solid_combo.currentData())
 
 
 class SketchContourDialog(QDialog):
@@ -793,45 +880,54 @@ class LocalMeshControlDialog(QDialog):
 
 
 class NamedRegionDialog(QDialog):
-    """Name a selected geometry entity without a permanent property panel."""
+    """Name a selected scope without a permanent property panel."""
 
     def __init__(
         self,
-        references: tuple[LogicalEntityRef, ...],
+        references: tuple[MeshEntityRef, ...],
         parent=None,
         *,
         suggested_name: str | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("创建命名区域")
-        names = {"point": "点", "edge": "边", "face": "面", "body": "体"}
+        self.setWindowTitle("创建作用域")
+        names = {
+            "node": "节点",
+            "edge": "边",
+            "face": "面",
+            "element": "单元",
+        }
         if any(
-            type(reference) is not LogicalEntityRef
+            type(reference) is not MeshEntityRef
             for reference in references
         ):
             raise TypeError(
-                "命名区域对话框只接受 LogicalEntityRef"
+                "作用域对话框只接受 MeshEntityRef"
             )
         canonical_references = tuple(
             sorted(
                 set(references),
-                key=logical_ref_sort_key,
+                key=lambda reference: (
+                    reference.kind,
+                    reference.identity,
+                    reference.node_ids,
+                ),
             )
         )
         if not canonical_references:
-            raise ValueError("命名区域至少需要一个几何引用")
+            raise ValueError("作用域至少需要一个网格实体")
         kinds = {
             reference.kind
             for reference in canonical_references
         }
         if len(kinds) != 1:
-            raise ValueError("命名区域只能包含同一种几何实体")
+            raise ValueError("作用域只能包含同一种网格实体")
         entity_kind = canonical_references[0].kind
         default_names = {
-            "point": "PointSet-1",
+            "node": "NodeSet-1",
             "edge": "EdgeSet-1",
             "face": "Surface-1",
-            "body": "BodySet-1",
+            "element": "ElementSet-1",
         }
         default_name = suggested_name or default_names.get(
             entity_kind,
@@ -850,7 +946,7 @@ class NamedRegionDialog(QDialog):
                 self,
             ),
         )
-        form.addRow("区域名称", self.name_edit)
+        form.addRow("作用域名称", self.name_edit)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
             self,
@@ -866,12 +962,12 @@ class NamedRegionDialog(QDialog):
     def region_name(self) -> str:
         name = self.name_edit.text().strip()
         if not name:
-            raise ValueError("区域名称不能为空")
+            raise ValueError("作用域名称不能为空")
         return name
 
 
 class NamedRegionManagerDialog(QDialog):
-    """Rename or delete geometry regions without exposing a second tree."""
+    """Rename or delete scopes without exposing a second tree."""
 
     def __init__(
         self,
@@ -879,7 +975,7 @@ class NamedRegionManagerDialog(QDialog):
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("命名区域管理")
+        self.setWindowTitle("作用域管理")
         self.regions = deepcopy(regions)
         self._original_names: tuple[str, ...] = tuple(regions)
         self._origins: dict[str, str | None] = {
@@ -903,7 +999,7 @@ class NamedRegionManagerDialog(QDialog):
         self.delete_button.clicked.connect(self._delete)
         self.table.itemSelectionChanged.connect(self._selection_changed)
         controls = QHBoxLayout()
-        controls.addWidget(QLabel("区域名称", self))
+        controls.addWidget(QLabel("作用域名称", self))
         controls.addWidget(self.name_edit, 1)
         controls.addWidget(self.rename_button)
         controls.addWidget(self.delete_button)
@@ -926,10 +1022,10 @@ class NamedRegionManagerDialog(QDialog):
     def _refresh(self, selected: int = 0) -> None:
         self.table.setRowCount(0)
         type_names = {
-            "point": "点",
-            "edge": "边",
-            "face": "面",
-            "body": "体",
+            "node": "节点",
+            "edge": "Edge",
+            "face": "Surface",
+            "element": "单元",
         }
         for row, region in enumerate(self.regions.values()):
             self.table.insertRow(row)

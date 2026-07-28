@@ -128,7 +128,7 @@ def test_small_ribbon_commands_use_readable_icons():
     window.close()
 
 
-def test_new_preprocessing_modules_do_not_change_the_existing_model_page():
+def test_model_page_replaces_clear_selection_with_edge_selection():
     _application()
     window = FEMMainWindow()
     tab_names = [
@@ -145,7 +145,7 @@ def test_new_preprocessing_modules_do_not_change_the_existing_model_page():
     assert model_actions == {
         "action_select_node",
         "action_select_element",
-        "action_clear_selection",
+        "action_select_edge",
         "action_selected_info",
         "action_nodes",
         "action_edges",
@@ -165,10 +165,9 @@ def test_new_preprocessing_modules_do_not_change_the_existing_model_page():
         if button.defaultAction() is not None
     }
     assert geometry_actions == {
-        window.actions[name]
+            window.actions[name]
             for name in (
-                "geometry_sketch",
-                "geometry_wire",
+                "geometry_create",
                 "geometry_extrude",
             "geometry_move",
             "geometry_rotate",
@@ -181,8 +180,6 @@ def test_new_preprocessing_modules_do_not_change_the_existing_model_page():
             "geometry_select_edge",
             "geometry_select_face",
             "geometry_select_body",
-            "geometry_region",
-            "geometry_regions",
         )
     }
     mesh_actions = {
@@ -200,8 +197,12 @@ def test_new_preprocessing_modules_do_not_change_the_existing_model_page():
             "mesh_clear",
             "mesh_verify",
             "mesh_statistics",
+            "geometry_region",
+            "geometry_regions",
         )
     }
+    assert window.actions["geometry_region"].text() == "创建作用域"
+    assert window.actions["geometry_regions"].text() == "作用域管理"
     window.close()
 
 

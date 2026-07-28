@@ -20,7 +20,6 @@ from fem.mesh import gmsh as gmsh_meshing
 from fem.selection import curves, edges, elements, nodes
 from fem.solvers import static_linear
 from tests.helpers.gmsh_fake import (
-    _AUTO_OPTION_ORIGINALS,
     _ENTITY_DEPENDENT_MESH_CONTROLS,
     _TRANSFORM_UNSAFE_ENTITY_CONTROLS,
     _FakeGmsh,
@@ -28,14 +27,12 @@ from tests.helpers.gmsh_fake import (
     _apply_entity_dependent_mesh_control,
     _apply_foundational_operation,
     _apply_typed_transform,
-    _build_fake_topology,
     _entity_control_target,
     _fake_control_boundary_dependency,
     _fake_edge_treatment_topology,
     _fake_entities,
     _fake_mesh_control_targets,
     _fake_threshold,
-    _first_requested_options,
     _generate_auto_mesh,
     _generate_mesh,
     _install_backend,

@@ -7,15 +7,7 @@ import math
 from typing import Any, Protocol
 
 from fem import geometry
-from fem.core.model import (
-    Edge,
-    ElementEdge,
-    ElementFace,
-    ElementSet,
-    FEMModel,
-    NodeSet,
-    Surface,
-)
+from fem.core.model import FEMModel
 from fem.geometry.measurements import resolve_target_radius
 from fem.geometry.recipe_analysis import (
     recipe_characteristic_size,
@@ -44,12 +36,10 @@ from .native_mesh_contract import (
     NativeMeshContract,
     require_complete_native_mesh_contract,
 )
-from .native_regions import (
-    CompiledDomainRegionSource,
-    LogicalReferencesRegionSource,
-    NativeRegionDescriptor,
-    RecipeRegionSource,
-    validate_native_authoring_context,
+from .native_regions import validate_native_authoring_context
+from .native_scope_materialization import (
+    NATIVE_SCOPE_CATALOG_KEY,
+    materialize_native_scopes,
 )
 from .revisions import MeshTaskSnapshot
 
@@ -130,7 +120,7 @@ def generate_fem_model(
     contract = require_complete_native_mesh_contract(recipe, mesh_settings)
     if mesh_settings is None:
         raise TypeError("网格生成需要 MeshSettings")
-    region_descriptors = validate_native_authoring_context(
+    validate_native_authoring_context(
         recipe,
         regions,
         local_controls=mesh_settings.local_controls,
@@ -178,17 +168,6 @@ def generate_fem_model(
                     topology,
                     topology_resolver,
                 )
-
-            entity_groups = {
-                descriptor.name: _resolve_region_descriptor(
-                    cad,
-                    recipe,
-                    topology,
-                    topology_resolver,
-                    descriptor,
-                )
-                for descriptor in region_descriptors
-            }
 
             mesh_size = mesh_settings.size
             refinements: list[Any] = []
@@ -251,8 +230,14 @@ def generate_fem_model(
                 native_mesh,
                 recipe.name,
                 dimension,
-                entity_groups,
+                topology,
             )
+            if regions:
+                model = materialize_native_scopes(
+                    model,
+                    previous_names=(),
+                    regions=regions,
+                )
             if dimension == 1 and (model.edges or model.surfaces):
                 raise TopologyResolutionError(
                     "native wire model unexpectedly created FEM edge or surface "
@@ -358,45 +343,6 @@ def _configure_hexahedral_mesh(
     mesher.transfinite_volume(topology.domain[0])
 
 
-def _resolve_region_descriptor(
-    cad: Any,
-    recipe: NativeGeometry,
-    topology: CompiledRecipeTopology,
-    resolver: RecipeTopologyResolver,
-    descriptor: NativeRegionDescriptor,
-) -> tuple[Any, ...]:
-    source = descriptor.source
-    if isinstance(source, CompiledDomainRegionSource):
-        return tuple(topology.domain)
-    if isinstance(source, RecipeRegionSource):
-        entities = tuple(topology.region_bindings.get(source.selector, ()))
-        if not entities:
-            raise TopologyResolutionError(
-                f"内建区域 {descriptor.name!r} 没有对应的 CAD 实体"
-            )
-        return entities
-    if not isinstance(source, LogicalReferencesRegionSource):
-        raise TypeError(
-            f"不支持的 native region source: {type(source).__name__}"
-        )
-    entities: list[Any] = []
-    for reference in source.references:
-        entities.extend(
-            resolver.resolve(
-                cad,
-                recipe,
-                topology,
-                reference,
-            )
-        )
-    resolved = _unique_entities(entities)
-    if not resolved:
-        raise TopologyResolutionError(
-            f"命名区域 {descriptor.name!r} 没有解析到 CAD 实体"
-        )
-    return resolved
-
-
 def _distance_field_sources(
     entities: Iterable[Any],
 ) -> Mapping[str, tuple[Any, ...]]:
@@ -418,65 +364,112 @@ def _build_native_fem_model(
     native_mesh: Any,
     name: str,
     dimension: int,
-    entity_groups: Mapping[str, tuple[Any, ...]],
+    topology: CompiledRecipeTopology,
 ) -> FEMModel:
-    """Convert CAD entity groups to FEM sets without leaking CAD identifiers."""
-    model = FEMModel(mesh=mesh, name=name)
-    boundary_edges = mesh_edges.boundary(mesh) if dimension == 2 else ()
-    boundary_faces = mesh_faces.boundary(mesh) if dimension == 3 else ()
+    """Return a generated model without any implicit user-facing scopes."""
 
-    for group_name, entities in entity_groups.items():
+    model = FEMModel(mesh=mesh, name=name)
+    model.metadata[NATIVE_SCOPE_CATALOG_KEY] = _native_scope_catalog(
+        mesh,
+        native_mesh,
+        dimension,
+        topology,
+    )
+    return model
+
+
+def _native_scope_catalog(
+    mesh: Any,
+    native_mesh: Any,
+    dimension: int,
+    topology: CompiledRecipeTopology,
+) -> dict[str, dict[str, Any]]:
+    """Map selectable CAD topology to mesh entities without creating scopes."""
+
+    boundary_edges = (
+        tuple(mesh_edges.boundary(mesh))
+        if dimension == 2
+        else _unique_element_edges(mesh_edges.all(mesh))
+        if dimension == 3
+        else ()
+    )
+    boundary_faces = (
+        tuple(mesh_faces.boundary(mesh))
+        if dimension == 3
+        else ()
+    )
+    catalog: dict[str, dict[str, Any]] = {}
+    for logical_id, raw_entities in topology.logical_entities.items():
+        entities = _unique_entities(raw_entities)
         if not entities:
             continue
-        entity_dimension = entities[0].dimension
-        if any(entity.dimension != entity_dimension for entity in entities):
-            raise ValueError(f"几何区域 {group_name} 包含不同维度的实体")
-        if entity_dimension == dimension:
-            element_ids = gmsh_io.entity_element_ids(native_mesh, entities)
-            model.element_sets[group_name] = ElementSet(
-                group_name,
-                element_ids,
+        entity_dimensions = {int(entity.dimension) for entity in entities}
+        if len(entity_dimensions) != 1:
+            raise TopologyResolutionError(
+                f"{logical_id} resolves to mixed CAD dimensions"
             )
-            continue
-
+        entity_dimension = next(iter(entity_dimensions))
         node_ids = gmsh_io.entity_node_ids(native_mesh, entities)
-        model.node_sets[group_name] = NodeSet(group_name, node_ids)
         node_id_set = set(node_ids)
-        if dimension == 2 and entity_dimension == 1:
-            model.edges[group_name] = Edge(
-                group_name,
-                [
-                    ElementEdge(
-                        element_id,
-                        local_edge,
-                        edge_node_ids,
-                    )
-                    for (
-                        element_id,
-                        local_edge,
-                        edge_node_ids,
-                    ) in boundary_edges
-                    if set(edge_node_ids).issubset(node_id_set)
-                ],
+        edge_rows = (
+            tuple(
+                (
+                    int(element_id),
+                    int(local_index),
+                    tuple(int(node_id) for node_id in row_node_ids),
+                )
+                for element_id, local_index, row_node_ids in boundary_edges
+                if set(row_node_ids).issubset(node_id_set)
             )
-        elif dimension == 3 and entity_dimension == 2:
-            model.surfaces[group_name] = Surface(
-                group_name,
-                [
-                    ElementFace(
-                        element_id,
-                        local_face,
-                        face_node_ids,
-                    )
-                    for (
-                        element_id,
-                        local_face,
-                        face_node_ids,
-                    ) in boundary_faces
-                    if set(face_node_ids).issubset(node_id_set)
-                ],
+            if entity_dimension == 1 and dimension >= 2
+            else ()
+        )
+        face_rows = (
+            tuple(
+                (
+                    int(element_id),
+                    int(local_index),
+                    tuple(int(node_id) for node_id in row_node_ids),
+                )
+                for element_id, local_index, row_node_ids in boundary_faces
+                if set(row_node_ids).issubset(node_id_set)
             )
-    return model
+            if entity_dimension == 2 and dimension == 3
+            else ()
+        )
+        catalog[str(logical_id)] = {
+            "kind": str(logical_id).partition(":")[0],
+            "node_ids": tuple(int(node_id) for node_id in node_ids),
+            "element_ids": (
+                gmsh_io.entity_element_ids(native_mesh, entities)
+                if entity_dimension == dimension
+                else ()
+            ),
+            "edges": edge_rows,
+            "faces": face_rows,
+        }
+    return catalog
+
+
+def _unique_element_edges(
+    rows: Iterable[tuple[int, int, Iterable[int]]],
+) -> tuple[tuple[int, int, tuple[int, ...]], ...]:
+    """Keep one deterministic element-local representative per mesh edge."""
+
+    selected: dict[
+        tuple[int, int],
+        tuple[int, int, tuple[int, ...]],
+    ] = {}
+    for element_id, local_index, raw_node_ids in rows:
+        node_ids = tuple(int(node_id) for node_id in raw_node_ids)
+        if len(node_ids) < 2:
+            continue
+        key = tuple(sorted((node_ids[0], node_ids[-1])))
+        candidate = (int(element_id), int(local_index), node_ids)
+        current = selected.get(key)
+        if current is None or candidate[:2] < current[:2]:
+            selected[key] = candidate
+    return tuple(selected[key] for key in sorted(selected))
 
 
 def _audit_native_wire_mesh(
