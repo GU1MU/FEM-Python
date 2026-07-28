@@ -29,10 +29,9 @@ from fem.geometry.measurements import (
     TargetRadiusResolutionError,
     resolve_legacy_hole_target,
 )
-from fem.geometry.recipe_analysis import legacy_sketch_to_strict
+from fem.geometry.recipe_analysis import legacy_sketches_to_strict
 from fem.geometry.recipe_topology import describe_recipe_topology
 from fem.geometry.references import LogicalEntityRef
-from fem.geometry.recipes import SketchGeometry
 from fem.mesh.settings import (
     LocalMeshControl,
     MeshSettings,
@@ -145,11 +144,7 @@ def migrate_project_v1(
         parts = legacy.parts
 
     source_geometry = legacy.geometry_recipe
-    geometry_recipe = (
-        legacy_sketch_to_strict(source_geometry)
-        if type(source_geometry) is SketchGeometry and source_geometry.is_legacy
-        else source_geometry
-    )
+    geometry_recipe = legacy_sketches_to_strict(source_geometry)
 
     named_regions = tuple(
         _migrate_named_region(
@@ -170,7 +165,7 @@ def migrate_project_v1(
             code="project.schema.v1",
             message=(
                 "项目已通过 schema 1 compatibility migration 打开；"
-                "下次显式保存将升级为 schema 3（v3）当前项目格式"
+                "下次显式保存将升级为 schema 4（v4）当前项目格式"
             ),
             path="$.schema",
         )

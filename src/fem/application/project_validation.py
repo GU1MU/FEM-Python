@@ -186,7 +186,7 @@ def validate_native_project_inputs(
             _require_product(
                 descriptors,
                 target,
-                "node_set",
+                getattr(boundary, "target_kind", "node_set"),
                 f"steps[{step_index}].boundaries[{index}].target",
             )
         for index, load in enumerate(step.cloads):
@@ -224,6 +224,17 @@ def validate_native_project_inputs(
                 target,
                 "beam_element_set",
                 f"steps[{step_index}].line_loads[{index}].target",
+            )
+        for index, load in enumerate(step.body_loads):
+            target = _stable_target(
+                load.target,
+                f"steps[{step_index}].body_loads[{index}].target",
+            )
+            _require_product(
+                descriptors,
+                target,
+                "element_set",
+                f"steps[{step_index}].body_loads[{index}].target",
             )
         for index, load in enumerate(step.gravity_loads):
             if load.target is None:
@@ -275,6 +286,7 @@ def analysis_step_has_native_region_target(step: AnalysisStep) -> bool:
         or step.edge_loads
         or step.surface_loads
         or step.line_loads
+        or step.body_loads
         or any(load.target is not None for load in step.gravity_loads)
     )
 

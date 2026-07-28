@@ -155,7 +155,7 @@ def test_service_builds_node_element_and_assignment_indexes_once(gui_inp_path):
     assert _fields(basic)["坐标"] == "1, 0"
     assert _fields(basic)["所属节点集"] == "RIGHT"
     assert basic.tables[0].rows == (("1", "Quad4"),)
-    assert _page(node, "分析定义").tables[0].rows[0][:3] == ("Static-1", "节点载荷", "U1")
+    assert _page(node, "分析定义").tables[0].rows[0][:3] == ("Static-1", "节点力", "U1")
     assert all(page.title != "结果" for page in node.pages)
 
     record = service.element_record(1)
@@ -192,7 +192,7 @@ def test_collection_material_section_and_step_information_is_structured(gui_inp_
     step_index = next(index for index, step in enumerate(service.model.steps) if step.name == "Static-1")
     step = service.inspect("step", step_index)
     assert [page.title for page in step.pages] == ["概况", "载荷", "输出请求"]
-    assert _page(step, "载荷").tables[0].rows[0][1:] == ("节点载荷", "RIGHT", "U1", "10")
+    assert _page(step, "载荷").tables[0].rows[0][1:] == ("节点力", "RIGHT", "U1", "10")
     assert _page(step, "输出请求").tables[0].rows[0][1:] == ("场输出", "节点", "U, RF")
 
 

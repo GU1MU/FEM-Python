@@ -337,7 +337,7 @@ def test_manager_lists_moves_and_deletes_line_loads(monkeypatch) -> None:
     line_row = manager._rows.index(("line_load", 0, 0))
     boundary_row = manager._rows.index(("boundary", 0, 0))
     node_load_row = manager._rows.index(("node_load", 0, 0))
-    assert manager.table.item(line_row, 0).text() == "梁线载荷"
+    assert manager.table.item(line_row, 0).text() == "边力"
     assert manager.table.item(line_row, 2).text() == "BEAM-SET"
     assert manager.table.item(line_row, 3).text() == "全局 = (1, 2, 3)"
     assert manager.table.item(boundary_row, 3).text() == "UR1 = 0"

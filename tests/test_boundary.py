@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 import numpy as np
 import pytest
 
@@ -8,6 +10,8 @@ from fem.boundary.step import boundary_for_step
 from fem.boundary import step as boundary_step
 from fem.core.model import (
     AnalysisStep,
+    BodyForce,
+    DisplacementConstraint,
     Edge,
     EdgeLoad,
     ElementEdge,
@@ -87,6 +91,72 @@ def test_3d_nodal_forces_accumulate_like_2d():
     F = boundary.loads.build_load_vector(mesh, bc)
 
     assert F[mesh.global_dof(1, 2)] == pytest.approx(-5.0)
+
+
+@pytest.mark.parametrize(
+    ("target_kind", "expected_node_ids"),
+    (
+        ("edge", (5, 6)),
+        ("surface", (1, 2, 3, 4)),
+    ),
+)
+def test_displacement_constraint_expands_edge_and_surface_nodes(
+    target_kind,
+    expected_node_ids,
+):
+    mesh = make_selection_hex_mesh()
+    model = FEMModel(
+        mesh=mesh,
+        edges={
+            "FIXED": Edge(
+                "FIXED",
+                [ElementEdge(1, 4, (5, 6))],
+            )
+        },
+        surfaces={
+            "FIXED": Surface(
+                "FIXED",
+                [ElementFace(1, 0, (1, 2, 3, 4))],
+            )
+        },
+        steps=[
+            AnalysisStep(
+                "load",
+                boundaries=[
+                    DisplacementConstraint(
+                        "FIXED",
+                        1,
+                        1,
+                        target_kind=target_kind,
+                    )
+                ],
+            )
+        ],
+    )
+    authoring_before = deepcopy(
+        (
+            model.node_sets,
+            model.edges,
+            model.surfaces,
+            tuple(model.steps[0].boundaries),
+        )
+    )
+
+    resolved = boundary_for_step(model, "load")
+
+    assert set(resolved.prescribed_displacements) == {
+        mesh.global_dof(node_id, 0)
+        for node_id in expected_node_ids
+    }
+    assert (
+        model.node_sets,
+        model.edges,
+        model.surfaces,
+        tuple(model.steps[0].boundaries),
+    ) == authoring_before
+    assert model.node_sets == {}
+    assert model.steps[0].boundaries[0].target == "FIXED"
+    assert model.steps[0].boundaries[0].target_kind == target_kind
 
 
 @pytest.mark.parametrize("nodal_only", [False, True], ids=["empty", "nodal-only"])
@@ -212,6 +282,34 @@ def test_mixed_solid_body_forces_and_gravity_dispatch_by_element_type():
     assert F.shape == (mesh.num_dofs,)
     assert np.all(np.isfinite(F))
     assert float(np.linalg.norm(F)) > 0.0
+
+
+def test_high_level_body_force_targets_elements_without_density_scaling():
+    mesh = make_mixed_hex8_tet4_mesh()
+    mesh.elements[0].props["rho"] = 20.0
+    mesh.elements[1].props["rho"] = 30.0
+    vector = (1.0, -2.0, 3.0)
+    step = AnalysisStep(
+        "body",
+        body_loads=(BodyForce("all", vector),),
+    )
+    model = FEMModel(
+        mesh=mesh,
+        element_sets={"all": ElementSet("all", (1, 2))},
+        steps=[step],
+    )
+
+    bc = boundary_for_step(model, step)
+    F = build_load_vector(mesh, bc)
+    expected = np.zeros(mesh.num_dofs)
+    node_lookup = {node.id: node for node in mesh.nodes}
+    for elem in mesh.elements:
+        expected[mesh.element_dofs(elem)] += get_element_kernel(
+            elem.type
+        ).body_force(mesh, elem, vector, node_lookup)
+
+    assert tuple(load.vector for load in bc.body_forces) == (vector, vector)
+    assert np.allclose(F, expected)
 
 
 def test_boundary_step_resolves_and_accumulates_global_and_targeted_gravity():

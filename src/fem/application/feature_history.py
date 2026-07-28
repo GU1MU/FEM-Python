@@ -20,6 +20,10 @@ from fem.geometry.recipes import (
     WireGeometry,
 )
 from fem.geometry.recipe_analysis import analyze_sketch_profiles
+from fem.geometry.extrusion_selection import (
+    ExtrusionSourceResolutionError,
+    resolve_extrusion_source_faces,
+)
 
 from .definitions import FeatureRecord
 
@@ -106,8 +110,22 @@ def derive_geometry_feature_rows(
             f"旋转  {recipe.axis.upper()} 轴，{recipe.angle_degrees:g}°",
         )
     if isinstance(recipe, ExtrudedGeometry):
+        try:
+            profile_count = len(
+                resolve_extrusion_source_faces(
+                    recipe.base,
+                    recipe.source_face_ids,
+                ).face_ids
+            )
+        except ExtrusionSourceResolutionError:
+            profile_count = len(recipe.source_face_ids)
+        profile_summary = (
+            ""
+            if profile_count <= 1
+            else f"，Profiles={profile_count}"
+        )
         return derive_geometry_feature_rows(recipe.base) + (
-            f"拉伸  高度={recipe.height:g}",
+            f"拉伸  高度={recipe.height:g}{profile_summary}",
         )
     if isinstance(recipe, BooleanGeometry):
         names = {"fuse": "合并", "cut": "切除", "fragment": "分割"}

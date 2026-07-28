@@ -27,6 +27,7 @@ from fem.application.results import (
 )
 from fem.application.preprocessing import generate_fem_model
 from fem.core.model import (
+    BodyForce,
     DisplacementConstraint,
     EdgeLoad,
     GravityLoad,
@@ -179,6 +180,7 @@ def test_analysis_dialogs_define_only_supported_kernel_objects():
     step_name, boundaries = boundary_dialog.definitions()
     assert step_name == "Load"
     assert boundaries[0].target == "Fixed"
+    assert boundaries[0].target_kind == "node_set"
     load_dialog = LoadDialog(
         ["Load"],
         _regions("node_set", "RIGHT"),
@@ -232,6 +234,31 @@ def test_displacement_dialog_creates_independent_checked_dofs():
         (item.first_component, item.last_component, item.value)
         for item in boundaries
     ] == [(2, 2, 0.25), (3, 3, -0.5)]
+
+
+@pytest.mark.parametrize(
+    ("kind", "name"),
+    (("edge", "FixedEdge"), ("surface", "FixedSurface")),
+)
+def test_displacement_dialog_accepts_edge_and_surface_regions(kind, name):
+    _application()
+    dialog = DisplacementDialog(
+        ["Load"],
+        [
+            RegionRef("node_set", "FixedNodes"),
+            RegionRef("edge", "FixedEdge"),
+            RegionRef("surface", "FixedSurface"),
+        ],
+        3,
+        selected_region=RegionRef(kind, name),
+    )
+
+    step_name, boundaries = dialog.definitions()
+
+    assert step_name == "Load"
+    assert boundaries[0].target == name
+    assert boundaries[0].target_kind == kind
+    assert not hasattr(boundaries[0], "node_ids")
 
 
 def test_analysis_manager_uses_a_copy_and_deletes_selected_definition():
@@ -317,6 +344,37 @@ def test_load_dialog_keeps_gravity_and_distributed_vectors_separate():
         dialog.kind_combo.findData("edge")
     )
     assert dialog.y_spin.value() == 0.0
+
+
+def test_load_dialog_exposes_five_physical_categories_and_builds_body_force():
+    _application()
+    dialog = LoadDialog(
+        ["Load"],
+        _regions("node_set", "Nodes"),
+        _regions("edge", "Edges"),
+        _regions("surface", "Faces"),
+        3,
+        spatial_dimensions=3,
+        body_regions=_regions("element_set", "Domain"),
+    )
+
+    assert [
+        dialog.kind_combo.itemText(index)
+        for index in range(dialog.kind_combo.count())
+    ] == ["节点力", "边力", "面力", "体力", "重力"]
+    dialog.kind_combo.setCurrentIndex(
+        dialog.kind_combo.findData("body")
+    )
+    dialog.x_spin.setValue(1.5)
+    dialog.y_spin.setValue(-2.0)
+    dialog.z_spin.setValue(3.25)
+
+    step_name, load = dialog.definition()
+
+    assert step_name == "Load"
+    assert load == BodyForce("Domain", (1.5, -2.0, 3.25))
+    assert dialog.form.labelForField(dialog.x_spin).text() == "bx"
+    assert not dialog.form.isRowVisible(dialog.load_type_combo)
 
 
 def test_analysis_manager_lists_and_deletes_gravity_loads():
@@ -427,7 +485,13 @@ def test_main_window_filters_distributed_load_regions_by_model_dimension():
         window.session.replace_named_regions(planar_regions)
     )
 
-    node_regions, edge_regions, face_regions, line_regions = (
+    (
+        node_regions,
+        edge_regions,
+        face_regions,
+        line_regions,
+        body_regions,
+    ) = (
         window._supported_load_regions()
     )
     assert node_regions == [
@@ -439,6 +503,14 @@ def test_main_window_filters_distributed_load_regions_by_model_dimension():
     ]
     assert face_regions == []
     assert line_regions == []
+    assert body_regions == [
+        RegionRef("element_set", "Surface"),
+    ]
+    assert set(window._supported_boundary_regions()) == {
+        RegionRef("node_set", "EdgeSet"),
+        RegionRef("edge", "EdgeSet"),
+        RegionRef("node_set", "NodeSet"),
+    }
 
     window._set_native_geometry(ExtrudedGeometry(rectangle, 1.0), "拉伸体")
     solid_regions = (
@@ -458,7 +530,13 @@ def test_main_window_filters_distributed_load_regions_by_model_dimension():
     assert window._apply_session_delta(
         window.session.replace_named_regions(solid_regions)
     )
-    node_regions, edge_regions, face_regions, line_regions = (
+    (
+        node_regions,
+        edge_regions,
+        face_regions,
+        line_regions,
+        body_regions,
+    ) = (
         window._supported_load_regions()
     )
     assert node_regions == [
@@ -471,6 +549,13 @@ def test_main_window_filters_distributed_load_regions_by_model_dimension():
         RegionRef("surface", "Surface"),
     ]
     assert line_regions == []
+    assert body_regions == []
+    assert set(window._supported_boundary_regions()) == {
+        RegionRef("node_set", "EdgeSet"),
+        RegionRef("node_set", "NodeSet"),
+        RegionRef("node_set", "Surface"),
+        RegionRef("surface", "Surface"),
+    }
     window.close()
 
 
@@ -525,6 +610,25 @@ def test_scope_pick_buttons_request_node_edge_and_surface_selection():
     assert displacement.scope_pick_button.toolTip() == ""
     displacement.scope_pick_button.click()
     assert displacement.requested_scope_kind() == "node"
+
+    displacement = DisplacementDialog(
+        ["Load"],
+        [],
+        3,
+        scope_selection_kinds=("node", "edge", "surface"),
+    )
+    for kind, target_kind in (
+        ("node", "node_set"),
+        ("edge", "edge"),
+        ("surface", "surface"),
+    ):
+        displacement.kind_combo.setCurrentIndex(
+            displacement.kind_combo.findData(target_kind)
+        )
+        assert displacement.scope_pick_button.isEnabled()
+        displacement._scope_selection_request = None
+        displacement.scope_pick_button.click()
+        assert displacement.requested_scope_kind() == kind
 
     load = LoadDialog(
         ["Load"],

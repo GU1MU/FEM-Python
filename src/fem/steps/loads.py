@@ -4,6 +4,7 @@ from typing import Sequence
 
 from ..core.model import (
     AnalysisStep,
+    BodyForce,
     Edge,
     EdgeLoad,
     GravityLoad,
@@ -83,6 +84,17 @@ def line_load(
     """Add a constant Beam2 line load to a step."""
     load = LineLoad(target, vector, coordinate_system)
     step.line_loads = tuple(step.line_loads) + (load,)
+    return load
+
+
+def body_force(
+    step: AnalysisStep,
+    target: str | int,
+    vector: Sequence[float],
+) -> BodyForce:
+    """Add a constant force-per-volume vector to an element target."""
+    load = BodyForce(target, vector)
+    step.body_loads = tuple(step.body_loads) + (load,)
     return load
 
 

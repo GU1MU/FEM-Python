@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from fem import geometry as geometry_runtime
 from fem.abaqus import (
     build_model_with_report as build_abaqus_model_with_report,
     parse_file,
@@ -59,6 +60,7 @@ from fem.application import (
     safe_static_preflight,
 )
 from fem.application.preprocessing import generate_fem_model
+from fem.application.recipe_compiler import compile_recipe
 from fem.application.results import (
     FieldAvailability,
     FieldPosition,
@@ -79,6 +81,7 @@ from fem.application.results import (
     restore_result_provider,
 )
 from fem.core.model import (
+    BodyForce,
     EdgeLoad,
     GravityLoad,
     LineLoad,
@@ -92,6 +95,7 @@ from fem.geometry import (
     CylinderGeometry,
     DiskGeometry,
     ExtrudedGeometry,
+    ExtrusionSourceResolutionError,
     LogicalEntityRef,
     MovedGeometry,
     NATIVE_GEOMETRY_TYPES,
@@ -103,8 +107,10 @@ from fem.geometry import (
     geometry_dimension,
     logical_ref_sort_key,
     recipe_characteristic_size,
+    resolve_extrusion_source_faces,
     supports_structured_hexahedron,
 )
+from fem.geometry.recipe_topology import describe_recipe_topology
 from fem.io.project import load_project, save_project
 from fem.io.result_csv import write_result_csv
 from fem.io.result_vtk import write_result_vtk
@@ -1739,6 +1745,16 @@ class FEMMainWindow(QMainWindow):
             self._clear_model_projection()
             recipe = snapshot.geometry_recipe
             if isinstance(recipe, NATIVE_GEOMETRY_TYPES):
+                topology = describe_recipe_topology(recipe)
+                selectable_ids = {
+                    entity.logical_id
+                    for entity in topology.selectable_entities()
+                }
+                self._selected_geometry_refs = {
+                    reference
+                    for reference in self._selected_geometry_refs
+                    if reference.logical_id in selectable_ids
+                }
                 self.model_tree.set_geometry_preview(
                     recipe.name,
                     tuple(item.name for item in snapshot.feature_history),
@@ -2296,6 +2312,9 @@ class FEMMainWindow(QMainWindow):
         self.viewport_panel = ViewportPanel(self.viewport, self.actions, self)
         self.viewport_panel.scope_creation_bar.createRequested.connect(
             self._complete_scope_creation_from_bar
+        )
+        self.viewport_panel.scope_creation_bar.cancelRequested.connect(
+            self._cancel_guided_selection
         )
         self.wire_editor_panel = WireEditorPanel(parent=self)
         self.wire_editor_panel.hide()
@@ -3050,11 +3069,18 @@ class FEMMainWindow(QMainWindow):
             )
             return
         original = self._sketch_editor_original_recipe
-        recipe = (
-            self._replace_root_geometry(original, root)
-            if original is not None
-            else root
-        )
+        try:
+            recipe = (
+                self._replace_root_geometry(original, root)
+                if original is not None
+                else root
+            )
+        except ExtrusionSourceResolutionError as error:
+            self.sketch_editor_panel.show_status(
+                f"{error.code}: 所选拉伸 Profile 已失效，请恢复该 Profile "
+                "或取消编辑后重新创建拉伸"
+            )
+            return
         receipt = self.apply_native_geometry_edit(
             NativeGeometryEdit(
                 base_session_revision=base_revision,
@@ -3182,9 +3208,57 @@ class FEMMainWindow(QMainWindow):
             or geometry_dimension(current) != 2
         ):
             return
-        dialog = ExtrudeGeometryDialog(current, self)
-        if self._exec_dialog(dialog):
-            self._set_native_geometry(dialog.recipe(), "拉伸实体")
+        selected = self._canonical_geometry_selection()
+        if selected and any(reference.kind != "face" for reference in selected):
+            self.status_panel.set_state("当前选择包含非面实体", 5000)
+            return
+        try:
+            all_sources = resolve_extrusion_source_faces(current)
+            if selected:
+                sources = resolve_extrusion_source_faces(current, selected)
+            elif len(all_sources.face_ids) == 1:
+                sources = all_sources
+            else:
+                self.status_panel.set_state(
+                    "该草图包含多个 Profile，请先选择至少一个二维面",
+                    5000,
+                )
+                return
+        except ExtrusionSourceResolutionError as error:
+            self.status_panel.set_state(str(error), 5000)
+            return
+        base_session_revision = self.document.session_revision
+        dialog = ExtrudeGeometryDialog(
+            current,
+            self,
+            source_face_ids=sources.face_ids,
+        )
+        while self._exec_dialog(dialog):
+            recipe = dialog.recipe()
+            try:
+                self._preflight_extruded_geometry(recipe)
+            except Exception as error:
+                logging.exception("extrusion OCC preflight failed")
+                self._show_error(
+                    "拉伸几何",
+                    "临时 OCC 编译失败，当前几何和选择保持不变："
+                    f"\n{error}",
+                )
+                continue
+            self._set_native_geometry(
+                recipe,
+                "拉伸实体",
+                base_session_revision=base_session_revision,
+            )
+            return
+
+    @staticmethod
+    def _preflight_extruded_geometry(recipe: ExtrudedGeometry) -> None:
+        with geometry_runtime.model(
+            f"{recipe.name}-extrusion-preflight",
+            dimension=3,
+        ) as cad:
+            compile_recipe(cad, recipe)
 
     def fuse_geometry(self) -> None:
         self._boolean_geometry("fuse", "合并后的")
@@ -3325,7 +3399,13 @@ class FEMMainWindow(QMainWindow):
         self.viewport_panel.set_geometry_context(False)
         self.status_panel.set_state("当前几何已删除", 5000)
 
-    def _set_native_geometry(self, recipe: object, label: str) -> None:
+    def _set_native_geometry(
+        self,
+        recipe: object,
+        label: str,
+        *,
+        base_session_revision: int | None = None,
+    ) -> None:
         if not isinstance(recipe, NATIVE_GEOMETRY_TYPES):
             raise TypeError(f"不支持的几何定义：{type(recipe).__name__}")
         if self.document.source_kind != "native":
@@ -3336,7 +3416,11 @@ class FEMMainWindow(QMainWindow):
         prior_region_count = len(self.document.named_regions)
         receipt = self.apply_native_geometry_edit(
             NativeGeometryEdit(
-                base_session_revision=self.document.session_revision,
+                base_session_revision=(
+                    self.document.session_revision
+                    if base_session_revision is None
+                    else base_session_revision
+                ),
                 parts=tuple(self.document.parts) or (NativePart(),),
                 recipe=recipe,
                 mesh_settings=UNSET,
@@ -3362,8 +3446,11 @@ class FEMMainWindow(QMainWindow):
             "请进入网格模块生成网格"
         )
         if TransitionEffect.NAMED_REGIONS_CLEARED in delta.effects:
+            removed_region_count = (
+                prior_region_count - len(self.document.named_regions)
+            )
             message += (
-                f"；{prior_region_count} 个旧作用域已失效，"
+                f"；{removed_region_count} 个旧作用域已失效，"
                 "请重新创建作用域"
             )
         if TransitionEffect.LOCAL_CONTROLS_CLEARED in delta.effects:
@@ -3414,7 +3501,6 @@ class FEMMainWindow(QMainWindow):
             0,
             False,
         )
-        self._schedule_viewport_fit()
         if not accepted:
             return None
         return dict(kinds).get(str(selected))
@@ -3620,6 +3706,7 @@ class FEMMainWindow(QMainWindow):
         list[RegionRef],
         list[RegionRef],
         list[RegionRef],
+        list[RegionRef],
     ]:
         """Return targets filtered by the application capability report."""
 
@@ -3630,6 +3717,7 @@ class FEMMainWindow(QMainWindow):
             ("edge", "load.edge"),
             ("surface", "load.surface"),
             ("element_set", "load.line.global"),
+            ("element_set", "load.body"),
         )
         return tuple(
             [
@@ -3640,6 +3728,17 @@ class FEMMainWindow(QMainWindow):
             ]
             for kind, operation in operations
         )
+
+    def _supported_boundary_regions(self) -> list[RegionRef]:
+        """Return typed regions that can expand to constrained mesh nodes."""
+
+        authoring = describe_session_authoring(self.document)
+        return [
+            target.region
+            for target in self._scope_authoring_targets(authoring)
+            if target.region.kind in {"node_set", "edge", "surface"}
+            and target.operation("boundary.displacement").can_submit
+        ]
 
     def _request_analysis_geometry_selection(
         self,
@@ -3690,6 +3789,7 @@ class FEMMainWindow(QMainWindow):
             self.viewport.show_geometry_preview(
                 topology.preview,
                 preserve_model=True,
+                render=False,
             )
             self._scope_selection_overlay_active = True
             self._set_geometry_selection_mode(default_kind)
@@ -4966,14 +5066,20 @@ class FEMMainWindow(QMainWindow):
         if self.document.source_kind == "native" and model is None:
             return
         selected_region = None
-        if (
-            self._mesh_scope_selection_kind() == "node"
-        ):
+        selected_mesh_kind = self._mesh_scope_selection_kind()
+        if selected_mesh_kind in {"node", "edge", "face"}:
             selected_name = self._create_region_from_current_mesh_selection()
             if selected_name is None:
                 return
-            selected_region = RegionRef("node_set", selected_name)
-        node_regions, _edge_regions, _face_regions = self._analysis_region_names()
+            selected_region = RegionRef(
+                {
+                    "node": "node_set",
+                    "edge": "edge",
+                    "face": "surface",
+                }[selected_mesh_kind],
+                selected_name,
+            )
+        boundary_regions = self._supported_boundary_regions()
         capability_report = self._model_capability_report()
         dimensions = (
             capability_report.dofs_per_node
@@ -4983,9 +5089,25 @@ class FEMMainWindow(QMainWindow):
             if model is not None
             else geometry_dimension(self.document.geometry_recipe)
         )
+        scope_topology = (
+            self._scope_selection_topology()
+            if self.document.model is not None
+            else None
+        )
+        available_scope_kinds = (
+            {
+                "node",
+                *(
+                    reference.kind
+                    for reference in scope_topology.mesh_references
+                ),
+            }
+            if scope_topology is not None
+            else set()
+        )
         dialog = DisplacementDialog(
             list(self.session.runnable_step_names()),
-            node_regions,
+            boundary_regions,
             dimensions,
             self,
             selected_region=selected_region,
@@ -4994,8 +5116,14 @@ class FEMMainWindow(QMainWindow):
                 if capability_report is not None
                 else ()
             ),
-            allow_scope_selection=(
-                self.document.model is not None
+            scope_selection_kinds=tuple(
+                kind
+                for kind, mesh_kind in (
+                    ("node", "node"),
+                    ("edge", "edge"),
+                    ("surface", "face"),
+                )
+                if mesh_kind in available_scope_kinds
             ),
         )
         if not self._exec_dialog(dialog):
@@ -5044,6 +5172,12 @@ class FEMMainWindow(QMainWindow):
                 "face": "surface",
                 "element": "line",
             }[selected_mesh_kind]
+            if (
+                selected_mesh_kind == "element"
+                and "line" not in capability_report.load_kinds
+                and "body" in capability_report.load_kinds
+            ):
+                preferred_kind = "body"
             if preferred_kind not in capability_report.load_kinds:
                 self._show_error(
                     "创建载荷",
@@ -5059,10 +5193,17 @@ class FEMMainWindow(QMainWindow):
                     "edge": "edge",
                     "surface": "surface",
                     "line": "element_set",
+                    "body": "element_set",
                 }[preferred_kind],
                 selected_name,
             )
-        node_regions, edge_regions, face_regions, line_regions = (
+        (
+            node_regions,
+            edge_regions,
+            face_regions,
+            line_regions,
+            body_regions,
+        ) = (
             self._supported_load_regions()
         )
         dimensions = (
@@ -5083,6 +5224,7 @@ class FEMMainWindow(QMainWindow):
                 capability_report.spatial_dimension or 3
             ),
             line_regions=line_regions,
+            body_regions=body_regions,
             selected_region=selected_region,
             preferred_kind=preferred_kind,
             labels=capability_report.force_labels,
@@ -5090,7 +5232,7 @@ class FEMMainWindow(QMainWindow):
             scope_selection_kinds=(
                 tuple(
                     kind
-                    for kind in ("node", "edge", "surface", "line")
+                    for kind in ("node", "edge", "surface", "line", "body")
                     if kind in capability_report.load_kinds
                 )
                 if self.document.model is not None
@@ -5121,7 +5263,7 @@ class FEMMainWindow(QMainWindow):
             decision = dialog.candidate_decision(load, step_name)
             if not self._strict_authoring_decision_enabled(decision):
                 self._show_authoring_decision_error(
-                    "创建梁线载荷",
+                    "创建边力",
                     decision,
                 )
                 return
@@ -5135,6 +5277,8 @@ class FEMMainWindow(QMainWindow):
             step.surface_loads = tuple(step.surface_loads) + (load,)
         elif isinstance(load, LineLoad):
             step.line_loads = tuple(step.line_loads) + (load,)
+        elif isinstance(load, BodyForce):
+            step.body_loads = tuple(step.body_loads) + (load,)
         elif isinstance(load, GravityLoad):
             step.gravity_loads = tuple(step.gravity_loads) + (load,)
         self._analysis_definitions_changed(
@@ -5234,7 +5378,13 @@ class FEMMainWindow(QMainWindow):
     ) -> AnalysisDefinitionManagerDialog | None:
         if not self.document.steps:
             return None
-        node_regions, edge_regions, face_regions, line_regions = (
+        (
+            node_regions,
+            edge_regions,
+            face_regions,
+            line_regions,
+            body_regions,
+        ) = (
             self._supported_load_regions()
         )
         authoring = describe_session_authoring(self.document)
@@ -5259,6 +5409,8 @@ class FEMMainWindow(QMainWindow):
                 else 3
             ),
             line_regions=line_regions,
+            body_regions=body_regions,
+            boundary_regions=self._supported_boundary_regions(),
             dof_labels=(
                 capability_report.dof_labels
                 if capability_report is not None
@@ -5593,11 +5745,12 @@ class FEMMainWindow(QMainWindow):
             ("材料数量", facts.material_count),
             ("截面数量", facts.section_count),
             ("位移边界条件数量", facts.displacement_count),
-            ("节点载荷数量", facts.nodal_load_count),
-            ("表面载荷数量", facts.surface_load_count),
-            ("边载荷数量", facts.edge_load_count),
-            ("梁线载荷数量", facts.line_load_count),
-            ("重力载荷数量", facts.gravity_load_count),
+            ("节点力数量", facts.nodal_load_count),
+            ("面力数量", facts.surface_load_count),
+            ("边力数量", facts.edge_load_count),
+            ("梁单元边力数量", facts.line_load_count),
+            ("体力数量", facts.body_load_count),
+            ("重力数量", facts.gravity_load_count),
             (
                 "数值稳定性",
                 (
@@ -6096,6 +6249,11 @@ class FEMMainWindow(QMainWindow):
 
     def _run_scheduled_viewport_fit(self) -> None:
         self._viewport_fit_pending = False
+        if (
+            self._pending_local_mesh_selection
+            or self._pending_analysis_selection is not None
+        ):
+            return
         self.viewport.fit()
 
     def _exec_dialog(self, dialog: QDialog) -> int:

@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 _REGION_KINDS = frozenset(
     {"node_set", "element_set", "edge", "surface"}
 )
-_DISTRIBUTED_LOAD_KINDS = frozenset({"edge", "surface", "line"})
+_DISTRIBUTED_LOAD_KINDS = frozenset({"edge", "surface", "line", "body"})
 _BEAM_ORIENTATION_VALIDITY_REQUIREMENT = "beam.orientation.valid"
 _EXPLICIT_BEAM_ORIENTATION_REQUIREMENT = "beam.orientation.explicit"
 
@@ -1239,8 +1239,12 @@ def _operations_for_target(
             )
         )
 
+    if region.kind in {"node_set", "edge", "surface"}:
+        add(
+            "boundary.displacement",
+            True if region.kind == "node_set" else compatible,
+        )
     if region.kind == "node_set" or "node_set" in products:
-        add("boundary.displacement", True)
         add("load.node", compatible and "node" in load_kinds)
     if region.kind == "edge" or "edge" in products:
         add("load.edge", compatible and "edge" in load_kinds)
@@ -1248,6 +1252,7 @@ def _operations_for_target(
         add("load.surface", compatible and "surface" in load_kinds)
     if region.kind == "element_set" or "element_set" in products:
         add("section.assignment", compatible and bool(report.section_families))
+        add("load.body", compatible and "body" in load_kinds)
         line_enabled = bool(
             region_report is not None
             and region_report.supports_distributed_load("line")
@@ -1419,6 +1424,7 @@ def _native_region_capability(
             compatible and bool(aggregate.section_families),
         )
         is_beam = compatible and aggregate.families == ("beam",)
+        add("load.body", compatible and "body" in aggregate.load_kinds)
         add("load.line.global", is_beam and "line" in aggregate.load_kinds)
         if is_beam:
             automatic = PreflightDiagnostic(
@@ -1435,8 +1441,10 @@ def _native_region_capability(
             )
             add("load.line.local", True, (automatic,))
     elif region.kind == "edge":
+        add("boundary.displacement", compatible)
         add("load.edge", compatible and "edge" in aggregate.load_kinds)
     elif region.kind == "surface":
+        add("boundary.displacement", compatible)
         add("load.surface", compatible and "surface" in aggregate.load_kinds)
 
     return RegionCapability(
@@ -1600,7 +1608,7 @@ def _aggregate_capabilities(
         load_kinds=load_kinds,
         distributed_load_kinds=tuple(
             kind for kind in load_kinds
-            if kind in _DISTRIBUTED_LOAD_KINDS
+            if compatible and kind in _DISTRIBUTED_LOAD_KINDS
         ),
         requirements=requirements,
         diagnostics=tuple(diagnostics),

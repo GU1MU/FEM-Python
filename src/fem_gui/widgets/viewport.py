@@ -11,8 +11,8 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from PySide6.QtCore import QEvent, QPoint, QRect, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPen
+from PySide6.QtCore import QEvent, QTimer, Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QLabel,
     QStackedLayout,
@@ -23,6 +23,10 @@ from PySide6.QtWidgets import (
 from fem.application import MeshEntityRef, RegionRef
 from fem.application.results import FieldLocation, ResultCellKind, ResultValueLayout
 from fem.boundary.step import boundary_for_step, get_step
+from fem.core._constraint_targets import (
+    displacement_target_kind,
+    resolve_displacement_node_ids,
+)
 from fem.geometry import LogicalEntityRef, logical_ref_sort_key
 from fem.selection import edges as mesh_edges
 from fem.selection import faces as mesh_faces
@@ -38,10 +42,12 @@ from ..visualization.symbols import (
     SymbolSettings,
     arc_points,
     camera_facing_offset,
+    constraint_outward_direction,
     constraint_rotation_axes,
     constraint_sample_indices,
     constraint_spatial_regions,
     constraint_symbol_dimensions,
+    load_arrow_origins,
     load_symbol_length,
     region_sample_indices,
     rotation_lock_points,
@@ -64,46 +70,87 @@ _LINE_ELEMENT_WIDTH = 5
 _LINE_NODE_POINT_SIZE = 11
 
 
-class _SelectionRubberBand(QWidget):
-    """Draw a border-only selection rectangle over the viewport."""
+class _SelectionRubberBand:
+    """Draw a border-only rectangle in VTK display coordinates."""
 
-    def __init__(self, parent: QWidget) -> None:
-        super().__init__(parent)
+    def __init__(self, renderer: Any) -> None:
+        import vtk
+
+        self._visible = False
         self._containment = True
-        self.setAttribute(
-            Qt.WidgetAttribute.WA_TransparentForMouseEvents,
-            True,
-        )
-        self.setAttribute(
-            Qt.WidgetAttribute.WA_TranslucentBackground,
-            True,
-        )
-        self.setAutoFillBackground(False)
-        self.hide()
+        self._points = vtk.vtkPoints()
+        self._points.SetNumberOfPoints(4)
+        lines = vtk.vtkCellArray()
+        for start, end in ((0, 1), (1, 2), (2, 3), (3, 0)):
+            lines.InsertNextCell(2)
+            lines.InsertCellPoint(start)
+            lines.InsertCellPoint(end)
+        self._polydata = vtk.vtkPolyData()
+        self._polydata.SetPoints(self._points)
+        self._polydata.SetLines(lines)
+        coordinate = vtk.vtkCoordinate()
+        coordinate.SetCoordinateSystemToDisplay()
+        mapper = vtk.vtkPolyDataMapper2D()
+        mapper.SetInputData(self._polydata)
+        mapper.SetTransformCoordinate(coordinate)
+        self._actors = []
+        for color, width in (
+            ((1.0, 1.0, 1.0), 4.0),
+            ((0.09, 0.55, 0.76), 2.0),
+        ):
+            actor = vtk.vtkActor2D()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(*color)
+            actor.GetProperty().SetLineWidth(width)
+            actor.PickableOff()
+            actor.SetVisibility(False)
+            renderer.AddViewProp(actor)
+            self._actors.append(actor)
 
     def set_containment(self, containment: bool) -> None:
         normalized = bool(containment)
         if normalized == self._containment:
             return
         self._containment = normalized
-        self.update()
+        pattern = 0xFFFF if normalized else 0xF0F0
+        for actor in self._actors:
+            actor.GetProperty().SetLineStipplePattern(pattern)
+            actor.GetProperty().SetLineStippleRepeatFactor(1)
 
-    def paintEvent(self, event: QPaintEvent) -> None:
-        del event
-        painter = QPainter(self)
-        pen = QPen(
-            QColor("#4c7fa5"),
-            2,
+    def set_rectangle(
+        self,
+        start: tuple[int, int],
+        end: tuple[int, int],
+    ) -> None:
+        minimum_x, maximum_x = sorted((int(start[0]), int(end[0])))
+        minimum_y, maximum_y = sorted((int(start[1]), int(end[1])))
+        for index, point in enumerate(
             (
-                Qt.PenStyle.SolidLine
-                if self._containment
-                else Qt.PenStyle.DashLine
-            ),
-        )
-        pen.setCosmetic(True)
-        painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRect(self.rect().adjusted(1, 1, -1, -1))
+                (minimum_x, minimum_y, 0.0),
+                (maximum_x, minimum_y, 0.0),
+                (maximum_x, maximum_y, 0.0),
+                (minimum_x, maximum_y, 0.0),
+            )
+        ):
+            self._points.SetPoint(index, point)
+        self._points.Modified()
+        self._polydata.Modified()
+
+    def show(self) -> bool:
+        if self._visible:
+            return False
+        self._visible = True
+        for actor in self._actors:
+            actor.SetVisibility(True)
+        return True
+
+    def hide(self) -> bool:
+        if not self._visible:
+            return False
+        self._visible = False
+        for actor in self._actors:
+            actor.SetVisibility(False)
+        return True
 
 
 def _effective_line_load_vector(
@@ -941,6 +988,8 @@ class FEMViewport(QWidget):
                     self._selection_press_position = None
                     return True
             if button == Qt.MouseButton.LeftButton:
+                self._pending_hover_position = None
+                self._hover_timer.stop()
                 position = self._plotter_event_position(watched, event)
                 self._selection_press_position = (position.x(), position.y())
                 self._selection_dragged = False
@@ -1073,23 +1122,28 @@ class FEMViewport(QWidget):
         if self._plotter is None:
             return
         if self._selection_rubber_band is None:
+            renderer = getattr(self._plotter, "renderer", None)
+            if renderer is None:
+                return
             self._selection_rubber_band = _SelectionRubberBand(
-                self._plotter
+                renderer
             )
         self._selection_rubber_band.set_containment(
             float(end[0]) >= float(start[0])
         )
-        rectangle = QRect(
-            QPoint(int(round(start[0])), int(round(start[1]))),
-            QPoint(int(round(end[0])), int(round(end[1]))),
-        ).normalized()
-        self._selection_rubber_band.setGeometry(rectangle)
-        self._selection_rubber_band.raise_()
+        self._selection_rubber_band.set_rectangle(
+            self._qt_to_vtk_position(*start),
+            self._qt_to_vtk_position(*end),
+        )
         self._selection_rubber_band.show()
+        self._render()
 
     def _hide_selection_rubber_band(self) -> None:
-        if self._selection_rubber_band is not None:
-            self._selection_rubber_band.hide()
+        if (
+            self._selection_rubber_band is not None
+            and self._selection_rubber_band.hide()
+        ):
+            self._render()
 
     def _box_select_qt_positions(
         self,
@@ -2607,15 +2661,16 @@ class FEMViewport(QWidget):
                 self._geometry_face_pick_ids,
             )
             self._geometry_preview_surface = surface
-            self._actors["geometry_surface"] = self._plotter.add_mesh(
-                surface,
-                color="#c8d3dc",
-                smooth_shading=False,
-                show_edges=False,
-                show_scalar_bar=False,
-                name="geometry_surface",
-                reset_camera=False,
-            )
+            if not preserve_model:
+                self._actors["geometry_surface"] = self._plotter.add_mesh(
+                    surface,
+                    color="#c8d3dc",
+                    smooth_shading=False,
+                    show_edges=False,
+                    show_scalar_bar=False,
+                    name="geometry_surface",
+                    reset_camera=False,
+                )
         if preview.edges:
             edge_mesh = _geometry_edge_polydata(
                 _pyvista,
@@ -2624,14 +2679,15 @@ class FEMViewport(QWidget):
                 self._geometry_edge_pick_ids,
             )
             self._geometry_preview_edges = edge_mesh
-            self._actors["geometry_edges"] = self._plotter.add_mesh(
-                edge_mesh,
-                color="#334b5f",
-                line_width=2,
-                show_scalar_bar=False,
-                name="geometry_edges",
-                reset_camera=False,
-            )
+            if not preserve_model:
+                self._actors["geometry_edges"] = self._plotter.add_mesh(
+                    edge_mesh,
+                    color="#334b5f",
+                    line_width=2,
+                    show_scalar_bar=False,
+                    name="geometry_edges",
+                    reset_camera=False,
+                )
         point_mesh = _geometry_point_polydata(
             _pyvista,
             points,
@@ -2639,7 +2695,7 @@ class FEMViewport(QWidget):
             self._geometry_point_pick_ids,
         )
         self._geometry_preview_points = point_mesh
-        if point_mesh.n_points:
+        if point_mesh.n_points and not preserve_model:
             self._actors["geometry_points"] = self._plotter.add_mesh(
                 point_mesh,
                 color="#406f8f",
@@ -2665,12 +2721,16 @@ class FEMViewport(QWidget):
 
     def hide_geometry_selection_overlay(self) -> None:
         """Remove a scope-picking overlay while preserving the current mesh."""
-        for name in (
+        overlay_names = (
             "geometry_surface",
             "geometry_edges",
             "geometry_points",
             "geometry_selection",
-        ):
+        )
+        had_visible_overlay = any(
+            name in self._actors for name in (*overlay_names, "preselection")
+        )
+        for name in overlay_names:
             self._remove_actor(name)
         self._geometry_preview = None
         self._geometry_preview_surface = None
@@ -2684,7 +2744,8 @@ class FEMViewport(QWidget):
         self._geometry_body_pick_id = 0
         self._clear_preselection(render=False)
         self._update_pickable_actors()
-        self._render()
+        if had_visible_overlay:
+            self._render()
 
     def _install_geometry_pick_bindings(
         self,
@@ -2942,6 +3003,9 @@ class FEMViewport(QWidget):
 
     def set_selection_mode(self, mode: str) -> None:
         previous = self._selection_mode
+        had_preselection = (
+            self._hover_hit is not None or "preselection" in self._actors
+        )
         if mode in {
             "geometry_point", "geometry_edge", "geometry_face", "geometry_body",
             "mesh_node", "mesh_edge", "mesh_face", "mesh_element",
@@ -2952,18 +3016,38 @@ class FEMViewport(QWidget):
         if previous != self._selection_mode:
             self._clear_preselection(render=False)
         points_actor = self._actors.get("geometry_points")
+        points_visibility_changed = False
         if points_actor is not None:
-            points_actor.SetVisibility(
+            desired_visibility = (
                 self._geometry_preview is not None
                 and (
                     self._geometry_preview.topological_dimension == 1
                     or self._selection_mode == "geometry_point"
                 )
             )
+            try:
+                points_visibility_changed = (
+                    bool(points_actor.GetVisibility())
+                    != desired_visibility
+                )
+            except (AttributeError, TypeError):
+                points_visibility_changed = True
+            points_actor.SetVisibility(desired_visibility)
         self._update_pickable_actors()
-        self._render()
+        if had_preselection or points_visibility_changed:
+            self._render()
 
     def clear_selection(self) -> None:
+        visual_names = {
+            "selection",
+            "geometry_selection",
+            "mesh_scope_selection",
+            "preselection",
+        }
+        had_visible_selection = any(
+            name in visual_names or name.startswith("beam_frame_")
+            for name in self._actors
+        )
         self._hide_selection_rubber_band()
         self._selected_kind = None
         self._selected_id = None
@@ -2973,7 +3057,9 @@ class FEMViewport(QWidget):
         self._remove_actor("mesh_scope_selection")
         self._clear_beam_frame_preview(render=False)
         self._clear_preselection(render=False)
-        self._render()
+        self._update_pickable_actors()
+        if had_visible_selection:
+            self._render()
 
     def highlight_geometry(self, reference: LogicalEntityRef) -> None:
         """Highlight one stable logical preview reference."""
@@ -3813,6 +3899,10 @@ class FEMViewport(QWidget):
         self._last_symbol_camera_position = self._camera_position()
         constraint_scale, constraint_radius = constraint_symbol_dimensions(glyph_scale)
         load_scale = load_symbol_length(glyph_scale)
+        model_center = 0.5 * (
+            np.min(self._geometry.points, axis=0)
+            + np.max(self._geometry.points, axis=0)
+        )
         is_3d = bool(self._model.mesh.nodes and hasattr(self._model.mesh.nodes[0], "z"))
         translation_count = 3 if is_3d else 2
         constraint_points: list[np.ndarray] = []
@@ -3834,17 +3924,30 @@ class FEMViewport(QWidget):
             )
             if initial_step is not None and initial_step is not selected_definition:
                 boundary_definitions = [*initial_step.boundaries, *boundary_definitions]
-            constraints_by_target: dict[str | int, dict[int, float]] = {}
+            constraints_by_target: dict[
+                tuple[str, str | int],
+                dict[int, float],
+            ] = {}
+            representative_by_target: dict[
+                tuple[str, str | int],
+                object,
+            ] = {}
             for definition in boundary_definitions:
-                components = constraints_by_target.setdefault(definition.target, {})
+                target_key = (
+                    displacement_target_kind(definition),
+                    definition.target,
+                )
+                representative_by_target[target_key] = definition
+                components = constraints_by_target.setdefault(target_key, {})
                 for component in range(definition.first_component - 1, definition.last_component):
                     components[component] = float(definition.value)
-            for target, components in constraints_by_target.items():
-                if isinstance(target, int):
-                    node_ids = (target,)
-                elif target in self._model.node_sets:
-                    node_ids = tuple(self._model.node_sets[target].node_ids)
-                else:
+            for target_key, components in constraints_by_target.items():
+                try:
+                    node_ids = resolve_displacement_node_ids(
+                        self._model,
+                        representative_by_target[target_key],
+                    )
+                except (KeyError, TypeError, ValueError):
                     continue
                 target_points = np.asarray([
                     self._geometry.points[self._geometry.node_id_to_point_index[node_id]]
@@ -3866,7 +3969,7 @@ class FEMViewport(QWidget):
                             self._geometry.node_id_to_point_index[node_id]
                         ]
                         display_base = base + camera_facing_offset(
-                            base, camera_position, 0.28 * constraint_scale
+                            base, camera_position, 0.04 * constraint_scale
                         )
                         for component, value in sorted(components.items()):
                             name = (
@@ -3883,10 +3986,14 @@ class FEMViewport(QWidget):
                             )
                             if component >= translation_count:
                                 continue
-                            direction = np.zeros(3)
-                            direction[component] = -1.0
-                            constraint_points.append(display_base)
-                            constraint_vectors.append(direction)
+                            outward = constraint_outward_direction(
+                                base, model_center, component
+                            )
+                            tip = display_base + 0.08 * constraint_scale * outward
+                            constraint_points.append(
+                                tip + constraint_scale * outward
+                            )
+                            constraint_vectors.append(-outward)
                         displayed_axes = constraint_rotation_axes(
                             tuple(sorted(components)),
                             is_3d=is_3d,
@@ -3898,16 +4005,30 @@ class FEMViewport(QWidget):
         if constraint_points:
             cloud = _pyvista.PolyData(np.asarray(constraint_points))
             cloud["directions"] = np.asarray(constraint_vectors)
-            wedge = _pyvista.Cone(
-                center=(-0.5 * constraint_scale, 0.0, 0.0),
-                direction=(1.0, 0.0, 0.0),
-                height=constraint_scale,
-                radius=constraint_radius,
-                resolution=16,
+            cloud["constraint_scale"] = np.full(
+                len(constraint_points), constraint_scale
             )
-            glyphs = cloud.glyph(orient="directions", scale=False, geom=wedge)
+            marker = _pyvista.Arrow(
+                start=(0.0, 0.0, 0.0),
+                direction=(1.0, 0.0, 0.0),
+                tip_length=0.34,
+                tip_radius=constraint_radius / constraint_scale,
+                tip_resolution=16,
+                shaft_radius=0.028,
+                shaft_resolution=12,
+            )
+            glyphs = cloud.glyph(
+                orient="directions",
+                scale="constraint_scale",
+                factor=1.0,
+                geom=marker,
+            )
             self._actors["constraints"] = self._plotter.add_mesh(
-                glyphs, color=settings.constraint_color, name="constraints", reset_camera=False,
+                glyphs,
+                color=settings.constraint_color,
+                lighting=False,
+                name="constraints",
+                reset_camera=False,
             )
         if rotation_points:
             self._add_rotation_constraint_symbols(
@@ -3926,6 +4047,7 @@ class FEMViewport(QWidget):
             )
         origins: list[np.ndarray] = []
         vectors: list[np.ndarray] = []
+        load_starts_at_anchor: list[bool] = []
         load_labels: list[str] = []
         moment_points: list[np.ndarray] = []
         moment_labels: list[str] = []
@@ -3946,6 +4068,7 @@ class FEMViewport(QWidget):
                 base = self._geometry.points[self._geometry.node_id_to_point_index[node_id]]
                 origins.append(base)
                 vectors.append(vector)
+                load_starts_at_anchor.append(False)
                 load_labels.append(f"F={tuple(float(value) for value in vector[:translation_count])}")
             for node_id, moment in nodal_moments.items():
                 if float(np.linalg.norm(moment)) <= 0.0:
@@ -3986,6 +4109,7 @@ class FEMViewport(QWidget):
                     continue
                 origins.append(candidate_array[int(index)])
                 vectors.append(vector)
+                load_starts_at_anchor.append(kind == "edge")
                 prefix = "P" if definition.load_type == "pressure" else "T"
                 load_labels.append(f"{prefix}={magnitude:.6g}" if int(index) == label_index else "")
 
@@ -4059,6 +4183,7 @@ class FEMViewport(QWidget):
                     for sample_index, sample in enumerate(samples):
                         origins.append(sample)
                         vectors.append(vector)
+                        load_starts_at_anchor.append(False)
                         load_labels.append(
                             f"q={tuple(float(value) for value in load.vector)}"
                             if sample_index == len(samples) // 2
@@ -4084,7 +4209,13 @@ class FEMViewport(QWidget):
                 region_edges, color=settings.load_color, line_width=3,
                 name="load_region_edges", reset_camera=False,
             )
-        self._add_load_arrows(origins, vectors, load_labels, load_scale)
+        self._add_load_arrows(
+            origins,
+            vectors,
+            load_starts_at_anchor,
+            load_labels,
+            load_scale,
+        )
         if moment_points:
             moment_axes = [
                 moment / np.linalg.norm(moment)
@@ -4173,8 +4304,9 @@ class FEMViewport(QWidget):
 
     def _add_load_arrows(
         self,
-        tips: list[np.ndarray],
+        anchors: list[np.ndarray],
         vectors: list[np.ndarray],
+        starts_at_anchor: list[bool],
         labels: list[str],
         glyph_scale: float,
     ) -> None:
@@ -4194,9 +4326,14 @@ class FEMViewport(QWidget):
                 factors = 0.55 + 0.45 * np.sqrt(norms / maximum)
                 display_vectors = directions * factors[:, None]
         arrow_lengths = np.linalg.norm(display_vectors, axis=1)
-        tip_points = np.asarray(tips)
+        anchor_points = np.asarray(anchors)
         displayed_lengths = arrow_lengths * glyph_scale
-        display_origins = tip_points - directions * displayed_lengths[:, None]
+        display_origins = load_arrow_origins(
+            anchor_points,
+            directions,
+            displayed_lengths,
+            np.asarray(starts_at_anchor),
+        )
         arrow_points = _pyvista.PolyData(display_origins)
         arrow_points["directions"] = directions
         arrow_points["arrow_scale"] = displayed_lengths
@@ -4211,7 +4348,7 @@ class FEMViewport(QWidget):
         self._actors["loads"] = self._plotter.add_mesh(
             arrow_glyphs, color=settings.load_color, name="loads", reset_camera=False,
         )
-        if settings.show_values and tips:
+        if settings.show_values and anchors:
             existing = self._actors.get("load_labels")
             if existing is not None:
                 self._remove_actor("load_labels")
@@ -4243,7 +4380,10 @@ class FEMViewport(QWidget):
             return False
         kwargs: dict[str, object] = {}
         try:
-            if "off_screen" in inspect.signature(interactor).parameters and is_offscreen_environment():
+            parameters = inspect.signature(interactor).parameters
+            if "auto_update" in parameters:
+                kwargs["auto_update"] = False
+            if "off_screen" in parameters and is_offscreen_environment():
                 kwargs["off_screen"] = True
         except (TypeError, ValueError):
             pass
@@ -5449,11 +5589,19 @@ class FEMViewport(QWidget):
             return
         data = None
         kwargs: dict[str, Any] = {}
+        logical_pick_ids = (hit.pick_id,)
+        if hit.kind.startswith("geometry_"):
+            reference = self._geometry_pick_to_ref.get(hit.pick_id)
+            if reference is not None:
+                logical_pick_ids = self._geometry_ref_to_pick_ids.get(
+                    reference,
+                    logical_pick_ids,
+                )
         if hit.kind == "geometry_point" and self._geometry_preview_points is not None:
             ids = np.asarray(
                 self._geometry_preview_points.point_data["geometry_pick_id"]
             )
-            indices = np.flatnonzero(ids == hit.pick_id)
+            indices = np.flatnonzero(np.isin(ids, logical_pick_ids))
             if len(indices):
                 data = _pyvista.PolyData(
                     np.asarray(self._geometry_preview_points.points)[indices]
@@ -5463,7 +5611,7 @@ class FEMViewport(QWidget):
             ids = np.asarray(
                 self._geometry_preview_edges.cell_data["geometry_pick_id"]
             )
-            cells = np.flatnonzero(ids == hit.pick_id)
+            cells = np.flatnonzero(np.isin(ids, logical_pick_ids))
             if len(cells):
                 data = self._geometry_preview_edges.extract_cells(cells)
                 kwargs = {"line_width": 4}
@@ -5475,7 +5623,7 @@ class FEMViewport(QWidget):
                     ids = np.asarray(
                         self._geometry_preview_surface.cell_data["geometry_pick_id"]
                     )
-                    cells = np.flatnonzero(ids == hit.pick_id)
+                    cells = np.flatnonzero(np.isin(ids, logical_pick_ids))
                     if len(cells):
                         data = self._geometry_preview_surface.extract_cells(cells)
                 kwargs = {"opacity": 0.38}
@@ -5609,7 +5757,15 @@ class FEMViewport(QWidget):
         try:
             mapper = actor.GetMapper()
             mapper.SetResolveCoincidentTopologyToPolygonOffset()
-            mapper.SetRelativeCoincidentTopologyPolygonOffsetParameters(-1.0, -1.0)
+            mapper.SetRelativeCoincidentTopologyPolygonOffsetParameters(
+                -4.0,
+                -4.0,
+            )
+            mapper.SetRelativeCoincidentTopologyLineOffsetParameters(
+                -4.0,
+                -4.0,
+            )
+            mapper.SetRelativeCoincidentTopologyPointOffsetParameter(-4.0)
         except (AttributeError, TypeError):
             return
 

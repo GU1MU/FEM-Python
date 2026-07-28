@@ -10,11 +10,15 @@ from types import MappingProxyType
 from typing import Any
 
 from fem.geometry import (
+    LogicalEntityRef,
     geometry_dimension,
     recipe_characteristic_size,
     supports_structured_hexahedron,
 )
-from fem.geometry.recipe_topology import can_preserve_logical_references
+from fem.geometry.recipe_topology import (
+    can_preserve_logical_references,
+    surviving_logical_reference_ids,
+)
 from fem.mesh.settings import MeshSettings
 
 from .results import (
@@ -698,36 +702,66 @@ class ModelSession:
             self._geometry_recipe,
             owned_recipe,
         ) and not _regions_use_mesh_entities(self._named_regions.values())
+        surviving_logical_ids = (
+            frozenset()
+            if preserve_references
+            or _regions_use_mesh_entities(self._named_regions.values())
+            else surviving_logical_reference_ids(
+                self._geometry_recipe,
+                owned_recipe,
+            )
+        )
+        candidate_regions = (
+            tuple(self._named_regions.values())
+            if preserve_references
+            else tuple(
+                region
+                for region in self._named_regions.values()
+                if all(
+                    type(reference) is LogicalEntityRef
+                    and reference.logical_id in surviving_logical_ids
+                    for reference in region.references
+                )
+            )
+        )
+        valid_region_names = {
+            "DOMAIN",
+            *(region.name for region in candidate_regions),
+        }
+        candidate_assignments = (
+            self._assignments
+            if preserve_references
+            else tuple(
+                assignment
+                for assignment in self._assignments
+                if assignment.region_name in valid_region_names
+            )
+        )
+        referenced_step_regions = _region_references((), self._steps)
+        candidate_steps = (
+            self._steps
+            if preserve_references
+            or referenced_step_regions.issubset(valid_region_names)
+            else _without_geometry_dependent_steps(self._steps)
+        )
         candidate_mesh_settings, mesh_effects = _transition_mesh_settings(
             self._mesh_settings,
             owned_recipe,
             preserve_references=preserve_references,
+            surviving_logical_ids=surviving_logical_ids,
             requested=mesh_settings,
         )
-        candidate_steps = (
-            self._steps
-            if preserve_references
-            else _without_geometry_dependent_steps(self._steps)
-        )
         mesh_settings_changed = candidate_mesh_settings != self._mesh_settings
-        named_regions_changed = (
-            not preserve_references and bool(self._named_regions)
+        named_regions_changed = candidate_regions != tuple(
+            self._named_regions.values()
         )
-        assignments_cleared = (
-            not preserve_references and bool(self._assignments)
-        )
+        assignments_cleared = candidate_assignments != self._assignments
         steps_cleared = candidate_steps != self._steps
         definitions_changed = (
             not self._definitions_explicit
             or assignments_cleared
             or steps_cleared
         )
-        candidate_regions = (
-            tuple(self._named_regions.values())
-            if preserve_references
-            else ()
-        )
-        candidate_assignments = self._assignments if preserve_references else ()
         if owned_recipe is not None:
             validate_native_project_inputs(
                 owned_recipe,
@@ -744,8 +778,10 @@ class ModelSession:
         self._feature_history = owned_history
         self._mesh_settings = candidate_mesh_settings
         if not preserve_references:
-            self._named_regions = {}
-            self._assignments = ()
+            self._named_regions = {
+                region.name: region for region in candidate_regions
+            }
+            self._assignments = candidate_assignments
             self._steps = candidate_steps
         self._definitions_explicit = True
         self._drop_model_state()
@@ -2730,6 +2766,10 @@ def _rename_step_region_references(
                     _rename_dataclass_field(item, "target", renames)
                     for item in getattr(step, "line_loads", ())
                 ),
+                body_loads=tuple(
+                    _rename_dataclass_field(item, "target", renames)
+                    for item in getattr(step, "body_loads", ())
+                ),
                 gravity_loads=tuple(
                     _rename_dataclass_field(item, "target", renames)
                     for item in getattr(step, "gravity_loads", ())
@@ -2764,6 +2804,7 @@ def _region_references(
             ("edge_loads", "edge"),
             ("surface_loads", "surface"),
             ("line_loads", "target"),
+            ("body_loads", "target"),
             ("gravity_loads", "target"),
         ):
             for value in getattr(step, collection_name, ()):
@@ -2778,6 +2819,7 @@ def _transition_mesh_settings(
     recipe: Any,
     *,
     preserve_references: bool,
+    surviving_logical_ids: frozenset[str] = frozenset(),
     requested: MeshSettings | None | Unset,
 ) -> tuple[MeshSettings | None, frozenset[TransitionEffect]]:
     """Apply the three-state mesh-input policy without mutating Session state."""
@@ -2820,7 +2862,15 @@ def _transition_mesh_settings(
     if type(current) is not MeshSettings:
         raise TypeError("existing mesh_settings must be MeshSettings or None")
 
-    controls = current.local_controls if preserve_references else ()
+    controls = (
+        current.local_controls
+        if preserve_references
+        else tuple(
+            control
+            for control in current.local_controls
+            if control.target.logical_id in surviving_logical_ids
+        )
+    )
     if geometry_dimension(recipe) == 1:
         if current.cell_shape == "line":
             transitioned = replace(deepcopy(current), local_controls=controls)

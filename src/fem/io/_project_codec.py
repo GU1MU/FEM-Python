@@ -19,6 +19,7 @@ from fem.application.definitions import (
 from fem.core.immutable_json import thaw_json_mapping
 from fem.core.model import (
     AnalysisStep,
+    BodyForce,
     DisplacementConstraint,
     EdgeLoad,
     GravityLoad,
@@ -51,6 +52,7 @@ from fem.geometry.recipes import (
     WirePoint,
 )
 from fem.geometry.recipe_analysis import legacy_sketch_to_strict
+from fem.geometry.references import LogicalEntityRef
 
 from ._project_errors import (
     ProjectDecodeError,
@@ -72,6 +74,10 @@ class ProjectFieldCodecPolicy:
     require_current_fields: bool
     assignment_orientation: bool
     allow_wire_geometry: bool = False
+    allow_strict_sketch: bool = False
+    extrusion_source_faces: bool = False
+    displacement_region_targets: bool = False
+    body_force_loads: bool = False
 
 
 def loads_json_strict(
@@ -403,9 +409,10 @@ def decode_geometry_field(
                 ),
                 contours,
             )
-        if policy.version_label != "v3":
+        if not policy.allow_strict_sketch:
             raise policy.decode_error(
-                f"{path} 的 curve-based sketch 只能由 v3 解码"
+                f"{path} 的 curve-based sketch 无法由 "
+                f"{policy.version_label} 解码"
             )
         _field_keys(
             data,
@@ -522,30 +529,71 @@ def decode_geometry_field(
             ),
         )
     if kind == "ExtrudedGeometry":
+        source_field = {"source_face_ids"} if policy.extrusion_source_faces else set()
         _field_keys(
             data,
             path,
-            required={"type", "base", "height"},
+            required={"type", "base", "height", *source_field},
             optional=set(),
             policy=policy,
             error_type=policy.decode_error,
         )
-        return _field_construct(
-            ExtrudedGeometry,
-            path,
-            policy,
-            decode_geometry_field(
-                data["base"],
-                f"{path}.base",
-                policy=policy,
-            ),
-            _field_number(
-                data["height"],
-                f"{path}.height",
-                policy.decode_error,
-                policy=policy,
-            ),
+        base = decode_geometry_field(
+            data["base"],
+            f"{path}.base",
+            policy=policy,
         )
+        height = _field_number(
+            data["height"],
+            f"{path}.height",
+            policy.decode_error,
+            policy=policy,
+        )
+        source_face_ids: tuple[str, ...] = ()
+        if policy.extrusion_source_faces:
+            values = _field_array(
+                data["source_face_ids"],
+                f"{path}.source_face_ids",
+                policy.decode_error,
+            )
+            parsed_ids: list[str] = []
+            seen_ids: set[str] = set()
+            for index, item in enumerate(values):
+                item_path = f"{path}.source_face_ids[{index}]"
+                logical_id = _field_string(
+                    item,
+                    item_path,
+                    policy.decode_error,
+                )
+                try:
+                    reference = LogicalEntityRef(logical_id)
+                except (TypeError, ValueError) as error:
+                    raise policy.decode_error(
+                        f"{item_path} 不是有效 logical ID：{error}"
+                    ) from error
+                if reference.kind != "face":
+                    raise policy.decode_error(
+                        f"{item_path} 必须引用 face logical ID"
+                    )
+                if logical_id in seen_ids:
+                    raise policy.decode_error(
+                        f"{item_path} 与前一项重复：{logical_id!r}"
+                    )
+                seen_ids.add(logical_id)
+                parsed_ids.append(logical_id)
+            source_face_ids = tuple(parsed_ids)
+        try:
+            return ExtrudedGeometry(base, height, source_face_ids)
+        except (TypeError, ValueError) as error:
+            logical_id = getattr(error, "logical_id", None)
+            if logical_id in source_face_ids:
+                error_path = (
+                    f"{path}.source_face_ids"
+                    f"[{source_face_ids.index(logical_id)}]"
+                )
+            else:
+                error_path = path
+            raise policy.decode_error(f"{error_path} 无效：{error}") from error
     if kind == "BooleanGeometry":
         _field_keys(
             data,
@@ -1027,11 +1075,10 @@ def encode_geometry_field(
         if type(recipe) is SketchGeometry:
             name = _field_string(recipe.name, f"{path}.name", policy.encode_error)
             if recipe.is_legacy:
-                if policy.version_label == "v3":
+                if policy.allow_strict_sketch:
                     # v3 is the first schema that can represent the strict
-                    # curve graph.  Upgrade compatibility contours at the
-                    # encoding boundary so a newly written project never
-                    # perpetuates the legacy shape.
+                    # curve graph.  Upgrade compatibility contours at every
+                    # current-schema encoding boundary.
                     recipe = legacy_sketch_to_strict(recipe)
                 else:
                     return {
@@ -1052,9 +1099,10 @@ def encode_geometry_field(
                             )
                         ],
                     }
-            if policy.version_label != "v3":
+            if not policy.allow_strict_sketch:
                 raise policy.encode_error(
-                    f"{path} 的 curve-based sketch 只能由 v3 编码"
+                    f"{path} 的 curve-based sketch 无法由 "
+                    f"{policy.version_label} 编码"
                 )
             return {
                 "type": "SketchGeometry",
@@ -1152,11 +1200,16 @@ def encode_geometry_field(
             _field_exact_dataclass(
                 recipe,
                 ExtrudedGeometry,
-                {"base", "height"},
+                {"base", "height", "source_face_ids"},
                 path,
                 policy,
             )
-            return {
+            if recipe.source_face_ids and not policy.extrusion_source_faces:
+                raise policy.encode_error(
+                    f"{path}.source_face_ids 无法由 "
+                    f"{policy.version_label} 无损表示"
+                )
+            encoded = {
                 "type": "ExtrudedGeometry",
                 "base": encode_geometry_field(
                     recipe.base,
@@ -1171,6 +1224,16 @@ def encode_geometry_field(
                     policy=policy,
                 ),
             }
+            if policy.extrusion_source_faces:
+                encoded["source_face_ids"] = [
+                    _field_string(
+                        logical_id,
+                        f"{path}.source_face_ids[{index}]",
+                        policy.encode_error,
+                    )
+                    for index, logical_id in enumerate(recipe.source_face_ids)
+                ]
+            return encoded
         if type(recipe) is BooleanGeometry:
             _field_exact_dataclass(
                 recipe,
@@ -1705,10 +1768,17 @@ def decode_boundary_field(
     policy: ProjectFieldCodecPolicy,
 ) -> DisplacementConstraint:
     required = {"target", "first_component", "last_component"}
-    optional = {"value"}
+    optional = {
+        "value",
+        *(
+            {"target_kind"}
+            if policy.displacement_region_targets
+            else set()
+        ),
+    }
     if policy.require_current_fields:
         required.add("value")
-        optional.clear()
+        optional.discard("value")
     data = _field_required_object(
         value,
         path,
@@ -1738,6 +1808,11 @@ def decode_boundary_field(
             f"{path}.value",
             policy.decode_error,
             policy=policy,
+        ),
+        _field_string(
+            data.get("target_kind", "node_set"),
+            f"{path}.target_kind",
+            policy.decode_error,
         ),
     )
 
@@ -1909,6 +1984,32 @@ def decode_line_load_field(
     )
 
 
+def decode_body_load_field(
+    value: Any,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> BodyForce:
+    data = _field_required_object(
+        value,
+        path,
+        {"target", "vector"},
+        policy=policy,
+    )
+    return _field_construct(
+        BodyForce,
+        path,
+        policy,
+        _field_target(
+            data["target"],
+            f"{path}.target",
+            policy,
+            encode=False,
+        ),
+        _field_decode_number_array(data["vector"], f"{path}.vector", policy),
+    )
+
+
 def decode_gravity_load_field(
     value: Any,
     path: str,
@@ -2012,11 +2113,29 @@ def encode_boundary_field(
     _field_exact_dataclass(
         boundary,
         DisplacementConstraint,
-        {"target", "first_component", "last_component", "value"},
+        {
+            "target",
+            "first_component",
+            "last_component",
+            "value",
+            "target_kind",
+        },
         path,
         policy,
     )
-    return {
+    target_kind = _field_string(
+        boundary.target_kind,
+        f"{path}.target_kind",
+        policy.encode_error,
+    )
+    if (
+        target_kind != "node_set"
+        and not policy.displacement_region_targets
+    ):
+        raise policy.encode_error(
+            f"{path}.target_kind 无法由 {policy.version_label} 无损表示"
+        )
+    result = {
         "target": _field_target(
             boundary.target,
             f"{path}.target",
@@ -2042,6 +2161,9 @@ def encode_boundary_field(
             policy=policy,
         ),
     }
+    if target_kind != "node_set":
+        result["target_kind"] = target_kind
+    return result
 
 
 def encode_cload_field(
@@ -2201,6 +2323,34 @@ def encode_line_load_field(
     }
 
 
+def encode_body_load_field(
+    load: Any,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> dict[str, Any]:
+    _field_exact_dataclass(
+        load,
+        BodyForce,
+        {"target", "vector"},
+        path,
+        policy,
+    )
+    return {
+        "target": _field_target(
+            load.target,
+            f"{path}.target",
+            policy,
+            encode=True,
+        ),
+        "vector": _field_encode_number_array(
+            load.vector,
+            f"{path}.vector",
+            policy,
+        ),
+    }
+
+
 def encode_gravity_load_field(
     load: Any,
     path: str,
@@ -2301,6 +2451,7 @@ _STEP_COLLECTION_CODECS = {
         encode_surface_load_field,
     ),
     "line_loads": (decode_line_load_field, encode_line_load_field),
+    "body_loads": (decode_body_load_field, encode_body_load_field),
     "gravity_loads": (
         decode_gravity_load_field,
         encode_gravity_load_field,
@@ -2316,11 +2467,16 @@ def decode_step_field(
     policy: ProjectFieldCodecPolicy,
 ) -> AnalysisStep:
     data = _field_mapping(value, path, policy.decode_error)
+    collection_codecs = {
+        name: codecs
+        for name, codecs in _STEP_COLLECTION_CODECS.items()
+        if name != "body_loads" or policy.body_force_loads
+    }
     required = {"name"}
-    optional = {"procedure", "metadata", *_STEP_COLLECTION_CODECS}
+    optional = {"procedure", "metadata", *collection_codecs}
     if policy.require_current_fields:
-        required.update(optional)
-        optional.clear()
+        required.update(optional - {"body_loads"})
+        optional.intersection_update({"body_loads"})
     _field_keys(
         data,
         path,
@@ -2331,7 +2487,7 @@ def decode_step_field(
     )
     collections: dict[str, tuple[Any, ...]] = {}
     for collection_name, (decoder, _encoder) in (
-        _STEP_COLLECTION_CODECS.items()
+        collection_codecs.items()
     ):
         collection_path = f"{path}.{collection_name}"
         raw_items = data[collection_name] if collection_name in data else ()
@@ -2391,6 +2547,15 @@ def encode_step_field(
         path,
         policy,
     )
+    if not policy.body_force_loads and tuple(step.body_loads):
+        raise policy.encode_error(
+            f"{path}.body_loads 无法由 {policy.version_label} 无损表示"
+        )
+    collection_codecs = {
+        name: codecs
+        for name, codecs in _STEP_COLLECTION_CODECS.items()
+        if name != "body_loads" or policy.body_force_loads
+    }
     result: dict[str, Any] = {
         "name": _field_string(
             step.name,
@@ -2409,7 +2574,7 @@ def encode_step_field(
         ),
     }
     for collection_name, (_decoder, encoder) in (
-        _STEP_COLLECTION_CODECS.items()
+        collection_codecs.items()
     ):
         collection_path = f"{path}.{collection_name}"
         result[collection_name] = [

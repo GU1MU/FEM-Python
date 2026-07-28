@@ -722,3 +722,64 @@ def test_surface_preselection_never_exposes_internal_triangulation(
 
     assert calls[-1]["show_edges"] is False
     viewport.close()
+
+
+def test_surface_preselection_highlights_every_cell_of_logical_face(
+    monkeypatch,
+) -> None:
+    _application()
+    preview = GeometryPreview(
+        points=(
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 1.0, 0.0),
+            (0.0, 1.0, 0.0),
+        ),
+        faces=((0, 1, 2), (0, 2, 3)),
+        edges=(),
+        face_logical_ids=("face:domain", "face:domain"),
+        topological_dimension=2,
+    )
+    viewport = FEMViewport()
+    viewport._install_geometry_pick_bindings(preview)
+    viewport._geometry_preview_surface = _geometry_surface_polydata(
+        pv,
+        np.asarray(preview.points, dtype=float),
+        preview,
+        viewport._geometry_face_pick_ids,
+    )
+    highlighted = []
+
+    class Actor:
+        def SetPickable(self, _value):
+            pass
+
+    class Plotter:
+        def add_mesh(self, data, **_kwargs):
+            highlighted.append(data)
+            return Actor()
+
+    viewport._plotter = Plotter()
+    monkeypatch.setattr(viewport_module, "_pyvista", pv)
+    monkeypatch.setattr(viewport, "_remove_actor", lambda _name: None)
+    monkeypatch.setattr(
+        viewport,
+        "_offset_highlight_actor",
+        lambda _actor: None,
+    )
+    monkeypatch.setattr(viewport, "_render", lambda: None)
+
+    viewport._show_preselection(
+        PickHit(
+            "geometry_face",
+            viewport._geometry_face_pick_ids[0],
+            "geometry_surface",
+            (100.0, 100.0),
+            (0.0, 0.0, 0.0),
+            vtk_cell_id=0,
+        )
+    )
+
+    assert len(highlighted) == 1
+    assert highlighted[0].n_cells == 2
+    viewport.close()

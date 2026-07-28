@@ -21,6 +21,7 @@ from fem.application import (
 )
 from fem.geometry import LogicalEntityRef
 from fem.core.model import (
+    BodyForce,
     DisplacementConstraint,
     EdgeLoad,
     GravityLoad,
@@ -68,6 +69,7 @@ def _native_project_snapshot() -> ProjectSnapshot:
     )
     step.cloads = (NodalLoad("RIGHT", 1, 100.0),)
     step.edge_loads = (EdgeLoad("TOP", (0.0, -5.0)),)
+    step.body_loads = (BodyForce("DOMAIN", (1.0, -2.0)),)
     step.gravity_loads = (GravityLoad((0.0, -9.81)),)
     return ProjectSnapshot(
         source_kind="native",
@@ -133,7 +135,7 @@ def test_native_project_round_trip_returns_a_detached_snapshot(tmp_path) -> None
     reopened = loaded.snapshot
 
     assert isinstance(reopened, ProjectSnapshot)
-    assert loaded.source_schema == 3
+    assert loaded.source_schema == 4
     assert loaded.notices == ()
     assert reopened.source_kind == "native"
     assert reopened.source_path == target
@@ -145,6 +147,9 @@ def test_native_project_round_trip_returns_a_detached_snapshot(tmp_path) -> None
     assert reopened.analysis_definitions[0].cloads[0].value == 100.0
     assert reopened.analysis_definitions[0].edge_loads == (
         EdgeLoad("TOP", (0.0, -5.0)),
+    )
+    assert reopened.analysis_definitions[0].body_loads == (
+        BodyForce("DOMAIN", (1.0, -2.0)),
     )
     assert reopened.analysis_definitions[0].gravity_loads == (
         GravityLoad((0.0, -9.81)),
@@ -164,7 +169,7 @@ def test_failed_detached_decode_cannot_change_a_live_session(tmp_path) -> None:
     assert session.snapshot() == before
 
 
-def test_main_window_opens_current_v3_project(tmp_path, monkeypatch) -> None:
+def test_main_window_opens_current_v4_project(tmp_path, monkeypatch) -> None:
     _application()
     source = save_project(
         tmp_path / "current.femproj",
@@ -267,12 +272,12 @@ def test_main_window_v1_open_then_save_upgrades_the_same_path(
     assert source.read_bytes() == original
     upgrade_notice = window.status_panel.state_label.text()
     assert "下次显式保存" in upgrade_notice
-    assert "schema 3" in upgrade_notice
-    assert "v3" in upgrade_notice
+    assert "schema 4" in upgrade_notice
+    assert "v4" in upgrade_notice
 
     assert window.save_native_project()
-    assert json.loads(source.read_text(encoding="utf-8"))["schema"] == 3
-    assert load_project(source).source_schema == 3
+    assert json.loads(source.read_text(encoding="utf-8"))["schema"] == 4
+    assert load_project(source).source_schema == 4
     assert not window.document.dirty
     window.close()
 

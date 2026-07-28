@@ -45,6 +45,8 @@ from fem.geometry import (
     SketchCircle,
     SketchGeometry,
     SketchRectangle,
+    analyze_sketch_profiles,
+    resolve_extrusion_source_faces,
 )
 from fem.mesh import settings as mesh_settings_api
 from fem.mesh.settings import LocalMeshControl, MeshSettings
@@ -611,14 +613,45 @@ class RotateGeometryDialog(QDialog):
 class ExtrudeGeometryDialog(QDialog):
     """Collect a positive-Z extrusion height for a planar geometry."""
 
-    def __init__(self, base: object, parent=None) -> None:
+    def __init__(
+        self,
+        base: object,
+        parent=None,
+        *,
+        source_face_ids: tuple[str, ...] = (),
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("拉伸几何")
         self._base = base
+        self._source_face_ids = resolve_extrusion_source_faces(
+            base,
+            source_face_ids,
+        ).face_ids
+        self.source_profile_list = QListWidget(self)
+        self.source_profile_list.setObjectName("extrusionSourceProfileList")
+        self.source_profile_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.NoSelection
+        )
+        profiles_with_holes: set[str] = set()
+        if isinstance(base, SketchGeometry) and base.is_strict:
+            analysis = analyze_sketch_profiles(base)
+            profiles_with_holes = {
+                profile.parent_profile_id
+                for profile in analysis.profiles
+                if profile.is_hole and profile.parent_profile_id is not None
+            }
+        for index, logical_id in enumerate(self._source_face_ids, start=1):
+            profile_id = logical_id.split(":", 1)[1]
+            suffix = "（含孔）" if profile_id in profiles_with_holes else ""
+            self.source_profile_list.addItem(
+                f"{index}. {profile_id}{suffix}\n{logical_id}"
+            )
         self.height_spin = _positive_spin_box(self, 10.0)
         form = QFormLayout()
         configure_form_layout(form)
-        form.addRow("拉伸高度 Z", self.height_spin)
+        form.addRow("源 Profiles", self.source_profile_list)
+        form.addRow("方向", QLabel("+Z（Phase 2）", self))
+        form.addRow("高度", self.height_spin)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel,
@@ -633,7 +666,11 @@ class ExtrudeGeometryDialog(QDialog):
         layout.addWidget(buttons)
 
     def recipe(self) -> ExtrudedGeometry:
-        return ExtrudedGeometry(self._base, self.height_spin.value())
+        return ExtrudedGeometry(
+            self._base,
+            self.height_spin.value(),
+            self._source_face_ids,
+        )
 
 
 class GeometryManagerDialog(QDialog):

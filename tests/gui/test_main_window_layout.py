@@ -59,6 +59,38 @@ def test_main_window_has_modules_navigation_and_viewport_toolbar():
     window.close()
 
 
+def test_scope_creation_bar_uses_stable_tray_and_cancel_exits_selection():
+    application = _application()
+    window = FEMMainWindow()
+    window.show()
+    window.resize(1000, 700)
+    application.processEvents()
+    viewport_size = window.viewport.size()
+    bar = window.viewport_panel.scope_creation_bar
+    window._pending_analysis_selection = "scope"
+    window._pending_scope_kind = "node"
+
+    bar.begin("Set", "NodeSet-1")
+    application.processEvents()
+
+    assert window.viewport.size() == viewport_size
+    tray = window.viewport_panel.scope_creation_tray
+    assert window.viewport_panel.layout().indexOf(tray) >= 0
+    assert tray.currentWidget() is bar
+    assert window.viewport.geometry().bottom() < tray.geometry().top()
+    assert bar.cancel_button.text() == "取消"
+
+    bar.cancel_button.click()
+    application.processEvents()
+
+    assert bar.isHidden()
+    assert window._pending_analysis_selection is None
+    assert window._pending_scope_kind is None
+    assert window.viewport.size() == viewport_size
+    assert tray.currentWidget() is window.viewport_panel._scope_creation_idle
+    window.close()
+
+
 def test_menu_ribbon_and_viewport_toolbar_reuse_actions():
     _application()
     window = FEMMainWindow()

@@ -6,10 +6,12 @@ import pytest
 from fem_gui.visualization.symbols import (
     arc_points,
     camera_facing_offset,
+    constraint_outward_direction,
     constraint_rotation_axes,
     constraint_sample_indices,
     constraint_spatial_regions,
     constraint_symbol_dimensions,
+    load_arrow_origins,
     load_symbol_length,
     region_sample_indices,
     rotation_lock_points,
@@ -151,12 +153,37 @@ def test_symbol_grows_on_screen_as_the_camera_zooms_in():
     assert close_up == pytest.approx(56.0)
 
 
-def test_constraint_symbol_is_larger_than_load_glyph_and_has_visible_width():
+def test_constraint_symbol_is_compact_and_has_a_slender_visible_width():
     length, radius = constraint_symbol_dimensions(20.0)
 
-    assert length == pytest.approx(33.0)
-    assert radius == pytest.approx(6.6)
+    assert length == pytest.approx(27.0)
+    assert radius == pytest.approx(3.24)
     assert load_symbol_length(20.0) == pytest.approx(66.0)
+
+
+def test_constraint_marker_uses_the_nearest_exterior_axis_side():
+    center = np.array((5.0, 5.0, 0.0))
+
+    assert constraint_outward_direction(
+        np.array((0.0, 10.0, 0.0)), center, 0
+    ) == pytest.approx((-1.0, 0.0, 0.0))
+    assert constraint_outward_direction(
+        np.array((0.0, 10.0, 0.0)), center, 1
+    ) == pytest.approx((0.0, 1.0, 0.0))
+    assert constraint_outward_direction(
+        np.array((0.0, 0.0, 0.0)), center, 1
+    ) == pytest.approx((0.0, -1.0, 0.0))
+
+
+def test_edge_load_can_align_its_arrow_start_while_other_loads_align_the_tip():
+    origins = load_arrow_origins(
+        anchors=np.array(((10.0, 1.0, 0.0), (3.0, 2.0, 0.0))),
+        directions=np.array(((1.0, 0.0, 0.0), (0.0, -1.0, 0.0))),
+        lengths=np.array((2.0, 1.0)),
+        start_aligned=np.array((True, False)),
+    )
+
+    assert origins == pytest.approx(np.array(((10.0, 1.0, 0.0), (3.0, 3.0, 0.0))))
 
 
 def test_region_sampling_starts_near_the_region_center_and_is_mesh_order_independent():

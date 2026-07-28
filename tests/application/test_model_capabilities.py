@@ -118,7 +118,7 @@ def test_line_element_report_separates_topology_and_spatial_dimension() -> None:
         "solid_circle",
         "hollow_circle",
     )
-    assert region.distributed_load_kinds == ("line",)
+    assert region.distributed_load_kinds == ("line", "body")
     assert region.status is AuthoringStatus.ENABLED
     assert region.diagnostics == ()
     assert region.status_for("section.rectangle") is AuthoringStatus.ENABLED
@@ -278,7 +278,7 @@ def test_same_family_mixed_region_uses_safe_common_contract() -> None:
     assert region.compatible
     assert region.families == ("plane_continuum",)
     assert region.section_families == ("solid",)
-    assert region.distributed_load_kinds == ("edge",)
+    assert region.distributed_load_kinds == ("edge", "body")
     assert region.diagnostics == ()
 
 

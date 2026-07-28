@@ -4,8 +4,8 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtGui import QColor, QImage
-from PySide6.QtWidgets import QApplication, QWidget
+import vtk
+from PySide6.QtWidgets import QApplication
 
 from fem.application import MeshEntityRef
 from fem_gui.widgets.viewport import (
@@ -19,25 +19,65 @@ def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def test_selection_rubber_band_has_no_interior_fill() -> None:
-    application = _application()
-    parent = QWidget()
-    parent.resize(100, 80)
-    band = _SelectionRubberBand(parent)
-    band.setGeometry(10, 10, 80, 60)
-    band.show()
-    application.processEvents()
-    image = QImage(
-        band.size(),
-        QImage.Format.Format_ARGB32_Premultiplied,
+def test_selection_rubber_band_is_a_border_only_vtk_overlay() -> None:
+    renderer = vtk.vtkRenderer()
+    band = _SelectionRubberBand(renderer)
+
+    band.set_rectangle((90, 10), (10, 70))
+    band.set_containment(False)
+
+    assert band._polydata.GetNumberOfLines() == 4
+    assert band._polydata.GetNumberOfPolys() == 0
+    assert tuple(band._points.GetPoint(0)) == (10.0, 10.0, 0.0)
+    assert tuple(band._points.GetPoint(2)) == (90.0, 70.0, 0.0)
+    assert renderer.GetActors2D().GetNumberOfItems() == 2
+    assert all(not actor.GetPickable() for actor in band._actors)
+    assert all(
+        actor.GetProperty().GetLineStipplePattern() == 0xF0F0
+        for actor in band._actors
     )
-    image.fill(QColor(0, 0, 0, 0))
 
-    band.render(image)
+    assert band.show()
+    assert all(actor.GetVisibility() for actor in band._actors)
+    assert band.hide()
+    assert all(not actor.GetVisibility() for actor in band._actors)
 
-    assert image.pixelColor(40, 30).alpha() == 0
-    assert image.pixelColor(1, 30).alpha() > 0
-    parent.close()
+
+def test_viewport_rubber_band_uses_vtk_display_coordinates() -> None:
+    _application()
+
+    class Plotter:
+        def __init__(self) -> None:
+            self.renderer = vtk.vtkRenderer()
+            self.render_count = 0
+
+        def _getPixelRatio(self):
+            return 1.0
+
+        def height(self):
+            return 100
+
+        def render(self):
+            self.render_count += 1
+
+    viewport = FEMViewport()
+    plotter = Plotter()
+    viewport._plotter = plotter
+
+    viewport._show_selection_rubber_band((10.0, 20.0), (90.0, 70.0))
+
+    band = viewport._selection_rubber_band
+    assert band is not None
+    assert tuple(band._points.GetPoint(0)) == (10.0, 29.0, 0.0)
+    assert tuple(band._points.GetPoint(2)) == (90.0, 79.0, 0.0)
+    assert all(actor.GetVisibility() for actor in band._actors)
+    assert plotter.render_count == 1
+
+    viewport._hide_selection_rubber_band()
+
+    assert all(not actor.GetVisibility() for actor in band._actors)
+    assert plotter.render_count == 2
+    viewport.close()
 
 
 def test_mesh_scope_pick_signal_emits_typed_mesh_references() -> None:

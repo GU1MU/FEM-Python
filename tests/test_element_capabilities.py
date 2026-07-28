@@ -23,7 +23,7 @@ _EXPECTED_CAPABILITIES = {
         "dofs": ("U1", "U2"),
         "forces": ("Fx", "Fy"),
         "sections": ("solid",),
-        "loads": ("node", "edge", "gravity"),
+        "loads": ("node", "edge", "body", "gravity"),
     },
     "Quad8": {
         "aliases": ("CPS8", "CPE8"),
@@ -34,7 +34,7 @@ _EXPECTED_CAPABILITIES = {
         "dofs": ("U1", "U2"),
         "forces": ("Fx", "Fy"),
         "sections": ("solid",),
-        "loads": ("node", "edge", "gravity"),
+        "loads": ("node", "edge", "body", "gravity"),
     },
     "Tri6": {
         "aliases": ("CPS6", "CPE6"),
@@ -45,7 +45,7 @@ _EXPECTED_CAPABILITIES = {
         "dofs": ("U1", "U2"),
         "forces": ("Fx", "Fy"),
         "sections": ("solid",),
-        "loads": ("node", "edge", "gravity"),
+        "loads": ("node", "edge", "body", "gravity"),
     },
     "Tri3": {
         "aliases": ("CPS3", "CPE3"),
@@ -56,7 +56,7 @@ _EXPECTED_CAPABILITIES = {
         "dofs": ("U1", "U2"),
         "forces": ("Fx", "Fy"),
         "sections": ("solid",),
-        "loads": ("node", "edge", "gravity"),
+        "loads": ("node", "edge", "body", "gravity"),
     },
     "Hex8": {
         "aliases": ("C3D8",),
@@ -67,7 +67,7 @@ _EXPECTED_CAPABILITIES = {
         "dofs": ("U1", "U2", "U3"),
         "forces": ("Fx", "Fy", "Fz"),
         "sections": ("solid",),
-        "loads": ("node", "surface", "gravity"),
+        "loads": ("node", "surface", "body", "gravity"),
     },
     "Hex20": {
         "aliases": ("C3D20",),
@@ -78,7 +78,7 @@ _EXPECTED_CAPABILITIES = {
         "dofs": ("U1", "U2", "U3"),
         "forces": ("Fx", "Fy", "Fz"),
         "sections": ("solid",),
-        "loads": ("node", "surface", "gravity"),
+        "loads": ("node", "surface", "body", "gravity"),
     },
     "Tet4": {
         "aliases": ("C3D4",),
@@ -89,7 +89,7 @@ _EXPECTED_CAPABILITIES = {
         "dofs": ("U1", "U2", "U3"),
         "forces": ("Fx", "Fy", "Fz"),
         "sections": ("solid",),
-        "loads": ("node", "surface", "gravity"),
+        "loads": ("node", "surface", "body", "gravity"),
     },
     "Tet10": {
         "aliases": ("C3D10",),
@@ -100,7 +100,7 @@ _EXPECTED_CAPABILITIES = {
         "dofs": ("U1", "U2", "U3"),
         "forces": ("Fx", "Fy", "Fz"),
         "sections": ("solid",),
-        "loads": ("node", "surface", "gravity"),
+        "loads": ("node", "surface", "body", "gravity"),
     },
     "Truss2": {
         "aliases": (),
@@ -111,7 +111,7 @@ _EXPECTED_CAPABILITIES = {
         "dofs": ("U1", "U2", "U3"),
         "forces": ("Fx", "Fy", "Fz"),
         "sections": ("truss",),
-        "loads": ("node", "gravity"),
+        "loads": ("node", "body", "gravity"),
     },
     "Beam2": {
         "aliases": (),
@@ -122,7 +122,7 @@ _EXPECTED_CAPABILITIES = {
         "dofs": ("U1", "U2", "U3", "UR1", "UR2", "UR3"),
         "forces": ("Fx", "Fy", "Fz", "Mx", "My", "Mz"),
         "sections": ("beam",),
-        "loads": ("node", "line", "gravity"),
+        "loads": ("node", "line", "body", "gravity"),
     },
 }
 

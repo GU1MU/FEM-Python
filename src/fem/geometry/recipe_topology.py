@@ -23,6 +23,11 @@ from .recipe_analysis import (
     expand_sketch_recipe,
     transformed_circle,
 )
+from .extrusion_selection import (
+    ExtrusionSourceResolutionError,
+    extrusion_face_boundary_ids,
+    resolve_extrusion_source_faces,
+)
 from .references import (
     EntityKind,
     LogicalEntityRef,
@@ -395,6 +400,68 @@ def can_preserve_logical_references(before: object, after: object) -> bool:
         and after_fingerprint.exact
         and before_fingerprint == after_fingerprint
     )
+
+
+def surviving_logical_reference_ids(
+    before: object,
+    after: object,
+) -> frozenset[str]:
+    """Return output IDs whose identity and feature lineage survive an edit."""
+
+    if not isinstance(before, NATIVE_GEOMETRY_TYPES) or not isinstance(
+        after,
+        NATIVE_GEOMETRY_TYPES,
+    ):
+        return frozenset()
+    before_topology = describe_recipe_topology(before)
+    after_topology = describe_recipe_topology(after)
+    if (
+        not before_topology.exact
+        or not after_topology.exact
+        or before_topology.dimension != after_topology.dimension
+    ):
+        return frozenset()
+    if (
+        topology_fingerprint_from_topology(before_topology)
+        == topology_fingerprint_from_topology(after_topology)
+    ):
+        return frozenset(before_topology.signature.logical_ids)
+
+    before_entities = {
+        entity.logical_id: entity for entity in before_topology.entities
+    }
+    after_entities = {
+        entity.logical_id: entity for entity in after_topology.entities
+    }
+
+    def provenance(topology: RecipeTopology, logical_id: str):
+        return frozenset(
+            (
+                mapping.source,
+                mapping.source_logical_id,
+                mapping.relation,
+            )
+            for mapping in topology.transition.mappings
+            if mapping.target_logical_id == logical_id
+        )
+
+    survivors: set[str] = set()
+    for logical_id in before_entities.keys() & after_entities.keys():
+        before_entity = before_entities[logical_id]
+        after_entity = after_entities[logical_id]
+        if (
+            before_entity.kind != after_entity.kind
+            or before_entity.dimension != after_entity.dimension
+            or before_entity.semantic_role != after_entity.semantic_role
+            or before_entity.selectable != after_entity.selectable
+            or before_entity.topology_links != after_entity.topology_links
+        ):
+            continue
+        before_provenance = provenance(before_topology, logical_id)
+        after_provenance = provenance(after_topology, logical_id)
+        if before_provenance and before_provenance == after_provenance:
+            survivors.add(logical_id)
+    return frozenset(survivors)
 
 
 def _logical_entity(
@@ -793,7 +860,8 @@ def _strict_sketch_topology(recipe: SketchGeometry) -> RecipeTopology:
         )
     for profile in material_profiles:
         members = tuple(
-            f"edge:{curve_id.lstrip('-')}" for curve_id in profile.curve_ids
+            f"edge:{curve_id.lstrip('-')}"
+            for curve_id in profile.curve_ids
         )
         entities.append(
             _logical_entity(
@@ -983,113 +1051,153 @@ def _logical_name(logical_id: str) -> str:
 
 def _extruded_topology(recipe: ExtrudedGeometry) -> RecipeTopology:
     base = describe_recipe_topology(recipe.base)
-    base_faces = base.entities_of("face", selectable_only=True)
     base_bodies = base.entities_of("body", selectable_only=True)
-    if not base.exact or len(base_faces) != 1 or len(base_bodies) != 1:
+    try:
+        selection = resolve_extrusion_source_faces(
+            recipe.base,
+            recipe.source_face_ids,
+        )
+    except ExtrusionSourceResolutionError as error:
         return _unknown_topology(
             recipe,
-            code="extrude.base-topology-unproven",
-            message=(
-                "Extrusion needs one exact selectable source face; the source "
-                "recipe topology cannot be propagated safely."
-            ),
+            code=error.code,
+            message=str(error),
+            operation="extrude",
+            source_signatures=(("base", base.signature),),
+        )
+    if len(base_bodies) != 1:
+        return _unknown_topology(
+            recipe,
+            code="extrude.source-face.topology-unproven",
+            message="拉伸源必须具有唯一的二维 logical body",
             operation="extrude",
             source_signatures=(("base", base.signature),),
         )
 
     entities: list[LogicalEntity] = []
     mappings: list[TopologyMapping] = []
-    base_points = base.entities_of("point", selectable_only=True)
-    base_edges = base.entities_of("edge", selectable_only=True)
+    single_source = len(selection.face_ids) == 1
 
-    # Match the compatibility preview order: bottom copies, top copies, then
-    # vertical/swept entities.  The ordering is semantic and tag-independent.
-    for level in ("bottom", "top"):
+    for source_face_id in selection.face_ids:
+        source_face = base.entity(source_face_id)
+        source_face_name = _logical_name(source_face.logical_id)
+        edge_ids, point_ids = extrusion_face_boundary_ids(
+            recipe.base,
+            source_face_id,
+        )
+        base_edges = tuple(base.entity(logical_id) for logical_id in edge_ids)
+        base_points = tuple(base.entity(logical_id) for logical_id in point_ids)
+
+        for level in ("bottom", "top"):
+            for point in base_points:
+                name = _logical_name(point.logical_id)
+                target_name = (
+                    f"{level}/{name}"
+                    if single_source
+                    else f"{level}/{source_face_name}/{name}"
+                )
+                target = _logical_entity(
+                    "point",
+                    target_name,
+                    f"copy.{level}.{point.semantic_role}",
+                )
+                entities.append(target)
+                mappings.append(
+                    TopologyMapping(
+                        "base",
+                        point.logical_id,
+                        target.logical_id,
+                        "derived",
+                    )
+                )
+
+        for level in ("bottom", "top"):
+            for edge in base_edges:
+                name = _logical_name(edge.logical_id)
+                target_name = (
+                    f"{level}/{name}"
+                    if single_source
+                    else f"{level}/{source_face_name}/{name}"
+                )
+                target = _logical_entity(
+                    "edge",
+                    target_name,
+                    f"copy.{level}.{edge.semantic_role}",
+                )
+                entities.append(target)
+                mappings.append(
+                    TopologyMapping(
+                        "base",
+                        edge.logical_id,
+                        target.logical_id,
+                        "derived",
+                    )
+                )
+
         for point in base_points:
             name = _logical_name(point.logical_id)
-            target = _logical_entity(
-                "point",
-                f"{level}/{name}",
-                f"copy.{level}.{point.semantic_role}",
+            target_name = (
+                f"vertical/{name}"
+                if single_source
+                else f"vertical/{source_face_name}/{name}"
             )
-            entities.append(target)
+            vertical = _logical_entity(
+                "edge",
+                target_name,
+                f"sweep.{point.semantic_role}",
+            )
+            entities.append(vertical)
             mappings.append(
                 TopologyMapping(
                     "base",
                     point.logical_id,
-                    target.logical_id,
+                    vertical.logical_id,
                     "derived",
                 )
             )
 
-    for level in ("bottom", "top"):
-        for edge in base_edges:
-            name = _logical_name(edge.logical_id)
+        for level in ("bottom", "top"):
+            target_name = (
+                level
+                if single_source
+                else f"{level}/{source_face_name}"
+            )
             target = _logical_entity(
-                "edge",
-                f"{level}/{name}",
-                f"copy.{level}.{edge.semantic_role}",
+                "face",
+                target_name,
+                f"copy.{level}.{source_face.semantic_role}",
             )
             entities.append(target)
             mappings.append(
                 TopologyMapping(
                     "base",
-                    edge.logical_id,
+                    source_face.logical_id,
                     target.logical_id,
                     "derived",
                 )
             )
 
-    for point in base_points:
-        name = _logical_name(point.logical_id)
-        vertical = _logical_entity(
-            "edge",
-            f"vertical/{name}",
-            f"sweep.{point.semantic_role}",
-        )
-        entities.append(vertical)
-        mappings.append(
-            TopologyMapping(
-                "base",
-                point.logical_id,
-                vertical.logical_id,
-                "derived",
+        for edge in base_edges:
+            name = _logical_name(edge.logical_id)
+            target_name = (
+                f"side/{name}"
+                if single_source
+                else f"side/{source_face_name}/{name}"
             )
-        )
-
-    source_face = base_faces[0]
-    for level in ("bottom", "top"):
-        target = _logical_entity(
-            "face",
-            level,
-            f"copy.{level}.{source_face.semantic_role}",
-        )
-        entities.append(target)
-        mappings.append(
-            TopologyMapping(
-                "base",
-                source_face.logical_id,
-                target.logical_id,
-                "derived",
+            side = _logical_entity(
+                "face",
+                target_name,
+                f"sweep.{edge.semantic_role}",
             )
-        )
-
-    for edge in base_edges:
-        name = _logical_name(edge.logical_id)
-        side = _logical_entity(
-            "face",
-            f"side/{name}",
-            f"sweep.{edge.semantic_role}",
-        )
-        entities.append(side)
-        mappings.append(
-            TopologyMapping(
-                "base",
-                edge.logical_id,
-                side.logical_id,
-                "derived",
+            entities.append(side)
+            mappings.append(
+                TopologyMapping(
+                    "base",
+                    edge.logical_id,
+                    side.logical_id,
+                    "derived",
+                )
             )
-        )
 
     body = _logical_entity("body", "domain", "sweep.domain", dimension=3)
     entities.append(body)
@@ -1326,6 +1434,7 @@ __all__ = [
     "TransitionRelation",
     "can_preserve_logical_references",
     "describe_recipe_topology",
+    "surviving_logical_reference_ids",
     "topology_fingerprint_for_recipe",
     "topology_fingerprint_from_topology",
 ]

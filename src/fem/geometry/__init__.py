@@ -18,6 +18,7 @@ from .recipe_analysis import (
     axis_aligned_rectangle,
     expand_sketch_recipe,
     legacy_sketch_to_strict,
+    legacy_sketches_to_strict,
     recipe_characteristic_size,
     supports_structured_hexahedron,
     transformed_circle,
@@ -59,6 +60,11 @@ from .measurements import (
     resolve_target_radius,
 )
 from .references import EntityKind, LogicalEntityRef, logical_ref_sort_key
+from .extrusion_selection import (
+    ExtrusionSourceResolutionError,
+    ExtrusionSourceSelection,
+    resolve_extrusion_source_faces,
+)
 from .types import (
     BooleanResult,
     CurveLoopRef,
@@ -86,6 +92,8 @@ __all__ = [
     "EntityKind",
     "EntityRef",
     "ExtrudedGeometry",
+    "ExtrusionSourceResolutionError",
+    "ExtrusionSourceSelection",
     "FeatureResult",
     "GeometryError",
     "GeometryModel",
@@ -131,9 +139,11 @@ __all__ = [
     "geometry_dimension",
     "logical_ref_sort_key",
     "legacy_sketch_to_strict",
+    "legacy_sketches_to_strict",
     "model",
     "recipe_characteristic_size",
     "resolve_legacy_hole_target",
+    "resolve_extrusion_source_faces",
     "resolve_target_radius",
     "supports_structured_hexahedron",
     "transformed_circle",

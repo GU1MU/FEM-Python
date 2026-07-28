@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMenu,
     QPushButton,
+    QStackedWidget,
     QToolBar,
     QToolButton,
     QVBoxLayout,
@@ -106,14 +107,20 @@ class ScopeCreationBar(QWidget):
     """Persistent completion controls for one guided scope selection."""
 
     createRequested = Signal()
+    cancelRequested = Signal()
+    activeChanged = Signal(bool)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("scopeCreationBar")
+        self.setAutoFillBackground(True)
         self.type_value = QLabel("—", self)
         self.type_value.setObjectName("scopeCreationType")
         self.name_edit = QLineEdit(self)
         self.name_edit.setObjectName("scopeCreationName")
+        self.cancel_button = QPushButton("取消", self)
+        self.cancel_button.setObjectName("scopeCreationCancel")
+        self.cancel_button.clicked.connect(self.cancelRequested)
         self.create_button = QPushButton("创建", self)
         self.create_button.setObjectName("scopeCreationSubmit")
         self.create_button.setEnabled(False)
@@ -126,6 +133,7 @@ class ScopeCreationBar(QWidget):
         layout.addSpacing(12)
         layout.addWidget(QLabel("作用域名称", self))
         layout.addWidget(self.name_edit, 1)
+        layout.addWidget(self.cancel_button)
         layout.addWidget(self.create_button)
         self.hide()
 
@@ -134,6 +142,7 @@ class ScopeCreationBar(QWidget):
         self.name_edit.setText(str(suggested_name))
         self.name_edit.selectAll()
         self.create_button.setEnabled(False)
+        self.activeChanged.emit(True)
         self.show()
 
     def set_selection_ready(self, ready: bool) -> None:
@@ -145,6 +154,7 @@ class ScopeCreationBar(QWidget):
     def finish(self) -> None:
         self.create_button.setEnabled(False)
         self.hide()
+        self.activeChanged.emit(False)
 
 
 class ViewportPanel(QWidget):
@@ -157,10 +167,29 @@ class ViewportPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         self.toolbar = ViewportToolBar(actions, self)
-        self.scope_creation_bar = ScopeCreationBar(self)
+        self.scope_creation_tray = QStackedWidget(self)
+        self.scope_creation_tray.setObjectName("scopeCreationTray")
+        self._scope_creation_idle = QWidget(self.scope_creation_tray)
+        self.scope_creation_bar = ScopeCreationBar(
+            self.scope_creation_tray
+        )
+        self.scope_creation_tray.addWidget(self._scope_creation_idle)
+        self.scope_creation_tray.addWidget(self.scope_creation_bar)
+        self.scope_creation_tray.setCurrentWidget(self._scope_creation_idle)
+        self.scope_creation_bar.activeChanged.connect(
+            self._set_scope_creation_active
+        )
+        self.viewport = viewport
         layout.addWidget(self.toolbar)
         layout.addWidget(viewport, 1)
-        layout.addWidget(self.scope_creation_bar)
+        layout.addWidget(self.scope_creation_tray)
+
+    def _set_scope_creation_active(self, active: bool) -> None:
+        self.scope_creation_tray.setCurrentWidget(
+            self.scope_creation_bar
+            if active
+            else self._scope_creation_idle
+        )
 
     def set_geometry_context(self, enabled: bool) -> None:
         self.toolbar.set_geometry_context(enabled)

@@ -130,6 +130,23 @@ def test_modal_dialog_fit_runs_after_exec_and_coalesces(
     window.close()
 
 
+def test_pending_scope_selection_suppresses_scheduled_dialog_fit(
+    monkeypatch,
+) -> None:
+    app = _application()
+    window = FEMMainWindow()
+    fit_calls = []
+    monkeypatch.setattr(window.viewport, "fit", lambda: fit_calls.append(True))
+    window._pending_analysis_selection = "scope"
+
+    window._schedule_viewport_fit()
+    app.processEvents()
+
+    assert fit_calls == []
+    assert not window._viewport_fit_pending
+    window.close()
+
+
 def test_generic_information_dialog_fits_after_return(
     monkeypatch,
 ) -> None:

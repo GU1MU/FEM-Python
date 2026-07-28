@@ -37,6 +37,7 @@ from fem.application.results import OutputRequestProjection
 from fem.core.immutable_json import thaw_json_mapping
 from fem.core.model import (
     AnalysisStep,
+    BodyForce,
     DisplacementConstraint,
     EdgeLoad,
     GravityLoad,
@@ -158,13 +159,39 @@ class DisplacementDialog(QDialog):
         current: DisplacementConstraint | None = None,
         labels: Sequence[str] | None = None,
         allow_scope_selection: bool = False,
+        scope_selection_kinds: Sequence[str] = (),
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("位移边界条件")
+        supported_scope_kinds = frozenset(
+            str(kind)
+            for kind in scope_selection_kinds
+            if str(kind) in {"node", "edge", "surface"}
+        )
+        if allow_scope_selection and not supported_scope_kinds:
+            supported_scope_kinds = frozenset({"node"})
+        self._scope_selection_kinds = supported_scope_kinds
         self._scope_selection_request: str | None = None
+        self._regions = {
+            kind: [
+                reference
+                for reference in regions
+                if type(reference) is RegionRef and reference.kind == kind
+            ]
+            for kind in ("node_set", "edge", "surface")
+        }
+        if any(type(reference) is not RegionRef for reference in regions):
+            raise TypeError("dialog regions must contain RegionRef values")
+        if any(
+            reference.kind not in self._regions
+            for reference in regions
+        ):
+            raise ValueError(
+                "displacement regions must be node_set, edge, or surface"
+            )
+        self.kind_combo = QComboBox(self)
         self.region_combo = QComboBox(self)
         self.scope_pick_button = QPushButton("创建", self)
-        self.scope_pick_button.setEnabled(bool(allow_scope_selection))
         self.scope_pick_button.clicked.connect(
             self._request_scope_selection
         )
@@ -174,11 +201,14 @@ class DisplacementDialog(QDialog):
         region_layout.addWidget(self.region_combo, 1)
         region_layout.addWidget(self.scope_pick_button)
         self.step_combo = QComboBox(self)
-        references = _typed_regions(regions, "node_set")
-        for reference in references:
-            self.region_combo.addItem(reference.name, reference)
+        for kind, label, selection_kind in (
+            ("node_set", "节点集", "node"),
+            ("edge", "边", "edge"),
+            ("surface", "面", "surface"),
+        ):
+            if self._regions[kind] or selection_kind in supported_scope_kinds:
+                self.kind_combo.addItem(label, kind)
         self.step_combo.addItems(step_names)
-        _select_region(self.region_combo, selected_region)
         self.component_checks: dict[int, QCheckBox] = {}
         self.component_values: dict[int, QDoubleSpinBox] = {}
         component_labels = tuple(str(label) for label in labels or ())
@@ -205,9 +235,9 @@ class DisplacementDialog(QDialog):
         if self.component_checks:
             self.component_checks[1].setChecked(True)
         if current is not None:
-            _select_region(
-                self.region_combo,
-                RegionRef("node_set", str(current.target)),
+            selected_region = RegionRef(
+                getattr(current, "target_kind", "node_set"),
+                str(current.target),
             )
             for component, check in self.component_checks.items():
                 selected = (
@@ -220,6 +250,7 @@ class DisplacementDialog(QDialog):
                     self.component_values[component].setValue(current.value)
         form = QFormLayout()
         configure_form_layout(form)
+        form.addRow("作用域类型", self.kind_combo)
         form.addRow("选择作用域", region_widget)
         form.addRow("分析步", self.step_combo)
         form.addRow("约束分量", component_widget)
@@ -228,33 +259,78 @@ class DisplacementDialog(QDialog):
         self.buttons = _buttons(self)
         self.buttons.button(
             QDialogButtonBox.StandardButton.Ok
-        ).setEnabled(self.region_combo.count() > 0)
+        ).setEnabled(False)
         layout.addWidget(self.buttons)
         self.setMinimumWidth(350)
+        self.kind_combo.currentIndexChanged.connect(self._refresh_regions)
+        self.region_combo.currentIndexChanged.connect(
+            self._update_accept_state
+        )
+        if selected_region is not None:
+            index = self.kind_combo.findData(selected_region.kind)
+            if index >= 0:
+                self.kind_combo.setCurrentIndex(index)
+        self._refresh_regions()
+        _select_region(self.region_combo, selected_region)
+        self._update_accept_state()
 
     def _request_scope_selection(self) -> None:
-        if not self.scope_pick_button.isEnabled():
+        kind = str(self.kind_combo.currentData() or "")
+        request_kind = {
+            "node_set": "node",
+            "edge": "edge",
+            "surface": "surface",
+        }.get(kind)
+        if request_kind not in self._scope_selection_kinds:
             return
-        self._scope_selection_request = "node"
+        self._scope_selection_request = request_kind
         self.reject()
 
     def requested_scope_kind(self) -> str | None:
         return self._scope_selection_request
 
+    def _refresh_regions(self) -> None:
+        current = self.region_combo.currentData()
+        kind = str(self.kind_combo.currentData() or "")
+        self.region_combo.clear()
+        for reference in self._regions.get(kind, ()):
+            self.region_combo.addItem(reference.name, reference)
+        if isinstance(current, RegionRef) and current.kind == kind:
+            _select_region(self.region_combo, current)
+        request_kind = {
+            "node_set": "node",
+            "edge": "edge",
+            "surface": "surface",
+        }.get(kind)
+        self.scope_pick_button.setEnabled(
+            request_kind in self._scope_selection_kinds
+        )
+        self._update_accept_state()
+
+    def _update_accept_state(self) -> None:
+        buttons = getattr(self, "buttons", None)
+        if buttons is None:
+            return
+        buttons.button(
+            QDialogButtonBox.StandardButton.Ok
+        ).setEnabled(isinstance(self.region_combo.currentData(), RegionRef))
+
     def definitions(self) -> tuple[str, tuple[DisplacementConstraint, ...]]:
         region = self.region_combo.currentData()
         if not isinstance(region, RegionRef):
             raise ValueError("请选择约束作用域")
-        target = require_region_kind(region, "node_set")
+        if region.kind not in {"node_set", "edge", "surface"}:
+            raise ValueError("位移边界作用域必须是节点集、边或面")
         step_name = self.step_combo.currentText().strip()
         if not step_name:
             raise ValueError("请选择分析步")
         values = tuple(
             DisplacementConstraint(
-                target,
+                region.name,
                 component,
                 component,
                 self.component_values[component].value(),
+                target_kind=region.kind,
             )
             for component, check in self.component_checks.items()
             if check.isChecked()
@@ -277,6 +353,7 @@ class LoadDialog(QDialog):
         *,
         spatial_dimensions: int | None = None,
         line_regions: Sequence[RegionRef] | None = None,
+        body_regions: Sequence[RegionRef] | None = None,
         selected_region: RegionRef | None = None,
         preferred_kind: str | None = None,
         current: (
@@ -284,6 +361,7 @@ class LoadDialog(QDialog):
             | EdgeLoad
             | SurfaceLoad
             | LineLoad
+            | BodyForce
             | GravityLoad
             | None
         ) = None,
@@ -298,7 +376,7 @@ class LoadDialog(QDialog):
         supported_scope_kinds = frozenset(
             str(kind)
             for kind in scope_selection_kinds
-            if str(kind) in {"node", "edge", "surface", "line"}
+            if str(kind) in {"node", "edge", "surface", "line", "body"}
         )
         self._scope_selection_kinds = supported_scope_kinds
         self._scope_selection_request: str | None = None
@@ -321,6 +399,7 @@ class LoadDialog(QDialog):
             "edge": list(_typed_regions(edge_regions, "edge")),
             "surface": list(_typed_regions(face_regions, "surface")),
             "line": resolved_line_regions,
+            "body": list(_typed_regions(body_regions or (), "element_set")),
         }
         self.dimensions = dimensions
         self.spatial_dimensions = int(
@@ -341,11 +420,13 @@ class LoadDialog(QDialog):
         if self._regions["node"] or "node" in supported_scope_kinds:
             self.kind_combo.addItem("节点力", "node")
         if self._regions["edge"] or "edge" in supported_scope_kinds:
-            self.kind_combo.addItem("边载荷", "edge")
+            self.kind_combo.addItem("边力", "edge")
         if self._regions["surface"] or "surface" in supported_scope_kinds:
-            self.kind_combo.addItem("面载荷", "surface")
+            self.kind_combo.addItem("面力", "surface")
         if resolved_line_regions or "line" in supported_scope_kinds:
-            self.kind_combo.addItem("梁线载荷", "line")
+            self.kind_combo.addItem("边力", "line")
+        if self._regions["body"] or "body" in supported_scope_kinds:
+            self.kind_combo.addItem("体力", "body")
         self.kind_combo.addItem("重力", "gravity")
         self._gravity_target = (
             current.target if isinstance(current, GravityLoad) else None
@@ -382,6 +463,7 @@ class LoadDialog(QDialog):
             "edge": zero_vector,
             "surface": zero_vector,
             "line": (0.0, 0.0, 0.0),
+            "body": zero_vector,
             "gravity": tuple(gravity_vector),
         }
         self._active_vector_kind: str | None = None
@@ -456,6 +538,16 @@ class LoadDialog(QDialog):
             line_vector += (0.0,) * (3 - len(line_vector))
             self._set_distributed_values(line_vector, None)
             self._vector_values["line"] = line_vector
+        elif isinstance(current, BodyForce):
+            self.kind_combo.setCurrentIndex(
+                max(0, self.kind_combo.findData("body"))
+            )
+            selected_region = RegionRef(
+                "element_set",
+                str(current.target),
+            )
+            self._set_distributed_values(tuple(current.vector), None)
+            self._vector_values["body"] = tuple(current.vector)
         elif isinstance(current, GravityLoad):
             self.kind_combo.setCurrentIndex(
                 max(0, self.kind_combo.findData("gravity"))
@@ -574,9 +666,17 @@ class LoadDialog(QDialog):
         self.form.labelForField(self.value_spin).setText(
             "压力值" if pressure and distributed else "载荷值"
         )
-        show_vector = gravity or line_load or (distributed and not pressure)
+        body_load = kind == "body"
+        show_vector = (
+            gravity
+            or body_load
+            or line_load
+            or (distributed and not pressure)
+        )
         if gravity:
             vector_labels = ("ax", "ay", "az")
+        elif body_load:
+            vector_labels = ("bx", "by", "bz")
         elif line_load:
             vector_labels = ("q1", "q2", "q3")
         else:
@@ -680,7 +780,7 @@ class LoadDialog(QDialog):
             if not _authoring_candidate_enabled(decision):
                 QMessageBox.warning(
                     self,
-                    "梁线载荷",
+                    "边力",
                     _authoring_candidate_message(decision),
                 )
                 return
@@ -709,6 +809,7 @@ class LoadDialog(QDialog):
             "edge": "edge",
             "surface": "surface",
             "line": "element_set",
+            "body": "element_set",
         }.get(kind)
         if expected_kind is None:
             raise ValueError("当前没有可用的载荷作用域")
@@ -728,17 +829,31 @@ class LoadDialog(QDialog):
                 for spin in (self.x_spin, self.y_spin, self.z_spin)
             )
             if len(vector) != 3 or not all(isfinite(value) for value in vector):
-                raise ValueError("梁线载荷必须包含三个有限分量")
+                raise ValueError("梁单元边力必须包含三个有限分量")
             coordinate_system = str(
                 self.coordinate_system_combo.currentData() or ""
             )
             if coordinate_system not in {"global", "local"}:
-                raise ValueError("梁线载荷坐标系只能为 global 或 local")
+                raise ValueError("梁单元边力坐标系只能为 global 或 local")
             return step, LineLoad(
                 target,
                 vector,
                 coordinate_system=coordinate_system,
             )
+        if kind == "body":
+            vector = tuple(
+                spin.value()
+                for spin in (self.x_spin, self.y_spin, self.z_spin)[
+                    :self.spatial_dimensions
+                ]
+            )
+            if len(vector) != self.spatial_dimensions or not all(
+                isfinite(value) for value in vector
+            ):
+                raise ValueError(
+                    "体力必须包含与空间维数一致的有限分量"
+                )
+            return step, BodyForce(target, vector)
         load_type = str(self.load_type_combo.currentData())
         if load_type == "pressure":
             return step, (EdgeLoad(target, magnitude=self.value_spin.value(), load_type="pressure") if kind == "edge" else SurfaceLoad(target, magnitude=self.value_spin.value(), load_type="pressure"))
@@ -917,6 +1032,8 @@ class AnalysisDefinitionManagerDialog(QDialog):
         *,
         spatial_dimensions: int | None = None,
         line_regions: Sequence[RegionRef] | None = None,
+        body_regions: Sequence[RegionRef] | None = None,
+        boundary_regions: Sequence[RegionRef] | None = None,
         dof_labels: Sequence[str] | None = None,
         force_labels: Sequence[str] | None = None,
         candidate_evaluator: Callable[..., AuthoringCapability] | None = None,
@@ -932,6 +1049,26 @@ class AnalysisDefinitionManagerDialog(QDialog):
         self.line_regions = list(
             _typed_regions(line_regions or (), "element_set")
         )
+        self.body_regions = list(
+            _typed_regions(body_regions or (), "element_set")
+        )
+        raw_boundary_regions = (
+            boundary_regions
+            if boundary_regions is not None
+            else (*self.node_regions, *self.edge_regions, *self.face_regions)
+        )
+        self.boundary_regions: list[RegionRef] = []
+        for reference in raw_boundary_regions:
+            if type(reference) is not RegionRef:
+                raise TypeError(
+                    "boundary regions must contain RegionRef values"
+                )
+            if reference.kind not in {"node_set", "edge", "surface"}:
+                raise ValueError(
+                    "boundary regions must be node_set, edge, or surface"
+                )
+            if reference not in self.boundary_regions:
+                self.boundary_regions.append(reference)
         self.dimensions = int(dimensions)
         self.dof_labels = tuple(str(label) for label in dof_labels or ())
         self.force_labels = tuple(
@@ -1023,7 +1160,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
             for item_index, load in enumerate(step.edge_loads):
                 self._append_row(
                     (
-                        "边载荷",
+                        "边力",
                         step.name,
                         load.edge,
                         self._distributed_text(load),
@@ -1033,7 +1170,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
             for item_index, load in enumerate(step.surface_loads):
                 self._append_row(
                     (
-                        "面载荷",
+                        "面力",
                         step.name,
                         load.surface,
                         self._distributed_text(load),
@@ -1043,12 +1180,22 @@ class AnalysisDefinitionManagerDialog(QDialog):
             for item_index, load in enumerate(step.line_loads):
                 self._append_row(
                     (
-                        "梁线载荷",
+                        "边力",
                         step.name,
                         str(load.target),
                         self._line_load_text(load),
                     ),
                     ("line_load", step_index, item_index),
+                )
+            for item_index, load in enumerate(step.body_loads):
+                self._append_row(
+                    (
+                        "体力",
+                        step.name,
+                        str(load.target),
+                        self._body_force_text(load),
+                    ),
+                    ("body_load", step_index, item_index),
                 )
             for item_index, load in enumerate(step.gravity_loads):
                 self._append_row(
@@ -1106,6 +1253,12 @@ class AnalysisDefinitionManagerDialog(QDialog):
     def _gravity_text(load: GravityLoad) -> str:
         return "加速度 = (" + ", ".join(
             f"{value:g}" for value in load.acceleration
+        ) + ")"
+
+    @staticmethod
+    def _body_force_text(load: BodyForce) -> str:
+        return "力密度 = (" + ", ".join(
+            f"{value:g}" for value in load.vector
         ) + ")"
 
     @staticmethod
@@ -1230,14 +1383,19 @@ class AnalysisDefinitionManagerDialog(QDialog):
             step.name = updated.name
         elif kind == "boundary":
             current = step.boundaries[int(item_index)]
+            current_region = RegionRef(
+                getattr(current, "target_kind", "node_set"),
+                str(current.target),
+            )
             dialog = DisplacementDialog(
                 [item.name for item in self.steps],
                 self._with_existing(
-                    self.node_regions,
-                    RegionRef("node_set", str(current.target)),
+                    self.boundary_regions,
+                    current_region,
                 ),
                 self.dimensions,
                 self,
+                selected_region=current_region,
                 current=current,
                 labels=self.dof_labels,
             )
@@ -1262,6 +1420,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
             "edge_load",
             "surface_load",
             "line_load",
+            "body_load",
             "gravity_load",
         }:
             collection_name = {
@@ -1269,6 +1428,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
                 "edge_load": "edge_loads",
                 "surface_load": "surface_loads",
                 "line_load": "line_loads",
+                "body_load": "body_loads",
                 "gravity_load": "gravity_loads",
             }[kind]
             collection = tuple(getattr(step, collection_name))
@@ -1300,6 +1460,12 @@ class AnalysisDefinitionManagerDialog(QDialog):
                     self.line_regions,
                     RegionRef("element_set", str(current.target))
                     if kind == "line_load"
+                    else None,
+                ),
+                body_regions=self._with_existing(
+                    self.body_regions,
+                    RegionRef("element_set", str(current.target))
+                    if kind == "body_load"
                     else None,
                 ),
                 current=current,
@@ -1394,6 +1560,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
                 "edge_load": "edge_loads",
                 "surface_load": "surface_loads",
                 "line_load": "line_loads",
+                "body_load": "body_loads",
                 "gravity_load": "gravity_loads",
                 "output": "outputs",
             }[kind]
@@ -1415,7 +1582,14 @@ class AnalysisDefinitionManagerDialog(QDialog):
     @staticmethod
     def _append_load(
         step: AnalysisStep,
-        load: NodalLoad | EdgeLoad | SurfaceLoad | LineLoad | GravityLoad,
+        load: (
+            NodalLoad
+            | EdgeLoad
+            | SurfaceLoad
+            | LineLoad
+            | BodyForce
+            | GravityLoad
+        ),
     ) -> None:
         if isinstance(load, NodalLoad):
             step.cloads = tuple(step.cloads) + (load,)
@@ -1425,6 +1599,8 @@ class AnalysisDefinitionManagerDialog(QDialog):
             step.surface_loads = tuple(step.surface_loads) + (load,)
         elif isinstance(load, LineLoad):
             step.line_loads = tuple(step.line_loads) + (load,)
+        elif isinstance(load, BodyForce):
+            step.body_loads = tuple(step.body_loads) + (load,)
         else:
             step.gravity_loads = tuple(step.gravity_loads) + (load,)
 

@@ -107,6 +107,7 @@ class PreflightFacts:
     edge_load_count: int = 0
     surface_load_count: int = 0
     line_load_count: int = 0
+    body_load_count: int = 0
     gravity_load_count: int = 0
 
 

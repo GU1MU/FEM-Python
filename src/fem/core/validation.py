@@ -7,6 +7,7 @@ from numbers import Real
 from typing import Any
 
 from .model import model_element_info
+from ._constraint_targets import displacement_target_kind
 
 
 _MESH_ATTRIBUTES = (
@@ -445,7 +446,14 @@ def _validate_step_references(
         else effective_boundaries
     )
     for constraint in boundaries:
-        _validate_node_target(constraint.target, node_ids, node_sets, step.name)
+        _validate_displacement_target(
+            constraint,
+            node_ids,
+            node_sets,
+            surfaces,
+            edges,
+            step.name,
+        )
         first = _integer_id(
             constraint.first_component,
             f"analysis step {step.name} constraint first component",
@@ -515,6 +523,36 @@ def _validate_step_references(
                 "line load coordinate_system must be 'global' or 'local', "
                 f"got {getattr(load, 'coordinate_system', None)!r}"
             )
+    for load in getattr(step, "body_loads", ()):
+        element_ids = _body_load_element_ids(
+            load.target,
+            element_lookup,
+            all_element_sets,
+            step.name,
+        )
+        for element_id in element_ids:
+            capabilities = _element_capabilities(
+                element_lookup[element_id].type
+            )
+            if "body" not in capabilities.load_kinds:
+                raise ValueError(
+                    f"element {element_id} does not support body force"
+                )
+        vector = getattr(load, "vector", None)
+        if not isinstance(vector, Sequence) or isinstance(
+            vector,
+            (str, bytes),
+        ):
+            raise ValueError(
+                "body force vector must contain finite spatial components"
+            )
+        if len(vector) != spatial_dimension:
+            raise ValueError(
+                f"body force vector must contain {spatial_dimension} "
+                "finite spatial components"
+            )
+        for value in vector:
+            _finite_scalar(value, "body force vector component")
     for load in getattr(step, "gravity_loads", ()):
         _validate_gravity_load(
             model,
@@ -687,6 +725,38 @@ def _line_load_element_ids(
     return (element_id,)
 
 
+def _body_load_element_ids(
+    target: Any,
+    element_lookup: Mapping[int, Any],
+    element_sets: Mapping[Any, Any],
+    step_name: str,
+) -> tuple[int, ...]:
+    """Resolve and validate one body-force element target."""
+    if isinstance(target, str):
+        if target not in element_sets:
+            raise KeyError(
+                f"analysis step {step_name} body force references missing "
+                f"element set {target}"
+            )
+        return tuple(
+            _integer_id(
+                value,
+                f"analysis step {step_name} body force element id",
+            )
+            for value in element_sets[target].element_ids
+        )
+    element_id = _integer_id(
+        target,
+        f"analysis step {step_name} body force target",
+    )
+    if element_id not in element_lookup:
+        raise KeyError(
+            f"analysis step {step_name} body force references missing "
+            f"element {element_id}"
+        )
+    return (element_id,)
+
+
 def _validate_unique_step_names(steps: Sequence[Any]) -> None:
     """Require model step names to be unique without case distinctions."""
     seen: dict[str, str] = {}
@@ -717,6 +787,31 @@ def _validate_node_target(
     if node_id not in node_ids:
         raise KeyError(
             f"analysis step {step_name} references missing node {node_id}"
+        )
+
+
+def _validate_displacement_target(
+    constraint: Any,
+    node_ids: set[int],
+    node_sets: Mapping[Any, Any],
+    surfaces: Mapping[Any, Any],
+    edges: Mapping[Any, Any],
+    step_name: str,
+) -> None:
+    kind = displacement_target_kind(constraint)
+    target = constraint.target
+    if kind == "node_set":
+        _validate_node_target(target, node_ids, node_sets, step_name)
+        return
+    if not isinstance(target, str):
+        raise TypeError(
+            f"analysis step {step_name} {kind} constraint target "
+            "must be a region name"
+        )
+    collection = edges if kind == "edge" else surfaces
+    if target not in collection:
+        raise KeyError(
+            f"analysis step {step_name} references missing {kind} {target}"
         )
 
 

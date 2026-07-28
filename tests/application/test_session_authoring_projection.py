@@ -61,6 +61,9 @@ def test_native_projection_preserves_target_namespaces_and_order() -> None:
     assert projection.target(
         RegionRef("node_set", "LEFT")
     ).operation("boundary.displacement").can_submit
+    assert projection.target(
+        RegionRef("edge", "LEFT")
+    ).operation("boundary.displacement").can_submit
 
 
 def test_imported_beam_projection_uses_canonical_model_regions() -> None:

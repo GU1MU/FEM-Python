@@ -7,6 +7,8 @@ import math
 from numbers import Real
 from typing import Literal
 
+from .references import LogicalEntityRef, logical_ref_sort_key
+
 
 def _normalize_wire_name(value: object, field_name: str) -> str:
     if type(value) is not str:
@@ -901,6 +903,7 @@ class ExtrudedGeometry:
 
     base: object
     height: float
+    source_face_ids: tuple[str, ...] = ()
 
     @property
     def name(self) -> str:
@@ -922,7 +925,34 @@ class ExtrudedGeometry:
         height = float(self.height)
         if height <= 0.0 or not math.isfinite(height):
             raise ValueError("拉伸高度必须大于零")
+        if isinstance(self.source_face_ids, (str, bytes, bytearray)):
+            raise TypeError("source_face_ids 必须是 face logical ID iterable")
+        try:
+            requested_ids = tuple(self.source_face_ids)
+        except TypeError as error:
+            raise TypeError(
+                "source_face_ids 必须是 face logical ID iterable"
+            ) from error
+        references = tuple(LogicalEntityRef(value) for value in requested_ids)
+        if any(reference.kind != "face" for reference in references):
+            raise ValueError("source_face_ids 只能包含 face logical IDs")
+        if len(references) != len(set(reference.logical_id for reference in references)):
+            raise ValueError("source_face_ids 不能包含重复 logical IDs")
+        normalized_ids: tuple[str, ...] = ()
+        if references:
+            from .extrusion_selection import resolve_extrusion_source_faces
+
+            normalized_ids = resolve_extrusion_source_faces(
+                self.base,
+                references,
+            ).face_ids
+        else:
+            normalized_ids = tuple(
+                reference.logical_id
+                for reference in sorted(references, key=logical_ref_sort_key)
+            )
         object.__setattr__(self, "height", height)
+        object.__setattr__(self, "source_face_ids", normalized_ids)
 
 
 @dataclass(frozen=True, slots=True)

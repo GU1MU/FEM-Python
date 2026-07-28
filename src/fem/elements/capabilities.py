@@ -10,7 +10,9 @@ _ELEMENT_FAMILIES = frozenset(
     {"plane_continuum", "solid_continuum", "truss", "beam"}
 )
 _SECTION_FAMILIES = frozenset({"solid", "truss", "beam"})
-_LOAD_KINDS = frozenset({"node", "edge", "surface", "line", "gravity"})
+_LOAD_KINDS = frozenset(
+    {"node", "edge", "surface", "line", "body", "gravity"}
+)
 
 
 class ElementCapabilityStatus(str, Enum):

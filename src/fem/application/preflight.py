@@ -668,6 +668,7 @@ def _preflight_facts(
         edge_load_count=len(getattr(step, "edge_loads", ())),
         surface_load_count=len(getattr(step, "surface_loads", ())),
         line_load_count=len(getattr(step, "line_loads", ())),
+        body_load_count=len(getattr(step, "body_loads", ())),
         gravity_load_count=len(getattr(step, "gravity_loads", ())),
     )
 

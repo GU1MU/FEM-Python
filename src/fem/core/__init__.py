@@ -13,6 +13,7 @@ from .mesh import (
 )
 from .model import (
     AnalysisStep,
+    BodyForce,
     DisplacementConstraint,
     Edge,
     EdgeLoad,
@@ -43,6 +44,7 @@ from .validation import (
 
 __all__ = [
     "AnalysisStep",
+    "BodyForce",
     "DisplacementConstraint",
     "DofMap",
     "Edge",

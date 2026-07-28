@@ -25,6 +25,7 @@ from fem.geometry.recipe_topology import describe_recipe_topology
 from fem.geometry.recipes import (
     BoxGeometry,
     CylinderGeometry,
+    ExtrudedGeometry,
     RectangleGeometry,
     WireGeometry,
     WireMember,
@@ -35,6 +36,10 @@ from tests.helpers.preflight_builders import passing_preflight_report
 from tests.helpers.result_builders import (
     assert_result_records_equivalent,
     make_solve_result_bundle,
+)
+from tests.geometry.test_profile_extrusion import (
+    profile_face_id,
+    two_profile_sketch,
 )
 
 
@@ -64,6 +69,48 @@ def _wire_recipe(
     if reconnected:
         members[1] = WireMember("M2", "P1", "P3")
     return WireGeometry("Wire", points, tuple(members))
+
+
+def test_profile_selection_edit_preserves_only_surviving_lineage() -> None:
+    sketch = two_profile_sketch()
+    first = profile_face_id(sketch, "L1")
+    second = profile_face_id(sketch, "L5")
+    first_name = first.split(":", 1)[1]
+    before = ExtrudedGeometry(sketch, 1.0, (first, second))
+    after = ExtrudedGeometry(sketch, 1.0, (first,))
+    removed_side = LogicalEntityRef(f"face:side/{first_name}/L1")
+    session = ModelSession()
+    session.new_native_project()
+    session.replace_native_geometry_inputs(
+        (NativePart(),),
+        before,
+        mesh_settings=MeshSettings(
+            0.5,
+            cell_shape="tetrahedron",
+            local_controls=(LocalMeshControl(removed_side, 0.2),),
+        ),
+    )
+    session.replace_named_regions(
+        (
+            NamedRegion(
+                "Body",
+                (LogicalEntityRef("body:domain"),),
+            ),
+            NamedRegion("ProfileSide", (removed_side,)),
+        )
+    )
+
+    delta = session.replace_native_geometry_inputs(
+        (NativePart(),),
+        after,
+    )
+    snapshot = session.snapshot()
+
+    assert tuple(snapshot.named_regions) == ("Body",)
+    assert snapshot.mesh_settings is not None
+    assert snapshot.mesh_settings.local_controls == ()
+    assert TransitionEffect.NAMED_REGIONS_CLEARED in delta.effects
+    assert TransitionEffect.LOCAL_CONTROLS_CLEARED in delta.effects
 
 
 def test_new_geometry_creates_dimension_aware_default_mesh_settings() -> None:

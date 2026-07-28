@@ -347,6 +347,59 @@ def legacy_sketch_to_strict(recipe: SketchGeometry) -> SketchGeometry:
     return SketchGeometry(recipe.name, SketchPlane.xy(), tuple(points), tuple(curves))
 
 
+def legacy_sketches_to_strict(recipe: NativeGeometry) -> NativeGeometry:
+    """Recursively canonicalize legacy sketches in one feature tree."""
+
+    _require_native_geometry(recipe)
+    if type(recipe) is SketchGeometry:
+        return legacy_sketch_to_strict(recipe) if recipe.is_legacy else recipe
+    if type(recipe) is MovedGeometry:
+        base = legacy_sketches_to_strict(recipe.base)
+        if base is recipe.base:
+            return recipe
+        return MovedGeometry(
+            base,
+            recipe.dx,
+            recipe.dy,
+            recipe.dz,
+        )
+    if type(recipe) is RotatedGeometry:
+        base = legacy_sketches_to_strict(recipe.base)
+        if base is recipe.base:
+            return recipe
+        return RotatedGeometry(
+            base,
+            recipe.axis,
+            recipe.angle_degrees,
+        )
+    if type(recipe) is ExtrudedGeometry:
+        base = legacy_sketches_to_strict(recipe.base)
+        if base is recipe.base:
+            return recipe
+        return ExtrudedGeometry(
+            base,
+            recipe.height,
+            recipe.source_face_ids,
+        )
+    if type(recipe) is BooleanGeometry:
+        object_geometry = legacy_sketches_to_strict(
+            recipe.object_geometry
+        )
+        tool_geometry = legacy_sketches_to_strict(recipe.tool_geometry)
+        if (
+            object_geometry is recipe.object_geometry
+            and tool_geometry is recipe.tool_geometry
+        ):
+            return recipe
+        return BooleanGeometry(
+            recipe.name,
+            recipe.operation,
+            object_geometry,
+            tool_geometry,
+        )
+    return recipe
+
+
 def analyze_sketch_profiles(
     sketch: SketchGeometry,
     *,
@@ -1231,6 +1284,7 @@ __all__ = [
     "axis_aligned_rectangle",
     "expand_sketch_recipe",
     "legacy_sketch_to_strict",
+    "legacy_sketches_to_strict",
     "recipe_characteristic_size",
     "supports_structured_hexahedron",
     "transformed_circle",

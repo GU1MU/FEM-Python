@@ -133,7 +133,7 @@ def test_line_load_is_a_regular_load_tree_item():
         item for item in _items(tree)
         if item.data(0, ROLE_KIND) == "line_load"
     )
-    assert line_load.text(0) == "梁均布载荷 1"
+    assert line_load.text(0) == "边力 1"
     assert not line_load.icon(0).isNull()
 
 

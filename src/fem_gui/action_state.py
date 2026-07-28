@@ -14,10 +14,12 @@ from fem.application.results import FieldState
 from fem.geometry import (
     BooleanGeometry,
     ExtrudedGeometry,
+    ExtrusionSourceResolutionError,
     MovedGeometry,
     NATIVE_GEOMETRY_TYPES,
     RotatedGeometry,
     geometry_dimension,
+    resolve_extrusion_source_faces,
 )
 from fem.geometry.references import LogicalEntityRef
 from fem.mesh.settings import MeshSettings
@@ -387,10 +389,53 @@ def derive_action_availability(
             and not busy,
             "One-dimensional wire geometry does not support this feature",
         )
+    extrude_enabled = False
+    extrude_reason = "请先创建二维草图或平面几何"
+    if (
+        has_native_geometry
+        and geometry_dimension(recipe) == 2
+        and not busy
+    ):
+        if context.geometry_selection and any(
+            reference.kind != "face"
+            for reference in context.geometry_selection
+        ):
+            extrude_reason = "当前选择包含非面实体"
+        else:
+            try:
+                all_sources = resolve_extrusion_source_faces(recipe)
+                requested_sources = (
+                    resolve_extrusion_source_faces(
+                        recipe,
+                        context.geometry_selection,
+                    )
+                    if context.geometry_selection
+                    else None
+                )
+            except ExtrusionSourceResolutionError as error:
+                extrude_reason = {
+                    "extrude.source-face.topology-unproven": (
+                        "当前二维拓扑无法安全拉伸"
+                    ),
+                    "extrude.source-face.unknown": (
+                        "所选 Profile 已失效，请重新选择"
+                    ),
+                }.get(error.code, str(error))
+            else:
+                if (
+                    len(all_sources.face_ids) > 1
+                    and requested_sources is None
+                ):
+                    extrude_reason = (
+                        "该草图包含多个 Profile，请先选择至少一个二维面"
+                    )
+                else:
+                    extrude_enabled = True
+                    extrude_reason = ""
     set_state(
         GuiActionKey.GEOMETRY_EXTRUDE,
-        has_native_geometry and geometry_dimension(recipe) == 2 and not busy,
-        "请先创建二维草图或平面几何",
+        extrude_enabled,
+        extrude_reason,
     )
     set_state(
         GuiActionKey.GEOMETRY_UNDO,
@@ -535,6 +580,7 @@ def derive_action_availability(
         "load.node",
         "load.edge",
         "load.surface",
+        "load.body",
         "load.line.global",
         "load.line.local",
     )

@@ -10,6 +10,10 @@ from numbers import Real
 from typing import Any
 
 from fem.application import RegionRef, resolve_effective_beam_frames
+from fem.core._constraint_targets import (
+    displacement_target_kind,
+    resolve_displacement_node_ids,
+)
 from fem.application.results import (
     ElementResultInspectionRequest,
     FieldPosition,
@@ -147,6 +151,10 @@ class InspectionService:
         self.node_analysis: dict[int, list[tuple[str, str, str, float, EntityReference]]] = defaultdict(list)
         self.node_set_boundaries: dict[str, list[EntityReference]] = defaultdict(list)
         self.node_set_loads: dict[str, list[EntityReference]] = defaultdict(list)
+        self.region_boundaries: dict[
+            tuple[str, str],
+            list[EntityReference],
+        ] = defaultdict(list)
         self.region_loads: dict[tuple[str, str], list[EntityReference]] = defaultdict(list)
         self._all_element_sets = dict(model.element_sets)
         self._all_element_sets.update(model.metadata.get("_abaqus_internal_element_sets", {}))
@@ -199,10 +207,21 @@ class InspectionService:
         for step_index, step in enumerate(self.model.steps):
             for index, boundary in enumerate(step.boundaries):
                 reference = EntityReference("boundary", (step_index, index))
+                target_kind = displacement_target_kind(boundary)
                 if isinstance(boundary.target, str):
-                    self.node_set_boundaries[str(boundary.target)].append(reference)
+                    if target_kind == "node_set":
+                        self.node_set_boundaries[str(boundary.target)].append(
+                            reference
+                        )
+                    else:
+                        self.region_boundaries[
+                            (target_kind, str(boundary.target))
+                        ].append(reference)
                 component = _component_range(boundary.first_component, boundary.last_component)
-                for node_id in self.target_node_ids(boundary.target):
+                for node_id in resolve_displacement_node_ids(
+                    self.model,
+                    boundary,
+                ):
                     self.node_analysis[node_id].append(
                         (step.name, "位移边界条件", component, float(boundary.value), reference)
                     )
@@ -212,7 +231,7 @@ class InspectionService:
                     self.node_set_loads[str(load.target)].append(reference)
                 for node_id in self.target_node_ids(load.target):
                     self.node_analysis[node_id].append(
-                        (step.name, "节点载荷", f"U{load.component}", float(load.value), reference)
+                        (step.name, "节点力", f"U{load.component}", float(load.value), reference)
                     )
             for index, load in enumerate(step.surface_loads):
                 self.region_loads[("surface", load.surface)].append(
@@ -285,6 +304,7 @@ class InspectionService:
             "boundary": self._inspect_boundary, "cload": self._inspect_cload,
             "surface_load": self._inspect_surface_load, "edge_load": self._inspect_edge_load,
             "line_load": self._inspect_line_load,
+            "body_load": self._inspect_body_load,
             "gravity_load": self._inspect_gravity_load,
             "assignment": self._inspect_assignment,
             "output": self._inspect_output,
@@ -319,7 +339,12 @@ class InspectionService:
             )
         if kind == "boundary":
             step_index, index = key
-            return EntitySelection(node_ids=self.target_node_ids(self.model.steps[step_index].boundaries[index].target))
+            return EntitySelection(
+                node_ids=resolve_displacement_node_ids(
+                    self.model,
+                    self.model.steps[step_index].boundaries[index],
+                )
+            )
         if kind == "cload":
             step_index, index = key
             return EntitySelection(node_ids=self.target_node_ids(self.model.steps[step_index].cloads[index].target))
@@ -333,6 +358,11 @@ class InspectionService:
             step_index, index = key
             return EntitySelection(element_ids=self.target_element_ids(
                 self.model.steps[step_index].line_loads[index].target
+            ))
+        if kind == "body_load":
+            step_index, index = key
+            return EntitySelection(element_ids=self.target_element_ids(
+                self.model.steps[step_index].body_loads[index].target
             ))
         if kind == "gravity_load":
             step_index, index = key
@@ -544,7 +574,7 @@ class InspectionService:
         fields = (
             ("名称", name), ("节点数量", str(len(item.node_ids))),
             ("边界条件引用", self._reference_names(self.node_set_boundaries.get(name, ()))),
-            ("节点载荷引用", self._reference_names(self.node_set_loads.get(name, ()))),
+            ("节点力引用", self._reference_names(self.node_set_loads.get(name, ()))),
         )
         table = InspectionTable("成员节点", ("节点编号", "X", "Y", "Z"), rows,
                                 tuple(EntityReference("node", int(row[0])) for row in rows))
@@ -585,6 +615,7 @@ class InspectionService:
         fields = (
             ("名称", name), ("类型", label), (f"{label}数量", str(len(members))),
             ("涉及单元数量", str(len({member.elem_id for member in members}))),
+            ("边界条件引用", self._reference_names(self.region_boundaries.get((kind, name), ()))),
             ("载荷引用", self._reference_names(self.region_loads.get((kind, name), ()))),
         )
         table = InspectionTable(f"成员{label}", ("单元编号", f"局部{label}编号", "节点编号"), rows,
@@ -779,6 +810,7 @@ class InspectionService:
             + len(step.surface_loads)
             + len(step.edge_loads)
             + len(step.line_loads)
+            + len(step.body_loads)
             + len(step.gravity_loads)
         )
         pages = [InspectionPage("概况", (
@@ -797,7 +829,7 @@ class InspectionService:
         load_rows: list[tuple[str, ...]] = []
         load_refs: list[EntityReference] = []
         for index, item in enumerate(step.cloads):
-            load_rows.append((str(len(load_rows) + 1), "节点载荷", str(item.target), f"U{item.component}", format_number(item.value)))
+            load_rows.append((str(len(load_rows) + 1), "节点力", str(item.target), f"U{item.component}", format_number(item.value)))
             load_refs.append(EntityReference("cload", (step_index, index)))
         for kind, items, target_name in (("surface_load", step.surface_loads, "surface"), ("edge_load", step.edge_loads, "edge")):
             for index, item in enumerate(items):
@@ -808,7 +840,7 @@ class InspectionService:
         for index, item in enumerate(step.line_loads):
             load_rows.append((
                 str(len(load_rows) + 1),
-                "梁均布载荷",
+                "边力",
                 str(item.target),
                 (
                     "局部（Beam 已解析局部坐标）"
@@ -818,6 +850,15 @@ class InspectionService:
                 ", ".join(format_number(value) for value in item.vector),
             ))
             load_refs.append(EntityReference("line_load", (step_index, index)))
+        for index, item in enumerate(step.body_loads):
+            load_rows.append((
+                str(len(load_rows) + 1),
+                "体力",
+                str(item.target),
+                "全局坐标",
+                ", ".join(format_number(value) for value in item.vector),
+            ))
+            load_refs.append(EntityReference("body_load", (step_index, index)))
         for index, item in enumerate(step.gravity_loads):
             load_rows.append((
                 str(len(load_rows) + 1),
@@ -849,9 +890,11 @@ class InspectionService:
         step_index, index = key
         step = self.model.steps[step_index]
         item = step.boundaries[index]
+        node_ids = resolve_displacement_node_ids(self.model, item)
         fields = (
             ("所属分析步", step.name), ("类型", "位移边界条件"), ("目标区域", str(item.target)),
-            ("目标节点数量", str(len(self.target_node_ids(item.target)))),
+            ("作用域类型", displacement_target_kind(item)),
+            ("目标节点数量", str(len(node_ids))),
             ("约束分量", _component_range(item.first_component, item.last_component)),
             ("数值", format_number(item.value)),
         )
@@ -864,10 +907,10 @@ class InspectionService:
         step_index, index = key
         step = self.model.steps[step_index]
         item = step.cloads[index]
-        fields = (("所属分析步", step.name), ("类型", "节点载荷"), ("目标", str(item.target)),
+        fields = (("所属分析步", step.name), ("类型", "节点力"), ("目标", str(item.target)),
                   ("目标节点数量", str(len(self.target_node_ids(item.target)))),
                   ("分量", f"U{item.component}"), ("数值", format_number(item.value)))
-        return EntityInspection("节点载荷", "cload", key, (InspectionPage("载荷", fields),))
+        return EntityInspection("节点力", "cload", key, (InspectionPage("载荷", fields),))
 
     def _inspect_surface_load(self, key: object) -> EntityInspection:
         return self._inspect_distributed_load("surface_load", key)
@@ -881,7 +924,7 @@ class InspectionService:
         item = step.line_loads[index]
         fields = (
             ("所属分析步", step.name),
-            ("类型", "梁均布载荷"),
+            ("类型", "边力（梁单元分布力）"),
             ("目标", str(item.target)),
             ("目标单元数量", str(len(self.target_element_ids(item.target)))),
             (
@@ -895,7 +938,7 @@ class InspectionService:
             ("载荷向量", ", ".join(format_number(value) for value in item.vector)),
         )
         return EntityInspection(
-            "梁均布载荷", "line_load", key,
+            "边力", "line_load", key,
             (InspectionPage("载荷", fields),),
         )
 
@@ -925,6 +968,26 @@ class InspectionService:
             (InspectionPage("载荷", fields),),
         )
 
+    def _inspect_body_load(self, key: object) -> EntityInspection:
+        step_index, index = key
+        step = self.model.steps[step_index]
+        item = step.body_loads[index]
+        fields = (
+            ("所属分析步", step.name),
+            ("类型", "体力"),
+            ("目标", str(item.target)),
+            (
+                "力密度向量",
+                ", ".join(format_number(value) for value in item.vector),
+            ),
+        )
+        return EntityInspection(
+            "体力",
+            "body_load",
+            key,
+            (InspectionPage("载荷", fields),),
+        )
+
     def _inspect_distributed_load(self, kind: str, key: object) -> EntityInspection:
         step_index, index = key
         step = self.model.steps[step_index]
@@ -938,7 +1001,7 @@ class InspectionService:
             fields.append(("方向或向量", ", ".join(format_number(value) for value in item.vector)))
         if item.magnitude is not None:
             fields.append((("压力大小" if item.load_type == "pressure" else "数值"), format_number(item.magnitude)))
-        return EntityInspection("面载荷" if is_surface else "边载荷", kind, key, (InspectionPage("载荷", tuple(fields)),))
+        return EntityInspection("面力" if is_surface else "边力", kind, key, (InspectionPage("载荷", tuple(fields)),))
 
     def _inspect_output(self, key: object) -> EntityInspection:
         step_index, index = key
@@ -957,16 +1020,18 @@ class InspectionService:
                 "surface_load",
                 "edge_load",
                 "line_load",
+                "body_load",
                 "gravity_load",
             }:
                 step_index, index = reference.key
                 step = self.model.steps[step_index]
                 labels = {
                     "boundary": "边界条件",
-                    "cload": "节点载荷",
-                    "surface_load": "面载荷",
-                    "edge_load": "边载荷",
-                    "line_load": "梁均布载荷",
+                    "cload": "节点力",
+                    "surface_load": "面力",
+                    "edge_load": "边力",
+                    "line_load": "边力",
+                    "body_load": "体力",
                     "gravity_load": "重力",
                 }
                 names.append(f"{step.name} / {labels[reference.kind]} {index + 1}")

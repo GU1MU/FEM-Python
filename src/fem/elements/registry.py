@@ -185,7 +185,7 @@ def _plane_capabilities(
         node_count=node_count,
         dofs_per_node=2,
         section_families=("solid",),
-        load_kinds=("node", "edge", "gravity"),
+        load_kinds=("node", "edge", "body", "gravity"),
         dof_labels=_PLANE_DOF_LABELS,
         force_labels=_PLANE_FORCE_LABELS,
     )
@@ -204,7 +204,7 @@ def _solid_capabilities(
         node_count=node_count,
         dofs_per_node=3,
         section_families=("solid",),
-        load_kinds=("node", "surface", "gravity"),
+        load_kinds=("node", "surface", "body", "gravity"),
         dof_labels=_SPATIAL_DOF_LABELS,
         force_labels=_SPATIAL_FORCE_LABELS,
     )
@@ -241,7 +241,7 @@ def _register_builtin_capabilities() -> None:
             node_count=2,
             dofs_per_node=3,
             section_families=("truss",),
-            load_kinds=("node", "gravity"),
+            load_kinds=("node", "body", "gravity"),
             dof_labels=_SPATIAL_DOF_LABELS,
             force_labels=_SPATIAL_FORCE_LABELS,
         ),
@@ -259,7 +259,7 @@ def _register_builtin_capabilities() -> None:
             node_count=2,
             dofs_per_node=6,
             section_families=("beam",),
-            load_kinds=("node", "line", "gravity"),
+            load_kinds=("node", "line", "body", "gravity"),
             dof_labels=_BEAM_DOF_LABELS,
             force_labels=_BEAM_FORCE_LABELS,
             requirements=(

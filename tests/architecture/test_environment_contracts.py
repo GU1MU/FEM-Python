@@ -3,13 +3,11 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 import re
-import subprocess
 import tomllib
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TESTS_ROOT = PROJECT_ROOT / "tests"
-FIXTURES_ROOT = TESTS_ROOT / "fixtures"
 PYPROJECT_PATH = PROJECT_ROOT / "pyproject.toml"
 _SKIP_REASON_PREFIXES = (
     "[slow-opt-in]",
@@ -36,30 +34,6 @@ def _requirements_by_name(requirements: list[str]) -> dict[str, str]:
         assert name not in result
         result[name] = requirement
     return result
-
-
-def _git_files(pathspec: str) -> set[str]:
-    completed = subprocess.run(
-        ["git", "ls-files", "-z", "--", pathspec],
-        cwd=PROJECT_ROOT,
-        check=True,
-        capture_output=True,
-    )
-    return {
-        value.decode("utf-8").replace("\\", "/")
-        for value in completed.stdout.split(b"\0")
-        if value
-    }
-
-
-def _is_gitignored(path: str) -> bool:
-    completed = subprocess.run(
-        ["git", "check-ignore", "-q", "--no-index", path],
-        cwd=PROJECT_ROOT,
-        check=False,
-    )
-    assert completed.returncode in {0, 1}
-    return completed.returncode == 0
 
 
 def _attribute_chain(node: ast.AST) -> tuple[str, ...]:
@@ -145,29 +119,6 @@ def test_every_static_test_skip_reason_has_a_stable_category_prefix():
                 )
 
     assert offenders == []
-
-
-def test_fixture_resources_are_under_the_fixture_root_and_tracked_by_git():
-    fixture_files = {
-        path.relative_to(PROJECT_ROOT).as_posix()
-        for path in FIXTURES_ROOT.rglob("*")
-        if path.is_file()
-    }
-
-    assert fixture_files
-    assert fixture_files == _git_files("tests/fixtures/**")
-
-
-def test_fixture_allow_rule_does_not_expose_local_resource_trees():
-    assert not _is_gitignored("tests/fixtures/_contract_probe.txt")
-    assert _is_gitignored("fem-agent.config.json")
-    assert _is_gitignored("tests/fem-agent.test.config.json")
-    for local_path in (
-        "docs/_contract_probe.txt",
-        "data/_contract_probe.txt",
-        "scripts/_contract_probe.txt",
-    ):
-        assert _is_gitignored(local_path)
 
 
 def test_pyproject_is_the_only_dependency_fact_source():

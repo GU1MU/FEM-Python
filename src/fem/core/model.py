@@ -131,11 +131,24 @@ class DisplacementConstraint:
     first_component: int
     last_component: int
     value: float = 0.0
+    target_kind: str = "node_set"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "first_component", int(self.first_component))
         object.__setattr__(self, "last_component", int(self.last_component))
         object.__setattr__(self, "value", float(self.value))
+        target_kind = str(self.target_kind).strip().casefold()
+        if target_kind not in {"node_set", "edge", "surface"}:
+            raise ValueError(
+                "displacement constraint target_kind must be "
+                "'node_set', 'edge', or 'surface'"
+            )
+        if isinstance(self.target, int) and target_kind != "node_set":
+            raise ValueError(
+                "integer displacement constraint targets require "
+                "target_kind='node_set'"
+            )
+        object.__setattr__(self, "target_kind", target_kind)
 
 
 @dataclass(frozen=True)
@@ -191,6 +204,20 @@ class LineLoad:
     def __post_init__(self) -> None:
         object.__setattr__(self, "vector", tuple(float(value) for value in self.vector))
         object.__setattr__(self, "coordinate_system", str(self.coordinate_system))
+
+
+@dataclass(frozen=True)
+class BodyForce:
+    """Constant force per unit volume applied to elements or an element set."""
+    target: str | int
+    vector: Sequence[float]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "vector",
+            tuple(float(value) for value in self.vector),
+        )
 
 
 @dataclass(frozen=True)
@@ -360,6 +387,7 @@ class AnalysisStep:
     metadata: Mapping[str, Any] = field(default_factory=dict)
     edge_loads: Sequence[EdgeLoad] = ()
     line_loads: Sequence[LineLoad] = ()
+    body_loads: Sequence[BodyForce] = ()
     gravity_loads: Sequence[GravityLoad] = ()
 
     def __post_init__(self) -> None:
@@ -370,6 +398,7 @@ class AnalysisStep:
         object.__setattr__(self, "metadata", dict(self.metadata))
         object.__setattr__(self, "edge_loads", tuple(self.edge_loads))
         object.__setattr__(self, "line_loads", tuple(self.line_loads))
+        object.__setattr__(self, "body_loads", tuple(self.body_loads))
         object.__setattr__(self, "gravity_loads", tuple(self.gravity_loads))
 
 

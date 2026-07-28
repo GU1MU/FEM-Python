@@ -12,6 +12,11 @@ from fem.geometry.recipe_analysis import (
     axis_aligned_rectangle,
     expand_sketch_recipe,
 )
+from fem.geometry.extrusion_selection import (
+    ExtrusionSourceResolutionError,
+    extrusion_face_boundary_ids,
+    resolve_extrusion_source_faces,
+)
 from fem.geometry.recipe_topology import (
     LogicalEntity,
     RecipeTopology,
@@ -896,107 +901,209 @@ def _compile_boolean(cad: Any, recipe: BooleanGeometry) -> _CompiledDraft:
 def _compile_extrusion(cad: Any, recipe: ExtrudedGeometry) -> _CompiledDraft:
     base = _compile_exact(cad, recipe.base)
     base_catalog = describe_recipe_topology(recipe.base)
-    feature = cad.extrude(base.domain, 0.0, 0.0, recipe.height)
-    domain = tuple(feature.primary)
-    bottom = tuple(feature.inputs)
-    top = tuple(feature.ends)
-    sides = tuple(feature.sides)
-    if len(domain) != 1 or len(bottom) != 1 or len(top) != 1 or not sides:
-        raise TopologyResolutionError("拉伸特征没有生成可证明的端面和侧面")
-
-    side_boundaries = {
-        side: set(cad.boundary((side,), combined=False)) for side in sides
-    }
-    top_curves = set(cad.boundary(top, combined=False))
-    bottom_curves = set(cad.boundary(bottom, combined=False))
-    logical: dict[str, tuple[Any, ...]] = {
-        "face:bottom": bottom,
-        "face:top": top,
-        "body:domain": domain,
-    }
-    for base_edge in base_catalog.entities_of("edge", selectable_only=True):
-        source_curves = tuple(base.logical_entities[base_edge.logical_id])
-        resolved_sides: list[Any] = []
-        resolved_top: list[Any] = []
-        for source_curve in source_curves:
-            matches = tuple(
-                side
-                for side, boundaries in side_boundaries.items()
-                if source_curve in boundaries
-            )
-            if len(matches) != 1:
-                raise TopologyResolutionError(
-                    f"拉伸无法唯一追踪源边 {base_edge.logical_id}"
-                )
-            side = matches[0]
-            top_matches = tuple(side_boundaries[side] & top_curves)
-            if len(top_matches) != 1:
-                raise TopologyResolutionError(
-                    f"拉伸无法唯一追踪顶边 {base_edge.logical_id}"
-                )
-            resolved_sides.append(side)
-            resolved_top.append(top_matches[0])
-        name = _logical_name(base_edge)
-        logical[f"edge:bottom/{name}"] = source_curves
-        logical[f"edge:top/{name}"] = _unique(resolved_top)
-        logical[f"face:side/{name}"] = _unique(resolved_sides)
-
-    all_side_curves = _unique(
-        entity
-        for boundaries in side_boundaries.values()
-        for entity in boundaries
-        if entity.dimension == 1
-    )
-    vertical_curves = tuple(
-        entity
-        for entity in all_side_curves
-        if entity not in bottom_curves and entity not in top_curves
-    )
-    top_points = set(_boundary_of(cad, tuple((curve,) for curve in top_curves)))
-    vertical_endpoints = {
-        curve: set(cad.boundary((curve,), combined=False)) for curve in vertical_curves
-    }
-    for base_point in base_catalog.entities_of("point", selectable_only=True):
-        source_points = tuple(base.logical_entities[base_point.logical_id])
-        if len(source_points) != 1:
-            raise TopologyResolutionError(
-                f"拉伸源点 {base_point.logical_id} 不是唯一实体"
-            )
-        source_point = source_points[0]
-        vertical = tuple(
-            curve
-            for curve, endpoints in vertical_endpoints.items()
-            if source_point in endpoints
+    try:
+        selection = resolve_extrusion_source_faces(
+            recipe.base,
+            recipe.source_face_ids,
         )
-        if len(vertical) != 1:
-            raise TopologyResolutionError(
-                f"拉伸无法唯一追踪竖边 {base_point.logical_id}"
-            )
-        top_point = tuple(vertical_endpoints[vertical[0]] & top_points)
-        if len(top_point) != 1:
-            raise TopologyResolutionError(
-                f"拉伸无法唯一追踪顶点 {base_point.logical_id}"
-            )
-        name = _logical_name(base_point)
-        logical[f"point:bottom/{name}"] = (source_point,)
-        logical[f"point:top/{name}"] = top_point
-        logical[f"edge:vertical/{name}"] = vertical
+    except ExtrusionSourceResolutionError as error:
+        raise TopologyResolutionError(
+            f"{error.code}: {error}"
+        ) from error
+    single_source = len(selection.face_ids) == 1
+    domain: list[Any] = []
+    bottom_faces: list[Any] = []
+    top_faces: list[Any] = []
+    outer_sides: list[Any] = []
+    hole_sides: list[Any] = []
+    logical: dict[str, tuple[Any, ...]] = {}
 
-    hole_sources = set(base.hole_boundary)
-    hole_sides = _unique(
-        side
-        for side, boundaries in side_boundaries.items()
-        if boundaries & hole_sources
-    )
-    outer_sides = _unique(side for side in sides if side not in set(hole_sides))
+    for source_face_id in selection.face_ids:
+        source_surfaces = tuple(base.logical_entities.get(source_face_id, ()))
+        if len(source_surfaces) != 1 or source_surfaces[0].dimension != 2:
+            raise TopologyResolutionError(
+                "extrude.compile.surface-not-unique: "
+                f"{source_face_id} 没有唯一 OCC plane surface"
+            )
+        feature = cad.extrude(
+            source_surfaces,
+            0.0,
+            0.0,
+            recipe.height,
+        )
+        source_domain = tuple(feature.primary)
+        bottom = tuple(feature.inputs)
+        top = tuple(feature.ends)
+        sides = tuple(feature.sides)
+        if len(source_domain) != 1 or source_domain[0].dimension != 3:
+            raise TopologyResolutionError(
+                "extrude.compile.empty-result: "
+                f"{source_face_id} 没有生成唯一 volume"
+            )
+        if len(bottom) != 1:
+            raise TopologyResolutionError(
+                "extrude.compile.bottom-not-unique: "
+                f"{source_face_id} 没有生成唯一 bottom face"
+            )
+        if len(top) != 1:
+            raise TopologyResolutionError(
+                "extrude.compile.top-not-unique: "
+                f"{source_face_id} 没有生成唯一 top face"
+            )
+        if not sides:
+            raise TopologyResolutionError(
+                "extrude.compile.side-not-unique: "
+                f"{source_face_id} 没有生成 side faces"
+            )
+
+        source_face_name = source_face_id.split(":", 1)[1]
+        bottom_id = (
+            "face:bottom"
+            if single_source
+            else f"face:bottom/{source_face_name}"
+        )
+        top_id = (
+            "face:top"
+            if single_source
+            else f"face:top/{source_face_name}"
+        )
+        logical[bottom_id] = bottom
+        logical[top_id] = top
+        domain.extend(source_domain)
+        bottom_faces.extend(bottom)
+        top_faces.extend(top)
+
+        side_boundaries = {
+            side: set(cad.boundary((side,), combined=False))
+            for side in sides
+        }
+        top_curves = set(cad.boundary(top, combined=False))
+        bottom_curves = set(cad.boundary(bottom, combined=False))
+        edge_ids, point_ids = extrusion_face_boundary_ids(
+            recipe.base,
+            source_face_id,
+        )
+        for edge_id in edge_ids:
+            base_edge = base_catalog.entity(edge_id)
+            source_curves = tuple(base.logical_entities[edge_id])
+            resolved_sides: list[Any] = []
+            resolved_top: list[Any] = []
+            for source_curve in source_curves:
+                if source_curve not in bottom_curves:
+                    raise TopologyResolutionError(
+                        "extrude.compile.side-not-unique: "
+                        f"源边 {edge_id} 不属于 {source_face_id}"
+                    )
+                matches = tuple(
+                    side
+                    for side, boundaries in side_boundaries.items()
+                    if source_curve in boundaries
+                )
+                if len(matches) != 1:
+                    raise TopologyResolutionError(
+                        "extrude.compile.side-not-unique: "
+                        f"拉伸无法唯一追踪源边 {edge_id}"
+                    )
+                side = matches[0]
+                top_matches = tuple(side_boundaries[side] & top_curves)
+                if len(top_matches) != 1:
+                    raise TopologyResolutionError(
+                        "extrude.compile.top-not-unique: "
+                        f"拉伸无法唯一追踪顶边 {edge_id}"
+                    )
+                resolved_sides.append(side)
+                resolved_top.append(top_matches[0])
+            edge_name = _logical_name(base_edge)
+            namespace = (
+                edge_name
+                if single_source
+                else f"{source_face_name}/{edge_name}"
+            )
+            logical[f"edge:bottom/{namespace}"] = source_curves
+            logical[f"edge:top/{namespace}"] = _unique(resolved_top)
+            logical[f"face:side/{namespace}"] = _unique(resolved_sides)
+
+        all_side_curves = _unique(
+            entity
+            for boundaries in side_boundaries.values()
+            for entity in boundaries
+            if entity.dimension == 1
+        )
+        vertical_curves = tuple(
+            entity
+            for entity in all_side_curves
+            if entity not in bottom_curves and entity not in top_curves
+        )
+        top_points = set(
+            _boundary_of(cad, tuple((curve,) for curve in top_curves))
+        )
+        vertical_endpoints = {
+            curve: set(cad.boundary((curve,), combined=False))
+            for curve in vertical_curves
+        }
+        for point_id in point_ids:
+            base_point = base_catalog.entity(point_id)
+            source_points = tuple(base.logical_entities[point_id])
+            if len(source_points) != 1:
+                raise TopologyResolutionError(
+                    f"拉伸源点 {point_id} 不是唯一实体"
+                )
+            source_point = source_points[0]
+            vertical = tuple(
+                curve
+                for curve, endpoints in vertical_endpoints.items()
+                if source_point in endpoints
+            )
+            if len(vertical) != 1:
+                raise TopologyResolutionError(
+                    f"拉伸无法唯一追踪竖边 {point_id}"
+                )
+            top_point = tuple(vertical_endpoints[vertical[0]] & top_points)
+            if len(top_point) != 1:
+                raise TopologyResolutionError(
+                    f"拉伸无法唯一追踪顶点 {point_id}"
+                )
+            point_name = _logical_name(base_point)
+            namespace = (
+                point_name
+                if single_source
+                else f"{source_face_name}/{point_name}"
+            )
+            logical[f"point:bottom/{namespace}"] = (source_point,)
+            logical[f"point:top/{namespace}"] = top_point
+            logical[f"edge:vertical/{namespace}"] = vertical
+
+        source_hole_curves = set(base.hole_boundary) & bottom_curves
+        source_hole_sides = _unique(
+            side
+            for side, boundaries in side_boundaries.items()
+            if boundaries & source_hole_curves
+        )
+        hole_sides.extend(source_hole_sides)
+        hole_side_set = set(source_hole_sides)
+        outer_sides.extend(
+            side for side in sides if side not in hole_side_set
+        )
+
+    compiled_domain = _unique(domain)
+    logical["body:domain"] = compiled_domain
+    bottom = _unique(bottom_faces)
+    top = _unique(top_faces)
+    hole = _unique(hole_sides)
+    outer = _unique(outer_sides)
     region_bindings = {
         RecipeRegionSelector.BOTTOM: bottom,
         RecipeRegionSelector.TOP: top,
-        RecipeRegionSelector.OUTER: outer_sides,
+        RecipeRegionSelector.OUTER: outer,
     }
-    if hole_sides:
-        region_bindings[RecipeRegionSelector.HOLE] = hole_sides
-    return _CompiledDraft(domain, logical, region_bindings, hole_sides)
+    if hole:
+        region_bindings[RecipeRegionSelector.HOLE] = hole
+    return _CompiledDraft(
+        compiled_domain,
+        logical,
+        region_bindings,
+        hole,
+    )
 
 
 def _finalize(
@@ -1120,13 +1227,7 @@ def _build_domain_only(cad: Any, recipe: NativeGeometry) -> tuple[Any, ...]:
             )
         )
     if isinstance(recipe, ExtrudedGeometry):
-        feature = cad.extrude(
-            _build_domain_only(cad, recipe.base),
-            0.0,
-            0.0,
-            recipe.height,
-        )
-        return tuple(feature.primary)
+        return _compile_extrusion(cad, recipe).domain
     raise TypeError(f"不支持的几何配方: {type(recipe).__name__}")
 
 

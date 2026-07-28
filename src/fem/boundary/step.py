@@ -14,6 +14,7 @@ from ..core.model import (
     SurfaceLoad,
     model_element_info,
 )
+from ..core._constraint_targets import resolve_displacement_node_ids
 from ..elements import get_element_capabilities
 from ._common import spatial_dim
 from .condition import BoundaryCondition
@@ -61,7 +62,7 @@ def boundary_for_step(model: Any, step: str | int | AnalysisStep | None = None) 
             elem_lookup_cache = {int(elem.id): elem for elem in model.mesh.elements}
         return elem_lookup_cache
     for constraint in _step_boundaries(model, selected_step):
-        for node_id in _resolve_node_target(model, constraint.target):
+        for node_id in resolve_displacement_node_ids(model, constraint):
             for component in range(
                 constraint.first_component,
                 constraint.last_component + 1,
@@ -142,6 +143,21 @@ def boundary_for_step(model: Any, step: str | int | AnalysisStep | None = None) 
                 vector,
                 line_load.coordinate_system,
             )
+
+    for body_load in selected_step.body_loads:
+        vector = _validated_body_force_vector(
+            body_load.vector,
+            spatial_dim(model.mesh),
+        )
+        for elem_id in _resolve_element_target(model, body_load.target):
+            elem = elem_lookup().get(elem_id)
+            if elem is None:
+                raise KeyError(f"element {elem_id} is not defined")
+            if "body" not in get_element_capabilities(elem.type).load_kinds:
+                raise ValueError(
+                    f"element {elem_id} does not support body force"
+                )
+            boundary.add_body_force_element(elem_id, *vector)
 
     _add_gravity_loads(model, selected_step, boundary)
 
@@ -246,6 +262,24 @@ def _validated_gravity_vector(vector: Any, dim: int) -> tuple[float, ...]:
         )
     if not np.all(np.isfinite(values)):
         raise ValueError("gravity acceleration must contain finite numbers")
+    return tuple(float(value) for value in values)
+
+
+def _validated_body_force_vector(
+    vector: Any,
+    dim: int,
+) -> tuple[float, ...]:
+    """Return a finite force-per-volume vector matching the mesh dimension."""
+    try:
+        values = np.asarray(vector, dtype=float)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("body force vector must contain finite numbers") from exc
+    if values.shape != (dim,):
+        raise ValueError(
+            f"body force vector must have {dim} components, got {values.shape}"
+        )
+    if not np.all(np.isfinite(values)):
+        raise ValueError("body force vector must contain finite numbers")
     return tuple(float(value) for value in values)
 
 

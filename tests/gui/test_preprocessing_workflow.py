@@ -773,6 +773,60 @@ def test_geometry_preview_never_exposes_internal_entity_ids_as_a_legend(
     assert viewport._geometry_preview_surface.active_scalars_name is None
 
 
+def test_geometry_pick_overlay_keeps_pick_data_without_rendering_over_mesh(
+    monkeypatch,
+) -> None:
+    import pyvista
+
+    class Actor:
+        def SetVisibility(self, _visible):
+            pass
+
+    class Plotter:
+        def __init__(self):
+            self.calls = []
+            self.render_count = 0
+            self.scalar_bars = {}
+
+        def add_mesh(self, _data, **kwargs):
+            self.calls.append(kwargs)
+            return Actor()
+
+        def remove_actor(self, *_args, **_kwargs):
+            pass
+
+        def render(self):
+            self.render_count += 1
+
+    _application()
+    viewport = FEMViewport()
+    plotter = Plotter()
+    viewport._plotter = plotter
+    monkeypatch.setattr(viewport_module, "_pyvista", pyvista)
+    monkeypatch.setattr(
+        viewport_module,
+        "is_offscreen_environment",
+        lambda: False,
+    )
+    monkeypatch.setattr(viewport, "_ensure_plotter", lambda: True)
+
+    viewport.show_geometry_preview(
+        build_geometry_preview(
+            RectangleGeometry("preview", 2.0, 1.0)
+        ),
+        preserve_model=True,
+        render=False,
+    )
+
+    assert plotter.calls == []
+    assert viewport._geometry_preview_surface is not None
+    assert viewport._geometry_preview_edges is not None
+    viewport.set_selection_mode("geometry_face")
+    viewport.hide_geometry_selection_overlay()
+    assert plotter.render_count == 0
+    viewport.close()
+
+
 def test_selecting_a_solid_geometry_prepares_tetrahedral_settings_and_preview() -> None:
     _application()
     window = FEMMainWindow()

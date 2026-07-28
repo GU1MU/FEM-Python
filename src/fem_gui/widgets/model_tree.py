@@ -236,19 +236,28 @@ class ModelTree(QTreeWidget):
                 + len(step.surface_loads)
                 + len(step.edge_loads)
                 + len(step.line_loads)
+                + len(getattr(step, "body_loads", ()))
                 + len(getattr(step, "gravity_loads", ()))
             )
             load_root = self._category(step_item, "载荷", load_count)
             for load_index, _load in enumerate(step.cloads):
-                load_root.addChild(self._item(f"节点载荷 {load_index + 1}", "cload", (index, load_index)))
+                load_root.addChild(self._item(f"节点力 {load_index + 1}", "cload", (index, load_index)))
             for load_index, _load in enumerate(step.surface_loads):
-                load_root.addChild(self._item(f"面载荷 {load_index + 1}", "surface_load", (index, load_index)))
+                load_root.addChild(self._item(f"面力 {load_index + 1}", "surface_load", (index, load_index)))
             for load_index, _load in enumerate(step.edge_loads):
-                load_root.addChild(self._item(f"边载荷 {load_index + 1}", "edge_load", (index, load_index)))
+                load_root.addChild(self._item(f"边力 {load_index + 1}", "edge_load", (index, load_index)))
             for load_index, _load in enumerate(step.line_loads):
                 load_root.addChild(self._item(
-                    f"梁均布载荷 {load_index + 1}",
+                    f"边力 {load_index + 1}",
                     "line_load",
+                    (index, load_index),
+                ))
+            for load_index, _load in enumerate(
+                getattr(step, "body_loads", ())
+            ):
+                load_root.addChild(self._item(
+                    f"体力 {load_index + 1}",
+                    "body_load",
                     (index, load_index),
                 ))
             for load_index, _load in enumerate(

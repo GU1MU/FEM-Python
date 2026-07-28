@@ -409,7 +409,10 @@ def test_extruding_unproven_sketch_topology_remains_unselectable() -> None:
     assert topology.exact is False
     assert topology.selectable_entities() == ()
     assert topology.entities[0].logical_id == "body:result"
-    assert topology.diagnostics[0].code == "extrude.base-topology-unproven"
+    assert (
+        topology.diagnostics[0].code
+        == "extrude.source-face.topology-unproven"
+    )
 
 
 def test_contained_circle_cut_has_a_proven_hole_transition() -> None:

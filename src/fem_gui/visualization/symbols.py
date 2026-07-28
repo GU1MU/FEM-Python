@@ -87,14 +87,45 @@ def symbol_length(
 
 
 def constraint_symbol_dimensions(glyph_length: float) -> tuple[float, float]:
-    """Return a compact constraint glyph size from the shared screen scale."""
-    length = 1.65 * float(glyph_length)
-    return length, 0.20 * length
+    """Return a slender constraint-marker size from the shared screen scale."""
+    length = 1.35 * float(glyph_length)
+    return length, 0.12 * length
+
+
+def constraint_outward_direction(
+    point: np.ndarray,
+    model_center: np.ndarray,
+    component: int,
+) -> np.ndarray:
+    """Place a translational constraint marker on the nearest exterior axis side."""
+    point = np.asarray(point, dtype=float)
+    model_center = np.asarray(model_center, dtype=float)
+    direction = np.zeros(3, dtype=float)
+    direction[int(component)] = (
+        1.0 if point[int(component)] > model_center[int(component)] else -1.0
+    )
+    return direction
 
 
 def load_symbol_length(glyph_length: float) -> float:
     """Return the displayed shaft-and-head length for force vectors."""
     return 3.3 * float(glyph_length)
+
+
+def load_arrow_origins(
+    anchors: np.ndarray,
+    directions: np.ndarray,
+    lengths: np.ndarray,
+    start_aligned: np.ndarray,
+) -> np.ndarray:
+    """Resolve arrow origins for mixed start- and tip-aligned load glyphs."""
+    anchors = np.asarray(anchors, dtype=float)
+    directions = np.asarray(directions, dtype=float)
+    lengths = np.asarray(lengths, dtype=float)
+    start_aligned = np.asarray(start_aligned, dtype=bool)
+    origins = anchors - directions * lengths[:, None]
+    origins[start_aligned] = anchors[start_aligned]
+    return origins
 
 
 def region_sample_indices(points: np.ndarray, density: str) -> np.ndarray:

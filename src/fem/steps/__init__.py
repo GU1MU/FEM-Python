@@ -1,6 +1,7 @@
 from .constraints import displacement
 from .factory import add, static
 from .loads import (
+    body_force,
     edge_pressure,
     edge_traction,
     gravity,
@@ -13,6 +14,7 @@ from .output import output
 
 __all__ = [
     "add",
+    "body_force",
     "displacement",
     "edge_pressure",
     "edge_traction",

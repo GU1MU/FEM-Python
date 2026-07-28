@@ -296,9 +296,17 @@ def test_scope_dispatch_offers_dimension_appropriate_semantic_types(
         "getItem",
         choose,
     )
+    fit_calls = []
+    monkeypatch.setattr(
+        window.viewport,
+        "fit",
+        lambda: fit_calls.append(True),
+    )
 
     assert window._choose_mesh_scope_kind() == "node"
+    _application().processEvents()
     assert captured["items"] == ("Set", "Edge", "Surface", "Volume")
+    assert fit_calls == []
     assert window.actions["select_edge"].text() == "选择边"
     window._start_edge_scope_selection()
     assert window._pending_scope_kind == "edge"

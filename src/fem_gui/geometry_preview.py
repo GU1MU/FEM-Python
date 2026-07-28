@@ -27,6 +27,7 @@ from fem.geometry import (
     axis_aligned_rectangle,
     expand_sketch_recipe,
     geometry_dimension,
+    resolve_extrusion_source_faces,
     transformed_circle,
 )
 from fem.geometry.recipe_topology import (
@@ -842,25 +843,82 @@ def _extruded_preview(
 ) -> GeometryPreview:
     base = _build_geometry_preview(recipe.base, segments)
     topology = describe_recipe_topology(recipe)
-    point_count = len(base.points)
-    points = base.points + tuple((x, y, z + recipe.height) for x, y, z in base.points)
-    faces = list(base.faces)
+    selection = resolve_extrusion_source_faces(
+        recipe.base,
+        recipe.source_face_ids,
+    )
+    selected_faces = set(selection.face_ids)
+    selected_edges = set(selection.boundary_edge_ids)
+    selected_points = set(selection.boundary_point_ids)
+    base_face_indices = tuple(
+        index
+        for index, logical_id in enumerate(base.face_logical_ids)
+        if logical_id in selected_faces
+    )
+    base_edge_indices = tuple(
+        index
+        for index, logical_id in enumerate(base.edge_logical_ids)
+        if logical_id in selected_edges
+    )
+    required_point_indices = {
+        point_index
+        for face_index in base_face_indices
+        for point_index in base.faces[face_index]
+    }
+    required_point_indices.update(
+        point_index
+        for edge_index in base_edge_indices
+        for point_index in base.edges[edge_index]
+    )
+    required_point_indices.update(
+        index
+        for index, logical_id in enumerate(base.point_logical_ids)
+        if logical_id in selected_points
+    )
+    ordered_point_indices = tuple(sorted(required_point_indices))
+    point_index_map = {
+        old_index: new_index
+        for new_index, old_index in enumerate(ordered_point_indices)
+    }
+    bottom_points = tuple(base.points[index] for index in ordered_point_indices)
+    point_count = len(bottom_points)
+    points = bottom_points + tuple(
+        (x, y, z + recipe.height)
+        for x, y, z in bottom_points
+    )
+    bottom_faces = tuple(
+        tuple(point_index_map[index] for index in base.faces[face_index])
+        for face_index in base_face_indices
+    )
+    bottom_face_source_ids = tuple(
+        base.face_logical_ids[face_index]
+        for face_index in base_face_indices
+    )
+    faces = list(bottom_faces)
     face_logical_ids = [
         _derived_logical_id(topology, logical_id, "face", "copy.bottom.")
-        for logical_id in base.face_logical_ids
+        for logical_id in bottom_face_source_ids
     ]
     faces.extend(
         tuple(reversed(tuple(index + point_count for index in face)))
-        for face in base.faces
+        for face in bottom_faces
     )
     face_logical_ids.extend(
         _derived_logical_id(topology, logical_id, "face", "copy.top.")
-        for logical_id in base.face_logical_ids
+        for logical_id in bottom_face_source_ids
     )
 
+    bottom_edges = tuple(
+        tuple(point_index_map[index] for index in base.edges[edge_index])
+        for edge_index in base_edge_indices
+    )
+    bottom_edge_source_ids = tuple(
+        base.edge_logical_ids[edge_index]
+        for edge_index in base_edge_indices
+    )
     for edge, logical_id in zip(
-        base.edges,
-        base.edge_logical_ids,
+        bottom_edges,
+        bottom_edge_source_ids,
         strict=True,
     ):
         for start, end in zip(edge, edge[1:]):
@@ -869,33 +927,47 @@ def _extruded_preview(
                 _derived_logical_id(topology, logical_id, "face", "sweep.")
             )
 
-    edges = list(base.edges)
-    edges.extend(tuple(index + point_count for index in edge) for edge in base.edges)
+    edges = list(bottom_edges)
+    edges.extend(
+        tuple(index + point_count for index in edge)
+        for edge in bottom_edges
+    )
     edge_logical_ids = [
         _derived_logical_id(topology, logical_id, "edge", "copy.bottom.")
-        for logical_id in base.edge_logical_ids
+        for logical_id in bottom_edge_source_ids
     ]
     edge_logical_ids.extend(
         _derived_logical_id(topology, logical_id, "edge", "copy.top.")
-        for logical_id in base.edge_logical_ids
+        for logical_id in bottom_edge_source_ids
+    )
+    bottom_point_source_ids = tuple(
+        (
+            logical_id
+            if logical_id in selected_points
+            else None
+        )
+        for logical_id in (
+            base.point_logical_ids[index]
+            for index in ordered_point_indices
+        )
     )
     point_logical_ids = tuple(
         _derived_logical_id(topology, logical_id, "point", "copy.bottom.")
-        for logical_id in base.point_logical_ids
+        for logical_id in bottom_point_source_ids
     ) + tuple(
         _derived_logical_id(topology, logical_id, "point", "copy.top.")
-        for logical_id in base.point_logical_ids
+        for logical_id in bottom_point_source_ids
     )
     feature_points = tuple(
         index
-        for index, logical_id in enumerate(base.point_logical_ids)
+        for index, logical_id in enumerate(bottom_point_source_ids)
         if logical_id is not None
     )
     edges.extend((index, index + point_count) for index in feature_points)
     edge_logical_ids.extend(
         _derived_logical_id(
             topology,
-            base.point_logical_ids[index],
+            bottom_point_source_ids[index],
             "edge",
             "sweep.",
         )
