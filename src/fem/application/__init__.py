@@ -113,7 +113,14 @@ from .project_validation import (
     analysis_step_has_native_region_target,
     analysis_steps_have_native_region_targets,
 )
+from .solid_boolean import (
+    StrictBodyBooleanPreview,
+    StrictBodyBooleanResult,
+    prepare_solid_body_boolean,
+    prepare_strict_body_recipe_preview,
+)
 from .session import (
+    BooleanReferenceUndoRecord,
     ModelSession,
     ProjectSaveSnapshot,
     ProjectSnapshot,
@@ -131,6 +138,7 @@ __all__ = [
     "AuthoringTarget",
     "BeamFrameReport",
     "BeamOrientation",
+    "BooleanReferenceUndoRecord",
     "ChangeKind",
     "CompiledDomainRegionSource",
     "DefinitionCompileResult",
@@ -186,6 +194,8 @@ __all__ = [
     "SolveTaskSnapshot",
     "TaskToken",
     "StepLifecycleProjection",
+    "StrictBodyBooleanResult",
+    "StrictBodyBooleanPreview",
     "TopologyResolutionError",
     "TokenStatus",
     "TransitionEffect",
@@ -213,6 +223,8 @@ __all__ = [
     "generate_fem_model",
     "internal_error_report",
     "normalize_model_definitions",
+    "prepare_solid_body_boolean",
+    "prepare_strict_body_recipe_preview",
     "require_native_region_product",
     "require_complete_native_mesh_contract",
     "require_region_kind",

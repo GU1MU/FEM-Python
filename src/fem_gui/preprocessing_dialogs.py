@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -531,6 +531,121 @@ class CylinderGeometryDialog(QDialog):
             self.radius_spin.value(),
             self.height_spin.value(),
         )
+
+
+class AddBodyGeometryDialog(QDialog):
+    """Collect one placed solid source while emitting detached previews."""
+
+    preview_changed = Signal(object)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("addBodyGeometryDialog")
+        self.setWindowTitle("添加 Body")
+        self.kind_combo = QComboBox(self)
+        self.kind_combo.setObjectName("addBodyKindCombo")
+        self.kind_combo.addItem("长方体", "box")
+        self.kind_combo.addItem("圆柱", "cylinder")
+        self.name_edit = QLineEdit("Body Source", self)
+        self.width_spin = _positive_spin_box(self, 100.0)
+        self.depth_spin = _positive_spin_box(self, 50.0)
+        self.radius_spin = _positive_spin_box(self, 25.0)
+        self.height_spin = _positive_spin_box(self, 50.0)
+        self.x_spin = _signed_spin_box(self, 0.0)
+        self.y_spin = _signed_spin_box(self, 0.0)
+        self.z_spin = _signed_spin_box(self, 0.0)
+        form = QFormLayout()
+        configure_form_layout(form)
+        form.addRow("基础实体", self.kind_combo)
+        form.addRow("源特征名称", self.name_edit)
+        form.addRow("宽度 X", self.width_spin)
+        form.addRow("深度 Y", self.depth_spin)
+        form.addRow("半径", self.radius_spin)
+        form.addRow("高度 Z", self.height_spin)
+        form.addRow("放置 X", self.x_spin)
+        form.addRow("放置 Y", self.y_spin)
+        form.addRow("放置 Z", self.z_spin)
+        self._form = form
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel,
+            self,
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("完成")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        self._finish_button = buttons.button(
+            QDialogButtonBox.StandardButton.Ok
+        )
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(buttons)
+        self.kind_combo.currentIndexChanged.connect(self._inputs_changed)
+        self.name_edit.textChanged.connect(self._inputs_changed)
+        for editor in (
+            self.width_spin,
+            self.depth_spin,
+            self.radius_spin,
+            self.height_spin,
+            self.x_spin,
+            self.y_spin,
+            self.z_spin,
+        ):
+            editor.valueChanged.connect(self._inputs_changed)
+        self._refresh_kind_fields()
+
+    def recipe(self) -> BoxGeometry | CylinderGeometry | MovedGeometry:
+        kind = str(self.kind_combo.currentData())
+        if kind == "box":
+            source: BoxGeometry | CylinderGeometry = BoxGeometry(
+                self.name_edit.text(),
+                self.width_spin.value(),
+                self.depth_spin.value(),
+                self.height_spin.value(),
+            )
+        elif kind == "cylinder":
+            source = CylinderGeometry(
+                self.name_edit.text(),
+                self.radius_spin.value(),
+                self.height_spin.value(),
+            )
+        else:
+            raise ValueError(f"unsupported Body source kind: {kind!r}")
+        placement = (
+            self.x_spin.value(),
+            self.y_spin.value(),
+            self.z_spin.value(),
+        )
+        return (
+            source
+            if placement == (0.0, 0.0, 0.0)
+            else MovedGeometry(source, *placement)
+        )
+
+    def _inputs_changed(self, _value=None) -> None:
+        self._refresh_kind_fields()
+        try:
+            recipe = self.recipe()
+        except (TypeError, ValueError):
+            self._finish_button.setEnabled(False)
+            return
+        self._finish_button.setEnabled(True)
+        self.preview_changed.emit(recipe)
+
+    def _refresh_kind_fields(self) -> None:
+        box = self.kind_combo.currentData() == "box"
+        self._form.setRowVisible(self.width_spin, box)
+        self._form.setRowVisible(self.depth_spin, box)
+        self._form.setRowVisible(self.radius_spin, not box)
+
+    def _accept(self) -> None:
+        try:
+            self.recipe()
+        except (TypeError, ValueError):
+            self._finish_button.setEnabled(False)
+            return
+        self.accept()
 
 
 class MoveGeometryDialog(QDialog):

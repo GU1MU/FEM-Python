@@ -58,6 +58,10 @@ _EDITABLE_KINDS = {
     "output",
 }
 
+_DELETABLE_KINDS = {
+    "boundary",
+}
+
 
 def _section_label(section: Any, element: Any | None = None) -> str:
     """Translate backend section identifiers into concise CAE terminology."""
@@ -88,6 +92,7 @@ class ModelTree(QTreeWidget):
     highlightRequested = Signal(str, object)
     informationRequested = Signal(str, object)
     editRequested = Signal(str, object)
+    deleteRequested = Signal(str, object)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -291,13 +296,26 @@ class ModelTree(QTreeWidget):
         feature_rows: tuple[str, ...],
         *,
         part_name: str = "Part-1",
+        bodies: tuple[tuple[str, str, tuple[str, ...]], ...] = (),
     ) -> None:
-        """Show a deliberately shallow Model → Part → Feature history."""
+        """Show Model → Part → Bodies → per-Body feature history."""
         self.clear()
         root = self._item(str(name), "model", None)
         part = self._item(str(part_name), "part", None)
-        for row in feature_rows:
-            part.addChild(self._item(str(row), "feature", None))
+        if bodies:
+            for body_id, body_name, rows in bodies:
+                body = self._item(
+                    f"{body_name} [{body_id}]",
+                    "geometry_body",
+                    f"body:{body_id}",
+                )
+                for row in rows:
+                    body.addChild(self._item(str(row), "feature", None))
+                part.addChild(body)
+                body.setExpanded(True)
+        else:
+            for row in feature_rows:
+                part.addChild(self._item(str(row), "feature", None))
         root.addChild(part)
         self.addTopLevelItem(root)
         root.setExpanded(True)
@@ -384,11 +402,18 @@ class ModelTree(QTreeWidget):
             if entry[0] in _EDITABLE_KINDS
             else None
         )
+        delete = (
+            menu.addAction("删除")
+            if entry[0] in _DELETABLE_KINDS
+            else None
+        )
         information = menu.addAction("查看信息")
         chosen = menu.exec(self.viewport().mapToGlobal(position))
         if chosen is highlight:
             self.highlightRequested.emit(*entry)
         elif edit is not None and chosen is edit:
             self.editRequested.emit(*entry)
+        elif delete is not None and chosen is delete:
+            self.deleteRequested.emit(*entry)
         elif chosen is information:
             self.informationRequested.emit(*entry)

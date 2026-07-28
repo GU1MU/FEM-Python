@@ -11,6 +11,7 @@ from fem.geometry.measurements import resolve_target_radius
 from fem.geometry.recipe_topology import (
     LogicalEntity,
     RecipeTopology,
+    canonicalize_multi_body_logical_id,
     describe_recipe_topology,
 )
 from fem.geometry.references import (
@@ -25,6 +26,7 @@ from fem.geometry.recipes import (
     DiskGeometry,
     ExtrudedGeometry,
     MovedGeometry,
+    MultiBodyGeometry,
     NativeGeometry,
     PlateWithHoleGeometry,
     RectangleGeometry,
@@ -318,6 +320,17 @@ def validate_logical_reference(
 
     if type(reference) is not LogicalEntityRef:
         raise TypeError("reference must be a LogicalEntityRef")
+    if isinstance(recipe, MultiBodyGeometry):
+        try:
+            canonical_id = canonicalize_multi_body_logical_id(
+                recipe,
+                reference.logical_id,
+            )
+        except KeyError as error:
+            raise NativeRegionValidationError(
+                f"unknown logical reference {reference.logical_id!r}"
+            ) from error
+        reference = LogicalEntityRef(canonical_id)
     topology = describe_recipe_topology(recipe)
     if require_exact and not topology.exact:
         raise NativeRegionValidationError(
@@ -354,14 +367,16 @@ def validate_logical_references(
     """Validate and canonicalize one non-empty homogeneous reference group."""
 
     source = LogicalReferencesRegionSource(tuple(references))
+    canonical: list[LogicalEntityRef] = []
     for reference in source.references:
-        validate_logical_reference(
+        entity = validate_logical_reference(
             recipe,
             reference,
             allowed_kinds=allowed_kinds,
             require_exact=require_exact,
         )
-    return source.references
+        canonical.append(LogicalEntityRef(entity.logical_id))
+    return tuple(sorted(canonical, key=logical_ref_sort_key))
 
 
 def require_native_region_product(
@@ -429,6 +444,16 @@ def _builtin_region_selectors(
     recipe: NativeGeometry,
     topology: RecipeTopology,
 ) -> tuple[RecipeRegionSelector, ...]:
+    if isinstance(recipe, MultiBodyGeometry):
+        selectors = {
+            selector
+            for body in recipe.bodies
+            for selector in _builtin_region_selectors(
+                body.recipe,
+                describe_recipe_topology(body.recipe),
+            )
+        }
+        return tuple(sorted(selectors, key=lambda item: item.value))
     if isinstance(recipe, (MovedGeometry, RotatedGeometry)):
         return _builtin_region_selectors(
             recipe.base,

@@ -5,9 +5,10 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QApplication
 
+import fem_gui.widgets.model_tree as model_tree_module
 from fem.abaqus import read
 from fem.application import RegionAssignment, SectionDefinition
 from fem.core.model import GravityLoad
@@ -107,6 +108,50 @@ def test_tree_click_and_double_click_keep_object_signals(gui_inp_path):
     assert informed == []
     assert edited == [("material", "STEEL")]
     assert tree.contextMenuPolicy() == Qt.ContextMenuPolicy.CustomContextMenu
+
+
+def test_boundary_context_menu_emits_delete_request(
+    gui_inp_path,
+    monkeypatch,
+):
+    _application()
+    tree = ModelTree()
+    tree.set_model(read(gui_inp_path))
+    boundary = next(
+        item
+        for item in _items(tree)
+        if item.data(0, ROLE_KIND) == "boundary"
+    )
+    action_labels = []
+
+    class Menu:
+        def __init__(self, _parent):
+            self.actions = {}
+
+        def addAction(self, label):
+            action = object()
+            action_labels.append(label)
+            self.actions[label] = action
+            return action
+
+        def exec(self, _position):
+            return self.actions["删除"]
+
+    deleted = []
+    tree.deleteRequested.connect(
+        lambda kind, key: deleted.append((kind, key))
+    )
+    monkeypatch.setattr(model_tree_module, "QMenu", Menu)
+    monkeypatch.setattr(
+        ModelTree,
+        "itemAt",
+        lambda _tree, _position: boundary,
+    )
+
+    tree._show_context_menu(QPoint())
+
+    assert action_labels == ["高亮", "编辑", "删除", "查看信息"]
+    assert deleted == [("boundary", boundary.data(0, ROLE_KEY))]
 
 
 def test_line_load_is_a_regular_load_tree_item():

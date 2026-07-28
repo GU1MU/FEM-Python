@@ -9,7 +9,7 @@ import pytest
 from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication
 
-from fem.application import SectionDefinition
+from fem.application import RegionRef, SectionDefinition
 from fem.application.preprocessing import generate_fem_model
 from fem.core.model import MaterialDefinition
 from fem.geometry import (
@@ -261,6 +261,48 @@ def test_box_selection_direction_uses_containment_then_crossing(
 
     assert left_to_right
     assert not right_to_left
+    window.close()
+
+
+def test_completed_scope_creation_reopens_load_editor_with_new_scope(
+    monkeypatch,
+) -> None:
+    application = _application()
+    window = FEMMainWindow()
+    definition_key = ("edge_load", 0, 0)
+    window._pending_analysis_selection = "load"
+    window._pending_scope_kind = "edge"
+    window._pending_analysis_edit = (definition_key, "edge", ())
+    monkeypatch.setattr(
+        window,
+        "_canonical_mesh_scope_selection",
+        lambda: (object(),),
+    )
+    monkeypatch.setattr(
+        window,
+        "_create_region_from_current_mesh_selection",
+        lambda **_kwargs: "EdgeSet-2",
+    )
+    resumed = []
+    monkeypatch.setattr(
+        window,
+        "_edit_analysis_definition_key",
+        lambda key, **kwargs: resumed.append((key, kwargs)),
+    )
+
+    window._complete_scope_creation_from_bar()
+    application.processEvents()
+
+    assert resumed == [
+        (
+            definition_key,
+            {
+                "selected_region": RegionRef("edge", "EdgeSet-2"),
+                "steps": (),
+            },
+        ),
+    ]
+    assert window._pending_analysis_edit is None
     window.close()
 
 

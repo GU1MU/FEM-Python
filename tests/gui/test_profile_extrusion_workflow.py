@@ -15,7 +15,7 @@ from fem.application import (
     TopologyResolutionError,
     describe_session_authoring,
 )
-from fem.geometry import ExtrudedGeometry, LogicalEntityRef
+from fem.geometry import ExtrudedGeometry, LogicalEntityRef, MultiBodyGeometry
 from fem_gui.action_state import (
     GuiActionContext,
     GuiActionKey,
@@ -139,8 +139,8 @@ def test_gui_extrusion_commits_selected_profile_and_clears_selection(
     window.extrude_geometry()
 
     recipe = window.document.geometry_recipe
-    assert isinstance(recipe, ExtrudedGeometry)
-    assert recipe.source_face_ids == (first,)
+    assert isinstance(recipe, MultiBodyGeometry)
+    assert recipe.body("B1").recipe.source_face_ids == (first,)
     assert window._selected_geometry_refs == set()
     assert window._geometry_selection_mode == "body"
     window.close()
@@ -315,7 +315,6 @@ def test_partial_lineage_message_reports_only_removed_regions() -> None:
     sketch = two_profile_sketch()
     first = profile_face_id(sketch, "L1")
     second = profile_face_id(sketch, "L5")
-    first_name = first.split(":", 1)[1]
     window._set_native_geometry(
         ExtrudedGeometry(sketch, 1.0, (first, second)),
         "测试拉伸体",
@@ -325,13 +324,13 @@ def test_partial_lineage_message_reports_only_removed_regions() -> None:
             (
                 NamedRegion(
                     "Body",
-                    (LogicalEntityRef("body:domain"),),
+                    (LogicalEntityRef("body:B1"),),
                 ),
                 NamedRegion(
                     "Side",
                     (
                         LogicalEntityRef(
-                            f"face:side/{first_name}/L1"
+                            "face:B2/side/L5"
                         ),
                     ),
                 ),

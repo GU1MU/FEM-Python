@@ -1,5 +1,7 @@
 """Typed, headless result identities for application consumers."""
 
+from fem.post.averaging import NodalAveragingPolicy
+
 from .data import (
     FieldAvailability,
     FieldData,
@@ -105,6 +107,7 @@ __all__ = [
     "FieldRequest",
     "FieldState",
     "NodeResultInspectionRequest",
+    "NodalAveragingPolicy",
     "OutputExecutionOutcome",
     "OutputExecutionStatus",
     "OutputRequestExecution",

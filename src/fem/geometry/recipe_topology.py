@@ -34,17 +34,20 @@ from .references import (
     logical_ref_sort_key,
 )
 from .recipes import (
+    BooleanBodyContext,
     BooleanGeometry,
     BoxGeometry,
     CylinderGeometry,
     DiskGeometry,
     ExtrudedGeometry,
     MovedGeometry,
+    MultiBodyGeometry,
     NATIVE_GEOMETRY_TYPES,
     NativeGeometry,
     PlateWithHoleGeometry,
     RectangleGeometry,
     RotatedGeometry,
+    SolidBody,
     SketchArc,
     SketchCircle,
     SketchGeometry,
@@ -346,6 +349,8 @@ def describe_recipe_topology(recipe: NativeGeometry) -> RecipeTopology:
         return _rigid_transform_topology(recipe, "rotate")
     if isinstance(recipe, ExtrudedGeometry):
         return _extruded_topology(recipe)
+    if isinstance(recipe, MultiBodyGeometry):
+        return _multi_body_topology(recipe)
     if isinstance(recipe, BooleanGeometry):
         return _boolean_topology(recipe)
     raise TypeError(f"Unsupported native geometry recipe: {type(recipe).__name__}")
@@ -462,6 +467,139 @@ def surviving_logical_reference_ids(
         if before_provenance and before_provenance == after_provenance:
             survivors.add(logical_id)
     return frozenset(survivors)
+
+
+def logical_reference_transition_map(
+    before: object,
+    after: object,
+) -> dict[str, tuple[str, ...]]:
+    """Return proven same-kind logical-reference rewrites for one edit.
+
+    Stable survivors map to themselves.  A committed strict Body Boolean maps
+    target/tool references through its persisted proof; undo applies the same
+    proof in reverse.  Cross-dimensional provenance is intentionally excluded
+    because a face scope cannot safely become an edge scope.
+    """
+
+    if not isinstance(before, NATIVE_GEOMETRY_TYPES) or not isinstance(
+        after,
+        NATIVE_GEOMETRY_TYPES,
+    ):
+        return {}
+    rewrites: dict[str, set[str]] = {
+        logical_id: {logical_id}
+        for logical_id in surviving_logical_reference_ids(before, after)
+    }
+    if not isinstance(before, MultiBodyGeometry) or not isinstance(
+        after,
+        MultiBodyGeometry,
+    ):
+        return {
+            source: tuple(sorted(targets, key=_logical_id_sort_key))
+            for source, targets in rewrites.items()
+        }
+
+    before_by_id = {body.id: body for body in before.bodies}
+    after_by_id = {body.id: body for body in after.bodies}
+    for target_id in before_by_id.keys() & after_by_id.keys():
+        before_body = before_by_id[target_id]
+        after_body = after_by_id[target_id]
+        forward = _top_strict_body_boolean(after_body.recipe)
+        reverse = _top_strict_body_boolean(before_body.recipe)
+        if (
+            forward is not None
+            and forward.body_context is not None
+            and forward.body_context.tool_body_id in before_by_id
+            and forward.body_context.tool_body_id not in after_by_id
+        ):
+            _extend_strict_boolean_reference_map(
+                rewrites,
+                forward.body_context,
+                reverse=False,
+            )
+        elif (
+            reverse is not None
+            and reverse.body_context is not None
+            and reverse.body_context.tool_body_id not in before_by_id
+            and reverse.body_context.tool_body_id in after_by_id
+        ):
+            _extend_strict_boolean_reference_map(
+                rewrites,
+                reverse.body_context,
+                reverse=True,
+            )
+    return {
+        source: tuple(sorted(targets, key=_logical_id_sort_key))
+        for source, targets in rewrites.items()
+        if targets
+    }
+
+
+def _top_strict_body_boolean(recipe: object) -> BooleanGeometry | None:
+    if isinstance(recipe, BooleanGeometry) and recipe.body_context is not None:
+        return recipe
+    return None
+
+
+def _extend_strict_boolean_reference_map(
+    rewrites: dict[str, set[str]],
+    context: BooleanBodyContext,
+    *,
+    reverse: bool,
+) -> None:
+    candidates: list[tuple[str, str]] = []
+    for mapping in context.topology_mappings:
+        if (
+            not reverse
+            and mapping.source == "tool"
+            and LogicalEntityRef(mapping.source_logical_id).kind == "body"
+        ):
+            # A consumed Body scope cannot become the surviving target Body.
+            # The Session-level undo tombstone restores it exactly on undo.
+            continue
+        source_body_id = (
+            context.target_body_id
+            if mapping.source == "target"
+            else context.tool_body_id
+        )
+        source = _namespace_local_logical_id(
+            source_body_id,
+            mapping.source_logical_id,
+        )
+        target = _namespace_local_logical_id(
+            context.target_body_id,
+            mapping.target_logical_id,
+        )
+        if LogicalEntityRef(source).kind != LogicalEntityRef(target).kind:
+            continue
+        candidates.append((source, target))
+    if not reverse:
+        for source, target in candidates:
+            rewrites.setdefault(source, set()).add(target)
+        return
+    sources_by_target: dict[str, set[str]] = {}
+    for source, target in candidates:
+        sources_by_target.setdefault(target, set()).add(source)
+    for target, sources in sources_by_target.items():
+        if len(sources) != 1:
+            continue
+        source = next(iter(sources))
+        existing = rewrites.get(target, set())
+        if existing and existing != {source}:
+            continue
+        rewrites.setdefault(target, set()).add(source)
+
+
+def _namespace_local_logical_id(body_id: str, logical_id: str) -> str:
+    reference = LogicalEntityRef(logical_id)
+    if reference.kind == "body":
+        return f"body:{body_id}"
+    _kind, local_name = logical_id.split(":", 1)
+    return f"{reference.kind}:{body_id}/{local_name}"
+
+
+def _logical_id_sort_key(logical_id: str):
+    return logical_ref_sort_key(LogicalEntityRef(logical_id))
 
 
 def _logical_entity(
@@ -1220,6 +1358,8 @@ def _extruded_topology(recipe: ExtrudedGeometry) -> RecipeTopology:
 
 
 def _boolean_topology(recipe: BooleanGeometry) -> RecipeTopology:
+    if recipe.body_context is not None:
+        return _strict_body_boolean_topology(recipe, recipe.body_context)
     object_topology = describe_recipe_topology(recipe.object_geometry)
     tool_topology = describe_recipe_topology(recipe.tool_geometry)
     sources = (
@@ -1280,6 +1420,171 @@ def _boolean_topology(recipe: BooleanGeometry) -> RecipeTopology:
         operation=f"boolean.{recipe.operation}",
         source_signatures=sources,
     )
+
+
+def _strict_body_boolean_topology(
+    recipe: BooleanGeometry,
+    context: BooleanBodyContext,
+) -> RecipeTopology:
+    target = describe_recipe_topology(recipe.object_geometry)
+    tool = describe_recipe_topology(recipe.tool_geometry)
+    sources = (("target", target.signature), ("tool", tool.signature))
+    if not context.proven:
+        return _unknown_topology(
+            recipe,
+            code="boolean.lineage.unproven",
+            message="Strict Body Boolean has not completed OCC lineage proof.",
+            operation=f"body.boolean.{recipe.operation}",
+            source_signatures=sources,
+        )
+    entities = tuple(
+        LogicalEntity(
+            item.kind,
+            {"point": 0, "edge": 1, "face": 2, "body": 3}[item.kind],
+            item.logical_id,
+            item.semantic_role,
+            True,
+            None,
+            item.topology_links,
+        )
+        for item in context.result_entities
+    )
+    mappings = tuple(
+        TopologyMapping(
+            item.source,
+            item.source_logical_id,
+            item.target_logical_id,
+            item.relation,
+        )
+        for item in context.topology_mappings
+    )
+    return _make_topology(
+        recipe,
+        entities,
+        exact=True,
+        operation=f"body.boolean.{recipe.operation}",
+        source_signatures=sources,
+        mappings=mappings,
+    )
+
+
+def _multi_body_topology(recipe: MultiBodyGeometry) -> RecipeTopology:
+    diagnostics = (
+        TopologyDiagnostic(
+            "multi_body.aggregate",
+            "body:domain is an internal aggregate and is not selectable.",
+            ("body:domain",),
+        ),
+    )
+    entities: list[LogicalEntity] = []
+    sources: list[tuple[str, TopologySignature]] = []
+    mappings: list[TopologyMapping] = []
+    for body in recipe.bodies:
+        local = describe_recipe_topology(body.recipe)
+        if not local.exact:
+            return _unknown_topology(
+                recipe,
+                code="multi_body.body-topology-unproven",
+                message=f"Body {body.id} does not have exact local topology.",
+                operation="multi-body",
+                source_signatures=tuple(sources),
+            )
+        source_name = f"body:{body.id}"
+        sources.append((source_name, local.signature))
+        for item in local.entities:
+            target_id = _body_namespaced_id(body, item.logical_id)
+            links = tuple(
+                _body_namespaced_id(body, link)
+                for link in item.topology_links
+            )
+            entities.append(
+                LogicalEntity(
+                    item.kind,
+                    item.dimension,
+                    target_id,
+                    item.semantic_role,
+                    item.selectable,
+                    item.diagnostic_code,
+                    links,
+                )
+            )
+            mappings.append(
+                TopologyMapping(
+                    source_name,
+                    item.logical_id,
+                    target_id,
+                    "derived",
+                )
+            )
+        local_bodies = local.entities_of("body", selectable_only=True)
+        if len(local_bodies) != 1:
+            raise ValueError(
+                f"Body {body.id} must expose exactly one selectable local body"
+            )
+    entities.append(
+        LogicalEntity(
+            "body",
+            3,
+            "body:domain",
+            "aggregate.domain",
+            False,
+            "multi_body.aggregate",
+        )
+    )
+    for body in recipe.bodies:
+        local = describe_recipe_topology(body.recipe)
+        mappings.append(
+            TopologyMapping(
+                f"body:{body.id}",
+                local.entities_of("body", selectable_only=True)[0].logical_id,
+                "body:domain",
+                "derived",
+            )
+        )
+    return _make_topology(
+        recipe,
+        tuple(entities),
+        exact=True,
+        operation="multi-body",
+        diagnostics=diagnostics,
+        source_signatures=tuple(sources),
+        mappings=tuple(mappings),
+    )
+
+
+def _body_namespaced_id(body: SolidBody, logical_id: str) -> str:
+    reference = LogicalEntityRef(logical_id)
+    if reference.kind == "body":
+        return f"body:{body.id}"
+    _kind, local_name = logical_id.split(":", 1)
+    return f"{reference.kind}:{body.id}/{local_name}"
+
+
+def canonicalize_multi_body_logical_id(
+    recipe: MultiBodyGeometry,
+    logical_id: str,
+) -> str:
+    """Resolve a canonical ID or an unambiguous legacy single-Body alias."""
+
+    reference = LogicalEntityRef(logical_id)
+    topology = describe_recipe_topology(recipe)
+    try:
+        topology.entity(reference.logical_id)
+    except KeyError:
+        pass
+    else:
+        if logical_id == "body:domain" and len(recipe.bodies) == 1:
+            return f"body:{recipe.bodies[0].id}"
+        return logical_id
+    if len(recipe.bodies) != 1:
+        raise KeyError(logical_id)
+    body = recipe.bodies[0]
+    if reference.kind == "body" and logical_id == "body:domain":
+        return f"body:{body.id}"
+    _kind, local_name = logical_id.split(":", 1)
+    candidate = f"{reference.kind}:{body.id}/{local_name}"
+    topology.entity(candidate)
+    return candidate
 
 
 def _outer_group_mappings(
@@ -1433,7 +1738,9 @@ __all__ = [
     "TopologyTransition",
     "TransitionRelation",
     "can_preserve_logical_references",
+    "canonicalize_multi_body_logical_id",
     "describe_recipe_topology",
+    "logical_reference_transition_map",
     "surviving_logical_reference_ids",
     "topology_fingerprint_for_recipe",
     "topology_fingerprint_from_topology",

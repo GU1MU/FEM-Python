@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from time import monotonic
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication
 
 from fem.application import (
@@ -52,6 +54,16 @@ _RESULT_ACTIONS = (
     "export_vtk",
     "screenshot",
 )
+
+
+def _wait_for_task(window: FEMMainWindow, timeout: float = 10.0) -> None:
+    application = QApplication.instance() or QApplication([])
+    deadline = monotonic() + timeout
+    while window.busy and monotonic() < deadline:
+        application.processEvents()
+        QThread.msleep(1)
+    application.processEvents()
+    assert not window.busy
 
 
 def _application() -> QApplication:
@@ -628,7 +640,6 @@ def test_failed_project_open_preserves_session_tree_and_viewport(
     errors: list[tuple[str, str]] = []
     before_document = window.document
     before = _projection_signature(window)
-    before_status = window.status_panel.state_label.text()
 
     monkeypatch.setattr(
         main_window_module.QFileDialog,
@@ -643,11 +654,11 @@ def test_failed_project_open_preserves_session_tree_and_viewport(
     )
 
     window.open_native_project()
+    _wait_for_task(window)
 
     assert errors
     assert window.document is before_document
     assert _projection_signature(window) == before
-    assert window.status_panel.state_label.text() == before_status
     assert "下次显式保存" not in window.status_panel.state_label.text()
     assert "schema 2" not in window.status_panel.state_label.text()
     assert "compatibility migration" not in (

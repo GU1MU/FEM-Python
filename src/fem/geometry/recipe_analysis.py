@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import math
 from typing import Literal
@@ -14,6 +14,7 @@ from .recipes import (
     DiskGeometry,
     ExtrudedGeometry,
     MovedGeometry,
+    MultiBodyGeometry,
     NATIVE_GEOMETRY_TYPES,
     NativeGeometry,
     PlateWithHoleGeometry,
@@ -396,7 +397,19 @@ def legacy_sketches_to_strict(recipe: NativeGeometry) -> NativeGeometry:
             recipe.operation,
             object_geometry,
             tool_geometry,
+            recipe.body_context,
         )
+    if type(recipe) is MultiBodyGeometry:
+        bodies = tuple(
+            replace(
+                body,
+                recipe=legacy_sketches_to_strict(body.recipe),
+            )
+            for body in recipe.bodies
+        )
+        if bodies == recipe.bodies:
+            return recipe
+        return replace(recipe, bodies=bodies)
     return recipe
 
 
@@ -1206,6 +1219,11 @@ def recipe_characteristic_size(recipe: NativeGeometry) -> float:
             recipe_characteristic_size(recipe.object_geometry),
             recipe_characteristic_size(recipe.tool_geometry),
         )
+    if isinstance(recipe, MultiBodyGeometry):
+        return min(
+            recipe_characteristic_size(body.recipe)
+            for body in recipe.bodies
+        )
     if isinstance(recipe, (MovedGeometry, RotatedGeometry)):
         return recipe_characteristic_size(recipe.base)
     if isinstance(recipe, ExtrudedGeometry):
@@ -1248,6 +1266,11 @@ def supports_structured_hexahedron(recipe: NativeGeometry) -> bool:
     """Return whether the existing structured Hex mesher supports ``recipe``."""
 
     _require_native_geometry(recipe)
+    if isinstance(recipe, MultiBodyGeometry):
+        return (
+            len(recipe.bodies) == 1
+            and supports_structured_hexahedron(recipe.bodies[0].recipe)
+        )
     if isinstance(recipe, (MovedGeometry, RotatedGeometry)):
         return supports_structured_hexahedron(recipe.base)
     if isinstance(recipe, BoxGeometry):

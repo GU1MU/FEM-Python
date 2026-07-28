@@ -29,6 +29,7 @@ from fem.geometry import (
     ExtrudedGeometry,
     LogicalEntityRef,
     MovedGeometry,
+    MultiBodyGeometry,
     PlateWithHoleGeometry,
     RectangleGeometry,
     RotatedGeometry,
@@ -834,11 +835,14 @@ def test_selecting_a_solid_geometry_prepares_tetrahedral_settings_and_preview() 
 
     window._set_native_geometry(recipe, "长方体")
 
-    assert window.document.geometry_recipe == recipe
+    geometry = window.document.geometry_recipe
+    assert isinstance(geometry, MultiBodyGeometry)
+    assert len(geometry.bodies) == 1
+    assert geometry.bodies[0].recipe == recipe
     assert window.document.mesh_settings.cell_shape == "tetrahedron"
     assert window.viewport._geometry_preview is not None
     assert window.model_tree.topLevelItemCount() == 1
-    assert window.model_tree.topLevelItem(0).text(0) == recipe.name
+    assert window.model_tree.topLevelItem(0).text(0) == geometry.name
     assert "未打开模型" not in window.model_tree.topLevelItem(0).text(0)
     assert window.actions["mesh_generate"].isEnabled()
     window.close()
@@ -864,6 +868,7 @@ def test_renderer_failure_cannot_leave_valid_geometry_actions_disabled(monkeypat
     )
 
     assert calls == 2
+    window._on_geometry_entity_pick(LogicalEntityRef("body:B1"))
     assert window.actions["geometry_move"].isEnabled()
     assert window.actions["geometry_select_face"].isEnabled()
     assert window.actions["mesh_settings"].isEnabled()

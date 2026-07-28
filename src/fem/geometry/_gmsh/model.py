@@ -32,6 +32,7 @@ from ..types import (
     LoftParametrization,
     LoftResult,
     OrientedCurveRef,
+    SurfaceTessellation,
     SweepFrame,
     WireRef,
     _unique_first_seen,
@@ -1863,6 +1864,216 @@ class GeometryModel:
         operation = "bounding_box"
         target = self._prepare_geometry_query_entity(entity, operation=operation)
         return self._read_bounding_box(target, operation=operation)
+
+    def geometry_type(self, entity: EntityRef) -> str:
+        """Return the backend analytic type as read-only lineage evidence."""
+
+        operation = "geometry_type"
+        target = self._prepare_geometry_query_entity(entity, operation=operation)
+        self._activate(operation)
+        self._gmsh.model.occ.synchronize()
+        value = self._gmsh.model.getType(target.dimension, target.tag)
+        if type(value) is not str or not value.strip():
+            raise GeometryError(
+                f"geometry model {self.name!r}: invalid geometry type for "
+                f"entity ({target.dimension}, {target.tag})"
+            )
+        return value.strip()
+
+    def geometry_direction(
+        self,
+        entity: EntityRef,
+    ) -> tuple[float, float, float] | None:
+        """Return an unoriented tangent/normal for analytic lines or planes."""
+
+        operation = "geometry_direction"
+        target = self._prepare_geometry_query_entity(
+            entity,
+            operation=operation,
+        )
+        if target.dimension not in {1, 2}:
+            return None
+        self._activate(operation)
+        self._gmsh.model.occ.synchronize()
+        geometry_type = str(
+            self._gmsh.model.getType(target.dimension, target.tag)
+        ).casefold()
+        if target.dimension == 1:
+            if geometry_type != "line":
+                return None
+            minimum, maximum = self._gmsh.model.getParametrizationBounds(
+                1,
+                target.tag,
+            )
+            parameter = (float(minimum[0]) + float(maximum[0])) * 0.5
+            raw = self._gmsh.model.getDerivative(
+                1,
+                target.tag,
+                (parameter,),
+            )
+        else:
+            if geometry_type != "plane":
+                return None
+            center = self._gmsh.model.occ.getCenterOfMass(2, target.tag)
+            parameters = self._gmsh.model.getParametrization(
+                2,
+                target.tag,
+                tuple(float(value) for value in center),
+            )
+            raw = self._gmsh.model.getNormal(target.tag, parameters)
+        values = tuple(float(value) for value in raw[:3])
+        magnitude = math.sqrt(sum(value * value for value in values))
+        if magnitude <= 0.0 or not math.isfinite(magnitude):
+            raise GeometryError(
+                f"geometry model {self.name!r}: invalid analytic direction"
+            )
+        return tuple(value / magnitude for value in values)
+
+    def tessellate_surfaces(
+        self,
+        faces: Iterable[EntityRef],
+        edges: Iterable[EntityRef] = (),
+        points: Iterable[EntityRef] = (),
+    ) -> SurfaceTessellation:
+        """Generate a detached surface display mesh with typed cell owners."""
+
+        self._check_state("tessellate_surfaces", _QUERY_STATES)
+        normalized_faces = self._normalize_entities(
+            faces,
+            operation="tessellate_surfaces",
+        )
+        normalized_edges = self._normalize_entities(
+            edges,
+            operation="tessellate_surfaces",
+        )
+        normalized_points = self._normalize_entities(
+            points,
+            operation="tessellate_surfaces",
+        )
+        if any(entity.dimension != 2 for entity in normalized_faces):
+            raise ValueError("tessellate_surfaces faces must be surfaces")
+        if any(entity.dimension != 1 for entity in normalized_edges):
+            raise ValueError("tessellate_surfaces edges must be curves")
+        if any(entity.dimension != 0 for entity in normalized_points):
+            raise ValueError("tessellate_surfaces points must be points")
+        if not normalized_faces:
+            raise ValueError("tessellate_surfaces requires at least one face")
+        self._activate("tessellate_surfaces")
+        self._gmsh.model.occ.synchronize()
+        self._gmsh.model.mesh.generate(2)
+        raw_node_tags, raw_coordinates, _parameters = (
+            self._gmsh.model.mesh.getNodes()
+        )
+        node_tags = tuple(int(value) for value in raw_node_tags)
+        coordinates = tuple(float(value) for value in raw_coordinates)
+        if len(coordinates) != 3 * len(node_tags):
+            raise GeometryError(
+                f"geometry model {self.name!r}: inconsistent display nodes"
+            )
+        node_index = {
+            tag: index for index, tag in enumerate(node_tags)
+        }
+        display_points = tuple(
+            (
+                coordinates[3 * index],
+                coordinates[3 * index + 1],
+                coordinates[3 * index + 2],
+            )
+            for index in range(len(node_tags))
+        )
+
+        def cells_for(entity: EntityRef) -> tuple[tuple[int, ...], ...]:
+            element_types, _element_tags, element_nodes = (
+                self._gmsh.model.mesh.getElements(
+                    entity.dimension,
+                    entity.tag,
+                )
+            )
+            cells: list[tuple[int, ...]] = []
+            for element_type, raw_nodes in zip(
+                element_types,
+                element_nodes,
+                strict=True,
+            ):
+                properties = self._gmsh.model.mesh.getElementProperties(
+                    int(element_type)
+                )
+                node_count = int(properties[3])
+                primary_count = int(properties[5])
+                values = tuple(int(value) for value in raw_nodes)
+                if node_count <= 0 or len(values) % node_count:
+                    raise GeometryError(
+                        f"geometry model {self.name!r}: invalid display "
+                        "element connectivity"
+                    )
+                for start in range(0, len(values), node_count):
+                    primary = values[start : start + primary_count]
+                    cells.append(
+                        tuple(node_index[tag] for tag in primary)
+                    )
+            return tuple(cells)
+
+        display_faces: list[tuple[int, ...]] = []
+        face_owners: list[EntityRef] = []
+        for face in normalized_faces:
+            cells = cells_for(face)
+            display_faces.extend(cells)
+            face_owners.extend((face,) * len(cells))
+        display_edges: list[tuple[int, ...]] = []
+        edge_owners: list[EntityRef] = []
+        for edge in normalized_edges:
+            cells = cells_for(edge)
+            display_edges.extend(cells)
+            edge_owners.extend((edge,) * len(cells))
+        point_owners: list[EntityRef | None] = [None] * len(display_points)
+        for point in normalized_points:
+            point_node_tags, _coordinates, _parameters = (
+                self._gmsh.model.mesh.getNodes(
+                    0,
+                    point.tag,
+                    True,
+                    False,
+                )
+            )
+            for raw_tag in point_node_tags:
+                index = node_index.get(int(raw_tag))
+                if index is None:
+                    continue
+                owner = point_owners[index]
+                if owner is not None and owner != point:
+                    raise GeometryError(
+                        f"geometry model {self.name!r}: display node "
+                        "belongs to multiple OCC points"
+                    )
+                point_owners[index] = point
+        used_indices = {
+            index
+            for cell in (*display_faces, *display_edges)
+            for index in cell
+        }
+        used_indices.update(
+            index
+            for index, owner in enumerate(point_owners)
+            if owner is not None
+        )
+        ordered_indices = tuple(sorted(used_indices))
+        compact_index = {
+            old: new for new, old in enumerate(ordered_indices)
+        }
+        return SurfaceTessellation(
+            tuple(display_points[index] for index in ordered_indices),
+            tuple(
+                tuple(compact_index[index] for index in face)
+                for face in display_faces
+            ),
+            tuple(face_owners),
+            tuple(
+                tuple(compact_index[index] for index in edge)
+                for edge in display_edges
+            ),
+            tuple(edge_owners),
+            tuple(point_owners[index] for index in ordered_indices),
+        )
 
     def length(self, curve: EntityRef) -> float:
         """Return the OCC length of one live curve."""

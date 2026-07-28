@@ -5,9 +5,11 @@ from copy import deepcopy
 import inspect
 import os
 from pathlib import Path
+from time import monotonic
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication, QDialog
 
 from fem.abaqus import read
@@ -33,6 +35,16 @@ _RELOAD_LOSS_MESSAGE = (
 
 def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def _wait_for_task(window: FEMMainWindow, timeout: float = 10.0) -> None:
+    application = _application()
+    deadline = monotonic() + timeout
+    while window.busy and monotonic() < deadline:
+        application.processEvents()
+        QThread.msleep(1)
+    application.processEvents()
+    assert not window.busy
 
 
 def _install_imported(window: FEMMainWindow, path: Path) -> None:
@@ -317,6 +329,7 @@ def test_native_create_survives_project_save_and_reopen(
         lambda *_args, **_kwargs: (str(target), ""),
     )
     assert window.save_native_project()
+    _wait_for_task(window)
     window.close()
 
     reopened = FEMMainWindow()
@@ -326,6 +339,7 @@ def test_native_create_survives_project_save_and_reopen(
         lambda *_args, **_kwargs: (str(target), ""),
     )
     reopened.open_native_project()
+    _wait_for_task(reopened)
 
     assert reopened.document.steps[0].outputs == (created,)
     assert reopened.document.steps[0].outputs[0].metadata == {

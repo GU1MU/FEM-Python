@@ -652,6 +652,87 @@ def test_scope_pick_buttons_request_node_edge_and_surface_selection():
         assert load.requested_scope_kind() == kind
 
 
+def test_analysis_manager_edit_requests_a_new_load_scope(monkeypatch):
+    _application()
+    step = static("Load")
+    step.edge_loads = (EdgeLoad("EdgeSet-1", (-10.0, 0.0)),)
+    manager = AnalysisDefinitionManagerDialog(
+        [step],
+        [],
+        _regions("edge", "EdgeSet-1"),
+        [],
+        2,
+        load_scope_selection_kinds=("edge",),
+    )
+
+    def request_scope(dialog):
+        assert dialog.scope_pick_button.isEnabled()
+        dialog.scope_pick_button.click()
+        return False
+
+    monkeypatch.setattr(LoadDialog, "exec", request_scope)
+
+    assert not manager.edit_definition(("edge_load", 0, 0))
+    assert manager.requested_scope_selection() == (
+        "edge",
+        ("edge_load", 0, 0),
+    )
+
+
+def test_analysis_manager_edit_requests_a_new_boundary_scope(monkeypatch):
+    _application()
+    step = static("Load")
+    step.boundaries = (
+        DisplacementConstraint(
+            "NodeSet-1",
+            1,
+            1,
+            0.0,
+            target_kind="node_set",
+        ),
+    )
+    manager = AnalysisDefinitionManagerDialog(
+        [step],
+        _regions("node_set", "NodeSet-1"),
+        [],
+        [],
+        2,
+        boundary_scope_selection_kinds=("node",),
+    )
+
+    def request_scope(dialog):
+        assert dialog.scope_pick_button.isEnabled()
+        dialog.scope_pick_button.click()
+        return False
+
+    monkeypatch.setattr(DisplacementDialog, "exec", request_scope)
+
+    assert not manager.edit_definition(("boundary", 0, 0))
+    assert manager.requested_scope_selection() == (
+        "node",
+        ("boundary", 0, 0),
+    )
+
+
+def test_edit_load_dialog_prefers_a_new_explicit_scope():
+    _application()
+    dialog = LoadDialog(
+        ["Load"],
+        [],
+        _regions("edge", "EdgeSet-1", "EdgeSet-2"),
+        [],
+        2,
+        selected_region=RegionRef("edge", "EdgeSet-2"),
+        current=EdgeLoad("EdgeSet-1", (-10.0, 0.0)),
+    )
+
+    assert dialog.region_combo.currentData() == RegionRef(
+        "edge",
+        "EdgeSet-2",
+    )
+    assert dialog.x_spin.value() == -10.0
+
+
 @pytest.mark.parametrize(
     "family",
     (
@@ -731,6 +812,49 @@ def test_analysis_manager_uses_readable_definition_summaries():
     assert manager.table.item(1, 3).text() == "U1 = 0"
     assert manager.table.item(2, 0).text() == "字段输出"
     assert manager.table.item(2, 2).text() == "节点"
+
+
+def test_model_tree_boundary_delete_preserves_other_definitions():
+    first = DisplacementConstraint("Fixed", 1, 1, 0.0)
+    second = DisplacementConstraint("Roller", 2, 2, 0.0)
+    step = static("Load")
+    step.boundaries = (first, second)
+    changes = []
+
+    class WindowStub:
+        def __init__(self):
+            self.document = type(
+                "Document",
+                (),
+                {"steps": (step,)},
+            )()
+
+        def _analysis_definitions_changed(self, reason, definitions):
+            changes.append((reason, definitions))
+
+    window = WindowStub()
+
+    FEMMainWindow.delete_analysis_definition(
+        window,
+        "boundary",
+        (0, 0),
+    )
+
+    assert step.boundaries == (first, second)
+    assert changes[0][0] == "边界条件已删除，模型需要重新检查"
+    assert changes[0][1][0].boundaries == (second,)
+
+    FEMMainWindow.delete_analysis_definition(
+        window,
+        "cload",
+        (0, 0),
+    )
+    FEMMainWindow.delete_analysis_definition(
+        window,
+        "boundary",
+        (9, 0),
+    )
+    assert len(changes) == 1
 
 
 def test_output_view_is_read_only_and_preserves_unsupported_request(

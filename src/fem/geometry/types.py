@@ -121,6 +121,56 @@ class BooleanResult:
 
 
 @dataclass(frozen=True, slots=True)
+class SurfaceTessellation:
+    """Detached display mesh retaining the OCC owner of each display cell."""
+
+    points: tuple[tuple[float, float, float], ...]
+    faces: tuple[tuple[int, ...], ...]
+    face_entities: tuple[EntityRef, ...]
+    edges: tuple[tuple[int, ...], ...]
+    edge_entities: tuple[EntityRef, ...]
+    point_entities: tuple[EntityRef | None, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.faces) != len(self.face_entities):
+            raise ValueError("face_entities must match tessellated faces")
+        if len(self.edges) != len(self.edge_entities):
+            raise ValueError("edge_entities must match tessellated edges")
+        if len(self.points) != len(self.point_entities):
+            raise ValueError("point_entities must match tessellated points")
+        if any(entity.dimension != 2 for entity in self.face_entities):
+            raise ValueError("face tessellation owners must be surfaces")
+        if any(entity.dimension != 1 for entity in self.edge_entities):
+            raise ValueError("edge tessellation owners must be curves")
+        if any(
+            entity is not None and entity.dimension != 0
+            for entity in self.point_entities
+        ):
+            raise ValueError("point tessellation owners must be points")
+
+
+@dataclass(frozen=True, slots=True)
+class StrictBodyBooleanPreview:
+    """Detached true OCC result tessellation with local logical identities."""
+
+    target_body_id: str
+    points: tuple[tuple[float, float, float], ...]
+    faces: tuple[tuple[int, ...], ...]
+    edges: tuple[tuple[int, ...], ...]
+    face_logical_ids: tuple[str, ...]
+    edge_logical_ids: tuple[str, ...]
+    point_logical_ids: tuple[str | None, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.faces) != len(self.face_logical_ids):
+            raise ValueError("Boolean preview faces and IDs must align")
+        if len(self.edges) != len(self.edge_logical_ids):
+            raise ValueError("Boolean preview edges and IDs must align")
+        if len(self.points) != len(self.point_logical_ids):
+            raise ValueError("Boolean preview points and IDs must align")
+
+
+@dataclass(frozen=True, slots=True)
 class FeatureResult:
     """Typed topology produced by one geometry feature operation.
 
@@ -366,6 +416,8 @@ __all__ = [
     "LoftParametrization",
     "LoftResult",
     "OrientedCurveRef",
+    "StrictBodyBooleanPreview",
+    "SurfaceTessellation",
     "SweepFrame",
     "WireRef",
 ]

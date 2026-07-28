@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,13 @@ from fem.geometry.measurements import (
 )
 from fem.geometry.recipe_analysis import legacy_sketches_to_strict
 from fem.geometry.recipe_topology import describe_recipe_topology
+from fem.geometry.recipe_topology import canonicalize_multi_body_logical_id
+from fem.geometry.body_operations import materialize_multi_body
+from fem.geometry.recipes import (
+    ExtrudedGeometry,
+    MultiBodyGeometry,
+    geometry_dimension,
+)
 from fem.geometry.references import LogicalEntityRef
 from fem.mesh.settings import (
     LocalMeshControl,
@@ -165,7 +173,7 @@ def migrate_project_v1(
             code="project.schema.v1",
             message=(
                 "项目已通过 schema 1 compatibility migration 打开；"
-                "下次显式保存将升级为 schema 4（v4）当前项目格式"
+                "下次显式保存将升级为 schema 5（v5）当前项目格式"
             ),
             path="$.schema",
         )
@@ -413,5 +421,124 @@ def _validate_current_native_authoring(
 
 __all__ = [
     "ProjectMigrationNotice",
+    "migrate_project_snapshot_to_v5",
     "migrate_project_v1",
 ]
+
+
+def migrate_project_snapshot_to_v5(
+    snapshot: ProjectSnapshot,
+) -> tuple[ProjectSnapshot, tuple[ProjectMigrationNotice, ...]]:
+    """Promote legacy 3D authoring into the canonical schema-v5 Body model."""
+
+    if type(snapshot) is not ProjectSnapshot:
+        raise TypeError("snapshot must be a ProjectSnapshot")
+    recipe = snapshot.geometry_recipe
+    if (
+        recipe is None
+        or geometry_dimension(recipe) != 3
+        or isinstance(recipe, MultiBodyGeometry)
+    ):
+        return snapshot, ()
+    body_name = (
+        snapshot.parts[0].body_name
+        if snapshot.parts
+        else "Body-1"
+    )
+    geometry = materialize_multi_body(
+        recipe,
+        geometry_name=f"{getattr(recipe, 'name', 'Part-1')} Geometry",
+        first_body_name=body_name,
+    )
+
+    def canonical(reference: LogicalEntityRef) -> LogicalEntityRef:
+        try:
+            logical_id = canonicalize_multi_body_logical_id(
+                geometry,
+                reference.logical_id,
+            )
+        except KeyError:
+            logical_id = _canonicalize_expanded_extrusion_reference(
+                geometry,
+                reference.logical_id,
+            )
+        return LogicalEntityRef(logical_id)
+
+    named_regions = tuple(
+        replace(
+            region,
+            references=tuple(
+                canonical(reference)
+                if type(reference) is LogicalEntityRef
+                else reference
+                for reference in region.references
+            ),
+        )
+        for region in snapshot.named_regions
+    )
+    mesh_settings = snapshot.mesh_settings
+    if mesh_settings is not None:
+        mesh_settings = replace(
+            mesh_settings,
+            local_controls=tuple(
+                replace(control, target=canonical(control.target))
+                for control in mesh_settings.local_controls
+            ),
+        )
+    migrated = replace(
+        snapshot,
+        geometry_recipe=geometry,
+        mesh_settings=mesh_settings,
+        feature_history=derive_feature_history(geometry),
+        named_regions=named_regions,
+    )
+    return (
+        migrated,
+        (
+            ProjectMigrationNotice(
+                "project.schema.v5.multi_body",
+                "3D native geometry was promoted to stable schema-v5 Bodies.",
+                "$.project.authoring.geometry",
+            ),
+        ),
+    )
+
+
+def _canonicalize_expanded_extrusion_reference(
+    geometry: MultiBodyGeometry,
+    logical_id: str,
+) -> str:
+    reference = LogicalEntityRef(logical_id)
+    if reference.kind == "body":
+        raise ProjectV1MigrationError(
+            "legacy aggregate body:domain is ambiguous after multi-Profile "
+            "Body materialization"
+        )
+    _kind, semantic_name = logical_id.split(":", 1)
+    candidates: list[str] = []
+    for body in geometry.bodies:
+        body_recipe = body.recipe
+        if not isinstance(body_recipe, ExtrudedGeometry):
+            continue
+        source_ids = body_recipe.source_face_ids
+        if len(source_ids) != 1:
+            continue
+        source_name = source_ids[0].split(":", 1)[1]
+        if semantic_name == source_name:
+            local_name = "domain"
+        elif semantic_name.endswith(f"/{source_name}"):
+            local_name = semantic_name[: -(len(source_name) + 1)]
+        else:
+            continue
+        candidate = f"{reference.kind}:{body.id}/{local_name}"
+        try:
+            describe_recipe_topology(geometry).entity(candidate)
+        except KeyError:
+            continue
+        candidates.append(candidate)
+    if len(candidates) != 1:
+        raise ProjectV1MigrationError(
+            f"legacy logical reference {logical_id!r} cannot be uniquely "
+            "mapped to one schema-v5 Body"
+        )
+    return candidates[0]

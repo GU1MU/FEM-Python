@@ -198,9 +198,10 @@ def test_model_page_replaces_clear_selection_with_edge_selection():
     }
     assert geometry_actions == {
             window.actions[name]
-            for name in (
-                "geometry_create",
-                "geometry_extrude",
+                for name in (
+                    "geometry_create",
+                    "geometry_add_body",
+                    "geometry_extrude",
             "geometry_move",
             "geometry_rotate",
             "geometry_fuse",

@@ -216,7 +216,7 @@ def test_native_public_workflow_saves_reopens_remeshes_and_resolves(
     first_run_id = _mesh_check_and_solve(window, run_name="Job-1")
 
     project_path = tmp_path / "plate-public.femproj"
-    require_accepted(window.save_project_path(project_path))
+    await_succeeded(window.save_project_path(project_path))
     assert project_path.is_file()
     assert window.document.project_path == project_path
     assert not window.document.dirty
@@ -231,7 +231,7 @@ def test_native_public_workflow_saves_reopens_remeshes_and_resolves(
     assert window.result_selection is None
     assert window.viewport._result_render_payload is None
 
-    require_accepted(window.open_project_path(project_path))
+    await_succeeded(window.open_project_path(project_path))
     assert window.document.source_kind == "native"
     assert window.document.project_path == project_path
     assert window.document.geometry_recipe is not None
@@ -294,13 +294,13 @@ def test_native_output_request_survives_save_reopen_and_executes(
     assert window.document.steps[0].outputs == (request,)
 
     project_path = tmp_path / "output-request-public.femproj"
-    require_accepted(window.save_project_path(project_path))
+    await_succeeded(window.save_project_path(project_path))
     require_accepted(
         window.close_session(
             CloseSessionCommand(window.document.session_revision)
         )
     )
-    require_accepted(window.open_project_path(project_path))
+    await_succeeded(window.open_project_path(project_path))
     assert window.document.steps[0].outputs == (request,)
 
     _mesh_check_and_solve(window, run_name="Output-Reopened")

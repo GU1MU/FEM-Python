@@ -7,8 +7,13 @@ import pytest
 from fem.application.definitions import NativePart
 from fem.application.feature_history import derive_feature_history
 from fem.application.session import ProjectSnapshot
-from fem.geometry import ExtrudedGeometry, SketchGeometry, SketchRectangle
-from fem.io.project import decode_project
+from fem.geometry import (
+    ExtrudedGeometry,
+    MultiBodyGeometry,
+    SketchGeometry,
+    SketchRectangle,
+)
+from fem.io.project import decode_project, encode_project
 from fem.io.project_v1 import encode_project_v1
 from fem.io.project_v2 import encode_project_v2
 from fem.io.project_v3 import (
@@ -124,7 +129,9 @@ def test_v3_writer_rejects_selected_source_faces_but_legacy_migrates_empty() -> 
     legacy = _snapshot(ExtrudedGeometry(_single_profile_base(), 2.0))
     loaded = decode_project(encode_project_v3(legacy))
     assert loaded.source_schema == 3
-    assert loaded.snapshot.geometry_recipe.source_face_ids == ()
+    geometry = loaded.snapshot.geometry_recipe
+    assert isinstance(geometry, MultiBodyGeometry)
+    assert geometry.body("B1").recipe.source_face_ids
 
 
 def test_v3_unproven_strict_extrusion_fingerprint_migrates_to_exact() -> None:
@@ -195,7 +202,7 @@ def test_v4_nested_legacy_source_alias_is_recanonicalized() -> None:
     "legacy_encoder",
     (encode_project_v1, encode_project_v2, encode_project_v3),
 )
-def test_old_schema_legacy_extrusion_can_save_as_v4_and_reopen(
+def test_old_schema_legacy_extrusion_can_save_as_v5_and_reopen(
     legacy_encoder,
 ) -> None:
     original = _snapshot(
@@ -203,7 +210,10 @@ def test_old_schema_legacy_extrusion_can_save_as_v4_and_reopen(
     )
     migrated = decode_project(legacy_encoder(original)).snapshot
 
-    reopened = decode_project_v4(encode_project_v4(migrated))
+    reopened = decode_project(encode_project(migrated)).snapshot
 
-    assert reopened.geometry_recipe.base.is_strict
-    assert reopened.geometry_recipe.source_face_ids == ()
+    geometry = reopened.geometry_recipe
+    assert isinstance(geometry, MultiBodyGeometry)
+    body_recipe = geometry.body("B1").recipe
+    assert body_recipe.base.is_strict
+    assert len(body_recipe.source_face_ids) == 1

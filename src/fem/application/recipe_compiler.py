@@ -23,6 +23,12 @@ from fem.geometry.recipe_topology import (
     describe_recipe_topology,
 )
 from fem.geometry.references import LogicalEntityRef
+from fem.geometry.solid_boolean_lineage import (
+    BooleanLineageResolutionError,
+    capture_boolean_operand_evidence,
+    resolve_solid_boolean_lineage,
+    validate_solid_boolean_input_map,
+)
 from fem.geometry.recipes import (
     BooleanGeometry,
     BoxGeometry,
@@ -30,6 +36,7 @@ from fem.geometry.recipes import (
     DiskGeometry,
     ExtrudedGeometry,
     MovedGeometry,
+    MultiBodyGeometry,
     NativeGeometry,
     PlateWithHoleGeometry,
     RectangleGeometry,
@@ -168,6 +175,8 @@ def _compile_exact(cad: Any, recipe: NativeGeometry) -> _CompiledDraft:
         return draft
     if isinstance(recipe, ExtrudedGeometry):
         return _compile_extrusion(cad, recipe)
+    if isinstance(recipe, MultiBodyGeometry):
+        return _compile_multi_body(cad, recipe)
     if isinstance(recipe, BooleanGeometry):
         return _compile_boolean(cad, recipe)
     raise TypeError(f"不支持的几何配方: {type(recipe).__name__}")
@@ -800,6 +809,8 @@ def _compile_cylinder(cad: Any, recipe: CylinderGeometry) -> _CompiledDraft:
 
 
 def _compile_boolean(cad: Any, recipe: BooleanGeometry) -> _CompiledDraft:
+    if recipe.body_context is not None:
+        return _compile_strict_body_boolean(cad, recipe)
     objects = tuple(_build_domain_only(cad, recipe.object_geometry))
     tools = tuple(_build_domain_only(cad, recipe.tool_geometry))
     operation = {
@@ -1106,6 +1117,113 @@ def _compile_extrusion(cad: Any, recipe: ExtrudedGeometry) -> _CompiledDraft:
     )
 
 
+def _compile_strict_body_boolean(
+    cad: Any,
+    recipe: BooleanGeometry,
+) -> _CompiledDraft:
+    context = recipe.body_context
+    if context is None or not context.proven:
+        raise TopologyResolutionError(
+            "boolean.lineage.unproven: strict Body Boolean lacks persisted proof"
+        )
+    target = _compile_exact(cad, recipe.object_geometry)
+    tool = _compile_exact(cad, recipe.tool_geometry)
+    target_compiled = _finalize(
+        cad,
+        recipe.object_geometry,
+        describe_recipe_topology(recipe.object_geometry),
+        target,
+    )
+    tool_compiled = _finalize(
+        cad,
+        recipe.tool_geometry,
+        describe_recipe_topology(recipe.tool_geometry),
+        tool,
+    )
+    target_evidence = capture_boolean_operand_evidence(cad, target_compiled)
+    tool_evidence = capture_boolean_operand_evidence(cad, tool_compiled)
+    operation = cad.fuse if recipe.operation == "fuse" else cad.cut
+    result = operation(target.domain, tool.domain)
+    try:
+        validate_solid_boolean_input_map(result)
+    except BooleanLineageResolutionError as error:
+        raise TopologyResolutionError(str(error)) from error
+    volumes = result.of_dimension(3)
+    boundary = (
+        ()
+        if len(volumes) != 1
+        else tuple(cad.boundary(volumes, combined=False))
+    )
+    try:
+        proof = resolve_solid_boolean_lineage(
+            cad,
+            target_evidence,
+            tool_evidence,
+            result,
+            boundary,
+            context,
+            operation=recipe.operation,
+        )
+    except BooleanLineageResolutionError as error:
+        raise TopologyResolutionError(str(error)) from error
+    if (
+        frozenset(proof.result_entities)
+        != frozenset(context.result_entities)
+        or frozenset(proof.topology_mappings)
+        != frozenset(context.topology_mappings)
+    ):
+        raise TopologyResolutionError(
+            "boolean.lineage.catalog-mismatch: persisted proof does not "
+            "match the current OCC result"
+        )
+    return _CompiledDraft(
+        (proof.result_volume,),
+        dict(proof.logical_entities),
+        {},
+    )
+
+
+def _compile_multi_body(
+    cad: Any,
+    recipe: MultiBodyGeometry,
+) -> _CompiledDraft:
+    domain: list[Any] = []
+    logical: dict[str, tuple[Any, ...]] = {}
+    region_bindings: dict[RecipeRegionSelector, list[Any]] = {}
+    hole_boundary: list[Any] = []
+    for body in recipe.bodies:
+        local = _compile_exact(cad, body.recipe)
+        local_domain = _unique(local.domain)
+        if len(local_domain) != 1 or local_domain[0].dimension != 3:
+            raise TopologyResolutionError(
+                f"multi-body.single-volume: Body {body.id} "
+                "must compile to exactly one volume"
+            )
+        domain.extend(local_domain)
+        for logical_id, entities in local.logical_entities.items():
+            reference = LogicalEntityRef(logical_id)
+            if reference.kind == "body":
+                target_id = f"body:{body.id}"
+            else:
+                _kind, local_name = logical_id.split(":", 1)
+                target_id = f"{reference.kind}:{body.id}/{local_name}"
+            logical[target_id] = tuple(entities)
+        for selector, entities in local.region_bindings.items():
+            region_bindings.setdefault(selector, []).extend(entities)
+        hole_boundary.extend(local.hole_boundary)
+    compiled_domain = _unique(domain)
+    logical["body:domain"] = compiled_domain
+    return _CompiledDraft(
+        compiled_domain,
+        logical,
+        {
+            selector: _unique(entities)
+            for selector, entities in region_bindings.items()
+        },
+        _unique(hole_boundary),
+    )
+
+
 def _finalize(
     cad: Any,
     recipe: NativeGeometry,
@@ -1152,6 +1270,8 @@ def _validate_logical_entities(
 
 
 def _build_domain_only(cad: Any, recipe: NativeGeometry) -> tuple[Any, ...]:
+    if isinstance(recipe, MultiBodyGeometry):
+        return _compile_multi_body(cad, recipe).domain
     if isinstance(recipe, SketchGeometry):
         if recipe.is_strict:
             return _compile_strict_sketch(cad, recipe).domain

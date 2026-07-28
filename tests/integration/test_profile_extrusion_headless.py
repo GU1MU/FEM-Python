@@ -8,7 +8,11 @@ from fem.application.feature_history import derive_feature_history
 from fem.application.session import ProjectSnapshot
 from fem.application.preprocessing import generate_fem_model
 from fem.application.recipe_compiler import compile_recipe
-from fem.geometry import ExtrudedGeometry, LogicalEntityRef
+from fem.geometry import (
+    ExtrudedGeometry,
+    LogicalEntityRef,
+    MultiBodyGeometry,
+)
 from fem.application.native_regions import RecipeRegionSelector
 from fem.io.project import load_project, save_project
 from fem.mesh.settings import MeshSettings
@@ -103,7 +107,10 @@ def test_selected_profile_save_reopen_and_remesh(
         reopened.mesh_settings,
     )
 
-    assert reopened.geometry_recipe.source_face_ids == (first,)
+    assert isinstance(reopened.geometry_recipe, MultiBodyGeometry)
+    assert reopened.geometry_recipe.body("B1").recipe.source_face_ids == (
+        first,
+    )
     assert model.mesh.nodes
     assert max(node.x for node in model.mesh.nodes) == pytest.approx(
         2.0,

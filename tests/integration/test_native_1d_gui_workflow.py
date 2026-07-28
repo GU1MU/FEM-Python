@@ -278,13 +278,13 @@ def test_native_1d_public_gui_workflow_persists_checks_solves_and_displays(
         )
 
     project_path = tmp_path / f"{formulation.casefold()}-native.femproj"
-    require_accepted(window.save_project_path(project_path))
+    await_succeeded(window.save_project_path(project_path))
     require_accepted(
         window.close_session(
             CloseSessionCommand(window.document.session_revision)
         )
     )
-    require_accepted(window.open_project_path(project_path))
+    await_succeeded(window.open_project_path(project_path))
     assert window.document.model is None
     assert window.document.assignments == (assignment,)
     if local_load is not None:

@@ -4,10 +4,13 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+from threading import Event
+from time import monotonic
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication
 
 from fem.application import (
@@ -49,10 +52,22 @@ from fem.mesh.settings import (
 from fem.steps.factory import static
 import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
+from fem_gui.task_controller import BackgroundTaskState
+from tests.helpers.gui_command_receipts import await_succeeded
 
 
 def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def _wait_for_task(window: FEMMainWindow, timeout: float = 10.0) -> None:
+    deadline = monotonic() + timeout
+    application = _application()
+    while window.busy and monotonic() < deadline:
+        application.processEvents()
+        QThread.msleep(1)
+    application.processEvents()
+    assert not window.busy
 
 
 def _native_project_snapshot() -> ProjectSnapshot:
@@ -135,7 +150,7 @@ def test_native_project_round_trip_returns_a_detached_snapshot(tmp_path) -> None
     reopened = loaded.snapshot
 
     assert isinstance(reopened, ProjectSnapshot)
-    assert loaded.source_schema == 4
+    assert loaded.source_schema == 5
     assert loaded.notices == ()
     assert reopened.source_kind == "native"
     assert reopened.source_path == target
@@ -188,6 +203,7 @@ def test_main_window_opens_current_v4_project(tmp_path, monkeypatch) -> None:
     )
 
     window.open_native_project()
+    _wait_for_task(window)
 
     assert window.document.source_kind == "native"
     assert window.document.project_path == source
@@ -222,6 +238,7 @@ def test_main_window_opens_wire_project_and_projects_preview(tmp_path) -> None:
     )
     window = FEMMainWindow()
     receipt = window.open_project_path(source)
+    await_succeeded(receipt)
 
     assert receipt.diagnostic is None
     assert window.document.source_kind == "native"
@@ -266,19 +283,162 @@ def test_main_window_v1_open_then_save_upgrades_the_same_path(
     )
 
     window.open_native_project()
+    _wait_for_task(window)
 
     assert window.document.project_path == source
     assert not window.document.dirty
     assert source.read_bytes() == original
     upgrade_notice = window.status_panel.state_label.text()
     assert "下次显式保存" in upgrade_notice
-    assert "schema 4" in upgrade_notice
-    assert "v4" in upgrade_notice
+    assert "schema 5" in upgrade_notice
+    assert "v5" in upgrade_notice
 
     assert window.save_native_project()
-    assert json.loads(source.read_text(encoding="utf-8"))["schema"] == 4
-    assert load_project(source).source_schema == 4
+    _wait_for_task(window)
+    assert json.loads(source.read_text(encoding="utf-8"))["schema"] == 5
+    assert load_project(source).source_schema == 5
     assert not window.document.dirty
+    window.close()
+
+
+def test_project_open_loads_and_authenticates_off_the_gui_thread(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    application = _application()
+    source = save_project(
+        tmp_path / "background-open.femproj",
+        _native_project_snapshot(),
+    )
+    real_load_project = load_project
+    entered = Event()
+    released = Event()
+    worker_threads: list[object] = []
+
+    def delayed_load(path):
+        worker_threads.append(QThread.currentThread())
+        entered.set()
+        assert released.wait(5.0)
+        return real_load_project(path)
+
+    monkeypatch.setattr(main_window_module, "load_project", delayed_load)
+    window = FEMMainWindow()
+    before = window.document
+    receipt = window.open_project_path(source)
+
+    deadline = monotonic() + 5.0
+    while not entered.is_set() and monotonic() < deadline:
+        application.processEvents()
+        QThread.msleep(1)
+
+    assert entered.is_set()
+    assert window.document is before
+    assert worker_threads[0] is not application.thread()
+
+    released.set()
+    await_succeeded(receipt)
+
+    assert window.document.project_path == source
+    assert window.document.geometry_recipe is not None
+    window.close()
+
+
+def test_project_save_encodes_and_authenticates_off_the_gui_thread(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    application = _application()
+    window = FEMMainWindow()
+    window._set_native_geometry(
+        SketchGeometry(
+            "Plate",
+            (SketchRectangle("material", 0.0, 0.0, 2.0, 1.0),),
+        ),
+        "草图",
+    )
+    target = tmp_path / "background-save.femproj"
+    real_save_project = save_project
+    entered = Event()
+    released = Event()
+    worker_threads: list[object] = []
+
+    def delayed_save(path, snapshot, **kwargs):
+        worker_threads.append(QThread.currentThread())
+        entered.set()
+        assert released.wait(5.0)
+        return real_save_project(path, snapshot, **kwargs)
+
+    monkeypatch.setattr(main_window_module, "save_project", delayed_save)
+    receipt = window.save_project_path(target)
+
+    deadline = monotonic() + 5.0
+    while not entered.is_set() and monotonic() < deadline:
+        application.processEvents()
+        QThread.msleep(1)
+
+    assert entered.is_set()
+    assert window.document.dirty
+    assert not target.exists()
+    assert worker_threads[0] is not application.thread()
+
+    released.set()
+    await_succeeded(receipt)
+
+    assert target.is_file()
+    assert window.document.project_path == target
+    assert not window.document.dirty
+    window.close()
+
+
+def test_stale_project_save_does_not_mark_newer_revision_saved(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    application = _application()
+    window = FEMMainWindow()
+    original = SketchGeometry(
+        "Original",
+        (SketchRectangle("material", 0.0, 0.0, 2.0, 1.0),),
+    )
+    window._set_native_geometry(original, "草图")
+    target = tmp_path / "stale-save.femproj"
+    real_save_project = save_project
+    entered = Event()
+    released = Event()
+
+    def delayed_save(path, snapshot, **kwargs):
+        entered.set()
+        assert released.wait(5.0)
+        return real_save_project(path, snapshot, **kwargs)
+
+    monkeypatch.setattr(main_window_module, "save_project", delayed_save)
+    receipt = window.save_project_path(target)
+    deadline = monotonic() + 5.0
+    while not entered.is_set() and monotonic() < deadline:
+        application.processEvents()
+        QThread.msleep(1)
+    assert entered.is_set()
+
+    changed = SketchGeometry(
+        "Changed",
+        (SketchRectangle("material", 0.0, 0.0, 3.0, 1.0),),
+    )
+    delta = window.session.replace_native_geometry_inputs(
+        (NativePart(),),
+        changed,
+        expected_session_revision=window.document.session_revision,
+    )
+    window._accepted_command(window._next_command_id(), delta)
+    released.set()
+
+    assert receipt.completion is not None
+    terminal = receipt.completion.result(10.0)
+
+    assert terminal.state is BackgroundTaskState.DISCARDED
+    assert window.document.geometry_recipe == changed
+    assert window.document.dirty
+    assert window.document.project_path is None
+    assert target.is_file()
     window.close()
 
 
@@ -323,7 +483,8 @@ def test_main_window_save_failure_keeps_project_dirty(
         lambda title, message: errors.append((title, message)),
     )
 
-    assert not window.save_native_project()
+    assert window.save_native_project()
+    _wait_for_task(window)
     assert window.document.dirty
     assert window.document.project_path is None
     assert not target.exists()

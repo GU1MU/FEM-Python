@@ -14,6 +14,7 @@ from fem.geometry import (
     ExtrudedGeometry,
     LogicalEntityRef,
     MovedGeometry,
+    MultiBodyGeometry,
     NativeGeometry,
     PlateWithHoleGeometry,
     RectangleGeometry,
@@ -21,6 +22,7 @@ from fem.geometry import (
     SketchArc,
     SketchCircle,
     SketchGeometry,
+    StrictBodyBooleanPreview,
     SketchLine,
     WireGeometry,
     analyze_sketch_profiles,
@@ -49,6 +51,9 @@ class GeometryPreview:
     point_logical_ids: tuple[str | None, ...] = ()
     body_logical_id: str | None = None
     topological_dimension: Literal[1, 2, 3] = 2
+    face_body_logical_ids: tuple[str | None, ...] = ()
+    edge_body_logical_ids: tuple[str | None, ...] = ()
+    point_body_logical_ids: tuple[str | None, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -73,6 +78,24 @@ class GeometryPreview:
             for logical_id in logical_ids:
                 if logical_id is not None:
                     LogicalEntityRef(logical_id)
+        for logical_name, cells in (
+            ("face_body_logical_ids", self.faces),
+            ("edge_body_logical_ids", self.edges),
+            ("point_body_logical_ids", self.points),
+        ):
+            logical_ids = tuple(getattr(self, logical_name))
+            if not logical_ids:
+                logical_ids = (self.body_logical_id,) * len(cells)
+                object.__setattr__(self, logical_name, logical_ids)
+            if len(logical_ids) != len(cells):
+                raise ValueError(f"{logical_name} 必须与对应显示实体数量一致")
+            for logical_id in logical_ids:
+                if logical_id is not None:
+                    reference = LogicalEntityRef(logical_id)
+                    if reference.kind != "body":
+                        raise ValueError(
+                            f"{logical_name} 只能包含 body logical IDs"
+                        )
         if self.body_logical_id is not None:
             reference = LogicalEntityRef(self.body_logical_id)
             if reference.kind != "body":
@@ -176,6 +199,74 @@ def build_strict_sketch_draft_preview(
     )
 
 
+def build_strict_body_boolean_preview(
+    recipe: MultiBodyGeometry,
+    boolean_preview: StrictBodyBooleanPreview,
+    *,
+    segments: int = 48,
+) -> GeometryPreview:
+    """Merge one true OCC Boolean tessellation with unaffected Body previews."""
+
+    return build_strict_body_boolean_previews(
+        recipe,
+        (boolean_preview,),
+        segments=segments,
+    )
+
+
+def build_strict_body_boolean_previews(
+    recipe: MultiBodyGeometry,
+    boolean_previews: tuple[StrictBodyBooleanPreview, ...],
+    *,
+    segments: int = 48,
+) -> GeometryPreview:
+    """Merge all replayed strict Bodies with deterministic unaffected Bodies."""
+
+    if type(recipe) is not MultiBodyGeometry:
+        raise TypeError("strict Boolean preview requires MultiBodyGeometry")
+    if any(
+        type(preview) is not StrictBodyBooleanPreview
+        for preview in boolean_previews
+    ):
+        raise TypeError(
+            "boolean_previews must contain StrictBodyBooleanPreview values"
+        )
+    preview_by_body = {
+        preview.target_body_id: preview
+        for preview in boolean_previews
+    }
+    if len(preview_by_body) != len(boolean_previews):
+        raise ValueError("strict Boolean previews contain duplicate Body IDs")
+    for body_id in preview_by_body:
+        recipe.body(body_id)
+    local_by_body: dict[str, GeometryPreview] = {}
+    for body in recipe.bodies:
+        boolean_preview = preview_by_body.get(body.id)
+        if boolean_preview is not None:
+            local_by_body[body.id] = GeometryPreview(
+                boolean_preview.points,
+                boolean_preview.faces,
+                boolean_preview.edges,
+                boolean_preview.face_logical_ids,
+                boolean_preview.edge_logical_ids,
+                boolean_preview.point_logical_ids,
+                "body:domain",
+                3,
+            )
+        else:
+            local_by_body[body.id] = _build_geometry_preview(
+                body.recipe,
+                max(12, int(segments)),
+            )
+    preview = _merge_multi_body_previews(recipe, local_by_body)
+    _validate_preview_topology(
+        recipe,
+        preview,
+        allow_occ_fallback=False,
+    )
+    return preview
+
+
 def _build_geometry_preview(
     recipe: NativeGeometry,
     segments: int,
@@ -195,6 +286,8 @@ def _build_geometry_preview(
         )
     if isinstance(recipe, BooleanGeometry):
         return _boolean_preview(recipe, segments)
+    if isinstance(recipe, MultiBodyGeometry):
+        return _multi_body_preview(recipe, segments)
     if isinstance(recipe, MovedGeometry):
         preview = _build_geometry_preview(recipe.base, segments)
         return _make_preview(
@@ -244,6 +337,85 @@ def _build_geometry_preview(
     if isinstance(recipe, PlateWithHoleGeometry):
         return _plate_with_hole_preview(recipe, segments)
     return _cylinder_preview(recipe, segments)
+
+
+def _multi_body_preview(
+    recipe: MultiBodyGeometry,
+    segments: int,
+) -> GeometryPreview:
+    return _merge_multi_body_previews(
+        recipe,
+        {
+            body.id: _build_geometry_preview(body.recipe, segments)
+            for body in recipe.bodies
+        },
+    )
+
+
+def _merge_multi_body_previews(
+    recipe: MultiBodyGeometry,
+    local_by_body: dict[str, GeometryPreview],
+) -> GeometryPreview:
+    points: list[tuple[float, float, float]] = []
+    faces: list[tuple[int, ...]] = []
+    edges: list[tuple[int, ...]] = []
+    face_ids: list[str | None] = []
+    edge_ids: list[str | None] = []
+    point_ids: list[str | None] = []
+    face_body_ids: list[str | None] = []
+    edge_body_ids: list[str | None] = []
+    point_body_ids: list[str | None] = []
+
+    def namespace(body_id: str, logical_id: str | None) -> str | None:
+        if logical_id is None:
+            return None
+        reference = LogicalEntityRef(logical_id)
+        if reference.kind == "body":
+            return f"body:{body_id}"
+        _kind, local_name = logical_id.split(":", 1)
+        return f"{reference.kind}:{body_id}/{local_name}"
+
+    for body in recipe.bodies:
+        local = local_by_body[body.id]
+        offset = len(points)
+        points.extend(local.points)
+        faces.extend(
+            tuple(index + offset for index in face)
+            for face in local.faces
+        )
+        edges.extend(
+            tuple(index + offset for index in edge)
+            for edge in local.edges
+        )
+        face_ids.extend(
+            namespace(body.id, logical_id)
+            for logical_id in local.face_logical_ids
+        )
+        edge_ids.extend(
+            namespace(body.id, logical_id)
+            for logical_id in local.edge_logical_ids
+        )
+        point_ids.extend(
+            namespace(body.id, logical_id)
+            for logical_id in local.point_logical_ids
+        )
+        body_logical_id = f"body:{body.id}"
+        face_body_ids.extend((body_logical_id,) * len(local.faces))
+        edge_body_ids.extend((body_logical_id,) * len(local.edges))
+        point_body_ids.extend((body_logical_id,) * len(local.points))
+    return GeometryPreview(
+        tuple(points),
+        tuple(faces),
+        tuple(edges),
+        tuple(face_ids),
+        tuple(edge_ids),
+        tuple(point_ids),
+        None,
+        3,
+        tuple(face_body_ids),
+        tuple(edge_body_ids),
+        tuple(point_body_ids),
+    )
 
 
 def _wire_preview(recipe: WireGeometry) -> GeometryPreview:
@@ -688,6 +860,8 @@ def _boolean_preview(
     recipe: BooleanGeometry,
     segments: int,
 ) -> GeometryPreview:
+    if recipe.body_context is not None and recipe.body_context.proven:
+        return _strict_body_boolean_preview(recipe, segments)
     if recipe.operation == "cut":
         outer = axis_aligned_rectangle(recipe.object_geometry)
         inner_rectangle = axis_aligned_rectangle(recipe.tool_geometry)
@@ -984,6 +1158,24 @@ def _extruded_preview(
     )
 
 
+def _strict_body_boolean_preview(
+    recipe: BooleanGeometry,
+    segments: int,
+) -> GeometryPreview:
+    """Build an explicitly unselectable fallback until OCC data is available."""
+
+    target = _build_geometry_preview(recipe.object_geometry, segments)
+    return _make_preview(
+        recipe,
+        target.points,
+        target.faces,
+        target.edges,
+        (None,) * len(target.faces),
+        (None,) * len(target.edges),
+        (None,) * len(target.points),
+    )
+
+
 def _rectangle_preview(recipe: RectangleGeometry) -> GeometryPreview:
     points = (
         (0.0, 0.0, 0.0),
@@ -1220,6 +1412,8 @@ def _cylinder_preview(
 def _validate_preview_topology(
     recipe: NativeGeometry,
     preview: GeometryPreview,
+    *,
+    allow_occ_fallback: bool = True,
 ) -> None:
     topology = describe_recipe_topology(recipe)
     if preview.topological_dimension != topology.dimension:
@@ -1251,17 +1445,30 @@ def _validate_preview_topology(
             entity.logical_id
             for entity in topology.entities_of(kind, selectable_only=True)
         }
-        if actual != expected:
+        incomplete_allowed = (
+            allow_occ_fallback
+            and _contains_proven_strict_boolean(recipe)
+        )
+        if actual != expected and not (
+            incomplete_allowed and actual.issubset(expected)
+        ):
             raise RuntimeError(
                 f"{type(recipe).__name__} 预览的 {kind} logical ID"
                 f"与 recipe topology 不一致: {sorted(actual)} != "
                 f"{sorted(expected)}"
             )
-    actual_body = (
-        set()
-        if preview.body_logical_id is None
-        else {preview.body_logical_id}
-    )
+    actual_body = {
+        logical_id
+        for logical_ids in (
+            preview.face_body_logical_ids,
+            preview.edge_body_logical_ids,
+            preview.point_body_logical_ids,
+        )
+        for logical_id in logical_ids
+        if logical_id is not None
+    }
+    if preview.body_logical_id is not None:
+        actual_body.add(preview.body_logical_id)
     expected_body = {
         entity.logical_id
         for entity in topology.entities_of("body", selectable_only=True)
@@ -1272,6 +1479,24 @@ def _validate_preview_topology(
             f"与 recipe topology 不一致: {sorted(actual_body)} != "
             f"{sorted(expected_body)}"
         )
+
+
+def _contains_proven_strict_boolean(recipe: object) -> bool:
+    if isinstance(recipe, BooleanGeometry):
+        return (
+            recipe.body_context is not None
+            and recipe.body_context.proven
+        ) or _contains_proven_strict_boolean(
+            recipe.object_geometry
+        ) or _contains_proven_strict_boolean(recipe.tool_geometry)
+    if isinstance(recipe, (MovedGeometry, RotatedGeometry, ExtrudedGeometry)):
+        return _contains_proven_strict_boolean(recipe.base)
+    if isinstance(recipe, MultiBodyGeometry):
+        return any(
+            _contains_proven_strict_boolean(body.recipe)
+            for body in recipe.bodies
+        )
+    return False
 
 
 def _rectangle_hole_rays(
@@ -1317,5 +1542,7 @@ def _angles(count: int) -> tuple[float, ...]:
 __all__ = [
     "GeometryPreview",
     "build_geometry_preview",
+    "build_strict_body_boolean_preview",
+    "build_strict_body_boolean_previews",
     "build_strict_sketch_draft_preview",
 ]

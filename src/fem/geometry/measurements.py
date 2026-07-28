@@ -5,6 +5,7 @@ from __future__ import annotations
 from .recipe_topology import (
     RecipeTopology,
     TopologyMapping,
+    canonicalize_multi_body_logical_id,
     describe_recipe_topology,
 )
 from .recipe_analysis import analyze_sketch_profiles
@@ -13,6 +14,7 @@ from .recipes import (
     BooleanGeometry,
     ExtrudedGeometry,
     MovedGeometry,
+    MultiBodyGeometry,
     NATIVE_GEOMETRY_TYPES,
     NativeGeometry,
     PlateWithHoleGeometry,
@@ -32,6 +34,34 @@ def resolve_target_radius(
     target: LogicalEntityRef,
 ) -> float:
     """Return the radius proven for one circular hole edge or swept side."""
+
+    if isinstance(recipe, MultiBodyGeometry):
+        try:
+            canonical_id = canonicalize_multi_body_logical_id(
+                recipe,
+                target.logical_id,
+            )
+        except KeyError as error:
+            raise TargetRadiusResolutionError(
+                f"unknown logical target {target.logical_id!r}"
+            ) from error
+        reference = LogicalEntityRef(canonical_id)
+        _kind, body_local_id = reference.logical_id.split(":", 1)
+        if "/" not in body_local_id:
+            raise TargetRadiusResolutionError(
+                f"logical target {canonical_id!r} has no circular-hole radius"
+            )
+        body_id, local_name = body_local_id.split("/", 1)
+        try:
+            body = recipe.body(body_id)
+        except KeyError as error:
+            raise TargetRadiusResolutionError(
+                f"unknown Body {body_id!r} in logical target"
+            ) from error
+        return resolve_target_radius(
+            body.recipe,
+            LogicalEntityRef(f"{reference.kind}:{local_name}"),
+        )
 
     topology = _validated_topology(recipe, target)
     entity = topology.entity(target.logical_id)

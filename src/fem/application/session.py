@@ -10,13 +10,19 @@ from types import MappingProxyType
 from typing import Any
 
 from fem.geometry import (
+    BooleanBodyContext,
+    BooleanGeometry,
     LogicalEntityRef,
+    MultiBodyGeometry,
     geometry_dimension,
+    historical_recipe_ids,
     recipe_characteristic_size,
+    retired_recipe_ids,
     supports_structured_hexahedron,
 )
 from fem.geometry.recipe_topology import (
     can_preserve_logical_references,
+    logical_reference_transition_map,
     surviving_logical_reference_ids,
 )
 from fem.mesh.settings import MeshSettings
@@ -159,6 +165,72 @@ class _IssuedMaterializationPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class BooleanReferenceUndoRecord:
+    """Exact pre/post reference state for one reversible Body Boolean."""
+
+    feature_id: str
+    target_body_id: str
+    before_geometry: Any
+    after_geometry: Any
+    before_named_regions: tuple[NamedRegion, ...]
+    after_named_regions: tuple[NamedRegion, ...]
+    before_mesh_settings: Any | None
+    after_mesh_settings: Any | None
+    before_materials: tuple[Any, ...]
+    after_materials: tuple[Any, ...]
+    before_sections: tuple[SectionDefinition, ...]
+    after_sections: tuple[SectionDefinition, ...]
+    before_assignments: tuple[RegionAssignment, ...]
+    after_assignments: tuple[RegionAssignment, ...]
+    before_steps: tuple[Any, ...]
+    after_steps: tuple[Any, ...]
+
+    def __post_init__(self) -> None:
+        transition = _strict_body_boolean_transition(
+            self.before_geometry,
+            self.after_geometry,
+        )
+        if (
+            transition is None
+            or transition[0] != "forward"
+            or transition[1].feature_id != self.feature_id
+            or transition[1].target_body_id != self.target_body_id
+        ):
+            raise ValueError(
+                "Boolean undo record geometries must describe its exact "
+                "forward feature transition"
+            )
+        for field_name in (
+            "before_named_regions",
+            "after_named_regions",
+            "before_materials",
+            "after_materials",
+            "before_sections",
+            "after_sections",
+            "before_assignments",
+            "after_assignments",
+            "before_steps",
+            "after_steps",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                deepcopy(tuple(getattr(self, field_name))),
+            )
+        for field_name in (
+            "before_geometry",
+            "after_geometry",
+            "before_mesh_settings",
+            "after_mesh_settings",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                deepcopy(getattr(self, field_name)),
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class ProjectSnapshot:
     """Detached, fully decoded project inputs suitable for atomic installation."""
 
@@ -174,6 +246,10 @@ class ProjectSnapshot:
     region_assignments: tuple[RegionAssignment, ...] = ()
     analysis_definitions: tuple[Any, ...] = ()
     model: Any | None = None
+    boolean_reference_undo_records: tuple[
+        BooleanReferenceUndoRecord,
+        ...,
+    ] = ()
 
     def __post_init__(self) -> None:
         source_kind = _canonical_source_kind(self.source_kind)
@@ -214,6 +290,25 @@ class ProjectSnapshot:
             deepcopy(tuple(self.analysis_definitions)),
         )
         object.__setattr__(self, "model", deepcopy(self.model))
+        records = tuple(self.boolean_reference_undo_records)
+        if any(type(record) is not BooleanReferenceUndoRecord for record in records):
+            raise TypeError(
+                "boolean_reference_undo_records must contain only "
+                "BooleanReferenceUndoRecord values"
+            )
+        feature_ids = tuple(record.feature_id for record in records)
+        if len(feature_ids) != len(set(feature_ids)):
+            raise ValueError("Boolean undo record feature IDs must be unique")
+        canonical = tuple(
+            sorted(records, key=lambda record: int(record.feature_id[2:]))
+        )
+        if records != canonical:
+            raise ValueError("Boolean undo records must use canonical feature order")
+        object.__setattr__(
+            self,
+            "boolean_reference_undo_records",
+            deepcopy(records),
+        )
 
     @property
     def project_path(self) -> Path | None:
@@ -464,6 +559,25 @@ class ModelSession:
             and self._geometry_recipe is not None
         )
 
+    @property
+    def retired_body_ids(self) -> tuple[str, ...]:
+        """Body IDs observed earlier in this open authoring session."""
+
+        return tuple(
+            sorted(self._retired_body_ids, key=lambda value: int(value[1:]))
+        )
+
+    @property
+    def retired_boolean_feature_ids(self) -> tuple[str, ...]:
+        """Strict-Boolean IDs observed earlier in this open authoring session."""
+
+        return tuple(
+            sorted(
+                self._retired_boolean_feature_ids,
+                key=lambda value: int(value[2:]),
+            )
+        )
+
     # ------------------------------------------------------------------
     # Lifecycle
     def new_native_project(
@@ -545,6 +659,7 @@ class ModelSession:
                 snapshot.region_assignments,
                 snapshot.analysis_definitions,
                 getattr(snapshot, "model", None),
+                getattr(snapshot, "boolean_reference_undo_records", ()),
             )
         )
         # ProjectSnapshot already owns a detached copy; copy once more so the
@@ -628,6 +743,13 @@ class ModelSession:
         else:
             self._source_path = detached.source_path
         self._geometry_recipe = geometry_recipe
+        (
+            self._retired_body_ids,
+            self._retired_boolean_feature_ids,
+        ) = (
+            set(values)
+            for values in retired_recipe_ids(geometry_recipe)
+        )
         self._mesh_settings = mesh_settings
         self._parts = parts
         self._feature_history = feature_history
@@ -636,6 +758,10 @@ class ModelSession:
         self._sections = sections
         self._assignments = assignments
         self._steps = steps
+        self._boolean_reference_undo_records = {
+            record.feature_id: deepcopy(record)
+            for record in detached.boolean_reference_undo_records
+        }
         self._definitions_explicit = True
         self._increment_domain_revisions(project=True, mesh=True, model=True)
         if model is not None:
@@ -695,6 +821,39 @@ class ModelSession:
         owned_recipe = deepcopy(recipe)
         if owned_recipe is not None and not owned_parts:
             owned_parts = (NativePart(),)
+        before_body_ids, before_feature_ids = historical_recipe_ids(
+            self._geometry_recipe
+        )
+        after_body_ids, after_feature_ids = historical_recipe_ids(
+            owned_recipe
+        )
+        explicit_body_ids, explicit_feature_ids = retired_recipe_ids(
+            owned_recipe
+        )
+        next_retired_body_ids = {
+            *self._retired_body_ids,
+            *explicit_body_ids,
+            *(before_body_ids - after_body_ids),
+        }
+        next_retired_feature_ids = {
+            *self._retired_boolean_feature_ids,
+            *explicit_feature_ids,
+            *(before_feature_ids - after_feature_ids),
+        }
+        if isinstance(owned_recipe, MultiBodyGeometry):
+            active_body_ids = {body.id for body in owned_recipe.bodies}
+            active_feature_ids = set(after_feature_ids) - set(
+                explicit_feature_ids
+            )
+            owned_recipe = replace(
+                owned_recipe,
+                retired_body_ids=tuple(
+                    next_retired_body_ids - active_body_ids
+                ),
+                retired_boolean_feature_ids=tuple(
+                    next_retired_feature_ids - active_feature_ids
+                ),
+            )
         owned_history = (
             () if owned_recipe is None else derive_feature_history(owned_recipe)
         )
@@ -711,56 +870,129 @@ class ModelSession:
                 owned_recipe,
             )
         )
-        candidate_regions = (
-            tuple(self._named_regions.values())
+        reference_rewrites = (
+            {}
             if preserve_references
-            else tuple(
-                region
-                for region in self._named_regions.values()
-                if all(
-                    type(reference) is LogicalEntityRef
-                    and reference.logical_id in surviving_logical_ids
-                    for reference in region.references
+            or _regions_use_mesh_entities(self._named_regions.values())
+            else logical_reference_transition_map(
+                self._geometry_recipe,
+                owned_recipe,
+            )
+        )
+        boolean_transition = _strict_body_boolean_transition(
+            self._geometry_recipe,
+            owned_recipe,
+        )
+        reverse_undo_record: BooleanReferenceUndoRecord | None = None
+        if (
+            boolean_transition is not None
+            and boolean_transition[0] == "reverse"
+        ):
+            context = boolean_transition[1]
+            reverse_undo_record = self._boolean_reference_undo_records.get(
+                context.feature_id
+            )
+            if reverse_undo_record is not None and (
+                self._geometry_recipe != reverse_undo_record.after_geometry
+                or not _same_active_multi_body_geometry(
+                    owned_recipe,
+                    reverse_undo_record.before_geometry,
+                )
+                or tuple(self._named_regions.values())
+                != reverse_undo_record.after_named_regions
+                or self._mesh_settings
+                != reverse_undo_record.after_mesh_settings
+                or self._materials != reverse_undo_record.after_materials
+                or self._sections != reverse_undo_record.after_sections
+                or self._assignments != reverse_undo_record.after_assignments
+                or self._steps != reverse_undo_record.after_steps
+            ):
+                raise SessionStateError(
+                    "boolean.body.undo-reference-conflict: reference state "
+                    "changed after the Boolean"
+                )
+        candidate_regions = (
+            deepcopy(reverse_undo_record.before_named_regions)
+            if reverse_undo_record is not None
+            else (
+                tuple(self._named_regions.values())
+                if preserve_references
+                else tuple(
+                    rewritten
+                    for region in self._named_regions.values()
+                    if (
+                        rewritten := _rewrite_named_region(
+                            region,
+                            reference_rewrites,
+                        )
+                    )
+                    is not None
                 )
             )
         )
+        prior_region_count = len(self._named_regions)
         valid_region_names = {
             "DOMAIN",
             *(region.name for region in candidate_regions),
         }
         candidate_assignments = (
-            self._assignments
-            if preserve_references
-            else tuple(
-                assignment
-                for assignment in self._assignments
-                if assignment.region_name in valid_region_names
+            deepcopy(reverse_undo_record.before_assignments)
+            if reverse_undo_record is not None
+            else (
+                self._assignments
+                if preserve_references
+                else tuple(
+                    assignment
+                    for assignment in self._assignments
+                    if assignment.region_name in valid_region_names
+                )
             )
         )
         referenced_step_regions = _region_references((), self._steps)
         candidate_steps = (
-            self._steps
-            if preserve_references
-            or referenced_step_regions.issubset(valid_region_names)
-            else _without_geometry_dependent_steps(self._steps)
+            deepcopy(reverse_undo_record.before_steps)
+            if reverse_undo_record is not None
+            else (
+                self._steps
+                if preserve_references
+                or referenced_step_regions.issubset(valid_region_names)
+                else _without_geometry_dependent_steps(self._steps)
+            )
         )
-        candidate_mesh_settings, mesh_effects = _transition_mesh_settings(
-            self._mesh_settings,
-            owned_recipe,
-            preserve_references=preserve_references,
-            surviving_logical_ids=surviving_logical_ids,
-            requested=mesh_settings,
-        )
+        if reverse_undo_record is not None and isinstance(
+            mesh_settings,
+            Unset,
+        ):
+            candidate_mesh_settings = deepcopy(
+                reverse_undo_record.before_mesh_settings
+            )
+            mesh_effects = frozenset()
+        else:
+            candidate_mesh_settings, mesh_effects = _transition_mesh_settings(
+                self._mesh_settings,
+                owned_recipe,
+                preserve_references=preserve_references,
+                surviving_logical_ids=surviving_logical_ids,
+                reference_rewrites=reference_rewrites,
+                requested=mesh_settings,
+            )
         mesh_settings_changed = candidate_mesh_settings != self._mesh_settings
         named_regions_changed = candidate_regions != tuple(
             self._named_regions.values()
         )
-        assignments_cleared = candidate_assignments != self._assignments
-        steps_cleared = candidate_steps != self._steps
+        assignments_changed = candidate_assignments != self._assignments
+        steps_changed = candidate_steps != self._steps
+        assignments_cleared = any(
+            assignment not in candidate_assignments
+            for assignment in self._assignments
+        )
+        steps_cleared = any(
+            step not in candidate_steps for step in self._steps
+        )
         definitions_changed = (
             not self._definitions_explicit
-            or assignments_cleared
-            or steps_cleared
+            or assignments_changed
+            or steps_changed
         )
         if owned_recipe is not None:
             validate_native_project_inputs(
@@ -773,7 +1005,41 @@ class ModelSession:
                 candidate_steps,
             )
 
+        forward_undo_record: BooleanReferenceUndoRecord | None = None
+        if (
+            boolean_transition is not None
+            and boolean_transition[0] == "forward"
+        ):
+            context = boolean_transition[1]
+            if context.feature_id in self._boolean_reference_undo_records:
+                raise SessionStateError(
+                    "boolean.body.undo-reference-conflict: duplicate "
+                    f"transition record {context.feature_id!r}"
+                )
+            forward_undo_record = BooleanReferenceUndoRecord(
+                context.feature_id,
+                context.target_body_id,
+                deepcopy(self._geometry_recipe),
+                deepcopy(owned_recipe),
+                deepcopy(tuple(self._named_regions.values())),
+                deepcopy(candidate_regions),
+                deepcopy(self._mesh_settings),
+                deepcopy(candidate_mesh_settings),
+                deepcopy(self._materials),
+                deepcopy(self._materials),
+                deepcopy(self._sections),
+                deepcopy(self._sections),
+                deepcopy(self._assignments),
+                deepcopy(candidate_assignments),
+                deepcopy(self._steps),
+                deepcopy(candidate_steps),
+            )
+
         self._parts = owned_parts
+        self._retired_body_ids = set(next_retired_body_ids)
+        self._retired_boolean_feature_ids = set(
+            next_retired_feature_ids
+        )
         self._geometry_recipe = owned_recipe
         self._feature_history = owned_history
         self._mesh_settings = candidate_mesh_settings
@@ -782,7 +1048,26 @@ class ModelSession:
                 region.name: region for region in candidate_regions
             }
             self._assignments = candidate_assignments
-            self._steps = candidate_steps
+        self._steps = candidate_steps
+        if forward_undo_record is not None:
+            self._boolean_reference_undo_records[
+                forward_undo_record.feature_id
+            ] = forward_undo_record
+        if reverse_undo_record is not None:
+            self._boolean_reference_undo_records.pop(
+                reverse_undo_record.feature_id,
+                None,
+            )
+        active_boolean_feature_ids = (
+            set(after_feature_ids) - set(explicit_feature_ids)
+            if isinstance(owned_recipe, MultiBodyGeometry)
+            else set()
+        )
+        self._boolean_reference_undo_records = {
+            feature_id: record
+            for feature_id, record in self._boolean_reference_undo_records.items()
+            if feature_id in active_boolean_feature_ids
+        }
         self._definitions_explicit = True
         self._drop_model_state()
         self._increment_domain_revisions(project=True, mesh=True, model=True)
@@ -801,9 +1086,11 @@ class ModelSession:
         if definitions_changed:
             changed.add(ChangeKind.DEFINITIONS)
         effects = set(mesh_effects)
-        if preserve_references:
+        if preserve_references or (
+            reference_rewrites and candidate_regions
+        ):
             effects.add(TransitionEffect.REFERENCES_PRESERVED)
-        if named_regions_changed:
+        if len(candidate_regions) < prior_region_count:
             effects.add(TransitionEffect.NAMED_REGIONS_CLEARED)
         if assignments_cleared:
             effects.add(TransitionEffect.ASSIGNMENTS_CLEARED)
@@ -822,8 +1109,12 @@ class ModelSession:
         self._check_expected(expected_session_revision)
         self._require_open()
         self._parts = ()
+        body_ids, feature_ids = historical_recipe_ids(self._geometry_recipe)
+        self._retired_body_ids.update(body_ids)
+        self._retired_boolean_feature_ids.update(feature_ids)
         self._geometry_recipe = None
         self._feature_history = ()
+        self._boolean_reference_undo_records.clear()
         self._mesh_settings = _without_mesh_topology_references(
             self._mesh_settings
         )
@@ -2111,6 +2402,13 @@ class ModelSession:
             section_definitions=self._sections,
             region_assignments=self._assignments,
             analysis_definitions=self._steps,
+            boolean_reference_undo_records=tuple(
+                self._boolean_reference_undo_records[feature_id]
+                for feature_id in sorted(
+                    self._boolean_reference_undo_records,
+                    key=lambda value: int(value[2:]),
+                )
+            ),
         )
         token = self._issue_token(
             "project_save",
@@ -2322,6 +2620,12 @@ class ModelSession:
         self._source_path: Path | None = None
         self._project_path: Path | None = None
         self._geometry_recipe: Any | None = None
+        self._retired_body_ids: set[str] = set()
+        self._retired_boolean_feature_ids: set[str] = set()
+        self._boolean_reference_undo_records: dict[
+            str,
+            BooleanReferenceUndoRecord,
+        ] = {}
         self._mesh_settings: Any | None = None
         self._parts: tuple[NativePart, ...] = ()
         self._feature_history: tuple[FeatureRecord, ...] = ()
@@ -2814,12 +3118,109 @@ def _region_references(
     return references
 
 
+def _rewrite_named_region(
+    region: NamedRegion,
+    rewrites: Mapping[str, tuple[str, ...]],
+) -> NamedRegion | None:
+    rewritten: list[LogicalEntityRef] = []
+    for reference in region.references:
+        if type(reference) is not LogicalEntityRef:
+            return None
+        targets = rewrites.get(reference.logical_id, ())
+        if not targets:
+            return None
+        rewritten.extend(LogicalEntityRef(target) for target in targets)
+    unique = tuple(
+        dict.fromkeys(
+            sorted(
+                rewritten,
+                key=lambda item: item.logical_id,
+            )
+        )
+    )
+    return replace(region, references=unique) if unique else None
+
+
+def _strict_body_boolean_transition(
+    before: object,
+    after: object,
+) -> tuple[str, BooleanBodyContext] | None:
+    """Identify one exact top-level strict Boolean commit or undo."""
+
+    if not isinstance(before, MultiBodyGeometry) or not isinstance(
+        after,
+        MultiBodyGeometry,
+    ):
+        return None
+    before_by_id = {body.id: body for body in before.bodies}
+    after_by_id = {body.id: body for body in after.bodies}
+    matches: list[tuple[str, BooleanBodyContext]] = []
+    for target_body_id in before_by_id.keys() & after_by_id.keys():
+        before_body = before_by_id[target_body_id]
+        after_body = after_by_id[target_body_id]
+        forward = after_body.recipe
+        if isinstance(forward, BooleanGeometry):
+            context = forward.body_context
+            tool = (
+                None
+                if context is None
+                else before_by_id.get(context.tool_body_id)
+            )
+            if (
+                context is not None
+                and context.target_body_id == target_body_id
+                and context.tool_body_id not in after_by_id
+                and forward.object_geometry == before_body.recipe
+                and tool is not None
+                and forward.tool_geometry == tool.recipe
+            ):
+                matches.append(("forward", context))
+        reverse = before_body.recipe
+        if isinstance(reverse, BooleanGeometry):
+            context = reverse.body_context
+            tool = (
+                None
+                if context is None
+                else after_by_id.get(context.tool_body_id)
+            )
+            if (
+                context is not None
+                and context.target_body_id == target_body_id
+                and context.tool_body_id not in before_by_id
+                and reverse.object_geometry == after_body.recipe
+                and tool is not None
+                and reverse.tool_geometry == tool.recipe
+            ):
+                matches.append(("reverse", context))
+    return matches[0] if len(matches) == 1 else None
+
+
+def _same_active_multi_body_geometry(left: object, right: object) -> bool:
+    """Compare active Body state while allowing monotonic retirement ledgers."""
+
+    if not isinstance(left, MultiBodyGeometry) or not isinstance(
+        right,
+        MultiBodyGeometry,
+    ):
+        return left == right
+    return replace(
+        left,
+        retired_body_ids=(),
+        retired_boolean_feature_ids=(),
+    ) == replace(
+        right,
+        retired_body_ids=(),
+        retired_boolean_feature_ids=(),
+    )
+
+
 def _transition_mesh_settings(
     current: Any,
     recipe: Any,
     *,
     preserve_references: bool,
     surviving_logical_ids: frozenset[str] = frozenset(),
+    reference_rewrites: Mapping[str, tuple[str, ...]] | None = None,
     requested: MeshSettings | None | Unset,
 ) -> tuple[MeshSettings | None, frozenset[TransitionEffect]]:
     """Apply the three-state mesh-input policy without mutating Session state."""
@@ -2862,20 +3263,24 @@ def _transition_mesh_settings(
     if type(current) is not MeshSettings:
         raise TypeError("existing mesh_settings must be MeshSettings or None")
 
-    controls = (
-        current.local_controls
-        if preserve_references
-        else tuple(
-            control
-            for control in current.local_controls
-            if control.target.logical_id in surviving_logical_ids
+    rewrites = {
+        logical_id: (logical_id,)
+        for logical_id in surviving_logical_ids
+    }
+    rewrites.update(reference_rewrites or {})
+    controls = current.local_controls if preserve_references else tuple(
+        replace(
+            control,
+            target=LogicalEntityRef(rewrites[control.target.logical_id][0]),
         )
+        for control in current.local_controls
+        if len(rewrites.get(control.target.logical_id, ())) == 1
     )
     if geometry_dimension(recipe) == 1:
         if current.cell_shape == "line":
             transitioned = replace(deepcopy(current), local_controls=controls)
             effects = set()
-            if current.local_controls and not controls:
+            if len(controls) < len(current.local_controls):
                 effects.add(TransitionEffect.LOCAL_CONTROLS_CLEARED)
             return transitioned, frozenset(effects)
         effects = {TransitionEffect.MESH_SHAPE_NORMALIZED}
@@ -2885,7 +3290,7 @@ def _transition_mesh_settings(
 
     transitioned = replace(deepcopy(current), local_controls=controls)
     effects = set()
-    if current.local_controls and not controls:
+    if len(controls) < len(current.local_controls):
         effects.add(TransitionEffect.LOCAL_CONTROLS_CLEARED)
     if not _mesh_shape_supported(transitioned.cell_shape, recipe):
         updates = {"cell_shape": _default_cell_shape(recipe)}

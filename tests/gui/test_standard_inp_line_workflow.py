@@ -28,6 +28,7 @@ from fem.core.model import (
     SectionAssignment,
 )
 from fem.geometry.recipes import RectangleGeometry
+from fem.io.project import LoadedProject
 import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.visualization.model_adapter import build_model_geometry
@@ -551,11 +552,16 @@ def test_successful_document_replacements_clear_import_notices(
             (NativePart(),),
             RectangleGeometry("Plate", 2.0, 1.0),
         )
-        loaded = SimpleNamespace(
-            snapshot=authoring.prepare_project_save().snapshot,
+        project_path = tmp_path / "native.femproj"
+        loaded = LoadedProject(
+            snapshot=replace(
+                authoring.prepare_project_save().snapshot,
+                source_path=project_path,
+            ),
+            path=project_path,
+            source_schema=5,
             notices=(),
         )
-        project_path = tmp_path / "native.femproj"
         monkeypatch.setattr(
             main_window_module.QFileDialog,
             "getOpenFileName",
@@ -567,6 +573,7 @@ def test_successful_document_replacements_clear_import_notices(
             lambda _path: loaded,
         )
         window.open_native_project()
+        _wait_for_task(window)
         assert window.document.source_kind == "native"
         assert window.import_notices == ()
 

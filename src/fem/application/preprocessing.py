@@ -9,6 +9,7 @@ from typing import Any, Protocol
 from fem import geometry
 from fem.core.model import FEMModel
 from fem.geometry.measurements import resolve_target_radius
+from fem.geometry.body_relations import require_meshable_body_relations
 from fem.geometry.recipe_analysis import (
     recipe_characteristic_size,
     supports_structured_hexahedron,
@@ -117,6 +118,7 @@ def generate_fem_model(
         settings,
         named_regions,
     )
+    require_meshable_body_relations(recipe)
     contract = require_complete_native_mesh_contract(recipe, mesh_settings)
     if mesh_settings is None:
         raise TypeError("网格生成需要 MeshSettings")

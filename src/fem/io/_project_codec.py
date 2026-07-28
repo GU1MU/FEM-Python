@@ -31,12 +31,16 @@ from fem.core.model import (
 )
 from fem.elements import BeamOrientation
 from fem.geometry.recipes import (
+    BooleanBodyContext,
     BooleanGeometry,
+    BooleanLineageEntity,
+    BooleanLineageMapping,
     BoxGeometry,
     CylinderGeometry,
     DiskGeometry,
     ExtrudedGeometry,
     MovedGeometry,
+    MultiBodyGeometry,
     PlateWithHoleGeometry,
     RectangleGeometry,
     RotatedGeometry,
@@ -47,12 +51,13 @@ from fem.geometry.recipes import (
     SketchPlane,
     SketchPoint,
     SketchRectangle,
+    SolidBody,
     WireGeometry,
     WireMember,
     WirePoint,
 )
 from fem.geometry.recipe_analysis import legacy_sketch_to_strict
-from fem.geometry.references import LogicalEntityRef
+from fem.geometry.references import LogicalEntityRef, logical_ref_sort_key
 
 from ._project_errors import (
     ProjectDecodeError,
@@ -78,6 +83,7 @@ class ProjectFieldCodecPolicy:
     extrusion_source_faces: bool = False
     displacement_region_targets: bool = False
     body_force_loads: bool = False
+    allow_multi_body: bool = False
 
 
 def loads_json_strict(
@@ -223,6 +229,7 @@ def atomic_write_project(
     expected_semantic: Any,
     error_type: type[ProjectEncodeError] = ProjectEncodeError,
     mismatch_message: str = "临时项目文件校验后与保存 snapshot 不一致",
+    checkpoint: Callable[[], Any] | None = None,
     replace_func: Callable[[str | Path, str | Path], Any] | None = None,
     unlink_func: Callable[[Path], Any] | None = None,
 ) -> Path:
@@ -236,6 +243,7 @@ def atomic_write_project(
         expected_semantic=expected_semantic,
         error_type=error_type,
         mismatch_message=mismatch_message,
+        checkpoint=checkpoint,
         replace_func=os.replace if replace_func is None else replace_func,
         unlink_func=unlink_func,
         _mkstemp_func=tempfile.mkstemp,
@@ -595,15 +603,16 @@ def decode_geometry_field(
                 error_path = path
             raise policy.decode_error(f"{error_path} 无效：{error}") from error
     if kind == "BooleanGeometry":
+        optional = {"body_context"} if policy.allow_multi_body else set()
         _field_keys(
             data,
             path,
             required={"type", "name", "operation", "object", "tool"},
-            optional=set(),
+            optional=optional,
             policy=policy,
             error_type=policy.decode_error,
         )
-        return _field_construct(
+        result = _field_construct(
             BooleanGeometry,
             path,
             policy,
@@ -627,6 +636,133 @@ def decode_geometry_field(
                 f"{path}.tool",
                 policy=policy,
             ),
+            (
+                _decode_boolean_body_context(
+                    data["body_context"],
+                    f"{path}.body_context",
+                    policy=policy,
+                )
+                if "body_context" in data
+                else None
+            ),
+        )
+        return result
+    if kind == "MultiBodyGeometry":
+        if not policy.allow_multi_body:
+            raise policy.decode_error(
+                f"{path}.type 是未知几何类型：{kind!r}"
+            )
+        _field_keys(
+            data,
+            path,
+            required={
+                "type",
+                "name",
+                "bodies",
+                "retired_body_ids",
+                "retired_boolean_feature_ids",
+            },
+            optional=set(),
+            policy=policy,
+            error_type=policy.decode_error,
+        )
+        body_values = _field_array(
+            data["bodies"],
+            f"{path}.bodies",
+            policy.decode_error,
+        )
+        bodies: list[SolidBody] = []
+        for index, value in enumerate(body_values):
+            body_path = f"{path}.bodies[{index}]"
+            body_data = _field_mapping(value, body_path, policy.decode_error)
+            _field_keys(
+                body_data,
+                body_path,
+                required={"id", "name", "recipe"},
+                optional=set(),
+                policy=policy,
+                error_type=policy.decode_error,
+            )
+            bodies.append(
+                _field_construct(
+                    SolidBody,
+                    body_path,
+                    policy,
+                    _field_string(
+                        body_data["id"],
+                        f"{body_path}.id",
+                        policy.decode_error,
+                    ),
+                    _field_string(
+                        body_data["name"],
+                        f"{body_path}.name",
+                        policy.decode_error,
+                    ),
+                    decode_geometry_field(
+                        body_data["recipe"],
+                        f"{body_path}.recipe",
+                        policy=policy,
+                    ),
+                )
+            )
+        if tuple(body.id for body in bodies) != tuple(
+            sorted(
+                (body.id for body in bodies),
+                key=lambda value: int(value[1:]),
+            )
+        ):
+            raise policy.decode_error(
+                f"{path}.bodies must use canonical Body ID order"
+            )
+        retired_body_ids = tuple(
+            _field_string(
+                value,
+                f"{path}.retired_body_ids[{index}]",
+                policy.decode_error,
+            )
+            for index, value in enumerate(
+                _field_array(
+                    data["retired_body_ids"],
+                    f"{path}.retired_body_ids",
+                    policy.decode_error,
+                )
+            )
+        )
+        if retired_body_ids != tuple(
+            sorted(set(retired_body_ids), key=lambda value: int(value[1:]))
+        ):
+            raise policy.decode_error(
+                f"{path}.retired_body_ids must be canonical and unique"
+            )
+        retired_feature_ids = tuple(
+            _field_string(
+                value,
+                f"{path}.retired_boolean_feature_ids[{index}]",
+                policy.decode_error,
+            )
+            for index, value in enumerate(
+                _field_array(
+                    data["retired_boolean_feature_ids"],
+                    f"{path}.retired_boolean_feature_ids",
+                    policy.decode_error,
+                )
+            )
+        )
+        if retired_feature_ids != tuple(
+            sorted(set(retired_feature_ids), key=lambda value: int(value[2:]))
+        ):
+            raise policy.decode_error(
+                f"{path}.retired_boolean_feature_ids must be canonical "
+                "and unique"
+            )
+        return _field_construct(
+            MultiBodyGeometry,
+            path,
+            policy,
+            _field_string(data["name"], f"{path}.name", policy.decode_error),
+            tuple(bodies),
+            retired_body_ids,
+            retired_feature_ids,
         )
     raise policy.decode_error(f"{path}.type 是未知几何类型：{kind!r}")
 
@@ -754,6 +890,185 @@ def _decode_sketch_plane_field(
             f"{path}.y_direction",
             policy,
         ),
+    )
+
+
+def _decode_boolean_body_context(
+    value: Any,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> BooleanBodyContext | None:
+    if value is None:
+        return None
+    data = _field_mapping(value, path, policy.decode_error)
+    _field_keys(
+        data,
+        path,
+        required={
+            "feature_id",
+            "target_body_id",
+            "tool_body_id",
+            "tool_body_name",
+            "result_entities",
+            "topology_mappings",
+        },
+        optional=set(),
+        policy=policy,
+        error_type=policy.decode_error,
+    )
+    entities: list[BooleanLineageEntity] = []
+    for index, item in enumerate(
+        _field_array(
+            data["result_entities"],
+            f"{path}.result_entities",
+            policy.decode_error,
+        )
+    ):
+        item_path = f"{path}.result_entities[{index}]"
+        item_data = _field_mapping(item, item_path, policy.decode_error)
+        _field_keys(
+            item_data,
+            item_path,
+            required={"kind", "logical_id", "semantic_role", "topology_links"},
+            optional=set(),
+            policy=policy,
+            error_type=policy.decode_error,
+        )
+        links = tuple(
+            _field_string(
+                link,
+                f"{item_path}.topology_links[{link_index}]",
+                policy.decode_error,
+            )
+            for link_index, link in enumerate(
+                _field_array(
+                    item_data["topology_links"],
+                    f"{item_path}.topology_links",
+                    policy.decode_error,
+                )
+            )
+        )
+        if links != tuple(sorted(set(links))):
+            raise policy.decode_error(
+                f"{item_path}.topology_links must be canonical and unique"
+            )
+        entities.append(
+            _field_construct(
+                BooleanLineageEntity,
+                item_path,
+                policy,
+                _field_string(
+                    item_data["kind"],
+                    f"{item_path}.kind",
+                    policy.decode_error,
+                ),
+                _field_string(
+                    item_data["logical_id"],
+                    f"{item_path}.logical_id",
+                    policy.decode_error,
+                ),
+                _field_string(
+                    item_data["semantic_role"],
+                    f"{item_path}.semantic_role",
+                    policy.decode_error,
+                ),
+                links,
+            )
+        )
+    mappings: list[BooleanLineageMapping] = []
+    for index, item in enumerate(
+        _field_array(
+            data["topology_mappings"],
+            f"{path}.topology_mappings",
+            policy.decode_error,
+        )
+    ):
+        item_path = f"{path}.topology_mappings[{index}]"
+        item_data = _field_mapping(item, item_path, policy.decode_error)
+        _field_keys(
+            item_data,
+            item_path,
+            required={
+                "source",
+                "source_logical_id",
+                "target_logical_id",
+                "relation",
+            },
+            optional=set(),
+            policy=policy,
+            error_type=policy.decode_error,
+        )
+        mappings.append(
+            _field_construct(
+                BooleanLineageMapping,
+                item_path,
+                policy,
+                *(
+                    _field_string(
+                        item_data[field_name],
+                        f"{item_path}.{field_name}",
+                        policy.decode_error,
+                    )
+                    for field_name in (
+                        "source",
+                        "source_logical_id",
+                        "target_logical_id",
+                        "relation",
+                    )
+                ),
+            )
+        )
+    canonical_entities = tuple(
+        sorted(
+            entities,
+            key=lambda item: logical_ref_sort_key(
+                LogicalEntityRef(item.logical_id)
+            ),
+        )
+    )
+    if tuple(entities) != canonical_entities:
+        raise policy.decode_error(
+            f"{path}.result_entities must use canonical logical order"
+        )
+    canonical_mappings = tuple(
+        sorted(
+            mappings,
+            key=lambda item: (
+                item.source,
+                logical_ref_sort_key(
+                    LogicalEntityRef(item.source_logical_id)
+                ),
+                logical_ref_sort_key(
+                    LogicalEntityRef(item.target_logical_id)
+                ),
+                item.relation,
+            ),
+        )
+    )
+    if tuple(mappings) != canonical_mappings:
+        raise policy.decode_error(
+            f"{path}.topology_mappings must use canonical logical order"
+        )
+    return _field_construct(
+        BooleanBodyContext,
+        path,
+        policy,
+        *(
+            _field_string(
+                data[field_name],
+                f"{path}.{field_name}",
+                policy.decode_error,
+            )
+            for field_name in (
+                "feature_id",
+                "target_body_id",
+                "tool_body_id",
+                "tool_body_name",
+            )
+        ),
+        tuple(entities),
+        tuple(mappings),
     )
 
 
@@ -1243,11 +1558,17 @@ def encode_geometry_field(
                     "operation",
                     "object_geometry",
                     "tool_geometry",
+                    "body_context",
                 },
                 path,
                 policy,
             )
-            return {
+            if recipe.body_context is not None and not policy.allow_multi_body:
+                raise policy.encode_error(
+                    f"{path}.body_context 无法由 "
+                    f"{policy.version_label} 无损表示"
+                )
+            encoded = {
                 "type": "BooleanGeometry",
                 "name": _field_string(
                     recipe.name,
@@ -1270,6 +1591,64 @@ def encode_geometry_field(
                     f"{path}.tool_geometry",
                     ancestors,
                     policy=policy,
+                ),
+            }
+            if policy.allow_multi_body:
+                encoded["body_context"] = _encode_boolean_body_context(
+                    recipe.body_context,
+                    f"{path}.body_context",
+                    policy=policy,
+                )
+            return encoded
+        if type(recipe) is MultiBodyGeometry:
+            if not policy.allow_multi_body:
+                raise policy.encode_error(
+                    f"{path} 的几何类型无法由 {policy.version_label} "
+                    "无损编码：MultiBodyGeometry"
+                )
+            _field_exact_dataclass(
+                recipe,
+                MultiBodyGeometry,
+                {
+                    "name",
+                    "bodies",
+                    "retired_body_ids",
+                    "retired_boolean_feature_ids",
+                },
+                path,
+                policy,
+            )
+            return {
+                "type": "MultiBodyGeometry",
+                "name": _field_string(
+                    recipe.name,
+                    f"{path}.name",
+                    policy.encode_error,
+                ),
+                "bodies": [
+                    {
+                        "id": _field_string(
+                            body.id,
+                            f"{path}.bodies[{index}].id",
+                            policy.encode_error,
+                        ),
+                        "name": _field_string(
+                            body.name,
+                            f"{path}.bodies[{index}].name",
+                            policy.encode_error,
+                        ),
+                        "recipe": encode_geometry_field(
+                            body.recipe,
+                            f"{path}.bodies[{index}].recipe",
+                            ancestors,
+                            policy=policy,
+                        ),
+                    }
+                    for index, body in enumerate(recipe.bodies)
+                ],
+                "retired_body_ids": list(recipe.retired_body_ids),
+                "retired_boolean_feature_ids": list(
+                    recipe.retired_boolean_feature_ids
                 ),
             }
         raise policy.encode_error(
@@ -1300,6 +1679,60 @@ def _encode_sketch_plane_field(
             f"{path}.y_direction",
             policy,
         ),
+    }
+
+
+def _encode_boolean_body_context(
+    context: BooleanBodyContext | None,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> dict[str, Any] | None:
+    if context is None:
+        return None
+    if type(context) is not BooleanBodyContext:
+        raise policy.encode_error(
+            f"{path} must be BooleanBodyContext or null"
+        )
+    return {
+        "feature_id": _field_string(
+            context.feature_id,
+            f"{path}.feature_id",
+            policy.encode_error,
+        ),
+        "target_body_id": _field_string(
+            context.target_body_id,
+            f"{path}.target_body_id",
+            policy.encode_error,
+        ),
+        "tool_body_id": _field_string(
+            context.tool_body_id,
+            f"{path}.tool_body_id",
+            policy.encode_error,
+        ),
+        "tool_body_name": _field_string(
+            context.tool_body_name,
+            f"{path}.tool_body_name",
+            policy.encode_error,
+        ),
+        "result_entities": [
+            {
+                "kind": item.kind,
+                "logical_id": item.logical_id,
+                "semantic_role": item.semantic_role,
+                "topology_links": list(item.topology_links),
+            }
+            for item in context.result_entities
+        ],
+        "topology_mappings": [
+            {
+                "source": item.source,
+                "source_logical_id": item.source_logical_id,
+                "target_logical_id": item.target_logical_id,
+                "relation": item.relation,
+            }
+            for item in context.topology_mappings
+        ],
     }
 
 

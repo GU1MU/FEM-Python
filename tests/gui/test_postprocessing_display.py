@@ -14,7 +14,9 @@ from fem.application.results import (
     ScalarFieldSelection,
     build_solve_result_bundle,
 )
+from fem.io.result_csv import read_result_csv
 from fem.solvers.static_linear import solve
+from fem_gui.commands import ResultCsvExportSpec
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.visualization.model_adapter import build_model_geometry
 
@@ -255,4 +257,87 @@ def test_overlay_and_contour_style_update_existing_scene_state(gui_inp_path):
     assert window.viewport._contour["manual"]
     assert window.viewport._contour["averaging_threshold"] == 75.0
     assert not window.actions["edges"].isChecked()
+    window.close()
+
+
+def test_stress_averaging_threshold_is_visualization_only(
+    gui_inp_path,
+    tmp_path,
+):
+    _application()
+    window = _solved_window(gui_inp_path)
+
+    assert window.result_averaging_threshold.value() == 75.0
+    assert window.result_averaging_threshold.isHidden()
+
+    stress_index = window.result_variable_combo.findData(ResultVariable.S)
+    assert stress_index >= 0
+    window.result_variable_combo.setCurrentIndex(stress_index)
+    window._result_variable_changed(stress_index)
+    _wait_for_tasks(window)
+    assert not window.result_averaging_threshold.isHidden()
+    assert not window.result_averaging_threshold.isEnabled()
+
+    resolved_index = window.result_position_combo.findData(
+        FieldPosition.RESOLVED_NODAL
+    )
+    assert resolved_index >= 0
+    window.result_position_combo.setCurrentIndex(resolved_index)
+    window._result_position_changed(resolved_index)
+    _wait_for_tasks(window)
+
+    selection = window.result_selection
+    provider = window._current_result_provider()
+    assert type(selection) is ScalarFieldSelection
+    assert provider is not None
+    assert window.result_averaging_threshold.isEnabled()
+    assert (
+        selection.field_key.request.averaging_policy.threshold_percent
+        == 75.0
+    )
+    generation = provider.snapshot.generation
+
+    window.result_averaging_threshold.setValue(25.0)
+    _wait_for_tasks(window)
+
+    current = window._current_result_provider()
+    rendered = window.viewport._result_render_payload.topology.selection
+    assert current is not None
+    assert current.snapshot.generation == generation
+    assert window.result_selection == selection
+    assert rendered.component == selection.component
+    assert (
+        rendered.field_key.request.averaging_policy.threshold_percent
+        == 25.0
+    )
+    assert not any(
+        availability.key == rendered.field_key
+        for availability in current.catalog().fields
+    )
+    window.set_shape_mode("undeformed")
+    assert (
+        window.viewport._result_render_payload.topology.selection
+        == rendered
+    )
+
+    target = tmp_path / "stress.csv"
+    receipt = window.export_result_csv(
+        target,
+        ResultCsvExportSpec(
+            current.source,
+            current.snapshot.generation,
+            selection,
+        ),
+    )
+    assert receipt.completion is not None
+    _wait_for_tasks(window)
+    readback = read_result_csv(target)
+    field = current.field(selection.field_key)
+    component_index = field.descriptor.columns.index(selection.component)
+    expected_values = tuple(
+        float(value)
+        for value in field.values[:, component_index]
+    )
+    assert readback.selection == selection
+    assert tuple(record.value for record in readback.records) == expected_values
     window.close()

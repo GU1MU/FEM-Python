@@ -16,10 +16,12 @@ from fem.geometry import (
     ExtrudedGeometry,
     ExtrusionSourceResolutionError,
     MovedGeometry,
+    MultiBodyGeometry,
     NATIVE_GEOMETRY_TYPES,
     RotatedGeometry,
     geometry_dimension,
     resolve_extrusion_source_faces,
+    analyze_body_relations,
 )
 from fem.geometry.references import LogicalEntityRef
 from fem.mesh.settings import MeshSettings
@@ -40,6 +42,7 @@ class GuiActionKey(str, Enum):
     GEOMETRY_CREATE = "geometry_create"
     GEOMETRY_SKETCH = "geometry_sketch"
     GEOMETRY_WIRE = "geometry_wire"
+    GEOMETRY_ADD_BODY = "geometry_add_body"
     GEOMETRY_MOVE = "geometry_move"
     GEOMETRY_ROTATE = "geometry_rotate"
     GEOMETRY_EXTRUDE = "geometry_extrude"
@@ -161,6 +164,7 @@ ACTION_DESCRIPTORS: tuple[GuiActionDescriptor, ...] = (
     _d(GuiActionKey.GEOMETRY_CREATE, "创建草图", "create_geometry", "sketch"),
     _d(GuiActionKey.GEOMETRY_SKETCH, "新建草图", "create_sketch_geometry", "sketch"),
     _d(GuiActionKey.GEOMETRY_WIRE, "新建线体", "start_wire_geometry", "wire"),
+    _d(GuiActionKey.GEOMETRY_ADD_BODY, "添加 Body", "add_body_geometry"),
     _d(GuiActionKey.GEOMETRY_MOVE, "移动", "move_geometry", "geometry_move"),
     _d(GuiActionKey.GEOMETRY_ROTATE, "旋转", "rotate_geometry", "geometry_rotate"),
     _d(GuiActionKey.GEOMETRY_EXTRUDE, "拉伸", "extrude_geometry", "extrude"),
@@ -255,6 +259,7 @@ class GuiActionContext:
     viewport_scene_available: bool = False
     wire_editor_active: bool = False
     sketch_editor_active: bool = False
+    boolean_editor_active: bool = False
 
     def __post_init__(self) -> None:
         for name in (
@@ -269,6 +274,7 @@ class GuiActionContext:
             "viewport_scene_available",
             "wire_editor_active",
             "sketch_editor_active",
+            "boolean_editor_active",
         ):
             if type(getattr(self, name)) is not bool:
                 raise TypeError(f"{name} must be a bool")
@@ -326,10 +332,20 @@ def derive_action_availability(
     editor_active = (
         context.wire_editor_active
         or context.sketch_editor_active
+        or context.boolean_editor_active
     )
     has_native_geometry = (
         snapshot.source_kind == "native"
         and isinstance(recipe, NATIVE_GEOMETRY_TYPES)
+    )
+    is_multi_body = isinstance(recipe, MultiBodyGeometry)
+    selected_body_count = len(
+        {
+            reference.logical_id
+            for reference in context.geometry_selection
+            if reference.kind == "body"
+            and reference.logical_id != "body:domain"
+        }
     )
 
     set_state(GuiActionKey.OPEN, not busy, "后台任务运行时不能打开 INP")
@@ -370,6 +386,11 @@ def derive_action_availability(
         snapshot.source_kind == "native" and not busy,
         geometry_reason,
     )
+    set_state(
+        GuiActionKey.GEOMETRY_ADD_BODY,
+        is_multi_body and not busy,
+        "请先创建一个三维 Body",
+    )
     for key in (
         GuiActionKey.GEOMETRY_MOVE,
         GuiActionKey.GEOMETRY_ROTATE,
@@ -378,6 +399,23 @@ def derive_action_availability(
         GuiActionKey.GEOMETRY_FUSE,
         GuiActionKey.GEOMETRY_CUT,
     ):
+        if is_multi_body:
+            is_boolean = key in {
+                GuiActionKey.GEOMETRY_FUSE,
+                GuiActionKey.GEOMETRY_CUT,
+            }
+            enabled = (
+                len(recipe.bodies) >= 2
+                if is_boolean
+                else selected_body_count == 1
+            ) and not busy and not editor_active
+            reason = (
+                "实体布尔需要至少两个 Body"
+                if is_boolean
+                else "请先选择一个 Body"
+            )
+            set_state(key, enabled, reason)
+            continue
         set_state(
             key,
             has_native_geometry
@@ -439,10 +477,20 @@ def derive_action_availability(
     )
     set_state(
         GuiActionKey.GEOMETRY_UNDO,
-        isinstance(
-            recipe,
-            (MovedGeometry, RotatedGeometry, ExtrudedGeometry, BooleanGeometry),
-        ) and not busy,
+        (
+            selected_body_count == 1
+            if is_multi_body
+            else isinstance(
+                recipe,
+                (
+                    MovedGeometry,
+                    RotatedGeometry,
+                    ExtrudedGeometry,
+                    BooleanGeometry,
+                ),
+            )
+        )
+        and not busy,
         "当前没有可撤销的几何特征",
     )
     for key in (
@@ -476,7 +524,19 @@ def derive_action_availability(
         "请先创建自主草图；INP 模型保留已有网格，不能反向编辑 CAD",
     )
     has_mesh_settings = isinstance(snapshot.mesh_settings, MeshSettings)
-    mesh_inputs_ready = has_native_geometry and has_mesh_settings and not busy
+    body_relations_ready = not (
+        is_multi_body
+        and any(
+            relation.relation != "disjoint"
+            for relation in analyze_body_relations(recipe)
+        )
+    )
+    mesh_inputs_ready = (
+        has_native_geometry
+        and has_mesh_settings
+        and not busy
+        and body_relations_ready
+    )
     truss_member_policy = bool(
         has_mesh_settings
         and snapshot.mesh_settings.line_element_type == "Truss2"
@@ -491,7 +551,11 @@ def derive_action_availability(
         (
             "桁架单元中每根线体杆件固定生成一个单元，请先在网格控制中删除局部尺寸"
             if truss_controls_conflict
-            else "请先创建自主几何并设置网格参数"
+            else (
+                "请先通过 Boolean 解决 Body 重叠或接触"
+                if not body_relations_ready
+                else "请先创建自主几何并设置网格参数"
+            )
         ),
     )
     set_state(

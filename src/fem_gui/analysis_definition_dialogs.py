@@ -235,10 +235,12 @@ class DisplacementDialog(QDialog):
         if self.component_checks:
             self.component_checks[1].setChecked(True)
         if current is not None:
-            selected_region = RegionRef(
+            current_region = RegionRef(
                 getattr(current, "target_kind", "node_set"),
                 str(current.target),
             )
+            if selected_region is None:
+                selected_region = current_region
             for component, check in self.component_checks.items():
                 selected = (
                     current.first_component
@@ -503,12 +505,14 @@ class LoadDialog(QDialog):
                 max(0, self.component_combo.findData(current.component))
             )
             self.value_spin.setValue(current.value)
-            selected_region = RegionRef("node_set", str(current.target))
+            if selected_region is None:
+                selected_region = RegionRef("node_set", str(current.target))
         elif isinstance(current, EdgeLoad):
             self.kind_combo.setCurrentIndex(
                 max(0, self.kind_combo.findData("edge"))
             )
-            selected_region = RegionRef("edge", current.edge)
+            if selected_region is None:
+                selected_region = RegionRef("edge", current.edge)
             self.load_type_combo.setCurrentIndex(
                 max(0, self.load_type_combo.findData(current.load_type))
             )
@@ -518,7 +522,8 @@ class LoadDialog(QDialog):
             self.kind_combo.setCurrentIndex(
                 max(0, self.kind_combo.findData("surface"))
             )
-            selected_region = RegionRef("surface", current.surface)
+            if selected_region is None:
+                selected_region = RegionRef("surface", current.surface)
             self.load_type_combo.setCurrentIndex(
                 max(0, self.load_type_combo.findData(current.load_type))
             )
@@ -528,7 +533,11 @@ class LoadDialog(QDialog):
             self.kind_combo.setCurrentIndex(
                 max(0, self.kind_combo.findData("line"))
             )
-            selected_region = RegionRef("element_set", str(current.target))
+            if selected_region is None:
+                selected_region = RegionRef(
+                    "element_set",
+                    str(current.target),
+                )
             coordinate_index = self.coordinate_system_combo.findData(
                 current.coordinate_system
             )
@@ -542,10 +551,11 @@ class LoadDialog(QDialog):
             self.kind_combo.setCurrentIndex(
                 max(0, self.kind_combo.findData("body"))
             )
-            selected_region = RegionRef(
-                "element_set",
-                str(current.target),
-            )
+            if selected_region is None:
+                selected_region = RegionRef(
+                    "element_set",
+                    str(current.target),
+                )
             self._set_distributed_values(tuple(current.vector), None)
             self._vector_values["body"] = tuple(current.vector)
         elif isinstance(current, GravityLoad):
@@ -1037,6 +1047,8 @@ class AnalysisDefinitionManagerDialog(QDialog):
         dof_labels: Sequence[str] | None = None,
         force_labels: Sequence[str] | None = None,
         candidate_evaluator: Callable[..., AuthoringCapability] | None = None,
+        boundary_scope_selection_kinds: Sequence[str] = (),
+        load_scope_selection_kinds: Sequence[str] = (),
         output_view_capability: AuthoringCapability | None = None,
         output_delete_capability: AuthoringCapability | None = None,
     ) -> None:
@@ -1075,6 +1087,16 @@ class AnalysisDefinitionManagerDialog(QDialog):
             str(label) for label in force_labels or ()
         )
         self._candidate_evaluator = candidate_evaluator
+        self.boundary_scope_selection_kinds = tuple(
+            str(kind) for kind in boundary_scope_selection_kinds
+        )
+        self.load_scope_selection_kinds = tuple(
+            str(kind) for kind in load_scope_selection_kinds
+        )
+        self._scope_selection_request: (
+            tuple[str, tuple[str, int, int | None]] | None
+        ) = None
+        self._selected_region_override: RegionRef | None = None
         self._output_view_capability = _manager_output_capability(
             output_view_capability,
             operation="output_request.view",
@@ -1330,13 +1352,29 @@ class AnalysisDefinitionManagerDialog(QDialog):
     def edit_definition(
         self,
         key: tuple[str, int, int | None],
+        *,
+        selected_region: RegionRef | None = None,
     ) -> bool:
         """Open the existing parameter dialog and report a real change."""
         if not self.select_definition(key):
             return False
+        if selected_region is not None and type(selected_region) is not RegionRef:
+            raise TypeError("selected_region must be a RegionRef")
+        self._scope_selection_request = None
+        self._selected_region_override = selected_region
         previous = deepcopy(self.steps)
-        self._edit()
+        try:
+            self._edit()
+        finally:
+            self._selected_region_override = None
         return self.steps != previous
+
+    def requested_scope_selection(
+        self,
+    ) -> tuple[str, tuple[str, int, int | None]] | None:
+        """Return a viewport-scope request raised by the current editor."""
+
+        return self._scope_selection_request
 
     @staticmethod
     def _with_existing(
@@ -1395,12 +1433,22 @@ class AnalysisDefinitionManagerDialog(QDialog):
                 ),
                 self.dimensions,
                 self,
-                selected_region=current_region,
+                selected_region=(
+                    self._selected_region_override or current_region
+                ),
                 current=current,
                 labels=self.dof_labels,
+                scope_selection_kinds=self.boundary_scope_selection_kinds,
             )
             dialog.step_combo.setCurrentText(step.name)
             if not dialog.exec():
+                requested_kind = dialog.requested_scope_kind()
+                if requested_kind is not None:
+                    self._scope_selection_request = (
+                        requested_kind,
+                        selected,
+                    )
+                    self.reject()
                 return
             try:
                 target_step, values = dialog.definitions()
@@ -1468,6 +1516,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
                     if kind == "body_load"
                     else None,
                 ),
+                selected_region=self._selected_region_override,
                 current=current,
                 labels=self.force_labels,
                 candidate_evaluator=(
@@ -1488,9 +1537,17 @@ class AnalysisDefinitionManagerDialog(QDialog):
                         )
                     )
                 ),
+                scope_selection_kinds=self.load_scope_selection_kinds,
             )
             dialog.step_combo.setCurrentText(step.name)
             if not dialog.exec():
+                requested_kind = dialog.requested_scope_kind()
+                if requested_kind is not None:
+                    self._scope_selection_request = (
+                        requested_kind,
+                        selected,
+                    )
+                    self.reject()
                 return
             try:
                 target_step, value = dialog.definition()

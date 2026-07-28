@@ -15,7 +15,8 @@ from PySide6.QtCore import QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QFileDialog, QGridLayout,
-    QInputDialog, QLabel, QMainWindow, QMessageBox, QSizePolicy, QSplitter,
+    QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMessageBox, QSizePolicy,
+    QSplitter,
     QVBoxLayout, QWidget,
 )
 
@@ -47,6 +48,8 @@ from fem.application import (
     RevisionConflictError,
     RunStatus,
     SessionDelta,
+    StrictBodyBooleanPreview,
+    StrictBodyBooleanResult,
     TokenStatus,
     TransitionEffect,
     UNSET,
@@ -56,20 +59,27 @@ from fem.application import (
     evaluate_authoring_candidate,
     evaluate_native_assignment_candidate,
     evaluate_native_line_load_candidate,
+    derive_geometry_feature_rows,
     resolve_effective_beam_frames,
     safe_static_preflight,
+    prepare_solid_body_boolean,
+    prepare_strict_body_recipe_preview,
 )
 from fem.application.preprocessing import generate_fem_model
 from fem.application.recipe_compiler import compile_recipe
 from fem.application.results import (
     FieldAvailability,
+    FieldMaterializationKey,
     FieldPosition,
+    FieldRequest,
     FieldState,
+    NodalAveragingPolicy,
     ResultQuery,
     ResultQueryResult,
     ResultQueryValidationError,
     ResultExportSnapshot,
     ResultMaterializationPatch,
+    ResultMaterializationSnapshot,
     ResultProvider,
     ResultSourceKey,
     ResultVariable,
@@ -81,6 +91,7 @@ from fem.application.results import (
     restore_result_provider,
 )
 from fem.core.model import (
+    AnalysisStep,
     BodyForce,
     EdgeLoad,
     GravityLoad,
@@ -98,6 +109,7 @@ from fem.geometry import (
     ExtrusionSourceResolutionError,
     LogicalEntityRef,
     MovedGeometry,
+    MultiBodyGeometry,
     NATIVE_GEOMETRY_TYPES,
     PlateWithHoleGeometry,
     RectangleGeometry,
@@ -109,9 +121,14 @@ from fem.geometry import (
     recipe_characteristic_size,
     resolve_extrusion_source_faces,
     supports_structured_hexahedron,
+    add_solid_body,
+    delete_solid_body,
+    materialize_multi_body,
+    rename_solid_body,
+    undo_solid_body_feature,
 )
 from fem.geometry.recipe_topology import describe_recipe_topology
-from fem.io.project import load_project, save_project
+from fem.io.project import LoadedProject, load_project, save_project
 from fem.io.result_csv import write_result_csv
 from fem.io.result_vtk import write_result_vtk
 from fem.mesh.quality import analyze_mesh
@@ -120,6 +137,7 @@ from fem.solvers import static_linear
 
 from .actions import build_actions
 from .action_state import GuiActionContext, derive_action_availability
+from .body_boolean import BodyBooleanController
 from .analysis_dialogs import JobManagerDialog, JobSubmitDialog
 from .analysis_definition_dialogs import (
     AnalysisDefinitionManagerDialog,
@@ -151,7 +169,12 @@ from .model_dialogs import (
 from .inspection_dialogs import EntityInfoDialog
 from .inspection_service import InspectionService
 from .mesh_browser import MeshBrowserDialog
-from .geometry_preview import build_geometry_preview
+from .geometry_preview import (
+    GeometryPreview,
+    build_geometry_preview,
+    build_strict_body_boolean_preview,
+    build_strict_body_boolean_previews,
+)
 from .scope_selection import (
     ScopeSelectionTopology,
     build_scope_selection_topology,
@@ -163,6 +186,7 @@ from .postprocessing_dialogs import (
     TypedResultQueryDialog,
 )
 from .preprocessing_dialogs import (
+    AddBodyGeometryDialog,
     BasicSolidCreationDialog,
     BoxGeometryDialog,
     CylinderGeometryDialog,
@@ -206,6 +230,7 @@ from .visualization.selection import SelectionState
 from .visualization.scene import DisplayState
 from .visualization.symbols import SymbolSettings
 from .widgets.navigation_panel import NavigationPanel
+from .widgets.boolean_feature_panel import BooleanFeaturePanel
 from .widgets.ribbon import RibbonPage, RibbonWidget
 from .widgets.sketch_editor_panel import SketchEditorPanel
 from .widgets.wire_editor_panel import WireEditorPanel
@@ -242,8 +267,6 @@ _RESULT_FIELD_STATE_LABELS = {
     FieldState.LAZY: "按需加载",
     FieldState.UNAVAILABLE: "不可用",
 }
-
-
 def initial_display_policy(
     element_count: int,
     node_count: int,
@@ -344,6 +367,14 @@ class FEMMainWindow(QMainWindow):
         self._pending_local_mesh_selection = False
         self._pending_analysis_selection: str | None = None
         self._pending_scope_kind: str | None = None
+        self._pending_analysis_edit: (
+            tuple[
+                tuple[str, int, int | None],
+                str,
+                tuple[AnalysisStep, ...],
+            ]
+            | None
+        ) = None
         self._scope_selection_overlay_active = False
         self._scope_selection_topology_cache: (
             ScopeSelectionTopology | None
@@ -354,6 +385,15 @@ class FEMMainWindow(QMainWindow):
         self._sketch_editor_controller: SketchDraftController | None = None
         self._sketch_editor_original_recipe: object | None = None
         self._sketch_editor_base_revision: int | None = None
+        self._body_boolean_controller: BodyBooleanController | None = None
+        self._body_boolean_preview_result: object | None = None
+        self._body_boolean_preview_generation = 0
+        self._geometry_preview_cache: (
+            tuple[str, object, GeometryPreview] | None
+        ) = None
+        self._pending_exact_boolean_preview_key: (
+            tuple[str, int] | None
+        ) = None
         self.selection = SelectionState()
         self.actions: dict[str, QAction] = {}
         self.task_controller = BackgroundTaskController(self)
@@ -379,6 +419,15 @@ class FEMMainWindow(QMainWindow):
             "edges": False,
             "averaging_threshold": 75.0,
         }
+        self._result_visualization_materialization: (
+            tuple[
+                ResultSourceKey,
+                int,
+                FieldMaterializationKey,
+                ResultMaterializationSnapshot,
+            ]
+            | None
+        ) = None
         self._step_combos: list[QComboBox] = []
         self._build_actions()
         self._build_menus()
@@ -531,6 +580,7 @@ class FEMMainWindow(QMainWindow):
         if (
             self._wire_editor_controller is not None
             or self._sketch_editor_controller is not None
+            or self._body_boolean_controller is not None
         ):
             return self._rejected_command(
                 command_id,
@@ -538,31 +588,80 @@ class FEMMainWindow(QMainWindow):
                 "请先完成或取消当前草图编辑，再打开项目",
             )
         target = Path(path)
-        try:
+        base_session_id = self.session.session_id
+        base_session_revision = self.session.session_revision
+        completion = GuiCommandCompletion(command_id)
+        accepted_delta: SessionDelta | None = None
+
+        def workload(context: TaskContext) -> LoadedProject:
+            context.report("正在读取并验证自主项目……")
+            context.checkpoint()
             loaded = load_project(target)
-            delta = self.session.replace_from_snapshot(
-                loaded.snapshot,
-                expected_session_revision=self.document.session_revision,
-            )
-            receipt = self._accepted_command(
+            context.checkpoint()
+            return loaded
+
+        def apply_result(payload: object) -> TaskApplyOutcome:
+            nonlocal accepted_delta
+            if type(payload) is not LoadedProject:
+                raise TypeError(
+                    "project loader worker must return LoadedProject"
+                )
+            if (
+                self.session.session_id != base_session_id
+                or self.session.session_revision != base_session_revision
+            ):
+                return TaskApplyOutcome.stale(
+                    "自主项目打开结果已过期，未应用"
+                )
+            try:
+                accepted_delta = self.session.replace_from_snapshot(
+                    payload.snapshot,
+                    expected_session_revision=base_session_revision,
+                )
+            except RevisionConflictError as error:
+                return TaskApplyOutcome.stale(str(error))
+            return TaskApplyOutcome.accepted(payload)
+
+        def on_success(payload: object) -> None:
+            if type(payload) is not LoadedProject or accepted_delta is None:
+                raise RuntimeError(
+                    "accepted project load has no detached project or delta"
+                )
+            self._accepted_command(
                 command_id,
-                delta,
+                accepted_delta,
                 source_label=target.name,
             )
-        except Exception as error:
+            self._import_notices = deepcopy(tuple(payload.notices))
+            if payload.notices:
+                self.status_panel.set_state(
+                    "；".join(notice.message for notice in payload.notices),
+                    12000,
+                )
+
+        try:
+            started = self._start_task(
+                workload,
+                on_success,
+                "打开自主项目失败",
+                task_name="打开自主项目",
+                apply_result=apply_result,
+                completion=completion,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
             return self._rejected_command(
                 command_id,
                 "project.open.rejected",
                 error,
                 "请检查项目文件版本和内容。",
             )
-        self._import_notices = deepcopy(tuple(loaded.notices))
-        if loaded.notices:
-            self.status_panel.set_state(
-                "；".join(notice.message for notice in loaded.notices),
-                12000,
+        if not started:
+            return self._rejected_command(
+                command_id,
+                "task.start.rejected",
+                "the project open task could not be started",
             )
-        return receipt
+        return GuiCommandReceipt.pending(command_id, completion)
 
     def open_inp_path(self, path: str | Path) -> GuiCommandReceipt:
         command_id = self._next_command_id()
@@ -636,28 +735,74 @@ class FEMMainWindow(QMainWindow):
         target = Path(path)
         if target.suffix.casefold() != ".femproj":
             target = target.with_suffix(".femproj")
-        save_snapshot = None
         try:
             save_snapshot = self.session.prepare_project_save()
-            saved_path = save_project(target, save_snapshot)
-            delta = self.session.accept_project_saved(
-                save_snapshot.token,
-                saved_path,
-            )
-            return self._accepted_command(command_id, delta)
-        except Exception as error:
-            if save_snapshot is not None:
-                failure = self.session.accept_task_failed(
-                    save_snapshot.token,
-                    error,
+
+            completion = GuiCommandCompletion(command_id)
+
+            def workload(context: TaskContext) -> Path:
+                context.report("正在验证并保存自主项目……")
+                return save_project(
+                    target,
+                    save_snapshot,
+                    checkpoint=context.checkpoint,
                 )
-                if failure.accepted:
-                    self._apply_session_delta(failure)
+
+            def apply_result(payload: object) -> TaskApplyOutcome:
+                if not isinstance(payload, Path):
+                    raise TypeError(
+                        "project save worker must return pathlib.Path"
+                    )
+                return self._session_task_outcome(
+                    self.session.accept_project_saved(
+                        save_snapshot.token,
+                        payload,
+                    ),
+                    payload,
+                )
+
+            def on_success(value: object) -> None:
+                if (
+                    type(value) is not tuple
+                    or len(value) != 2
+                    or type(value[0]) is not SessionDelta
+                    or not isinstance(value[1], Path)
+                ):
+                    raise TypeError(
+                        "accepted project save must carry SessionDelta and Path"
+                    )
+                delta, _saved_path = value
+                self._accepted_command(command_id, delta)
+
+            started = self._start_task(
+                workload,
+                on_success,
+                "保存自主项目失败",
+                lambda message: self._session_task_failed(
+                    save_snapshot.token,
+                    "保存自主项目失败",
+                    message,
+                ),
+                task_name="保存自主项目",
+                on_cancelled=lambda: self._session_task_cancelled(
+                    save_snapshot.token
+                ),
+                apply_result=apply_result,
+                completion=completion,
+            )
+        except Exception as error:
             return self._rejected_command(
                 command_id,
                 "project.save.rejected",
                 error,
             )
+        if not started:
+            return self._rejected_command(
+                command_id,
+                "task.start.rejected",
+                "the project save task could not be started",
+            )
+        return GuiCommandReceipt.pending(command_id, completion)
 
     def apply_native_geometry_edit(
         self,
@@ -1763,6 +1908,18 @@ class FEMMainWindow(QMainWindow):
                         if snapshot.parts
                         else "Part-1"
                     ),
+                    bodies=(
+                        tuple(
+                            (
+                                body.id,
+                                body.name,
+                                derive_geometry_feature_rows(body.recipe),
+                            )
+                            for body in recipe.bodies
+                        )
+                        if isinstance(recipe, MultiBodyGeometry)
+                        else ()
+                    ),
                 )
                 if (
                     geometry_dimension(recipe) == 1
@@ -1774,7 +1931,17 @@ class FEMMainWindow(QMainWindow):
                     self.actions["geometry_select_face"].setChecked(False)
                     self.viewport.set_selection_mode("geometry_body")
                 try:
-                    preview = build_geometry_preview(recipe)
+                    cached = self._geometry_preview_cache
+                    cached_is_current = (
+                        cached is not None
+                        and cached[0] == snapshot.session_id
+                        and cached[1] == recipe
+                    )
+                    preview = (
+                        cached[2]
+                        if cached_is_current
+                        else build_geometry_preview(recipe)
+                    )
                     if (
                         self._sketch_editor_controller is not None
                         or self._wire_editor_controller is not None
@@ -1785,6 +1952,18 @@ class FEMMainWindow(QMainWindow):
                         )
                     else:
                         self.viewport.show_geometry_preview(preview)
+                    if (
+                        not cached_is_current
+                        and isinstance(recipe, MultiBodyGeometry)
+                        and any(
+                            self._recipe_contains_strict_boolean(body.recipe)
+                            for body in recipe.bodies
+                        )
+                    ):
+                        self._schedule_exact_boolean_preview(
+                            snapshot,
+                            recipe,
+                        )
                 finally:
                     # The Session transition is already committed.  Keep action
                     # gates aligned with it even when the optional renderer
@@ -1909,11 +2088,13 @@ class FEMMainWindow(QMainWindow):
         self._close_job_manager()
         self._pending_analysis_selection = None
         self._pending_scope_kind = None
+        self._pending_analysis_edit = None
         self.viewport_panel.scope_creation_bar.finish()
         self.inspection_service = None
         self.geometry = None
         self.result_provider = None
         self.result_selection = None
+        self._result_visualization_materialization = None
         self.selection.clear()
         self._display = DisplayState()
         self.model_tree.clear_model()
@@ -1932,6 +2113,7 @@ class FEMMainWindow(QMainWindow):
         )
         self.result_provider = None
         self.result_selection = None
+        self._result_visualization_materialization = None
         self._display = DisplayState()
         self.result_tree.clear_result()
         self.navigation.show_model()
@@ -1983,6 +2165,15 @@ class FEMMainWindow(QMainWindow):
             raise RuntimeError(
                 "provider projection does not match the current model"
             )
+        cached = self._result_visualization_materialization
+        if (
+            cached is not None
+            and (
+                cached[0] != provider.source
+                or cached[1] != provider.snapshot.generation
+            )
+        ):
+            self._result_visualization_materialization = None
 
         catalog = provider.catalog()
         selection = (
@@ -1997,9 +2188,12 @@ class FEMMainWindow(QMainWindow):
             )
             else catalog.default_selection
         )
+        render_provider, render_selection = (
+            self._result_visualization_provider(provider, selection)
+        )
         payload = self._build_result_render_payload(
-            provider,
-            selection,
+            render_provider,
+            render_selection,
         )
         step_name = self._current_step_name or self.session.default_step_name()
         previous_catalog = self.result_tree.catalog
@@ -2054,6 +2248,18 @@ class FEMMainWindow(QMainWindow):
         self.result_provider = provider
         self.result_selection = selection
         self.status_panel.set_result(self._result_status_text())
+        visual_selection = self._result_averaging_visual_selection(
+            provider,
+            selection,
+        )
+        if (
+            visual_selection != selection
+            and render_selection != visual_selection
+        ):
+            QTimer.singleShot(
+                0,
+                self._apply_result_averaging_threshold,
+            )
 
     def _build_actions(self) -> None:
         self.actions = build_actions(self)
@@ -2108,7 +2314,11 @@ class FEMMainWindow(QMainWindow):
             ("输出", ("export_csv", "export_vtk"), ()),
         ), step_group="分析")
         self._add_ribbon_page("几何", (
-            ("创建", ("geometry_create",), ("geometry_create",)),
+            (
+                "创建",
+                ("geometry_create", "geometry_add_body"),
+                ("geometry_create",),
+            ),
             (
                 "特征",
                 ("geometry_extrude", "geometry_move", "geometry_rotate"),
@@ -2200,6 +2410,25 @@ class FEMMainWindow(QMainWindow):
         self.result_component_combo.setObjectName("resultComponentCombo")
         self.result_position_combo = _ExactDataComboBox(field_host)
         self.result_position_combo.setObjectName("resultPositionCombo")
+        self.result_averaging_threshold = CompactDoubleSpinBox(
+            field_host,
+            minimum_display_decimals=0,
+        )
+        self.result_averaging_threshold.setObjectName(
+            "resultAveragingThreshold"
+        )
+        self.result_averaging_threshold.setRange(0.0, 100.0)
+        self.result_averaging_threshold.setDecimals(1)
+        self.result_averaging_threshold.setSingleStep(1.0)
+        self.result_averaging_threshold.setKeyboardTracking(False)
+        self.result_averaging_threshold.setValue(
+            float(self._contour_options["averaging_threshold"])
+        )
+        self.result_averaging_threshold.setFixedHeight(24)
+        self.result_averaging_threshold.setFixedWidth(58)
+        self.result_averaging_threshold.setToolTip(
+            "仅控制平均节点应力云图；不改变查询或 CSV 导出的结果数据。"
+        )
         for combo in (
             self.result_variable_combo,
             self.result_component_combo,
@@ -2209,7 +2438,7 @@ class FEMMainWindow(QMainWindow):
             combo.setEnabled(False)
         self.result_variable_combo.setMinimumWidth(76)
         self.result_component_combo.setMinimumWidth(86)
-        self.result_position_combo.setMinimumWidth(199)
+        self.result_position_combo.setMinimumWidth(90)
         for combo in (
             self.result_variable_combo,
             self.result_component_combo,
@@ -2222,21 +2451,40 @@ class FEMMainWindow(QMainWindow):
         variable_label = QLabel("变量", field_host)
         component_label = QLabel("分量", field_host)
         position_label = QLabel("位置", field_host)
+        self.result_averaging_threshold_label = QLabel(
+            "阈值（%）",
+            field_host,
+        )
         for label in (variable_label, component_label, position_label):
             label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             label.setFixedSize(36, 24)
+        self.result_averaging_threshold_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.result_averaging_threshold_label.setFixedHeight(24)
+        position_host = QWidget(field_host)
+        position_layout = QHBoxLayout(position_host)
+        position_layout.setContentsMargins(0, 0, 0, 0)
+        position_layout.setSpacing(5)
+        position_layout.addWidget(self.result_position_combo, 1)
+        position_layout.addWidget(self.result_averaging_threshold_label)
+        position_layout.addWidget(self.result_averaging_threshold)
         field_layout.addWidget(variable_label, 0, 0)
         field_layout.addWidget(self.result_variable_combo, 0, 1)
         field_layout.addWidget(component_label, 0, 2)
         field_layout.addWidget(self.result_component_combo, 0, 3)
         field_layout.addWidget(position_label, 1, 0)
-        field_layout.addWidget(self.result_position_combo, 1, 1, 1, 3)
+        field_layout.addWidget(position_host, 1, 1, 1, 3)
         field_layout.setColumnStretch(1, 1)
         field_layout.setColumnStretch(3, 1)
         field_group.add_widget(field_host)
         self.result_variable_combo.activated.connect(self._result_variable_changed)
         self.result_component_combo.activated.connect(self._result_component_changed)
         self.result_position_combo.activated.connect(self._result_position_changed)
+        self.result_averaging_threshold.valueChanged.connect(
+            self._result_averaging_threshold_changed
+        )
+        self._sync_result_averaging_threshold_control()
 
         deformation_group = page.add_group("变形")
         scale_host = QWidget(deformation_group)
@@ -2320,20 +2568,24 @@ class FEMMainWindow(QMainWindow):
         self.wire_editor_panel.hide()
         self.sketch_editor_panel = SketchEditorPanel(parent=self)
         self.sketch_editor_panel.hide()
+        self.boolean_feature_panel = BooleanFeaturePanel(parent=self)
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
         splitter.setObjectName("mainSplitter")
         splitter.addWidget(self.navigation)
         splitter.addWidget(self.viewport_panel)
         splitter.addWidget(self.wire_editor_panel)
         splitter.addWidget(self.sketch_editor_panel)
-        splitter.setSizes([260, 1020, 0, 0])
+        splitter.addWidget(self.boolean_feature_panel)
+        splitter.setSizes([260, 1020, 0, 0, 0])
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
         splitter.setStretchFactor(3, 0)
+        splitter.setStretchFactor(4, 0)
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(2, True)
         splitter.setCollapsible(3, True)
+        splitter.setCollapsible(4, True)
         self.main_splitter = splitter
         host = QWidget(self)
         host.setObjectName("centralWorkspace")
@@ -2346,6 +2598,7 @@ class FEMMainWindow(QMainWindow):
         self.model_tree.highlightRequested.connect(self._highlight_tree_entry)
         self.model_tree.informationRequested.connect(self._show_entry_information)
         self.model_tree.editRequested.connect(self._edit_tree_entry)
+        self.model_tree.deleteRequested.connect(self._delete_tree_entry)
         self.result_tree.fieldSelectionActivated.connect(
             self._activate_result_selection
         )
@@ -2381,6 +2634,18 @@ class FEMMainWindow(QMainWindow):
         )
         self.sketch_editor_panel.entityFocusRequested.connect(
             self.viewport.focus_sketch_draft_entity
+        )
+        self.boolean_feature_panel.selectionRequested.connect(
+            self._request_body_boolean_selection
+        )
+        self.boolean_feature_panel.operationChanged.connect(
+            self._body_boolean_operation_changed
+        )
+        self.boolean_feature_panel.finishRequested.connect(
+            self.finish_body_boolean
+        )
+        self.boolean_feature_panel.cancelRequested.connect(
+            self.cancel_body_boolean
         )
 
     def _build_status_bar(self) -> None:
@@ -2473,6 +2738,7 @@ class FEMMainWindow(QMainWindow):
             self.result_component_combo.clear()
             self.result_component_combo.addItem("—", None)
             self.result_component_combo.blockSignals(False)
+            self._sync_result_averaging_threshold_control()
             return
 
         variables: list[ResultVariable] = []
@@ -2505,6 +2771,21 @@ class FEMMainWindow(QMainWindow):
         self._populate_result_components(
             preferred_selection=selection,
         )
+        self._sync_result_averaging_threshold_control()
+
+    def _sync_result_averaging_threshold_control(self) -> None:
+        variable = self.result_variable_combo.currentData()
+        position = self.result_position_combo.currentData()
+        visible = variable is ResultVariable.S
+        enabled = (
+            visible
+            and position is FieldPosition.RESOLVED_NODAL
+            and self._current_result_provider() is not None
+            and not self.busy
+        )
+        self.result_averaging_threshold_label.setVisible(visible)
+        self.result_averaging_threshold.setVisible(visible)
+        self.result_averaging_threshold.setEnabled(enabled)
 
     def _populate_result_positions(
         self,
@@ -2641,6 +2922,7 @@ class FEMMainWindow(QMainWindow):
         self._result_component_changed(
             self.result_component_combo.currentIndex()
         )
+        self._sync_result_averaging_threshold_control()
 
     def _result_position_changed(self, _index: int) -> None:
         current = self.result_component_combo.currentData()
@@ -2654,12 +2936,26 @@ class FEMMainWindow(QMainWindow):
         self._result_component_changed(
             self.result_component_combo.currentIndex()
         )
+        self._sync_result_averaging_threshold_control()
 
     def _result_component_changed(self, _index: int) -> None:
         selection = self.result_component_combo.currentData()
         if type(selection) is not ScalarFieldSelection:
             return
         self._activate_result_selection(selection)
+
+    def _result_averaging_threshold_changed(self, value: float) -> None:
+        threshold = float(value)
+        if (
+            threshold
+            == float(self._contour_options["averaging_threshold"])
+        ):
+            return
+        self._contour_options["averaging_threshold"] = threshold
+        self.viewport.set_contour_options(
+            {"averaging_threshold": threshold}
+        )
+        self._apply_result_averaging_threshold()
 
     def _result_scale_mode_changed(self, _index: int) -> None:
         self._scale_mode = str(self.result_scale_combo.currentData())
@@ -2747,6 +3043,7 @@ class FEMMainWindow(QMainWindow):
             ),
             wire_editor_active=self._wire_editor_controller is not None,
             sketch_editor_active=self._sketch_editor_controller is not None,
+            boolean_editor_active=self._body_boolean_controller is not None,
         )
         for availability in derive_action_availability(
             self.document,
@@ -2766,6 +3063,7 @@ class FEMMainWindow(QMainWindow):
         self.result_scale_value.setEnabled(
             has_result and self._scale_mode == "custom"
         )
+        self._sync_result_averaging_threshold_control()
         self._sync_step_combos()
         self._update_window_title()
 
@@ -2856,7 +3154,7 @@ class FEMMainWindow(QMainWindow):
             base_snapshot=controller.snapshot(),
         )
         self.wire_editor_panel.begin(self.viewport)
-        self.main_splitter.setSizes([260, 760, 360, 0])
+        self.main_splitter.setSizes([260, 760, 360, 0, 0])
         self._wire_editor_work_plane_changed(
             str(self.wire_editor_panel.work_plane_combo.currentData())
         )
@@ -2930,7 +3228,7 @@ class FEMMainWindow(QMainWindow):
         self._wire_editor_controller = None
         self._wire_editor_original_recipe = None
         self._wire_editor_base_revision = None
-        self.main_splitter.setSizes([260, 1020, 0, 0])
+        self.main_splitter.setSizes([260, 1020, 0, 0, 0])
         self._update_action_states()
         self._schedule_viewport_fit()
 
@@ -3029,7 +3327,7 @@ class FEMMainWindow(QMainWindow):
             base_snapshot=controller.snapshot(),
         )
         self.sketch_editor_panel.begin(self.viewport)
-        self.main_splitter.setSizes([260, 720, 0, 400])
+        self.main_splitter.setSizes([260, 720, 0, 400, 0])
         self.ribbon.set_current("几何")
         self.viewport.set_view("top")
         self.status_panel.set_state(
@@ -3116,7 +3414,7 @@ class FEMMainWindow(QMainWindow):
         self._sketch_editor_controller = None
         self._sketch_editor_original_recipe = None
         self._sketch_editor_base_revision = None
-        self.main_splitter.setSizes([260, 1020, 0, 0])
+        self.main_splitter.setSizes([260, 1020, 0, 0, 0])
         self._update_action_states()
         self._schedule_viewport_fit()
 
@@ -3156,7 +3454,42 @@ class FEMMainWindow(QMainWindow):
             self,
         )
         if self._exec_dialog(dialog):
-            self._set_native_geometry(dialog.recipe(), "长方体")
+            self._add_or_set_solid_source(dialog.recipe(), "长方体")
+
+    def add_body_geometry(self) -> None:
+        current = self.document.geometry_recipe
+        if not isinstance(current, MultiBodyGeometry):
+            return
+        base_revision = self.document.session_revision
+        dialog = AddBodyGeometryDialog(self)
+
+        def show_detached_preview(recipe: object) -> None:
+            if (
+                self.document.session_revision != base_revision
+                or not isinstance(recipe, (BoxGeometry, CylinderGeometry, MovedGeometry))
+            ):
+                return
+            candidate = add_solid_body(current, recipe)
+            self.viewport.show_geometry_preview(
+                build_geometry_preview(candidate)
+            )
+
+        dialog.preview_changed.connect(show_detached_preview)
+        show_detached_preview(dialog.recipe())
+        if not self._exec_dialog(dialog):
+            self._rebuild_full_projection()
+            self.status_panel.set_state(
+                "已取消添加 Body；committed Bodies 保持不变",
+                4000,
+            )
+            return
+        candidate = add_solid_body(current, dialog.recipe())
+        if not self._set_native_geometry(
+            candidate,
+            "新增 Body",
+            base_session_revision=base_revision,
+        ):
+            self._rebuild_full_projection()
 
     def create_cylinder_geometry(self) -> None:
         current = self.document.geometry_recipe
@@ -3165,7 +3498,17 @@ class FEMMainWindow(QMainWindow):
             self,
         )
         if self._exec_dialog(dialog):
-            self._set_native_geometry(dialog.recipe(), "圆柱")
+            self._add_or_set_solid_source(dialog.recipe(), "圆柱")
+
+    def _add_or_set_solid_source(self, recipe: object, label: str) -> None:
+        current = self.document.geometry_recipe
+        if isinstance(current, MultiBodyGeometry):
+            self._set_native_geometry(
+                add_solid_body(current, recipe),
+                f"新增{label}",
+            )
+        else:
+            self._set_native_geometry(recipe, label)
 
     def create_plate_with_hole_geometry(self) -> None:
         current = self.document.geometry_recipe
@@ -3181,25 +3524,71 @@ class FEMMainWindow(QMainWindow):
         current = self.document.geometry_recipe
         if not isinstance(current, NATIVE_GEOMETRY_TYPES):
             return
+        selected_body_id = self._selected_body_id(current)
+        if isinstance(current, MultiBodyGeometry) and selected_body_id is None:
+            self.status_panel.set_state("请先选择一个 Body", 5000)
+            return
+        source = (
+            current.body(selected_body_id).recipe
+            if isinstance(current, MultiBodyGeometry)
+            and selected_body_id is not None
+            else current
+        )
         dialog = MoveGeometryDialog(
-            current,
+            source,
             self,
-            is_3d=geometry_dimension(current) != 2,
+            is_3d=geometry_dimension(source) != 2,
         )
         if self._exec_dialog(dialog):
-            self._set_native_geometry(dialog.recipe(), "移动后的")
+            moved = dialog.recipe()
+            if isinstance(current, MultiBodyGeometry):
+                moved_geometry = replace(
+                    current,
+                    bodies=tuple(
+                        replace(body, recipe=moved)
+                        if body.id == selected_body_id
+                        else body
+                        for body in current.bodies
+                    ),
+                )
+                self._set_native_geometry(moved_geometry, "移动后的")
+            else:
+                self._set_native_geometry(moved, "移动后的")
 
     def rotate_geometry(self) -> None:
         current = self.document.geometry_recipe
         if not isinstance(current, NATIVE_GEOMETRY_TYPES):
             return
+        selected_body_id = self._selected_body_id(current)
+        if isinstance(current, MultiBodyGeometry) and selected_body_id is None:
+            self.status_panel.set_state("请先选择一个 Body", 5000)
+            return
+        source = (
+            current.body(selected_body_id).recipe
+            if isinstance(current, MultiBodyGeometry)
+            and selected_body_id is not None
+            else current
+        )
         dialog = RotateGeometryDialog(
-            current,
+            source,
             self,
-            is_3d=geometry_dimension(current) != 2,
+            is_3d=geometry_dimension(source) != 2,
         )
         if self._exec_dialog(dialog):
-            self._set_native_geometry(dialog.recipe(), "旋转后的")
+            rotated = dialog.recipe()
+            if isinstance(current, MultiBodyGeometry):
+                rotated_geometry = replace(
+                    current,
+                    bodies=tuple(
+                        replace(body, recipe=rotated)
+                        if body.id == selected_body_id
+                        else body
+                        for body in current.bodies
+                    ),
+                )
+                self._set_native_geometry(rotated_geometry, "旋转后的")
+            else:
+                self._set_native_geometry(rotated, "旋转后的")
 
     def extrude_geometry(self) -> None:
         current = self.document.geometry_recipe
@@ -3270,6 +3659,9 @@ class FEMMainWindow(QMainWindow):
         current = self.document.geometry_recipe
         if not isinstance(current, NATIVE_GEOMETRY_TYPES):
             return
+        if isinstance(current, MultiBodyGeometry):
+            self._begin_body_boolean(operation)
+            return
         if isinstance(current, SketchGeometry):
             if current.is_strict:
                 self._begin_sketch_editor(
@@ -3300,6 +3692,399 @@ class FEMMainWindow(QMainWindow):
         )
         if self._exec_dialog(dialog):
             self._set_native_geometry(dialog.recipe(), label)
+
+    def _begin_body_boolean(self, operation: str) -> None:
+        current = self.document.geometry_recipe
+        if not isinstance(current, MultiBodyGeometry) or len(current.bodies) < 2:
+            self.status_panel.set_state("实体布尔需要至少两个 Body", 5000)
+            return
+        if (
+            self._wire_editor_controller is not None
+            or self._sketch_editor_controller is not None
+        ):
+            self.status_panel.set_state("请先完成或取消当前几何编辑", 5000)
+            return
+        if self._body_boolean_controller is not None:
+            self.cancel_body_boolean()
+        controller = BodyBooleanController(
+            current,
+            self.document.session_revision,
+            operation,
+        )
+        self._body_boolean_controller = controller
+        self._body_boolean_preview_result = None
+        self._body_boolean_preview_generation += 1
+        self.boolean_feature_panel.begin(controller)
+        self._set_geometry_selection_mode("body")
+        self.main_splitter.setSizes([260, 720, 0, 0, 400])
+        self.status_panel.set_state(
+            "实体布尔已打开；请在面板中分别选择目标体和工具体",
+            0,
+        )
+        self._update_action_states()
+
+    def _request_body_boolean_selection(self, slot: str) -> None:
+        controller = self._body_boolean_controller
+        if controller is None:
+            return
+        try:
+            controller.request_selection(slot)
+        except ValueError as error:
+            self.boolean_feature_panel.show_status(str(error))
+            return
+        if self._body_boolean_preview_result is not None:
+            self._body_boolean_preview_result = None
+            self.boolean_feature_panel.set_preview_valid(False)
+            self._rebuild_full_projection()
+        self._set_geometry_selection_mode("body")
+        role = "目标体" if slot == "target" else "工具体"
+        self.boolean_feature_panel.show_status(
+            f"请在 viewport 或 model tree 中选择{role}"
+        )
+        self.status_panel.set_state(f"正在选择 Boolean {role}", 0)
+
+    def _assign_body_boolean_reference(
+        self,
+        reference: LogicalEntityRef,
+    ) -> bool:
+        controller = self._body_boolean_controller
+        if controller is None or controller.pending_slot is None:
+            return False
+        try:
+            slot = controller.assign_reference(reference)
+        except (KeyError, TypeError, ValueError) as error:
+            self.boolean_feature_panel.show_status(str(error))
+            return True
+        self.boolean_feature_panel.refresh()
+        self.viewport.highlight_body_boolean_operands(
+            (
+                None
+                if controller.target_body_id is None
+                else LogicalEntityRef(f"body:{controller.target_body_id}")
+            ),
+            (
+                None
+                if controller.tool_body_id is None
+                else LogicalEntityRef(f"body:{controller.tool_body_id}")
+            ),
+        )
+        role = "目标体" if slot == "target" else "工具体"
+        self.boolean_feature_panel.show_status(f"{role}已设置")
+        if controller.ready:
+            self._refresh_body_boolean_preview()
+        return True
+
+    def _body_boolean_operation_changed(self, operation: str) -> None:
+        controller = self._body_boolean_controller
+        if controller is None:
+            return
+        controller.set_operation(operation)
+        self._body_boolean_preview_result = None
+        self._body_boolean_preview_generation += 1
+        self.boolean_feature_panel.set_preview_valid(False)
+        if controller.ready:
+            self._refresh_body_boolean_preview()
+
+    def _refresh_body_boolean_preview(self) -> None:
+        controller = self._body_boolean_controller
+        if controller is None or not controller.ready:
+            return
+        if self.document.session_revision != controller.base_session_revision:
+            self.boolean_feature_panel.finish_button.setEnabled(False)
+            self.boolean_feature_panel.show_status(
+                "项目已变化；请取消后重新打开实体布尔"
+            )
+            return
+        if self.busy:
+            self.boolean_feature_panel.show_status(
+                "当前有后台任务正在运行，请稍后重试"
+            )
+            return
+        self._body_boolean_preview_generation += 1
+        generation = self._body_boolean_preview_generation
+        target_body_id = controller.target_body_id
+        tool_body_id = controller.tool_body_id
+        operation = controller.operation
+        base_revision = controller.base_session_revision
+        source_geometry = controller.geometry
+        self._body_boolean_preview_result = None
+        self.boolean_feature_panel.set_preview_valid(False)
+        self.boolean_feature_panel.set_preview_running(True)
+        self.boolean_feature_panel.show_status(
+            "正在执行临时 OCC Boolean 与 lineage proof…"
+        )
+
+        def workload(context: TaskContext) -> StrictBodyBooleanResult:
+            context.report("正在执行临时 OCC Boolean 与 lineage proof…")
+            context.checkpoint()
+            with geometry_runtime.model(
+                f"{source_geometry.name}-{operation}-preview",
+                dimension=3,
+            ) as cad:
+                result = prepare_solid_body_boolean(
+                    cad,
+                    source_geometry,
+                    target_body_id,
+                    tool_body_id,
+                    operation,
+                )
+            context.checkpoint()
+            return result
+
+        def apply_result(payload: object) -> TaskApplyOutcome:
+            current = self._body_boolean_controller
+            if (
+                type(payload) is not StrictBodyBooleanResult
+                or current is not controller
+                or generation != self._body_boolean_preview_generation
+                or self.document.session_revision != base_revision
+                or current.target_body_id != target_body_id
+                or current.tool_body_id != tool_body_id
+                or current.operation != operation
+            ):
+                if current is controller:
+                    self.boolean_feature_panel.set_preview_running(False)
+                    self.boolean_feature_panel.set_preview_valid(False)
+                return TaskApplyOutcome.stale(
+                    "实体布尔 Preview 已过期，未应用"
+                )
+            return TaskApplyOutcome.accepted(payload)
+
+        def on_success(payload: object) -> None:
+            if type(payload) is not StrictBodyBooleanResult:
+                raise TypeError("strict Body Boolean task returned invalid data")
+            preview = build_strict_body_boolean_preview(
+                payload.geometry,
+                payload.preview,
+            )
+            self._body_boolean_preview_result = payload
+            self.viewport.clear_body_boolean_highlights(render=False)
+            self.viewport.show_geometry_preview(preview)
+            self.boolean_feature_panel.set_preview_running(False)
+            self.boolean_feature_panel.set_preview_valid(True)
+            self.boolean_feature_panel.show_status(
+                "Preview 与 lineage proof 已通过，可以完成"
+            )
+
+        def on_failure(message: str) -> None:
+            if (
+                self._body_boolean_controller is controller
+                and generation == self._body_boolean_preview_generation
+            ):
+                self.boolean_feature_panel.set_preview_running(False)
+                self.boolean_feature_panel.set_preview_valid(False)
+                self.boolean_feature_panel.show_status(
+                    "OCC Boolean 或 lineage proof 失败；"
+                    f"committed Bodies 未变化：\n{message}"
+                )
+                self._body_boolean_preview_result = None
+
+        started = self._start_task(
+            workload,
+            on_success,
+            "实体布尔 Preview",
+            on_failure,
+            task_name="实体布尔 Preview",
+            on_cancelled=lambda: (
+                self.boolean_feature_panel.set_preview_running(False)
+                if self._body_boolean_controller is controller
+                else None
+            ),
+            apply_result=apply_result,
+        )
+        if not started:
+            self.boolean_feature_panel.set_preview_running(False)
+
+    def finish_body_boolean(self) -> None:
+        controller = self._body_boolean_controller
+        if controller is None or not controller.ready:
+            return
+        if self._body_boolean_preview_result is None:
+            self._refresh_body_boolean_preview()
+        result = self._body_boolean_preview_result
+        if result is None:
+            return
+        geometry = getattr(result, "geometry", None)
+        if not isinstance(geometry, MultiBodyGeometry):
+            raise RuntimeError("strict Body Boolean preview returned invalid geometry")
+        preview = build_strict_body_boolean_preview(
+            geometry,
+            result.preview,
+        )
+        self._geometry_preview_cache = (
+            self.document.session_id,
+            geometry,
+            preview,
+        )
+        target_id = controller.target_body_id
+        label = "合并后的" if controller.operation == "fuse" else "切除后的"
+        if not self._set_native_geometry(
+            geometry,
+            label,
+            base_session_revision=controller.base_session_revision,
+        ):
+            self._geometry_preview_cache = None
+            self.boolean_feature_panel.show_status(
+                "提交失败；committed Bodies 保持不变"
+            )
+            return
+        self._exit_body_boolean()
+        self.viewport.show_geometry_preview(preview)
+        target_reference = LogicalEntityRef(f"body:{target_id}")
+        self._selected_geometry_refs = {target_reference}
+        self.viewport.highlight_geometry_entities((target_reference,))
+        self._update_action_states()
+
+    def cancel_body_boolean(self) -> None:
+        if self._body_boolean_controller is None:
+            return
+        self._body_boolean_preview_generation += 1
+        self._exit_body_boolean()
+        if self.task_controller.current_task_name == "实体布尔 Preview":
+            if self.cancel_current_task(
+                after_cleanup=self._rebuild_full_projection,
+            ):
+                return
+        self._rebuild_full_projection()
+        self.status_panel.set_state("已取消实体布尔；Bodies 保持不变", 4000)
+
+    def _exit_body_boolean(self) -> None:
+        self.viewport.clear_body_boolean_highlights(render=False)
+        self.boolean_feature_panel.end()
+        self._body_boolean_controller = None
+        self._body_boolean_preview_result = None
+        self.main_splitter.setSizes([260, 1020, 0, 0, 0])
+
+    @classmethod
+    def _recipe_contains_strict_boolean(cls, recipe: object) -> bool:
+        if isinstance(recipe, BooleanGeometry):
+            return (
+                recipe.body_context is not None
+                and recipe.body_context.proven
+            ) or cls._recipe_contains_strict_boolean(
+                recipe.object_geometry
+            ) or cls._recipe_contains_strict_boolean(recipe.tool_geometry)
+        if isinstance(recipe, (MovedGeometry, RotatedGeometry, ExtrudedGeometry)):
+            return cls._recipe_contains_strict_boolean(recipe.base)
+        return False
+
+    def _schedule_exact_boolean_preview(
+        self,
+        snapshot: object,
+        recipe: MultiBodyGeometry,
+    ) -> None:
+        key = (
+            str(getattr(snapshot, "session_id")),
+            int(getattr(snapshot, "project_revision")),
+        )
+        if self._pending_exact_boolean_preview_key == key:
+            return
+        self._pending_exact_boolean_preview_key = key
+
+        def launch() -> None:
+            if (
+                self.document.session_id != key[0]
+                or self.document.project_revision != key[1]
+                or self.document.geometry_recipe != recipe
+            ):
+                if self._pending_exact_boolean_preview_key == key:
+                    self._pending_exact_boolean_preview_key = None
+                return
+
+            strict_bodies = tuple(
+                body
+                for body in recipe.bodies
+                if self._recipe_contains_strict_boolean(body.recipe)
+            )
+
+            def workload(
+                context: TaskContext,
+            ) -> tuple[StrictBodyBooleanPreview, ...]:
+                previews: list[StrictBodyBooleanPreview] = []
+                for body in strict_bodies:
+                    context.report(
+                        f"正在重建 {body.name} [{body.id}] 的 OCC Preview…"
+                    )
+                    with geometry_runtime.model(
+                        f"{recipe.name}-{body.id}-persisted-preview",
+                        dimension=3,
+                    ) as cad:
+                        previews.append(
+                            prepare_strict_body_recipe_preview(
+                                cad,
+                                body.id,
+                                body.recipe,
+                            )
+                        )
+                    context.checkpoint()
+                return tuple(previews)
+
+            def apply_result(payload: object) -> TaskApplyOutcome:
+                if (
+                    self.document.session_id != key[0]
+                    or self.document.project_revision != key[1]
+                    or self.document.geometry_recipe != recipe
+                    or not isinstance(payload, tuple)
+                    or any(
+                        type(item) is not StrictBodyBooleanPreview
+                        for item in payload
+                    )
+                ):
+                    if self._pending_exact_boolean_preview_key == key:
+                        self._pending_exact_boolean_preview_key = None
+                    return TaskApplyOutcome.stale(
+                        "Boolean OCC Preview 重建结果已过期"
+                    )
+                preview = build_strict_body_boolean_previews(
+                    recipe,
+                    payload,
+                )
+                return TaskApplyOutcome.accepted(preview)
+
+            def on_success(payload: object) -> None:
+                if type(payload) is not GeometryPreview:
+                    raise TypeError(
+                        "persisted Boolean preview task returned invalid data"
+                    )
+                self._pending_exact_boolean_preview_key = None
+                self._geometry_preview_cache = (
+                    key[0],
+                    recipe,
+                    payload,
+                )
+                if (
+                    self.document.session_id == key[0]
+                    and self.document.geometry_recipe == recipe
+                    and self.document.artifact is None
+                ):
+                    self.viewport.show_geometry_preview(payload)
+                    self.status_panel.set_state(
+                        "Boolean OCC Preview 已重建，可选择生成拓扑",
+                        4000,
+                    )
+
+            def cleanup_failure(message: str | None = None) -> None:
+                if self._pending_exact_boolean_preview_key == key:
+                    self._pending_exact_boolean_preview_key = None
+                if message:
+                    self.status_panel.set_state(
+                        f"Boolean OCC Preview 重建失败：{message}",
+                        6000,
+                    )
+
+            started = self._start_task(
+                workload,
+                on_success,
+                "Boolean OCC Preview",
+                cleanup_failure,
+                task_name="Boolean OCC Preview 重建",
+                on_cancelled=cleanup_failure,
+                apply_result=apply_result,
+            )
+            if not started:
+                cleanup_failure()
+
+        QTimer.singleShot(0, launch)
 
     @staticmethod
     def _root_geometry(recipe: object) -> object:
@@ -3343,6 +4128,29 @@ class FEMMainWindow(QMainWindow):
         current = self.document.geometry_recipe
         if not isinstance(current, NATIVE_GEOMETRY_TYPES):
             return
+        if isinstance(current, MultiBodyGeometry):
+            body_id = self._selected_body_id(current)
+            if body_id is None:
+                self.status_panel.set_state(
+                    "请在 model tree 或 viewport 中选择一个 Body",
+                    5000,
+                )
+                return
+            body = current.body(body_id)
+            name, accepted = QInputDialog.getText(
+                self,
+                "Body Manager",
+                f"重命名 {body.name} [{body.id}]：",
+                text=body.name,
+            )
+            if accepted:
+                try:
+                    updated = rename_solid_body(current, body.id, name)
+                except (TypeError, ValueError) as error:
+                    self._show_error("Body Manager", str(error))
+                    return
+                self._set_native_geometry(updated, "重命名后的")
+            return
         if isinstance(current, SketchGeometry):
             self._begin_sketch_editor(current, original_recipe=current)
             return
@@ -3376,14 +4184,80 @@ class FEMMainWindow(QMainWindow):
 
     def undo_geometry_feature(self) -> None:
         current = self.document.geometry_recipe
-        if isinstance(current, (MovedGeometry, RotatedGeometry, ExtrudedGeometry)):
+        if isinstance(current, MultiBodyGeometry):
+            body_id = self._selected_body_id(current)
+            if body_id is None:
+                self.status_panel.set_state("请先选择一个 Body", 5000)
+                return
+            try:
+                updated = undo_solid_body_feature(current, body_id)
+            except ValueError as error:
+                self.status_panel.set_state(str(error), 5000)
+                return
+            self._set_native_geometry(updated, "撤销后的")
+        elif isinstance(current, (MovedGeometry, RotatedGeometry, ExtrudedGeometry)):
             self._set_native_geometry(current.base, "撤销后的")
         elif isinstance(current, BooleanGeometry):
             self._set_native_geometry(current.object_geometry, "撤销后的")
 
     def delete_geometry(self) -> None:
-        if not isinstance(self.document.geometry_recipe, NATIVE_GEOMETRY_TYPES):
+        current = self.document.geometry_recipe
+        if not isinstance(current, NATIVE_GEOMETRY_TYPES):
             return
+        if isinstance(current, MultiBodyGeometry):
+            body_id = self._selected_body_id(current)
+            if body_id is None:
+                self.status_panel.set_state("请先选择要删除的 Body", 5000)
+                return
+            body = current.body(body_id)
+            prefix = f"{body_id}/"
+            impacted_regions = tuple(
+                region.name
+                for region in self.document.named_regions.values()
+                if any(
+                    type(reference) is LogicalEntityRef
+                    and (
+                        reference.logical_id == f"body:{body_id}"
+                        or reference.logical_id.split(":", 1)[1].startswith(
+                            prefix
+                        )
+                    )
+                    for reference in region.references
+                )
+            )
+            impacted_controls = tuple(
+                control
+                for control in getattr(
+                    self.document.mesh_settings,
+                    "local_controls",
+                    (),
+                )
+                if (
+                    control.target.logical_id == f"body:{body_id}"
+                    or control.target.logical_id.split(":", 1)[1].startswith(
+                        prefix
+                    )
+                )
+            )
+            impact = (
+                f"\n将移除 {len(impacted_regions)} 个命名区域、"
+                f"{len(impacted_controls)} 个局部网格控制。"
+                if impacted_regions or impacted_controls
+                else "\n当前没有直接引用此 Body 的命名区域或局部网格控制。"
+            )
+            answer = QMessageBox.question(
+                self,
+                "删除 Body",
+                f"确认删除 {body.name} [{body.id}]？{impact}",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            updated = delete_solid_body(current, body_id)
+            if updated is not None:
+                self._set_native_geometry(updated, "删除 Body 后的")
+                return
         receipt = self.apply_native_geometry_edit(
             NativeGeometryEdit(
                 base_session_revision=self.document.session_revision,
@@ -3405,14 +4279,35 @@ class FEMMainWindow(QMainWindow):
         label: str,
         *,
         base_session_revision: int | None = None,
-    ) -> None:
+    ) -> bool:
         if not isinstance(recipe, NATIVE_GEOMETRY_TYPES):
             raise TypeError(f"不支持的几何定义：{type(recipe).__name__}")
+        if (
+            geometry_dimension(recipe) == 3
+            and not isinstance(recipe, MultiBodyGeometry)
+        ):
+            recipe = materialize_multi_body(
+                recipe,
+                first_body_name=(
+                    self.document.parts[0].body_name
+                    if self.document.parts
+                    else "Body-1"
+                ),
+                retired_body_ids=self.session.retired_body_ids,
+                retired_boolean_feature_ids=(
+                    self.session.retired_boolean_feature_ids
+                ),
+            )
+        if (
+            self._geometry_preview_cache is not None
+            and self._geometry_preview_cache[1] != recipe
+        ):
+            self._geometry_preview_cache = None
         if self.document.source_kind != "native":
             new_receipt = self.new_native_project(NewNativeProjectCommand())
             if new_receipt.diagnostic is not None:
                 self._show_command_rejection("新建项目", new_receipt)
-                return
+                return False
         prior_region_count = len(self.document.named_regions)
         receipt = self.apply_native_geometry_edit(
             NativeGeometryEdit(
@@ -3428,12 +4323,14 @@ class FEMMainWindow(QMainWindow):
         )
         if receipt.diagnostic is not None:
             self._show_command_rejection("编辑几何", receipt)
-            return
+            return False
         delta = receipt.delta
         if delta is None:
             raise RuntimeError("geometry command did not return a Session delta")
         self._pending_local_mesh_selection = False
         self._pending_analysis_selection = None
+        self._pending_scope_kind = None
+        self._pending_analysis_edit = None
         self._selected_geometry_refs.clear()
         self._selected_mesh_scope_refs.clear()
         self._geometry_selection_mode = "body"
@@ -3465,6 +4362,7 @@ class FEMMainWindow(QMainWindow):
         if TransitionEffect.REFERENCES_PRESERVED in delta.effects:
             message += "；逻辑拓扑未变化，已有拓扑引用已保留"
         self.status_panel.set_state(message, 6000)
+        return True
 
     def create_named_geometry_region(self) -> None:
         if self.document.model is None:
@@ -3744,10 +4642,20 @@ class FEMMainWindow(QMainWindow):
         self,
         operation: str,
         scope_kind: str | None = None,
+        *,
+        resume_edit: (
+            tuple[
+                tuple[str, int, int | None],
+                str,
+                tuple[AnalysisStep, ...],
+            ]
+            | None
+        ) = None,
     ) -> None:
         if self.document.model is None:
             return
         self._pending_analysis_selection = operation
+        self._pending_analysis_edit = resume_edit
         topology = self._scope_selection_topology()
         dimension = topology.preview.topological_dimension
         domain_kind = {
@@ -3780,6 +4688,7 @@ class FEMMainWindow(QMainWindow):
                 f"当前网格不支持 {default_kind} 作用域",
             )
             self._pending_analysis_selection = None
+            self._pending_analysis_edit = None
             return
         self._pending_scope_kind = default_kind
         self.viewport_panel.set_geometry_context(False)
@@ -3847,17 +4756,48 @@ class FEMMainWindow(QMainWindow):
         if name is None:
             return
         operation = self._pending_analysis_selection
+        resumed_edit = self._pending_analysis_edit
+        selected_scope_kind = (
+            resumed_edit[1] if resumed_edit is not None else None
+        )
         self._pending_analysis_selection = None
         self._pending_scope_kind = None
+        self._pending_analysis_edit = None
         if self._scope_selection_overlay_active:
             self.viewport.hide_geometry_selection_overlay()
             self._scope_selection_overlay_active = False
         bar.finish()
-        callback = {
-            "boundary": self.create_displacement_boundary,
-            "load": self.create_load,
-            "section": self.assign_section_to_region,
-        }.get(operation)
+        callback = None
+        if resumed_edit is not None:
+            definition_key, _requested_kind, edit_steps = resumed_edit
+            region_kind = {
+                "node": "node_set",
+                "edge": "edge",
+                "surface": "surface",
+                "line": "element_set",
+                "body": "element_set",
+            }.get(str(selected_scope_kind))
+            if region_kind is None:
+                raise RuntimeError(
+                    "unsupported analysis edit scope kind: "
+                    f"{selected_scope_kind}"
+                )
+            selected_region = RegionRef(region_kind, name)
+
+            def resume_definition_edit() -> None:
+                self._edit_analysis_definition_key(
+                    definition_key,
+                    selected_region=selected_region,
+                    steps=edit_steps,
+                )
+
+            callback = resume_definition_edit
+        else:
+            callback = {
+                "boundary": self.create_displacement_boundary,
+                "load": self.create_load,
+                "section": self.assign_section_to_region,
+            }.get(operation)
         if callback is not None:
             QTimer.singleShot(0, callback)
         elif operation != "scope":
@@ -4223,14 +5163,22 @@ class FEMMainWindow(QMainWindow):
         if receipt.diagnostic is not None:
             self._show_command_rejection("打开自主项目失败", receipt)
             return
-        if not self.import_notices:
-            self.status_panel.set_state(
-                "自主项目已打开，请生成网格并检查模型",
-                6000,
-            )
+        completion = receipt.completion
+        if completion is not None:
+            def project_opened(record: TaskCompletion) -> None:
+                if (
+                    record.state is BackgroundTaskState.SUCCEEDED
+                    and not self.import_notices
+                ):
+                    self.status_panel.set_state(
+                        "自主项目已打开，请生成网格并检查模型",
+                        6000,
+                    )
+
+            completion.observe(project_opened)
         self.ribbon.set_current("几何")
 
-    def save_native_project(self) -> bool:
+    def save_native_project(self, *, wait: bool = False) -> bool:
         if not self.document.can_save:
             return False
         path = self.document.project_path
@@ -4247,14 +5195,32 @@ class FEMMainWindow(QMainWindow):
         if receipt.diagnostic is not None:
             self._show_command_rejection("保存自主项目失败", receipt)
             return False
-        if self.document.dirty:
-            self.status_panel.set_state(
-                "已保存发起操作时的项目快照；当前修改仍未保存",
-                6000,
-            )
+        completion = receipt.completion
+        if completion is None:
             return False
-        self.status_panel.set_state(f"自主项目已保存：{path.name}", 5000)
-        return True
+
+        def project_saved(record: TaskCompletion) -> None:
+            if record.state is not BackgroundTaskState.SUCCEEDED:
+                return
+            if self.document.dirty:
+                self.status_panel.set_state(
+                    "已保存发起操作时的项目快照；当前修改仍未保存",
+                    6000,
+                )
+            else:
+                self.status_panel.set_state(
+                    f"自主项目已保存：{path.name}",
+                    5000,
+                )
+
+        completion.observe(project_saved)
+        if not wait:
+            return True
+        terminal = completion.result()
+        return (
+            terminal.state is BackgroundTaskState.SUCCEEDED
+            and not self.document.dirty
+        )
 
     def reload_model(self) -> None:
         if (
@@ -4595,7 +5561,7 @@ class FEMMainWindow(QMainWindow):
         box.exec()
         clicked = box.clickedButton()
         if clicked is save_button:
-            accepted = self.save_native_project()
+            accepted = self.save_native_project(wait=True)
         else:
             accepted = clicked is discard_button
         if accepted and wire_editor_active:
@@ -5375,9 +6341,16 @@ class FEMMainWindow(QMainWindow):
 
     def _analysis_manager_dialog(
         self,
+        steps: Sequence[AnalysisStep] | None = None,
     ) -> AnalysisDefinitionManagerDialog | None:
-        if not self.document.steps:
+        source_steps = (
+            list(self.document.steps)
+            if steps is None
+            else list(steps)
+        )
+        if not source_steps:
             return None
+        model = self.document.model
         (
             node_regions,
             edge_regions,
@@ -5386,6 +6359,22 @@ class FEMMainWindow(QMainWindow):
             body_regions,
         ) = (
             self._supported_load_regions()
+        )
+        scope_topology = (
+            self._scope_selection_topology()
+            if model is not None
+            else None
+        )
+        available_scope_kinds = (
+            {
+                "node",
+                *(
+                    reference.kind
+                    for reference in scope_topology.mesh_references
+                ),
+            }
+            if scope_topology is not None
+            else set()
         )
         authoring = describe_session_authoring(self.document)
         capability_report = self._model_capability_report()
@@ -5396,7 +6385,7 @@ class FEMMainWindow(QMainWindow):
             else 3
         )
         return AnalysisDefinitionManagerDialog(
-            self.document.steps,
+            source_steps,
             node_regions,
             edge_regions,
             face_regions,
@@ -5422,6 +6411,31 @@ class FEMMainWindow(QMainWindow):
                 else ()
             ),
             candidate_evaluator=self._evaluate_line_load_candidate,
+            boundary_scope_selection_kinds=tuple(
+                kind
+                for kind, mesh_kind in (
+                    ("node", "node"),
+                    ("edge", "edge"),
+                    ("surface", "face"),
+                )
+                if mesh_kind in available_scope_kinds
+            ),
+            load_scope_selection_kinds=(
+                tuple(
+                    kind
+                    for kind in (
+                        "node",
+                        "edge",
+                        "surface",
+                        "line",
+                        "body",
+                    )
+                    if capability_report is not None
+                    and kind in capability_report.load_kinds
+                )
+                if model is not None
+                else ()
+            ),
             output_view_capability=authoring.operation(
                 "output_request.view"
             ),
@@ -5473,6 +6487,7 @@ class FEMMainWindow(QMainWindow):
         if dialog is None:
             return
         if not self._exec_dialog(dialog):
+            self._begin_analysis_definition_scope_selection(dialog)
             return
         values = dialog.values()
         current = tuple(self.document.steps)
@@ -5518,12 +6533,79 @@ class FEMMainWindow(QMainWindow):
                 int(step_index),
                 int(item_index),
             )
-        dialog = self._analysis_manager_dialog()
-        if dialog is None or not dialog.edit_definition(definition_key):
+        self._edit_analysis_definition_key(definition_key)
+
+    def _edit_analysis_definition_key(
+        self,
+        definition_key: tuple[str, int, int | None],
+        *,
+        selected_region: RegionRef | None = None,
+        steps: Sequence[AnalysisStep] | None = None,
+    ) -> None:
+        """Edit one manager definition and resume guided scope creation."""
+
+        dialog = self._analysis_manager_dialog(steps)
+        if dialog is None:
+            return
+        if not dialog.edit_definition(
+            definition_key,
+            selected_region=selected_region,
+        ):
+            self._begin_analysis_definition_scope_selection(dialog)
             return
         self._analysis_definitions_changed(
             "分析步、边界、载荷或输出请求已修改，模型需要重新检查",
             dialog.values(),
+        )
+
+    def _begin_analysis_definition_scope_selection(
+        self,
+        dialog: AnalysisDefinitionManagerDialog,
+    ) -> bool:
+        request = dialog.requested_scope_selection()
+        if request is None:
+            return False
+        requested_kind, definition_key = request
+        operation = (
+            "boundary"
+            if definition_key[0] == "boundary"
+            else "load"
+        )
+        self._request_analysis_geometry_selection(
+            operation,
+            requested_kind,
+            resume_edit=(
+                definition_key,
+                requested_kind,
+                tuple(dialog.values()),
+            ),
+        )
+        return self._pending_analysis_selection is not None
+
+    def delete_analysis_definition(self, kind: str, key: object) -> None:
+        """Delete one supported definition selected in the model tree."""
+        if kind != "boundary":
+            return
+        if not isinstance(key, (tuple, list)) or len(key) != 2:
+            return
+        try:
+            step_index, boundary_index = (int(value) for value in key)
+        except (TypeError, ValueError):
+            return
+        definitions = list(deepcopy(self.document.steps))
+        if not 0 <= step_index < len(definitions):
+            return
+        step = definitions[step_index]
+        boundaries = tuple(step.boundaries)
+        if not 0 <= boundary_index < len(boundaries):
+            return
+        step.boundaries = (
+            boundaries[:boundary_index]
+            + boundaries[boundary_index + 1:]
+        )
+        self._analysis_definitions_changed(
+            "边界条件已删除，模型需要重新检查",
+            definitions,
         )
 
     def show_current_step_information(self) -> EntityInfoDialog | None:
@@ -6309,6 +7391,22 @@ class FEMMainWindow(QMainWindow):
             )
         )
 
+    def _selected_body_id(self, recipe: object) -> str | None:
+        if not isinstance(recipe, MultiBodyGeometry):
+            return None
+        selected = self._canonical_geometry_selection()
+        if len(selected) != 1 or selected[0].kind != "body":
+            return None
+        logical_id = selected[0].logical_id
+        if logical_id == "body:domain":
+            return None
+        body_id = logical_id.split(":", 1)[1]
+        try:
+            recipe.body(body_id)
+        except KeyError:
+            return None
+        return body_id
+
     def _geometry_selection_kind(self) -> str | None:
         kinds = {
             reference.kind
@@ -6418,6 +7516,7 @@ class FEMMainWindow(QMainWindow):
         self._pending_local_mesh_selection = False
         self._pending_analysis_selection = None
         self._pending_scope_kind = None
+        self._pending_analysis_edit = None
         self.viewport_panel.scope_creation_bar.finish()
         if self._scope_selection_overlay_active:
             self.viewport.hide_geometry_selection_overlay()
@@ -6463,6 +7562,8 @@ class FEMMainWindow(QMainWindow):
             raise TypeError(
                 "geometryEntityPicked 必须携带 LogicalEntityRef"
             )
+        if self._assign_body_boolean_reference(reference):
+            return
         additive = self._geometry_pick_is_additive()
         if (
             self._geometry_selection_kind() != reference.kind
@@ -6671,6 +7772,7 @@ class FEMMainWindow(QMainWindow):
         self._pending_local_mesh_selection = False
         self._pending_analysis_selection = None
         self._pending_scope_kind = None
+        self._pending_analysis_edit = None
         self.viewport_panel.scope_creation_bar.finish()
         if self._scope_selection_overlay_active:
             self.viewport.hide_geometry_selection_overlay()
@@ -6692,6 +7794,18 @@ class FEMMainWindow(QMainWindow):
         return ", ".join(f"{axis}={float(value):.6g}" for axis, value in zip("xyz", point))
 
     def _highlight_tree_entry(self, kind: str, key: object) -> None:
+        if kind == "geometry_body" and type(key) is str:
+            reference = LogicalEntityRef(key)
+            if self._assign_body_boolean_reference(reference):
+                return
+            self._selected_geometry_refs = {reference}
+            self._geometry_selection_mode = "body"
+            self.actions["geometry_select_body"].setChecked(True)
+            self.viewport.set_selection_mode("geometry_body")
+            self.viewport.highlight_geometry_entities((reference,))
+            self.status_panel.set_object(f"Body {key}")
+            self._update_action_states()
+            return
         if self.inspection_service is None:
             return
         self.highlight_entity(kind, key)
@@ -6735,14 +7849,7 @@ class FEMMainWindow(QMainWindow):
             raise TypeError("provider must be exactly ResultProvider")
         if type(selection) is not ScalarFieldSelection:
             raise TypeError("selection must be a ScalarFieldSelection")
-        matches = tuple(
-            availability
-            for availability in provider.catalog().fields
-            if availability.key == selection.field_key
-        )
-        if len(matches) != 1:
-            raise KeyError("selection is outside the current result catalog")
-        availability = matches[0]
+        availability = provider.field_status(selection.field_key)
         if selection.component not in availability.descriptor.columns:
             raise ValueError(
                 "selection component is outside the field descriptor"
@@ -6848,6 +7955,217 @@ class FEMMainWindow(QMainWindow):
         )
         return build_result_render_payload(topology)
 
+    def _result_averaging_visual_selection(
+        self,
+        provider: ResultProvider,
+        selection: ScalarFieldSelection,
+    ) -> ScalarFieldSelection:
+        request = selection.field_key.request
+        field_id = request.field_id
+        if (
+            field_id.variable is not ResultVariable.S
+            or field_id.position is not FieldPosition.RESOLVED_NODAL
+        ):
+            return selection
+        visual_request = FieldRequest(
+            field_id=field_id,
+            averaging_policy=NodalAveragingPolicy(
+                threshold_percent=float(
+                    self._contour_options["averaging_threshold"]
+                )
+            ),
+            gauss_order=request.gauss_order,
+        )
+        return ScalarFieldSelection(
+            provider.resolve_request(visual_request),
+            selection.component,
+        )
+
+    def _result_visualization_provider(
+        self,
+        provider: ResultProvider,
+        selection: ScalarFieldSelection,
+    ) -> tuple[ResultProvider, ScalarFieldSelection]:
+        visual_selection = self._result_averaging_visual_selection(
+            provider,
+            selection,
+        )
+        if visual_selection == selection:
+            return provider, selection
+        if (
+            provider.field_status(visual_selection.field_key).state
+            is FieldState.READY
+        ):
+            return provider, visual_selection
+        cached = self._result_visualization_materialization
+        if (
+            cached is None
+            or cached[0] != provider.source
+            or cached[1] != provider.snapshot.generation
+            or cached[2] != visual_selection.field_key
+        ):
+            return provider, selection
+        record = self.session.current_result()
+        if (
+            record is None
+            or record.materialization.source != provider.source
+        ):
+            return provider, selection
+        return (
+            restore_result_provider(record.result, cached[3]),
+            visual_selection,
+        )
+
+    def _apply_result_averaging_threshold(self) -> None:
+        self._sync_result_averaging_threshold_control()
+        provider = self._current_result_provider()
+        selection = self.result_selection
+        if (
+            provider is None
+            or type(selection) is not ScalarFieldSelection
+        ):
+            return
+        visual_selection = self._result_averaging_visual_selection(
+            provider,
+            selection,
+        )
+        render_provider, render_selection = (
+            self._result_visualization_provider(provider, selection)
+        )
+        if (
+            visual_selection == selection
+            or render_selection == visual_selection
+        ):
+            self._apply_display()
+            return
+        if self.busy:
+            self.status_panel.set_state(
+                "结果任务正在运行，节点平均阈值将在任务完成后应用",
+                4000,
+            )
+            return
+        self._begin_result_averaging_visualization(
+            provider,
+            selection,
+            visual_selection,
+        )
+
+    def _begin_result_averaging_visualization(
+        self,
+        provider: ResultProvider,
+        selection: ScalarFieldSelection,
+        visual_selection: ScalarFieldSelection,
+    ) -> None:
+        task = None
+        try:
+            task = self.session.prepare_result_projection(
+                provider.source.run_id
+            )
+            if (
+                task.record.materialization.source != provider.source
+                or task.record.materialization.generation
+                != provider.snapshot.generation
+            ):
+                raise RuntimeError(
+                    "result changed before averaging visualization started"
+                )
+
+            def workload(
+                context: TaskContext,
+            ) -> ResultMaterializationPatch:
+                context.report("正在计算节点平均应力云图……")
+                detached_provider = restore_result_provider(
+                    task.record.result,
+                    task.record.materialization,
+                )
+                return detached_provider.materialize(
+                    (visual_selection.field_key,),
+                    cancellation=context,
+                )
+
+            def apply_result(value: object) -> TaskApplyOutcome:
+                if type(value) is not ResultMaterializationPatch:
+                    raise TypeError(
+                        "averaging visualization must return "
+                        "ResultMaterializationPatch"
+                    )
+                return self._session_task_outcome(
+                    self.session.accept_result_projection(task.token),
+                    value,
+                )
+
+            def succeeded(value: object) -> None:
+                delta, patch = value
+                if not self._apply_revision_neutral_task_receipt(delta):
+                    raise RuntimeError(
+                        "averaging visualization receipt was not accepted"
+                    )
+                visual_snapshot = advance_materialization(
+                    task.record.materialization,
+                    patch,
+                )
+                if not any(
+                    field_data.key == visual_selection.field_key
+                    for field_data in visual_snapshot.fields
+                ):
+                    raise RuntimeError(
+                        "averaging visualization field was not materialized"
+                    )
+                current = self._current_result_provider()
+                current_selection = self.result_selection
+                if (
+                    current is None
+                    or current.source != provider.source
+                    or current.snapshot.generation
+                    != provider.snapshot.generation
+                    or current_selection != selection
+                    or self._result_averaging_visual_selection(
+                        current,
+                        current_selection,
+                    )
+                    != visual_selection
+                ):
+                    return
+                self._result_visualization_materialization = (
+                    provider.source,
+                    provider.snapshot.generation,
+                    visual_selection.field_key,
+                    visual_snapshot,
+                )
+                self._apply_display()
+                self.status_panel.set_state(
+                    "节点平均应力云图已更新",
+                    4000,
+                )
+
+            started = self._start_task(
+                workload,
+                succeeded,
+                "节点平均应力云图计算失败",
+                lambda message: self._session_task_failed(
+                    task.token,
+                    "节点平均应力云图计算失败",
+                    message,
+                ),
+                task_name="节点平均应力云图",
+                on_cancelled=lambda: self._session_task_cancelled(
+                    task.token
+                ),
+                apply_result=apply_result,
+            )
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            if task is not None:
+                failure = self.session.accept_task_failed(
+                    task.token,
+                    error,
+                )
+                self._apply_revision_neutral_task_receipt(failure)
+            self._show_error("节点平均应力云图计算失败", str(error))
+            return
+        if not started:
+            cancelled = self.session.accept_task_cancelled(task.token)
+            self._apply_revision_neutral_task_receipt(cancelled)
+
     def _install_ready_result_selection(
         self,
         provider: ResultProvider,
@@ -6855,9 +8173,12 @@ class FEMMainWindow(QMainWindow):
     ) -> None:
         if provider is not self._current_result_provider():
             raise RuntimeError("provider is no longer current")
+        render_provider, render_selection = (
+            self._result_visualization_provider(provider, selection)
+        )
         payload = self._build_result_render_payload(
-            provider,
-            selection,
+            render_provider,
+            render_selection,
         )
         if not self.result_tree.has_selection(selection):
             raise RuntimeError(
@@ -6876,6 +8197,18 @@ class FEMMainWindow(QMainWindow):
         self._refresh_result_controls()
         self.status_panel.set_result(self._result_status_text())
         self._update_action_states()
+        visual_selection = self._result_averaging_visual_selection(
+            provider,
+            selection,
+        )
+        if (
+            visual_selection != selection
+            and render_selection != visual_selection
+        ):
+            QTimer.singleShot(
+                0,
+                self._apply_result_averaging_threshold,
+            )
 
     def _install_viewport_result_payload(
         self,
@@ -7050,9 +8383,12 @@ class FEMMainWindow(QMainWindow):
             or type(selection) is not ScalarFieldSelection
         ):
             return
+        render_provider, render_selection = (
+            self._result_visualization_provider(provider, selection)
+        )
         payload = self._build_result_render_payload(
-            provider,
-            selection,
+            render_provider,
+            render_selection,
         )
         show_edges = (
             bool(self._contour_options["edges"])
@@ -7188,9 +8524,15 @@ class FEMMainWindow(QMainWindow):
                 )
             return
         try:
+            render_provider, render_selection = (
+                self._result_visualization_provider(
+                    provider,
+                    settings.selection,
+                )
+            )
             payload = self._build_result_render_payload(
-                provider,
-                settings.selection,
+                render_provider,
+                render_selection,
                 shape_mode=settings.shape_mode,
                 scale_mode=settings.scale_mode,
                 scale_value=settings.scale_value,
@@ -7259,6 +8601,18 @@ class FEMMainWindow(QMainWindow):
         self._refresh_result_controls()
         self.status_panel.set_result(self._result_status_text())
         self._update_action_states()
+        visual_selection = self._result_averaging_visual_selection(
+            provider,
+            settings.selection,
+        )
+        if (
+            visual_selection != settings.selection
+            and render_selection != visual_selection
+        ):
+            QTimer.singleShot(
+                0,
+                self._apply_result_averaging_threshold,
+            )
 
     def _finish_typed_result_display_materialization(
         self,
@@ -7289,12 +8643,23 @@ class FEMMainWindow(QMainWindow):
         self._exec_dialog(dialog)
 
     def _set_contour_options(self, options: dict[str, Any]) -> None:
+        previous_threshold = float(
+            self._contour_options["averaging_threshold"]
+        )
         self._contour_options.update(options)
+        threshold = float(
+            self._contour_options["averaging_threshold"]
+        )
+        self.result_averaging_threshold.blockSignals(True)
+        self.result_averaging_threshold.setValue(threshold)
+        self.result_averaging_threshold.blockSignals(False)
         if self._display.contour_enabled:
             show_edges = bool(self._contour_options["edges"])
             self.actions["edges"].setChecked(show_edges)
             self.viewport.set_edges_visible(show_edges, render=False)
         self.viewport.set_contour_options(self._contour_options)
+        if threshold != previous_threshold:
+            self._apply_result_averaging_threshold()
 
     def show_symbol_settings_dialog(self) -> None:
         if self.document.model is None:
@@ -7610,6 +8975,10 @@ class FEMMainWindow(QMainWindow):
             self.edit_analysis_definition(kind, key)
         else:
             self.show_entity_information(kind, key)
+
+    def _delete_tree_entry(self, kind: str, key: object) -> None:
+        if kind == "boundary":
+            self.delete_analysis_definition(kind, key)
 
     def show_entity_information(self, kind: str, key: object) -> EntityInfoDialog | None:
         if self.inspection_service is None:

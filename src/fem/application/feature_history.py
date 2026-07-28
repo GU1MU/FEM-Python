@@ -11,6 +11,7 @@ from fem.geometry.recipes import (
     DiskGeometry,
     ExtrudedGeometry,
     MovedGeometry,
+    MultiBodyGeometry,
     NATIVE_GEOMETRY_TYPES,
     NativeGeometry,
     PlateWithHoleGeometry,
@@ -32,6 +33,20 @@ def derive_feature_history(recipe: NativeGeometry) -> tuple[FeatureRecord, ...]:
     """Return the canonical shallow feature projection for one recipe chain."""
 
     _require_native_recipe(recipe)
+    if isinstance(recipe, MultiBodyGeometry):
+        return tuple(
+            FeatureRecord(
+                f"{body.id}/{record.name}",
+                record.kind,
+                {
+                    **record.payload,
+                    "body_id": body.id,
+                    "body_name": body.name,
+                },
+            )
+            for body in recipe.bodies
+            for record in derive_feature_history(body.recipe)
+        )
     records: list[FeatureRecord] = []
     counters: dict[str, int] = {}
 
@@ -80,6 +95,12 @@ def derive_geometry_feature_rows(
     """Return the pure user-facing summaries used by feature history."""
 
     _require_native_recipe(recipe)
+    if isinstance(recipe, MultiBodyGeometry):
+        return tuple(
+            f"{body.name} [{body.id}]  {row}"
+            for body in recipe.bodies
+            for row in derive_geometry_feature_rows(body.recipe)
+        )
     if isinstance(recipe, SketchGeometry):
         if recipe.is_strict:
             analysis = analyze_sketch_profiles(recipe)

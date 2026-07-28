@@ -58,6 +58,9 @@ def _native_scope_selection_topology(
         for logical_id in (
             *preview.edge_logical_ids,
             *preview.face_logical_ids,
+            *preview.face_body_logical_ids,
+            *preview.edge_body_logical_ids,
+            *preview.point_body_logical_ids,
             preview.body_logical_id,
         )
         if logical_id is not None

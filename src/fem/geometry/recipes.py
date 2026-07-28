@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from numbers import Real
+import re
 from typing import Literal
 
 from .references import LogicalEntityRef, logical_ref_sort_key
@@ -827,6 +828,199 @@ PRIMITIVE_GEOMETRY_TYPES = (
 BASE_GEOMETRY_TYPES = (*PRIMITIVE_GEOMETRY_TYPES, SketchGeometry, WireGeometry)
 
 
+_BODY_ID_PATTERN = re.compile(r"B([1-9][0-9]*)\Z")
+
+
+def _normalize_body_id(value: object, field_name: str = "body id") -> str:
+    if type(value) is not str:
+        raise TypeError(f"{field_name} must be a string")
+    if value != value.strip() or _BODY_ID_PATTERN.fullmatch(value) is None:
+        raise ValueError(f"{field_name} must use B1, B2, B3, ...")
+    return value
+
+
+def _normalize_body_name(value: object, field_name: str = "body name") -> str:
+    if type(value) is not str:
+        raise TypeError(f"{field_name} must be a string")
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{field_name} must not be empty")
+    return normalized
+
+
+@dataclass(frozen=True, slots=True)
+class BooleanLineageEntity:
+    """One persisted logical entity proven by a strict solid Boolean."""
+
+    kind: Literal["point", "edge", "face", "body"]
+    logical_id: str
+    semantic_role: str
+    topology_links: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        reference = LogicalEntityRef(self.logical_id)
+        if reference.kind != self.kind:
+            raise ValueError("Boolean lineage kind must match logical_id")
+        if type(self.semantic_role) is not str or not self.semantic_role.strip():
+            raise ValueError("Boolean lineage semantic_role must not be empty")
+        links = tuple(self.topology_links)
+        for link in links:
+            LogicalEntityRef(link)
+        object.__setattr__(self, "topology_links", tuple(sorted(set(links))))
+
+
+@dataclass(frozen=True, slots=True)
+class BooleanLineageMapping:
+    """Persisted source-to-result mapping for a strict solid Boolean."""
+
+    source: Literal["target", "tool"]
+    source_logical_id: str
+    target_logical_id: str
+    relation: Literal["preserved", "derived"]
+
+    def __post_init__(self) -> None:
+        if self.source not in {"target", "tool"}:
+            raise ValueError("Boolean lineage source must be target or tool")
+        if self.relation not in {"preserved", "derived"}:
+            raise ValueError(
+                "Boolean lineage relation must be preserved or derived"
+            )
+        source = LogicalEntityRef(self.source_logical_id)
+        target = LogicalEntityRef(self.target_logical_id)
+        if self.relation == "preserved" and (
+            self.source_logical_id != self.target_logical_id
+        ):
+            raise ValueError("preserved Boolean lineage must keep its logical ID")
+        dimensions = {"point": 0, "edge": 1, "face": 2, "body": 3}
+        descent = dimensions[source.kind] - dimensions[target.kind]
+        if descent not in {0, 1}:
+            raise ValueError(
+                "Boolean lineage may preserve dimension or derive one "
+                "lower-dimensional intersection"
+            )
+        if descent == 1 and "/intersection/" not in target.logical_id:
+            raise ValueError(
+                "cross-dimensional Boolean lineage is only valid for "
+                "generated intersections"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class BooleanBodyContext:
+    """Stable target/tool intent and optional proven Boolean lineage."""
+
+    feature_id: str
+    target_body_id: str
+    tool_body_id: str
+    tool_body_name: str
+    result_entities: tuple[BooleanLineageEntity, ...] = ()
+    topology_mappings: tuple[BooleanLineageMapping, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.feature_id) is not str:
+            raise TypeError("feature_id must be a string")
+        feature_id = self.feature_id.strip()
+        if not feature_id or not re.fullmatch(r"BF[1-9][0-9]*", feature_id):
+            raise ValueError("feature_id must use BF1, BF2, BF3, ...")
+        target_id = _normalize_body_id(
+            self.target_body_id,
+            "target_body_id",
+        )
+        tool_id = _normalize_body_id(self.tool_body_id, "tool_body_id")
+        if target_id == tool_id:
+            raise ValueError("target_body_id and tool_body_id must differ")
+        entities = tuple(self.result_entities)
+        mappings = tuple(self.topology_mappings)
+        if any(type(item) is not BooleanLineageEntity for item in entities):
+            raise TypeError(
+                "result_entities must contain BooleanLineageEntity values"
+            )
+        if any(type(item) is not BooleanLineageMapping for item in mappings):
+            raise TypeError(
+                "topology_mappings must contain BooleanLineageMapping values"
+            )
+        logical_ids = tuple(item.logical_id for item in entities)
+        if len(logical_ids) != len(set(logical_ids)):
+            raise ValueError("Boolean lineage contains duplicate logical IDs")
+        entity_ids = set(logical_ids)
+        if any(item.target_logical_id not in entity_ids for item in mappings):
+            raise ValueError("Boolean lineage mapping targets an unknown entity")
+        if bool(entities) != bool(mappings):
+            raise ValueError(
+                "Boolean lineage entities and mappings must be present together"
+            )
+        if entities:
+            body_ids = tuple(
+                item.logical_id for item in entities if item.kind == "body"
+            )
+            if body_ids != ("body:domain",):
+                raise ValueError(
+                    "proven Boolean lineage must contain exactly body:domain"
+                )
+            if not any(item.kind == "face" for item in entities):
+                raise ValueError(
+                    "proven Boolean lineage must contain boundary faces"
+                )
+            mapped_ids = {item.target_logical_id for item in mappings}
+            if mapped_ids != entity_ids:
+                raise ValueError(
+                    "proven Boolean lineage must map every result entity"
+                )
+            if {item.source for item in mappings} != {"target", "tool"}:
+                raise ValueError(
+                    "proven Boolean lineage must contain target and tool "
+                    "source evidence"
+                )
+            if any(
+                link not in entity_ids
+                for item in entities
+                for link in item.topology_links
+            ):
+                raise ValueError(
+                    "Boolean lineage topology link targets an unknown entity"
+                )
+        object.__setattr__(self, "feature_id", feature_id)
+        object.__setattr__(self, "target_body_id", target_id)
+        object.__setattr__(self, "tool_body_id", tool_id)
+        object.__setattr__(
+            self,
+            "tool_body_name",
+            _normalize_body_name(self.tool_body_name, "tool_body_name"),
+        )
+        object.__setattr__(
+            self,
+            "result_entities",
+            tuple(sorted(entities, key=lambda item: logical_ref_sort_key(
+                LogicalEntityRef(item.logical_id)
+            ))),
+        )
+        object.__setattr__(
+            self,
+            "topology_mappings",
+            tuple(
+                sorted(
+                    mappings,
+                    key=lambda item: (
+                        item.source,
+                        logical_ref_sort_key(
+                            LogicalEntityRef(item.source_logical_id)
+                        ),
+                        logical_ref_sort_key(
+                            LogicalEntityRef(item.target_logical_id)
+                        ),
+                        item.relation,
+                    ),
+                )
+            ),
+        )
+
+    @property
+    def proven(self) -> bool:
+        """Return whether the context carries complete persisted proof."""
+
+        return bool(self.result_entities)
+
+
 @dataclass(frozen=True, slots=True)
 class MovedGeometry:
     """A geometry feature translated in global coordinates."""
@@ -963,6 +1157,7 @@ class BooleanGeometry:
     operation: Literal["fuse", "cut", "fragment"]
     object_geometry: object
     tool_geometry: object
+    body_context: BooleanBodyContext | None = None
 
     def __post_init__(self) -> None:
         normalized_name = str(self.name).strip()
@@ -987,7 +1182,143 @@ class BooleanGeometry:
             raise ValueError("布尔操作不支持一维线框几何")
         if object_dimension != tool_dimension:
             raise ValueError("布尔操作的主体和工具体维度必须一致")
+        if self.body_context is not None:
+            if type(self.body_context) is not BooleanBodyContext:
+                raise TypeError(
+                    "body_context must be BooleanBodyContext or None"
+                )
+            if self.operation not in {"fuse", "cut"}:
+                raise ValueError("strict Body Boolean only supports fuse or cut")
+            if object_dimension != 3:
+                raise ValueError("strict Body Boolean requires 3D operands")
         object.__setattr__(self, "name", normalized_name)
+
+
+@dataclass(frozen=True, slots=True)
+class SolidBody:
+    """One stable independently managed solid inside a native part."""
+
+    id: str
+    name: str
+    recipe: object
+
+    def __post_init__(self) -> None:
+        body_id = _normalize_body_id(self.id)
+        body_name = _normalize_body_name(self.name)
+        if not _is_single_solid_recipe(self.recipe):
+            raise ValueError(
+                "SolidBody.recipe must be an exact single-solid 3D recipe"
+            )
+        object.__setattr__(self, "id", body_id)
+        object.__setattr__(self, "name", body_name)
+
+
+@dataclass(frozen=True, slots=True)
+class MultiBodyGeometry:
+    """Top-level ownership container for independent solid Bodies."""
+
+    name: str
+    bodies: tuple[SolidBody, ...]
+    retired_body_ids: tuple[str, ...] = ()
+    retired_boolean_feature_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        name = _normalize_body_name(self.name, "MultiBodyGeometry.name")
+        if isinstance(self.bodies, (str, bytes, bytearray)):
+            raise TypeError("bodies must be an iterable of SolidBody values")
+        try:
+            bodies = tuple(self.bodies)
+        except TypeError as error:
+            raise TypeError(
+                "bodies must be an iterable of SolidBody values"
+            ) from error
+        if not bodies:
+            raise ValueError("MultiBodyGeometry requires at least one Body")
+        if any(type(body) is not SolidBody for body in bodies):
+            raise TypeError("bodies must contain only SolidBody values")
+        ids = tuple(body.id for body in bodies)
+        names = tuple(body.name for body in bodies)
+        if len(ids) != len(set(ids)):
+            raise ValueError("Body IDs must be unique")
+        if len(names) != len(set(names)):
+            raise ValueError("Body names must be unique")
+        retired_body_ids = tuple(
+            sorted(
+                {
+                    _normalize_body_id(value, "retired body id")
+                    for value in self.retired_body_ids
+                },
+                key=lambda value: int(value[1:]),
+            )
+        )
+        if set(ids) & set(retired_body_ids):
+            raise ValueError("active and retired Body IDs must be disjoint")
+        retired_feature_ids: list[str] = []
+        for value in self.retired_boolean_feature_ids:
+            if (
+                type(value) is not str
+                or value != value.strip()
+                or re.fullmatch(r"BF[1-9][0-9]*", value) is None
+            ):
+                raise ValueError(
+                    "retired Boolean feature IDs must use BF1, BF2, BF3, ..."
+                )
+            retired_feature_ids.append(value)
+        object.__setattr__(self, "name", name)
+        object.__setattr__(
+            self,
+            "bodies",
+            tuple(sorted(bodies, key=lambda body: int(body.id[1:]))),
+        )
+        object.__setattr__(
+            self,
+            "retired_body_ids",
+            retired_body_ids,
+        )
+        object.__setattr__(
+            self,
+            "retired_boolean_feature_ids",
+            tuple(
+                sorted(
+                    set(retired_feature_ids),
+                    key=lambda value: int(value[2:]),
+                )
+            ),
+        )
+
+    def body(self, body_id: str) -> SolidBody:
+        """Return one Body by stable ID."""
+
+        normalized = _normalize_body_id(body_id)
+        for body in self.bodies:
+            if body.id == normalized:
+                return body
+        raise KeyError(normalized)
+
+
+def _is_single_solid_recipe(recipe: object) -> bool:
+    if isinstance(recipe, (BoxGeometry, CylinderGeometry)):
+        return True
+    if isinstance(recipe, (MovedGeometry, RotatedGeometry)):
+        return _is_single_solid_recipe(recipe.base)
+    if isinstance(recipe, ExtrudedGeometry):
+        from .extrusion_selection import resolve_extrusion_source_faces
+
+        return len(
+            resolve_extrusion_source_faces(
+                recipe.base,
+                recipe.source_face_ids,
+            ).face_ids
+        ) == 1
+    if isinstance(recipe, BooleanGeometry):
+        if recipe.body_context is not None:
+            return recipe.body_context.proven
+        return (
+            recipe.operation in {"fuse", "cut"}
+            and _is_single_solid_recipe(recipe.object_geometry)
+            and _is_single_solid_recipe(recipe.tool_geometry)
+        )
+    return False
 
 
 NativeGeometry = (
@@ -998,6 +1329,7 @@ NativeGeometry = (
     | RotatedGeometry
     | ExtrudedGeometry
     | BooleanGeometry
+    | MultiBodyGeometry
 )
 NATIVE_GEOMETRY_TYPES = (
     *PRIMITIVE_GEOMETRY_TYPES,
@@ -1007,6 +1339,7 @@ NATIVE_GEOMETRY_TYPES = (
     RotatedGeometry,
     ExtrudedGeometry,
     BooleanGeometry,
+    MultiBodyGeometry,
 )
 
 
@@ -1014,6 +1347,8 @@ def geometry_dimension(recipe: NativeGeometry) -> Literal[1, 2, 3]:
     """Return the topological dimension of a native geometry recipe."""
     if isinstance(recipe, BooleanGeometry):
         return geometry_dimension(recipe.object_geometry)
+    if isinstance(recipe, MultiBodyGeometry):
+        return 3
     if isinstance(recipe, ExtrudedGeometry):
         return 3
     if isinstance(recipe, (MovedGeometry, RotatedGeometry)):
@@ -1025,12 +1360,16 @@ def geometry_dimension(recipe: NativeGeometry) -> Literal[1, 2, 3]:
 
 __all__ = [
     "BASE_GEOMETRY_TYPES",
+    "BooleanBodyContext",
     "BooleanGeometry",
+    "BooleanLineageEntity",
+    "BooleanLineageMapping",
     "BoxGeometry",
     "CylinderGeometry",
     "DiskGeometry",
     "ExtrudedGeometry",
     "MovedGeometry",
+    "MultiBodyGeometry",
     "NATIVE_GEOMETRY_TYPES",
     "NativeGeometry",
     "PRIMITIVE_GEOMETRY_TYPES",
@@ -1049,6 +1388,7 @@ __all__ = [
     "SketchPlane",
     "SketchPoint",
     "SketchRectangle",
+    "SolidBody",
     "WireGeometry",
     "WireMember",
     "WirePoint",
