@@ -29,8 +29,10 @@ from fem.geometry.measurements import (
     TargetRadiusResolutionError,
     resolve_legacy_hole_target,
 )
+from fem.geometry.recipe_analysis import legacy_sketch_to_strict
 from fem.geometry.recipe_topology import describe_recipe_topology
 from fem.geometry.references import LogicalEntityRef
+from fem.geometry.recipes import SketchGeometry
 from fem.mesh.settings import (
     LocalMeshControl,
     MeshSettings,
@@ -142,20 +144,27 @@ def migrate_project_v1(
     else:
         parts = legacy.parts
 
+    source_geometry = legacy.geometry_recipe
+    geometry_recipe = (
+        legacy_sketch_to_strict(source_geometry)
+        if type(source_geometry) is SketchGeometry and source_geometry.is_legacy
+        else source_geometry
+    )
+
     named_regions = tuple(
         _migrate_named_region(
-            legacy.geometry_recipe,
+            source_geometry,
             region,
             index=index,
         )
         for index, region in enumerate(legacy.named_regions)
     )
     mesh_settings, mesh_notices = _migrate_mesh_settings(
-        legacy.geometry_recipe,
+        source_geometry,
         legacy.mesh_settings,
     )
 
-    canonical_history = derive_feature_history(legacy.geometry_recipe)
+    canonical_history = derive_feature_history(geometry_recipe)
     notices: list[ProjectMigrationNotice] = [
         ProjectMigrationNotice(
             code="project.schema.v1",
@@ -166,6 +175,17 @@ def migrate_project_v1(
             path="$.schema",
         )
     ]
+    if geometry_recipe is not source_geometry:
+        notices.append(
+            ProjectMigrationNotice(
+                code="project.v1.sketch_curve_graph",
+                message=(
+                    "legacy SketchGeometry contours 已迁移为严格 point/curve graph；"
+                    "Profile 材料/孔关系由 loop containment 重新推导"
+                ),
+                path="$.geometry",
+            )
+        )
     notices.extend(mesh_notices)
     if (
         legacy.feature_history_present
@@ -190,7 +210,7 @@ def migrate_project_v1(
             legacy.analysis_definitions,
         )
         _validate_current_native_authoring(
-            legacy.geometry_recipe,
+            geometry_recipe,
             mesh_settings,
             named_regions,
             definitions.materials,
@@ -202,7 +222,7 @@ def migrate_project_v1(
             source_kind="native",
             source_path=legacy.source_path,
             parts=parts,
-            geometry_recipe=legacy.geometry_recipe,
+            geometry_recipe=geometry_recipe,
             mesh_settings=mesh_settings,
             feature_history=canonical_history,
             named_regions=named_regions,

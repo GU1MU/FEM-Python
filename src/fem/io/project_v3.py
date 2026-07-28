@@ -22,13 +22,14 @@ from fem.application.project_validation import (
     validate_native_project_inputs,
 )
 from fem.application.session import ProjectSaveSnapshot, ProjectSnapshot
+from fem.geometry.recipe_analysis import legacy_sketch_to_strict
 from fem.geometry.recipe_topology import (
     TOPOLOGY_REFERENCE_CONTRACT,
     TopologyFingerprint,
     TopologyFingerprintEntity,
     topology_fingerprint_for_recipe,
 )
-from fem.geometry.recipes import NATIVE_GEOMETRY_TYPES
+from fem.geometry.recipes import NATIVE_GEOMETRY_TYPES, SketchGeometry
 from fem.geometry.references import LogicalEntityRef, logical_ref_sort_key
 from fem.mesh.settings import MeshSettings
 
@@ -355,11 +356,18 @@ def encode_project_v3(
             raise ProjectV3EncodeError("snapshot.geometry_recipe 不能为空")
         if not isinstance(geometry, NATIVE_GEOMETRY_TYPES):
             raise ProjectV3EncodeError("snapshot.geometry_recipe 不是 native geometry")
+        source_geometry = geometry
+        if type(geometry) is SketchGeometry and geometry.is_legacy:
+            geometry = legacy_sketch_to_strict(geometry)
         parts = tuple(project.parts)
         if len(parts) != 1:
             raise ProjectV3EncodeError("v3 native 项目必须且只能包含一个 part")
         expected_history = derive_feature_history(geometry)
-        if tuple(project.feature_history) != tuple(expected_history):
+        source_history = derive_feature_history(source_geometry)
+        if (
+            tuple(project.feature_history) != tuple(expected_history)
+            and tuple(project.feature_history) != tuple(source_history)
+        ):
             raise ProjectV3EncodeError(
                 "snapshot.feature_history 不是 geometry recipe 的 canonical 派生投影"
             )

@@ -19,6 +19,7 @@ from fem.geometry.recipes import (
     SketchGeometry,
     WireGeometry,
 )
+from fem.geometry.recipe_analysis import analyze_sketch_profiles
 
 from .definitions import FeatureRecord
 
@@ -76,6 +77,16 @@ def derive_geometry_feature_rows(
 
     _require_native_recipe(recipe)
     if isinstance(recipe, SketchGeometry):
+        if recipe.is_strict:
+            analysis = analyze_sketch_profiles(recipe)
+            material_count = sum(
+                profile.is_material for profile in analysis.profiles
+            )
+            hole_count = sum(profile.is_hole for profile in analysis.profiles)
+            return (
+                f"草图  点={len(recipe.points)}，曲线={len(recipe.curves)}，"
+                f"Profile={material_count}，孔={hole_count}",
+            )
         material_count = sum(
             contour.operation == "material" for contour in recipe.contours
         )

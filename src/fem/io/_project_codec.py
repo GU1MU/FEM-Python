@@ -39,13 +39,18 @@ from fem.geometry.recipes import (
     PlateWithHoleGeometry,
     RectangleGeometry,
     RotatedGeometry,
+    SketchArc,
     SketchCircle,
     SketchGeometry,
+    SketchLine,
+    SketchPlane,
+    SketchPoint,
     SketchRectangle,
     WireGeometry,
     WireMember,
     WirePoint,
 )
+from fem.geometry.recipe_analysis import legacy_sketch_to_strict
 
 from ._project_errors import (
     ProjectDecodeError,
@@ -364,38 +369,85 @@ def decode_geometry_field(
             members,
         )
     if kind == "SketchGeometry":
+        if "contours" in data:
+            _field_keys(
+                data,
+                path,
+                required={"type", "name", "contours"},
+                optional=set(),
+                policy=policy,
+                error_type=policy.decode_error,
+            )
+            contours = tuple(
+                decode_contour_field(
+                    item,
+                    f"{path}.contours[{index}]",
+                    policy=policy,
+                )
+                for index, item in enumerate(
+                    _field_array(
+                        data["contours"],
+                        f"{path}.contours",
+                        policy.decode_error,
+                    )
+                )
+            )
+            return _field_construct(
+                SketchGeometry,
+                path,
+                policy,
+                _field_string(
+                    data["name"],
+                    f"{path}.name",
+                    policy.decode_error,
+                ),
+                contours,
+            )
+        if policy.version_label != "v3":
+            raise policy.decode_error(
+                f"{path} 的 curve-based sketch 只能由 v3 解码"
+            )
         _field_keys(
             data,
             path,
-            required={"type", "name", "contours"},
+            required={"type", "name", "plane", "points", "curves"},
             optional=set(),
             policy=policy,
             error_type=policy.decode_error,
         )
-        contours = tuple(
-            decode_contour_field(
+        plane = _decode_sketch_plane_field(
+            data["plane"],
+            f"{path}.plane",
+            policy=policy,
+        )
+        points = tuple(
+            _decode_sketch_point_field(
                 item,
-                f"{path}.contours[{index}]",
+                f"{path}.points[{index}]",
                 policy=policy,
             )
             for index, item in enumerate(
-                _field_array(
-                    data["contours"],
-                    f"{path}.contours",
-                    policy.decode_error,
-                )
+                _field_array(data["points"], f"{path}.points", policy.decode_error)
+            )
+        )
+        curves = tuple(
+            _decode_sketch_curve_field(
+                item,
+                f"{path}.curves[{index}]",
+                policy=policy,
+            )
+            for index, item in enumerate(
+                _field_array(data["curves"], f"{path}.curves", policy.decode_error)
             )
         )
         return _field_construct(
             SketchGeometry,
             path,
             policy,
-            _field_string(
-                data["name"],
-                f"{path}.name",
-                policy.decode_error,
-            ),
-            contours,
+            _field_string(data["name"], f"{path}.name", policy.decode_error),
+            plane,
+            points,
+            curves,
         )
     if kind == "MovedGeometry":
         required = {"type", "base", "dx", "dy"}
@@ -624,6 +676,168 @@ def decode_contour_field(
     raise policy.decode_error(f"{path}.type 是未知草图轮廓：{kind!r}")
 
 
+def _decode_sketch_plane_field(
+    value: Any,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> SketchPlane:
+    data = _field_mapping(value, path, policy.decode_error)
+    _field_keys(
+        data,
+        path,
+        required={"origin", "x_direction", "y_direction"},
+        optional=set(),
+        policy=policy,
+        error_type=policy.decode_error,
+    )
+    return _field_construct(
+        SketchPlane,
+        path,
+        policy,
+        _field_decode_number_array(data["origin"], f"{path}.origin", policy),
+        _field_decode_number_array(
+            data["x_direction"],
+            f"{path}.x_direction",
+            policy,
+        ),
+        _field_decode_number_array(
+            data["y_direction"],
+            f"{path}.y_direction",
+            policy,
+        ),
+    )
+
+
+def _decode_sketch_point_field(
+    value: Any,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> SketchPoint:
+    data = _field_mapping(value, path, policy.decode_error)
+    _field_keys(
+        data,
+        path,
+        required={"id", "u", "v"},
+        optional=set(),
+        policy=policy,
+        error_type=policy.decode_error,
+    )
+    return _field_construct(
+        SketchPoint,
+        path,
+        policy,
+        _field_string(data["id"], f"{path}.id", policy.decode_error),
+        _field_number(data["u"], f"{path}.u", policy.decode_error, policy=policy),
+        _field_number(data["v"], f"{path}.v", policy.decode_error, policy=policy),
+    )
+
+
+def _decode_sketch_curve_field(
+    value: Any,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> SketchLine | SketchArc | SketchCircle:
+    data = _field_mapping(value, path, policy.decode_error)
+    kind = _field_string(data.get("type"), f"{path}.type", policy.decode_error)
+    if kind == "line":
+        _field_keys(
+            data,
+            path,
+            required={"type", "id", "start_point_id", "end_point_id"},
+            optional=set(),
+            policy=policy,
+            error_type=policy.decode_error,
+        )
+        return _field_construct(
+            SketchLine,
+            path,
+            policy,
+            _field_string(data["id"], f"{path}.id", policy.decode_error),
+            _field_string(
+                data["start_point_id"],
+                f"{path}.start_point_id",
+                policy.decode_error,
+            ),
+            _field_string(
+                data["end_point_id"],
+                f"{path}.end_point_id",
+                policy.decode_error,
+            ),
+        )
+    if kind == "arc":
+        _field_keys(
+            data,
+            path,
+            required={
+                "type",
+                "id",
+                "start_point_id",
+                "center_point_id",
+                "end_point_id",
+                "orientation",
+            },
+            optional=set(),
+            policy=policy,
+            error_type=policy.decode_error,
+        )
+        return _field_construct(
+            SketchArc,
+            path,
+            policy,
+            _field_string(data["id"], f"{path}.id", policy.decode_error),
+            _field_string(
+                data["start_point_id"],
+                f"{path}.start_point_id",
+                policy.decode_error,
+            ),
+            _field_string(
+                data["center_point_id"],
+                f"{path}.center_point_id",
+                policy.decode_error,
+            ),
+            _field_string(
+                data["end_point_id"],
+                f"{path}.end_point_id",
+                policy.decode_error,
+            ),
+            _field_string(
+                data["orientation"],
+                f"{path}.orientation",
+                policy.decode_error,
+            ),
+        )
+    if kind == "circle":
+        _field_keys(
+            data,
+            path,
+            required={"type", "id", "center_point_id", "radius"},
+            optional=set(),
+            policy=policy,
+            error_type=policy.decode_error,
+        )
+        return _field_construct(
+            SketchCircle,
+            path,
+            policy,
+            _field_string(data["id"], f"{path}.id", policy.decode_error),
+            _field_string(
+                data["center_point_id"],
+                f"{path}.center_point_id",
+                policy.decode_error,
+            ),
+            _field_number(
+                data["radius"],
+                f"{path}.radius",
+                policy.decode_error,
+                policy=policy,
+            ),
+        )
+    raise policy.decode_error(f"{path}.type 不支持草图曲线：{kind!r}")
+
+
 def _decode_wire_point_field(
     value: Any,
     path: str,
@@ -811,32 +1025,63 @@ def encode_geometry_field(
                 ],
             }
         if type(recipe) is SketchGeometry:
-            _field_exact_dataclass(
-                recipe,
-                SketchGeometry,
-                {"name", "contours"},
-                path,
-                policy,
-            )
+            name = _field_string(recipe.name, f"{path}.name", policy.encode_error)
+            if recipe.is_legacy:
+                if policy.version_label == "v3":
+                    # v3 is the first schema that can represent the strict
+                    # curve graph.  Upgrade compatibility contours at the
+                    # encoding boundary so a newly written project never
+                    # perpetuates the legacy shape.
+                    recipe = legacy_sketch_to_strict(recipe)
+                else:
+                    return {
+                        "type": "SketchGeometry",
+                        "name": name,
+                        "contours": [
+                            encode_contour_field(
+                                item,
+                                f"{path}.contours[{index}]",
+                                policy=policy,
+                            )
+                            for index, item in enumerate(
+                                _field_runtime_sequence(
+                                    recipe.contours,
+                                    f"{path}.contours",
+                                    policy,
+                                )
+                            )
+                        ],
+                    }
+            if policy.version_label != "v3":
+                raise policy.encode_error(
+                    f"{path} 的 curve-based sketch 只能由 v3 编码"
+                )
             return {
                 "type": "SketchGeometry",
-                "name": _field_string(
-                    recipe.name,
-                    f"{path}.name",
-                    policy.encode_error,
+                "name": name,
+                "plane": _encode_sketch_plane_field(
+                    recipe.plane,
+                    f"{path}.plane",
+                    policy=policy,
                 ),
-                "contours": [
-                    encode_contour_field(
+                "points": [
+                    _encode_sketch_point_field(
                         item,
-                        f"{path}.contours[{index}]",
+                        f"{path}.points[{index}]",
                         policy=policy,
                     )
                     for index, item in enumerate(
-                        _field_runtime_sequence(
-                            recipe.contours,
-                            f"{path}.contours",
-                            policy,
-                        )
+                        _field_runtime_sequence(recipe.points, f"{path}.points", policy)
+                    )
+                ],
+                "curves": [
+                    _encode_sketch_curve_field(
+                        item,
+                        f"{path}.curves[{index}]",
+                        policy=policy,
+                    )
+                    for index, item in enumerate(
+                        _field_runtime_sequence(recipe.curves, f"{path}.curves", policy)
                     )
                 ],
             }
@@ -972,6 +1217,109 @@ def encode_geometry_field(
         ancestors.remove(identity)
 
 
+def _encode_sketch_plane_field(
+    plane: SketchPlane | None,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> dict[str, Any]:
+    if type(plane) is not SketchPlane:
+        raise policy.encode_error(f"{path} 必须是 SketchPlane")
+    return {
+        "origin": _field_encode_number_array(plane.origin, f"{path}.origin", policy),
+        "x_direction": _field_encode_number_array(
+            plane.x_direction,
+            f"{path}.x_direction",
+            policy,
+        ),
+        "y_direction": _field_encode_number_array(
+            plane.y_direction,
+            f"{path}.y_direction",
+            policy,
+        ),
+    }
+
+
+def _encode_sketch_point_field(
+    point: Any,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> dict[str, Any]:
+    if type(point) is not SketchPoint:
+        raise policy.encode_error(f"{path} 必须是 SketchPoint")
+    return {
+        "id": _field_string(point.id, f"{path}.id", policy.encode_error),
+        "u": _field_number(point.u, f"{path}.u", policy.encode_error, policy=policy),
+        "v": _field_number(point.v, f"{path}.v", policy.encode_error, policy=policy),
+    }
+
+
+def _encode_sketch_curve_field(
+    curve: Any,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> dict[str, Any]:
+    if type(curve) is SketchLine:
+        return {
+            "type": "line",
+            "id": _field_string(curve.id, f"{path}.id", policy.encode_error),
+            "start_point_id": _field_string(
+                curve.start_point_id,
+                f"{path}.start_point_id",
+                policy.encode_error,
+            ),
+            "end_point_id": _field_string(
+                curve.end_point_id,
+                f"{path}.end_point_id",
+                policy.encode_error,
+            ),
+        }
+    if type(curve) is SketchArc:
+        return {
+            "type": "arc",
+            "id": _field_string(curve.id, f"{path}.id", policy.encode_error),
+            "start_point_id": _field_string(
+                curve.start_point_id,
+                f"{path}.start_point_id",
+                policy.encode_error,
+            ),
+            "center_point_id": _field_string(
+                curve.center_point_id,
+                f"{path}.center_point_id",
+                policy.encode_error,
+            ),
+            "end_point_id": _field_string(
+                curve.end_point_id,
+                f"{path}.end_point_id",
+                policy.encode_error,
+            ),
+            "orientation": _field_string(
+                curve.orientation,
+                f"{path}.orientation",
+                policy.encode_error,
+            ),
+        }
+    if type(curve) is SketchCircle and curve.is_curve:
+        return {
+            "type": "circle",
+            "id": _field_string(curve.id, f"{path}.id", policy.encode_error),
+            "center_point_id": _field_string(
+                curve.center_point_id,
+                f"{path}.center_point_id",
+                policy.encode_error,
+            ),
+            "radius": _field_number(
+                curve.radius,
+                f"{path}.radius",
+                policy.encode_error,
+                policy=policy,
+            ),
+        }
+    raise policy.encode_error(f"{path} 不是可编码的严格草图曲线")
+
+
 def encode_contour_field(
     contour: Any,
     path: str,
@@ -1019,13 +1367,10 @@ def encode_contour_field(
             ),
         }
     if type(contour) is SketchCircle:
-        _field_exact_dataclass(
-            contour,
-            SketchCircle,
-            {"operation", "x", "y", "radius"},
-            path,
-            policy,
-        )
+        if not contour.is_legacy:
+            raise policy.encode_error(
+                f"{path} 的严格 circle curve 不能作为旧 contour 编码"
+            )
         return {
             "type": "circle",
             "operation": _field_string(

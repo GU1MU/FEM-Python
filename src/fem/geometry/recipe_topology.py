@@ -14,9 +14,11 @@ placeholder and a diagnostic instead of guessing an entity ordering.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Literal
 
 from .recipe_analysis import (
+    analyze_sketch_profiles,
     axis_aligned_rectangle,
     expand_sketch_recipe,
     transformed_circle,
@@ -38,7 +40,10 @@ from .recipes import (
     PlateWithHoleGeometry,
     RectangleGeometry,
     RotatedGeometry,
+    SketchArc,
+    SketchCircle,
     SketchGeometry,
+    SketchLine,
     WireGeometry,
     geometry_dimension,
 )
@@ -655,7 +660,9 @@ def _wire_topology(recipe: WireGeometry) -> RecipeTopology:
 
 
 def _sketch_topology(recipe: SketchGeometry) -> RecipeTopology:
-    """Resolve the proven single-domain sketch whitelist exactly."""
+    """Resolve strict curve graphs or the frozen legacy contour contract."""
+    if recipe.is_strict:
+        return _strict_sketch_topology(recipe)
     expanded = expand_sketch_recipe(recipe)
     if len(recipe.contours) == 1:
         if axis_aligned_rectangle(expanded) is not None:
@@ -709,6 +716,239 @@ def _sketch_topology(recipe: SketchGeometry) -> RecipeTopology:
         ),
         operation="sketch.composite",
     )
+
+
+def _strict_sketch_topology(recipe: SketchGeometry) -> RecipeTopology:
+    analysis = analyze_sketch_profiles(recipe)
+    if analysis.blocking_diagnostics or not analysis.profiles:
+        first = next(
+            iter(analysis.blocking_diagnostics),
+        ) if analysis.blocking_diagnostics else None
+        return _unknown_topology(
+            recipe,
+            code="sketch.profile-invalid" if first is None else first.code,
+            message=(
+                "严格草图 Profile 无法证明为可提交的平面拓扑"
+                if first is None
+                else first.message
+            ),
+            operation="sketch.curve-graph",
+        )
+    entities: list[LogicalEntity] = []
+    for point in recipe.points:
+        entities.append(
+            _logical_entity(
+                "point",
+                point.id,
+                "sketch.point",
+                topology_links=tuple(
+                    f"edge:{curve.id}"
+                    for curve in recipe.curves
+                    if point.id in _strict_curve_point_ids(curve)
+                ),
+            )
+        )
+    for curve in recipe.curves:
+        links = tuple(
+            sorted(
+                f"point:{point_id}"
+                for point_id in _strict_curve_point_ids(curve)
+                if point_id != getattr(curve, "center_point_id", None)
+            )
+        )
+        entities.append(
+            _logical_entity(
+                "edge",
+                curve.id,
+                "sketch.curve",
+                topology_links=links,
+            )
+        )
+    material_profiles = tuple(profile for profile in analysis.profiles if profile.is_material)
+    hole_profiles = tuple(profile for profile in analysis.profiles if profile.is_hole)
+    existing_curve_ids = {curve.id.casefold() for curve in recipe.curves}
+    if len(material_profiles) == 1 and "outer-loop" not in existing_curve_ids:
+        profile = material_profiles[0]
+        entities.append(
+            _logical_entity(
+                "edge",
+                "outer-loop",
+                "boundary.outer-loop",
+                topology_links=tuple(
+                    f"edge:{curve_id.lstrip('-')}" for curve_id in profile.curve_ids
+                ),
+            )
+        )
+    if len(hole_profiles) == 1 and "hole-loop" not in existing_curve_ids:
+        profile = hole_profiles[0]
+        entities.append(
+            _logical_entity(
+                "edge",
+                "hole-loop",
+                "boundary.hole-loop",
+                topology_links=tuple(
+                    f"edge:{curve_id.lstrip('-')}" for curve_id in profile.curve_ids
+                ),
+            )
+        )
+    for profile in material_profiles:
+        members = tuple(
+            f"edge:{curve_id.lstrip('-')}" for curve_id in profile.curve_ids
+        )
+        entities.append(
+            _logical_entity(
+                "face",
+                f"profile/{profile.id.split('/', 1)[-1]}",
+                "sketch.profile",
+                topology_links=members,
+            )
+        )
+    # Keep deterministic aliases for the v1/v2 primitive contour contract.
+    # They let an explicitly migrated rectangle retain named-region and mesh
+    # intent while the strict graph exposes its stable point/curve/profile IDs.
+    entity_ids = {entity.logical_id for entity in entities}
+
+    def add_compatibility_alias(
+        kind: EntityKind,
+        name: str,
+        role: str,
+        links: tuple[str, ...] = (),
+    ) -> None:
+        logical_id = f"{kind}:{name}"
+        if logical_id in entity_ids:
+            return
+        entities.append(
+            _logical_entity(
+                kind,
+                name,
+                role,
+                topology_links=links,
+            )
+        )
+        entity_ids.add(logical_id)
+
+    if len(material_profiles) == 1:
+        material_profile = material_profiles[0]
+        profile_curve_ids = tuple(
+            curve_id.lstrip("-") for curve_id in material_profile.curve_ids
+        )
+        profile_curves = tuple(
+            recipe.curve(curve_id) for curve_id in profile_curve_ids
+        )
+        if len(profile_curves) == 1 and isinstance(profile_curves[0], SketchCircle):
+            add_compatibility_alias(
+                "edge",
+                "outer",
+                "boundary.outer",
+                (f"edge:{profile_curves[0].id}",),
+            )
+        if len(profile_curves) == 4 and all(
+            isinstance(curve, SketchLine) for curve in profile_curves
+        ):
+            profile_points = tuple(
+                point
+                for point in recipe.points
+                if point.id
+                in {
+                    point_id
+                    for curve in profile_curves
+                    for point_id in _strict_curve_point_ids(curve)
+                }
+            )
+            if len({round(point.u, 12) for point in profile_points}) == 2 and len(
+                {round(point.v, 12) for point in profile_points}
+            ) == 2:
+                min_u = min(point.u for point in profile_points)
+                max_u = max(point.u for point in profile_points)
+                min_v = min(point.v for point in profile_points)
+                max_v = max(point.v for point in profile_points)
+                side_aliases: dict[str, str] = {}
+                for curve in profile_curves:
+                    start = recipe.point(curve.start_point_id)
+                    end = recipe.point(curve.end_point_id)
+                    if math.isclose(start.v, min_v) and math.isclose(end.v, min_v):
+                        side_aliases["bottom"] = curve.id
+                    elif math.isclose(start.u, max_u) and math.isclose(end.u, max_u):
+                        side_aliases["right"] = curve.id
+                    elif math.isclose(start.v, max_v) and math.isclose(end.v, max_v):
+                        side_aliases["top"] = curve.id
+                    elif math.isclose(start.u, min_u) and math.isclose(end.u, min_u):
+                        side_aliases["left"] = curve.id
+                if len(side_aliases) == 4:
+                    for side, curve_id in side_aliases.items():
+                        add_compatibility_alias(
+                            "edge",
+                            side,
+                            f"boundary.{side}",
+                            (f"edge:{curve_id}",),
+                        )
+                    point_aliases = {
+                        "bottom-left": (min_u, min_v),
+                        "bottom-right": (max_u, min_v),
+                        "top-right": (max_u, max_v),
+                        "top-left": (min_u, max_v),
+                    }
+                    for name, coordinate in point_aliases.items():
+                        point = next(
+                            (
+                                value
+                                for value in profile_points
+                                if math.isclose(value.u, coordinate[0])
+                                and math.isclose(value.v, coordinate[1])
+                            ),
+                            None,
+                        )
+                        if point is not None:
+                            add_compatibility_alias(
+                                "point",
+                                name,
+                                f"corner.{name}",
+                                (f"point:{point.id}",),
+                            )
+        material_face = next(
+            (
+                entity
+                for entity in entities
+                if entity.kind == "face"
+                and entity.logical_id == f"face:{material_profile.id}"
+            ),
+            None,
+        )
+        if material_face is not None:
+            add_compatibility_alias(
+                "face",
+                "domain",
+                "domain",
+                (material_face.logical_id,),
+            )
+    face_ids = tuple(
+        entity.logical_id for entity in entities if entity.kind == "face"
+    )
+    entities.append(
+        _logical_entity(
+            "body",
+            "domain",
+            "sketch.domain",
+            dimension=2,
+            topology_links=face_ids,
+        )
+    )
+    return _make_topology(
+        recipe,
+        tuple(entities),
+        exact=True,
+        operation="sketch.curve-graph",
+    )
+
+
+def _strict_curve_point_ids(curve: object) -> tuple[str, ...]:
+    if isinstance(curve, SketchLine):
+        return curve.start_point_id, curve.end_point_id
+    if isinstance(curve, SketchArc):
+        return curve.start_point_id, curve.center_point_id, curve.end_point_id
+    if isinstance(curve, SketchCircle):
+        return (curve.center_point_id,)
+    raise TypeError(f"Unsupported strict sketch curve: {type(curve).__name__}")
 
 
 def _rigid_transform_topology(

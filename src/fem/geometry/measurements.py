@@ -7,6 +7,7 @@ from .recipe_topology import (
     TopologyMapping,
     describe_recipe_topology,
 )
+from .recipe_analysis import analyze_sketch_profiles
 from .references import LogicalEntityRef
 from .recipes import (
     BooleanGeometry,
@@ -57,6 +58,27 @@ def resolve_target_radius(
             )
             if len(circles) == 1:
                 return circles[0].radius
+        if recipe.is_strict and entity.kind == "edge":
+            analysis = analyze_sketch_profiles(recipe)
+            if entity.semantic_role == "boundary.hole-loop":
+                circles = tuple(
+                    curve
+                    for profile in analysis.profiles
+                    if profile.is_hole
+                    for curve in recipe.curves
+                    if isinstance(curve, SketchCircle)
+                    and curve.id in {item.lstrip("-") for item in profile.curve_ids}
+                )
+                if len(circles) == 1:
+                    return circles[0].radius
+            curve_id = entity.logical_id.split(":", 1)[1]
+            curve = recipe.curve(curve_id)
+            if isinstance(curve, SketchCircle) and any(
+                profile.is_hole
+                and curve_id in {item.lstrip("-") for item in profile.curve_ids}
+                for profile in analysis.profiles
+            ):
+                return curve.radius
     elif isinstance(recipe, BooleanGeometry):
         if topology.transition.operation == "boolean.cut-contained-circle":
             mapping = _unique_source_mapping(topology, target, "tool")
@@ -110,6 +132,18 @@ def resolve_legacy_hole_target(recipe: NativeGeometry) -> LogicalEntityRef:
                 kind="edge",
                 semantic_role="boundary.hole-loop",
             )
+        if recipe.is_strict:
+            analysis = analyze_sketch_profiles(recipe)
+            candidates = tuple(
+                curve.id
+                for profile in analysis.profiles
+                if profile.is_hole
+                for curve in recipe.curves
+                if isinstance(curve, SketchCircle)
+                and curve.id in {item.lstrip("-") for item in profile.curve_ids}
+            )
+            if len(candidates) == 1:
+                target = LogicalEntityRef(f"edge:{candidates[0]}")
     elif isinstance(recipe, BooleanGeometry):
         if topology.transition.operation == "boolean.cut-contained-circle":
             candidates = tuple(
