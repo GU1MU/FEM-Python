@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 from typing import Callable, Protocol
 
 from fem.application import ModelSession, UnitContext
+from fem.application.changes import SessionDelta
 
 from fem_agent.authoring import (
     AgentProposal,
@@ -33,6 +34,7 @@ from fem_agent.authoring import (
     UnitContextSummary,
 )
 from fem_agent.geometry_authoring import geometry_recipe_from_payload
+from fem_agent.mesh_authoring import MeshIntent
 from fem_agent.naming import NameAllocator
 
 
@@ -150,6 +152,24 @@ def authoring_context_from_snapshot(
         CapabilitySummary("present_static_proposal", supported, blocked_reason),
         CapabilitySummary("draft_native_geometry", supported, blocked_reason),
         CapabilitySummary("commit_native_geometry", supported, blocked_reason),
+        CapabilitySummary(
+            "draft_mesh_intent",
+            supported and source_kind == "native",
+            (
+                None
+                if supported and source_kind == "native"
+                else "网格意图需要 native 项目"
+            ),
+        ),
+        CapabilitySummary(
+            "request_mesh_proposal",
+            supported and source_kind == "native",
+            (
+                None
+                if supported and source_kind == "native"
+                else "网格提案需要 native 项目"
+            ),
+        ),
     )
     return AuthoringContext(
         binding=binding,
@@ -221,13 +241,21 @@ class _GuiControlAuthorization:
     nonce: int
 
 
+@dataclass(frozen=True, slots=True)
+class AgentMeshTaskRequest:
+    proposal_id: str
+    proposal_hash: str
+    task: object
+
+
 class SessionGeometryAuthoringPort:
-    """A2 port that applies one geometry operation to the authoritative session."""
+    """A2/A3 port for atomic geometry writes and detached mesh tasks."""
 
     def __init__(
         self,
         session: ModelSession,
         refresh_projection: Callable[[], None],
+        start_mesh_task: Callable[[AgentMeshTaskRequest], bool] | None = None,
     ) -> None:
         if type(session) is not ModelSession:
             raise TypeError("session must be ModelSession")
@@ -235,8 +263,19 @@ class SessionGeometryAuthoringPort:
             raise TypeError("refresh_projection must be callable")
         self._session = session
         self._refresh_callback = refresh_projection
+        self._start_mesh_task = start_mesh_task
         self._context: AuthoringContext | None = None
         self._records: dict[str, ProposalPortRecord] = {}
+        self._mesh_tasks: dict[str, object] = {}
+        self._record_listener: Callable[[ProposalPortRecord], None] | None = None
+
+    def set_record_listener(
+        self,
+        callback: Callable[[ProposalPortRecord], None],
+    ) -> None:
+        if not callable(callback):
+            raise TypeError("record listener must be callable")
+        self._record_listener = callback
 
     def set_context(self, context: AuthoringContext) -> None:
         if type(context) is not AuthoringContext:
@@ -244,16 +283,30 @@ class SessionGeometryAuthoringPort:
         self._context = context
 
     def present(self, proposal: AgentProposal) -> ProposalPortRecord:
-        if proposal.proposal_kind is not ProposalKind.GEOMETRY:
+        if proposal.proposal_kind not in {ProposalKind.GEOMETRY, ProposalKind.MESH}:
             raise AuthoringContractError(
-                "A2 session port only accepts geometry proposals"
+                "session authoring port accepts only geometry or mesh proposals"
             )
-        if len(proposal.operations) != 1 or proposal.operations[0].kind not in {
-            OperationKind.CREATE_NATIVE_PROJECT,
-            OperationKind.ADD_NATIVE_PART,
-        }:
+        geometry_valid = (
+            proposal.proposal_kind is ProposalKind.GEOMETRY
+            and len(proposal.operations) == 1
+            and proposal.operations[0].kind
+            in {
+                OperationKind.CREATE_NATIVE_PROJECT,
+                OperationKind.ADD_NATIVE_PART,
+            }
+        )
+        mesh_valid = (
+            proposal.proposal_kind is ProposalKind.MESH
+            and tuple(item.kind for item in proposal.operations)
+            == (
+                OperationKind.SET_PART_MESH_INTENT,
+                OperationKind.REQUEST_MESH,
+            )
+        )
+        if not geometry_valid and not mesh_valid:
             raise AuthoringContractError(
-                "A2 geometry proposal must contain one create/add operation"
+                "proposal operations do not match its authoring kind"
             )
         if proposal.proposal_id in self._records:
             raise AuthoringContractError("proposal_id is already registered")
@@ -274,7 +327,9 @@ class SessionGeometryAuthoringPort:
             or proposal.target_document_id != f"document:{current_id}"
             or proposal.base_session_revision != current_revision
         ):
-            raise AuthoringContractError("geometry proposal target is stale")
+            raise AuthoringContractError("authoring proposal target is stale")
+        if proposal.proposal_kind is ProposalKind.MESH:
+            return self._accept_mesh(record)
         operation = proposal.operations[0]
         parameters = operation.parameters
         recipe = geometry_recipe_from_payload(parameters["recipe"])
@@ -324,6 +379,106 @@ class SessionGeometryAuthoringPort:
         self._records[proposal_id] = succeeded
         return succeeded
 
+    def _accept_mesh(self, record: ProposalPortRecord) -> ProposalPortRecord:
+        if self._start_mesh_task is None:
+            raise AuthoringContractError(
+                "mesh proposal execution is not configured"
+            )
+        proposal = record.proposal
+        intent_operation, request_operation = proposal.operations
+        intent = MeshIntent.from_dict(
+            intent_operation.parameters["mesh_intent"]  # type: ignore[arg-type]
+        )
+        part_id = str(intent_operation.parameters["part_id"])
+        if (
+            str(request_operation.parameters["part_id"]) != part_id
+            or str(request_operation.parameters["mesh_intent_hash"])
+            != intent.intent_hash
+        ):
+            raise AuthoringContractError(
+                "mesh request does not match its retained MeshIntent"
+            )
+        snapshot = self._session.snapshot()
+        part = next(
+            (item for item in snapshot.parts if item.id == part_id),
+            None,
+        )
+        if part is None or part.geometry_recipe is None:
+            raise AuthoringContractError("mesh proposal Part is unavailable")
+        settings = intent.to_mesh_settings(part.geometry_recipe)
+        task = self._session.prepare_agent_mesh_generation(
+            part_id,
+            settings,
+            intent.intent_hash,
+            expected_session_revision=proposal.base_session_revision,
+        )
+        self._mesh_tasks[proposal.proposal_id] = task
+        running = replace(record, state=ProposalState.RUNNING)
+        self._records[proposal.proposal_id] = running
+        try:
+            started = self._start_mesh_task(
+                AgentMeshTaskRequest(
+                    proposal.proposal_id,
+                    proposal.proposal_hash,
+                    task,
+                )
+            )
+        except Exception as error:
+            self._session.terminate_agent_mesh_task(task.token, str(error))
+            self._mesh_tasks.pop(proposal.proposal_id, None)
+            raise
+        if not started:
+            self._session.terminate_agent_mesh_task(
+                task.token,
+                "GUI background task controller is busy",
+            )
+            self._mesh_tasks.pop(proposal.proposal_id, None)
+            failed = replace(
+                running,
+                state=ProposalState.FAILED,
+                message="GUI background task controller is busy",
+            )
+            self._records[proposal.proposal_id] = failed
+            raise AuthoringContractError(failed.message)
+        return self._records[proposal.proposal_id]
+
+    def accept_mesh_result(
+        self,
+        proposal_id: str,
+        model: object,
+    ) -> SessionDelta:
+        record = self._records.get(proposal_id)
+        if record is None or record.state is not ProposalState.RUNNING:
+            raise AuthoringAuthorizationError(
+                "mesh result requires a running proposal"
+            )
+        task = self._mesh_tasks[proposal_id]
+        delta = self._session.accept_agent_generated_model(task.token, model)
+        if delta.accepted:
+            self.complete_mesh(
+                proposal_id,
+                ProposalState.SUCCEEDED,
+                "网格意图和生成模型已原子提交",
+            )
+        return delta
+
+    def terminate_mesh(
+        self,
+        proposal_id: str,
+        state: ProposalState,
+        message: str,
+    ) -> SessionDelta:
+        if state not in {
+            ProposalState.FAILED,
+            ProposalState.CANCELLED,
+            ProposalState.STALE,
+        }:
+            raise ValueError("terminated mesh proposal requires a failure state")
+        task = self._mesh_tasks[proposal_id]
+        delta = self._session.terminate_agent_mesh_task(task.token, message)
+        self.complete_mesh(proposal_id, state, message)
+        return delta
+
     def refresh_projection(self) -> None:
         self._refresh_callback()
 
@@ -353,6 +508,38 @@ class SessionGeometryAuthoringPort:
         self._records[proposal_id] = failed
         return failed
 
+    def complete_mesh(
+        self,
+        proposal_id: str,
+        state: ProposalState,
+        message: str = "",
+    ) -> ProposalPortRecord:
+        if state not in {
+            ProposalState.SUCCEEDED,
+            ProposalState.FAILED,
+            ProposalState.CANCELLED,
+            ProposalState.STALE,
+        }:
+            raise ValueError("mesh completion state must be terminal")
+        try:
+            record = self._records[proposal_id]
+        except KeyError as exc:
+            raise AuthoringContractError("proposal is not registered") from exc
+        if record.state is not ProposalState.RUNNING:
+            raise AuthoringAuthorizationError(
+                f"mesh proposal is already {record.state.value}"
+            )
+        completed = replace(
+            record,
+            state=state,
+            message=str(message).strip(),
+        )
+        self._records[proposal_id] = completed
+        self._mesh_tasks.pop(proposal_id, None)
+        if self._record_listener is not None:
+            self._record_listener(completed)
+        return completed
+
     def _pending(self, proposal_id: str) -> ProposalPortRecord:
         try:
             record = self._records[proposal_id]
@@ -376,6 +563,9 @@ class AgentAuthoringBridge:
         self._authorization_nonce = 0
         self._unused_authorizations: set[_GuiControlAuthorization] = set()
         self._gui_thread_id = threading.get_ident()
+        listener = getattr(port, "set_record_listener", None)
+        if callable(listener):
+            listener(self._receive_port_record)
 
     @property
     def context(self) -> AuthoringContext | None:
@@ -457,9 +647,13 @@ class AgentAuthoringBridge:
             self._records[proposal_id] = failed
             return self._receipt(failed)
         self._records[proposal_id] = accepted
-        refresh = getattr(self._port, "refresh_projection", None)
-        if callable(refresh):
-            refresh()
+        if (
+            accepted.state is ProposalState.SUCCEEDED
+            and accepted.proposal.proposal_kind is ProposalKind.GEOMETRY
+        ):
+            refresh = getattr(self._port, "refresh_projection", None)
+            if callable(refresh):
+                refresh()
         return self._receipt(accepted)
 
     def reject_proposal(
@@ -581,6 +775,14 @@ class AgentAuthoringBridge:
                 "GUI authorization must run on the bridge owner thread"
             )
 
+    def _receive_port_record(self, record: ProposalPortRecord) -> None:
+        current = self._records.get(record.proposal.proposal_id)
+        if current is None or current.proposal.proposal_hash != record.proposal.proposal_hash:
+            raise AuthoringContractError(
+                "port lifecycle update does not match a registered proposal"
+            )
+        self._records[record.proposal.proposal_id] = record
+
     @staticmethod
     def _receipt(
         record: ProposalPortRecord,
@@ -596,6 +798,7 @@ class AgentAuthoringBridge:
 
 
 __all__ = [
+    "AgentMeshTaskRequest",
     "AgentAuthoringBridge",
     "BridgeReceipt",
     "SessionGeometryAuthoringPort",

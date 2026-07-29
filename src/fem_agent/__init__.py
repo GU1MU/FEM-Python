@@ -27,6 +27,11 @@ from .geometry_authoring import (
     translate_geometry,
 )
 from .naming import NameAllocator, NamePolicy
+from .mesh_authoring import (
+    MESH_INTENT_SCHEMA_VERSION,
+    MeshIntent,
+    create_mesh_proposal,
+)
 from .schemas import SCHEMA_VERSION
 
 __all__ = [
@@ -38,6 +43,8 @@ __all__ = [
     "LocalModelBinding",
     "NameAllocator",
     "NamePolicy",
+    "MESH_INTENT_SCHEMA_VERSION",
+    "MeshIntent",
     "ModelPatch",
     "RequirementLedger",
     "RequirementReview",
@@ -45,6 +52,7 @@ __all__ = [
     "StaticGeometryPreview",
     "UnitContextSummary",
     "box_geometry",
+    "create_mesh_proposal",
     "create_geometry_proposal",
     "cylinder_geometry",
     "disk_geometry",

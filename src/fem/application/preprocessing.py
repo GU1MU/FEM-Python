@@ -7,6 +7,7 @@ from copy import deepcopy
 from dataclasses import replace
 import math
 from typing import Any, Protocol
+from collections.abc import Callable
 
 from fem import geometry
 from fem.core.mesh import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
@@ -18,6 +19,7 @@ from fem.geometry.recipe_analysis import (
     supports_structured_hexahedron,
 )
 from fem.geometry.references import LogicalEntityRef
+from fem.geometry.gmsh_coordinator import PROCESS_GMSH_COORDINATOR
 from fem.geometry.recipes import (
     MovedGeometry,
     MultiBodyGeometry,
@@ -125,6 +127,7 @@ def generate_fem_model(
     *,
     named_regions: Iterable[Any] | Mapping[str, Any] | None = None,
     resolver: RecipeTopologyResolver | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> FEMModel:
     """Generate a canonical model from explicit inputs or a mesh task snapshot."""
     if (
@@ -147,6 +150,7 @@ def generate_fem_model(
         return _generate_multi_part_fem_model(
             recipe_or_snapshot,
             resolver=resolver,
+            cancelled=cancelled,
         )
     recipe, mesh_settings, regions, model_name = _normalize_inputs(
         recipe_or_snapshot,
@@ -176,8 +180,13 @@ def generate_fem_model(
             "几何与网格功能需要 Gmsh；请安装项目的 cad 可选依赖"
         ) from error
 
-    owns_session = not bool(gmsh.isInitialized())
+    gmsh_lease = PROCESS_GMSH_COORDINATOR.acquire(
+        f"generate FEM model {model_name}",
+        cancelled=cancelled,
+    )
+    owns_session = False
     try:
+        owns_session = not bool(gmsh.isInitialized())
         if owns_session:
             # Gmsh can install its SIGINT handler only on the Python main
             # thread. GUI callers intentionally execute this function in a
@@ -242,14 +251,35 @@ def generate_fem_model(
                 mesher.background_field(background)
                 mesh_size = None
 
-            native_mesh = mesher.generate(
-                gmsh_meshing.MeshSpec(
-                    size=mesh_size,
-                    order=mesh_settings.order,
-                    recombine=contract.cell_shape
-                    in {"quadrilateral", "hexahedron"},
+            strict_shape = bool(mesh_settings.strict_cell_shape)
+            if strict_shape and not refinements and mesh_settings.auto_level is None:
+                mesher.mesh_size(cad.entities(0), size=mesh_settings.size)
+                mesh_size = None
+            if strict_shape or mesh_settings.auto_level is not None:
+                native_mesh = mesher.generate(
+                    gmsh_meshing.AutoMeshSpec(
+                        # A background field already carries the absolute
+                        # effective far-field size derived from AutoMesh
+                        # level.  Level 3 keeps MeshSizeFactor at 1 and avoids
+                        # scaling local sizes a second time.
+                        level=(
+                            3
+                            if refinements
+                            else mesh_settings.auto_level or 3
+                        ),
+                        cell_shape=_auto_mesh_cell_shape(contract),
+                        order=mesh_settings.order,
+                    )
                 )
-            )
+            else:
+                native_mesh = mesher.generate(
+                    gmsh_meshing.MeshSpec(
+                        size=mesh_size,
+                        order=mesh_settings.order,
+                        recombine=contract.cell_shape
+                        in {"quadrilateral", "hexahedron"},
+                    )
+                )
             mesh = gmsh_io.read(
                 native_mesh,
                 line_element_type=contract.line_element_type,
@@ -282,14 +312,28 @@ def generate_fem_model(
                 )
             return model
     finally:
-        if owns_session and bool(gmsh.isInitialized()):
-            gmsh.finalize()
+        try:
+            if owns_session and bool(gmsh.isInitialized()):
+                gmsh.finalize()
+        finally:
+            gmsh_lease.release()
+
+
+def _auto_mesh_cell_shape(contract: NativeMeshContract) -> str | None:
+    return {
+        "line": None,
+        "triangle": "tri",
+        "quadrilateral": "quad",
+        "tetrahedron": "tet",
+        "hexahedron": "hex",
+    }[str(contract.cell_shape)]
 
 
 def _generate_multi_part_fem_model(
     snapshot: MeshTaskSnapshot,
     *,
     resolver: RecipeTopologyResolver | None,
+    cancelled: Callable[[], bool] | None,
 ) -> FEMModel:
     """Compile, mesh, and deterministically aggregate active Parts."""
 
@@ -354,6 +398,7 @@ def _generate_multi_part_fem_model(
                     local_settings,
                     named_regions=(),
                     resolver=resolver,
+                    cancelled=cancelled,
                 ),
             )
         )

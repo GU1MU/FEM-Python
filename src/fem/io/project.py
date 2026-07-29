@@ -43,13 +43,16 @@ from .project_v7 import (
 )
 from .project_v8 import (
     decode_project_v8,
-    dumps_project_v8,
-    encode_project_v8,
-    save_project_v8,
+)
+from .project_v9 import (
+    decode_project_v9,
+    dumps_project_v9,
+    encode_project_v9,
+    save_project_v9,
 )
 
 
-CURRENT_PROJECT_SCHEMA = 8
+CURRENT_PROJECT_SCHEMA = 9
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,8 +169,14 @@ def decode_project(
             source_path=resolved_path,
         )
         notices = ()
-    elif schema == CURRENT_PROJECT_SCHEMA:
+    elif schema == 8:
         snapshot = decode_project_v8(
+            payload,
+            source_path=resolved_path,
+        )
+        notices = ()
+    elif schema == CURRENT_PROJECT_SCHEMA:
+        snapshot = decode_project_v9(
             payload,
             source_path=resolved_path,
         )
@@ -175,7 +184,7 @@ def decode_project(
     else:
         raise UnsupportedProjectSchemaError(
             f"$.schema={schema!r} 不受支持；"
-            "当前版本可读取 schema 1、2、3、4、5、6、7 和 "
+            "当前版本可读取 schema 1、2、3、4、5、6、7、8 和 "
             f"{CURRENT_PROJECT_SCHEMA}"
         )
     if schema < 7:
@@ -183,14 +192,14 @@ def decode_project(
             snapshot, v5_notices = migrate_project_snapshot_to_v5(snapshot)
         except ProjectV1MigrationError as error:
             raise ProjectDecodeError(
-                f"schema {schema} 无法原子迁移到 schema 8：{error}"
+                f"schema {schema} 无法原子迁移到 schema 9：{error}"
             ) from error
         notices = (*notices, *v5_notices)
         try:
             snapshot, v7_notices = migrate_project_snapshot_to_v7(snapshot)
         except ProjectV1MigrationError as error:
             raise ProjectDecodeError(
-                f"schema {schema} 无法原子迁移到 schema 8：{error}"
+                f"schema {schema} 无法原子迁移到 schema 9：{error}"
             ) from error
         notices = (*notices, *v7_notices)
     return LoadedProject(
@@ -206,7 +215,7 @@ def encode_project(
 ) -> dict[str, Any]:
     """Encode a detached snapshot using the current project schema."""
 
-    return encode_project_v8(_canonical_writer_snapshot(snapshot))
+    return encode_project_v9(_canonical_writer_snapshot(snapshot))
 
 
 def dumps_project(
@@ -214,7 +223,7 @@ def dumps_project(
 ) -> str:
     """Serialize a detached snapshot using canonical current-schema JSON."""
 
-    return dumps_project_v8(_canonical_writer_snapshot(snapshot))
+    return dumps_project_v9(_canonical_writer_snapshot(snapshot))
 
 
 def save_project(
@@ -225,7 +234,7 @@ def save_project(
 ) -> Path:
     """Atomically save a detached snapshot using the current schema."""
 
-    return save_project_v8(
+    return save_project_v9(
         path,
         _canonical_writer_snapshot(snapshot),
         checkpoint=checkpoint,
@@ -235,7 +244,7 @@ def save_project(
 def _canonical_writer_snapshot(
     snapshot: ProjectSnapshot | ProjectSaveSnapshot,
 ) -> ProjectSnapshot | ProjectSaveSnapshot:
-    """Upgrade compatibility snapshots before the strict v8 writer."""
+    """Upgrade compatibility snapshots before the strict v9 writer."""
 
     project = unwrap_project_snapshot(snapshot)
     if project.parts and all(

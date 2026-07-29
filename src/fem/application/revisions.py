@@ -110,6 +110,8 @@ class MeshTaskSnapshot:
     section_definitions: tuple[Any, ...]
     region_assignments: tuple[Any, ...]
     analysis_definitions: tuple[Any, ...]
+    target_part_id: str | None = None
+    mesh_intent_hash: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

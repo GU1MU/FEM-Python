@@ -211,6 +211,15 @@ class _IssuedMaterializationPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class _IssuedAgentMeshPayload:
+    """Authoritative mesh intent retained outside the detached worker result."""
+
+    target_part_id: str
+    mesh_settings: MeshSettings
+    mesh_intent_hash: str
+
+
+@dataclass(frozen=True, slots=True)
 class _PreparedSystemRecord:
     """Single artifact-bound reusable linear-static base system."""
 
@@ -3573,6 +3582,110 @@ class ModelSession:
             analysis_definitions=deepcopy(self._steps),
         )
 
+    def prepare_agent_mesh_generation(
+        self,
+        part_id: str,
+        settings: MeshSettings,
+        mesh_intent_hash: str,
+        *,
+        expected_session_revision: int,
+    ) -> MeshTaskSnapshot:
+        """Build a detached A3 task without replacing current intent or mesh."""
+
+        self._check_expected(expected_session_revision)
+        self._require_native()
+        if type(settings) is not MeshSettings:
+            raise TypeError("settings must be MeshSettings")
+        normalized = normalize_part_id(part_id)
+        current = self._require_editable_part(normalized)
+        if current.provenance is not None and settings.auto_level is not None:
+            raise SessionStateError(
+                "A3 AutoMesh does not support a Boolean result Part"
+            )
+        intent_hash = str(mesh_intent_hash)
+        if (
+            len(intent_hash) != 64
+            or any(character not in "0123456789abcdef" for character in intent_hash)
+        ):
+            raise ValueError("mesh_intent_hash must be a lowercase SHA-256 hash")
+        owned_settings = _namespace_part_mesh_settings(
+            normalized,
+            deepcopy(settings),
+        )
+        candidate = replace(current, mesh_settings=owned_settings)
+        _validate_native_part_inputs(candidate)
+        candidate_parts = tuple(
+            candidate if part.id == normalized else part
+            for part in self._parts
+        )
+        active_parts = tuple(
+            part for part in candidate_parts if not part.suppressed
+        )
+        if not active_parts:
+            raise SessionStateError(
+                "mesh generation requires an unsuppressed Part"
+            )
+        for part in active_parts:
+            if part.mesh_settings is None:
+                raise SessionStateError(
+                    f"Part {part.id} requires mesh settings"
+                )
+            require_complete_native_mesh_contract(
+                part.geometry_recipe,
+                _localize_part_mesh_settings(
+                    part.id,
+                    part.mesh_settings,
+                ),
+            )
+        _validate_native_parts_project_inputs(
+            candidate_parts,
+            tuple(self._named_regions.values()),
+            self._materials,
+            self._sections,
+            self._assignments,
+            self._steps,
+        )
+        token = self._issue_token(
+            "agent_mesh",
+            (
+                ("session_revision", self._session_revision),
+                ("mesh_input_revision", self._mesh_input_revision),
+                ("model_revision", self._model_revision),
+            ),
+        )
+        self._task_data[token.task_id] = _IssuedAgentMeshPayload(
+            normalized,
+            owned_settings,
+            intent_hash,
+        )
+        active = next(
+            (
+                part
+                for part in candidate_parts
+                if part.id == self._active_part_id
+            ),
+            candidate,
+        )
+        return MeshTaskSnapshot(
+            token=token,
+            model_name=str(self._model_name or "模型-1"),
+            geometry_recipe=deepcopy(active.geometry_recipe),
+            mesh_settings=deepcopy(active.mesh_settings),
+            parts=deepcopy(candidate_parts),
+            feature_history=tuple(
+                deepcopy(feature)
+                for part in candidate_parts
+                for feature in part.feature_history
+            ),
+            named_regions=deepcopy(tuple(self._named_regions.values())),
+            material_definitions=deepcopy(self._materials),
+            section_definitions=deepcopy(self._sections),
+            region_assignments=deepcopy(self._assignments),
+            analysis_definitions=deepcopy(self._steps),
+            target_part_id=normalized,
+            mesh_intent_hash=intent_hash,
+        )
+
     def accept_generated_model(
         self, token: TaskToken, model: Any
     ) -> SessionDelta:
@@ -3616,6 +3729,114 @@ class ModelSession:
             },
             _COMPUTATION_INVALIDATIONS,
             "generated model installed",
+        )
+
+    def accept_agent_generated_model(
+        self,
+        token: TaskToken,
+        model: Any,
+    ) -> SessionDelta:
+        """Atomically install the retained A3 intent and detached model."""
+
+        status = self._token_status_for(token, "agent_mesh")
+        if status is not TokenStatus.CURRENT:
+            return self._rejected(status, "stale Agent generated model")
+        payload = self._task_data.get(token.task_id)
+        if type(payload) is not _IssuedAgentMeshPayload:
+            return self._rejected(
+                TokenStatus.INVALID_STATE,
+                "Agent mesh task intent is unavailable",
+            )
+        self._require_native()
+        current = self._require_editable_part(payload.target_part_id)
+        candidate_part = replace(
+            current,
+            mesh_settings=deepcopy(payload.mesh_settings),
+        )
+        _validate_native_part_inputs(candidate_part)
+        candidate_parts = tuple(
+            candidate_part if part.id == candidate_part.id else part
+            for part in self._parts
+        )
+        owned_model = deepcopy(model)
+        definitions = None
+        if self._definitions_explicit:
+            current_definitions = ModelDefinitions(
+                self._materials,
+                self._sections,
+                self._assignments,
+                self._steps,
+            )
+            owned_model = compile_model_definitions(
+                owned_model,
+                current_definitions,
+            ).require_model()
+        else:
+            definitions = definitions_from_model(owned_model)
+
+        previous_artifact = self._artifact
+        self._parts = validate_native_parts(candidate_parts)
+        self._sync_active_part_projection()
+        self._drop_computations()
+        if definitions is not None:
+            self._materials = definitions.materials
+            self._sections = definitions.sections
+            self._assignments = definitions.assignments
+            self._steps = definitions.steps
+        self._increment_domain_revisions(project=True, mesh=True, model=True)
+        self._artifact = self._new_artifact(owned_model, "native")
+        self._complete_token(token)
+        invalidated = _COMPUTATION_INVALIDATIONS
+        if previous_artifact is not None:
+            invalidated = invalidated | frozenset({ArtifactKind.MODEL})
+        return self._emit(
+            {
+                ChangeKind.PROJECT_INPUTS,
+                ChangeKind.MESH_SETTINGS,
+                ChangeKind.MODEL,
+                ChangeKind.DEFINITIONS,
+                ChangeKind.VALIDATIONS,
+                ChangeKind.RUNS,
+                ChangeKind.DISPLAYED_RESULT,
+            },
+            invalidated,
+            "Agent mesh intent and generated model installed atomically",
+        )
+
+    def terminate_agent_mesh_task(
+        self,
+        token: TaskToken,
+        reason: str,
+    ) -> SessionDelta:
+        """Consume one exact A3 token without changing intent or model state."""
+
+        if not isinstance(token, TaskToken):
+            return self._rejected(
+                TokenStatus.UNKNOWN_TASK,
+                "unknown Agent mesh task",
+            )
+        issued = self._issued_tokens.get(token.task_id)
+        if issued != token:
+            return self._rejected(
+                TokenStatus.UNKNOWN_TASK,
+                "unknown Agent mesh task",
+            )
+        if token.task_kind != "agent_mesh":
+            return self._rejected(
+                TokenStatus.WRONG_KIND,
+                "task is not an Agent mesh task",
+            )
+        if token.task_id in self._completed_task_ids:
+            return self._rejected(
+                TokenStatus.ALREADY_COMPLETED,
+                "Agent mesh task is already complete",
+            )
+        status = self.validate_task_token(token)
+        self._complete_token(token)
+        return SessionDelta(
+            session_revision=self._session_revision,
+            reason=str(reason).strip() or "Agent mesh task terminated",
+            token_status=status,
         )
 
     # ------------------------------------------------------------------

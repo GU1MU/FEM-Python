@@ -136,16 +136,22 @@ from fem.geometry import (
     rename_solid_body,
     undo_solid_body_feature,
 )
+from fem.geometry.gmsh_coordinator import GmshExecutionCancelled
 from fem.io.project import LoadedProject, load_project, save_project
 from fem.io.result_csv import write_result_csv
 from fem.io.result_vtk import write_result_vtk
 from fem.mesh.quality import analyze_mesh
 from fem.mesh.settings import MeshSettings
 from fem.solvers import static_linear
+from fem_agent.authoring import ProposalState
 
 from .actions import build_actions
 from .action_state import GuiActionContext, derive_action_availability
-from .agent_authoring import AgentAuthoringBridge, SessionGeometryAuthoringPort
+from .agent_authoring import (
+    AgentAuthoringBridge,
+    AgentMeshTaskRequest,
+    SessionGeometryAuthoringPort,
+)
 from .part_boolean import PartBooleanController
 from .planar_boolean import PlanarBooleanController
 from .analysis_dialogs import JobManagerDialog, JobSubmitDialog
@@ -476,6 +482,7 @@ class FEMMainWindow(QMainWindow):
             SessionGeometryAuthoringPort(
                 self.session,
                 self._rebuild_full_projection,
+                self._begin_agent_mesh_generation,
             )
         )
         self.agent_authoring_bridge.bind_snapshot(self.document)
@@ -6364,6 +6371,107 @@ class FEMMainWindow(QMainWindow):
         receipt = self.generate_mesh()
         if receipt.diagnostic is not None:
             self._show_command_rejection("网格生成失败", receipt)
+
+    def _begin_agent_mesh_generation(
+        self,
+        request: AgentMeshTaskRequest,
+    ) -> bool:
+        """Start the A3 detached task after the bridge consumed GUI authority."""
+
+        task = request.task
+        port = self.agent_authoring_bridge.port
+        complete_mesh = getattr(port, "complete_mesh", None)
+        accept_mesh_result = getattr(port, "accept_mesh_result", None)
+        terminate_mesh = getattr(port, "terminate_mesh", None)
+        if not all(
+            callable(item)
+            for item in (complete_mesh, accept_mesh_result, terminate_mesh)
+        ):
+            raise RuntimeError("Agent mesh lifecycle port is unavailable")
+
+        def workload(context: TaskContext) -> object:
+            context.report("正在生成 Agent 网格……")
+            started = perf_counter()
+            try:
+                model = generate_fem_model(
+                    task,
+                    cancelled=lambda: context.is_cancelled,
+                )
+            except GmshExecutionCancelled:
+                context.checkpoint()
+                raise
+            timings = {
+                "Gmsh 几何与网格": perf_counter() - started,
+            }
+            context.report("正在准备显示网格……")
+            started = perf_counter()
+            display_geometry = build_model_geometry(model)
+            timings["VTK 显示几何构建"] = perf_counter() - started
+            context.checkpoint()
+            return model, display_geometry, timings
+
+        def apply_result(value: object) -> TaskApplyOutcome:
+            model, _geometry, _timings, _notices = self._unpack_model_load(
+                value
+            )
+            outcome = self._session_task_outcome(
+                accept_mesh_result(request.proposal_id, model),
+                value,
+            )
+            return outcome
+
+        def project_result(value: object) -> None:
+            delta, payload = value
+            model, geometry, timings, _notices = self._unpack_model_load(
+                payload
+            )
+            if not self._apply_session_delta(
+                delta,
+                model_geometry=geometry,
+                timings=timings,
+                source_label=str(
+                    getattr(model, "name", None) or "未命名模型"
+                ),
+            ):
+                raise RuntimeError("已接受的 Agent 网格结果无法投影")
+            self._import_notices = ()
+
+        def terminal(record: TaskCompletion) -> None:
+            if record.state is BackgroundTaskState.SUCCEEDED:
+                return
+            state = {
+                BackgroundTaskState.CANCELLED: ProposalState.CANCELLED,
+                BackgroundTaskState.DISCARDED: ProposalState.STALE,
+            }.get(record.state, ProposalState.FAILED)
+            terminate_mesh(
+                request.proposal_id,
+                state,
+                record.message or record.state.value,
+            )
+            if record.state is BackgroundTaskState.FAILED:
+                self.status_panel.set_state(
+                    record.message or "Agent 网格生成失败",
+                    5000,
+                )
+            elif record.state is BackgroundTaskState.CANCELLED:
+                self.status_panel.set_state("已取消 Agent 网格生成", 4000)
+            else:
+                self.status_panel.set_state(
+                    record.message or "Agent 网格结果已陈旧，未应用",
+                    5000,
+                )
+
+        task_id = self.task_controller.start(
+            workload,
+            task_name="Agent 网格生成",
+            apply_result=apply_result,
+            project_result=project_result,
+            rebuild_projection=self._rebuild_full_projection,
+            on_terminal=terminal,
+            on_progress=self.status_panel.set_state,
+            on_projection_error=self._task_projection_failed,
+        )
+        return task_id is not None
 
     def _begin_mesh_generation(
         self,

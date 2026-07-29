@@ -90,6 +90,8 @@ class MeshSettings:
     ] = "triangle"
     local_controls: tuple[LocalMeshControl, ...] = ()
     line_element_type: Literal["Truss2", "Beam2"] | None = None
+    auto_level: Literal[1, 2, 3, 4, 5] | None = None
+    strict_cell_shape: bool = False
 
     def __post_init__(self) -> None:
         if (
@@ -101,6 +103,14 @@ class MeshSettings:
             raise ValueError("全局网格尺寸必须大于零")
         if isinstance(self.order, bool) or self.order not in (1, 2):
             raise ValueError("单元阶次只能是一阶或二阶")
+        if self.auto_level is not None and (
+            isinstance(self.auto_level, bool)
+            or type(self.auto_level) is not int
+            or self.auto_level not in {1, 2, 3, 4, 5}
+        ):
+            raise ValueError("AutoMesh level 只能是 1 到 5 的严格整数")
+        if type(self.strict_cell_shape) is not bool:
+            raise TypeError("strict_cell_shape must be a bool")
         if type(self.cell_shape) is not str or self.cell_shape not in {
             "line",
             "triangle",

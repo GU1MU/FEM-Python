@@ -23,6 +23,7 @@ from ..errors import (
     GeometryStateError,
     StaleEntityError,
 )
+from ..gmsh_coordinator import PROCESS_GMSH_COORDINATOR
 from ..types import (
     BooleanResult,
     CurveLoopRef,
@@ -110,6 +111,7 @@ class GeometryModel:
         self._topology_provenance_unknown = False
         self._meshing_port: _BoundMeshingPort | None = None
         self._structured_extrusion_open = False
+        self._gmsh_execution_lease = None
 
     @property
     def name(self) -> str:
@@ -132,6 +134,9 @@ class GeometryModel:
             raise self._state_error("context entry", "model context is not new")
 
         try:
+            self._gmsh_execution_lease = PROCESS_GMSH_COORDINATOR.acquire(
+                f"geometry model {self.name}"
+            )
             self._session.enter()
             self._references.clear()
             self._control_dependencies.clear()
@@ -142,6 +147,15 @@ class GeometryModel:
             return self
         except BaseException as error:
             cleanup_errors = self._cleanup_after_failed_entry()
+            if self._gmsh_execution_lease is not None:
+                try:
+                    self._gmsh_execution_lease.release()
+                except BaseException as cleanup_error:
+                    cleanup_errors = (
+                        *cleanup_errors,
+                        ("release Gmsh ownership", cleanup_error),
+                    )
+                self._gmsh_execution_lease = None
             self._states.close()
             for operation, cleanup_error in cleanup_errors:
                 error.add_note(
@@ -187,6 +201,12 @@ class GeometryModel:
                     self._session.finalize_owned_session(initialized=initialized)
                 except BaseException as error:
                     cleanup_errors.append(("finalize owned session", error))
+            if self._gmsh_execution_lease is not None:
+                try:
+                    self._gmsh_execution_lease.release()
+                except BaseException as error:
+                    cleanup_errors.append(("release Gmsh ownership", error))
+                self._gmsh_execution_lease = None
 
         if exc_value is None and cleanup_errors:
             operation, error = cleanup_errors[0]
