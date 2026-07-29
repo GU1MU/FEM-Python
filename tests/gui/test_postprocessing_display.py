@@ -132,6 +132,7 @@ def test_analysis_uses_clean_deformed_displacement_contour_defaults(gui_inp_path
     assert window._contour_options["decimals"] == 5
     assert not window._contour_options["show_minimum"]
     assert not window._contour_options["show_maximum"]
+    assert window._contour_options["show_coordinate_system"]
     assert window._contour_options["orientation"] == "vertical"
     assert not window.actions["symbols"].isChecked()
     assert not window.actions["node_labels"].isChecked()

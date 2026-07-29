@@ -923,22 +923,41 @@ class OutputRequestDialog(QDialog):
             QAbstractItemView.SelectionMode.NoSelection
         )
         self.candidate_list.setMinimumHeight(92)
+        self._required_candidate_index = next(
+            (
+                index
+                for index, candidate in enumerate(self._candidates)
+                if _is_required_displacement_output(
+                    candidate.authoring_request
+                )
+            ),
+            None,
+        )
         for index, candidate in enumerate(self._candidates):
             item = QListWidgetItem(
                 _output_request_summary(candidate.authoring_request),
                 self.candidate_list,
             )
             item.setData(Qt.ItemDataRole.UserRole, index)
-            item.setFlags(
-                item.flags()
-                | Qt.ItemFlag.ItemIsEnabled
-                | Qt.ItemFlag.ItemIsUserCheckable
-            )
             item.setCheckState(
                 Qt.CheckState.Checked
-                if index == 0
+                if (
+                    index == self._required_candidate_index
+                    or (
+                        self._required_candidate_index is None
+                        and index == 0
+                    )
+                )
                 else Qt.CheckState.Unchecked
             )
+            flags = item.flags() | Qt.ItemFlag.ItemIsEnabled
+            if index == self._required_candidate_index:
+                flags &= ~Qt.ItemFlag.ItemIsUserCheckable
+            else:
+                flags |= Qt.ItemFlag.ItemIsUserCheckable
+            item.setFlags(flags)
+            if index == self._required_candidate_index:
+                item.setToolTip("位移场 U 为必需输出，无法取消")
         self.kind_value = QLabel("", self)
         self.variables_value = QLabel("", self)
         self.variables_value.setWordWrap(True)
@@ -997,6 +1016,15 @@ class OutputRequestDialog(QDialog):
         return step_name, requests[0]
 
     def _refresh_request(self, _item: QListWidgetItem | None = None) -> None:
+        if (
+            _item is not None
+            and self.candidate_list.row(_item)
+            == self._required_candidate_index
+            and _item.checkState() != Qt.CheckState.Checked
+        ):
+            self.candidate_list.blockSignals(True)
+            _item.setCheckState(Qt.CheckState.Checked)
+            self.candidate_list.blockSignals(False)
         requests = self._selected_requests()
         kinds = tuple(dict.fromkeys(request.kind for request in requests))
         self.kind_value.setText("、".join(kinds))
@@ -1019,7 +1047,10 @@ class OutputRequestDialog(QDialog):
         selected: list[OutputRequestProjection] = []
         for row in range(self.candidate_list.count()):
             item = self.candidate_list.item(row)
-            if item.checkState() != Qt.CheckState.Checked:
+            if (
+                row != self._required_candidate_index
+                and item.checkState() != Qt.CheckState.Checked
+            ):
                 continue
             index = item.data(Qt.ItemDataRole.UserRole)
             if type(index) is not int or not 0 <= index < len(self._candidates):
@@ -1040,6 +1071,18 @@ def _output_request_summary(request: OutputRequest) -> str:
     if type(request) is not OutputRequest:
         raise TypeError("request must be exactly OutputRequest")
     return "、".join(request.variables)
+
+
+def _is_required_displacement_output(request: OutputRequest) -> bool:
+    return (
+        type(request) is OutputRequest
+        and request.kind.casefold() == "field"
+        and request.target.casefold() == "node"
+        and any(
+            variable.strip().casefold() == "u"
+            for variable in request.variables
+        )
+    )
 
 
 def _compact_output_request(request: OutputRequest) -> OutputRequest:
@@ -1643,12 +1686,21 @@ class AnalysisDefinitionManagerDialog(QDialog):
             step.name.strip().casefold() == "initial"
             and bool(step.outputs)
         )
+        required_output = (
+            kind == "output"
+            and item_index is not None
+            and _is_required_displacement_output(
+                step.outputs[int(item_index)]
+            )
+        )
         if (
             kind == "output"
             and not self._output_delete_capability.can_submit
         ) or (
             kind in {"step", "output"}
             and initial_output_owner
+        ) or (
+            required_output
         ):
             return
         if kind == "step":
@@ -1719,6 +1771,13 @@ class AnalysisDefinitionManagerDialog(QDialog):
             and self.steps[selected[1]].name.strip().casefold()
             != "initial"
         )
+        required_output = (
+            is_output
+            and selected[2] is not None
+            and _is_required_displacement_output(
+                self.steps[selected[1]].outputs[int(selected[2])]
+            )
+        )
         self.edit_button.setEnabled(
             selected is not None
             and (
@@ -1734,6 +1793,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
         self.delete_button.setEnabled(
             selected is not None
             and not deletes_initial_outputs
+            and not required_output
             and (
                 not is_output
                 or (

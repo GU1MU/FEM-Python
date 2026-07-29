@@ -12,13 +12,13 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QThread
-from PySide6.QtWidgets import QApplication, QToolButton
+from PySide6.QtCore import QThread, Qt
+from PySide6.QtWidgets import QApplication, QLabel, QToolButton
 
 from fem.application import AnalysisRun, ModelSession, RunStatus
 from fem.abaqus import read
 from fem.solvers import static_linear
-from fem_gui.analysis_dialogs import JobManagerDialog
+from fem_gui.analysis_dialogs import JobManagerDialog, JobSubmitDialog
 from fem_gui.main_window import FEMMainWindow
 import fem_gui.main_window as main_window_module
 from fem_gui.visualization.model_adapter import build_model_geometry
@@ -65,6 +65,16 @@ def _accept_validation(window: FEMMainWindow, step_name: str) -> None:
     )
 
 
+def test_job_submit_dialog_uses_a_chinese_default_name_without_description():
+    _application()
+    dialog = JobSubmitDialog("作业-1", ("分析步-1",), "分析步-1")
+
+    assert dialog.job_name == "作业-1"
+    assert dialog.step_name == "分析步-1"
+    assert dialog.findChild(QLabel, "jobSessionNotice") is None
+    dialog.close()
+
+
 def test_analysis_job_timestamps_elapsed_and_result_state():
     started_at = datetime.now(timezone.utc) - timedelta(seconds=1.0)
     job = AnalysisRun(
@@ -95,7 +105,7 @@ def test_analysis_job_timestamps_elapsed_and_result_state():
 def test_session_runs_are_case_insensitive_and_cleared_by_model_transitions():
     session = _validated_session()
     first = session.prepare_solve("pull", "Job-1")
-    assert session.next_run_name() == "Job-2"
+    assert session.next_run_name() == "作业-1"
     found = session.find_run("job-1")
     assert found is not None
     assert found.run_id == first.run_id
@@ -792,6 +802,12 @@ def test_job_manager_shows_memory_log_and_history_actions(gui_inp_path):
     assert manager is not None
     assert manager.table.rowCount() == 1
     assert manager.table.item(0, 2).text() == "已完成"
+    assert manager.findChild(QLabel, "jobSessionNotice") is None
+    assert all(
+        manager.table.item(0, column).textAlignment()
+        == Qt.AlignmentFlag.AlignCenter
+        for column in range(manager.table.columnCount())
+    )
     assert manager.resubmit_button.isEnabled()
     assert manager.open_result_button.isEnabled()
     assert window.show_job_manager() is manager

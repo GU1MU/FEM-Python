@@ -23,13 +23,8 @@ _FIELD_LABELS = {
     "result.field.ur.node": "转角 UR",
     "result.field.rf.node": "反力 RF",
     "result.field.rm.node": "反力矩 RM",
-    "result.field.le.centroid": "对数应变 LE（单元质心）",
-    "result.field.s.element_nodal": "应力 S（节点）",
-}
-_FIELD_STATE_LABELS = {
-    FieldState.READY: "就绪",
-    FieldState.LAZY: "按需加载",
-    FieldState.UNAVAILABLE: "不可用",
+    "result.field.le.centroid": "对数应变 LE",
+    "result.field.s.element_nodal": "应力 S",
 }
 
 
@@ -97,12 +92,11 @@ class ResultTree(QTreeWidget):
         default_selection: ScalarFieldSelection | None,
     ) -> tuple[QTreeWidgetItem, QTreeWidgetItem | None]:
         descriptor = availability.descriptor
-        state_label = _FIELD_STATE_LABELS[availability.state]
         field_label = _FIELD_LABELS.get(
             descriptor.label_key,
             descriptor.label_key,
         )
-        field_item = QTreeWidgetItem([f"{field_label}（{state_label}）"])
+        field_item = QTreeWidgetItem([field_label])
         field_selection = ScalarFieldSelection(
             availability.key,
             descriptor.default_component,

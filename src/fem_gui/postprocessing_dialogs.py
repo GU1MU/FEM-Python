@@ -354,30 +354,49 @@ class ContourSettingsDialog(QDialog):
         self.setWindowTitle("云图设置")
         self.setMinimumWidth(450)
         layout = QVBoxLayout(self)
-        range_group = QGroupBox("范围", self)
-        range_layout = QVBoxLayout(range_group)
-        self.auto_range = QRadioButton("自动", range_group)
-        self.manual_range = QRadioButton("手动", range_group)
+        self.range_group = QGroupBox("范围", self)
+        range_layout = QVBoxLayout(self.range_group)
+        self.auto_range = QRadioButton("自动", self.range_group)
+        self.manual_range = QRadioButton("手动", self.range_group)
         (self.manual_range if options.get("manual") else self.auto_range).setChecked(True)
-        range_buttons = QButtonGroup(range_group)
+        range_buttons = QButtonGroup(self.range_group)
         range_buttons.addButton(self.auto_range)
         range_buttons.addButton(self.manual_range)
-        self.minimum = CompactDoubleSpinBox(range_group)
-        self.maximum = CompactDoubleSpinBox(range_group)
+        self.minimum = CompactDoubleSpinBox(self.range_group)
+        self.maximum = CompactDoubleSpinBox(self.range_group)
         for spin in (self.minimum, self.maximum):
             spin.setRange(-1.0e30, 1.0e30)
             spin.setDecimals(8)
         self.minimum.setValue(float(options.get("minimum", 0.0)))
         self.maximum.setValue(float(options.get("maximum", 1.0)))
+        self.show_minimum = QCheckBox(
+            "显示最小值",
+            self.range_group,
+        )
+        self.show_minimum.setChecked(
+            bool(options.get("show_minimum", False))
+        )
+        self.show_maximum = QCheckBox(
+            "显示最大值",
+            self.range_group,
+        )
+        self.show_maximum.setChecked(
+            bool(options.get("show_maximum", False))
+        )
+        automatic_row = QHBoxLayout()
+        automatic_row.addWidget(self.auto_range)
+        automatic_row.addStretch(1)
+        automatic_row.addWidget(self.show_minimum)
+        automatic_row.addWidget(self.show_maximum)
         manual_row = QHBoxLayout()
         manual_row.addWidget(self.manual_range)
         manual_row.addWidget(QLabel("最小值", self))
         manual_row.addWidget(self.minimum)
         manual_row.addWidget(QLabel("最大值", self))
         manual_row.addWidget(self.maximum)
-        range_layout.addWidget(self.auto_range)
+        range_layout.addLayout(automatic_row)
         range_layout.addLayout(manual_row)
-        layout.addWidget(range_group)
+        layout.addWidget(self.range_group)
         form = QFormLayout()
         configure_form_layout(form)
         self.colormap = QComboBox(self)
@@ -473,17 +492,19 @@ class ContourSettingsDialog(QDialog):
         layout.addLayout(form)
         self.legend = QCheckBox("显示图例", self)
         self.legend.setChecked(bool(options.get("legend", True)))
-        self.show_minimum = QCheckBox("显示最小值", self)
-        self.show_minimum.setChecked(bool(options.get("show_minimum", False)))
-        self.show_maximum = QCheckBox("显示最大值", self)
-        self.show_maximum.setChecked(bool(options.get("show_maximum", False)))
         self.show_ids = QCheckBox("显示对象编号", self)
         self.show_ids.setChecked(bool(options.get("show_ids", False)))
+        self.show_coordinate_system = QCheckBox(
+            "显示坐标系",
+            self,
+        )
+        self.show_coordinate_system.setChecked(
+            bool(options.get("show_coordinate_system", True))
+        )
         for checkbox in (
             self.legend,
-            self.show_minimum,
-            self.show_maximum,
             self.show_ids,
+            self.show_coordinate_system,
         ):
             layout.addWidget(checkbox)
         buttons = _dialog_buttons(self)
@@ -510,6 +531,9 @@ class ContourSettingsDialog(QDialog):
             "show_minimum": self.show_minimum.isChecked(),
             "show_maximum": self.show_maximum.isChecked(),
             "show_ids": self.show_ids.isChecked(),
+            "show_coordinate_system": (
+                self.show_coordinate_system.isChecked()
+            ),
             "edges": edge_mode != CONTOUR_EDGE_NONE,
             "averaging_threshold": float(self.averaging_threshold.value()),
         }

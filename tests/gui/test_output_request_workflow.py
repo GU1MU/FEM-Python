@@ -313,10 +313,13 @@ def test_native_create_survives_project_save_and_reopen(
 
     window.create_output_request()
 
-    created = window.document.steps[0].outputs[0]
-    assert created.variables == ("S",)
-    assert not created.metadata
-    assert created.source_evidence is None
+    created = window.document.steps[0].outputs
+    assert tuple(request.variables for request in created) == (
+        ("U",),
+        ("S",),
+    )
+    assert all(not request.metadata for request in created)
+    assert all(request.source_evidence is None for request in created)
     assert warnings == []
 
     target = tmp_path / "output-request.femproj"
@@ -338,7 +341,7 @@ def test_native_create_survives_project_save_and_reopen(
     reopened.open_native_project()
     _wait_for_task(reopened)
 
-    assert reopened.document.steps[0].outputs == (created,)
+    assert reopened.document.steps[0].outputs == created
     assert not reopened.document.steps[0].outputs[0].metadata
     assert reopened.document.steps[0].outputs[0].source_evidence is None
     reopened.close()

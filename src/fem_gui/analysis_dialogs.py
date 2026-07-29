@@ -26,7 +26,6 @@ from fem.application import AnalysisRun, RunStatus
 from .dialogs import configure_form_layout
 
 
-SESSION_NOTICE = "作业记录、日志和结果仅保留在当前会话中；关闭、重新加载或更换模型后将被清除。"
 _STATUS_LABELS = {
     RunStatus.PENDING: "等待中",
     RunStatus.RUNNING: "运行中",
@@ -65,10 +64,6 @@ class JobSubmitDialog(QDialog):
         form.addRow("分析步：", self.step_combo)
         form.addRow("求解类型：", solver_type)
         layout.addLayout(form)
-        notice = QLabel(SESSION_NOTICE, self)
-        notice.setWordWrap(True)
-        notice.setObjectName("jobSessionNotice")
-        layout.addWidget(notice)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok,
             parent=self,
@@ -101,10 +96,6 @@ class JobManagerDialog(QDialog):
         self.setWindowTitle("作业管理器")
         self.resize(680, 450)
         layout = QVBoxLayout(self)
-        notice = QLabel(SESSION_NOTICE, self)
-        notice.setWordWrap(True)
-        notice.setObjectName("jobSessionNotice")
-        layout.addWidget(notice)
         self.table = QTableWidget(0, 5, self)
         self.table.setObjectName("jobTable")
         self.table.setHorizontalHeaderLabels(("作业名称", "分析步", "状态", "开始时间", "耗时"))
@@ -158,6 +149,7 @@ class JobManagerDialog(QDialog):
             )
             for column, text in enumerate(entries):
                 item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 item.setData(Qt.ItemDataRole.UserRole, job.name)
                 self.table.setItem(row, column, item)
             if job.name == selected:

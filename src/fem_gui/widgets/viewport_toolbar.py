@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..icons import icon
+from .agent_chat import ModelViewportOverlayHost
 
 
 class ViewportToolBar(QToolBar):
@@ -180,8 +181,10 @@ class ViewportPanel(QWidget):
             self._set_scope_creation_active
         )
         self.viewport = viewport
+        self.overlay_host = ModelViewportOverlayHost(viewport, self)
+        self.agent_chat_drawer = self.overlay_host.agent_chat_drawer
         layout.addWidget(self.toolbar)
-        layout.addWidget(viewport, 1)
+        layout.addWidget(self.overlay_host, 1)
         layout.addWidget(self.scope_creation_tray)
 
     def _set_scope_creation_active(self, active: bool) -> None:

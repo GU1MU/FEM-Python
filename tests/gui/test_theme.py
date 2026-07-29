@@ -2,20 +2,79 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint
+from PySide6.QtCore import QPoint, QRect
 from PySide6.QtGui import QColor, QImage, QPainter
-from PySide6.QtWidgets import QApplication, QComboBox
+from PySide6.QtWidgets import QApplication, QComboBox, QStyle, QStyleOption
 
-from fem_gui.theme import build_stylesheet
+from fem_gui.theme import FEMStyle, build_stylesheet
 
 
-def test_checkbox_theme_uses_the_native_indicator_instead_of_a_fragile_icon_resource():
+def test_checkbox_theme_delegates_indicator_drawing_to_the_application_style():
     stylesheet = build_stylesheet()
 
     assert "QCheckBox, QRadioButton" in stylesheet
     assert "QCheckBox::indicator" not in stylesheet
     assert "standardbutton-apply" not in stylesheet
     assert "QComboBox::drop-down" in stylesheet
+
+
+def test_fem_style_draws_a_larger_high_contrast_checkbox_indicator():
+    QApplication.instance() or QApplication([])
+    style = FEMStyle()
+    option = QStyleOption()
+    option.rect = QRect(0, 0, 16, 16)
+    option.state = QStyle.StateFlag.State_Enabled
+    image = QImage(16, 16, QImage.Format.Format_ARGB32)
+    image.fill(QColor("white"))
+    painter = QPainter(image)
+    style.drawPrimitive(
+        QStyle.PrimitiveElement.PE_IndicatorCheckBox,
+        option,
+        painter,
+    )
+    painter.end()
+
+    assert (
+        style.pixelMetric(QStyle.PixelMetric.PM_IndicatorWidth) == style.CHECKBOX_SIZE
+    )
+    assert (
+        style.pixelMetric(QStyle.PixelMetric.PM_IndicatorHeight) == style.CHECKBOX_SIZE
+    )
+    dark_border_pixels = sum(
+        1
+        for y in range(image.height())
+        for x in range(image.width())
+        if max(
+            image.pixelColor(x, y).red(),
+            image.pixelColor(x, y).green(),
+            image.pixelColor(x, y).blue(),
+        )
+        < 160
+    )
+    assert dark_border_pixels >= 40
+
+    option.state |= QStyle.StateFlag.State_On
+    image.fill(QColor("transparent"))
+    painter = QPainter(image)
+    style.drawPrimitive(
+        QStyle.PrimitiveElement.PE_IndicatorCheckBox,
+        option,
+        painter,
+    )
+    painter.end()
+
+    light_check_pixels = sum(
+        1
+        for y in range(image.height())
+        for x in range(image.width())
+        if min(
+            image.pixelColor(x, y).red(),
+            image.pixelColor(x, y).green(),
+            image.pixelColor(x, y).blue(),
+        )
+        > 220
+    )
+    assert light_check_pixels >= 8
 
 
 def test_combo_theme_draws_a_visible_down_arrow():

@@ -52,12 +52,16 @@ def test_contour_and_symbol_dialogs_round_trip_settings():
             "show_minimum": True,
             "show_maximum": True,
             "show_ids": True,
+            "show_coordinate_system": False,
         }
     )
     assert contour.settings()["levels"] == 16
     assert contour.settings()["style"] == "continuous"
     assert contour.settings()["orientation"] == "vertical"
     assert contour.settings()["show_ids"]
+    assert not contour.settings()["show_coordinate_system"]
+    assert contour.show_minimum.parent() is contour.range_group
+    assert contour.show_maximum.parent() is contour.range_group
 
     settings = SymbolSettings(step_name="Static-1", show_values=True, scale=1.5)
     symbols = SymbolSettingsDialog(settings, ("Static-1",))

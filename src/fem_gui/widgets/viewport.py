@@ -938,6 +938,7 @@ class FEMViewport(QWidget):
             "number_format": "general", "decimals": 5,
             "orientation": "vertical", "show_minimum": False,
             "show_maximum": False, "show_ids": False,
+            "show_coordinate_system": True,
         }
         self._message = QLabel("", self)
         self._message.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -3948,7 +3949,16 @@ class FEMViewport(QWidget):
         self._update_result_layer()
 
     def set_contour_options(self, options: dict[str, Any]) -> None:
+        previous_coordinate_system = bool(
+            self._contour["show_coordinate_system"]
+        )
         self._contour.update(options)
+        coordinate_system_changed = (
+            bool(self._contour["show_coordinate_system"])
+            != previous_coordinate_system
+        )
+        if coordinate_system_changed:
+            self._refresh_coordinate_system_axes()
         if (
             "edges" in options
             and self._display.contour_enabled
@@ -3956,6 +3966,8 @@ class FEMViewport(QWidget):
             self._show_edges = bool(options["edges"])
         if self._display.contour_enabled:
             self._update_result_layer()
+        elif coordinate_system_changed:
+            self._render()
 
     def hide_selection_highlight(self, *, render: bool = True) -> None:
         """Hide the selection actor while preserving the selected FEM entity."""
@@ -6416,9 +6428,17 @@ class FEMViewport(QWidget):
         settings = self._background_settings
         top = settings.top_color if settings.style == "gradient" else None
         self._plotter.set_background(settings.bottom_color, top=top)
+        self._refresh_coordinate_system_axes()
+
+    def _refresh_coordinate_system_axes(self) -> None:
+        if self._plotter is None:
+            return
         try:
             self._plotter.hide_axes()
-            self._plotter.add_axes(color=settings.foreground_color)
+            if self._contour.get("show_coordinate_system", True):
+                self._plotter.add_axes(
+                    color=self._background_settings.foreground_color
+                )
         except Exception:
             pass
 

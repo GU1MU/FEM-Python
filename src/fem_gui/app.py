@@ -13,7 +13,7 @@ from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtWidgets import QApplication
 
 from .main_window import FEMMainWindow
-from .theme import build_stylesheet
+from .theme import FEMStyle, build_stylesheet
 
 
 def create_application(argv: Sequence[str] | None = None) -> QApplication:
@@ -23,6 +23,7 @@ def create_application(argv: Sequence[str] | None = None) -> QApplication:
         application = QApplication(list(sys.argv if argv is None else argv))
     _configure_chinese_font(application)
     application.setApplicationDisplayName("有限元分析")
+    application.setStyle(FEMStyle())
     application.setStyleSheet(build_stylesheet())
     return application
 

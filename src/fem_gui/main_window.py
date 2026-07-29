@@ -284,6 +284,68 @@ _RESULT_FIELD_STATE_LABELS = {
 }
 _NUMERICAL_MODEL_CHECK_DOF_LIMIT = 50_000
 _NUMERICAL_MODEL_CHECK_ELEMENT_LIMIT = 100_000
+
+
+def _is_displacement_output_request(request: OutputRequest) -> bool:
+    return (
+        request.kind.casefold() == "field"
+        and request.target.casefold() == "node"
+        and any(
+            variable.strip().casefold() == "u"
+            for variable in request.variables
+        )
+    )
+
+
+def _with_required_displacement_output(
+    requests: tuple[OutputRequest, ...],
+    candidates: Sequence[object],
+    existing: tuple[OutputRequest, ...],
+) -> tuple[OutputRequest, ...]:
+    existing_has_displacement = any(
+        _is_displacement_output_request(request)
+        for request in existing
+    )
+    if existing_has_displacement:
+        return tuple(
+            request
+            for request in requests
+            if not (
+                _is_displacement_output_request(request)
+                and len(request.variables) == 1
+            )
+        )
+
+    selected_displacement = tuple(
+        request
+        for request in requests
+        if _is_displacement_output_request(request)
+    )
+    if selected_displacement:
+        return (
+            *selected_displacement,
+            *(
+                request
+                for request in requests
+                if not _is_displacement_output_request(request)
+            ),
+        )
+
+    required = next(
+        (
+            candidate.authoring_request
+            for candidate in candidates
+            if _is_displacement_output_request(
+                candidate.authoring_request
+            )
+        ),
+        None,
+    )
+    if type(required) is not OutputRequest:
+        raise ValueError("当前模型不支持必需的位移场 U 输出")
+    return (deepcopy(required), *requests)
+
+
 def initial_display_policy(
     element_count: int,
     node_count: int,
@@ -490,6 +552,7 @@ class FEMMainWindow(QMainWindow):
             "number_format": "general", "decimals": 5,
             "orientation": "vertical", "show_minimum": False,
             "show_maximum": False, "show_ids": False,
+            "show_coordinate_system": True,
             "edges": False,
             "averaging_threshold": 75.0,
         }
@@ -7287,7 +7350,7 @@ class FEMMainWindow(QMainWindow):
         if self.document.source_kind is None:
             return
         definitions = list(deepcopy(self.document.steps))
-        name = f"Step-{len(definitions) + 1}"
+        name = f"分析步-{len(definitions) + 1}"
         dialog = StaticStepDialog(name, self)
         if not self._exec_dialog(dialog):
             return
@@ -7598,6 +7661,21 @@ class FEMMainWindow(QMainWindow):
             self._show_error(
                 "创建输出请求",
                 f"分析步不存在或不可编辑：{step_name}",
+            )
+            return
+        try:
+            requests = _with_required_displacement_output(
+                requests,
+                candidates,
+                tuple(target.outputs),
+            )
+        except ValueError as error:
+            self._show_error("创建输出请求", str(error))
+            return
+        if not requests:
+            self.status_panel.set_state(
+                "位移场 U 输出请求已存在",
+                5000,
             )
             return
         target.outputs = tuple(target.outputs) + tuple(

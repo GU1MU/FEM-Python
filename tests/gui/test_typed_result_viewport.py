@@ -403,6 +403,8 @@ class _Plotter:
         self.scalar_bars: dict[str, object] = {}
         self.render_count = 0
         self.background_calls: list[tuple[str, str | None]] = []
+        self.hide_axes_count = 0
+        self.axes_calls: list[dict[str, object]] = []
 
     def add_mesh(self, dataset, **kwargs):
         self.mesh_calls.append((dataset, kwargs))
@@ -419,16 +421,40 @@ class _Plotter:
         self.background_calls.append((color, top))
 
     def hide_axes(self) -> None:
-        return None
+        self.hide_axes_count += 1
 
-    def add_axes(self, **_kwargs) -> None:
-        return None
+    def add_axes(self, **kwargs) -> None:
+        self.axes_calls.append(kwargs)
 
     def _getPixelRatio(self) -> float:
         return 1.0
 
     def render(self) -> None:
         self.render_count += 1
+
+
+def test_coordinate_system_option_updates_viewport_axes() -> None:
+    _application()
+    viewport = FEMViewport()
+    plotter = _Plotter()
+    viewport._plotter = plotter
+
+    viewport.set_contour_options(
+        {"show_coordinate_system": False}
+    )
+
+    assert plotter.hide_axes_count == 1
+    assert plotter.axes_calls == []
+
+    viewport.set_contour_options(
+        {"show_coordinate_system": True}
+    )
+
+    assert plotter.hide_axes_count == 2
+    assert plotter.axes_calls == [
+        {"color": viewport._background_settings.foreground_color}
+    ]
+    viewport.close()
 
 
 @pytest.mark.parametrize(

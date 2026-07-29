@@ -447,7 +447,7 @@ def test_limited_legacy_local_load_can_be_changed_to_global(
     )
 
 
-def test_existing_output_request_is_read_only_and_deletable() -> None:
+def test_existing_displacement_output_is_read_only_and_not_deletable() -> None:
     _application()
     output = OutputRequest("field", "node", ("U", "RF"))
     dialog = OutputRequestDialog(["Step-A"], current=output)
@@ -467,8 +467,9 @@ def test_existing_output_request_is_read_only_and_deletable() -> None:
     assert dialog.variables_value.text() == "U、RF"
     assert manager.select_definition(("output", 0, 0))
     assert manager.edit_button.text() == "查看"
+    assert not manager.delete_button.isEnabled()
     manager._delete()
-    assert manager.values()[0].outputs == ()
+    assert manager.values()[0].outputs == (output,)
 
 
 def test_line_load_tree_item_routes_double_click_to_edit() -> None:

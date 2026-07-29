@@ -163,9 +163,9 @@ def test_catalog_tree_preserves_published_field_and_component_order() -> None:
     step = _step_item(tree)
     assert step.text(0) == "Job-1 · Static-1"
     assert [step.child(index).text(0) for index in range(3)] == [
-        "位移 U（就绪）",
-        "vendor.result.reaction（按需加载）",
-        "应力 S（节点）（不可用）",
+        "位移 U",
+        "vendor.result.reaction",
+        "应力 S",
     ]
     assert [
         step.child(0).child(index).text(0)

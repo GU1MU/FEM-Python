@@ -59,6 +59,46 @@ def test_visible_edge_modes_extract_distinct_model_boundaries() -> None:
     assert extract_contour_edges(grid, CONTOUR_EDGE_NONE) is None
 
 
+def test_feature_edges_merge_element_nodal_stress_geometry_first() -> None:
+    points = np.asarray(
+        (
+            (0, 0, 0),
+            (1, 0, 0),
+            (1, 1, 0),
+            (0, 1, 0),
+            (0, 0, 1),
+            (1, 0, 1),
+            (1, 1, 1),
+            (0, 1, 1),
+            (1, 0, 0),
+            (2, 0, 0),
+            (2, 1, 0),
+            (1, 1, 0),
+            (1, 0, 1),
+            (2, 0, 1),
+            (2, 1, 1),
+            (1, 1, 1),
+        ),
+        dtype=float,
+    )
+    cells = np.asarray(
+        (8, *range(8), 8, *range(8, 16)),
+        dtype=np.int64,
+    )
+    disconnected_stress_grid = pyvista.UnstructuredGrid(
+        cells,
+        np.asarray((12, 12), dtype=np.uint8),
+        points,
+    )
+
+    feature_edges = extract_contour_edges(
+        disconnected_stress_grid,
+        CONTOUR_EDGE_FEATURE,
+    )
+
+    assert feature_edges.n_cells == 16
+
+
 def test_pyvista_accepts_filled_surface_and_feature_edge_options() -> None:
     grid = pyvista.ImageData(dimensions=(3, 3, 3))
     grid.point_data["value"] = np.linspace(0.0, 1.0, grid.n_points)

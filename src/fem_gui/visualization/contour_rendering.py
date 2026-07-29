@@ -47,7 +47,10 @@ def extract_contour_edges(dataset: Any, edge_mode: str) -> Any | None:
     if edge_mode == CONTOUR_EDGE_ALL:
         return dataset.extract_all_edges(clear_data=True)
 
-    surface = dataset.extract_surface(
+    connected_geometry = (
+        dataset.cast_to_unstructured_grid().clean()
+    )
+    surface = connected_geometry.extract_surface(
         algorithm="dataset_surface"
     ).clean()
     if edge_mode == CONTOUR_EDGE_EXTERIOR:
@@ -58,7 +61,7 @@ def extract_contour_edges(dataset: Any, edge_mode: str) -> Any | None:
             boundary_edges=False,
             feature_edges=True,
             manifold_edges=False,
-            non_manifold_edges=True,
+            non_manifold_edges=False,
             clear_data=True,
         )
     if edge_mode == CONTOUR_EDGE_FREE:

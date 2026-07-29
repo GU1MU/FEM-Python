@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import QProxyStyle, QStyle, QStyleOption, QWidget
+
 
 COLORS = {
     "background": "#f4f5f6",
@@ -23,6 +27,100 @@ COLORS = {
 _COMBO_DOWN_ARROW = (
     Path(__file__).with_name("resources") / "icons" / "combo_down_arrow.svg"
 ).resolve().as_posix()
+
+
+class FEMStyle(QProxyStyle):
+    """为较难辨认的原生控件提供清晰、稳定的绘制。"""
+
+    CHECKBOX_SIZE = 16
+    CHECKBOX_BORDER_WIDTH = 2.0
+
+    def pixelMetric(
+        self,
+        metric: QStyle.PixelMetric,
+        option: QStyleOption | None = None,
+        widget: QWidget | None = None,
+    ) -> int:
+        if metric in (
+            QStyle.PixelMetric.PM_IndicatorWidth,
+            QStyle.PixelMetric.PM_IndicatorHeight,
+        ):
+            return self.CHECKBOX_SIZE
+        return super().pixelMetric(metric, option, widget)
+
+    def drawPrimitive(
+        self,
+        element: QStyle.PrimitiveElement,
+        option: QStyleOption,
+        painter: QPainter,
+        widget: QWidget | None = None,
+    ) -> None:
+        if element in (
+            QStyle.PrimitiveElement.PE_IndicatorCheckBox,
+            QStyle.PrimitiveElement.PE_IndicatorItemViewItemCheck,
+        ):
+            self._draw_checkbox_indicator(option, painter)
+            return
+        super().drawPrimitive(element, option, painter, widget)
+
+    def _draw_checkbox_indicator(
+        self,
+        option: QStyleOption,
+        painter: QPainter,
+    ) -> None:
+        state = option.state
+        enabled = bool(state & QStyle.StateFlag.State_Enabled)
+        hovered = bool(state & QStyle.StateFlag.State_MouseOver)
+        focused = bool(state & QStyle.StateFlag.State_HasFocus)
+        checked = bool(state & QStyle.StateFlag.State_On)
+        partial = bool(state & QStyle.StateFlag.State_NoChange)
+
+        side = min(self.CHECKBOX_SIZE, option.rect.width(), option.rect.height())
+        left = option.rect.x() + (option.rect.width() - side) / 2
+        top = option.rect.y() + (option.rect.height() - side) / 2
+        box = QRectF(left + 1.25, top + 1.25, side - 2.5, side - 2.5)
+
+        if not enabled:
+            border = QColor("#aeb5bb")
+            fill = QColor("#aeb8c0") if checked or partial else QColor("#f1f2f3")
+        elif checked or partial:
+            border = QColor("#315f82")
+            fill = QColor("#3f759d") if hovered else QColor(COLORS["accent"])
+        else:
+            border = QColor(COLORS["accent"] if hovered or focused else "#65727d")
+            fill = QColor("#f5f9fc" if hovered else "#ffffff")
+
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(QPen(border, self.CHECKBOX_BORDER_WIDTH))
+        painter.setBrush(fill)
+        painter.drawRoundedRect(box, 2.0, 2.0)
+
+        if checked:
+            check = QPainterPath(QPointF(left + 3.7, top + 8.1))
+            check.lineTo(QPointF(left + 6.8, top + 11.1))
+            check.lineTo(QPointF(left + 12.4, top + 4.8))
+            check_pen = QPen(
+                QColor("#f7f9fa" if enabled else "#ffffff"),
+                2.2,
+            )
+            check_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            check_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(check_pen)
+            painter.setBrush(QColor("transparent"))
+            painter.drawPath(check)
+        elif partial:
+            partial_pen = QPen(
+                QColor("#f7f9fa" if enabled else "#ffffff"),
+                2.2,
+            )
+            partial_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(partial_pen)
+            painter.drawLine(
+                QPointF(left + 4.2, top + 8.0),
+                QPointF(left + 11.8, top + 8.0),
+            )
+        painter.restore()
 
 
 def build_stylesheet() -> str:

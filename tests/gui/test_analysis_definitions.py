@@ -55,6 +55,26 @@ def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
+def test_new_static_step_uses_a_chinese_default_name(monkeypatch):
+    _application()
+    window = FEMMainWindow()
+    window._set_native_geometry(RectangleGeometry("plate", 2.0, 1.0), "矩形")
+    names: list[str] = []
+
+    class _Dialog:
+        def __init__(self, name, parent):
+            del parent
+            names.append(name)
+
+    monkeypatch.setattr("fem_gui.main_window.StaticStepDialog", _Dialog)
+    monkeypatch.setattr(window, "_exec_dialog", lambda _dialog: False)
+
+    window.create_static_step()
+
+    assert names == ["分析步-1"]
+    window.close()
+
+
 def _regions(kind: str, *names: str) -> list[RegionRef]:
     return [RegionRef(kind, name) for name in names]
 
@@ -769,6 +789,14 @@ def test_output_request_uses_only_published_candidate_order_and_dto(
         "position" not in dialog.candidate_list.item(index).text()
         for index in range(dialog.candidate_list.count())
     )
+    displacement_item = dialog.candidate_list.item(0)
+    assert displacement_item.checkState() == Qt.CheckState.Checked
+    assert not (
+        displacement_item.flags()
+        & Qt.ItemFlag.ItemIsUserCheckable
+    )
+    displacement_item.setCheckState(Qt.CheckState.Unchecked)
+    assert displacement_item.checkState() == Qt.CheckState.Checked
     for index in range(dialog.candidate_list.count()):
         dialog.candidate_list.item(index).setCheckState(
             Qt.CheckState.Checked
@@ -989,6 +1017,25 @@ def test_output_delete_uses_independent_capability_and_protects_initial() -> Non
     assert allowed.delete_button.isEnabled()
     allowed._delete()
     assert allowed.values()[0].outputs == ()
+
+    required = OutputRequest("field", "node", ("U",))
+    required_step = static("Load")
+    required_step.outputs = (required,)
+    required_manager = AnalysisDefinitionManagerDialog(
+        [required_step],
+        [],
+        [],
+        [],
+        2,
+        output_delete_capability=_output_capability(
+            "output_request.delete",
+            AuthoringStatus.ENABLED,
+        ),
+    )
+    assert required_manager.select_definition(("output", 0, 0))
+    assert not required_manager.delete_button.isEnabled()
+    required_manager._delete()
+    assert required_manager.values()[0].outputs == (required,)
 
     initial = static("Initial")
     initial.outputs = (output,)
