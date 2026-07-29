@@ -232,3 +232,109 @@ def test_install_transaction_reuses_one_payload_validation(
 
     assert calls == [payload, payload]
     viewport.close()
+
+
+class _CountingMapper:
+    def __init__(self, array_name: str) -> None:
+        self.array_name = array_name
+        self.scalar_visibility = True
+        self.scalar_range = (0.0, 1.0)
+        self.update_count = 0
+
+    def Update(self) -> None:
+        self.update_count += 1
+
+
+class _CountingActor:
+    def __init__(self, array_name: str) -> None:
+        self.mapper = _CountingMapper(array_name)
+        self.visible = True
+
+    def SetVisibility(self, visible: bool) -> None:
+        self.visible = bool(visible)
+
+
+class _CountingPlotter:
+    def __init__(self) -> None:
+        self.mesh_calls: list[tuple[object, dict[str, object]]] = []
+        self.remove_actor_calls = 0
+        self.render_count = 0
+        self.scalar_bars: dict[str, object] = {}
+
+    def add_mesh(self, dataset: object, **options: object) -> _CountingActor:
+        self.mesh_calls.append((dataset, options))
+        return _CountingActor(str(options.get("scalars", "")))
+
+    def remove_actor(self, _actor: object, **_options: object) -> None:
+        self.remove_actor_calls += 1
+
+    def remove_scalar_bar(self, title: str, **_options: object) -> None:
+        self.scalar_bars.pop(title, None)
+
+    def add_scalar_bar(self, *, title: str, **_options: object) -> None:
+        self.scalar_bars[title] = object()
+
+    def render(self) -> None:
+        self.render_count += 1
+
+
+def test_stress_component_switch_has_constant_geometry_work() -> None:
+    _application()
+    viewport = FEMViewport()
+    plotter = _CountingPlotter()
+    viewport._plotter = plotter
+    viewport._display = DisplayState("deformed", True)
+    first = _payload("S11", (1.0, 2.0, 3.0))
+    viewport.set_result_render_payload(first)
+    viewport._update_result_layer()
+    rendered_grid = viewport._result_grid
+    rendered_actor = viewport._actors["result"]
+    node_index = viewport._result_point_index_to_node_id
+    element_index = viewport._result_point_index_to_element_id
+    cell_index = viewport._result_cell_index_to_element_id
+
+    for offset, component in enumerate(
+        ("S22", "S33", "S12", "Mises"),
+        start=1,
+    ):
+        current = viewport._result_render_payload
+        assert current is not None
+        topology = current.topology
+        next_topology = ResultFieldTopology(
+            source=topology.source,
+            materialization_generation=topology.materialization_generation,
+            selection=ScalarFieldSelection(
+                topology.selection.field_key,
+                component,
+            ),
+            deformation_scale=topology.deformation_scale,
+            points=topology.points,
+            cells=topology.cells,
+            cell_kinds=topology.cell_kinds,
+            canonical_element_types=topology.canonical_element_types,
+            values=np.asarray(
+                (offset + 1.0, offset + 2.0, offset + 3.0)
+            ),
+            value_layout=topology.value_layout,
+            point_locations=topology.point_locations,
+            cell_locations=topology.cell_locations,
+        )
+        next_payload = build_result_render_payload(
+            next_topology,
+            reusable=current,
+        )
+        viewport.set_result_render_payload(next_payload)
+        viewport.set_display("deformed", True)
+
+    assert viewport._result_grid is rendered_grid
+    assert viewport._actors["result"] is rendered_actor
+    assert [
+        options["name"]
+        for _dataset, options in plotter.mesh_calls
+    ] == ["result", "result_edges"]
+    assert plotter.remove_actor_calls == 0
+    assert plotter.render_count == 5
+    assert viewport._result_point_index_to_node_id is node_index
+    assert viewport._result_point_index_to_element_id is element_index
+    assert viewport._result_cell_index_to_element_id is cell_index
+    viewport.close()
