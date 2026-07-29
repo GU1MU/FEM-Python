@@ -51,6 +51,8 @@ from ..agent_events import (
     DiagnosticView,
     MessageStatus,
     MessageView,
+    ProposalView,
+    ProposalViewStatus,
     SessionPresentation,
     TimelineKind,
     ToolGroupView,
@@ -696,6 +698,7 @@ class AgentChatDrawer(_BoundaryFrame):
         *,
         workspace_commands: WorkspaceCommandHandler | None = None,
         agent_runtime: QtAgentRuntime | None = None,
+        authoring_bridge: object | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("agentChatDrawer")
@@ -711,6 +714,7 @@ class AgentChatDrawer(_BoundaryFrame):
         self._pending_solve_confirmations: set[tuple[int, str]] = set()
         self._completed_solve_confirmations: set[tuple[int, str]] = set()
         self.event_projector = AgentEventProjector()
+        self.authoring_bridge = authoring_bridge
         self.workspace_commands = (
             workspace_commands or WorkspaceCommandHandler()
         )
@@ -783,6 +787,12 @@ class AgentChatDrawer(_BoundaryFrame):
         title = QLabel("FEM Agent", header)
         title.setObjectName("agentChatTitle")
         layout.addWidget(title)
+
+        self.authoring_binding_state = QLabel("未绑定模型", header)
+        self.authoring_binding_state.setObjectName(
+            "agentChatAuthoringBinding"
+        )
+        layout.addWidget(self.authoring_binding_state)
         layout.addStretch(1)
 
         self.new_session_button = _BoundaryToolButton(header)
@@ -798,6 +808,7 @@ class AgentChatDrawer(_BoundaryFrame):
         self.close_button.setToolTip("关闭聊天框")
         self.close_button.clicked.connect(self.closeRequested)
         layout.addWidget(self.close_button)
+        self._update_authoring_binding_state()
         return header
 
     def _build_conversation(self, parent: QWidget) -> QWidget:
@@ -899,6 +910,10 @@ class AgentChatDrawer(_BoundaryFrame):
                 confirmation.confirmation_id: confirmation
                 for confirmation in turn.confirmations
             }
+            proposals = {
+                proposal.proposal_id: proposal
+                for proposal in turn.proposals
+            }
             for timeline_item in turn.timeline:
                 if timeline_item.kind is TimelineKind.MESSAGE:
                     self._add_agent_message(
@@ -922,6 +937,11 @@ class AgentChatDrawer(_BoundaryFrame):
                 elif timeline_item.kind is TimelineKind.CONFIRMATION:
                     self._add_confirmation_card(
                         confirmations[timeline_item.item_id]
+                    )
+                elif timeline_item.kind is TimelineKind.PROPOSAL:
+                    self._add_proposal_card(
+                        proposals[timeline_item.item_id],
+                        turn.turn_id,
                     )
             if turn.status in {TurnStatus.CANCELLED, TurnStatus.FAILED}:
                 status = _plain_label(
@@ -1067,6 +1087,138 @@ class AgentChatDrawer(_BoundaryFrame):
             0,
             Qt.AlignmentFlag.AlignLeft,
         )
+        self.event_feed_layout.addWidget(card)
+
+    def _add_proposal_card(
+        self,
+        proposal: ProposalView,
+        turn_id: str,
+    ) -> None:
+        card = _BoundaryFrame(self.event_feed)
+        card.setObjectName("agentChatProposal")
+        card.setProperty("proposalId", proposal.proposal_id)
+        card.setProperty("proposalHash", proposal.proposal_hash)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(9, 7, 9, 7)
+        layout.setSpacing(4)
+
+        title = _plain_label(proposal.title, card)
+        title.setObjectName("agentChatProposalTitle")
+        layout.addWidget(title)
+        summary = _plain_label(proposal.summary, card)
+        summary.setObjectName("agentChatProposalSummary")
+        summary.setWordWrap(True)
+        layout.addWidget(summary)
+        impact = _plain_label(f"影响 · {proposal.impact}", card)
+        impact.setObjectName("agentChatProposalImpact")
+        impact.setWordWrap(True)
+        layout.addWidget(impact)
+        revision = QLabel(
+            f"revision {proposal.base_session_revision} · "
+            f"sha256 {proposal.proposal_hash[:16]}…",
+            card,
+        )
+        revision.setObjectName("agentChatProposalRevision")
+        revision.setToolTip(proposal.proposal_hash)
+        layout.addWidget(revision)
+
+        status = proposal.status
+        bridge = self.authoring_bridge
+        if (
+            status is ProposalViewStatus.PENDING_CONFIRMATION
+            and bridge is not None
+        ):
+            try:
+                bridge_status = bridge.state(proposal.proposal_id)
+            except Exception:
+                bridge_status = None
+            if bridge_status is not None:
+                try:
+                    status = ProposalViewStatus(bridge_status.value)
+                except ValueError:
+                    pass
+
+        status_labels = {
+            ProposalViewStatus.PENDING_CONFIRMATION: "等待 GUI 确认",
+            ProposalViewStatus.ACCEPTED: "已接受",
+            ProposalViewStatus.REJECTED: "已拒绝",
+            ProposalViewStatus.STALE: "提案已陈旧",
+            ProposalViewStatus.RUNNING: "正在执行",
+            ProposalViewStatus.SUCCEEDED: "已完成",
+            ProposalViewStatus.FAILED: "执行失败",
+            ProposalViewStatus.CANCELLED: "已取消",
+        }
+        state_label = _plain_label(
+            (
+                status_labels[status]
+                + (
+                    f" · {proposal.status_message}"
+                    if proposal.status_message
+                    else ""
+                )
+            ),
+            card,
+        )
+        state_label.setObjectName("agentChatProposalStatus")
+        layout.addWidget(state_label)
+
+        actions = QWidget(card)
+        actions_layout = QHBoxLayout(actions)
+        actions_layout.setContentsMargins(0, 2, 0, 0)
+        actions_layout.setSpacing(6)
+        accept = _BoundaryToolButton(actions)
+        accept.setObjectName("agentChatProposalAcceptButton")
+        accept.setText(proposal.confirm_label)
+        accept.setProperty("proposalId", proposal.proposal_id)
+        accept.setProperty(
+            "targetDocumentId",
+            proposal.target_document_id,
+        )
+        accept.setProperty(
+            "targetSessionId",
+            proposal.target_session_id,
+        )
+        accept.setProperty(
+            "baseSessionRevision",
+            proposal.base_session_revision,
+        )
+        accept.setEnabled(
+            status is ProposalViewStatus.PENDING_CONFIRMATION
+            and not self._runtime_busy
+            and self._proposal_targets_live_binding(proposal)
+        )
+        accept.clicked.connect(
+            lambda _checked=False, item=proposal, item_turn=turn_id: (
+                self._accept_authoring_proposal(item, item_turn)
+            )
+        )
+        actions_layout.addWidget(accept)
+
+        reject = _BoundaryToolButton(actions)
+        reject.setObjectName("agentChatProposalRejectButton")
+        reject.setText("拒绝")
+        reject.setProperty("proposalId", proposal.proposal_id)
+        reject.setProperty(
+            "targetDocumentId",
+            proposal.target_document_id,
+        )
+        reject.setProperty(
+            "targetSessionId",
+            proposal.target_session_id,
+        )
+        reject.setProperty(
+            "baseSessionRevision",
+            proposal.base_session_revision,
+        )
+        reject.setEnabled(accept.isEnabled())
+        reject.clicked.connect(
+            lambda _checked=False, item=proposal, item_turn=turn_id: (
+                self._reject_authoring_proposal(item, item_turn)
+            )
+        )
+        actions_layout.addWidget(reject)
+        actions_layout.addStretch(1)
+        layout.addWidget(actions)
         self.event_feed_layout.addWidget(card)
 
     def _build_composer(self, parent: QWidget) -> QWidget:
@@ -1491,6 +1643,95 @@ class AgentChatDrawer(_BoundaryFrame):
                 preserve_tool_expansion=True,
             )
 
+    def _accept_authoring_proposal(
+        self,
+        proposal: ProposalView,
+        _turn_id: str,
+    ) -> None:
+        bridge = self.authoring_bridge
+        if bridge is None:
+            return
+        try:
+            receipt = bridge.accept_from_gui_control(proposal.proposal_id)
+        except Exception as exc:
+            self._show_preview_notice(
+                str(exc).strip() or "提案接受失败"
+            )
+        else:
+            self._show_preview_notice(
+                receipt.message
+                or (
+                    "提案已由 GUI 控件接受；A1 Fake Port 未修改模型"
+                    if receipt.state.value == "accepted"
+                    else "提案处理失败"
+                )
+            )
+        self._render_event_presentation(preserve_tool_expansion=True)
+
+    def _reject_authoring_proposal(
+        self,
+        proposal: ProposalView,
+        _turn_id: str,
+    ) -> None:
+        bridge = self.authoring_bridge
+        if bridge is None:
+            return
+        try:
+            receipt = bridge.reject_from_gui_control(proposal.proposal_id)
+        except Exception as exc:
+            self._show_preview_notice(
+                str(exc).strip() or "提案拒绝失败"
+            )
+        else:
+            self._show_preview_notice(
+                receipt.message or "提案已拒绝，当前模型保持不变"
+            )
+        self._render_event_presentation(preserve_tool_expansion=True)
+
+    def _proposal_targets_live_binding(
+        self,
+        proposal: ProposalView,
+    ) -> bool:
+        bridge = self.authoring_bridge
+        if bridge is None or bridge.context is None:
+            return False
+        binding = bridge.context.binding
+        if (
+            not binding.supported
+            or binding.document_id != proposal.target_document_id
+            or binding.session_id != proposal.target_session_id
+            or binding.session_revision != proposal.base_session_revision
+        ):
+            return False
+        try:
+            return (
+                bridge.state(proposal.proposal_id).value
+                == "pending_confirmation"
+            )
+        except Exception:
+            return False
+
+    def refresh_authoring_binding(self) -> None:
+        self._update_authoring_binding_state()
+        self._render_event_presentation(preserve_tool_expansion=True)
+
+    def _update_authoring_binding_state(self) -> None:
+        label = getattr(self, "authoring_binding_state", None)
+        if label is None:
+            return
+        bridge = self.authoring_bridge
+        context = None if bridge is None else bridge.context
+        if context is None or not context.binding.supported:
+            label.setText("未绑定模型")
+            label.setToolTip("V1 A1 只支持空白会话和 native 项目")
+            return
+        model_name = context.model_name or "空白会话"
+        label.setText(f"已绑定 · {model_name}")
+        label.setToolTip(
+            f"{context.binding.document_id} · "
+            f"revision {context.binding.session_revision}"
+        )
+
     def _solve_finished(
         self,
         revision: int,
@@ -1566,6 +1807,46 @@ class AgentChatDrawer(_BoundaryFrame):
                     not self._runtime_busy
                     and self._confirmation_targets_live_session()
                 )
+        for button in self.findChildren(
+            QToolButton,
+            "agentChatProposalAcceptButton",
+        ):
+            button.setEnabled(
+                not self._runtime_busy
+                and self._proposal_button_targets_live_binding(button)
+            )
+        for button in self.findChildren(
+            QToolButton,
+            "agentChatProposalRejectButton",
+        ):
+            button.setEnabled(
+                not self._runtime_busy
+                and self._proposal_button_targets_live_binding(button)
+            )
+
+    def _proposal_button_targets_live_binding(
+        self,
+        button: QToolButton,
+    ) -> bool:
+        bridge = self.authoring_bridge
+        if bridge is None or bridge.context is None:
+            return False
+        binding = bridge.context.binding
+        if (
+            not binding.supported
+            or binding.document_id != button.property("targetDocumentId")
+            or binding.session_id != button.property("targetSessionId")
+            or binding.session_revision
+            != button.property("baseSessionRevision")
+        ):
+            return False
+        try:
+            return (
+                bridge.state(str(button.property("proposalId"))).value
+                == "pending_confirmation"
+            )
+        except Exception:
+            return False
 
     def shutdown_runtime(self) -> None:
         """安全关闭后台执行边界；收起聊天框不会调用本方法。"""
@@ -1614,6 +1895,7 @@ class ModelViewportOverlayHost(QWidget):
         *,
         workspace_commands: WorkspaceCommandHandler | None = None,
         agent_runtime: QtAgentRuntime | None = None,
+        authoring_bridge: object | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("modelViewportOverlayHost")
@@ -1633,6 +1915,7 @@ class ModelViewportOverlayHost(QWidget):
             self,
             workspace_commands=workspace_commands,
             agent_runtime=agent_runtime,
+            authoring_bridge=authoring_bridge,
         )
         self.chat_launcher = AgentChatLauncher(self)
         self._bottom_overlay: QWidget | None = None

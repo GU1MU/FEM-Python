@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from fem import geometry as geometry_runtime
+from fem_agent.authoring import FakeAuthoringPort
 from fem.abaqus import (
     build_model_with_report as build_abaqus_model_with_report,
     parse_file,
@@ -145,6 +146,7 @@ from fem.solvers import static_linear
 
 from .actions import build_actions
 from .action_state import GuiActionContext, derive_action_availability
+from .agent_authoring import AgentAuthoringBridge
 from .part_boolean import PartBooleanController
 from .planar_boolean import PlanarBooleanController
 from .analysis_dialogs import JobManagerDialog, JobSubmitDialog
@@ -471,6 +473,10 @@ class FEMMainWindow(QMainWindow):
         self.resize(1280, 800)
         self.session = ModelSession()
         self.document = self.session.projection_snapshot()
+        self.agent_authoring_bridge = AgentAuthoringBridge(
+            FakeAuthoringPort()
+        )
+        self.agent_authoring_bridge.bind_snapshot(self.document)
         self._applied_session_revision = self.document.session_revision
         self._import_notices: tuple[object, ...] = ()
         self._current_step_name: str | None = None
@@ -1998,6 +2004,9 @@ class FEMMainWindow(QMainWindow):
             else None
         )
         self.document = snapshot
+        self.agent_authoring_bridge.bind_snapshot(snapshot)
+        if hasattr(self, "viewport_panel"):
+            self.viewport_panel.agent_chat_drawer.refresh_authoring_binding()
         if (
             snapshot.artifact is None
             or previous_artifact_id
@@ -2781,7 +2790,12 @@ class FEMMainWindow(QMainWindow):
         self.result_tree = self.navigation.result_tree
         self.viewport = FEMViewport(self)
         self.viewport.set_background_settings(self._background_settings)
-        self.viewport_panel = ViewportPanel(self.viewport, self.actions, self)
+        self.viewport_panel = ViewportPanel(
+            self.viewport,
+            self.actions,
+            self,
+            authoring_bridge=self.agent_authoring_bridge,
+        )
         self.viewport_panel.scope_creation_bar.createRequested.connect(
             self._complete_scope_creation_from_bar
         )

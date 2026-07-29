@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..agent_authoring import AgentAuthoringBridge
 from ..icons import icon
 from .agent_chat import ModelViewportOverlayHost
 
@@ -159,7 +160,14 @@ class ScopeCreationBar(QWidget):
 class ViewportPanel(QWidget):
     """组合常驻工具栏与有限元三维视口。"""
 
-    def __init__(self, viewport: QWidget, actions: Mapping[str, QAction], parent=None) -> None:
+    def __init__(
+        self,
+        viewport: QWidget,
+        actions: Mapping[str, QAction],
+        parent=None,
+        *,
+        authoring_bridge: AgentAuthoringBridge | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("viewportPanel")
         layout = QVBoxLayout(self)
@@ -167,7 +175,11 @@ class ViewportPanel(QWidget):
         layout.setSpacing(0)
         self.toolbar = ViewportToolBar(actions, self)
         self.viewport = viewport
-        self.overlay_host = ModelViewportOverlayHost(viewport, self)
+        self.overlay_host = ModelViewportOverlayHost(
+            viewport,
+            self,
+            authoring_bridge=authoring_bridge,
+        )
         self.agent_chat_drawer = self.overlay_host.agent_chat_drawer
         self.scope_creation_bar = ScopeCreationBar(self.overlay_host)
         self.overlay_host.set_bottom_overlay(self.scope_creation_bar)

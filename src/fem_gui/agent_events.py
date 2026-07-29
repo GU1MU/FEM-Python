@@ -63,6 +63,15 @@ class EventType(str, Enum):
     TOOL_FAILED = "tool_failed"
     DIAGNOSTIC = "diagnostic"
     CONFIRMATION_REQUESTED = "confirmation_requested"
+    PROPOSAL_REQUESTED = "proposal_requested"
+    PROPOSAL_ACCEPTED = "proposal_accepted"
+    PROPOSAL_REJECTED = "proposal_rejected"
+    PROPOSAL_STALE = "proposal_stale"
+    PROPOSAL_STARTED = "proposal_started"
+    PROPOSAL_PROGRESS = "proposal_progress"
+    PROPOSAL_SUCCEEDED = "proposal_succeeded"
+    PROPOSAL_FAILED = "proposal_failed"
+    PROPOSAL_CANCELLED = "proposal_cancelled"
     TURN_CANCELLED = "turn_cancelled"
     TURN_COMPLETE = "turn_complete"
     TURN_FAILED = "turn_failed"
@@ -103,6 +112,18 @@ class TimelineKind(str, Enum):
     TOOL_GROUP = "tool_group"
     DIAGNOSTIC = "diagnostic"
     CONFIRMATION = "confirmation"
+    PROPOSAL = "proposal"
+
+
+class ProposalViewStatus(str, Enum):
+    PENDING_CONFIRMATION = "pending_confirmation"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    STALE = "stale"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 _REQUIRED_PAYLOAD_FIELDS: dict[EventType, frozenset[str]] = {
@@ -137,6 +158,44 @@ _REQUIRED_PAYLOAD_FIELDS: dict[EventType, frozenset[str]] = {
             "revision_hash",
         }
     ),
+    EventType.PROPOSAL_REQUESTED: frozenset(
+        {
+            "proposal_id",
+            "proposal_hash",
+            "proposal_kind",
+            "title",
+            "summary",
+            "impact",
+            "confirm_label",
+            "target_document_id",
+            "target_session_id",
+            "base_session_revision",
+        }
+    ),
+    EventType.PROPOSAL_ACCEPTED: frozenset(
+        {"proposal_id", "proposal_hash"}
+    ),
+    EventType.PROPOSAL_REJECTED: frozenset(
+        {"proposal_id", "proposal_hash", "reason"}
+    ),
+    EventType.PROPOSAL_STALE: frozenset(
+        {"proposal_id", "proposal_hash", "reason"}
+    ),
+    EventType.PROPOSAL_STARTED: frozenset(
+        {"proposal_id", "proposal_hash"}
+    ),
+    EventType.PROPOSAL_PROGRESS: frozenset(
+        {"proposal_id", "proposal_hash", "progress", "message"}
+    ),
+    EventType.PROPOSAL_SUCCEEDED: frozenset(
+        {"proposal_id", "proposal_hash", "summary"}
+    ),
+    EventType.PROPOSAL_FAILED: frozenset(
+        {"proposal_id", "proposal_hash", "reason"}
+    ),
+    EventType.PROPOSAL_CANCELLED: frozenset(
+        {"proposal_id", "proposal_hash", "reason"}
+    ),
     EventType.TURN_CANCELLED: frozenset({"reason"}),
     EventType.TURN_COMPLETE: frozenset(),
     EventType.TURN_FAILED: frozenset({"reason"}),
@@ -154,6 +213,15 @@ _OPTIONAL_PAYLOAD_FIELDS: dict[EventType, frozenset[str]] = {
     EventType.TOOL_FAILED: frozenset({"diagnostic"}),
     EventType.DIAGNOSTIC: frozenset({"code"}),
     EventType.CONFIRMATION_REQUESTED: frozenset(),
+    EventType.PROPOSAL_REQUESTED: frozenset(),
+    EventType.PROPOSAL_ACCEPTED: frozenset(),
+    EventType.PROPOSAL_REJECTED: frozenset(),
+    EventType.PROPOSAL_STALE: frozenset(),
+    EventType.PROPOSAL_STARTED: frozenset(),
+    EventType.PROPOSAL_PROGRESS: frozenset(),
+    EventType.PROPOSAL_SUCCEEDED: frozenset(),
+    EventType.PROPOSAL_FAILED: frozenset(),
+    EventType.PROPOSAL_CANCELLED: frozenset(),
     EventType.TURN_CANCELLED: frozenset(),
     EventType.TURN_COMPLETE: frozenset(),
     EventType.TURN_FAILED: frozenset(),
@@ -326,6 +394,71 @@ def _validate_payload(event_type: EventType, payload: Mapping[str, Any]) -> None
             or not _REVISION_HASH_PATTERN.fullmatch(revision_hash)
         ):
             raise AgentEventError("revision_hash 必须是完整 SHA-256 十六进制值")
+        return
+    proposal_events = {
+        EventType.PROPOSAL_REQUESTED,
+        EventType.PROPOSAL_ACCEPTED,
+        EventType.PROPOSAL_REJECTED,
+        EventType.PROPOSAL_STALE,
+        EventType.PROPOSAL_STARTED,
+        EventType.PROPOSAL_PROGRESS,
+        EventType.PROPOSAL_SUCCEEDED,
+        EventType.PROPOSAL_FAILED,
+        EventType.PROPOSAL_CANCELLED,
+    }
+    if event_type in proposal_events:
+        _require_identifier(payload["proposal_id"], "proposal_id")
+        proposal_hash = payload["proposal_hash"]
+        if (
+            not isinstance(proposal_hash, str)
+            or not _REVISION_HASH_PATTERN.fullmatch(proposal_hash)
+        ):
+            raise AgentEventError(
+                "proposal_hash 必须是完整 SHA-256 十六进制值"
+            )
+        if event_type is EventType.PROPOSAL_REQUESTED:
+            if payload["proposal_kind"] not in {
+                "geometry",
+                "mesh",
+                "solve",
+                "destructive_edit",
+                "requirement_review",
+            }:
+                raise AgentEventError("proposal_kind 不是已知类型")
+            for field_name in (
+                "title",
+                "summary",
+                "impact",
+                "confirm_label",
+            ):
+                _require_string(payload[field_name], field_name)
+            _require_identifier(
+                payload["target_document_id"],
+                "target_document_id",
+            )
+            _require_identifier(
+                payload["target_session_id"],
+                "target_session_id",
+            )
+            revision = payload["base_session_revision"]
+            if not _is_plain_int(revision) or revision < 0:
+                raise AgentEventError(
+                    "base_session_revision 必须是非负整数"
+                )
+        elif event_type is EventType.PROPOSAL_PROGRESS:
+            progress = payload["progress"]
+            if not _is_number(progress) or not 0.0 <= float(progress) <= 1.0:
+                raise AgentEventError("proposal progress 必须在 0 到 1 之间")
+            _require_string(payload["message"], "message")
+        elif event_type is EventType.PROPOSAL_SUCCEEDED:
+            _require_string(payload["summary"], "summary")
+        elif event_type in {
+            EventType.PROPOSAL_REJECTED,
+            EventType.PROPOSAL_STALE,
+            EventType.PROPOSAL_FAILED,
+            EventType.PROPOSAL_CANCELLED,
+        }:
+            _require_string(payload["reason"], "reason")
         return
     if event_type in {
         EventType.TURN_CANCELLED,
@@ -596,6 +729,24 @@ class ConfirmationView:
 
 
 @dataclass
+class ProposalView:
+    proposal_id: str
+    proposal_hash: str
+    proposal_kind: str
+    title: str
+    summary: str
+    impact: str
+    confirm_label: str
+    target_document_id: str
+    target_session_id: str
+    base_session_revision: int
+    status: ProposalViewStatus = ProposalViewStatus.PENDING_CONFIRMATION
+    progress: float = 0.0
+    status_message: str = ""
+    authorized: bool = False
+
+
+@dataclass
 class TimelineItem:
     kind: TimelineKind
     item_id: str
@@ -610,6 +761,7 @@ class TurnView:
     tool_groups: list[ToolGroupView] = field(default_factory=list)
     diagnostics: list[DiagnosticView] = field(default_factory=list)
     confirmations: list[ConfirmationView] = field(default_factory=list)
+    proposals: list[ProposalView] = field(default_factory=list)
     timeline: list[TimelineItem] = field(default_factory=list)
     failure_reason: str = ""
 
@@ -688,6 +840,18 @@ class AgentEventProjector:
             raise AgentEventError("事件跨越了当前 session")
         if event.event_type is EventType.TURN_STARTED:
             self._apply_turn_started(event)
+        elif event.event_type in {
+            EventType.PROPOSAL_ACCEPTED,
+            EventType.PROPOSAL_REJECTED,
+            EventType.PROPOSAL_STALE,
+            EventType.PROPOSAL_STARTED,
+            EventType.PROPOSAL_PROGRESS,
+            EventType.PROPOSAL_SUCCEEDED,
+            EventType.PROPOSAL_FAILED,
+            EventType.PROPOSAL_CANCELLED,
+        }:
+            turn = self._find_turn(event.turn_id)
+            self._apply_proposal_lifecycle(turn, event)
         else:
             turn = self._require_active_turn(event)
             self._apply_turn_event(turn, event)
@@ -722,6 +886,12 @@ class AgentEventProjector:
             raise AgentEventError("事件跨越了当前 turn")
         return self._presentation.turns[-1]
 
+    def _find_turn(self, turn_id: str) -> TurnView:
+        for turn in self._presentation.turns:
+            if turn.turn_id == turn_id:
+                return turn
+        raise AgentEventError("proposal 事件引用了未知 turn")
+
     def _apply_turn_event(self, turn: TurnView, event: AgentEvent) -> None:
         event_type = event.event_type
         if event_type is EventType.MESSAGE_START:
@@ -744,6 +914,8 @@ class AgentEventProjector:
             self._diagnostic(turn, event)
         elif event_type is EventType.CONFIRMATION_REQUESTED:
             self._confirmation(turn, event)
+        elif event_type is EventType.PROPOSAL_REQUESTED:
+            self._proposal_requested(turn, event)
         elif event_type is EventType.TURN_COMPLETE:
             self._turn_complete(turn)
         elif event_type is EventType.TURN_CANCELLED:
@@ -912,6 +1084,142 @@ class AgentEventProjector:
             TimelineItem(TimelineKind.CONFIRMATION, confirmation_id)
         )
         self._last_timeline_kind = TimelineKind.CONFIRMATION
+
+    def _proposal_requested(
+        self,
+        turn: TurnView,
+        event: AgentEvent,
+    ) -> None:
+        proposal_id = event.payload["proposal_id"]
+        if any(item.proposal_id == proposal_id for item in turn.proposals):
+            raise AgentEventError("proposal_id 已存在")
+        proposal = ProposalView(
+            proposal_id=proposal_id,
+            proposal_hash=event.payload["proposal_hash"],
+            proposal_kind=event.payload["proposal_kind"],
+            title=safe_tool_summary(
+                event.payload["title"],
+                max_characters=100,
+            ),
+            summary=safe_tool_summary(
+                event.payload["summary"],
+                max_characters=1_000,
+            ),
+            impact=safe_tool_summary(
+                event.payload["impact"],
+                max_characters=1_000,
+            ),
+            confirm_label=safe_tool_summary(
+                event.payload["confirm_label"],
+                max_characters=40,
+            ),
+            target_document_id=event.payload["target_document_id"],
+            target_session_id=event.payload["target_session_id"],
+            base_session_revision=event.payload["base_session_revision"],
+        )
+        turn.proposals.append(proposal)
+        turn.timeline.append(
+            TimelineItem(TimelineKind.PROPOSAL, proposal_id)
+        )
+        self._last_timeline_kind = TimelineKind.PROPOSAL
+
+    def _apply_proposal_lifecycle(
+        self,
+        turn: TurnView,
+        event: AgentEvent,
+    ) -> None:
+        proposal_id = event.payload["proposal_id"]
+        proposal = next(
+            (
+                item
+                for item in turn.proposals
+                if item.proposal_id == proposal_id
+            ),
+            None,
+        )
+        if proposal is None:
+            raise AgentEventError("proposal 事件引用了未知 proposal_id")
+        if proposal.proposal_hash != event.payload["proposal_hash"]:
+            raise AgentEventError("proposal_hash 与请求事件不一致")
+
+        event_type = event.event_type
+        current = proposal.status
+        allowed: dict[EventType, frozenset[ProposalViewStatus]] = {
+            EventType.PROPOSAL_ACCEPTED: frozenset(
+                {ProposalViewStatus.PENDING_CONFIRMATION}
+            ),
+            EventType.PROPOSAL_REJECTED: frozenset(
+                {ProposalViewStatus.PENDING_CONFIRMATION}
+            ),
+            EventType.PROPOSAL_STALE: frozenset(
+                {ProposalViewStatus.PENDING_CONFIRMATION}
+            ),
+            EventType.PROPOSAL_STARTED: frozenset(
+                {ProposalViewStatus.ACCEPTED}
+            ),
+            EventType.PROPOSAL_PROGRESS: frozenset(
+                {ProposalViewStatus.RUNNING}
+            ),
+            EventType.PROPOSAL_SUCCEEDED: frozenset(
+                {
+                    ProposalViewStatus.ACCEPTED,
+                    ProposalViewStatus.RUNNING,
+                }
+            ),
+            EventType.PROPOSAL_FAILED: frozenset(
+                {
+                    ProposalViewStatus.PENDING_CONFIRMATION,
+                    ProposalViewStatus.ACCEPTED,
+                    ProposalViewStatus.RUNNING,
+                }
+            ),
+            EventType.PROPOSAL_CANCELLED: frozenset(
+                {
+                    ProposalViewStatus.PENDING_CONFIRMATION,
+                    ProposalViewStatus.ACCEPTED,
+                    ProposalViewStatus.RUNNING,
+                }
+            ),
+        }
+        if current not in allowed[event_type]:
+            raise AgentEventError(
+                f"proposal 不能从 {current.value} 进入 {event_type.value}"
+            )
+
+        status_by_event = {
+            EventType.PROPOSAL_ACCEPTED: ProposalViewStatus.ACCEPTED,
+            EventType.PROPOSAL_REJECTED: ProposalViewStatus.REJECTED,
+            EventType.PROPOSAL_STALE: ProposalViewStatus.STALE,
+            EventType.PROPOSAL_STARTED: ProposalViewStatus.RUNNING,
+            EventType.PROPOSAL_PROGRESS: ProposalViewStatus.RUNNING,
+            EventType.PROPOSAL_SUCCEEDED: ProposalViewStatus.SUCCEEDED,
+            EventType.PROPOSAL_FAILED: ProposalViewStatus.FAILED,
+            EventType.PROPOSAL_CANCELLED: ProposalViewStatus.CANCELLED,
+        }
+        proposal.status = status_by_event[event_type]
+        if event_type is EventType.PROPOSAL_ACCEPTED:
+            proposal.authorized = True
+            proposal.status_message = "用户已授权"
+        elif event_type is EventType.PROPOSAL_STARTED:
+            proposal.progress = 0.0
+            proposal.status_message = "后台任务已开始"
+        elif event_type is EventType.PROPOSAL_PROGRESS:
+            proposal.progress = float(event.payload["progress"])
+            proposal.status_message = safe_tool_summary(
+                event.payload["message"],
+                max_characters=300,
+            )
+        elif event_type is EventType.PROPOSAL_SUCCEEDED:
+            proposal.progress = 1.0
+            proposal.status_message = safe_tool_summary(
+                event.payload["summary"],
+                max_characters=500,
+            )
+        else:
+            proposal.status_message = safe_tool_summary(
+                event.payload["reason"],
+                max_characters=500,
+            )
 
     def _turn_complete(self, turn: TurnView) -> None:
         if any(
