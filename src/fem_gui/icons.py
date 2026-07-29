@@ -151,6 +151,8 @@ _PATHS = {
     "field": "<path d='M4 5h16v14H4z'/><path d='M8 9h8M8 13h5M8 17h3'/>",
     "scale": "<path d='M4 17L17 4M7 4h10v10'/><path d='M4 11v9h9'/>",
     "query": "<rect x='3' y='4' width='7' height='7' fill='#2878b5' stroke='none'/><rect x='10' y='4' width='7' height='7' fill='#42b7b1' stroke='none'/><rect x='3' y='11' width='7' height='7' fill='#f2c14e' stroke='none'/><rect x='10' y='11' width='7' height='7' fill='#d9534f' stroke='none'/><rect x='3' y='4' width='14' height='14' stroke='#455a64' stroke-width='1.5'/><circle cx='13.5' cy='14.5' r='4' fill='none' stroke='#455a64' stroke-width='2.2'/><path d='M16.5 17.5L21 22' stroke='#455a64' stroke-width='2.2'/><circle cx='13.5' cy='14.5' r='1.5' fill='#e8872d' stroke='#ffffff' stroke-width='.8'/>",
+    # Reserved vector fallback until a dedicated sweep.png resource is supplied.
+    "sweep": "<path d='M5 19V5M5 12h5'/><path d='M10 7h3v10h-3z' fill='#8ed9e8'/><path d='M14.5 7.5a6 6 0 1 1-.2 9'/><path d='M13 5.5l2 2.2-2.8 1'/>",
     "export": "<path d='M5 4h9l5 5v11H5z'/><path d='M14 4v5h5M12 11v7M9 15l3 3 3-3'/>",
     "image": "<rect x='3' y='5' width='18' height='14'/><circle cx='8' cy='10' r='2'/><path d='M5 17l5-5 3 3 2-2 4 4'/>",
 }

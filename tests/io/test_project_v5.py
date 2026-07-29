@@ -323,13 +323,14 @@ def test_v4_single_body_refs_migrate_atomically_to_v5_namespace() -> None:
 
     migrated = loaded.snapshot
     assert loaded.source_schema == 4
-    assert isinstance(migrated.geometry_recipe, MultiBodyGeometry)
-    assert migrated.geometry_recipe.body("B1").name == "Legacy Body"
+    assert migrated.active_part_id == "P1"
+    assert migrated.parts[0].name == "Legacy Body"
+    assert migrated.parts[0].geometry_recipe == geometry
     assert migrated.named_regions[0].references == (
-        LogicalEntityRef("body:B1"),
+        LogicalEntityRef("body:P1/domain"),
     )
     assert migrated.mesh_settings.local_controls[0].target == (
-        LogicalEntityRef("face:B1/top")
+        LogicalEntityRef("face:P1/top")
     )
 
 

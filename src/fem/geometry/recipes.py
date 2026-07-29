@@ -889,6 +889,8 @@ class BooleanLineageMapping:
         target = LogicalEntityRef(self.target_logical_id)
         if self.relation == "preserved" and (
             self.source_logical_id != self.target_logical_id
+            and _part_local_logical_id(self.source_logical_id)
+            != _part_local_logical_id(self.target_logical_id)
         ):
             raise ValueError("preserved Boolean lineage must keep its logical ID")
         dimensions = {"point": 0, "edge": 1, "face": 2, "body": 3}
@@ -1018,6 +1020,142 @@ class BooleanBodyContext:
     def proven(self) -> bool:
         """Return whether the context carries complete persisted proof."""
 
+        return bool(self.result_entities)
+
+
+@dataclass(frozen=True, slots=True)
+class PartBooleanContext:
+    """Stable cross-Part Boolean intent and complete result lineage."""
+
+    feature_id: str
+    target_part_id: str
+    tool_part_id: str
+    result_part_id: str
+    result_entities: tuple[BooleanLineageEntity, ...] = ()
+    topology_mappings: tuple[BooleanLineageMapping, ...] = ()
+
+    def __post_init__(self) -> None:
+        from fem.application.native_part import (
+            normalize_part_boolean_feature_id,
+            normalize_part_id,
+        )
+        from .part_namespace import part_id_from_logical_id
+
+        feature_id = normalize_part_boolean_feature_id(self.feature_id)
+        target_id = normalize_part_id(self.target_part_id, "target_part_id")
+        tool_id = normalize_part_id(self.tool_part_id, "tool_part_id")
+        result_id = normalize_part_id(self.result_part_id, "result_part_id")
+        if len({target_id, tool_id, result_id}) != 3:
+            raise ValueError(
+                "target, tool, and result Part identities must differ"
+            )
+        entities = tuple(self.result_entities)
+        mappings = tuple(self.topology_mappings)
+        if any(type(item) is not BooleanLineageEntity for item in entities):
+            raise TypeError(
+                "result_entities must contain BooleanLineageEntity values"
+            )
+        if any(type(item) is not BooleanLineageMapping for item in mappings):
+            raise TypeError(
+                "topology_mappings must contain BooleanLineageMapping values"
+            )
+        logical_ids = tuple(item.logical_id for item in entities)
+        if len(logical_ids) != len(set(logical_ids)):
+            raise ValueError("Part Boolean lineage contains duplicate logical IDs")
+        if bool(entities) != bool(mappings):
+            raise ValueError(
+                "Part Boolean entities and mappings must be present together"
+            )
+        entity_ids = set(logical_ids)
+        if entities:
+            if tuple(
+                item.logical_id for item in entities if item.kind == "body"
+            ) != (f"body:{result_id}/domain",):
+                raise ValueError(
+                    "proven Part Boolean lineage must contain exactly the "
+                    "result Part body"
+                )
+            if not any(item.kind == "face" for item in entities):
+                raise ValueError(
+                    "proven Part Boolean lineage must contain boundary faces"
+                )
+            if {item.target_logical_id for item in mappings} != entity_ids:
+                raise ValueError(
+                    "proven Part Boolean lineage must map every result entity"
+                )
+            if {item.source for item in mappings} != {"target", "tool"}:
+                raise ValueError(
+                    "proven Part Boolean lineage requires target and tool proof"
+                )
+            if any(
+                part_id_from_logical_id(item.logical_id) != result_id
+                for item in entities
+            ):
+                raise ValueError(
+                    "Part Boolean result entities must use result Part namespace"
+                )
+            source_ids = {"target": target_id, "tool": tool_id}
+            if any(
+                part_id_from_logical_id(item.source_logical_id)
+                != source_ids[item.source]
+                for item in mappings
+            ):
+                raise ValueError(
+                    "Part Boolean source mappings use the wrong Part namespace"
+                )
+            if any(
+                part_id_from_logical_id(item.target_logical_id) != result_id
+                for item in mappings
+            ):
+                raise ValueError(
+                    "Part Boolean mappings must target the result Part namespace"
+                )
+            if any(
+                link not in entity_ids
+                for item in entities
+                for link in item.topology_links
+            ):
+                raise ValueError(
+                    "Part Boolean topology link targets an unknown entity"
+                )
+        object.__setattr__(self, "feature_id", feature_id)
+        object.__setattr__(self, "target_part_id", target_id)
+        object.__setattr__(self, "tool_part_id", tool_id)
+        object.__setattr__(self, "result_part_id", result_id)
+        object.__setattr__(
+            self,
+            "result_entities",
+            tuple(
+                sorted(
+                    entities,
+                    key=lambda item: logical_ref_sort_key(
+                        LogicalEntityRef(item.logical_id)
+                    ),
+                )
+            ),
+        )
+        object.__setattr__(
+            self,
+            "topology_mappings",
+            tuple(
+                sorted(
+                    mappings,
+                    key=lambda item: (
+                        item.source,
+                        logical_ref_sort_key(
+                            LogicalEntityRef(item.source_logical_id)
+                        ),
+                        logical_ref_sort_key(
+                            LogicalEntityRef(item.target_logical_id)
+                        ),
+                        item.relation,
+                    ),
+                )
+            ),
+        )
+
+    @property
+    def proven(self) -> bool:
         return bool(self.result_entities)
 
 
@@ -1170,6 +1308,7 @@ class MovedGeometry:
                 MovedGeometry,
                 RotatedGeometry,
                 ExtrudedGeometry,
+                RevolvedGeometry,
                 BooleanGeometry,
             ),
         ):
@@ -1203,6 +1342,7 @@ class RotatedGeometry:
                 MovedGeometry,
                 RotatedGeometry,
                 ExtrudedGeometry,
+                RevolvedGeometry,
                 BooleanGeometry,
             ),
         ):
@@ -1278,6 +1418,70 @@ class ExtrudedGeometry:
 
 
 @dataclass(frozen=True, slots=True)
+class RevolvedGeometry:
+    """A planar Profile revolved about one global axis through the origin."""
+
+    base: object
+    axis: Literal["x", "y", "z"]
+    angle_degrees: float
+    source_face_ids: tuple[str, ...] = ()
+
+    @property
+    def name(self) -> str:
+        return self.base.name
+
+    def __post_init__(self) -> None:
+        if not isinstance(
+            self.base,
+            (
+                *BASE_GEOMETRY_TYPES,
+                MovedGeometry,
+                RotatedGeometry,
+                BooleanGeometry,
+            ),
+        ):
+            raise TypeError("扫掠操作需要已有二维几何")
+        if geometry_dimension(self.base) != 2:
+            raise ValueError("只有二维几何可以扫掠")
+        normalized_axis = str(self.axis).lower()
+        if normalized_axis not in {"x", "y", "z"}:
+            raise ValueError("扫掠轴只能是 X、Y 或 Z")
+        angle = float(self.angle_degrees)
+        if (
+            not math.isfinite(angle)
+            or angle <= 0.0
+            or angle > 360.0
+        ):
+            raise ValueError("扫掠角度必须大于 0° 且不超过 360°")
+        if isinstance(self.source_face_ids, (str, bytes, bytearray)):
+            raise TypeError("source_face_ids 必须是 face logical ID iterable")
+        try:
+            requested_ids = tuple(self.source_face_ids)
+        except TypeError as error:
+            raise TypeError(
+                "source_face_ids 必须是 face logical ID iterable"
+            ) from error
+        references = tuple(LogicalEntityRef(value) for value in requested_ids)
+        if any(reference.kind != "face" for reference in references):
+            raise ValueError("source_face_ids 只能包含 face logical IDs")
+        if len(references) != len(
+            set(reference.logical_id for reference in references)
+        ):
+            raise ValueError("source_face_ids 不能包含重复 logical IDs")
+        normalized_ids: tuple[str, ...] = ()
+        if references:
+            from .extrusion_selection import resolve_extrusion_source_faces
+
+            normalized_ids = resolve_extrusion_source_faces(
+                self.base,
+                references,
+            ).face_ids
+        object.__setattr__(self, "axis", normalized_axis)
+        object.__setattr__(self, "angle_degrees", angle)
+        object.__setattr__(self, "source_face_ids", normalized_ids)
+
+
+@dataclass(frozen=True, slots=True)
 class BooleanGeometry:
     """A boolean feature combining one object and one tool geometry."""
 
@@ -1287,6 +1491,7 @@ class BooleanGeometry:
     tool_geometry: object
     body_context: BooleanBodyContext | None = None
     planar_context: PlanarBooleanContext | None = None
+    part_context: PartBooleanContext | None = None
 
     def __post_init__(self) -> None:
         normalized_name = str(self.name).strip()
@@ -1299,6 +1504,7 @@ class BooleanGeometry:
             MovedGeometry,
             RotatedGeometry,
             ExtrudedGeometry,
+            RevolvedGeometry,
             BooleanGeometry,
         )
         if not isinstance(self.object_geometry, supported) or not isinstance(
@@ -1311,8 +1517,18 @@ class BooleanGeometry:
             raise ValueError("布尔操作不支持一维线框几何")
         if object_dimension != tool_dimension:
             raise ValueError("布尔操作的主体和工具体维度必须一致")
-        if self.body_context is not None and self.planar_context is not None:
-            raise ValueError("body_context and planar_context are mutually exclusive")
+        if sum(
+            context is not None
+            for context in (
+                self.body_context,
+                self.planar_context,
+                self.part_context,
+            )
+        ) > 1:
+            raise ValueError(
+                "body_context, planar_context, and part_context are "
+                "mutually exclusive"
+            )
         if self.body_context is not None:
             if type(self.body_context) is not BooleanBodyContext:
                 raise TypeError(
@@ -1366,6 +1582,15 @@ class BooleanGeometry:
                     tool_face_ids=selection.tool_face_ids,
                 ),
             )
+        if self.part_context is not None:
+            if type(self.part_context) is not PartBooleanContext:
+                raise TypeError(
+                    "part_context must be PartBooleanContext or None"
+                )
+            if self.operation not in {"fuse", "cut"}:
+                raise ValueError("strict Part Boolean only supports fuse or cut")
+            if object_dimension != 3:
+                raise ValueError("strict Part Boolean requires 3D operands")
         object.__setattr__(self, "name", normalized_name)
 
 
@@ -1471,12 +1696,21 @@ class MultiBodyGeometry:
         raise KeyError(normalized)
 
 
-def _is_single_solid_recipe(recipe: object) -> bool:
+def is_single_solid_recipe(recipe: object) -> bool:
     if isinstance(recipe, (BoxGeometry, CylinderGeometry)):
         return True
     if isinstance(recipe, (MovedGeometry, RotatedGeometry)):
-        return _is_single_solid_recipe(recipe.base)
+        return is_single_solid_recipe(recipe.base)
     if isinstance(recipe, ExtrudedGeometry):
+        from .extrusion_selection import resolve_extrusion_source_faces
+
+        return len(
+            resolve_extrusion_source_faces(
+                recipe.base,
+                recipe.source_face_ids,
+            ).face_ids
+        ) == 1
+    if isinstance(recipe, RevolvedGeometry):
         from .extrusion_selection import resolve_extrusion_source_faces
 
         return len(
@@ -1488,12 +1722,32 @@ def _is_single_solid_recipe(recipe: object) -> bool:
     if isinstance(recipe, BooleanGeometry):
         if recipe.body_context is not None:
             return recipe.body_context.proven
+        if recipe.part_context is not None:
+            return recipe.part_context.proven
         return (
             recipe.operation in {"fuse", "cut"}
-            and _is_single_solid_recipe(recipe.object_geometry)
-            and _is_single_solid_recipe(recipe.tool_geometry)
+            and is_single_solid_recipe(recipe.object_geometry)
+            and is_single_solid_recipe(recipe.tool_geometry)
         )
     return False
+
+
+_is_single_solid_recipe = is_single_solid_recipe
+
+
+def _part_local_logical_id(logical_id: str) -> str:
+    """Compare lineage semantics while allowing a Part namespace change."""
+
+    reference = LogicalEntityRef(logical_id)
+    semantic_name = logical_id.split(":", 1)[1]
+    owner, separator, local_name = semantic_name.partition("/")
+    if (
+        separator == "/"
+        and re.fullmatch(r"P[1-9][0-9]*", owner) is not None
+        and local_name
+    ):
+        return f"{reference.kind}:{local_name}"
+    return logical_id
 
 
 NativeGeometry = (
@@ -1503,6 +1757,7 @@ NativeGeometry = (
     | MovedGeometry
     | RotatedGeometry
     | ExtrudedGeometry
+    | RevolvedGeometry
     | BooleanGeometry
     | MultiBodyGeometry
 )
@@ -1513,6 +1768,7 @@ NATIVE_GEOMETRY_TYPES = (
     MovedGeometry,
     RotatedGeometry,
     ExtrudedGeometry,
+    RevolvedGeometry,
     BooleanGeometry,
     MultiBodyGeometry,
 )
@@ -1524,7 +1780,7 @@ def geometry_dimension(recipe: NativeGeometry) -> Literal[1, 2, 3]:
         return geometry_dimension(recipe.object_geometry)
     if isinstance(recipe, MultiBodyGeometry):
         return 3
-    if isinstance(recipe, ExtrudedGeometry):
+    if isinstance(recipe, (ExtrudedGeometry, RevolvedGeometry)):
         return 3
     if isinstance(recipe, (MovedGeometry, RotatedGeometry)):
         return geometry_dimension(recipe.base)
@@ -1550,8 +1806,10 @@ __all__ = [
     "PRIMITIVE_GEOMETRY_TYPES",
     "PlateWithHoleGeometry",
     "PlanarBooleanContext",
+    "PartBooleanContext",
     "PrimitiveGeometry",
     "RectangleGeometry",
+    "RevolvedGeometry",
     "RotatedGeometry",
     "SKETCH_CONTOUR_TYPES",
     "STRICT_SKETCH_CURVE_TYPES",
@@ -1569,4 +1827,5 @@ __all__ = [
     "WireMember",
     "WirePoint",
     "geometry_dimension",
+    "is_single_solid_recipe",
 ]

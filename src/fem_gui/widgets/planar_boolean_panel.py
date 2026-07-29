@@ -20,10 +20,13 @@ class PlanarBooleanPanel(QWidget):
     """Expose one committed target Face and one detached tool sketch."""
 
     targetSelectionRequested = Signal()
+    targetSelectionCleared = Signal()
     toolSketchRequested = Signal()
+    toolSketchDeleted = Signal()
     operationChanged = Signal(str)
     finishRequested = Signal()
     cancelRequested = Signal()
+    statusChanged = Signal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -54,26 +57,32 @@ class PlanarBooleanPanel(QWidget):
         self.target_button = QPushButton("选择", self)
         self.target_button.setObjectName("planarBooleanSelectTarget")
         self.target_button.clicked.connect(self.targetSelectionRequested.emit)
+        self.clear_target_button = QPushButton("取消选择", self)
+        self.clear_target_button.setObjectName("planarBooleanClearTarget")
+        self.clear_target_button.clicked.connect(
+            self.targetSelectionCleared.emit
+        )
         target_row = QWidget(self)
         target_layout = QHBoxLayout(target_row)
         target_layout.setContentsMargins(0, 0, 0, 0)
         target_layout.addWidget(self.target_label, 1)
         target_layout.addWidget(self.target_button)
+        target_layout.addWidget(self.clear_target_button)
 
         self.tool_label = QLabel("未绘制", self)
         self.tool_label.setObjectName("planarBooleanToolLabel")
         self.tool_button = QPushButton("绘制", self)
         self.tool_button.setObjectName("planarBooleanDrawTool")
         self.tool_button.clicked.connect(self.toolSketchRequested.emit)
+        self.delete_tool_button = QPushButton("删除绘制", self)
+        self.delete_tool_button.setObjectName("planarBooleanDeleteTool")
+        self.delete_tool_button.clicked.connect(self.toolSketchDeleted.emit)
         tool_row = QWidget(self)
         tool_layout = QHBoxLayout(tool_row)
         tool_layout.setContentsMargins(0, 0, 0, 0)
         tool_layout.addWidget(self.tool_label, 1)
         tool_layout.addWidget(self.tool_button)
-
-        self.status_label = QLabel("请选择目标面并绘制工具轮廓", self)
-        self.status_label.setObjectName("planarBooleanPreviewStatus")
-        self.status_label.setWordWrap(True)
+        tool_layout.addWidget(self.delete_tool_button)
         self.finish_button = QPushButton("完成", self)
         self.finish_button.setObjectName("planarBooleanFinish")
         self.finish_button.setEnabled(False)
@@ -93,8 +102,6 @@ class PlanarBooleanPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.addWidget(title)
         layout.addLayout(form)
-        layout.addWidget(QLabel("预览与诊断", self))
-        layout.addWidget(self.status_label)
         layout.addStretch(1)
         layout.addLayout(buttons)
 
@@ -130,6 +137,7 @@ class PlanarBooleanPanel(QWidget):
         self.finish_button.setEnabled(
             controller.ready and self._preview_valid and not self._preview_running
         )
+        self._set_inputs_enabled(not self._preview_running)
 
     def set_preview_running(self, running: bool) -> None:
         self._preview_running = bool(running)
@@ -141,15 +149,27 @@ class PlanarBooleanPanel(QWidget):
         self.refresh()
 
     def show_status(self, message: str) -> None:
-        self.status_label.setText(str(message))
+        self.statusChanged.emit(str(message))
 
     def _set_inputs_enabled(self, enabled: bool) -> None:
-        for widget in (
-            self.operation_combo,
-            self.target_button,
-            self.tool_button,
-        ):
-            widget.setEnabled(bool(enabled))
+        inputs_enabled = bool(enabled)
+        self.operation_combo.setEnabled(inputs_enabled)
+        self.target_button.setEnabled(inputs_enabled)
+        self.tool_button.setEnabled(inputs_enabled)
+        controller = self._controller
+        self.clear_target_button.setEnabled(
+            inputs_enabled
+            and controller is not None
+            and (
+                controller.target_face_id is not None
+                or controller.selecting_target
+            )
+        )
+        self.delete_tool_button.setEnabled(
+            inputs_enabled
+            and controller is not None
+            and controller.tool_geometry is not None
+        )
 
     def _operation_changed(self) -> None:
         operation = self.operation_combo.currentData()

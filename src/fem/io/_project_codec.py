@@ -41,6 +41,7 @@ from fem.geometry.recipes import (
     ExtrudedGeometry,
     MovedGeometry,
     MultiBodyGeometry,
+    PartBooleanContext,
     PlateWithHoleGeometry,
     PlanarBooleanContext,
     RectangleGeometry,
@@ -86,6 +87,7 @@ class ProjectFieldCodecPolicy:
     body_force_loads: bool = False
     allow_multi_body: bool = False
     allow_planar_boolean: bool = False
+    allow_part_boolean: bool = False
 
 
 def loads_json_strict(
@@ -610,6 +612,8 @@ def decode_geometry_field(
             optional.add("body_context")
         if policy.allow_planar_boolean:
             optional.add("planar_context")
+        if policy.allow_part_boolean:
+            optional.add("part_context")
         _field_keys(
             data,
             path,
@@ -658,6 +662,15 @@ def decode_geometry_field(
                     policy=policy,
                 )
                 if "planar_context" in data
+                else None
+            ),
+            (
+                _decode_part_boolean_context(
+                    data["part_context"],
+                    f"{path}.part_context",
+                    policy=policy,
+                )
+                if "part_context" in data
                 else None
             ),
         )
@@ -1159,6 +1172,187 @@ def _decode_planar_boolean_context(
     )
 
 
+def _decode_part_boolean_context(
+    value: Any,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> PartBooleanContext | None:
+    if value is None:
+        return None
+    from fem.geometry.part_boolean import namespace_part_boolean_context
+    from fem.geometry.part_namespace import strip_part_logical_id
+
+    data = _field_mapping(value, path, policy.decode_error)
+    _field_keys(
+        data,
+        path,
+        required={
+            "feature_id",
+            "target_part_id",
+            "tool_part_id",
+            "result_part_id",
+            "result_entities",
+            "topology_mappings",
+        },
+        optional=set(),
+        policy=policy,
+        error_type=policy.decode_error,
+    )
+    values = {
+        field_name: _field_string(
+            data[field_name],
+            f"{path}.{field_name}",
+            policy.decode_error,
+        )
+        for field_name in (
+            "feature_id",
+            "target_part_id",
+            "tool_part_id",
+            "result_part_id",
+        )
+    }
+    source_parts = {
+        "target": values["target_part_id"],
+        "tool": values["tool_part_id"],
+    }
+    try:
+        local_entities: list[dict[str, Any]] = []
+        for index, raw in enumerate(
+            _field_array(
+                data["result_entities"],
+                f"{path}.result_entities",
+                policy.decode_error,
+            )
+        ):
+            item_path = f"{path}.result_entities[{index}]"
+            item = _field_mapping(raw, item_path, policy.decode_error)
+            _field_keys(
+                item,
+                item_path,
+                required={
+                    "kind",
+                    "logical_id",
+                    "semantic_role",
+                    "topology_links",
+                },
+                optional=set(),
+                policy=policy,
+                error_type=policy.decode_error,
+            )
+            local_entities.append(
+                {
+                    "kind": item["kind"],
+                    "logical_id": strip_part_logical_id(
+                        values["result_part_id"],
+                        _field_string(
+                            item["logical_id"],
+                            f"{item_path}.logical_id",
+                            policy.decode_error,
+                        ),
+                    ),
+                    "semantic_role": item["semantic_role"],
+                    "topology_links": [
+                        strip_part_logical_id(
+                            values["result_part_id"],
+                            _field_string(
+                                link,
+                                f"{item_path}.topology_links[{link_index}]",
+                                policy.decode_error,
+                            ),
+                        )
+                        for link_index, link in enumerate(
+                            _field_array(
+                                item["topology_links"],
+                                f"{item_path}.topology_links",
+                                policy.decode_error,
+                            )
+                        )
+                    ],
+                }
+            )
+        local_mappings: list[dict[str, Any]] = []
+        for index, raw in enumerate(
+            _field_array(
+                data["topology_mappings"],
+                f"{path}.topology_mappings",
+                policy.decode_error,
+            )
+        ):
+            item_path = f"{path}.topology_mappings[{index}]"
+            item = _field_mapping(raw, item_path, policy.decode_error)
+            _field_keys(
+                item,
+                item_path,
+                required={
+                    "source",
+                    "source_logical_id",
+                    "target_logical_id",
+                    "relation",
+                },
+                optional=set(),
+                policy=policy,
+                error_type=policy.decode_error,
+            )
+            source = _field_string(
+                item["source"],
+                f"{item_path}.source",
+                policy.decode_error,
+            )
+            if source not in source_parts:
+                raise policy.decode_error(
+                    f"{item_path}.source must be target or tool"
+                )
+            local_mappings.append(
+                {
+                    "source": source,
+                    "source_logical_id": strip_part_logical_id(
+                        source_parts[source],
+                        _field_string(
+                            item["source_logical_id"],
+                            f"{item_path}.source_logical_id",
+                            policy.decode_error,
+                        ),
+                    ),
+                    "target_logical_id": strip_part_logical_id(
+                        values["result_part_id"],
+                        _field_string(
+                            item["target_logical_id"],
+                            f"{item_path}.target_logical_id",
+                            policy.decode_error,
+                        ),
+                    ),
+                    "relation": item["relation"],
+                }
+            )
+        lineage = _decode_boolean_body_context(
+            {
+                "feature_id": "BF1",
+                "target_body_id": "B1",
+                "tool_body_id": "B2",
+                "tool_body_name": "Part Tool",
+                "result_entities": local_entities,
+                "topology_mappings": local_mappings,
+            },
+            path,
+            policy=policy,
+        )
+        if lineage is None:
+            raise policy.decode_error(f"{path} must not be null")
+        return namespace_part_boolean_context(
+            feature_id=values["feature_id"],
+            target_part_id=values["target_part_id"],
+            tool_part_id=values["tool_part_id"],
+            result_part_id=values["result_part_id"],
+            result_entities=lineage.result_entities,
+            topology_mappings=lineage.topology_mappings,
+        )
+    except policy.decode_error:
+        raise
+    except (KeyError, TypeError, ValueError) as error:
+        raise policy.decode_error(f"{path} 无效：{error}") from error
+
+
 def _decode_sketch_point_field(
     value: Any,
     path: str,
@@ -1647,6 +1841,7 @@ def encode_geometry_field(
                     "tool_geometry",
                     "body_context",
                     "planar_context",
+                    "part_context",
                 },
                 path,
                 policy,
@@ -1662,6 +1857,14 @@ def encode_geometry_field(
             ):
                 raise policy.encode_error(
                     f"{path}.planar_context 无法由 "
+                    f"{policy.version_label} 无损表示"
+                )
+            if (
+                recipe.part_context is not None
+                and not policy.allow_part_boolean
+            ):
+                raise policy.encode_error(
+                    f"{path}.part_context 无法由 "
                     f"{policy.version_label} 无损表示"
                 )
             encoded = {
@@ -1699,6 +1902,12 @@ def encode_geometry_field(
                 encoded["planar_context"] = _encode_planar_boolean_context(
                     recipe.planar_context,
                     f"{path}.planar_context",
+                    policy=policy,
+                )
+            if policy.allow_part_boolean:
+                encoded["part_context"] = _encode_part_boolean_context(
+                    recipe.part_context,
+                    f"{path}.part_context",
                     policy=policy,
                 )
             return encoded
@@ -1871,6 +2080,54 @@ def _encode_planar_boolean_context(
         "tool_face_ids": list(context.tool_face_ids),
         "result_entities": lineage["result_entities"],
         "topology_mappings": lineage["topology_mappings"],
+    }
+
+
+def _encode_part_boolean_context(
+    context: PartBooleanContext | None,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> dict[str, Any] | None:
+    if context is None:
+        return None
+    if type(context) is not PartBooleanContext:
+        raise policy.encode_error(
+            f"{path} must be PartBooleanContext or null"
+        )
+    from fem.geometry.part_boolean import localize_part_boolean_context
+
+    lineage = _encode_boolean_body_context(
+        localize_part_boolean_context(context),
+        path,
+        policy=policy,
+    )
+    if lineage is None:
+        raise policy.encode_error(f"{path} must not be null")
+    # Persist the canonical Part namespace, not the localized replay view.
+    return {
+        "feature_id": context.feature_id,
+        "target_part_id": context.target_part_id,
+        "tool_part_id": context.tool_part_id,
+        "result_part_id": context.result_part_id,
+        "result_entities": [
+            {
+                "kind": item.kind,
+                "logical_id": item.logical_id,
+                "semantic_role": item.semantic_role,
+                "topology_links": list(item.topology_links),
+            }
+            for item in context.result_entities
+        ],
+        "topology_mappings": [
+            {
+                "source": item.source,
+                "source_logical_id": item.source_logical_id,
+                "target_logical_id": item.target_logical_id,
+                "relation": item.relation,
+            }
+            for item in context.topology_mappings
+        ],
     }
 
 

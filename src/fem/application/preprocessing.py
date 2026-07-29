@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from copy import deepcopy
+from dataclasses import replace
 import math
 from typing import Any, Protocol
 
 from fem import geometry
+from fem.core.mesh import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
 from fem.core.model import FEMModel
 from fem.geometry.measurements import resolve_target_radius
 from fem.geometry.body_relations import require_meshable_body_relations
@@ -17,10 +20,18 @@ from fem.geometry.recipe_analysis import (
 from fem.geometry.references import LogicalEntityRef
 from fem.geometry.recipes import (
     MovedGeometry,
+    MultiBodyGeometry,
     NATIVE_GEOMETRY_TYPES,
     NativeGeometry,
     RotatedGeometry,
+    SolidBody,
     WireGeometry,
+    geometry_dimension,
+)
+from fem.geometry.part_namespace import (
+    namespace_part_logical_id,
+    part_id_from_logical_id,
+    strip_part_reference,
 )
 from fem.io import gmsh as gmsh_io
 from fem.mesh import gmsh as gmsh_meshing
@@ -39,10 +50,13 @@ from .native_mesh_contract import (
 )
 from .native_regions import validate_native_authoring_context
 from .native_scope_materialization import (
+    NATIVE_PART_OWNERSHIP_KEY,
     NATIVE_SCOPE_CATALOG_KEY,
     materialize_native_scopes,
 )
 from .revisions import MeshTaskSnapshot
+from .native_part import NativePart, part_id_sort_key
+from .definitions import MeshEntityRef
 
 
 class RecipeTopologyResolver(Protocol):
@@ -113,6 +127,27 @@ def generate_fem_model(
     resolver: RecipeTopologyResolver | None = None,
 ) -> FEMModel:
     """Generate a canonical model from explicit inputs or a mesh task snapshot."""
+    if (
+        isinstance(recipe_or_snapshot, MeshTaskSnapshot)
+        and recipe_or_snapshot.parts
+        and all(
+            type(part) is NativePart
+            and part.geometry_recipe is not None
+            for part in recipe_or_snapshot.parts
+        )
+    ):
+        if settings is not None:
+            raise TypeError(
+                "MeshTaskSnapshot 已包含网格设置，不能重复传入 settings"
+            )
+        if named_regions is not None:
+            raise TypeError(
+                "MeshTaskSnapshot 已包含命名区域，不能重复传入 named_regions"
+            )
+        return _generate_multi_part_fem_model(
+            recipe_or_snapshot,
+            resolver=resolver,
+        )
     recipe, mesh_settings, regions, model_name = _normalize_inputs(
         recipe_or_snapshot,
         settings,
@@ -249,6 +284,271 @@ def generate_fem_model(
     finally:
         if owns_session and bool(gmsh.isInitialized()):
             gmsh.finalize()
+
+
+def _generate_multi_part_fem_model(
+    snapshot: MeshTaskSnapshot,
+    *,
+    resolver: RecipeTopologyResolver | None,
+) -> FEMModel:
+    """Compile, mesh, and deterministically aggregate active Parts."""
+
+    active_parts = tuple(
+        sorted(
+            (part for part in snapshot.parts if not part.suppressed),
+            key=lambda part: part_id_sort_key(part.id),
+        )
+    )
+    if not active_parts:
+        raise ValueError("网格生成至少需要一个未抑制部件")
+    dimensions = {
+        geometry_dimension(part.geometry_recipe)
+        for part in active_parts
+    }
+    if len(dimensions) != 1:
+        details = "、".join(
+            f"{part.name} [{part.id}]={part.dimension}D"
+            for part in active_parts
+        )
+        raise ValueError(
+            "analysis.mixed-dimension.unsupported: "
+            f"当前分析不支持混合维度部件（{details}）"
+        )
+    dimension = next(iter(dimensions))
+    if dimension == 3 and len(active_parts) > 1:
+        relation_recipe = MultiBodyGeometry(
+            "部件关系预检",
+            tuple(
+                SolidBody(f"B{index}", part.name, part.geometry_recipe)
+                for index, part in enumerate(active_parts, start=1)
+            ),
+        )
+        try:
+            require_meshable_body_relations(relation_recipe)
+        except ValueError as error:
+            raise type(error)(
+                str(error)
+                .replace("body.overlap.mesh-blocked", "part.overlap.mesh-blocked")
+                .replace("Body", "部件")
+            ) from error
+
+    per_part_models: list[tuple[NativePart, FEMModel]] = []
+    for part in active_parts:
+        if part.mesh_settings is None:
+            raise TypeError(
+                f"部件 {part.name} [{part.id}] 缺少网格设置"
+            )
+        local_settings = _localize_part_mesh_settings(
+            part.id,
+            part.mesh_settings,
+        )
+        require_complete_native_mesh_contract(
+            part.geometry_recipe,
+            local_settings,
+        )
+        per_part_models.append(
+            (
+                part,
+                generate_fem_model(
+                    part.geometry_recipe,
+                    local_settings,
+                    named_regions=(),
+                    resolver=resolver,
+                ),
+            )
+        )
+
+    aggregate = _aggregate_part_models(
+        str(snapshot.model_name),
+        per_part_models,
+    )
+    active_regions = _active_part_regions(
+        snapshot.named_regions,
+        frozenset(part.id for part in active_parts),
+    )
+    if active_regions:
+        aggregate = materialize_native_scopes(
+            aggregate,
+            previous_names=(),
+            regions=active_regions,
+        )
+    return aggregate
+
+
+def _active_part_regions(
+    regions: Iterable[Any],
+    active_part_ids: frozenset[str],
+) -> tuple[Any, ...]:
+    """Project preserved region definitions onto the meshed Part set."""
+
+    projected: list[Any] = []
+    for region in regions:
+        references = tuple(getattr(region, "references", ()))
+        retained = tuple(
+            reference
+            for reference in references
+            if (
+                type(reference) is LogicalEntityRef
+                and part_id_from_logical_id(reference.logical_id)
+                in active_part_ids
+            )
+            or (
+                type(reference) is MeshEntityRef
+                and (
+                    reference.part_id is None
+                    or reference.part_id in active_part_ids
+                )
+            )
+        )
+        if retained:
+            projected.append(replace(region, references=retained))
+    return tuple(projected)
+
+
+def _localize_part_mesh_settings(
+    part_id: str,
+    settings: MeshSettings,
+) -> MeshSettings:
+    controls = tuple(
+        replace(
+            control,
+            target=(
+                strip_part_reference(part_id, control.target)
+                if part_id_from_logical_id(control.target.logical_id)
+                is not None
+                else control.target
+            ),
+        )
+        for control in settings.local_controls
+    )
+    return replace(settings, local_controls=controls)
+
+
+def _aggregate_part_models(
+    model_name: str,
+    entries: Iterable[tuple[NativePart, FEMModel]],
+) -> FEMModel:
+    """Merge Part meshes without merging coincident nodes."""
+
+    rows = tuple(entries)
+    if not rows:
+        raise ValueError("cannot aggregate an empty Part collection")
+    first_mesh = rows[0][1].mesh
+    mesh_type = type(first_mesh)
+    if mesh_type not in {Mesh2D, Mesh3D}:
+        raise TypeError("unsupported native mesh container")
+    if any(type(model.mesh) is not mesh_type for _part, model in rows):
+        raise ValueError("analysis.mixed-dimension.unsupported")
+    if any(
+        int(model.mesh.dofs_per_node) != int(first_mesh.dofs_per_node)
+        for _part, model in rows
+    ):
+        raise ValueError("部件网格的每节点自由度不一致")
+
+    nodes: list[Node2D | Node3D] = []
+    elements: list[Element2D | Element3D] = []
+    catalog: dict[str, dict[str, Any]] = {}
+    ownership: dict[str, dict[str, tuple[int, ...]]] = {}
+    next_node_id = 1
+    next_element_id = 1
+
+    for part, model in rows:
+        local_nodes = tuple(
+            sorted(model.mesh.nodes, key=lambda node: int(node.id))
+        )
+        local_elements = tuple(
+            sorted(model.mesh.elements, key=lambda element: int(element.id))
+        )
+        node_map = {
+            int(node.id): next_node_id + index
+            for index, node in enumerate(local_nodes)
+        }
+        element_map = {
+            int(element.id): next_element_id + index
+            for index, element in enumerate(local_elements)
+        }
+        for node in local_nodes:
+            owned_node = deepcopy(node)
+            owned_node.id = node_map[int(node.id)]
+            nodes.append(owned_node)
+        for element in local_elements:
+            owned_element = deepcopy(element)
+            owned_element.id = element_map[int(element.id)]
+            owned_element.node_ids = [
+                node_map[int(node_id)] for node_id in element.node_ids
+            ]
+            elements.append(owned_element)
+
+        source_catalog = model.metadata.get(NATIVE_SCOPE_CATALOG_KEY, {})
+        if not isinstance(source_catalog, Mapping):
+            raise TypeError("native Part model lacks a scope catalog")
+        for logical_id, raw in source_catalog.items():
+            if not isinstance(raw, Mapping):
+                raise TypeError("native scope catalog entry must be a mapping")
+            namespaced = namespace_part_logical_id(
+                part.id,
+                str(logical_id),
+            )
+            catalog[namespaced] = _renumber_scope_catalog_entry(
+                raw,
+                node_map,
+                element_map,
+            )
+        ownership[part.id] = {
+            "node_ids": tuple(node_map.values()),
+            "element_ids": tuple(element_map.values()),
+            "cell_ids": tuple(element_map.values()),
+        }
+        next_node_id += len(local_nodes)
+        next_element_id += len(local_elements)
+
+    aggregate_mesh = mesh_type(
+        nodes=nodes,
+        elements=elements,
+        dofs_per_node=int(first_mesh.dofs_per_node),
+    )
+    aggregate = FEMModel(mesh=aggregate_mesh, name=model_name)
+    aggregate.metadata[NATIVE_SCOPE_CATALOG_KEY] = catalog
+    aggregate.metadata[NATIVE_PART_OWNERSHIP_KEY] = ownership
+    return aggregate
+
+
+def _renumber_scope_catalog_entry(
+    raw: Mapping[str, Any],
+    node_map: Mapping[int, int],
+    element_map: Mapping[int, int],
+) -> dict[str, Any]:
+    def node_id(value: Any) -> int:
+        return node_map[int(value)]
+
+    def element_id(value: Any) -> int:
+        return element_map[int(value)]
+
+    return {
+        "kind": str(raw.get("kind", "")),
+        "node_ids": tuple(
+            node_id(value) for value in raw.get("node_ids", ())
+        ),
+        "element_ids": tuple(
+            element_id(value) for value in raw.get("element_ids", ())
+        ),
+        "edges": tuple(
+            (
+                element_id(element),
+                int(local_index),
+                tuple(node_id(value) for value in node_ids),
+            )
+            for element, local_index, node_ids in raw.get("edges", ())
+        ),
+        "faces": tuple(
+            (
+                element_id(element),
+                int(local_index),
+                tuple(node_id(value) for value in node_ids),
+            )
+            for element, local_index, node_ids in raw.get("faces", ())
+        ),
+    }
 
 
 def _normalize_inputs(

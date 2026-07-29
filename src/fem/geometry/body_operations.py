@@ -13,6 +13,7 @@ from .recipes import (
     MovedGeometry,
     MultiBodyGeometry,
     NATIVE_GEOMETRY_TYPES,
+    RevolvedGeometry,
     RotatedGeometry,
     SolidBody,
     geometry_dimension,
@@ -313,7 +314,7 @@ def undo_solid_body_feature(
 
 
 def _singleton_solid_recipes(recipe: object) -> tuple[object, ...]:
-    if isinstance(recipe, ExtrudedGeometry):
+    if isinstance(recipe, (ExtrudedGeometry, RevolvedGeometry)):
         source_ids = resolve_extrusion_source_faces(
             recipe.base,
             recipe.source_face_ids,
@@ -374,7 +375,15 @@ def _historical_ids(recipe: object | None) -> tuple[set[str], set[str]]:
             visit(item.object_geometry)
             visit(item.tool_geometry)
             return
-        if isinstance(item, (MovedGeometry, RotatedGeometry, ExtrudedGeometry)):
+        if isinstance(
+            item,
+            (
+                MovedGeometry,
+                RotatedGeometry,
+                ExtrudedGeometry,
+                RevolvedGeometry,
+            ),
+        ):
             visit(item.base)
 
     visit(recipe)

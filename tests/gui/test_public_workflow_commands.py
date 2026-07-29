@@ -131,3 +131,26 @@ def test_pending_public_command_is_the_busy_gate_and_completion_handle() -> None
         )
     )
     window.close()
+
+
+def test_public_inp_import_accepts_gb18030_comments(tmp_path) -> None:
+    _application()
+    source = FIXTURES / "truss2_tension.inp"
+    path = tmp_path / "gb18030_truss.inp"
+    path.write_bytes(
+        "** 名称：完全固定；类型：位移/转角\n".encode("gb18030")
+        + source.read_bytes()
+    )
+    window = FEMMainWindow()
+
+    terminal = await_succeeded(window.open_inp_path(path))
+
+    assert terminal.value is None
+    assert window.document.source_kind == "imported"
+    assert window.document.source_path == path
+    require_accepted(
+        window.close_session(
+            CloseSessionCommand(window.document.session_revision)
+        )
+    )
+    window.close()

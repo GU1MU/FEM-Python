@@ -431,6 +431,57 @@ def test_rigid_transform_keeps_lower_logical_entities_live(real_gmsh) -> None:
         assert bottom[4] == pytest.approx(0.0, abs=1.0e-7)
 
 
+@pytest.mark.parametrize("transform_kind", ("move", "rotate"))
+def test_rigid_transform_rebinds_extruded_strict_sketch_entities(
+    real_gmsh,
+    transform_kind,
+) -> None:
+    del real_gmsh
+    sketch = SketchGeometry(
+        "strict-extrusion",
+        SketchPlane.xy(),
+        (
+            SketchPoint("P1", 0.0, 0.0),
+            SketchPoint("P2", 2.0, 0.0),
+            SketchPoint("P3", 2.0, 1.0),
+            SketchPoint("P4", 0.0, 1.0),
+        ),
+        (
+            SketchLine("L1", "P1", "P2"),
+            SketchLine("L2", "P2", "P3"),
+            SketchLine("L3", "P3", "P4"),
+            SketchLine("L4", "P4", "P1"),
+        ),
+    )
+    extrusion = ExtrudedGeometry(sketch, 0.75)
+    recipe = (
+        MovedGeometry(extrusion, 1.0, -2.0, 0.5)
+        if transform_kind == "move"
+        else RotatedGeometry(extrusion, "x", 37.0)
+    )
+
+    with geometry.model(
+        f"rigid-extrusion-{transform_kind}",
+        dimension=3,
+    ) as cad:
+        compiled = compile_recipe(cad, recipe)
+
+        assert len(compiled.domain) == 1
+        for logical in compiled.catalog.selectable_entities():
+            resolved = compiled.resolve(
+                LogicalEntityRef(logical.logical_id)
+            )
+            assert resolved
+            for entity in resolved:
+                cad.bounding_box(entity)
+
+    session = ModelSession()
+    session.new_native_project()
+    session.add_native_part(recipe, name="变换后的拉伸部件")
+
+    assert session.snapshot().geometry_recipe == recipe
+
+
 def test_extrusion_recovers_caps_sides_top_edges_and_verticals(real_gmsh) -> None:
     del real_gmsh
     recipe = ExtrudedGeometry(

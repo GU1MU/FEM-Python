@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Literal
+from typing import Iterable, Literal, Mapping
+
+from fem.application.native_part import (
+    NativePart,
+    normalize_part_id,
+    part_id_sort_key,
+)
 
 from fem.geometry import (
     BooleanGeometry,
@@ -18,6 +24,7 @@ from fem.geometry import (
     NativeGeometry,
     PlateWithHoleGeometry,
     RectangleGeometry,
+    RevolvedGeometry,
     RotatedGeometry,
     SketchArc,
     SketchCircle,
@@ -30,6 +37,7 @@ from fem.geometry import (
     axis_aligned_rectangle,
     expand_sketch_recipe,
     geometry_dimension,
+    namespace_part_logical_id,
     resolve_extrusion_source_faces,
     transformed_circle,
 )
@@ -55,6 +63,9 @@ class GeometryPreview:
     face_body_logical_ids: tuple[str | None, ...] = ()
     edge_body_logical_ids: tuple[str | None, ...] = ()
     point_body_logical_ids: tuple[str | None, ...] = ()
+    face_part_ids: tuple[str | None, ...] = ()
+    edge_part_ids: tuple[str | None, ...] = ()
+    point_part_ids: tuple[str | None, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -101,6 +112,20 @@ class GeometryPreview:
             reference = LogicalEntityRef(self.body_logical_id)
             if reference.kind != "body":
                 raise ValueError("body_logical_id 必须引用 body")
+        for part_name, cells in (
+            ("face_part_ids", self.faces),
+            ("edge_part_ids", self.edges),
+            ("point_part_ids", self.points),
+        ):
+            part_ids = tuple(getattr(self, part_name))
+            if not part_ids:
+                part_ids = (None,) * len(cells)
+                object.__setattr__(self, part_name, part_ids)
+            if len(part_ids) != len(cells):
+                raise ValueError(f"{part_name} 必须与对应显示实体数量一致")
+            for part_id in part_ids:
+                if part_id is not None:
+                    normalize_part_id(part_id)
 
     @property
     def dimension(self) -> int:
@@ -184,6 +209,176 @@ def build_geometry_preview(
     return preview
 
 
+def build_multi_part_geometry_preview(
+    parts: Iterable[NativePart],
+    *,
+    include_suppressed: bool = False,
+    segments: int = 48,
+) -> GeometryPreview:
+    """Merge stable Part-owned previews in canonical Part order."""
+
+    return merge_multi_part_geometry_previews(
+        parts,
+        include_suppressed=include_suppressed,
+        segments=segments,
+    )
+
+
+def merge_multi_part_geometry_previews(
+    parts: Iterable[NativePart],
+    *,
+    exact_previews: Mapping[str, GeometryPreview] | None = None,
+    include_suppressed: bool = False,
+    segments: int = 48,
+) -> GeometryPreview:
+    """Merge Parts while replacing selected rows with exact namespaced previews."""
+
+    owned = tuple(
+        sorted(
+            (
+                part
+                for part in parts
+                if include_suppressed or not part.suppressed
+            ),
+            key=lambda part: part_id_sort_key(part.id),
+        )
+    )
+    if any(
+        type(part) is not NativePart or part.geometry_recipe is None
+        for part in owned
+    ):
+        raise TypeError("multi-Part preview requires canonical NativeParts")
+    overrides = {} if exact_previews is None else dict(exact_previews)
+    unknown = set(overrides).difference(part.id for part in owned)
+    if unknown:
+        raise ValueError(
+            "exact Part preview has no visible owner: "
+            + ", ".join(sorted(unknown))
+        )
+    if any(type(preview) is not GeometryPreview for preview in overrides.values()):
+        raise TypeError("exact Part previews must be GeometryPreview values")
+    if not owned:
+        return GeometryPreview((), (), (), topological_dimension=2)
+
+    points: list[tuple[float, float, float]] = []
+    faces: list[tuple[int, ...]] = []
+    edges: list[tuple[int, ...]] = []
+    face_ids: list[str | None] = []
+    edge_ids: list[str | None] = []
+    point_ids: list[str | None] = []
+    face_bodies: list[str | None] = []
+    edge_bodies: list[str | None] = []
+    point_bodies: list[str | None] = []
+    face_parts: list[str | None] = []
+    edge_parts: list[str | None] = []
+    point_parts: list[str | None] = []
+    dimensions: set[int] = set()
+
+    for part in owned:
+        local = overrides.get(part.id)
+        if local is None:
+            local = namespace_part_geometry_preview(
+                part.id,
+                build_geometry_preview(
+                    part.geometry_recipe,
+                    segments=segments,
+                ),
+            )
+        elif any(
+            owner not in {None, part.id}
+            for owners in (
+                local.face_part_ids,
+                local.edge_part_ids,
+                local.point_part_ids,
+            )
+            for owner in owners
+        ):
+            raise ValueError(
+                f"exact Part preview contains a foreign owner for {part.id}"
+            )
+        offset = len(points)
+        points.extend(local.points)
+        faces.extend(
+            tuple(offset + index for index in cell)
+            for cell in local.faces
+        )
+        edges.extend(
+            tuple(offset + index for index in cell)
+            for cell in local.edges
+        )
+
+        face_ids.extend(local.face_logical_ids)
+        edge_ids.extend(local.edge_logical_ids)
+        point_ids.extend(local.point_logical_ids)
+        face_bodies.extend(local.face_body_logical_ids)
+        edge_bodies.extend(local.edge_body_logical_ids)
+        point_bodies.extend(local.point_body_logical_ids)
+        face_parts.extend((part.id,) * len(local.faces))
+        edge_parts.extend((part.id,) * len(local.edges))
+        point_parts.extend((part.id,) * len(local.points))
+        dimensions.add(local.dimension)
+
+    return GeometryPreview(
+        points=tuple(points),
+        faces=tuple(faces),
+        edges=tuple(edges),
+        face_logical_ids=tuple(face_ids),
+        edge_logical_ids=tuple(edge_ids),
+        point_logical_ids=tuple(point_ids),
+        body_logical_id=None,
+        topological_dimension=max(dimensions),
+        face_body_logical_ids=tuple(face_bodies),
+        edge_body_logical_ids=tuple(edge_bodies),
+        point_body_logical_ids=tuple(point_bodies),
+        face_part_ids=tuple(face_parts),
+        edge_part_ids=tuple(edge_parts),
+        point_part_ids=tuple(point_parts),
+    )
+
+
+def namespace_part_geometry_preview(
+    part_id: str,
+    preview: GeometryPreview,
+) -> GeometryPreview:
+    """Attach one stable Part namespace to a recipe-local preview."""
+
+    normalized = normalize_part_id(part_id)
+
+    def namespace(value: str | None) -> str | None:
+        return (
+            None
+            if value is None
+            else namespace_part_logical_id(normalized, value)
+        )
+
+    body = namespace(preview.body_logical_id)
+    return GeometryPreview(
+        preview.points,
+        preview.faces,
+        preview.edges,
+        tuple(namespace(value) for value in preview.face_logical_ids),
+        tuple(namespace(value) for value in preview.edge_logical_ids),
+        tuple(namespace(value) for value in preview.point_logical_ids),
+        body,
+        preview.topological_dimension,
+        tuple(
+            namespace(value)
+            for value in preview.face_body_logical_ids
+        ),
+        tuple(
+            namespace(value)
+            for value in preview.edge_body_logical_ids
+        ),
+        tuple(
+            namespace(value)
+            for value in preview.point_body_logical_ids
+        ),
+        (normalized,) * len(preview.faces),
+        (normalized,) * len(preview.edges),
+        (normalized,) * len(preview.points),
+    )
+
+
 def build_strict_sketch_draft_preview(
     recipe: SketchGeometry,
     *,
@@ -212,6 +407,35 @@ def build_strict_body_boolean_preview(
         recipe,
         (boolean_preview,),
         segments=segments,
+    )
+
+
+def build_strict_part_boolean_preview(
+    boolean_preview: StrictBodyBooleanPreview,
+) -> GeometryPreview:
+    """Install one exact Part-Boolean tessellation with namespaced picks."""
+
+    if type(boolean_preview) is not StrictBodyBooleanPreview:
+        raise TypeError(
+            "boolean_preview must be StrictBodyBooleanPreview"
+        )
+    part_id = normalize_part_id(boolean_preview.target_body_id)
+    body_id = f"body:{part_id}/domain"
+    return GeometryPreview(
+        boolean_preview.points,
+        boolean_preview.faces,
+        boolean_preview.edges,
+        boolean_preview.face_logical_ids,
+        boolean_preview.edge_logical_ids,
+        boolean_preview.point_logical_ids,
+        body_id,
+        3,
+        (body_id,) * len(boolean_preview.faces),
+        (body_id,) * len(boolean_preview.edges),
+        (body_id,) * len(boolean_preview.points),
+        (part_id,) * len(boolean_preview.faces),
+        (part_id,) * len(boolean_preview.edges),
+        (part_id,) * len(boolean_preview.points),
     )
 
 
@@ -275,8 +499,10 @@ def build_strict_planar_boolean_preview(
     """Install exact OCC planar tessellation and logical pick identities."""
 
     topology = describe_recipe_topology(recipe)
-    if topology.dimension != 2 or not topology.exact:
-        raise TypeError("strict planar preview requires exact 2D geometry")
+    if topology.dimension not in {2, 3} or not topology.exact:
+        raise TypeError(
+            "strict planar preview requires exact planar or extruded geometry"
+        )
     if type(boolean_preview) is not StrictPlanarBooleanPreview:
         raise TypeError("boolean_preview must be StrictPlanarBooleanPreview")
     preview = GeometryPreview(
@@ -287,7 +513,7 @@ def build_strict_planar_boolean_preview(
         boolean_preview.edge_logical_ids,
         boolean_preview.point_logical_ids,
         "body:domain",
-        2,
+        topology.dimension,
     )
     _validate_preview_topology(
         recipe,
@@ -356,6 +582,8 @@ def _build_geometry_preview(
         )
     if isinstance(recipe, ExtrudedGeometry):
         return _extruded_preview(recipe, segments)
+    if isinstance(recipe, RevolvedGeometry):
+        return _revolved_preview(recipe, segments)
     if isinstance(recipe, WireGeometry):
         return _wire_preview(recipe)
     if isinstance(recipe, RectangleGeometry):
@@ -890,9 +1118,16 @@ def _boolean_preview(
     recipe: BooleanGeometry,
     segments: int,
 ) -> GeometryPreview:
-    if recipe.body_context is not None and recipe.body_context.proven:
-        return _strict_body_boolean_preview(recipe, segments)
-    if recipe.planar_context is not None and recipe.planar_context.proven:
+    if (
+        recipe.body_context is not None
+        and recipe.body_context.proven
+    ) or (
+        recipe.planar_context is not None
+        and recipe.planar_context.proven
+    ) or (
+        recipe.part_context is not None
+        and recipe.part_context.proven
+    ):
         return _strict_body_boolean_preview(recipe, segments)
     if recipe.operation == "cut":
         outer = axis_aligned_rectangle(recipe.object_geometry)
@@ -1237,6 +1472,148 @@ def _unselectable_extruded_fallback(
     )
 
 
+def _revolved_preview(
+    recipe: RevolvedGeometry,
+    segments: int,
+) -> GeometryPreview:
+    """Tessellate an axis-angle sweep without claiming stable face identity."""
+
+    base = _build_geometry_preview(recipe.base, segments)
+    selection = resolve_extrusion_source_faces(
+        recipe.base,
+        recipe.source_face_ids,
+    )
+    selected_faces = set(selection.face_ids)
+    selected_edges = set(selection.boundary_edge_ids)
+    selected_points = set(selection.boundary_point_ids)
+    base_face_indices = tuple(
+        index
+        for index, logical_id in enumerate(base.face_logical_ids)
+        if logical_id in selected_faces
+    )
+    base_edge_indices = tuple(
+        index
+        for index, logical_id in enumerate(base.edge_logical_ids)
+        if logical_id in selected_edges
+    )
+    if (
+        not base_face_indices
+        and base.faces
+        and _contains_proven_strict_boolean(recipe.base)
+    ):
+        base_face_indices = tuple(range(len(base.faces)))
+        base_edge_indices = tuple(range(len(base.edges)))
+    required_point_indices = {
+        point_index
+        for face_index in base_face_indices
+        for point_index in base.faces[face_index]
+    }
+    required_point_indices.update(
+        point_index
+        for edge_index in base_edge_indices
+        for point_index in base.edges[edge_index]
+    )
+    required_point_indices.update(
+        index
+        for index, logical_id in enumerate(base.point_logical_ids)
+        if logical_id in selected_points
+    )
+    ordered_point_indices = tuple(sorted(required_point_indices))
+    point_index_map = {
+        old_index: new_index
+        for new_index, old_index in enumerate(ordered_point_indices)
+    }
+    source_points = tuple(base.points[index] for index in ordered_point_indices)
+    source_faces = tuple(
+        tuple(point_index_map[index] for index in base.faces[face_index])
+        for face_index in base_face_indices
+    )
+    source_edges = tuple(
+        tuple(point_index_map[index] for index in base.edges[edge_index])
+        for edge_index in base_edge_indices
+    )
+    sweep_segments = max(
+        4,
+        math.ceil(segments * recipe.angle_degrees / 360.0),
+    )
+    full_turn = math.isclose(
+        recipe.angle_degrees,
+        360.0,
+        rel_tol=0.0,
+        abs_tol=1.0e-9,
+    )
+    layer_count = sweep_segments if full_turn else sweep_segments + 1
+    angles = tuple(
+        math.radians(recipe.angle_degrees) * index / sweep_segments
+        for index in range(layer_count)
+    )
+
+    def rotate(
+        point: tuple[float, float, float],
+        angle: float,
+    ) -> tuple[float, float, float]:
+        x, y, z = point
+        cosine, sine = math.cos(angle), math.sin(angle)
+        if recipe.axis == "x":
+            return x, y * cosine - z * sine, y * sine + z * cosine
+        if recipe.axis == "y":
+            return x * cosine + z * sine, y, -x * sine + z * cosine
+        return x * cosine - y * sine, x * sine + y * cosine, z
+
+    point_count = len(source_points)
+    points = tuple(
+        rotate(point, angle)
+        for angle in angles
+        for point in source_points
+    )
+    faces: list[tuple[int, ...]] = []
+    if not full_turn:
+        faces.extend(tuple(reversed(face)) for face in source_faces)
+        end_offset = (layer_count - 1) * point_count
+        faces.extend(
+            tuple(end_offset + index for index in face)
+            for face in source_faces
+        )
+    for layer in range(sweep_segments):
+        next_layer = (layer + 1) % layer_count
+        start_offset = layer * point_count
+        end_offset = next_layer * point_count
+        for edge in source_edges:
+            for start, end in zip(edge, edge[1:]):
+                faces.append(
+                    (
+                        start_offset + start,
+                        start_offset + end,
+                        end_offset + end,
+                        end_offset + start,
+                    )
+                )
+
+    edges: list[tuple[int, ...]] = []
+    boundary_layers = (0,) if full_turn else (0, layer_count - 1)
+    for layer in boundary_layers:
+        offset = layer * point_count
+        edges.extend(
+            tuple(offset + index for index in edge)
+            for edge in source_edges
+        )
+    for local_index in range(point_count):
+        path = tuple(
+            layer * point_count + local_index
+            for layer in range(layer_count)
+        )
+        edges.append(path + ((local_index,) if full_turn else ()))
+    return _make_preview(
+        recipe,
+        points,
+        tuple(faces),
+        tuple(edges),
+        (None,) * len(faces),
+        (None,) * len(edges),
+        (None,) * len(points),
+    )
+
+
 def _strict_body_boolean_preview(
     recipe: BooleanGeometry,
     segments: int,
@@ -1552,7 +1929,11 @@ def _validate_preview_topology(
         entity.logical_id
         for entity in topology.entities_of("body", selectable_only=True)
     }
-    if actual_body != expected_body:
+    if actual_body != expected_body and not (
+        allow_occ_fallback
+        and _contains_proven_strict_boolean(recipe)
+        and actual_body.issubset(expected_body)
+    ):
         raise RuntimeError(
             f"{type(recipe).__name__} 预览的 body logical ID"
             f"与 recipe topology 不一致: {sorted(actual_body)} != "
@@ -1568,10 +1949,16 @@ def _contains_proven_strict_boolean(recipe: object) -> bool:
         ) or (
             recipe.planar_context is not None
             and recipe.planar_context.proven
+        ) or (
+            recipe.part_context is not None
+            and recipe.part_context.proven
         ) or _contains_proven_strict_boolean(
             recipe.object_geometry
         ) or _contains_proven_strict_boolean(recipe.tool_geometry)
-    if isinstance(recipe, (MovedGeometry, RotatedGeometry, ExtrudedGeometry)):
+    if isinstance(
+        recipe,
+        (MovedGeometry, RotatedGeometry, ExtrudedGeometry, RevolvedGeometry),
+    ):
         return _contains_proven_strict_boolean(recipe.base)
     if isinstance(recipe, MultiBodyGeometry):
         return any(
@@ -1624,8 +2011,12 @@ def _angles(count: int) -> tuple[float, ...]:
 __all__ = [
     "GeometryPreview",
     "build_geometry_preview",
+    "build_multi_part_geometry_preview",
     "build_strict_body_boolean_preview",
     "build_strict_body_boolean_previews",
+    "build_strict_part_boolean_preview",
     "build_strict_planar_boolean_preview",
     "build_strict_sketch_draft_preview",
+    "merge_multi_part_geometry_previews",
+    "namespace_part_geometry_preview",
 ]

@@ -156,7 +156,18 @@ def constraint_sample_indices(points: np.ndarray, density: str) -> np.ndarray:
         projected = centered @ right[:2].T
         hull = _convex_hull_indices(projected)
         if len(hull) >= 3:
-            return np.asarray(hull, dtype=np.int64)
+            hull_indices = np.asarray(hull, dtype=np.int64)
+            boundary_limit = max(4, limit)
+            if len(hull_indices) <= boundary_limit:
+                return hull_indices
+            offsets = np.linspace(
+                0,
+                len(hull_indices),
+                boundary_limit,
+                endpoint=False,
+                dtype=np.int64,
+            )
+            return hull_indices[offsets]
     if len(points) <= limit:
         return np.arange(len(points), dtype=np.int64)
     return _spatial_sample_indices(points, density, limits)

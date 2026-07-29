@@ -18,6 +18,7 @@ from fem.geometry import (
     MovedGeometry,
     MultiBodyGeometry,
     NATIVE_GEOMETRY_TYPES,
+    RevolvedGeometry,
     RotatedGeometry,
     geometry_dimension,
     resolve_extrusion_source_faces,
@@ -42,10 +43,10 @@ class GuiActionKey(str, Enum):
     GEOMETRY_CREATE = "geometry_create"
     GEOMETRY_SKETCH = "geometry_sketch"
     GEOMETRY_WIRE = "geometry_wire"
-    GEOMETRY_ADD_BODY = "geometry_add_body"
     GEOMETRY_MOVE = "geometry_move"
     GEOMETRY_ROTATE = "geometry_rotate"
     GEOMETRY_EXTRUDE = "geometry_extrude"
+    GEOMETRY_SWEEP = "geometry_sweep"
     GEOMETRY_FUSE = "geometry_fuse"
     GEOMETRY_CUT = "geometry_cut"
     GEOMETRY_MANAGER = "geometry_manager"
@@ -72,6 +73,7 @@ class GuiActionKey(str, Enum):
     ORTHOGRAPHIC = "orthographic"
     PERSPECTIVE = "perspective"
     VIEWPORT_BACKGROUND = "viewport_background"
+    SUPPRESSED_PART_GHOSTS = "suppressed_part_ghosts"
     EDGES = "edges"
     NODES = "nodes"
     NODE_LABELS = "node_labels"
@@ -161,13 +163,13 @@ ACTION_DESCRIPTORS: tuple[GuiActionDescriptor, ...] = (
     _d(GuiActionKey.MATERIAL_MANAGER, "材料管理", "show_material_manager", "material"),
     _d(GuiActionKey.SECTION_MANAGER, "截面管理", "show_section_manager", "section"),
     _d(GuiActionKey.SECTION_ASSIGN, "截面分配", "assign_section_to_region", "section_assign"),
-    _d(GuiActionKey.GEOMETRY_CREATE, "创建草图", "create_geometry", "sketch"),
+    _d(GuiActionKey.GEOMETRY_CREATE, "新建部件", "create_geometry", "sketch"),
     _d(GuiActionKey.GEOMETRY_SKETCH, "新建草图", "create_sketch_geometry", "sketch"),
     _d(GuiActionKey.GEOMETRY_WIRE, "新建线体", "start_wire_geometry", "wire"),
-    _d(GuiActionKey.GEOMETRY_ADD_BODY, "添加实体", "add_body_geometry"),
     _d(GuiActionKey.GEOMETRY_MOVE, "移动", "move_geometry", "geometry_move"),
     _d(GuiActionKey.GEOMETRY_ROTATE, "旋转", "rotate_geometry", "geometry_rotate"),
     _d(GuiActionKey.GEOMETRY_EXTRUDE, "拉伸", "extrude_geometry", "extrude"),
+    _d(GuiActionKey.GEOMETRY_SWEEP, "扫掠", "sweep_geometry", "sweep"),
     _d(GuiActionKey.GEOMETRY_FUSE, "合并", "fuse_geometry", "boolean_fuse"),
     _d(GuiActionKey.GEOMETRY_CUT, "切除", "cut_geometry", "boolean_cut"),
     _d(GuiActionKey.GEOMETRY_MANAGER, "编辑", "show_geometry_manager", "feature_edit"),
@@ -194,6 +196,7 @@ ACTION_DESCRIPTORS: tuple[GuiActionDescriptor, ...] = (
     _d(GuiActionKey.ORTHOGRAPHIC, "正交投影", "viewport.set_parallel_projection", "orthographic", checkable=True, checked=True, group="projection", argument=True, checked_only=True),
     _d(GuiActionKey.PERSPECTIVE, "透视投影", "viewport.set_parallel_projection", "perspective", checkable=True, group="projection", argument=False, checked_only=True),
     _d(GuiActionKey.VIEWPORT_BACKGROUND, "视口背景", "show_viewport_background_dialog", "background"),
+    _d(GuiActionKey.SUPPRESSED_PART_GHOSTS, "显示已抑制源部件", "_toggle_suppressed_part_ghosts", checkable=True),
     _d(GuiActionKey.EDGES, "显示单元边", "_toggle_edges", "edges", checkable=True, checked=True),
     _d(GuiActionKey.NODES, "显示节点", "_toggle_nodes", "nodes", checkable=True),
     _d(GuiActionKey.NODE_LABELS, "显示节点编号", "_toggle_node_labels", "node_ids", checkable=True),
@@ -233,7 +236,7 @@ ACTION_DESCRIPTORS: tuple[GuiActionDescriptor, ...] = (
     _d(GuiActionKey.GEOMETRY_SELECT_POINT, "选择点", "_set_geometry_selection_mode", "select_geometry_point", checkable=True, group="selection", argument="point"),
     _d(GuiActionKey.GEOMETRY_SELECT_EDGE, "选择边", "_set_geometry_selection_mode", "select_geometry_edge", checkable=True, group="selection", argument="edge"),
     _d(GuiActionKey.GEOMETRY_SELECT_FACE, "选择面", "_set_geometry_selection_mode", "select_geometry_face", checkable=True, group="selection", argument="face"),
-    _d(GuiActionKey.GEOMETRY_SELECT_BODY, "选择体", "_set_geometry_selection_mode", "select_geometry_body", checkable=True, group="selection", argument="body"),
+    _d(GuiActionKey.GEOMETRY_SELECT_BODY, "选择部件", "_set_geometry_selection_mode", "select_geometry_body", checkable=True, group="selection", argument="body"),
     _d(GuiActionKey.CLEAR_SELECTION, "清除选择", "clear_selection", "clear_selection"),
     _d(GuiActionKey.SELECTED_INFO, "查看所选信息", "show_selected_information", "inspect"),
 )
@@ -329,6 +332,18 @@ def derive_action_availability(
         and not context.result_task_busy
     )
     recipe = snapshot.geometry_recipe
+    active_part = snapshot.active_part
+    active_part_editable = (
+        active_part is not None
+        and not active_part.suppressed
+        and active_part.geometry_recipe is not None
+    )
+    set_state(
+        GuiActionKey.SUPPRESSED_PART_GHOSTS,
+        snapshot.source_kind == "native"
+        and any(part.suppressed for part in snapshot.parts),
+        "当前没有已抑制源部件",
+    )
     editor_active = (
         context.wire_editor_active
         or context.sketch_editor_active
@@ -337,6 +352,7 @@ def derive_action_availability(
     has_native_geometry = (
         snapshot.source_kind == "native"
         and isinstance(recipe, NATIVE_GEOMETRY_TYPES)
+        and active_part_editable
     )
     is_multi_body = isinstance(recipe, MultiBodyGeometry)
     selected_body_count = len(
@@ -354,7 +370,7 @@ def derive_action_availability(
     set_state(
         GuiActionKey.SAVE_PROJECT,
         snapshot.can_save and not busy,
-        "请先创建自主草图或几何；INP 模型保持原文件工作流",
+        "请先创建自主部件；INP 模型保持原文件工作流",
     )
     set_state(
         GuiActionKey.RELOAD,
@@ -385,11 +401,6 @@ def derive_action_availability(
         GuiActionKey.GEOMETRY_WIRE,
         snapshot.source_kind == "native" and not busy,
         geometry_reason,
-    )
-    set_state(
-        GuiActionKey.GEOMETRY_ADD_BODY,
-        is_multi_body and not busy,
-        "请先创建一个三维实体",
     )
     for key in (
         GuiActionKey.GEOMETRY_MOVE,
@@ -422,7 +433,23 @@ def derive_action_availability(
             and (
                 key
                 not in {GuiActionKey.GEOMETRY_FUSE, GuiActionKey.GEOMETRY_CUT}
-                or geometry_dimension(recipe) != 1
+                or (
+                    geometry_dimension(recipe) == 2
+                    or (
+                        geometry_dimension(recipe) == 3
+                        and len(
+                            tuple(
+                                part
+                                for part in snapshot.parts
+                                if (
+                                    not part.suppressed
+                                    and part.dimension == 3
+                                )
+                            )
+                        )
+                        >= 2
+                    )
+                )
             )
             and (
                 key
@@ -433,7 +460,7 @@ def derive_action_availability(
             (
                 "请先完成当前几何编辑"
                 if editor_active
-                else "One-dimensional wire geometry does not support this feature"
+                else "请选择一个未抑制部件；实体布尔需要两个三维部件"
             ),
         )
     extrude_enabled = False
@@ -485,6 +512,11 @@ def derive_action_availability(
         extrude_reason,
     )
     set_state(
+        GuiActionKey.GEOMETRY_SWEEP,
+        extrude_enabled,
+        extrude_reason,
+    )
+    set_state(
         GuiActionKey.GEOMETRY_UNDO,
         (
             selected_body_count == 1
@@ -495,6 +527,7 @@ def derive_action_availability(
                     MovedGeometry,
                     RotatedGeometry,
                     ExtrudedGeometry,
+                    RevolvedGeometry,
                     BooleanGeometry,
                 ),
             )
@@ -812,6 +845,7 @@ def derive_action_availability(
             GuiActionKey.GEOMETRY_MOVE,
             GuiActionKey.GEOMETRY_ROTATE,
             GuiActionKey.GEOMETRY_EXTRUDE,
+            GuiActionKey.GEOMETRY_SWEEP,
             GuiActionKey.GEOMETRY_FUSE,
             GuiActionKey.GEOMETRY_CUT,
             GuiActionKey.GEOMETRY_MANAGER,

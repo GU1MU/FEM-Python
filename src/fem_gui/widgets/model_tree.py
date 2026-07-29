@@ -6,12 +6,15 @@ from collections.abc import Collection
 from typing import Any
 
 from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import QAbstractItemView, QMenu, QTreeWidget, QTreeWidgetItem
 
 from ..icons import icon
 
 ROLE_KIND = int(Qt.ItemDataRole.UserRole)
 ROLE_KEY = ROLE_KIND + 1
+
+_ACTIVE_PART_BACKGROUND = QColor("#d9ecff")
 
 _TREE_ICONS = {
     "model": "model",
@@ -46,6 +49,7 @@ _CATEGORY_ICONS = {
 }
 
 _EDITABLE_KINDS = {
+    "part",
     "material",
     "assignment",
     "step",
@@ -59,6 +63,7 @@ _EDITABLE_KINDS = {
 }
 
 _DELETABLE_KINDS = {
+    "part",
     "boundary",
     "cload",
     "edge_load",
@@ -74,6 +79,7 @@ _NATIVE_FEATURE_NAMES = {
     "Move": "移动",
     "Rotate": "旋转",
     "Extrude": "拉伸",
+    "Sweep": "扫掠",
     "Fuse": "合并",
     "Cut": "切除",
     "Partition": "分割",
@@ -95,6 +101,27 @@ def _native_feature_label(value: object) -> str:
         ):
             return f"{prefix}{translated}{suffix}"
     return text
+
+
+def _native_part_label(native_part: Any) -> str:
+    """Return a user-facing Part label without exposing internal IDs."""
+
+    state = "（已抑制）" if native_part.suppressed else ""
+    return f"{native_part.name}{state}"
+
+
+def _style_native_part_item(
+    item: QTreeWidgetItem,
+    native_part: Any,
+    *,
+    active: bool,
+) -> None:
+    """Show current-Part state through color instead of label suffixes."""
+
+    if active:
+        item.setBackground(0, QBrush(_ACTIVE_PART_BACKGROUND))
+    elif native_part.suppressed:
+        item.setForeground(0, QBrush(Qt.GlobalColor.gray))
 
 
 def _section_label(section: Any, element: Any | None = None) -> str:
@@ -134,6 +161,12 @@ class ModelTree(QTreeWidget):
         self.setObjectName("modelTree")
         self.setHeaderHidden(True)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.setStyleSheet(
+            "QTreeWidget::item:selected {"
+            " background-color: #d9ecff;"
+            " color: #202020;"
+            "}"
+        )
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.itemClicked.connect(self._on_clicked)
         self.itemDoubleClicked.connect(self._on_double_clicked)
@@ -160,16 +193,22 @@ class ModelTree(QTreeWidget):
         section_definitions: tuple[Any, ...] = (),
         region_assignments: tuple[Any, ...] = (),
         scope_names: Collection[str] | None = None,
+        native_parts: tuple[Any, ...] = (),
+        active_part_id: str | None = None,
     ) -> None:
         self._renamable_kinds = (
             frozenset({"model", "part"})
-            if part_name is not None
+            if part_name is not None or native_parts
             else frozenset()
         )
         self._non_highlightable_kinds = (
-            frozenset({"model", "part", "feature"})
-            if part_name is not None
-            else frozenset()
+            frozenset({"model", "feature"})
+            if native_parts
+            else (
+                frozenset({"model", "part", "feature"})
+                if part_name is not None
+                else frozenset()
+            )
         )
         self.clear()
         visible_scope_names = (
@@ -194,7 +233,47 @@ class ModelTree(QTreeWidget):
             None,
         )
         part = None
-        if part_name is not None:
+        if native_parts:
+            for native_part in native_parts:
+                native_item = self._item(
+                    _native_part_label(native_part),
+                    "part",
+                    native_part.id,
+                )
+                _style_native_part_item(
+                    native_item,
+                    native_part,
+                    active=native_part.id == active_part_id,
+                )
+                for record in native_part.feature_history:
+                    native_item.addChild(
+                        self._item(
+                            _native_feature_label(record.name),
+                            "feature",
+                            str(record.name),
+                        )
+                    )
+                native_item.addChild(
+                    self._item(
+                        "网格设置",
+                        "part_mesh_settings",
+                        native_part.id,
+                    )
+                )
+                root.addChild(native_item)
+                native_item.setExpanded(
+                    native_part.id == active_part_id
+                )
+            part = next(
+                (
+                    root.child(index)
+                    for index in range(root.childCount())
+                    if root.child(index).data(0, ROLE_KEY)
+                    == active_part_id
+                ),
+                None,
+            )
+        elif part_name is not None:
             part = self._item(str(part_name), "part", None)
             for row in feature_rows:
                 part.addChild(
@@ -343,6 +422,7 @@ class ModelTree(QTreeWidget):
         steps.setExpanded(part is None)
         if part is not None:
             part.setExpanded(True)
+            self.setCurrentItem(part)
         if first_step_item is None and steps.childCount():
             first_step_item = steps.child(0)
         if first_step_item is not None and part is None:
@@ -355,14 +435,75 @@ class ModelTree(QTreeWidget):
         *,
         part_name: str = "部件-1",
         bodies: tuple[tuple[str, str, tuple[str, ...]], ...] = (),
+        parts: tuple[Any, ...] | None = None,
+        active_part_id: str | None = None,
     ) -> None:
-        """显示模型、部件、实体及各实体的特征历史。"""
+        """显示模型以及稳定的原生部件层级。"""
         self._renamable_kinds = frozenset({"model", "part"})
-        self._non_highlightable_kinds = frozenset(
-            {"model", "part", "feature"}
+        self._non_highlightable_kinds = (
+            frozenset({"model", "feature"})
+            if parts is not None
+            else frozenset({"model", "part", "feature"})
         )
         self.clear()
         root = self._item(str(name), "model", None)
+        if parts is not None:
+            active_item = None
+            for native_part in parts:
+                part = self._item(
+                    _native_part_label(native_part),
+                    "part",
+                    native_part.id,
+                )
+                is_active = native_part.id == active_part_id
+                _style_native_part_item(
+                    part,
+                    native_part,
+                    active=is_active,
+                )
+                for row in native_part.feature_history:
+                    part.addChild(
+                        self._item(
+                            _native_feature_label(row.name),
+                            "feature",
+                            str(row.name),
+                        )
+                    )
+                provenance = native_part.provenance
+                if provenance is not None:
+                    operation = (
+                        "布尔合并"
+                        if provenance.operation == "fuse"
+                        else "布尔切除"
+                    )
+                    part.addChild(
+                        self._item(
+                            f"{operation} [{provenance.feature_id}]",
+                            "feature",
+                            provenance.feature_id,
+                        )
+                    )
+                    part.addChild(
+                        self._item(
+                            "源部件："
+                            f"{provenance.target_part_id}、"
+                            f"{provenance.tool_part_id}",
+                            "detail",
+                            None,
+                        )
+                    )
+                part.addChild(
+                    self._item("网格设置", "part_mesh_settings", native_part.id)
+                )
+                root.addChild(part)
+                part.setExpanded(is_active)
+                if is_active:
+                    active_item = part
+            self.addTopLevelItem(root)
+            root.setExpanded(True)
+            if active_item is not None:
+                self.setCurrentItem(active_item)
+            return
         part = self._item(str(part_name), "part", None)
         if bodies:
             for body_id, body_name, rows in bodies:
@@ -459,9 +600,16 @@ class ModelTree(QTreeWidget):
     def _on_double_clicked(self, item: QTreeWidgetItem) -> None:
         entry = self._entry(item)
         if entry is not None:
+            editable = (
+                entry[0] in _EDITABLE_KINDS
+                and not (
+                    entry[0] == "part"
+                    and type(entry[1]) is not str
+                )
+            )
             signal = (
                 self.editRequested
-                if entry[0] in _EDITABLE_KINDS
+                if editable
                 else self.informationRequested
             )
             signal.emit(*entry)
@@ -485,12 +633,24 @@ class ModelTree(QTreeWidget):
         )
         edit = (
             menu.addAction("编辑")
-            if entry[0] in _EDITABLE_KINDS
+            if (
+                entry[0] in _EDITABLE_KINDS
+                and not (
+                    entry[0] == "part"
+                    and type(entry[1]) is not str
+                )
+            )
             else None
         )
         delete = (
             menu.addAction("删除")
-            if entry[0] in _DELETABLE_KINDS
+            if (
+                entry[0] in _DELETABLE_KINDS
+                and not (
+                    entry[0] == "part"
+                    and type(entry[1]) is not str
+                )
+            )
             else None
         )
         information = menu.addAction("查看信息")

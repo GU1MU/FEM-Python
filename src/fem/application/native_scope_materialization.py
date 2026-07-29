@@ -15,6 +15,7 @@ from fem.core.model import (
     Surface,
 )
 from fem.geometry.references import LogicalEntityRef
+from fem.geometry.part_namespace import part_id_from_logical_id
 from fem.selection import edges as mesh_edges
 from fem.selection import faces as mesh_faces
 
@@ -22,6 +23,7 @@ from .definitions import MeshEntityRef
 
 
 NATIVE_SCOPE_CATALOG_KEY = "_native_scope_catalog"
+NATIVE_PART_OWNERSHIP_KEY = "_native_part_ownership"
 
 
 def has_native_scope_catalog(model: Any) -> bool:
@@ -115,6 +117,7 @@ def _materialize_mesh_scope(
     name: str,
     references: tuple[MeshEntityRef, ...],
 ) -> None:
+    _validate_mesh_reference_owners(model, references)
     kind = references[0].kind
     if any(reference.kind != kind for reference in references):
         raise ValueError("one mesh scope cannot mix entity kinds")
@@ -195,14 +198,15 @@ def mesh_references_for_logical_entities(
                 "scope reference is absent from the current mesh: "
                 f"{reference.logical_id}"
             )
+        part_id = part_id_from_logical_id(reference.logical_id)
         if mesh_kind == "node":
             selected.update(
-                MeshEntityRef.node(node_id)
+                MeshEntityRef.node(node_id, part_id=part_id)
                 for node_id in _integer_values(entry.get("node_ids", ()))
             )
         elif mesh_kind == "element":
             selected.update(
-                MeshEntityRef.element(element_id)
+                MeshEntityRef.element(element_id, part_id=part_id)
                 for element_id in _integer_values(
                     entry.get("element_ids", ())
                 )
@@ -218,7 +222,12 @@ def mesh_references_for_logical_entities(
                 else MeshEntityRef.face
             )
             selected.update(
-                constructor(element_id, local_index, node_ids)
+                constructor(
+                    element_id,
+                    local_index,
+                    node_ids,
+                    part_id=part_id,
+                )
                 for (element_id, local_index), node_ids in rows.items()
             )
     if not selected:
@@ -254,6 +263,42 @@ def _validated_boundary_nodes(
             f"{label} reference connectivity is stale for the current mesh: {key}"
         )
     return actual
+
+
+def _validate_mesh_reference_owners(
+    model: Any,
+    references: tuple[MeshEntityRef, ...],
+) -> None:
+    owned = tuple(reference for reference in references if reference.part_id)
+    if not owned:
+        return
+    metadata = getattr(model, "metadata", None)
+    ownership = (
+        metadata.get(NATIVE_PART_OWNERSHIP_KEY)
+        if isinstance(metadata, Mapping)
+        else None
+    )
+    if not isinstance(ownership, Mapping):
+        raise ValueError("mesh reference declares a Part owner without ownership data")
+    for reference in owned:
+        row = ownership.get(reference.part_id)
+        if not isinstance(row, Mapping):
+            raise ValueError(
+                f"mesh reference owner {reference.part_id!r} is absent"
+            )
+        if reference.kind == "node":
+            valid = int(reference.node_id) in {
+                int(value) for value in row.get("node_ids", ())
+            }
+        else:
+            valid = int(reference.element_id) in {
+                int(value) for value in row.get("element_ids", ())
+            }
+        if not valid:
+            raise ValueError(
+                "mesh reference identity does not belong to declared Part "
+                f"{reference.part_id}"
+            )
 
 
 def _require_ids(
@@ -372,6 +417,7 @@ def _boundary_rows(
 
 __all__ = [
     "NATIVE_SCOPE_CATALOG_KEY",
+    "NATIVE_PART_OWNERSHIP_KEY",
     "can_materialize_native_scopes",
     "has_native_scope_catalog",
     "materialize_native_scopes",

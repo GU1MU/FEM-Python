@@ -2,7 +2,7 @@ from dataclasses import replace
 
 import pytest
 
-from fem.application import ModelSession, describe_session_authoring
+from fem.application import ModelSession, NativePart, describe_session_authoring
 from fem.application.results import FieldState
 from fem.core.model import AnalysisStep
 from fem.geometry import LogicalEntityRef, RectangleGeometry
@@ -97,10 +97,21 @@ def test_native_scope_actions_remain_disabled_until_meshing() -> None:
     session = ModelSession()
     session.new_native_project()
     base = session.snapshot()
+    recipe = RectangleGeometry("Part-1", 4.0, 2.0)
+    settings = MeshSettings(size=0.4)
     snapshot = replace(
         base,
-        geometry_recipe=RectangleGeometry("Part-1", 4.0, 2.0),
-        mesh_settings=MeshSettings(size=0.4),
+        parts=(
+            NativePart(
+                id="P1",
+                name="Part-1",
+                geometry_recipe=recipe,
+                mesh_settings=settings,
+            ),
+        ),
+        active_part_id="P1",
+        geometry_recipe=recipe,
+        mesh_settings=settings,
         steps=(AnalysisStep("Step-1"),),
         can_save=True,
     )
@@ -118,7 +129,7 @@ def test_native_scope_actions_remain_disabled_until_meshing() -> None:
             projection,
             GuiActionContext(
                 selected_step_name="Step-1",
-                geometry_selection=(LogicalEntityRef("edge:left"),),
+                geometry_selection=(LogicalEntityRef("edge:P1/left"),),
             ),
         )
     )

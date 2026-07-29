@@ -1,4 +1,4 @@
-"""Non-modal panel for strict solid Body Boolean authoring."""
+"""Non-modal panel for strict Boolean authoring between Parts."""
 
 from __future__ import annotations
 
@@ -8,12 +8,13 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
-from ..body_boolean import BodyBooleanController
+from ..part_boolean import PartBooleanController
 
 
 class BooleanFeaturePanel(QWidget):
@@ -29,14 +30,14 @@ class BooleanFeaturePanel(QWidget):
         self.setObjectName("booleanFeaturePanel")
         self.setMinimumWidth(320)
         self.setMaximumWidth(480)
-        self._controller: BodyBooleanController | None = None
+        self._controller: PartBooleanController | None = None
         self._preview_running = False
         self._preview_valid = False
         self._build_ui()
         self.hide()
 
     @property
-    def controller(self) -> BodyBooleanController | None:
+    def controller(self) -> PartBooleanController | None:
         return self._controller
 
     def _build_ui(self) -> None:
@@ -77,11 +78,12 @@ class BooleanFeaturePanel(QWidget):
         tool_layout.addWidget(self.tool_label, 1)
         tool_layout.addWidget(self.tool_button)
 
-        self.result_label = QLabel("未确定", self)
-        self.result_label.setObjectName("booleanResultLabel")
-        tool_policy = QLabel("操作成功后消耗", self)
+        self.result_edit = QLineEdit("切除结果-1", self)
+        self.result_edit.setObjectName("booleanResultName")
+        self.result_edit.textChanged.connect(lambda _text: self.refresh())
+        tool_policy = QLabel("操作成功后自动抑制", self)
 
-        self.status_label = QLabel("请选择目标体和工具体", self)
+        self.status_label = QLabel("请选择目标部件和工具部件", self)
         self.status_label.setObjectName("booleanPreviewStatus")
         self.status_label.setWordWrap(True)
 
@@ -99,10 +101,10 @@ class BooleanFeaturePanel(QWidget):
 
         form = QFormLayout()
         form.addRow("操作", self.operation_combo)
-        form.addRow("目标体", target_row)
-        form.addRow("工具体", tool_row)
-        form.addRow("结果体", self.result_label)
-        form.addRow("工具体处理", tool_policy)
+        form.addRow("目标部件", target_row)
+        form.addRow("工具部件", tool_row)
+        form.addRow("结果部件", self.result_edit)
+        form.addRow("源部件处理", tool_policy)
 
         layout = QVBoxLayout(self)
         layout.addWidget(title)
@@ -111,15 +113,20 @@ class BooleanFeaturePanel(QWidget):
         layout.addStretch(1)
         layout.addLayout(buttons)
 
-    def begin(self, controller: BodyBooleanController) -> None:
-        if type(controller) is not BodyBooleanController:
-            raise TypeError("controller must be BodyBooleanController")
+    def begin(self, controller: PartBooleanController) -> None:
+        if type(controller) is not PartBooleanController:
+            raise TypeError("controller must be PartBooleanController")
         self._controller = controller
         self._preview_running = False
         self._preview_valid = False
         index = self.operation_combo.findData(controller.operation)
         self.operation_combo.setCurrentIndex(index)
-        self.show_status("请选择目标体和工具体")
+        self.result_edit.setText(
+            "合并结果-1"
+            if controller.operation == "fuse"
+            else "切除结果-1"
+        )
+        self.show_status("请选择目标部件和工具部件")
         self.refresh()
         self.show()
 
@@ -134,16 +141,14 @@ class BooleanFeaturePanel(QWidget):
         if controller is None:
             return
         self.target_label.setText(
-            controller.body_label(controller.target_body_id)
+            controller.part_label(controller.target_part_id)
         )
         self.tool_label.setText(
-            controller.body_label(controller.tool_body_id)
-        )
-        self.result_label.setText(
-            controller.body_label(controller.target_body_id)
+            controller.part_label(controller.tool_part_id)
         )
         self.finish_button.setEnabled(
             controller.ready
+            and bool(self.result_name())
             and self._preview_valid
             and not self._preview_running
         )
@@ -162,6 +167,9 @@ class BooleanFeaturePanel(QWidget):
 
     def show_status(self, message: str) -> None:
         self.status_label.setText(str(message))
+
+    def result_name(self) -> str:
+        return self.result_edit.text().strip()
 
     def _operation_changed(self) -> None:
         operation = self.operation_combo.currentData()

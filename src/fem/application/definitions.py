@@ -26,19 +26,7 @@ from .diagnostics import (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class NativePart:
-    """Small serialisable representation of one editable native part."""
-
-    name: str = "Part-1"
-    body_name: str = "Body-1"
-
-    def __post_init__(self) -> None:
-        for field_name in ("name", "body_name"):
-            value = getattr(self, field_name)
-            if type(value) is not str or not value.strip():
-                raise ValueError(f"NativePart.{field_name} must be a non-empty string")
-            object.__setattr__(self, field_name, value.strip())
+from .native_part import NativePart
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,8 +47,17 @@ class MeshEntityRef:
     element_id: int | None = None
     local_index: int | None = None
     node_ids: tuple[int, ...] = ()
+    part_id: str | None = None
 
     def __post_init__(self) -> None:
+        if self.part_id is not None:
+            from .native_part import normalize_part_id
+
+            object.__setattr__(
+                self,
+                "part_id",
+                normalize_part_id(self.part_id, "mesh entity part_id"),
+            )
         if self.kind not in {"node", "edge", "face", "element"}:
             raise ValueError(f"unsupported mesh entity kind: {self.kind!r}")
         node_ids = tuple(int(node_id) for node_id in self.node_ids)
@@ -102,12 +99,26 @@ class MeshEntityRef:
             )
 
     @classmethod
-    def node(cls, node_id: int) -> MeshEntityRef:
-        return cls("node", node_id=int(node_id))
+    def node(
+        cls,
+        node_id: int,
+        *,
+        part_id: str | None = None,
+    ) -> MeshEntityRef:
+        return cls("node", node_id=int(node_id), part_id=part_id)
 
     @classmethod
-    def element(cls, element_id: int) -> MeshEntityRef:
-        return cls("element", element_id=int(element_id))
+    def element(
+        cls,
+        element_id: int,
+        *,
+        part_id: str | None = None,
+    ) -> MeshEntityRef:
+        return cls(
+            "element",
+            element_id=int(element_id),
+            part_id=part_id,
+        )
 
     @classmethod
     def edge(
@@ -115,12 +126,15 @@ class MeshEntityRef:
         element_id: int,
         local_index: int,
         node_ids: Iterable[int],
+        *,
+        part_id: str | None = None,
     ) -> MeshEntityRef:
         return cls(
             "edge",
             element_id=int(element_id),
             local_index=int(local_index),
             node_ids=tuple(int(node_id) for node_id in node_ids),
+            part_id=part_id,
         )
 
     @classmethod
@@ -129,12 +143,15 @@ class MeshEntityRef:
         element_id: int,
         local_index: int,
         node_ids: Iterable[int],
+        *,
+        part_id: str | None = None,
     ) -> MeshEntityRef:
         return cls(
             "face",
             element_id=int(element_id),
             local_index=int(local_index),
             node_ids=tuple(int(node_id) for node_id in node_ids),
+            part_id=part_id,
         )
 
     @property
@@ -150,12 +167,13 @@ class MeshEntityRef:
 
 def mesh_entity_ref_sort_key(
     reference: MeshEntityRef,
-) -> tuple[int, int, int, tuple[int, ...]]:
+) -> tuple[str, int, int, int, tuple[int, ...]]:
     """Return a deterministic ordering key for mesh entity references."""
 
     kind_order = {"node": 0, "edge": 1, "face": 2, "element": 3}
     primary, local_index = reference.identity
     return (
+        "" if reference.part_id is None else reference.part_id,
         kind_order[reference.kind],
         primary,
         local_index,

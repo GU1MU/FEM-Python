@@ -113,3 +113,30 @@ def test_mesh_scope_pick_signal_emits_typed_mesh_references() -> None:
         MeshEntityRef.element(20),
     ]
     viewport.close()
+
+
+def test_mesh_scope_boundary_topology_is_built_only_for_edge_or_face_mode(
+    monkeypatch,
+) -> None:
+    _application()
+    viewport = FEMViewport()
+    builds = []
+
+    def install() -> None:
+        builds.append(viewport._selection_mode)
+        viewport._mesh_scope_pick_bindings_ready = True
+
+    monkeypatch.setattr(
+        viewport,
+        "_install_mesh_scope_pick_bindings",
+        install,
+    )
+
+    viewport.set_selection_mode("mesh_node")
+    viewport.set_selection_mode("mesh_element")
+    assert builds == []
+
+    viewport.set_selection_mode("mesh_edge")
+    viewport.set_selection_mode("mesh_face")
+    assert builds == ["mesh_edge"]
+    viewport.close()

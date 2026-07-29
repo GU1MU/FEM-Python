@@ -16,6 +16,7 @@ from fem.geometry.recipes import (
     NativeGeometry,
     PlateWithHoleGeometry,
     RectangleGeometry,
+    RevolvedGeometry,
     RotatedGeometry,
     SketchGeometry,
     WireGeometry,
@@ -74,6 +75,9 @@ def derive_feature_history(recipe: NativeGeometry) -> tuple[FeatureRecord, ...]:
         elif isinstance(item, ExtrudedGeometry):
             visit(item.base)
             add("Extrude", derive_geometry_feature_rows(item)[-1])
+        elif isinstance(item, RevolvedGeometry):
+            visit(item.base)
+            add("Sweep", derive_geometry_feature_rows(item)[-1])
         elif isinstance(item, BooleanGeometry):
             visit(item.object_geometry)
             kind = {
@@ -147,6 +151,17 @@ def derive_geometry_feature_rows(
         )
         return derive_geometry_feature_rows(recipe.base) + (
             f"拉伸  高度={recipe.height:g}{profile_summary}",
+        )
+    if isinstance(recipe, RevolvedGeometry):
+        profile_count = len(recipe.source_face_ids)
+        profile_summary = (
+            ""
+            if profile_count <= 1
+            else f"，Profiles={profile_count}"
+        )
+        return derive_geometry_feature_rows(recipe.base) + (
+            f"扫掠  {recipe.axis.upper()} 轴，"
+            f"{recipe.angle_degrees:g}°{profile_summary}",
         )
     if isinstance(recipe, BooleanGeometry):
         names = {"fuse": "合并", "cut": "切除", "fragment": "分割"}

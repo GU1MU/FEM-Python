@@ -716,7 +716,17 @@ def _decode_local_control(value: Any, path: str) -> LegacyLocalMeshControlV1:
 
 
 def _encode_part(part: Any, path: str) -> dict[str, Any]:
-    _exact_dataclass(part, NativePart, {"name", "body_name"}, path)
+    if type(part) is not NativePart:
+        raise ProjectV1EncodeError(f"{path} 必须是 NativePart")
+    if (
+        part.geometry_recipe is not None
+        or part.mesh_settings is not None
+        or part.suppressed
+        or part.provenance is not None
+    ):
+        raise ProjectV1EncodeError(
+            f"{path} 包含 v1 无法表示的部件所有权字段"
+        )
     return {
         "name": _string(part.name, f"{path}.name", error_type=ProjectV1EncodeError),
         "body_name": _string(

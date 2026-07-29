@@ -11,11 +11,10 @@ from PySide6.QtWidgets import QApplication, QLabel
 from fem.application import (
     ModelSession,
     NamedRegion,
-    NativePart,
     TopologyResolutionError,
     describe_session_authoring,
 )
-from fem.geometry import ExtrudedGeometry, LogicalEntityRef, MultiBodyGeometry
+from fem.geometry import ExtrudedGeometry, LogicalEntityRef
 from fem_gui.action_state import (
     GuiActionContext,
     GuiActionKey,
@@ -41,12 +40,8 @@ def _application() -> QApplication:
 def _extrude_state(recipe, selection=()):
     session = ModelSession()
     session.new_native_project()
-    base = session.snapshot()
-    snapshot = replace(
-        base,
-        geometry_recipe=recipe,
-        can_save=True,
-    )
+    session.add_native_part(recipe)
+    snapshot = session.snapshot()
     states = {
         state.key: state
         for state in derive_action_availability(
@@ -140,8 +135,8 @@ def test_gui_extrusion_commits_selected_profile_and_clears_selection(
     window.extrude_geometry()
 
     recipe = window.document.geometry_recipe
-    assert isinstance(recipe, MultiBodyGeometry)
-    assert recipe.body("B1").recipe.source_face_ids == (first,)
+    assert isinstance(recipe, ExtrudedGeometry)
+    assert recipe.source_face_ids == (first,)
     assert window._selected_geometry_refs == set()
     assert window._geometry_selection_mode == "body"
     window.close()
@@ -176,19 +171,18 @@ def test_gui_extrusion_revision_conflict_preserves_face_selection(
     window._set_native_geometry(sketch, "测试草图")
     window._set_geometry_selection_mode("face")
     window._selected_geometry_refs = {first_ref}
-    rejections = []
+    errors: list[tuple[str, str]] = []
     monkeypatch.setattr(
         window,
-        "_show_command_rejection",
-        lambda title, receipt: rejections.append((title, receipt)),
+        "_show_error",
+        lambda title, message: errors.append((title, message)),
     )
 
     def mutate_while_dialog_is_open(_dialog) -> bool:
-        delta = window.session.replace_native_geometry_inputs(
-            (NativePart(),),
-            sketch,
+        window.session.rename_native_part(
+            "P1",
+            "并发修改的部件",
         )
-        window._apply_session_delta(delta)
         return True
 
     monkeypatch.setattr(
@@ -201,8 +195,8 @@ def test_gui_extrusion_revision_conflict_preserves_face_selection(
 
     assert window.document.geometry_recipe == sketch
     assert window._selected_geometry_refs == {first_ref}
-    assert rejections
-    assert rejections[0][1].diagnostic.code == "geometry.edit.rejected"
+    assert errors
+    assert errors[0][0] == "编辑几何"
     window.close()
 
 
@@ -310,14 +304,14 @@ def test_occ_preflight_failure_releases_temporary_runtime(
     assert released == [True]
 
 
-def test_partial_lineage_message_reports_only_removed_regions() -> None:
+def test_profile_change_preserves_only_surviving_part_regions() -> None:
     _application()
     window = FEMMainWindow()
     sketch = two_profile_sketch()
     first = profile_face_id(sketch, "L1")
     second = profile_face_id(sketch, "L5")
     window._set_native_geometry(
-        ExtrudedGeometry(sketch, 1.0, (first, second)),
+        ExtrudedGeometry(sketch, 1.0, (first,)),
         "测试拉伸体",
     )
     window._apply_session_delta(
@@ -325,13 +319,13 @@ def test_partial_lineage_message_reports_only_removed_regions() -> None:
             (
                 NamedRegion(
                     "Body",
-                    (LogicalEntityRef("body:B1"),),
+                    (LogicalEntityRef("body:P1/domain"),),
                 ),
                 NamedRegion(
                     "Side",
                     (
                         LogicalEntityRef(
-                            "face:B2/side/L5"
+                            "face:P1/side/L1"
                         ),
                     ),
                 ),
@@ -340,10 +334,10 @@ def test_partial_lineage_message_reports_only_removed_regions() -> None:
     )
 
     window._set_native_geometry(
-        ExtrudedGeometry(sketch, 1.0, (first,)),
+        ExtrudedGeometry(sketch, 1.0, (second,)),
         "选择修改后的",
     )
 
     assert set(window.document.named_regions) == {"Body"}
-    assert "1 个旧作用域已失效" in window.status_panel.state_label.text()
+    assert "选择修改后的几何已创建" in window.status_panel.state_label.text()
     window.close()

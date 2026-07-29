@@ -131,17 +131,7 @@ def parse_file(path: str | Path) -> AbaqusDeck:
     state = _ParserState(deck, inp_path)
 
     raw_bytes = inp_path.read_bytes()
-    try:
-        text = raw_bytes.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        line = raw_bytes[: exc.start].count(b"\n") + 1
-        raise AbaqusParseError(
-            "Abaqus input is not valid UTF-8",
-            code="abaqus.text.invalid_utf8",
-            location=AbaqusSourceLocation(inp_path, line),
-            record=raw_bytes[exc.start : exc.end],
-            remediation="Save the input as valid UTF-8 text.",
-        ) from exc
+    text = _decode_abaqus_text(raw_bytes, inp_path)
 
     physical_lines = text.splitlines()
     index = 0
@@ -191,6 +181,29 @@ def parse_file(path: str | Path) -> AbaqusDeck:
 
     state.finish()
     return deck
+
+
+def _decode_abaqus_text(raw_bytes: bytes, inp_path: Path) -> str:
+    """Decode an Abaqus deck without dropping or replacing source bytes."""
+
+    try:
+        return raw_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError as utf8_error:
+        if not raw_bytes.startswith(b"\xef\xbb\xbf"):
+            try:
+                return raw_bytes.decode("gb18030")
+            except UnicodeDecodeError:
+                pass
+        line = raw_bytes[: utf8_error.start].count(b"\n") + 1
+        raise AbaqusParseError(
+            "Abaqus input is not valid UTF-8 or GB18030 text",
+            code="abaqus.text.invalid_utf8",
+            location=AbaqusSourceLocation(inp_path, line),
+            record=raw_bytes[utf8_error.start : utf8_error.end],
+            remediation=(
+                "Save the input as valid UTF-8 or GB18030/GBK text."
+            ),
+        ) from utf8_error
 
 
 class _ParserState:

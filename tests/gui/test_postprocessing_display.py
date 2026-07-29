@@ -127,12 +127,12 @@ def test_analysis_uses_clean_deformed_displacement_contour_defaults(gui_inp_path
     provider = window._current_result_provider()
     assert provider is not None
     assert selection == provider.catalog().default_selection
-    assert window._contour_options["style"] == "continuous"
+    assert window._contour_options["style"] == "segmented"
     assert window._contour_options["colormap"] == "jet"
     assert window._contour_options["decimals"] == 5
     assert not window._contour_options["show_minimum"]
     assert not window._contour_options["show_maximum"]
-    assert window._contour_options["orientation"] == "horizontal"
+    assert window._contour_options["orientation"] == "vertical"
     assert not window.actions["symbols"].isChecked()
     assert not window.actions["node_labels"].isChecked()
     assert not window.actions["element_labels"].isChecked()

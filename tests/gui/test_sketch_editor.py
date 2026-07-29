@@ -98,3 +98,50 @@ def test_trim_splits_a_crossing_line_as_one_undo_command() -> None:
     assert controller.snapshot() == before
     controller.redo()
     assert len(controller.snapshot().curves) == 4
+
+
+def test_trim_with_one_intersection_removes_clicked_side() -> None:
+    controller = SketchDraftController("Trim one side")
+    controller.add_point(-1.0, 0.0, point_id="P1")
+    controller.add_point(1.0, 0.0, point_id="P2")
+    controller.add_point(0.0, -1.0, point_id="P3")
+    controller.add_point(0.0, 1.0, point_id="P4")
+    target = controller.add_line("P1", "P2", curve_id="L1")
+    controller.add_line("P3", "P4", curve_id="L2")
+
+    replacements = controller.trim_curve(target.id, (0.75, 0.4))
+
+    assert len(replacements) == 1
+    assert replacements[0].id == target.id
+    snapshot = controller.snapshot()
+    points = {point.id: point for point in snapshot.points}
+    kept = replacements[0]
+    assert (points[kept.start_point_id].u, points[kept.start_point_id].v) == (
+        -1.0,
+        0.0,
+    )
+    assert (points[kept.end_point_id].u, points[kept.end_point_id].v) == (
+        0.0,
+        0.0,
+    )
+
+
+def test_trim_deletes_whole_curve_when_overlap_has_no_unique_boundary() -> None:
+    controller = SketchDraftController("Trim overlap")
+    controller.add_point(0.0, 0.0, point_id="P1")
+    controller.add_point(2.0, 0.0, point_id="P2")
+    controller.add_point(1.0, 0.0, point_id="P3")
+    controller.add_point(3.0, 0.0, point_id="P4")
+    target = controller.add_line("P1", "P2", curve_id="L1")
+    overlap = controller.add_line("P3", "P4", curve_id="L2")
+    before = controller.snapshot()
+
+    replacements = controller.trim_curve(target.id, (0.5, 0.2))
+
+    assert replacements == ()
+    assert tuple(curve.id for curve in controller.snapshot().curves) == (
+        overlap.id,
+    )
+    assert {point.id for point in controller.snapshot().points} == {"P3", "P4"}
+    controller.undo()
+    assert controller.snapshot() == before

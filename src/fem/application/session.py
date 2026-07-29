@@ -12,14 +12,23 @@ from typing import Any
 from fem.geometry import (
     BooleanBodyContext,
     BooleanGeometry,
+    ExtrudedGeometry,
     LogicalEntityRef,
+    logical_ref_sort_key,
+    MovedGeometry,
     MultiBodyGeometry,
     PlanarBooleanContext,
+    PartBooleanContext,
     geometry_dimension,
     historical_recipe_ids,
     recipe_characteristic_size,
     retired_recipe_ids,
+    RevolvedGeometry,
+    RotatedGeometry,
     supports_structured_hexahedron,
+    namespace_part_logical_id,
+    part_id_from_logical_id,
+    strip_part_logical_id,
 )
 from fem.geometry.recipe_topology import (
     can_preserve_logical_references,
@@ -56,12 +65,22 @@ from .definitions import (
     MeshEntityRef,
     ModelDefinitions,
     NamedRegion,
-    NativePart,
     RegionAssignment,
     SectionDefinition,
     compile_model_definitions,
     definitions_from_model,
     normalize_model_definitions,
+)
+from .native_part import (
+    NativePart,
+    PartBooleanProvenance,
+    next_part_boolean_feature_id,
+    next_part_id,
+    normalize_part_boolean_feature_id,
+    normalize_part_id,
+    part_boolean_feature_id_sort_key,
+    part_id_sort_key,
+    validate_native_parts,
 )
 from .diagnostics import PreflightReport, internal_error_report
 from .feature_history import derive_feature_history
@@ -71,7 +90,9 @@ from .project_validation import (
     validate_native_project_inputs,
 )
 from .native_mesh_contract import require_complete_native_mesh_contract
+from .native_regions import describe_native_regions
 from .native_scope_materialization import (
+    NATIVE_PART_OWNERSHIP_KEY,
     can_materialize_native_scopes,
     materialize_native_scopes,
 )
@@ -134,6 +155,25 @@ class RevisionConflictError(RuntimeError):
         super().__init__(
             f"expected session revision {expected}, current revision is {actual}"
         )
+        self.expected = int(expected)
+        self.actual = int(actual)
+
+
+class PartRevisionConflictError(RuntimeError):
+    """A compare-and-swap Part edit was based on an older Part revision."""
+
+    def __init__(
+        self,
+        part_id: str,
+        expected: int,
+        actual: int,
+    ) -> None:
+        normalized = normalize_part_id(part_id)
+        super().__init__(
+            f"expected Part {normalized} revision {expected}, "
+            f"current revision is {actual}"
+        )
+        self.part_id = normalized
         self.expected = int(expected)
         self.actual = int(actual)
 
@@ -201,13 +241,77 @@ class BooleanReferenceUndoRecord:
                 "Boolean undo record geometries must describe its exact "
                 "forward feature transition"
             )
+
+
+@dataclass(frozen=True, slots=True)
+class PartBooleanUndoRecord:
+    """Exact source and definition state for one reversible Part Boolean."""
+
+    feature_id: str
+    result_part_id: str
+    source_parts: tuple[NativePart, NativePart]
+    result_part: NativePart
+    before_named_regions: tuple[NamedRegion, ...]
+    after_named_regions: tuple[NamedRegion, ...]
+    before_assignments: tuple[RegionAssignment, ...]
+    after_assignments: tuple[RegionAssignment, ...]
+    before_steps: tuple[Any, ...]
+    after_steps: tuple[Any, ...]
+
+    def __post_init__(self) -> None:
+        feature_id = normalize_part_boolean_feature_id(self.feature_id)
+        result_id = normalize_part_id(self.result_part_id)
+        sources = deepcopy(tuple(self.source_parts))
+        if len(sources) != 2 or any(
+            type(part) is not NativePart for part in sources
+        ):
+            raise TypeError(
+                "Part Boolean undo source_parts must contain two NativeParts"
+            )
+        if sources[0].id == sources[1].id:
+            raise ValueError("Part Boolean undo sources must differ")
+        result = deepcopy(self.result_part)
+        if type(result) is not NativePart or result.id != result_id:
+            raise ValueError(
+                "Part Boolean undo result_part must match result_part_id"
+            )
+        provenance = result.provenance
+        if (
+            provenance is None
+            or provenance.feature_id != feature_id
+            or provenance.source_part_ids
+            != (sources[0].id, sources[1].id)
+        ):
+            raise ValueError(
+                "Part Boolean undo result provenance does not match sources"
+            )
+        recipe = result.geometry_recipe
+        context = (
+            recipe.part_context
+            if isinstance(recipe, BooleanGeometry)
+            else None
+        )
+        if (
+            context is None
+            or context.feature_id != feature_id
+            or context.result_part_id != result_id
+            or context.target_part_id != sources[0].id
+            or context.tool_part_id != sources[1].id
+            or recipe.object_geometry != sources[0].geometry_recipe
+            or recipe.tool_geometry != sources[1].geometry_recipe
+            or recipe.operation != provenance.operation
+        ):
+            raise ValueError(
+                "Part Boolean undo result recipe is not bound to its exact "
+                "source Part states"
+            )
+        object.__setattr__(self, "feature_id", feature_id)
+        object.__setattr__(self, "result_part_id", result_id)
+        object.__setattr__(self, "source_parts", sources)
+        object.__setattr__(self, "result_part", result)
         for field_name in (
             "before_named_regions",
             "after_named_regions",
-            "before_materials",
-            "after_materials",
-            "before_sections",
-            "after_sections",
             "before_assignments",
             "after_assignments",
             "before_steps",
@@ -218,17 +322,19 @@ class BooleanReferenceUndoRecord:
                 field_name,
                 deepcopy(tuple(getattr(self, field_name))),
             )
-        for field_name in (
-            "before_geometry",
-            "after_geometry",
-            "before_mesh_settings",
-            "after_mesh_settings",
-        ):
-            object.__setattr__(
-                self,
-                field_name,
-                deepcopy(getattr(self, field_name)),
-            )
+
+
+@dataclass(frozen=True, slots=True)
+class _PartExtrusionUndoRecord:
+    primary_part_id: str
+    before_part: NativePart
+    after_parts: tuple[NativePart, ...]
+    before_named_regions: tuple[NamedRegion, ...]
+    after_named_regions: tuple[NamedRegion, ...]
+    before_assignments: tuple[RegionAssignment, ...]
+    after_assignments: tuple[RegionAssignment, ...]
+    before_steps: tuple[Any, ...]
+    after_steps: tuple[Any, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,6 +358,10 @@ class ProjectSnapshot:
         ...,
     ] = ()
     model_name: str = "Model-1"
+    part_boolean_undo_records: tuple[PartBooleanUndoRecord, ...] = ()
+    retired_part_ids: tuple[str, ...] = ()
+    retired_part_boolean_feature_ids: tuple[str, ...] = ()
+    active_part_id: str | None = None
 
     def __post_init__(self) -> None:
         source_kind = _canonical_source_kind(self.source_kind)
@@ -316,6 +426,91 @@ class ProjectSnapshot:
             self,
             "boolean_reference_undo_records",
             deepcopy(records),
+        )
+        part_records = tuple(self.part_boolean_undo_records)
+        if any(type(record) is not PartBooleanUndoRecord for record in part_records):
+            raise TypeError(
+                "part_boolean_undo_records must contain PartBooleanUndoRecord"
+            )
+        part_record_ids = tuple(record.feature_id for record in part_records)
+        if len(part_record_ids) != len(set(part_record_ids)):
+            raise ValueError("Part Boolean undo feature IDs must be unique")
+        if part_records != tuple(
+            sorted(
+                part_records,
+                key=lambda record: part_boolean_feature_id_sort_key(
+                    record.feature_id
+                ),
+            )
+        ):
+            raise ValueError(
+                "Part Boolean undo records must use canonical feature order"
+            )
+        object.__setattr__(
+            self,
+            "part_boolean_undo_records",
+            deepcopy(part_records),
+        )
+        retired_parts = tuple(
+            sorted(
+                {
+                    normalize_part_id(value, "retired Part ID")
+                    for value in self.retired_part_ids
+                },
+                key=part_id_sort_key,
+            )
+        )
+        retired_features = tuple(
+            sorted(
+                {
+                    normalize_part_boolean_feature_id(
+                        value,
+                        "retired Part Boolean feature ID",
+                    )
+                    for value in self.retired_part_boolean_feature_ids
+                },
+                key=part_boolean_feature_id_sort_key,
+            )
+        )
+        active_part_ids = {part.id for part in self.parts}
+        if active_part_ids & set(retired_parts):
+            raise ValueError("active and retired Part IDs must be disjoint")
+        active_feature_ids = {
+            part.provenance.feature_id
+            for part in self.parts
+            if part.provenance is not None
+        }
+        if active_feature_ids & set(retired_features):
+            raise ValueError(
+                "active and retired Part Boolean feature IDs must be disjoint"
+            )
+        active_part_id = (
+            None
+            if self.active_part_id is None
+            else normalize_part_id(
+                self.active_part_id,
+                "ProjectSnapshot.active_part_id",
+            )
+        )
+        if active_part_id is not None:
+            active_part = next(
+                (part for part in self.parts if part.id == active_part_id),
+                None,
+            )
+            if active_part is None:
+                raise ValueError(
+                    "ProjectSnapshot.active_part_id must identify an active Part"
+                )
+            if active_part.suppressed:
+                raise ValueError(
+                    "ProjectSnapshot.active_part_id cannot identify a suppressed Part"
+                )
+        object.__setattr__(self, "active_part_id", active_part_id)
+        object.__setattr__(self, "retired_part_ids", retired_parts)
+        object.__setattr__(
+            self,
+            "retired_part_boolean_feature_ids",
+            retired_features,
         )
         model_name = str(self.model_name).strip()
         if not model_name:
@@ -390,6 +585,8 @@ class SessionSnapshot:
     geometry_recipe: Any | None
     mesh_settings: Any | None
     parts: tuple[NativePart, ...]
+    active_part_id: str | None
+    part_revisions: Mapping[str, int]
     feature_history: tuple[FeatureRecord, ...]
     named_regions: Mapping[str, NamedRegion]
     materials: tuple[Any, ...]
@@ -425,9 +622,36 @@ class SessionSnapshot:
 
     @property
     def has_native_geometry(self) -> bool:
-        return (
-            self.source_kind == "native" and self.geometry_recipe is not None
+        return self.source_kind == "native" and any(
+            part.geometry_recipe is not None for part in self.parts
         )
+
+    @property
+    def active_part(self) -> NativePart | None:
+        if self.active_part_id is None:
+            return None
+        return next(
+            (
+                part
+                for part in self.parts
+                if part.id == self.active_part_id
+            ),
+            None,
+        )
+
+    def part(self, part_id: str) -> NativePart:
+        normalized = normalize_part_id(part_id)
+        for part in self.parts:
+            if part.id == normalized:
+                return deepcopy(part)
+        raise KeyError(normalized)
+
+    def part_revision(self, part_id: str) -> int:
+        normalized = normalize_part_id(part_id)
+        try:
+            return int(self.part_revisions[normalized])
+        except KeyError:
+            raise KeyError(normalized) from None
 
     @property
     def model_current(self) -> bool:
@@ -569,7 +793,54 @@ class ModelSession:
         return (
             self._is_open
             and self._source_kind == "native"
-            and self._geometry_recipe is not None
+        )
+
+    @property
+    def active_part_id(self) -> str | None:
+        return self._active_part_id
+
+    @property
+    def retired_part_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(self._retired_part_ids, key=part_id_sort_key))
+
+    @property
+    def retired_part_boolean_feature_ids(self) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                self._retired_part_boolean_feature_ids,
+                key=part_boolean_feature_id_sort_key,
+            )
+        )
+
+    @property
+    def next_native_part_id(self) -> str:
+        return next_part_id(
+            (part.id for part in self._parts),
+            self._retired_part_ids,
+        )
+
+    @property
+    def next_part_boolean_feature_id(self) -> str:
+        active = (
+            part.provenance.feature_id
+            for part in self._parts
+            if part.provenance is not None
+        )
+        return next_part_boolean_feature_id(
+            active,
+            self._retired_part_boolean_feature_ids,
+        )
+
+    def part_revision(self, part_id: str) -> int:
+        normalized = normalize_part_id(part_id)
+        if normalized not in self._part_revisions:
+            raise KeyError(normalized)
+        return int(self._part_revisions[normalized])
+
+    def can_undo_part_extrusion(self, part_id: str) -> bool:
+        return (
+            normalize_part_id(part_id)
+            in self._part_extrusion_undo_records
         )
 
     @property
@@ -605,14 +876,17 @@ class ModelSession:
         project_name = str(name).strip()
         if not project_name:
             raise ValueError("project name must not be empty")
-        part = NativePart(part_name, body_name)
+        del part_name, body_name
 
         self._session_id = new_identity("session")
         self._clear_content()
         self._is_open = True
         self._source_kind = "native"
         self._model_name = project_name
-        self._parts = (part,)
+        # A native Model starts empty.  Detached editors allocate the first
+        # Part only when Finish commits valid geometry.
+        self._parts = ()
+        self._active_part_id = None
         self._increment_domain_revisions(project=True, mesh=True, model=True)
         self._saved_project_revision = self._project_revision
         return self._emit(
@@ -678,17 +952,60 @@ class ModelSession:
                 getattr(snapshot, "model", None),
                 getattr(snapshot, "boolean_reference_undo_records", ()),
                 model_name=getattr(snapshot, "model_name", "Model-1"),
+                part_boolean_undo_records=getattr(
+                    snapshot,
+                    "part_boolean_undo_records",
+                    (),
+                ),
+                retired_part_ids=getattr(snapshot, "retired_part_ids", ()),
+                retired_part_boolean_feature_ids=getattr(
+                    snapshot,
+                    "retired_part_boolean_feature_ids",
+                    (),
+                ),
+                active_part_id=getattr(snapshot, "active_part_id", None),
             )
         )
         # ProjectSnapshot already owns a detached copy; copy once more so the
         # caller may retain and mutate its own nested values after installation.
         detached = deepcopy(detached)
         source_kind = _canonical_source_kind(detached.source_kind)
-        parts = deepcopy(detached.parts) or (
-            (NativePart(),) if source_kind == "native" else ()
+        raw_parts = deepcopy(detached.parts)
+        canonical_part_mode = (
+            source_kind == "native"
+            and bool(raw_parts)
+            and all(part.geometry_recipe is not None for part in raw_parts)
         )
-        geometry_recipe = deepcopy(detached.geometry_recipe)
-        mesh_settings = deepcopy(detached.mesh_settings)
+        if canonical_part_mode:
+            parts = validate_native_parts(raw_parts)
+            active_part = (
+                next(
+                    (
+                        part
+                        for part in parts
+                        if part.id == detached.active_part_id
+                    ),
+                    None,
+                )
+                if detached.active_part_id is not None
+                else None
+            )
+            if active_part is None:
+                active_part = next(
+                    (part for part in parts if not part.suppressed),
+                    parts[0],
+                )
+            geometry_recipe = deepcopy(active_part.geometry_recipe)
+            mesh_settings = deepcopy(active_part.mesh_settings)
+        else:
+            parts = raw_parts or (
+                (NativePart(),)
+                if source_kind == "native"
+                and detached.geometry_recipe is not None
+                else ()
+            )
+            geometry_recipe = deepcopy(detached.geometry_recipe)
+            mesh_settings = deepcopy(detached.mesh_settings)
         named_regions = _regions_by_name(detached.named_regions)
         definitions = normalize_model_definitions(
             detached.material_definitions,
@@ -700,7 +1017,7 @@ class ModelSession:
         sections = definitions.sections
         assignments = definitions.assignments
         steps = definitions.steps
-        if source_kind == "native":
+        if source_kind == "native" and not canonical_part_mode:
             feature_history = (
                 ()
                 if geometry_recipe is None
@@ -743,8 +1060,19 @@ class ModelSession:
                     "native project inputs cannot reference geometry before "
                     "a geometry recipe exists"
                 )
-        else:
+        elif source_kind != "native":
             feature_history = deepcopy(detached.feature_history)
+        else:
+            feature_history = deepcopy(active_part.feature_history)
+            _validate_native_parts_project_inputs(
+                parts,
+                tuple(named_regions.values()),
+                materials,
+                sections,
+                assignments,
+                steps,
+                authenticate_geometry=True,
+            )
         model = deepcopy(detached.model)
         if model is not None:
             model = compile_model_definitions(
@@ -775,7 +1103,31 @@ class ModelSession:
         )
         self._mesh_settings = mesh_settings
         self._parts = parts
+        if canonical_part_mode:
+            self._active_part_id = detached.active_part_id or next(
+                (
+                    part.id
+                    for part in parts
+                    if not part.suppressed
+                ),
+                None,
+            )
+        else:
+            self._active_part_id = (
+                parts[0].id
+                if source_kind == "native" and parts
+                else None
+            )
+        self._part_revisions = {
+            part.id: 0 for part in parts
+        }
+        self._retired_part_ids = set(detached.retired_part_ids)
+        self._retired_part_boolean_feature_ids = set(
+            detached.retired_part_boolean_feature_ids
+        )
         self._feature_history = feature_history
+        if canonical_part_mode:
+            self._sync_active_part_projection()
         self._named_regions = named_regions
         self._materials = materials
         self._sections = sections
@@ -784,6 +1136,10 @@ class ModelSession:
         self._boolean_reference_undo_records = {
             record.feature_id: deepcopy(record)
             for record in detached.boolean_reference_undo_records
+        }
+        self._part_boolean_undo_records = {
+            record.feature_id: deepcopy(record)
+            for record in detached.part_boolean_undo_records
         }
         self._definitions_explicit = True
         self._increment_domain_revisions(project=True, mesh=True, model=True)
@@ -858,32 +1214,1060 @@ class ModelSession:
             "native model renamed",
         )
 
-    def rename_native_part(
+    def set_active_native_part(
         self,
-        name: str,
+        part_id: str | None,
         *,
         expected_session_revision: int | None = None,
     ) -> SessionDelta:
-        """Rename the single native Part without invalidating its mesh."""
+        """Project one stable Part selection without changing project inputs."""
 
         self._check_expected(expected_session_revision)
         self._require_native()
-        if len(self._parts) != 1:
-            raise SessionStateError(
-                "native part rename requires exactly one part"
+        normalized = None if part_id is None else normalize_part_id(part_id)
+        if normalized is not None:
+            part = self._require_part(normalized)
+            if part.suppressed:
+                raise SessionStateError(
+                    f"Part {normalized} is suppressed and cannot become active"
+                )
+        if normalized == self._active_part_id:
+            return self._emit(
+                frozenset(),
+                frozenset(),
+                "active Part unchanged",
             )
-        part_name = str(name).strip()
+        self._active_part_id = normalized
+        self._sync_active_part_projection()
+        return self._emit(
+            {ChangeKind.SESSION},
+            frozenset(),
+            "active Part changed",
+        )
+
+    def add_native_part(
+        self,
+        draft: NativePart | Any,
+        *,
+        name: str | None = None,
+        mesh_settings: MeshSettings | None | Unset = UNSET,
+        expected_revision: int | None = None,
+        expected_session_revision: int | None = None,
+    ) -> SessionDelta:
+        """Atomically allocate and append one detached native Part draft."""
+
+        expected = (
+            expected_session_revision
+            if expected_session_revision is not None
+            else expected_revision
+        )
+        self._check_expected(expected)
+        self._require_native()
+        allocated_id = self.next_native_part_id
+        if type(draft) is NativePart:
+            recipe = deepcopy(draft.geometry_recipe)
+            part_name = draft.name if name is None else str(name)
+            requested_settings: MeshSettings | None | Unset = (
+                draft.mesh_settings
+                if isinstance(mesh_settings, Unset)
+                else mesh_settings
+            )
+        else:
+            recipe = deepcopy(draft)
+            part_name = (
+                f"部件-{part_id_sort_key(allocated_id)}"
+                if name is None
+                else str(name)
+            )
+            requested_settings = mesh_settings
+        if recipe is None:
+            raise ValueError("new Part draft must contain geometry")
+        if any(part.name == part_name.strip() for part in self._parts):
+            raise ValueError(f"Part name already exists: {part_name.strip()!r}")
+        local_settings = (
+            _default_mesh_settings(recipe)
+            if isinstance(requested_settings, Unset)
+            else deepcopy(requested_settings)
+        )
+        owned_settings = _namespace_part_mesh_settings(
+            allocated_id,
+            local_settings,
+        )
+        part = NativePart(
+            id=allocated_id,
+            name=part_name,
+            geometry_recipe=recipe,
+            mesh_settings=owned_settings,
+        )
+        _validate_native_part_inputs(part, authenticate_geometry=True)
+        self._parts = validate_native_parts((*self._parts, part))
+        self._part_revisions[part.id] = 0
+        self._active_part_id = part.id
+        self._sync_active_part_projection()
+        self._drop_model_state()
+        self._increment_domain_revisions(project=True, mesh=True, model=True)
+        return self._emit(
+            {
+                ChangeKind.PROJECT_INPUTS,
+                ChangeKind.GEOMETRY,
+                ChangeKind.MESH_SETTINGS,
+                ChangeKind.MODEL,
+                ChangeKind.VALIDATIONS,
+                ChangeKind.RUNS,
+                ChangeKind.DISPLAYED_RESULT,
+            },
+            _MODEL_INVALIDATIONS,
+            "native Part added",
+        )
+
+    def rename_native_part(
+        self,
+        part_id_or_name: str,
+        name: str | None = None,
+        *,
+        expected_part_revision: int | None = None,
+        expected_session_revision: int | None = None,
+    ) -> SessionDelta:
+        """Rename one Part while preserving its stable identity and refs."""
+
+        self._check_expected(expected_session_revision)
+        self._require_native()
+        if name is None:
+            if len(self._parts) != 1:
+                raise SessionStateError(
+                    "native part rename requires a Part ID"
+                )
+            part_id = self._parts[0].id
+            part_name = str(part_id_or_name).strip()
+        else:
+            part_id = normalize_part_id(part_id_or_name)
+            part_name = str(name).strip()
+        legacy_projection = (
+            part_id not in self._part_revisions
+            and len(self._parts) == 1
+            and self._parts[0].geometry_recipe is None
+            and self._geometry_recipe is not None
+        )
+        if legacy_projection:
+            if expected_part_revision is not None:
+                raise SessionStateError(
+                    "legacy authoring state has no Part revision"
+                )
+        else:
+            self._check_part_revision(part_id, expected_part_revision)
         if not part_name:
             raise ValueError("part name must not be empty")
-        current = self._parts[0]
+        current = (
+            self._require_part(part_id)
+            if legacy_projection
+            else self._require_editable_part(part_id)
+        )
         if part_name == current.name:
             return self._emit(frozenset(), frozenset(), "part name unchanged")
-        self._parts = (replace(current, name=part_name),)
+        if any(
+            part.id != part_id and part.name == part_name
+            for part in self._parts
+        ):
+            raise ValueError(f"Part name already exists: {part_name!r}")
+        self._replace_part(replace(current, name=part_name))
+        if not legacy_projection:
+            self._part_revisions[part_id] += 1
+            self._sync_active_part_projection()
         self._increment_domain_revisions(project=True)
         return self._emit(
             {ChangeKind.PROJECT_INPUTS},
             frozenset(),
             "native part renamed",
+        )
+
+    def replace_part_geometry(
+        self,
+        part_id: str,
+        recipe: Any,
+        *,
+        mesh_settings: MeshSettings | None | Unset = UNSET,
+        expected_part_revision: int | None = None,
+        expected_session_revision: int | None = None,
+    ) -> SessionDelta:
+        """Replace only one Part recipe and transition only its namespace."""
+
+        self._check_expected(expected_session_revision)
+        self._require_native()
+        normalized = normalize_part_id(part_id)
+        self._check_part_revision(normalized, expected_part_revision)
+        current = self._require_editable_part(normalized)
+        before_regions = tuple(self._named_regions.values())
+        before_assignments = self._assignments
+        before_steps = self._steps
+        candidate_recipe = deepcopy(recipe)
+        candidate_regions = _transition_part_named_regions(
+            before_regions,
+            normalized,
+            current.geometry_recipe,
+            candidate_recipe,
+        )
+        removed_region_names = set(self._named_regions).difference(
+            region.name for region in candidate_regions
+        )
+        candidate_assignments = tuple(
+            assignment
+            for assignment in before_assignments
+            if assignment.region_name not in removed_region_names
+        )
+        candidate_steps = (
+            _without_geometry_dependent_steps(before_steps)
+            if _region_references((), before_steps) & removed_region_names
+            else before_steps
+        )
+        current_local_settings = _localize_part_mesh_settings(
+            normalized,
+            current.mesh_settings,
+        )
+        preserve = can_preserve_logical_references(
+            current.geometry_recipe,
+            candidate_recipe,
+        )
+        surviving = (
+            frozenset()
+            if preserve
+            else surviving_logical_reference_ids(
+                current.geometry_recipe,
+                candidate_recipe,
+            )
+        )
+        rewrites = (
+            {}
+            if preserve
+            else logical_reference_transition_map(
+                current.geometry_recipe,
+                candidate_recipe,
+            )
+        )
+        local_settings, mesh_effects = _transition_mesh_settings(
+            current_local_settings,
+            candidate_recipe,
+            preserve_references=preserve,
+            surviving_logical_ids=surviving,
+            reference_rewrites=rewrites,
+            requested=(
+                mesh_settings
+                if not isinstance(mesh_settings, MeshSettings)
+                else _requested_local_part_mesh_settings(
+                    normalized,
+                    mesh_settings,
+                )
+            ),
+        )
+        updated = replace(
+            current,
+            geometry_recipe=candidate_recipe,
+            mesh_settings=_namespace_part_mesh_settings(
+                normalized,
+                local_settings,
+            ),
+        )
+        _validate_native_part_inputs(updated, authenticate_geometry=True)
+        self._replace_part(updated)
+        self._named_regions = {
+            region.name: region for region in candidate_regions
+        }
+        self._assignments = candidate_assignments
+        self._steps = candidate_steps
+        self._part_revisions[normalized] += 1
+        self._active_part_id = normalized
+        self._sync_active_part_projection()
+        self._drop_model_state()
+        self._increment_domain_revisions(project=True, mesh=True, model=True)
+        changed = {
+            ChangeKind.PROJECT_INPUTS,
+            ChangeKind.GEOMETRY,
+            ChangeKind.MODEL,
+            ChangeKind.VALIDATIONS,
+            ChangeKind.RUNS,
+            ChangeKind.DISPLAYED_RESULT,
+        }
+        if updated.mesh_settings != current.mesh_settings:
+            changed.add(ChangeKind.MESH_SETTINGS)
+        if candidate_regions != before_regions:
+            changed.add(ChangeKind.NAMED_REGIONS)
+        if (
+            candidate_assignments != before_assignments
+            or candidate_steps != before_steps
+        ):
+            changed.add(ChangeKind.DEFINITIONS)
+        return self._emit(
+            changed,
+            _MODEL_INVALIDATIONS,
+            "Part geometry replaced",
+            effects=mesh_effects,
+        )
+
+    def replace_part_with_extruded_siblings(
+        self,
+        part_id: str,
+        recipes: Iterable[ExtrudedGeometry | RevolvedGeometry],
+        *,
+        expected_part_revision: int | None = None,
+        expected_session_revision: int | None = None,
+    ) -> SessionDelta:
+        """Atomically turn canonical Profiles into independent solid Parts."""
+
+        self._check_expected(expected_session_revision)
+        self._require_native()
+        normalized = normalize_part_id(part_id)
+        self._check_part_revision(normalized, expected_part_revision)
+        current = self._require_editable_part(normalized)
+        requested_candidates = deepcopy(tuple(recipes))
+        recipe_type = (
+            None
+            if not requested_candidates
+            else type(requested_candidates[0])
+        )
+        if (
+            recipe_type not in {ExtrudedGeometry, RevolvedGeometry}
+            or any(type(recipe) is not recipe_type for recipe in requested_candidates)
+        ):
+            raise ValueError(
+                "profile solid creation requires one or more recipes "
+                "of the same supported feature type"
+            )
+        candidates = tuple(
+            sorted(
+                requested_candidates,
+                key=lambda recipe: tuple(recipe.source_face_ids),
+            )
+        )
+        if len(
+            {tuple(recipe.source_face_ids) for recipe in candidates}
+        ) != len(candidates):
+            raise ValueError("Profile sources must be unique")
+
+        before_regions = tuple(self._named_regions.values())
+        before_assignments = self._assignments
+        before_steps = self._steps
+        primary_recipe = candidates[0]
+        primary_regions = _transition_part_named_regions(
+            before_regions,
+            normalized,
+            current.geometry_recipe,
+            primary_recipe,
+        )
+        current_local_settings = _localize_part_mesh_settings(
+            normalized,
+            current.mesh_settings,
+        )
+        preserve = can_preserve_logical_references(
+            current.geometry_recipe,
+            primary_recipe,
+        )
+        rewrites = (
+            {}
+            if preserve
+            else logical_reference_transition_map(
+                current.geometry_recipe,
+                primary_recipe,
+            )
+        )
+        primary_settings, _effects = _transition_mesh_settings(
+            current_local_settings,
+            primary_recipe,
+            preserve_references=preserve,
+            surviving_logical_ids=(
+                frozenset()
+                if preserve
+                else surviving_logical_reference_ids(
+                    current.geometry_recipe,
+                    primary_recipe,
+                )
+            ),
+            reference_rewrites=rewrites,
+            requested=UNSET,
+        )
+        primary = replace(
+            current,
+            geometry_recipe=primary_recipe,
+            mesh_settings=_namespace_part_mesh_settings(
+                normalized,
+                primary_settings,
+            ),
+        )
+        _validate_native_part_inputs(primary, authenticate_geometry=True)
+
+        allocated_ids: list[str] = []
+        active_ids = [part.id for part in self._parts]
+        siblings: list[NativePart] = []
+        for recipe in candidates[1:]:
+            sibling_id = next_part_id(
+                (*active_ids, *allocated_ids),
+                self._retired_part_ids,
+            )
+            allocated_ids.append(sibling_id)
+            sibling_preserve = can_preserve_logical_references(
+                current.geometry_recipe,
+                recipe,
+            )
+            sibling_rewrites = (
+                {}
+                if sibling_preserve
+                else logical_reference_transition_map(
+                    current.geometry_recipe,
+                    recipe,
+                )
+            )
+            sibling_settings, _sibling_effects = _transition_mesh_settings(
+                current_local_settings,
+                recipe,
+                preserve_references=sibling_preserve,
+                surviving_logical_ids=(
+                    frozenset()
+                    if sibling_preserve
+                    else surviving_logical_reference_ids(
+                        current.geometry_recipe,
+                        recipe,
+                    )
+                ),
+                reference_rewrites=sibling_rewrites,
+                requested=UNSET,
+            )
+            sibling = NativePart(
+                id=sibling_id,
+                name=f"部件-{part_id_sort_key(sibling_id)}",
+                geometry_recipe=recipe,
+                mesh_settings=_namespace_part_mesh_settings(
+                    sibling_id,
+                    (
+                        sibling_settings
+                        if sibling_settings is not None
+                        else _default_mesh_settings(recipe)
+                    ),
+                ),
+            )
+            _validate_native_part_inputs(sibling, authenticate_geometry=True)
+            siblings.append(sibling)
+
+        after_regions = _merge_extrusion_region_transitions(
+            before_regions,
+            normalized,
+            current.geometry_recipe,
+            primary_regions,
+            tuple(
+                (sibling.id, sibling.geometry_recipe)
+                for sibling in siblings
+            ),
+        )
+        removed_names = set(self._named_regions).difference(
+            region.name for region in after_regions
+        )
+        after_assignments = tuple(
+            assignment
+            for assignment in before_assignments
+            if assignment.region_name not in removed_names
+        )
+        after_steps = (
+            _without_geometry_dependent_steps(before_steps)
+            if _region_references((), before_steps) & removed_names
+            else before_steps
+        )
+        after_parts = (primary, *siblings)
+        prospective_parts = validate_native_parts(
+            (
+                *(
+                    primary if part.id == normalized else part
+                    for part in self._parts
+                ),
+                *siblings,
+            )
+        )
+        self._parts = prospective_parts
+        self._named_regions = {
+            region.name: region for region in after_regions
+        }
+        self._assignments = after_assignments
+        self._steps = after_steps
+        self._part_revisions[normalized] += 1
+        for sibling in siblings:
+            self._part_revisions[sibling.id] = 0
+        self._part_extrusion_undo_records[normalized] = (
+            _PartExtrusionUndoRecord(
+                normalized,
+                current,
+                after_parts,
+                before_regions,
+                after_regions,
+                before_assignments,
+                after_assignments,
+                before_steps,
+                after_steps,
+            )
+        )
+        self._active_part_id = normalized
+        self._sync_active_part_projection()
+        self._drop_model_state()
+        self._increment_domain_revisions(
+            project=True,
+            mesh=True,
+            model=True,
+        )
+        return self._emit(
+            {
+                ChangeKind.PROJECT_INPUTS,
+                ChangeKind.GEOMETRY,
+                ChangeKind.MESH_SETTINGS,
+                ChangeKind.NAMED_REGIONS,
+                ChangeKind.DEFINITIONS,
+                ChangeKind.MODEL,
+                ChangeKind.VALIDATIONS,
+                ChangeKind.RUNS,
+                ChangeKind.DISPLAYED_RESULT,
+            },
+            _MODEL_INVALIDATIONS,
+            (
+                "Profiles extruded into Parts"
+                if recipe_type is ExtrudedGeometry
+                else "Profiles swept into Parts"
+            ),
+        )
+
+    def replace_part_with_revolved_siblings(
+        self,
+        part_id: str,
+        recipes: Iterable[RevolvedGeometry],
+        *,
+        expected_part_revision: int | None = None,
+        expected_session_revision: int | None = None,
+    ) -> SessionDelta:
+        """Atomically revolve canonical Profiles into independent Parts."""
+
+        return self.replace_part_with_extruded_siblings(
+            part_id,
+            recipes,
+            expected_part_revision=expected_part_revision,
+            expected_session_revision=expected_session_revision,
+        )
+
+    def undo_part_extrusion(
+        self,
+        part_id: str,
+        *,
+        expected_part_revision: int | None = None,
+        expected_session_revision: int | None = None,
+    ) -> SessionDelta:
+        """Undo the latest shared multi-Profile extrusion group."""
+
+        self._check_expected(expected_session_revision)
+        normalized = normalize_part_id(part_id)
+        self._check_part_revision(normalized, expected_part_revision)
+        record = self._part_extrusion_undo_records.get(normalized)
+        if record is None:
+            raise SessionStateError(
+                f"Part {normalized} has no reversible extrusion group"
+            )
+        by_id = {part.id: part for part in self._parts}
+        if any(
+            by_id.get(part.id) != part for part in record.after_parts
+        ):
+            raise SessionStateError(
+                "extrusion.undo-conflict: one result Part changed"
+            )
+        if (
+            tuple(self._named_regions.values())
+            != record.after_named_regions
+            or self._assignments != record.after_assignments
+            or self._steps != record.after_steps
+        ):
+            raise SessionStateError(
+                "extrusion.undo-reference-conflict: definitions changed"
+            )
+        sibling_ids = {
+            part.id for part in record.after_parts[1:]
+        }
+        self._parts = validate_native_parts(
+            tuple(
+                record.before_part
+                if part.id == normalized
+                else part
+                for part in self._parts
+                if part.id not in sibling_ids
+            )
+        )
+        self._retired_part_ids.update(sibling_ids)
+        for sibling_id in sibling_ids:
+            self._part_revisions.pop(sibling_id, None)
+        self._part_revisions[normalized] += 1
+        self._named_regions = {
+            region.name: region
+            for region in record.before_named_regions
+        }
+        self._assignments = record.before_assignments
+        self._steps = record.before_steps
+        self._part_extrusion_undo_records.pop(normalized, None)
+        self._active_part_id = normalized
+        self._sync_active_part_projection()
+        self._drop_model_state()
+        self._increment_domain_revisions(
+            project=True,
+            mesh=True,
+            model=True,
+        )
+        return self._emit(
+            {
+                ChangeKind.PROJECT_INPUTS,
+                ChangeKind.GEOMETRY,
+                ChangeKind.MESH_SETTINGS,
+                ChangeKind.NAMED_REGIONS,
+                ChangeKind.DEFINITIONS,
+                ChangeKind.MODEL,
+                ChangeKind.VALIDATIONS,
+                ChangeKind.RUNS,
+                ChangeKind.DISPLAYED_RESULT,
+            },
+            _MODEL_INVALIDATIONS,
+            "Part extrusion group undone",
+        )
+
+    def replace_part_mesh_settings(
+        self,
+        part_id: str,
+        settings: MeshSettings | None,
+        *,
+        expected_part_revision: int | None = None,
+        expected_session_revision: int | None = None,
+    ) -> SessionDelta:
+        """Replace mesh policy on exactly one active Part."""
+
+        self._check_expected(expected_session_revision)
+        self._require_native()
+        normalized = normalize_part_id(part_id)
+        self._check_part_revision(normalized, expected_part_revision)
+        current = self._require_editable_part(normalized)
+        owned = _namespace_part_mesh_settings(normalized, deepcopy(settings))
+        updated = replace(current, mesh_settings=owned)
+        _validate_native_part_inputs(updated)
+        if updated == current:
+            return self._emit(
+                frozenset(),
+                frozenset(),
+                "Part mesh settings unchanged",
+            )
+        self._replace_part(updated)
+        self._part_revisions[normalized] += 1
+        self._active_part_id = normalized
+        self._sync_active_part_projection()
+        self._drop_model_state()
+        self._increment_domain_revisions(project=True, mesh=True, model=True)
+        return self._emit(
+            {
+                ChangeKind.PROJECT_INPUTS,
+                ChangeKind.MESH_SETTINGS,
+                ChangeKind.MODEL,
+                ChangeKind.VALIDATIONS,
+                ChangeKind.RUNS,
+                ChangeKind.DISPLAYED_RESULT,
+            },
+            _MODEL_INVALIDATIONS,
+            "Part mesh settings replaced",
+        )
+
+    def delete_native_part(
+        self,
+        part_id: str,
+        *,
+        expected_part_revision: int | None = None,
+        expected_session_revision: int | None = None,
+    ) -> SessionDelta:
+        """Delete one ordinary Part or undo one Boolean result Part."""
+
+        self._check_expected(expected_session_revision)
+        self._require_native()
+        normalized = normalize_part_id(part_id)
+        self._check_part_revision(normalized, expected_part_revision)
+        part = self._require_part(normalized)
+        if part.provenance is not None:
+            return self.undo_part_boolean(
+                normalized,
+                expected_part_revision=expected_part_revision,
+            )
+        if self._part_has_active_descendant(normalized):
+            raise SessionStateError(
+                f"Part {normalized} is locked by an active Boolean result"
+            )
+        before_regions = tuple(self._named_regions.values())
+        before_assignments = self._assignments
+        before_steps = self._steps
+        candidate_regions = _remove_part_from_named_regions(
+            before_regions,
+            normalized,
+        )
+        removed_names = set(self._named_regions).difference(
+            region.name for region in candidate_regions
+        )
+        candidate_assignments = tuple(
+            assignment
+            for assignment in before_assignments
+            if assignment.region_name not in removed_names
+        )
+        candidate_steps = (
+            _without_geometry_dependent_steps(before_steps)
+            if _region_references((), before_steps) & removed_names
+            else before_steps
+        )
+        self._parts = tuple(
+            value for value in self._parts if value.id != normalized
+        )
+        self._part_revisions.pop(normalized, None)
+        self._retired_part_ids.add(normalized)
+        self._named_regions = {
+            region.name: region for region in candidate_regions
+        }
+        self._assignments = candidate_assignments
+        self._steps = candidate_steps
+        if self._active_part_id == normalized:
+            self._active_part_id = next(
+                (
+                    value.id
+                    for value in self._parts
+                    if not value.suppressed
+                ),
+                None,
+            )
+        self._sync_active_part_projection()
+        self._drop_model_state()
+        self._increment_domain_revisions(project=True, mesh=True, model=True)
+        changed = {
+            ChangeKind.PROJECT_INPUTS,
+            ChangeKind.GEOMETRY,
+            ChangeKind.MODEL,
+            ChangeKind.VALIDATIONS,
+            ChangeKind.RUNS,
+            ChangeKind.DISPLAYED_RESULT,
+        }
+        effects: set[TransitionEffect] = set()
+        if candidate_regions != before_regions:
+            changed.add(ChangeKind.NAMED_REGIONS)
+            effects.add(TransitionEffect.NAMED_REGIONS_CLEARED)
+        if candidate_assignments != before_assignments:
+            changed.add(ChangeKind.DEFINITIONS)
+            effects.add(TransitionEffect.ASSIGNMENTS_CLEARED)
+        if candidate_steps != before_steps:
+            changed.add(ChangeKind.DEFINITIONS)
+            effects.add(TransitionEffect.STEPS_CLEARED)
+        return self._emit(
+            changed,
+            _MODEL_INVALIDATIONS,
+            "native Part deleted",
+            effects=effects,
+        )
+
+    def suppress_native_part(
+        self,
+        part_id: str,
+        suppressed: bool = True,
+        *,
+        expected_part_revision: int | None = None,
+        expected_session_revision: int | None = None,
+    ) -> SessionDelta:
+        """Set explicit Part suppression while respecting the provenance DAG."""
+
+        self._check_expected(expected_session_revision)
+        self._require_native()
+        if type(suppressed) is not bool:
+            raise TypeError("suppressed must be a bool")
+        normalized = normalize_part_id(part_id)
+        self._check_part_revision(normalized, expected_part_revision)
+        current = self._require_part(normalized)
+        if not suppressed and self._part_has_active_descendant(normalized):
+            raise SessionStateError(
+                f"Part {normalized} cannot be unsuppressed while an active "
+                "Boolean descendant exists"
+            )
+        if current.suppressed == suppressed:
+            return self._emit(
+                frozenset(),
+                frozenset(),
+                "Part suppression unchanged",
+            )
+        self._replace_part(replace(current, suppressed=suppressed))
+        self._part_revisions[normalized] += 1
+        if suppressed and self._active_part_id == normalized:
+            self._active_part_id = next(
+                (
+                    part.id
+                    for part in self._parts
+                    if not part.suppressed
+                ),
+                None,
+            )
+        elif not suppressed:
+            self._active_part_id = normalized
+        self._sync_active_part_projection()
+        self._drop_model_state()
+        self._increment_domain_revisions(project=True, mesh=True, model=True)
+        return self._emit(
+            {
+                ChangeKind.PROJECT_INPUTS,
+                ChangeKind.GEOMETRY,
+                ChangeKind.MODEL,
+                ChangeKind.VALIDATIONS,
+                ChangeKind.RUNS,
+                ChangeKind.DISPLAYED_RESULT,
+            },
+            _MODEL_INVALIDATIONS,
+            "Part suppression changed",
+        )
+
+    def apply_part_boolean(
+        self,
+        target_id: str,
+        tool_id: str,
+        operation: str,
+        result_name: str,
+        *,
+        result: Any | None = None,
+        result_recipe: Any | None = None,
+        expected_target_revision: int | None = None,
+        expected_tool_revision: int | None = None,
+        expected_session_revision: int | None = None,
+    ) -> SessionDelta:
+        """Commit one already-proven detached Part Boolean atomically."""
+
+        self._check_expected(expected_session_revision)
+        self._require_native()
+        target_key = normalize_part_id(target_id, "target_id")
+        tool_key = normalize_part_id(tool_id, "tool_id")
+        if target_key == tool_key:
+            raise ValueError("target and tool Parts must differ")
+        self._check_part_revision(target_key, expected_target_revision)
+        self._check_part_revision(tool_key, expected_tool_revision)
+        target = self._require_editable_part(target_key)
+        tool = self._require_editable_part(tool_key)
+        if target.dimension != 3 or tool.dimension != 3:
+            raise ValueError("Part Boolean requires two 3D Parts")
+        if operation not in {"fuse", "cut"}:
+            raise ValueError("Part Boolean operation must be fuse or cut")
+        normalized_name = str(result_name).strip()
+        if not normalized_name:
+            raise ValueError("result Part name must not be empty")
+        if any(part.name == normalized_name for part in self._parts):
+            raise ValueError(f"Part name already exists: {normalized_name!r}")
+
+        from .part_boolean import StrictPartBooleanResult
+
+        recipe = (
+            deepcopy(result.recipe)
+            if type(result) is StrictPartBooleanResult
+            else deepcopy(result_recipe)
+        )
+        if not isinstance(recipe, BooleanGeometry):
+            raise TypeError(
+                "Part Boolean commit requires a proven BooleanGeometry result"
+            )
+        context = recipe.part_context
+        if context is None or not context.proven:
+            raise ValueError("Part Boolean result requires complete lineage proof")
+        allocated_part_id = self.next_native_part_id
+        allocated_feature_id = self.next_part_boolean_feature_id
+        if (
+            context.target_part_id != target_key
+            or context.tool_part_id != tool_key
+            or context.result_part_id != allocated_part_id
+            or context.feature_id != allocated_feature_id
+            or recipe.operation != operation
+        ):
+            raise SessionStateError(
+                "detached Part Boolean identity no longer matches Session"
+            )
+        if (
+            recipe.object_geometry != target.geometry_recipe
+            or recipe.tool_geometry != tool.geometry_recipe
+        ):
+            raise SessionStateError(
+                "detached Part Boolean proof no longer matches source geometry"
+            )
+
+        before_regions = tuple(self._named_regions.values())
+        before_assignments = self._assignments
+        before_steps = self._steps
+        forward_map = _part_boolean_forward_map(context)
+        after_regions = _rewrite_part_boolean_regions(
+            before_regions,
+            forward_map,
+            {target_key, tool_key},
+        )
+        removed_names = set(self._named_regions).difference(
+            region.name for region in after_regions
+        )
+        after_assignments = tuple(
+            assignment
+            for assignment in before_assignments
+            if assignment.region_name not in removed_names
+        )
+        after_steps = (
+            _without_geometry_dependent_steps(before_steps)
+            if _region_references((), before_steps) & removed_names
+            else before_steps
+        )
+        result_settings = _transition_part_boolean_mesh_settings(
+            target.mesh_settings,
+            forward_map,
+            target_key,
+            allocated_part_id,
+        )
+        result_part = NativePart(
+            id=allocated_part_id,
+            name=normalized_name,
+            geometry_recipe=recipe,
+            mesh_settings=result_settings,
+            provenance=PartBooleanProvenance(
+                allocated_feature_id,
+                target_key,
+                tool_key,
+                operation,
+            ),
+        )
+        _validate_native_part_inputs(result_part, authenticate_geometry=True)
+        record = PartBooleanUndoRecord(
+            allocated_feature_id,
+            allocated_part_id,
+            (target, tool),
+            result_part,
+            before_regions,
+            after_regions,
+            before_assignments,
+            after_assignments,
+            before_steps,
+            after_steps,
+        )
+        self._replace_part(replace(target, suppressed=True))
+        self._replace_part(replace(tool, suppressed=True))
+        self._parts = validate_native_parts((*self._parts, result_part))
+        self._part_revisions[target_key] += 1
+        self._part_revisions[tool_key] += 1
+        self._part_revisions[allocated_part_id] = 0
+        self._part_boolean_undo_records[allocated_feature_id] = record
+        self._named_regions = {
+            region.name: region for region in after_regions
+        }
+        self._assignments = after_assignments
+        self._steps = after_steps
+        self._active_part_id = allocated_part_id
+        self._sync_active_part_projection()
+        self._drop_model_state()
+        self._increment_domain_revisions(project=True, mesh=True, model=True)
+        changed = {
+            ChangeKind.PROJECT_INPUTS,
+            ChangeKind.GEOMETRY,
+            ChangeKind.MESH_SETTINGS,
+            ChangeKind.MODEL,
+            ChangeKind.VALIDATIONS,
+            ChangeKind.RUNS,
+            ChangeKind.DISPLAYED_RESULT,
+        }
+        if after_regions != before_regions:
+            changed.add(ChangeKind.NAMED_REGIONS)
+        if (
+            after_assignments != before_assignments
+            or after_steps != before_steps
+        ):
+            changed.add(ChangeKind.DEFINITIONS)
+        return self._emit(
+            changed,
+            _MODEL_INVALIDATIONS,
+            "Part Boolean applied",
+            effects={TransitionEffect.REFERENCES_PRESERVED},
+        )
+
+    def undo_part_boolean(
+        self,
+        result_part_id: str,
+        *,
+        expected_part_revision: int | None = None,
+        expected_session_revision: int | None = None,
+    ) -> SessionDelta:
+        """Delete one result Part and exactly restore its direct sources."""
+
+        self._check_expected(expected_session_revision)
+        self._require_native()
+        result_id = normalize_part_id(result_part_id)
+        self._check_part_revision(result_id, expected_part_revision)
+        result = self._require_part(result_id)
+        provenance = result.provenance
+        if provenance is None:
+            raise SessionStateError("Part is not a Boolean result")
+        if self._part_has_active_descendant(result_id):
+            raise SessionStateError(
+                "undo later Part Boolean descendants before this result"
+            )
+        record = self._part_boolean_undo_records.get(provenance.feature_id)
+        if record is None or record.result_part_id != result_id:
+            raise SessionStateError(
+                "Part Boolean undo record is missing or stale"
+            )
+        current_sources = tuple(
+            self._require_part(part.id) for part in record.source_parts
+        )
+        if (
+            result.provenance != record.result_part.provenance
+            or not _recipe_contains_geometry_state(
+                result.geometry_recipe,
+                record.result_part.geometry_recipe,
+            )
+            or tuple(self._named_regions.values())
+            != record.after_named_regions
+            or self._assignments != record.after_assignments
+            or self._steps != record.after_steps
+            or any(not part.suppressed for part in current_sources)
+        ):
+            raise SessionStateError(
+                "Part Boolean state changed after commit; undo later edits first"
+            )
+        self._parts = tuple(
+            part
+            for part in self._parts
+            if part.id not in {
+                result_id,
+                *(source.id for source in record.source_parts),
+            }
+        )
+        self._parts = validate_native_parts(
+            tuple(
+                sorted(
+                    (*self._parts, *record.source_parts),
+                    key=lambda part: part_id_sort_key(part.id),
+                )
+            )
+        )
+        self._part_revisions.pop(result_id, None)
+        for source in record.source_parts:
+            self._part_revisions[source.id] = (
+                self._part_revisions.get(source.id, 0) + 1
+            )
+        self._retired_part_ids.add(result_id)
+        self._retired_part_boolean_feature_ids.add(provenance.feature_id)
+        self._part_boolean_undo_records.pop(provenance.feature_id, None)
+        self._named_regions = {
+            region.name: region for region in record.before_named_regions
+        }
+        self._assignments = record.before_assignments
+        self._steps = record.before_steps
+        self._active_part_id = record.source_parts[0].id
+        self._sync_active_part_projection()
+        self._drop_model_state()
+        self._increment_domain_revisions(project=True, mesh=True, model=True)
+        return self._emit(
+            {
+                ChangeKind.PROJECT_INPUTS,
+                ChangeKind.GEOMETRY,
+                ChangeKind.MESH_SETTINGS,
+                ChangeKind.NAMED_REGIONS,
+                ChangeKind.DEFINITIONS,
+                ChangeKind.MODEL,
+                ChangeKind.VALIDATIONS,
+                ChangeKind.RUNS,
+                ChangeKind.DISPLAYED_RESULT,
+            },
+            _MODEL_INVALIDATIONS,
+            "Part Boolean undone",
+            effects={TransitionEffect.REFERENCES_PRESERVED},
         )
 
     def replace_native_geometry_inputs(
@@ -898,6 +2282,8 @@ class ModelSession:
 
         self._check_expected(expected_session_revision)
         self._require_native()
+        prior_parts = {part.id: part for part in self._parts}
+        prior_part_revisions = dict(self._part_revisions)
         owned_parts = deepcopy(tuple(parts))
         owned_recipe = deepcopy(recipe)
         if owned_recipe is not None and not owned_parts:
@@ -1121,6 +2507,28 @@ class ModelSession:
             )
 
         self._parts = owned_parts
+        self._part_revisions = {
+            part.id: (
+                prior_part_revisions.get(part.id, 0)
+                + int(
+                    part.id in prior_parts
+                    and prior_parts[part.id] != part
+                )
+            )
+            for part in owned_parts
+        }
+        if (
+            self._active_part_id not in self._part_revisions
+            or self._require_part(self._active_part_id).suppressed
+        ):
+            self._active_part_id = next(
+                (
+                    part.id
+                    for part in owned_parts
+                    if not part.suppressed
+                ),
+                None,
+            )
         self._retired_body_ids = set(next_retired_body_ids)
         self._retired_boolean_feature_ids = set(
             next_retired_feature_ids
@@ -1192,7 +2600,17 @@ class ModelSession:
     ) -> SessionDelta:
         self._check_expected(expected_session_revision)
         self._require_open()
+        self._retired_part_ids.update(part.id for part in self._parts)
+        self._retired_part_boolean_feature_ids.update(
+            part.provenance.feature_id
+            for part in self._parts
+            if part.provenance is not None
+        )
         self._parts = ()
+        self._active_part_id = None
+        self._part_revisions.clear()
+        self._part_boolean_undo_records.clear()
+        self._part_extrusion_undo_records.clear()
         body_ids, feature_ids = historical_recipe_ids(self._geometry_recipe)
         self._retired_body_ids.update(body_ids)
         self._retired_boolean_feature_ids.update(feature_ids)
@@ -1232,6 +2650,16 @@ class ModelSession:
     ) -> SessionDelta:
         self._check_expected(expected_session_revision)
         self._require_native()
+        if self._canonical_part_state():
+            if self._active_part_id is None:
+                raise SessionStateError(
+                    "Part mesh settings require an active Part"
+                )
+            return self.replace_part_mesh_settings(
+                self._active_part_id,
+                settings,
+                expected_session_revision=expected_session_revision,
+            )
         owned = deepcopy(settings)
         clears_mesh_scopes = _regions_use_mesh_entities(
             self._named_regions.values()
@@ -1316,6 +2744,14 @@ class ModelSession:
         self._check_expected(expected_session_revision)
         self._require_native()
         owned = _regions_by_name(deepcopy(_mapping_values(regions)))
+        if self._canonical_part_state() and self._artifact is not None:
+            owned = _regions_by_name(
+                _attach_mesh_reference_owners(
+                    tuple(owned.values()),
+                    self._parts,
+                    self._artifact.model,
+                )
+            )
         rename_map = {
             str(old_name): str(new_name)
             for old_name, new_name in (renames or {}).items()
@@ -1371,15 +2807,21 @@ class ModelSession:
         ):
             raise ValueError("mesh scopes require a generated mesh")
         elif not _regions_use_mesh_entities(owned.values()):
-            validate_native_project_inputs(
-                self._geometry_recipe,
-                self._mesh_settings,
-                tuple(owned.values()),
-                self._materials,
-                self._sections,
-                assignments,
-                steps,
-            )
+            if self._canonical_part_state():
+                _validate_part_namespaced_references(
+                    self._parts,
+                    tuple(owned.values()),
+                )
+            else:
+                validate_native_project_inputs(
+                    self._geometry_recipe,
+                    self._mesh_settings,
+                    tuple(owned.values()),
+                    self._materials,
+                    self._sections,
+                    assignments,
+                    steps,
+                )
 
         return self._commit_named_region_state(
             owned,
@@ -1400,6 +2842,14 @@ class ModelSession:
         self._require_open()
 
         owned = _regions_by_name(batch.regions)
+        if self._canonical_part_state() and self._artifact is not None:
+            owned = _regions_by_name(
+                _attach_mesh_reference_owners(
+                    tuple(owned.values()),
+                    self._parts,
+                    self._artifact.model,
+                )
+            )
         rename_map = _validate_edit_ledger(
             tuple(self._named_regions.values()),
             tuple(owned.values()),
@@ -1444,15 +2894,21 @@ class ModelSession:
         ):
             raise ValueError("mesh scopes require a generated mesh")
         elif not _regions_use_mesh_entities(owned.values()):
-            validate_native_project_inputs(
-                self._geometry_recipe,
-                self._mesh_settings,
-                tuple(owned.values()),
-                self._materials,
-                self._sections,
-                assignments,
-                steps,
-            )
+            if self._canonical_part_state():
+                _validate_part_namespaced_references(
+                    self._parts,
+                    tuple(owned.values()),
+                )
+            else:
+                validate_native_project_inputs(
+                    self._geometry_recipe,
+                    self._mesh_settings,
+                    tuple(owned.values()),
+                    self._materials,
+                    self._sections,
+                    assignments,
+                    steps,
+                )
 
         return self._commit_named_region_state(
             owned,
@@ -1656,7 +3112,16 @@ class ModelSession:
         """Validate and commit one already-owned definitions post-state."""
 
         if self._source_kind == "native":
-            if self._geometry_recipe is None:
+            if self._canonical_part_state():
+                _validate_native_parts_project_inputs(
+                    self._parts,
+                    tuple(self._named_regions.values()),
+                    owned.materials,
+                    owned.sections,
+                    owned.assignments,
+                    owned.steps,
+                )
+            elif self._geometry_recipe is None:
                 if (
                     owned.assignments
                     or analysis_steps_have_native_region_targets(owned.steps)
@@ -1821,6 +3286,76 @@ class ModelSession:
 
     def prepare_mesh_generation(self) -> MeshTaskSnapshot:
         self._require_native()
+        if self._canonical_part_state():
+            active_parts = tuple(
+                part for part in self._parts if not part.suppressed
+            )
+            if not active_parts:
+                raise SessionStateError(
+                    "mesh generation requires an unsuppressed Part"
+                )
+            if (
+                _regions_use_mesh_entities(self._named_regions.values())
+                and self._artifact is not None
+            ):
+                raise SessionStateError(
+                    "mesh scopes must be cleared before generating a new mesh"
+                )
+            for part in active_parts:
+                if part.mesh_settings is None:
+                    raise SessionStateError(
+                        f"Part {part.id} requires mesh settings"
+                    )
+                require_complete_native_mesh_contract(
+                    part.geometry_recipe,
+                    _localize_part_mesh_settings(
+                        part.id,
+                        part.mesh_settings,
+                    ),
+                )
+            _validate_native_parts_project_inputs(
+                self._parts,
+                tuple(self._named_regions.values()),
+                self._materials,
+                self._sections,
+                self._assignments,
+                self._steps,
+            )
+            _validate_suppressed_part_analysis_targets(
+                self._parts,
+                tuple(self._named_regions.values()),
+                self._assignments,
+                self._steps,
+            )
+            token = self._issue_token(
+                "mesh",
+                (
+                    ("mesh_input_revision", self._mesh_input_revision),
+                    ("model_revision", self._model_revision),
+                ),
+            )
+            active = active_parts[0]
+            return MeshTaskSnapshot(
+                token=token,
+                model_name=str(self._model_name or "模型-1"),
+                # Compatibility projections are intentionally present on the
+                # detached task, while generate_fem_model consumes Parts.
+                geometry_recipe=deepcopy(active.geometry_recipe),
+                mesh_settings=deepcopy(active.mesh_settings),
+                parts=deepcopy(self._parts),
+                feature_history=tuple(
+                    deepcopy(feature)
+                    for part in self._parts
+                    for feature in part.feature_history
+                ),
+                named_regions=deepcopy(
+                    tuple(self._named_regions.values())
+                ),
+                material_definitions=deepcopy(self._materials),
+                section_definitions=deepcopy(self._sections),
+                region_assignments=deepcopy(self._assignments),
+                analysis_definitions=deepcopy(self._steps),
+            )
         if self._geometry_recipe is None:
             raise SessionStateError("mesh generation requires geometry")
         if (
@@ -2473,13 +4008,21 @@ class ModelSession:
     # Project snapshot save protocol
     def prepare_project_save(self) -> ProjectSaveSnapshot:
         self._require_native()
-        if self._geometry_recipe is None:
-            raise SessionStateError("project save requires geometry")
+        canonical_part_mode = self._canonical_part_state()
+        save_parts = (
+            _canonical_parts_for_save(
+                self._parts,
+                self._geometry_recipe,
+                self._mesh_settings,
+            )
+            if canonical_part_mode
+            else deepcopy(self._parts)
+        )
         project = ProjectSnapshot(
             source_kind="native",
             source_path=self._project_path,
             model_name=str(self._model_name or "Model-1"),
-            parts=self._parts,
+            parts=save_parts,
             geometry_recipe=self._geometry_recipe,
             mesh_settings=self._mesh_settings,
             feature_history=self._feature_history,
@@ -2494,6 +4037,20 @@ class ModelSession:
                     self._boolean_reference_undo_records,
                     key=lambda value: (value[:2], int(value[2:])),
                 )
+            ),
+            part_boolean_undo_records=tuple(
+                self._part_boolean_undo_records[feature_id]
+                for feature_id in sorted(
+                    self._part_boolean_undo_records,
+                    key=part_boolean_feature_id_sort_key,
+                )
+            ),
+            retired_part_ids=self.retired_part_ids,
+            retired_part_boolean_feature_ids=(
+                self.retired_part_boolean_feature_ids
+            ),
+            active_part_id=(
+                self._active_part_id if canonical_part_mode else None
             ),
         )
         token = self._issue_token(
@@ -2549,6 +4106,10 @@ class ModelSession:
             geometry_recipe=deepcopy(self._geometry_recipe),
             mesh_settings=deepcopy(self._mesh_settings),
             parts=deepcopy(self._parts),
+            active_part_id=self._active_part_id,
+            part_revisions=MappingProxyType(
+                deepcopy(self._part_revisions)
+            ),
             feature_history=deepcopy(self._feature_history),
             named_regions=MappingProxyType(deepcopy(self._named_regions)),
             materials=deepcopy(self._materials),
@@ -2701,6 +4262,86 @@ class ModelSession:
 
     # ------------------------------------------------------------------
     # Internals
+    def _canonical_part_state(self) -> bool:
+        return bool(self._parts) and all(
+            part.geometry_recipe is not None for part in self._parts
+        )
+
+    def _require_part(self, part_id: str) -> NativePart:
+        normalized = normalize_part_id(part_id)
+        for part in self._parts:
+            if part.id == normalized:
+                return part
+        raise KeyError(normalized)
+
+    def _check_part_revision(
+        self,
+        part_id: str,
+        expected: int | None,
+    ) -> None:
+        normalized = normalize_part_id(part_id)
+        if normalized not in self._part_revisions:
+            raise KeyError(normalized)
+        if expected is None:
+            return
+        actual = self._part_revisions[normalized]
+        if int(expected) != actual:
+            raise PartRevisionConflictError(
+                normalized,
+                int(expected),
+                actual,
+            )
+
+    def _part_has_active_descendant(self, part_id: str) -> bool:
+        normalized = normalize_part_id(part_id)
+        return any(
+            part.provenance is not None
+            and normalized in part.provenance.source_part_ids
+            for part in self._parts
+        )
+
+    def _require_editable_part(self, part_id: str) -> NativePart:
+        part = self._require_part(part_id)
+        if part.suppressed:
+            raise SessionStateError(f"Part {part.id} is suppressed")
+        if self._part_has_active_descendant(part.id):
+            raise SessionStateError(
+                f"Part {part.id} is locked by an active Boolean result"
+            )
+        return part
+
+    def _replace_part(self, replacement: NativePart) -> None:
+        if type(replacement) is not NativePart:
+            raise TypeError("replacement must be a NativePart")
+        if replacement.id not in {part.id for part in self._parts}:
+            raise KeyError(replacement.id)
+        self._parts = tuple(
+            replacement if part.id == replacement.id else part
+            for part in self._parts
+        )
+
+    def _sync_active_part_projection(self) -> None:
+        """Keep read-only v1-v6 accessors projected from the active Part."""
+
+        active = None
+        if self._active_part_id is not None:
+            active = next(
+                (
+                    part
+                    for part in self._parts
+                    if part.id == self._active_part_id
+                ),
+                None,
+            )
+        if active is None:
+            self._geometry_recipe = None
+            self._mesh_settings = None
+            self._feature_history = ()
+            return
+        self._geometry_recipe = deepcopy(active.geometry_recipe)
+        self._mesh_settings = deepcopy(active.mesh_settings)
+        self._feature_history = deepcopy(active.feature_history)
+
     def _clear_content(self) -> None:
         self._is_open = False
         self._source_kind: str | None = None
@@ -2716,6 +4357,18 @@ class ModelSession:
         ] = {}
         self._mesh_settings: Any | None = None
         self._parts: tuple[NativePart, ...] = ()
+        self._active_part_id: str | None = None
+        self._part_revisions: dict[str, int] = {}
+        self._retired_part_ids: set[str] = set()
+        self._retired_part_boolean_feature_ids: set[str] = set()
+        self._part_boolean_undo_records: dict[
+            str,
+            PartBooleanUndoRecord,
+        ] = {}
+        self._part_extrusion_undo_records: dict[
+            str,
+            _PartExtrusionUndoRecord,
+        ] = {}
         self._feature_history: tuple[FeatureRecord, ...] = ()
         self._named_regions: dict[str, NamedRegion] = {}
         self._materials: tuple[Any, ...] = ()
@@ -3227,6 +4880,669 @@ def _rewrite_named_region(
         )
     )
     return replace(region, references=unique) if unique else None
+
+
+def _canonical_parts_for_save(
+    parts: tuple[NativePart, ...],
+    legacy_recipe: object | None,
+    legacy_mesh_settings: MeshSettings | None,
+) -> tuple[NativePart, ...]:
+    """Materialize compatibility state into canonical Part ownership."""
+
+    if parts and all(part.geometry_recipe is not None for part in parts):
+        return validate_native_parts(parts)
+    if legacy_recipe is None:
+        return ()
+    if isinstance(legacy_recipe, MultiBodyGeometry):
+        owned = tuple(
+            NativePart(
+                id=f"P{int(body.id[1:])}",
+                name=body.name,
+                geometry_recipe=body.recipe,
+                mesh_settings=_namespace_part_mesh_settings(
+                    f"P{int(body.id[1:])}",
+                    legacy_mesh_settings,
+                ),
+            )
+            for body in legacy_recipe.bodies
+        )
+        return validate_native_parts(owned)
+    metadata = parts[0] if parts else NativePart()
+    return (
+        NativePart(
+            id=metadata.id,
+            name=metadata.name,
+            geometry_recipe=legacy_recipe,
+            mesh_settings=_namespace_part_mesh_settings(
+                metadata.id,
+                legacy_mesh_settings,
+            ),
+            body_name=metadata.body_name,
+        ),
+    )
+
+
+def _namespace_part_mesh_settings(
+    part_id: str,
+    settings: MeshSettings | None,
+) -> MeshSettings | None:
+    if settings is None:
+        return None
+    if type(settings) is not MeshSettings:
+        raise TypeError("Part mesh settings must be MeshSettings or None")
+    normalized = normalize_part_id(part_id)
+    controls = []
+    for control in settings.local_controls:
+        owner = part_id_from_logical_id(control.target.logical_id)
+        if owner is None:
+            target = LogicalEntityRef(
+                namespace_part_logical_id(
+                    normalized,
+                    control.target.logical_id,
+                )
+            )
+        elif owner == normalized:
+            target = control.target
+        else:
+            raise ValueError(
+                f"Part {normalized} mesh settings contain target owned by "
+                f"{owner}"
+            )
+        controls.append(replace(control, target=target))
+    return replace(deepcopy(settings), local_controls=tuple(controls))
+
+
+def _localize_part_mesh_settings(
+    part_id: str,
+    settings: MeshSettings | None,
+) -> MeshSettings | None:
+    if settings is None:
+        return None
+    if type(settings) is not MeshSettings:
+        raise TypeError("Part mesh settings must be MeshSettings or None")
+    normalized = normalize_part_id(part_id)
+    return replace(
+        deepcopy(settings),
+        local_controls=tuple(
+            replace(
+                control,
+                target=LogicalEntityRef(
+                    strip_part_logical_id(
+                        normalized,
+                        control.target.logical_id,
+                    )
+                ),
+            )
+            for control in settings.local_controls
+        ),
+    )
+
+
+def _requested_local_part_mesh_settings(
+    part_id: str,
+    settings: MeshSettings,
+) -> MeshSettings:
+    owners = {
+        part_id_from_logical_id(control.target.logical_id)
+        for control in settings.local_controls
+    }
+    if owners == {None} or not owners:
+        return deepcopy(settings)
+    if owners == {normalize_part_id(part_id)}:
+        localized = _localize_part_mesh_settings(part_id, settings)
+        if localized is None:  # pragma: no cover - exact input type above
+            raise TypeError("settings unexpectedly localized to None")
+        return localized
+    raise ValueError("Part mesh settings mix local or foreign namespaces")
+
+
+def _validate_native_part_inputs(
+    part: NativePart,
+    *,
+    authenticate_geometry: bool = False,
+) -> None:
+    if type(part) is not NativePart or part.geometry_recipe is None:
+        raise ValueError("canonical Part must own geometry")
+    settings = _localize_part_mesh_settings(part.id, part.mesh_settings)
+    if (
+        settings is not None
+        and (
+            geometry_dimension(part.geometry_recipe) == 1
+            or settings.cell_shape == "line"
+        )
+    ):
+        _validate_explicit_mesh_settings(settings, part.geometry_recipe)
+    validate_native_project_inputs(
+        part.geometry_recipe,
+        settings,
+        (),
+        (),
+        (),
+        (),
+        (),
+    )
+    if authenticate_geometry and part.dimension == 3:
+        _authenticate_native_part_single_solid(part)
+
+
+def _authenticate_native_part_single_solid(part: NativePart) -> None:
+    """Require OCC replay to produce exactly one three-dimensional domain."""
+
+    from fem.geometry import model as geometry_model
+
+    from .recipe_compiler import compile_recipe
+
+    if _contains_unproven_boolean(part.geometry_recipe):
+        raise ValueError(
+            f"Part {part.id} 的三维布尔几何缺少完整拓扑证明"
+        )
+    try:
+        with geometry_model(
+            f"native-part-{part.id}-single-solid-authentication",
+            dimension=3,
+        ) as cad:
+            compiled = compile_recipe(cad, part.geometry_recipe)
+            domains = tuple(compiled.domain)
+    except Exception as error:
+        raise ValueError(
+            f"Part {part.id} 的三维几何无法通过 OCC 单实体认证：{error}"
+        ) from error
+    if len(domains) != 1 or domains[0].dimension != 3:
+        raise ValueError(
+            f"Part {part.id} 的三维几何必须精确生成一个实体；"
+            f"当前生成 {len(domains)} 个"
+        )
+
+
+def _recipe_contains_geometry_state(current: Any, expected: Any) -> bool:
+    """Return whether *current* is the expected recipe plus later local features."""
+
+    if current == expected:
+        return True
+    if isinstance(current, (MovedGeometry, RotatedGeometry)):
+        return _recipe_contains_geometry_state(current.base, expected)
+    return False
+
+
+def _contains_unproven_boolean(recipe: Any) -> bool:
+    if isinstance(recipe, BooleanGeometry):
+        context = (
+            recipe.body_context
+            or recipe.planar_context
+            or recipe.part_context
+        )
+        return (
+            context is None
+            or not context.proven
+            or _contains_unproven_boolean(recipe.object_geometry)
+            or _contains_unproven_boolean(recipe.tool_geometry)
+        )
+    if isinstance(
+        recipe,
+        (MovedGeometry, RotatedGeometry, ExtrudedGeometry, RevolvedGeometry),
+    ):
+        return _contains_unproven_boolean(recipe.base)
+    return False
+
+
+def _validate_native_parts_project_inputs(
+    parts: tuple[NativePart, ...],
+    regions: tuple[NamedRegion, ...],
+    materials: tuple[Any, ...],
+    sections: tuple[SectionDefinition, ...],
+    assignments: tuple[RegionAssignment, ...],
+    steps: tuple[Any, ...],
+    *,
+    authenticate_geometry: bool = False,
+) -> None:
+    """Validate aggregate authoring without projecting it onto one Part."""
+
+    for part in parts:
+        _validate_native_part_inputs(
+            part,
+            authenticate_geometry=authenticate_geometry,
+        )
+    _validate_part_namespaced_references(parts, regions)
+    localized_by_part = {
+        part.id: _localized_regions_for_part(part.id, parts, regions)
+        for part in parts
+    }
+    builtins_by_part = {
+        part.id: {
+            descriptor.name
+            for descriptor in describe_native_regions(
+                part.geometry_recipe,
+                (),
+                mesh_settings=_localize_part_mesh_settings(
+                    part.id,
+                    part.mesh_settings,
+                ),
+            )
+        }
+        for part in parts
+    }
+    known_region_names = {
+        region.name for region in regions
+    } | {
+        name
+        for names in builtins_by_part.values()
+        for name in names
+    }
+    unknown_targets = sorted(
+        _region_references(assignments, steps) - known_region_names
+    )
+    if unknown_targets:
+        raise ValueError(
+            "multi-Part definitions reference unknown named regions: "
+            + ", ".join(unknown_targets)
+        )
+    for part in parts:
+        part_names = builtins_by_part[part.id] | {
+            region.name for region in localized_by_part[part.id]
+        }
+        validate_native_project_inputs(
+            part.geometry_recipe,
+            _localize_part_mesh_settings(part.id, part.mesh_settings),
+            localized_by_part[part.id],
+            materials,
+            sections,
+            tuple(
+                assignment
+                for assignment in assignments
+                if assignment.region_name in part_names
+            ),
+            tuple(
+                _step_projected_to_regions(step, part_names)
+                for step in steps
+            ),
+        )
+
+
+def _localized_regions_for_part(
+    part_id: str,
+    parts: tuple[NativePart, ...],
+    regions: tuple[NamedRegion, ...],
+) -> tuple[NamedRegion, ...]:
+    localized: list[NamedRegion] = []
+    for region in regions:
+        references: list[LogicalEntityRef | MeshEntityRef] = []
+        for reference in region.references:
+            if type(reference) is LogicalEntityRef:
+                if part_id_from_logical_id(reference.logical_id) == part_id:
+                    references.append(
+                        LogicalEntityRef(
+                            strip_part_logical_id(
+                                part_id,
+                                reference.logical_id,
+                            )
+                        )
+                    )
+            elif (
+                reference.part_id == part_id
+                or (reference.part_id is None and len(parts) == 1)
+            ):
+                references.append(replace(reference, part_id=None))
+        if references:
+            localized.append(NamedRegion(region.name, tuple(references)))
+    return tuple(localized)
+
+
+def _attach_mesh_reference_owners(
+    regions: tuple[NamedRegion, ...],
+    parts: tuple[NativePart, ...],
+    model: Any,
+) -> tuple[NamedRegion, ...]:
+    metadata = getattr(model, "metadata", None)
+    ownership = (
+        metadata.get(NATIVE_PART_OWNERSHIP_KEY)
+        if isinstance(metadata, Mapping)
+        else None
+    )
+    if not isinstance(ownership, Mapping):
+        if any(
+            type(reference) is MeshEntityRef
+            for region in regions
+            for reference in region.references
+        ):
+            raise ValueError("generated multi-Part mesh lacks ownership metadata")
+        return regions
+    known_ids = {part.id for part in parts}
+    result: list[NamedRegion] = []
+    for region in regions:
+        references: list[LogicalEntityRef | MeshEntityRef] = []
+        for reference in region.references:
+            if type(reference) is not MeshEntityRef:
+                references.append(reference)
+                continue
+            if reference.part_id is not None:
+                if reference.part_id not in known_ids:
+                    raise ValueError(
+                        f"mesh reference owner {reference.part_id!r} is unknown"
+                    )
+                references.append(reference)
+                continue
+            identity = (
+                int(reference.node_id)
+                if reference.kind == "node"
+                else int(reference.element_id)
+            )
+            field = "node_ids" if reference.kind == "node" else "element_ids"
+            candidates = tuple(
+                part_id
+                for part_id, row in ownership.items()
+                if part_id in known_ids
+                and isinstance(row, Mapping)
+                and identity
+                in {int(value) for value in row.get(field, ())}
+            )
+            if len(candidates) != 1:
+                raise ValueError(
+                    "mesh reference cannot be assigned to exactly one Part"
+                )
+            references.append(replace(reference, part_id=candidates[0]))
+        result.append(NamedRegion(region.name, tuple(references)))
+    return tuple(result)
+
+
+def _step_projected_to_regions(step: Any, names: set[str]) -> Any:
+    projected = deepcopy(step)
+    projected.boundaries = tuple(
+        value for value in step.boundaries if value.target in names
+    )
+    projected.cloads = tuple(
+        value for value in step.cloads if value.target in names
+    )
+    projected.edge_loads = tuple(
+        value for value in step.edge_loads if value.edge in names
+    )
+    projected.surface_loads = tuple(
+        value for value in step.surface_loads if value.surface in names
+    )
+    projected.line_loads = tuple(
+        value for value in step.line_loads if value.target in names
+    )
+    projected.body_loads = tuple(
+        value for value in step.body_loads if value.target in names
+    )
+    projected.gravity_loads = tuple(
+        value
+        for value in step.gravity_loads
+        if value.target is None or value.target in names
+    )
+    return projected
+
+
+def _validate_part_namespaced_references(
+    parts: tuple[NativePart, ...],
+    regions: tuple[NamedRegion, ...],
+) -> None:
+    by_id = {part.id: part for part in parts}
+    for region in regions:
+        for reference in region.references:
+            if type(reference) is MeshEntityRef:
+                if reference.part_id is None:
+                    if len(parts) != 1:
+                        raise ValueError(
+                            f"named region {region.name!r} contains an "
+                            "ownerless mesh reference in a multi-Part project"
+                        )
+                elif reference.part_id not in by_id:
+                    raise ValueError(
+                        f"named region {region.name!r} contains a mesh "
+                        "reference owned by an unknown Part"
+                    )
+                continue
+            if type(reference) is not LogicalEntityRef:
+                continue
+            owner = part_id_from_logical_id(reference.logical_id)
+            if owner is None or owner not in by_id:
+                raise ValueError(
+                    f"named region {region.name!r} contains a reference "
+                    "without an active Part owner"
+                )
+            local = strip_part_logical_id(owner, reference.logical_id)
+            from fem.geometry.recipe_topology import describe_recipe_topology
+
+            topology = describe_recipe_topology(
+                by_id[owner].geometry_recipe
+            )
+            try:
+                topology.entity(local)
+            except KeyError as error:
+                raise ValueError(
+                    f"named region {region.name!r} contains unknown Part "
+                    f"reference {reference.logical_id!r}"
+                ) from error
+
+
+def _validate_suppressed_part_analysis_targets(
+    parts: tuple[NativePart, ...],
+    regions: tuple[NamedRegion, ...],
+    assignments: tuple[RegionAssignment, ...],
+    steps: tuple[Any, ...],
+) -> None:
+    suppressed = {part.id for part in parts if part.suppressed}
+    if not suppressed:
+        return
+    used_region_names = _region_references(assignments, steps)
+    for region in regions:
+        if region.name not in used_region_names:
+            continue
+        blocked = sorted(
+            {
+                owner
+                for reference in region.references
+                if type(reference) is LogicalEntityRef
+                and (
+                    owner := part_id_from_logical_id(
+                        reference.logical_id
+                    )
+                )
+                in suppressed
+            },
+            key=part_id_sort_key,
+        )
+        if blocked:
+            raise SessionStateError(
+                "suppressed Part references cannot be active analysis "
+                f"targets: {region.name!r} -> {', '.join(blocked)}"
+            )
+
+
+def _transition_part_named_regions(
+    regions: tuple[NamedRegion, ...],
+    part_id: str,
+    before_recipe: object,
+    after_recipe: object,
+) -> tuple[NamedRegion, ...]:
+    normalized = normalize_part_id(part_id)
+    preserve = can_preserve_logical_references(before_recipe, after_recipe)
+    local_rewrites = (
+        {}
+        if preserve
+        else logical_reference_transition_map(before_recipe, after_recipe)
+    )
+    transitioned: list[NamedRegion] = []
+    for region in regions:
+        if any(type(item) is not LogicalEntityRef for item in region.references):
+            transitioned.append(region)
+            continue
+        references: list[LogicalEntityRef] = []
+        for reference in region.references:
+            owner = part_id_from_logical_id(reference.logical_id)
+            if owner != normalized:
+                references.append(reference)
+                continue
+            local_id = strip_part_logical_id(
+                normalized,
+                reference.logical_id,
+            )
+            targets = (
+                (local_id,)
+                if preserve
+                else local_rewrites.get(local_id, ())
+            )
+            references.extend(
+                LogicalEntityRef(
+                    namespace_part_logical_id(normalized, target)
+                )
+                for target in targets
+            )
+        unique = tuple(
+            dict.fromkeys(
+                sorted(references, key=logical_ref_sort_key)
+            )
+        )
+        if unique:
+            transitioned.append(replace(region, references=unique))
+    return tuple(transitioned)
+
+
+def _merge_extrusion_region_transitions(
+    regions: tuple[NamedRegion, ...],
+    primary_part_id: str,
+    before_recipe: object,
+    primary_regions: tuple[NamedRegion, ...],
+    siblings: tuple[tuple[str, object], ...],
+) -> tuple[NamedRegion, ...]:
+    by_name: dict[str, list[LogicalEntityRef | MeshEntityRef]] = {
+        region.name: list(region.references)
+        for region in primary_regions
+    }
+    for sibling_id, recipe in siblings:
+        transitioned = _transition_part_named_regions(
+            regions,
+            primary_part_id,
+            before_recipe,
+            recipe,
+        )
+        for region in transitioned:
+            for reference in region.references:
+                if (
+                    type(reference) is LogicalEntityRef
+                    and part_id_from_logical_id(reference.logical_id)
+                    == primary_part_id
+                ):
+                    local_id = strip_part_logical_id(
+                        primary_part_id,
+                        reference.logical_id,
+                    )
+                    by_name.setdefault(region.name, []).append(
+                        LogicalEntityRef(
+                            namespace_part_logical_id(
+                                sibling_id,
+                                local_id,
+                            )
+                        )
+                    )
+    merged: list[NamedRegion] = []
+    for region in regions:
+        references = tuple(
+            dict.fromkeys(
+                sorted(
+                    by_name.get(region.name, ()),
+                    key=lambda reference: (
+                        logical_ref_sort_key(reference)
+                        if type(reference) is LogicalEntityRef
+                        else (
+                            reference.kind,
+                            reference.identity,
+                            reference.node_ids,
+                        )
+                    ),
+                )
+            )
+        )
+        if references:
+            merged.append(replace(region, references=references))
+    return tuple(merged)
+
+
+def _remove_part_from_named_regions(
+    regions: tuple[NamedRegion, ...],
+    part_id: str,
+) -> tuple[NamedRegion, ...]:
+    normalized = normalize_part_id(part_id)
+    result: list[NamedRegion] = []
+    for region in regions:
+        if any(type(item) is not LogicalEntityRef for item in region.references):
+            result.append(region)
+            continue
+        references = tuple(
+            reference
+            for reference in region.references
+            if part_id_from_logical_id(reference.logical_id) != normalized
+        )
+        if references:
+            result.append(replace(region, references=references))
+    return tuple(result)
+
+
+def _part_boolean_forward_map(
+    context: PartBooleanContext,
+) -> dict[str, tuple[str, ...]]:
+    grouped: dict[str, list[str]] = {}
+    for mapping in context.topology_mappings:
+        grouped.setdefault(mapping.source_logical_id, []).append(
+            mapping.target_logical_id
+        )
+    return {
+        source: tuple(
+            sorted(set(targets), key=lambda value: logical_ref_sort_key(
+                LogicalEntityRef(value)
+            ))
+        )
+        for source, targets in grouped.items()
+    }
+
+
+def _rewrite_part_boolean_regions(
+    regions: tuple[NamedRegion, ...],
+    rewrites: Mapping[str, tuple[str, ...]],
+    source_part_ids: set[str],
+) -> tuple[NamedRegion, ...]:
+    result: list[NamedRegion] = []
+    for region in regions:
+        if any(type(item) is not LogicalEntityRef for item in region.references):
+            result.append(region)
+            continue
+        references: list[LogicalEntityRef] = []
+        for reference in region.references:
+            owner = part_id_from_logical_id(reference.logical_id)
+            if owner not in source_part_ids:
+                references.append(reference)
+                continue
+            references.extend(
+                LogicalEntityRef(target)
+                for target in rewrites.get(reference.logical_id, ())
+            )
+        unique = tuple(
+            dict.fromkeys(
+                sorted(references, key=logical_ref_sort_key)
+            )
+        )
+        if unique:
+            result.append(replace(region, references=unique))
+    return tuple(result)
+
+
+def _transition_part_boolean_mesh_settings(
+    settings: MeshSettings | None,
+    rewrites: Mapping[str, tuple[str, ...]],
+    source_part_id: str,
+    result_part_id: str,
+) -> MeshSettings | None:
+    del result_part_id
+    if settings is None:
+        return None
+    controls = tuple(
+        replace(control, target=LogicalEntityRef(target))
+        for control in settings.local_controls
+        if part_id_from_logical_id(control.target.logical_id)
+        == source_part_id
+        for target in rewrites.get(control.target.logical_id, ())
+    )
+    return replace(deepcopy(settings), local_controls=controls)
 
 
 def _strict_boolean_transition(

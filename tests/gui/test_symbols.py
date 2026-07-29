@@ -85,6 +85,17 @@ def test_rectangular_support_keeps_all_four_corners_at_low_density():
     }
 
 
+def test_curved_planar_support_boundary_obeys_density_limit():
+    angles = np.linspace(0.0, 2.0 * np.pi, 64, endpoint=False)
+    points = np.column_stack(
+        (np.cos(angles), np.sin(angles), np.zeros(len(angles)))
+    )
+
+    assert len(constraint_sample_indices(points, "low")) == 4
+    assert len(constraint_sample_indices(points, "medium")) == 6
+    assert len(constraint_sample_indices(points, "high")) == 12
+
+
 def test_constraint_depth_offset_follows_the_camera_ray():
     point = np.array((1.0, -2.0, 3.0))
 

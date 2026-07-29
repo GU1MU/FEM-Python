@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Iterable
 
@@ -1041,13 +1042,28 @@ def describe_session_authoring(snapshot: Any) -> SessionAuthoringProjection:
     model = getattr(snapshot, "model", None)
     recipe = getattr(snapshot, "geometry_recipe", None)
     mesh_settings = getattr(snapshot, "mesh_settings", None)
+    named_regions = getattr(snapshot, "named_regions", ())
+    native_contexts = _native_part_authoring_contexts(snapshot)
+    if native_contexts:
+        active_part_id = getattr(snapshot, "active_part_id", None)
+        active_part, active_regions = next(
+            (
+                context
+                for context in native_contexts
+                if context[0].id == active_part_id
+            ),
+            native_contexts[0],
+        )
+        recipe = active_part.geometry_recipe
+        mesh_settings = active_part.mesh_settings
+        named_regions = active_regions
     if model is not None:
         report = describe_model_capabilities(model)
     elif recipe is not None and getattr(snapshot, "source_kind", None) == "native":
         report = describe_native_authoring_capabilities(
             recipe,
             mesh_settings,
-            named_regions=getattr(snapshot, "named_regions", ()),
+            named_regions=named_regions,
         )
     else:
         report = _empty_model_capability_report()
@@ -1056,25 +1072,39 @@ def describe_session_authoring(snapshot: Any) -> SessionAuthoringProjection:
     if recipe is not None and getattr(snapshot, "source_kind", None) == "native":
         from .native_regions import describe_native_regions
 
-        descriptors = describe_native_regions(
-            recipe,
-            getattr(snapshot, "named_regions", ()),
-            mesh_settings=mesh_settings,
+        descriptor_groups = (
+            tuple(
+                describe_native_regions(
+                    part.geometry_recipe,
+                    localized_regions,
+                    mesh_settings=part.mesh_settings,
+                )
+                for part, localized_regions in native_contexts
+            )
+            if native_contexts
+            else (
+                describe_native_regions(
+                    recipe,
+                    named_regions,
+                    mesh_settings=mesh_settings,
+                ),
+            )
         )
-        for descriptor in descriptors:
-            for product, kind in (
-                ("node_set", "node_set"),
-                ("element_set", "element_set"),
-                ("beam_element_set", "element_set"),
-                ("edge", "edge"),
-                ("surface", "surface"),
-            ):
-                if product in descriptor.products:
-                    _append_target_region(
-                        target_regions,
-                        RegionRef(kind, descriptor.name),
-                        descriptor.products,
-                    )
+        for descriptors in descriptor_groups:
+            for descriptor in descriptors:
+                for product, kind in (
+                    ("node_set", "node_set"),
+                    ("element_set", "element_set"),
+                    ("beam_element_set", "element_set"),
+                    ("edge", "edge"),
+                    ("surface", "surface"),
+                ):
+                    if product in descriptor.products:
+                        _append_target_region(
+                            target_regions,
+                            RegionRef(kind, descriptor.name),
+                            descriptor.products,
+                        )
 
     for item in report.regions:
         _append_target_region(
@@ -1136,6 +1166,76 @@ def describe_session_authoring(snapshot: Any) -> SessionAuthoringProjection:
         tuple(lifecycles),
         _session_output_authoring_capabilities(snapshot, report),
     )
+
+
+def _native_part_authoring_contexts(
+    snapshot: Any,
+) -> tuple[tuple[Any, tuple[Any, ...]], ...]:
+    """Localize canonical Part-owned regions for recipe-level capabilities."""
+
+    if getattr(snapshot, "source_kind", None) != "native":
+        return ()
+    parts = tuple(
+        part
+        for part in tuple(getattr(snapshot, "parts", ()))
+        if (
+            not bool(getattr(part, "suppressed", False))
+            and getattr(part, "geometry_recipe", None) is not None
+        )
+    )
+    if not parts:
+        return ()
+
+    from fem.geometry import (
+        LogicalEntityRef,
+        part_id_from_logical_id,
+        strip_part_logical_id,
+    )
+
+    raw_regions = getattr(snapshot, "named_regions", ())
+    regions = (
+        tuple(raw_regions.values())
+        if isinstance(raw_regions, Mapping)
+        else tuple(raw_regions)
+    )
+    contexts: list[tuple[Any, tuple[Any, ...]]] = []
+    for part in parts:
+        localized_regions: list[Any] = []
+        for region in regions:
+            localized_references: list[Any] = []
+            for reference in tuple(getattr(region, "references", ())):
+                if type(reference) is LogicalEntityRef:
+                    owner = part_id_from_logical_id(
+                        reference.logical_id
+                    )
+                    if owner == part.id:
+                        localized_references.append(
+                            LogicalEntityRef(
+                                strip_part_logical_id(
+                                    part.id,
+                                    reference.logical_id,
+                                )
+                            )
+                        )
+                    elif owner is None and len(parts) == 1:
+                        localized_references.append(reference)
+                    continue
+                owner = getattr(reference, "part_id", None)
+                if owner == part.id or (owner is None and len(parts) == 1):
+                    localized_references.append(
+                        replace(reference, part_id=None)
+                        if hasattr(reference, "part_id")
+                        else reference
+                    )
+            if localized_references:
+                localized_regions.append(
+                    replace(
+                        region,
+                        references=tuple(localized_references),
+                    )
+                )
+        contexts.append((part, tuple(localized_regions)))
+    return tuple(contexts)
 
 
 def _session_output_authoring_capabilities(

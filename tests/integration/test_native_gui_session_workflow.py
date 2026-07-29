@@ -77,7 +77,13 @@ def _install_native_authoring(window: FEMMainWindow) -> None:
         window.apply_native_geometry_edit(
             NativeGeometryEdit(
                 base_session_revision=window.document.session_revision,
-                parts=(NativePart("Plate", "Body"),),
+                parts=(
+                    NativePart(
+                        id="P1",
+                        name="Plate",
+                        geometry_recipe=recipe,
+                    ),
+                ),
                 recipe=recipe,
             )
         )
@@ -271,8 +277,6 @@ def test_native_output_request_survives_save_reopen_and_executes(
         candidate.authoring_request
         for candidate in catalog.candidates
         if candidate.authoring_request.variables == ("S",)
-        and candidate.authoring_request.metadata.get("position")
-        == "element_nodal"
     )
     edited_steps = tuple(
         replace(step, outputs=(*step.outputs, request))

@@ -6,7 +6,7 @@ from time import monotonic
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from fem import geometry as geometry_runtime
 from fem.application import (
@@ -67,7 +67,32 @@ def test_controller_keeps_target_and_tool_state_detached() -> None:
     assert controller.target_face_id == "face:domain"
     assert len(controller.tool_face_ids) == 1
     assert controller.geometry == source
-    assert controller.tool_label() == "1 个 Profiles"
+    assert controller.target_label() == "已选择"
+    assert controller.tool_label() == "1 个闭合轮廓"
+
+
+def test_controller_clears_target_and_tool_independently() -> None:
+    controller = PlanarBooleanController(
+        RectangleGeometry("Target", 3.0, 2.0),
+        4,
+        "cut",
+        target_face_id="face:domain",
+    )
+    controller.set_tool_recipe(_tool_sketch())
+
+    controller.clear_target()
+
+    assert controller.target_face_id is None
+    assert controller.tool_geometry is not None
+    assert not controller.ready
+
+    controller.set_target("face:domain")
+    controller.clear_tool()
+
+    assert controller.target_face_id == "face:domain"
+    assert controller.tool_geometry is None
+    assert controller.tool_face_ids == ()
+    assert not controller.ready
 
 
 def test_controller_requires_a_valid_face_target() -> None:
@@ -98,6 +123,14 @@ def test_panel_reenables_inputs_after_running_preview_is_cancelled() -> None:
     controller.set_tool_recipe(_tool_sketch())
     panel = PlanarBooleanPanel()
     panel.begin(controller)
+    assert panel.target_label.text() == "已选择"
+    assert panel.tool_label.text() == "1 个闭合轮廓"
+    assert panel.clear_target_button.isEnabled()
+    assert panel.delete_tool_button.isEnabled()
+    assert all(
+        label.text() != "预览与诊断"
+        for label in panel.findChildren(QLabel)
+    )
     panel.set_preview_running(True)
     assert not panel.operation_combo.isEnabled()
 
@@ -107,7 +140,40 @@ def test_panel_reenables_inputs_after_running_preview_is_cancelled() -> None:
     assert panel.operation_combo.isEnabled()
     assert panel.target_button.isEnabled()
     assert panel.tool_button.isEnabled()
+    assert panel.clear_target_button.isEnabled()
+    assert panel.delete_tool_button.isEnabled()
     panel.close()
+
+
+def test_planar_boolean_panel_can_clear_target_and_delete_tool() -> None:
+    _application()
+    window = FEMMainWindow()
+    source = RectangleGeometry("Target", 3.0, 2.0)
+    window._set_native_geometry(source, "测试")
+    window._selected_geometry_refs = {LogicalEntityRef("face:domain")}
+    window.cut_geometry()
+    controller = window._planar_boolean_controller
+    assert controller is not None
+    controller.set_tool_recipe(_tool_sketch())
+    window.planar_boolean_panel.refresh()
+
+    window.planar_boolean_panel.clear_target_button.click()
+
+    assert controller.target_face_id is None
+    assert controller.tool_geometry is not None
+    assert window._selected_geometry_refs == set()
+    assert not window.planar_boolean_panel.finish_button.isEnabled()
+
+    controller.set_target("face:domain")
+    window.planar_boolean_panel.refresh()
+    window.planar_boolean_panel.delete_tool_button.click()
+
+    assert controller.target_face_id == "face:domain"
+    assert controller.tool_geometry is None
+    assert controller.tool_face_ids == ()
+    assert not window.planar_boolean_panel.finish_button.isEnabled()
+    window.cancel_planar_boolean()
+    window.close()
 
 
 def test_2d_boolean_dispatches_to_non_modal_planar_workflow() -> None:

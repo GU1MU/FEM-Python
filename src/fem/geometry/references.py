@@ -6,9 +6,15 @@ from dataclasses import dataclass
 from typing import Literal, cast
 
 
-EntityKind = Literal["point", "edge", "face", "body"]
+EntityKind = Literal["point", "edge", "face", "body", "part"]
 
-_ENTITY_KINDS: tuple[EntityKind, ...] = ("point", "edge", "face", "body")
+_ENTITY_KINDS: tuple[EntityKind, ...] = (
+    "point",
+    "edge",
+    "face",
+    "body",
+    "part",
+)
 _KIND_ORDER = {kind: index for index, kind in enumerate(_ENTITY_KINDS)}
 
 
@@ -32,7 +38,7 @@ class LogicalEntityRef:
         ):
             raise ValueError(
                 "logical_id must use '<kind>:<semantic-name>' with kind "
-                "point, edge, face, or body"
+                "point, edge, face, body, or part"
             )
 
     @property

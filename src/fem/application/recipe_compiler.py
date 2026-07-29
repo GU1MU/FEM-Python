@@ -27,6 +27,10 @@ from fem.geometry.planar_boolean_selection import (
     PlanarBooleanSelectionError,
     resolve_planar_boolean_faces,
 )
+from fem.geometry.part_boolean import (
+    localize_part_boolean_context,
+    namespace_part_boolean_context,
+)
 from fem.geometry.recipe_topology import (
     LogicalEntity,
     RecipeTopology,
@@ -50,6 +54,7 @@ from fem.geometry.recipes import (
     NativeGeometry,
     PlateWithHoleGeometry,
     RectangleGeometry,
+    RevolvedGeometry,
     RotatedGeometry,
     SketchArc,
     SketchCircle,
@@ -124,6 +129,14 @@ class _CompiledDraft:
     hole_boundary: tuple[Any, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class _RigidEntityFingerprint:
+    center: tuple[float, float, float]
+    measure: float
+    geometry_type: str
+    boundary: tuple[Any, ...]
+
+
 def compile_recipe(
     cad: Any,
     recipe: NativeGeometry,
@@ -161,35 +174,335 @@ def _compile_exact(cad: Any, recipe: NativeGeometry) -> _CompiledDraft:
         return _compile_cylinder(cad, recipe)
     if isinstance(recipe, MovedGeometry):
         draft = _compile_exact(cad, recipe.base)
-        draft.domain = tuple(
-            cad.translate(draft.domain, recipe.dx, recipe.dy, recipe.dz)
+        return _translate_compiled_draft(
+            cad,
+            draft,
+            recipe.dx,
+            recipe.dy,
+            recipe.dz,
         )
-        return draft
     if isinstance(recipe, RotatedGeometry):
         draft = _compile_exact(cad, recipe.base)
-        axis = {
-            "x": (1.0, 0.0, 0.0),
-            "y": (0.0, 1.0, 0.0),
-            "z": (0.0, 0.0, 1.0),
-        }[recipe.axis]
-        draft.domain = tuple(
-            cad.rotate(
-                draft.domain,
-                0.0,
-                0.0,
-                0.0,
-                *axis,
-                math.radians(recipe.angle_degrees),
-            )
+        return _rotate_compiled_draft(
+            cad,
+            draft,
+            recipe.axis,
+            math.radians(recipe.angle_degrees),
         )
-        return draft
     if isinstance(recipe, ExtrudedGeometry):
         return _compile_extrusion(cad, recipe)
+    if isinstance(recipe, RevolvedGeometry):
+        return _compile_revolution(cad, recipe)
     if isinstance(recipe, MultiBodyGeometry):
         return _compile_multi_body(cad, recipe)
     if isinstance(recipe, BooleanGeometry):
         return _compile_boolean(cad, recipe)
     raise TypeError(f"不支持的几何配方: {type(recipe).__name__}")
+
+
+def _translate_compiled_draft(
+    cad: Any,
+    draft: _CompiledDraft,
+    dx: float,
+    dy: float,
+    dz: float,
+) -> _CompiledDraft:
+    fingerprints = _capture_rigid_entity_fingerprints(cad, draft)
+    original_domain = draft.domain
+    transformed_domain = tuple(cad.translate(original_domain, dx, dy, dz))
+    return _rebind_rigid_transform(
+        cad,
+        draft,
+        original_domain,
+        transformed_domain,
+        fingerprints,
+        lambda point: (
+            point[0] + dx,
+            point[1] + dy,
+            point[2] + dz,
+        ),
+    )
+
+
+def _rotate_compiled_draft(
+    cad: Any,
+    draft: _CompiledDraft,
+    axis_name: str,
+    angle: float,
+) -> _CompiledDraft:
+    axis = {
+        "x": (1.0, 0.0, 0.0),
+        "y": (0.0, 1.0, 0.0),
+        "z": (0.0, 0.0, 1.0),
+    }[axis_name]
+    fingerprints = _capture_rigid_entity_fingerprints(cad, draft)
+    original_domain = draft.domain
+    transformed_domain = tuple(
+        cad.rotate(
+            original_domain,
+            0.0,
+            0.0,
+            0.0,
+            *axis,
+            angle,
+        )
+    )
+    cosine, sine = math.cos(angle), math.sin(angle)
+
+    def transform(point: tuple[float, float, float]):
+        x, y, z = point
+        if axis_name == "x":
+            return x, y * cosine - z * sine, y * sine + z * cosine
+        if axis_name == "y":
+            return x * cosine + z * sine, y, -x * sine + z * cosine
+        return x * cosine - y * sine, x * sine + y * cosine, z
+
+    return _rebind_rigid_transform(
+        cad,
+        draft,
+        original_domain,
+        transformed_domain,
+        fingerprints,
+        transform,
+    )
+
+
+def _capture_rigid_entity_fingerprints(
+    cad: Any,
+    draft: _CompiledDraft,
+) -> dict[Any, _RigidEntityFingerprint]:
+    closure = _domain_boundary_closure(cad, draft.domain)
+    closure_set = set(closure)
+    referenced = _unique(
+        entity
+        for group in (
+            *draft.logical_entities.values(),
+            *draft.region_bindings.values(),
+            draft.hole_boundary,
+        )
+        for entity in group
+    )
+    outside = tuple(
+        entity for entity in referenced if entity not in closure_set
+    )
+    if outside:
+        entity = outside[0]
+        raise TopologyResolutionError(
+            "rigid-transform.rebind.outside-domain: "
+            f"逻辑实体 ({entity.dimension}, {entity.tag}) 不属于计算域边界"
+        )
+    required = list(referenced)
+    frontier = tuple(
+        entity for entity in required if entity.dimension > 0
+    )
+    while frontier:
+        boundary = _unique(
+            child
+            for parent in frontier
+            for child in cad.boundary(
+                (parent,),
+                combined=False,
+            )
+        )
+        frontier = tuple(
+            entity for entity in boundary if entity not in required
+        )
+        required.extend(frontier)
+    return {
+        entity: _RigidEntityFingerprint(
+            tuple(float(value) for value in cad.center_of_mass(entity)),
+            _entity_measure(cad, entity),
+            str(cad.geometry_type(entity)),
+            (
+                ()
+                if entity.dimension == 0
+                else tuple(
+                    cad.boundary(
+                        (entity,),
+                        combined=False,
+                    )
+                )
+            ),
+        )
+        for entity in required
+    }
+
+
+def _rebind_rigid_transform(
+    cad: Any,
+    draft: _CompiledDraft,
+    original_domain: tuple[Any, ...],
+    transformed_domain: tuple[Any, ...],
+    fingerprints: dict[Any, _RigidEntityFingerprint],
+    transform_point,
+) -> _CompiledDraft:
+    if len(original_domain) != len(transformed_domain):
+        raise TopologyResolutionError(
+            "rigid-transform.rebind.domain-count: "
+            "刚体变换改变了计算域数量"
+        )
+    transformed_closure = _domain_boundary_closure(
+        cad,
+        transformed_domain,
+    )
+    transformed_fingerprints = {
+        entity: _RigidEntityFingerprint(
+            tuple(float(value) for value in cad.center_of_mass(entity)),
+            _entity_measure(cad, entity),
+            str(cad.geometry_type(entity)),
+            (
+                ()
+                if entity.dimension == 0
+                else tuple(
+                    cad.boundary(
+                        (entity,),
+                        combined=False,
+                    )
+                )
+            ),
+        )
+        for entity in transformed_closure
+    }
+    rebound = dict(
+        zip(
+            original_domain,
+            transformed_domain,
+            strict=True,
+        )
+    )
+    used = set(transformed_domain)
+    tolerance = max(
+        1.0e-8,
+        float(cad.effective_bounding_box_tolerance(1.0e-9)),
+    )
+    maximum_dimension = max(
+        (entity.dimension for entity in original_domain),
+        default=0,
+    )
+    for dimension in range(maximum_dimension):
+        originals = tuple(
+            entity
+            for entity in fingerprints
+            if entity.dimension == dimension
+        )
+        candidates = tuple(
+            entity
+            for entity in transformed_closure
+            if entity.dimension == dimension and entity not in used
+        )
+        for original in originals:
+            fingerprint = fingerprints[original]
+            expected_center = transform_point(fingerprint.center)
+            expected_boundary = {
+                rebound[entity] for entity in fingerprint.boundary
+            }
+            matches = tuple(
+                candidate
+                for candidate in candidates
+                if candidate not in used
+                and _rigid_fingerprint_matches(
+                    transformed_fingerprints[candidate],
+                    expected_center,
+                    fingerprint.measure,
+                    fingerprint.geometry_type,
+                    expected_boundary,
+                    tolerance,
+                )
+            )
+            if len(matches) != 1:
+                raise TopologyResolutionError(
+                    "rigid-transform.rebind.ambiguous: "
+                    f"实体 ({original.dimension}, {original.tag}) "
+                    f"匹配到 {len(matches)} 个变换后候选"
+                )
+            rebound[original] = matches[0]
+            used.add(matches[0])
+
+    def remap(group: tuple[Any, ...]) -> tuple[Any, ...]:
+        try:
+            return tuple(rebound[entity] for entity in group)
+        except KeyError as error:
+            entity = error.args[0]
+            raise TopologyResolutionError(
+                "rigid-transform.rebind.missing: "
+                f"无法重新绑定实体 ({entity.dimension}, {entity.tag})"
+            ) from error
+
+    return _CompiledDraft(
+        transformed_domain,
+        {
+            logical_id: remap(entities)
+            for logical_id, entities in draft.logical_entities.items()
+        },
+        {
+            selector: remap(entities)
+            for selector, entities in draft.region_bindings.items()
+        },
+        remap(draft.hole_boundary),
+    )
+
+
+def _rigid_fingerprint_matches(
+    fingerprint: _RigidEntityFingerprint,
+    expected_center: tuple[float, float, float],
+    expected_measure: float,
+    expected_type: str,
+    expected_boundary: set[Any],
+    tolerance: float,
+) -> bool:
+    return (
+        fingerprint.geometry_type == expected_type
+        and all(
+            math.isclose(
+                actual,
+                expected,
+                rel_tol=1.0e-9,
+                abs_tol=tolerance,
+            )
+            for actual, expected in zip(
+                fingerprint.center,
+                expected_center,
+                strict=True,
+            )
+        )
+        and math.isclose(
+            fingerprint.measure,
+            expected_measure,
+            rel_tol=1.0e-9,
+            abs_tol=tolerance,
+        )
+        and set(fingerprint.boundary) == expected_boundary
+    )
+
+
+def _domain_boundary_closure(
+    cad: Any,
+    domain: tuple[Any, ...],
+) -> tuple[Any, ...]:
+    closure = list(_unique(domain))
+    frontier = tuple(closure)
+    while frontier and frontier[0].dimension > 0:
+        boundary = _unique(
+            cad.boundary(
+                frontier,
+                combined=False,
+            )
+        )
+        frontier = tuple(
+            entity for entity in boundary if entity not in closure
+        )
+        closure.extend(frontier)
+    return tuple(closure)
+
+
+def _entity_measure(cad: Any, entity: Any) -> float:
+    if entity.dimension == 0:
+        return 0.0
+    if entity.dimension == 1:
+        return float(cad.length(entity))
+    if entity.dimension == 2:
+        return float(cad.area(entity))
+    return float(cad.volume(entity))
 
 
 def _transformed_wire_recipe(recipe: object) -> WireGeometry | None:
@@ -819,7 +1132,7 @@ def _compile_cylinder(cad: Any, recipe: CylinderGeometry) -> _CompiledDraft:
 
 
 def _compile_boolean(cad: Any, recipe: BooleanGeometry) -> _CompiledDraft:
-    if recipe.body_context is not None:
+    if recipe.body_context is not None or recipe.part_context is not None:
         return _compile_strict_body_boolean(cad, recipe)
     if recipe.planar_context is not None:
         return _compile_strict_planar_boolean(cad, recipe)
@@ -1273,11 +1586,69 @@ def _compile_extrusion(cad: Any, recipe: ExtrudedGeometry) -> _CompiledDraft:
     )
 
 
+def _compile_revolution(cad: Any, recipe: RevolvedGeometry) -> _CompiledDraft:
+    base = _compile_exact(cad, recipe.base)
+    try:
+        selection = resolve_extrusion_source_faces(
+            recipe.base,
+            recipe.source_face_ids,
+        )
+    except ExtrusionSourceResolutionError as error:
+        raise TopologyResolutionError(
+            f"{error.code}: {error}"
+        ) from error
+    axis = {
+        "x": (1.0, 0.0, 0.0),
+        "y": (0.0, 1.0, 0.0),
+        "z": (0.0, 0.0, 1.0),
+    }[recipe.axis]
+    domain: list[Any] = []
+    for source_face_id in selection.face_ids:
+        source_surfaces = tuple(base.logical_entities.get(source_face_id, ()))
+        if len(source_surfaces) != 1 or source_surfaces[0].dimension != 2:
+            raise TopologyResolutionError(
+                "revolve.compile.surface-not-unique: "
+                f"{source_face_id} 没有唯一 OCC plane surface"
+            )
+        feature = cad.revolve(
+            source_surfaces,
+            0.0,
+            0.0,
+            0.0,
+            *axis,
+            math.radians(recipe.angle_degrees),
+        )
+        volumes = tuple(feature.primary)
+        if len(volumes) != 1 or volumes[0].dimension != 3:
+            raise TopologyResolutionError(
+                "revolve.compile.empty-result: "
+                f"{source_face_id} 没有生成唯一 volume"
+            )
+        if cad.volume(volumes[0]) <= 0.0:
+            raise TopologyResolutionError(
+                "revolve.compile.zero-volume: "
+                "当前二维面、扫掠轴和角度会生成零体积或退化实体；"
+                "请改用与草图平面不垂直的轴"
+            )
+        domain.extend(volumes)
+    compiled_domain = _unique(domain)
+    return _CompiledDraft(
+        compiled_domain,
+        {"body:domain": compiled_domain},
+        {},
+    )
+
+
 def _compile_strict_body_boolean(
     cad: Any,
     recipe: BooleanGeometry,
 ) -> _CompiledDraft:
-    context = recipe.body_context
+    part_context = recipe.part_context
+    context = (
+        recipe.body_context
+        if part_context is None
+        else localize_part_boolean_context(part_context)
+    )
     if context is None or not context.proven:
         raise TopologyResolutionError(
             "boolean.lineage.unproven: strict Body Boolean lacks persisted proof"
@@ -1322,12 +1693,31 @@ def _compile_strict_body_boolean(
         )
     except BooleanLineageResolutionError as error:
         raise TopologyResolutionError(str(error)) from error
-    if (
-        frozenset(proof.result_entities)
-        != frozenset(context.result_entities)
-        or frozenset(proof.topology_mappings)
-        != frozenset(context.topology_mappings)
-    ):
+    persisted_entities = context.result_entities
+    persisted_mappings = context.topology_mappings
+    if part_context is not None:
+        persisted = namespace_part_boolean_context(
+            feature_id=part_context.feature_id,
+            target_part_id=part_context.target_part_id,
+            tool_part_id=part_context.tool_part_id,
+            result_part_id=part_context.result_part_id,
+            result_entities=proof.result_entities,
+            topology_mappings=proof.topology_mappings,
+        )
+        replay_matches = (
+            frozenset(persisted.result_entities)
+            == frozenset(part_context.result_entities)
+            and frozenset(persisted.topology_mappings)
+            == frozenset(part_context.topology_mappings)
+        )
+    else:
+        replay_matches = (
+            frozenset(proof.result_entities)
+            == frozenset(persisted_entities)
+            and frozenset(proof.topology_mappings)
+            == frozenset(persisted_mappings)
+        )
+    if not replay_matches:
         raise TopologyResolutionError(
             "boolean.lineage.catalog-mismatch: persisted proof does not "
             "match the current OCC result"
@@ -1504,6 +1894,8 @@ def _build_domain_only(cad: Any, recipe: NativeGeometry) -> tuple[Any, ...]:
         )
     if isinstance(recipe, ExtrudedGeometry):
         return _compile_extrusion(cad, recipe).domain
+    if isinstance(recipe, RevolvedGeometry):
+        return _compile_revolution(cad, recipe).domain
     raise TypeError(f"不支持的几何配方: {type(recipe).__name__}")
 
 

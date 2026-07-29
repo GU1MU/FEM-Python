@@ -18,6 +18,7 @@ from fem.geometry.recipes import (
     ExtrudedGeometry,
     MovedGeometry,
     PlanarBooleanContext,
+    RevolvedGeometry,
     RotatedGeometry,
 )
 from fem.geometry.types import StrictPlanarBooleanPreview
@@ -153,7 +154,15 @@ def next_planar_boolean_feature_id(recipe: object | None) -> str:
                 used.add(int(item.planar_context.feature_id[2:]))
             visit(item.object_geometry)
             visit(item.tool_geometry)
-        elif isinstance(item, (MovedGeometry, RotatedGeometry, ExtrudedGeometry)):
+        elif isinstance(
+            item,
+            (
+                MovedGeometry,
+                RotatedGeometry,
+                ExtrudedGeometry,
+                RevolvedGeometry,
+            ),
+        ):
             visit(item.base)
 
     visit(recipe)
@@ -170,7 +179,10 @@ def _persisted_planar_context(recipe: Any) -> PlanarBooleanContext | None:
         return _persisted_planar_context(
             recipe.object_geometry
         ) or _persisted_planar_context(recipe.tool_geometry)
-    if isinstance(recipe, (MovedGeometry, RotatedGeometry, ExtrudedGeometry)):
+    if isinstance(
+        recipe,
+        (MovedGeometry, RotatedGeometry, ExtrudedGeometry, RevolvedGeometry),
+    ):
         return _persisted_planar_context(recipe.base)
     return None
 

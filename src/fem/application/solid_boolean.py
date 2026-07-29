@@ -14,6 +14,7 @@ from fem.geometry.recipes import (
     ExtrudedGeometry,
     MovedGeometry,
     MultiBodyGeometry,
+    RevolvedGeometry,
     RotatedGeometry,
 )
 from fem.geometry.solid_boolean_lineage import (
@@ -149,7 +150,10 @@ def _persisted_strict_context(recipe: Any):
             _persisted_strict_context(recipe.object_geometry)
             or _persisted_strict_context(recipe.tool_geometry)
         )
-    if isinstance(recipe, (MovedGeometry, RotatedGeometry, ExtrudedGeometry)):
+    if isinstance(
+        recipe,
+        (MovedGeometry, RotatedGeometry, ExtrudedGeometry, RevolvedGeometry),
+    ):
         return _persisted_strict_context(recipe.base)
     return None
 

@@ -150,12 +150,16 @@ def test_native_project_round_trip_returns_a_detached_snapshot(tmp_path) -> None
     reopened = loaded.snapshot
 
     assert isinstance(reopened, ProjectSnapshot)
-    assert loaded.source_schema == 6
+    assert loaded.source_schema == 7
     assert loaded.notices == ()
     assert reopened.source_kind == "native"
     assert reopened.source_path == target
     assert reopened.geometry_recipe == original.geometry_recipe
-    assert reopened.mesh_settings == original.mesh_settings
+    assert reopened.mesh_settings == reopened.parts[0].mesh_settings
+    assert {
+        control.target.logical_id
+        for control in reopened.mesh_settings.local_controls
+    } == {"edge:P1/outer-loop", "edge:P1/hole-loop"}
     assert reopened.material_definitions[0].name == "Steel"
     assert reopened.section_definitions[0].properties["thickness"] == 2.0
     assert reopened.region_assignments[0].region_name == "DOMAIN"
@@ -290,13 +294,13 @@ def test_main_window_v1_open_then_save_upgrades_the_same_path(
     assert source.read_bytes() == original
     upgrade_notice = window.status_panel.state_label.text()
     assert "下次显式保存" in upgrade_notice
-    assert "schema 6" in upgrade_notice
-    assert "v6" in upgrade_notice
+    assert "schema 7" in upgrade_notice
+    assert "v7" in upgrade_notice
 
     assert window.save_native_project()
     _wait_for_task(window)
-    assert json.loads(source.read_text(encoding="utf-8"))["schema"] == 6
-    assert load_project(source).source_schema == 6
+    assert json.loads(source.read_text(encoding="utf-8"))["schema"] == 7
+    assert load_project(source).source_schema == 7
     assert not window.document.dirty
     window.close()
 

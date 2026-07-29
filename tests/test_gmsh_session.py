@@ -135,6 +135,7 @@ class _FakeGmsh:
         self.fail_inspect_count = 0
         self.fail_finalize_count = 0
         self.initialize_calls = 0
+        self.initialize_interruptible: list[bool] = []
         self.finalize_calls = 0
         self.model = _FakeModel(self, names=names, current=current)
         self.option = _FakeOption(self)
@@ -146,9 +147,10 @@ class _FakeGmsh:
             raise RuntimeError("fake session inspection failure")
         return self.initialized
 
-    def initialize(self) -> None:
+    def initialize(self, *, interruptible: bool = True) -> None:
         self.calls.append(("initialize",))
         self.initialize_calls += 1
+        self.initialize_interruptible.append(bool(interruptible))
         self.initialized = True
         if self.fail_initialize_after_state:
             raise RuntimeError("fake initialize failure")
@@ -212,6 +214,7 @@ def test_entry_preserves_backend_session_capture_validation_and_add_order(
     ]
     assert session.created_model
     assert gmsh.model.current == "facade"
+    assert gmsh.initialize_interruptible == [False]
 
 
 def test_invalid_name_is_detected_after_owned_session_and_model_inspection(
@@ -981,6 +984,40 @@ assert not bool(gmsh.isInitialized())
 with geometry.model("owned-session-finalization", dimension=1):
     assert bool(gmsh.isInitialized())
     assert gmsh.model.list().count("") == 1
+assert not bool(gmsh.isInitialized())
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_real_owned_session_can_initialize_in_background_worker() -> None:
+    src_dir = Path(__file__).resolve().parents[1] / "src"
+    script = f"""
+import sys
+from concurrent.futures import ThreadPoolExecutor
+
+sys.path.insert(0, {str(src_dir)!r})
+
+import gmsh
+from fem import geometry
+
+assert not bool(gmsh.isInitialized())
+
+def build():
+    with geometry.model("background-worker", dimension=2) as cad:
+        surface = cad.rectangle(0.0, 0.0, 1.0, 1.0)
+        return cad.area(surface)
+
+with ThreadPoolExecutor(max_workers=1) as executor:
+    assert executor.submit(build).result() == 1.0
+
 assert not bool(gmsh.isInitialized())
 """
 

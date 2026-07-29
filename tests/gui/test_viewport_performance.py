@@ -11,6 +11,7 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 from fem.core.model import FEMModel
+import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow, initial_display_policy
 from fem_gui.visualization.model_adapter import build_model_geometry
 from fem_gui.visualization.symbols import SymbolSettings
@@ -110,10 +111,18 @@ class _ViewPlotter:
 
     def add_mesh(self, _data, **kwargs):
         self.calls.append(("mesh", kwargs["name"]))
-        return object()
+        return _VisibilityActor()
 
     def render(self) -> None:
         self.calls.append("render")
+
+
+class _VisibilityActor:
+    def __init__(self) -> None:
+        self.visible = True
+
+    def SetVisibility(self, visible: bool) -> None:
+        self.visible = bool(visible)
 
 
 def test_boundary_cache_reuses_step_and_is_cleared_by_new_model(monkeypatch):
@@ -152,6 +161,24 @@ def test_boundary_cache_reuses_step_and_is_cleared_by_new_model(monkeypatch):
     )
     assert viewport._boundary_cache == {}
     assert viewport._beam_frame_cache == {}
+
+
+def test_symbol_sampling_density_override_is_explicit_and_reversible():
+    _application()
+    viewport = FEMViewport()
+    viewport.set_symbol_settings(
+        SymbolSettings(sampling_density="high"),
+        refresh=False,
+    )
+
+    assert viewport._effective_symbol_sampling_density() == "high"
+    viewport.set_symbol_sampling_density_override("low")
+    assert viewport._effective_symbol_sampling_density() == "low"
+    viewport.set_symbol_sampling_density_override(None)
+    assert viewport._effective_symbol_sampling_density() == "high"
+    with pytest.raises(ValueError, match="符号采样密度"):
+        viewport.set_symbol_sampling_density_override("invalid")
+    viewport.close()
 
 
 def test_world_per_pixel_supports_parallel_and_perspective_cameras():
@@ -294,6 +321,49 @@ def test_base_model_layers_fit_stable_bounds_without_intermediate_render(
     ]
 
 
+def test_large_model_base_layers_skip_hidden_element_edges(monkeypatch):
+    _application()
+    viewport = FEMViewport()
+    plotter = _ViewPlotter()
+    viewport._plotter = plotter
+    viewport._grid = SimpleNamespace(
+        points=np.asarray(((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)))
+    )
+    viewport._show_edges = False
+    monkeypatch.setattr(
+        viewport,
+        "_refresh_node_layer",
+        lambda *, render: None,
+    )
+    monkeypatch.setattr(
+        viewport,
+        "_refresh_labels",
+        lambda *, render=False: None,
+    )
+
+    viewport._add_base_layers(reset_camera=False, render=False)
+
+    assert plotter.calls == [("mesh", "mesh_surface")]
+    assert "element_edges" not in viewport._actors
+    viewport.close()
+
+
+def test_element_edges_are_created_once_when_enabled_after_initial_load():
+    _application()
+    viewport = FEMViewport()
+    plotter = _ViewPlotter()
+    viewport._plotter = plotter
+    viewport._grid = object()
+    viewport._show_edges = False
+
+    viewport.set_edges_visible(True, render=False)
+    viewport.set_edges_visible(True, render=False)
+
+    assert plotter.calls == [("mesh", "element_edges")]
+    assert viewport._actors["element_edges"].visible
+    viewport.close()
+
+
 def test_model_load_batches_symbol_rebuild_and_final_render(monkeypatch):
     _application()
     model = make_static_pull_truss_model()
@@ -325,10 +395,51 @@ def test_model_load_batches_symbol_rebuild_and_final_render(monkeypatch):
 def test_large_model_first_display_policy_has_explicit_thresholds():
     assert initial_display_policy(100_000, 200_000)["show_edges"]
     assert not initial_display_policy(100_001, 10)["show_edges"]
-    assert initial_display_policy(200_000, 10)["show_symbols"]
-    assert not initial_display_policy(200_001, 10)["show_symbols"]
+    assert initial_display_policy(100_000, 10)["show_symbols"]
+    assert initial_display_policy(100_001, 10)["show_symbols"]
+    assert initial_display_policy(100_001, 10)["reduce_symbols"]
     assert initial_display_policy(10, 200_001)["simplified"]
+    assert initial_display_policy(10, 200_001)["show_symbols"]
+    assert initial_display_policy(10, 200_001)["reduce_symbols"]
+    assert not initial_display_policy(10, 200_000)["reduce_symbols"]
     assert not initial_display_policy(10, 200_001)["show_nodes"]
     assert not initial_display_policy(10, 200_001)["show_labels"]
     assert initial_display_policy(10, 20_000, line_mesh=True)["show_nodes"]
     assert not initial_display_policy(10, 20_001, line_mesh=True)["show_nodes"]
+
+
+def test_large_model_load_uses_sparse_symbols_until_user_changes_settings(
+    monkeypatch,
+):
+    _application()
+    model = make_static_pull_truss_model()
+    geometry = build_model_geometry(model)
+    window = FEMMainWindow()
+    monkeypatch.setattr(
+        main_window_module,
+        "initial_display_policy",
+        lambda *_args, **_kwargs: {
+            "show_edges": False,
+            "show_symbols": True,
+            "reduce_symbols": True,
+            "show_nodes": False,
+            "show_labels": False,
+            "simplified": True,
+        },
+    )
+    monkeypatch.setattr(window.viewport, "render", lambda: None)
+
+    window._model_loaded(Path("large.inp"), (model, geometry))
+
+    assert window.actions["symbols"].isChecked()
+    assert window.viewport._effective_symbol_sampling_density() == "low"
+
+    window._apply_symbol_settings(
+        SymbolSettings(
+            step_name=window._current_step_name,
+            sampling_density="high",
+        )
+    )
+
+    assert window.viewport._effective_symbol_sampling_density() == "high"
+    window.close()

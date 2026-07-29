@@ -537,6 +537,21 @@ def test_utf8_bom_is_accepted_at_lexer_boundary(tmp_path) -> None:
     assert model.mesh.elements[0].type == "Truss2"
 
 
+def test_gb18030_abaqus_comments_are_accepted_without_lossy_decode(
+    tmp_path,
+) -> None:
+    source = STANDARD / "t3d2_default_area.inp"
+    path = tmp_path / "gb18030_t3d2.inp"
+    chinese_comment = "** 名称：完全固定；类型：位移/转角\n"
+    path.write_bytes(
+        chinese_comment.encode("gb18030") + source.read_bytes()
+    )
+
+    model = abaqus.read(path)
+
+    assert model.mesh.elements[0].type == "Truss2"
+
+
 def test_invalid_utf8_raises_typed_parse_error_without_dropping_cause(
     tmp_path,
 ) -> None:

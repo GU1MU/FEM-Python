@@ -57,6 +57,12 @@ class PlanarBooleanController:
     def request_target_selection(self) -> None:
         self.selecting_target = True
 
+    def clear_target(self) -> None:
+        """Clear the detached target selection without changing the Session."""
+
+        self.target_face_id = None
+        self.selecting_target = False
+
     def assign_reference(self, reference: LogicalEntityRef) -> None:
         if not self.selecting_target:
             raise ValueError("no planar Boolean target selection is pending")
@@ -85,6 +91,12 @@ class PlanarBooleanController:
         if self.target_face_id is not None:
             self._validate_complete_selection()
 
+    def clear_tool(self) -> None:
+        """Delete the detached tool sketch without changing the Session."""
+
+        self.tool_geometry = None
+        self.tool_face_ids = ()
+
     def _validate_complete_selection(self) -> None:
         if self.target_face_id is None or self.tool_geometry is None:
             return
@@ -98,12 +110,12 @@ class PlanarBooleanController:
         self.tool_face_ids = selection.tool_face_ids
 
     def target_label(self) -> str:
-        return self.target_face_id or "未选择"
+        return "已选择" if self.target_face_id is not None else "未选择"
 
     def tool_label(self) -> str:
         if self.tool_geometry is None:
             return "未绘制"
-        return f"{len(self.tool_face_ids)} 个 Profiles"
+        return f"{len(self.tool_face_ids)} 个闭合轮廓"
 
 
 __all__ = ["PlanarBooleanController", "PlanarBooleanOperation"]

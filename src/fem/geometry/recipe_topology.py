@@ -47,6 +47,7 @@ from .recipes import (
     PlateWithHoleGeometry,
     PlanarBooleanContext,
     RectangleGeometry,
+    RevolvedGeometry,
     RotatedGeometry,
     SolidBody,
     SketchArc,
@@ -350,6 +351,8 @@ def describe_recipe_topology(recipe: NativeGeometry) -> RecipeTopology:
         return _rigid_transform_topology(recipe, "rotate")
     if isinstance(recipe, ExtrudedGeometry):
         return _extruded_topology(recipe)
+    if isinstance(recipe, RevolvedGeometry):
+        return _revolved_topology(recipe)
     if isinstance(recipe, MultiBodyGeometry):
         return _multi_body_topology(recipe)
     if isinstance(recipe, BooleanGeometry):
@@ -1425,9 +1428,65 @@ def _extruded_topology(recipe: ExtrudedGeometry) -> RecipeTopology:
     )
 
 
+def _revolved_topology(recipe: RevolvedGeometry) -> RecipeTopology:
+    """Expose a stable result Body while swept face naming remains conservative."""
+
+    base = describe_recipe_topology(recipe.base)
+    try:
+        resolve_extrusion_source_faces(
+            recipe.base,
+            recipe.source_face_ids,
+        )
+    except ExtrusionSourceResolutionError as error:
+        return _unknown_topology(
+            recipe,
+            code=error.code,
+            message=str(error),
+            operation="revolve",
+            source_signatures=(("base", base.signature),),
+        )
+    base_bodies = base.entities_of("body", selectable_only=True)
+    if not base.exact or len(base_bodies) != 1:
+        return _unknown_topology(
+            recipe,
+            code="revolve.source-face.topology-unproven",
+            message="扫掠源必须具有唯一且可验证的二维 logical body",
+            operation="revolve",
+            source_signatures=(("base", base.signature),),
+        )
+    body = _logical_entity(
+        "body",
+        "domain",
+        "revolve.domain",
+        dimension=3,
+    )
+    return _make_topology(
+        recipe,
+        (body,),
+        exact=True,
+        operation="revolve",
+        source_signatures=(("base", base.signature),),
+        mappings=(
+            TopologyMapping(
+                "base",
+                base_bodies[0].logical_id,
+                body.logical_id,
+                "derived",
+            ),
+        ),
+    )
+
+
 def _boolean_topology(recipe: BooleanGeometry) -> RecipeTopology:
     if recipe.body_context is not None:
         return _strict_body_boolean_topology(recipe, recipe.body_context)
+    if recipe.part_context is not None:
+        from .part_boolean import localize_part_boolean_context
+
+        return _strict_body_boolean_topology(
+            recipe,
+            localize_part_boolean_context(recipe.part_context),
+        )
     if recipe.planar_context is not None:
         return _strict_planar_boolean_topology(recipe, recipe.planar_context)
     object_topology = describe_recipe_topology(recipe.object_geometry)

@@ -458,6 +458,11 @@ def test_typed_payload_renders_owned_dataset_without_reprojection(
     assert not hasattr(viewport, "_result_scalar")
     assert not hasattr(viewport, "_deformation_scale")
     assert options["scalars"] == RESULT_SCALAR_NAME
+    assert options["cmap"] == "jet"
+    assert options["n_colors"] == 12
+    assert not options["interpolate_before_map"]
+    assert options["scalar_bar_args"]["vertical"]
+    assert options["scalar_bar_args"]["n_labels"] == 13
     assert payload.topology.value_layout is expected_layout
     np.testing.assert_array_equal(payload.dataset.points, original_points)
     assert viewport.artifact_id == "artifact-1"

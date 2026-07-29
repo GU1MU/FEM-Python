@@ -586,10 +586,19 @@ class SketchDraftController:
     update_curve = update_curve_parameters
 
     def delete_curve(self, curve_id: str) -> None:
-        self._require_curve(curve_id)
+        curve = self._require_curve(curve_id)
+        candidate_point_ids = _curve_point_ids(curve)
 
         def apply() -> None:
             del self._curves[curve_id]
+            used_point_ids = {
+                point_id
+                for remaining in self._curves.values()
+                for point_id in _curve_point_ids(remaining)
+            }
+            for point_id in candidate_point_ids:
+                if point_id not in used_point_ids:
+                    self._points.pop(point_id, None)
             self._clear_selection_id(curve_id)
 
         self._mutate(apply)
@@ -610,18 +619,18 @@ class SketchDraftController:
         curve_id: str,
         point: object | None = None,
     ) -> tuple[SketchCurve, ...]:
-        """Trim a line between its nearest explicit curve intersections.
+        """Remove the clicked curve interval as one undoable operation.
 
-        Phase 1 keeps the operation deliberately narrow: a line can be
-        trimmed at line/circle/arc intersections, while ambiguous overlaps
-        and non-line targets are rejected with a diagnostic-sized error.  The
-        complete replacement is recorded as one mutation, so one GUI trim is
-        one undo/redo command.
+        A line is split at its explicit intersections and the interval nearest
+        ``point`` is removed.  With one intersection, the clicked end is
+        removed.  If no unique split is available, or the target is a circle
+        or arc, the whole target curve is deleted.
         """
 
         target = self._require_curve(curve_id)
         if not isinstance(target, SketchLine):
-            raise ValueError("Phase 1 trim currently supports line targets only")
+            self.delete_curve(curve_id)
+            return ()
         start = self._require_point(target.start_point_id)
         end = self._require_point(target.end_point_id)
         start_xy = (start.u, start.v)
@@ -630,17 +639,23 @@ class SketchDraftController:
         for other in self._curves.values():
             if other.id == curve_id:
                 continue
-            intersections.extend(
-                _line_curve_intersections(
-                    start_xy,
-                    end_xy,
-                    other,
-                    self._points,
+            try:
+                intersections.extend(
+                    _line_curve_intersections(
+                        start_xy,
+                        end_xy,
+                        other,
+                        self._points,
+                    )
                 )
-            )
+            except ValueError:
+                # Collinear overlaps and tangencies do not define a unique
+                # trim boundary.  Other usable intersections remain valid.
+                continue
         intersections = _unique_trim_intersections(intersections)
         if not intersections:
-            raise ValueError("trim requires an unambiguous interior curve intersection")
+            self.delete_curve(curve_id)
+            return ()
         parameters = [0.0, *(item[0] for item in intersections), 1.0]
         if point is None:
             if len(intersections) >= 2:
@@ -649,9 +664,13 @@ class SketchDraftController:
                 lower_index = 0
         else:
             target_point = _coordinate_pair(point, "trim point")
-            target_parameter = _line_parameter(start_xy, end_xy, target_point)
+            target_parameter = _line_projection_parameter(
+                start_xy,
+                end_xy,
+                target_point,
+            )
             if target_parameter is None:
-                raise ValueError("trim point must lie on the target line")
+                raise ValueError("无法确定修剪位置")
             lower_index = min(
                 range(len(parameters) - 1),
                 key=lambda index: (
@@ -701,12 +720,19 @@ class SketchDraftController:
         left_end_id = point_id_at(lower)
         right_start_id = point_id_at(upper)
         right_end_id = target.end_point_id
-        replacements: list[SketchLine] = []
+        replacement_endpoints: list[tuple[str, str]] = []
         if lower > _TRIM_TOLERANCE:
-            replacements.append(SketchLine(target.id, left_start_id, left_end_id))
+            replacement_endpoints.append((left_start_id, left_end_id))
         if upper < 1.0 - _TRIM_TOLERANCE:
-            replacement_id = self._next_id("L", self._curves)
-            replacements.append(SketchLine(replacement_id, right_start_id, right_end_id))
+            replacement_endpoints.append((right_start_id, right_end_id))
+        replacements = [
+            SketchLine(
+                target.id if index == 0 else self._next_id("L", self._curves),
+                start_id,
+                end_id,
+            )
+            for index, (start_id, end_id) in enumerate(replacement_endpoints)
+        ]
 
         def apply() -> None:
             for item in new_points:
@@ -716,6 +742,14 @@ class SketchDraftController:
             for item in replacements:
                 self._assert_new_id(item.id)
                 self._curves[item.id] = item
+            used_point_ids = {
+                point_id
+                for remaining in self._curves.values()
+                for point_id in _curve_point_ids(remaining)
+            }
+            for point_id in _curve_point_ids(target):
+                if point_id not in used_point_ids:
+                    self._points.pop(point_id, None)
 
         self._mutate(apply)
         return tuple(replacements)
@@ -890,7 +924,7 @@ class SketchDraftController:
         diagnostics.extend(analysis.diagnostics)
         if not analysis.profiles:
             diagnostics.append(
-                SketchDiagnostic("sketch.no-profile", "草图至少需要一个闭合 Profile")
+                SketchDiagnostic("sketch.no-profile", "草图至少需要一个闭合轮廓")
             )
         return _DiagnosticTuple(_unique_diagnostics(diagnostics))
 
@@ -1154,14 +1188,10 @@ def _line_parameter(
     end: tuple[float, float],
     point: tuple[float, float],
 ) -> float | None:
-    direction = (end[0] - start[0], end[1] - start[1])
-    length_squared = direction[0] ** 2 + direction[1] ** 2
-    if length_squared <= _TRIM_TOLERANCE**2:
+    parameter = _line_projection_parameter(start, end, point)
+    if parameter is None:
         return None
-    parameter = (
-        (point[0] - start[0]) * direction[0]
-        + (point[1] - start[1]) * direction[1]
-    ) / length_squared
+    direction = (end[0] - start[0], end[1] - start[1])
     projected = (
         start[0] + parameter * direction[0],
         start[1] + parameter * direction[1],
@@ -1170,6 +1200,22 @@ def _line_parameter(
         return None
     if not -_TRIM_TOLERANCE <= parameter <= 1.0 + _TRIM_TOLERANCE:
         return None
+    return min(1.0, max(0.0, parameter))
+
+
+def _line_projection_parameter(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    point: tuple[float, float],
+) -> float | None:
+    direction = (end[0] - start[0], end[1] - start[1])
+    length_squared = direction[0] ** 2 + direction[1] ** 2
+    if length_squared <= _TRIM_TOLERANCE**2:
+        return None
+    parameter = (
+        (point[0] - start[0]) * direction[0]
+        + (point[1] - start[1]) * direction[1]
+    ) / length_squared
     return min(1.0, max(0.0, parameter))
 
 

@@ -9,17 +9,23 @@ import numpy as np
 import pytest
 from PySide6.QtWidgets import QApplication
 
+from fem.application import NativePart
 from fem.geometry import (
     BoxGeometry,
     CylinderGeometry,
     LogicalEntityRef,
+    MovedGeometry,
     SketchCircle,
     SketchGeometry,
     SketchLine,
     SketchPlane,
     SketchPoint,
 )
-from fem_gui.geometry_preview import GeometryPreview, build_geometry_preview
+from fem_gui.geometry_preview import (
+    GeometryPreview,
+    build_geometry_preview,
+    build_multi_part_geometry_preview,
+)
 from fem_gui.widgets import viewport as viewport_module
 from fem_gui.widgets.viewport import (
     FEMViewport,
@@ -244,6 +250,51 @@ def test_triangulated_geometry_faces_preserve_logical_ids() -> None:
     assert surface.n_cells == 12
     assert len(set(ids)) == 6
     assert all(np.count_nonzero(ids == pick_id) == 2 for pick_id in set(ids))
+
+
+def test_multi_part_polydata_carries_part_identity() -> None:
+    preview = build_multi_part_geometry_preview(
+        (
+            NativePart(
+                id="P1",
+                name="部件-1",
+                geometry_recipe=BoxGeometry("实体-1", 1.0, 1.0, 1.0),
+            ),
+            NativePart(
+                id="P2",
+                name="部件-2",
+                geometry_recipe=MovedGeometry(
+                    BoxGeometry("实体-2", 1.0, 1.0, 1.0),
+                    2.0,
+                    0.0,
+                    0.0,
+                ),
+            ),
+        )
+    )
+    points = np.asarray(preview.points, dtype=float)
+    surface = _geometry_surface_polydata(
+        pv,
+        points,
+        preview,
+        tuple(range(1, len(preview.faces) + 1)),
+    )
+    edges = _geometry_edge_polydata(
+        pv,
+        points,
+        preview,
+        tuple(range(1, len(preview.edges) + 1)),
+    )
+    vertices = _geometry_point_polydata(
+        pv,
+        points,
+        preview,
+        tuple(range(1, len(preview.points) + 1)),
+    )
+
+    assert set(surface.cell_data["geometry_part_id"]) == {"P1", "P2"}
+    assert set(edges.cell_data["geometry_part_id"]) == {"P1", "P2"}
+    assert set(vertices.point_data["geometry_part_id"]) == {"P1", "P2"}
 
 
 def test_preview_cells_without_logical_ids_are_not_selectable() -> None:

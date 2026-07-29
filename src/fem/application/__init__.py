@@ -51,6 +51,19 @@ from .feature_history import (
     derive_feature_history,
     derive_geometry_feature_rows,
 )
+from .native_part import (
+    PartBooleanProvenance,
+    next_part_boolean_feature_id,
+    next_part_id,
+    normalize_part_boolean_feature_id,
+    normalize_part_id,
+    validate_native_parts,
+)
+from .part_boolean import (
+    StrictPartBooleanResult,
+    prepare_part_boolean,
+    prepare_strict_part_recipe_preview,
+)
 from .native_regions import (
     CompiledDomainRegionSource,
     LogicalReferencesRegionSource,
@@ -129,6 +142,8 @@ from .planar_boolean import (
 from .session import (
     BooleanReferenceUndoRecord,
     ModelSession,
+    PartBooleanUndoRecord,
+    PartRevisionConflictError,
     ProjectSaveSnapshot,
     ProjectSnapshot,
     RevisionConflictError,
@@ -167,6 +182,9 @@ __all__ = [
     "NamedRegion",
     "NamedRegionEditBatch",
     "NativePart",
+    "PartBooleanProvenance",
+    "PartBooleanUndoRecord",
+    "PartRevisionConflictError",
     "NativeDimension",
     "NativeMeshContract",
     "NativeMeshContractError",
@@ -205,6 +223,7 @@ __all__ = [
     "StrictBodyBooleanPreview",
     "StrictPlanarBooleanResult",
     "StrictPlanarBooleanPreview",
+    "StrictPartBooleanResult",
     "TopologyResolutionError",
     "TokenStatus",
     "TransitionEffect",
@@ -235,7 +254,13 @@ __all__ = [
     "prepare_solid_body_boolean",
     "prepare_strict_body_recipe_preview",
     "next_planar_boolean_feature_id",
+    "next_part_boolean_feature_id",
+    "next_part_id",
+    "normalize_part_boolean_feature_id",
+    "normalize_part_id",
     "prepare_planar_boolean",
+    "prepare_part_boolean",
+    "prepare_strict_part_recipe_preview",
     "prepare_strict_planar_recipe_preview",
     "require_native_region_product",
     "require_complete_native_mesh_contract",
@@ -246,4 +271,5 @@ __all__ = [
     "validate_logical_reference",
     "validate_logical_references",
     "validate_native_authoring_context",
+    "validate_native_parts",
 ]

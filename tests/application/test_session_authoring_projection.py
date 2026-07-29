@@ -6,12 +6,17 @@ from fem.application import (
     AnalysisRun,
     AuthoringStatus,
     ModelSession,
+    NamedRegion,
     RegionRef,
     RunStatus,
     describe_session_authoring,
 )
 from fem.core.model import AnalysisStep, OutputRequest
-from fem.geometry import RectangleGeometry
+from fem.geometry import (
+    LogicalEntityRef,
+    RectangleGeometry,
+    namespace_part_logical_id,
+)
 from fem.mesh.settings import MeshSettings
 
 
@@ -64,6 +69,45 @@ def test_native_projection_preserves_target_namespaces_and_order() -> None:
     assert projection.target(
         RegionRef("edge", "LEFT")
     ).operation("boundary.displacement").can_submit
+
+
+def test_multi_part_projection_localizes_canonical_region_references() -> None:
+    session = ModelSession()
+    session.new_native_project()
+    session.add_native_part(
+        RectangleGeometry("Part-1", 4.0, 2.0),
+        name="部件-1",
+    )
+    session.add_native_part(
+        RectangleGeometry("Part-2", 3.0, 1.0),
+        name="部件-2",
+    )
+    session.replace_named_regions(
+        (
+            NamedRegion(
+                "跨部件边",
+                (
+                    LogicalEntityRef(
+                        namespace_part_logical_id(
+                            "P1",
+                            "edge:bottom",
+                        )
+                    ),
+                    LogicalEntityRef(
+                        namespace_part_logical_id(
+                            "P2",
+                            "edge:top",
+                        )
+                    ),
+                ),
+            ),
+        )
+    )
+
+    projection = describe_session_authoring(session.snapshot())
+
+    assert projection.target(RegionRef("node_set", "跨部件边")) is not None
+    assert projection.target(RegionRef("edge", "跨部件边")) is not None
 
 
 def test_imported_beam_projection_uses_canonical_model_regions() -> None:

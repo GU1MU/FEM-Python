@@ -17,6 +17,7 @@ from fem.application import (
     RegionAssignment,
     RenameIntent,
     SectionDefinition,
+    generate_fem_model,
 )
 from fem.application.results import build_solve_result_bundle
 from fem.abaqus import read
@@ -36,6 +37,7 @@ from fem.geometry import (
     WireGeometry,
     WireMember,
     WirePoint,
+    namespace_part_logical_id,
 )
 from fem.mesh import settings as mesh_settings_api
 from fem.mesh.settings import LocalMeshControl, MeshSettings
@@ -53,7 +55,13 @@ def _application() -> QApplication:
 def _named_region(name: str, *logical_ids: str) -> NamedRegion:
     return NamedRegion(
         name,
-        tuple(LogicalEntityRef(logical_id) for logical_id in logical_ids),
+        tuple(_part_ref(logical_id) for logical_id in logical_ids),
+    )
+
+
+def _part_ref(logical_id: str, part_id: str = "P1") -> LogicalEntityRef:
+    return LogicalEntityRef(
+        namespace_part_logical_id(part_id, logical_id)
     )
 
 
@@ -62,7 +70,7 @@ def _global_local_control(
     size: float,
 ) -> LocalMeshControl:
     return LocalMeshControl(
-        LogicalEntityRef(logical_id),
+        _part_ref(logical_id),
         size,
         mesh_settings_api.MeshSizeFalloff(
             "global_size",
@@ -203,10 +211,10 @@ def test_new_model_dialog_commits_entered_model_name_and_cancel_is_safe(
 
     assert prompts == [("新建模型", "模型名称：", "模型-1")]
     assert window.document.model_name == "支架模型"
-    assert window.document.parts[0].name == "部件-1"
-    assert window.document.parts[0].body_name == "实体-1"
+    assert window.document.parts == ()
+    assert window.document.active_part_id is None
     assert window.model_tree.topLevelItem(0).text(0) == "支架模型"
-    assert window.model_tree.topLevelItem(0).child(0).text(0) == "部件-1"
+    assert window.model_tree.topLevelItem(0).childCount() == 0
     revision = window.document.session_revision
 
     window.new_native_model()
@@ -292,7 +300,7 @@ def test_project_save_ui_follows_can_save_in_all_session_states(
 
     window.close_model(confirm=False)
     window._apply_session_delta(window.session.new_native_project())
-    assert_save_ui(False)
+    assert_save_ui(True)
 
     window._set_native_geometry(
         RectangleGeometry("Plate", 2.0, 1.0),
@@ -615,12 +623,13 @@ def test_geometry_parameter_edits_preserve_topology_references(before, after):
     assert window.document.mesh_settings.local_controls == (
         _global_local_control("edge:bottom", 0.1),
     )
-    assert "已有拓扑引用已保留" in window.status_panel.state_label.text()
-    assert "旧命名区域已失效" not in window.status_panel.state_label.text()
+    message = window.status_panel.state_label.text()
+    assert "参数修改后的几何已创建" in message
+    assert "旧命名区域已失效" not in message
     window.close()
 
 
-def test_geometry_topology_change_reports_cleared_references():
+def test_geometry_topology_change_clears_invalid_references():
     _application()
     window = FEMMainWindow()
     window._set_native_geometry(
@@ -651,12 +660,12 @@ def test_geometry_topology_change_reports_cleared_references():
     assert window.document.named_regions == {}
     assert window.document.mesh_settings.local_controls == ()
     message = window.status_panel.state_label.text()
-    assert "1 个旧作用域已失效" in message
+    assert "矩形几何已创建" in message
     assert "旧局部网格设置已失效" in message
     window.close()
 
 
-def test_geometry_topology_change_does_not_report_preserved_steps():
+def test_geometry_topology_change_preserves_topology_independent_steps():
     _application()
     window = FEMMainWindow()
     window._set_native_geometry(
@@ -686,14 +695,11 @@ def test_geometry_topology_change_does_not_report_preserved_steps():
         empty,
         global_gravity,
     )
-    assert (
-        "依赖旧拓扑的区域分配和分析步已失效"
-        not in window.status_panel.state_label.text()
-    )
+    assert "矩形几何已创建" in window.status_panel.state_label.text()
     window.close()
 
 
-def test_geometry_topology_change_reports_invalidated_region_target_step():
+def test_geometry_topology_change_invalidates_region_target_step():
     _application()
     window = FEMMainWindow()
     window._set_native_geometry(
@@ -730,10 +736,7 @@ def test_geometry_topology_change_reports_invalidated_region_target_step():
     )
 
     assert window.document.steps == ()
-    assert (
-        "依赖旧拓扑的区域分配和分析步已失效"
-        in window.status_panel.state_label.text()
-    )
+    assert "矩形几何已创建" in window.status_panel.state_label.text()
     window.close()
 
 
@@ -766,8 +769,8 @@ def test_geometry_ctrl_selection_accumulates_same_kind_entities(monkeypatch):
         "矩形",
     )
     monkeypatch.setattr(window, "_geometry_pick_is_additive", lambda: False)
-    bottom = LogicalEntityRef("edge:bottom")
-    top = LogicalEntityRef("edge:top")
+    bottom = _part_ref("edge:bottom")
+    top = _part_ref("edge:top")
     window._on_geometry_entity_pick(bottom)
     monkeypatch.setattr(window, "_geometry_pick_is_additive", lambda: True)
     window._on_geometry_entity_pick(top)
@@ -795,7 +798,7 @@ def test_switching_geometry_selection_kind_clears_incompatible_selection(
     monkeypatch.setattr(window, "_geometry_pick_is_additive", lambda: False)
     window._set_geometry_selection_mode("edge")
     window._on_geometry_entity_pick(
-        LogicalEntityRef("edge:bottom")
+        _part_ref("edge:bottom")
     )
 
     window._set_geometry_selection_mode("face")
@@ -836,8 +839,8 @@ def test_local_mesh_control_applies_once_to_all_selected_edges(monkeypatch):
         RectangleGeometry("Plate", 2.0, 1.0),
         "矩形",
     )
-    bottom = LogicalEntityRef("edge:bottom")
-    top = LogicalEntityRef("edge:top")
+    bottom = _part_ref("edge:bottom")
+    top = _part_ref("edge:top")
     window._selected_geometry_refs = {bottom, top}
 
     class AcceptedLocalMeshDialog:
@@ -909,12 +912,15 @@ def test_mesh_scope_ctrl_pick_toggles_selected_entity(monkeypatch) -> None:
 
 def test_former_builtin_region_name_can_be_created_as_a_mesh_scope(
     monkeypatch,
-    gui_inp_path,
 ):
     _application()
     window = FEMMainWindow()
-    model = read(gui_inp_path)
-    geometry = build_model_geometry(model)
+    errors: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        window,
+        "_show_error",
+        lambda title, message: errors.append((title, message)),
+    )
     settings = MeshSettings(0.25)
     window._set_native_geometry(
         RectangleGeometry("Plate", 2.0, 1.0),
@@ -924,11 +930,17 @@ def test_former_builtin_region_name_can_be_created_as_a_mesh_scope(
         window.session.replace_mesh_settings(settings)
     )
     task = window.session.prepare_mesh_generation()
+    model = generate_fem_model(task)
+    geometry = build_model_geometry(model)
     window._generated_model_loaded(
         (model, geometry),
         token=task.token,
     )
-    selected = MeshEntityRef.node(model.mesh.nodes[0].id)
+    assert errors == []
+    selected = MeshEntityRef.node(
+        model.mesh.nodes[0].id,
+        part_id=window.document.active_part_id,
+    )
     window._selected_mesh_scope_refs = {selected}
 
     class FormerBuiltinRegionDialog:
@@ -947,7 +959,9 @@ def test_former_builtin_region_name_can_be_created_as_a_mesh_scope(
         FormerBuiltinRegionDialog,
     )
 
-    assert window._create_region_from_current_mesh_selection() == "bottom"
+    created = window._create_region_from_current_mesh_selection()
+    assert errors == []
+    assert created == "bottom"
     assert window.document.named_regions["bottom"].references == (selected,)
     assert window.document.model.node_sets["bottom"].node_ids == (
         selected.node_id,

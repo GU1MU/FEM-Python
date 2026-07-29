@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -102,6 +103,9 @@ class SketchEditorPanel(QWidget):
             self._mode_buttons[mode] = button
             (first_modes if index < 3 else second_modes).addWidget(button)
         self._mode_buttons["polyline"].setChecked(True)
+        self._mode_buttons["trim"].setToolTip(
+            "单击曲线：有交点时删除点击段；无可用交点时删除整条曲线"
+        )
 
         self.snap_check = QCheckBox("启用网格捕捉", self)
         self.snap_check.setChecked(True)
@@ -211,6 +215,21 @@ class SketchEditorPanel(QWidget):
         self.diagnostic_label = QLabel(self)
         self.diagnostic_label.setObjectName("sketchDiagnostics")
         self.diagnostic_label.setWordWrap(True)
+        self.diagnostic_label.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+        )
+        self.diagnostic_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.diagnostic_scroll = QScrollArea(self)
+        self.diagnostic_scroll.setObjectName("sketchDiagnosticsScroll")
+        self.diagnostic_scroll.setWidgetResizable(True)
+        self.diagnostic_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.diagnostic_scroll.setMinimumHeight(64)
+        self.diagnostic_scroll.setMaximumHeight(150)
+        self.diagnostic_scroll.setWidget(self.diagnostic_label)
 
         self.finish_button = QPushButton("完成草图", self)
         self.finish_button.setObjectName("sketchFinishButton")
@@ -243,7 +262,7 @@ class SketchEditorPanel(QWidget):
         layout.addWidget(self.circle_parameter_group)
         layout.addWidget(self.arc_parameter_group)
         layout.addLayout(edit_row)
-        layout.addWidget(self.diagnostic_label)
+        layout.addWidget(self.diagnostic_scroll)
         layout.addLayout(bottom)
 
     def set_controller(
@@ -569,23 +588,32 @@ class SketchEditorPanel(QWidget):
     ) -> None:
         controller = self._require_controller()
         try:
-            controller.trim_curve(
+            replacements = controller.trim_curve(
                 curve_id,
                 controller.plane.to_local(tuple(global_point)),
             )
         except (TypeError, ValueError) as error:
             self._set_status(str(error))
+        else:
+            self._set_status(
+                "没有可用的分割交点，已删除整条曲线"
+                if not replacements
+                else "已修剪鼠标所在的曲线段"
+            )
         self._refresh()
 
     def delete_selected(self) -> None:
         controller = self._require_controller()
         if not controller.selected_ids:
+            self._set_status("请先用“选择”工具选中要删除的点或曲线")
             return
         entity_id = controller.selected_ids[0]
         try:
             controller.delete(entity_id)
         except (KeyError, TypeError, ValueError) as error:
             self._set_status(str(error))
+        else:
+            self._set_status(f"已删除草图实体 {entity_id}")
         self._refresh()
 
     def undo(self) -> None:
@@ -923,7 +951,7 @@ class SketchEditorPanel(QWidget):
             self.diagnostic_label.setText(
                 "\n".join(item.message for item in diagnostics)
                 if diagnostics
-                else "草图已形成有效闭合 Profile"
+                else "草图已形成有效闭合轮廓"
             )
             self.finish_button.setEnabled(controller.can_finish)
             self.finish_button.setToolTip(

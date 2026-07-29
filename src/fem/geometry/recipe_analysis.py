@@ -19,6 +19,7 @@ from .recipes import (
     NativeGeometry,
     PlateWithHoleGeometry,
     RectangleGeometry,
+    RevolvedGeometry,
     RotatedGeometry,
     SketchArc,
     SketchCircle,
@@ -380,6 +381,16 @@ def legacy_sketches_to_strict(recipe: NativeGeometry) -> NativeGeometry:
         return ExtrudedGeometry(
             base,
             recipe.height,
+            recipe.source_face_ids,
+        )
+    if type(recipe) is RevolvedGeometry:
+        base = legacy_sketches_to_strict(recipe.base)
+        if base is recipe.base:
+            return recipe
+        return RevolvedGeometry(
+            base,
+            recipe.axis,
+            recipe.angle_degrees,
             recipe.source_face_ids,
         )
     if type(recipe) is BooleanGeometry:
@@ -1228,6 +1239,8 @@ def recipe_characteristic_size(recipe: NativeGeometry) -> float:
         return recipe_characteristic_size(recipe.base)
     if isinstance(recipe, ExtrudedGeometry):
         return min(recipe_characteristic_size(recipe.base), recipe.height)
+    if isinstance(recipe, RevolvedGeometry):
+        return recipe_characteristic_size(recipe.base)
     if isinstance(recipe, SketchGeometry):
         if recipe.is_strict:
             analysis = analyze_sketch_profiles(recipe)

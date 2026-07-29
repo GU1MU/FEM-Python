@@ -376,7 +376,7 @@ class ContourSettingsDialog(QDialog):
         self.style = QComboBox(self)
         self.style.addItem("分段云图", "segmented")
         self.style.addItem("连续云图", "continuous")
-        self.style.setCurrentIndex(max(0, self.style.findData(options.get("style", "continuous"))))
+        self.style.setCurrentIndex(max(0, self.style.findData(options.get("style", "segmented"))))
         self.style.currentIndexChanged.connect(
             lambda: self.levels.setEnabled(self.style.currentData() == "segmented")
         )
@@ -399,7 +399,7 @@ class ContourSettingsDialog(QDialog):
         self.orientation = QComboBox(self)
         self.orientation.addItem("横向", "horizontal")
         self.orientation.addItem("纵向", "vertical")
-        self.orientation.setCurrentIndex(max(0, self.orientation.findData(options.get("orientation", "horizontal"))))
+        self.orientation.setCurrentIndex(max(0, self.orientation.findData(options.get("orientation", "vertical"))))
         form.addRow("色带：", self.colormap)
         form.addRow("云图样式：", self.style)
         form.addRow("色带级数：", self.levels)

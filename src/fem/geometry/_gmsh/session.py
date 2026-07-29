@@ -115,7 +115,10 @@ class _GmshModelSession:
             # Record ownership before initialize: Gmsh can raise after changing
             # its process-global initialized state.
             self._owns_session = True
-            gmsh.initialize()
+            # Geometry models are also created by GUI background workers.
+            # Let the application retain signal ownership because Python only
+            # permits signal handler registration on the main thread.
+            gmsh.initialize(interruptible=False)
 
         self._prior_current = str(gmsh.model.getCurrent())
         self._prior_current_captured = True

@@ -154,6 +154,82 @@ def test_panel_keeps_invalid_open_draft_detached() -> None:
     assert panel.render_data().curves == ((0, 1),)
 
 
+def test_many_diagnostics_stay_scrollable_and_cancel_remains_available() -> None:
+    app = _application()
+    controller = SketchDraftController("many-diagnostics")
+    for index in range(18):
+        start = controller.add_point(float(index), 0.0)
+        end = controller.add_point(float(index), 1.0)
+        controller.add_line(start.id, end.id)
+    panel = SketchEditorPanel(controller)
+    panel.resize(420, 650)
+    panel.show()
+    app.processEvents()
+
+    cancelled: list[bool] = []
+    panel.cancelRequested.connect(lambda: cancelled.append(True))
+
+    assert panel.diagnostic_label.text().count("\n") > 10
+    assert panel.diagnostic_scroll.height() <= 150
+    assert panel.cancel_button.isVisible()
+    assert panel.cancel_button.geometry().bottom() <= panel.rect().bottom()
+    panel.cancel_button.click()
+    assert cancelled == [True]
+    panel.close()
+
+
+def test_invalid_dirty_sketch_can_be_cancelled_from_panel(
+    monkeypatch,
+) -> None:
+    _application()
+    window = FEMMainWindow()
+    window._create_native_model("模型-1")
+    window._begin_sketch_editor(
+        None,
+        original_recipe=None,
+        part_name="未完成部件",
+    )
+    controller = window._sketch_editor_controller
+    assert controller is not None
+    start = controller.add_point(0.0, 0.0)
+    end = controller.add_point(1.0, 0.0)
+    controller.add_line(start.id, end.id)
+    window.sketch_editor_panel._refresh()
+    monkeypatch.setattr(
+        window,
+        "_confirm_sketch_editor_discard",
+        lambda: True,
+    )
+
+    window.sketch_editor_panel.cancel_button.click()
+
+    assert window._sketch_editor_controller is None
+    assert window.sketch_editor_panel.isHidden()
+    assert not window.viewport.sketch_authoring_active
+    window.close()
+
+
+def test_trim_click_uses_unsnapped_work_plane_position() -> None:
+    _application()
+    viewport = FEMViewport()
+    viewport._sketch_authoring_mode = "trim"
+    viewport._sketch_grid_snap = True
+    viewport._sketch_grid_spacing = 1.0
+    viewport._display_to_world = (
+        lambda _x, _y, depth: (0.24, 0.37, float(depth))
+    )
+    viewport._sketch_curve_at = lambda _x, _y: "L7"
+    requests: list[tuple[str, tuple[float, float, float]]] = []
+    viewport.sketchTrimRequested.connect(
+        lambda curve_id, point: requests.append((curve_id, tuple(point)))
+    )
+
+    viewport._sketch_authoring_click(10, 20)
+
+    assert requests == [("L7", pytest.approx((0.24, 0.37, 0.0)))]
+    viewport.close()
+
+
 def test_panel_keeps_valid_profile_fill_with_blocking_open_curve() -> None:
     _application()
     controller = SketchDraftController("partial-profile")
@@ -269,7 +345,7 @@ def test_main_window_commits_strict_sketch_only_on_finish(monkeypatch) -> None:
     assert controller is not None
     assert prompts == [("新建二维草图", "部件名称：", "部件-1")]
     assert window.document.geometry_recipe is None
-    assert window.document.parts[0].name == "部件-1"
+    assert window.document.parts == ()
     assert window.sketch_editor_panel.isHidden() is False
     assert window.viewport.sketch_authoring_active
 
@@ -316,7 +392,7 @@ def test_main_window_commits_strict_sketch_only_on_finish(monkeypatch) -> None:
     window.close()
 
 
-def test_new_sketch_defers_replacement_confirmation_until_finish(
+def test_new_sketch_appends_part_without_replacing_existing(
     monkeypatch,
 ) -> None:
     _application()
@@ -326,34 +402,31 @@ def test_new_sketch_defers_replacement_confirmation_until_finish(
     window = FEMMainWindow()
     window._apply_session_delta(window.session.new_native_project())
     window._set_native_geometry(original, "测试")
-    confirmations: list[bool] = []
-    window._confirm_sketch_replacement = (
-        lambda: confirmations.append(True) or False
-    )
     monkeypatch.setattr(
         main_window_module.QInputDialog,
         "getText",
-        lambda *_args, **_options: ("Part-1", True),
+        lambda *_args, **_options: ("Part-2", True),
     )
 
     window.start_sketch_geometry()
 
-    assert confirmations == []
     controller = window._sketch_editor_controller
     assert controller is not None
     controller.add_rectangle((0.0, 0.0), (4.0, 2.0))
     window.finish_sketch_geometry()
-    assert confirmations == [True]
-    assert window.document.geometry_recipe == original
-    assert window._sketch_editor_controller is controller
-    assert "保留当前草稿" in window.status_panel.state_label.text()
 
-    window._exit_sketch_editor()
+    assert tuple(part.name for part in window.document.parts) == (
+        "部件-1",
+        "Part-2",
+    )
+    assert window.document.parts[0].geometry_recipe == original
+    assert window.document.parts[1].geometry_recipe != original
+    assert window._sketch_editor_controller is None
     window.close_model(confirm=False)
     window.close()
 
 
-def test_edit_root_rejection_keeps_draft_open_at_finish() -> None:
+def test_edit_root_commits_to_active_part() -> None:
     _application()
     committed = SketchDraftController("editable")
     committed.add_rectangle((0.0, 0.0), (4.0, 2.0))
@@ -361,23 +434,17 @@ def test_edit_root_rejection_keeps_draft_open_at_finish() -> None:
     window = FEMMainWindow()
     window._apply_session_delta(window.session.new_native_project())
     window._set_native_geometry(original, "测试")
-    confirmations: list[bool] = []
-    window._confirm_sketch_replacement = (
-        lambda: confirmations.append(True) or False
-    )
 
     window.show_geometry_manager()
 
     controller = window._sketch_editor_controller
     assert controller is not None
-    assert confirmations == []
     controller.add_circle((2.0, 1.0), 0.25)
     window.finish_sketch_geometry()
-    assert confirmations == [True]
-    assert window.document.geometry_recipe == original
-    assert window._sketch_editor_controller is controller
 
-    window._exit_sketch_editor()
+    assert len(window.document.parts) == 1
+    assert window.document.geometry_recipe != original
+    assert window._sketch_editor_controller is None
     window.close_model(confirm=False)
     window.close()
 
@@ -388,8 +455,8 @@ def test_unified_create_command_routes_2d_to_sketch_editor(
     _application()
 
     class _CreationDialog:
-        def __init__(self, _parent) -> None:
-            pass
+        def __init__(self, _parent, *, default_part_name) -> None:
+            assert default_part_name == "部件-1"
 
         def exec(self) -> bool:
             return True
@@ -397,15 +464,13 @@ def test_unified_create_command_routes_2d_to_sketch_editor(
         def creation_kind(self) -> str:
             return "2d"
 
+        def part_name(self) -> str:
+            return "Part-1"
+
     monkeypatch.setattr(
         main_window_module,
         "GeometryCreationDialog",
         _CreationDialog,
-    )
-    monkeypatch.setattr(
-        main_window_module.QInputDialog,
-        "getText",
-        lambda *_args, **_options: ("Part-1", True),
     )
     window = FEMMainWindow()
     window._apply_session_delta(window.session.new_native_project())
@@ -413,6 +478,7 @@ def test_unified_create_command_routes_2d_to_sketch_editor(
     window.create_geometry()
 
     assert window._sketch_editor_controller is not None
+    assert window._sketch_editor_part_name == "Part-1"
     assert window._wire_editor_controller is None
     window._exit_sketch_editor()
     window.close_model(confirm=False)
@@ -436,7 +502,7 @@ def test_new_sketch_name_dialog_cancel_keeps_part_and_editor_unchanged(
 
     assert window._sketch_editor_controller is None
     assert window.document.session_revision == revision
-    assert window.document.parts[0].name == "部件-1"
+    assert window.document.parts == ()
     window.close_model(confirm=False)
     window.close()
 
@@ -448,14 +514,18 @@ def test_unified_create_command_opens_separate_3d_solid_chooser(
     events: list[str] = []
 
     class _CreationDialog:
-        def __init__(self, _parent) -> None:
+        def __init__(self, _parent, *, default_part_name) -> None:
             events.append("dimension")
+            assert default_part_name == "部件-1"
 
         def exec(self) -> bool:
             return True
 
         def creation_kind(self) -> str:
             return "3d"
+
+        def part_name(self) -> str:
+            return "圆柱部件"
 
     class _SolidDialog:
         def __init__(self, _parent) -> None:
@@ -479,12 +549,17 @@ def test_unified_create_command_opens_separate_3d_solid_chooser(
     )
     window = FEMMainWindow()
     window._apply_session_delta(window.session.new_native_project())
-    window.create_box_geometry = lambda: events.append("box")
-    window.create_cylinder_geometry = lambda: events.append("cylinder")
+    window._create_basic_solid_part = (
+        lambda kind, name: events.append(f"{kind}:{name}")
+    )
 
     window.create_geometry()
 
-    assert events == ["dimension", "solid", "cylinder"]
+    assert events == [
+        "dimension",
+        "solid",
+        "3d_cylinder:圆柱部件",
+    ]
     window.close_model(confirm=False)
     window.close()
 
