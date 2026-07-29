@@ -45,6 +45,11 @@ from fem_agent.definition_authoring import (
 from fem_agent.geometry_authoring import geometry_recipe_from_payload
 from fem_agent.mesh_authoring import MeshIntent
 from fem_agent.naming import NameAllocator
+from fem_agent.solve_authoring import (
+    SolveValidationStamp,
+    solve_operation_identity,
+    validation_stamp_for_snapshot,
+)
 
 
 class _SessionSnapshot(Protocol):
@@ -179,6 +184,42 @@ def authoring_context_from_snapshot(
                 else "网格提案需要 native 项目"
             ),
         ),
+        CapabilitySummary(
+            "run_model_preflight",
+            (
+                supported
+                and source_kind == "native"
+                and bool(getattr(snapshot, "mesh_current", False))
+            ),
+            (
+                None
+                if (
+                    supported
+                    and source_kind == "native"
+                    and bool(getattr(snapshot, "mesh_current", False))
+                )
+                else "模型预检需要当前 native 网格"
+            ),
+        ),
+        CapabilitySummary(
+            "request_solve_proposal",
+            (
+                supported
+                and source_kind == "native"
+                and bool(getattr(snapshot, "mesh_current", False))
+                and validation_status == "passed"
+            ),
+            (
+                None
+                if (
+                    supported
+                    and source_kind == "native"
+                    and bool(getattr(snapshot, "mesh_current", False))
+                    and validation_status == "passed"
+                )
+                else "求解提案需要当前 native 网格和通过的预检"
+            ),
+        ),
     )
     return AuthoringContext(
         binding=binding,
@@ -249,6 +290,25 @@ class AppliedPatchState(str, Enum):
     STALE = "stale"
 
 
+class AgentPreflightState(str, Enum):
+    RUNNING = "running"
+    PASSED = "passed"
+    BLOCKED = "blocked"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    STALE = "stale"
+
+
+@dataclass(frozen=True, slots=True)
+class AgentPreflightRecord:
+    request_id: str
+    step_name: str
+    base_session_revision: int
+    state: AgentPreflightState
+    message: str = ""
+    validation_stamp: SolveValidationStamp | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class AppliedPatchRecord:
     """One local automatic patch and its exact one-shot inverse."""
@@ -284,6 +344,32 @@ class AgentMeshTaskRequest:
     task: object
 
 
+@dataclass(frozen=True, slots=True)
+class AgentSolveTaskRequest:
+    """Metadata-only request passed to the existing GUI job entry."""
+
+    proposal_id: str
+    proposal_hash: str
+    step_name: str
+    job_name: str
+    base_session_revision: int
+    artifact_id: str
+    model_revision: int
+    validation_stamp: SolveValidationStamp
+
+
+@dataclass(frozen=True, slots=True)
+class AgentPreflightTaskRequest:
+    """Exact metadata used to run an automatic local preflight."""
+
+    request_id: str
+    step_name: str
+    base_session_revision: int
+    session_id: str
+    artifact_id: str
+    model_revision: int
+
+
 class SessionGeometryAuthoringPort:
     """A2/A3 port for atomic geometry writes and detached mesh tasks."""
 
@@ -293,6 +379,10 @@ class SessionGeometryAuthoringPort:
         refresh_projection: Callable[[], None],
         start_mesh_task: Callable[[AgentMeshTaskRequest], bool] | None = None,
         apply_definition_delta: Callable[[SessionDelta], None] | None = None,
+        start_solve_task: Callable[[AgentSolveTaskRequest], bool] | None = None,
+        start_preflight_task: (
+            Callable[[AgentPreflightTaskRequest], bool] | None
+        ) = None,
     ) -> None:
         if type(session) is not ModelSession:
             raise TypeError("session must be ModelSession")
@@ -301,6 +391,8 @@ class SessionGeometryAuthoringPort:
         self._session = session
         self._refresh_callback = refresh_projection
         self._start_mesh_task = start_mesh_task
+        self._start_solve_task = start_solve_task
+        self._start_preflight_task = start_preflight_task
         if apply_definition_delta is not None and not callable(
             apply_definition_delta
         ):
@@ -310,6 +402,8 @@ class SessionGeometryAuthoringPort:
         self._records: dict[str, ProposalPortRecord] = {}
         self._mesh_tasks: dict[str, object] = {}
         self._patch_records: dict[str, AppliedPatchRecord] = {}
+        self._preflight_records: dict[str, AgentPreflightRecord] = {}
+        self._preflight_counter = 0
         self._record_listener: Callable[[ProposalPortRecord], None] | None = None
 
     def set_record_listener(
@@ -329,6 +423,7 @@ class SessionGeometryAuthoringPort:
         if proposal.proposal_kind not in {
             ProposalKind.GEOMETRY,
             ProposalKind.MESH,
+            ProposalKind.SOLVE,
             ProposalKind.DESTRUCTIVE_EDIT,
         }:
             raise AuthoringContractError(
@@ -359,7 +454,21 @@ class SessionGeometryAuthoringPort:
                 OperationKind.UPSERT_MODEL_DEFINITIONS,
             )
         )
-        if not geometry_valid and not mesh_valid and not destructive_valid:
+        solve_valid = (
+            proposal.proposal_kind is ProposalKind.SOLVE
+            and len(proposal.operations) == 1
+            and proposal.operations[0].kind is OperationKind.REQUEST_SOLVE
+            and isinstance(proposal.preconditions, Mapping)
+            and proposal.preconditions.get("authoring_phase") == "A6"
+        )
+        if solve_valid:
+            solve_operation_identity(proposal.operations[0])
+        if (
+            not geometry_valid
+            and not mesh_valid
+            and not destructive_valid
+            and not solve_valid
+        ):
             raise AuthoringContractError(
                 "proposal operations do not match its authoring kind"
             )
@@ -385,6 +494,8 @@ class SessionGeometryAuthoringPort:
             raise AuthoringContractError("authoring proposal target is stale")
         if proposal.proposal_kind is ProposalKind.MESH:
             return self._accept_mesh(record)
+        if proposal.proposal_kind is ProposalKind.SOLVE:
+            return self._accept_solve(record)
         if proposal.proposal_kind is ProposalKind.DESTRUCTIVE_EDIT:
             batch = scoped_definition_batch_from_operations(
                 proposal.operations,
@@ -444,6 +555,117 @@ class SessionGeometryAuthoringPort:
         succeeded = replace(record, state=ProposalState.SUCCEEDED)
         self._records[proposal_id] = succeeded
         return succeeded
+
+    def can_accept(self, proposal_id: str) -> bool:
+        """Return whether the current Session still satisfies the proposal."""
+
+        try:
+            record = self._pending(proposal_id)
+            proposal = record.proposal
+            if proposal.proposal_kind is not ProposalKind.SOLVE:
+                return True
+            self._require_current_solve_identity(proposal)
+        except (KeyError, TypeError, ValueError):
+            return False
+        return True
+
+    def request_preflight(self, step_name: str) -> AgentPreflightRecord:
+        """Start one confirmation-free preflight through the GUI task owner."""
+
+        if self._start_preflight_task is None:
+            raise AuthoringContractError(
+                "automatic preflight execution is not configured"
+            )
+        if any(
+            item.state is AgentPreflightState.RUNNING
+            for item in self._preflight_records.values()
+        ):
+            raise AuthoringContractError("an Agent preflight is already running")
+        snapshot = self._session.snapshot()
+        clean_step = str(step_name)
+        artifact = snapshot.artifact
+        if (
+            snapshot.source_kind != "native"
+            or not snapshot.model_current
+            or not snapshot.mesh_current
+            or artifact is None
+            or clean_step not in snapshot.runnable_step_names()
+        ):
+            raise AuthoringContractError(
+                "automatic preflight requires a current native model and step"
+            )
+        self._preflight_counter += 1
+        request_id = f"preflight-{self._preflight_counter}"
+        record = AgentPreflightRecord(
+            request_id=request_id,
+            step_name=clean_step,
+            base_session_revision=snapshot.session_revision,
+            state=AgentPreflightState.RUNNING,
+            message="正在后台执行确定性模型预检",
+        )
+        self._preflight_records[request_id] = record
+        request = AgentPreflightTaskRequest(
+            request_id=request_id,
+            step_name=clean_step,
+            base_session_revision=snapshot.session_revision,
+            session_id=snapshot.session_id,
+            artifact_id=artifact.artifact_id,
+            model_revision=snapshot.model_revision,
+        )
+        try:
+            started = self._start_preflight_task(request)
+        except Exception:
+            self._preflight_records[request_id] = replace(
+                record,
+                state=AgentPreflightState.FAILED,
+                message="GUI 预检任务启动失败",
+            )
+            raise
+        if not started:
+            failed = replace(
+                record,
+                state=AgentPreflightState.FAILED,
+                message="GUI 后台任务控制器忙或拒绝启动",
+            )
+            self._preflight_records[request_id] = failed
+            return failed
+        return self._preflight_records[request_id]
+
+    def complete_preflight(
+        self,
+        request_id: str,
+        state: AgentPreflightState,
+        message: str = "",
+    ) -> AgentPreflightRecord:
+        if state is AgentPreflightState.RUNNING:
+            raise ValueError("preflight completion requires a terminal state")
+        record = self._preflight_records[str(request_id)]
+        if record.state is not AgentPreflightState.RUNNING:
+            raise AuthoringAuthorizationError(
+                f"preflight is already {record.state.value}"
+            )
+        stamp = None
+        if state is AgentPreflightState.PASSED:
+            stamp = validation_stamp_for_snapshot(
+                self._session.snapshot(),
+                record.step_name,
+            )
+        completed = replace(
+            record,
+            state=state,
+            message=str(message).strip(),
+            validation_stamp=stamp,
+        )
+        self._preflight_records[str(request_id)] = completed
+        return completed
+
+    def preflight_record(self, request_id: str) -> AgentPreflightRecord:
+        try:
+            return self._preflight_records[str(request_id)]
+        except KeyError as error:
+            raise AuthoringContractError(
+                "automatic preflight request is not registered"
+            ) from error
 
     def apply_patch(self, patch: ModelPatch) -> AppliedPatchRecord:
         """Apply one non-destructive A4/A5 patch and retain its exact inverse."""
@@ -645,6 +867,128 @@ class SessionGeometryAuthoringPort:
             self._records[proposal.proposal_id] = failed
             raise AuthoringContractError(failed.message)
         return self._records[proposal.proposal_id]
+
+    def _accept_solve(
+        self,
+        record: ProposalPortRecord,
+    ) -> ProposalPortRecord:
+        if self._start_solve_task is None:
+            raise AuthoringContractError(
+                "solve proposal execution is not configured"
+            )
+        proposal = record.proposal
+        (
+            step_name,
+            job_name,
+            artifact_id,
+            model_revision,
+            stamp,
+        ) = self._require_current_solve_identity(proposal)
+        running = replace(
+            record,
+            state=ProposalState.RUNNING,
+            message="GUI 已授权，正在提交后台作业",
+        )
+        self._records[proposal.proposal_id] = running
+        if self._record_listener is not None:
+            self._record_listener(running)
+        request = AgentSolveTaskRequest(
+            proposal_id=proposal.proposal_id,
+            proposal_hash=proposal.proposal_hash,
+            step_name=step_name,
+            job_name=job_name,
+            base_session_revision=proposal.base_session_revision,
+            artifact_id=artifact_id,
+            model_revision=model_revision,
+            validation_stamp=stamp,
+        )
+        try:
+            started = self._start_solve_task(request)
+        except Exception:
+            self._records[proposal.proposal_id] = replace(
+                running,
+                state=ProposalState.FAILED,
+                message="GUI 后台作业启动失败",
+            )
+            raise
+        if not started:
+            failed = replace(
+                running,
+                state=ProposalState.FAILED,
+                message="GUI 后台任务控制器忙或拒绝启动",
+            )
+            self._records[proposal.proposal_id] = failed
+            raise AuthoringContractError(failed.message)
+        return self._records[proposal.proposal_id]
+
+    def _require_current_solve_identity(
+        self,
+        proposal: AgentProposal,
+    ) -> tuple[str, str, str, int, SolveValidationStamp]:
+        identity = solve_operation_identity(proposal.operations[0])
+        step_name, job_name, artifact_id, model_revision, stamp = identity
+        snapshot = self._session.snapshot()
+        current_stamp = validation_stamp_for_snapshot(snapshot, step_name)
+        if (
+            proposal.target_session_id != snapshot.session_id
+            or proposal.target_document_id
+            != f"document:{snapshot.session_id}"
+            or proposal.base_session_revision != snapshot.session_revision
+            or artifact_id
+            != getattr(snapshot.artifact, "artifact_id", None)
+            or model_revision != snapshot.model_revision
+            or stamp != current_stamp
+        ):
+            raise AuthoringContractError(
+                "solve proposal revision or validation stamp is stale"
+            )
+        if self._session.find_run(job_name) is not None:
+            raise AuthoringContractError("solve proposal job name is already used")
+        return identity
+
+    def progress_solve(
+        self,
+        proposal_id: str,
+        message: str,
+    ) -> ProposalPortRecord:
+        record = self._records[str(proposal_id)]
+        if record.state is not ProposalState.RUNNING:
+            raise AuthoringAuthorizationError(
+                "solve progress requires a running proposal"
+            )
+        updated = replace(record, message=str(message).strip())
+        self._records[str(proposal_id)] = updated
+        if self._record_listener is not None:
+            self._record_listener(updated)
+        return updated
+
+    def complete_solve(
+        self,
+        proposal_id: str,
+        state: ProposalState,
+        message: str = "",
+    ) -> ProposalPortRecord:
+        if state not in {
+            ProposalState.SUCCEEDED,
+            ProposalState.FAILED,
+            ProposalState.CANCELLED,
+            ProposalState.STALE,
+        }:
+            raise ValueError("solve completion state must be terminal")
+        record = self._records[str(proposal_id)]
+        if record.state is not ProposalState.RUNNING:
+            raise AuthoringAuthorizationError(
+                f"solve proposal is already {record.state.value}"
+            )
+        completed = replace(
+            record,
+            state=state,
+            message=str(message).strip(),
+        )
+        self._records[str(proposal_id)] = completed
+        if self._record_listener is not None:
+            self._record_listener(completed)
+        return completed
 
     def accept_mesh_result(
         self,
@@ -943,6 +1287,37 @@ class AgentAuthoringBridge:
         )
         return self.accept_proposal(proposal_id, authorization)
 
+    def can_accept_from_gui_control(self, proposal_id: str) -> bool:
+        """Return the exact local gate used to enable a GUI accept button."""
+
+        try:
+            record = self._pending_record(proposal_id)
+            self._require_live_target(record.proposal)
+            port_check = getattr(self._port, "can_accept", None)
+            return not callable(port_check) or bool(port_check(proposal_id))
+        except (
+            AuthoringAuthorizationError,
+            AuthoringContractError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ):
+            return False
+
+    def request_preflight(
+        self,
+        step_name: str,
+    ) -> AgentPreflightRecord:
+        """Start a local read-only preflight without a confirmation token."""
+
+        self._require_gui_thread()
+        request = getattr(self._port, "request_preflight", None)
+        if not callable(request):
+            raise AuthoringContractError(
+                "authoring port does not support automatic preflight"
+            )
+        return request(step_name)
+
     def reject_from_gui_control(self, proposal_id: str) -> BridgeReceipt:
         self._require_gui_thread()
         authorization = self._issue_gui_authorization(
@@ -1076,7 +1451,11 @@ class AgentAuthoringBridge:
 __all__ = [
     "AppliedPatchRecord",
     "AppliedPatchState",
+    "AgentPreflightRecord",
+    "AgentPreflightState",
+    "AgentPreflightTaskRequest",
     "AgentMeshTaskRequest",
+    "AgentSolveTaskRequest",
     "AgentAuthoringBridge",
     "BridgeReceipt",
     "SessionGeometryAuthoringPort",

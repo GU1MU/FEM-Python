@@ -47,6 +47,15 @@ from .mesh_authoring import (
     MeshIntent,
     create_mesh_proposal,
 )
+from .solve_authoring import (
+    SolveAuthoringError,
+    SolveSummary,
+    SolveValidationStamp,
+    build_solve_summary,
+    create_solve_proposal,
+    solve_operation_identity,
+    validation_stamp_for_snapshot,
+)
 from .schemas import SCHEMA_VERSION
 
 __all__ = [
@@ -71,21 +80,28 @@ __all__ = [
     "RequirementReview",
     "ScopeSelectionError",
     "ScopeSelectionEvidence",
+    "SolveAuthoringError",
+    "SolveSummary",
+    "SolveValidationStamp",
     "GeometryDraft",
     "StaticGeometryPreview",
     "UnitContextSummary",
     "box_geometry",
     "build_eccentric_plate_scopes",
+    "build_solve_summary",
     "create_scope_definition_change",
     "create_analysis_definition_change",
     "create_mesh_proposal",
+    "create_solve_proposal",
     "create_geometry_proposal",
     "cylinder_geometry",
     "disk_geometry",
     "plate_with_hole_geometry",
     "rectangle_geometry",
     "rotate_geometry",
+    "solve_operation_identity",
     "translate_geometry",
+    "validation_stamp_for_snapshot",
     "SCHEMA_VERSION",
 ]
 

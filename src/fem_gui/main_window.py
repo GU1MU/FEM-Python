@@ -150,6 +150,9 @@ from .action_state import GuiActionContext, derive_action_availability
 from .agent_authoring import (
     AgentAuthoringBridge,
     AgentMeshTaskRequest,
+    AgentPreflightState,
+    AgentPreflightTaskRequest,
+    AgentSolveTaskRequest,
     SessionGeometryAuthoringPort,
 )
 from .part_boolean import PartBooleanController
@@ -510,6 +513,8 @@ class FEMMainWindow(QMainWindow):
                 self._rebuild_full_projection,
                 self._begin_agent_mesh_generation,
                 self._apply_agent_definition_delta,
+                self._begin_agent_solve,
+                self._begin_agent_preflight,
             )
         )
         self.agent_authoring_bridge.bind_snapshot(self.document)
@@ -1136,7 +1141,12 @@ class FEMMainWindow(QMainWindow):
             )
         return GuiCommandReceipt.pending(command_id, completion)
 
-    def check_step(self, step_name: str) -> GuiCommandReceipt:
+    def check_step(
+        self,
+        step_name: str,
+        *,
+        expected_session_revision: int | None = None,
+    ) -> GuiCommandReceipt:
         command_id = self._next_command_id()
         if self.busy:
             return self._rejected_command(
@@ -1163,6 +1173,7 @@ class FEMMainWindow(QMainWindow):
                 clean_step,
                 completion=completion,
                 show_success=False,
+                expected_session_revision=expected_session_revision,
             )
         except (KeyError, RuntimeError, TypeError, ValueError) as error:
             return self._rejected_command(
@@ -8253,8 +8264,13 @@ class FEMMainWindow(QMainWindow):
         *,
         completion: GuiCommandCompletion | None = None,
         show_success: bool,
+        expected_session_revision: int | None = None,
+        on_progress: Callable[[str], None] | None = None,
     ) -> bool:
-        task = self._prepare_model_check(step_name)
+        task = self._prepare_model_check(
+            step_name,
+            expected_session_revision=expected_session_revision,
+        )
         if task is None:
             raise RuntimeError(f"step cannot be checked: {step_name}")
         full_numerical_check = should_run_numerical_model_check(task.model)
@@ -8316,18 +8332,80 @@ class FEMMainWindow(QMainWindow):
             on_cancelled=cancelled,
             apply_result=apply_result,
             completion=completion,
+            on_progress=on_progress,
         )
 
     def _prepare_model_check(
         self,
         step_name: str | None = None,
+        *,
+        expected_session_revision: int | None = None,
     ) -> object | None:
         step_name = self._current_step_name if step_name is None else step_name
         if step_name is None or not self.session.can_check(step_name):
             return None
-        return self.session.prepare_validation(
-            step_name,
-            detach_model=False,
+        options: dict[str, object] = {"detach_model": False}
+        if expected_session_revision is not None:
+            options["expected_session_revision"] = expected_session_revision
+        return self.session.prepare_validation(step_name, **options)
+
+    def _begin_agent_preflight(
+        self,
+        request: AgentPreflightTaskRequest,
+    ) -> bool:
+        """Run A6 preflight automatically through the existing GUI task."""
+
+        if type(request) is not AgentPreflightTaskRequest:
+            raise TypeError("request must be exactly AgentPreflightTaskRequest")
+        if self.busy:
+            return False
+        port = self.agent_authoring_bridge.port
+        complete_preflight = getattr(port, "complete_preflight", None)
+        if not callable(complete_preflight):
+            raise RuntimeError("Agent preflight lifecycle port is unavailable")
+        completion = GuiCommandCompletion(self._next_command_id())
+
+        def terminal(record: TaskCompletion) -> None:
+            if record.state is BackgroundTaskState.SUCCEEDED:
+                validation = self.session.validation_for(request.step_name)
+                if validation is None:
+                    complete_preflight(
+                        request.request_id,
+                        AgentPreflightState.STALE,
+                        "预检结果未绑定当前模型",
+                    )
+                elif validation.passed:
+                    complete_preflight(
+                        request.request_id,
+                        AgentPreflightState.PASSED,
+                        "确定性模型预检通过",
+                    )
+                else:
+                    complete_preflight(
+                        request.request_id,
+                        AgentPreflightState.BLOCKED,
+                        (
+                            f"存在 {len(validation.report.errors)} "
+                            "项阻塞诊断"
+                        ),
+                    )
+                return
+            state = {
+                BackgroundTaskState.CANCELLED: AgentPreflightState.CANCELLED,
+                BackgroundTaskState.DISCARDED: AgentPreflightState.STALE,
+            }.get(record.state, AgentPreflightState.FAILED)
+            complete_preflight(
+                request.request_id,
+                state,
+                record.message or record.state.value,
+            )
+
+        completion.observe(terminal)
+        return self._begin_model_check(
+            request.step_name,
+            completion=completion,
+            show_success=False,
+            expected_session_revision=request.base_session_revision,
         )
 
     @staticmethod
@@ -8514,6 +8592,8 @@ class FEMMainWindow(QMainWindow):
         step_name: str,
         *,
         completion: GuiCommandCompletion | None = None,
+        expected_session_revision: int | None = None,
+        on_progress: Callable[[str], None] | None = None,
     ) -> AnalysisRun | None:
         if self.document.model is None or self.geometry is None or self.busy:
             raise RuntimeError("a current model is required and the task controller must be idle")
@@ -8529,7 +8609,11 @@ class FEMMainWindow(QMainWindow):
             raise ValueError(f"作业名称已存在：{clean_name}")
         if clean_step not in self.session.runnable_step_names():
             raise ValueError(f"分析步不存在：{clean_step}")
-        task = self.session.prepare_solve(clean_step, clean_name)
+        task = self.session.prepare_solve(
+            clean_step,
+            clean_name,
+            expected_session_revision=expected_session_revision,
+        )
         if task.delta is not None:
             self._apply_session_delta(task.delta)
         self._apply_session_delta(self.session.begin_run(task.token))
@@ -8618,6 +8702,7 @@ class FEMMainWindow(QMainWindow):
             on_cancelled=lambda token=task.token: self._job_cancelled(token),
             apply_result=apply_result,
             completion=completion,
+            on_progress=on_progress,
         )
         if started:
             return job
@@ -8628,6 +8713,81 @@ class FEMMainWindow(QMainWindow):
             )
         )
         return None
+
+    def _begin_agent_solve(
+        self,
+        request: AgentSolveTaskRequest,
+    ) -> bool:
+        """Submit one A6 proposal through the existing GUI job lifecycle."""
+
+        if type(request) is not AgentSolveTaskRequest:
+            raise TypeError("request must be exactly AgentSolveTaskRequest")
+        port = self.agent_authoring_bridge.port
+        progress_solve = getattr(port, "progress_solve", None)
+        complete_solve = getattr(port, "complete_solve", None)
+        if not callable(progress_solve) or not callable(complete_solve):
+            raise RuntimeError("Agent solve lifecycle port is unavailable")
+        completion = GuiCommandCompletion(self._next_command_id())
+
+        def terminal(record: TaskCompletion) -> None:
+            if record.state is BackgroundTaskState.SUCCEEDED:
+                run = self.session.find_run(request.job_name)
+                provenance = (
+                    None
+                    if run is None
+                    else self.session.result_provenance_for(run.run_id)
+                )
+                if (
+                    run is None
+                    or not run.has_result
+                    or run.artifact_id != request.artifact_id
+                    or run.model_revision != request.model_revision
+                    or run.step_name != request.step_name
+                    or provenance is None
+                    or provenance.session_id != self.document.session_id
+                    or provenance.artifact_id != request.artifact_id
+                    or provenance.model_revision != request.model_revision
+                    or provenance.step_name != request.step_name
+                    or provenance.run_id != run.run_id
+                ):
+                    complete_solve(
+                        request.proposal_id,
+                        ProposalState.FAILED,
+                        "求解成功终态缺少精确 artifact/run/model provenance",
+                    )
+                    return
+                complete_solve(
+                    request.proposal_id,
+                    ProposalState.SUCCEEDED,
+                    (
+                        f"求解完成：artifact {request.artifact_id} · "
+                        f"run {run.run_id} · model revision "
+                        f"{request.model_revision}"
+                    ),
+                )
+                return
+            state = {
+                BackgroundTaskState.CANCELLED: ProposalState.CANCELLED,
+                BackgroundTaskState.DISCARDED: ProposalState.STALE,
+            }.get(record.state, ProposalState.FAILED)
+            complete_solve(
+                request.proposal_id,
+                state,
+                record.message or record.state.value,
+            )
+
+        completion.observe(terminal)
+        job = self._begin_submit_run(
+            request.job_name,
+            request.step_name,
+            completion=completion,
+            expected_session_revision=request.base_session_revision,
+            on_progress=lambda message: progress_solve(
+                request.proposal_id,
+                message,
+            ),
+        )
+        return job is not None
 
     def _job_succeeded(self, token: object, value: object) -> None:
         bundle, timings = value
@@ -8815,6 +8975,7 @@ class FEMMainWindow(QMainWindow):
         on_cancelled: Callable[[], None] | None = None,
         apply_result: Callable[[object], TaskApplyOutcome] | None = None,
         completion: GuiCommandCompletion | None = None,
+        on_progress: Callable[[str], None] | None = None,
     ) -> bool:
         if self.busy:
             self.status_panel.set_state(
@@ -8867,6 +9028,11 @@ class FEMMainWindow(QMainWindow):
                 if completion is not None:
                     completion.complete(record)
 
+        def progress(message: str) -> None:
+            self.status_panel.set_state(message)
+            if on_progress is not None:
+                on_progress(message)
+
         task_id = self.task_controller.start(
             workload,
             task_name=task_name,
@@ -8874,7 +9040,7 @@ class FEMMainWindow(QMainWindow):
             project_result=on_success,
             rebuild_projection=self._rebuild_full_projection,
             on_terminal=terminal,
-            on_progress=self.status_panel.set_state,
+            on_progress=progress,
             on_projection_error=self._task_projection_failed,
         )
         if task_id is not None and completion is not None:

@@ -1799,10 +1799,10 @@ class AgentChatDrawer(_BoundaryFrame):
         ):
             return False
         try:
-            return (
-                bridge.state(proposal.proposal_id).value
-                == "pending_confirmation"
-            )
+            check = getattr(bridge, "can_accept_from_gui_control", None)
+            if callable(check):
+                return bool(check(proposal.proposal_id))
+            return bridge.state(proposal.proposal_id).value == "pending_confirmation"
         except Exception:
             return False
 
@@ -1946,10 +1946,11 @@ class AgentChatDrawer(_BoundaryFrame):
         ):
             return False
         try:
-            return (
-                bridge.state(str(button.property("proposalId"))).value
-                == "pending_confirmation"
-            )
+            proposal_id = str(button.property("proposalId"))
+            check = getattr(bridge, "can_accept_from_gui_control", None)
+            if callable(check):
+                return bool(check(proposal_id))
+            return bridge.state(proposal_id).value == "pending_confirmation"
         except Exception:
             return False
 

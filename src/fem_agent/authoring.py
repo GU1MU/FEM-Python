@@ -994,7 +994,15 @@ _OPERATION_PARAMETER_FIELDS: dict[
         frozenset({"step_name"}),
     ),
     OperationKind.REQUEST_SOLVE: (
-        frozenset({"step_name", "validation_stamp"}),
+        frozenset(
+            {
+                "step_name",
+                "job_name",
+                "artifact_id",
+                "model_revision",
+                "validation_stamp",
+            }
+        ),
         frozenset({"step_name", "validation_stamp"}),
     ),
     OperationKind.REQUEST_RESULT_QUERY: (
@@ -1031,6 +1039,21 @@ class ModelOperation:
             raise AuthoringContractError(
                 f"{kind.value} is missing parameter fields: "
                 + ", ".join(sorted(missing))
+            )
+        if kind is OperationKind.REQUEST_SOLVE and keys not in {
+            frozenset({"step_name", "validation_stamp"}),
+            frozenset(
+                {
+                    "step_name",
+                    "job_name",
+                    "artifact_id",
+                    "model_revision",
+                    "validation_stamp",
+                }
+            ),
+        }:
+            raise AuthoringContractError(
+                "request_solve must use either the legacy or exact A6 field set"
             )
         object.__setattr__(self, "parameters", parameters)
 

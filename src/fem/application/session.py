@@ -3959,9 +3959,11 @@ class ModelSession:
         step_name: str | None = None,
         *,
         detach_model: bool = True,
+        expected_session_revision: int | None = None,
     ) -> ValidationTaskSnapshot:
         """Prepare validation, optionally deferring the model copy to a worker."""
 
+        self._check_expected(expected_session_revision)
         if type(detach_model) is not bool:
             raise TypeError("detach_model must be bool")
         artifact = self._require_current_artifact()
@@ -4444,6 +4446,15 @@ class ModelSession:
             frozenset(),
             "displayed result selected",
         )
+
+    def result_provenance_for(
+        self,
+        run_id: str,
+    ) -> ResultProvenance | None:
+        """Return bounded provenance for one current successful run."""
+
+        record = self._current_result_record(str(run_id))
+        return None if record is None else deepcopy(record.provenance)
 
     def prepare_result_projection(self, run_id: str) -> ResultTaskSnapshot:
         record = self._current_result_record(str(run_id))
