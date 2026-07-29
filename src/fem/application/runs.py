@@ -160,6 +160,7 @@ class ResultRecord:
             provider = restore_result_provider(
                 self.result,
                 self.materialization,
+                published_keys=executed_keys,
             )
         else:
             if type(provider) is not ResultProvider:

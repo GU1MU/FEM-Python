@@ -223,14 +223,10 @@ def test_typed_provider_drives_node_and_element_result_pages_in_catalog_order(
     assert tuple(table.title for table in node_page.tables) == (
         "位移 U（就绪）",
         "反力 RF（就绪）",
-        "应力 S（单元节点）（就绪）",
-        "应力 S（节点区域）（就绪）",
-        "应力 S（平均节点）（就绪）",
+        "应力 S（节点）（就绪）",
     )
     assert tuple(table.title for table in element_page.tables) == (
-        "应力 S（积分点）（就绪）",
-        "应力 S（单元质心）（就绪）",
-        "应力 S（单元节点）（就绪）",
+        "应力 S（节点）（就绪）",
     )
     assert all(
         table.columns
@@ -258,29 +254,13 @@ def test_typed_result_rows_preserve_all_location_provenance() -> None:
 
     element_node = tuple(
         row
-        for row in by_title["应力 S（单元节点）（就绪）"].rows
-        if row[1] == "S11"
-    )
-    node_region = tuple(
-        row
-        for row in by_title["应力 S（节点区域）（就绪）"].rows
-        if row[1] == "S11"
-    )
-    resolved = tuple(
-        row
-        for row in by_title["应力 S（平均节点）（就绪）"].rows
+        for row in by_title["应力 S（节点）（就绪）"].rows
         if row[1] == "S11"
     )
 
     assert len(element_node) == 3
     assert tuple(row[4] for row in element_node) == ("1", "2", "3")
     assert all(row[6] != "—" for row in element_node)
-    assert len(node_region) == 2
-    assert len({row[7] for row in node_region}) == 2
-    assert len(resolved) == 3
-    assert tuple(row[4] for row in resolved) == ("1", "2", "3")
-    assert len({row[7] for row in resolved}) == 2
-    assert all(row[8] in {"是", "否"} for row in resolved)
 
 
 def test_typed_provider_update_is_exact_and_clearable() -> None:
@@ -329,14 +309,7 @@ def test_lazy_and_unavailable_provider_fields_do_not_materialize_or_block_model(
     )
 
     assert any(title.endswith("（按需加载）") for title in titles)
-    assert "应力 S（单元质心）（不可用）" in titles
-    unavailable = next(
-        table
-        for table in element_page.tables
-        if table.title == "应力 S（单元质心）（不可用）"
-    )
-    assert unavailable.rows[0][0] == "不可用"
-    assert "result.field.unavailable" in unavailable.rows[0][-1]
+    assert all("单元质心" not in title for title in titles)
     assert calls == []
 
 

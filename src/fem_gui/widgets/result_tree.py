@@ -11,6 +11,7 @@ from fem.application.results import (
     ResultCatalog,
     ScalarFieldSelection,
 )
+from fem_gui.result_presentation import visible_result_fields
 
 ROLE_SELECTION = int(Qt.ItemDataRole.UserRole)
 ROLE_MATERIALIZATION_KEY = ROLE_SELECTION + 1
@@ -23,13 +24,7 @@ _FIELD_LABELS = {
     "result.field.rf.node": "反力 RF",
     "result.field.rm.node": "反力矩 RM",
     "result.field.le.centroid": "对数应变 LE（单元质心）",
-    "result.field.s.integration_point": "应力 S（积分点）",
-    "result.field.s.centroid": "应力 S（单元质心）",
-    "result.field.s.element_nodal": "应力 S（单元节点）",
-    "result.field.s.node_region": "应力 S（节点区域）",
-    "result.field.s.resolved_nodal": "应力 S（平均节点）",
-    "result.field.s.section_end": "应力 S（截面端点）",
-    "result.field.s.section_node_envelope": "应力 S（截面节点包络）",
+    "result.field.s.element_nodal": "应力 S（节点）",
 }
 _FIELD_STATE_LABELS = {
     FieldState.READY: "就绪",
@@ -79,7 +74,7 @@ class ResultTree(QTreeWidget):
         root.addChild(step)
 
         default_item: QTreeWidgetItem | None = None
-        for availability in catalog.fields:
+        for availability in visible_result_fields(catalog.fields):
             field_item, selected_component = self._catalog_field_item(
                 availability,
                 catalog.default_selection,
@@ -99,7 +94,7 @@ class ResultTree(QTreeWidget):
     @staticmethod
     def _catalog_field_item(
         availability: FieldAvailability,
-        default_selection: ScalarFieldSelection,
+        default_selection: ScalarFieldSelection | None,
     ) -> tuple[QTreeWidgetItem, QTreeWidgetItem | None]:
         descriptor = availability.descriptor
         state_label = _FIELD_STATE_LABELS[availability.state]

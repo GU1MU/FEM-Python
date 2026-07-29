@@ -87,7 +87,7 @@ def _catalog() -> ResultCatalog:
     )
     stress = _key(
         ResultVariable.S,
-        FieldPosition.CENTROID,
+        FieldPosition.ELEMENT_NODAL,
         contract=13,
     )
     fields = (
@@ -123,11 +123,11 @@ def _catalog() -> ResultCatalog:
             stress,
             _descriptor(
                 stress,
-                association=FieldAssociation.ELEMENT,
+                association=FieldAssociation.ELEMENT_NODE,
                 quantity=PhysicalQuantity.STRESS,
                 components=("S22", "S11"),
                 derived_components=("Mises",),
-                label_key="result.field.s.centroid",
+                label_key="result.field.s.element_nodal",
                 default_component="Mises",
                 order=1,
             ),
@@ -165,7 +165,7 @@ def test_catalog_tree_preserves_published_field_and_component_order() -> None:
     assert [step.child(index).text(0) for index in range(3)] == [
         "位移 U（就绪）",
         "vendor.result.reaction（按需加载）",
-        "应力 S（单元质心）（不可用）",
+        "应力 S（节点）（不可用）",
     ]
     assert [
         step.child(0).child(index).text(0)

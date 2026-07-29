@@ -30,6 +30,11 @@ from fem_gui.visualization.result_renderer import (
     RESULT_SCALAR_NAME,
     build_result_render_payload,
 )
+from fem_gui.visualization.colormaps import abaqus_rainbow_colors
+from fem_gui.visualization.contour_rendering import (
+    CONTOUR_EDGE_ALL,
+    CONTOUR_RENDER_FILLED,
+)
 from fem_gui.visualization.scene import DisplayState
 from fem_gui.viewport_background import ViewportBackgroundSettings
 import fem_gui.widgets.viewport as viewport_module
@@ -458,15 +463,64 @@ def test_typed_payload_renders_owned_dataset_without_reprojection(
     assert not hasattr(viewport, "_result_scalar")
     assert not hasattr(viewport, "_deformation_scale")
     assert options["scalars"] == RESULT_SCALAR_NAME
-    assert options["cmap"] == "jet"
+    assert options["cmap"] == abaqus_rainbow_colors(12)
     assert options["n_colors"] == 12
     assert not options["interpolate_before_map"]
     assert options["scalar_bar_args"]["vertical"]
     assert options["scalar_bar_args"]["n_labels"] == 13
+    assert options["scalar_bar_args"]["title"] == (
+        f"S, {payload.topology.selection.component}"
+    )
+    assert options["scalar_bar_args"]["outline"]
+    assert options["lighting"]
+    assert options["smooth_shading"]
+    assert options["ambient"] == 0.35
+    assert options["diffuse"] == 0.65
+    assert options["specular"] == 0.0
     assert payload.topology.value_layout is expected_layout
     np.testing.assert_array_equal(payload.dataset.points, original_points)
     assert viewport.artifact_id == "artifact-1"
     assert viewport.run_id == "run-1"
+    viewport.close()
+
+
+def test_filled_result_and_all_edge_modes_reach_pyvista() -> None:
+    _application()
+    payload = _point_payload()
+    viewport = FEMViewport()
+    plotter = _Plotter()
+    viewport._plotter = plotter
+    viewport._display = DisplayState("deformed", True)
+    viewport.set_contour_options(
+        {
+            "render_mode": CONTOUR_RENDER_FILLED,
+            "edge_mode": CONTOUR_EDGE_ALL,
+            "edges": True,
+        }
+    )
+
+    viewport.set_result_render_payload(payload)
+    viewport._update_result_layer()
+
+    result_data, result_options = plotter.mesh_calls[0]
+    edge_data, edge_options = plotter.mesh_calls[1]
+    assert result_data is payload.dataset
+    assert not result_options["lighting"]
+    assert not result_options["smooth_shading"]
+    assert edge_data.n_cells == 3
+    assert edge_options["name"] == "result_edges"
+    assert not edge_options["lighting"]
+    assert not edge_options["show_scalar_bar"]
+    assert not edge_options["pickable"]
+
+    viewport.set_edges_visible(False, render=False)
+    viewport._update_result_layer()
+    assert "result_edges" not in viewport._actors
+    assert plotter.mesh_calls[-1][1]["name"] == "result"
+
+    viewport.set_edges_visible(True, render=False)
+    assert "result_edges" in viewport._actors
+    assert plotter.mesh_calls[-1][1]["name"] == "result_edges"
     viewport.close()
 
 

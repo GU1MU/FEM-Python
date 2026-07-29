@@ -95,9 +95,23 @@ class ResultProvider:
         snapshot_keys = {
             field_data.key for field_data in self._snapshot.fields
         }
-        if ready_catalog_keys != snapshot_keys:
+        if not ready_catalog_keys.issubset(snapshot_keys):
             raise ValueError(
-                "provider READY catalog keys must equal snapshot field keys"
+                "provider READY catalog keys must be present in snapshot fields"
+            )
+        if any(
+            (
+                availability.key in snapshot_keys
+                and availability.state is not FieldState.READY
+            )
+            or (
+                availability.key not in snapshot_keys
+                and availability.state is FieldState.READY
+            )
+            for availability in self._catalog.fields
+        ):
+            raise ValueError(
+                "published catalog states must match snapshot field readiness"
             )
 
     @property
@@ -149,10 +163,80 @@ class ResultProvider:
             if availability.key == key:
                 return availability
         entry = _entry_for_key(self._profile, key)
+        ready_keys = {
+            field_data.key for field_data in self._snapshot.fields
+        }
         return FieldAvailability(
             key=key,
             descriptor=entry.descriptor,
-            state=FieldState.LAZY,
+            state=(
+                FieldState.READY
+                if key in ready_keys
+                else FieldState.LAZY
+            ),
+        )
+
+    def publish_fields(
+        self,
+        keys: Iterable[FieldMaterializationKey],
+    ) -> ResultProvider:
+        """Publish only successfully requested fields to catalog consumers."""
+
+        try:
+            requested = tuple(keys)
+        except TypeError as error:
+            raise TypeError(
+                "keys must be an iterable of FieldMaterializationKey values"
+            ) from error
+        if any(type(key) is not FieldMaterializationKey for key in requested):
+            raise TypeError(
+                "keys must contain only FieldMaterializationKey values"
+            )
+        ordered = tuple(
+            sorted(
+                set(requested),
+                key=field_materialization_sort_key,
+            )
+        )
+        fields = tuple(self.field_status(key) for key in ordered)
+        if any(
+            availability.state is not FieldState.READY
+            for availability in fields
+        ):
+            raise ValueError("published fields must all be READY")
+        default = (
+            next(
+                (
+                    availability
+                    for availability in fields
+                    if availability.descriptor.field_id.variable
+                    is ResultVariable.U
+                ),
+                fields[0],
+            )
+            if fields
+            else None
+        )
+        catalog = ResultCatalog(
+            source=self.source,
+            fields=fields,
+            default_selection=(
+                None
+                if default is None
+                else ScalarFieldSelection(
+                    field_key=default.key,
+                    component=default.descriptor.default_component,
+                )
+            ),
+            diagnostics=self._catalog.diagnostics,
+        )
+        if catalog == self._catalog:
+            return self
+        return ResultProvider(
+            _owned_result=self._owned_result,
+            _profile=self._profile,
+            _catalog=catalog,
+            _snapshot=self._snapshot,
         )
 
     def field(self, key: FieldMaterializationKey) -> FieldData:
@@ -317,9 +401,13 @@ class ResultProvider:
             topology=self._snapshot.topology,
             fields=combined,
         )
-        draft_catalog = _catalog_with_ready_patch(
-            self._catalog,
-            tuple(checked),
+        draft_catalog = (
+            self._catalog
+            if not self._catalog.fields
+            else _catalog_with_ready_patch(
+                self._catalog,
+                tuple(checked),
+            )
         )
         return ResultProvider(
             _owned_result=self._owned_result,
@@ -392,6 +480,8 @@ def build_result_provider(
 def restore_result_provider(
     result: ModelResult,
     materialization: ResultMaterializationSnapshot,
+    *,
+    published_keys: Iterable[FieldMaterializationKey] | None = None,
 ) -> ResultProvider:
     """Rebuild a provider from one accepted materialization snapshot."""
 
@@ -429,12 +519,16 @@ def restore_result_provider(
         _build_catalog(snapshot.source, profile, entries, snapshot),
         checked,
     )
-    return ResultProvider(
+    provider = ResultProvider(
         _owned_result=owned_result,
         _profile=profile,
         _catalog=catalog,
         _snapshot=snapshot,
     )
+    if published_keys is not None:
+        requested = tuple(published_keys)
+        provider = provider.publish_fields(requested)
+    return provider
 
 
 def _require_exact_topology(

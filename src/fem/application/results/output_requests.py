@@ -60,8 +60,8 @@ _EXECUTABLE_STRESS_POSITIONS = {
     ResultModelFamily.BEAM: frozenset({FieldPosition.SECTION_END}),
 }
 _DEFAULT_STRESS_POSITION = {
-    ResultModelFamily.PLANE_CONTINUUM: FieldPosition.INTEGRATION_POINT,
-    ResultModelFamily.SOLID_CONTINUUM: FieldPosition.INTEGRATION_POINT,
+    ResultModelFamily.PLANE_CONTINUUM: FieldPosition.ELEMENT_NODAL,
+    ResultModelFamily.SOLID_CONTINUUM: FieldPosition.ELEMENT_NODAL,
     ResultModelFamily.TRUSS: FieldPosition.CENTROID,
     ResultModelFamily.BEAM: FieldPosition.SECTION_END,
 }
@@ -680,6 +680,12 @@ def _project_stress_variable(
                     request_index=request_index,
                 ),
             )
+
+    if family in {
+        ResultModelFamily.PLANE_CONTINUUM,
+        ResultModelFamily.SOLID_CONTINUUM,
+    }:
+        position = FieldPosition.ELEMENT_NODAL
 
     field_id = ResultFieldId(ResultVariable.S, position)
     entry = capabilities.entry_for(field_id)

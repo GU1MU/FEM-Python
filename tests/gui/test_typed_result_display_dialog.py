@@ -85,13 +85,13 @@ def _catalog() -> ResultCatalog:
     )
     stress = _key(
         ResultVariable.S,
-        FieldPosition.CENTROID,
+        FieldPosition.ELEMENT_NODAL,
         contract=13,
     )
     unavailable_diagnostic = ResultDiagnostic(
         code="result.field.unavailable",
         severity="error",
-        message="当前模型无法恢复单元质心应力。",
+        message="当前模型无法恢复节点应力。",
         path=("Step", "Static-1", "S"),
         remediation="选择受支持的场变量。",
         details={},
@@ -129,11 +129,11 @@ def _catalog() -> ResultCatalog:
             stress,
             _descriptor(
                 stress,
-                association=FieldAssociation.ELEMENT,
+                association=FieldAssociation.ELEMENT_NODE,
                 quantity=PhysicalQuantity.STRESS,
                 components=("S22", "S11"),
                 derived_components=("Mises",),
-                label_key="result.field.s.centroid",
+                label_key="result.field.s.element_nodal",
                 default_component="Mises",
                 order=1,
             ),
@@ -294,7 +294,7 @@ def test_catalog_and_descriptor_order_keep_complete_typed_identity() -> None:
     ) == (
         "位移 U（就绪）",
         "vendor.result.reaction（按需加载）",
-        "应力 S（单元质心）（不可用）",
+        "应力 S（节点）（不可用）",
     )
     assert all(
         type(dialog.field_combo.itemData(index)) is FieldMaterializationKey
@@ -380,7 +380,7 @@ def test_unavailable_field_shows_diagnostic_and_cannot_submit() -> None:
         )
         == unavailable.descriptor.columns
     )
-    assert "无法恢复单元质心应力" in dialog.availability_label.text()
+    assert "无法恢复节点应力" in dialog.availability_label.text()
     assert not dialog.apply_button.isEnabled()
     assert not dialog.ok_button.isEnabled()
     dialog.apply()

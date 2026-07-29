@@ -7,8 +7,10 @@ import pytest
 
 import fem.application.results.workflow as workflow_module
 from fem.application.results import (
+    FieldPosition,
     OutputExecutionStatus,
     ResultProvider,
+    ResultVariable,
     SolveResultBundle,
     build_solve_result_bundle,
     validate_solve_result_model_identity,
@@ -17,6 +19,7 @@ from fem.application.revisions import SolveTaskSnapshot, TaskToken
 from fem.core.model import AnalysisStep, OutputRequest
 from fem.core.result import ModelResult
 from tests.helpers.phase8_result_characterization import (
+    make_continuum_nodal_semantics_result,
     make_truss_field_characterization_result,
 )
 
@@ -36,8 +39,11 @@ class _Cancellation:
 
 def _task_and_result(
     outputs: tuple[OutputRequest, ...] = (),
+    *,
+    result: ModelResult | None = None,
 ) -> tuple[SolveTaskSnapshot, ModelResult]:
-    result = make_truss_field_characterization_result()
+    if result is None:
+        result = make_truss_field_characterization_result()
     step = AnalysisStep("Step-1", outputs=outputs)
     result.model.steps = [step]
     result.step = step
@@ -98,6 +104,10 @@ def test_build_bundle_owns_source_and_initial_generation() -> None:
             for field_data in bundle.initial_materialization.fields
         }
     )
+    assert tuple(
+        availability.key
+        for availability in bundle._provider.catalog().fields
+    ) == tuple(executed_keys)
 
 
 def test_empty_and_unsupported_outputs_still_build_a_success_bundle() -> None:
@@ -113,10 +123,53 @@ def test_empty_and_unsupported_outputs_still_build_a_success_bundle() -> None:
     )
 
     assert empty_bundle.execution_report.requests == ()
+    assert empty_bundle._provider is not None
+    assert empty_bundle._provider.catalog().fields == ()
+    assert empty_bundle._provider.catalog().default_selection is None
     assert tuple(
         request.status
         for request in unsupported_bundle.execution_report.requests
     ) == (OutputExecutionStatus.UNSUPPORTED,)
+    assert unsupported_bundle._provider is not None
+    assert unsupported_bundle._provider.catalog().fields == ()
+
+
+def test_bundle_catalog_publishes_only_selected_output_variables() -> None:
+    task, result = _task_and_result(
+        (OutputRequest("field", "node", ("RF",)),)
+    )
+
+    bundle = build_solve_result_bundle(task, result)
+
+    assert bundle._provider is not None
+    assert tuple(
+        availability.descriptor.field_id.variable
+        for availability in bundle._provider.catalog().fields
+    ) == (ResultVariable.RF,)
+
+
+def test_continuum_stress_is_published_only_at_the_node_position() -> None:
+    task, result = _task_and_result(
+        (
+            OutputRequest("field", "node", ("U",)),
+            OutputRequest("field", "element", ("S",)),
+        ),
+        result=make_continuum_nodal_semantics_result(),
+    )
+
+    bundle = build_solve_result_bundle(task, result)
+
+    assert bundle._provider is not None
+    assert tuple(
+        (
+            availability.descriptor.field_id.variable,
+            availability.descriptor.field_id.position,
+        )
+        for availability in bundle._provider.catalog().fields
+    ) == (
+        (ResultVariable.U, FieldPosition.NODE),
+        (ResultVariable.S, FieldPosition.ELEMENT_NODAL),
+    )
 
 
 def test_base_provider_failure_propagates_without_output_execution(

@@ -56,6 +56,19 @@ def test_main_window_has_modules_navigation_and_viewport_toolbar():
     ).y()
     assert variable_y == component_y
     assert position_y > variable_y
+    component_text_width = (
+        window.result_component_combo.fontMetrics().horizontalAdvance(
+            "MaxPrincipal"
+        )
+    )
+    assert (
+        window.result_component_combo.minimumWidth()
+        >= component_text_width + 44
+    )
+    assert (
+        window.result_component_combo.view().minimumWidth()
+        >= window.result_component_combo.minimumWidth()
+    )
     window.close()
 
 

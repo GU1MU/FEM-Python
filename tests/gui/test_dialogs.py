@@ -10,6 +10,11 @@ from fem_gui.postprocessing_dialogs import ContourSettingsDialog
 from fem_gui.symbol_dialog import SymbolSettingsDialog
 from fem_gui.viewport_background import ViewportBackgroundSettings
 from fem_gui.viewport_background_dialog import ViewportBackgroundDialog
+from fem_gui.visualization.colormaps import ABAQUS_RAINBOW
+from fem_gui.visualization.contour_rendering import (
+    CONTOUR_EDGE_FEATURE,
+    CONTOUR_RENDER_FILLED,
+)
 from fem_gui.visualization.symbols import SymbolSettings
 
 
@@ -59,6 +64,30 @@ def test_contour_and_symbol_dialogs_round_trip_settings():
     assert symbols.settings().step_name == "Static-1"
     assert symbols.settings().show_values
     assert symbols.settings().scale == 1.5
+
+
+def test_contour_dialog_defaults_to_abaqus_rainbow():
+    _application()
+    contour = ContourSettingsDialog({})
+
+    assert contour.colormap.currentText() == "Abaqus 彩虹"
+    assert contour.settings()["colormap"] == ABAQUS_RAINBOW
+
+
+def test_contour_dialog_exposes_render_and_visible_edge_modes():
+    _application()
+    contour = ContourSettingsDialog(
+        {
+            "render_mode": CONTOUR_RENDER_FILLED,
+            "edge_mode": CONTOUR_EDGE_FEATURE,
+            "edges": True,
+        }
+    )
+
+    settings = contour.settings()
+    assert settings["render_mode"] == CONTOUR_RENDER_FILLED
+    assert settings["edge_mode"] == CONTOUR_EDGE_FEATURE
+    assert settings["edges"]
 
 
 def test_viewport_background_dialog_supports_presets_and_live_preview():

@@ -25,6 +25,7 @@ from fem.application.results import (
 )
 from fem.post.fields import encode_result_region_key
 from fem_gui.postprocessing_dialogs import TypedResultQueryDialog
+from fem_gui.result_presentation import result_field_is_visible
 from tests.helpers.phase8_result_characterization import (
     make_continuum_nodal_semantics_result,
 )
@@ -119,7 +120,10 @@ def test_catalog_order_typed_association_and_descriptor_components_are_exact(
     expected_node_keys = tuple(
         availability.key
         for availability in catalog.fields
-        if availability.descriptor.association in node_associations
+        if (
+            availability.descriptor.association in node_associations
+            and result_field_is_visible(availability)
+        )
     )
     actual_node_keys = tuple(
         dialog.field_combo.itemData(index)
@@ -151,7 +155,10 @@ def test_catalog_order_typed_association_and_descriptor_components_are_exact(
     ) == tuple(
         availability.key
         for availability in catalog.fields
-        if availability.descriptor.association in element_associations
+        if (
+            availability.descriptor.association in element_associations
+            and result_field_is_visible(availability)
+        )
     )
     dialog.close()
 
@@ -182,12 +189,12 @@ def test_ready_and_lazy_selections_emit_exact_typed_requests_without_recovery(
     selections.clear()
     queries.clear()
     dialog.association_combo.setCurrentIndex(1)
-    integration_point = _availability_at(
+    element_nodal = _availability_at(
         provider,
-        FieldPosition.INTEGRATION_POINT,
+        FieldPosition.ELEMENT_NODAL,
     )
     dialog.field_combo.setCurrentIndex(
-        _combo_index(dialog.field_combo, integration_point.key)
+        _combo_index(dialog.field_combo, element_nodal.key)
     )
     dialog.component_combo.setCurrentIndex(
         _combo_index(dialog.component_combo, "S11")
@@ -198,19 +205,19 @@ def test_ready_and_lazy_selections_emit_exact_typed_requests_without_recovery(
 
     dialog.request_query()
 
-    selection = ScalarFieldSelection(integration_point.key, "S11")
+    selection = ScalarFieldSelection(element_nodal.key, "S11")
     query = ResultQuery(
-        field_key=integration_point.key,
+        field_key=element_nodal.key,
         component="S11",
         element_ids=(3, 1, 2),
     )
-    assert integration_point.state is FieldState.LAZY
+    assert element_nodal.state is FieldState.LAZY
     assert selections == [selection]
     assert queries == [query]
     assert type(queries[0]) is ResultQuery
-    assert provider.field_status(integration_point.key).state is FieldState.LAZY
+    assert provider.field_status(element_nodal.key).state is FieldState.LAZY
     assert provider.snapshot is original_snapshot
-    assert integration_point.key not in {
+    assert element_nodal.key not in {
         field.key for field in provider.snapshot.fields
     }
 
@@ -255,15 +262,18 @@ def test_pending_query_freezes_intent_without_overwriting_latest_query(
     dialog.close()
 
 
-def test_query_result_keeps_multi_region_and_provenance_rows_in_order(
+def test_query_result_keeps_element_nodal_provenance_rows_in_order(
     result_provider,
 ) -> None:
     _application()
     result, provider = result_provider
     dialog = TypedResultQueryDialog(provider)
-    resolved = _availability_at(provider, FieldPosition.RESOLVED_NODAL)
+    element_nodal = _availability_at(
+        provider,
+        FieldPosition.ELEMENT_NODAL,
+    )
     dialog.field_combo.setCurrentIndex(
-        _combo_index(dialog.field_combo, resolved.key)
+        _combo_index(dialog.field_combo, element_nodal.key)
     )
     dialog.component_combo.setCurrentIndex(
         _combo_index(dialog.component_combo, "S11")
@@ -276,20 +286,15 @@ def test_query_result_keeps_multi_region_and_provenance_rows_in_order(
 
     accepted = advance_materialization(
         provider.snapshot,
-        provider.materialize((resolved.key,)),
+        provider.materialize((element_nodal.key,)),
     )
     ready_provider = restore_result_provider(result, accepted)
     query_result = ready_provider.query(query)
     assert query_result.materialization_generation == 1
     assert len(query_result.records) >= 2
-    assert len(
-        {
-            record.location.region_key
-            for record in query_result.records
-        }
-    ) >= 2
-    assert any(
+    assert all(
         record.location.element_id is not None
+        and record.location.local_node is not None
         for record in query_result.records
     )
 
@@ -301,6 +306,7 @@ def test_query_result_keeps_multi_region_and_provenance_rows_in_order(
     for row, record in enumerate(query_result.records):
         location = record.location
         assert dialog.record_at(row) == record
+        assert dialog.table.item(row, 0).text() == "节点"
         assert dialog.table.item(row, 1).text() == str(location.node_id)
         assert dialog.table.item(row, 2).text() == (
             "" if location.element_id is None else str(location.element_id)

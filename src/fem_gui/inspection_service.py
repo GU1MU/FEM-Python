@@ -26,6 +26,10 @@ from fem.application.results import (
     ResultQueryValidationError,
 )
 from fem.post.fields import encode_result_region_key
+from .result_presentation import (
+    result_field_is_visible,
+    result_position_label,
+)
 
 
 _RESULT_VARIABLE_LABELS = {
@@ -35,15 +39,6 @@ _RESULT_VARIABLE_LABELS = {
     "RM": "反力矩 RM",
     "LE": "对数应变 LE",
     "S": "应力 S",
-}
-_RESULT_POSITION_LABELS = {
-    FieldPosition.INTEGRATION_POINT: "积分点",
-    FieldPosition.CENTROID: "单元质心",
-    FieldPosition.ELEMENT_NODAL: "单元节点",
-    FieldPosition.NODE_REGION: "节点区域",
-    FieldPosition.RESOLVED_NODAL: "平均节点",
-    FieldPosition.SECTION_END: "截面端点",
-    FieldPosition.SECTION_NODE_ENVELOPE: "截面节点包络",
 }
 _RESULT_COMPONENT_LABELS = {
     "Magnitude": "模",
@@ -553,13 +548,18 @@ class InspectionService:
                 "ResultProvider.inspect_result() must return "
                 "ResultInspectionResult"
             )
-        if not result.fields:
+        fields = tuple(
+            field_entry
+            for field_entry in result.fields
+            if result_field_is_visible(field_entry.availability)
+        )
+        if not fields:
             return None
         return InspectionPage(
             "结果",
             tables=tuple(
                 _provider_result_table(field_entry)
-                for field_entry in result.fields
+                for field_entry in fields
             ),
         )
 
@@ -1156,10 +1156,7 @@ def _localized_result_field(descriptor: Any) -> str:
     )
     if field_id.position is FieldPosition.NODE:
         return base
-    position = _RESULT_POSITION_LABELS.get(
-        field_id.position,
-        field_id.position.value,
-    )
+    position = result_position_label(field_id.position)
     return f"{base}（{position}）"
 
 

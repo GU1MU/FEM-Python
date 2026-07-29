@@ -36,6 +36,16 @@ from ..wire_editor import (
     snap_work_plane_point,
 )
 from ..viewport_background import ViewportBackgroundSettings
+from ..visualization.colormaps import (
+    ABAQUS_RAINBOW,
+    resolve_contour_colormap,
+)
+from ..visualization.contour_rendering import (
+    CONTOUR_EDGE_NONE,
+    CONTOUR_RENDER_SHADED,
+    contour_surface_options,
+    extract_contour_edges,
+)
 from ..visualization.model_adapter import ModelGeometry, pyvista_cell_array
 from ..visualization.scene import DisplayState
 from ..visualization.symbols import (
@@ -896,7 +906,10 @@ class FEMViewport(QWidget):
         self._hover_timer.timeout.connect(self._update_preselection)
         self._contour = {
             "manual": False, "minimum": 0.0, "maximum": 1.0, "levels": 12,
-            "colormap": "jet", "style": "segmented", "legend": True, "edges": False,
+            "colormap": ABAQUS_RAINBOW, "style": "segmented",
+            "legend": True, "edges": False,
+            "render_mode": CONTOUR_RENDER_SHADED,
+            "edge_mode": CONTOUR_EDGE_NONE,
             "number_format": "general", "decimals": 5,
             "orientation": "vertical", "show_minimum": False,
             "show_maximum": False, "show_ids": False,
@@ -3849,6 +3862,11 @@ class FEMViewport(QWidget):
 
     def set_contour_options(self, options: dict[str, Any]) -> None:
         self._contour.update(options)
+        if (
+            "edges" in options
+            and self._display.contour_enabled
+        ):
+            self._show_edges = bool(options["edges"])
         if self._display.contour_enabled:
             self._update_result_layer()
 
@@ -3917,6 +3935,7 @@ class FEMViewport(QWidget):
         for name, color in (
             ("mesh_surface", self._mesh_layer_color(palette)),
             ("element_edges", self._element_layer_color(palette)),
+            ("result_edges", self._background_settings.foreground_color),
             ("nodes", self._node_layer_color(palette)),
             ("undeformed_overlay", palette["overlay"]),
         ):
@@ -3932,6 +3951,29 @@ class FEMViewport(QWidget):
 
     def set_edges_visible(self, visible: bool, *, render: bool = True) -> None:
         self._show_edges = bool(visible)
+        if self._display.contour_enabled:
+            base_edges = self._actors.get("element_edges")
+            if base_edges is not None:
+                base_edges.SetVisibility(False)
+            result_edges = self._actors.get("result_edges")
+            if (
+                self._show_edges
+                and result_edges is None
+                and self._plotter is not None
+                and self._result_grid is not None
+            ):
+                result_edges = self._add_result_edges_layer(
+                    self._result_grid
+                )
+            if result_edges is not None:
+                result_edges.SetVisibility(self._show_edges)
+            if render:
+                self._render()
+            return
+
+        result_edges = self._actors.get("result_edges")
+        if result_edges is not None:
+            result_edges.SetVisibility(False)
         actor = self._actors.get("element_edges")
         if (
             self._show_edges
@@ -4824,6 +4866,7 @@ class FEMViewport(QWidget):
 
     def _update_result_layer(self) -> None:
         self._remove_actor("result")
+        self._remove_actor("result_edges")
         self._remove_actor("extrema")
         self._remove_scalar_bars()
         self._result_grid = None
@@ -4858,31 +4901,48 @@ class FEMViewport(QWidget):
         base = self._actors.get("mesh_surface")
         if base is not None:
             base.SetVisibility(False)
+        base_edges = self._actors.get("element_edges")
+        if base_edges is not None:
+            base_edges.SetVisibility(
+                self._show_edges
+                and not self._display.contour_enabled
+            )
         kwargs: dict[str, Any] = {
             "name": "result",
             "reset_camera": False,
             "line_width": self._element_line_width(),
             "show_edges": False,
             **self._line_render_options(),
+            **contour_surface_options(
+                str(self._contour["render_mode"]),
+                is_line_mesh=self._is_line_mesh(),
+            ),
         }
         if self._display.contour_enabled:
+            color_count = (
+                256
+                if self._contour.get("style") == "continuous"
+                else int(self._contour["levels"])
+            )
+            selection = checked.topology.selection
+            variable = selection.field_key.request.field_id.variable.value
             kwargs.update(
                 scalars=checked.scalar_name,
-                cmap=self._contour["colormap"],
-                n_colors=(
-                    256
-                    if self._contour.get("style") == "continuous"
-                    else int(self._contour["levels"])
+                cmap=resolve_contour_colormap(
+                    str(self._contour["colormap"]),
+                    color_count,
                 ),
+                n_colors=color_count,
                 interpolate_before_map=self._contour.get("style")
                 == "continuous",
                 show_scalar_bar=self._contour["legend"],
                 scalar_bar_args={
-                    "title": checked.topology.selection.component,
+                    "title": f"{variable}, {selection.component}",
                     "vertical": self._contour["orientation"] == "vertical",
                     "n_labels": int(self._contour["levels"]) + 1,
                     "fmt": self._scalar_format(),
                     "color": self._background_settings.foreground_color,
+                    "outline": True,
                 },
             )
             if self._contour["manual"]:
@@ -4895,6 +4955,11 @@ class FEMViewport(QWidget):
         self._actors["result"] = self._plotter.add_mesh(dataset, **kwargs)
         if (
             self._display.contour_enabled
+            and self._show_edges
+        ):
+            self._add_result_edges_layer(dataset)
+        if (
+            self._display.contour_enabled
             and (
                 self._contour["show_minimum"]
                 or self._contour["show_maximum"]
@@ -4904,6 +4969,28 @@ class FEMViewport(QWidget):
         self._refresh_undeformed_overlay()
         self._restore_selection()
         self._render()
+
+    def _add_result_edges_layer(self, dataset: Any) -> Any | None:
+        edge_mode = str(self._contour["edge_mode"])
+        if edge_mode == CONTOUR_EDGE_NONE:
+            edge_mode = "all"
+        edges = extract_contour_edges(dataset, edge_mode)
+        if edges is None or edges.n_cells == 0:
+            return None
+        actor = self._plotter.add_mesh(
+            edges,
+            color=self._background_settings.foreground_color,
+            line_width=self._element_line_width(),
+            lighting=False,
+            show_scalar_bar=False,
+            pickable=False,
+            name="result_edges",
+            reset_camera=False,
+            **self._line_render_options(),
+        )
+        self._offset_highlight_actor(actor)
+        self._actors["result_edges"] = actor
+        return actor
 
     def _add_result_render_payload_extrema_labels(
         self,

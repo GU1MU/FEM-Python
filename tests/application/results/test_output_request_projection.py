@@ -245,11 +245,11 @@ def test_node_variables_are_case_insensitive_collapsed_and_canonically_ordered()
     (
         (
             ResultModelFamily.PLANE_CONTINUUM,
-            FieldPosition.INTEGRATION_POINT,
+            FieldPosition.ELEMENT_NODAL,
         ),
         (
             ResultModelFamily.SOLID_CONTINUUM,
-            FieldPosition.INTEGRATION_POINT,
+            FieldPosition.ELEMENT_NODAL,
         ),
         (ResultModelFamily.TRUSS, FieldPosition.CENTROID),
         (ResultModelFamily.BEAM, FieldPosition.SECTION_END),
@@ -275,7 +275,7 @@ def test_stress_uses_deterministic_family_default(
         FieldPosition.ELEMENT_NODAL,
     ),
 )
-def test_continuum_stress_accepts_explicit_canonical_positions(
+def test_continuum_stress_normalizes_explicit_positions_to_element_nodes(
     position: FieldPosition,
 ) -> None:
     request = OutputRequest(
@@ -291,7 +291,10 @@ def test_continuum_stress_accepts_explicit_canonical_positions(
     executable = projection.executable_request
     assert executable is not None
     assert len(executable.field_requests) == 1
-    assert executable.field_requests[0].field_id.position is position
+    assert (
+        executable.field_requests[0].field_id.position
+        is FieldPosition.ELEMENT_NODAL
+    )
     assert executable.variables[0].source_variable_indices == (0, 1)
     assert request.metadata == {"POSITION": position.value.upper()}
 

@@ -119,11 +119,21 @@ def build_solve_result_bundle(
         cancellation=cancellation,
     )
     check_cancellation(cancellation)
+    published_keys = {
+        key
+        for request in outcome.report.requests
+        if request.status is OutputExecutionStatus.EXECUTED
+        for variable in request.variables
+        for key in variable.field_keys
+    }
+    published_provider = outcome.provider_draft.publish_fields(
+        published_keys
+    )
     return SolveResultBundle._from_provider(
         source=source,
         result=result,
         execution_report=outcome.report,
-        provider=outcome.provider_draft,
+        provider=published_provider,
     )
 
 

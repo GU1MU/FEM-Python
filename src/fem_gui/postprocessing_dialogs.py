@@ -46,6 +46,20 @@ from PySide6.QtWidgets import (
 )
 
 from .dialogs import CompactDoubleSpinBox, configure_form_layout
+from .result_presentation import (
+    result_field_is_visible,
+    visible_result_fields,
+)
+from .visualization.colormaps import ABAQUS_RAINBOW
+from .visualization.contour_rendering import (
+    CONTOUR_EDGE_ALL,
+    CONTOUR_EDGE_EXTERIOR,
+    CONTOUR_EDGE_FEATURE,
+    CONTOUR_EDGE_FREE,
+    CONTOUR_EDGE_NONE,
+    CONTOUR_RENDER_FILLED,
+    CONTOUR_RENDER_SHADED,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,7 +148,7 @@ class TypedResultDisplayDialog(QDialog):
         self.component_combo = QComboBox(self)
         self.availability_label = QLabel(self)
         self.availability_label.setWordWrap(True)
-        for availability in catalog.fields:
+        for availability in visible_result_fields(catalog.fields):
             self.field_combo.addItem(
                 _typed_result_display_field_label(availability),
                 availability.key,
@@ -367,9 +381,20 @@ class ContourSettingsDialog(QDialog):
         form = QFormLayout()
         configure_form_layout(form)
         self.colormap = QComboBox(self)
-        for label, key in (("彩虹", "jet"), ("维里迪斯", "viridis"), ("等离子", "plasma"), ("冷暖", "coolwarm"), ("灰度", "gray")):
+        for label, key in (
+            ("Abaqus 彩虹", ABAQUS_RAINBOW),
+            ("维里迪斯", "viridis"),
+            ("等离子", "plasma"),
+            ("冷暖", "coolwarm"),
+            ("灰度", "gray"),
+        ):
             self.colormap.addItem(label, key)
-        self.colormap.setCurrentIndex(max(0, self.colormap.findData(options.get("colormap", "jet"))))
+        selected_colormap = options.get("colormap", ABAQUS_RAINBOW)
+        if selected_colormap == "jet":
+            selected_colormap = ABAQUS_RAINBOW
+        self.colormap.setCurrentIndex(
+            max(0, self.colormap.findData(selected_colormap))
+        )
         self.levels = QSpinBox(self)
         self.levels.setRange(2, 256)
         self.levels.setValue(int(options.get("levels", 12)))
@@ -381,6 +406,42 @@ class ContourSettingsDialog(QDialog):
             lambda: self.levels.setEnabled(self.style.currentData() == "segmented")
         )
         self.levels.setEnabled(self.style.currentData() == "segmented")
+        self.render_mode = QComboBox(self)
+        self.render_mode.addItem("光影", CONTOUR_RENDER_SHADED)
+        self.render_mode.addItem("填充", CONTOUR_RENDER_FILLED)
+        self.render_mode.setCurrentIndex(
+            max(
+                0,
+                self.render_mode.findData(
+                    options.get(
+                        "render_mode",
+                        CONTOUR_RENDER_SHADED,
+                    )
+                ),
+            )
+        )
+        self.edge_mode = QComboBox(self)
+        for label, key in (
+            ("全部边", CONTOUR_EDGE_ALL),
+            ("外部边", CONTOUR_EDGE_EXTERIOR),
+            ("特征边", CONTOUR_EDGE_FEATURE),
+            ("自由边", CONTOUR_EDGE_FREE),
+            ("无边", CONTOUR_EDGE_NONE),
+        ):
+            self.edge_mode.addItem(label, key)
+        selected_edge_mode = options.get(
+            "edge_mode",
+            (
+                CONTOUR_EDGE_ALL
+                if options.get("edges", False)
+                else CONTOUR_EDGE_NONE
+            ),
+        )
+        if not options.get("edges", False):
+            selected_edge_mode = CONTOUR_EDGE_NONE
+        self.edge_mode.setCurrentIndex(
+            max(0, self.edge_mode.findData(selected_edge_mode))
+        )
         self.averaging_threshold = QDoubleSpinBox(self)
         self.averaging_threshold.setRange(0.0, 100.0)
         self.averaging_threshold.setDecimals(1)
@@ -402,6 +463,8 @@ class ContourSettingsDialog(QDialog):
         self.orientation.setCurrentIndex(max(0, self.orientation.findData(options.get("orientation", "vertical"))))
         form.addRow("色带：", self.colormap)
         form.addRow("云图样式：", self.style)
+        form.addRow("渲染模式：", self.render_mode)
+        form.addRow("显示轮廓：", self.edge_mode)
         form.addRow("色带级数：", self.levels)
         form.addRow("节点平均阈值：", self.averaging_threshold)
         form.addRow("数值格式：", self.number_format)
@@ -416,9 +479,12 @@ class ContourSettingsDialog(QDialog):
         self.show_maximum.setChecked(bool(options.get("show_maximum", False)))
         self.show_ids = QCheckBox("显示对象编号", self)
         self.show_ids.setChecked(bool(options.get("show_ids", False)))
-        self.show_edges = QCheckBox("显示单元边", self)
-        self.show_edges.setChecked(bool(options.get("edges", False)))
-        for checkbox in (self.legend, self.show_minimum, self.show_maximum, self.show_ids, self.show_edges):
+        for checkbox in (
+            self.legend,
+            self.show_minimum,
+            self.show_maximum,
+            self.show_ids,
+        ):
             layout.addWidget(checkbox)
         buttons = _dialog_buttons(self)
         buttons.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(self.apply)
@@ -427,12 +493,15 @@ class ContourSettingsDialog(QDialog):
         layout.addWidget(buttons)
 
     def settings(self) -> dict[str, Any]:
+        edge_mode = str(self.edge_mode.currentData())
         return {
             "manual": self.manual_range.isChecked(),
             "minimum": float(self.minimum.value()),
             "maximum": float(self.maximum.value()),
             "colormap": str(self.colormap.currentData()),
             "style": str(self.style.currentData()),
+            "render_mode": str(self.render_mode.currentData()),
+            "edge_mode": edge_mode,
             "levels": int(self.levels.value()),
             "number_format": str(self.number_format.currentData()),
             "decimals": int(self.decimals.value()),
@@ -441,7 +510,7 @@ class ContourSettingsDialog(QDialog):
             "show_minimum": self.show_minimum.isChecked(),
             "show_maximum": self.show_maximum.isChecked(),
             "show_ids": self.show_ids.isChecked(),
-            "edges": self.show_edges.isChecked(),
+            "edges": edge_mode != CONTOUR_EDGE_NONE,
             "averaging_threshold": float(self.averaging_threshold.value()),
         }
 
@@ -704,7 +773,7 @@ class TypedResultQueryDialog(QDialog):
         for row, record in enumerate(result.records):
             location = record.location
             values = (
-                location.association.value,
+                _typed_association_text(location.association),
                 _optional_identity_text(location.node_id),
                 _optional_identity_text(location.element_id),
                 _optional_identity_text(location.integration_point),
@@ -794,7 +863,9 @@ class TypedResultQueryDialog(QDialog):
         self.field_combo.blockSignals(True)
         self.field_combo.clear()
         if type(mode) is _TypedQueryMode:
-            for availability in self._catalog.fields:
+            for availability in visible_result_fields(
+                self._catalog.fields
+            ):
                 if _typed_query_association_matches(
                     mode.association,
                     availability.descriptor.association,
@@ -935,6 +1006,18 @@ def _typed_query_association_matches(
     raise TypeError("mode must be a query association")
 
 
+def _typed_association_text(association: FieldAssociation) -> str:
+    labels = {
+        FieldAssociation.NODE: "节点",
+        FieldAssociation.ELEMENT_NODE: "节点",
+        FieldAssociation.ELEMENT: "单元",
+        FieldAssociation.INTEGRATION_POINT: "积分点",
+        FieldAssociation.NODE_REGION: "节点",
+        FieldAssociation.RESOLVED_NODAL: "节点",
+    }
+    return labels[association]
+
+
 def _parse_typed_query_ids(
     text: str,
     valid_ids: tuple[int, ...],
@@ -974,13 +1057,7 @@ def _parse_typed_query_ids(
 
 
 def _typed_field_label(availability: FieldAvailability) -> str:
-    descriptor = availability.descriptor
-    return (
-        f"{descriptor.label_key} · "
-        f"{descriptor.field_id.variable.value}/"
-        f"{descriptor.field_id.position.value} · "
-        f"{availability.state.value}"
-    )
+    return _typed_result_display_field_label(availability)
 
 
 _TYPED_RESULT_FIELD_LABELS = {
@@ -989,13 +1066,7 @@ _TYPED_RESULT_FIELD_LABELS = {
     "result.field.rf.node": "反力 RF",
     "result.field.rm.node": "反力矩 RM",
     "result.field.le.centroid": "对数应变 LE（单元质心）",
-    "result.field.s.integration_point": "应力 S（积分点）",
-    "result.field.s.centroid": "应力 S（单元质心）",
-    "result.field.s.element_nodal": "应力 S（单元节点）",
-    "result.field.s.node_region": "应力 S（节点区域）",
-    "result.field.s.resolved_nodal": "应力 S（平均节点）",
-    "result.field.s.section_end": "应力 S（截面端点）",
-    "result.field.s.section_node_envelope": "应力 S（截面节点包络）",
+    "result.field.s.element_nodal": "应力 S（节点）",
 }
 _TYPED_RESULT_FIELD_STATE_LABELS = {
     FieldState.READY: "就绪",
@@ -1041,7 +1112,10 @@ def _validate_typed_display_selection(
     matches = tuple(
         availability
         for availability in catalog.fields
-        if availability.key == selection.field_key
+        if (
+            availability.key == selection.field_key
+            and result_field_is_visible(availability)
+        )
     )
     if len(matches) != 1:
         raise ValueError(

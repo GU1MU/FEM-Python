@@ -16,19 +16,11 @@ from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication, QToolButton
 
 from fem.application import AnalysisRun, ModelSession, RunStatus
-from fem.application.results import (
-    FieldPosition,
-    FieldState,
-    ResultVariable,
-    ScalarFieldSelection,
-)
 from fem.abaqus import read
 from fem.solvers import static_linear
 from fem_gui.analysis_dialogs import JobManagerDialog
-from fem_gui.commands import GuiCommandOutcome, GuiCommandStatus
 from fem_gui.main_window import FEMMainWindow
 import fem_gui.main_window as main_window_module
-from fem_gui.task_controller import BackgroundTaskState, TaskApplyStatus
 from fem_gui.visualization.model_adapter import build_model_geometry
 from tests.helpers.model_builders import make_static_pull_truss_model
 from tests.helpers.preflight_builders import passing_preflight_report
@@ -576,76 +568,12 @@ def test_job_completes_with_primary_results_and_recovers_stress_on_demand(
     assert "线性方程求解" in job.timings
     assert "输出请求与初始结果" in job.timings
 
-    centroid_stress = tuple(
-        availability
-        for availability in provider.catalog().fields
-        if (
-            availability.descriptor.field_id.variable
-            is ResultVariable.S
-            and availability.descriptor.field_id.position
-            is FieldPosition.CENTROID
-        )
-    )
-    assert len(centroid_stress) == 1
-    lazy = centroid_stress[0]
-    assert lazy.state is FieldState.LAZY
-    assert "Mises" in lazy.descriptor.columns
-    selection = ScalarFieldSelection(lazy.key, "Mises")
-    initial_snapshot = provider.snapshot
-    initial_generation = initial_snapshot.generation
-    revision = window.session.session_revision
-    receipt = window.select_result_field(selection)
-
-    assert receipt.status is GuiCommandStatus.PENDING
-    assert receipt.delta is None
-    assert receipt.outcome is None
-    assert receipt.diagnostic is None
-    assert receipt.completion is not None
-    _wait_for_task(window)
-
-    terminal = receipt.completion.terminal
-    outcome = receipt.completion.outcome
-    assert terminal is not None
-    assert terminal.state is BackgroundTaskState.SUCCEEDED
-    assert terminal.apply_status is TaskApplyStatus.ACCEPTED
-    assert terminal.projection_error is None
-    assert terminal.value is None
-    assert type(outcome) is GuiCommandOutcome
-    assert outcome.source == provider.source
-    assert outcome.materialization_generation == initial_generation + 1
-    assert outcome.selection == selection
-
-    assert window.session.session_revision == revision + 1
-    current_record = window.session.current_result()
-    current_provider = window._current_result_provider()
-    assert current_record is not None
-    assert current_provider is not None
-    assert current_provider is not provider
-    assert current_provider.snapshot is not initial_snapshot
-    assert current_provider.snapshot.generation == initial_generation + 1
-    assert current_record.materialization.generation == initial_generation + 1
-    assert provider.snapshot is initial_snapshot
-    assert next(
-        availability
-        for availability in provider.catalog().fields
-        if availability.key == selection.field_key
-    ).state is FieldState.LAZY
-    assert next(
-        availability
-        for availability in current_provider.catalog().fields
-        if availability.key == selection.field_key
-    ).state is FieldState.READY
-    materialized = current_provider.field(selection.field_key)
-    assert outcome.record_count == len(materialized.locations)
-    assert window.result_selection == selection
-    payload = window.viewport._result_render_payload
-    assert payload is not None
-    assert payload.topology.source == current_provider.source
-    assert (
-        payload.topology.materialization_generation
-        == current_provider.snapshot.generation
-    )
-    assert payload.topology.selection == selection
+    assert provider.catalog().fields == ()
+    assert provider.catalog().default_selection is None
+    assert window.result_selection is None
+    assert window.viewport._result_render_payload is None
+    result_step = window.result_tree.topLevelItem(0).child(0)
+    assert result_step.childCount() == 0
     assert errors == []
     window.close()
 

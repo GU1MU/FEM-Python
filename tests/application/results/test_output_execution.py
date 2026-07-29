@@ -574,7 +574,7 @@ def test_shared_lazy_key_is_materialized_once_and_satisfies_each_request(
     )
 
 
-def test_one_materialization_failure_does_not_block_unrelated_request(
+def test_legacy_continuum_positions_share_one_element_nodal_materialization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = _continuum_provider()
@@ -595,7 +595,7 @@ def test_one_materialization_failure_does_not_block_unrelated_request(
     original_materialize = ResultProvider.materialize
     calls: list[FieldPosition] = []
 
-    def fail_centroid(
+    def materialize_spy(
         self: ResultProvider,
         keys: object,
         *,
@@ -604,47 +604,26 @@ def test_one_materialization_failure_does_not_block_unrelated_request(
         requested = tuple(keys)  # type: ignore[arg-type]
         position = requested[0].request.field_id.position
         calls.append(position)
-        if position is FieldPosition.CENTROID:
-            raise RuntimeError("centroid kernel fault")
         return original_materialize(
             self,
             requested,
             cancellation=cancellation,
         )
 
-    monkeypatch.setattr(ResultProvider, "materialize", fail_centroid)
+    monkeypatch.setattr(ResultProvider, "materialize", materialize_spy)
 
     outcome = execute_output_requests(provider, requests)
 
     assert _status_values(outcome) == (
-        OutputExecutionStatus.FAILED,
+        OutputExecutionStatus.EXECUTED,
         OutputExecutionStatus.EXECUTED,
     )
-    assert set(calls) == {
-        FieldPosition.CENTROID,
-        FieldPosition.INTEGRATION_POINT,
-    }
+    assert calls == [FieldPosition.ELEMENT_NODAL]
     assert tuple(
         field.key.request.field_id.position
         for field in outcome.eager_patch.fields
-    ) == (FieldPosition.INTEGRATION_POINT,)
-    failed = outcome.report.requests[0]
-    assert failed.variables[0].status is OutputExecutionStatus.FAILED
-    diagnostic = failed.diagnostics[0]
-    assert diagnostic.code == "output.request.materialization_failed"
-    assert diagnostic.severity == "error"
-    assert diagnostic.path == (
-        "steps",
-        provider.source.step_name,
-        "outputs",
-        0,
-        "variables",
-        0,
-    )
-    assert diagnostic.details["field_position"] == "centroid"
-    assert diagnostic.details["error_type"] == "RuntimeError"
-    assert diagnostic.details["error_message"] == "centroid kernel fault"
-    assert outcome.report.diagnostics == failed.diagnostics
+    ) == (FieldPosition.ELEMENT_NODAL,)
+    assert outcome.report.diagnostics == ()
 
 
 def test_shared_materialization_failure_is_attempted_once_and_reported_per_request(

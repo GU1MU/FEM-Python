@@ -12,7 +12,7 @@ from time import perf_counter
 from typing import Any, Callable
 
 import numpy as np
-from PySide6.QtCore import QSettings, Qt, QTimer, Signal
+from PySide6.QtCore import QSize, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QFileDialog, QGridLayout,
@@ -194,6 +194,10 @@ from .postprocessing_dialogs import (
     TypedResultDisplaySettings,
     TypedResultQueryDialog,
 )
+from .result_presentation import (
+    result_position_label,
+    visible_result_fields,
+)
 from .preprocessing_dialogs import (
     BasicSolidCreationDialog,
     BoxGeometryDialog,
@@ -228,6 +232,12 @@ from .viewport_background import (
 from .viewport_background_dialog import ViewportBackgroundDialog
 from .sketch_editor import SketchDraftController, SketchDraftValidationError
 from .wire_editor import WireDraftController, WireDraftValidationError
+from .visualization.colormaps import ABAQUS_RAINBOW
+from .visualization.contour_rendering import (
+    CONTOUR_EDGE_ALL,
+    CONTOUR_EDGE_NONE,
+    CONTOUR_RENDER_SHADED,
+)
 from .visualization.model_adapter import ModelGeometry, build_model_geometry
 from .visualization.result_renderer import (
     ResultRenderPayload,
@@ -263,13 +273,7 @@ _RESULT_VARIABLE_LABELS = {
 }
 _RESULT_POSITION_LABELS = {
     FieldPosition.NODE: "节点",
-    FieldPosition.INTEGRATION_POINT: "积分点",
-    FieldPosition.CENTROID: "单元质心",
-    FieldPosition.ELEMENT_NODAL: "单元节点",
-    FieldPosition.NODE_REGION: "节点区域",
-    FieldPosition.RESOLVED_NODAL: "平均节点",
-    FieldPosition.SECTION_END: "截面端点",
-    FieldPosition.SECTION_NODE_ENVELOPE: "截面节点包络",
+    FieldPosition.ELEMENT_NODAL: "节点",
 }
 _RESULT_FIELD_STATE_LABELS = {
     FieldState.LAZY: "按需加载",
@@ -366,6 +370,31 @@ class _ExactDataComboBox(QComboBox):
         return super().findData(data, role, flags)
 
 
+class _PreferredWidthHost(QWidget):
+    """Prefer a wider ribbon section while allowing compact windows."""
+
+    def __init__(
+        self,
+        preferred_width: int,
+        minimum_width: int,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._preferred_width = preferred_width
+        self._minimum_width = minimum_width
+        self.setMinimumWidth(minimum_width)
+
+    def sizeHint(self) -> QSize:
+        hint = super().sizeHint()
+        hint.setWidth(max(hint.width(), self._preferred_width))
+        return hint
+
+    def minimumSizeHint(self) -> QSize:
+        hint = super().minimumSizeHint()
+        hint.setWidth(self._minimum_width)
+        return hint
+
+
 class FEMMainWindow(QMainWindow):
     """只暴露当前内核已经实现的有限元工作流。"""
 
@@ -451,7 +480,10 @@ class FEMMainWindow(QMainWindow):
         )
         self._contour_options: dict[str, Any] = {
             "manual": False, "minimum": 0.0, "maximum": 1.0,
-            "levels": 12, "colormap": "jet", "style": "segmented", "legend": True,
+            "levels": 12, "colormap": ABAQUS_RAINBOW,
+            "style": "segmented", "legend": True,
+            "render_mode": CONTOUR_RENDER_SHADED,
+            "edge_mode": CONTOUR_EDGE_NONE,
             "number_format": "general", "decimals": 5,
             "orientation": "vertical", "show_minimum": False,
             "show_maximum": False, "show_ids": False,
@@ -2260,6 +2292,21 @@ class FEMMainWindow(QMainWindow):
             self._result_visualization_provider_cache = None
 
         catalog = provider.catalog()
+        if not catalog.fields:
+            inspection = self.inspection_service
+            self._clear_result_projection()
+            self.result_provider = provider
+            self.result_selection = None
+            self.result_tree.set_catalog(
+                self._current_step_name
+                or self.session.default_step_name()
+                or "",
+                catalog,
+            )
+            if inspection is not None:
+                inspection.update_result_provider(provider)
+            self.status_panel.set_result()
+            return
         selection = (
             self.result_selection
             if (
@@ -2486,10 +2533,9 @@ class FEMMainWindow(QMainWindow):
         contour_group.add_action(self.actions["contour"], large=True)
 
         field_group = page.add_group("主变量")
-        field_host = QWidget(field_group)
+        field_host = _PreferredWidthHost(312, 246, field_group)
         field_host.setObjectName("resultFieldControls")
-        field_host.setMinimumWidth(246)
-        field_host.setMaximumWidth(330)
+        field_host.setMaximumWidth(390)
         field_host.setSizePolicy(
             QSizePolicy.Policy.Preferred,
             QSizePolicy.Policy.Preferred,
@@ -2531,7 +2577,21 @@ class FEMMainWindow(QMainWindow):
             combo.setFixedHeight(24)
             combo.setEnabled(False)
         self.result_variable_combo.setMinimumWidth(76)
-        self.result_component_combo.setMinimumWidth(86)
+        component_minimum_width = max(
+            138,
+            (
+                self.result_component_combo.fontMetrics().horizontalAdvance(
+                    "MaxPrincipal"
+                )
+                + 44
+            ),
+        )
+        self.result_component_combo.setMinimumWidth(
+            component_minimum_width
+        )
+        self.result_component_combo.view().setMinimumWidth(
+            component_minimum_width
+        )
         self.result_position_combo.setMinimumWidth(90)
         for combo in (
             self.result_variable_combo,
@@ -2570,7 +2630,7 @@ class FEMMainWindow(QMainWindow):
         field_layout.addWidget(position_label, 1, 0)
         field_layout.addWidget(position_host, 1, 1, 1, 3)
         field_layout.setColumnStretch(1, 1)
-        field_layout.setColumnStretch(3, 1)
+        field_layout.setColumnStretch(3, 2)
         field_group.add_widget(field_host)
         self.result_variable_combo.activated.connect(self._result_variable_changed)
         self.result_component_combo.activated.connect(self._result_component_changed)
@@ -2866,7 +2926,9 @@ class FEMMainWindow(QMainWindow):
             return
 
         variables: list[ResultVariable] = []
-        for availability in provider.catalog().fields:
+        for availability in visible_result_fields(
+            provider.catalog().fields
+        ):
             if availability.state is FieldState.UNAVAILABLE:
                 continue
             variable = availability.descriptor.field_id.variable
@@ -2900,7 +2962,10 @@ class FEMMainWindow(QMainWindow):
     def _sync_result_averaging_threshold_control(self) -> None:
         variable = self.result_variable_combo.currentData()
         position = self.result_position_combo.currentData()
-        visible = variable is ResultVariable.S
+        visible = (
+            variable is ResultVariable.S
+            and position is FieldPosition.RESOLVED_NODAL
+        )
         enabled = (
             visible
             and position is FieldPosition.RESOLVED_NODAL
@@ -2928,7 +2993,9 @@ class FEMMainWindow(QMainWindow):
             return
 
         positions: list[FieldPosition] = []
-        for availability in provider.catalog().fields:
+        for availability in visible_result_fields(
+            provider.catalog().fields
+        ):
             if availability.state is FieldState.UNAVAILABLE:
                 continue
             field_id = availability.descriptor.field_id
@@ -2983,7 +3050,9 @@ class FEMMainWindow(QMainWindow):
 
         availabilities = tuple(
             availability
-            for availability in provider.catalog().fields
+            for availability in visible_result_fields(
+                provider.catalog().fields
+            )
             if (
                 availability.state is not FieldState.UNAVAILABLE
                 and availability.descriptor.field_id.variable is variable
@@ -8662,6 +8731,12 @@ class FEMMainWindow(QMainWindow):
     def _toggle_edges(self, checked: bool) -> None:
         if self._display.contour_enabled:
             self._contour_options["edges"] = bool(checked)
+            if (
+                checked
+                and self._contour_options["edge_mode"]
+                == CONTOUR_EDGE_NONE
+            ):
+                self._contour_options["edge_mode"] = CONTOUR_EDGE_ALL
         else:
             self._model_edges_visible = bool(checked)
         self.viewport.set_edges_visible(checked)
@@ -9796,7 +9871,7 @@ class FEMMainWindow(QMainWindow):
         field_id = availability.descriptor.field_id
         result_name = (
             f"{field_id.variable.value} {selection.component}"
-            f"（{field_id.position.value}）"
+            f"（{result_position_label(field_id.position)}）"
         )
         return f"{shape} / {result_name}"
 
@@ -9956,6 +10031,12 @@ class FEMMainWindow(QMainWindow):
         )
         if settings.contour_enabled:
             self._contour_options["edges"] = settings.show_edges
+            if (
+                settings.show_edges
+                and self._contour_options["edge_mode"]
+                == CONTOUR_EDGE_NONE
+            ):
+                self._contour_options["edge_mode"] = CONTOUR_EDGE_ALL
         else:
             self._model_edges_visible = settings.show_edges
         self.actions["edges"].setChecked(settings.show_edges)
@@ -10017,7 +10098,18 @@ class FEMMainWindow(QMainWindow):
         previous_threshold = float(
             self._contour_options["averaging_threshold"]
         )
-        self._contour_options.update(options)
+        updated_options = dict(options)
+        if "edge_mode" in updated_options:
+            updated_options["edges"] = (
+                updated_options["edge_mode"] != CONTOUR_EDGE_NONE
+            )
+        elif (
+            updated_options.get("edges")
+            and self._contour_options["edge_mode"]
+            == CONTOUR_EDGE_NONE
+        ):
+            updated_options["edge_mode"] = CONTOUR_EDGE_ALL
+        self._contour_options.update(updated_options)
         threshold = float(
             self._contour_options["averaging_threshold"]
         )
@@ -10240,7 +10332,11 @@ class FEMMainWindow(QMainWindow):
         field_label = "_".join(
             (
                 field_id.variable.value,
-                field_id.position.value,
+                (
+                    "node"
+                    if field_id.position is FieldPosition.ELEMENT_NODAL
+                    else field_id.position.value
+                ),
                 selection.component,
             )
         )

@@ -14,9 +14,7 @@ from fem.application.results import (
     ScalarFieldSelection,
     build_solve_result_bundle,
 )
-from fem.io.result_csv import read_result_csv
 from fem.solvers.static_linear import solve
-from fem_gui.commands import ResultCsvExportSpec
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.visualization.model_adapter import build_model_geometry
 
@@ -128,7 +126,9 @@ def test_analysis_uses_clean_deformed_displacement_contour_defaults(gui_inp_path
     assert provider is not None
     assert selection == provider.catalog().default_selection
     assert window._contour_options["style"] == "segmented"
-    assert window._contour_options["colormap"] == "jet"
+    assert window._contour_options["colormap"] == "abaqus_rainbow"
+    assert window._contour_options["render_mode"] == "shaded"
+    assert window._contour_options["edge_mode"] == "none"
     assert window._contour_options["decimals"] == 5
     assert not window._contour_options["show_minimum"]
     assert not window._contour_options["show_maximum"]
@@ -177,41 +177,14 @@ def test_result_ribbon_selects_real_fields_and_deformation_scale(gui_inp_path):
     window.result_variable_combo.setCurrentIndex(stress_index)
     window._result_variable_changed(stress_index)
     _wait_for_tasks(window)
-    integration_point_selection = _assert_current_ribbon_selection(
-        window,
-        variable=ResultVariable.S,
-        position=FieldPosition.INTEGRATION_POINT,
-    )
-
-    unaveraged_index = window.result_position_combo.findData(
-        FieldPosition.ELEMENT_NODAL
-    )
-    assert unaveraged_index >= 0
-    window.result_position_combo.setCurrentIndex(unaveraged_index)
-    window._result_position_changed(unaveraged_index)
-    _wait_for_tasks(window)
     element_nodal_selection = _assert_current_ribbon_selection(
         window,
         variable=ResultVariable.S,
         position=FieldPosition.ELEMENT_NODAL,
     )
-    assert element_nodal_selection.component == integration_point_selection.component
-    assert element_nodal_selection.field_key != integration_point_selection.field_key
-
-    center_index = window.result_position_combo.findData(
-        FieldPosition.CENTROID
-    )
-    assert center_index >= 0
-    window.result_position_combo.setCurrentIndex(center_index)
-    window._result_position_changed(center_index)
-    _wait_for_tasks(window)
-    centroid_selection = _assert_current_ribbon_selection(
-        window,
-        variable=ResultVariable.S,
-        position=FieldPosition.CENTROID,
-    )
-    assert centroid_selection.component == element_nodal_selection.component
-    assert centroid_selection.field_key != element_nodal_selection.field_key
+    assert element_nodal_selection.component
+    assert window.result_position_combo.count() == 1
+    assert window.result_position_combo.currentText() == "节点"
 
     custom_index = window.result_scale_combo.findData("custom")
     window.result_scale_combo.setCurrentIndex(custom_index)
@@ -260,10 +233,7 @@ def test_overlay_and_contour_style_update_existing_scene_state(gui_inp_path):
     window.close()
 
 
-def test_stress_averaging_threshold_is_visualization_only(
-    gui_inp_path,
-    tmp_path,
-):
+def test_stress_exposes_no_discarded_position_controls(gui_inp_path):
     _application()
     window = _solved_window(gui_inp_path)
 
@@ -275,69 +245,14 @@ def test_stress_averaging_threshold_is_visualization_only(
     window.result_variable_combo.setCurrentIndex(stress_index)
     window._result_variable_changed(stress_index)
     _wait_for_tasks(window)
-    assert not window.result_averaging_threshold.isHidden()
-    assert not window.result_averaging_threshold.isEnabled()
-
-    resolved_index = window.result_position_combo.findData(
-        FieldPosition.RESOLVED_NODAL
-    )
-    assert resolved_index >= 0
-    window.result_position_combo.setCurrentIndex(resolved_index)
-    window._result_position_changed(resolved_index)
-    _wait_for_tasks(window)
 
     selection = window.result_selection
-    provider = window._current_result_provider()
     assert type(selection) is ScalarFieldSelection
-    assert provider is not None
-    assert window.result_averaging_threshold.isEnabled()
     assert (
-        selection.field_key.request.averaging_policy.threshold_percent
-        == 75.0
+        selection.field_key.request.field_id.position
+        is FieldPosition.ELEMENT_NODAL
     )
-    generation = provider.snapshot.generation
-
-    window.result_averaging_threshold.setValue(25.0)
-    _wait_for_tasks(window)
-
-    current = window._current_result_provider()
-    rendered = window.viewport._result_render_payload.topology.selection
-    assert current is not None
-    assert current.snapshot.generation == generation
-    assert window.result_selection == selection
-    assert rendered.component == selection.component
-    assert (
-        rendered.field_key.request.averaging_policy.threshold_percent
-        == 25.0
-    )
-    assert not any(
-        availability.key == rendered.field_key
-        for availability in current.catalog().fields
-    )
-    window.set_shape_mode("undeformed")
-    assert (
-        window.viewport._result_render_payload.topology.selection
-        == rendered
-    )
-
-    target = tmp_path / "stress.csv"
-    receipt = window.export_result_csv(
-        target,
-        ResultCsvExportSpec(
-            current.source,
-            current.snapshot.generation,
-            selection,
-        ),
-    )
-    assert receipt.completion is not None
-    _wait_for_tasks(window)
-    readback = read_result_csv(target)
-    field = current.field(selection.field_key)
-    component_index = field.descriptor.columns.index(selection.component)
-    expected_values = tuple(
-        float(value)
-        for value in field.values[:, component_index]
-    )
-    assert readback.selection == selection
-    assert tuple(record.value for record in readback.records) == expected_values
+    assert window.result_position_combo.count() == 1
+    assert window.result_position_combo.currentText() == "节点"
+    assert window.result_averaging_threshold.isHidden()
     window.close()

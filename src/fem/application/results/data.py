@@ -260,11 +260,11 @@ class FieldAvailability:
 
 @dataclass(frozen=True, slots=True)
 class ResultCatalog:
-    """Immutable provider catalog with a complete default scalar selection."""
+    """Immutable published catalog with an optional default when empty."""
 
     source: ResultSourceKey
     fields: tuple[FieldAvailability, ...]
-    default_selection: ScalarFieldSelection
+    default_selection: ScalarFieldSelection | None
     diagnostics: tuple[ResultDiagnostic, ...] = ()
 
     def __post_init__(self) -> None:
@@ -282,9 +282,15 @@ class ResultCatalog:
             tuple(item.key for item in self.fields),
             label="catalog fields",
         )
+        if not self.fields:
+            if self.default_selection is not None:
+                raise ValueError(
+                    "empty result catalogs cannot have a default selection"
+                )
+            return
         if type(self.default_selection) is not ScalarFieldSelection:
             raise TypeError(
-                "default_selection must be ScalarFieldSelection"
+                "non-empty catalogs require a ScalarFieldSelection default"
             )
         selected = tuple(
             item
