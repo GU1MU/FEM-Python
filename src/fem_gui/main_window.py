@@ -84,16 +84,13 @@ from fem.application.results import (
     ResultQueryValidationError,
     ResultExportSnapshot,
     ResultMaterializationPatch,
-    ResultMaterializationSnapshot,
     ResultProvider,
     ResultSourceKey,
     ResultVariable,
     ScalarFieldSelection,
-    advance_materialization,
     build_solve_result_bundle,
     prepare_result_export_snapshot,
     project_scalar_field_topology,
-    restore_result_provider,
 )
 from fem.core.model import (
     AnalysisStep,
@@ -460,12 +457,12 @@ class FEMMainWindow(QMainWindow):
             "edges": False,
             "averaging_threshold": 75.0,
         }
-        self._result_visualization_materialization: (
+        self._result_visualization_provider_cache: (
             tuple[
                 ResultSourceKey,
                 int,
                 FieldMaterializationKey,
-                ResultMaterializationSnapshot,
+                ResultProvider,
             ]
             | None
         ) = None
@@ -1195,11 +1192,7 @@ class FEMMainWindow(QMainWindow):
                 context: TaskContext,
             ) -> ResultMaterializationPatch:
                 context.report("正在按需加载结果字段……")
-                detached_provider = restore_result_provider(
-                    task.record.result,
-                    task.materialization,
-                )
-                return detached_provider.materialize(
+                return provider.materialize(
                     task.field_keys,
                     cancellation=context,
                 )
@@ -1517,11 +1510,7 @@ class FEMMainWindow(QMainWindow):
                 context: TaskContext,
             ) -> ResultMaterializationPatch:
                 context.report("正在按需加载查询字段……")
-                detached_provider = restore_result_provider(
-                    task.record.result,
-                    task.materialization,
-                )
-                return detached_provider.materialize(
+                return provider.materialize(
                     task.field_keys,
                     cancellation=context,
                 )
@@ -1553,14 +1542,7 @@ class FEMMainWindow(QMainWindow):
 
                 accepted_delta = delta
                 try:
-                    materialization = advance_materialization(
-                        task.materialization,
-                        value,
-                    )
-                    accepted_provider = restore_result_provider(
-                        task.record.result,
-                        materialization,
-                    )
+                    accepted_provider = provider.advance(value)
                     result = accepted_provider.query(query)
                     self._validate_result_query_result(
                         accepted_provider,
@@ -1865,10 +1847,10 @@ class FEMMainWindow(QMainWindow):
         self,
         spec: ResultCsvExportSpec | ResultVtkExportSpec,
     ) -> ResultExportSnapshot:
-        record = self.session.current_result()
-        if record is None:
+        provider = self._current_result_provider()
+        if provider is None:
             raise RuntimeError("there is no current accepted result")
-        materialization = record.materialization
+        materialization = provider.snapshot
         if materialization.source != spec.source:
             raise RuntimeError(
                 "export source does not match the current accepted result"
@@ -2073,22 +2055,23 @@ class FEMMainWindow(QMainWindow):
                 source_label=source_label or self._session_source_label(),
             )
 
-        current_result = self.session.current_result()
-        if current_result is None:
+        result_identity = self.session.current_result_identity()
+        if result_identity is None:
             self._clear_result_projection()
         elif artifact is not None and self.geometry is not None:
-            materialization = current_result.materialization
+            source, generation = result_identity
             provider = self.result_provider
             provider_changed = (
                 type(provider) is not ResultProvider
-                or provider.source != materialization.source
-                or provider.snapshot.generation != materialization.generation
+                or provider.source != source
+                or provider.snapshot.generation != generation
             )
             if provider_changed:
-                provider = restore_result_provider(
-                    current_result.result,
-                    materialization,
-                )
+                provider = self.session.current_result_provider()
+                if provider is None:
+                    raise RuntimeError(
+                        "current result identity has no provider"
+                    )
 
             selection_is_current = self._selection_belongs_to_catalog(
                 provider,
@@ -2205,7 +2188,7 @@ class FEMMainWindow(QMainWindow):
         self.geometry = None
         self.result_provider = None
         self.result_selection = None
-        self._result_visualization_materialization = None
+        self._result_visualization_provider_cache = None
         self.selection.clear()
         self._display = DisplayState()
         self.model_tree.clear_model()
@@ -2224,7 +2207,7 @@ class FEMMainWindow(QMainWindow):
         )
         self.result_provider = None
         self.result_selection = None
-        self._result_visualization_materialization = None
+        self._result_visualization_provider_cache = None
         self._display = DisplayState()
         self.result_tree.clear_result()
         self.navigation.show_model()
@@ -2254,12 +2237,11 @@ class FEMMainWindow(QMainWindow):
 
         if type(provider) is not ResultProvider:
             raise TypeError("provider must be exactly ResultProvider")
-        record = self.session.current_result()
+        identity = self.session.current_result_identity()
         if (
-            record is None
-            or provider.source != record.materialization.source
-            or provider.snapshot.generation
-            != record.materialization.generation
+            identity is None
+            or provider.source != identity[0]
+            or provider.snapshot.generation != identity[1]
         ):
             raise RuntimeError(
                 "provider does not match the current accepted result"
@@ -2276,7 +2258,7 @@ class FEMMainWindow(QMainWindow):
             raise RuntimeError(
                 "provider projection does not match the current model"
             )
-        cached = self._result_visualization_materialization
+        cached = self._result_visualization_provider_cache
         if (
             cached is not None
             and (
@@ -2284,7 +2266,7 @@ class FEMMainWindow(QMainWindow):
                 or cached[1] != provider.snapshot.generation
             )
         ):
-            self._result_visualization_materialization = None
+            self._result_visualization_provider_cache = None
 
         catalog = provider.catalog()
         selection = (
@@ -3112,7 +3094,7 @@ class FEMMainWindow(QMainWindow):
         self._scale_mode = str(self.result_scale_combo.currentData())
         self.result_scale_value.setEnabled(
             self._scale_mode == "custom"
-            and self.session.current_result() is not None
+            and self.session.current_result_identity() is not None
         )
         self._apply_scale()
 
@@ -9184,17 +9166,16 @@ class FEMMainWindow(QMainWindow):
         """Return the exact provider for the currently displayed Session result."""
 
         provider = self.result_provider
-        record = self.session.current_result()
+        identity = self.session.current_result_identity()
         artifact = self.document.artifact
         geometry = self.geometry
         if (
             type(provider) is not ResultProvider
-            or record is None
+            or identity is None
             or artifact is None
             or geometry is None
-            or provider.source != record.materialization.source
-            or provider.snapshot.generation
-            != record.materialization.generation
+            or provider.source != identity[0]
+            or provider.snapshot.generation != identity[1]
             or provider.source.artifact_id != artifact.artifact_id
             or geometry.artifact_id != artifact.artifact_id
         ):
@@ -9358,7 +9339,7 @@ class FEMMainWindow(QMainWindow):
             is FieldState.READY
         ):
             return provider, visual_selection
-        cached = self._result_visualization_materialization
+        cached = self._result_visualization_provider_cache
         if (
             cached is None
             or cached[0] != provider.source
@@ -9366,14 +9347,14 @@ class FEMMainWindow(QMainWindow):
             or cached[2] != visual_selection.field_key
         ):
             return provider, selection
-        record = self.session.current_result()
         if (
-            record is None
-            or record.materialization.source != provider.source
+            cached[3].source != provider.source
+            or cached[3].snapshot.generation
+            != provider.snapshot.generation
         ):
             return provider, selection
         return (
-            restore_result_provider(record.result, cached[3]),
+            cached[3],
             visual_selection,
         )
 
@@ -9423,8 +9404,12 @@ class FEMMainWindow(QMainWindow):
                 provider.source.run_id
             )
             if (
-                task.record.materialization.source != provider.source
-                or task.record.materialization.generation
+                self.session.current_result_identity()
+                != (provider.source, provider.snapshot.generation)
+                or task.token.result_id != provider.source.result_id
+                or dict(task.token.dependency_revisions).get(
+                    "materialization_generation"
+                )
                 != provider.snapshot.generation
             ):
                 raise RuntimeError(
@@ -9435,11 +9420,7 @@ class FEMMainWindow(QMainWindow):
                 context: TaskContext,
             ) -> ResultMaterializationPatch:
                 context.report("正在计算节点平均应力云图……")
-                detached_provider = restore_result_provider(
-                    task.record.result,
-                    task.record.materialization,
-                )
-                return detached_provider.materialize(
+                return provider.materialize(
                     (visual_selection.field_key,),
                     cancellation=context,
                 )
@@ -9461,13 +9442,10 @@ class FEMMainWindow(QMainWindow):
                     raise RuntimeError(
                         "averaging visualization receipt was not accepted"
                     )
-                visual_snapshot = advance_materialization(
-                    task.record.materialization,
-                    patch,
-                )
+                visual_provider = provider.apply(patch)
                 if not any(
                     field_data.key == visual_selection.field_key
-                    for field_data in visual_snapshot.fields
+                    for field_data in visual_provider.snapshot.fields
                 ):
                     raise RuntimeError(
                         "averaging visualization field was not materialized"
@@ -9487,11 +9465,11 @@ class FEMMainWindow(QMainWindow):
                     != visual_selection
                 ):
                     return
-                self._result_visualization_materialization = (
+                self._result_visualization_provider_cache = (
                     provider.source,
                     provider.snapshot.generation,
                     visual_selection.field_key,
-                    visual_snapshot,
+                    visual_provider,
                 )
                 self._apply_display()
                 self.status_panel.set_state(

@@ -23,6 +23,7 @@ from .data import (
     ResultMaterializationPatch,
     ResultMaterializationSnapshot,
     ResultTopologyProjection,
+    advance_materialization,
     build_initial_materialization,
 )
 from .fields import (
@@ -325,6 +326,26 @@ class ResultProvider:
             _profile=self._profile,
             _catalog=draft_catalog,
             _snapshot=draft_snapshot,
+        )
+
+    def advance(
+        self,
+        patch: ResultMaterializationPatch,
+    ) -> ResultProvider:
+        """Accept one non-empty patch and advance the immutable generation."""
+
+        draft = self.apply(patch)
+        if draft is self:
+            raise ValueError("patch must add at least one field")
+        accepted_snapshot = advance_materialization(
+            self._snapshot,
+            patch,
+        )
+        return ResultProvider(
+            _owned_result=self._owned_result,
+            _profile=self._profile,
+            _catalog=draft._catalog,
+            _snapshot=accepted_snapshot,
         )
 
 

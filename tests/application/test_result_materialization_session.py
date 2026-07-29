@@ -6,6 +6,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import fem.application.runs as runs_module
+import fem.application.results.workflow as workflow_module
 from fem.application import (
     ChangeKind,
     ModelSession,
@@ -170,6 +172,85 @@ def test_materialization_advances_only_runtime_result_generation() -> None:
         is TokenStatus.STALE_REVISION
     )
     assert not session.accept_result_projection(projection.token).accepted
+
+
+def test_accepted_result_builds_once_and_reuses_generation_provider(
+    monkeypatch,
+) -> None:
+    build_calls = []
+    restore_calls = []
+    original_build = workflow_module.build_result_provider
+    original_restore = runs_module.restore_result_provider
+
+    def counted_build(*args, **kwargs):
+        build_calls.append(True)
+        return original_build(*args, **kwargs)
+
+    def counted_restore(*args, **kwargs):
+        restore_calls.append(True)
+        return original_restore(*args, **kwargs)
+
+    monkeypatch.setattr(
+        workflow_module,
+        "build_result_provider",
+        counted_build,
+    )
+    monkeypatch.setattr(
+        runs_module,
+        "restore_result_provider",
+        counted_restore,
+    )
+    session = _session()
+    solve = _succeed(session, "Job-1", marker=1.5)
+
+    initial_provider = session.current_result_provider()
+    assert initial_provider is not None
+    assert session.current_result_identity() == (
+        initial_provider.source,
+        0,
+    )
+    assert build_calls == [True]
+    assert restore_calls == []
+
+    for _ in range(3):
+        assert session.current_result_provider() is initial_provider
+        assert session.current_result_identity() == (
+            initial_provider.source,
+            0,
+        )
+        assert session.current_result() is not None
+    assert session.snapshot().displayed_result is not None
+    assert session.prepare_result_projection(solve.run_id).record is not None
+    assert build_calls == [True]
+    assert restore_calls == []
+
+    key = initial_provider.resolve_request(
+        FieldRequest(
+            ResultFieldId(
+                ResultVariable.S,
+                FieldPosition.CENTROID,
+            )
+        )
+    )
+    task = session.prepare_result_materialization(
+        solve.run_id,
+        (key,),
+    )
+    patch = initial_provider.materialize(task.field_keys)
+    delta = session.accept_result_materialization(task.token, patch)
+
+    advanced_provider = session.current_result_provider()
+    assert delta.accepted
+    assert advanced_provider is not None
+    assert advanced_provider is not initial_provider
+    assert advanced_provider.source == initial_provider.source
+    assert advanced_provider.snapshot.generation == 1
+    assert session.current_result_identity() == (
+        advanced_provider.source,
+        1,
+    )
+    assert build_calls == [True]
+    assert restore_calls == []
 
 
 def test_competing_workers_use_generation_cas_and_cache_hit_is_noop() -> None:

@@ -13,6 +13,7 @@ import pytest
 from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication
 
+import fem.application.runs as runs_module
 from fem.application.results import (
     FieldMaterializationKey,
     FieldState,
@@ -238,6 +239,44 @@ def _install_blocking_materializer(
 
     monkeypatch.setattr(ResultProvider, "materialize", materialize)
     return original, entered, release, calls
+
+
+def test_result_status_and_display_refresh_reuse_provider_without_detaching(
+    solved_window: FEMMainWindow,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window = solved_window
+    provider = window.result_provider
+    assert type(provider) is ResultProvider
+    identity = (provider.source, provider.snapshot.generation)
+    assert window.session.current_result_identity() == identity
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError(
+            "result refresh must not detach or restore the accepted result"
+        )
+
+    monkeypatch.setattr(window.session, "current_result", unexpected)
+    monkeypatch.setattr(
+        runs_module,
+        "restore_result_provider",
+        unexpected,
+    )
+    monkeypatch.setattr(runs_module, "deep_owned_result", unexpected)
+    monkeypatch.setattr(
+        runs_module,
+        "deep_owned_materialization",
+        unexpected,
+    )
+
+    for _ in range(3):
+        assert window._current_result_provider() is provider
+        window._refresh_result_controls()
+        window._update_action_states()
+        window._apply_display()
+
+    assert window.result_provider is provider
+    assert window.session.current_result_identity() == identity
 
 
 def _result_payload(window: FEMMainWindow) -> ResultRenderPayload:

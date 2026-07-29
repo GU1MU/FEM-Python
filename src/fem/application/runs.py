@@ -10,12 +10,19 @@ from typing import Mapping
 
 from fem.core.result import ModelResult
 
-from .results.data import ResultMaterializationSnapshot
+from .results.data import (
+    ResultMaterializationPatch,
+    ResultMaterializationSnapshot,
+)
 from .results.execution import (
     OutputExecutionStatus,
     ResultExecutionReport,
 )
-from .results.provider import restore_result_provider
+from .results._ownership import (
+    deep_owned_materialization,
+    deep_owned_result,
+)
+from .results.provider import ResultProvider, restore_result_provider
 
 
 def utc_now() -> datetime:
@@ -85,6 +92,11 @@ class ResultRecord:
     output_report: ResultExecutionReport
     materialization: ResultMaterializationSnapshot
     created_at: datetime = field(default_factory=utc_now)
+    _provider: ResultProvider | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         if type(self.result_id) is not str or not self.result_id.strip():
@@ -143,11 +155,24 @@ class ResultRecord:
                 "every executed output field must be materialized"
             )
 
-        restored = restore_result_provider(
-            self.result,
-            self.materialization,
-        )
-        object.__setattr__(self, "result", restored._owned_result)
+        provider = self._provider
+        if provider is None:
+            provider = restore_result_provider(
+                self.result,
+                self.materialization,
+            )
+        else:
+            if type(provider) is not ResultProvider:
+                raise TypeError("_provider must be exactly ResultProvider")
+            if provider._owned_result is not self.result:
+                raise ValueError(
+                    "_provider must own the exact record result"
+                )
+            if provider.snapshot is not self.materialization:
+                raise ValueError(
+                    "_provider must expose the exact record materialization"
+                )
+        object.__setattr__(self, "result", provider._owned_result)
         object.__setattr__(
             self,
             "output_report",
@@ -156,8 +181,9 @@ class ResultRecord:
         object.__setattr__(
             self,
             "materialization",
-            restored.snapshot,
+            provider.snapshot,
         )
+        object.__setattr__(self, "_provider", provider)
 
 
 def detached_result_record(record: ResultRecord) -> ResultRecord:
@@ -165,12 +191,53 @@ def detached_result_record(record: ResultRecord) -> ResultRecord:
 
     if type(record) is not ResultRecord:
         raise TypeError("record must be exactly ResultRecord")
+    provider = result_record_provider(record)
+    owned_result = deep_owned_result(record.result)
+    owned_materialization = deep_owned_materialization(
+        record.materialization
+    )
+    detached_provider = ResultProvider(
+        _owned_result=owned_result,
+        _profile=provider.profile,
+        _catalog=provider.catalog(),
+        _snapshot=owned_materialization,
+    )
     return ResultRecord(
         result_id=record.result_id,
         provenance=deepcopy(record.provenance),
-        result=record.result,
+        result=owned_result,
         output_report=record.output_report,
-        materialization=record.materialization,
+        materialization=owned_materialization,
         created_at=record.created_at,
+        _provider=detached_provider,
+    )
+
+
+def result_record_provider(record: ResultRecord) -> ResultProvider:
+    """Return the immutable provider owned by one already accepted record."""
+
+    if type(record) is not ResultRecord:
+        raise TypeError("record must be exactly ResultRecord")
+    provider = record._provider
+    if type(provider) is not ResultProvider:
+        raise RuntimeError("accepted result record has no provider")
+    return provider
+
+
+def advance_result_record(
+    record: ResultRecord,
+    patch: ResultMaterializationPatch,
+) -> ResultRecord:
+    """Advance one accepted record without restoring its owned result graph."""
+
+    provider = result_record_provider(record).advance(patch)
+    return ResultRecord(
+        result_id=record.result_id,
+        provenance=record.provenance,
+        result=provider._owned_result,
+        output_report=record.output_report,
+        materialization=provider.snapshot,
+        created_at=record.created_at,
+        _provider=provider,
     )
 

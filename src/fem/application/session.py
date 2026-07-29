@@ -40,9 +40,9 @@ from fem.mesh.settings import MeshSettings
 from .results import (
     FieldMaterializationKey,
     ResultMaterializationPatch,
+    ResultProvider,
     ResultSourceKey,
     SolveResultBundle,
-    advance_materialization,
     field_materialization_sort_key,
     validate_solve_result_model_identity,
 )
@@ -113,7 +113,9 @@ from .runs import (
     ResultProvenance,
     ResultRecord,
     RunStatus,
+    advance_result_record,
     detached_result_record,
+    result_record_provider,
     utc_now,
 )
 from .validation import ValidationRecord, ValidationStamp
@@ -3676,14 +3678,22 @@ class ModelSession:
             step_name=str(token.step_name),
             run_id=run.run_id,
         )
+        provider = bundle._provider
         record = ResultRecord(
             result_id=result_id,
             provenance=provenance,
-            result=bundle.result,
+            result=(
+                bundle.result
+                if provider is None
+                else provider._owned_result
+            ),
             output_report=bundle.execution_report,
             materialization=bundle.initial_materialization,
+            _provider=provider,
         )
         self._results[run.run_id] = record
+        if provider is not None:
+            object.__setattr__(bundle, "_provider", None)
         self._runs[run.run_id] = replace(
             run,
             status=RunStatus.SUCCEEDED,
@@ -3933,14 +3943,7 @@ class ModelSession:
                 reason="result materialization cache hit",
             )
 
-        advanced = advance_materialization(
-            record.materialization,
-            patch,
-        )
-        updated_record = replace(
-            record,
-            materialization=advanced,
-        )
+        updated_record = advance_result_record(record, patch)
         self._results[str(token.run_id)] = updated_record
         for task_id, issued in self._issued_tokens.items():
             if (
@@ -4171,6 +4174,33 @@ class ModelSession:
             None
             if record is None
             else detached_result_record(record)
+        )
+
+    def current_result_identity(
+        self,
+    ) -> tuple[ResultSourceKey, int] | None:
+        """Return immutable displayed-result identity without detaching data."""
+
+        record = self._current_result_record(
+            self._displayed_result_run_id
+        )
+        if record is None:
+            return None
+        return (
+            record.materialization.source,
+            record.materialization.generation,
+        )
+
+    def current_result_provider(self) -> ResultProvider | None:
+        """Return the immutable provider projection for the displayed result."""
+
+        record = self._current_result_record(
+            self._displayed_result_run_id
+        )
+        return (
+            None
+            if record is None
+            else result_record_provider(record)
         )
 
     def find_run(self, run_id_or_name: str | None) -> AnalysisRun | None:

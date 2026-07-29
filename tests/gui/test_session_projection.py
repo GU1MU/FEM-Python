@@ -111,6 +111,11 @@ def test_one_delta_projects_result_to_every_gui_consumer() -> None:
     assert window.document.displayed_result_run_id == run_id
     assert record is not None
     assert provider is not None
+    assert window.session.current_result_provider() is provider
+    assert window.session.current_result_identity() == (
+        provider.source,
+        provider.snapshot.generation,
+    )
     assert selection is not None
     assert payload is not None
     assert provider.source.artifact_id == artifact_id
@@ -142,6 +147,7 @@ def test_same_run_generation_rebuilds_projection_and_preserves_ready_fields() ->
     selection_before = window.result_selection
     record = window.session.current_result()
     assert provider_before is not None
+    assert window.session.current_result_provider() is provider_before
     assert selection_before is not None
     assert record is not None
     assert provider_before.snapshot.generation == 0
@@ -163,6 +169,11 @@ def test_same_run_generation_rebuilds_projection_and_preserves_ready_fields() ->
     provider_after = window.result_provider
     assert accepted is not None
     assert provider_after is not None
+    assert window.session.current_result_provider() is provider_after
+    assert window.session.current_result_identity() == (
+        provider_after.source,
+        provider_after.snapshot.generation,
+    )
     assert provider_after is not provider_before
     assert provider_after.source.run_id == run_id
     assert provider_after.source.result_id == accepted.result_id == record.result_id

@@ -102,6 +102,7 @@ def test_result_acceptance_deep_owns_all_public_result_views() -> None:
     bundle = make_solve_result_bundle(solve, marker=4.0)
 
     session.accept_run_succeeded(solve.token, bundle)
+    assert bundle._provider is None
     bundle.result.U[0] = 99.0
     bundle.result.model.name = "mutated-worker-model"
 

@@ -81,6 +81,8 @@ def test_build_bundle_owns_source_and_initial_generation() -> None:
     assert bundle.execution_report.source == bundle.source
     assert bundle.initial_materialization.source == bundle.source
     assert bundle.initial_materialization.generation == 0
+    assert bundle._provider is not None
+    assert bundle._provider.snapshot is bundle.initial_materialization
     assert tuple(
         request.status for request in bundle.execution_report.requests
     ) == (OutputExecutionStatus.EXECUTED,)

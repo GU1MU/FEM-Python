@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from fem.application.revisions import SolveTaskSnapshot, TaskToken
 from fem.core.model import OutputRequest
@@ -16,7 +16,7 @@ from .execution import (
     execute_output_requests,
 )
 from .fields import ResultSourceKey
-from .provider import build_result_provider
+from .provider import ResultProvider, build_result_provider
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +27,12 @@ class SolveResultBundle:
     result: ModelResult
     execution_report: ResultExecutionReport
     initial_materialization: ResultMaterializationSnapshot
+    _provider: ResultProvider | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         if type(self.source) is not ResultSourceKey:
@@ -73,6 +79,28 @@ class SolveResultBundle:
                 "initial materialization"
             )
 
+    @classmethod
+    def _from_provider(
+        cls,
+        *,
+        source: ResultSourceKey,
+        result: ModelResult,
+        execution_report: ResultExecutionReport,
+        provider: ResultProvider,
+    ) -> SolveResultBundle:
+        if type(provider) is not ResultProvider:
+            raise TypeError("provider must be exactly ResultProvider")
+        if provider.source != source:
+            raise ValueError("provider source must match bundle source")
+        bundle = cls(
+            source=source,
+            result=result,
+            execution_report=execution_report,
+            initial_materialization=provider.snapshot,
+        )
+        object.__setattr__(bundle, "_provider", provider)
+        return bundle
+
 
 def build_solve_result_bundle(
     task: SolveTaskSnapshot,
@@ -91,11 +119,11 @@ def build_solve_result_bundle(
         cancellation=cancellation,
     )
     check_cancellation(cancellation)
-    return SolveResultBundle(
+    return SolveResultBundle._from_provider(
         source=source,
         result=result,
         execution_report=outcome.report,
-        initial_materialization=outcome.provider_draft.snapshot,
+        provider=outcome.provider_draft,
     )
 
 
