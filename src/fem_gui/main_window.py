@@ -84,14 +84,17 @@ from fem.application.results import (
     ResultQueryResult,
     ResultQueryValidationError,
     ResultExportSnapshot,
+    ResultFieldTopologyTemplate,
     ResultMaterializationPatch,
     ResultProvider,
     ResultSourceKey,
     ResultVariable,
     ScalarFieldSelection,
     build_solve_result_bundle,
+    build_result_field_topology_template,
     prepare_result_export_snapshot,
     project_scalar_field_topology,
+    project_scalar_field_topology_from_template,
 )
 from fem.core.model import (
     AnalysisStep,
@@ -498,6 +501,9 @@ class FEMMainWindow(QMainWindow):
                 ResultProvider,
             ]
             | None
+        ) = None
+        self._result_topology_template_cache: (
+            tuple[object, ResultFieldTopologyTemplate] | None
         ) = None
         self._step_combos: list[QComboBox] = []
         self._build_actions()
@@ -9393,16 +9399,39 @@ class FEMMainWindow(QMainWindow):
             provider.snapshot,
             selection,
         )
-        topology = project_scalar_field_topology(
-            export,
-            deformation_scale=self._result_deformation_scale(
-                provider,
-                shape_mode=shape_mode,
-                scale_mode=scale_mode,
-                scale_value=scale_value,
-            ),
+        deformation_scale = self._result_deformation_scale(
+            provider,
+            shape_mode=shape_mode,
+            scale_mode=scale_mode,
+            scale_value=scale_value,
         )
-        return build_result_render_payload(topology)
+        cache = self._result_topology_template_cache
+        if (
+            cache is not None
+            and cache[0] is provider.snapshot
+            and cache[1].matches(export, deformation_scale)
+        ):
+            topology = project_scalar_field_topology_from_template(
+                export,
+                cache[1],
+                deformation_scale,
+            )
+        else:
+            topology = project_scalar_field_topology(
+                export,
+                deformation_scale=deformation_scale,
+            )
+            self._result_topology_template_cache = (
+                provider.snapshot,
+                build_result_field_topology_template(
+                    topology,
+                    export.field,
+                ),
+            )
+        return build_result_render_payload(
+            topology,
+            reusable=self.viewport._result_render_payload,
+        )
 
     def _result_averaging_visual_selection(
         self,

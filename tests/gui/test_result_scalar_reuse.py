@@ -157,3 +157,47 @@ def test_failed_component_switch_can_restore_exact_previous_payload(
     assert rendered_actor.mapper.array_name == first.scalar_name
     assert validate_result_render_payload(first) is first
     viewport.close()
+
+
+def test_cached_layout_reuses_dataset_and_provenance_indexes() -> None:
+    _application()
+    first = _payload("S11", (1.0, 2.0, 3.0))
+    first_topology = first.topology
+    second_topology = ResultFieldTopology(
+        source=first_topology.source,
+        materialization_generation=first_topology.materialization_generation,
+        selection=ScalarFieldSelection(
+            first_topology.selection.field_key,
+            "S22",
+        ),
+        deformation_scale=first_topology.deformation_scale,
+        points=first_topology.points,
+        cells=first_topology.cells,
+        cell_kinds=first_topology.cell_kinds,
+        canonical_element_types=first_topology.canonical_element_types,
+        values=np.asarray((4.0, 5.0, 6.0)),
+        value_layout=first_topology.value_layout,
+        point_locations=first_topology.point_locations,
+        cell_locations=first_topology.cell_locations,
+    )
+    second = build_result_render_payload(
+        second_topology,
+        reusable=first,
+    )
+    assert second.dataset is first.dataset
+
+    viewport = FEMViewport()
+    viewport._plotter = pyvista.Plotter(off_screen=True)
+    viewport._display = DisplayState("deformed", True)
+    viewport.set_result_render_payload(first)
+    viewport._update_result_layer()
+    node_index = viewport._result_point_index_to_node_id
+    element_index = viewport._result_point_index_to_element_id
+    cell_index = viewport._result_cell_index_to_element_id
+
+    viewport.set_result_render_payload(second)
+
+    assert viewport._result_point_index_to_node_id is node_index
+    assert viewport._result_point_index_to_element_id is element_index
+    assert viewport._result_cell_index_to_element_id is cell_index
+    viewport.close()

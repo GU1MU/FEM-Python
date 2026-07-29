@@ -42,11 +42,23 @@ class ResultRenderPayload:
 
 def build_result_render_payload(
     topology: ResultFieldTopology,
+    *,
+    reusable: ResultRenderPayload | None = None,
 ) -> ResultRenderPayload:
     """Build a PyVista grid without reinterpreting result-field semantics."""
 
     if type(topology) is not ResultFieldTopology:
         raise TypeError("topology must be exactly ResultFieldTopology")
+    if reusable is not None:
+        checked_reusable = validate_result_render_payload(reusable)
+        if _has_reusable_topology(checked_reusable, topology):
+            rebound = _payload_on_reused_dataset(
+                checked_reusable,
+                topology,
+                topology.values,
+            )
+            if rebound is not None:
+                return rebound
 
     cells = _flat_cell_array(topology)
     cell_types = _cell_type_array(topology)
@@ -169,36 +181,15 @@ def reuse_result_render_dataset(
         if topology.value_layout is ResultValueLayout.POINT
         else checked_candidate.dataset.cell_data[checked_candidate.scalar_name]
     )
-    target = (
-        dataset.point_data
-        if topology.value_layout is ResultValueLayout.POINT
-        else dataset.cell_data
-    )
-    scalar_name = _component_scalar_name(checked_candidate)
-    if scalar_name in target:
-        if not np.array_equal(np.asarray(target[scalar_name]), source_values):
-            return checked_candidate, False
-    else:
-        target.set_array(
-            source_values,
-            scalar_name,
-            deep_copy=True,
-        )
-    dataset.set_active_scalars(
-        scalar_name,
-        preference=(
-            "point"
-            if topology.value_layout is ResultValueLayout.POINT
-            else "cell"
-        ),
+    rebound = _payload_on_reused_dataset(
+        checked_current,
+        topology,
+        source_values,
     )
     return (
-        ResultRenderPayload(
-            topology=topology,
-            dataset=dataset,
-            scalar_name=scalar_name,
-        ),
-        True,
+        (checked_candidate, False)
+        if rebound is None
+        else (rebound, True)
     )
 
 
@@ -206,8 +197,14 @@ def _has_reusable_geometry(
     current: ResultRenderPayload,
     candidate: ResultRenderPayload,
 ) -> bool:
+    return _has_reusable_topology(current, candidate.topology)
+
+
+def _has_reusable_topology(
+    current: ResultRenderPayload,
+    candidate_topology: ResultFieldTopology,
+) -> bool:
     current_topology = current.topology
-    candidate_topology = candidate.topology
     return (
         current_topology.source == candidate_topology.source
         and current_topology.materialization_generation
@@ -227,21 +224,49 @@ def _has_reusable_geometry(
         == candidate_topology.cell_locations
         and np.array_equal(
             np.asarray(current.dataset.points),
-            np.asarray(candidate.dataset.points),
-        )
-        and np.array_equal(
-            np.asarray(current.dataset.cells),
-            np.asarray(candidate.dataset.cells),
-        )
-        and np.array_equal(
-            np.asarray(current.dataset.celltypes),
-            np.asarray(candidate.dataset.celltypes),
+            candidate_topology.points,
         )
     )
 
 
-def _component_scalar_name(payload: ResultRenderPayload) -> str:
-    component = payload.topology.selection.component
+def _payload_on_reused_dataset(
+    current: ResultRenderPayload,
+    topology: ResultFieldTopology,
+    values: np.ndarray,
+) -> ResultRenderPayload | None:
+    dataset = current.dataset
+    target = (
+        dataset.point_data
+        if topology.value_layout is ResultValueLayout.POINT
+        else dataset.cell_data
+    )
+    scalar_name = _component_scalar_name(topology)
+    if scalar_name in target:
+        if not np.array_equal(np.asarray(target[scalar_name]), values):
+            return None
+    else:
+        target.set_array(
+            values,
+            scalar_name,
+            deep_copy=True,
+        )
+    dataset.set_active_scalars(
+        scalar_name,
+        preference=(
+            "point"
+            if topology.value_layout is ResultValueLayout.POINT
+            else "cell"
+        ),
+    )
+    return ResultRenderPayload(
+        topology=topology,
+        dataset=dataset,
+        scalar_name=scalar_name,
+    )
+
+
+def _component_scalar_name(topology: ResultFieldTopology) -> str:
+    component = topology.selection.component
     return f"{RESULT_SCALAR_NAME}:{component}"
 
 

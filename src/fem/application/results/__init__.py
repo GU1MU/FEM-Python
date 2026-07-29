@@ -67,8 +67,11 @@ from .query import (
 from .topology import (
     ResultCellKind,
     ResultFieldTopology,
+    ResultFieldTopologyTemplate,
     ResultValueLayout,
+    build_result_field_topology_template,
     project_scalar_field_topology,
+    project_scalar_field_topology_from_template,
 )
 from .output_requests import (
     ExecutableOutputRequest,
@@ -123,6 +126,7 @@ __all__ = [
     "ResultExecutionReport",
     "ResultExportSnapshot",
     "ResultFieldTopology",
+    "ResultFieldTopologyTemplate",
     "ResultFieldId",
     "ResultInspectionField",
     "ResultInspectionRequest",
@@ -143,6 +147,7 @@ __all__ = [
     "SolveResultBundle",
     "advance_materialization",
     "build_result_provider",
+    "build_result_field_topology_template",
     "build_solve_result_bundle",
     "build_initial_materialization",
     "catalog_diagnostics",
@@ -156,6 +161,7 @@ __all__ = [
     "inspect_result_snapshot",
     "prepare_result_export_snapshot",
     "project_scalar_field_topology",
+    "project_scalar_field_topology_from_template",
     "project_output_request",
     "registry_entry_for",
     "restore_result_provider",

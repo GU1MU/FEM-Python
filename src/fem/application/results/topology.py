@@ -20,6 +20,7 @@ from .data import (
 )
 from .fields import (
     FieldAssociation,
+    FieldMaterializationKey,
     ResultSourceKey,
     ScalarFieldSelection,
 )
@@ -150,6 +151,110 @@ class ResultFieldTopology:
         return _public_array_copy(self._values)
 
 
+@dataclass(frozen=True, slots=True, eq=False, init=False)
+class ResultFieldTopologyTemplate:
+    """Immutable geometry and field-row mapping shared by field components."""
+
+    source: ResultSourceKey
+    materialization_generation: int
+    field_key: FieldMaterializationKey
+    deformation_scale: float
+    _points: np.ndarray = field(repr=False)
+    cells: tuple[tuple[int, ...], ...]
+    cell_kinds: tuple[ResultCellKind, ...]
+    canonical_element_types: tuple[str | None, ...]
+    value_layout: ResultValueLayout
+    point_locations: tuple[FieldLocation | None, ...]
+    cell_locations: tuple[FieldLocation | None, ...]
+    _row_indices: np.ndarray = field(repr=False)
+
+    def __init__(
+        self,
+        topology: ResultFieldTopology,
+        field_data: FieldData,
+    ) -> None:
+        if type(topology) is not ResultFieldTopology:
+            raise TypeError("topology must be ResultFieldTopology")
+        if type(field_data) is not FieldData:
+            raise TypeError("field_data must be FieldData")
+        if topology.source != field_data.source:
+            raise ValueError("template topology and field source must match")
+        if topology.selection.field_key != field_data.key:
+            raise ValueError("template topology and field key must match")
+
+        value_locations = (
+            topology.point_locations
+            if topology.value_layout is ResultValueLayout.POINT
+            else topology.cell_locations
+        )
+        rows = {
+            location: row_index
+            for row_index, location in enumerate(field_data.locations)
+        }
+        if any(location is None for location in value_locations):
+            raise ValueError("template value locations must be exact field rows")
+        try:
+            row_indices = np.fromiter(
+                (rows[location] for location in value_locations),
+                dtype=np.int64,
+                count=len(value_locations),
+            )
+        except KeyError as error:
+            raise ValueError(
+                "template value location is absent from the field"
+            ) from error
+        if set(int(index) for index in row_indices) != set(range(len(rows))):
+            raise ValueError("template must map every field row")
+        row_indices.setflags(write=False)
+
+        object.__setattr__(self, "source", topology.source)
+        object.__setattr__(
+            self,
+            "materialization_generation",
+            topology.materialization_generation,
+        )
+        object.__setattr__(self, "field_key", topology.selection.field_key)
+        object.__setattr__(
+            self,
+            "deformation_scale",
+            topology.deformation_scale,
+        )
+        object.__setattr__(self, "_points", topology._points)
+        object.__setattr__(self, "cells", topology.cells)
+        object.__setattr__(self, "cell_kinds", topology.cell_kinds)
+        object.__setattr__(
+            self,
+            "canonical_element_types",
+            topology.canonical_element_types,
+        )
+        object.__setattr__(self, "value_layout", topology.value_layout)
+        object.__setattr__(
+            self,
+            "point_locations",
+            topology.point_locations,
+        )
+        object.__setattr__(
+            self,
+            "cell_locations",
+            topology.cell_locations,
+        )
+        object.__setattr__(self, "_row_indices", row_indices)
+
+    def matches(
+        self,
+        export: ResultExportSnapshot,
+        deformation_scale: float,
+    ) -> bool:
+        return (
+            type(export) is ResultExportSnapshot
+            and self.source == export.source
+            and self.materialization_generation
+            == export.materialization_generation
+            and self.field_key == export.selection.field_key
+            and self.deformation_scale == _finite_scale(deformation_scale)
+        )
+
+
 def project_scalar_field_topology(
     export: ResultExportSnapshot,
     deformation_scale: float = 0.0,
@@ -217,6 +322,86 @@ def project_scalar_field_topology(
         deformation_scale=scale,
         **projected,
     )
+
+
+def build_result_field_topology_template(
+    topology: ResultFieldTopology,
+    field_data: FieldData,
+) -> ResultFieldTopologyTemplate:
+    return ResultFieldTopologyTemplate(topology, field_data)
+
+
+def project_scalar_field_topology_from_template(
+    export: ResultExportSnapshot,
+    template: ResultFieldTopologyTemplate,
+    deformation_scale: float,
+) -> ResultFieldTopology:
+    if type(export) is not ResultExportSnapshot:
+        raise TypeError("export must be ResultExportSnapshot")
+    if type(template) is not ResultFieldTopologyTemplate:
+        raise TypeError("template must be ResultFieldTopologyTemplate")
+    if not template.matches(export, deformation_scale):
+        raise ValueError("template does not match the result export")
+    field_data = export.field
+    component_index = field_data.descriptor.columns.index(
+        export.selection.component
+    )
+    values = field_data.values[
+        template._row_indices,
+        component_index,
+    ]
+    return _topology_from_template(
+        template,
+        export.selection,
+        values,
+    )
+
+
+def _topology_from_template(
+    template: ResultFieldTopologyTemplate,
+    selection: ScalarFieldSelection,
+    values: np.ndarray,
+) -> ResultFieldTopology:
+    expected_values = (
+        len(template._points)
+        if template.value_layout is ResultValueLayout.POINT
+        else len(template.cells)
+    )
+    owned_values = _owned_values(values, expected_values)
+    instance = object.__new__(ResultFieldTopology)
+    object.__setattr__(instance, "source", template.source)
+    object.__setattr__(
+        instance,
+        "materialization_generation",
+        template.materialization_generation,
+    )
+    object.__setattr__(instance, "selection", selection)
+    object.__setattr__(
+        instance,
+        "deformation_scale",
+        template.deformation_scale,
+    )
+    object.__setattr__(instance, "_points", template._points)
+    object.__setattr__(instance, "cells", template.cells)
+    object.__setattr__(instance, "cell_kinds", template.cell_kinds)
+    object.__setattr__(
+        instance,
+        "canonical_element_types",
+        template.canonical_element_types,
+    )
+    object.__setattr__(instance, "_values", owned_values)
+    object.__setattr__(instance, "value_layout", template.value_layout)
+    object.__setattr__(
+        instance,
+        "point_locations",
+        template.point_locations,
+    )
+    object.__setattr__(
+        instance,
+        "cell_locations",
+        template.cell_locations,
+    )
+    return instance
 
 
 def _validate_export_snapshot(export: ResultExportSnapshot) -> None:
@@ -839,6 +1024,9 @@ def _public_array_copy(owner: np.ndarray) -> np.ndarray:
 __all__ = [
     "ResultCellKind",
     "ResultFieldTopology",
+    "ResultFieldTopologyTemplate",
     "ResultValueLayout",
+    "build_result_field_topology_template",
     "project_scalar_field_topology",
+    "project_scalar_field_topology_from_template",
 ]

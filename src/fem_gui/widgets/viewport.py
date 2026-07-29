@@ -824,6 +824,9 @@ class FEMViewport(QWidget):
         self._result_point_index_to_node_id: dict[int, int] = {}
         self._result_point_index_to_element_id: dict[int, int] = {}
         self._result_cell_index_to_element_id: dict[int, int] = {}
+        self._result_provenance_layout: (
+            tuple[object, object, object] | None
+        ) = None
         self._model = None
         self._geometry: ModelGeometry | None = None
         self._geometry_preview: GeometryPreview | None = None
@@ -1366,6 +1369,7 @@ class FEMViewport(QWidget):
         self._result_render_payload = None
         self._scalar_reuse_pending = False
         self._scalar_reuse_display = None
+        self._result_provenance_layout = None
         self._result_render_validated_mtime = None
         self._selected_kind = None
         self._selected_id = None
@@ -1428,6 +1432,7 @@ class FEMViewport(QWidget):
         self._result_render_payload = None
         self._scalar_reuse_pending = False
         self._scalar_reuse_display = None
+        self._result_provenance_layout = None
         self._result_render_validated_mtime = None
         self._display = DisplayState()
         self._overlay_undeformed = False
@@ -3109,6 +3114,19 @@ class FEMViewport(QWidget):
         """Index locations from a payload validated by the current caller."""
 
         topology = payload.topology
+        layout = (
+            topology.cells,
+            topology.point_locations,
+            topology.cell_locations,
+        )
+        cached = self._result_provenance_layout
+        if (
+            cached is not None
+            and cached[0] is layout[0]
+            and cached[1] is layout[1]
+            and cached[2] is layout[2]
+        ):
+            return
         self._result_point_index_to_node_id = {
             index: int(location.node_id)
             for index, location in enumerate(topology.point_locations)
@@ -3143,6 +3161,7 @@ class FEMViewport(QWidget):
             for index, element_id in enumerate(cell_ids)
             if element_id > 0
         }
+        self._result_provenance_layout = layout
 
     def _rendered_result_payload(self) -> ResultRenderPayload | None:
         """Return the rendered payload, honoring VTK-reported modifications.
@@ -4926,6 +4945,7 @@ class FEMViewport(QWidget):
         self._result_point_index_to_node_id.clear()
         self._result_point_index_to_element_id.clear()
         self._result_cell_index_to_element_id.clear()
+        self._result_provenance_layout = None
 
     def _update_result_render_payload_layer(
         self,

@@ -21,8 +21,10 @@ from fem.application.results import (
     ResultValueLayout,
     ResultVariable,
     ScalarFieldSelection,
+    build_result_field_topology_template,
     prepare_result_export_snapshot,
     project_scalar_field_topology,
+    project_scalar_field_topology_from_template,
 )
 from fem.post.averaging import NodalAveragingPolicy
 from fem.post.fields import (
@@ -489,6 +491,72 @@ def test_element_node_positions_duplicate_every_element_local_point(
     ) == tuple(
         (location.element_id, location.local_node, location.node_id)
         for location in canonical
+    )
+
+
+def test_component_projection_reuses_cached_element_node_layout() -> None:
+    canonical = _all_element_node_locations()
+    shuffled = tuple(reversed(canonical))
+    association, variable, quantity, key = _field_contract(
+        FieldPosition.ELEMENT_NODAL
+    )
+    descriptor = FieldDescriptor(
+        field_id=key.request.field_id,
+        association=association,
+        quantity=quantity,
+        components=("S11", "S22"),
+        derived_components=(),
+        label_key=f"result.{variable.value}.element_nodal",
+        unit_label=None,
+        default_component="S11",
+        order=0,
+    )
+    values_by_location = {
+        location: (float(index), float(index + 100))
+        for index, location in enumerate(canonical, start=1)
+    }
+    field_data = FieldData(
+        descriptor=descriptor,
+        source=_source(),
+        key=key,
+        locations=shuffled,
+        values=np.asarray(
+            tuple(values_by_location[location] for location in shuffled)
+        ),
+    )
+    materialization = ResultMaterializationSnapshot(
+        source=_source(),
+        generation=3,
+        topology=_topology(),
+        fields=(field_data,),
+    )
+    first_export = prepare_result_export_snapshot(
+        materialization,
+        ScalarFieldSelection(key, "S11"),
+    )
+    second_export = prepare_result_export_snapshot(
+        materialization,
+        ScalarFieldSelection(key, "S22"),
+    )
+    first = project_scalar_field_topology(
+        first_export,
+        deformation_scale=1.0,
+    )
+    template = build_result_field_topology_template(first, field_data)
+
+    second = project_scalar_field_topology_from_template(
+        second_export,
+        template,
+        deformation_scale=1.0,
+    )
+
+    assert second.cells is first.cells
+    assert second.point_locations is first.point_locations
+    assert second.cell_locations is first.cell_locations
+    np.testing.assert_array_equal(second.points, first.points)
+    np.testing.assert_array_equal(
+        second.values,
+        np.arange(101.0, 110.0),
     )
 
 
