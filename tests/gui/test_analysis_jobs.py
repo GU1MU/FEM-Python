@@ -205,6 +205,136 @@ def test_model_check_runs_the_shared_numerical_stiffness_preflight(
     window.close()
 
 
+def test_preflight_and_repeated_runs_assemble_one_artifact_once(
+    monkeypatch,
+    gui_inp_path,
+) -> None:
+    _application()
+    window = FEMMainWindow()
+    model = read(gui_inp_path)
+    window._model_loaded(
+        gui_inp_path,
+        (model, build_model_geometry(model)),
+    )
+    errors: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        window,
+        "_show_error",
+        lambda title, message: errors.append((title, message)),
+    )
+    calls: list[tuple[str, bool]] = []
+    original_apply = static_linear.materials.apply_sections
+    original_assemble = static_linear.assemble_global_stiffness_sparse
+
+    def apply_sections(candidate):
+        calls.append(
+            (
+                "materials",
+                QThread.currentThread() is window.thread(),
+            )
+        )
+        return original_apply(candidate)
+
+    def assemble(mesh):
+        calls.append(
+            (
+                "stiffness",
+                QThread.currentThread() is window.thread(),
+            )
+        )
+        return original_assemble(mesh)
+
+    monkeypatch.setattr(
+        static_linear.materials,
+        "apply_sections",
+        apply_sections,
+    )
+    monkeypatch.setattr(
+        static_linear,
+        "assemble_global_stiffness_sparse",
+        assemble,
+    )
+
+    assert window.check_current_model(show_success=False)
+    first = window._submit_job("Job-1", "Static-1")
+    assert first is not None
+    _wait_for_task(window)
+    second = window._submit_job("Job-2", "Static-1")
+    assert second is not None
+    _wait_for_task(window)
+
+    assert calls == [
+        ("materials", False),
+        ("stiffness", False),
+    ]
+    previous_artifact = window.document.artifact.artifact_id
+    assert window._apply_session_delta(
+        window.session.replace_model_definitions(
+            window.document.materials,
+            window.document.sections,
+            window.document.assignments,
+            window.document.steps,
+        )
+    )
+    assert window.document.artifact.artifact_id != previous_artifact
+    assert window.check_current_model(show_success=False)
+    assert calls == [
+        ("materials", False),
+        ("stiffness", False),
+        ("materials", False),
+        ("stiffness", False),
+    ]
+    assert errors == []
+    window.close()
+
+
+def test_quick_preflight_defers_prepare_until_first_run_and_then_reuses_it(
+    monkeypatch,
+    gui_inp_path,
+) -> None:
+    _application()
+    window = FEMMainWindow()
+    model = read(gui_inp_path)
+    window._model_loaded(
+        gui_inp_path,
+        (model, build_model_geometry(model)),
+    )
+    errors: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        window,
+        "_show_error",
+        lambda title, message: errors.append((title, message)),
+    )
+    prepare_threads: list[bool] = []
+    original_prepare = static_linear.prepare
+
+    def prepare(*args, **kwargs):
+        prepare_threads.append(
+            QThread.currentThread() is window.thread()
+        )
+        return original_prepare(*args, **kwargs)
+
+    monkeypatch.setattr(
+        main_window_module,
+        "should_run_numerical_model_check",
+        lambda _model: False,
+    )
+    monkeypatch.setattr(static_linear, "prepare", prepare)
+
+    assert window.check_current_model(show_success=False)
+    assert prepare_threads == []
+    first = window._submit_job("Job-1", "Static-1")
+    assert first is not None
+    _wait_for_task(window)
+    second = window._submit_job("Job-2", "Static-1")
+    assert second is not None
+    _wait_for_task(window)
+
+    assert prepare_threads == [False]
+    assert errors == []
+    window.close()
+
+
 def test_large_model_check_policy_avoids_preflight_factorization() -> None:
     within_limit = SimpleNamespace(
         mesh=SimpleNamespace(

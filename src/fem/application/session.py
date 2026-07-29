@@ -36,6 +36,7 @@ from fem.geometry.recipe_topology import (
     surviving_logical_reference_ids,
 )
 from fem.mesh.settings import MeshSettings
+from fem.solvers.static_linear import PreparedSystem
 
 from .results import (
     FieldMaterializationKey,
@@ -196,6 +197,7 @@ class _IssuedSolvePayload:
 
     model: Any
     step: Any
+    prepared_system: PreparedSystem | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,6 +207,14 @@ class _IssuedMaterializationPayload:
     source: ResultSourceKey
     generation: int
     expected_patch_keys: tuple[FieldMaterializationKey, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedSystemRecord:
+    """Single artifact-bound reusable linear-static base system."""
+
+    key: tuple[str, str, int]
+    prepared: PreparedSystem
 
 
 @dataclass(slots=True)
@@ -3551,6 +3561,40 @@ class ModelSession:
         token: TaskToken,
         report: PreflightReport,
     ) -> SessionDelta:
+        return self._accept_validation(
+            token,
+            report,
+            prepared_system=None,
+        )
+
+    def _accept_validation_with_prepared_system(
+        self,
+        token: TaskToken,
+        report: PreflightReport,
+        prepared_system: PreparedSystem | None,
+    ) -> SessionDelta:
+        """Accept validation and atomically install its worker-prepared K."""
+
+        if (
+            prepared_system is not None
+            and type(prepared_system) is not PreparedSystem
+        ):
+            raise TypeError(
+                "prepared_system must be exactly PreparedSystem or None"
+            )
+        return self._accept_validation(
+            token,
+            report,
+            prepared_system=prepared_system,
+        )
+
+    def _accept_validation(
+        self,
+        token: TaskToken,
+        report: PreflightReport,
+        *,
+        prepared_system: PreparedSystem | None,
+    ) -> SessionDelta:
         status = self._token_status_for(token, "validation")
         if status is not TokenStatus.CURRENT:
             return self._rejected(status, "stale validation report")
@@ -3565,10 +3609,16 @@ class ModelSession:
             model_revision=self._model_revision,
             step_name=str(token.step_name),
         )
+        if prepared_system is not None and not owned_report.passed:
+            raise ValueError(
+                "failed validation cannot install a prepared system"
+            )
         self._validations[str(token.step_name)] = ValidationRecord(
             stamp=stamp,
             report=owned_report,
         )
+        if prepared_system is not None:
+            self._install_prepared_system(prepared_system)
         self._complete_token(token)
         return self._emit(
             {ChangeKind.VALIDATIONS},
@@ -3616,7 +3666,17 @@ class ModelSession:
             raise ValueError("run name must not be empty")
         if self._find_run_by_name(resolved_name) is not None:
             raise ValueError(f"run name already exists: {resolved_name}")
-        solve_model = deepcopy(artifact.model)
+        cached_prepared = self._current_prepared_system()
+        solve_prepared = (
+            None
+            if cached_prepared is None
+            else cached_prepared.clone()
+        )
+        solve_model = (
+            deepcopy(artifact.model)
+            if solve_prepared is None
+            else solve_prepared._trusted_model_for_task()
+        )
         solve_steps = tuple(
             step
             for step in getattr(solve_model, "steps", ())
@@ -3653,6 +3713,7 @@ class ModelSession:
         self._task_data[token.task_id] = _IssuedSolvePayload(
             model=solve_model,
             step=solve_steps[0],
+            prepared_system=solve_prepared,
         )
         return SolveTaskSnapshot(
             token=token,
@@ -3662,6 +3723,7 @@ class ModelSession:
             run_id=run_id,
             result_id=result_id,
             delta=delta,
+            prepared_system=solve_prepared,
         )
 
     def begin_run(self, token: TaskToken) -> SessionDelta:
@@ -3690,6 +3752,52 @@ class ModelSession:
         *,
         timings: Mapping[str, float] | None = None,
     ) -> SessionDelta:
+        return self._accept_run_succeeded(
+            token,
+            bundle,
+            timings=timings,
+            prepared_system=None,
+        )
+
+    def _accept_run_succeeded_with_prepared_system(
+        self,
+        token: TaskToken,
+        bundle: SolveResultBundle,
+        prepared_system: PreparedSystem,
+        *,
+        cache_candidate: PreparedSystem | None = None,
+        timings: Mapping[str, float] | None = None,
+    ) -> SessionDelta:
+        """Accept a solve and atomically cache its worker-prepared base K."""
+
+        if type(prepared_system) is not PreparedSystem:
+            raise TypeError(
+                "prepared_system must be exactly PreparedSystem"
+            )
+        if (
+            cache_candidate is not None
+            and type(cache_candidate) is not PreparedSystem
+        ):
+            raise TypeError(
+                "cache_candidate must be exactly PreparedSystem or None"
+            )
+        return self._accept_run_succeeded(
+            token,
+            bundle,
+            timings=timings,
+            prepared_system=prepared_system,
+            cache_candidate=cache_candidate,
+        )
+
+    def _accept_run_succeeded(
+        self,
+        token: TaskToken,
+        bundle: SolveResultBundle,
+        *,
+        timings: Mapping[str, float] | None,
+        prepared_system: PreparedSystem | None,
+        cache_candidate: PreparedSystem | None = None,
+    ) -> SessionDelta:
         status = self._token_status_for(token, "solve")
         if status is not TokenStatus.CURRENT:
             return self._rejected(status, "stale run result")
@@ -3706,6 +3814,46 @@ class ModelSession:
             raise SessionStateError(
                 "solve task has no issued model payload"
             )
+        if (
+            prepared_system is not None
+            and prepared_system._trusted_model_for_task()
+            is not issued_payload.model
+        ):
+            raise ValueError(
+                "prepared system model must be the exact issued solve model"
+            )
+        if prepared_system is not None:
+            if issued_payload.prepared_system is None:
+                if cache_candidate is None:
+                    raise ValueError(
+                        "cache-miss solve requires an unexposed cache clone"
+                    )
+            elif prepared_system is not issued_payload.prepared_system:
+                raise ValueError(
+                    "cache-hit solve must return the exact issued "
+                    "prepared system"
+                )
+        if cache_candidate is not None:
+            if issued_payload.prepared_system is not None:
+                raise ValueError(
+                    "cache-hit solve cannot replace the root prepared system"
+                )
+            if (
+                cache_candidate._trusted_model_for_task()
+                is issued_payload.model
+            ):
+                raise ValueError(
+                    "cache candidate must own an unexposed model clone"
+                )
+            if (
+                prepared_system is None
+                or not prepared_system._shares_base_stiffness_with(
+                    cache_candidate
+                )
+            ):
+                raise ValueError(
+                    "cache candidate must share the exact solved base stiffness"
+                )
         if (
             bundle.result.model is not issued_payload.model
             or bundle.result.step is not issued_payload.step
@@ -3775,6 +3923,8 @@ class ModelSession:
         )
         self._selected_run_id = run.run_id
         self._displayed_result_run_id = run.run_id
+        if cache_candidate is not None:
+            self._install_prepared_system(cache_candidate)
         self._complete_token(token)
         return self._emit(
             {
@@ -4598,6 +4748,7 @@ class ModelSession:
         self._steps: tuple[Any, ...] = ()
         self._definitions_explicit = False
         self._artifact: ModelArtifact | None = None
+        self._prepared_system: _PreparedSystemRecord | None = None
         self._validations: dict[str, ValidationRecord] = {}
         self._runs: dict[str, AnalysisRun] = {}
         self._results: dict[str, ResultRecord] = {}
@@ -4673,6 +4824,7 @@ class ModelSession:
             }:
                 self._task_data.pop(task_id, None)
         self._validations.clear()
+        self._prepared_system = None
         self._runs.clear()
         self._results.clear()
         self._selected_run_id = None
@@ -4692,6 +4844,36 @@ class ModelSession:
             ),
             source_kind=source_kind,
             model=model,
+        )
+
+    def _prepared_system_key(self) -> tuple[str, str, int]:
+        artifact = self._require_current_artifact()
+        return (
+            self._session_id,
+            artifact.artifact_id,
+            self._model_revision,
+        )
+
+    def _current_prepared_system(self) -> PreparedSystem | None:
+        record = self._prepared_system
+        if record is None:
+            return None
+        if record.key != self._prepared_system_key():
+            self._prepared_system = None
+            return None
+        return record.prepared
+
+    def _install_prepared_system(
+        self,
+        prepared_system: PreparedSystem,
+    ) -> None:
+        if type(prepared_system) is not PreparedSystem:
+            raise TypeError(
+                "prepared_system must be exactly PreparedSystem"
+            )
+        self._prepared_system = _PreparedSystemRecord(
+            self._prepared_system_key(),
+            prepared_system,
         )
 
     def _require_current_artifact(self) -> ModelArtifact:

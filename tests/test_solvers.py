@@ -23,7 +23,61 @@ def test_static_linear_solver_builds_step_boundary_and_solves_case():
 
 
 def test_static_linear_solver_public_surface():
-    assert static_linear.__all__ == ["solve"]
+    assert static_linear.__all__ == [
+        "PreparedSystem",
+        "prepare",
+        "solve",
+    ]
+
+
+def test_prepared_system_applies_sections_and_assembles_once_for_many_steps(
+    monkeypatch,
+):
+    expected_model = make_two_step_static_pull_truss_model()
+    expected = static_linear.solve(expected_model, steps="all")
+    model = make_two_step_static_pull_truss_model()
+    calls = {"materials": 0, "stiffness": 0}
+    original_apply = static_linear.materials.apply_sections
+    original_assemble = static_linear.assemble_global_stiffness_sparse
+
+    def apply_sections(candidate):
+        calls["materials"] += 1
+        return original_apply(candidate)
+
+    def assemble(mesh):
+        calls["stiffness"] += 1
+        return original_assemble(mesh)
+
+    monkeypatch.setattr(
+        static_linear.materials,
+        "apply_sections",
+        apply_sections,
+    )
+    monkeypatch.setattr(
+        static_linear,
+        "assemble_global_stiffness_sparse",
+        assemble,
+    )
+
+    prepared = static_linear.prepare(model)
+    results = prepared.solve(steps="all")
+    pull1, pull2 = results.results
+
+    assert calls == {"materials": 1, "stiffness": 1}
+    assert pull1.model is pull2.model
+    assert pull1.model is not model
+    np.testing.assert_allclose(pull1.U, expected.results[0].U)
+    np.testing.assert_allclose(pull2.U, expected.results[1].U)
+    pull1.model.mesh.nodes[1].x += 10.0
+    selected = prepared.validate_step("pull1")
+    stiffness_step = prepared.validate_stiffness("pull1")
+    selected.name = "mutated-selected-step"
+    stiffness_step.name = "mutated-stiffness-step"
+    repeated = prepared.solve("pull1")
+    assert repeated.step.name == "pull1"
+    np.testing.assert_allclose(repeated.U, expected.results[0].U)
+    with pytest.raises(ValueError):
+        prepared._base_stiffness.data[0] = 0.0
 
 
 def test_static_linear_solver_returns_scalar_result_with_name_and_reactions():

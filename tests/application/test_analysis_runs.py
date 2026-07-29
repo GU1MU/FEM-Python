@@ -20,9 +20,13 @@ from fem.application.results import (
 from fem.core.model import AnalysisStep, FEMModel
 from fem.core.result import ModelResult
 from fem.geometry.recipes import BoxGeometry
+from fem.solvers import static_linear
 from tests.helpers.preflight_builders import passing_preflight_report
 from tests.helpers.result_builders import make_solve_result_bundle
-from tests.helpers.model_builders import make_simple_truss_mesh
+from tests.helpers.model_builders import (
+    make_simple_truss_mesh,
+    make_static_pull_truss_model,
+)
 from tests.helpers.phase8_result_characterization import (
     make_continuum_nodal_semantics_result,
 )
@@ -50,6 +54,152 @@ def _session() -> ModelSession:
         passing_preflight_report(validation.token),
     )
     return session
+
+
+def test_cached_prepared_system_isolated_from_exposed_solve_task_model() -> None:
+    session = ModelSession()
+    imported = session.prepare_import("prepared-cache.inp")
+    session.accept_imported_model(
+        imported.token,
+        make_static_pull_truss_model(),
+    )
+    validation = session.prepare_validation("pull")
+    prepared = static_linear.prepare(validation.model)
+    session._accept_validation_with_prepared_system(
+        validation.token,
+        passing_preflight_report(validation.token),
+        prepared,
+    )
+
+    first = session.prepare_solve("pull", "Job-1")
+    original_x = first.model.mesh.nodes[1].x
+    first.model.mesh.nodes[1].x = original_x + 10.0
+    second = session.prepare_solve("pull", "Job-2")
+
+    assert second.prepared_system is not None
+    assert second.model.mesh.nodes[1].x == original_x
+    result = static_linear.solve(
+        second.model,
+        second.step_name,
+        _prepared_system=second.prepared_system,
+    )
+    assert result.U[second.model.mesh.global_dof(2, 0)] == pytest.approx(0.5)
+
+
+def test_first_solve_installs_unexposed_cache_clone() -> None:
+    session = ModelSession()
+    imported = session.prepare_import("quick-cache.inp")
+    session.accept_imported_model(
+        imported.token,
+        make_static_pull_truss_model(),
+    )
+    validation = session.prepare_validation("pull")
+    session.accept_validation(
+        validation.token,
+        passing_preflight_report(validation.token),
+    )
+    first = session.prepare_solve("pull", "Job-1")
+    session.begin_run(first.token)
+    run_prepared = static_linear.prepare(
+        first.model,
+        copy_model=False,
+    )
+    result = static_linear.solve(
+        first.model,
+        first.step_name,
+        _prepared_system=run_prepared,
+    )
+    cache_candidate = run_prepared.clone()
+    session._accept_run_succeeded_with_prepared_system(
+        first.token,
+        build_solve_result_bundle(first, result),
+        run_prepared,
+        cache_candidate=cache_candidate,
+    )
+
+    original_x = first.model.mesh.nodes[1].x
+    first.model.mesh.nodes[1].x = original_x + 10.0
+    second = session.prepare_solve("pull", "Job-2")
+
+    assert second.prepared_system is not None
+    assert second.model.mesh.nodes[1].x == original_x
+    second_result = static_linear.solve(
+        second.model,
+        second.step_name,
+        _prepared_system=second.prepared_system,
+    )
+    assert second_result.U[
+        second.model.mesh.global_dof(2, 0)
+    ] == pytest.approx(0.5)
+
+
+def test_stale_validation_cannot_install_prepared_system() -> None:
+    session = ModelSession()
+    imported = session.prepare_import("old.inp")
+    session.accept_imported_model(
+        imported.token,
+        make_static_pull_truss_model(),
+    )
+    validation = session.prepare_validation("pull")
+    prepared = static_linear.prepare(validation.model)
+    replacement = session.prepare_import("replacement.inp")
+    session.accept_imported_model(
+        replacement.token,
+        make_static_pull_truss_model(),
+    )
+
+    delta = session._accept_validation_with_prepared_system(
+        validation.token,
+        passing_preflight_report(validation.token),
+        prepared,
+    )
+
+    assert not delta.accepted
+    assert delta.token_status is TokenStatus.STALE_SESSION
+    assert session._current_prepared_system() is None
+
+
+def test_stale_solve_completion_cannot_install_cache_candidate() -> None:
+    session = ModelSession()
+    imported = session.prepare_import("old-solve.inp")
+    session.accept_imported_model(
+        imported.token,
+        make_static_pull_truss_model(),
+    )
+    validation = session.prepare_validation("pull")
+    session.accept_validation(
+        validation.token,
+        passing_preflight_report(validation.token),
+    )
+    solve = session.prepare_solve("pull", "Job-1")
+    session.begin_run(solve.token)
+    run_prepared = static_linear.prepare(
+        solve.model,
+        copy_model=False,
+    )
+    result = static_linear.solve(
+        solve.model,
+        solve.step_name,
+        _prepared_system=run_prepared,
+    )
+    bundle = build_solve_result_bundle(solve, result)
+    cache_candidate = run_prepared.clone()
+    replacement = session.prepare_import("new-solve.inp")
+    session.accept_imported_model(
+        replacement.token,
+        make_static_pull_truss_model(),
+    )
+
+    delta = session._accept_run_succeeded_with_prepared_system(
+        solve.token,
+        bundle,
+        run_prepared,
+        cache_candidate=cache_candidate,
+    )
+
+    assert not delta.accepted
+    assert delta.token_status is TokenStatus.STALE_SESSION
+    assert session._current_prepared_system() is None
 
 
 def test_pending_running_succeeded_lifecycle_and_provenance() -> None:

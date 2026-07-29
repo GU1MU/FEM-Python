@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any, Iterable
 
 from fem import materials
@@ -34,6 +35,14 @@ from .diagnostics import (
 from .revisions import TaskToken
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedPreflight:
+    """One typed preflight report and its reusable prepared base system."""
+
+    report: PreflightReport
+    prepared_system: static_linear.PreparedSystem | None = None
+
+
 def run_static_preflight(
     model: Any,
     step: Any = None,
@@ -44,6 +53,51 @@ def run_static_preflight(
     quick_check: bool = False,
 ) -> PreflightReport:
     """Check one detached model Step and return stable diagnostics."""
+
+    return _evaluate_static_preflight(
+        model,
+        step,
+        token=token,
+        check_numerical_stability=check_numerical_stability,
+        copy_model=copy_model,
+        quick_check=quick_check,
+        retain_prepared_system=False,
+    ).report
+
+
+def prepare_static_preflight(
+    model: Any,
+    step: Any = None,
+    *,
+    token: TaskToken | None = None,
+    check_numerical_stability: bool = True,
+    copy_model: bool = True,
+    quick_check: bool = False,
+) -> PreparedPreflight:
+    """Run preflight and retain a successful numerical base system."""
+
+    return _evaluate_static_preflight(
+        model,
+        step,
+        token=token,
+        check_numerical_stability=check_numerical_stability,
+        copy_model=copy_model,
+        quick_check=quick_check,
+        retain_prepared_system=True,
+    )
+
+
+def _evaluate_static_preflight(
+    model: Any,
+    step: Any = None,
+    *,
+    token: TaskToken | None,
+    check_numerical_stability: bool,
+    copy_model: bool,
+    quick_check: bool,
+    retain_prepared_system: bool,
+) -> PreparedPreflight:
+    """Evaluate preflight once, optionally retaining prepared stiffness."""
 
     if type(check_numerical_stability) is not bool:
         raise TypeError("check_numerical_stability must be bool")
@@ -56,6 +110,7 @@ def run_static_preflight(
     provenance = _report_provenance(token)
     diagnostics: list[PreflightDiagnostic] = []
     numerical_stability_checked = False
+    prepared_system = None
     selected_step = None
     boundary = None
 
@@ -209,8 +264,12 @@ def run_static_preflight(
         if check_numerical_stability:
             numerical_stability_checked = True
             try:
-                static_linear.validate_stiffness(
+                candidate = static_linear.prepare(
                     owned_model,
+                    copy_model=False,
+                )
+                static_linear.validate_stiffness(
+                    candidate,
                     selected_step,
                 )
             except Exception as error:
@@ -226,6 +285,9 @@ def run_static_preflight(
                         ),
                     )
                 )
+            else:
+                if retain_prepared_system:
+                    prepared_system = candidate
         else:
             diagnostics.append(
                 PreflightDiagnostic(
@@ -249,12 +311,15 @@ def run_static_preflight(
         boundary,
         report_step_name,
     )
-    return PreflightReport(
-        step_name=report_step_name,
-        diagnostics=tuple(diagnostics),
-        facts=facts,
-        numerical_stability_checked=numerical_stability_checked,
-        **provenance,
+    return PreparedPreflight(
+        report=PreflightReport(
+            step_name=report_step_name,
+            diagnostics=tuple(diagnostics),
+            facts=facts,
+            numerical_stability_checked=numerical_stability_checked,
+            **provenance,
+        ),
+        prepared_system=prepared_system,
     )
 
 
@@ -284,6 +349,37 @@ def safe_static_preflight(
             step_name,
             error,
             **_report_provenance(token),
+        )
+
+
+def safe_prepare_static_preflight(
+    model: Any,
+    step: Any = None,
+    *,
+    token: TaskToken | None = None,
+    check_numerical_stability: bool = True,
+    copy_model: bool = True,
+    quick_check: bool = False,
+) -> PreparedPreflight:
+    """Return an internal-error report with no cacheable system on failure."""
+
+    try:
+        return prepare_static_preflight(
+            model,
+            step,
+            token=token,
+            check_numerical_stability=check_numerical_stability,
+            copy_model=copy_model,
+            quick_check=quick_check,
+        )
+    except Exception as error:
+        step_name = _requested_step_name(step, token)
+        return PreparedPreflight(
+            internal_error_report(
+                step_name,
+                error,
+                **_report_provenance(token),
+            )
         )
 
 
@@ -1130,4 +1226,10 @@ def _truthy_option(value: Any) -> bool:
     return bool(value)
 
 
-__all__ = ["run_static_preflight", "safe_static_preflight"]
+__all__ = [
+    "PreparedPreflight",
+    "prepare_static_preflight",
+    "run_static_preflight",
+    "safe_prepare_static_preflight",
+    "safe_static_preflight",
+]

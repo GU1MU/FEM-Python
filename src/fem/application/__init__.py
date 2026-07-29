@@ -121,7 +121,13 @@ from .preprocessing import (
     TopologyResolutionError,
     generate_fem_model,
 )
-from .preflight import run_static_preflight, safe_static_preflight
+from .preflight import (
+    PreparedPreflight,
+    prepare_static_preflight,
+    run_static_preflight,
+    safe_prepare_static_preflight,
+    safe_static_preflight,
+)
 from .project_validation import (
     analysis_step_has_native_region_target,
     analysis_steps_have_native_region_targets,
@@ -199,6 +205,7 @@ __all__ = [
     "PreflightReport",
     "PreflightSeverity",
     "PreflightStage",
+    "PreparedPreflight",
     "RegionAssignment",
     "RegionCapability",
     "RegionRef",
@@ -252,6 +259,7 @@ __all__ = [
     "internal_error_report",
     "normalize_model_definitions",
     "prepare_solid_body_boolean",
+    "prepare_static_preflight",
     "prepare_strict_body_recipe_preview",
     "next_planar_boolean_feature_id",
     "next_part_boolean_feature_id",
@@ -268,6 +276,7 @@ __all__ = [
     "resolve_effective_beam_frames",
     "run_static_preflight",
     "safe_static_preflight",
+    "safe_prepare_static_preflight",
     "validate_logical_reference",
     "validate_logical_references",
     "validate_native_authoring_context",

@@ -128,6 +128,7 @@ class SolveTaskSnapshot:
     run_id: str
     result_id: str
     delta: Any | None = None
+    prepared_system: Any | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import replace
 import logging
@@ -40,6 +41,7 @@ from fem.application import (
     NamedRegion,
     NamedRegionEditBatch,
     PreflightDiagnostic,
+    PreparedPreflight,
     PreflightReport,
     RegionRef,
     RegionAssignment,
@@ -62,6 +64,7 @@ from fem.application import (
     derive_geometry_feature_rows,
     resolve_effective_beam_frames,
     safe_static_preflight,
+    safe_prepare_static_preflight,
     prepare_part_boolean,
     prepare_strict_part_recipe_preview,
     prepare_strict_body_recipe_preview,
@@ -7883,14 +7886,19 @@ class FEMMainWindow(QMainWindow):
         task = self._prepare_model_check()
         if task is None:
             return False
-        report = self._evaluate_model_check(
-            task.model,
-            task.step_name,
-            task.token,
-        )
+        with ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="fem-preflight",
+        ) as executor:
+            evaluation = executor.submit(
+                self._evaluate_model_check,
+                task.model,
+                task.step_name,
+                task.token,
+            ).result()
         return self._complete_model_check(
             task.token,
-            report,
+            evaluation,
             show_success=show_success,
         )
 
@@ -7942,18 +7950,22 @@ class FEMMainWindow(QMainWindow):
             return result
 
         def succeeded(value: object) -> None:
-            delta, report = value
+            delta, evaluation = value
             self._project_model_check(
                 delta,
-                report,
+                evaluation.report,
                 show_success=show_success,
             )
 
         def apply_result(value: object) -> TaskApplyOutcome:
-            if not isinstance(value, PreflightReport):
-                raise TypeError("model check must return PreflightReport")
+            if type(value) is not PreparedPreflight:
+                raise TypeError("model check must return PreparedPreflight")
             return self._session_task_outcome(
-                self.session.accept_validation(task.token, value),
+                self.session._accept_validation_with_prepared_system(
+                    task.token,
+                    value.report,
+                    value.prepared_system,
+                ),
                 value,
             )
 
@@ -7999,27 +8011,43 @@ class FEMMainWindow(QMainWindow):
         model: object,
         step_name: str,
         token: object | None = None,
-    ) -> PreflightReport:
+    ) -> PreparedPreflight:
         full_numerical_check = should_run_numerical_model_check(model)
-        return safe_static_preflight(
-            model,
-            step_name,
-            token=token,
-            check_numerical_stability=full_numerical_check,
-            copy_model=full_numerical_check,
-            quick_check=not full_numerical_check,
+        options = {
+            "token": token,
+            "check_numerical_stability": full_numerical_check,
+            "copy_model": full_numerical_check,
+            "quick_check": not full_numerical_check,
+        }
+        if full_numerical_check:
+            return safe_prepare_static_preflight(
+                model,
+                step_name,
+                **options,
+            )
+        return PreparedPreflight(
+            safe_static_preflight(
+                model,
+                step_name,
+                **options,
+            )
         )
 
     def _complete_model_check(
         self,
         token: object,
-        report: object,
+        evaluation: object,
         *,
         show_success: bool,
     ) -> bool:
-        if not isinstance(report, PreflightReport):
-            raise TypeError("model check must return PreflightReport")
-        delta = self.session.accept_validation(token, report)
+        if type(evaluation) is not PreparedPreflight:
+            raise TypeError("model check must return PreparedPreflight")
+        report = evaluation.report
+        delta = self.session._accept_validation_with_prepared_system(
+            token,
+            report,
+            evaluation.prepared_system,
+        )
         return self._project_model_check(
             delta,
             report,
@@ -8190,15 +8218,23 @@ class FEMMainWindow(QMainWindow):
 
         def workload(
             context: TaskContext,
-        ) -> tuple[object, dict[str, float]]:
+        ) -> tuple[object, dict[str, float], object, object | None]:
             timings: dict[str, float] = {}
             solve_model = task.model
             stage["name"] = "求解"
             context.report("正在装配并求解……")
+            run_prepared = task.prepared_system
+            if run_prepared is None:
+                run_prepared = static_linear.prepare(
+                    solve_model,
+                    copy_model=False,
+                    timings=timings,
+                )
             result = static_linear.solve(
                 solve_model,
                 task.step_name,
                 name=task.run_name,
+                _prepared_system=run_prepared,
                 timings=timings,
             )
             context.report("正在执行输出请求……")
@@ -8209,14 +8245,21 @@ class FEMMainWindow(QMainWindow):
                 cancellation=context,
             )
             timings["输出请求与初始结果"] = perf_counter() - started
+            cache_candidate = (
+                run_prepared.clone()
+                if task.prepared_system is None
+                else None
+            )
             context.checkpoint()
-            return bundle, timings
+            return bundle, timings, run_prepared, cache_candidate
 
         def apply_result(value: object) -> TaskApplyOutcome:
-            bundle, timings = value
-            delta = self.session.accept_run_succeeded(
+            bundle, timings, run_prepared, cache_candidate = value
+            delta = self.session._accept_run_succeeded_with_prepared_system(
                 task.token,
                 bundle,
+                run_prepared,
+                cache_candidate=cache_candidate,
                 timings=timings,
             )
             return self._session_task_outcome(
