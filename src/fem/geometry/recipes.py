@@ -1035,7 +1035,7 @@ class PartBooleanContext:
     topology_mappings: tuple[BooleanLineageMapping, ...] = ()
 
     def __post_init__(self) -> None:
-        from fem.application.native_part import (
+        from .part_namespace import (
             normalize_part_boolean_feature_id,
             normalize_part_id,
         )

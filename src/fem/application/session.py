@@ -3288,7 +3288,7 @@ class ModelSession:
         return ImportTaskSnapshot(token, path)
 
     @staticmethod
-    def _prepare_imported_model_transfer(model: Any) -> object:
+    def prepare_imported_model_transfer(model: Any) -> object:
         """Build a transferable, Session-owned import payload.
 
         GUI workers call this before returning their result so both the
@@ -3310,10 +3310,10 @@ class ModelSession:
         status = self._token_status_for(token, "import")
         if status is not TokenStatus.CURRENT:
             return self._rejected(status, "stale imported model")
-        prepared = self._prepare_imported_model_transfer(model)
+        prepared = self.prepare_imported_model_transfer(model)
         return self._install_prepared_imported_model(token, prepared)
 
-    def _accept_imported_model_transfer(
+    def accept_imported_model_transfer(
         self,
         token: TaskToken,
         prepared: object,
@@ -3325,7 +3325,7 @@ class ModelSession:
             return self._rejected(status, "stale imported model")
         if type(prepared) is not _PreparedImportedModel:
             raise TypeError(
-                "prepared must come from _prepare_imported_model_transfer"
+                "prepared must come from prepare_imported_model_transfer"
             )
         return self._install_prepared_imported_model(token, prepared)
 
@@ -3567,7 +3567,7 @@ class ModelSession:
             prepared_system=None,
         )
 
-    def _accept_validation_with_prepared_system(
+    def accept_validation_with_prepared_system(
         self,
         token: TaskToken,
         report: PreflightReport,
@@ -3759,7 +3759,7 @@ class ModelSession:
             prepared_system=None,
         )
 
-    def _accept_run_succeeded_with_prepared_system(
+    def accept_run_succeeded_with_prepared_system(
         self,
         token: TaskToken,
         bundle: SolveResultBundle,
@@ -4364,12 +4364,12 @@ class ModelSession:
             can_save=self.can_save,
         )
 
-    def _snapshot_for_gui(
+    def projection_snapshot(
         self,
         previous: SessionSnapshot | None = None,
         changed: Iterable[ChangeKind] | None = None,
     ) -> SessionSnapshot:
-        """Return a trusted GUI projection without detaching large payloads.
+        """Return a trusted read-only projection without detaching large payloads.
 
         Nested model and result objects remain Session-owned and must be
         treated as read-only.  When one ordered status/result delta follows

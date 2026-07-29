@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMenu,
     QPushButton,
-    QStackedWidget,
     QToolBar,
     QToolButton,
     QVBoxLayout,
@@ -144,7 +143,6 @@ class ScopeCreationBar(QWidget):
         self.name_edit.selectAll()
         self.create_button.setEnabled(False)
         self.activeChanged.emit(True)
-        self.show()
 
     def set_selection_ready(self, ready: bool) -> None:
         self.create_button.setEnabled(bool(ready))
@@ -168,31 +166,19 @@ class ViewportPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         self.toolbar = ViewportToolBar(actions, self)
-        self.scope_creation_tray = QStackedWidget(self)
-        self.scope_creation_tray.setObjectName("scopeCreationTray")
-        self._scope_creation_idle = QWidget(self.scope_creation_tray)
-        self.scope_creation_bar = ScopeCreationBar(
-            self.scope_creation_tray
-        )
-        self.scope_creation_tray.addWidget(self._scope_creation_idle)
-        self.scope_creation_tray.addWidget(self.scope_creation_bar)
-        self.scope_creation_tray.setCurrentWidget(self._scope_creation_idle)
-        self.scope_creation_bar.activeChanged.connect(
-            self._set_scope_creation_active
-        )
         self.viewport = viewport
         self.overlay_host = ModelViewportOverlayHost(viewport, self)
         self.agent_chat_drawer = self.overlay_host.agent_chat_drawer
+        self.scope_creation_bar = ScopeCreationBar(self.overlay_host)
+        self.overlay_host.set_bottom_overlay(self.scope_creation_bar)
+        self.scope_creation_bar.activeChanged.connect(
+            self._set_scope_creation_active
+        )
         layout.addWidget(self.toolbar)
         layout.addWidget(self.overlay_host, 1)
-        layout.addWidget(self.scope_creation_tray)
 
     def _set_scope_creation_active(self, active: bool) -> None:
-        self.scope_creation_tray.setCurrentWidget(
-            self.scope_creation_bar
-            if active
-            else self._scope_creation_idle
-        )
+        self.overlay_host.set_bottom_overlay_visible(active)
 
     def set_geometry_context(self, enabled: bool) -> None:
         self.toolbar.set_geometry_context(enabled)

@@ -1,4 +1,4 @@
-"""Strict local configuration loading for the FEM Agent entry points."""
+"""Strict local configuration loading for the GUI Agent runtime."""
 
 from __future__ import annotations
 
@@ -18,23 +18,12 @@ ROOT_CONFIG_NAME = "fem-agent.config.json"
 TEST_CONFIG_NAME = "fem-agent.test.config.json"
 MAX_CONFIG_BYTES = 64 * 1024
 
-_MAIN_CONFIG_TEMPLATE = {
-    "provider": "deepseek",
-    "model": "deepseek-v4-pro",
-    "base_url": "https://api.deepseek.com",
-    "api_key": "",
-    "workspace": "agent-workspace",
-    "timeout_seconds": 60,
-    "max_retries": 2,
-    "max_output_tokens": 8192,
-}
 _CONFIG_FIELDS = frozenset(
     {
         "provider",
         "model",
         "base_url",
         "api_key",
-        "workspace",
         "timeout_seconds",
         "max_retries",
         "max_output_tokens",
@@ -59,7 +48,6 @@ class LocalAgentConfig:
     model: str = "deepseek-v4-pro"
     base_url: str = "https://api.deepseek.com"
     api_key: str | None = field(default=None, repr=False)
-    workspace: Path = Path("agent-workspace")
     timeout_seconds: float = 60.0
     max_retries: int = 2
     max_output_tokens: int = 8192
@@ -71,8 +59,6 @@ class LocalAgentConfig:
                 raise ConfigError(f"{name} must be a string")
         if self.api_key is not None and type(self.api_key) is not str:
             raise ConfigError("api_key must be a string when provided")
-        if not isinstance(self.workspace, Path):
-            raise ConfigError("workspace must be a pathlib.Path")
         if (
             type(self.timeout_seconds) not in {int, float}
             or not math.isfinite(self.timeout_seconds)
@@ -138,10 +124,6 @@ class LocalAgentConfig:
             raise ConfigError("configuration file contains an unknown field")
 
         values = _validate_document_fields(document)
-        workspace = Path(values.pop("workspace", "agent-workspace"))
-        if not workspace.is_absolute():
-            workspace = (config_path.resolve().parent / workspace).resolve()
-        values["workspace"] = workspace
         return cls(**values)
 
     @property
@@ -184,60 +166,6 @@ class LocalAgentConfig:
         return result
 
 
-def create_main_config_template(
-    path: str | os.PathLike[str],
-) -> bool:
-    """Create a readable, empty-key config template without overwriting.
-
-    Returns ``True`` only when this call created the file. The parent
-    directory must already exist so a mistyped ``--config`` cannot create an
-    unexpected directory tree.
-    """
-
-    requested = Path(path)
-    try:
-        parent = requested.parent.resolve(strict=True)
-    except (FileNotFoundError, OSError, RuntimeError) as error:
-        raise ConfigError(
-            "configuration parent directory does not exist or is inaccessible"
-        ) from error
-    if not parent.is_dir():
-        raise ConfigError("configuration parent path is not a directory")
-    target = parent / requested.name
-    serialized = (
-        json.dumps(
-            _MAIN_CONFIG_TEMPLATE,
-            ensure_ascii=False,
-            indent=2,
-        )
-        + "\n"
-    )
-    descriptor: int | None = None
-    try:
-        descriptor = os.open(
-            target,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-            0o600,
-        )
-        with os.fdopen(
-            descriptor,
-            "w",
-            encoding="utf-8",
-            newline="\n",
-        ) as stream:
-            descriptor = None
-            stream.write(serialized)
-            stream.flush()
-            os.fsync(stream.fileno())
-    except FileExistsError:
-        return False
-    except OSError as error:
-        if descriptor is not None:
-            os.close(descriptor)
-        raise ConfigError("configuration template could not be created") from error
-    return True
-
-
 def find_main_config(
     start: str | os.PathLike[str] | None = None,
     *,
@@ -248,7 +176,7 @@ def find_main_config(
     A project root must contain both ``pyproject.toml`` and ``src/fem_agent``.
     This keeps an unrelated ancestor config from silently selecting a
     different API account. Module and executable fallbacks keep an editable
-    install usable when ``.venv/Scripts/fem-agent.exe`` is launched from an
+    install usable when ``.venv/Scripts/fem-gui.exe`` is launched from an
     unrelated working directory.
     """
 
@@ -312,51 +240,49 @@ def _find_project_root(start: Path) -> Path | None:
 def resolve_local_config(
     file_config: LocalAgentConfig | None = None,
     *,
-    provider: str | None = None,
-    model: str | None = None,
-    base_url: str | None = None,
-    api_key: str | None = None,
-    workspace: Path | None = None,
-    timeout_seconds: float | None = None,
-    max_retries: int | None = None,
-    max_output_tokens: int | None = None,
-    enabled: bool | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> LocalAgentConfig:
-    """Resolve CLI, environment, file, and built-in values in that order."""
+    """Resolve environment, file, and built-in values in that order."""
 
     source = file_config or LocalAgentConfig()
     env = os.environ if environ is None else environ
 
     return LocalAgentConfig(
-        provider=_choose(provider, env, "FEM_AGENT_PROVIDER", source.provider),
-        model=_choose(model, env, "DEEPSEEK_MODEL", source.model),
-        base_url=_choose(base_url, env, "DEEPSEEK_BASE_URL", source.base_url),
-        api_key=_choose(api_key, env, "DEEPSEEK_API_KEY", source.api_key),
-        workspace=_workspace_override(workspace, env, source.workspace),
+        provider=_environment_override(
+            env,
+            "FEM_AGENT_PROVIDER",
+            source.provider,
+        ),
+        model=_environment_override(env, "DEEPSEEK_MODEL", source.model),
+        base_url=_environment_override(
+            env,
+            "DEEPSEEK_BASE_URL",
+            source.base_url,
+        ),
+        api_key=_environment_override(
+            env,
+            "DEEPSEEK_API_KEY",
+            source.api_key,
+        ),
         timeout_seconds=_numeric_override(
-            timeout_seconds,
             env,
             "FEM_AGENT_PROVIDER_TIMEOUT",
             source.timeout_seconds,
             float,
         ),
         max_retries=_numeric_override(
-            max_retries,
             env,
             "FEM_AGENT_PROVIDER_RETRIES",
             source.max_retries,
             int,
         ),
         max_output_tokens=_numeric_override(
-            max_output_tokens,
             env,
             "FEM_AGENT_MAX_OUTPUT_TOKENS",
             source.max_output_tokens,
             int,
         ),
         enabled=_boolean_override(
-            enabled,
             env,
             "FEM_AGENT_ENABLED",
             source.enabled,
@@ -379,14 +305,12 @@ def _reject_nonfinite_constant(_value: str) -> None:
 
 def _validate_document_fields(document: dict[str, Any]) -> dict[str, Any]:
     values: dict[str, Any] = {}
-    for name in ("provider", "model", "base_url", "api_key", "workspace"):
+    for name in ("provider", "model", "base_url", "api_key"):
         if name not in document:
             continue
         value = document[name]
         if type(value) is not str:
             raise ConfigError(f"{name} must be a string")
-        if name == "workspace" and not value.strip():
-            raise ConfigError("workspace must be a non-empty string")
         values[name] = value
     if "timeout_seconds" in document:
         value = document["timeout_seconds"]
@@ -408,14 +332,11 @@ def _validate_document_fields(document: dict[str, Any]) -> dict[str, Any]:
     return values
 
 
-def _choose(
-    cli_value: str | None,
+def _environment_override(
     environ: Mapping[str, str],
     env_name: str,
     file_value: str | None,
 ) -> str | None:
-    if cli_value is not None:
-        return cli_value
     if env_name in environ:
         value = environ[env_name]
         if type(value) is not str:
@@ -424,32 +345,12 @@ def _choose(
     return file_value
 
 
-def _workspace_override(
-    cli_value: Path | None,
-    environ: Mapping[str, str],
-    file_value: Path,
-) -> Path:
-    if cli_value is not None:
-        if not isinstance(cli_value, Path):
-            raise ConfigError("workspace CLI override must be a pathlib.Path")
-        return cli_value
-    if "FEM_AGENT_WORKSPACE" not in environ:
-        return file_value
-    value = environ["FEM_AGENT_WORKSPACE"]
-    if type(value) is not str or not value.strip():
-        raise ConfigError("FEM_AGENT_WORKSPACE must contain a path")
-    return Path(value)
-
-
 def _numeric_override(
-    cli_value: int | float | None,
     environ: Mapping[str, str],
     env_name: str,
     file_value: int | float,
     converter: type[int] | type[float],
 ) -> int | float:
-    if cli_value is not None:
-        return cli_value
     if env_name not in environ:
         return file_value
     value = environ[env_name]
@@ -463,13 +364,10 @@ def _numeric_override(
 
 
 def _boolean_override(
-    cli_value: bool | None,
     environ: Mapping[str, str],
     env_name: str,
     file_value: bool,
 ) -> bool:
-    if cli_value is not None:
-        return cli_value
     if env_name not in environ:
         return file_value
     value = environ[env_name]
@@ -489,7 +387,6 @@ __all__ = [
     "MAX_CONFIG_BYTES",
     "ROOT_CONFIG_NAME",
     "TEST_CONFIG_NAME",
-    "create_main_config_template",
     "find_main_config",
     "resolve_local_config",
 ]

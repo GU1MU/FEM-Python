@@ -2,13 +2,55 @@
 
 from __future__ import annotations
 
+import re
+
 from .references import LogicalEntityRef
+
+
+_PART_ID_PATTERN = re.compile(r"P([1-9][0-9]*)\Z")
+_PART_BOOLEAN_FEATURE_ID_PATTERN = re.compile(r"PBF([1-9][0-9]*)\Z")
+
+
+def normalize_part_id(value: object, field_name: str = "part id") -> str:
+    """Return one canonical ``P*`` identity."""
+
+    if type(value) is not str:
+        raise TypeError(f"{field_name} must be a string")
+    if value != value.strip() or _PART_ID_PATTERN.fullmatch(value) is None:
+        raise ValueError(f"{field_name} must use P1, P2, P3, ...")
+    return value
+
+
+def normalize_part_boolean_feature_id(
+    value: object,
+    field_name: str = "part Boolean feature id",
+) -> str:
+    """Return one canonical ``PBF*`` identity."""
+
+    if type(value) is not str:
+        raise TypeError(f"{field_name} must be a string")
+    if (
+        value != value.strip()
+        or _PART_BOOLEAN_FEATURE_ID_PATTERN.fullmatch(value) is None
+    ):
+        raise ValueError(f"{field_name} must use PBF1, PBF2, PBF3, ...")
+    return value
+
+
+def part_id_sort_key(value: str) -> int:
+    """Canonical numeric order for stable Part identities."""
+
+    return int(normalize_part_id(value)[1:])
+
+
+def part_boolean_feature_id_sort_key(value: str) -> int:
+    """Canonical numeric order for stable Part-Boolean feature identities."""
+
+    return int(normalize_part_boolean_feature_id(value)[3:])
 
 
 def namespace_part_logical_id(part_id: str, logical_id: str) -> str:
     """Map one recipe-local logical ID into a stable Part namespace."""
-
-    from fem.application.native_part import normalize_part_id
 
     normalized_part_id = normalize_part_id(part_id)
     reference = LogicalEntityRef(logical_id)
@@ -26,8 +68,6 @@ def namespace_part_logical_id(part_id: str, logical_id: str) -> str:
 
 def strip_part_logical_id(part_id: str, logical_id: str) -> str:
     """Return the recipe-local form of one reference owned by *part_id*."""
-
-    from fem.application.native_part import normalize_part_id
 
     normalized_part_id = normalize_part_id(part_id)
     reference = LogicalEntityRef(logical_id)
@@ -54,8 +94,6 @@ def strip_part_logical_id(part_id: str, logical_id: str) -> str:
 def part_id_from_logical_id(logical_id: str) -> str | None:
     """Return a canonical owner Part ID, or ``None`` for a local reference."""
 
-    from fem.application.native_part import normalize_part_id
-
     reference = LogicalEntityRef(logical_id)
     semantic_name = logical_id.split(":", 1)[1]
     if reference.kind == "part":
@@ -71,8 +109,6 @@ def part_id_from_logical_id(logical_id: str) -> str | None:
 
 def part_logical_ref(part_id: str) -> LogicalEntityRef:
     """Create the selection-only reference for one Part."""
-
-    from fem.application.native_part import normalize_part_id
 
     return LogicalEntityRef(f"part:{normalize_part_id(part_id)}")
 
@@ -102,7 +138,11 @@ def strip_part_reference(
 __all__ = [
     "namespace_part_logical_id",
     "namespace_part_reference",
+    "normalize_part_boolean_feature_id",
+    "normalize_part_id",
+    "part_boolean_feature_id_sort_key",
     "part_id_from_logical_id",
+    "part_id_sort_key",
     "part_logical_ref",
     "strip_part_logical_id",
     "strip_part_reference",

@@ -181,12 +181,12 @@ from .mesh_browser import MeshBrowserDialog
 from .geometry_preview import (
     GeometryPreview,
     build_geometry_preview,
-    build_multi_part_geometry_preview,
     namespace_part_geometry_preview,
     build_strict_body_boolean_previews,
     build_strict_part_boolean_preview,
     build_strict_planar_boolean_preview,
 )
+from .part_geometry_preview import build_multi_part_geometry_preview
 from .scope_selection import (
     ScopeSelectionTopology,
     build_scope_selection_topology,
@@ -470,7 +470,7 @@ class FEMMainWindow(QMainWindow):
         self.setWindowTitle("有限元分析")
         self.resize(1280, 800)
         self.session = ModelSession()
-        self.document = self.session._snapshot_for_gui()
+        self.document = self.session.projection_snapshot()
         self._applied_session_revision = self.document.session_revision
         self._import_notices: tuple[object, ...] = ()
         self._current_step_name: str | None = None
@@ -2223,11 +2223,11 @@ class FEMMainWindow(QMainWindow):
             isinstance(delta, SessionDelta)
             and self.session.session_revision == revision
         ):
-            return self.session._snapshot_for_gui(
+            return self.session.projection_snapshot(
                 self.document,
                 delta.changed,
             )
-        return self.session._snapshot_for_gui()
+        return self.session.projection_snapshot()
 
     def _apply_revision_neutral_task_receipt(
         self,
@@ -6585,7 +6585,7 @@ class FEMMainWindow(QMainWindow):
             timings["VTK 显示几何构建"] = perf_counter() - started
             context.report("正在准备会话模型……")
             started = perf_counter()
-            prepared = self.session._prepare_imported_model_transfer(model)
+            prepared = self.session.prepare_imported_model_transfer(model)
             timings["Session 模型所有权准备"] = perf_counter() - started
             context.checkpoint()
             return prepared, geometry, timings, build_result.notices
@@ -6595,7 +6595,7 @@ class FEMMainWindow(QMainWindow):
                 value
             )
             return self._session_task_outcome(
-                self.session._accept_imported_model_transfer(
+                self.session.accept_imported_model_transfer(
                     task.token,
                     prepared,
                 ),
@@ -8114,7 +8114,7 @@ class FEMMainWindow(QMainWindow):
             if type(value) is not PreparedPreflight:
                 raise TypeError("model check must return PreparedPreflight")
             return self._session_task_outcome(
-                self.session._accept_validation_with_prepared_system(
+                self.session.accept_validation_with_prepared_system(
                     task.token,
                     value.report,
                     value.prepared_system,
@@ -8196,7 +8196,7 @@ class FEMMainWindow(QMainWindow):
         if type(evaluation) is not PreparedPreflight:
             raise TypeError("model check must return PreparedPreflight")
         report = evaluation.report
-        delta = self.session._accept_validation_with_prepared_system(
+        delta = self.session.accept_validation_with_prepared_system(
             token,
             report,
             evaluation.prepared_system,
@@ -8408,7 +8408,7 @@ class FEMMainWindow(QMainWindow):
 
         def apply_result(value: object) -> TaskApplyOutcome:
             bundle, timings, run_prepared, cache_candidate = value
-            delta = self.session._accept_run_succeeded_with_prepared_system(
+            delta = self.session.accept_run_succeeded_with_prepared_system(
                 task.token,
                 bundle,
                 run_prepared,
@@ -8727,7 +8727,7 @@ class FEMMainWindow(QMainWindow):
         self.status_panel.set_state("任务已接受，但界面刷新失败", 8000)
 
     def _rebuild_full_projection(self) -> None:
-        snapshot = self.session._snapshot_for_gui()
+        snapshot = self.session.projection_snapshot()
         self._applied_session_revision = -1
         if not self._apply_session_delta(
             SessionDelta(

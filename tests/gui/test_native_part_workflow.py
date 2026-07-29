@@ -18,7 +18,7 @@ from fem.geometry import (
     SketchPoint,
 )
 from fem_gui.action_state import ACTION_DESCRIPTORS
-from fem_gui.geometry_preview import build_multi_part_geometry_preview
+from fem_gui.part_geometry_preview import build_multi_part_geometry_preview
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.preprocessing_dialogs import GeometryCreationDialog
 from fem_gui.widgets.model_tree import ROLE_KEY, ROLE_KIND, ModelTree

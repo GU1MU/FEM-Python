@@ -118,20 +118,37 @@ class ArtifactStore:
         source_path: str | os.PathLike[str],
         *,
         max_bytes: int = 50 * 1024 * 1024,
+        source_encoding: str | None = None,
     ) -> ArtifactRecord:
         """Copy one regular ``.inp`` file into an immutable session location.
 
         The source may be outside the Agent workspace because it is selected by
-        the local CLI.  The returned record contains no source path.
+        the local UI.  A declared source encoding transcodes the private copy
+        to UTF-8 while leaving the user-owned source unchanged.  The returned
+        record contains no source path.
         """
 
         if isinstance(max_bytes, bool) or not isinstance(max_bytes, int):
             raise InputRejectedError("max_bytes must be an integer")
         if max_bytes <= 0:
             raise InputRejectedError("max_bytes must be greater than zero")
+        if source_encoding not in {
+            None,
+            "utf-8",
+            "utf-8-sig",
+            "utf-16",
+            "gb18030",
+        }:
+            raise InputRejectedError("source_encoding is not supported")
 
         source = _validated_input_source(source_path)
-        initial_size = source.stat().st_size
+        try:
+            initial_stat = source.stat()
+        except OSError as error:
+            raise InputRejectedError(
+                "input metadata could not be read"
+            ) from error
+        initial_size = initial_stat.st_size
         if initial_size > max_bytes:
             raise InputRejectedError(
                 f"input exceeds the configured {max_bytes}-byte limit"
@@ -158,20 +175,59 @@ class ArtifactStore:
             digest = hashlib.sha256()
             size_bytes = 0
             try:
-                with source.open("rb") as source_stream, temporary.open("xb") as output:
-                    while True:
-                        chunk = source_stream.read(_COPY_CHUNK_SIZE)
-                        if not chunk:
-                            break
-                        size_bytes += len(chunk)
-                        if size_bytes > max_bytes:
-                            raise InputRejectedError(
-                                f"input exceeds the configured {max_bytes}-byte limit"
-                            )
-                        digest.update(chunk)
-                        output.write(chunk)
+                with temporary.open("xb") as output:
+                    if source_encoding is None:
+                        with source.open("rb") as source_stream:
+                            while True:
+                                chunk = source_stream.read(_COPY_CHUNK_SIZE)
+                                if not chunk:
+                                    break
+                                size_bytes += len(chunk)
+                                if size_bytes > max_bytes:
+                                    raise InputRejectedError(
+                                        "input exceeds the configured "
+                                        f"{max_bytes}-byte limit"
+                                    )
+                                digest.update(chunk)
+                                output.write(chunk)
+                    else:
+                        with source.open(
+                            "r",
+                            encoding=source_encoding,
+                            errors="strict",
+                            newline="",
+                        ) as source_stream:
+                            while True:
+                                text = source_stream.read(_COPY_CHUNK_SIZE)
+                                if not text:
+                                    break
+                                chunk = text.encode("utf-8")
+                                size_bytes += len(chunk)
+                                if size_bytes > max_bytes:
+                                    raise InputRejectedError(
+                                        "transcoded input exceeds the configured "
+                                        f"{max_bytes}-byte limit"
+                                    )
+                                digest.update(chunk)
+                                output.write(chunk)
                     output.flush()
                     os.fsync(output.fileno())
+                try:
+                    final_stat = source.stat()
+                except OSError as error:
+                    raise InputRejectedError(
+                        "input changed while it was being copied"
+                    ) from error
+                if (
+                    final_stat.st_size != initial_stat.st_size
+                    or final_stat.st_mtime_ns != initial_stat.st_mtime_ns
+                    or final_stat.st_ctime_ns != initial_stat.st_ctime_ns
+                    or final_stat.st_dev != initial_stat.st_dev
+                    or final_stat.st_ino != initial_stat.st_ino
+                ):
+                    raise InputRejectedError(
+                        "input changed while it was being copied"
+                    )
                 _publish_new_file(temporary, destination)
             finally:
                 if temporary.exists():

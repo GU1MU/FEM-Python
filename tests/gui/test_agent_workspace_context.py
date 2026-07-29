@@ -232,7 +232,9 @@ def test_index_does_not_follow_real_directory_link(tmp_path):
     try:
         link.symlink_to(outside_root, target_is_directory=True)
     except OSError:
-        pytest.skip("当前 Windows 权限不允许创建符号链接")
+        pytest.skip(
+            "[platform-capability] 当前 Windows 权限不允许创建符号链接"
+        )
     snapshot = WorkspaceIndexer().scan(workspace)
     assert [item.relative_path for item in snapshot.files] == ["safe.txt"]
     assert snapshot.skipped_unsafe_entries >= 1

@@ -92,7 +92,7 @@ def test_prepared_import_transfers_worker_owned_model_without_second_copy(
     session = ModelSession()
     task = session.prepare_import("prepared.inp")
     source = _model("Step-A")
-    prepared = session._prepare_imported_model_transfer(source)
+    prepared = session.prepare_imported_model_transfer(source)
 
     def unexpected_deepcopy(_value):
         raise AssertionError("prepared import acceptance must not deepcopy")
@@ -100,8 +100,8 @@ def test_prepared_import_transfers_worker_owned_model_without_second_copy(
     monkeypatch.setattr(session_module, "deepcopy", unexpected_deepcopy)
     monkeypatch.setattr(definitions_module, "deepcopy", unexpected_deepcopy)
 
-    delta = session._accept_imported_model_transfer(task.token, prepared)
-    projection = session._snapshot_for_gui()
+    delta = session.accept_imported_model_transfer(task.token, prepared)
+    projection = session.projection_snapshot()
 
     assert delta.accepted
     assert projection.model is not source
@@ -113,7 +113,7 @@ def test_stale_prepared_import_preserves_import_cas_without_copy(
 ) -> None:
     session = ModelSession()
     task = session.prepare_import("stale-prepared.inp")
-    prepared = session._prepare_imported_model_transfer(_model("Step-A"))
+    prepared = session.prepare_imported_model_transfer(_model("Step-A"))
     session.new_native_project()
 
     def unexpected_deepcopy(_value):
@@ -122,24 +122,24 @@ def test_stale_prepared_import_preserves_import_cas_without_copy(
     monkeypatch.setattr(session_module, "deepcopy", unexpected_deepcopy)
     monkeypatch.setattr(definitions_module, "deepcopy", unexpected_deepcopy)
 
-    delta = session._accept_imported_model_transfer(task.token, prepared)
+    delta = session.accept_imported_model_transfer(task.token, prepared)
 
     assert not delta.accepted
     assert delta.token_status is TokenStatus.STALE_SESSION
 
 
-def test_public_snapshot_remains_detached_from_trusted_gui_projection() -> None:
+def test_public_snapshot_remains_detached_from_trusted_projection() -> None:
     session = ModelSession()
     task = session.prepare_import("detached.inp")
     session.accept_imported_model(task.token, _model("Step-A"))
 
     public = session.snapshot()
-    trusted = session._snapshot_for_gui()
+    trusted = session.projection_snapshot()
 
     assert public.model is not trusted.model
     public.model.name = "mutated-public-snapshot"
     public.model.steps[0].name = "Mutated-Step"
-    current = session._snapshot_for_gui()
+    current = session.projection_snapshot()
     assert current.model.name != "mutated-public-snapshot"
     assert current.steps[0].name == "Step-A"
 

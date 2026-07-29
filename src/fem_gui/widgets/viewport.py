@@ -794,6 +794,7 @@ def _display_point_in_polygon(
 class FEMViewport(QWidget):
     """维护网格、标注、选择、载荷与结果等独立 Actor。"""
 
+    nativeSurfaceUpdated = Signal()
     entityPicked = Signal(str, int)
     geometryEntityPicked = Signal(object)
     geometryEntitiesBoxSelected = Signal(object)
@@ -4834,6 +4835,7 @@ class FEMViewport(QWidget):
     def _ensure_plotter(self) -> bool:
         if self._plotter is not None:
             self._stack.setCurrentWidget(self._plotter)
+            self.nativeSurfaceUpdated.emit()
             return True
         pv, interactor, error = load_backend()
         if pv is None or interactor is None:
@@ -4854,6 +4856,7 @@ class FEMViewport(QWidget):
             self._stack.addWidget(self._plotter)
             self._stack.setCurrentWidget(self._plotter)
             self._install_picker()
+            self.nativeSurfaceUpdated.emit()
         except Exception as error:
             self._plotter = None
             self._message.setText(f"三维视口初始化失败：{error}")
@@ -6519,3 +6522,4 @@ class FEMViewport(QWidget):
                 self._plotter.render()
             except Exception:
                 pass
+            self.nativeSurfaceUpdated.emit()

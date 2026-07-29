@@ -6,11 +6,12 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint, QPointF, QRect, QSize, Qt
+from PySide6.QtCore import QPoint, QPointF, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QAction, QWheelEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
+from fem_gui.agent_events import FakeAgentEventStream
 from fem_gui.widgets.agent_chat import (
     ModelViewportOverlayHost,
     ToolActivityPreview,
@@ -62,6 +63,13 @@ def _global_rect(widget: QWidget) -> QRect:
     return QRect(widget.mapToGlobal(QPoint(0, 0)), widget.size())
 
 
+def _widget_at_host_point(
+    host: QWidget,
+    point: QPoint,
+) -> QWidget | None:
+    return QApplication.widgetAt(host.mapToGlobal(point))
+
+
 def _belongs_to(widget: QWidget, ancestor: QWidget) -> bool:
     current: QWidget | None = widget
     while current is not None:
@@ -72,6 +80,8 @@ def _belongs_to(widget: QWidget, ancestor: QWidget) -> bool:
 
 
 class _ViewportProbe(QWidget):
+    nativeSurfaceUpdated = Signal()
+
     def __init__(self) -> None:
         super().__init__()
         self.mouse_presses = 0
@@ -85,6 +95,33 @@ class _ViewportProbe(QWidget):
     def wheelEvent(self, event) -> None:
         self.wheel_events += 1
         event.accept()
+
+
+def test_drawer_removes_phase_copy_and_uses_larger_primary_controls():
+    application = _application()
+    viewport = _ViewportProbe()
+    host = ModelViewportOverlayHost(viewport)
+    host.resize(720, 520)
+    host.show()
+    application.processEvents()
+
+    drawer = host.agent_chat_drawer
+    labels = drawer.findChildren(QLabel)
+    title = drawer.findChild(QLabel, "agentChatTitle")
+
+    assert title is not None
+    assert title.text() == "FEM Agent"
+    assert title.font().pointSizeF() >= 12
+    assert all("Phase 5" not in label.text() for label in labels)
+    assert drawer.findChild(QWidget, "agentChatPreviewBadge") is None
+    assert drawer.findChild(QWidget, "agentChatSubtitle") is None
+    assert drawer.findChild(QWidget, "agentChatWelcome") is None
+    assert drawer.input.font().pointSizeF() >= 10
+    assert drawer.input.minimumHeight() >= 96
+    assert drawer.new_session_button.sizeHint().width() >= 32
+    assert drawer.close_button.sizeHint().height() >= 32
+    assert drawer.send_state.size() == QSize(34, 34)
+    host.close()
 
 
 def test_drawer_open_close_and_width_only_change_overlay_geometry():
@@ -124,7 +161,10 @@ def test_drawer_open_close_and_width_only_change_overlay_geometry():
     host.set_drawer_width(448)
     application.processEvents()
     assert host.agent_chat_drawer.width() == 448
-    assert host.agent_chat_drawer.geometry().right() == host.rect().right()
+    assert (
+        _global_rect(host.agent_chat_drawer).right()
+        == _global_rect(host).right()
+    )
     assert viewport.geometry() == baseline_geometry
     assert viewport.size() == baseline_size
 
@@ -139,27 +179,153 @@ def test_drawer_open_close_and_width_only_change_overlay_geometry():
     host.close()
 
 
-def test_drawer_stays_between_toolbar_and_scope_tray_at_800_by_600():
+def test_native_viewport_cannot_cover_independent_tool_overlays():
+    application = _application()
+    viewport = _ViewportProbe()
+    viewport.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
+    host = ModelViewportOverlayHost(viewport)
+    host.resize(720, 460)
+    host.show()
+    application.processEvents()
+
+    baseline_geometry = QRect(viewport.geometry())
+    baseline_size = QSize(viewport.size())
+    assert host.agent_chat_drawer.isWindow()
+    assert host.chat_launcher.isWindow()
+    assert (
+        host.agent_chat_drawer.windowType()
+        == Qt.WindowType.Tool
+    )
+    assert host.chat_launcher.windowType() == Qt.WindowType.Tool
+    assert host.agent_chat_drawer.testAttribute(
+        Qt.WidgetAttribute.WA_ShowWithoutActivating
+    )
+    assert host.chat_launcher.testAttribute(
+        Qt.WidgetAttribute.WA_ShowWithoutActivating
+    )
+    assert (
+        host.chat_launcher.windowFlags()
+        & Qt.WindowType.WindowDoesNotAcceptFocus
+    )
+
+    host.set_drawer_open(False, animated=False)
+    viewport.raise_()
+    viewport.nativeSurfaceUpdated.emit()
+    application.processEvents()
+    assert host.chat_launcher.isVisible()
+    QTest.mouseClick(
+        host.chat_launcher,
+        Qt.MouseButton.LeftButton,
+    )
+    application.processEvents()
+    assert host.drawer_is_open
+    assert viewport.geometry() == baseline_geometry
+    assert viewport.size() == baseline_size
+
+    host.set_drawer_open(True, animated=False)
+    viewport.raise_()
+    viewport.nativeSurfaceUpdated.emit()
+    application.processEvents()
+    assert host.agent_chat_drawer.isVisible()
+    QTest.mouseClick(
+        host.agent_chat_drawer.close_button,
+        Qt.MouseButton.LeftButton,
+    )
+    application.processEvents()
+    assert not host.drawer_is_open
+    assert viewport.geometry() == baseline_geometry
+    assert viewport.size() == baseline_size
+    host.close()
+
+
+def test_tool_overlays_follow_host_window_lifecycle():
+    application = _application()
+    viewport = _ViewportProbe()
+    host = ModelViewportOverlayHost(viewport)
+    host.resize(720, 460)
+    host.move(60, 70)
+    host.show()
+    host.activateWindow()
+    application.processEvents()
+    host.set_drawer_open(False, animated=False)
+    application.processEvents()
+
+    baseline_viewport_geometry = QRect(viewport.geometry())
+    baseline_viewport_size = QSize(viewport.size())
+    first_host_rect = _global_rect(host)
+    first_launcher_rect = _global_rect(host.chat_launcher)
+    assert first_host_rect.contains(first_launcher_rect)
+
+    host.move(100, 120)
+    application.processEvents()
+    moved_launcher_rect = _global_rect(host.chat_launcher)
+    assert moved_launcher_rect.topLeft() - first_launcher_rect.topLeft() == (
+        _global_rect(host).topLeft() - first_host_rect.topLeft()
+    )
+    assert viewport.geometry() == baseline_viewport_geometry
+    assert viewport.size() == baseline_viewport_size
+
+    host.resize(640, 400)
+    application.processEvents()
+    resized_host_rect = _global_rect(host)
+    resized_launcher_rect = _global_rect(host.chat_launcher)
+    assert resized_host_rect.contains(resized_launcher_rect)
+    assert (
+        resized_host_rect.right() - resized_launcher_rect.right()
+        == host.LAUNCHER_MARGIN
+    )
+    assert viewport.geometry() == host.rect()
+
+    host.hide()
+    application.processEvents()
+    assert host.agent_chat_drawer.isHidden()
+    assert host.chat_launcher.isHidden()
+
+    host.show()
+    host.activateWindow()
+    application.processEvents()
+    assert host.chat_launcher.isVisible()
+
+    host.showMinimized()
+    application.processEvents()
+    assert host.agent_chat_drawer.isHidden()
+    assert host.chat_launcher.isHidden()
+
+    host.showNormal()
+    host.activateWindow()
+    application.processEvents()
+    assert host.chat_launcher.isVisible()
+    host.close()
+
+
+def test_drawer_and_scope_bar_overlay_without_resizing_viewport():
     application = _application()
     viewport = _ViewportProbe()
     panel = ViewportPanel(viewport, _actions(viewport))
     panel.resize(800, 600)
     panel.show()
+    application.processEvents()
+    assert panel.layout().count() == 2
+    assert panel.overlay_host.geometry().bottom() == panel.rect().bottom()
+    assert panel.scope_creation_bar.isHidden()
+    baseline_geometry = QRect(viewport.geometry())
+    baseline_size = QSize(viewport.size())
     panel.scope_creation_bar.begin("Set", "NodeSet-1")
     application.processEvents()
 
     assert panel.size() == QSize(800, 600)
-    baseline_geometry = QRect(viewport.geometry())
-    baseline_size = QSize(viewport.size())
+    assert viewport.geometry() == baseline_geometry
+    assert viewport.size() == baseline_size
     host_rect = _global_rect(panel.overlay_host)
     drawer_rect = _global_rect(panel.agent_chat_drawer)
     toolbar_rect = _global_rect(panel.toolbar)
-    tray_rect = _global_rect(panel.scope_creation_tray)
+    scope_bar_rect = _global_rect(panel.scope_creation_bar)
 
     assert drawer_rect.top() == host_rect.top()
     assert drawer_rect.bottom() == host_rect.bottom()
     assert not drawer_rect.intersects(toolbar_rect)
-    assert not drawer_rect.intersects(tray_rect)
+    assert scope_bar_rect.bottom() == host_rect.bottom()
+    assert not drawer_rect.intersects(scope_bar_rect)
     assert viewport.geometry() == panel.overlay_host.rect()
 
     panel.overlay_host.set_drawer_open(False, animated=False)
@@ -175,7 +341,7 @@ def test_drawer_stays_between_toolbar_and_scope_tray_at_800_by_600():
         _global_rect(panel.toolbar)
     )
     assert not _global_rect(panel.agent_chat_drawer).intersects(
-        _global_rect(panel.scope_creation_tray)
+        _global_rect(panel.scope_creation_bar)
     )
     panel.close()
 
@@ -189,7 +355,7 @@ def test_drawer_hit_area_consumes_input_and_outside_remains_viewport():
     application.processEvents()
 
     inside = QPoint(host.width() - 20, 90)
-    inside_target = host.childAt(inside)
+    inside_target = _widget_at_host_point(host, inside)
     assert inside_target is not None
     assert _belongs_to(inside_target, host.agent_chat_drawer)
     assert host.agent_chat_drawer not in viewport._picker_event_targets
@@ -215,7 +381,7 @@ def test_drawer_hit_area_consumes_input_and_outside_remains_viewport():
     assert viewport.wheel_events == 0
 
     outside = QPoint(30, 90)
-    outside_target = host.childAt(outside)
+    outside_target = _widget_at_host_point(host, outside)
     assert outside_target is viewport
     QTest.mouseClick(outside_target, Qt.MouseButton.LeftButton)
     QApplication.sendEvent(
@@ -263,6 +429,7 @@ def test_static_preview_controls_do_not_create_files_or_agent_dependencies(
         "__future__",
         "PySide6",
         "agent_events",
+        "agent_runtime",
         "agent_workspace",
         "collections",
         "html",
@@ -277,6 +444,10 @@ def test_static_preview_controls_do_not_create_files_or_agent_dependencies(
     application.processEvents()
 
     drawer = host.agent_chat_drawer
+    drawer.replay_agent_events(
+        FakeAgentEventStream().review_preview()
+    )
+    application.processEvents()
     tools = drawer.findChild(ToolActivityPreview)
     assert tools is not None
     assert tools.details.isHidden()
@@ -289,17 +460,12 @@ def test_static_preview_controls_do_not_create_files_or_agent_dependencies(
     assert drawer.add_button.text() == "＋"
     assert drawer.send_button.text() == ""
     assert not drawer.send_button.icon().isNull()
-    assert drawer.send_button.iconSize() == QSize(16, 16)
+    assert drawer.send_button.iconSize() == QSize(18, 18)
 
     drawer.input.setPlainText("@")
     application.processEvents()
     assert drawer.suggestion.isVisible()
     assert "各种类型" in drawer.suggestion_item.text()
-    drawer.send_button.click()
-    assert drawer.send_state.currentWidget() is drawer.stop_button
-    assert not drawer.input.isEnabled()
-    drawer.stop_button.click()
-    assert drawer.send_state.currentWidget() is drawer.send_button
-    assert drawer.input.isEnabled()
+    assert not drawer.agent_runtime.busy
     assert list(tmp_path.iterdir()) == []
     host.close()

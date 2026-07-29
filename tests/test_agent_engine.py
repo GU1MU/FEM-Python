@@ -681,6 +681,97 @@ def test_attached_local_path_and_raw_input_are_absent_from_provider_requests(tmp
     assert "*Node" not in serialized
 
 
+def test_request_context_is_ephemeral_across_provider_tool_loop(tmp_path):
+    provider = FakeProvider(
+        [
+            _tool_response(
+                ToolCall(
+                    "call_capabilities",
+                    "show_capabilities",
+                    {"detail": "summary"},
+                )
+            ),
+            _text_response("能力检查完成。"),
+        ]
+    )
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_ephemeral_context",
+    )
+    request_context = (
+        "The following JSON is user-selected workspace data for this turn.\n"
+        '{"files":[{"path":"notes.md","content":"PRIVATE-CONTEXT"}]}'
+    )
+
+    events = engine.send_message(
+        "结合 @notes.md 检查能力。",
+        request_context=request_context,
+    )
+
+    assert len(provider.requests) == 2
+    for request in provider.requests:
+        assert sum(
+            message.role == "user"
+            and message.content == request_context
+            for message in request.messages
+        ) == 1
+        context_index = next(
+            index
+            for index, message in enumerate(request.messages)
+            if message.content == request_context
+        )
+        assert request.messages[context_index + 1].content == (
+            "结合 @notes.md 检查能力。"
+        )
+    tool_started = next(
+        event
+        for event in events
+        if event.event == EngineEventType.TOOL_STARTED
+    )
+    assert tool_started.data["arguments"] == {"detail": "summary"}
+    conversation = (
+        engine.workspace
+        / "sessions"
+        / engine.session_id
+        / "conversation.json"
+    ).read_text(encoding="utf-8")
+    assert "PRIVATE-CONTEXT" not in conversation
+    assert "@notes.md" in conversation
+
+
+def test_credential_in_request_context_is_rejected_before_provider(tmp_path):
+    provider = FakeProvider([_text_response("不应调用。")])
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_context_credential",
+    )
+
+    events = engine.send_message(
+        "读取文件。",
+        request_context=(
+            "workspace data\n"
+            '{"content":"DEEPSEEK_API_KEY=sk-abcdefghijklmnop"}'
+        ),
+    )
+
+    assert provider.requests == []
+    assert any(
+        event.event == EngineEventType.DIAGNOSTIC
+        and event.data["diagnostic"]["code"]
+        == DiagnosticCode.INVALID_INPUT.value
+        for event in events
+    )
+    conversation = (
+        engine.workspace
+        / "sessions"
+        / engine.session_id
+        / "conversation.json"
+    )
+    assert not conversation.exists()
+
+
 def test_engine_conversation_can_be_reopened_without_provider_objects(tmp_path):
     provider = FakeProvider([_text_response("已记录。")])
     engine, _ = _attached_engine(tmp_path, provider)

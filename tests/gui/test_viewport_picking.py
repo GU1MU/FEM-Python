@@ -21,11 +21,8 @@ from fem.geometry import (
     SketchPlane,
     SketchPoint,
 )
-from fem_gui.geometry_preview import (
-    GeometryPreview,
-    build_geometry_preview,
-    build_multi_part_geometry_preview,
-)
+from fem_gui.geometry_preview import GeometryPreview, build_geometry_preview
+from fem_gui.part_geometry_preview import build_multi_part_geometry_preview
 from fem_gui.widgets import viewport as viewport_module
 from fem_gui.widgets.viewport import (
     FEMViewport,

@@ -196,15 +196,25 @@ def test_retired_output_and_projection_alias_tokens_are_absent() -> None:
     assert offenders == []
 
 
-def test_fem_and_gui_do_not_import_deferred_agent_implementation() -> None:
-    roots = (SRC_ROOT / "fem", GUI_ROOT)
-    offenders = [
-        offender
-        for root in roots
-        for offender in _forbidden_imports(root, ("fem_agent",))
-    ]
+def test_agent_imports_are_confined_to_phase5_gui_runtime_adapter() -> None:
+    assert _forbidden_imports(SRC_ROOT / "fem", ("fem_agent",)) == []
 
-    assert offenders == []
+    runtime_path = Path("src/fem_gui/agent_runtime.py")
+    allowed = {
+        (runtime_path, "fem_agent.artifacts.ArtifactStore"),
+        (runtime_path, "fem_agent.artifacts.InputRejectedError"),
+        (runtime_path, "fem_agent.config.ConfigError"),
+        (runtime_path, "fem_agent.config.LocalAgentConfig"),
+        (runtime_path, "fem_agent.config.find_main_config"),
+        (runtime_path, "fem_agent.config.resolve_local_config"),
+        (runtime_path, "fem_agent.engine.AgentSessionEngine"),
+        (runtime_path, "fem_agent.engine.EngineEvent"),
+        (runtime_path, "fem_agent.engine.EngineEventType"),
+        (runtime_path, "fem_agent.providers.base.CloudModelProvider"),
+        (runtime_path, "fem_agent.providers.deepseek.DeepSeekProvider"),
+        (runtime_path, "fem_agent.providers.fake.FakeProvider"),
+    }
+    assert set(_forbidden_imports(GUI_ROOT, ("fem_agent",))) == allowed
 
 
 def test_deferred_agent_result_implementation_allowlist_is_exact() -> None:

@@ -65,7 +65,7 @@ def test_cached_prepared_system_isolated_from_exposed_solve_task_model() -> None
     )
     validation = session.prepare_validation("pull")
     prepared = static_linear.prepare(validation.model)
-    session._accept_validation_with_prepared_system(
+    session.accept_validation_with_prepared_system(
         validation.token,
         passing_preflight_report(validation.token),
         prepared,
@@ -119,7 +119,7 @@ def test_first_solve_installs_unexposed_cache_clone(monkeypatch) -> None:
         _prepared_system=run_prepared,
     )
     cache_candidate = run_prepared.clone()
-    session._accept_run_succeeded_with_prepared_system(
+    session.accept_run_succeeded_with_prepared_system(
         first.token,
         build_solve_result_bundle(first, result),
         run_prepared,
@@ -158,7 +158,7 @@ def test_stale_validation_cannot_install_prepared_system() -> None:
         make_static_pull_truss_model(),
     )
 
-    delta = session._accept_validation_with_prepared_system(
+    delta = session.accept_validation_with_prepared_system(
         validation.token,
         passing_preflight_report(validation.token),
         prepared,
@@ -211,7 +211,7 @@ def test_stale_solve_completion_cannot_install_cache_candidate(
         make_static_pull_truss_model(),
     )
 
-    delta = session._accept_run_succeeded_with_prepared_system(
+    delta = session.accept_run_succeeded_with_prepared_system(
         solve.token,
         bundle,
         run_prepared,

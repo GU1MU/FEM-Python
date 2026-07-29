@@ -1,7 +1,7 @@
-"""FEM Agent 的覆盖式聊天界面与阶段 3 结构化事件预览。
+"""FEM Agent 的覆盖式聊天界面与结构化事件展示。
 
-本模块不创建真实 Agent 会话，不导入或调用 ``fem_agent``。工作区文件候选
-只使用有界元数据索引，不读取文件内容；对话展示只消费结构化事件投影状态。
+工作区文件候选使用有界元数据索引；文件内容只由后台 Agent 适配器按限制
+读取。对话展示只消费结构化事件投影状态。
 """
 
 from __future__ import annotations
@@ -19,15 +19,18 @@ from PySide6.QtCore import (
     QPropertyAnimation,
     QRect,
     QSize,
+    QTimer,
     Qt,
     Signal,
 )
 from PySide6.QtGui import QKeyEvent, QMouseEvent, QRegion, QTextCursor
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QListWidget,
     QListWidgetItem,
     QMenu,
@@ -46,7 +49,6 @@ from ..agent_events import (
     AgentEventProjector,
     ConfirmationView,
     DiagnosticView,
-    FakeAgentEventStream,
     MessageStatus,
     MessageView,
     SessionPresentation,
@@ -55,6 +57,7 @@ from ..agent_events import (
     ToolStatus,
     TurnStatus,
 )
+from ..agent_runtime import QtAgentRuntime
 from ..agent_workspace import (
     MAX_VISIBLE_WORKSPACE_CANDIDATES,
     WorkspaceCommandHandler,
@@ -88,10 +91,19 @@ _BOUNDARY_EVENT_TYPES = frozenset(
 )
 
 
+def _shutdown_runtime_safely(runtime: QtAgentRuntime) -> None:
+    try:
+        runtime.shutdown(wait=True)
+    except RuntimeError:
+        # Python may already be finalizing its thread executors.
+        pass
+
+
 _AGENT_CHAT_STYLESHEET = """
 QFrame#agentChatDrawer {
     background: #f8f9fb;
     border-left: 1px solid #c7ccd2;
+    font-size: 9.5pt;
 }
 QFrame#agentChatDrawer QLabel {
     background: transparent;
@@ -103,33 +115,25 @@ QFrame#agentChatHeader {
 }
 QLabel#agentChatTitle {
     color: #20262d;
-    font-size: 10.5pt;
+    font-size: 12pt;
     font-weight: 600;
 }
-QLabel#agentChatPreviewBadge {
-    color: #426b88;
-    background: #e8f0f6;
-    border: 1px solid #c8dbe8;
-    border-radius: 7px;
-    padding: 1px 6px;
-    font-size: 7.5pt;
-}
-QLabel#agentChatSubtitle, QLabel#agentChatMuted,
+QLabel#agentChatMuted,
 QLabel#agentChatComposerHint, QLabel#agentChatToolMeta {
     color: #6c7680;
-    font-size: 8pt;
+    font-size: 8.5pt;
 }
 QToolButton#agentChatHeaderButton {
     color: #4a545e;
     background: transparent;
     border: 1px solid transparent;
-    border-radius: 4px;
-    min-width: 26px;
-    max-width: 26px;
-    min-height: 26px;
-    max-height: 26px;
+    border-radius: 5px;
+    min-width: 32px;
+    max-width: 32px;
+    min-height: 32px;
+    max-height: 32px;
     padding: 0;
-    font-size: 12pt;
+    font-size: 14pt;
 }
 QToolButton#agentChatHeaderButton:hover {
     background: #edf2f5;
@@ -142,15 +146,6 @@ QScrollArea#agentChatScroll {
 QWidget#agentChatConversation {
     background: #f8f9fb;
 }
-QFrame#agentChatWelcome {
-    background: #eef4f8;
-    border: 1px solid #d5e2ea;
-    border-radius: 7px;
-}
-QLabel#agentChatWelcomeTitle {
-    color: #2d4f68;
-    font-weight: 600;
-}
 QFrame#agentChatUserMessage {
     background: #e7eff5;
     border: 1px solid #d1e0eb;
@@ -158,13 +153,16 @@ QFrame#agentChatUserMessage {
 }
 QLabel#agentChatUserLabel {
     color: #29333c;
+    font-size: 9.5pt;
 }
 QLabel#agentChatSpeaker {
     color: #334b5d;
+    font-size: 9.5pt;
     font-weight: 600;
 }
 QLabel#agentChatAgentMessage {
     color: #28313a;
+    font-size: 9.5pt;
 }
 QFrame#agentChatToolActivity {
     background: transparent;
@@ -178,7 +176,7 @@ QToolButton#agentChatToolSummary {
     border: none;
     padding: 5px 1px;
     text-align: left;
-    font-size: 8pt;
+    font-size: 8.5pt;
 }
 QToolButton#agentChatToolSummary:hover {
     color: #45515b;
@@ -191,28 +189,28 @@ QFrame#agentChatToolDetails {
 }
 QLabel#agentChatToolColumn {
     color: #879099;
-    font-size: 7.5pt;
+    font-size: 8pt;
     font-weight: 600;
 }
 QLabel#agentChatToolValue {
     color: #68727b;
-    font-size: 7.5pt;
+    font-size: 8pt;
 }
 QLabel#agentChatToolSuccess {
     color: #4f775f;
-    font-size: 7.5pt;
+    font-size: 8pt;
 }
 QLabel#agentChatToolWarning {
     color: #8a681d;
-    font-size: 7.5pt;
+    font-size: 8pt;
 }
 QLabel#agentChatToolFailure {
     color: #a14444;
-    font-size: 7.5pt;
+    font-size: 8pt;
 }
 QLabel#agentChatToolDetail {
     color: #707981;
-    font-size: 7pt;
+    font-size: 7.5pt;
 }
 QFrame#agentChatDiagnostic {
     background: #fff8e7;
@@ -222,10 +220,12 @@ QFrame#agentChatDiagnostic {
 }
 QLabel#agentChatDiagnosticTitle {
     color: #795e1c;
+    font-size: 9.5pt;
     font-weight: 600;
 }
 QLabel#agentChatDiagnosticText {
     color: #65562f;
+    font-size: 9.5pt;
 }
 QFrame#agentChatDiagnostic[severity="info"] {
     background: #edf5fa;
@@ -246,22 +246,24 @@ QFrame#agentChatConfirmation {
 }
 QLabel#agentChatConfirmationTitle {
     color: #36556d;
+    font-size: 9.5pt;
     font-weight: 600;
 }
 QLabel#agentChatConfirmationText {
     color: #435665;
+    font-size: 9.5pt;
 }
 QLabel#agentChatConfirmationRevision {
     color: #6c7680;
-    font-size: 7pt;
+    font-size: 8pt;
 }
 QToolButton#agentChatConfirmationButton {
     color: #76818a;
     background: #e5e9ed;
     border: 1px solid #d2d8dd;
     border-radius: 4px;
-    padding: 4px 8px;
-    font-size: 7.5pt;
+    padding: 5px 10px;
+    font-size: 8.5pt;
 }
 QLabel#agentChatTurnStatus {
     color: #a14444;
@@ -269,7 +271,7 @@ QLabel#agentChatTurnStatus {
     border: 1px solid #e5c2c2;
     border-radius: 4px;
     padding: 5px 7px;
-    font-size: 7.5pt;
+    font-size: 8.5pt;
 }
 QFrame#agentChatComposer {
     background: #ffffff;
@@ -281,8 +283,8 @@ QLabel#agentChatWorkspaceState {
     background: #f3f5f7;
     border: 1px solid #dde1e5;
     border-radius: 6px;
-    padding: 2px 7px;
-    font-size: 7.5pt;
+    padding: 3px 8px;
+    font-size: 8.5pt;
 }
 QFrame#agentChatSuggestion {
     background: #ffffff;
@@ -291,7 +293,7 @@ QFrame#agentChatSuggestion {
 }
 QLabel#agentChatSuggestionTitle {
     color: #66717b;
-    font-size: 7.5pt;
+    font-size: 8.5pt;
     font-weight: 600;
 }
 QListWidget#agentChatSuggestionList {
@@ -299,9 +301,10 @@ QListWidget#agentChatSuggestionList {
     background: #ffffff;
     border: none;
     outline: none;
+    font-size: 9pt;
 }
 QListWidget#agentChatSuggestionList::item {
-    padding: 4px 5px;
+    padding: 6px 7px;
     border-radius: 3px;
 }
 QListWidget#agentChatSuggestionList::item:selected {
@@ -312,8 +315,9 @@ QPlainTextEdit#agentChatInput {
     color: #20262d;
     background: #ffffff;
     border: 1px solid #cbd2d8;
-    border-radius: 7px;
-    padding: 7px;
+    border-radius: 8px;
+    padding: 9px;
+    font-size: 10pt;
     selection-background-color: #dce9f2;
 }
 QPlainTextEdit#agentChatInput:focus {
@@ -325,13 +329,13 @@ QPlainTextEdit#agentChatInput:disabled {
 }
 QToolButton#agentChatAddButton, QToolButton#agentChatSendButton,
 QToolButton#agentChatStopButton {
-    border-radius: 6px;
-    min-width: 30px;
-    max-width: 30px;
-    min-height: 30px;
-    max-height: 30px;
+    border-radius: 7px;
+    min-width: 34px;
+    max-width: 34px;
+    min-height: 34px;
+    max-height: 34px;
     padding: 0;
-    font-size: 12pt;
+    font-size: 14pt;
 }
 QToolButton#agentChatAddButton {
     color: #4c5963;
@@ -367,9 +371,10 @@ QMenu#agentChatAddMenu {
     background: #ffffff;
     border: 1px solid #cbd2d8;
     padding: 4px;
+    font-size: 9pt;
 }
 QMenu#agentChatAddMenu::item {
-    padding: 6px 24px 6px 9px;
+    padding: 8px 26px 8px 11px;
 }
 QMenu#agentChatAddMenu::item:selected {
     background: #e8f0f6;
@@ -378,13 +383,13 @@ QToolButton#agentChatLauncher {
     color: #365d78;
     background: #ffffff;
     border: 1px solid #c4d1da;
-    border-radius: 17px;
-    min-width: 34px;
-    max-width: 34px;
-    min-height: 34px;
-    max-height: 34px;
+    border-radius: 19px;
+    min-width: 38px;
+    max-width: 38px;
+    min-height: 38px;
+    max-height: 38px;
     padding: 0;
-    font-size: 11pt;
+    font-size: 12pt;
     font-weight: 600;
 }
 QToolButton#agentChatLauncher:hover {
@@ -682,6 +687,7 @@ class AgentChatDrawer(_BoundaryFrame):
 
     closeRequested = Signal()
     messagePreviewRequested = Signal(str, object)
+    messageSubmitted = Signal(str, object)
     agentEventApplied = Signal(object)
 
     def __init__(
@@ -689,6 +695,7 @@ class AgentChatDrawer(_BoundaryFrame):
         parent: QWidget | None = None,
         *,
         workspace_commands: WorkspaceCommandHandler | None = None,
+        agent_runtime: QtAgentRuntime | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("agentChatDrawer")
@@ -699,11 +706,17 @@ class AgentChatDrawer(_BoundaryFrame):
             QSizePolicy.Policy.Ignored,
             QSizePolicy.Policy.Ignored,
         )
-        self._busy_preview = False
+        self._runtime_busy = False
         self._expanded_tool_group_ids: set[str] = set()
+        self._pending_solve_confirmations: set[tuple[int, str]] = set()
+        self._completed_solve_confirmations: set[tuple[int, str]] = set()
         self.event_projector = AgentEventProjector()
         self.workspace_commands = (
             workspace_commands or WorkspaceCommandHandler()
+        )
+        self.agent_runtime = agent_runtime or QtAgentRuntime(
+            self.workspace_commands.agent_data_root,
+            self,
         )
         self._workspace_index = self.workspace_commands.workspace_index
         self._workspace_references: list[
@@ -726,42 +739,65 @@ class AgentChatDrawer(_BoundaryFrame):
         pane_layout.addWidget(self._build_header(pane))
         pane_layout.addWidget(self._build_conversation(pane), 1)
         pane_layout.addWidget(self._build_composer(pane))
+        self.agent_runtime.agentEventReady.connect(
+            self._apply_runtime_event,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self.agent_runtime.sessionReset.connect(
+            self._reset_runtime_session,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self.agent_runtime.busyChanged.connect(
+            self.set_runtime_busy,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self.agent_runtime.solveFinished.connect(
+            self._solve_finished,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self.agent_runtime.operationRejected.connect(
+            self._show_runtime_notice,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self.agent_runtime.eventRejected.connect(
+            self._show_runtime_notice,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        runtime = self.agent_runtime
+        self.destroyed.connect(
+            lambda _object=None: _shutdown_runtime_safely(runtime)
+        )
+        application = QApplication.instance()
+        if application is not None:
+            application.aboutToQuit.connect(runtime.shutdown)
         self._update_workspace_state()
-        self.replay_agent_events(FakeAgentEventStream().review_preview())
+        self._render_event_presentation(preserve_tool_expansion=False)
 
     def _build_header(self, parent: QWidget) -> QWidget:
         header = _BoundaryFrame(parent)
         header.setObjectName("agentChatHeader")
-        layout = QGridLayout(header)
-        layout.setContentsMargins(12, 8, 8, 8)
-        layout.setHorizontalSpacing(7)
-        layout.setVerticalSpacing(1)
+        layout = QHBoxLayout(header)
+        layout.setContentsMargins(14, 10, 10, 10)
+        layout.setSpacing(8)
 
         title = QLabel("FEM Agent", header)
         title.setObjectName("agentChatTitle")
-        layout.addWidget(title, 0, 0)
-        badge = QLabel("事件预览", header)
-        badge.setObjectName("agentChatPreviewBadge")
-        layout.addWidget(badge, 0, 1)
-        layout.setColumnStretch(2, 1)
+        layout.addWidget(title)
+        layout.addStretch(1)
 
         self.new_session_button = _BoundaryToolButton(header)
         self.new_session_button.setObjectName("agentChatHeaderButton")
         self.new_session_button.setText("＋")
-        self.new_session_button.setToolTip("清空当前输入预览")
-        self.new_session_button.clicked.connect(self._reset_preview)
-        layout.addWidget(self.new_session_button, 0, 3, 2, 1)
+        self.new_session_button.setToolTip("创建新的 Agent 会话")
+        self.new_session_button.clicked.connect(self._new_runtime_session)
+        layout.addWidget(self.new_session_button)
 
         self.close_button = _BoundaryToolButton(header)
         self.close_button.setObjectName("agentChatHeaderButton")
         self.close_button.setText("×")
         self.close_button.setToolTip("关闭聊天框")
         self.close_button.clicked.connect(self.closeRequested)
-        layout.addWidget(self.close_button, 0, 4, 2, 1)
-
-        subtitle = QLabel("纯内存 Fake 流 · 尚未接入 Agent", header)
-        subtitle.setObjectName("agentChatSubtitle")
-        layout.addWidget(subtitle, 1, 0, 1, 3)
+        layout.addWidget(self.close_button)
         return header
 
     def _build_conversation(self, parent: QWidget) -> QWidget:
@@ -776,26 +812,8 @@ class AgentChatDrawer(_BoundaryFrame):
         conversation = QWidget(scroll)
         conversation.setObjectName("agentChatConversation")
         layout = QVBoxLayout(conversation)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(11)
-
-        welcome = _BoundaryFrame(conversation)
-        welcome.setObjectName("agentChatWelcome")
-        welcome_layout = QVBoxLayout(welcome)
-        welcome_layout.setContentsMargins(10, 8, 10, 8)
-        welcome_layout.setSpacing(3)
-        welcome_title = QLabel("FEM Agent 结构化事件预览", welcome)
-        welcome_title.setObjectName("agentChatWelcomeTitle")
-        welcome_layout.addWidget(welcome_title)
-        welcome_text = QLabel(
-            "回复、工具、诊断和确认均来自纯内存 Fake 事件。"
-            "不会执行工具、求解或网络请求。",
-            welcome,
-        )
-        welcome_text.setObjectName("agentChatMuted")
-        welcome_text.setWordWrap(True)
-        welcome_layout.addWidget(welcome_text)
-        layout.addWidget(welcome)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(12)
 
         self.event_feed = QWidget(conversation)
         self.event_feed.setObjectName("agentChatEventFeed")
@@ -820,7 +838,7 @@ class AgentChatDrawer(_BoundaryFrame):
         self,
         events: Iterable[AgentEvent],
     ) -> None:
-        """用完整事件日志替换当前 Fake 展示并一次性重绘。"""
+        """用完整事件日志替换当前展示并一次性重绘。"""
         self.event_projector = AgentEventProjector.replay(events)
         self._expanded_tool_group_ids.clear()
         self._render_event_presentation(preserve_tool_expansion=False)
@@ -1014,10 +1032,29 @@ class AgentChatDrawer(_BoundaryFrame):
         revision.setObjectName("agentChatConfirmationRevision")
         revision.setToolTip(confirmation.revision_hash)
         layout.addWidget(revision)
+        key = (
+            confirmation.revision,
+            confirmation.revision_hash,
+        )
         button = _BoundaryToolButton(card)
         button.setObjectName("agentChatConfirmationButton")
-        button.setText("确认（阶段 3 不执行）")
-        button.setEnabled(False)
+        if key in self._completed_solve_confirmations:
+            button.setText("求解已完成")
+            button.setEnabled(False)
+        elif key in self._pending_solve_confirmations:
+            button.setText("正在求解…")
+            button.setEnabled(False)
+        else:
+            button.setText("开始求解")
+            button.setEnabled(
+                not self._runtime_busy
+                and self._confirmation_targets_live_session()
+            )
+            button.clicked.connect(
+                lambda _checked=False, item=confirmation: (
+                    self._confirm_runtime_solve(item)
+                )
+            )
         button.setProperty(
             "confirmationId",
             confirmation.confirmation_id,
@@ -1036,8 +1073,8 @@ class AgentChatDrawer(_BoundaryFrame):
         composer = _BoundaryFrame(parent)
         composer.setObjectName("agentChatComposer")
         layout = QVBoxLayout(composer)
-        layout.setContentsMargins(10, 8, 10, 9)
-        layout.setSpacing(6)
+        layout.setContentsMargins(12, 10, 12, 11)
+        layout.setSpacing(8)
 
         self.workspace_state = QLabel("工作区  尚未选择", composer)
         self.workspace_state.setObjectName("agentChatWorkspaceState")
@@ -1061,7 +1098,7 @@ class AgentChatDrawer(_BoundaryFrame):
         suggestion_layout.addWidget(self.suggestion_title)
         self.suggestion_list = _BoundaryListWidget(self.suggestion)
         self.suggestion_list.setObjectName("agentChatSuggestionList")
-        self.suggestion_list.setMaximumHeight(126)
+        self.suggestion_list.setMaximumHeight(150)
         self.suggestion_list.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
@@ -1078,7 +1115,8 @@ class AgentChatDrawer(_BoundaryFrame):
         self.input.setPlaceholderText(
             "询问 FEM Agent；使用 @ 引用工作区文件…"
         )
-        self.input.setMaximumHeight(86)
+        self.input.setMinimumHeight(96)
+        self.input.setMaximumHeight(110)
         self.input.setTabChangesFocus(True)
         self.input.textChanged.connect(self._input_changed)
         self.input.document().contentsChange.connect(
@@ -1124,7 +1162,7 @@ class AgentChatDrawer(_BoundaryFrame):
 
         self.send_state = QStackedWidget(composer)
         self.send_state.setObjectName("agentChatSendState")
-        self.send_state.setFixedSize(30, 30)
+        self.send_state.setFixedSize(34, 34)
         self.send_button = _BoundaryToolButton(self.send_state)
         self.send_button.setObjectName("agentChatSendButton")
         self.send_button.setIcon(
@@ -1132,17 +1170,15 @@ class AgentChatDrawer(_BoundaryFrame):
                 QStyle.StandardPixmap.SP_ArrowUp
             )
         )
-        self.send_button.setIconSize(QSize(16, 16))
-        self.send_button.setToolTip("发送（当前仍为界面预览）")
+        self.send_button.setIconSize(QSize(18, 18))
+        self.send_button.setToolTip("发送到配置的 FEM Agent Provider")
         self.send_button.setEnabled(False)
         self.send_button.clicked.connect(self._submit_current_input)
         self.stop_button = _BoundaryToolButton(self.send_state)
         self.stop_button.setObjectName("agentChatStopButton")
         self.stop_button.setText("■")
-        self.stop_button.setToolTip("停止界面预览状态")
-        self.stop_button.clicked.connect(
-            lambda: self.set_busy_preview(False)
-        )
+        self.stop_button.setToolTip("取消当前 Agent 操作")
+        self.stop_button.clicked.connect(self._cancel_runtime_operation)
         self.send_state.addWidget(self.send_button)
         self.send_state.addWidget(self.stop_button)
         self.send_state.setCurrentWidget(self.send_button)
@@ -1181,7 +1217,7 @@ class AgentChatDrawer(_BoundaryFrame):
     def _input_changed(self) -> None:
         text = self.input.toPlainText()
         self.send_button.setEnabled(
-            bool(text.strip()) and not self._busy_preview
+            bool(text.strip()) and not self._runtime_busy
         )
         active = self._active_token()
         if active is None:
@@ -1354,7 +1390,7 @@ class AgentChatDrawer(_BoundaryFrame):
             self._hide_suggestions()
             self._run_workspace_command()
             return
-        self._preview_send()
+        self._send_to_runtime()
 
     def _run_workspace_command(
         self,
@@ -1383,12 +1419,10 @@ class AgentChatDrawer(_BoundaryFrame):
 
     def _update_workspace_state(self) -> None:
         snapshot = self._workspace_index
-        private_root = self.workspace_commands.agent_data_root
         if snapshot is None:
             self.workspace_state.setText("工作区  尚未选择")
             self.workspace_state.setToolTip(
-                f"Agent 私有数据位置：{private_root}\n"
-                "尚未创建任何目录"
+                "Agent 私有会话目录尚未创建；其位置不会在界面中披露"
             )
             return
         workspace = snapshot.workspace
@@ -1399,46 +1433,143 @@ class AgentChatDrawer(_BoundaryFrame):
         )
         self.workspace_state.setToolTip(
             f"用户工作区：{workspace.root}\n"
-            f"Agent 私有数据位置：{private_root}\n"
-            "两者独立；选择工作区不会写入文件"
+            "Agent 私有数据与用户工作区相互独立；"
+            "选择工作区不会写入文件"
         )
 
-    def _preview_send(self) -> None:
+    def _send_to_runtime(self) -> None:
         text = self.input.toPlainText()
         if not text.strip():
             return
+        references = self.workspace_file_references
+        workspace_root = (
+            None
+            if self._workspace_index is None
+            else self._workspace_index.workspace.root
+        )
+        if not self.agent_runtime.send_message(
+            text,
+            references,
+            workspace_root=workspace_root,
+        ):
+            return
         self.messagePreviewRequested.emit(
             text,
-            self.workspace_file_references,
+            references,
         )
-        self.set_busy_preview(True)
+        self.messageSubmitted.emit(text, references)
+        self.input.clear()
+        self._workspace_references.clear()
+        self._hide_suggestions()
+        self.set_runtime_busy(True)
 
     def _show_preview_notice(self, text: str) -> None:
         self.composer_hint.setText(text)
 
-    def _reset_preview(self) -> None:
-        self.set_busy_preview(False)
+    def _new_runtime_session(self) -> None:
+        if self.agent_runtime.new_session():
+            self.set_runtime_busy(True)
+            self._show_preview_notice("正在创建新的 Agent 会话…")
+
+    def _cancel_runtime_operation(self) -> None:
+        if self.agent_runtime.cancel():
+            self._show_preview_notice("正在取消当前操作…")
+
+    def _confirm_runtime_solve(
+        self,
+        confirmation: ConfirmationView,
+    ) -> None:
+        key = (
+            confirmation.revision,
+            confirmation.revision_hash,
+        )
+        if self.agent_runtime.confirm_solve(*key):
+            self._pending_solve_confirmations.add(key)
+            self._show_preview_notice("已确认当前 revision，正在开始求解…")
+            self.set_runtime_busy(True)
+            self._render_event_presentation(
+                preserve_tool_expansion=True,
+            )
+
+    def _solve_finished(
+        self,
+        revision: int,
+        revision_hash: str,
+        succeeded: bool,
+    ) -> None:
+        key = (revision, revision_hash)
+        self._pending_solve_confirmations.discard(key)
+        if succeeded:
+            self._completed_solve_confirmations.add(key)
+        self._render_event_presentation(
+            preserve_tool_expansion=True,
+        )
+
+    def _reset_runtime_session(self, _session_id: str) -> None:
+        self.event_projector = AgentEventProjector()
+        self._expanded_tool_group_ids.clear()
+        self._pending_solve_confirmations.clear()
+        self._completed_solve_confirmations.clear()
+        self._render_event_presentation(preserve_tool_expansion=False)
         self.input.clear()
         self._workspace_references.clear()
-        self._show_preview_notice("本地上下文预览 · 未创建会话")
+        self._show_preview_notice("新的 Agent 会话已就绪")
 
-    def set_busy_preview(self, busy: bool) -> None:
-        """切换发送/停止按钮，且不启动任何后台工作。"""
-        self._busy_preview = bool(busy)
-        self.input.setEnabled(not self._busy_preview)
-        self.send_state.setCurrentWidget(
-            self.stop_button if self._busy_preview else self.send_button
+    def _apply_runtime_event(self, event: AgentEvent) -> None:
+        self.apply_agent_event(event)
+
+    def _show_runtime_notice(self, text: str) -> None:
+        self._show_preview_notice(text)
+
+    def _confirmation_targets_live_session(self) -> bool:
+        presentation_session = self.event_projector.presentation.session_id
+        return (
+            bool(presentation_session)
+            and self.agent_runtime.session_id == presentation_session
         )
-        if self._busy_preview:
+
+    def set_runtime_busy(self, _busy: bool) -> None:
+        """投影后台 runtime 的串行操作状态。"""
+        self._runtime_busy = self.agent_runtime.busy
+        self.input.setEnabled(not self._runtime_busy)
+        self.add_button.setEnabled(not self._runtime_busy)
+        self.new_session_button.setEnabled(not self._runtime_busy)
+        self.send_state.setCurrentWidget(
+            self.stop_button if self._runtime_busy else self.send_button
+        )
+        if self._runtime_busy:
             self._show_preview_notice(
-                "运行状态预览 · 消息未发送，点击停止返回"
+                "FEM Agent 正在后台运行 · 可点击停止"
             )
         else:
             self._show_preview_notice("Enter 发送 · Shift+Enter 换行")
         self.send_button.setEnabled(
             bool(self.input.toPlainText().strip())
-            and not self._busy_preview
+            and not self._runtime_busy
         )
+        for button in self.findChildren(
+            QToolButton,
+            "agentChatConfirmationButton",
+        ):
+            revision = button.property("revision")
+            revision_hash = button.property("revisionHash")
+            key = (revision, revision_hash)
+            if key in self._completed_solve_confirmations:
+                button.setText("求解已完成")
+                button.setEnabled(False)
+            elif key in self._pending_solve_confirmations:
+                button.setText("正在求解…")
+                button.setEnabled(False)
+            else:
+                button.setText("开始求解")
+                button.setEnabled(
+                    not self._runtime_busy
+                    and self._confirmation_targets_live_session()
+                )
+
+    def shutdown_runtime(self) -> None:
+        """安全关闭后台执行边界；收起聊天框不会调用本方法。"""
+        self.agent_runtime.shutdown(wait=True)
 
 
 class AgentChatLauncher(_BoundaryToolButton):
@@ -1482,6 +1613,7 @@ class ModelViewportOverlayHost(QWidget):
         parent: QWidget | None = None,
         *,
         workspace_commands: WorkspaceCommandHandler | None = None,
+        agent_runtime: QtAgentRuntime | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("modelViewportOverlayHost")
@@ -1500,8 +1632,28 @@ class ModelViewportOverlayHost(QWidget):
         self.agent_chat_drawer = AgentChatDrawer(
             self,
             workspace_commands=workspace_commands,
+            agent_runtime=agent_runtime,
         )
         self.chat_launcher = AgentChatLauncher(self)
+        self._bottom_overlay: QWidget | None = None
+        self._bottom_overlay_visible = False
+        self.agent_chat_drawer.layout().setSizeConstraint(
+            QLayout.SizeConstraint.SetNoConstraint
+        )
+        tool_flags = (
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.NoDropShadowWindowHint
+        )
+        self.agent_chat_drawer.setWindowFlags(tool_flags)
+        self.chat_launcher.setWindowFlags(
+            tool_flags | Qt.WindowType.WindowDoesNotAcceptFocus
+        )
+        for overlay in (self.agent_chat_drawer, self.chat_launcher):
+            overlay.setAttribute(
+                Qt.WidgetAttribute.WA_ShowWithoutActivating,
+                True,
+            )
         self.chat_launcher.clicked.connect(
             lambda: self.set_drawer_open(True)
         )
@@ -1515,6 +1667,8 @@ class ModelViewportOverlayHost(QWidget):
         self._drawer_width = self.DEFAULT_DRAWER_WIDTH
         self._drawer_reveal = 0
         self._drawer_open = True
+        self._overlay_window_sync_pending = False
+        self._anchor_window: QWidget | None = None
         self._animation = QPropertyAnimation(
             self,
             b"drawerReveal",
@@ -1523,10 +1677,30 @@ class ModelViewportOverlayHost(QWidget):
         self._animation.setDuration(self.ANIMATION_DURATION_MS)
         self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._animation.finished.connect(self._animation_finished)
+        native_surface_updated = getattr(
+            self.viewport,
+            "nativeSurfaceUpdated",
+            None,
+        )
+        if native_surface_updated is not None:
+            native_surface_updated.connect(
+                self._schedule_overlay_window_sync
+            )
 
         self.chat_launcher.hide()
-        self.agent_chat_drawer.show()
+        self.agent_chat_drawer.hide()
         self._settle_overlay_geometry()
+
+    def closeEvent(self, event) -> None:
+        self.agent_chat_drawer.hide()
+        self.chat_launcher.hide()
+        if self._bottom_overlay is not None:
+            self._bottom_overlay.hide()
+        if self._anchor_window is not None:
+            self._anchor_window.removeEventFilter(self)
+            self._anchor_window = None
+        self.agent_chat_drawer.shutdown_runtime()
+        super().closeEvent(event)
 
     def _get_drawer_reveal(self) -> int:
         return self._drawer_reveal
@@ -1571,9 +1745,8 @@ class ModelViewportOverlayHost(QWidget):
         self._animation.stop()
         self._drawer_open = opened
         if opened:
-            self.agent_chat_drawer.show()
-            self.agent_chat_drawer.raise_()
             self.chat_launcher.hide()
+            self._sync_overlay_window_visibility()
 
         self.drawerOpenChanged.emit(opened)
         if (
@@ -1603,6 +1776,39 @@ class ModelViewportOverlayHost(QWidget):
         self._position_overlays()
         self.drawerWidthChanged.emit(self.drawer_width)
 
+    def set_bottom_overlay(self, overlay: QWidget) -> None:
+        """注册一个不占用模型视口布局的底部工具浮层。"""
+        if overlay is self._bottom_overlay:
+            return
+        if self._bottom_overlay is not None:
+            self._bottom_overlay.hide()
+        self._bottom_overlay = overlay
+        overlay.setParent(self)
+        overlay.setWindowFlags(
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.NoDropShadowWindowHint
+        )
+        overlay.setAttribute(
+            Qt.WidgetAttribute.WA_ShowWithoutActivating,
+            True,
+        )
+        overlay_layout = overlay.layout()
+        if overlay_layout is not None:
+            overlay_layout.setSizeConstraint(
+                QLayout.SizeConstraint.SetNoConstraint
+            )
+        overlay.hide()
+        self._position_overlays()
+
+    def set_bottom_overlay_visible(self, visible: bool) -> None:
+        """显示或隐藏底部工具浮层，同时保持模型视口几何不变。"""
+        visible = bool(visible)
+        if visible == self._bottom_overlay_visible:
+            return
+        self._bottom_overlay_visible = visible
+        self._position_overlays()
+
     def _resize_drawer_by(self, delta: int) -> None:
         self.set_drawer_width(self._drawer_width + int(delta))
 
@@ -1618,15 +1824,48 @@ class ModelViewportOverlayHost(QWidget):
         self._animation_finished()
 
     def _position_overlays(self) -> None:
+        host_origin = self.mapToGlobal(QPoint(0, 0))
         drawer_width = self._effective_drawer_width()
-        drawer_x = self.width() - self._drawer_reveal
-        self.agent_chat_drawer.setGeometry(
-            QRect(drawer_x, 0, drawer_width, self.height())
+        drawer_x = (
+            host_origin.x() + self.width() - self._drawer_reveal
         )
+        self.agent_chat_drawer.setGeometry(
+            QRect(
+                drawer_x,
+                host_origin.y(),
+                drawer_width,
+                self.height(),
+            )
+        )
+        if 0 < self._drawer_reveal < drawer_width:
+            self.agent_chat_drawer.setMask(
+                QRegion(
+                    0,
+                    0,
+                    self._drawer_reveal,
+                    self.height(),
+                )
+            )
+        elif self._drawer_reveal >= drawer_width:
+            self.agent_chat_drawer.clearMask()
+        else:
+            self.agent_chat_drawer.setMask(QRegion())
 
         launcher_size = self.chat_launcher.sizeHint()
-        launcher_width = max(34, launcher_size.width())
-        launcher_height = max(34, launcher_size.height())
+        requested_launcher_width = min(
+            max(34, launcher_size.width()),
+            self.width(),
+        )
+        requested_launcher_height = min(
+            max(34, launcher_size.height()),
+            self.height(),
+        )
+        self.chat_launcher.resize(
+            requested_launcher_width,
+            requested_launcher_height,
+        )
+        launcher_width = self.chat_launcher.width()
+        launcher_height = self.chat_launcher.height()
         launcher_x = max(
             0,
             self.width() - launcher_width - self.LAUNCHER_MARGIN,
@@ -1635,29 +1874,150 @@ class ModelViewportOverlayHost(QWidget):
             self.LAUNCHER_MARGIN,
             max(0, self.height() - launcher_height),
         )
-        self.chat_launcher.setGeometry(
-            QRect(
-                launcher_x,
-                launcher_y,
-                min(launcher_width, self.width()),
-                min(launcher_height, self.height()),
-            )
+        self.chat_launcher.move(
+            host_origin.x() + launcher_x,
+            host_origin.y() + launcher_y,
         )
-        if self._drawer_open or self._drawer_reveal:
-            self.agent_chat_drawer.raise_()
-        else:
-            self.chat_launcher.raise_()
+        bottom_overlay = self._bottom_overlay
+        if bottom_overlay is not None:
+            overlay_height = min(
+                max(1, bottom_overlay.sizeHint().height()),
+                self.height(),
+            )
+            overlay_width = max(
+                0,
+                self.width() - self._drawer_reveal,
+            )
+            bottom_overlay.setGeometry(
+                QRect(
+                    host_origin.x(),
+                    host_origin.y() + self.height() - overlay_height,
+                    overlay_width,
+                    overlay_height,
+                )
+            )
+        self._sync_overlay_window_visibility()
 
-    def _animation_finished(self) -> None:
-        if self._drawer_open:
+    def _refresh_anchor_window(self) -> None:
+        anchor_window = self.window()
+        if anchor_window is self._anchor_window:
+            return
+        if self._anchor_window is not None:
+            self._anchor_window.removeEventFilter(self)
+        self._anchor_window = anchor_window
+        self._anchor_window.installEventFilter(self)
+
+    def _window_group_is_active(self) -> bool:
+        if (
+            QApplication.applicationState()
+            != Qt.ApplicationState.ApplicationActive
+        ):
+            return False
+        active_window = QApplication.activeWindow()
+        if active_window is None:
+            return True
+        group_windows = {
+            self._anchor_window,
+            self.agent_chat_drawer,
+            self.chat_launcher,
+            self._bottom_overlay,
+        }
+        current = active_window
+        while current is not None:
+            if current in group_windows:
+                return True
+            current = current.parentWidget()
+        return False
+
+    def _overlay_windows_can_show(self) -> bool:
+        anchor_window = self._anchor_window
+        return bool(
+            self.isVisible()
+            and anchor_window is not None
+            and anchor_window.isVisible()
+            and not anchor_window.isMinimized()
+            and self._window_group_is_active()
+        )
+
+    def _sync_overlay_window_visibility(self) -> None:
+        if not self._overlay_windows_can_show():
+            self.agent_chat_drawer.hide()
+            self.chat_launcher.hide()
+            if self._bottom_overlay is not None:
+                self._bottom_overlay.hide()
+            return
+        if (
+            self._bottom_overlay is not None
+            and self._bottom_overlay_visible
+            and self._bottom_overlay.width() > 0
+        ):
+            self._bottom_overlay.show()
+            self._bottom_overlay.raise_()
+        elif self._bottom_overlay is not None:
+            self._bottom_overlay.hide()
+        if self._drawer_open or self._drawer_reveal:
+            self.chat_launcher.hide()
             self.agent_chat_drawer.show()
             self.agent_chat_drawer.raise_()
-            self.chat_launcher.hide()
         else:
             self.agent_chat_drawer.hide()
             self.chat_launcher.show()
             self.chat_launcher.raise_()
 
+    def _schedule_overlay_window_sync(self) -> None:
+        """在宿主或 VTK 更新后同步独立覆盖窗口。"""
+        if self._overlay_window_sync_pending:
+            return
+        self._overlay_window_sync_pending = True
+        QTimer.singleShot(0, self._sync_overlay_windows)
+
+    def _sync_overlay_windows(self) -> None:
+        self._overlay_window_sync_pending = False
+        self._refresh_anchor_window()
+        self._position_overlays()
+
+    def _animation_finished(self) -> None:
+        self._sync_overlay_window_visibility()
+
+    def eventFilter(self, watched: object, event: object) -> bool:
+        if watched is self._anchor_window:
+            event_type = event.type()
+            if event_type in {
+                QEvent.Type.Hide,
+                QEvent.Type.Close,
+            }:
+                self.agent_chat_drawer.hide()
+                self.chat_launcher.hide()
+                if self._bottom_overlay is not None:
+                    self._bottom_overlay.hide()
+            elif event_type in {
+                QEvent.Type.Move,
+                QEvent.Type.Resize,
+                QEvent.Type.Show,
+                QEvent.Type.WindowActivate,
+                QEvent.Type.WindowDeactivate,
+                QEvent.Type.WindowStateChange,
+                QEvent.Type.ZOrderChange,
+            }:
+                self._schedule_overlay_window_sync()
+        return super().eventFilter(watched, event)
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._settle_overlay_geometry()
+
+    def moveEvent(self, event) -> None:
+        super().moveEvent(event)
+        self._schedule_overlay_window_sync()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._refresh_anchor_window()
+        self._schedule_overlay_window_sync()
+
+    def hideEvent(self, event) -> None:
+        self.agent_chat_drawer.hide()
+        self.chat_launcher.hide()
+        if self._bottom_overlay is not None:
+            self._bottom_overlay.hide()
+        super().hideEvent(event)

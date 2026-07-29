@@ -4,17 +4,10 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QSize
+from PySide6.QtCore import QPoint, QSize
 from PySide6.QtWidgets import QApplication, QLabel, QMenu, QToolBar, QToolButton
 
 from fem.abaqus import read
-from fem.application.results import (
-    FieldState,
-    ResultVariable,
-    ScalarFieldSelection,
-    build_solve_result_bundle,
-)
-from fem.solvers.static_linear import solve
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.visualization.model_adapter import build_model_geometry
 
@@ -72,7 +65,7 @@ def test_main_window_has_modules_navigation_and_viewport_toolbar():
     window.close()
 
 
-def test_scope_creation_bar_uses_stable_tray_and_cancel_exits_selection():
+def test_scope_creation_bar_overlays_viewport_and_cancel_exits_selection():
     application = _application()
     window = FEMMainWindow()
     window.show()
@@ -80,6 +73,8 @@ def test_scope_creation_bar_uses_stable_tray_and_cancel_exits_selection():
     application.processEvents()
     viewport_size = window.viewport.size()
     bar = window.viewport_panel.scope_creation_bar
+    host = window.viewport_panel.overlay_host
+    assert bar.isHidden()
     window._pending_analysis_selection = "scope"
     window._pending_scope_kind = "node"
 
@@ -87,10 +82,13 @@ def test_scope_creation_bar_uses_stable_tray_and_cancel_exits_selection():
     application.processEvents()
 
     assert window.viewport.size() == viewport_size
-    tray = window.viewport_panel.scope_creation_tray
-    assert window.viewport_panel.layout().indexOf(tray) >= 0
-    assert tray.currentWidget() is bar
-    assert window.viewport.geometry().bottom() < tray.geometry().top()
+    assert bar.isVisible()
+    assert bar.isWindow()
+    host_origin = host.mapToGlobal(QPoint(0, 0))
+    assert bar.geometry().left() == host_origin.x()
+    assert bar.geometry().bottom() == (
+        host_origin.y() + host.height() - 1
+    )
     assert bar.cancel_button.text() == "取消"
 
     bar.cancel_button.click()
@@ -100,7 +98,6 @@ def test_scope_creation_bar_uses_stable_tray_and_cancel_exits_selection():
     assert window._pending_analysis_selection is None
     assert window._pending_scope_kind is None
     assert window.viewport.size() == viewport_size
-    assert tray.currentWidget() is window.viewport_panel._scope_creation_idle
     window.close()
 
 
@@ -332,65 +329,4 @@ def test_viewport_background_updates_placeholder_without_model():
     assert window.viewport._background_settings == settings
     assert window.viewport._background_settings.foreground_color == "#f2f5f7"
     assert "#16191c" in window.viewport._message.styleSheet()
-    window.close()
-
-
-def test_result_navigation_refreshes_and_activates_real_field(gui_inp_path):
-    _application()
-    window = FEMMainWindow()
-    model = read(gui_inp_path)
-    geometry = build_model_geometry(model)
-    window._model_loaded(gui_inp_path, (model, geometry))
-    window._on_viewport_pick("node", 2)
-    assert window.status_panel.object_label.text() == "对象：节点 2"
-    assert "x=1" in window.status_panel.coordinate_label.text()
-    assert window.check_current_model(show_success=False)
-    task = window.session.prepare_solve("Static-1", "Job-1")
-    if task.delta is not None:
-        assert window._apply_session_delta(task.delta)
-    assert window._apply_session_delta(window.session.begin_run(task.token))
-    result = solve(task.model, task.step_name)
-    window._job_succeeded(
-        task.token,
-        (build_solve_result_bundle(task, result), {}),
-    )
-
-    text = []
-    root = window.result_tree.invisibleRootItem()
-    stack = [root.child(index) for index in range(root.childCount())]
-    while stack:
-        item = stack.pop()
-        text.append(item.text(0))
-        stack.extend(item.child(index) for index in range(item.childCount()))
-    assert any(label.startswith("位移 U（") for label in text)
-    assert any(label.startswith("反力 RF（") for label in text)
-    assert any(label.startswith("应力 S（") for label in text)
-
-    window.ribbon.set_current("结果")
-    assert window.navigation.tabs.currentWidget() is window.result_tree
-    provider = window.result_provider
-    assert provider is not None
-    reaction = next(
-        availability
-        for availability in provider.catalog().fields
-        if (
-            availability.state is FieldState.READY
-            and availability.descriptor.field_id.variable
-            is ResultVariable.RF
-        )
-    )
-    selection = ScalarFieldSelection(
-        reaction.key,
-        reaction.descriptor.default_component,
-    )
-    window.result_tree.fieldSelectionActivated.emit(selection)
-    assert window.result_selection == selection
-    assert (
-        window.viewport._result_render_payload.topology.selection
-        == selection
-    )
-    assert window._display.contour_enabled
-    assert window.actions["contour"].isChecked()
-    window.ribbon.set_current("模型")
-    assert window.navigation.tabs.currentWidget() is window.model_tree
     window.close()

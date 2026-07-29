@@ -80,6 +80,16 @@ def test_test_extra_covers_default_gui_and_agent_runtime_with_range_parity():
     } == product_requirements
 
 
+def test_packaging_exposes_gui_without_the_retired_agent_cli():
+    project = _pyproject()["project"]
+    extras = project["optional-dependencies"]
+
+    assert project["scripts"] == {"fem-gui": "fem_gui.app:main"}
+    assert not (PROJECT_ROOT / "src" / "fem_agent" / "cli.py").exists()
+    assert "prompt-toolkit" not in _requirements_by_name(extras["agent"])
+    assert "prompt-toolkit" not in _requirements_by_name(extras["test"])
+
+
 def test_skip_markers_and_unknown_warning_policy_are_registered():
     pytest_options = _pyproject()["tool"]["pytest"]["ini_options"]
     marker_names = {

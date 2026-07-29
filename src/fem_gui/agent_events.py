@@ -447,6 +447,15 @@ def _redact_text(value: str) -> str:
     redacted = value
     for pattern in _SECRET_VALUE_PATTERNS:
         redacted = pattern.sub("<敏感信息已隐藏>", redacted)
+    return redact_absolute_paths(redacted)
+
+
+def redact_absolute_paths(value: str) -> str:
+    """Hide local absolute paths while preserving other message text."""
+
+    if not isinstance(value, str):
+        raise TypeError("value must be a string")
+    redacted = value
     redacted = _FILE_URI_PATTERN.sub(
         "<绝对路径已隐藏>",
         redacted,

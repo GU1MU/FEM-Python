@@ -14,7 +14,6 @@ dependencies = [
 ]
 
 [project.scripts]
-fem-agent = "fem_agent.cli:main"
 fem-gui = "fem_gui.app:main"
 
 [project.optional-dependencies]
@@ -24,12 +23,10 @@ cad = [
 agent = [
     "httpx[socks]>=0.28,<1",
     "openai>=2.46,<3",
-    "prompt-toolkit>=3.0.52,<4",
 ]
 test = [
     "httpx[socks]>=0.28,<1",
     "openai>=2.46,<3",
-    "prompt-toolkit>=3.0.52,<4",
     "PySide6>=6.8,<7",
     "pytest>=9,<10",
     "pyvista>=0.46,<1",

@@ -679,6 +679,7 @@ def test_diagnostic_severity_is_structured_and_separate_from_tools():
 def test_fake_event_stream_drives_tool_message_diagnostic_and_confirmation_ui():
     application = _application()
     drawer = AgentChatDrawer()
+    drawer.replay_agent_events(FakeAgentEventStream().review_preview())
     drawer.resize(440, 760)
     drawer.show()
     application.processEvents()

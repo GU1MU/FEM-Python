@@ -55,7 +55,6 @@ def _cloud_smoke_config(
             model=resolved.model,
             base_url=resolved.base_url,
             api_key=resolved.api_key,
-            workspace=resolved.workspace,
             timeout_seconds=min(resolved.timeout_seconds, 30),
             max_retries=0,
             max_output_tokens=min(resolved.max_output_tokens, 256),

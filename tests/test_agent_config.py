@@ -10,7 +10,6 @@ from fem_agent.config import (
     MAX_CONFIG_BYTES,
     ROOT_CONFIG_NAME,
     TEST_CONFIG_NAME,
-    create_main_config_template,
     find_main_config,
     resolve_local_config,
 )
@@ -34,68 +33,6 @@ def test_config_names_are_stable():
     assert TEST_CONFIG_NAME == "fem-agent.test.config.json"
 
 
-def test_create_main_config_template_is_loadable_and_has_an_empty_key(tmp_path):
-    path = tmp_path / ROOT_CONFIG_NAME
-
-    assert create_main_config_template(path)
-
-    document = json.loads(path.read_text(encoding="utf-8"))
-    config = LocalAgentConfig.load(path)
-    assert document == {
-        "provider": "deepseek",
-        "model": "deepseek-v4-pro",
-        "base_url": "https://api.deepseek.com",
-        "api_key": "",
-        "workspace": "agent-workspace",
-        "timeout_seconds": 60,
-        "max_retries": 2,
-        "max_output_tokens": 8192,
-    }
-    assert not config.has_api_key
-    assert config.workspace == (tmp_path / "agent-workspace").resolve()
-    assert path.read_bytes().endswith(b"\n")
-
-
-def test_create_main_config_template_never_overwrites_an_existing_file(
-    tmp_path,
-):
-    path = _write_config(
-        tmp_path / ROOT_CONFIG_NAME,
-        {"api_key": "keep-this-value"},
-    )
-    original = path.read_bytes()
-
-    assert not create_main_config_template(path)
-    assert path.read_bytes() == original
-
-
-def test_create_main_config_template_does_not_create_missing_parents(tmp_path):
-    parent = tmp_path / "mistyped" / "directory"
-    path = parent / ROOT_CONFIG_NAME
-
-    with pytest.raises(ConfigError, match="parent directory"):
-        create_main_config_template(path)
-
-    assert not parent.exists()
-
-
-def test_create_main_config_template_keeps_its_file_after_a_write_error(
-    monkeypatch,
-    tmp_path,
-):
-    path = tmp_path / ROOT_CONFIG_NAME
-
-    def fail_to_sync(descriptor):
-        raise OSError("simulated sync failure")
-
-    monkeypatch.setattr(config_module.os, "fsync", fail_to_sync)
-    with pytest.raises(ConfigError, match="could not be created"):
-        create_main_config_template(path)
-
-    assert path.exists()
-    assert json.loads(path.read_text(encoding="utf-8"))["api_key"] == ""
-
-
 def test_secret_bearing_config_paths_are_precisely_gitignored():
     project_root = Path(__file__).resolve().parents[1]
     patterns = set(
@@ -107,7 +44,7 @@ def test_secret_bearing_config_paths_are_precisely_gitignored():
     assert "*.config.json" not in patterns
 
 
-def test_loads_config_and_resolves_workspace_relative_to_config(tmp_path):
+def test_loads_gui_agent_provider_config(tmp_path):
     path = _write_config(
         tmp_path / ROOT_CONFIG_NAME,
         {
@@ -115,7 +52,6 @@ def test_loads_config_and_resolves_workspace_relative_to_config(tmp_path):
             "model": "deepseek-v4-flash",
             "base_url": "https://api.deepseek.com/v1",
             "api_key": "test-secret",
-            "workspace": "private/workspace",
             "timeout_seconds": 12.5,
             "max_retries": 0,
             "max_output_tokens": 256,
@@ -128,7 +64,6 @@ def test_loads_config_and_resolves_workspace_relative_to_config(tmp_path):
     assert config.provider == "deepseek"
     assert config.model == "deepseek-v4-flash"
     assert config.base_url == "https://api.deepseek.com/v1"
-    assert config.workspace == (tmp_path / "private/workspace").resolve()
     assert config.timeout_seconds == 12.5
     assert config.max_retries == 0
     assert config.max_output_tokens == 256
@@ -181,7 +116,7 @@ def test_provider_config_and_environment_keep_secret_separate():
         '{"max_retries":1.5}',
         '{"max_output_tokens":false}',
         '{"enabled":1}',
-        '{"workspace":""}',
+        '{"workspace":"retired-cli-workspace"}',
         '{"provider":null}',
         '{"timeout_seconds":NaN}',
     ),
@@ -236,13 +171,13 @@ def test_find_main_config_searches_cwd_ancestors_first(tmp_path):
     assert find_main_config(nested, module_path=module_path) == config
 
 
-def test_find_main_config_uses_module_ancestor_for_double_click_layout(tmp_path):
+def test_find_main_config_uses_module_ancestor_for_gui_entry_point(tmp_path):
     project = tmp_path / "project"
-    script = project / ".venv" / "Scripts" / "fem-agent.exe"
+    script = project / ".venv" / "Scripts" / "fem-gui.exe"
     script.parent.mkdir(parents=True)
     _mark_project_root(project)
     config = _write_config(project / ROOT_CONFIG_NAME, {})
-    unrelated_cwd = Path(tmp_path.anchor) / "fem-agent-unrelated-cwd-does-not-exist"
+    unrelated_cwd = Path(tmp_path.anchor) / "fem-gui-unrelated-cwd-does-not-exist"
 
     assert find_main_config(unrelated_cwd, module_path=script) == config
 
@@ -308,13 +243,12 @@ def test_missing_anchored_project_config_does_not_fall_back_to_cwd_config(
     assert find_main_config(unrelated_cwd, module_path=module_path) is None
 
 
-def test_resolve_precedence_is_cli_then_env_then_file_then_defaults(tmp_path):
+def test_resolve_precedence_is_environment_then_file_then_defaults():
     file_config = LocalAgentConfig(
         provider="file-provider",
         model="file-model",
         base_url="https://file.example",
         api_key="file-key",
-        workspace=tmp_path / "file-workspace",
         timeout_seconds=10,
         max_retries=1,
         max_output_tokens=100,
@@ -325,63 +259,40 @@ def test_resolve_precedence_is_cli_then_env_then_file_then_defaults(tmp_path):
         "DEEPSEEK_MODEL": "env-model",
         "DEEPSEEK_BASE_URL": "https://env.example",
         "DEEPSEEK_API_KEY": "env-key",
-        "FEM_AGENT_WORKSPACE": "env-workspace",
         "FEM_AGENT_PROVIDER_TIMEOUT": "20",
         "FEM_AGENT_PROVIDER_RETRIES": "2",
         "FEM_AGENT_MAX_OUTPUT_TOKENS": "200",
         "FEM_AGENT_ENABLED": "true",
     }
 
-    from_env = resolve_local_config(file_config, environ=env)
     resolved = resolve_local_config(
         file_config,
-        provider="cli-provider",
-        model="cli-model",
-        base_url="https://cli.example",
-        api_key="cli-key",
-        workspace=tmp_path / "cli-workspace",
-        timeout_seconds=30,
-        max_retries=3,
-        max_output_tokens=300,
-        enabled=False,
         environ=env,
     )
 
-    assert from_env.provider == "env-provider"
-    assert from_env.model == "env-model"
-    assert from_env.api_key == "env-key"
-    assert from_env.workspace == Path("env-workspace")
-    assert from_env.timeout_seconds == 20
-    assert from_env.max_retries == 2
-    assert from_env.max_output_tokens == 200
-    assert from_env.enabled is True
-    assert resolved.provider == "cli-provider"
-    assert resolved.model == "cli-model"
-    assert resolved.base_url == "https://cli.example"
-    assert resolved.api_key == "cli-key"
-    assert resolved.workspace == tmp_path / "cli-workspace"
-    assert resolved.timeout_seconds == 30
-    assert resolved.max_retries == 3
-    assert resolved.max_output_tokens == 300
-    assert resolved.enabled is False
+    assert resolved.provider == "env-provider"
+    assert resolved.model == "env-model"
+    assert resolved.base_url == "https://env.example"
+    assert resolved.api_key == "env-key"
+    assert resolved.timeout_seconds == 20
+    assert resolved.max_retries == 2
+    assert resolved.max_output_tokens == 200
+    assert resolved.enabled is True
 
 
-def test_resolve_uses_file_then_builtin_defaults(tmp_path):
+def test_resolve_uses_file_then_builtin_defaults():
     file_config = LocalAgentConfig(
         model="file-model",
         base_url="https://api.deepseek.com",
-        workspace=tmp_path,
     )
 
     from_file = resolve_local_config(file_config, environ={})
     defaults = resolve_local_config(environ={})
 
     assert from_file.model == "file-model"
-    assert from_file.workspace == tmp_path
     assert defaults.provider == "deepseek"
     assert defaults.model == "deepseek-v4-pro"
     assert defaults.base_url == "https://api.deepseek.com"
-    assert defaults.workspace == Path("agent-workspace")
     assert defaults.max_output_tokens == 8192
     assert defaults.enabled is False
 

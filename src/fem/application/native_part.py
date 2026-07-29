@@ -10,9 +10,14 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
-import re
 from typing import Any, Iterable
 
+from fem.geometry.part_namespace import (
+    normalize_part_boolean_feature_id,
+    normalize_part_id,
+    part_boolean_feature_id_sort_key,
+    part_id_sort_key,
+)
 from fem.geometry.recipes import (
     MultiBodyGeometry,
     NATIVE_GEOMETRY_TYPES,
@@ -20,48 +25,6 @@ from fem.geometry.recipes import (
     is_single_solid_recipe,
 )
 from fem.mesh.settings import MeshSettings
-
-
-_PART_ID_PATTERN = re.compile(r"P([1-9][0-9]*)\Z")
-_PART_BOOLEAN_FEATURE_ID_PATTERN = re.compile(r"PBF([1-9][0-9]*)\Z")
-
-
-def normalize_part_id(value: object, field_name: str = "part id") -> str:
-    """Return one canonical ``P*`` identity or raise a typed input error."""
-
-    if type(value) is not str:
-        raise TypeError(f"{field_name} must be a string")
-    if value != value.strip() or _PART_ID_PATTERN.fullmatch(value) is None:
-        raise ValueError(f"{field_name} must use P1, P2, P3, ...")
-    return value
-
-
-def normalize_part_boolean_feature_id(
-    value: object,
-    field_name: str = "part Boolean feature id",
-) -> str:
-    """Return one canonical ``PBF*`` identity."""
-
-    if type(value) is not str:
-        raise TypeError(f"{field_name} must be a string")
-    if (
-        value != value.strip()
-        or _PART_BOOLEAN_FEATURE_ID_PATTERN.fullmatch(value) is None
-    ):
-        raise ValueError(f"{field_name} must use PBF1, PBF2, PBF3, ...")
-    return value
-
-
-def part_id_sort_key(value: str) -> int:
-    """Canonical numeric order for stable Part identities."""
-
-    return int(normalize_part_id(value)[1:])
-
-
-def part_boolean_feature_id_sort_key(value: str) -> int:
-    """Canonical numeric order for stable Part-Boolean feature identities."""
-
-    return int(normalize_part_boolean_feature_id(value)[3:])
 
 
 def next_part_id(
@@ -97,6 +60,14 @@ def _required_name(value: object, field_name: str) -> str:
     if not normalized:
         raise ValueError(f"{field_name} must not be empty")
     return normalized
+
+
+def _uses_part_id_syntax(value: str) -> bool:
+    try:
+        normalize_part_id(value)
+    except ValueError:
+        return False
+    return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,7 +132,7 @@ class NativePart:
             first = args[0]
             if (
                 type(first) is str
-                and _PART_ID_PATTERN.fullmatch(first) is not None
+                and _uses_part_id_syntax(first)
                 and len(args) >= 2
             ):
                 if len(args) > 6:
