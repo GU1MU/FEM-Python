@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, replace
+from enum import Enum
 from typing import Callable, Protocol
 
 from fem.application import ModelSession, UnitContext
@@ -24,6 +25,7 @@ from fem_agent.authoring import (
     DefinitionSummary,
     LocalModelBinding,
     MeshSummary,
+    ModelPatch,
     OperationKind,
     PartSummary,
     ProposalKind,
@@ -32,6 +34,11 @@ from fem_agent.authoring import (
     RequirementLedger,
     RequirementReview,
     UnitContextSummary,
+)
+from fem_agent.definition_authoring import (
+    inverse_operations_for_snapshot,
+    require_non_destructive_a4_batch,
+    scoped_definition_batch_from_operations,
 )
 from fem_agent.geometry_authoring import geometry_recipe_from_payload
 from fem_agent.mesh_authoring import MeshIntent
@@ -234,6 +241,33 @@ class BridgeReceipt:
     replayed: bool = False
 
 
+class AppliedPatchState(str, Enum):
+    APPLIED = "applied"
+    UNDONE = "undone"
+    STALE = "stale"
+
+
+@dataclass(frozen=True, slots=True)
+class AppliedPatchRecord:
+    """One local automatic patch and its exact one-shot inverse."""
+
+    patch: ModelPatch
+    inverse_patch: ModelPatch
+    session_revision: int
+    delta: SessionDelta
+    state: AppliedPatchState = AppliedPatchState.APPLIED
+    message: str = ""
+    replayed: bool = False
+
+    @property
+    def undo_available(self) -> bool:
+        return self.state is AppliedPatchState.APPLIED
+
+    @property
+    def display_summary(self) -> object:
+        return self.patch.display_summary
+
+
 @dataclass(frozen=True, slots=True)
 class _GuiControlAuthorization:
     proposal_id: str
@@ -256,6 +290,7 @@ class SessionGeometryAuthoringPort:
         session: ModelSession,
         refresh_projection: Callable[[], None],
         start_mesh_task: Callable[[AgentMeshTaskRequest], bool] | None = None,
+        apply_definition_delta: Callable[[SessionDelta], None] | None = None,
     ) -> None:
         if type(session) is not ModelSession:
             raise TypeError("session must be ModelSession")
@@ -264,9 +299,15 @@ class SessionGeometryAuthoringPort:
         self._session = session
         self._refresh_callback = refresh_projection
         self._start_mesh_task = start_mesh_task
+        if apply_definition_delta is not None and not callable(
+            apply_definition_delta
+        ):
+            raise TypeError("apply_definition_delta must be callable or None")
+        self._apply_definition_delta = apply_definition_delta
         self._context: AuthoringContext | None = None
         self._records: dict[str, ProposalPortRecord] = {}
         self._mesh_tasks: dict[str, object] = {}
+        self._patch_records: dict[str, AppliedPatchRecord] = {}
         self._record_listener: Callable[[ProposalPortRecord], None] | None = None
 
     def set_record_listener(
@@ -283,9 +324,13 @@ class SessionGeometryAuthoringPort:
         self._context = context
 
     def present(self, proposal: AgentProposal) -> ProposalPortRecord:
-        if proposal.proposal_kind not in {ProposalKind.GEOMETRY, ProposalKind.MESH}:
+        if proposal.proposal_kind not in {
+            ProposalKind.GEOMETRY,
+            ProposalKind.MESH,
+            ProposalKind.DESTRUCTIVE_EDIT,
+        }:
             raise AuthoringContractError(
-                "session authoring port accepts only geometry or mesh proposals"
+                "session authoring port does not accept this proposal kind"
             )
         geometry_valid = (
             proposal.proposal_kind is ProposalKind.GEOMETRY
@@ -304,7 +349,15 @@ class SessionGeometryAuthoringPort:
                 OperationKind.REQUEST_MESH,
             )
         )
-        if not geometry_valid and not mesh_valid:
+        destructive_valid = (
+            proposal.proposal_kind is ProposalKind.DESTRUCTIVE_EDIT
+            and tuple(item.kind for item in proposal.operations)
+            == (
+                OperationKind.UPSERT_NAMED_REGIONS,
+                OperationKind.UPSERT_MODEL_DEFINITIONS,
+            )
+        )
+        if not geometry_valid and not mesh_valid and not destructive_valid:
             raise AuthoringContractError(
                 "proposal operations do not match its authoring kind"
             )
@@ -330,6 +383,17 @@ class SessionGeometryAuthoringPort:
             raise AuthoringContractError("authoring proposal target is stale")
         if proposal.proposal_kind is ProposalKind.MESH:
             return self._accept_mesh(record)
+        if proposal.proposal_kind is ProposalKind.DESTRUCTIVE_EDIT:
+            batch = scoped_definition_batch_from_operations(
+                proposal.operations,
+                self._session.snapshot(),
+                base_session_revision=proposal.base_session_revision,
+            )
+            delta = self._session.apply_scoped_definition_batch(batch)
+            self._project_definition_delta(delta)
+            succeeded = replace(record, state=ProposalState.SUCCEEDED)
+            self._records[proposal_id] = succeeded
+            return succeeded
         operation = proposal.operations[0]
         parameters = operation.parameters
         recipe = geometry_recipe_from_payload(parameters["recipe"])
@@ -378,6 +442,137 @@ class SessionGeometryAuthoringPort:
         succeeded = replace(record, state=ProposalState.SUCCEEDED)
         self._records[proposal_id] = succeeded
         return succeeded
+
+    def apply_patch(self, patch: ModelPatch) -> AppliedPatchRecord:
+        """Apply one non-destructive A4 patch and retain its exact inverse."""
+
+        if type(patch) is not ModelPatch:
+            raise TypeError("patch must be ModelPatch")
+        current = self._patch_records.get(patch.patch_id)
+        if current is not None:
+            if current.patch.patch_hash != patch.patch_hash:
+                raise AuthoringContractError(
+                    "patch_id was reused with different content"
+                )
+            return replace(current, replayed=True)
+        snapshot = self._session.snapshot()
+        if (
+            patch.target_session_id != snapshot.session_id
+            or patch.target_document_id
+            != f"document:{snapshot.session_id}"
+            or patch.base_session_revision != snapshot.session_revision
+        ):
+            raise AuthoringContractError("automatic patch target is stale")
+        if any(bool(getattr(run, "has_result", False)) for run in snapshot.runs):
+            raise AuthoringAuthorizationError(
+                "a result-invalidating edit requires GUI confirmation"
+            )
+        inverse_operations = inverse_operations_for_snapshot(snapshot)
+        batch = scoped_definition_batch_from_operations(
+            patch.operations,
+            snapshot,
+            base_session_revision=patch.base_session_revision,
+        )
+        require_non_destructive_a4_batch(snapshot, batch)
+        delta = self._session.apply_scoped_definition_batch(batch)
+        inverse = ModelPatch.create(
+            patch_id=f"inverse-{patch.patch_hash[:24]}",
+            agent_session_id=patch.agent_session_id,
+            turn_id=patch.turn_id,
+            source_tool_call_ids=patch.source_tool_call_ids,
+            target_document_id=patch.target_document_id,
+            target_session_id=patch.target_session_id,
+            base_session_revision=delta.session_revision,
+            draft_revision=patch.draft_revision,
+            operations=inverse_operations,
+            preconditions={
+                "forward_patch_hash": patch.patch_hash,
+                "expected_session_revision": delta.session_revision,
+                "one_shot": True,
+            },
+            expected_changes={"restore_exact_pre_state": True},
+            invalidation_impact={
+                "model": True,
+                "validation": True,
+                "results": False,
+            },
+            display_summary={
+                "title": "撤销本次 Agent 修改",
+                "forward_patch_id": patch.patch_id,
+            },
+        )
+        applied = AppliedPatchRecord(
+            patch,
+            inverse,
+            delta.session_revision,
+            delta,
+        )
+        self._patch_records[patch.patch_id] = applied
+        self._project_definition_delta(delta)
+        return applied
+
+    def can_undo_patch(self, patch_id: str) -> bool:
+        record = self._patch_records.get(str(patch_id))
+        return (
+            record is not None
+            and record.state is AppliedPatchState.APPLIED
+            and self._session.session_id
+            == record.inverse_patch.target_session_id
+            and self._session.session_revision
+            == record.inverse_patch.base_session_revision
+        )
+
+    def undo_patch(self, patch_id: str) -> AppliedPatchRecord:
+        """Apply an inverse exactly once while its post revision is current."""
+
+        try:
+            record = self._patch_records[str(patch_id)]
+        except KeyError as error:
+            raise AuthoringContractError(
+                "automatic patch is not registered"
+            ) from error
+        if record.state is not AppliedPatchState.APPLIED:
+            raise AuthoringAuthorizationError(
+                f"automatic patch is already {record.state.value}"
+            )
+        if not self.can_undo_patch(patch_id):
+            stale = replace(
+                record,
+                state=AppliedPatchState.STALE,
+                message="session revision changed after the Agent patch",
+            )
+            self._patch_records[str(patch_id)] = stale
+            raise AuthoringAuthorizationError(stale.message)
+        snapshot = self._session.snapshot()
+        inverse = record.inverse_patch
+        batch = scoped_definition_batch_from_operations(
+            inverse.operations,
+            snapshot,
+            base_session_revision=inverse.base_session_revision,
+        )
+        delta = self._session.apply_scoped_definition_batch(batch)
+        undone = replace(
+            record,
+            session_revision=delta.session_revision,
+            delta=delta,
+            state=AppliedPatchState.UNDONE,
+            message="Agent patch inverse applied",
+        )
+        self._patch_records[str(patch_id)] = undone
+        self._project_definition_delta(delta)
+        return undone
+
+    def patch_record(self, patch_id: str) -> AppliedPatchRecord:
+        try:
+            return self._patch_records[str(patch_id)]
+        except KeyError as error:
+            raise AuthoringContractError(
+                "automatic patch is not registered"
+            ) from error
+
+    def _project_definition_delta(self, delta: SessionDelta) -> None:
+        if self._apply_definition_delta is not None:
+            self._apply_definition_delta(delta)
 
     def _accept_mesh(self, record: ProposalPortRecord) -> ProposalPortRecord:
         if self._start_mesh_task is None:
@@ -560,9 +755,11 @@ class AgentAuthoringBridge:
         self._context: AuthoringContext | None = None
         self._records: dict[str, ProposalPortRecord] = {}
         self._idempotency: dict[str, str] = {}
+        self._patch_idempotency: dict[str, str] = {}
         self._authorization_nonce = 0
         self._unused_authorizations: set[_GuiControlAuthorization] = set()
         self._gui_thread_id = threading.get_ident()
+        self._patch_listener: Callable[[AppliedPatchRecord], None] | None = None
         listener = getattr(port, "set_record_listener", None)
         if callable(listener):
             listener(self._receive_port_record)
@@ -574,6 +771,14 @@ class AgentAuthoringBridge:
     @property
     def port(self) -> AuthoringPort:
         return self._port
+
+    def set_patch_listener(
+        self,
+        callback: Callable[[AppliedPatchRecord], None],
+    ) -> None:
+        if not callable(callback):
+            raise TypeError("patch listener must be callable")
+        self._patch_listener = callback
 
     def bind_snapshot(
         self,
@@ -620,6 +825,54 @@ class AgentAuthoringBridge:
         self._idempotency[proposal.idempotency_key] = proposal.proposal_id
         return self._receipt(record)
 
+    def apply_automatic_patch(
+        self,
+        patch: ModelPatch,
+    ) -> AppliedPatchRecord:
+        """Apply a revision-bound reversible edit without a confirmation click."""
+
+        if type(patch) is not ModelPatch:
+            raise TypeError("patch must be ModelPatch")
+        replay_id = self._patch_idempotency.get(patch.idempotency_key)
+        if replay_id is not None:
+            record_getter = getattr(self._port, "patch_record")
+            record = record_getter(replay_id)
+            if record.patch.patch_hash != patch.patch_hash:
+                raise AuthoringContractError(
+                    "patch idempotency key was reused with different content"
+                )
+            return replace(record, replayed=True)
+        self._require_live_patch_target(patch)
+        port_apply = getattr(self._port, "apply_patch", None)
+        if not callable(port_apply):
+            raise AuthoringContractError(
+                "authoring port does not support automatic patches"
+            )
+        record = port_apply(patch)
+        self._patch_idempotency[patch.idempotency_key] = patch.patch_id
+        if self._patch_listener is not None:
+            self._patch_listener(record)
+        return record
+
+    def can_undo_patch(self, patch_id: str) -> bool:
+        check = getattr(self._port, "can_undo_patch", None)
+        return bool(callable(check) and check(patch_id))
+
+    def undo_patch_from_gui_control(
+        self,
+        patch_id: str,
+    ) -> AppliedPatchRecord:
+        self._require_gui_thread()
+        undo = getattr(self._port, "undo_patch", None)
+        if not callable(undo):
+            raise AuthoringContractError(
+                "authoring port does not support patch inverse"
+            )
+        record = undo(patch_id)
+        if self._patch_listener is not None:
+            self._patch_listener(record)
+        return record
+
     def accept_proposal(
         self,
         proposal_id: str,
@@ -649,7 +902,8 @@ class AgentAuthoringBridge:
         self._records[proposal_id] = accepted
         if (
             accepted.state is ProposalState.SUCCEEDED
-            and accepted.proposal.proposal_kind is ProposalKind.GEOMETRY
+            and accepted.proposal.proposal_kind
+            is ProposalKind.GEOMETRY
         ):
             refresh = getattr(self._port, "refresh_projection", None)
             if callable(refresh):
@@ -726,6 +980,19 @@ class AgentAuthoringBridge:
         ):
             raise AuthoringContractError("proposal target is stale")
 
+    def _require_live_patch_target(self, patch: ModelPatch) -> None:
+        context = self._context
+        if context is None:
+            raise AuthoringContractError("there is no local model binding")
+        binding = context.binding
+        if (
+            not binding.supported
+            or patch.target_document_id != binding.document_id
+            or patch.target_session_id != binding.session_id
+            or patch.base_session_revision != binding.session_revision
+        ):
+            raise AuthoringContractError("patch target is stale")
+
     def _pending_record(self, proposal_id: str) -> ProposalPortRecord:
         try:
             record = self._records[proposal_id]
@@ -798,6 +1065,8 @@ class AgentAuthoringBridge:
 
 
 __all__ = [
+    "AppliedPatchRecord",
+    "AppliedPatchState",
     "AgentMeshTaskRequest",
     "AgentAuthoringBridge",
     "BridgeReceipt",

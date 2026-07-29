@@ -26,6 +26,13 @@ from .geometry_authoring import (
     rotate_geometry,
     translate_geometry,
 )
+from .definition_authoring import (
+    PlateScopeSet,
+    ScopeSelectionError,
+    ScopeSelectionEvidence,
+    build_eccentric_plate_scopes,
+    create_scope_definition_change,
+)
 from .naming import NameAllocator, NamePolicy
 from .mesh_authoring import (
     MESH_INTENT_SCHEMA_VERSION,
@@ -46,12 +53,17 @@ __all__ = [
     "MESH_INTENT_SCHEMA_VERSION",
     "MeshIntent",
     "ModelPatch",
+    "PlateScopeSet",
     "RequirementLedger",
     "RequirementReview",
+    "ScopeSelectionError",
+    "ScopeSelectionEvidence",
     "GeometryDraft",
     "StaticGeometryPreview",
     "UnitContextSummary",
     "box_geometry",
+    "build_eccentric_plate_scopes",
+    "create_scope_definition_change",
     "create_mesh_proposal",
     "create_geometry_proposal",
     "cylinder_geometry",

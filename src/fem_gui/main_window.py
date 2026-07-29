@@ -483,6 +483,7 @@ class FEMMainWindow(QMainWindow):
                 self.session,
                 self._rebuild_full_projection,
                 self._begin_agent_mesh_generation,
+                self._apply_agent_definition_delta,
             )
         )
         self.agent_authoring_bridge.bind_snapshot(self.document)
@@ -8860,6 +8861,48 @@ class FEMMainWindow(QMainWindow):
             )
         ):
             raise RuntimeError("无法从最新 Session snapshot 重建界面")
+
+    def _apply_agent_definition_delta(self, delta: SessionDelta) -> None:
+        """Project A4 scopes/definitions without rebuilding mesh actors."""
+
+        if not delta.accepted:
+            return
+        revision = int(delta.session_revision)
+        if revision <= self._applied_session_revision:
+            return
+        snapshot = self.session.projection_snapshot(
+            self.document,
+            delta.changed,
+        )
+        if snapshot.session_revision != revision:
+            raise RuntimeError("Agent definition delta is not the current revision")
+        artifact = snapshot.artifact
+        if artifact is None:
+            raise RuntimeError("Agent definitions require a current model artifact")
+
+        self.document = snapshot
+        self.agent_authoring_bridge.bind_snapshot(snapshot)
+        if hasattr(self, "viewport_panel"):
+            self.viewport_panel.agent_chat_drawer.refresh_authoring_binding()
+        self._scope_selection_topology_cache = None
+        self._close_inspection_windows()
+
+        model = artifact.model
+
+        def frame_query(target: RegionRef | int) -> BeamFrameReport:
+            return resolve_effective_beam_frames(model, target)
+
+        self.inspection_service = InspectionService(
+            model,
+            definitions=snapshot,
+            effective_frame_query=frame_query,
+        )
+        self._show_model_in_tree(model)
+        self._clear_result_projection()
+        self._sync_step_combos()
+        self._refresh_result_controls()
+        self._update_action_states()
+        self._applied_session_revision = revision
 
     def cancel_current_task(
         self,

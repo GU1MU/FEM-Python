@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import html
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 from PySide6.QtCore import (
     QAbstractAnimation,
@@ -713,6 +713,7 @@ class AgentChatDrawer(_BoundaryFrame):
         self._expanded_tool_group_ids: set[str] = set()
         self._pending_solve_confirmations: set[tuple[int, str]] = set()
         self._completed_solve_confirmations: set[tuple[int, str]] = set()
+        self._applied_patch_records: dict[str, object] = {}
         self.event_projector = AgentEventProjector()
         self.authoring_bridge = authoring_bridge
         self.workspace_commands = (
@@ -722,6 +723,13 @@ class AgentChatDrawer(_BoundaryFrame):
             self.workspace_commands.agent_data_root,
             self,
         )
+        patch_listener = getattr(
+            self.authoring_bridge,
+            "set_patch_listener",
+            None,
+        )
+        if callable(patch_listener):
+            patch_listener(self.show_applied_patch)
         self._workspace_index = self.workspace_commands.workspace_index
         self._workspace_references: list[
             WorkspaceFileReference
@@ -956,6 +964,89 @@ class AgentChatDrawer(_BoundaryFrame):
                 status.setObjectName("agentChatTurnStatus")
                 status.setWordWrap(True)
                 self.event_feed_layout.addWidget(status)
+        for record in self._applied_patch_records.values():
+            self._add_applied_patch_card(record)
+
+    def show_applied_patch(self, record: object) -> None:
+        """Show one local automatic edit with its revision-gated undo entry."""
+
+        patch = getattr(record, "patch", None)
+        patch_id = getattr(patch, "patch_id", None)
+        if type(patch_id) is not str or not patch_id:
+            raise TypeError("record must contain one applied ModelPatch")
+        self._applied_patch_records[patch_id] = record
+        self._render_event_presentation()
+
+    def _add_applied_patch_card(self, record: object) -> None:
+        patch = getattr(record, "patch")
+        patch_id = str(getattr(patch, "patch_id"))
+        bridge = self.authoring_bridge
+        if bridge is not None:
+            getter = getattr(getattr(bridge, "port", None), "patch_record", None)
+            if callable(getter):
+                try:
+                    record = getter(patch_id)
+                    self._applied_patch_records[patch_id] = record
+                except Exception:
+                    pass
+        summary = getattr(record, "display_summary", {})
+        summary = summary if isinstance(summary, Mapping) else {}
+        card = _BoundaryFrame(self.event_feed)
+        card.setObjectName("agentChatAppliedPatch")
+        card.setProperty("patchId", patch_id)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(9, 7, 9, 7)
+        layout.setSpacing(4)
+        title = _plain_label(
+            str(summary.get("title", "Agent 已应用模型修改")),
+            card,
+        )
+        title.setObjectName("agentChatProposalTitle")
+        layout.addWidget(title)
+        detail = _plain_label(
+            str(summary.get("summary", "已应用可逆模型补丁")),
+            card,
+        )
+        detail.setObjectName("agentChatProposalSummary")
+        detail.setWordWrap(True)
+        layout.addWidget(detail)
+        revision = _plain_label(
+            f"revision {getattr(record, 'session_revision')} · "
+            f"sha256 {str(getattr(patch, 'patch_hash'))[:16]}…",
+            card,
+        )
+        revision.setObjectName("agentChatProposalRevision")
+        layout.addWidget(revision)
+        undo = _BoundaryToolButton(card)
+        undo.setObjectName("agentChatPatchUndoButton")
+        undo.setProperty("patchId", patch_id)
+        undo.setText(
+            str(summary.get("undo_label", "撤销本次 Agent 修改"))
+        )
+        undo.setEnabled(
+            not self._runtime_busy
+            and bridge is not None
+            and bool(bridge.can_undo_patch(patch_id))
+        )
+        undo.clicked.connect(
+            lambda _checked=False, value=patch_id: (
+                self._undo_applied_patch(value)
+            )
+        )
+        layout.addWidget(undo)
+        self.event_feed_layout.addWidget(card)
+
+    def _undo_applied_patch(self, patch_id: str) -> None:
+        bridge = self.authoring_bridge
+        if bridge is None:
+            return
+        try:
+            record = bridge.undo_patch_from_gui_control(patch_id)
+        except Exception as error:
+            self._show_runtime_notice(str(error))
+        else:
+            self._applied_patch_records[patch_id] = record
+        self._render_event_presentation()
 
     def _add_user_message(self, text: str, turn_id: str) -> None:
         user_row = QWidget(self.event_feed)
@@ -1826,6 +1917,16 @@ class AgentChatDrawer(_BoundaryFrame):
             button.setEnabled(
                 not self._runtime_busy
                 and self._proposal_button_targets_live_binding(button)
+            )
+        for button in self.findChildren(
+            QToolButton,
+            "agentChatPatchUndoButton",
+        ):
+            bridge = self.authoring_bridge
+            button.setEnabled(
+                not self._runtime_busy
+                and bridge is not None
+                and bridge.can_undo_patch(str(button.property("patchId")))
             )
 
     def _proposal_button_targets_live_binding(

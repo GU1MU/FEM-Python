@@ -59,6 +59,7 @@ from .commands import (
     DeleteIntent,
     NamedRegionEditBatch,
     RenameIntent,
+    ScopedDefinitionBatch,
     Unset,
 )
 from .definitions import (
@@ -3244,6 +3245,118 @@ class ModelSession:
         return self._commit_model_definitions(
             owned,
             reason="definition edit applied",
+        )
+
+    def apply_scoped_definition_batch(
+        self,
+        batch: ScopedDefinitionBatch,
+    ) -> SessionDelta:
+        """Atomically apply native scopes, materials, sections, and assignments."""
+
+        if type(batch) is not ScopedDefinitionBatch:
+            raise TypeError("batch must be a ScopedDefinitionBatch")
+        self._check_expected(batch.base_session_revision)
+        self._require_native()
+        if self._artifact is None:
+            raise SessionStateError(
+                "scoped definitions require a generated model artifact"
+            )
+
+        regions = _regions_by_name(batch.regions)
+        if self._canonical_part_state():
+            regions = _regions_by_name(
+                _attach_mesh_reference_owners(
+                    tuple(regions.values()),
+                    self._parts,
+                    self._artifact.model,
+                )
+            )
+        definitions = normalize_model_definitions(
+            batch.materials,
+            batch.sections,
+            batch.assignments,
+            batch.steps,
+        )
+        if self._canonical_part_state():
+            _validate_native_parts_project_inputs(
+                self._parts,
+                tuple(regions.values()),
+                definitions.materials,
+                definitions.sections,
+                definitions.assignments,
+                definitions.steps,
+            )
+        elif self._geometry_recipe is None:
+            raise SessionStateError(
+                "scoped definitions require a native geometry recipe"
+            )
+        else:
+            validate_native_project_inputs(
+                self._geometry_recipe,
+                self._mesh_settings,
+                tuple(regions.values()),
+                definitions.materials,
+                definitions.sections,
+                definitions.assignments,
+                definitions.steps,
+            )
+
+        if not can_materialize_native_scopes(
+            self._artifact.model,
+            regions.values(),
+        ):
+            raise ValueError(
+                "current generated model cannot materialize the supplied scopes"
+            )
+        scoped_model = materialize_native_scopes(
+            self._artifact.model,
+            previous_names=tuple(self._named_regions),
+            regions=tuple(regions.values()),
+        )
+        compiled_model = compile_model_definitions(
+            scoped_model,
+            definitions,
+        ).require_model()
+
+        previous_artifact = self._artifact
+        edits_mesh_scopes = _regions_use_mesh_entities(regions.values())
+        self._named_regions = regions
+        self._materials = definitions.materials
+        self._sections = definitions.sections
+        self._assignments = definitions.assignments
+        self._steps = definitions.steps
+        self._definitions_explicit = True
+        self._drop_computations()
+        self._increment_domain_revisions(
+            project=True,
+            mesh=not edits_mesh_scopes,
+            model=True,
+        )
+        self._artifact = ModelArtifact(
+            session_id=self._session_id,
+            artifact_id=new_identity("artifact"),
+            model_revision=self._model_revision,
+            mesh_input_revision=(
+                previous_artifact.mesh_input_revision
+                if edits_mesh_scopes
+                else self._mesh_input_revision
+            ),
+            source_kind=previous_artifact.source_kind,
+            model=compiled_model,
+        )
+        return self._emit(
+            {
+                ChangeKind.PROJECT_INPUTS,
+                ChangeKind.NAMED_REGIONS,
+                ChangeKind.DEFINITIONS,
+                ChangeKind.MODEL,
+                ChangeKind.VALIDATIONS,
+                ChangeKind.RUNS,
+                ChangeKind.DISPLAYED_RESULT,
+            },
+            _COMPUTATION_INVALIDATIONS
+            | frozenset({ArtifactKind.MODEL}),
+            "scoped definition batch applied",
         )
 
     def _commit_model_definitions(

@@ -147,6 +147,38 @@ class NamedRegionEditBatch:
             object.__setattr__(self, field_name, values)
 
 
+@dataclass(frozen=True, slots=True)
+class ScopedDefinitionBatch:
+    """One atomic post-state for native scopes and model definitions."""
+
+    base_session_revision: int
+    regions: tuple[NamedRegion, ...]
+    materials: tuple[MaterialDefinition, ...]
+    sections: tuple[SectionDefinition, ...]
+    assignments: tuple[RegionAssignment, ...]
+    steps: tuple[AnalysisStep, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "base_session_revision",
+            _base_revision(self.base_session_revision),
+        )
+        for field_name, expected_type in (
+            ("regions", NamedRegion),
+            ("materials", MaterialDefinition),
+            ("sections", SectionDefinition),
+            ("assignments", RegionAssignment),
+            ("steps", AnalysisStep),
+        ):
+            values = deepcopy(tuple(getattr(self, field_name)))
+            if any(type(value) is not expected_type for value in values):
+                raise TypeError(
+                    f"{field_name} must contain only {expected_type.__name__} values"
+                )
+            object.__setattr__(self, field_name, values)
+
+
 def _command_name(value: Any, label: str) -> str:
     if type(value) is not str or not value.strip():
         raise ValueError(f"{label} must be a non-empty string")
@@ -164,6 +196,7 @@ __all__ = [
     "DeleteIntent",
     "NamedRegionEditBatch",
     "RenameIntent",
+    "ScopedDefinitionBatch",
     "UNSET",
     "Unset",
 ]

@@ -13,6 +13,7 @@ from .commands import (
     DeleteIntent,
     NamedRegionEditBatch,
     RenameIntent,
+    ScopedDefinitionBatch,
     UNSET,
     Unset,
 )
@@ -220,6 +221,7 @@ __all__ = [
     "RevisionConflictError",
     "RunStatus",
     "SectionDefinition",
+    "ScopedDefinitionBatch",
     "SessionDelta",
     "SessionAuthoringProjection",
     "SessionSnapshot",
