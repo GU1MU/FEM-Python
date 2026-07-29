@@ -3,12 +3,17 @@ from __future__ import annotations
 from dataclasses import replace
 import os
 from pathlib import Path
+from threading import Event
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
 from PySide6.QtWidgets import QApplication
 
+import fem.application.definitions as definitions_module
+import fem.application.session as session_module
+import fem_gui.main_window as main_window_module
 from fem.abaqus import read
 from fem.application import RegionAssignment, describe_session_authoring
 from fem.application.results import (
@@ -22,7 +27,9 @@ from fem.application.results import (
 from fem.solvers.static_linear import solve
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.model_dialogs import RegionAssignmentDialog
+from fem_gui.task_controller import TaskApplyStatus
 from fem_gui.visualization.model_adapter import build_model_geometry
+from fem_gui.workers import TaskContext
 from tests.helpers.model_builders import make_static_pull_truss_model
 from tests.helpers.preflight_builders import passing_preflight_report
 
@@ -96,6 +103,117 @@ def _materialize_task(task):
         task.record.materialization,
     )
     return provider.materialize(task.field_keys)
+
+
+def test_async_import_acceptance_and_projection_do_not_copy_on_gui_thread(
+    monkeypatch,
+) -> None:
+    _application()
+    window = FEMMainWindow()
+    model = make_static_pull_truss_model()
+    captured = {}
+
+    monkeypatch.setattr(main_window_module, "parse_file", lambda _path: object())
+    monkeypatch.setattr(
+        main_window_module,
+        "build_abaqus_model_with_report",
+        lambda _deck: SimpleNamespace(model=model, notices=()),
+    )
+
+    def capture_start(workload, on_success, *_args, **kwargs):
+        captured["workload"] = workload
+        captured["on_success"] = on_success
+        captured["apply_result"] = kwargs["apply_result"]
+        return True
+
+    monkeypatch.setattr(window, "_start_task", capture_start)
+    assert window._begin_import(Path("worker-owned.inp"))
+    payload = captured["workload"](
+        TaskContext(1, Event(), lambda _task_id, _stage: None)
+    )
+
+    def unexpected_deepcopy(_value):
+        raise AssertionError("GUI import acceptance must not deepcopy")
+
+    def unexpected_snapshot():
+        raise AssertionError("GUI projection must not use detached snapshot")
+
+    monkeypatch.setattr(session_module, "deepcopy", unexpected_deepcopy)
+    monkeypatch.setattr(definitions_module, "deepcopy", unexpected_deepcopy)
+    monkeypatch.setattr(main_window_module, "deepcopy", unexpected_deepcopy)
+    monkeypatch.setattr(window.session, "snapshot", unexpected_snapshot)
+
+    outcome = captured["apply_result"](payload)
+    assert outcome.status is TaskApplyStatus.ACCEPTED
+    captured["on_success"](outcome.projection_value)
+
+    assert window.document.model is not model
+    assert window.document.source_path == Path("worker-owned.inp")
+    assert window.geometry is not None
+    window.close()
+
+
+def test_result_and_run_status_deltas_reuse_trusted_gui_projection(
+    monkeypatch,
+) -> None:
+    window = _window_with_imported_model()
+    run_a = _install_successful_result(window, run_name="Job-A")
+    _install_successful_result(window, run_name="Job-B")
+    pending = window.session.prepare_solve("pull", "Job-Pending")
+    assert pending.delta is not None
+    assert window._apply_session_delta(pending.delta)
+
+    projection_a = window.session.prepare_result_projection(run_a)
+    key_a = _centroid_stress_key(projection_a.record)
+    materialization = window.session.prepare_result_materialization(
+        run_a,
+        (key_a,),
+    )
+    patch = _materialize_task(materialization)
+    model_before = window.document.model
+    artifact_before = window.document.artifact
+    select_delta = window.session.select_result(run_a)
+
+    def unexpected_deepcopy(_value):
+        raise AssertionError("GUI delta projection must not deepcopy the model")
+
+    def unexpected_detach(_record):
+        raise AssertionError("GUI delta projection must not detach a result")
+
+    def unexpected_snapshot():
+        raise AssertionError("GUI delta projection must not use snapshot()")
+
+    monkeypatch.setattr(session_module, "deepcopy", unexpected_deepcopy)
+    monkeypatch.setattr(
+        session_module,
+        "detached_result_record",
+        unexpected_detach,
+    )
+    monkeypatch.setattr(window.session, "snapshot", unexpected_snapshot)
+
+    assert window._apply_session_delta(select_delta)
+    selected_provider = window.result_provider
+    assert selected_provider is not None
+    assert selected_provider.source.run_id == run_a
+
+    result_delta = window.session.accept_result_materialization(
+        materialization.token,
+        patch,
+    )
+    assert window._apply_session_delta(result_delta)
+    assert window.result_provider is not selected_provider
+    assert window.result_provider.snapshot.generation == 1
+
+    status_delta = window.session.request_cancel(pending.run_id)
+    assert window._apply_session_delta(status_delta)
+    assert window.document.model is model_before
+    assert window.document.artifact is artifact_before
+    assert next(
+        run
+        for run in window.document.runs
+        if run.run_id == pending.run_id
+    ).cancellation_requested
+    window.close()
 
 
 def test_one_delta_projects_result_to_every_gui_consumer() -> None:

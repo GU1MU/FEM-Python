@@ -207,6 +207,31 @@ class _IssuedMaterializationPayload:
     expected_patch_keys: tuple[FieldMaterializationKey, ...]
 
 
+@dataclass(slots=True)
+class _PreparedImportedModel:
+    """Worker-owned import payload transferred exactly once into a Session."""
+
+    model: Any | None
+    definitions: ModelDefinitions | None
+    consumed: bool = False
+
+    def take(self) -> tuple[Any, ModelDefinitions]:
+        if self.consumed:
+            raise SessionStateError(
+                "prepared imported model has already been consumed"
+            )
+        model = self.model
+        definitions = self.definitions
+        if definitions is None:
+            raise SessionStateError(
+                "prepared imported model has no owned definitions"
+            )
+        self.model = None
+        self.definitions = None
+        self.consumed = True
+        return model, definitions
+
+
 @dataclass(frozen=True, slots=True)
 class BooleanReferenceUndoRecord:
     """Exact pre/post reference state for one reversible strict Boolean."""
@@ -743,6 +768,11 @@ class SessionSnapshot:
     def validation_current(self, step_name: str) -> bool:
         record = self.validation_for(step_name)
         return record is not None and record.passed
+
+
+@dataclass(frozen=True, slots=True)
+class _GuiSessionSnapshot(SessionSnapshot):
+    """Trusted shallow GUI projection; nested values remain Session-owned."""
 
 
 class ModelSession:
@@ -3247,14 +3277,54 @@ class ModelSession:
         self._task_data[token.task_id] = path
         return ImportTaskSnapshot(token, path)
 
+    @staticmethod
+    def _prepare_imported_model_transfer(model: Any) -> object:
+        """Build a transferable, Session-owned import payload.
+
+        GUI workers call this before returning their result so both the
+        ownership copy and definition extraction stay off the GUI thread.
+        The returned payload is opaque and may be accepted only once.
+        """
+
+        owned_model = deepcopy(model)
+        return _PreparedImportedModel(
+            owned_model,
+            definitions_from_model(owned_model),
+        )
+
     def accept_imported_model(
         self, token: TaskToken, model: Any
     ) -> SessionDelta:
+        """Accept a caller-owned model while preserving detached ownership."""
+
         status = self._token_status_for(token, "import")
         if status is not TokenStatus.CURRENT:
             return self._rejected(status, "stale imported model")
-        owned_model = deepcopy(model)
-        definitions = definitions_from_model(owned_model)
+        prepared = self._prepare_imported_model_transfer(model)
+        return self._install_prepared_imported_model(token, prepared)
+
+    def _accept_imported_model_transfer(
+        self,
+        token: TaskToken,
+        prepared: object,
+    ) -> SessionDelta:
+        """Transfer one worker-owned imported model through the import CAS."""
+
+        status = self._token_status_for(token, "import")
+        if status is not TokenStatus.CURRENT:
+            return self._rejected(status, "stale imported model")
+        if type(prepared) is not _PreparedImportedModel:
+            raise TypeError(
+                "prepared must come from _prepare_imported_model_transfer"
+            )
+        return self._install_prepared_imported_model(token, prepared)
+
+    def _install_prepared_imported_model(
+        self,
+        token: TaskToken,
+        prepared: _PreparedImportedModel,
+    ) -> SessionDelta:
+        owned_model, definitions = prepared.take()
         source_path = Path(self._task_data[token.task_id])
 
         self._session_id = new_identity("session")
@@ -4140,6 +4210,116 @@ class ModelSession:
                 if displayed is None
                 else detached_result_record(displayed)
             ),
+            dirty=self.dirty,
+            can_save=self.can_save,
+        )
+
+    def _snapshot_for_gui(
+        self,
+        previous: SessionSnapshot | None = None,
+        changed: Iterable[ChangeKind] | None = None,
+    ) -> SessionSnapshot:
+        """Return a trusted GUI projection without detaching large payloads.
+
+        Nested model and result objects remain Session-owned and must be
+        treated as read-only.  When one ordered status/result delta follows
+        ``previous``, unchanged authoring and model fields retain their exact
+        identities.
+        """
+
+        changed_set = (
+            None
+            if changed is None
+            else frozenset(changed)
+        )
+        if changed_set is not None and any(
+            type(kind) is not ChangeKind for kind in changed_set
+        ):
+            raise TypeError("changed must contain only ChangeKind values")
+
+        incremental_kinds = frozenset(
+            {
+                ChangeKind.VALIDATIONS,
+                ChangeKind.RUNS,
+                ChangeKind.RESULTS,
+                ChangeKind.DISPLAYED_RESULT,
+                ChangeKind.SAVED_STATE,
+            }
+        )
+        can_increment = (
+            isinstance(previous, SessionSnapshot)
+            and previous.session_id == self._session_id
+            and previous.session_revision == self._session_revision - 1
+            and changed_set is not None
+            and bool(changed_set)
+            and changed_set <= incremental_kinds
+        )
+        displayed = self._current_result_record(
+            self._displayed_result_run_id
+        )
+        if can_increment:
+            updates: dict[str, Any] = {
+                "is_open": self._is_open,
+                "session_id": self._session_id,
+                "session_revision": self._session_revision,
+                "project_revision": self._project_revision,
+                "mesh_input_revision": self._mesh_input_revision,
+                "model_revision": self._model_revision,
+                "saved_project_revision": self._saved_project_revision,
+                "source_kind": self._source_kind,
+                "source_path": self._source_path,
+                "project_path": self._project_path,
+                "model_name": self._model_name,
+                "dirty": self.dirty,
+                "can_save": self.can_save,
+            }
+            if ChangeKind.VALIDATIONS in changed_set:
+                updates["validations"] = MappingProxyType(
+                    dict(self._validations)
+                )
+            if ChangeKind.RUNS in changed_set:
+                updates["runs"] = tuple(self._runs.values())
+                updates["selected_run_id"] = self._selected_run_id
+            if changed_set & {
+                ChangeKind.RESULTS,
+                ChangeKind.DISPLAYED_RESULT,
+            }:
+                updates["selected_run_id"] = self._selected_run_id
+                updates[
+                    "displayed_result_run_id"
+                ] = self._displayed_result_run_id
+                updates["displayed_result"] = displayed
+            return replace(previous, **updates)
+
+        return _GuiSessionSnapshot(
+            is_open=self._is_open,
+            session_id=self._session_id,
+            session_revision=self._session_revision,
+            project_revision=self._project_revision,
+            mesh_input_revision=self._mesh_input_revision,
+            model_revision=self._model_revision,
+            saved_project_revision=self._saved_project_revision,
+            source_kind=self._source_kind,
+            source_path=self._source_path,
+            project_path=self._project_path,
+            model_name=self._model_name,
+            geometry_recipe=self._geometry_recipe,
+            mesh_settings=self._mesh_settings,
+            parts=tuple(self._parts),
+            active_part_id=self._active_part_id,
+            part_revisions=MappingProxyType(dict(self._part_revisions)),
+            feature_history=tuple(self._feature_history),
+            named_regions=MappingProxyType(dict(self._named_regions)),
+            materials=tuple(self._materials),
+            sections=tuple(self._sections),
+            assignments=tuple(self._assignments),
+            steps=tuple(self._effective_steps()),
+            artifact=self._artifact,
+            validations=MappingProxyType(dict(self._validations)),
+            runs=tuple(self._runs.values()),
+            selected_run_id=self._selected_run_id,
+            displayed_result_run_id=self._displayed_result_run_id,
+            displayed_result=displayed,
             dirty=self.dirty,
             can_save=self.can_save,
         )

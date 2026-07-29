@@ -8,7 +8,6 @@ from dataclasses import replace
 import logging
 from pathlib import Path
 from time import perf_counter
-from types import MappingProxyType
 from typing import Any, Callable
 
 import numpy as np
@@ -31,7 +30,6 @@ from fem.application import (
     AuthoringCapability,
     AuthoringStatus,
     BeamFrameReport,
-    ChangeKind,
     DefinitionEditBatch,
     DeleteIntent,
     DefinitionRejected,
@@ -375,7 +373,7 @@ class FEMMainWindow(QMainWindow):
         self.setWindowTitle("有限元分析")
         self.resize(1280, 800)
         self.session = ModelSession()
-        self.document = self.session.snapshot()
+        self.document = self.session._snapshot_for_gui()
         self._applied_session_revision = self.document.session_revision
         self._import_notices: tuple[object, ...] = ()
         self._current_step_name: str | None = None
@@ -2115,27 +2113,17 @@ class FEMMainWindow(QMainWindow):
         delta: object,
         revision: int,
     ) -> object:
-        """Reuse the detached model for validation-only state transitions."""
+        """Project one ordered delta without detaching full model/results."""
 
         if (
             isinstance(delta, SessionDelta)
-            and delta.changed == frozenset({ChangeKind.VALIDATIONS})
-            and not delta.invalidated
             and self.session.session_revision == revision
-            and self.document.session_id == self.session.session_id
-            and self.document.session_revision == revision - 1
         ):
-            validations = {}
-            for step_name in self.session.runnable_step_names():
-                record = self.session.validation_for(step_name)
-                if record is not None:
-                    validations[step_name] = record
-            return replace(
+            return self.session._snapshot_for_gui(
                 self.document,
-                session_revision=revision,
-                validations=MappingProxyType(validations),
+                delta.changed,
             )
-        return self.session.snapshot()
+        return self.session._snapshot_for_gui()
 
     def _apply_revision_neutral_task_receipt(
         self,
@@ -6454,15 +6442,22 @@ class FEMMainWindow(QMainWindow):
             started = perf_counter()
             geometry = build_model_geometry(model)
             timings["VTK 显示几何构建"] = perf_counter() - started
+            context.report("正在准备会话模型……")
+            started = perf_counter()
+            prepared = self.session._prepare_imported_model_transfer(model)
+            timings["Session 模型所有权准备"] = perf_counter() - started
             context.checkpoint()
-            return model, geometry, timings, build_result.notices
+            return prepared, geometry, timings, build_result.notices
 
         def apply_result(value: object) -> TaskApplyOutcome:
-            model, _geometry, _timings, _notices = self._unpack_model_load(
+            prepared, _geometry, _timings, _notices = self._unpack_model_load(
                 value
             )
             return self._session_task_outcome(
-                self.session.accept_imported_model(task.token, model),
+                self.session._accept_imported_model_transfer(
+                    task.token,
+                    prepared,
+                ),
                 value,
             )
 
@@ -6576,7 +6571,7 @@ class FEMMainWindow(QMainWindow):
     ) -> None:
         """Replace notices only after the imported Session CAS was projected."""
 
-        self._import_notices = deepcopy(tuple(notices))
+        self._import_notices = tuple(notices)
         if not self._import_notices:
             return
         self.status_panel.set_state(
@@ -6634,18 +6629,12 @@ class FEMMainWindow(QMainWindow):
             self._symbol_settings,
             step_name=self._current_step_name,
         )
-        definitions = ModelDefinitions(
-            materials=tuple(self.document.materials),
-            sections=tuple(self.document.sections),
-            assignments=tuple(self.document.assignments),
-            steps=tuple(self.document.steps),
-        )
         def frame_query(target: RegionRef | int) -> BeamFrameReport:
             return resolve_effective_beam_frames(model, target)
         started = perf_counter()
         self.inspection_service = InspectionService(
             model,
-            definitions=definitions,
+            definitions=self.document,
             effective_frame_query=frame_query,
         )
         timings["InspectionService 初始化"] = perf_counter() - started
@@ -8542,7 +8531,7 @@ class FEMMainWindow(QMainWindow):
         self.status_panel.set_state("任务已接受，但界面刷新失败", 8000)
 
     def _rebuild_full_projection(self) -> None:
-        snapshot = self.session.snapshot()
+        snapshot = self.session._snapshot_for_gui()
         self._applied_session_revision = -1
         if not self._apply_session_delta(
             SessionDelta(
