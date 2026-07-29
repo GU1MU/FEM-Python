@@ -728,12 +728,18 @@ def _require_result_render_payload(
 def _reuse_result_render_dataset(
     current: ResultRenderPayload,
     candidate: ResultRenderPayload,
+    *,
+    candidate_validated: bool = False,
 ) -> tuple[ResultRenderPayload, bool]:
     from ..visualization.result_renderer import (
         reuse_result_render_dataset,
     )
 
-    return reuse_result_render_dataset(current, candidate)
+    return reuse_result_render_dataset(
+        current,
+        candidate,
+        candidate_validated=candidate_validated,
+    )
 
 
 def _point_to_segment_distance(
@@ -863,6 +869,9 @@ class FEMViewport(QWidget):
         # Runtime revalidation follows VTK Modified notifications. Full
         # representation validation still runs unconditionally on install/render.
         self._result_render_validated_mtime: int | None = None
+        self._result_install_validation: (
+            tuple[ResultRenderPayload, int] | None
+        ) = None
         self._artifact_id: str | None = None
         self._run_id: str | None = None
         self._actors: dict[str, Any] = {}
@@ -1371,6 +1380,7 @@ class FEMViewport(QWidget):
         self._scalar_reuse_display = None
         self._result_provenance_layout = None
         self._result_render_validated_mtime = None
+        self._result_install_validation = None
         self._selected_kind = None
         self._selected_id = None
         self._selection_highlight_visible = True
@@ -1434,6 +1444,7 @@ class FEMViewport(QWidget):
         self._scalar_reuse_display = None
         self._result_provenance_layout = None
         self._result_render_validated_mtime = None
+        self._result_install_validation = None
         self._display = DisplayState()
         self._overlay_undeformed = False
         self._selected_kind = None
@@ -3092,6 +3103,7 @@ class FEMViewport(QWidget):
             checked, reused = _reuse_result_render_dataset(
                 current,
                 checked,
+                candidate_validated=True,
             )
         else:
             reused = False
@@ -3102,6 +3114,10 @@ class FEMViewport(QWidget):
         )
         self._result_render_validated_mtime = int(
             checked.dataset.GetMTime()
+        )
+        self._result_install_validation = (
+            checked,
+            self._result_render_validated_mtime,
         )
         self._artifact_id = source.artifact_id
         self._run_id = source.run_id
@@ -3182,6 +3198,20 @@ class FEMViewport(QWidget):
             payload = _require_result_render_payload(payload)
             self._result_render_validated_mtime = modified
         return payload
+
+    def _consume_result_install_validation(
+        self,
+        payload: ResultRenderPayload,
+    ) -> ResultRenderPayload:
+        token = self._result_install_validation
+        self._result_install_validation = None
+        if (
+            token is not None
+            and token[0] is payload
+            and token[1] == int(payload.dataset.GetMTime())
+        ):
+            return payload
+        return _require_result_render_payload(payload)
 
     @staticmethod
     def _provenance_ids(
@@ -4946,6 +4976,7 @@ class FEMViewport(QWidget):
         self._result_point_index_to_element_id.clear()
         self._result_cell_index_to_element_id.clear()
         self._result_provenance_layout = None
+        self._result_install_validation = None
 
     def _update_result_render_payload_layer(
         self,
@@ -4953,7 +4984,7 @@ class FEMViewport(QWidget):
     ) -> None:
         """Render an already-selected and already-deformed typed payload."""
 
-        checked = _require_result_render_payload(payload)
+        checked = self._consume_result_install_validation(payload)
         self._result_render_validated_mtime = int(
             checked.dataset.GetMTime()
         )
@@ -5033,7 +5064,10 @@ class FEMViewport(QWidget):
                 or self._contour["show_maximum"]
             )
         ):
-            self._add_result_render_payload_extrema_labels(checked)
+            self._add_result_render_payload_extrema_labels(
+                checked,
+                payload_validated=True,
+            )
         self._refresh_undeformed_overlay()
         self._restore_selection()
         self._render()
@@ -5051,7 +5085,7 @@ class FEMViewport(QWidget):
         ):
             return False
 
-        checked = _require_result_render_payload(payload)
+        checked = self._consume_result_install_validation(payload)
         mapper.array_name = checked.scalar_name
         mapper.scalar_visibility = True
         mapper.scalar_range = self._contour_data_range(checked)
@@ -5067,7 +5101,10 @@ class FEMViewport(QWidget):
             self._contour["show_minimum"]
             or self._contour["show_maximum"]
         ):
-            self._add_result_render_payload_extrema_labels(checked)
+            self._add_result_render_payload_extrema_labels(
+                checked,
+                payload_validated=True,
+            )
         self._result_render_validated_mtime = int(
             checked.dataset.GetMTime()
         )
@@ -5134,10 +5171,16 @@ class FEMViewport(QWidget):
     def _add_result_render_payload_extrema_labels(
         self,
         payload: ResultRenderPayload,
+        *,
+        payload_validated: bool = False,
     ) -> None:
         """Label extrema from payload scalar and typed location provenance."""
 
-        checked = _require_result_render_payload(payload)
+        checked = (
+            payload
+            if payload_validated
+            else _require_result_render_payload(payload)
+        )
         topology = checked.topology
         if topology.value_layout is ResultValueLayout.POINT:
             values = np.asarray(

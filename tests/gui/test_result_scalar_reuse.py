@@ -28,6 +28,7 @@ from fem_gui.visualization.result_renderer import (
     validate_result_render_payload,
 )
 from fem_gui.visualization.scene import DisplayState
+import fem_gui.widgets.viewport as viewport_module
 from fem_gui.widgets.viewport import FEMViewport
 
 
@@ -200,4 +201,34 @@ def test_cached_layout_reuses_dataset_and_provenance_indexes() -> None:
     assert viewport._result_point_index_to_node_id is node_index
     assert viewport._result_point_index_to_element_id is element_index
     assert viewport._result_cell_index_to_element_id is cell_index
+    viewport.close()
+
+
+def test_install_transaction_reuses_one_payload_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _application()
+    payload = _payload("S11", (1.0, 2.0, 3.0))
+    calls: list[object] = []
+    original = viewport_module._require_result_render_payload
+
+    def record_validation(candidate: object):
+        calls.append(candidate)
+        return original(candidate)
+
+    monkeypatch.setattr(
+        viewport_module,
+        "_require_result_render_payload",
+        record_validation,
+    )
+    viewport = FEMViewport()
+
+    viewport.set_result_render_payload(payload)
+    viewport._update_result_layer()
+
+    assert calls == [payload]
+
+    viewport._update_result_layer()
+
+    assert calls == [payload, payload]
     viewport.close()

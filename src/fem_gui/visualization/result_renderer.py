@@ -156,11 +156,19 @@ def validate_result_render_payload(
 def reuse_result_render_dataset(
     current: ResultRenderPayload,
     candidate: ResultRenderPayload,
+    *,
+    candidate_validated: bool = False,
 ) -> tuple[ResultRenderPayload, bool]:
     """Rebind a component-only payload to the currently rendered dataset."""
 
     checked_current = validate_result_render_payload(current)
-    checked_candidate = validate_result_render_payload(candidate)
+    checked_candidate = (
+        candidate
+        if candidate_validated
+        else validate_result_render_payload(candidate)
+    )
+    if type(checked_candidate) is not ResultRenderPayload:
+        raise TypeError("candidate must be exactly ResultRenderPayload")
     if not _has_reusable_geometry(checked_current, checked_candidate):
         return checked_candidate, False
 
