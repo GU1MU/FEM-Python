@@ -86,7 +86,16 @@ def test_cached_prepared_system_isolated_from_exposed_solve_task_model() -> None
     assert result.U[second.model.mesh.global_dof(2, 0)] == pytest.approx(0.5)
 
 
-def test_first_solve_installs_unexposed_cache_clone() -> None:
+def test_first_solve_installs_unexposed_cache_clone(monkeypatch) -> None:
+    factor_calls = 0
+    original_factor = static_linear.splu
+
+    def factor(stiffness):
+        nonlocal factor_calls
+        factor_calls += 1
+        return original_factor(stiffness)
+
+    monkeypatch.setattr(static_linear, "splu", factor)
     session = ModelSession()
     imported = session.prepare_import("quick-cache.inp")
     session.accept_imported_model(
@@ -131,6 +140,7 @@ def test_first_solve_installs_unexposed_cache_clone() -> None:
     assert second_result.U[
         second.model.mesh.global_dof(2, 0)
     ] == pytest.approx(0.5)
+    assert factor_calls == 1
 
 
 def test_stale_validation_cannot_install_prepared_system() -> None:
@@ -159,7 +169,18 @@ def test_stale_validation_cannot_install_prepared_system() -> None:
     assert session._current_prepared_system() is None
 
 
-def test_stale_solve_completion_cannot_install_cache_candidate() -> None:
+def test_stale_solve_completion_cannot_install_cache_candidate(
+    monkeypatch,
+) -> None:
+    factor_calls = 0
+    original_factor = static_linear.splu
+
+    def factor(stiffness):
+        nonlocal factor_calls
+        factor_calls += 1
+        return original_factor(stiffness)
+
+    monkeypatch.setattr(static_linear, "splu", factor)
     session = ModelSession()
     imported = session.prepare_import("old-solve.inp")
     session.accept_imported_model(
@@ -200,6 +221,23 @@ def test_stale_solve_completion_cannot_install_cache_candidate() -> None:
     assert not delta.accepted
     assert delta.token_status is TokenStatus.STALE_SESSION
     assert session._current_prepared_system() is None
+
+    validation = session.prepare_validation("pull")
+    session.accept_validation(
+        validation.token,
+        passing_preflight_report(validation.token),
+    )
+    replacement_solve = session.prepare_solve("pull", "Job-2")
+    replacement_prepared = static_linear.prepare(
+        replacement_solve.model,
+        copy_model=False,
+    )
+    static_linear.solve(
+        replacement_solve.model,
+        replacement_solve.step_name,
+        _prepared_system=replacement_prepared,
+    )
+    assert factor_calls == 2
 
 
 def test_pending_running_succeeded_lifecycle_and_provenance() -> None:

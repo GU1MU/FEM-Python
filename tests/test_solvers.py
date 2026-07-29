@@ -1,8 +1,15 @@
+from concurrent.futures import ThreadPoolExecutor
+from time import perf_counter
+
 import numpy as np
 import pytest
-from scipy.sparse import csr_matrix
+from scipy.sparse import csr_matrix, diags
 
 from fem import solvers
+from fem.boundary.condition import BoundaryCondition
+from fem.boundary.constraints import apply_dirichlet
+from fem.boundary.loads import build_load_vector
+from fem.boundary.step import boundary_for_step
 from fem.core.model import AnalysisStep, DisplacementConstraint, NodalLoad
 from fem.core.result import ModelResult, ModelResults
 from fem.solvers import static_linear
@@ -36,9 +43,10 @@ def test_prepared_system_applies_sections_and_assembles_once_for_many_steps(
     expected_model = make_two_step_static_pull_truss_model()
     expected = static_linear.solve(expected_model, steps="all")
     model = make_two_step_static_pull_truss_model()
-    calls = {"materials": 0, "stiffness": 0}
+    calls = {"materials": 0, "stiffness": 0, "factor": 0}
     original_apply = static_linear.materials.apply_sections
     original_assemble = static_linear.assemble_global_stiffness_sparse
+    original_factor = static_linear.splu
 
     def apply_sections(candidate):
         calls["materials"] += 1
@@ -47,6 +55,10 @@ def test_prepared_system_applies_sections_and_assembles_once_for_many_steps(
     def assemble(mesh):
         calls["stiffness"] += 1
         return original_assemble(mesh)
+
+    def factor(stiffness):
+        calls["factor"] += 1
+        return original_factor(stiffness)
 
     monkeypatch.setattr(
         static_linear.materials,
@@ -58,12 +70,13 @@ def test_prepared_system_applies_sections_and_assembles_once_for_many_steps(
         "assemble_global_stiffness_sparse",
         assemble,
     )
+    monkeypatch.setattr(static_linear, "splu", factor)
 
     prepared = static_linear.prepare(model)
     results = prepared.solve(steps="all")
     pull1, pull2 = results.results
 
-    assert calls == {"materials": 1, "stiffness": 1}
+    assert calls == {"materials": 1, "stiffness": 1, "factor": 1}
     assert pull1.model is pull2.model
     assert pull1.model is not model
     np.testing.assert_allclose(pull1.U, expected.results[0].U)
@@ -343,8 +356,7 @@ def test_plural_solve_prepares_once_and_runs_each_load_case_once(monkeypatch):
         "boundary": 0,
         "stiffness": 0,
         "load": 0,
-        "dirichlet": 0,
-        "linear": 0,
+        "factor": 0,
     }
     prepared = {}
 
@@ -352,8 +364,7 @@ def test_plural_solve_prepares_once_and_runs_each_load_case_once(monkeypatch):
     original_boundary_for_step = static_linear._boundary_step.boundary_for_step
     original_assemble = static_linear.assemble_global_stiffness_sparse
     original_build_load = static_linear.build_load_vector
-    original_apply_dirichlet = static_linear.apply_dirichlet
-    original_linear_solve = static_linear.linear.solve
+    original_factor = static_linear.splu
 
     def apply_sections(model):
         calls["materials"] += 1
@@ -374,16 +385,9 @@ def test_plural_solve_prepares_once_and_runs_each_load_case_once(monkeypatch):
         calls["load"] += 1
         return original_build_load(mesh, boundary)
 
-    def apply_constraints(stiffness, load, boundary):
-        calls["dirichlet"] += 1
-        assert stiffness is prepared["stiffness"]
-        result = original_apply_dirichlet(stiffness, load, boundary)
-        assert np.array_equal(stiffness.toarray(), prepared["snapshot"])
-        return result
-
-    def solve_linear(stiffness, load):
-        calls["linear"] += 1
-        return original_linear_solve(stiffness, load)
+    def factor(stiffness):
+        calls["factor"] += 1
+        return original_factor(stiffness)
 
     monkeypatch.setattr(static_linear.materials, "apply_sections", apply_sections)
     monkeypatch.setattr(
@@ -393,8 +397,7 @@ def test_plural_solve_prepares_once_and_runs_each_load_case_once(monkeypatch):
     )
     monkeypatch.setattr(static_linear, "assemble_global_stiffness_sparse", assemble)
     monkeypatch.setattr(static_linear, "build_load_vector", build_load)
-    monkeypatch.setattr(static_linear, "apply_dirichlet", apply_constraints)
-    monkeypatch.setattr(static_linear.linear, "solve", solve_linear)
+    monkeypatch.setattr(static_linear, "splu", factor)
 
     results = static_linear.solve(model, steps="all")
 
@@ -404,8 +407,7 @@ def test_plural_solve_prepares_once_and_runs_each_load_case_once(monkeypatch):
         "boundary": 2,
         "stiffness": 1,
         "load": 2,
-        "dirichlet": 2,
-        "linear": 2,
+        "factor": 1,
     }
     assert np.array_equal(
         prepared["stiffness"].toarray(),
@@ -429,6 +431,296 @@ def test_nonzero_prescribed_displacement_is_absolute_in_each_load_case():
     assert settled.U[loaded_dof] == pytest.approx(0.25)
     assert settled.reactions[fixed_dof] == pytest.approx(-50.0)
     assert settled.reactions[loaded_dof] == pytest.approx(50.0)
+
+
+def test_reduced_solver_matches_full_dirichlet_oracle_for_multiple_cases():
+    model = make_two_step_static_pull_truss_model()
+    settlement = AnalysisStep(
+        "settlement",
+        boundaries=[DisplacementConstraint("TIP", 1, 1, 0.25)],
+        cloads=[NodalLoad("TIP", 1, 30.0)],
+    )
+    prepared = static_linear.prepare(model)
+
+    results = prepared._solve_owned(
+        steps=("pull1", "pull2", settlement),
+    )
+
+    for result in results.results:
+        boundary = boundary_for_step(result.model, result.step)
+        load = build_load_vector(result.model.mesh, boundary)
+        constrained_stiffness, constrained_load = apply_dirichlet(
+            prepared._base_stiffness,
+            load,
+            boundary,
+        )
+        expected_displacement = solvers.linear.solve(
+            constrained_stiffness,
+            constrained_load,
+        )
+        expected_reactions = (
+            prepared._base_stiffness @ expected_displacement - load
+        )
+        np.testing.assert_allclose(result.U, expected_displacement)
+        np.testing.assert_allclose(
+            result.reactions,
+            expected_reactions,
+        )
+
+
+def test_factor_key_ignores_load_and_prescribed_values(monkeypatch):
+    model = make_two_step_static_pull_truss_model()
+    first = AnalysisStep(
+        "first",
+        boundaries=[DisplacementConstraint("FIXED", 1, 1, 0.1)],
+        cloads=[NodalLoad("TIP", 1, 10.0)],
+    )
+    second = AnalysisStep(
+        "second",
+        boundaries=[DisplacementConstraint("FIXED", 1, 1, -0.2)],
+        cloads=[NodalLoad("TIP", 1, 75.0)],
+    )
+    factor_calls = 0
+    original_factor = static_linear.splu
+
+    def factor(stiffness):
+        nonlocal factor_calls
+        factor_calls += 1
+        return original_factor(stiffness)
+
+    monkeypatch.setattr(static_linear, "splu", factor)
+    prepared = static_linear.prepare(model)
+
+    results = prepared._solve_owned(steps=(first, second))
+
+    assert factor_calls == 1
+    assert results.results[0].U[0] == pytest.approx(0.1)
+    assert results.results[1].U[0] == pytest.approx(-0.2)
+
+
+def test_factor_cache_lru_is_bounded_and_refactors_evicted_pattern(
+    monkeypatch,
+):
+    stiffness = csr_matrix(np.diag(np.arange(1.0, 7.0)))
+    cache = static_linear._FactorizationCache(stiffness)
+    factor_calls = 0
+    original_factor = static_linear.splu
+
+    def factor(matrix):
+        nonlocal factor_calls
+        factor_calls += 1
+        return original_factor(matrix)
+
+    monkeypatch.setattr(static_linear, "splu", factor)
+    patterns = tuple((dof,) for dof in range(5))
+    for pattern in patterns:
+        cache.factor_for(pattern)
+
+    assert factor_calls == 5
+    assert len(cache._entries) == static_linear._FACTOR_CACHE_MAX_ENTRIES
+    assert tuple(cache._entries) == patterns[-4:]
+
+    cache.factor_for(patterns[0])
+    assert factor_calls == 6
+    assert tuple(cache._entries) == patterns[-3:] + patterns[:1]
+
+
+def test_factor_cache_serializes_concurrent_factor_creation(monkeypatch):
+    stiffness = csr_matrix(np.diag(np.arange(1.0, 9.0)))
+    cache = static_linear._FactorizationCache(stiffness)
+    factor_calls = 0
+    original_factor = static_linear.splu
+
+    def factor(matrix):
+        nonlocal factor_calls
+        factor_calls += 1
+        return original_factor(matrix)
+
+    monkeypatch.setattr(static_linear, "splu", factor)
+
+    def solve(scale):
+        displacement, _ = cache.solve(
+            scale * np.ones(8),
+            (0,),
+            np.array([0.0]),
+        )
+        return displacement
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = tuple(executor.map(solve, range(1, 9)))
+
+    assert factor_calls == 1
+    for scale, displacement in enumerate(results, start=1):
+        np.testing.assert_allclose(
+            displacement[1:],
+            scale / np.arange(2.0, 9.0),
+        )
+
+
+def test_factor_cache_handles_fully_constrained_and_unconstrained_systems(
+    monkeypatch,
+):
+    stiffness = csr_matrix(np.diag([2.0, 3.0]))
+    cache = static_linear._FactorizationCache(stiffness)
+    factor_calls = 0
+    original_factor = static_linear.splu
+
+    def factor(matrix):
+        nonlocal factor_calls
+        factor_calls += 1
+        return original_factor(matrix)
+
+    monkeypatch.setattr(static_linear, "splu", factor)
+    displacement, free_dofs = cache.solve(
+        np.array([10.0, 20.0]),
+        (0, 1),
+        np.array([0.25, -0.5]),
+    )
+
+    np.testing.assert_allclose(displacement, [0.25, -0.5])
+    assert free_dofs.size == 0
+    assert factor_calls == 0
+
+    displacement, free_dofs = cache.solve(
+        np.array([4.0, 9.0]),
+        (),
+        np.empty(0),
+    )
+    np.testing.assert_allclose(displacement, [2.0, 3.0])
+    np.testing.assert_array_equal(free_dofs, [0, 1])
+    assert factor_calls == 1
+
+
+def test_repeated_reduced_solve_matches_full_system_oracle_and_records_cost(
+    record_property,
+):
+    dimension = 400
+    stiffness = diags(
+        (
+            -np.ones(dimension - 1),
+            2.0 * np.ones(dimension),
+            -np.ones(dimension - 1),
+        ),
+        offsets=(-1, 0, 1),
+        format="csr",
+    )
+    boundary = BoundaryCondition()
+    boundary.add_displacement_dof(0, 0.125)
+    boundary.add_displacement_dof(dimension - 1, -0.05)
+    pattern, values = static_linear._validated_prescribed_displacements(
+        boundary,
+        dimension,
+    )
+    loads = tuple(
+        np.linspace(0.0, float(scale), dimension)
+        for scale in range(1, 7)
+    )
+
+    started = perf_counter()
+    expected = []
+    for load in loads:
+        constrained_stiffness, constrained_load = apply_dirichlet(
+            stiffness,
+            load,
+            boundary,
+        )
+        displacement = solvers.linear.solve(
+            constrained_stiffness,
+            constrained_load,
+        )
+        expected.append(
+            (
+                displacement,
+                stiffness @ displacement - load,
+            )
+        )
+    legacy_seconds = perf_counter() - started
+
+    cache = static_linear._FactorizationCache(stiffness)
+    started = perf_counter()
+    actual = []
+    for load in loads:
+        displacement, free_dofs = cache.solve(
+            load,
+            pattern,
+            values,
+        )
+        reactions = stiffness @ displacement - load
+        static_linear._validate_free_dof_equilibrium(
+            reactions,
+            load,
+            free_dofs,
+        )
+        actual.append((displacement, reactions))
+    reduced_seconds = perf_counter() - started
+
+    for (actual_u, actual_rf), (expected_u, expected_rf) in zip(
+        actual,
+        expected,
+        strict=True,
+    ):
+        np.testing.assert_allclose(actual_u, expected_u)
+        np.testing.assert_allclose(actual_rf, expected_rf, atol=1e-10)
+    record_property("full_matrix_dimension", dimension)
+    record_property("free_matrix_dimension", dimension - len(pattern))
+    record_property("repeated_solve_count", len(loads))
+    record_property("legacy_full_solve_seconds", legacy_seconds)
+    record_property("reduced_cached_solve_seconds", reduced_seconds)
+
+
+def test_factor_cache_normalizes_singular_direct_solve_error():
+    cache = static_linear._FactorizationCache(
+        csr_matrix([[1.0, 0.0], [0.0, 0.0]])
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="singular or under-constrained",
+    ):
+        cache.solve(np.ones(2), (), np.empty(0))
+
+    constrained = static_linear._FactorizationCache(
+        csr_matrix([[1.0, 0.0], [0.0, 0.0]])
+    )
+    displacement, _ = constrained.solve(
+        np.array([1.0, 0.0]),
+        (1,),
+        np.array([0.0]),
+    )
+    np.testing.assert_allclose(displacement, [1.0, 0.0])
+
+
+@pytest.mark.parametrize(
+    ("prescribed", "expected_exception", "message"),
+    [
+        ({6: 0.0}, IndexError, r"out of bounds \[0, 6\)"),
+        ({1.5: 0.0}, TypeError, "DOF index must be an integer"),
+        ({True: 0.0}, TypeError, "DOF index must be an integer"),
+        ({0: np.nan}, ValueError, "must be finite"),
+    ],
+)
+def test_reduced_solver_validates_prescribed_mapping(
+    prescribed,
+    expected_exception,
+    message,
+):
+    boundary = BoundaryCondition()
+    boundary.prescribed_displacements = prescribed
+
+    with pytest.raises(expected_exception, match=message):
+        static_linear._validated_prescribed_displacements(boundary, 6)
+
+
+def test_reduced_solver_rejects_duplicate_normalized_constraint_dofs():
+    class DuplicateItems(dict):
+        def items(self):
+            return ((0, 0.0), (np.int64(0), 1.0))
+
+    boundary = BoundaryCondition()
+    boundary.prescribed_displacements = DuplicateItems()
+
+    with pytest.raises(ValueError, match="repeats DOF index 0"):
+        static_linear._validated_prescribed_displacements(boundary, 2)
 
 
 def test_linear_solver_solves_sparse_system_and_rejects_dense_matrix():

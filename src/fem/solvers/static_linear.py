@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import operator
+from collections import OrderedDict
 from collections.abc import Iterable
 from copy import deepcopy
 from dataclasses import dataclass
+from threading import RLock
 from time import perf_counter
 from typing import Any, Literal, overload
 
@@ -13,18 +16,17 @@ from scipy.sparse.linalg import splu
 from .. import materials
 from ..assemble import assemble_global_stiffness_sparse
 from ..boundary import step as _boundary_step
-from ..boundary.constraints import apply_dirichlet
 from ..boundary.loads import build_load_vector
 from ..core.model import AnalysisStep
 from ..core.result import ModelResult, ModelResults
 from ..core.validation import validate_analysis_step, validate_model_structure
-from . import linear
 
 
 __all__ = ["PreparedSystem", "prepare", "solve"]
 
 
 StepSelector = str | int | AnalysisStep
+_FACTOR_CACHE_MAX_ENTRIES = 4
 
 
 @dataclass(frozen=True)
@@ -35,26 +37,124 @@ class _ResolvedSelection:
     plural: bool
 
 
+@dataclass(frozen=True, slots=True)
+class _ReducedFactorization:
+    """One scaled free-DOF factorization for a constraint pattern."""
+
+    constrained_dofs: np.ndarray
+    free_dofs: np.ndarray
+    inverse_scale: np.ndarray
+    factor: Any | None
+
+
+class _FactorizationCache:
+    """Small thread-safe LRU of factors tied to one exact frozen base K."""
+
+    __slots__ = (
+        "_base_stiffness",
+        "_entries",
+        "_lock",
+        "_max_entries",
+    )
+
+    def __init__(
+        self,
+        base_stiffness: Any,
+        *,
+        max_entries: int = _FACTOR_CACHE_MAX_ENTRIES,
+    ) -> None:
+        self._base_stiffness = base_stiffness
+        self._entries: OrderedDict[
+            tuple[int, ...],
+            _ReducedFactorization,
+        ] = OrderedDict()
+        self._lock = RLock()
+        self._max_entries = max_entries
+
+    def shares_base_stiffness(self, base_stiffness: Any) -> bool:
+        """Return whether the cache is tied to the exact immutable K."""
+
+        return self._base_stiffness is base_stiffness
+
+    def factor_for(
+        self,
+        constrained_pattern: tuple[int, ...],
+    ) -> _ReducedFactorization:
+        """Return or build one factor while maintaining LRU order."""
+
+        with self._lock:
+            return self._factor_for_locked(constrained_pattern)
+
+    def solve(
+        self,
+        load: np.ndarray,
+        constrained_pattern: tuple[int, ...],
+        constrained_values: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Solve one partitioned system under the cache's serial lock."""
+
+        with self._lock:
+            try:
+                entry = self._factor_for_locked(constrained_pattern)
+            except (RuntimeError, ValueError) as exc:
+                raise RuntimeError(
+                    "sparse linear solve failed: stiffness matrix "
+                    "is singular or under-constrained."
+                ) from exc
+            return _solve_reduced_system(
+                self._base_stiffness,
+                load,
+                entry,
+                constrained_values,
+            )
+
+    def _factor_for_locked(
+        self,
+        constrained_pattern: tuple[int, ...],
+    ) -> _ReducedFactorization:
+        cached = self._entries.get(constrained_pattern)
+        if cached is not None:
+            self._entries.move_to_end(constrained_pattern)
+            return cached
+
+        factorization = _build_reduced_factorization(
+            self._base_stiffness,
+            constrained_pattern,
+        )
+        self._entries[constrained_pattern] = factorization
+        self._entries.move_to_end(constrained_pattern)
+        while len(self._entries) > self._max_entries:
+            self._entries.popitem(last=False)
+        return factorization
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class PreparedSystem:
     """Owned linear-static model and immutable assembled base stiffness."""
 
     _model: Any
     _base_stiffness: Any
+    _factor_cache: _FactorizationCache
 
     @classmethod
     def _from_owned(
         cls,
         model: Any,
         base_stiffness: Any,
+        factor_cache: _FactorizationCache | None = None,
     ) -> PreparedSystem:
+        frozen_stiffness = _freeze_base_stiffness(base_stiffness)
+        if factor_cache is None:
+            factor_cache = _FactorizationCache(frozen_stiffness)
+        elif not factor_cache.shares_base_stiffness(frozen_stiffness):
+            raise ValueError(
+                "factor cache must share the exact base stiffness"
+            )
+
         prepared = object.__new__(cls)
         object.__setattr__(prepared, "_model", model)
-        object.__setattr__(
-            prepared,
-            "_base_stiffness",
-            _freeze_base_stiffness(base_stiffness),
-        )
+        object.__setattr__(prepared, "_base_stiffness", frozen_stiffness)
+        object.__setattr__(prepared, "_factor_cache", factor_cache)
         return prepared
 
     def clone(self) -> PreparedSystem:
@@ -63,6 +163,7 @@ class PreparedSystem:
         return PreparedSystem._from_owned(
             deepcopy(self._model),
             self._base_stiffness,
+            self._factor_cache,
         )
 
     def _trusted_model_for_task(self) -> Any:
@@ -79,6 +180,7 @@ class PreparedSystem:
         return (
             type(other) is PreparedSystem
             and self._base_stiffness is other._base_stiffness
+            and self._factor_cache is other._factor_cache
         )
 
     def validate_step(
@@ -114,14 +216,12 @@ class PreparedSystem:
             self._model,
             selected_step,
         )
-        zero_load = np.zeros(self._model.mesh.num_dofs, dtype=float)
-        constrained_stiffness, _ = apply_dirichlet(
-            self._base_stiffness,
-            zero_load,
+        constrained_pattern, _ = _validated_prescribed_displacements(
             boundary,
+            self._base_stiffness.shape[0],
         )
         try:
-            _validate_nonsingular_stiffness(constrained_stiffness)
+            self._factor_cache.factor_for(constrained_pattern)
         except (RuntimeError, ValueError) as error:
             raise ValueError(
                 "模型约束不足或刚度矩阵奇异；"
@@ -192,6 +292,7 @@ class PreparedSystem:
                     selected_step,
                 ),
                 self._base_stiffness,
+                self._factor_cache,
                 _result_name(
                     self._model,
                     selected_step,
@@ -407,25 +508,36 @@ def _solve_prepared_step(
     selected_step: AnalysisStep | None,
     boundary: Any,
     base_stiffness: Any,
+    factor_cache: _FactorizationCache,
     name: str | None,
     timings: dict[str, float] | None,
 ) -> ModelResult:
     """Solve one load case against an already prepared base stiffness."""
     started = perf_counter()
     load = build_load_vector(model.mesh, boundary)
-    constrained_stiffness, constrained_load = apply_dirichlet(
-        base_stiffness,
+    constrained_pattern, constrained_values = (
+        _validated_prescribed_displacements(
+            boundary,
+            base_stiffness.shape[0],
+        )
+    )
+    load = _validated_load_vector(
         load,
-        boundary,
+        base_stiffness.shape[0],
     )
     _record_timing(timings, "载荷与边界条件", started)
 
     started = perf_counter()
-    displacement = linear.solve(constrained_stiffness, constrained_load)
+    displacement, free_dofs = factor_cache.solve(
+        load,
+        constrained_pattern,
+        constrained_values,
+    )
     _record_timing(timings, "线性方程求解", started)
 
     started = perf_counter()
     reactions = base_stiffness @ displacement - load
+    _validate_free_dof_equilibrium(reactions, load, free_dofs)
     result = ModelResult(
         model,
         selected_step,
@@ -435,6 +547,229 @@ def _solve_prepared_step(
     )
     _record_timing(timings, "反力与结果封装", started)
     return result
+
+
+def _validated_prescribed_displacements(
+    boundary: Any,
+    num_dofs: int,
+) -> tuple[tuple[int, ...], np.ndarray]:
+    """Return a sorted factor key and aligned finite prescribed values."""
+
+    normalized: dict[int, float] = {}
+    for raw_dof, raw_value in boundary.prescribed_displacements.items():
+        if isinstance(raw_dof, bool):
+            raise TypeError(
+                "prescribed displacement DOF index must be an integer, "
+                f"got {raw_dof!r}"
+            )
+        try:
+            dof = int(operator.index(raw_dof))
+        except TypeError as exc:
+            raise TypeError(
+                "prescribed displacement DOF index must be an integer, "
+                f"got {raw_dof!r}"
+            ) from exc
+        if dof < 0 or dof >= num_dofs:
+            raise IndexError(
+                f"DOF index {dof} out of bounds [0, {num_dofs})"
+            )
+        if dof in normalized:
+            raise ValueError(
+                f"prescribed displacement repeats DOF index {dof}"
+            )
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(
+                f"prescribed displacement at DOF {dof} must be numeric"
+            ) from exc
+        if not np.isfinite(value):
+            raise ValueError(
+                f"prescribed displacement at DOF {dof} "
+                f"must be finite, got {value!r}"
+            )
+        normalized[dof] = value
+
+    constrained_pattern = tuple(sorted(normalized))
+    constrained_values = np.fromiter(
+        (normalized[dof] for dof in constrained_pattern),
+        dtype=float,
+        count=len(constrained_pattern),
+    )
+    return constrained_pattern, constrained_values
+
+
+def _validated_load_vector(
+    load: Any,
+    num_dofs: int,
+) -> np.ndarray:
+    """Normalize the static load without changing public linear.solve."""
+
+    values = np.asarray(load, dtype=float)
+    if values.ndim == 2 and values.shape[1] == 1:
+        values = values[:, 0]
+    elif values.ndim != 1:
+        raise ValueError(
+            "load must be one-dimensional or a column vector, "
+            f"got shape {values.shape}"
+        )
+    if values.shape[0] != num_dofs:
+        raise ValueError(
+            f"load must have length {num_dofs}, got {values.shape}"
+        )
+    if not np.all(np.isfinite(values)):
+        raise ValueError("load must contain only finite values")
+    return values
+
+
+def _build_reduced_factorization(
+    base_stiffness: Any,
+    constrained_pattern: tuple[int, ...],
+) -> _ReducedFactorization:
+    """Build one diagonally scaled LU for the free-DOF submatrix."""
+
+    num_dofs = base_stiffness.shape[0]
+    constrained_dofs = np.fromiter(
+        constrained_pattern,
+        dtype=np.int64,
+        count=len(constrained_pattern),
+    )
+    free_mask = np.ones(num_dofs, dtype=bool)
+    free_mask[constrained_dofs] = False
+    free_dofs = np.flatnonzero(free_mask).astype(np.int64, copy=False)
+    if free_dofs.size == 0:
+        inverse_scale = np.empty(0, dtype=float)
+        factor = None
+    else:
+        free_stiffness = base_stiffness[free_dofs][:, free_dofs]
+        diagonal = np.abs(
+            np.asarray(free_stiffness.diagonal(), dtype=float)
+        )
+        if (
+            diagonal.size != free_stiffness.shape[0]
+            or not np.all(np.isfinite(diagonal))
+            or np.any(diagonal <= 0.0)
+        ):
+            raise ValueError(
+                "stiffness matrix has a zero or invalid diagonal"
+            )
+        inverse_scale = 1.0 / np.sqrt(diagonal)
+        if not np.all(np.isfinite(inverse_scale)):
+            raise ValueError(
+                "stiffness matrix has an invalid diagonal scaling"
+            )
+        scaling = diags(inverse_scale)
+        scaled = (scaling @ free_stiffness @ scaling).tocsc()
+        try:
+            factor = splu(scaled)
+        except Exception as exc:
+            raise ValueError(
+                "stiffness matrix is singular or under-constrained"
+            ) from exc
+        _validate_factor_pivots(factor, free_stiffness.shape[0])
+
+    for values in (constrained_dofs, free_dofs, inverse_scale):
+        values.flags.writeable = False
+    return _ReducedFactorization(
+        constrained_dofs=constrained_dofs,
+        free_dofs=free_dofs,
+        inverse_scale=inverse_scale,
+        factor=factor,
+    )
+
+
+def _validate_factor_pivots(factor: Any, dimension: int) -> None:
+    """Apply one rank diagnostic to every cached scaled factor."""
+
+    pivots = np.abs(np.asarray(factor.U.diagonal(), dtype=float))
+    tolerance = (
+        np.finfo(float).eps
+        * max(dimension, 1)
+        * max(float(np.max(pivots)), 1.0)
+    )
+    if (
+        not np.all(np.isfinite(pivots))
+        or float(np.min(pivots)) <= tolerance
+    ):
+        raise ValueError("stiffness matrix is numerically rank deficient")
+
+
+def _solve_reduced_system(
+    base_stiffness: Any,
+    load: np.ndarray,
+    factorization: _ReducedFactorization,
+    constrained_values: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Solve the free system and reconstruct the prescribed global U."""
+
+    if constrained_values.shape != factorization.constrained_dofs.shape:
+        raise ValueError(
+            "prescribed displacement values do not match constraint pattern"
+        )
+    displacement = np.zeros(base_stiffness.shape[0], dtype=float)
+    displacement[factorization.constrained_dofs] = constrained_values
+    if factorization.free_dofs.size == 0:
+        return displacement, factorization.free_dofs
+
+    free_load = load[factorization.free_dofs].copy()
+    if factorization.constrained_dofs.size:
+        coupling = base_stiffness[factorization.free_dofs][
+            :,
+            factorization.constrained_dofs,
+        ]
+        free_load -= coupling @ constrained_values
+
+    scaled_load = factorization.inverse_scale * free_load
+    try:
+        reduced_scaled = np.asarray(
+            factorization.factor.solve(scaled_load),
+            dtype=float,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "sparse linear solve failed: "
+            "stiffness matrix is singular or under-constrained."
+        ) from exc
+    free_displacement = (
+        factorization.inverse_scale * reduced_scaled
+    )
+    displacement[factorization.free_dofs] = free_displacement
+    if (
+        displacement.ndim != 1
+        or displacement.shape[0] != load.shape[0]
+        or not np.all(np.isfinite(displacement))
+    ):
+        raise RuntimeError(
+            "sparse linear solve returned invalid or non-finite values"
+        )
+    return displacement, factorization.free_dofs
+
+
+def _validate_free_dof_equilibrium(
+    reactions: np.ndarray,
+    load: np.ndarray,
+    free_dofs: np.ndarray,
+) -> None:
+    """Require reconstructed free DOFs to have negligible reactions."""
+
+    if free_dofs.size == 0:
+        return
+    free_reactions = reactions[free_dofs]
+    residual_norm = float(
+        np.linalg.norm(free_reactions, ord=np.inf)
+    )
+    free_load = load[free_dofs]
+    internal = free_reactions + free_load
+    scale = max(
+        float(np.linalg.norm(internal, ord=np.inf)),
+        float(np.linalg.norm(free_load, ord=np.inf)),
+        1.0,
+    )
+    if residual_norm > 1e-8 * scale:
+        raise RuntimeError(
+            f"sparse linear solve residual {residual_norm:g} "
+            "exceeds tolerance"
+        )
 
 
 def _record_timing(
@@ -482,32 +817,6 @@ def _freeze_base_stiffness(stiffness: Any) -> Any:
     for values in (frozen.data, frozen.indices, frozen.indptr):
         values.flags.writeable = False
     return frozen
-
-
-def _validate_nonsingular_stiffness(stiffness: Any) -> None:
-    """Check scaled sparse-LU pivots without depending on the load vector."""
-    diagonal = np.abs(np.asarray(stiffness.diagonal(), dtype=float))
-    if (
-        diagonal.size != stiffness.shape[0]
-        or not np.all(np.isfinite(diagonal))
-        or np.any(diagonal <= 0.0)
-    ):
-        raise ValueError("stiffness matrix has a zero or invalid diagonal")
-    inverse_scale = 1.0 / np.sqrt(diagonal)
-    scaling = diags(inverse_scale)
-    scaled = (scaling @ stiffness @ scaling).tocsc()
-    factor = splu(scaled)
-    pivots = np.abs(np.asarray(factor.U.diagonal(), dtype=float))
-    tolerance = (
-        np.finfo(float).eps
-        * max(stiffness.shape[0], 1)
-        * max(float(np.max(pivots)), 1.0)
-    )
-    if (
-        not np.all(np.isfinite(pivots))
-        or float(np.min(pivots)) <= tolerance
-    ):
-        raise ValueError("stiffness matrix is numerically rank deficient")
 
 
 def _result_name(

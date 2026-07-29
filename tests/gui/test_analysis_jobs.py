@@ -225,6 +225,7 @@ def test_preflight_and_repeated_runs_assemble_one_artifact_once(
     calls: list[tuple[str, bool]] = []
     original_apply = static_linear.materials.apply_sections
     original_assemble = static_linear.assemble_global_stiffness_sparse
+    original_factor = static_linear.splu
 
     def apply_sections(candidate):
         calls.append(
@@ -244,6 +245,15 @@ def test_preflight_and_repeated_runs_assemble_one_artifact_once(
         )
         return original_assemble(mesh)
 
+    def factor(stiffness):
+        calls.append(
+            (
+                "factor",
+                QThread.currentThread() is window.thread(),
+            )
+        )
+        return original_factor(stiffness)
+
     monkeypatch.setattr(
         static_linear.materials,
         "apply_sections",
@@ -254,6 +264,7 @@ def test_preflight_and_repeated_runs_assemble_one_artifact_once(
         "assemble_global_stiffness_sparse",
         assemble,
     )
+    monkeypatch.setattr(static_linear, "splu", factor)
 
     assert window.check_current_model(show_success=False)
     first = window._submit_job("Job-1", "Static-1")
@@ -266,6 +277,7 @@ def test_preflight_and_repeated_runs_assemble_one_artifact_once(
     assert calls == [
         ("materials", False),
         ("stiffness", False),
+        ("factor", False),
     ]
     previous_artifact = window.document.artifact.artifact_id
     assert window._apply_session_delta(
@@ -281,8 +293,10 @@ def test_preflight_and_repeated_runs_assemble_one_artifact_once(
     assert calls == [
         ("materials", False),
         ("stiffness", False),
+        ("factor", False),
         ("materials", False),
         ("stiffness", False),
+        ("factor", False),
     ]
     assert errors == []
     window.close()
@@ -306,7 +320,9 @@ def test_quick_preflight_defers_prepare_until_first_run_and_then_reuses_it(
         lambda title, message: errors.append((title, message)),
     )
     prepare_threads: list[bool] = []
+    factor_threads: list[bool] = []
     original_prepare = static_linear.prepare
+    original_factor = static_linear.splu
 
     def prepare(*args, **kwargs):
         prepare_threads.append(
@@ -314,15 +330,23 @@ def test_quick_preflight_defers_prepare_until_first_run_and_then_reuses_it(
         )
         return original_prepare(*args, **kwargs)
 
+    def factor(stiffness):
+        factor_threads.append(
+            QThread.currentThread() is window.thread()
+        )
+        return original_factor(stiffness)
+
     monkeypatch.setattr(
         main_window_module,
         "should_run_numerical_model_check",
         lambda _model: False,
     )
     monkeypatch.setattr(static_linear, "prepare", prepare)
+    monkeypatch.setattr(static_linear, "splu", factor)
 
     assert window.check_current_model(show_success=False)
     assert prepare_threads == []
+    assert factor_threads == []
     first = window._submit_job("Job-1", "Static-1")
     assert first is not None
     _wait_for_task(window)
@@ -331,6 +355,7 @@ def test_quick_preflight_defers_prepare_until_first_run_and_then_reuses_it(
     _wait_for_task(window)
 
     assert prepare_threads == [False]
+    assert factor_threads == [False]
     assert errors == []
     window.close()
 
