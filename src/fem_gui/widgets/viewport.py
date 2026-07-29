@@ -725,6 +725,17 @@ def _require_result_render_payload(
     return validate_result_render_payload(payload)
 
 
+def _reuse_result_render_dataset(
+    current: ResultRenderPayload,
+    candidate: ResultRenderPayload,
+) -> tuple[ResultRenderPayload, bool]:
+    from ..visualization.result_renderer import (
+        reuse_result_render_dataset,
+    )
+
+    return reuse_result_render_dataset(current, candidate)
+
+
 def _point_to_segment_distance(
     point: np.ndarray,
     start: np.ndarray,
@@ -844,6 +855,8 @@ class FEMViewport(QWidget):
         self._pick_grid = None
         self._pick_locators: dict[int, tuple[int, Any]] = {}
         self._result_render_payload: ResultRenderPayload | None = None
+        self._scalar_reuse_pending = False
+        self._scalar_reuse_display: DisplayState | None = None
         # Runtime revalidation follows VTK Modified notifications. Full
         # representation validation still runs unconditionally on install/render.
         self._result_render_validated_mtime: int | None = None
@@ -1351,6 +1364,8 @@ class FEMViewport(QWidget):
         self._pick_grid = None
         self._pick_locators.clear()
         self._result_render_payload = None
+        self._scalar_reuse_pending = False
+        self._scalar_reuse_display = None
         self._result_render_validated_mtime = None
         self._selected_kind = None
         self._selected_id = None
@@ -1411,6 +1426,8 @@ class FEMViewport(QWidget):
         self._pick_grid = None
         self._pick_locators.clear()
         self._result_render_payload = None
+        self._scalar_reuse_pending = False
+        self._scalar_reuse_display = None
         self._result_render_validated_mtime = None
         self._display = DisplayState()
         self._overlay_undeformed = False
@@ -3060,7 +3077,24 @@ class FEMViewport(QWidget):
             raise ValueError(
                 "payload artifact provenance does not match the viewport model"
             )
+        current = self._result_render_payload
+        can_reuse = (
+            current is not None
+            and self._result_grid is current.dataset
+            and "result" in self._actors
+        )
+        if can_reuse:
+            checked, reused = _reuse_result_render_dataset(
+                current,
+                checked,
+            )
+        else:
+            reused = False
         self._result_render_payload = checked
+        self._scalar_reuse_pending = reused
+        self._scalar_reuse_display = (
+            self._display if reused else None
+        )
         self._result_render_validated_mtime = int(
             checked.dataset.GetMTime()
         )
@@ -3118,7 +3152,11 @@ class FEMViewport(QWidget):
         """
 
         payload = self._result_render_payload
-        if payload is None or self._result_grid is not payload.dataset:
+        if (
+            payload is None
+            or self._scalar_reuse_pending
+            or self._result_grid is not payload.dataset
+        ):
             return None
         modified = int(payload.dataset.GetMTime())
         if self._result_render_validated_mtime != modified:
@@ -4865,6 +4903,16 @@ class FEMViewport(QWidget):
             self._render()
 
     def _update_result_layer(self) -> None:
+        if (
+            self._scalar_reuse_pending
+            and self._scalar_reuse_display == self._display
+            and self._update_reused_scalar_layer()
+        ):
+            self._scalar_reuse_pending = False
+            self._scalar_reuse_display = None
+            return
+        self._scalar_reuse_pending = False
+        self._scalar_reuse_display = None
         self._remove_actor("result")
         self._remove_actor("result_edges")
         self._remove_actor("extrema")
@@ -4969,6 +5017,77 @@ class FEMViewport(QWidget):
         self._refresh_undeformed_overlay()
         self._restore_selection()
         self._render()
+
+    def _update_reused_scalar_layer(self) -> bool:
+        payload = self._result_render_payload
+        actor = self._actors.get("result")
+        mapper = None if actor is None else getattr(actor, "mapper", None)
+        if (
+            payload is None
+            or self._plotter is None
+            or self._result_grid is not payload.dataset
+            or mapper is None
+            or not self._display.contour_enabled
+        ):
+            return False
+
+        checked = _require_result_render_payload(payload)
+        mapper.array_name = checked.scalar_name
+        mapper.scalar_visibility = True
+        mapper.scalar_range = self._contour_data_range(checked)
+        mapper.Update()
+        self._remove_scalar_bars()
+        if self._contour["legend"]:
+            self._plotter.add_scalar_bar(
+                mapper=mapper,
+                **self._contour_bar_args(checked),
+            )
+        self._remove_actor("extrema")
+        if (
+            self._contour["show_minimum"]
+            or self._contour["show_maximum"]
+        ):
+            self._add_result_render_payload_extrema_labels(checked)
+        self._result_render_validated_mtime = int(
+            checked.dataset.GetMTime()
+        )
+        self._render()
+        return True
+
+    def _contour_data_range(
+        self,
+        payload: ResultRenderPayload,
+    ) -> tuple[float, float]:
+        if self._contour["manual"]:
+            return (
+                float(self._contour["minimum"]),
+                float(self._contour["maximum"]),
+            )
+        preference = (
+            "point"
+            if payload.topology.value_layout is ResultValueLayout.POINT
+            else "cell"
+        )
+        minimum, maximum = payload.dataset.get_data_range(
+            payload.scalar_name,
+            preference=preference,
+        )
+        return float(minimum), float(maximum)
+
+    def _contour_bar_args(
+        self,
+        payload: ResultRenderPayload,
+    ) -> dict[str, Any]:
+        selection = payload.topology.selection
+        variable = selection.field_key.request.field_id.variable.value
+        return {
+            "title": f"{variable}, {selection.component}",
+            "vertical": self._contour["orientation"] == "vertical",
+            "n_labels": int(self._contour["levels"]) + 1,
+            "fmt": self._scalar_format(),
+            "color": self._background_settings.foreground_color,
+            "outline": True,
+        }
 
     def _add_result_edges_layer(self, dataset: Any) -> Any | None:
         edge_mode = str(self._contour["edge_mode"])

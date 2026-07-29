@@ -136,11 +136,113 @@ def validate_result_render_payload(
     scalar_values = np.asarray(values)
     if scalar_values.shape != (expected_values,):
         raise ValueError("payload scalar must be one-dimensional")
-    if dataset.active_scalars_name != scalar_name:
-        raise ValueError("payload scalar must be the active dataset scalar")
     if not np.array_equal(scalar_values, topology.values):
         raise ValueError("payload scalar values must exactly match topology values")
     return payload
+
+
+def reuse_result_render_dataset(
+    current: ResultRenderPayload,
+    candidate: ResultRenderPayload,
+) -> tuple[ResultRenderPayload, bool]:
+    """Rebind a component-only payload to the currently rendered dataset."""
+
+    checked_current = validate_result_render_payload(current)
+    checked_candidate = validate_result_render_payload(candidate)
+    if not _has_reusable_geometry(checked_current, checked_candidate):
+        return checked_candidate, False
+
+    topology = checked_candidate.topology
+    dataset = checked_current.dataset
+    if checked_candidate.dataset is dataset:
+        dataset.set_active_scalars(
+            checked_candidate.scalar_name,
+            preference=(
+                "point"
+                if topology.value_layout is ResultValueLayout.POINT
+                else "cell"
+            ),
+        )
+        return checked_candidate, True
+    source_values = (
+        checked_candidate.dataset.point_data[checked_candidate.scalar_name]
+        if topology.value_layout is ResultValueLayout.POINT
+        else checked_candidate.dataset.cell_data[checked_candidate.scalar_name]
+    )
+    target = (
+        dataset.point_data
+        if topology.value_layout is ResultValueLayout.POINT
+        else dataset.cell_data
+    )
+    scalar_name = _component_scalar_name(checked_candidate)
+    if scalar_name in target:
+        if not np.array_equal(np.asarray(target[scalar_name]), source_values):
+            return checked_candidate, False
+    else:
+        target.set_array(
+            source_values,
+            scalar_name,
+            deep_copy=True,
+        )
+    dataset.set_active_scalars(
+        scalar_name,
+        preference=(
+            "point"
+            if topology.value_layout is ResultValueLayout.POINT
+            else "cell"
+        ),
+    )
+    return (
+        ResultRenderPayload(
+            topology=topology,
+            dataset=dataset,
+            scalar_name=scalar_name,
+        ),
+        True,
+    )
+
+
+def _has_reusable_geometry(
+    current: ResultRenderPayload,
+    candidate: ResultRenderPayload,
+) -> bool:
+    current_topology = current.topology
+    candidate_topology = candidate.topology
+    return (
+        current_topology.source == candidate_topology.source
+        and current_topology.materialization_generation
+        == candidate_topology.materialization_generation
+        and current_topology.selection.field_key
+        == candidate_topology.selection.field_key
+        and current_topology.deformation_scale
+        == candidate_topology.deformation_scale
+        and current_topology.value_layout is candidate_topology.value_layout
+        and current_topology.cells == candidate_topology.cells
+        and current_topology.cell_kinds == candidate_topology.cell_kinds
+        and current_topology.canonical_element_types
+        == candidate_topology.canonical_element_types
+        and current_topology.point_locations
+        == candidate_topology.point_locations
+        and current_topology.cell_locations
+        == candidate_topology.cell_locations
+        and np.array_equal(
+            np.asarray(current.dataset.points),
+            np.asarray(candidate.dataset.points),
+        )
+        and np.array_equal(
+            np.asarray(current.dataset.cells),
+            np.asarray(candidate.dataset.cells),
+        )
+        and np.array_equal(
+            np.asarray(current.dataset.celltypes),
+            np.asarray(candidate.dataset.celltypes),
+        )
+    )
+
+
+def _component_scalar_name(payload: ResultRenderPayload) -> str:
+    component = payload.topology.selection.component
+    return f"{RESULT_SCALAR_NAME}:{component}"
 
 
 def _flat_cell_array(topology: ResultFieldTopology) -> np.ndarray:
@@ -182,5 +284,6 @@ __all__ = [
     "RESULT_SCALAR_NAME",
     "ResultRenderPayload",
     "build_result_render_payload",
+    "reuse_result_render_dataset",
     "validate_result_render_payload",
 ]
