@@ -16,8 +16,13 @@ from PySide6.QtWidgets import QApplication
 import fem.application.runs as runs_module
 from fem.application.results import (
     FieldMaterializationKey,
+    FieldPosition,
+    FieldRequest,
     FieldState,
+    ResultFieldId,
     ResultProvider,
+    ResultSourceKey,
+    ResultVariable,
     ScalarFieldSelection,
     build_solve_result_bundle,
     restore_result_provider,
@@ -520,6 +525,77 @@ def test_ready_activation_failure_restores_the_installed_tree_selection(
         window.result_tree.currentItem().data(0, ROLE_SELECTION)
         == current
     )
+
+
+def test_ready_activation_renders_once_when_contour_is_already_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _application()
+    window = FEMMainWindow()
+    selection = ScalarFieldSelection(
+        FieldMaterializationKey(
+            FieldRequest(
+                ResultFieldId(
+                    ResultVariable.U,
+                    FieldPosition.NODE,
+                )
+            ),
+            recovery_contract=1,
+        ),
+        "U1",
+    )
+    source = ResultSourceKey(
+        result_id="result-1",
+        session_id="session-1",
+        artifact_id="artifact-1",
+        model_revision=1,
+        step_name="Step-1",
+        run_id="run-1",
+    )
+    window._display = replace(
+        window._display,
+        contour_enabled=True,
+    )
+    display_calls: list[tuple[str, bool]] = []
+    original_set_display = window.viewport.set_display
+
+    def record_set_display(
+        shape_mode: str,
+        contour_enabled: bool,
+    ) -> None:
+        display_calls.append((shape_mode, contour_enabled))
+        original_set_display(shape_mode, contour_enabled)
+
+    def select_result_field(
+        requested: ScalarFieldSelection,
+    ) -> GuiCommandReceipt:
+        assert requested == selection
+        window.viewport.set_display(window._display.shape_mode, True)
+        return GuiCommandReceipt.accepted(
+            1,
+            outcome=GuiCommandOutcome(
+                source=source,
+                materialization_generation=0,
+                selection=selection,
+                record_count=1,
+            ),
+        )
+
+    monkeypatch.setattr(
+        window.viewport,
+        "set_display",
+        record_set_display,
+    )
+    monkeypatch.setattr(
+        window,
+        "select_result_field",
+        select_result_field,
+    )
+
+    window._activate_result_selection(selection)
+
+    assert display_calls == [(window._display.shape_mode, True)]
+    window.close()
 
 
 def test_first_provider_projection_failure_restores_the_model_only_scene(

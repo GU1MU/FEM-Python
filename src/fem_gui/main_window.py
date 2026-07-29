@@ -9760,15 +9760,16 @@ class FEMMainWindow(QMainWindow):
                 4000,
             )
             return
-        self._display = replace(
-            self._display,
-            contour_enabled=True,
-        )
-        self.actions["contour"].setChecked(True)
-        self.viewport.set_display(
-            self._display.shape_mode,
-            True,
-        )
+        if not self._display.contour_enabled:
+            self._display = replace(
+                self._display,
+                contour_enabled=True,
+            )
+            self.actions["contour"].setChecked(True)
+            self.viewport.set_display(
+                self._display.shape_mode,
+                True,
+            )
         self.status_panel.set_result(self._result_status_text())
 
     def _finish_activated_result_selection(
@@ -9792,15 +9793,16 @@ class FEMMainWindow(QMainWindow):
             or self.result_selection != selection
         ):
             return
-        self._display = replace(
-            self._display,
-            contour_enabled=True,
-        )
-        self.actions["contour"].setChecked(True)
-        self.viewport.set_display(
-            self._display.shape_mode,
-            True,
-        )
+        if not self._display.contour_enabled:
+            self._display = replace(
+                self._display,
+                contour_enabled=True,
+            )
+            self.actions["contour"].setChecked(True)
+            self.viewport.set_display(
+                self._display.shape_mode,
+                True,
+            )
         self.status_panel.set_result(self._result_status_text())
 
     def set_shape_mode(self, shape_mode: str) -> None:
