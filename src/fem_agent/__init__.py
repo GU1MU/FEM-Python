@@ -14,6 +14,14 @@ from .authoring import (
     RequirementReview,
     UnitContextSummary,
 )
+from .analysis_authoring import (
+    AnalysisAuthoringError,
+    ConfirmedDisplacement,
+    ConfirmedLoad,
+    ConfirmedResultRequest,
+    LinearStaticAnalysis,
+    create_analysis_definition_change,
+)
 from .geometry_authoring import (
     GeometryDraft,
     StaticGeometryPreview,
@@ -45,9 +53,14 @@ __all__ = [
     "AUTHORING_SCHEMA_VERSION",
     "AgentDraft",
     "AgentProposal",
+    "AnalysisAuthoringError",
     "AuthoringContext",
+    "ConfirmedDisplacement",
+    "ConfirmedLoad",
+    "ConfirmedResultRequest",
     "FakeAuthoringPort",
     "LocalModelBinding",
+    "LinearStaticAnalysis",
     "NameAllocator",
     "NamePolicy",
     "MESH_INTENT_SCHEMA_VERSION",
@@ -64,6 +77,7 @@ __all__ = [
     "box_geometry",
     "build_eccentric_plate_scopes",
     "create_scope_definition_change",
+    "create_analysis_definition_change",
     "create_mesh_proposal",
     "create_geometry_proposal",
     "cylinder_geometry",

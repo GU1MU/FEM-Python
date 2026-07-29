@@ -2947,10 +2947,12 @@ def encode_boundary_field(
             "last_component",
             "value",
             "target_kind",
+            "name",
         },
         path,
         policy,
     )
+    _field_reject_named_analysis_object(boundary, path, policy)
     target_kind = _field_string(
         boundary.target_kind,
         f"{path}.target_kind",
@@ -3003,10 +3005,11 @@ def encode_cload_field(
     _field_exact_dataclass(
         load,
         NodalLoad,
-        {"target", "component", "value"},
+        {"target", "component", "value", "name"},
         path,
         policy,
     )
+    _field_reject_named_analysis_object(load, path, policy)
     return {
         "target": _field_target(
             load.target,
@@ -3038,10 +3041,11 @@ def encode_edge_load_field(
     _field_exact_dataclass(
         load,
         EdgeLoad,
-        {"edge", "vector", "magnitude", "load_type"},
+        {"edge", "vector", "magnitude", "load_type", "name"},
         path,
         policy,
     )
+    _field_reject_named_analysis_object(load, path, policy)
     return {
         "edge": _field_string(
             load.edge,
@@ -3080,10 +3084,11 @@ def encode_surface_load_field(
     _field_exact_dataclass(
         load,
         SurfaceLoad,
-        {"surface", "vector", "magnitude", "load_type"},
+        {"surface", "vector", "magnitude", "load_type", "name"},
         path,
         policy,
     )
+    _field_reject_named_analysis_object(load, path, policy)
     return {
         "surface": _field_string(
             load.surface,
@@ -3122,10 +3127,11 @@ def encode_line_load_field(
     _field_exact_dataclass(
         load,
         LineLoad,
-        {"target", "vector", "coordinate_system"},
+        {"target", "vector", "coordinate_system", "name"},
         path,
         policy,
     )
+    _field_reject_named_analysis_object(load, path, policy)
     coordinate_system = _field_string(
         load.coordinate_system,
         f"{path}.coordinate_system",
@@ -3160,10 +3166,11 @@ def encode_body_load_field(
     _field_exact_dataclass(
         load,
         BodyForce,
-        {"target", "vector"},
+        {"target", "vector", "name"},
         path,
         policy,
     )
+    _field_reject_named_analysis_object(load, path, policy)
     return {
         "target": _field_target(
             load.target,
@@ -3188,10 +3195,11 @@ def encode_gravity_load_field(
     _field_exact_dataclass(
         load,
         GravityLoad,
-        {"acceleration", "target"},
+        {"acceleration", "target", "name"},
         path,
         policy,
     )
+    _field_reject_named_analysis_object(load, path, policy)
     return {
         "acceleration": _field_encode_number_array(
             load.acceleration,
@@ -3220,10 +3228,18 @@ def encode_output_field(
     _field_exact_dataclass(
         output,
         OutputRequest,
-        {"kind", "target", "variables", "metadata", "source_evidence"},
+        {
+            "kind",
+            "target",
+            "variables",
+            "metadata",
+            "source_evidence",
+            "name",
+        },
         path,
         policy,
     )
+    _field_reject_named_analysis_object(output, path, policy)
     if output.source_evidence is not None:
         raise policy.encode_error(
             f"{path}.source_evidence 不能由 {policy.version_label} 无损表示"
@@ -3453,6 +3469,17 @@ def _field_construct(
         return constructor(*args, **kwargs)
     except (TypeError, ValueError, OverflowError) as error:
         raise policy.decode_error(f"{path} 无效：{error}") from error
+
+
+def _field_reject_named_analysis_object(
+    value: Any,
+    path: str,
+    policy: ProjectFieldCodecPolicy,
+) -> None:
+    if getattr(value, "name", None) is not None:
+        raise policy.encode_error(
+            f"{path}.name 无法由 {policy.version_label} 无损表示"
+        )
 
 
 def _field_exact_dataclass(

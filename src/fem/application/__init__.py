@@ -7,6 +7,14 @@ from .beam_frames import (
     EffectiveBeamFrame,
     resolve_effective_beam_frames,
 )
+from .analysis_identity import (
+    ANALYSIS_OBJECT_COLLECTIONS,
+    analysis_object_namespace,
+    compatibility_analysis_name,
+    validate_analysis_object_names,
+    with_compatibility_analysis_names,
+    without_analysis_object_names,
+)
 from .changes import ArtifactKind, ChangeKind, SessionDelta, TransitionEffect
 from .commands import (
     DefinitionEditBatch,
@@ -162,6 +170,7 @@ from .validation import ValidationRecord, ValidationStamp
 
 __all__ = [
     "AnalysisRun",
+    "ANALYSIS_OBJECT_COLLECTIONS",
     "ArtifactKind",
     "AuthoringCapability",
     "AuthoringStatus",
@@ -245,6 +254,8 @@ __all__ = [
     "ValidationTaskSnapshot",
     "analysis_step_has_native_region_target",
     "analysis_steps_have_native_region_targets",
+    "analysis_object_namespace",
+    "compatibility_analysis_name",
     "compile_model_definitions",
     "compiled_model_snapshot",
     "describe_model_capabilities",
@@ -285,4 +296,7 @@ __all__ = [
     "validate_logical_references",
     "validate_native_authoring_context",
     "validate_native_parts",
+    "validate_analysis_object_names",
+    "with_compatibility_analysis_names",
+    "without_analysis_object_names",
 ]

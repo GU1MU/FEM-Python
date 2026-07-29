@@ -132,6 +132,7 @@ class DisplacementConstraint:
     last_component: int
     value: float = 0.0
     target_kind: str = "node_set"
+    name: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "first_component", int(self.first_component))
@@ -149,6 +150,7 @@ class DisplacementConstraint:
                 "target_kind='node_set'"
             )
         object.__setattr__(self, "target_kind", target_kind)
+        object.__setattr__(self, "name", _optional_identity_name(self.name))
 
 
 @dataclass(frozen=True)
@@ -157,10 +159,12 @@ class NodalLoad:
     target: str | int
     component: int
     value: float
+    name: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "component", int(self.component))
         object.__setattr__(self, "value", float(self.value))
+        object.__setattr__(self, "name", _optional_identity_name(self.name))
 
 
 @dataclass(frozen=True)
@@ -170,12 +174,14 @@ class SurfaceLoad:
     vector: Sequence[float] = ()
     magnitude: float | None = None
     load_type: str = "traction"
+    name: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "vector", tuple(float(value) for value in self.vector))
         if self.magnitude is not None:
             object.__setattr__(self, "magnitude", float(self.magnitude))
         object.__setattr__(self, "load_type", str(self.load_type).lower())
+        object.__setattr__(self, "name", _optional_identity_name(self.name))
 
 
 @dataclass(frozen=True)
@@ -185,6 +191,7 @@ class EdgeLoad:
     vector: Sequence[float] = ()
     magnitude: float | None = None
     load_type: str = "traction"
+    name: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "edge", str(self.edge))
@@ -192,6 +199,7 @@ class EdgeLoad:
         if self.magnitude is not None:
             object.__setattr__(self, "magnitude", float(self.magnitude))
         object.__setattr__(self, "load_type", str(self.load_type).lower())
+        object.__setattr__(self, "name", _optional_identity_name(self.name))
 
 
 @dataclass(frozen=True)
@@ -200,10 +208,12 @@ class LineLoad:
     target: str | int
     vector: Sequence[float]
     coordinate_system: str = "global"
+    name: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "vector", tuple(float(value) for value in self.vector))
         object.__setattr__(self, "coordinate_system", str(self.coordinate_system))
+        object.__setattr__(self, "name", _optional_identity_name(self.name))
 
 
 @dataclass(frozen=True)
@@ -211,6 +221,7 @@ class BodyForce:
     """Constant force per unit volume applied to elements or an element set."""
     target: str | int
     vector: Sequence[float]
+    name: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -218,6 +229,7 @@ class BodyForce:
             "vector",
             tuple(float(value) for value in self.vector),
         )
+        object.__setattr__(self, "name", _optional_identity_name(self.name))
 
 
 @dataclass(frozen=True)
@@ -225,9 +237,11 @@ class GravityLoad:
     """Gravity acceleration applied globally or to selected elements."""
     acceleration: Sequence[float]
     target: str | int | None = None
+    name: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "acceleration", tuple(self.acceleration))
+        object.__setattr__(self, "name", _optional_identity_name(self.name))
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,6 +303,7 @@ class OutputRequest:
     variables: tuple[str, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
     source_evidence: OutputSourceEvidence | None = None
+    name: str | None = None
 
     def __post_init__(self) -> None:
         kind = _exact_nonblank_string(self.kind, name="kind")
@@ -305,6 +320,7 @@ class OutputRequest:
         object.__setattr__(self, "target", target.lower())
         object.__setattr__(self, "variables", variables)
         object.__setattr__(self, "metadata", metadata)
+        object.__setattr__(self, "name", _optional_identity_name(self.name))
 
 
 def _exact_nonblank_string(value: Any, *, name: str) -> str:
@@ -313,6 +329,12 @@ def _exact_nonblank_string(value: Any, *, name: str) -> str:
     if not value.strip():
         raise ValueError(f"{name} must not be blank")
     return value
+
+
+def _optional_identity_name(value: Any) -> str | None:
+    if value is None:
+        return None
+    return _exact_nonblank_string(value, name="name")
 
 
 def _freeze_output_variables(value: Any) -> tuple[str, ...]:

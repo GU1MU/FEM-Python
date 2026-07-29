@@ -353,6 +353,32 @@ def _with_required_displacement_output(
     return (deepcopy(required), *requests)
 
 
+def _resolve_analysis_object_key(
+    steps: Sequence[AnalysisStep],
+    collection_name: str,
+    key: object,
+) -> tuple[int, int] | None:
+    """Resolve legacy indices or stable `(step_name, object_name)` identity."""
+
+    if not isinstance(key, (tuple, list)) or len(key) != 2:
+        return None
+    step_key, item_key = key
+    if type(step_key) is str and type(item_key) is str:
+        for step_index, step in enumerate(steps):
+            if step.name != step_key:
+                continue
+            for item_index, item in enumerate(
+                tuple(getattr(step, collection_name))
+            ):
+                if getattr(item, "name", None) == item_key:
+                    return step_index, item_index
+        return None
+    try:
+        return int(step_key), int(item_key)
+    except (TypeError, ValueError):
+        return None
+
+
 def initial_display_policy(
     element_count: int,
     node_count: int,
@@ -8019,6 +8045,7 @@ class FEMMainWindow(QMainWindow):
             "edge_load": "edge_load",
             "surface_load": "surface_load",
             "line_load": "line_load",
+            "body_load": "body_load",
             "gravity_load": "gravity_load",
             "output": "output",
         }.get(kind)
@@ -8028,11 +8055,28 @@ class FEMMainWindow(QMainWindow):
         if kind == "step":
             definition_key = (manager_kind, int(key), None)
         else:
-            step_index, item_index = key
+            collection_name = {
+                "boundary": "boundaries",
+                "cload": "cloads",
+                "edge_load": "edge_loads",
+                "surface_load": "surface_loads",
+                "line_load": "line_loads",
+                "body_load": "body_loads",
+                "gravity_load": "gravity_loads",
+                "output": "outputs",
+            }[kind]
+            resolved = _resolve_analysis_object_key(
+                tuple(self.document.steps),
+                collection_name,
+                key,
+            )
+            if resolved is None:
+                return
+            step_index, item_index = resolved
             definition_key = (
                 manager_kind,
-                int(step_index),
-                int(item_index),
+                step_index,
+                item_index,
             )
         self._edit_analysis_definition_key(definition_key)
 
@@ -8096,12 +8140,14 @@ class FEMMainWindow(QMainWindow):
         }.get(kind)
         if collection_name is None:
             return
-        if not isinstance(key, (tuple, list)) or len(key) != 2:
+        resolved = _resolve_analysis_object_key(
+            tuple(self.document.steps),
+            collection_name,
+            key,
+        )
+        if resolved is None:
             return
-        try:
-            step_index, item_index = (int(value) for value in key)
-        except (TypeError, ValueError):
-            return
+        step_index, item_index = resolved
         definitions = list(deepcopy(self.document.steps))
         if not 0 <= step_index < len(definitions):
             return
@@ -10849,6 +10895,7 @@ class FEMMainWindow(QMainWindow):
             "edge_load",
             "surface_load",
             "line_load",
+            "body_load",
             "gravity_load",
             "output",
         }:

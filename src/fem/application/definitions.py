@@ -24,6 +24,7 @@ from .diagnostics import (
     PreflightSeverity,
     PreflightStage,
 )
+from .analysis_identity import validate_analysis_object_names
 
 
 from .native_part import NativePart
@@ -480,6 +481,7 @@ def _normalize_model_definitions(
     _validate_unique_names(owned_materials, "material")
     _validate_unique_names(owned_sections, "section")
     _validate_unique_names(owned_steps, "analysis step")
+    validate_analysis_object_names(owned_steps, require_all=False)
     _validate_definition_links(
         owned_materials,
         owned_sections,

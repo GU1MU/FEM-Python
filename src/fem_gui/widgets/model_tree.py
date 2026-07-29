@@ -372,7 +372,18 @@ class ModelTree(QTreeWidget):
                 first_step_item = step_item
             bc_root = self._category(step_item, "边界条件", len(step.boundaries))
             for bc_index, boundary in enumerate(step.boundaries):
-                bc_root.addChild(self._item(f"位移约束 {bc_index + 1}", "boundary", (index, bc_index)))
+                identity = getattr(boundary, "name", None)
+                bc_root.addChild(
+                    self._item(
+                        identity or f"位移约束 {bc_index + 1}",
+                        "boundary",
+                        (
+                            (step.name, identity)
+                            if identity is not None
+                            else (index, bc_index)
+                        ),
+                    )
+                )
             load_count = (
                 len(step.cloads)
                 + len(step.surface_loads)
@@ -382,39 +393,74 @@ class ModelTree(QTreeWidget):
                 + len(getattr(step, "gravity_loads", ()))
             )
             load_root = self._category(step_item, "载荷", load_count)
-            for load_index, _load in enumerate(step.cloads):
-                load_root.addChild(self._item(f"节点力 {load_index + 1}", "cload", (index, load_index)))
-            for load_index, _load in enumerate(step.surface_loads):
-                load_root.addChild(self._item(f"面力 {load_index + 1}", "surface_load", (index, load_index)))
-            for load_index, _load in enumerate(step.edge_loads):
-                load_root.addChild(self._item(f"边力 {load_index + 1}", "edge_load", (index, load_index)))
-            for load_index, _load in enumerate(step.line_loads):
+            for load_index, load in enumerate(step.cloads):
+                identity = getattr(load, "name", None)
                 load_root.addChild(self._item(
-                    f"边力 {load_index + 1}",
-                    "line_load",
-                    (index, load_index),
+                    identity or f"节点力 {load_index + 1}",
+                    "cload",
+                    (step.name, identity) if identity is not None else (index, load_index),
                 ))
-            for load_index, _load in enumerate(
+            for load_index, load in enumerate(step.surface_loads):
+                identity = getattr(load, "name", None)
+                load_root.addChild(self._item(
+                    identity or f"面力 {load_index + 1}",
+                    "surface_load",
+                    (step.name, identity) if identity is not None else (index, load_index),
+                ))
+            for load_index, load in enumerate(step.edge_loads):
+                identity = getattr(load, "name", None)
+                load_root.addChild(self._item(
+                    identity or f"边力 {load_index + 1}",
+                    "edge_load",
+                    (step.name, identity) if identity is not None else (index, load_index),
+                ))
+            for load_index, load in enumerate(step.line_loads):
+                identity = getattr(load, "name", None)
+                load_root.addChild(self._item(
+                    identity or f"边力 {load_index + 1}",
+                    "line_load",
+                    (
+                        (step.name, identity)
+                        if identity is not None
+                        else (index, load_index)
+                    ),
+                ))
+            for load_index, load in enumerate(
                 getattr(step, "body_loads", ())
             ):
+                identity = getattr(load, "name", None)
                 load_root.addChild(self._item(
-                    f"体力 {load_index + 1}",
+                    identity or f"体力 {load_index + 1}",
                     "body_load",
-                    (index, load_index),
+                    (
+                        (step.name, identity)
+                        if identity is not None
+                        else (index, load_index)
+                    ),
                 ))
-            for load_index, _load in enumerate(
+            for load_index, load in enumerate(
                 getattr(step, "gravity_loads", ())
             ):
+                identity = getattr(load, "name", None)
                 load_root.addChild(self._item(
-                    f"重力 {load_index + 1}",
+                    identity or f"重力 {load_index + 1}",
                     "gravity_load",
-                    (index, load_index),
+                    (
+                        (step.name, identity)
+                        if identity is not None
+                        else (index, load_index)
+                    ),
                 ))
             output_root = self._category(step_item, "输出请求", len(step.outputs))
             for output_index, output in enumerate(step.outputs):
                 kind_label = {"field": "字段输出", "history": "历史输出"}.get(output.kind, "输出")
                 target_label = {"node": "节点", "element": "单元"}.get(output.target, output.target)
-                output_root.addChild(self._item(f"{kind_label}：{target_label}", "output", (index, output_index)))
+                identity = getattr(output, "name", None)
+                output_root.addChild(self._item(
+                    identity or f"{kind_label}：{target_label}",
+                    "output",
+                    (step.name, identity) if identity is not None else (index, output_index),
+                ))
             steps.addChild(step_item)
         self.addTopLevelItem(root)
         root.setExpanded(True)

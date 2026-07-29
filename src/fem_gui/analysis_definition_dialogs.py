@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from copy import deepcopy
+from dataclasses import replace
 from math import isfinite
 
 from PySide6.QtCore import Qt
@@ -1250,7 +1251,11 @@ class AnalysisDefinitionManagerDialog(QDialog):
                     (
                         "位移边界",
                         step.name,
-                        str(boundary.target),
+                        (
+                            f"{boundary.name} · {boundary.target}"
+                            if boundary.name is not None
+                            else str(boundary.target)
+                        ),
                         self._boundary_text(boundary),
                     ),
                     ("boundary", step_index, item_index),
@@ -1260,7 +1265,11 @@ class AnalysisDefinitionManagerDialog(QDialog):
                     (
                         "节点力",
                         step.name,
-                        str(load.target),
+                        (
+                            f"{load.name} · {load.target}"
+                            if load.name is not None
+                            else str(load.target)
+                        ),
                         f"{self._force_label(load.component)} = {load.value:g}",
                     ),
                     ("node_load", step_index, item_index),
@@ -1270,7 +1279,11 @@ class AnalysisDefinitionManagerDialog(QDialog):
                     (
                         "边力",
                         step.name,
-                        load.edge,
+                        (
+                            f"{load.name} · {load.edge}"
+                            if load.name is not None
+                            else load.edge
+                        ),
                         self._distributed_text(load),
                     ),
                     ("edge_load", step_index, item_index),
@@ -1280,7 +1293,11 @@ class AnalysisDefinitionManagerDialog(QDialog):
                     (
                         "面力",
                         step.name,
-                        load.surface,
+                        (
+                            f"{load.name} · {load.surface}"
+                            if load.name is not None
+                            else load.surface
+                        ),
                         self._distributed_text(load),
                     ),
                     ("surface_load", step_index, item_index),
@@ -1290,7 +1307,11 @@ class AnalysisDefinitionManagerDialog(QDialog):
                     (
                         "边力",
                         step.name,
-                        str(load.target),
+                        (
+                            f"{load.name} · {load.target}"
+                            if load.name is not None
+                            else str(load.target)
+                        ),
                         self._line_load_text(load),
                     ),
                     ("line_load", step_index, item_index),
@@ -1300,7 +1321,11 @@ class AnalysisDefinitionManagerDialog(QDialog):
                     (
                         "体力",
                         step.name,
-                        str(load.target),
+                        (
+                            f"{load.name} · {load.target}"
+                            if load.name is not None
+                            else str(load.target)
+                        ),
                         self._body_force_text(load),
                     ),
                     ("body_load", step_index, item_index),
@@ -1311,6 +1336,13 @@ class AnalysisDefinitionManagerDialog(QDialog):
                         "重力",
                         step.name,
                         (
+                            "整个模型"
+                            if load.target is None
+                            else str(load.target)
+                        )
+                        if load.name is None
+                        else f"{load.name} · "
+                        + (
                             "整个模型"
                             if load.target is None
                             else str(load.target)
@@ -1327,7 +1359,12 @@ class AnalysisDefinitionManagerDialog(QDialog):
                             "history": "历史输出",
                         }.get(output.kind, "输出请求"),
                         step.name,
-                        {
+                        (
+                            f"{output.name} · "
+                            if output.name is not None
+                            else ""
+                        )
+                        + {
                             "node": "节点",
                             "element": "单元",
                             "preselect": "INP 预选",
@@ -1541,6 +1578,18 @@ class AnalysisDefinitionManagerDialog(QDialog):
             except ValueError as error:
                 QMessageBox.warning(self, "分析定义", str(error))
                 return
+            if current.name is not None:
+                values = tuple(
+                    replace(
+                        value,
+                        name=(
+                            current.name
+                            if index == 0
+                            else f"{current.name}-{index + 1}"
+                        ),
+                    )
+                    for index, value in enumerate(values)
+                )
             step.boundaries = tuple(
                 item
                 for index, item in enumerate(step.boundaries)
@@ -1640,6 +1689,8 @@ class AnalysisDefinitionManagerDialog(QDialog):
             except ValueError as error:
                 QMessageBox.warning(self, "分析定义", str(error))
                 return
+            if getattr(current, "name", None) is not None:
+                value = replace(value, name=current.name)
             if (
                 isinstance(value, LineLoad)
                 and value.coordinate_system == "local"

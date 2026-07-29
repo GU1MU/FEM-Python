@@ -8,6 +8,7 @@ owns only those DTOs and an ``AuthoringPort``; it never stores or mutates a
 from __future__ import annotations
 
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Callable, Protocol
@@ -35,6 +36,7 @@ from fem_agent.authoring import (
     RequirementReview,
     UnitContextSummary,
 )
+from fem_agent.analysis_authoring import require_non_destructive_a5_batch
 from fem_agent.definition_authoring import (
     inverse_operations_for_snapshot,
     require_non_destructive_a4_batch,
@@ -444,7 +446,7 @@ class SessionGeometryAuthoringPort:
         return succeeded
 
     def apply_patch(self, patch: ModelPatch) -> AppliedPatchRecord:
-        """Apply one non-destructive A4 patch and retain its exact inverse."""
+        """Apply one non-destructive A4/A5 patch and retain its exact inverse."""
 
         if type(patch) is not ModelPatch:
             raise TypeError("patch must be ModelPatch")
@@ -473,7 +475,14 @@ class SessionGeometryAuthoringPort:
             snapshot,
             base_session_revision=patch.base_session_revision,
         )
-        require_non_destructive_a4_batch(snapshot, batch)
+        preconditions = patch.preconditions
+        if (
+            isinstance(preconditions, Mapping)
+            and preconditions.get("authoring_phase") == "A5"
+        ):
+            require_non_destructive_a5_batch(snapshot, batch)
+        else:
+            require_non_destructive_a4_batch(snapshot, batch)
         delta = self._session.apply_scoped_definition_batch(batch)
         inverse = ModelPatch.create(
             patch_id=f"inverse-{patch.patch_hash[:24]}",

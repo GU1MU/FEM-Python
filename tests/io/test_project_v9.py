@@ -30,7 +30,7 @@ def _session() -> ModelSession:
     return session
 
 
-def test_a3_schema_v9_round_trip_preserves_automatic_strict_mesh_intent() -> None:
+def test_current_schema_preserves_a3_automatic_strict_mesh_intent() -> None:
     session = _session()
     session.replace_part_mesh_settings(
         "P1",
@@ -54,8 +54,8 @@ def test_a3_schema_v9_round_trip_preserves_automatic_strict_mesh_intent() -> Non
     loaded = decode_project(payload)
     settings = loaded.snapshot.parts[0].mesh_settings
 
-    assert CURRENT_PROJECT_SCHEMA == 9
-    assert payload["schema"] == 9
+    assert CURRENT_PROJECT_SCHEMA == 10
+    assert payload["schema"] == 10
     assert payload["project"]["authoring"]["parts"][0]["mesh_settings"][
         "intent_mode"
     ] == "automatic"
