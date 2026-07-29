@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+import fem.application.results.topology as topology_module
 from fem.application.results import (
     FieldAssociation,
     FieldData,
@@ -557,6 +558,36 @@ def test_component_projection_reuses_cached_element_node_layout() -> None:
     np.testing.assert_array_equal(
         second.values,
         np.arange(101.0, 110.0),
+    )
+
+
+def test_element_node_deformation_is_batched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canonical = _all_element_node_locations()
+    field_data = _field(
+        FieldPosition.ELEMENT_NODAL,
+        canonical,
+        tuple(float(index) for index in range(1, 10)),
+    )
+
+    def reject_per_location_deformation(*_args: object) -> None:
+        raise AssertionError("element-node projection must batch deformation")
+
+    monkeypatch.setattr(
+        topology_module,
+        "_deformed_location",
+        reject_per_location_deformation,
+    )
+
+    projected = project_scalar_field_topology(
+        _export(field_data),
+        deformation_scale=1.0,
+    )
+
+    np.testing.assert_array_equal(
+        projected.values,
+        np.arange(1.0, 10.0),
     )
 
 

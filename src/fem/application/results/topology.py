@@ -266,8 +266,7 @@ def project_scalar_field_topology(
     scale = _finite_scale(deformation_scale)
     _validate_export_snapshot(export)
     field_data = export.field
-    component_index = field_data.descriptor.columns.index(export.selection.component)
-    scalar_values = field_data.values[:, component_index]
+    scalar_values = field_data.component_values(export.selection.component)
     association = field_data.descriptor.association
 
     if association is FieldAssociation.NODE:
@@ -343,13 +342,10 @@ def project_scalar_field_topology_from_template(
     if not template.matches(export, deformation_scale):
         raise ValueError("template does not match the result export")
     field_data = export.field
-    component_index = field_data.descriptor.columns.index(
+    component_values = field_data.component_values(
         export.selection.component
     )
-    values = field_data.values[
-        template._row_indices,
-        component_index,
-    ]
+    values = component_values[template._row_indices]
     return _topology_from_template(
         template,
         export.selection,
@@ -679,9 +675,8 @@ def _project_element_local_rows(
     node_order = {node_id: index for index, node_id in enumerate(topology.node_ids)}
     coordinates = topology.node_coordinates
     displacements = topology.nodal_displacements
-    points: list[tuple[float, float, float]] = []
-    values: list[float] = []
-    locations: list[FieldLocation] = []
+    projected_rows: list[int] = []
+    projected_node_indices: list[int] = []
     cells: list[tuple[int, ...]] = []
     used: set[int] = set()
 
@@ -703,38 +698,46 @@ def _project_element_local_rows(
                 raise TypeError("row projector must return an integer index")
             if row_index < 0 or row_index >= len(field_data.locations):
                 raise ValueError("row projector returned an invalid index")
-            location = field_data.locations[row_index]
             topology_node_index = node_order[node_id]
-            _validate_nodal_sample(
-                location,
-                node_id=node_id,
-                coordinates=coordinates[topology_node_index],
-                displacement=displacements[topology_node_index],
-            )
             used.add(row_index)
             cache_key = (
                 None if reusable_point_key is None else reusable_point_key(row_index)
             )
             point_index = None if cache_key is None else point_cache.get(cache_key)
             if point_index is None:
-                point_index = len(points)
-                points.append(_deformed_location(location, scale))
-                values.append(float(scalar_values[row_index]))
-                locations.append(location)
+                point_index = len(projected_rows)
+                projected_rows.append(row_index)
+                projected_node_indices.append(topology_node_index)
                 if cache_key is not None:
                     point_cache[cache_key] = point_index
             projected_cell.append(point_index)
         cells.append(tuple(projected_cell))
 
     _require_complete_row_use(field_data, used)
+    row_indices = np.asarray(projected_rows, dtype=np.int64)
+    node_indices = np.asarray(projected_node_indices, dtype=np.int64)
+    locations = tuple(field_data.locations[index] for index in projected_rows)
+    _validate_nodal_samples(
+        locations,
+        expected_node_ids=np.asarray(topology.node_ids, dtype=np.int64)[
+            node_indices
+        ],
+        coordinates=coordinates[node_indices],
+        displacements=displacements[node_indices],
+    )
+    points = _deformed_points(
+        coordinates[node_indices],
+        displacements[node_indices],
+        scale,
+    )
     return {
-        "points": np.asarray(points, dtype=float).reshape((len(points), 3)),
+        "points": points,
         "cells": tuple(cells),
         "cell_kinds": (ResultCellKind.FEM_ELEMENT,) * len(cells),
         "canonical_element_types": topology.element_types,
-        "values": np.asarray(values, dtype=float),
+        "values": np.asarray(scalar_values[row_indices], dtype=float),
         "value_layout": ResultValueLayout.POINT,
-        "point_locations": tuple(locations),
+        "point_locations": locations,
         "cell_locations": (None,) * len(cells),
     }
 
@@ -862,6 +865,41 @@ def _validate_nodal_sample(
     if location.displacement is None:
         raise ValueError("deformable nodal field rows require sample displacement")
     if tuple(float(value) for value in displacement) != location.displacement:
+        raise ValueError("field row displacement does not match topology node")
+
+
+def _validate_nodal_samples(
+    locations: tuple[FieldLocation, ...],
+    *,
+    expected_node_ids: np.ndarray,
+    coordinates: np.ndarray,
+    displacements: np.ndarray,
+) -> None:
+    node_ids = np.fromiter(
+        (
+            _required_identity(location.node_id, "node_id")
+            for location in locations
+        ),
+        dtype=np.int64,
+        count=len(locations),
+    )
+    if not np.array_equal(node_ids, expected_node_ids):
+        raise ValueError("field row node identity does not match topology")
+    sample_coordinates = np.asarray(
+        tuple(location.coordinates for location in locations),
+        dtype=float,
+    ).reshape((len(locations), 3))
+    if not np.array_equal(sample_coordinates, coordinates):
+        raise ValueError("field row coordinates do not match topology node")
+    if any(location.displacement is None for location in locations):
+        raise ValueError(
+            "deformable nodal field rows require sample displacement"
+        )
+    sample_displacements = np.asarray(
+        tuple(location.displacement for location in locations),
+        dtype=float,
+    ).reshape((len(locations), 3))
+    if not np.array_equal(sample_displacements, displacements):
         raise ValueError("field row displacement does not match topology node")
 
 

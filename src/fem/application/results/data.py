@@ -472,6 +472,24 @@ class FieldData:
 
         return _public_array_copy(self._values)
 
+    def component_values(self, component: str) -> np.ndarray:
+        """Return one detached readonly component column."""
+
+        if type(component) is not str:
+            raise TypeError("component must be a string")
+        try:
+            component_index = self.descriptor.columns.index(component)
+        except ValueError as error:
+            raise KeyError(component) from error
+        result = np.array(
+            self._values[:, component_index],
+            dtype=float,
+            order="C",
+            copy=True,
+        )
+        result.setflags(write=False)
+        return result
+
 
 @dataclass(frozen=True, slots=True)
 class ResultMaterializationPatch:

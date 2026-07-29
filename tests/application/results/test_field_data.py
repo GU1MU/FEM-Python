@@ -505,6 +505,23 @@ def test_field_data_owns_finite_values_in_complete_column_shape() -> None:
     )
 
 
+def test_field_data_returns_one_detached_component_column() -> None:
+    field_data = _centroid_field()
+
+    component = field_data.component_values("Mises")
+
+    np.testing.assert_array_equal(component, (10.0, 20.0))
+    assert component.shape == (2,)
+    assert component.flags.owndata
+    assert not component.flags.writeable
+    component.setflags(write=True)
+    component[:] = -1.0
+    np.testing.assert_array_equal(
+        field_data.component_values("Mises"),
+        (10.0, 20.0),
+    )
+
+
 @pytest.mark.parametrize(
     "values",
     (
