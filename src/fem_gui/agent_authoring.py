@@ -7,6 +7,7 @@ owns only those DTOs and an ``AuthoringPort``; it never stores or mutates a
 
 from __future__ import annotations
 
+import math
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -15,6 +16,17 @@ from typing import Callable, Protocol
 
 from fem.application import ModelSession, UnitContext
 from fem.application.changes import SessionDelta
+from fem.application.results import (
+    FieldMaterializationKey,
+    FieldPosition,
+    FieldState,
+    ResultProvider,
+    ResultQuery as NativeResultQuery,
+    ResultQueryRecord,
+    ResultQueryValidationError,
+    ResultSourceKey,
+    ResultVariable,
+)
 
 from fem_agent.authoring import (
     AgentProposal,
@@ -49,6 +61,18 @@ from fem_agent.solve_authoring import (
     SolveValidationStamp,
     solve_operation_identity,
     validation_stamp_for_snapshot,
+)
+from fem_agent.result_authoring import (
+    AcceptedResultSource,
+    AgentResultAggregation,
+    AgentResultCatalog,
+    AgentResultCatalogResponse,
+    AgentResultField,
+    AgentResultLocation,
+    AgentResultQuery,
+    AgentResultQueryResponse,
+    AgentResultScalar,
+    AgentResultVariable,
 )
 
 
@@ -220,6 +244,23 @@ def authoring_context_from_snapshot(
                 else "求解提案需要当前 native 网格和通过的预检"
             ),
         ),
+        CapabilitySummary(
+            "query_accepted_result",
+            (
+                supported
+                and source_kind == "native"
+                and snapshot.displayed_result is not None
+            ),
+            (
+                None
+                if (
+                    supported
+                    and source_kind == "native"
+                    and snapshot.displayed_result is not None
+                )
+                else "结果查询需要当前已接受的 native 结果"
+            ),
+        ),
     )
     return AuthoringContext(
         binding=binding,
@@ -368,6 +409,440 @@ class AgentPreflightTaskRequest:
     session_id: str
     artifact_id: str
     model_revision: int
+
+
+class SessionResultQueryPort:
+    """A7 read-only adapter over the Session's exact accepted result provider."""
+
+    def __init__(self, session: ModelSession) -> None:
+        if type(session) is not ModelSession:
+            raise TypeError("session must be ModelSession")
+        self._session = session
+
+    def catalog(self) -> AgentResultCatalogResponse:
+        provider = self._session.current_result_provider()
+        identity = self._session.current_result_identity()
+        if provider is None or identity is None:
+            return _result_catalog_failure(
+                "result.catalog.no_accepted_result",
+                "No current accepted native result is available.",
+                retryable=True,
+            )
+        source, generation = identity
+        if (
+            provider.source != source
+            or provider.snapshot.generation != generation
+        ):
+            return _result_catalog_failure(
+                "result.catalog.current_identity_invalid",
+                "The current accepted result provider identity is inconsistent.",
+                retryable=True,
+            )
+        projection = self._session.projection_snapshot()
+        units = projection.unit_context
+        if projection.source_kind != "native" or units is None:
+            return _result_catalog_failure(
+                "result.catalog.units_unavailable",
+                "A native project unit context is required for result values.",
+                clarification_required=True,
+            )
+        fields = tuple(
+            AgentResultField(
+                variable=AgentResultVariable(
+                    item.descriptor.field_id.variable.value
+                ),
+                position=item.descriptor.field_id.position.value,
+                components=item.descriptor.columns,
+                unit=_result_unit(
+                    units,
+                    AgentResultVariable(
+                        item.descriptor.field_id.variable.value
+                    ),
+                ),
+            )
+            for item in provider.catalog().fields
+            if (
+                item.state is FieldState.READY
+                and item.descriptor.field_id.variable
+                in {ResultVariable.U, ResultVariable.RF, ResultVariable.S}
+            )
+        )
+        if not fields:
+            return _result_catalog_failure(
+                "result.catalog.no_supported_ready_fields",
+                "The accepted result has no READY U, RF, or S fields.",
+                clarification_required=True,
+            )
+        named_regions = tuple(projection.named_regions.values())
+        nodal_regions = (
+            "all_nodes",
+            *tuple(
+                region.name
+                for region in named_regions[:127]
+                if region.entity_kind in {"node", "edge", "face"}
+            ),
+        )
+        element_regions = (
+            "all_elements",
+            *tuple(
+                region.name
+                for region in named_regions[:127]
+                if region.entity_kind == "element"
+            ),
+        )
+        catalog = AgentResultCatalog(
+            source=_accepted_source(source),
+            materialization_generation=generation,
+            fields=fields,
+            nodal_regions=tuple(dict.fromkeys(nodal_regions)),
+            element_regions=tuple(dict.fromkeys(element_regions)),
+        )
+        if self._session.current_result_identity() != (source, generation):
+            return _result_catalog_failure(
+                "result.catalog.stale",
+                "The accepted result changed before the catalog was returned.",
+                retryable=True,
+            )
+        return AgentResultCatalogResponse.success(catalog)
+
+    def query(self, request: AgentResultQuery) -> AgentResultQueryResponse:
+        if type(request) is not AgentResultQuery:
+            raise TypeError("request must be AgentResultQuery")
+        provider = self._session.current_result_provider()
+        identity = self._session.current_result_identity()
+        if provider is None or identity is None:
+            return _result_query_failure(
+                "result.query.no_accepted_result",
+                "No current accepted native result is available.",
+                retryable=True,
+            )
+        source, generation = identity
+        if (
+            provider.source != source
+            or provider.snapshot.generation != generation
+        ):
+            return _result_query_failure(
+                "result.query.current_identity_invalid",
+                "The current accepted result provider identity is inconsistent.",
+                retryable=True,
+            )
+        if (
+            _accepted_source(source) != request.expected_source
+            or generation != request.expected_materialization_generation
+        ):
+            return _result_query_failure(
+                "result.query.stale",
+                "The requested result source or materialization generation is stale.",
+                retryable=True,
+            )
+
+        projection = self._session.projection_snapshot()
+        units = projection.unit_context
+        if projection.source_kind != "native" or units is None:
+            return _result_query_failure(
+                "result.query.units_unavailable",
+                "A native project unit context is required for result values.",
+                clarification_required=True,
+            )
+
+        try:
+            _require_published_result_region(projection, request)
+            availability = _resolve_result_availability(provider, request)
+            native_query = _native_result_query(
+                provider,
+                availability.key,
+                request,
+            )
+            checked = provider.validate_query(native_query)
+            if checked.state is FieldState.LAZY:
+                return _result_query_failure(
+                    "result.query.field_not_materialized",
+                    "The requested field is not READY in this accepted generation.",
+                    retryable=True,
+                )
+            if checked.state is not FieldState.READY:
+                return _result_query_failure(
+                    "result.query.field_unavailable",
+                    "The requested field is unavailable for this accepted result.",
+                    clarification_required=True,
+                )
+            result = provider.query(native_query)
+            if (
+                result.source != source
+                or result.materialization_generation != generation
+                or result.query != native_query
+            ):
+                return _result_query_failure(
+                    "result.query.provider_identity_invalid",
+                    "The native query result does not match the requested identity.",
+                    retryable=True,
+                )
+            if not result.records:
+                return _result_query_failure(
+                    "result.query.empty_region",
+                    "The requested field has no values in the selected region.",
+                    clarification_required=True,
+                )
+            scalar = _aggregate_native_result(
+                request,
+                result.records,
+                source,
+                generation,
+                _result_unit(units, request.variable),
+            )
+        except _AgentResultQueryRejected as error:
+            return _result_query_failure(
+                error.code,
+                str(error),
+                clarification_required=error.clarification_required,
+            )
+        except ResultQueryValidationError as error:
+            return _result_query_failure(
+                error.code,
+                str(error),
+                clarification_required=True,
+            )
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            return _result_query_failure(
+                "result.query.rejected",
+                f"The accepted-result query was rejected: {type(error).__name__}.",
+                clarification_required=True,
+            )
+
+        if self._session.current_result_identity() != (source, generation):
+            return _result_query_failure(
+                "result.query.stale",
+                "The accepted result changed before the query completed.",
+                retryable=True,
+            )
+        return AgentResultQueryResponse.success(scalar)
+
+
+class _AgentResultQueryRejected(ValueError):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        clarification_required: bool = True,
+    ) -> None:
+        self.code = code
+        self.clarification_required = clarification_required
+        super().__init__(message)
+
+
+def _resolve_result_availability(
+    provider: ResultProvider,
+    request: AgentResultQuery,
+):
+    variable = ResultVariable(request.variable.value)
+    try:
+        position = FieldPosition(request.position)
+    except ValueError as error:
+        raise _AgentResultQueryRejected(
+            "result.query.position_unsupported",
+            f"Result position {request.position!r} is unsupported.",
+        ) from error
+    matches = tuple(
+        item
+        for item in provider.catalog().fields
+        if (
+            item.descriptor.field_id.variable is variable
+            and item.descriptor.field_id.position is position
+        )
+    )
+    if not matches:
+        raise _AgentResultQueryRejected(
+            "result.query.field_not_available",
+            "The requested variable and position are absent from the result catalog.",
+        )
+    if len(matches) != 1:
+        raise _AgentResultQueryRejected(
+            "result.query.field_ambiguous",
+            "The requested variable and position do not identify one catalog field.",
+        )
+    availability = matches[0]
+    if request.component not in availability.descriptor.columns:
+        raise _AgentResultQueryRejected(
+            "result.query.component_not_available",
+            f"Result component {request.component!r} is not available.",
+        )
+    return availability
+
+
+def _require_published_result_region(
+    projection: _SessionSnapshot,
+    request: AgentResultQuery,
+) -> None:
+    if request.region in {"all_nodes", "all_elements"}:
+        return
+    regions = tuple(projection.named_regions.values())[:127]  # type: ignore[union-attr]
+    matches = tuple(
+        region for region in regions if region.name == request.region
+    )
+    if len(matches) != 1:
+        raise _AgentResultQueryRejected(
+            "result.query.region_not_published",
+            "The requested named region is absent from the bounded result catalog.",
+        )
+    kind = matches[0].entity_kind
+    if (
+        request.variable
+        in {
+            AgentResultVariable.DISPLACEMENT,
+            AgentResultVariable.REACTION_FORCE,
+        }
+        and kind not in {"node", "edge", "face"}
+    ) or (
+        request.variable is AgentResultVariable.STRESS
+        and kind != "element"
+    ):
+        raise _AgentResultQueryRejected(
+            "result.query.region_entity_unsupported",
+            "The requested named region entity type does not support this variable.",
+        )
+
+
+def _native_result_query(
+    provider: ResultProvider,
+    field_key: FieldMaterializationKey,
+    request: AgentResultQuery,
+) -> NativeResultQuery:
+    variable = request.variable
+    region = request.region
+    if variable in {
+        AgentResultVariable.DISPLACEMENT,
+        AgentResultVariable.REACTION_FORCE,
+    }:
+        if region == "all_elements":
+            raise _AgentResultQueryRejected(
+                "result.query.region_entity_unsupported",
+                "Nodal U and RF queries cannot target all_elements.",
+            )
+        node_ids = (
+            ()
+            if region == "all_nodes"
+            else provider.named_region_node_ids(region)
+        )
+        return NativeResultQuery(
+            field_key,
+            request.component,
+            node_ids=node_ids,
+        )
+    if region == "all_nodes":
+        raise _AgentResultQueryRejected(
+            "result.query.region_entity_unsupported",
+            "Stress S queries cannot target all_nodes.",
+        )
+    element_ids = (
+        ()
+        if region == "all_elements"
+        else provider.named_region_element_ids(region)
+    )
+    return NativeResultQuery(
+        field_key,
+        request.component,
+        element_ids=element_ids,
+    )
+
+
+def _aggregate_native_result(
+    request: AgentResultQuery,
+    records: tuple[ResultQueryRecord, ...],
+    source: ResultSourceKey,
+    generation: int,
+    unit: str,
+) -> AgentResultScalar:
+    aggregation = request.aggregation
+    if aggregation is AgentResultAggregation.SUM:
+        value = math.fsum(float(record.value) for record in records)
+        location = None
+    else:
+        selector = {
+            AgentResultAggregation.MAXIMUM: lambda record: float(record.value),
+            AgentResultAggregation.MINIMUM: lambda record: -float(record.value),
+            AgentResultAggregation.ABSOLUTE_EXTREME: (
+                lambda record: abs(float(record.value))
+            ),
+        }[aggregation]
+        selected = max(records, key=selector)
+        value = float(selected.value)
+        location = _agent_result_location(selected.location)
+    return AgentResultScalar(
+        variable=request.variable,
+        component=request.component,
+        position=request.position,
+        region=request.region,
+        aggregation=aggregation,
+        value=value,
+        unit=unit,
+        source=_accepted_source(source),
+        materialization_generation=generation,
+        location=location,
+    )
+
+
+def _agent_result_location(location: object) -> AgentResultLocation:
+    association = getattr(location, "association")
+    return AgentResultLocation(
+        association=str(getattr(association, "value", association)),
+        node_id=getattr(location, "node_id"),
+        element_id=getattr(location, "element_id"),
+        integration_point=getattr(location, "integration_point"),
+        local_node=getattr(location, "local_node"),
+    )
+
+
+def _result_unit(
+    units: UnitContext,
+    variable: AgentResultVariable,
+) -> str:
+    return {
+        AgentResultVariable.DISPLACEMENT: units.length,
+        AgentResultVariable.REACTION_FORCE: units.force,
+        AgentResultVariable.STRESS: units.stress,
+    }[variable]
+
+
+def _accepted_source(source: ResultSourceKey) -> AcceptedResultSource:
+    return AcceptedResultSource(
+        result_id=source.result_id,
+        session_id=source.session_id,
+        artifact_id=source.artifact_id,
+        model_revision=source.model_revision,
+        step_name=source.step_name,
+        run_id=source.run_id,
+    )
+
+
+def _result_query_failure(
+    code: str,
+    message: str,
+    *,
+    retryable: bool = False,
+    clarification_required: bool = False,
+) -> AgentResultQueryResponse:
+    return AgentResultQueryResponse.failure(
+        code,
+        message,
+        retryable=retryable,
+        clarification_required=clarification_required,
+    )
+
+
+def _result_catalog_failure(
+    code: str,
+    message: str,
+    *,
+    retryable: bool = False,
+    clarification_required: bool = False,
+) -> AgentResultCatalogResponse:
+    return AgentResultCatalogResponse.failure(
+        code,
+        message,
+        retryable=retryable,
+        clarification_required=clarification_required,
+    )
 
 
 class SessionGeometryAuthoringPort:
@@ -1458,6 +1933,7 @@ __all__ = [
     "AgentSolveTaskRequest",
     "AgentAuthoringBridge",
     "BridgeReceipt",
+    "SessionResultQueryPort",
     "SessionGeometryAuthoringPort",
     "authoring_context_from_snapshot",
 ]

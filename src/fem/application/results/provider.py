@@ -261,6 +261,18 @@ class ResultProvider:
 
         return evaluate_result_query(self._snapshot, query)
 
+    def named_region_node_ids(self, name: str) -> tuple[int, ...]:
+        """Resolve one exact local named region to unique nodal identities."""
+
+        clean_name = _provider_region_name(name)
+        return _named_region_node_ids(self._owned_result.model, clean_name)
+
+    def named_region_element_ids(self, name: str) -> tuple[int, ...]:
+        """Resolve one exact local named region to element identities."""
+
+        clean_name = _provider_region_name(name)
+        return _named_region_element_ids(self._owned_result.model, clean_name)
+
     def validate_query(self, query: ResultQuery) -> FieldAvailability:
         """Validate one catalog-bound query without reading or recovering data."""
 
@@ -1045,6 +1057,116 @@ def _dof_label_index(
         raise ValueError(
             f"primary result DOF label {label!r} is unavailable"
         ) from error
+
+
+def _provider_region_name(value: object) -> str:
+    if type(value) is not str:
+        raise TypeError("name must be a string")
+    if value != value.strip() or not value:
+        raise ValueError(
+            "name must be nonblank without surrounding whitespace"
+        )
+    return value
+
+
+def _named_region_node_ids(model: Any, name: str) -> tuple[int, ...]:
+    candidates: list[tuple[int, ...]] = []
+    node_set = getattr(model, "node_sets", {}).get(name)
+    if node_set is not None:
+        candidates.append(
+            _unique_positive_ids(
+                node_set.node_ids,
+                label="named-region node ID",
+            )
+        )
+    edge = getattr(model, "edges", {}).get(name)
+    if edge is not None:
+        candidates.append(
+            _unique_positive_ids(
+                (
+                    node_id
+                    for item in edge.edges
+                    for node_id in item.node_ids
+                ),
+                label="named-region node ID",
+            )
+        )
+    surface = getattr(model, "surfaces", {}).get(name)
+    if surface is not None:
+        candidates.append(
+            _unique_positive_ids(
+                (
+                    node_id
+                    for item in surface.faces
+                    for node_id in item.node_ids
+                ),
+                label="named-region node ID",
+            )
+        )
+    if len(candidates) > 1:
+        raise ResultQueryValidationError(
+            "result.query.region_ambiguous",
+            f"named region {name!r} exists in multiple nodal collections",
+        )
+    if not candidates:
+        if name in getattr(model, "element_sets", {}):
+            raise ResultQueryValidationError(
+                "result.query.region_entity_unsupported",
+                f"named region {name!r} is an element region",
+            )
+        raise ResultQueryValidationError(
+            "result.query.region_not_found",
+            f"named nodal region {name!r} is not defined",
+        )
+    if not candidates[0]:
+        raise ResultQueryValidationError(
+            "result.query.region_empty",
+            f"named nodal region {name!r} is empty",
+        )
+    return candidates[0]
+
+
+def _named_region_element_ids(model: Any, name: str) -> tuple[int, ...]:
+    element_set = getattr(model, "element_sets", {}).get(name)
+    if element_set is None:
+        if any(
+            name in getattr(model, collection_name, {})
+            for collection_name in ("node_sets", "edges", "surfaces")
+        ):
+            raise ResultQueryValidationError(
+                "result.query.region_entity_unsupported",
+                f"named region {name!r} is not an element region",
+            )
+        raise ResultQueryValidationError(
+            "result.query.region_not_found",
+            f"named element region {name!r} is not defined",
+        )
+    element_ids = _unique_positive_ids(
+        element_set.element_ids,
+        label="named-region element ID",
+    )
+    if not element_ids:
+        raise ResultQueryValidationError(
+            "result.query.region_empty",
+            f"named element region {name!r} is empty",
+        )
+    return element_ids
+
+
+def _unique_positive_ids(
+    values: Iterable[object],
+    *,
+    label: str,
+) -> tuple[int, ...]:
+    result: list[int] = []
+    seen: set[int] = set()
+    for value in values:
+        identity = _positive_id(value, label=label)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        result.append(identity)
+    return tuple(result)
 
 
 def _positive_id(value: Any, *, label: str) -> int:

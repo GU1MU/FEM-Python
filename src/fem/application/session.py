@@ -4911,6 +4911,7 @@ class ModelSession:
             displayed_result=displayed,
             dirty=self.dirty,
             can_save=self.can_save,
+            unit_context=self._unit_context,
         )
 
     def can_check(self, step_name: str | None = None) -> bool:

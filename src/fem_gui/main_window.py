@@ -144,6 +144,7 @@ from fem.mesh.quality import analyze_mesh
 from fem.mesh.settings import MeshSettings
 from fem.solvers import static_linear
 from fem_agent.authoring import ProposalState
+from fem_agent.result_authoring import AgentResultQueryBridge
 
 from .actions import build_actions
 from .action_state import GuiActionContext, derive_action_availability
@@ -154,6 +155,7 @@ from .agent_authoring import (
     AgentPreflightTaskRequest,
     AgentSolveTaskRequest,
     SessionGeometryAuthoringPort,
+    SessionResultQueryPort,
 )
 from .part_boolean import PartBooleanController
 from .planar_boolean import PlanarBooleanController
@@ -507,6 +509,9 @@ class FEMMainWindow(QMainWindow):
         self.resize(1280, 800)
         self.session = ModelSession()
         self.document = self.session.projection_snapshot()
+        self.agent_result_query_bridge = AgentResultQueryBridge(
+            SessionResultQueryPort(self.session)
+        )
         self.agent_authoring_bridge = AgentAuthoringBridge(
             SessionGeometryAuthoringPort(
                 self.session,
