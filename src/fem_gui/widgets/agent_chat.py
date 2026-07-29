@@ -1663,7 +1663,11 @@ class AgentChatDrawer(_BoundaryFrame):
                 or (
                     "提案已由 GUI 控件接受；A1 Fake Port 未修改模型"
                     if receipt.state.value == "accepted"
-                    else "提案处理失败"
+                    else (
+                        "几何已加入模型"
+                        if receipt.state.value == "succeeded"
+                        else "提案处理失败"
+                    )
                 )
             )
         self._render_event_presentation(preserve_tool_expansion=True)
@@ -1723,7 +1727,7 @@ class AgentChatDrawer(_BoundaryFrame):
         context = None if bridge is None else bridge.context
         if context is None or not context.binding.supported:
             label.setText("未绑定模型")
-            label.setToolTip("V1 A1 只支持空白会话和 native 项目")
+            label.setToolTip("V1 只支持空白会话和 native 项目")
             return
         model_name = context.model_name or "空白会话"
         label.setText(f"已绑定 · {model_name}")

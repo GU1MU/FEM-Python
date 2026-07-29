@@ -156,6 +156,7 @@ from .session import (
     SessionSnapshot,
     SessionStateError,
 )
+from .units import UnitContext
 from .validation import ValidationRecord, ValidationStamp
 
 __all__ = [
@@ -234,6 +235,7 @@ __all__ = [
     "TopologyResolutionError",
     "TokenStatus",
     "TransitionEffect",
+    "UnitContext",
     "UNSET",
     "Unset",
     "ValidationRecord",

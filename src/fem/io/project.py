@@ -1,6 +1,6 @@
 """Version-neutral native project persistence API.
 
-Readers dispatch schema 1 compatibility migration or schema 2-7 codecs after
+Readers dispatch schema 1 compatibility migration or schema 2-8 codecs after
 one strict JSON parse.  Writers always emit the current schema.
 """
 
@@ -40,13 +40,16 @@ from .project_v6 import (
 )
 from .project_v7 import (
     decode_project_v7,
-    dumps_project_v7,
-    encode_project_v7,
-    save_project_v7,
+)
+from .project_v8 import (
+    decode_project_v8,
+    dumps_project_v8,
+    encode_project_v8,
+    save_project_v8,
 )
 
 
-CURRENT_PROJECT_SCHEMA = 7
+CURRENT_PROJECT_SCHEMA = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +81,7 @@ class LoadedProject:
 
 
 def load_project(path: str | Path) -> LoadedProject:
-    """Read and decode a supported schema 1-7 project from *path*."""
+    """Read and decode a supported schema 1-8 project from *path*."""
 
     source = Path(path)
     return loads_project(source.read_bytes(), source_path=source)
@@ -89,7 +92,7 @@ def loads_project(
     *,
     source_path: str | Path | None = None,
 ) -> LoadedProject:
-    """Strictly parse and decode a supported schema 1-7 JSON document."""
+    """Strictly parse and decode a supported schema 1-8 JSON document."""
 
     payload = loads_json_strict(
         data,
@@ -157,8 +160,14 @@ def decode_project(
             source_path=resolved_path,
         )
         notices = ()
-    elif schema == CURRENT_PROJECT_SCHEMA:
+    elif schema == 7:
         snapshot = decode_project_v7(
+            payload,
+            source_path=resolved_path,
+        )
+        notices = ()
+    elif schema == CURRENT_PROJECT_SCHEMA:
+        snapshot = decode_project_v8(
             payload,
             source_path=resolved_path,
         )
@@ -166,22 +175,22 @@ def decode_project(
     else:
         raise UnsupportedProjectSchemaError(
             f"$.schema={schema!r} 不受支持；"
-            "当前版本可读取 schema 1、2、3、4、5、6 和 "
+            "当前版本可读取 schema 1、2、3、4、5、6、7 和 "
             f"{CURRENT_PROJECT_SCHEMA}"
         )
-    if schema < CURRENT_PROJECT_SCHEMA:
+    if schema < 7:
         try:
             snapshot, v5_notices = migrate_project_snapshot_to_v5(snapshot)
         except ProjectV1MigrationError as error:
             raise ProjectDecodeError(
-                f"schema {schema} 无法原子迁移到 schema 7：{error}"
+                f"schema {schema} 无法原子迁移到 schema 8：{error}"
             ) from error
         notices = (*notices, *v5_notices)
         try:
             snapshot, v7_notices = migrate_project_snapshot_to_v7(snapshot)
         except ProjectV1MigrationError as error:
             raise ProjectDecodeError(
-                f"schema {schema} 无法原子迁移到 schema 7：{error}"
+                f"schema {schema} 无法原子迁移到 schema 8：{error}"
             ) from error
         notices = (*notices, *v7_notices)
     return LoadedProject(
@@ -197,7 +206,7 @@ def encode_project(
 ) -> dict[str, Any]:
     """Encode a detached snapshot using the current project schema."""
 
-    return encode_project_v7(_canonical_writer_snapshot(snapshot))
+    return encode_project_v8(_canonical_writer_snapshot(snapshot))
 
 
 def dumps_project(
@@ -205,7 +214,7 @@ def dumps_project(
 ) -> str:
     """Serialize a detached snapshot using canonical current-schema JSON."""
 
-    return dumps_project_v7(_canonical_writer_snapshot(snapshot))
+    return dumps_project_v8(_canonical_writer_snapshot(snapshot))
 
 
 def save_project(
@@ -216,7 +225,7 @@ def save_project(
 ) -> Path:
     """Atomically save a detached snapshot using the current schema."""
 
-    return save_project_v7(
+    return save_project_v8(
         path,
         _canonical_writer_snapshot(snapshot),
         checkpoint=checkpoint,
@@ -226,7 +235,7 @@ def save_project(
 def _canonical_writer_snapshot(
     snapshot: ProjectSnapshot | ProjectSaveSnapshot,
 ) -> ProjectSnapshot | ProjectSaveSnapshot:
-    """Upgrade compatibility snapshots before the strict v7 writer."""
+    """Upgrade compatibility snapshots before the strict v8 writer."""
 
     project = unwrap_project_snapshot(snapshot)
     if project.parts and all(

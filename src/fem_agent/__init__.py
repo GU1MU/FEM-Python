@@ -12,7 +12,21 @@ from .authoring import (
     ModelPatch,
     RequirementLedger,
     RequirementReview,
+    UnitContextSummary,
 )
+from .geometry_authoring import (
+    GeometryDraft,
+    StaticGeometryPreview,
+    box_geometry,
+    create_geometry_proposal,
+    cylinder_geometry,
+    disk_geometry,
+    plate_with_hole_geometry,
+    rectangle_geometry,
+    rotate_geometry,
+    translate_geometry,
+)
+from .naming import NameAllocator, NamePolicy
 from .schemas import SCHEMA_VERSION
 
 __all__ = [
@@ -22,9 +36,22 @@ __all__ = [
     "AuthoringContext",
     "FakeAuthoringPort",
     "LocalModelBinding",
+    "NameAllocator",
+    "NamePolicy",
     "ModelPatch",
     "RequirementLedger",
     "RequirementReview",
+    "GeometryDraft",
+    "StaticGeometryPreview",
+    "UnitContextSummary",
+    "box_geometry",
+    "create_geometry_proposal",
+    "cylinder_geometry",
+    "disk_geometry",
+    "plate_with_hole_geometry",
+    "rectangle_geometry",
+    "rotate_geometry",
+    "translate_geometry",
     "SCHEMA_VERSION",
 ]
 

@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
 )
 
 from fem import geometry as geometry_runtime
-from fem_agent.authoring import FakeAuthoringPort
 from fem.abaqus import (
     build_model_with_report as build_abaqus_model_with_report,
     parse_file,
@@ -146,7 +145,7 @@ from fem.solvers import static_linear
 
 from .actions import build_actions
 from .action_state import GuiActionContext, derive_action_availability
-from .agent_authoring import AgentAuthoringBridge
+from .agent_authoring import AgentAuthoringBridge, SessionGeometryAuthoringPort
 from .part_boolean import PartBooleanController
 from .planar_boolean import PlanarBooleanController
 from .analysis_dialogs import JobManagerDialog, JobSubmitDialog
@@ -474,7 +473,10 @@ class FEMMainWindow(QMainWindow):
         self.session = ModelSession()
         self.document = self.session.projection_snapshot()
         self.agent_authoring_bridge = AgentAuthoringBridge(
-            FakeAuthoringPort()
+            SessionGeometryAuthoringPort(
+                self.session,
+                self._rebuild_full_projection,
+            )
         )
         self.agent_authoring_bridge.bind_snapshot(self.document)
         self._applied_session_revision = self.document.session_revision

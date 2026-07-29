@@ -79,7 +79,7 @@ def test_v7_round_trip_preserves_part_ids_and_namespaces() -> None:
     payload = encode_project_v7(source)
     reopened = loads_project(dumps_project(source)).snapshot
 
-    assert CURRENT_PROJECT_SCHEMA == 7
+    assert CURRENT_PROJECT_SCHEMA == 8
     assert payload["schema"] == 7
     assert reopened == source
     assert tuple(part.id for part in reopened.parts) == ("P1", "P2")

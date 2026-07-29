@@ -120,6 +120,7 @@ from .runs import (
     utc_now,
 )
 from .validation import ValidationRecord, ValidationStamp
+from .units import UnitContext
 
 
 _ALL_INVALIDATIONS = frozenset(
@@ -399,6 +400,7 @@ class ProjectSnapshot:
     retired_part_ids: tuple[str, ...] = ()
     retired_part_boolean_feature_ids: tuple[str, ...] = ()
     active_part_id: str | None = None
+    unit_context: UnitContext | None = None
 
     def __post_init__(self) -> None:
         source_kind = _canonical_source_kind(self.source_kind)
@@ -553,6 +555,9 @@ class ProjectSnapshot:
         if not model_name:
             raise ValueError("ProjectSnapshot.model_name must not be empty")
         object.__setattr__(self, "model_name", model_name)
+        if self.unit_context is not None and type(self.unit_context) is not UnitContext:
+            raise TypeError("ProjectSnapshot.unit_context must be UnitContext or None")
+        object.__setattr__(self, "unit_context", deepcopy(self.unit_context))
 
     @property
     def project_path(self) -> Path | None:
@@ -638,6 +643,7 @@ class SessionSnapshot:
     displayed_result: ResultRecord | None
     dirty: bool
     can_save: bool
+    unit_context: UnitContext | None = None
 
     @property
     def path(self) -> Path | None:
@@ -913,11 +919,14 @@ class ModelSession:
         part_name: str = "Part-1",
         body_name: str = "Body-1",
         expected_session_revision: int | None = None,
+        unit_context: UnitContext | None = None,
     ) -> SessionDelta:
         self._check_expected(expected_session_revision)
         project_name = str(name).strip()
         if not project_name:
             raise ValueError("project name must not be empty")
+        if unit_context is not None and type(unit_context) is not UnitContext:
+            raise TypeError("unit_context must be UnitContext or None")
         del part_name, body_name
 
         self._session_id = new_identity("session")
@@ -925,6 +934,7 @@ class ModelSession:
         self._is_open = True
         self._source_kind = "native"
         self._model_name = project_name
+        self._unit_context = deepcopy(unit_context)
         # A native Model starts empty.  Detached editors allocate the first
         # Part only when Finish commits valid geometry.
         self._parts = ()
@@ -945,6 +955,71 @@ class ModelSession:
             },
             _ALL_INVALIDATIONS,
             "new native project",
+        )
+
+    def create_native_project_with_first_part(
+        self,
+        name: str,
+        unit_context: UnitContext,
+        draft: NativePart | Any,
+        *,
+        part_name: str | None = None,
+        expected_session_revision: int | None = None,
+    ) -> SessionDelta:
+        """Atomically install a new native project and its first geometry Part."""
+
+        self._check_expected(expected_session_revision)
+        if self._is_open:
+            raise SessionStateError("operation requires a blank session")
+        project_name = str(name)
+        if not project_name or project_name != project_name.strip():
+            raise ValueError(
+                "project name must be non-empty without outer whitespace"
+            )
+        if type(unit_context) is not UnitContext:
+            raise TypeError("unit_context must be UnitContext")
+        if type(draft) is NativePart:
+            recipe = deepcopy(draft.geometry_recipe)
+            allocated_name = draft.name if part_name is None else str(part_name)
+        else:
+            recipe = deepcopy(draft)
+            allocated_name = "部件-1" if part_name is None else str(part_name)
+        if recipe is None:
+            raise ValueError("first Part draft must contain geometry")
+        part = NativePart(
+            id="P1",
+            name=allocated_name,
+            geometry_recipe=recipe,
+            mesh_settings=None,
+        )
+        _validate_native_part_inputs(part, authenticate_geometry=True)
+
+        self._session_id = new_identity("session")
+        self._clear_content()
+        self._is_open = True
+        self._source_kind = "native"
+        self._model_name = project_name
+        self._unit_context = deepcopy(unit_context)
+        self._parts = (part,)
+        self._part_revisions = {part.id: 0}
+        self._active_part_id = part.id
+        self._sync_active_part_projection()
+        self._increment_domain_revisions(project=True, mesh=True, model=True)
+        return self._emit(
+            {
+                ChangeKind.SESSION,
+                ChangeKind.SOURCE,
+                ChangeKind.PROJECT_INPUTS,
+                ChangeKind.GEOMETRY,
+                ChangeKind.MESH_SETTINGS,
+                ChangeKind.MODEL,
+                ChangeKind.VALIDATIONS,
+                ChangeKind.RUNS,
+                ChangeKind.DISPLAYED_RESULT,
+                ChangeKind.SAVED_STATE,
+            },
+            _ALL_INVALIDATIONS,
+            "native project and first Part created",
         )
 
     def close(
@@ -1006,6 +1081,7 @@ class ModelSession:
                     (),
                 ),
                 active_part_id=getattr(snapshot, "active_part_id", None),
+                unit_context=getattr(snapshot, "unit_context", None),
             )
         )
         # ProjectSnapshot already owns a detached copy; copy once more so the
@@ -1130,6 +1206,11 @@ class ModelSession:
             detached.model_name
             if source_kind == "native"
             else str(getattr(model, "name", "") or "").strip() or None
+        )
+        self._unit_context = (
+            deepcopy(detached.unit_context)
+            if source_kind == "native"
+            else None
         )
         if source_kind == "native":
             self._project_path = detached.source_path
@@ -1295,6 +1376,7 @@ class ModelSession:
         mesh_settings: MeshSettings | None | Unset = UNSET,
         expected_revision: int | None = None,
         expected_session_revision: int | None = None,
+        unit_context: UnitContext | None = None,
     ) -> SessionDelta:
         """Atomically allocate and append one detached native Part draft."""
 
@@ -1305,6 +1387,15 @@ class ModelSession:
         )
         self._check_expected(expected)
         self._require_native()
+        if unit_context is not None and type(unit_context) is not UnitContext:
+            raise TypeError("unit_context must be UnitContext or None")
+        if (
+            self._unit_context is not None
+            and unit_context is not None
+            and unit_context != self._unit_context
+        ):
+            raise ValueError("A2 cannot change an existing project unit context")
+        accepted_units = self._unit_context or unit_context
         allocated_id = self.next_native_part_id
         if type(draft) is NativePart:
             recipe = deepcopy(draft.geometry_recipe)
@@ -1342,6 +1433,7 @@ class ModelSession:
             mesh_settings=owned_settings,
         )
         _validate_native_part_inputs(part, authenticate_geometry=True)
+        self._unit_context = deepcopy(accepted_units)
         self._parts = validate_native_parts((*self._parts, part))
         self._part_revisions[part.id] = 0
         self._active_part_id = part.id
@@ -4286,6 +4378,7 @@ class ModelSession:
             active_part_id=(
                 self._active_part_id if canonical_part_mode else None
             ),
+            unit_context=self._unit_context,
         )
         token = self._issue_token(
             "project_save",
@@ -4362,6 +4455,7 @@ class ModelSession:
             ),
             dirty=self.dirty,
             can_save=self.can_save,
+            unit_context=deepcopy(self._unit_context),
         )
 
     def projection_snapshot(
@@ -4719,6 +4813,7 @@ class ModelSession:
         self._source_path: Path | None = None
         self._project_path: Path | None = None
         self._model_name: str | None = None
+        self._unit_context: UnitContext | None = None
         self._geometry_recipe: Any | None = None
         self._retired_body_ids: set[str] = set()
         self._retired_boolean_feature_ids: set[str] = set()

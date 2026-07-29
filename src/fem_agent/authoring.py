@@ -306,6 +306,42 @@ class DefinitionSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class UnitContextSummary:
+    length: str
+    force: str
+    stress: str
+    density: str | None = None
+    acceleration: str | None = None
+    convention: str | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in ("length", "force", "stress"):
+            object.__setattr__(
+                self,
+                field_name,
+                _require_text(getattr(self, field_name), field_name),
+            )
+        for field_name in ("density", "acceleration", "convention"):
+            value = getattr(self, field_name)
+            if value is not None:
+                object.__setattr__(
+                    self,
+                    field_name,
+                    _require_text(value, field_name),
+                )
+
+    def to_dict(self) -> dict[str, str | None]:
+        return {
+            "length": self.length,
+            "force": self.force,
+            "stress": self.stress,
+            "density": self.density,
+            "acceleration": self.acceleration,
+            "convention": self.convention,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class CapabilitySummary:
     operation: str
     enabled: bool
@@ -348,6 +384,7 @@ class AuthoringContext:
     job_status: str = "idle"
     result_available: bool = False
     capabilities: tuple[CapabilitySummary, ...] = ()
+    unit_context: UnitContextSummary | None = None
     schema_version: str = AUTHORING_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -393,6 +430,13 @@ class AuthoringContext:
                 "capabilities must contain CapabilitySummary values"
             )
         object.__setattr__(self, "capabilities", capabilities)
+        if (
+            self.unit_context is not None
+            and type(self.unit_context) is not UnitContextSummary
+        ):
+            raise AuthoringContractError(
+                "unit_context must be UnitContextSummary or null"
+            )
         if self.schema_version != AUTHORING_SCHEMA_VERSION:
             raise AuthoringContractError("unknown AuthoringContext schema_version")
 
@@ -413,6 +457,11 @@ class AuthoringContext:
             "capabilities": [
                 item.to_dict() for item in self.capabilities
             ],
+            "unit_context": (
+                None
+                if self.unit_context is None
+                else self.unit_context.to_dict()
+            ),
         }
 
 
@@ -917,11 +966,11 @@ _OPERATION_PARAMETER_FIELDS: dict[
     tuple[frozenset[str], frozenset[str]],
 ] = {
     OperationKind.CREATE_NATIVE_PROJECT: (
-        frozenset({"project_name", "part_name", "recipe"}),
-        frozenset({"project_name", "part_name", "recipe"}),
+        frozenset({"project_name", "part_name", "recipe", "unit_context"}),
+        frozenset({"project_name", "part_name", "recipe", "unit_context"}),
     ),
     OperationKind.ADD_NATIVE_PART: (
-        frozenset({"part_name", "recipe"}),
+        frozenset({"part_name", "recipe", "unit_context"}),
         frozenset({"part_name", "recipe"}),
     ),
     OperationKind.SET_PART_MESH_INTENT: (
@@ -1626,4 +1675,5 @@ __all__ = [
     "RequirementReview",
     "RequirementReviewStatus",
     "RequirementStatus",
+    "UnitContextSummary",
 ]

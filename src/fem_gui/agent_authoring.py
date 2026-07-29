@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, replace
-from typing import Protocol
+from typing import Callable, Protocol
+
+from fem.application import ModelSession, UnitContext
 
 from fem_agent.authoring import (
     AgentProposal,
@@ -21,12 +23,17 @@ from fem_agent.authoring import (
     DefinitionSummary,
     LocalModelBinding,
     MeshSummary,
+    OperationKind,
     PartSummary,
+    ProposalKind,
     ProposalPortRecord,
     ProposalState,
     RequirementLedger,
     RequirementReview,
+    UnitContextSummary,
 )
+from fem_agent.geometry_authoring import geometry_recipe_from_payload
+from fem_agent.naming import NameAllocator
 
 
 class _SessionSnapshot(Protocol):
@@ -46,6 +53,7 @@ class _SessionSnapshot(Protocol):
     runs: object
     displayed_result: object | None
     mesh_current: bool
+    unit_context: object | None
 
 
 def _bounded_count(value: object) -> int:
@@ -63,8 +71,7 @@ def _recipe_dimension(recipe: object | None) -> int | None:
         return int(dimension)
     name = type(recipe).__name__.casefold()
     if any(
-        token in name
-        for token in ("rectangle", "disk", "plate", "sketch", "planar")
+        token in name for token in ("rectangle", "disk", "plate", "sketch", "planar")
     ):
         return 2
     if any(token in name for token in ("box", "cylinder", "extruded")):
@@ -89,9 +96,7 @@ def authoring_context_from_snapshot(
     """Copy a session projection into a bounded, provider-safe DTO."""
 
     session_id = str(snapshot.session_id)
-    source_kind = (
-        "blank" if snapshot.source_kind is None else str(snapshot.source_kind)
-    )
+    source_kind = "blank" if snapshot.source_kind is None else str(snapshot.source_kind)
     supported = source_kind in {"blank", "native"}
     binding = LocalModelBinding(
         document_id=f"document:{session_id}",
@@ -109,9 +114,7 @@ def authoring_context_from_snapshot(
                 PartSummary(
                     part_id=str(getattr(part, "id")),
                     name=str(getattr(part, "name")),
-                    recipe_kind=(
-                        None if recipe is None else type(recipe).__name__
-                    ),
+                    recipe_kind=(None if recipe is None else type(recipe).__name__),
                     dimension=_recipe_dimension(recipe),
                     suppressed=bool(getattr(part, "suppressed", False)),
                 )
@@ -130,24 +133,28 @@ def authoring_context_from_snapshot(
         )
     runs = tuple(getattr(snapshot, "runs", ()))
     job_status = "idle"
-    if any(str(getattr(item, "status", "")).casefold().endswith("running") for item in runs):
+    if any(
+        str(getattr(item, "status", "")).casefold().endswith("running") for item in runs
+    ):
         job_status = "running"
     elif runs:
-        job_status = str(getattr(runs[-1], "status", "completed")).split(".")[-1].casefold()
+        job_status = (
+            str(getattr(runs[-1], "status", "completed")).split(".")[-1].casefold()
+        )
 
-    blocked_reason = None if supported else "V1 A1 只绑定空白或 native 文档"
+    blocked_reason = None if supported else "V1 只绑定空白或 native 文档"
     capabilities = (
         CapabilitySummary("read_authoring_context", supported, blocked_reason),
         CapabilitySummary("review_requirements", supported, blocked_reason),
         CapabilitySummary("build_agent_draft", supported, blocked_reason),
         CapabilitySummary("present_static_proposal", supported, blocked_reason),
+        CapabilitySummary("draft_native_geometry", supported, blocked_reason),
+        CapabilitySummary("commit_native_geometry", supported, blocked_reason),
     )
     return AuthoringContext(
         binding=binding,
         model_name=(
-            str(snapshot.model_name)
-            if snapshot.model_name is not None
-            else None
+            str(snapshot.model_name) if snapshot.model_name is not None else None
         ),
         active_part_id=(
             str(snapshot.active_part_id)
@@ -172,6 +179,30 @@ def authoring_context_from_snapshot(
         job_status=job_status,
         result_available=snapshot.displayed_result is not None,
         capabilities=capabilities,
+        unit_context=(
+            None
+            if getattr(snapshot, "unit_context", None) is None
+            else UnitContextSummary(
+                length=str(snapshot.unit_context.length),
+                force=str(snapshot.unit_context.force),
+                stress=str(snapshot.unit_context.stress),
+                density=(
+                    None
+                    if snapshot.unit_context.density is None
+                    else str(snapshot.unit_context.density)
+                ),
+                acceleration=(
+                    None
+                    if snapshot.unit_context.acceleration is None
+                    else str(snapshot.unit_context.acceleration)
+                ),
+                convention=(
+                    None
+                    if snapshot.unit_context.convention is None
+                    else str(snapshot.unit_context.convention)
+                ),
+            )
+        ),
     )
 
 
@@ -188,6 +219,150 @@ class _GuiControlAuthorization:
     proposal_id: str
     action: str
     nonce: int
+
+
+class SessionGeometryAuthoringPort:
+    """A2 port that applies one geometry operation to the authoritative session."""
+
+    def __init__(
+        self,
+        session: ModelSession,
+        refresh_projection: Callable[[], None],
+    ) -> None:
+        if type(session) is not ModelSession:
+            raise TypeError("session must be ModelSession")
+        if not callable(refresh_projection):
+            raise TypeError("refresh_projection must be callable")
+        self._session = session
+        self._refresh_callback = refresh_projection
+        self._context: AuthoringContext | None = None
+        self._records: dict[str, ProposalPortRecord] = {}
+
+    def set_context(self, context: AuthoringContext) -> None:
+        if type(context) is not AuthoringContext:
+            raise AuthoringContractError("context must be AuthoringContext")
+        self._context = context
+
+    def present(self, proposal: AgentProposal) -> ProposalPortRecord:
+        if proposal.proposal_kind is not ProposalKind.GEOMETRY:
+            raise AuthoringContractError(
+                "A2 session port only accepts geometry proposals"
+            )
+        if len(proposal.operations) != 1 or proposal.operations[0].kind not in {
+            OperationKind.CREATE_NATIVE_PROJECT,
+            OperationKind.ADD_NATIVE_PART,
+        }:
+            raise AuthoringContractError(
+                "A2 geometry proposal must contain one create/add operation"
+            )
+        if proposal.proposal_id in self._records:
+            raise AuthoringContractError("proposal_id is already registered")
+        record = ProposalPortRecord(
+            proposal,
+            ProposalState.PENDING_CONFIRMATION,
+        )
+        self._records[proposal.proposal_id] = record
+        return record
+
+    def accept(self, proposal_id: str) -> ProposalPortRecord:
+        record = self._pending(proposal_id)
+        proposal = record.proposal
+        current_id = self._session.session_id
+        current_revision = self._session.session_revision
+        if (
+            proposal.target_session_id != current_id
+            or proposal.target_document_id != f"document:{current_id}"
+            or proposal.base_session_revision != current_revision
+        ):
+            raise AuthoringContractError("geometry proposal target is stale")
+        operation = proposal.operations[0]
+        parameters = operation.parameters
+        recipe = geometry_recipe_from_payload(parameters["recipe"])
+        snapshot = self._session.snapshot()
+        part_name = NameAllocator(
+            {"parts": (part.name for part in snapshot.parts)}
+        ).require_next(
+            "parts",
+            "部件",
+            str(parameters["part_name"]),
+        )
+        raw_units = parameters.get("unit_context")
+        if not isinstance(raw_units, dict):
+            raise AuthoringContractError(
+                "geometry proposal requires confirmed unit_context"
+            )
+        units = UnitContext.from_dict(raw_units)
+        if operation.kind is OperationKind.CREATE_NATIVE_PROJECT:
+            if snapshot.source_kind is not None:
+                raise AuthoringContractError(
+                    "create_native_project requires a blank session"
+                )
+            self._session.create_native_project_with_first_part(
+                NameAllocator().require_next(
+                    "models",
+                    "模型",
+                    str(parameters["project_name"]),
+                ),
+                units,
+                recipe,
+                part_name=part_name,
+                expected_session_revision=proposal.base_session_revision,
+            )
+        else:
+            if snapshot.source_kind != "native":
+                raise AuthoringContractError(
+                    "add_native_part requires a native project"
+                )
+            self._session.add_native_part(
+                recipe,
+                name=part_name,
+                mesh_settings=None,
+                expected_session_revision=proposal.base_session_revision,
+                unit_context=units,
+            )
+        succeeded = replace(record, state=ProposalState.SUCCEEDED)
+        self._records[proposal_id] = succeeded
+        return succeeded
+
+    def refresh_projection(self) -> None:
+        self._refresh_callback()
+
+    def reject(self, proposal_id: str) -> ProposalPortRecord:
+        record = self._pending(proposal_id)
+        rejected = replace(record, state=ProposalState.REJECTED)
+        self._records[proposal_id] = rejected
+        return rejected
+
+    def stale(self, proposal_id: str, reason: str) -> ProposalPortRecord:
+        record = self._pending(proposal_id)
+        stale = replace(
+            record,
+            state=ProposalState.STALE,
+            message=str(reason).strip(),
+        )
+        self._records[proposal_id] = stale
+        return stale
+
+    def mark_failed(self, proposal_id: str, message: str) -> ProposalPortRecord:
+        record = self._records[proposal_id]
+        failed = replace(
+            record,
+            state=ProposalState.FAILED,
+            message=str(message).strip(),
+        )
+        self._records[proposal_id] = failed
+        return failed
+
+    def _pending(self, proposal_id: str) -> ProposalPortRecord:
+        try:
+            record = self._records[proposal_id]
+        except KeyError as exc:
+            raise AuthoringContractError("proposal is not registered") from exc
+        if record.state is not ProposalState.PENDING_CONFIRMATION:
+            raise AuthoringAuthorizationError(
+                f"proposal is already {record.state.value}"
+            )
+        return record
 
 
 class AgentAuthoringBridge:
@@ -219,9 +394,7 @@ class AgentAuthoringBridge:
     def bind_context(self, context: AuthoringContext) -> tuple[str, ...]:
         if type(context) is not AuthoringContext:
             raise AuthoringContractError("context must be AuthoringContext")
-        prior_binding = (
-            None if self._context is None else self._context.binding
-        )
+        prior_binding = None if self._context is None else self._context.binding
         self._context = context
         self._port.set_context(context)
         if prior_binding is None or prior_binding == context.binding:
@@ -284,6 +457,9 @@ class AgentAuthoringBridge:
             self._records[proposal_id] = failed
             return self._receipt(failed)
         self._records[proposal_id] = accepted
+        refresh = getattr(self._port, "refresh_projection", None)
+        if callable(refresh):
+            refresh()
         return self._receipt(accepted)
 
     def reject_proposal(
@@ -422,5 +598,6 @@ class AgentAuthoringBridge:
 __all__ = [
     "AgentAuthoringBridge",
     "BridgeReceipt",
+    "SessionGeometryAuthoringPort",
     "authoring_context_from_snapshot",
 ]
