@@ -2210,7 +2210,11 @@ def _region_element_ids(
             for element_id, element in element_lookup.items()
             if any(int(node_id) in node_ids for node_id in element.node_ids)
         )
-    unique = _ordered_unique(ids)
+    # Region members are normalized integers, so dict-key de-duplication keeps
+    # their declaration order without the quadratic list membership scan used
+    # by the generic helper.  Imported assembly-wide sets can contain hundreds
+    # of thousands of elements.
+    unique = tuple(dict.fromkeys(ids))
     missing = tuple(
         element_id
         for element_id in unique

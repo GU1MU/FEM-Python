@@ -184,18 +184,19 @@ def classify_result_model(model: Any) -> ElementResultProfile:
 
     try:
         mesh = model.mesh
-        elements = tuple(mesh.elements)
         mesh_dofs_per_node = mesh.dofs_per_node
     except AttributeError as error:
         raise TypeError(
             "model must expose a mesh with elements and dofs_per_node"
         ) from error
-    element_types = []
-    for element in elements:
+    element_types: list[Any] = []
+    for element in mesh.elements:
         try:
-            element_types.append(element.type)
+            element_type = element.type
         except AttributeError as error:
             raise TypeError("mesh elements must expose type") from error
+        if element_type not in element_types:
+            element_types.append(element_type)
     return classify_result_element_types(
         tuple(element_types),
         dofs_per_node=mesh_dofs_per_node,

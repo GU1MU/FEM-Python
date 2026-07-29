@@ -74,6 +74,94 @@ def test_valid_collinear_truss_uses_actual_stiffness_and_passes() -> None:
     assert report.diagnostics == ()
 
 
+def test_quick_preflight_skips_stiffness_without_mutating_model(
+    monkeypatch,
+) -> None:
+    model = _read("truss2_tension.inp")
+    before = deepcopy(model.mesh.elements[0].props)
+    calls = []
+    monkeypatch.setattr(
+        preflight_module.static_linear,
+        "validate_stiffness",
+        lambda *_args, **_kwargs: calls.append(True),
+    )
+
+    report = run_static_preflight(
+        model,
+        "Tension",
+        check_numerical_stability=False,
+        copy_model=False,
+    )
+
+    assert report.passed
+    assert not report.numerical_stability_checked
+    assert calls == []
+    assert model.mesh.elements[0].props == before
+    assert {
+        item.code for item in report.warnings
+    } == {"static.stiffness.skipped_large_model"}
+
+
+def test_large_model_quick_check_avoids_per_element_resolution(
+    monkeypatch,
+) -> None:
+    model = _read("truss2_tension.inp")
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("full-model operation must not run")
+
+    monkeypatch.setattr(
+        preflight_module,
+        "describe_model_capabilities",
+        unexpected,
+    )
+    monkeypatch.setattr(
+        preflight_module.materials,
+        "resolve_sections",
+        unexpected,
+    )
+    monkeypatch.setattr(
+        preflight_module.static_linear,
+        "validate_stiffness",
+        unexpected,
+    )
+
+    report = run_static_preflight(
+        model,
+        "Tension",
+        check_numerical_stability=False,
+        copy_model=False,
+        quick_check=True,
+    )
+
+    assert report.passed
+    assert not report.numerical_stability_checked
+    assert {
+        item.code for item in report.warnings
+    } == {
+        "model.capability.sampled_large_model",
+        "static.stiffness.skipped_large_model",
+    }
+
+
+def test_large_model_quick_check_keeps_section_coverage_blocking() -> None:
+    model = _read("truss2_tension.inp")
+    model.sections = []
+
+    report = run_static_preflight(
+        model,
+        "Tension",
+        check_numerical_stability=False,
+        copy_model=False,
+        quick_check=True,
+    )
+    codes = {item.code for item in report.errors}
+
+    assert not report.passed
+    assert "definition.section.missing" in codes
+    assert "definition.section.unassigned_elements" in codes
+
+
 def test_valid_beam_reports_orientation_limitation_without_blocking() -> None:
     model = _read("beam2_rectangle_uniform_load.inp")
     model.sections[0].properties.pop(

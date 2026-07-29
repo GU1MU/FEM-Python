@@ -3447,8 +3447,15 @@ class ModelSession:
     # ------------------------------------------------------------------
     # Per-step validation
     def prepare_validation(
-        self, step_name: str | None = None
+        self,
+        step_name: str | None = None,
+        *,
+        detach_model: bool = True,
     ) -> ValidationTaskSnapshot:
+        """Prepare validation, optionally deferring the model copy to a worker."""
+
+        if type(detach_model) is not bool:
+            raise TypeError("detach_model must be bool")
         artifact = self._require_current_artifact()
         resolved = self._resolve_step_name(step_name)
         token = self._issue_token(
@@ -3459,7 +3466,11 @@ class ModelSession:
         )
         return ValidationTaskSnapshot(
             token=token,
-            model=deepcopy(artifact.model),
+            model=(
+                deepcopy(artifact.model)
+                if detach_model
+                else artifact.model
+            ),
             step_name=resolved,
         )
 

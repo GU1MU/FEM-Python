@@ -5,6 +5,7 @@ from copy import deepcopy
 import numpy as np
 import pytest
 
+import fem.application.results.provider as provider_module
 from fem.application.results.data import FieldState
 from fem.application.results.fields import (
     FieldMaterializationKey,
@@ -84,6 +85,31 @@ def _two_dimensional_result() -> ModelResult:
         reactions=np.asarray(
             [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0]
         ),
+    )
+
+
+def _many_quad_result(element_count: int) -> ModelResult:
+    mesh = Mesh2D(
+        nodes=[
+            Node2D(1, 0.0, 0.0),
+            Node2D(2, 1.0, 0.0),
+            Node2D(3, 1.0, 1.0),
+            Node2D(4, 0.0, 1.0),
+        ],
+        elements=[
+            Element2D(
+                10_000 + index,
+                [1, 2, 3, 4],
+                "Quad4",
+            )
+            for index in range(element_count)
+        ],
+    )
+    return ModelResult(
+        model=FEMModel(mesh=mesh),
+        step=None,
+        U=np.zeros(mesh.num_dofs),
+        reactions=np.zeros(mesh.num_dofs),
     )
 
 
@@ -457,6 +483,70 @@ def test_topology_rejects_wrong_or_repeated_element_connectivity(
 
     with pytest.raises(ValueError, match=message):
         build_result_provider(_source(), result)
+
+
+def test_topology_rejects_duplicate_element_id_with_stable_error() -> None:
+    result = _two_dimensional_result()
+    duplicate = deepcopy(result.model.mesh.elements[0])
+    result.model.mesh.elements.append(duplicate)
+
+    with pytest.raises(
+        ValueError,
+        match=r"mesh element id 90 is duplicated",
+    ):
+        build_result_provider(_source(), result)
+
+
+def test_topology_duplicate_detection_uses_one_hash_lookup_per_element(
+    monkeypatch,
+) -> None:
+    element_count = 512
+    builtin_set = set
+    created_sets = []
+
+    class CountingSet(builtin_set):
+        def __init__(self, *args):
+            super().__init__(*args)
+            self.initial_size = len(self)
+            self.contains_calls = 0
+            self.add_calls = 0
+
+        def __contains__(self, value):
+            self.contains_calls += 1
+            return super().__contains__(value)
+
+        def add(self, value):
+            self.add_calls += 1
+            return super().add(value)
+
+    def tracked_set(*args):
+        value = CountingSet(*args)
+        created_sets.append(value)
+        return value
+
+    monkeypatch.setattr(
+        provider_module,
+        "set",
+        tracked_set,
+        raising=False,
+    )
+
+    provider = build_result_provider(
+        _source(),
+        _many_quad_result(element_count),
+    )
+
+    assert provider.snapshot.topology.element_ids == tuple(
+        10_000 + index for index in range(element_count)
+    )
+    duplicate_indexes = [
+        value
+        for value in created_sets
+        if value.initial_size == 0
+        and value.contains_calls == element_count
+        and value.add_calls == element_count
+    ]
+    assert len(duplicate_indexes) == 1
 
 
 def test_request_resolution_and_lookup_use_the_complete_key() -> None:

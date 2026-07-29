@@ -42,7 +42,7 @@ def _plate_model(element_count: int, pressure: bool) -> FEMModel:
             lower_left + nx + 2, lower_left + nx + 1,
         )
         element_id = index + 1
-        elements.append(Element2D(element_id, node_ids, "Quad4Plane"))
+        elements.append(Element2D(element_id, node_ids, "Quad4"))
         if pressure and index >= element_count - min(nx, element_count):
             loaded_edges.append(ElementEdge(
                 element_id, 2, (lower_left + nx + 2, lower_left + nx + 1)

@@ -16,6 +16,7 @@ from fem.solvers import static_linear
 from .beam_frames import resolve_effective_beam_frames
 from .capabilities import (
     RegionRef,
+    _aggregate_capabilities,
     _assumed_orientation_diagnostic,
     _diagnostic_for_operation,
     _evaluate_output_requests,
@@ -38,10 +39,19 @@ def run_static_preflight(
     step: Any = None,
     *,
     token: TaskToken | None = None,
+    check_numerical_stability: bool = True,
+    copy_model: bool = True,
+    quick_check: bool = False,
 ) -> PreflightReport:
     """Check one detached model Step and return stable diagnostics."""
 
-    owned_model = deepcopy(model)
+    if type(check_numerical_stability) is not bool:
+        raise TypeError("check_numerical_stability must be bool")
+    if type(copy_model) is not bool:
+        raise TypeError("copy_model must be bool")
+    if type(quick_check) is not bool:
+        raise TypeError("quick_check must be bool")
+    owned_model = deepcopy(model) if copy_model else model
     requested_name = _requested_step_name(step, token)
     provenance = _report_provenance(token)
     diagnostics: list[PreflightDiagnostic] = []
@@ -49,22 +59,24 @@ def run_static_preflight(
     selected_step = None
     boundary = None
 
-    try:
-        capability_report = describe_model_capabilities(owned_model)
-        diagnostics.extend(capability_report.diagnostics)
-    except Exception as error:
-        capability_report = None
-        diagnostics.append(
-            _diagnostic(
-                "model.capability.unsupported_mix",
-                PreflightStage.CAPABILITY,
-                error,
-                subject="model",
-                remediation=(
-                    "请使用已注册且具有完整 capability descriptor 的单元。"
-                ),
+    if quick_check:
+        _append_quick_capability_diagnostics(owned_model, diagnostics)
+    else:
+        try:
+            capability_report = describe_model_capabilities(owned_model)
+            diagnostics.extend(capability_report.diagnostics)
+        except Exception as error:
+            diagnostics.append(
+                _diagnostic(
+                    "model.capability.unsupported_mix",
+                    PreflightStage.CAPABILITY,
+                    error,
+                    subject="model",
+                    remediation=(
+                        "请使用已注册且具有完整 capability descriptor 的单元。"
+                    ),
+                )
             )
-        )
 
     structure_valid = True
     try:
@@ -125,15 +137,23 @@ def run_static_preflight(
         report_step_name,
     )
 
-    definitions_valid = _append_definition_diagnostics(
-        owned_model,
-        diagnostics,
+    definitions_valid = (
+        _append_quick_definition_diagnostics(
+            owned_model,
+            diagnostics,
+        )
+        if quick_check
+        else _append_definition_diagnostics(
+            owned_model,
+            diagnostics,
+        )
     )
-    _append_beam_orientation_diagnostics(
-        owned_model,
-        selected_step,
-        diagnostics,
-    )
+    if not quick_check:
+        _append_beam_orientation_diagnostics(
+            owned_model,
+            selected_step,
+            diagnostics,
+        )
 
     if structure_valid and step_valid and selected_step is not None:
         try:
@@ -186,22 +206,39 @@ def run_static_preflight(
         and boundary.prescribed_displacements
         and not _has_blocking_diagnostic(diagnostics)
     ):
-        numerical_stability_checked = True
-        try:
-            static_linear.validate_stiffness(
-                owned_model,
-                selected_step,
-            )
-        except Exception as error:
+        if check_numerical_stability:
+            numerical_stability_checked = True
+            try:
+                static_linear.validate_stiffness(
+                    owned_model,
+                    selected_step,
+                )
+            except Exception as error:
+                diagnostics.append(
+                    _diagnostic(
+                        "static.stiffness.singular",
+                        PreflightStage.STIFFNESS,
+                        error,
+                        subject=report_step_name,
+                        path=("steps", report_step_name, "stiffness"),
+                        remediation=(
+                            "请检查约束、材料、截面、单元连接和零刚度自由度。"
+                        ),
+                    )
+                )
+        else:
             diagnostics.append(
-                _diagnostic(
-                    "static.stiffness.singular",
-                    PreflightStage.STIFFNESS,
-                    error,
+                PreflightDiagnostic(
+                    code="static.stiffness.skipped_large_model",
+                    severity=PreflightSeverity.WARNING,
+                    stage=PreflightStage.STIFFNESS,
+                    message=(
+                        "大型模型快速检查已跳过全局刚度矩阵的数值分解。"
+                    ),
                     subject=report_step_name,
                     path=("steps", report_step_name, "stiffness"),
                     remediation=(
-                        "请检查约束、材料、截面、单元连接和零刚度自由度。"
+                        "提交分析后，求解器仍会执行完整刚度矩阵装配与分解。"
                     ),
                 )
             )
@@ -226,11 +263,21 @@ def safe_static_preflight(
     step: Any = None,
     *,
     token: TaskToken | None = None,
+    check_numerical_stability: bool = True,
+    copy_model: bool = True,
+    quick_check: bool = False,
 ) -> PreflightReport:
     """Convert an unexpected preflight invariant failure into a typed report."""
 
     try:
-        return run_static_preflight(model, step, token=token)
+        return run_static_preflight(
+            model,
+            step,
+            token=token,
+            check_numerical_stability=check_numerical_stability,
+            copy_model=copy_model,
+            quick_check=quick_check,
+        )
     except Exception as error:
         step_name = _requested_step_name(step, token)
         return internal_error_report(
@@ -238,6 +285,347 @@ def safe_static_preflight(
             error,
             **_report_provenance(token),
         )
+
+
+def _append_quick_capability_diagnostics(
+    model: Any,
+    diagnostics: list[PreflightDiagnostic],
+) -> None:
+    """Check the model-wide contract without expanding every named region."""
+
+    try:
+        elements = getattr(getattr(model, "mesh", None), "elements", ())
+        element_types = tuple(
+            dict.fromkeys(str(getattr(element, "type", "")) for element in elements)
+        )
+        aggregate = _aggregate_capabilities(
+            element_types,
+            subject="model",
+        )
+        diagnostics.extend(aggregate.diagnostics)
+    except Exception as error:
+        element_types = ()
+        diagnostics.append(
+            _diagnostic(
+                "model.capability.unsupported_mix",
+                PreflightStage.CAPABILITY,
+                error,
+                subject="model",
+                remediation=(
+                    "请使用已注册且具有完整 capability descriptor 的单元。"
+                ),
+            )
+        )
+    diagnostics.append(
+        PreflightDiagnostic(
+            code="model.capability.sampled_large_model",
+            severity=PreflightSeverity.WARNING,
+            stage=PreflightStage.CAPABILITY,
+            message=(
+                "大型模型快速检查按唯一单元类型验证能力与截面，"
+                "未逐单元构造完整截面解析对象。"
+            ),
+            subject="model",
+            path=("capabilities",),
+            remediation=(
+                "提交分析后，求解器仍会对实际单元执行完整截面与刚度验证。"
+            ),
+            details={"element_types": element_types},
+        )
+    )
+
+
+def _append_quick_definition_diagnostics(
+    model: Any,
+    diagnostics: list[PreflightDiagnostic],
+) -> bool:
+    """Validate references, coverage, and one schema sample per element type."""
+
+    materials_by_name = getattr(model, "materials", {})
+    sections = tuple(getattr(model, "sections", ()))
+    definitions_valid = bool(materials_by_name) and bool(sections)
+    if not materials_by_name:
+        diagnostics.append(
+            PreflightDiagnostic(
+                code="definition.material.missing",
+                severity=PreflightSeverity.ERROR,
+                stage=PreflightStage.DEFINITIONS,
+                message="The model has no material definitions.",
+                subject="materials",
+                path=("definitions", "materials"),
+                remediation="请创建至少一个与单元族兼容的材料。",
+            )
+        )
+    if not sections:
+        diagnostics.append(
+            PreflightDiagnostic(
+                code="definition.section.missing",
+                severity=PreflightSeverity.ERROR,
+                stage=PreflightStage.DEFINITIONS,
+                message="The model has no section assignments.",
+                subject="sections",
+                path=("definitions", "sections"),
+                remediation="请创建截面并分配到单元集。",
+            )
+        )
+
+    try:
+        element_lookup = {
+            int(element.id): element
+            for element in getattr(
+                getattr(model, "mesh", None),
+                "elements",
+                (),
+            )
+        }
+        internal_sets = dict(
+            getattr(model, "metadata", {}).get(
+                "_abaqus_internal_element_sets",
+                {},
+            )
+        )
+        element_sets = {
+            **internal_sets,
+            **dict(getattr(model, "element_sets", {})),
+        }
+    except Exception as error:
+        diagnostics.append(
+            _diagnostic(
+                "definition.section.invalid",
+                PreflightStage.DEFINITIONS,
+                error,
+                subject="sections",
+                path=("definitions", "sections"),
+                remediation="请修复材料、截面参数及单元集引用。",
+            )
+        )
+        return False
+
+    targeted_element_ids: set[int] = set()
+    for assignment_index, section in enumerate(sections):
+        element_set_name = str(getattr(section, "element_set", ""))
+        material_name = str(getattr(section, "material", ""))
+        declared_type = str(getattr(section, "section_type", ""))
+        section_path = (
+            "definitions",
+            "sections",
+            str(assignment_index),
+        )
+        material = (
+            materials_by_name.get(material_name)
+            if hasattr(materials_by_name, "get")
+            else None
+        )
+        element_set = element_sets.get(element_set_name)
+
+        if material is None:
+            definitions_valid = False
+            _append_quick_section_diagnostic(
+                diagnostics,
+                code="definition.material.missing",
+                message=f"material {material_name} is not defined",
+                assignment_index=assignment_index,
+                element_set_name=element_set_name,
+                material_name=material_name,
+                declared_type=declared_type,
+                path=section_path,
+            )
+        if element_set is None:
+            definitions_valid = False
+            _append_quick_section_diagnostic(
+                diagnostics,
+                code="definition.section.missing",
+                message=f"element set {element_set_name} is not defined",
+                assignment_index=assignment_index,
+                element_set_name=element_set_name,
+                material_name=material_name,
+                declared_type=declared_type,
+                path=section_path,
+            )
+            continue
+
+        raw_element_ids = getattr(element_set, "element_ids", None)
+        if raw_element_ids is None:
+            definitions_valid = False
+            _append_quick_section_diagnostic(
+                diagnostics,
+                code="definition.section.missing",
+                message=(
+                    f"element set {element_set_name} has no element_ids"
+                ),
+                assignment_index=assignment_index,
+                element_set_name=element_set_name,
+                material_name=material_name,
+                declared_type=declared_type,
+                path=section_path,
+            )
+            continue
+
+        representatives: dict[str, tuple[int, Any]] = {}
+        missing_element_count = 0
+        first_missing_element_id: int | None = None
+        for raw_element_id in raw_element_ids:
+            try:
+                element_id = int(raw_element_id)
+            except (TypeError, ValueError):
+                definitions_valid = False
+                missing_element_count += 1
+                continue
+            element = element_lookup.get(element_id)
+            if element is None:
+                definitions_valid = False
+                missing_element_count += 1
+                if first_missing_element_id is None:
+                    first_missing_element_id = element_id
+                continue
+            targeted_element_ids.add(element_id)
+            representatives.setdefault(
+                str(getattr(element, "type", "")),
+                (element_id, element),
+            )
+
+        if missing_element_count:
+            _append_quick_section_diagnostic(
+                diagnostics,
+                code="definition.section.missing",
+                message=(
+                    f"element set {element_set_name} references "
+                    f"{missing_element_count} missing or invalid elements"
+                ),
+                assignment_index=assignment_index,
+                element_set_name=element_set_name,
+                material_name=material_name,
+                declared_type=declared_type,
+                path=section_path,
+                element_id=first_missing_element_id,
+                extra_details={"missing_element_count": missing_element_count},
+            )
+
+        if material is None:
+            continue
+        material_properties = getattr(material, "properties", {})
+        section_properties = getattr(section, "properties", {})
+        for element_type, (element_id, element) in representatives.items():
+            try:
+                materials.resolve_section_properties(
+                    element_type,
+                    material_properties,
+                    declared_type,
+                    section_properties,
+                    baseline_properties=materials.restored_element_properties(
+                        model,
+                        element_id,
+                        element,
+                    ),
+                )
+            except materials.SectionCompatibilityError as caught:
+                code = "definition.section.incompatible"
+                section_error = caught
+            except materials.MaterialPropertyError as caught:
+                code = "definition.material.invalid"
+                section_error = caught
+            except materials.SectionPropertyError as caught:
+                code = getattr(
+                    caught,
+                    "code",
+                    "definition.section.invalid",
+                )
+                section_error = caught
+            except NotImplementedError as caught:
+                code = "definition.section.incompatible"
+                section_error = caught
+            except Exception as caught:
+                code = "definition.section.invalid"
+                section_error = caught
+            else:
+                continue
+            definitions_valid = False
+            _append_quick_section_diagnostic(
+                diagnostics,
+                code=code,
+                message=str(section_error),
+                assignment_index=assignment_index,
+                element_set_name=element_set_name,
+                material_name=material_name,
+                declared_type=declared_type,
+                path=section_path,
+                element_id=element_id,
+                extra_details={
+                    "element_type": element_type,
+                    "representative_check": True,
+                    "error_type": type(section_error).__name__,
+                },
+            )
+
+    uncovered_count = 0
+    uncovered_sample: list[int] = []
+    for element_id in element_lookup:
+        if element_id in targeted_element_ids:
+            continue
+        uncovered_count += 1
+        if len(uncovered_sample) < 20:
+            uncovered_sample.append(element_id)
+    if uncovered_count:
+        definitions_valid = False
+        diagnostics.append(
+            PreflightDiagnostic(
+                code="definition.section.unassigned_elements",
+                severity=PreflightSeverity.ERROR,
+                stage=PreflightStage.DEFINITIONS,
+                message=(
+                    f"{uncovered_count} elements have no valid explicit "
+                    "section assignment."
+                ),
+                subject=tuple(uncovered_sample),
+                path=("definitions", "sections", "coverage"),
+                remediation="请将兼容截面分配到所有单元。",
+                details={
+                    "element_count": uncovered_count,
+                    "element_ids": tuple(uncovered_sample),
+                    "truncated": uncovered_count > len(uncovered_sample),
+                },
+            )
+        )
+    return definitions_valid
+
+
+def _append_quick_section_diagnostic(
+    diagnostics: list[PreflightDiagnostic],
+    *,
+    code: str,
+    message: str,
+    assignment_index: int,
+    element_set_name: str,
+    material_name: str,
+    declared_type: str,
+    path: tuple[str, ...],
+    element_id: int | None = None,
+    extra_details: dict[str, Any] | None = None,
+) -> None:
+    try:
+        subject: Any = RegionRef("element_set", element_set_name)
+    except ValueError:
+        subject = element_id if element_id is not None else element_set_name
+    details = {
+        "assignment_index": assignment_index,
+        "element_set": element_set_name,
+        "element_id": element_id,
+        "material": material_name,
+        "section_type": declared_type,
+    }
+    details.update(extra_details or {})
+    diagnostics.append(
+        PreflightDiagnostic(
+            code=code,
+            severity=PreflightSeverity.ERROR,
+            stage=PreflightStage.DEFINITIONS,
+            message=message,
+            subject=subject,
+            path=path,
+            remediation="请修复材料、截面及其单元集分配。",
+            details=details,
+        )
+    )
 
 
 def _append_definition_diagnostics(

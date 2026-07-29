@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event
 from time import monotonic, sleep
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -201,6 +202,130 @@ def test_model_check_runs_the_shared_numerical_stiffness_preflight(
 
     assert window.check_current_model(show_success=False)
     assert calls == ["Static-1"]
+    window.close()
+
+
+def test_large_model_check_policy_avoids_preflight_factorization() -> None:
+    within_limit = SimpleNamespace(
+        mesh=SimpleNamespace(
+            elements=range(100_000),
+            num_dofs=50_000,
+        )
+    )
+    too_many_elements = SimpleNamespace(
+        mesh=SimpleNamespace(
+            elements=range(100_001),
+            num_dofs=50_000,
+        )
+    )
+    too_many_dofs = SimpleNamespace(
+        mesh=SimpleNamespace(
+            elements=range(100_000),
+            num_dofs=50_001,
+        )
+    )
+
+    assert main_window_module.should_run_numerical_model_check(
+        within_limit
+    )
+    assert not main_window_module.should_run_numerical_model_check(
+        too_many_elements
+    )
+    assert not main_window_module.should_run_numerical_model_check(
+        too_many_dofs
+    )
+
+
+def test_gui_large_model_check_defers_copy_and_uses_quick_preflight(
+    monkeypatch,
+    gui_inp_path,
+):
+    _application()
+    window = FEMMainWindow()
+    model = read(gui_inp_path)
+    window._model_loaded(
+        gui_inp_path,
+        (model, build_model_geometry(model)),
+    )
+    detach_options = []
+    preflight_options = []
+    original_prepare = window.session.prepare_validation
+    original_preflight = main_window_module.safe_static_preflight
+
+    def tracked_prepare(step_name=None, *, detach_model=True):
+        detach_options.append(detach_model)
+        return original_prepare(
+            step_name,
+            detach_model=detach_model,
+        )
+
+    def tracked_preflight(*args, **kwargs):
+        preflight_options.append(
+            (
+                kwargs["check_numerical_stability"],
+                kwargs["copy_model"],
+                kwargs["quick_check"],
+            )
+        )
+        return original_preflight(*args, **kwargs)
+
+    monkeypatch.setattr(
+        main_window_module,
+        "should_run_numerical_model_check",
+        lambda _model: False,
+    )
+    monkeypatch.setattr(
+        window.session,
+        "prepare_validation",
+        tracked_prepare,
+    )
+    monkeypatch.setattr(
+        main_window_module,
+        "safe_static_preflight",
+        tracked_preflight,
+    )
+
+    assert window.check_current_model(show_success=False)
+
+    validation = window.session.validation_for("Static-1")
+    assert detach_options == [False]
+    assert preflight_options == [(False, False, True)]
+    assert validation is not None and validation.passed
+    assert {
+        item.code for item in validation.report.warnings
+    } == {
+        "model.capability.sampled_large_model",
+        "static.stiffness.skipped_large_model",
+    }
+    window.close()
+
+
+def test_validation_only_projection_reuses_detached_model_snapshot(
+    monkeypatch,
+    gui_inp_path,
+):
+    _application()
+    window = FEMMainWindow()
+    model = read(gui_inp_path)
+    window._model_loaded(
+        gui_inp_path,
+        (model, build_model_geometry(model)),
+    )
+    detached_model = window.document.model
+    validation = window.session.prepare_validation("Static-1")
+    delta = window.session.accept_validation(
+        validation.token,
+        passing_preflight_report(validation.token),
+    )
+
+    def unexpected_snapshot():
+        raise AssertionError("validation projection must not copy the model")
+
+    monkeypatch.setattr(window.session, "snapshot", unexpected_snapshot)
+
+    assert window._apply_session_delta(delta)
+    assert window.document.model is detached_model
+    assert window.document.validation_current("Static-1")
     window.close()
 
 

@@ -550,6 +550,7 @@ def _build_topology(
     ).reshape((len(node_ids), 3))
 
     element_ids: list[int] = []
+    seen_element_ids: set[int] = set()
     element_types: list[str] = []
     connectivity: list[tuple[int, ...]] = []
     element_region_keys = []
@@ -565,7 +566,7 @@ def _build_topology(
             raise TypeError(
                 "mesh elements must expose id, type, and node_ids"
             ) from error
-        if element_id in element_ids:
+        if element_id in seen_element_ids:
             raise ValueError(f"mesh element id {element_id} is duplicated")
         if len(connected) != descriptor.node_count:
             raise ValueError(
@@ -584,6 +585,7 @@ def _build_topology(
                 f"element {element_id} references missing node {missing[0]}"
             )
         element_ids.append(element_id)
+        seen_element_ids.add(element_id)
         element_types.append(descriptor.canonical_type)
         connectivity.append(connected)
         element_region_keys.append(result_region_key_for_element(element))

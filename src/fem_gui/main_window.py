@@ -8,6 +8,7 @@ from dataclasses import replace
 import logging
 from pathlib import Path
 from time import perf_counter
+from types import MappingProxyType
 from typing import Any, Callable
 
 import numpy as np
@@ -30,6 +31,7 @@ from fem.application import (
     AuthoringCapability,
     AuthoringStatus,
     BeamFrameReport,
+    ChangeKind,
     DefinitionEditBatch,
     DeleteIntent,
     DefinitionRejected,
@@ -275,6 +277,8 @@ _RESULT_FIELD_STATE_LABELS = {
     FieldState.LAZY: "按需加载",
     FieldState.UNAVAILABLE: "不可用",
 }
+_NUMERICAL_MODEL_CHECK_DOF_LIMIT = 50_000
+_NUMERICAL_MODEL_CHECK_ELEMENT_LIMIT = 100_000
 def initial_display_policy(
     element_count: int,
     node_count: int,
@@ -293,6 +297,23 @@ def initial_display_policy(
         "show_labels": False,
         "simplified": simplified,
     }
+
+
+def should_run_numerical_model_check(model: object) -> bool:
+    """Return whether a full stiffness factorization is suitable for preflight."""
+
+    mesh = getattr(model, "mesh", None)
+    if mesh is None:
+        return True
+    try:
+        element_count = len(mesh.elements)
+        dof_count = int(mesh.num_dofs)
+    except (AttributeError, TypeError, ValueError):
+        return True
+    return (
+        element_count <= _NUMERICAL_MODEL_CHECK_ELEMENT_LIMIT
+        and dof_count <= _NUMERICAL_MODEL_CHECK_DOF_LIMIT
+    )
 
 
 class _ExactDataComboBox(QComboBox):
@@ -1879,7 +1900,7 @@ class FEMMainWindow(QMainWindow):
         if revision <= self._applied_session_revision:
             return False
 
-        snapshot = self.session.snapshot()
+        snapshot = self._snapshot_for_delta(delta, revision)
         if snapshot.session_revision < revision:
             return False
         if snapshot.session_revision > revision:
@@ -2105,6 +2126,33 @@ class FEMMainWindow(QMainWindow):
         self._update_action_states()
         self._applied_session_revision = revision
         return True
+
+    def _snapshot_for_delta(
+        self,
+        delta: object,
+        revision: int,
+    ) -> object:
+        """Reuse the detached model for validation-only state transitions."""
+
+        if (
+            isinstance(delta, SessionDelta)
+            and delta.changed == frozenset({ChangeKind.VALIDATIONS})
+            and not delta.invalidated
+            and self.session.session_revision == revision
+            and self.document.session_id == self.session.session_id
+            and self.document.session_revision == revision - 1
+        ):
+            validations = {}
+            for step_name in self.session.runnable_step_names():
+                record = self.session.validation_for(step_name)
+                if record is not None:
+                    validations[step_name] = record
+            return replace(
+                self.document,
+                session_revision=revision,
+                validations=MappingProxyType(validations),
+            )
+        return self.session.snapshot()
 
     def _apply_revision_neutral_task_receipt(
         self,
@@ -7906,9 +7954,14 @@ class FEMMainWindow(QMainWindow):
         task = self._prepare_model_check(step_name)
         if task is None:
             raise RuntimeError(f"step cannot be checked: {step_name}")
+        full_numerical_check = should_run_numerical_model_check(task.model)
 
         def workload(context: TaskContext):
-            context.report("正在检查模型……")
+            context.report(
+                "正在检查模型……"
+                if full_numerical_check
+                else "正在执行大模型快速检查……"
+            )
             result = self._evaluate_model_check(
                 task.model,
                 task.step_name,
@@ -7965,7 +8018,10 @@ class FEMMainWindow(QMainWindow):
         step_name = self._current_step_name if step_name is None else step_name
         if step_name is None or not self.session.can_check(step_name):
             return None
-        return self.session.prepare_validation(step_name)
+        return self.session.prepare_validation(
+            step_name,
+            detach_model=False,
+        )
 
     @staticmethod
     def _evaluate_model_check(
@@ -7973,10 +8029,14 @@ class FEMMainWindow(QMainWindow):
         step_name: str,
         token: object | None = None,
     ) -> PreflightReport:
+        full_numerical_check = should_run_numerical_model_check(model)
         return safe_static_preflight(
             model,
             step_name,
             token=token,
+            check_numerical_stability=full_numerical_check,
+            copy_model=full_numerical_check,
+            quick_check=not full_numerical_check,
         )
 
     def _complete_model_check(
@@ -8028,6 +8088,10 @@ class FEMMainWindow(QMainWindow):
 
     def _show_model_check_report(self, report: PreflightReport) -> None:
         facts = report.facts
+        stiffness_skipped = any(
+            item.code == "static.stiffness.skipped_large_model"
+            for item in report.warnings
+        )
         warnings = "；".join(
             f"[{item.code}] {item.message}"
             for item in report.warnings
@@ -8053,7 +8117,11 @@ class FEMMainWindow(QMainWindow):
                 (
                     "已检查"
                     if report.numerical_stability_checked
-                    else "未执行"
+                    else (
+                        "已跳过（大模型快速检查）"
+                        if stiffness_skipped
+                        else "未执行"
+                    )
                 ),
             ),
             ("警告/限制", warnings or "无"),
