@@ -733,6 +733,7 @@ def test_failed_turn_keeps_diagnostic_without_duplicate_status_box():
     events = _Events(session_id="failed-turn-ui")
     drawer = AgentChatDrawer()
     drawer.setStyleSheet(_AGENT_CHAT_STYLESHEET)
+    drawer.resize(800, 400)
     drawer.replay_agent_events(
         (
             _turn_start(events),
@@ -755,14 +756,21 @@ def test_failed_turn_keeps_diagnostic_without_duplicate_status_box():
     drawer.show()
     application.processEvents()
 
-    assert drawer.findChild(QWidget, "agentChatDiagnostic") is not None
+    diagnostic_card = drawer.findChild(QWidget, "agentChatDiagnostic")
+    assert diagnostic_card is not None
     assert drawer.findChild(QLabel, "agentChatTurnStatus") is None
     title = drawer.findChild(QLabel, "agentChatDiagnosticTitle")
+    text = drawer.findChild(QLabel, "agentChatDiagnosticText")
     code = drawer.findChild(QLabel, "agentChatDiagnosticCode")
     assert title is not None
+    assert text is not None
     assert code is not None
+    assert diagnostic_card.width() <= 520
+    assert diagnostic_card.width() < drawer.event_feed.width()
     assert title.property("severity") == "error"
     assert title.palette().color(title.foregroundRole()).name() == "#b42318"
+    assert text.palette().color(text.foregroundRole()).name() == "#20262d"
+    assert text.font().bold()
     assert code.text() == "GUI-AGENT-CONFIG"
     assert code.font().pointSizeF() == 7.5
     drawer.close()

@@ -601,6 +601,69 @@ def test_provider_tool_call_reaches_registry_and_projects_tool_events(
     runtime.shutdown()
 
 
+def test_tool_diagnostic_stays_inside_tool_details(tmp_path):
+    fake = FakeProvider(
+        [
+            ProviderResponse(
+                AssistantMessage(
+                    "assistant",
+                    tool_calls=(
+                        ToolCall(
+                            "call-invalid-units",
+                            "set_unit_context",
+                            {
+                                "length": "mm",
+                                "force": "N",
+                                "stress": "MPa",
+                                "density": "tonne/mm^3",
+                                "acceleration": "mm/s^2",
+                            },
+                        ),
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+            ProviderResponse(
+                AssistantMessage(
+                    "assistant",
+                    "请继续提供建模参数。",
+                ),
+                finish_reason="stop",
+            ),
+        ]
+    )
+    runtime = QtAgentRuntime(
+        tmp_path / "agent-private",
+        provider_factory=lambda: fake,
+    )
+    collector = _EventCollector()
+    runtime.agentEventReady.connect(
+        collector.receive,
+        Qt.ConnectionType.QueuedConnection,
+    )
+
+    assert runtime.send_message("记录单位")
+    _wait_until(lambda: not runtime.busy)
+    _wait_until(
+        lambda: any(
+            event.event_type is EventType.TURN_COMPLETE
+            for event in collector.events
+        )
+    )
+
+    assert EventType.TOOL_FAILED in {
+        event.event_type for event in collector.events
+    }
+    assert EventType.DIAGNOSTIC not in {
+        event.event_type for event in collector.events
+    }
+    projected = AgentEventProjector.replay(collector.events).presentation
+    call = projected.turns[-1].tool_groups[0].calls[0]
+    assert call.diagnostics
+    assert "RevisionNotFoundError" in call.diagnostics[0]
+    runtime.shutdown()
+
+
 def test_text_around_tool_loop_keeps_message_tool_message_timeline(
     tmp_path,
 ):

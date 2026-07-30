@@ -297,8 +297,9 @@ QLabel#agentChatDiagnosticTitle[severity="blocking"] {
     color: #b42318;
 }
 QLabel#agentChatDiagnosticText {
-    color: #65562f;
+    color: #20262d;
     font-size: 9.5pt;
+    font-weight: 600;
 }
 QLabel#agentChatDiagnosticCode {
     color: #8a9299;
@@ -1627,6 +1628,11 @@ class AgentChatDrawer(_BoundaryFrame):
         card.setObjectName("agentChatDiagnostic")
         card.setProperty("diagnosticId", diagnostic.diagnostic_id)
         card.setProperty("severity", diagnostic.severity.value)
+        card.setMaximumWidth(520)
+        card.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Maximum,
+        )
         layout = QVBoxLayout(card)
         layout.setContentsMargins(9, 7, 9, 7)
         layout.setSpacing(2)
@@ -1642,7 +1648,11 @@ class AgentChatDrawer(_BoundaryFrame):
             code = _plain_label(diagnostic.code, card)
             code.setObjectName("agentChatDiagnosticCode")
             layout.addWidget(code)
-        self.event_feed_layout.addWidget(card)
+        self.event_feed_layout.addWidget(
+            card,
+            0,
+            Qt.AlignmentFlag.AlignLeft,
+        )
 
     def _add_confirmation_card(
         self,

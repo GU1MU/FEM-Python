@@ -115,6 +115,18 @@ _TOOL_DISPLAY_NAMES = {
 }
 
 
+def _diagnostic_identity(
+    raw_diagnostic: object,
+) -> tuple[str, str, str] | None:
+    if not isinstance(raw_diagnostic, Mapping):
+        return None
+    return (
+        str(raw_diagnostic.get("code", "")),
+        str(raw_diagnostic.get("severity", "")),
+        str(raw_diagnostic.get("message", "")),
+    )
+
+
 class AgentRuntimeConfigurationError(RuntimeError):
     """The configured GUI provider cannot be enabled safely."""
 
@@ -142,6 +154,9 @@ class _TurnContext:
     solve_call_id: str | None = None
     solve_succeeded: bool = False
     seen_engine_events: list[EngineEvent] = field(default_factory=list)
+    embedded_tool_diagnostics: list[
+        tuple[str, str, str]
+    ] = field(default_factory=list)
 
 
 @dataclass
@@ -1134,6 +1149,8 @@ class QtAgentRuntime(QObject):
         context: _TurnContext,
         event: EngineEvent,
     ) -> list[AgentEvent]:
+        if event.event is not EngineEventType.DIAGNOSTIC:
+            context.embedded_tool_diagnostics.clear()
         if event.event is EngineEventType.MESSAGE_STARTED:
             events: list[AgentEvent] = []
             if context.active_message_id is not None:
@@ -1191,10 +1208,16 @@ class QtAgentRuntime(QObject):
                     )
             return events
         if event.event is EngineEventType.DIAGNOSTIC:
+            raw_diagnostic = event.data.get("diagnostic")
+            identity = _diagnostic_identity(raw_diagnostic)
+            if identity in context.embedded_tool_diagnostics:
+                context.embedded_tool_diagnostics.remove(identity)
+                return []
+            context.embedded_tool_diagnostics.clear()
             return [
                 self._diagnostic_event_locked(
                     context,
-                    event.data.get("diagnostic"),
+                    raw_diagnostic,
                 )
             ]
         if event.event is EngineEventType.ERROR:
@@ -1325,6 +1348,11 @@ class QtAgentRuntime(QObject):
             if isinstance(diagnostics, (list, tuple))
             else ()
         )
+        context.embedded_tool_diagnostics = [
+            identity
+            for item in diagnostic_items
+            if (identity := _diagnostic_identity(item)) is not None
+        ]
         messages = [
             safe_tool_summary(item.get("message"))
             for item in diagnostic_items
