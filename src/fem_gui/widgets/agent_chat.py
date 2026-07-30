@@ -1759,6 +1759,7 @@ class AgentChatDrawer(_BoundaryFrame):
         user_layout = QHBoxLayout(user_row)
         user_layout.setContentsMargins(34, 0, 0, 0)
         user_layout.setSpacing(0)
+        user_layout.addStretch(0)
         user_bubble = _BoundaryFrame(user_row)
         user_bubble.setObjectName("agentChatUserMessage")
         bubble_layout = QVBoxLayout(user_bubble)
@@ -1766,8 +1767,21 @@ class AgentChatDrawer(_BoundaryFrame):
         user_text = _plain_label(text, user_bubble)
         user_text.setObjectName("agentChatUserLabel")
         user_text.setWordWrap(True)
+        # 气泡宽度随内容自适应：以最宽行的文本宽度加内边距作为上限，
+        # 短消息收窄为内容宽度，长消息仍占满可用宽度并自动换行。
+        user_text.ensurePolished()
+        metrics = user_text.fontMetrics()
+        natural_width = max(
+            (
+                metrics.horizontalAdvance(line)
+                for line in text.splitlines()
+            ),
+            default=0,
+        )
+        user_bubble.setMinimumWidth(48)
+        user_bubble.setMaximumWidth(max(natural_width + 26, 48))
         bubble_layout.addWidget(user_text)
-        user_layout.addWidget(user_bubble)
+        user_layout.addWidget(user_bubble, 1)
         self.event_feed_layout.addWidget(user_row)
 
     def _add_agent_message(self, message: MessageView) -> None:
