@@ -712,6 +712,7 @@ _TOOL_STATUS_LABELS = {
 
 _UNORDERED_LIST_PATTERN = re.compile(r"^\s{0,3}[-+*]\s+(.+)$")
 _ORDERED_LIST_PATTERN = re.compile(r"^\s{0,3}(\d+)[.)]\s+(.+)$")
+_TABLE_DELIMITER_PATTERN = re.compile(r"^:?-{3,}:?$")
 
 
 def _restricted_inline_markdown_html(markdown: str) -> str:
@@ -726,10 +727,112 @@ def _restricted_inline_markdown_html(markdown: str) -> str:
     return escaped
 
 
+def _split_markdown_table_row(line: str) -> tuple[str, ...] | None:
+    """Split one pipe row while preserving escaped and inline-code pipes."""
+
+    cells: list[str] = []
+    current: list[str] = []
+    escaped = False
+    in_code = False
+    separators = 0
+    for character in line.strip():
+        if escaped:
+            current.append(character)
+            escaped = False
+            continue
+        if character == "\\":
+            escaped = True
+            continue
+        if character == "`":
+            in_code = not in_code
+            current.append(character)
+            continue
+        if character == "|" and not in_code:
+            cells.append("".join(current).strip())
+            current = []
+            separators += 1
+            continue
+        current.append(character)
+    if escaped:
+        current.append("\\")
+    cells.append("".join(current).strip())
+    if separators == 0:
+        return None
+    if cells and not cells[0]:
+        cells.pop(0)
+    if cells and not cells[-1]:
+        cells.pop()
+    return tuple(cells) if cells else None
+
+
+def _table_alignments(
+    delimiter: tuple[str, ...] | None,
+    column_count: int,
+) -> tuple[str, ...] | None:
+    if (
+        delimiter is None
+        or len(delimiter) != column_count
+        or any(
+            _TABLE_DELIMITER_PATTERN.fullmatch(cell.replace(" ", ""))
+            is None
+            for cell in delimiter
+        )
+    ):
+        return None
+    alignments: list[str] = []
+    for cell in delimiter:
+        normalized = cell.replace(" ", "")
+        alignments.append(
+            "center"
+            if normalized.startswith(":") and normalized.endswith(":")
+            else "right"
+            if normalized.endswith(":")
+            else "left"
+        )
+    return tuple(alignments)
+
+
+def _restricted_table_html(
+    header: tuple[str, ...],
+    alignments: tuple[str, ...],
+    rows: list[tuple[str, ...]],
+) -> str:
+    cell_style = (
+        "border:1px solid #d6dce3;"
+        "padding:4px 7px;"
+        "vertical-align:top;"
+    )
+    rendered = [
+        "<table width='100%' border='1' bordercolor='#d6dce3' "
+        "cellspacing='0' cellpadding='0' "
+        "style='border-collapse:collapse; margin-top:5px; "
+        "margin-bottom:5px;'>",
+        "<tr>",
+    ]
+    for cell, alignment in zip(header, alignments, strict=True):
+        rendered.append(
+            f"<th style='{cell_style}background-color:#f2f4f6;"
+            f"text-align:{alignment};'>"
+            f"{_restricted_inline_markdown_html(cell)}</th>"
+        )
+    rendered.append("</tr>")
+    for row in rows:
+        rendered.append("<tr>")
+        for cell, alignment in zip(row, alignments, strict=True):
+            rendered.append(
+                f"<td style='{cell_style}text-align:{alignment};'>"
+                f"{_restricted_inline_markdown_html(cell)}</td>"
+            )
+        rendered.append("</tr>")
+    rendered.append("</table>")
+    return "".join(rendered)
+
+
 def _restricted_markdown_html(markdown: str) -> str:
     """把受限 Markdown 转成不含链接、图片或原始 HTML 的 Qt 富文本。"""
     rendered: list[str] = []
     active_list: str | None = None
+    lines = markdown.split("\n")
 
     def close_list() -> None:
         nonlocal active_list
@@ -737,7 +840,35 @@ def _restricted_markdown_html(markdown: str) -> str:
             rendered.append(f"</{active_list}>")
             active_list = None
 
-    for line in markdown.split("\n"):
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        header = _split_markdown_table_row(line)
+        delimiter = (
+            _split_markdown_table_row(lines[index + 1])
+            if index + 1 < len(lines)
+            else None
+        )
+        alignments = (
+            _table_alignments(delimiter, len(header))
+            if header is not None
+            else None
+        )
+        if header is not None and alignments is not None:
+            close_list()
+            rows: list[tuple[str, ...]] = []
+            index += 2
+            while index < len(lines):
+                row = _split_markdown_table_row(lines[index])
+                if row is None or len(row) != len(header):
+                    break
+                rows.append(row)
+                index += 1
+            rendered.append(
+                _restricted_table_html(header, alignments, rows)
+            )
+            continue
+
         unordered = _UNORDERED_LIST_PATTERN.match(line)
         ordered = _ORDERED_LIST_PATTERN.match(line)
         list_type = "ul" if unordered is not None else (
@@ -761,12 +892,14 @@ def _restricted_markdown_html(markdown: str) -> str:
                 + _restricted_inline_markdown_html(content)
                 + "</li>"
             )
+            index += 1
             continue
 
         close_list()
         if line:
             rendered.append(_restricted_inline_markdown_html(line))
         rendered.append("<br>")
+        index += 1
 
     close_list()
     if rendered and rendered[-1] == "<br>":
@@ -1360,14 +1493,15 @@ class AgentChatDrawer(_BoundaryFrame):
 
     def _add_agent_message(self, message: MessageView) -> None:
         text = message.text
+        rendered_text = _restricted_markdown_html(text)
         if message.status is MessageStatus.STREAMING:
-            text += " ▌"
+            rendered_text += " ▌"
         label = QLabel(self.event_feed)
         label.setObjectName("agentChatAgentMessage")
         label.setProperty("messageId", message.message_id)
         label.setProperty("messageStatus", message.status.value)
         label.setTextFormat(Qt.TextFormat.RichText)
-        label.setText(_restricted_markdown_html(text))
+        label.setText(rendered_text)
         label.setOpenExternalLinks(False)
         label.setWordWrap(True)
         label.setTextInteractionFlags(

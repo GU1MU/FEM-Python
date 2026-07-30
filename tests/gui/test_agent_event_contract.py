@@ -848,6 +848,58 @@ def test_restricted_markdown_renders_ordered_and_unordered_lists():
     drawer.close()
 
 
+def test_restricted_markdown_renders_safe_aligned_tables():
+    application = _application()
+    events = _Events(session_id="markdown-table-session")
+    drawer = AgentChatDrawer()
+    drawer.replay_agent_events(
+        (
+            _turn_start(events),
+            events.make(
+                EventType.MESSAGE_START,
+                {
+                    "message_id": "markdown-table-message",
+                    "role": "assistant",
+                    "format": "restricted_markdown",
+                },
+            ),
+        )
+    )
+    drawer.show()
+    drawer.apply_agent_event(
+        events.make(
+            EventType.MESSAGE_DELTA,
+            {
+                "message_id": "markdown-table-message",
+                "delta": (
+                    "| 参数 | 默认值 | 说明 |\n"
+                    "| :--- | ---: | :---: |\n"
+                    "| **厚度** | 1 mm | `plane stress` |\n"
+                    "| 载荷 | 10 MPa | <script>unsafe</script> |\n"
+                    "| 转义 | A \\| B | `x|y` |"
+                ),
+            },
+        )
+    )
+    application.processEvents()
+
+    label = drawer.findChild(QLabel, "agentChatAgentMessage")
+    assert label is not None
+    rendered = label.text()
+    assert "<table " in rendered
+    assert rendered.count("<th ") == 3
+    assert rendered.count("<td ") == 9
+    assert "text-align:left" in rendered
+    assert "text-align:right" in rendered
+    assert "text-align:center" in rendered
+    assert "<b>厚度</b>" in rendered
+    assert "font-family:monospace" in rendered
+    assert "A | B" in rendered
+    assert "&lt;script&gt;unsafe&lt;/script&gt;" in rendered
+    assert "<script>" not in rendered
+    drawer.close()
+
+
 def test_conversation_follows_stream_until_user_scrolls_up():
     application = _application()
     events = _Events(session_id="scroll-follow-session")
