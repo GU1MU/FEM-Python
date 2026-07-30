@@ -300,7 +300,7 @@ QLabel#agentChatWorkspaceState {
     background: #f3f5f7;
     border: 1px solid #dde1e5;
     border-radius: 6px;
-    padding: 3px 8px;
+    padding: 2px 7px;
     font-size: 8.5pt;
 }
 QFrame#agentChatSuggestion {
@@ -333,7 +333,7 @@ QPlainTextEdit#agentChatInput {
     background: #ffffff;
     border: 1px solid #cbd2d8;
     border-radius: 8px;
-    padding: 9px;
+    padding: 7px;
     font-size: 10pt;
     selection-background-color: #dce9f2;
 }
@@ -346,13 +346,13 @@ QPlainTextEdit#agentChatInput:disabled {
 }
 QToolButton#agentChatAddButton, QToolButton#agentChatSendButton,
 QToolButton#agentChatStopButton {
-    border-radius: 7px;
-    min-width: 34px;
-    max-width: 34px;
-    min-height: 34px;
-    max-height: 34px;
+    border-radius: 6px;
+    min-width: 30px;
+    max-width: 30px;
+    min-height: 30px;
+    max-height: 30px;
     padding: 0;
-    font-size: 14pt;
+    font-size: 13pt;
 }
 QToolButton#agentChatAddButton {
     color: #4c5963;
@@ -449,6 +449,10 @@ class _BoundaryListWidget(_EventBoundaryMixin, QListWidget):
 class _ChatInput(QPlainTextEdit):
     """在输入框内路由发送与候选键盘操作。"""
 
+    COLLAPSED_HEIGHT = 44
+    MAXIMUM_HEIGHT = 124
+    _CONTENT_VERTICAL_PADDING = 14
+
     submitRequested = Signal()
     suggestionMoveRequested = Signal(int)
     suggestionAcceptRequested = Signal()
@@ -457,6 +461,35 @@ class _ChatInput(QPlainTextEdit):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._suggestions_active = False
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.setFixedHeight(self.COLLAPSED_HEIGHT)
+        self.document().documentLayout().documentSizeChanged.connect(
+            self._fit_height_to_content
+        )
+        self.textChanged.connect(self._fit_height_to_content)
+
+    def _fit_height_to_content(self, *_args: object) -> None:
+        document = self.document()
+        document_layout = document.documentLayout()
+        block = document.begin()
+        document_height = 0.0
+        while block.isValid():
+            document_height += document_layout.blockBoundingRect(
+                block
+            ).height()
+            block = block.next()
+        target_height = max(
+            self.COLLAPSED_HEIGHT,
+            min(
+                self.MAXIMUM_HEIGHT,
+                round(document_height) + self._CONTENT_VERTICAL_PADDING,
+            ),
+        )
+        if self.height() != target_height:
+            self.setFixedHeight(target_height)
 
     def set_suggestions_active(self, active: bool) -> None:
         self._suggestions_active = bool(active)
@@ -1350,8 +1383,8 @@ class AgentChatDrawer(_BoundaryFrame):
         composer = _BoundaryFrame(parent)
         composer.setObjectName("agentChatComposer")
         layout = QVBoxLayout(composer)
-        layout.setContentsMargins(12, 10, 12, 11)
-        layout.setSpacing(8)
+        layout.setContentsMargins(12, 6, 12, 7)
+        layout.setSpacing(5)
 
         self.workspace_state = QLabel("工作区  尚未选择", composer)
         self.workspace_state.setObjectName("agentChatWorkspaceState")
@@ -1392,8 +1425,6 @@ class AgentChatDrawer(_BoundaryFrame):
         self.input.setPlaceholderText(
             "询问 FEM Agent；使用 @ 引用工作区文件…"
         )
-        self.input.setMinimumHeight(96)
-        self.input.setMaximumHeight(110)
         self.input.setTabChangesFocus(True)
         self.input.textChanged.connect(self._input_changed)
         self.input.document().contentsChange.connect(
@@ -1413,7 +1444,7 @@ class AgentChatDrawer(_BoundaryFrame):
 
         footer = QHBoxLayout()
         footer.setContentsMargins(0, 0, 0, 0)
-        footer.setSpacing(5)
+        footer.setSpacing(4)
 
         self.add_button = _BoundaryToolButton(composer)
         self.add_button.setObjectName("agentChatAddButton")
@@ -1439,7 +1470,7 @@ class AgentChatDrawer(_BoundaryFrame):
 
         self.send_state = QStackedWidget(composer)
         self.send_state.setObjectName("agentChatSendState")
-        self.send_state.setFixedSize(34, 34)
+        self.send_state.setFixedSize(30, 30)
         self.send_button = _BoundaryToolButton(self.send_state)
         self.send_button.setObjectName("agentChatSendButton")
         self.send_button.setIcon(
@@ -1447,7 +1478,7 @@ class AgentChatDrawer(_BoundaryFrame):
                 QStyle.StandardPixmap.SP_ArrowUp
             )
         )
-        self.send_button.setIconSize(QSize(18, 18))
+        self.send_button.setIconSize(QSize(16, 16))
         self.send_button.setToolTip("发送到配置的 FEM Agent Provider")
         self.send_button.setEnabled(False)
         self.send_button.clicked.connect(self._submit_current_input)

@@ -97,7 +97,7 @@ class _ViewportProbe(QWidget):
         event.accept()
 
 
-def test_drawer_removes_phase_copy_and_uses_larger_primary_controls():
+def test_drawer_removes_phase_copy_and_uses_compact_composer_controls():
     application = _application()
     viewport = _ViewportProbe()
     host = ModelViewportOverlayHost(viewport)
@@ -119,9 +119,39 @@ def test_drawer_removes_phase_copy_and_uses_larger_primary_controls():
     assert drawer.findChild(QWidget, "agentChatAuthoringBinding") is None
     assert not hasattr(drawer, "new_session_button")
     assert drawer.input.font().pointSizeF() >= 10
-    assert drawer.input.minimumHeight() >= 96
+    assert drawer.input.height() == 44
     assert drawer.close_button.sizeHint().height() >= 32
-    assert drawer.send_state.size() == QSize(34, 34)
+    assert drawer.send_state.size() == QSize(30, 30)
+    host.close()
+
+
+def test_composer_input_expands_for_multiple_lines_and_collapses_when_cleared():
+    application = _application()
+    viewport = _ViewportProbe()
+    host = ModelViewportOverlayHost(viewport)
+    host.resize(720, 520)
+    host.show()
+    application.processEvents()
+
+    editor = host.agent_chat_drawer.input
+    collapsed_height = editor.height()
+    editor.setPlainText("保持单行")
+    application.processEvents()
+    assert editor.height() == collapsed_height
+
+    editor.setPlainText("第一行\n第二行\n第三行")
+    application.processEvents()
+
+    assert editor.height() > collapsed_height
+    assert editor.height() <= 124
+
+    editor.setPlainText("\n".join(f"第 {index} 行" for index in range(20)))
+    application.processEvents()
+    assert editor.height() == 124
+
+    editor.clear()
+    application.processEvents()
+    assert editor.height() == collapsed_height
     host.close()
 
 
