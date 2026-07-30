@@ -133,6 +133,18 @@ def test_drawer_removes_phase_copy_and_uses_compact_composer_controls():
     assert not hasattr(drawer, "new_session_button")
     assert drawer.input.font().pointSizeF() >= 10
     assert drawer.input.height() == 44
+    assert drawer.input.parentWidget() is drawer.composer_surface
+    assert drawer.workspace_state.parentWidget() is drawer.composer_surface
+    assert drawer.add_button.parentWidget() is drawer.composer_surface
+    assert drawer.composer_hint.isHidden()
+    assert drawer.composer_hint.text() == ""
+    assert drawer.add_button.size() == QSize(24, 24)
+    surface_layout = drawer.composer_surface.layout()
+    footer_layout = surface_layout.itemAt(1).layout()
+    assert surface_layout.itemAt(0).widget() is drawer.input
+    assert footer_layout.itemAt(0).widget() is drawer.add_button
+    assert footer_layout.itemAt(1).widget() is drawer.workspace_state
+    assert footer_layout.itemAt(4).widget() is drawer.send_state
     assert drawer.close_button.width() <= 30
     assert drawer.close_button.height() <= 30
     assert drawer.send_state.size() == QSize(30, 30)
@@ -197,11 +209,13 @@ def test_composer_placeholder_hides_on_focus_and_returns_when_unfocused():
     application.processEvents()
     assert editor.hasFocus()
     assert editor.placeholderText() == ""
+    assert host.agent_chat_drawer.composer_surface.property("focused") is True
 
     editor.clearFocus()
     application.processEvents()
     assert not editor.hasFocus()
     assert editor.placeholderText() == expected_placeholder
+    assert host.agent_chat_drawer.composer_surface.property("focused") is False
     host.close()
 
 

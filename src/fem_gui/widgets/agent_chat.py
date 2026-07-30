@@ -460,6 +460,14 @@ QFrame#agentChatComposer {
     border: none;
     border-top: 1px solid #dfe3e7;
 }
+QFrame#agentChatComposerSurface {
+    background: #ffffff;
+    border: 1px solid #cbd2d8;
+    border-radius: 10px;
+}
+QFrame#agentChatComposerSurface[focused="true"] {
+    border-color: #4c7fa5;
+}
 QLabel#agentChatWorkspaceState {
     color: #66717b;
     background: #f3f5f7;
@@ -495,22 +503,17 @@ QListWidget#agentChatSuggestionList::item:selected {
 }
 QPlainTextEdit#agentChatInput {
     color: #20262d;
-    background: #ffffff;
-    border: 1px solid #cbd2d8;
-    border-radius: 8px;
-    padding: 7px;
+    background: transparent;
+    border: none;
+    padding: 6px 7px 2px 7px;
     font-size: 10pt;
     selection-background-color: #dce9f2;
 }
-QPlainTextEdit#agentChatInput:focus {
-    border-color: #4c7fa5;
-}
 QPlainTextEdit#agentChatInput:disabled {
     color: #8f979e;
-    background: #f5f6f7;
+    background: transparent;
 }
-QToolButton#agentChatAddButton, QToolButton#agentChatSendButton,
-QToolButton#agentChatStopButton {
+QToolButton#agentChatSendButton, QToolButton#agentChatStopButton {
     border-radius: 6px;
     min-width: 30px;
     max-width: 30px;
@@ -523,6 +526,13 @@ QToolButton#agentChatAddButton {
     color: #4c5963;
     background: transparent;
     border: 1px solid transparent;
+    border-radius: 5px;
+    min-width: 22px;
+    max-width: 22px;
+    min-height: 22px;
+    max-height: 22px;
+    padding: 0;
+    font-size: 12pt;
 }
 QToolButton#agentChatAddButton:hover {
     background: #edf2f5;
@@ -627,6 +637,7 @@ class _ChatInput(QPlainTextEdit):
     suggestionMoveRequested = Signal(int)
     suggestionAcceptRequested = Signal()
     suggestionDismissRequested = Signal()
+    focusChanged = Signal(bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -654,10 +665,12 @@ class _ChatInput(QPlainTextEdit):
     def focusInEvent(self, event: QFocusEvent) -> None:
         super().setPlaceholderText("")
         super().focusInEvent(event)
+        self.focusChanged.emit(True)
 
     def focusOutEvent(self, event: QFocusEvent) -> None:
         super().focusOutEvent(event)
         super().setPlaceholderText(self._idle_placeholder)
+        self.focusChanged.emit(False)
 
     def _fit_height_to_content(self, *_args: object) -> None:
         document = self.document()
@@ -2012,20 +2025,8 @@ class AgentChatDrawer(_BoundaryFrame):
         composer = _BoundaryFrame(parent)
         composer.setObjectName("agentChatComposer")
         layout = QVBoxLayout(composer)
-        layout.setContentsMargins(12, 6, 12, 7)
+        layout.setContentsMargins(10, 7, 10, 7)
         layout.setSpacing(5)
-
-        self.workspace_state = QLabel("工作区  尚未选择", composer)
-        self.workspace_state.setObjectName("agentChatWorkspaceState")
-        self.workspace_state.setSizePolicy(
-            QSizePolicy.Policy.Maximum,
-            QSizePolicy.Policy.Fixed,
-        )
-        layout.addWidget(
-            self.workspace_state,
-            0,
-            Qt.AlignmentFlag.AlignLeft,
-        )
 
         self.suggestion = _BoundaryFrame(composer)
         self.suggestion.setObjectName("agentChatSuggestion")
@@ -2049,7 +2050,14 @@ class AgentChatDrawer(_BoundaryFrame):
         layout.addWidget(self.suggestion)
         self.suggestion.hide()
 
-        self.input = _ChatInput(composer)
+        self.composer_surface = _BoundaryFrame(composer)
+        self.composer_surface.setObjectName("agentChatComposerSurface")
+        self.composer_surface.setProperty("focused", False)
+        surface_layout = QVBoxLayout(self.composer_surface)
+        surface_layout.setContentsMargins(5, 4, 5, 5)
+        surface_layout.setSpacing(3)
+
+        self.input = _ChatInput(self.composer_surface)
         self.input.setObjectName("agentChatInput")
         self.input.setPlaceholderText(
             "询问 FEM Agent；使用 @ 引用工作区文件…"
@@ -2069,15 +2077,17 @@ class AgentChatDrawer(_BoundaryFrame):
         self.input.suggestionDismissRequested.connect(
             self._hide_suggestions
         )
-        layout.addWidget(self.input)
+        self.input.focusChanged.connect(self._set_composer_surface_focused)
+        surface_layout.addWidget(self.input)
 
         footer = QHBoxLayout()
-        footer.setContentsMargins(0, 0, 0, 0)
+        footer.setContentsMargins(2, 0, 0, 0)
         footer.setSpacing(4)
 
-        self.add_button = _BoundaryToolButton(composer)
+        self.add_button = _BoundaryToolButton(self.composer_surface)
         self.add_button.setObjectName("agentChatAddButton")
         self.add_button.setText("＋")
+        self.add_button.setFixedSize(24, 24)
         self.add_button.setToolTip("添加上下文")
         self.add_menu = QMenu(self.add_button)
         self.add_menu.setObjectName("agentChatAddMenu")
@@ -2089,15 +2099,24 @@ class AgentChatDrawer(_BoundaryFrame):
         self.add_button.clicked.connect(self._show_add_menu)
         footer.addWidget(self.add_button)
 
-        self.composer_hint = QLabel(
-            "Enter 发送 · Shift+Enter 换行",
-            composer,
+        self.workspace_state = QLabel(
+            "工作区  尚未选择",
+            self.composer_surface,
         )
+        self.workspace_state.setObjectName("agentChatWorkspaceState")
+        self.workspace_state.setSizePolicy(
+            QSizePolicy.Policy.Maximum,
+            QSizePolicy.Policy.Fixed,
+        )
+        footer.addWidget(self.workspace_state)
+
+        self.composer_hint = QLabel("", self.composer_surface)
         self.composer_hint.setObjectName("agentChatComposerHint")
+        self.composer_hint.hide()
         footer.addWidget(self.composer_hint)
         footer.addStretch(1)
 
-        self.send_state = QStackedWidget(composer)
+        self.send_state = QStackedWidget(self.composer_surface)
         self.send_state.setObjectName("agentChatSendState")
         self.send_state.setFixedSize(30, 30)
         self.send_button = _BoundaryToolButton(self.send_state)
@@ -2120,8 +2139,16 @@ class AgentChatDrawer(_BoundaryFrame):
         self.send_state.addWidget(self.stop_button)
         self.send_state.setCurrentWidget(self.send_button)
         footer.addWidget(self.send_state)
-        layout.addLayout(footer)
+        surface_layout.addLayout(footer)
+        layout.addWidget(self.composer_surface)
         return composer
+
+    def _set_composer_surface_focused(self, focused: bool) -> None:
+        self.composer_surface.setProperty("focused", focused)
+        style = self.composer_surface.style()
+        style.unpolish(self.composer_surface)
+        style.polish(self.composer_surface)
+        self.composer_surface.update()
 
     def _show_add_menu(self) -> None:
         menu_size = self.add_menu.sizeHint()
@@ -2336,7 +2363,7 @@ class AgentChatDrawer(_BoundaryFrame):
             self._workspace_index = result.index
             self._workspace_references.clear()
             self._update_workspace_state()
-            self._show_preview_notice("Enter 发送 · Shift+Enter 换行")
+            self._show_preview_notice("")
         elif result.cancelled:
             self._show_preview_notice("已取消选择，工作区保持不变")
         else:
@@ -2394,7 +2421,9 @@ class AgentChatDrawer(_BoundaryFrame):
         self.set_runtime_busy(True)
 
     def _show_preview_notice(self, text: str) -> None:
-        self.composer_hint.setText(text)
+        notice = text.strip()
+        self.composer_hint.setText(notice)
+        self.composer_hint.setVisible(bool(notice))
 
     def _cancel_runtime_operation(self) -> None:
         if self.agent_runtime.cancel():
@@ -2787,7 +2816,7 @@ class AgentChatDrawer(_BoundaryFrame):
                 "FEM Agent 正在后台运行 · 可点击停止"
             )
         else:
-            self._show_preview_notice("Enter 发送 · Shift+Enter 换行")
+            self._show_preview_notice("")
         self.send_button.setEnabled(
             bool(self.input.toPlainText().strip())
             and not self._runtime_busy

@@ -94,7 +94,8 @@ def test_workspace_menu_and_slash_share_handler_and_cancel_is_stable(
     assert handler.user_workspace is not None
     assert handler.user_workspace.root == workspace.resolve()
     assert drawer.workspace_state.text() == f"工作区  {workspace.name}"
-    assert drawer.composer_hint.text() == "Enter 发送 · Shift+Enter 换行"
+    assert drawer.composer_hint.text() == ""
+    assert drawer.composer_hint.isHidden()
     assert drawer.input.toPlainText() == ""
     assert message_spy.count() == 0
     assert [action.text() for action in drawer.add_menu.actions()] == [
