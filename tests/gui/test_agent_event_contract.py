@@ -10,7 +10,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QLabel, QToolButton
+from PySide6.QtWidgets import QApplication, QLabel, QToolButton, QWidget
 
 from fem_gui.agent_events import (
     AGENT_EVENT_SCHEMA_VERSION,
@@ -707,6 +707,37 @@ def test_fake_event_stream_drives_tool_message_diagnostic_and_confirmation_ui():
     )
     assert not confirmation_button.property("authorized")
     assert not confirmation_button.isEnabled()
+    drawer.close()
+
+
+def test_failed_turn_keeps_diagnostic_without_duplicate_status_box():
+    application = _application()
+    events = _Events(session_id="failed-turn-ui")
+    drawer = AgentChatDrawer()
+    drawer.replay_agent_events(
+        (
+            _turn_start(events),
+            events.make(
+                EventType.DIAGNOSTIC,
+                {
+                    "diagnostic_id": "config-error",
+                    "title": "Agent 配置不可用",
+                    "message": "FEM Agent 配置无效或缺少凭据。",
+                    "severity": "error",
+                    "code": "GUI-AGENT-CONFIG",
+                },
+            ),
+            events.make(
+                EventType.TURN_FAILED,
+                {"reason": "FEM Agent 配置无效或缺少凭据。"},
+            ),
+        )
+    )
+    drawer.show()
+    application.processEvents()
+
+    assert drawer.findChild(QWidget, "agentChatDiagnostic") is not None
+    assert drawer.findChild(QLabel, "agentChatTurnStatus") is None
     drawer.close()
 
 

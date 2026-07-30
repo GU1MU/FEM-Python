@@ -12,7 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QToolButton
+from PySide6.QtWidgets import QApplication, QToolButton
 
 from fem_agent.authoring import (
     AgentProposal,
@@ -440,7 +440,6 @@ def test_minimal_gui_card_binds_and_only_buttons_authorize() -> None:
     drawer.show()
     application.processEvents()
 
-    binding = drawer.findChild(QLabel, "agentChatAuthoringBinding")
     accept = drawer.findChild(
         QToolButton,
         "agentChatProposalAcceptButton",
@@ -450,8 +449,6 @@ def test_minimal_gui_card_binds_and_only_buttons_authorize() -> None:
         "agentChatProposalRejectButton",
     )
 
-    assert binding is not None
-    assert binding.text() == "已绑定 · 模型-孔板"
     assert accept is not None and accept.isEnabled()
     assert reject is not None and reject.isEnabled()
     assert bridge.state(proposal.proposal_id) is (

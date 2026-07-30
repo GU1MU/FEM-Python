@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
+import hashlib
 import json
 import math
 import re
@@ -47,6 +48,8 @@ class AuthoringWorkflowStage(str, Enum):
     SOLVE_READY = "solve_ready"
     SOLVE_PENDING = "solve_pending"
     RESULTS_READY = "results_ready"
+    PROJECT_SAVE_PENDING = "project_save_pending"
+    DESTRUCTIVE_EDIT_PENDING = "destructive_edit_pending"
     STALE = "stale"
     CANCELLED = "cancelled"
 
@@ -77,6 +80,46 @@ class AuthoringTerminalRecord:
     operation: str
     state: str
     message: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectSaveProposalRecord:
+    proposal_id: str
+    proposal_hash: str
+    target_document_id: str
+    target_session_id: str
+    base_session_revision: int
+    resume_stage: AuthoringWorkflowStage
+    state: ProposalState = ProposalState.PENDING_CONFIRMATION
+    message: str = ""
+
+    def __post_init__(self) -> None:
+        identifier = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+        for field_name in (
+            "proposal_id",
+            "target_document_id",
+            "target_session_id",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or identifier.fullmatch(value) is None:
+                raise ValueError(f"{field_name} must be a bounded identifier")
+        if (
+            not isinstance(self.proposal_hash, str)
+            or re.fullmatch(r"[0-9a-f]{64}", self.proposal_hash) is None
+        ):
+            raise ValueError("proposal_hash must be a SHA-256 hexadecimal value")
+        if (
+            type(self.base_session_revision) is not int
+            or self.base_session_revision < 0
+        ):
+            raise ValueError("base_session_revision must be non-negative")
+        object.__setattr__(
+            self,
+            "resume_stage",
+            AuthoringWorkflowStage(self.resume_stage),
+        )
+        object.__setattr__(self, "state", ProposalState(self.state))
+        object.__setattr__(self, "message", str(self.message).strip()[:512])
 
 
 AuthoringToolHandler = Callable[
@@ -297,8 +340,201 @@ _PREPARE_SOLVE = _tool(
     ),
     _NO_ARGUMENTS,
 )
+_REQUEST_PROJECT_SAVE = _tool(
+    "request_project_save",
+    (
+        "Present a revision-bound local project-save card. This tool has no "
+        "path argument and cannot write a file; only its GUI button may start "
+        "the existing native project save command."
+    ),
+    _NO_ARGUMENTS,
+)
+_READ_DELETABLE_OBJECTS = _tool(
+    "read_deletable_objects",
+    (
+        "Read a bounded catalog of current native model objects that can be "
+        "selected for a GUI-confirmed deletion."
+    ),
+    _NO_ARGUMENTS,
+)
+_PREPARE_DELETE = _tool(
+    "prepare_delete_proposal",
+    (
+        "Build and present one revision-bound destructive-edit card for an "
+        "exact object returned by read_deletable_objects. This tool cannot "
+        "perform the deletion; only its GUI button may do so."
+    ),
+    {
+        "type": "object",
+        "properties": {
+            "object_type": {
+                "type": "string",
+                "enum": [
+                    "part",
+                    "generated_mesh",
+                    "named_region",
+                    "analysis_step",
+                    "boundary_condition",
+                    "load",
+                    "result_request",
+                ],
+            },
+            "target_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+            },
+            "step_name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+            },
+        },
+        "required": ["object_type", "target_id"],
+        "additionalProperties": False,
+    },
+)
+_READ_EDITABLE_OBJECTS = _tool(
+    "read_editable_model_objects",
+    (
+        "Read current named scopes, boundary conditions, and loads with their "
+        "bounded editable fields and stable identities."
+    ),
+    _NO_ARGUMENTS,
+)
+_PREPARE_EDIT = _tool(
+    "prepare_edit_model_object_proposal",
+    (
+        "Build and present one revision-bound edit card for an exact object "
+        "returned by read_editable_model_objects. This tool cannot modify the "
+        "model; only its GUI button may apply the edit."
+    ),
+    {
+        "type": "object",
+        "properties": {
+            "object_type": {
+                "type": "string",
+                "enum": [
+                    "named_region",
+                    "boundary_condition",
+                    "load",
+                ],
+            },
+            "target_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+            },
+            "step_name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+            },
+            "changes": {
+                "type": "object",
+                "properties": {
+                    "new_name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160,
+                    },
+                    "reference_keys": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 160,
+                        },
+                        "minItems": 1,
+                        "maxItems": 128,
+                        "uniqueItems": True,
+                    },
+                    "target_scope": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 160,
+                            },
+                            {"type": "null"},
+                        ]
+                    },
+                    "first_component": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 6,
+                    },
+                    "last_component": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 6,
+                    },
+                    "component": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 6,
+                    },
+                    "value": {"type": "number"},
+                    "vector": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 1,
+                        "maxItems": 3,
+                    },
+                    "magnitude": {
+                        "anyOf": [
+                            {"type": "number"},
+                            {"type": "null"},
+                        ]
+                    },
+                    "load_type": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64,
+                    },
+                    "coordinate_system": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64,
+                    },
+                    "acceleration": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 1,
+                        "maxItems": 3,
+                    },
+                },
+                "minProperties": 1,
+                "additionalProperties": False,
+            },
+        },
+        "required": ["object_type", "target_id", "changes"],
+        "additionalProperties": False,
+    },
+)
 _RESULT_CATALOG = _result_tool_definition(result_catalog_tool_schema())
 _RESULT_QUERY = _result_tool_definition(result_query_tool_schema())
+
+
+_PROJECT_SAVE_READY_STAGES = frozenset(
+    {
+        AuthoringWorkflowStage.REQUIREMENTS,
+        AuthoringWorkflowStage.GEOMETRY_READY,
+        AuthoringWorkflowStage.MESH_READY,
+        AuthoringWorkflowStage.DEFINITIONS_READY,
+        AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY,
+        AuthoringWorkflowStage.PREFLIGHT_READY,
+        AuthoringWorkflowStage.SOLVE_READY,
+        AuthoringWorkflowStage.RESULTS_READY,
+    }
+)
+_DESTRUCTIVE_EDIT_READY_STAGES = _PROJECT_SAVE_READY_STAGES
+_DESTRUCTIVE_EDIT_TOOLS = frozenset(
+    {_READ_DELETABLE_OBJECTS.name, _PREPARE_DELETE.name}
+)
+_MODEL_EDIT_TOOLS = frozenset(
+    {_READ_EDITABLE_OBJECTS.name, _PREPARE_EDIT.name}
+)
 
 
 _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
@@ -306,41 +542,83 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
         _READ_CONTEXT,
         _SET_REQUIREMENTS,
         _REQUEST_REVIEW,
+        _REQUEST_PROJECT_SAVE,
+        _READ_DELETABLE_OBJECTS,
+        _PREPARE_DELETE,
+        _READ_EDITABLE_OBJECTS,
+        _PREPARE_EDIT,
     ),
     AuthoringWorkflowStage.REVIEW_PENDING: (_READ_CONTEXT,),
     AuthoringWorkflowStage.GEOMETRY_READY: (
         _READ_CONTEXT,
         _PREPARE_GEOMETRY,
+        _REQUEST_PROJECT_SAVE,
+        _READ_DELETABLE_OBJECTS,
+        _PREPARE_DELETE,
+        _READ_EDITABLE_OBJECTS,
+        _PREPARE_EDIT,
     ),
     AuthoringWorkflowStage.GEOMETRY_PENDING: (_READ_CONTEXT,),
     AuthoringWorkflowStage.MESH_READY: (
         _READ_CONTEXT,
         _PREPARE_MESH,
+        _REQUEST_PROJECT_SAVE,
+        _READ_DELETABLE_OBJECTS,
+        _PREPARE_DELETE,
+        _READ_EDITABLE_OBJECTS,
+        _PREPARE_EDIT,
     ),
     AuthoringWorkflowStage.MESH_PENDING: (_READ_CONTEXT,),
     AuthoringWorkflowStage.DEFINITIONS_READY: (
         _READ_CONTEXT,
         _APPLY_SCOPES,
+        _REQUEST_PROJECT_SAVE,
+        _READ_DELETABLE_OBJECTS,
+        _PREPARE_DELETE,
+        _READ_EDITABLE_OBJECTS,
+        _PREPARE_EDIT,
     ),
     AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY: (
         _READ_CONTEXT,
         _APPLY_ANALYSIS,
+        _REQUEST_PROJECT_SAVE,
+        _READ_DELETABLE_OBJECTS,
+        _PREPARE_DELETE,
+        _READ_EDITABLE_OBJECTS,
+        _PREPARE_EDIT,
     ),
     AuthoringWorkflowStage.PREFLIGHT_READY: (
         _READ_CONTEXT,
         _RUN_PREFLIGHT,
+        _REQUEST_PROJECT_SAVE,
+        _READ_DELETABLE_OBJECTS,
+        _PREPARE_DELETE,
+        _READ_EDITABLE_OBJECTS,
+        _PREPARE_EDIT,
     ),
     AuthoringWorkflowStage.PREFLIGHT_PENDING: (_READ_CONTEXT,),
     AuthoringWorkflowStage.SOLVE_READY: (
         _READ_CONTEXT,
         _PREPARE_SOLVE,
+        _REQUEST_PROJECT_SAVE,
+        _READ_DELETABLE_OBJECTS,
+        _PREPARE_DELETE,
+        _READ_EDITABLE_OBJECTS,
+        _PREPARE_EDIT,
     ),
     AuthoringWorkflowStage.SOLVE_PENDING: (_READ_CONTEXT,),
     AuthoringWorkflowStage.RESULTS_READY: (
         _READ_CONTEXT,
         _RESULT_CATALOG,
         _RESULT_QUERY,
+        _REQUEST_PROJECT_SAVE,
+        _READ_DELETABLE_OBJECTS,
+        _PREPARE_DELETE,
+        _READ_EDITABLE_OBJECTS,
+        _PREPARE_EDIT,
     ),
+    AuthoringWorkflowStage.PROJECT_SAVE_PENDING: (_READ_CONTEXT,),
+    AuthoringWorkflowStage.DESTRUCTIVE_EDIT_PENDING: (_READ_CONTEXT,),
     AuthoringWorkflowStage.STALE: (_READ_CONTEXT,),
     AuthoringWorkflowStage.CANCELLED: (_READ_CONTEXT,),
 }
@@ -376,6 +654,9 @@ class AuthoringWorkflowController:
         self._pending_review: RequirementReview | None = None
         self._review_binding: tuple[str, str, int] | None = None
         self._pending_operation: str | None = None
+        self._project_save_record: ProjectSaveProposalRecord | None = None
+        self._destructive_resume_stage: AuthoringWorkflowStage | None = None
+        self._pending_destructive_object_type: str | None = None
         self._terminals: list[AuthoringTerminalRecord] = []
         self._active_tool_context: ToolExecutionContext | None = None
         self._binding_identity: tuple[str, str, int] | None = None
@@ -401,6 +682,11 @@ class AuthoringWorkflowController:
             return tuple(self._terminals)
 
     @property
+    def project_save_record(self) -> ProjectSaveProposalRecord | None:
+        with self._lock:
+            return self._project_save_record
+
+    @property
     def definitions(self) -> tuple[ToolDefinition, ...]:
         with self._lock:
             definitions = _STAGE_TOOLS[self._stage]
@@ -408,13 +694,27 @@ class AuthoringWorkflowController:
                 item
                 for item in definitions
                 if (
-                    item.name
-                    in {
-                        _READ_CONTEXT.name,
-                        _SET_REQUIREMENTS.name,
-                        _REQUEST_REVIEW.name,
-                    }
-                    or item.name in self._handlers
+                    (
+                        item.name
+                        in {
+                            _READ_CONTEXT.name,
+                            _SET_REQUIREMENTS.name,
+                            _REQUEST_REVIEW.name,
+                        }
+                        or item.name in self._handlers
+                    )
+                    and (
+                        item.name != _REQUEST_PROJECT_SAVE.name
+                        or self._project_save_available()
+                    )
+                    and (
+                        item.name not in _DESTRUCTIVE_EDIT_TOOLS
+                        or self._destructive_edit_available()
+                    )
+                    and (
+                        item.name not in _MODEL_EDIT_TOOLS
+                        or self._model_edit_available()
+                    )
                 )
             )
 
@@ -443,7 +743,9 @@ class AuthoringWorkflowController:
                     outcome = self._request_review()
                 else:
                     _require_exact_fields(arguments, set()) if name not in {
-                        RESULT_QUERY_TOOL_NAME
+                        RESULT_QUERY_TOOL_NAME,
+                        _PREPARE_DELETE.name,
+                        _PREPARE_EDIT.name,
                     } else None
                     self._active_tool_context = context
                     try:
@@ -563,6 +865,8 @@ class AuthoringWorkflowController:
         context: AuthoringContext,
         *,
         proposal_staled: bool = False,
+        saved_state_transition: bool = False,
+        project_save_terminal_transition: bool = False,
     ) -> bool:
         """Track accepted GUI identity and reject cross-binding stage reuse."""
 
@@ -596,16 +900,40 @@ class AuthoringWorkflowController:
                         and (
                             self._active_tool_context is not None
                             or self._pending_operation
-                            in {"geometry", "mesh", "preflight", "solve"}
+                            in {
+                                "geometry",
+                                "mesh",
+                                "preflight",
+                                "solve",
+                                "destructive_edit",
+                            }
                         )
                     )
                     or first_native_project_transition
+                    or (
+                        same_session
+                        and saved_state_transition
+                    )
+                    or (
+                        same_session
+                        and project_save_terminal_transition
+                        and self._pending_operation == "project_save"
+                    )
                 )
             )
             self._binding_identity = current
             if expected_local_transition:
                 return True
             operation = self._pending_operation or "binding"
+            if self._pending_operation == "project_save":
+                self._mark_project_save_terminal(
+                    ProposalState.STALE,
+                    (
+                        "a pending project save was staled by the binding change"
+                        if proposal_staled
+                        else "document, session, or revision changed"
+                    ),
+                )
             self._record_terminal(
                 operation,
                 "stale",
@@ -619,6 +947,7 @@ class AuthoringWorkflowController:
                 ),
             )
             self._pending_operation = None
+            self._clear_destructive_pending()
             self._pending_review = None
             self._review_binding = None
             self._ledger = RequirementLedger()
@@ -662,6 +991,32 @@ class AuthoringWorkflowController:
                     if normalized_state is ProposalState.SUCCEEDED
                     else AuthoringWorkflowStage.SOLVE_READY
                 )
+            elif normalized_operation == "destructive_edit":
+                resume_stage = self._destructive_resume_stage
+                object_type = self._pending_destructive_object_type
+                if resume_stage is None or object_type is None:
+                    raise ValueError("destructive edit has no pending target")
+                if normalized_state is ProposalState.SUCCEEDED:
+                    self._stage = {
+                        "part": AuthoringWorkflowStage.GEOMETRY_READY,
+                        "generated_mesh": AuthoringWorkflowStage.MESH_READY,
+                        "named_region": AuthoringWorkflowStage.DEFINITIONS_READY,
+                        "analysis_step": (
+                            AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
+                        ),
+                        "boundary_condition": (
+                            AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
+                        ),
+                        "load": (
+                            AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
+                        ),
+                        "result_request": (
+                            AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
+                        ),
+                    }[object_type]
+                else:
+                    self._stage = resume_stage
+                self._clear_destructive_pending()
             else:
                 raise ValueError("unknown pending proposal operation")
             self._pending_operation = None
@@ -677,8 +1032,14 @@ class AuthoringWorkflowController:
             raise ValueError("stale reason must be non-blank")
         with self._lock:
             operation = self._pending_operation or "binding"
+            if self._pending_operation == "project_save":
+                self._mark_project_save_terminal(
+                    ProposalState.STALE,
+                    normalized,
+                )
             self._record_terminal(operation, ProposalState.STALE.value, normalized)
             self._pending_operation = None
+            self._clear_destructive_pending()
             self._pending_review = None
             self._review_binding = None
             self._ledger = RequirementLedger()
@@ -720,6 +1081,8 @@ class AuthoringWorkflowController:
                 AuthoringWorkflowStage.GEOMETRY_PENDING,
                 AuthoringWorkflowStage.MESH_PENDING,
                 AuthoringWorkflowStage.SOLVE_PENDING,
+                AuthoringWorkflowStage.PROJECT_SAVE_PENDING,
+                AuthoringWorkflowStage.DESTRUCTIVE_EDIT_PENDING,
             }:
                 self._stage = AuthoringWorkflowStage.CANCELLED
 
@@ -729,8 +1092,147 @@ class AuthoringWorkflowController:
             self._pending_review = None
             self._review_binding = None
             self._pending_operation = None
+            self._project_save_record = None
+            self._clear_destructive_pending()
             self._binding_identity = None
             self._stage = AuthoringWorkflowStage.REQUIREMENTS
+
+    def register_project_save_proposal(
+        self,
+        proposal_id: str,
+        context: AuthoringContext,
+    ) -> ProjectSaveProposalRecord:
+        """Register one path-free save card during a model tool dispatch."""
+
+        normalized_id = _nonblank_string(proposal_id, "proposal_id")
+        if type(context) is not AuthoringContext:
+            raise TypeError("context must be AuthoringContext")
+        with self._lock:
+            if not self._project_save_available(context):
+                raise ValueError("current native project is not ready to save")
+            active = self._project_save_record
+            if (
+                active is not None
+                and active.state
+                in {
+                    ProposalState.PENDING_CONFIRMATION,
+                    ProposalState.RUNNING,
+                }
+            ):
+                raise ValueError("a project save proposal is already active")
+            binding = context.binding
+            identity = {
+                "proposal_id": normalized_id,
+                "target_document_id": binding.document_id,
+                "target_session_id": binding.session_id,
+                "base_session_revision": binding.session_revision,
+                "operation": "project_save",
+            }
+            proposal_hash = hashlib.sha256(
+                json.dumps(
+                    identity,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            record = ProjectSaveProposalRecord(
+                normalized_id,
+                proposal_hash,
+                binding.document_id,
+                binding.session_id,
+                binding.session_revision,
+                self._stage,
+            )
+            self._project_save_record = record
+            return record
+
+    def can_accept_project_save_from_gui(
+        self,
+        proposal_id: str,
+        proposal_hash: str,
+        context: AuthoringContext,
+    ) -> bool:
+        if type(context) is not AuthoringContext:
+            return False
+        with self._lock:
+            record = self._project_save_record
+            binding = context.binding
+            return bool(
+                self._stage is AuthoringWorkflowStage.PROJECT_SAVE_PENDING
+                and self._pending_operation == "project_save"
+                and record is not None
+                and record.state is ProposalState.PENDING_CONFIRMATION
+                and record.proposal_id == proposal_id
+                and record.proposal_hash == proposal_hash
+                and binding.supported
+                and binding.source_kind == "native"
+                and binding.document_id == record.target_document_id
+                and binding.session_id == record.target_session_id
+                and binding.session_revision == record.base_session_revision
+                and _capability_enabled(context, "request_project_save")
+            )
+
+    def begin_project_save_from_gui(
+        self,
+        proposal_id: str,
+        proposal_hash: str,
+        context: AuthoringContext,
+    ) -> None:
+        """Consume the sole GUI acceptance edge for a save proposal."""
+
+        with self._lock:
+            if not self.can_accept_project_save_from_gui(
+                proposal_id,
+                proposal_hash,
+                context,
+            ):
+                raise ValueError("project save proposal is stale or already consumed")
+            assert self._project_save_record is not None
+            self._project_save_record = replace(
+                self._project_save_record,
+                state=ProposalState.RUNNING,
+            )
+
+    def record_project_save_state(
+        self,
+        proposal_id: str,
+        proposal_hash: str,
+        state: ProposalState | str,
+        message: str = "",
+    ) -> None:
+        """Record exactly one local save terminal returned by MainWindow."""
+
+        normalized_state = ProposalState(state)
+        if normalized_state not in {
+            ProposalState.SUCCEEDED,
+            ProposalState.FAILED,
+            ProposalState.CANCELLED,
+            ProposalState.STALE,
+            ProposalState.REJECTED,
+        }:
+            raise ValueError("project save state must be terminal")
+        with self._lock:
+            record = self._project_save_record
+            if (
+                record is None
+                or record.proposal_id != proposal_id
+                or record.proposal_hash != proposal_hash
+                or record.state
+                not in {
+                    ProposalState.PENDING_CONFIRMATION,
+                    ProposalState.RUNNING,
+                }
+            ):
+                raise ValueError("project save state does not match an active proposal")
+            self._mark_project_save_terminal(normalized_state, message)
+            self._pending_operation = None
+            self._stage = record.resume_stage
+            self._record_terminal(
+                "project_save",
+                normalized_state.value,
+                message,
+            )
 
     def confirmed_requirements(self) -> dict[str, object]:
         return {
@@ -945,6 +1447,124 @@ class AuthoringWorkflowController:
         elif name == _PREPARE_SOLVE.name:
             self._stage = AuthoringWorkflowStage.SOLVE_PENDING
             self._pending_operation = "solve"
+        elif name == _REQUEST_PROJECT_SAVE.name:
+            if self._project_save_record is None:
+                raise ValueError("project save handler registered no proposal")
+            self._stage = AuthoringWorkflowStage.PROJECT_SAVE_PENDING
+            self._pending_operation = "project_save"
+        elif name in {_PREPARE_DELETE.name, _PREPARE_EDIT.name}:
+            object_type = outcome.data.get("delete_object_type")
+            if name == _PREPARE_EDIT.name:
+                object_type = outcome.data.get("edit_object_type")
+            if (
+                type(object_type) is not str
+                or object_type
+                not in {
+                    "part",
+                    "generated_mesh",
+                    "named_region",
+                    "analysis_step",
+                    "boundary_condition",
+                    "load",
+                    "result_request",
+                }
+            ):
+                raise ValueError(
+                    "destructive handler registered no exact target type"
+                )
+            self._destructive_resume_stage = self._stage
+            self._pending_destructive_object_type = object_type
+            self._stage = AuthoringWorkflowStage.DESTRUCTIVE_EDIT_PENDING
+            self._pending_operation = "destructive_edit"
+
+    def _project_save_available(
+        self,
+        context: AuthoringContext | None = None,
+    ) -> bool:
+        if (
+            self._stage not in _PROJECT_SAVE_READY_STAGES
+            or _REQUEST_PROJECT_SAVE.name not in self._handlers
+        ):
+            return False
+        if context is None:
+            try:
+                raw = self._context_reader()
+            except Exception:
+                return False
+            if type(raw) is not AuthoringContext:
+                return False
+            context = raw
+        binding = context.binding
+        return bool(
+            binding.supported
+            and binding.source_kind == "native"
+            and _capability_enabled(context, "request_project_save")
+        )
+
+    def _destructive_edit_available(
+        self,
+        context: AuthoringContext | None = None,
+    ) -> bool:
+        if (
+            self._stage not in _DESTRUCTIVE_EDIT_READY_STAGES
+            or not _DESTRUCTIVE_EDIT_TOOLS.issubset(self._handlers)
+        ):
+            return False
+        if context is None:
+            try:
+                raw = self._context_reader()
+            except Exception:
+                return False
+            if type(raw) is not AuthoringContext:
+                return False
+            context = raw
+        binding = context.binding
+        return bool(
+            binding.supported
+            and binding.source_kind == "native"
+            and _capability_enabled(context, "delete_model_objects")
+        )
+
+    def _model_edit_available(
+        self,
+        context: AuthoringContext | None = None,
+    ) -> bool:
+        if (
+            self._stage not in _DESTRUCTIVE_EDIT_READY_STAGES
+            or not _MODEL_EDIT_TOOLS.issubset(self._handlers)
+        ):
+            return False
+        if context is None:
+            try:
+                raw = self._context_reader()
+            except Exception:
+                return False
+            if type(raw) is not AuthoringContext:
+                return False
+            context = raw
+        binding = context.binding
+        return bool(
+            binding.supported
+            and binding.source_kind == "native"
+            and _capability_enabled(context, "edit_model_objects")
+        )
+
+    def _clear_destructive_pending(self) -> None:
+        self._destructive_resume_stage = None
+        self._pending_destructive_object_type = None
+
+    def _mark_project_save_terminal(
+        self,
+        state: ProposalState,
+        message: str,
+    ) -> None:
+        record = self._project_save_record
+        if record is not None:
+            self._project_save_record = replace(
+                record,
+                state=state,
+                message=str(message)[:512],
+            )
 
     def _record_terminal(
         self,
@@ -1166,11 +1786,22 @@ def _requirement_stage(key: str) -> str:
     return "results"
 
 
+def _capability_enabled(
+    context: AuthoringContext,
+    operation: str,
+) -> bool:
+    return any(
+        item.operation == operation and item.enabled
+        for item in context.capabilities
+    )
+
+
 __all__ = [
     "AuthoringTerminalRecord",
     "AuthoringToolHandler",
     "AuthoringToolOutcome",
     "AuthoringWorkflowController",
     "AuthoringWorkflowStage",
+    "ProjectSaveProposalRecord",
     "provider_safe_authoring_payload",
 ]

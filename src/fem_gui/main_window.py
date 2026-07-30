@@ -73,6 +73,7 @@ from fem.application import (
 )
 from fem.application.preprocessing import generate_fem_model
 from fem.application.recipe_compiler import compile_recipe
+from fem.application.changes import ChangeKind
 from fem.application.results import (
     FieldAvailability,
     FieldMaterializationKey,
@@ -2072,6 +2073,21 @@ class FEMMainWindow(QMainWindow):
             self.agent_authoring_controller.observe_binding(
                 current_authoring_context,
                 proposal_staled=bool(stale_agent_proposals),
+                saved_state_transition=(
+                    isinstance(delta, SessionDelta)
+                    and delta.changed
+                    == frozenset({ChangeKind.SAVED_STATE})
+                ),
+                project_save_terminal_transition=(
+                    isinstance(delta, SessionDelta)
+                    and delta.changed
+                    == frozenset({ChangeKind.SESSION})
+                    and delta.reason
+                    in {
+                        "project_save task failed",
+                        "project_save task cancelled",
+                    }
+                ),
             )
         if hasattr(self, "viewport_panel"):
             self.viewport_panel.agent_chat_drawer.refresh_authoring_binding()
@@ -2864,6 +2880,9 @@ class FEMMainWindow(QMainWindow):
             self,
             authoring_bridge=self.agent_authoring_bridge,
             authoring_controller=self.agent_authoring_controller,
+        )
+        self.viewport_panel.agent_chat_drawer.set_project_save_handler(
+            self._start_agent_project_save
         )
         self.viewport_panel.scope_creation_bar.createRequested.connect(
             self._complete_scope_creation_from_bar
@@ -6727,8 +6746,20 @@ class FEMMainWindow(QMainWindow):
             completion.observe(project_opened)
         self.ribbon.set_current("几何")
 
-    def save_native_project(self, *, wait: bool = False) -> bool:
+    def save_native_project(
+        self,
+        *,
+        wait: bool = False,
+        agent_terminal: (
+            Callable[[ProposalState, str], None] | None
+        ) = None,
+    ) -> bool:
         if not self.document.can_save:
+            if agent_terminal is not None:
+                agent_terminal(
+                    ProposalState.FAILED,
+                    "当前项目无法保存",
+                )
             return False
         path = self.document.project_path
         if path is None:
@@ -6736,6 +6767,11 @@ class FEMMainWindow(QMainWindow):
                 self, "保存自主项目", "模型-1.femproj", "FEM 自主项目 (*.femproj)"
             )
             if not filename:
+                if agent_terminal is not None:
+                    agent_terminal(
+                        ProposalState.CANCELLED,
+                        "用户取消了另存为",
+                    )
                 return False
             path = Path(filename)
             if path.suffix.lower() != ".femproj":
@@ -6743,9 +6779,19 @@ class FEMMainWindow(QMainWindow):
         receipt = self.save_project_path(path)
         if receipt.diagnostic is not None:
             self._show_command_rejection("保存自主项目失败", receipt)
+            if agent_terminal is not None:
+                agent_terminal(
+                    ProposalState.FAILED,
+                    "保存任务未能启动",
+                )
             return False
         completion = receipt.completion
         if completion is None:
+            if agent_terminal is not None:
+                agent_terminal(
+                    ProposalState.FAILED,
+                    "保存任务未能启动",
+                )
             return False
 
         def project_saved(record: TaskCompletion) -> None:
@@ -6763,6 +6809,23 @@ class FEMMainWindow(QMainWindow):
                 )
 
         completion.observe(project_saved)
+        if agent_terminal is not None:
+
+            def agent_save_finished(record: TaskCompletion) -> None:
+                state = {
+                    BackgroundTaskState.SUCCEEDED: ProposalState.SUCCEEDED,
+                    BackgroundTaskState.CANCELLED: ProposalState.CANCELLED,
+                    BackgroundTaskState.DISCARDED: ProposalState.STALE,
+                }.get(record.state, ProposalState.FAILED)
+                message = {
+                    ProposalState.SUCCEEDED: "自主项目已保存",
+                    ProposalState.CANCELLED: "保存任务已取消",
+                    ProposalState.STALE: "保存快照已陈旧",
+                    ProposalState.FAILED: "保存自主项目失败",
+                }[state]
+                agent_terminal(state, message)
+
+            completion.observe(agent_save_finished)
         if not wait:
             return True
         terminal = completion.result()
@@ -6770,6 +6833,16 @@ class FEMMainWindow(QMainWindow):
             terminal.state is BackgroundTaskState.SUCCEEDED
             and not self.document.dirty
         )
+
+    def _start_agent_project_save(
+        self,
+        terminal: Callable[[ProposalState, str], None],
+    ) -> bool:
+        """Enter the existing project-save command from the GUI card only."""
+
+        if not callable(terminal):
+            raise TypeError("project save terminal callback must be callable")
+        return self.save_native_project(agent_terminal=terminal)
 
     def reload_model(self) -> None:
         if (

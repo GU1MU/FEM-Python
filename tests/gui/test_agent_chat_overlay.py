@@ -116,9 +116,10 @@ def test_drawer_removes_phase_copy_and_uses_larger_primary_controls():
     assert drawer.findChild(QWidget, "agentChatPreviewBadge") is None
     assert drawer.findChild(QWidget, "agentChatSubtitle") is None
     assert drawer.findChild(QWidget, "agentChatWelcome") is None
+    assert drawer.findChild(QWidget, "agentChatAuthoringBinding") is None
+    assert not hasattr(drawer, "new_session_button")
     assert drawer.input.font().pointSizeF() >= 10
     assert drawer.input.minimumHeight() >= 96
-    assert drawer.new_session_button.sizeHint().width() >= 32
     assert drawer.close_button.sizeHint().height() >= 32
     assert drawer.send_state.size() == QSize(34, 34)
     host.close()

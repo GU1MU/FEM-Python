@@ -66,6 +66,16 @@ from fem_agent.definition_authoring import (
     require_non_destructive_a4_batch,
     scoped_definition_batch_from_operations,
 )
+from fem_agent.deletion_authoring import (
+    apply_delete_operation,
+    create_delete_proposal,
+    deletable_object_catalog,
+)
+from fem_agent.editing_authoring import (
+    apply_edit_operation,
+    create_edit_proposal,
+    editable_object_catalog,
+)
 from fem_agent.geometry_authoring import (
     create_geometry_proposal,
     geometry_recipe_from_payload,
@@ -100,6 +110,7 @@ class _SessionSnapshot(Protocol):
     session_id: str
     session_revision: int
     source_kind: str | None
+    can_save: bool
     model_name: str | None
     active_part_id: str | None
     parts: object
@@ -203,6 +214,8 @@ def authoring_context_from_snapshot(
         )
 
     blocked_reason = None if supported else "V1 只绑定空白或 native 文档"
+    deletable_objects_available = bool(deletable_object_catalog(snapshot))
+    editable_objects_available = bool(editable_object_catalog(snapshot))
     capabilities = (
         CapabilitySummary("read_authoring_context", supported, blocked_reason),
         CapabilitySummary("review_requirements", supported, blocked_reason),
@@ -262,6 +275,33 @@ def authoring_context_from_snapshot(
                     and validation_status == "passed"
                 )
                 else "求解提案需要当前 native 网格和通过的预检"
+            ),
+        ),
+        CapabilitySummary(
+            "request_project_save",
+            bool(getattr(snapshot, "can_save", False)),
+            (
+                None
+                if bool(getattr(snapshot, "can_save", False))
+                else "项目保存需要当前已打开的 native 项目"
+            ),
+        ),
+        CapabilitySummary(
+            "delete_model_objects",
+            deletable_objects_available,
+            (
+                None
+                if deletable_objects_available
+                else "当前 native 项目没有可删除对象"
+            ),
+        ),
+        CapabilitySummary(
+            "edit_model_objects",
+            editable_objects_available,
+            (
+                None
+                if editable_objects_available
+                else "当前 native 项目没有可编辑的作用域、边界条件或载荷"
             ),
         ),
         CapabilitySummary(
@@ -943,10 +983,20 @@ class SessionGeometryAuthoringPort:
         )
         destructive_valid = (
             proposal.proposal_kind is ProposalKind.DESTRUCTIVE_EDIT
-            and tuple(item.kind for item in proposal.operations)
-            == (
-                OperationKind.UPSERT_NAMED_REGIONS,
-                OperationKind.UPSERT_MODEL_DEFINITIONS,
+            and (
+                tuple(item.kind for item in proposal.operations)
+                == (
+                    OperationKind.UPSERT_NAMED_REGIONS,
+                    OperationKind.UPSERT_MODEL_DEFINITIONS,
+                )
+                or (
+                    len(proposal.operations) == 1
+                    and proposal.operations[0].kind
+                    in {
+                        OperationKind.DELETE_MODEL_OBJECT,
+                        OperationKind.EDIT_MODEL_OBJECT,
+                    }
+                )
             )
         )
         solve_valid = (
@@ -992,13 +1042,32 @@ class SessionGeometryAuthoringPort:
         if proposal.proposal_kind is ProposalKind.SOLVE:
             return self._accept_solve(record)
         if proposal.proposal_kind is ProposalKind.DESTRUCTIVE_EDIT:
-            batch = scoped_definition_batch_from_operations(
-                proposal.operations,
-                self._session.snapshot(),
-                base_session_revision=proposal.base_session_revision,
-            )
-            delta = self._session.apply_scoped_definition_batch(batch)
-            self._project_definition_delta(delta)
+            if len(proposal.operations) == 1:
+                operation = proposal.operations[0]
+                if operation.kind is OperationKind.DELETE_MODEL_OBJECT:
+                    apply_delete_operation(
+                        self._session,
+                        operation,
+                        base_session_revision=proposal.base_session_revision,
+                    )
+                elif operation.kind is OperationKind.EDIT_MODEL_OBJECT:
+                    apply_edit_operation(
+                        self._session,
+                        operation,
+                        base_session_revision=proposal.base_session_revision,
+                    )
+                else:
+                    raise AuthoringContractError(
+                        "unsupported destructive edit operation"
+                    )
+            else:
+                batch = scoped_definition_batch_from_operations(
+                    proposal.operations,
+                    self._session.snapshot(),
+                    base_session_revision=proposal.base_session_revision,
+                )
+                delta = self._session.apply_scoped_definition_batch(batch)
+                self._project_definition_delta(delta)
             succeeded = replace(record, state=ProposalState.SUCCEEDED)
             self._records[proposal_id] = succeeded
             return succeeded
@@ -1776,8 +1845,19 @@ class AgentAuthoringBridge:
         self._records[proposal_id] = accepted
         if (
             accepted.state is ProposalState.SUCCEEDED
-            and accepted.proposal.proposal_kind
-            is ProposalKind.GEOMETRY
+            and (
+                accepted.proposal.proposal_kind is ProposalKind.GEOMETRY
+                or (
+                    accepted.proposal.proposal_kind
+                    is ProposalKind.DESTRUCTIVE_EDIT
+                    and len(accepted.proposal.operations) == 1
+                    and accepted.proposal.operations[0].kind
+                    in {
+                        OperationKind.DELETE_MODEL_OBJECT,
+                        OperationKind.EDIT_MODEL_OBJECT,
+                    }
+                )
+            )
         ):
             refresh = getattr(self._port, "refresh_projection", None)
             if callable(refresh):
@@ -2001,27 +2081,31 @@ def create_session_authoring_workflow_controller(
         summary: str,
         impact: str,
         confirm_label: str,
+        extra_data: Mapping[str, object] | None = None,
     ) -> AuthoringToolOutcome:
         receipt = authoring_bridge.register_proposal(proposal)
-        return AuthoringToolOutcome(
-            summary,
-            {
+        data = {
+            "proposal_id": proposal.proposal_id,
+            "proposal_hash": proposal.proposal_hash,
+            "state": receipt.state.value,
+            "proposal_view": {
                 "proposal_id": proposal.proposal_id,
                 "proposal_hash": proposal.proposal_hash,
-                "state": receipt.state.value,
-                "proposal_view": {
-                    "proposal_id": proposal.proposal_id,
-                    "proposal_hash": proposal.proposal_hash,
-                    "proposal_kind": proposal.proposal_kind.value,
-                    "title": str(proposal.display_summary.get("title", summary)),
-                    "summary": summary,
-                    "impact": impact,
-                    "confirm_label": confirm_label,
-                    "target_document_id": proposal.target_document_id,
-                    "target_session_id": proposal.target_session_id,
-                    "base_session_revision": proposal.base_session_revision,
-                },
+                "proposal_kind": proposal.proposal_kind.value,
+                "title": str(proposal.display_summary.get("title", summary)),
+                "summary": summary,
+                "impact": impact,
+                "confirm_label": confirm_label,
+                "target_document_id": proposal.target_document_id,
+                "target_session_id": proposal.target_session_id,
+                "base_session_revision": proposal.base_session_revision,
             },
+        }
+        if extra_data is not None:
+            data.update(dict(extra_data))
+        return AuthoringToolOutcome(
+            summary,
+            data,
         )
 
     def prepare_geometry(
@@ -2331,6 +2415,134 @@ def create_session_authoring_workflow_controller(
             confirm_label="开始求解",
         )
 
+    def request_project_save(
+        _arguments: Mapping[str, object],
+        controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        metadata = envelope(controller, "project-save")
+        suffix = str(metadata["identity_suffix"])
+        context = current_context()
+        record = controller.register_project_save_proposal(
+            f"proposal-{suffix}",
+            context,
+        )
+        return AuthoringToolOutcome(
+            "Project save is waiting for the local GUI control.",
+            {
+                "proposal_id": record.proposal_id,
+                "proposal_hash": record.proposal_hash,
+                "state": record.state.value,
+                "proposal_view": {
+                    "proposal_id": record.proposal_id,
+                    "proposal_hash": record.proposal_hash,
+                    "proposal_kind": "project_save",
+                    "title": "保存当前自主项目",
+                    "summary": "保存当前已接受的模型状态",
+                    "impact": "确认后调用本地项目保存；未确认草稿不会写入",
+                    "confirm_label": "保存模型",
+                    "target_document_id": record.target_document_id,
+                    "target_session_id": record.target_session_id,
+                    "base_session_revision": record.base_session_revision,
+                },
+            },
+        )
+
+    def read_deletable_objects(
+        _arguments: Mapping[str, object],
+        _controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        catalog = deletable_object_catalog(session.snapshot(), limit=128)
+        visible = catalog[:100]
+        return AuthoringToolOutcome(
+            "Current deletable native model objects read locally.",
+            {
+                "objects": [item.to_provider_dict() for item in visible],
+                "count": len(visible),
+                "truncated": len(catalog) > len(visible),
+            },
+        )
+
+    def prepare_delete(
+        arguments: Mapping[str, object],
+        controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        allowed = {"object_type", "target_id", "step_name"}
+        if set(arguments) - allowed:
+            raise AuthoringContractError(
+                "prepare_delete_proposal has unknown fields"
+            )
+        if not {"object_type", "target_id"}.issubset(arguments):
+            raise AuthoringContractError(
+                "prepare_delete_proposal requires object_type and target_id"
+            )
+        metadata = envelope(controller, "delete")
+        suffix = str(metadata.pop("identity_suffix"))
+        proposal, target = create_delete_proposal(
+            proposal_id=f"proposal-{suffix}",
+            context=current_context(),
+            snapshot=session.snapshot(),
+            object_type=arguments["object_type"],
+            target_id=arguments["target_id"],
+            step_name=arguments.get("step_name"),
+            **metadata,
+        )
+        return proposal_outcome(
+            proposal,
+            summary=str(proposal.display_summary["summary"]),
+            impact=str(proposal.display_summary["impact"]),
+            confirm_label=str(proposal.display_summary["confirm_label"]),
+            extra_data={"delete_object_type": target.object_type},
+        )
+
+    def read_editable_objects(
+        _arguments: Mapping[str, object],
+        _controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        catalog = editable_object_catalog(session.snapshot(), limit=128)
+        visible = catalog[:100]
+        return AuthoringToolOutcome(
+            "Current editable model objects read locally.",
+            {
+                "objects": [item.to_provider_dict() for item in visible],
+                "count": len(visible),
+                "truncated": len(catalog) > len(visible),
+            },
+        )
+
+    def prepare_edit(
+        arguments: Mapping[str, object],
+        controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        allowed = {"object_type", "target_id", "step_name", "changes"}
+        if set(arguments) - allowed:
+            raise AuthoringContractError(
+                "prepare_edit_model_object_proposal has unknown fields"
+            )
+        if not {"object_type", "target_id", "changes"}.issubset(arguments):
+            raise AuthoringContractError(
+                "prepare_edit_model_object_proposal requires "
+                "object_type, target_id, and changes"
+            )
+        metadata = envelope(controller, "edit")
+        suffix = str(metadata.pop("identity_suffix"))
+        proposal, target = create_edit_proposal(
+            proposal_id=f"proposal-{suffix}",
+            context=current_context(),
+            snapshot=session.snapshot(),
+            object_type=arguments["object_type"],
+            target_id=arguments["target_id"],
+            step_name=arguments.get("step_name"),
+            changes=arguments["changes"],
+            **metadata,
+        )
+        return proposal_outcome(
+            proposal,
+            summary=str(proposal.display_summary["summary"]),
+            impact=str(proposal.display_summary["impact"]),
+            confirm_label=str(proposal.display_summary["confirm_label"]),
+            extra_data={"edit_object_type": target.object_type},
+        )
+
     def read_catalog(
         _arguments: Mapping[str, object],
         _controller: AuthoringWorkflowController,
@@ -2362,6 +2574,11 @@ def create_session_authoring_workflow_controller(
             "apply_analysis_definitions": apply_analysis_definitions,
             "run_native_preflight": run_preflight,
             "prepare_solve_proposal": prepare_solve,
+            "request_project_save": request_project_save,
+            "read_deletable_objects": read_deletable_objects,
+            "prepare_delete_proposal": prepare_delete,
+            "read_editable_model_objects": read_editable_objects,
+            "prepare_edit_model_object_proposal": prepare_edit,
             "read_accepted_result_catalog": read_catalog,
             "query_accepted_result": query_result,
         },

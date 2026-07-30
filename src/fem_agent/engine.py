@@ -170,7 +170,15 @@ request for clarification: do not write guessed or inferred values into the
 requirements ledger. Request a RequirementReview only after every required
 engineering value was explicitly supplied. Geometry, mesh, and solve proposals
 only present local GUI cards; never claim that they were accepted or executed,
-and wait for the GUI-controlled terminal state before advancing."""
+and wait for the GUI-controlled terminal state before advancing. A project-save
+request also only presents a local GUI card: never supply a path or claim that
+the project was saved before the GUI reports its terminal state. For deletion,
+first select an exact identity returned by read_deletable_objects, then present
+one delete proposal; never claim the object was deleted before the GUI reports
+its terminal state. For edits to accepted scopes, boundary conditions, or
+loads, first read the exact current object and editable fields, then present one
+edit proposal; never claim the edit was applied before the GUI reports its
+terminal state."""
 
 
 class _ConversationStorageLimit(ValueError):

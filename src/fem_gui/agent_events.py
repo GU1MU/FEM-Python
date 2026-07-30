@@ -423,6 +423,7 @@ def _validate_payload(event_type: EventType, payload: Mapping[str, Any]) -> None
                 "solve",
                 "destructive_edit",
                 "requirement_review",
+                "project_save",
             }:
                 raise AgentEventError("proposal_kind 不是已知类型")
             for field_name in (

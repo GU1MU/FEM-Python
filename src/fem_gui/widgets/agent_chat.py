@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import html
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 
 from PySide6.QtCore import (
     QAbstractAnimation,
@@ -48,6 +48,7 @@ from fem_agent.authoring_runtime import (
     AuthoringWorkflowController,
     AuthoringWorkflowStage,
 )
+from fem_agent.authoring import ProposalState
 
 from ..agent_events import (
     AgentEvent,
@@ -722,6 +723,9 @@ class AgentChatDrawer(_BoundaryFrame):
         self._applied_patch_records: dict[str, object] = {}
         self.event_projector = AgentEventProjector()
         self.authoring_bridge = authoring_bridge
+        self._project_save_handler: (
+            Callable[[Callable[[ProposalState, str], None]], bool] | None
+        ) = None
         self.workspace_commands = (
             workspace_commands or WorkspaceCommandHandler()
         )
@@ -792,6 +796,17 @@ class AgentChatDrawer(_BoundaryFrame):
         self._update_workspace_state()
         self._render_event_presentation(preserve_tool_expansion=False)
 
+    def set_project_save_handler(
+        self,
+        handler: Callable[
+            [Callable[[ProposalState, str], None]],
+            bool,
+        ],
+    ) -> None:
+        if not callable(handler):
+            raise TypeError("project save handler must be callable")
+        self._project_save_handler = handler
+
     def _build_header(self, parent: QWidget) -> QWidget:
         header = _BoundaryFrame(parent)
         header.setObjectName("agentChatHeader")
@@ -803,19 +818,7 @@ class AgentChatDrawer(_BoundaryFrame):
         title.setObjectName("agentChatTitle")
         layout.addWidget(title)
 
-        self.authoring_binding_state = QLabel("未绑定模型", header)
-        self.authoring_binding_state.setObjectName(
-            "agentChatAuthoringBinding"
-        )
-        layout.addWidget(self.authoring_binding_state)
         layout.addStretch(1)
-
-        self.new_session_button = _BoundaryToolButton(header)
-        self.new_session_button.setObjectName("agentChatHeaderButton")
-        self.new_session_button.setText("＋")
-        self.new_session_button.setToolTip("创建新的 Agent 会话")
-        self.new_session_button.clicked.connect(self._new_runtime_session)
-        layout.addWidget(self.new_session_button)
 
         self.close_button = _BoundaryToolButton(header)
         self.close_button.setObjectName("agentChatHeaderButton")
@@ -823,7 +826,6 @@ class AgentChatDrawer(_BoundaryFrame):
         self.close_button.setToolTip("关闭聊天框")
         self.close_button.clicked.connect(self.closeRequested)
         layout.addWidget(self.close_button)
-        self._update_authoring_binding_state()
         return header
 
     def _build_conversation(self, parent: QWidget) -> QWidget:
@@ -958,14 +960,9 @@ class AgentChatDrawer(_BoundaryFrame):
                         proposals[timeline_item.item_id],
                         turn.turn_id,
                     )
-            if turn.status in {TurnStatus.CANCELLED, TurnStatus.FAILED}:
+            if turn.status is TurnStatus.CANCELLED:
                 status = _plain_label(
-                    (
-                        "本轮已取消 · "
-                        if turn.status is TurnStatus.CANCELLED
-                        else "本轮失败 · "
-                    )
-                    + turn.failure_reason,
+                    "本轮已取消 · " + turn.failure_reason,
                     self.event_feed,
                 )
                 status.setObjectName("agentChatTurnStatus")
@@ -1222,9 +1219,25 @@ class AgentChatDrawer(_BoundaryFrame):
 
         status = proposal.status
         bridge = self.authoring_bridge
+        if proposal.proposal_kind == "project_save":
+            controller = self.agent_runtime.authoring_controller
+            record = (
+                None
+                if controller is None
+                else controller.project_save_record
+            )
+            if (
+                record is not None
+                and record.proposal_id == proposal.proposal_id
+                and record.proposal_hash == proposal.proposal_hash
+            ):
+                status = ProposalViewStatus(record.state.value)
+                if record.message:
+                    proposal.status_message = record.message
         if (
             status is ProposalViewStatus.PENDING_CONFIRMATION
             and bridge is not None
+            and proposal.proposal_kind != "project_save"
         ):
             try:
                 bridge_status = bridge.state(proposal.proposal_id)
@@ -1488,6 +1501,7 @@ class AgentChatDrawer(_BoundaryFrame):
 
     def _show_slash_suggestion(self) -> None:
         self.suggestion_title.setText("斜杠命令")
+        self.suggestion_title.show()
         self.suggestion_list.clear()
         item = QListWidgetItem("/workspace  选择工作区")
         item.setData(Qt.ItemDataRole.UserRole, "/workspace")
@@ -1497,10 +1511,11 @@ class AgentChatDrawer(_BoundaryFrame):
         self._show_suggestions()
 
     def _show_workspace_suggestions(self, query: str) -> None:
+        self.suggestion_title.clear()
+        self.suggestion_title.hide()
         self.suggestion_list.clear()
         snapshot = self._workspace_index
         if snapshot is None:
-            self.suggestion_title.setText("@ 工作区文件")
             item = QListWidgetItem(
                 "请先选择工作区，再引用各种类型的普通文件"
             )
@@ -1515,13 +1530,6 @@ class AgentChatDrawer(_BoundaryFrame):
             limit=MAX_VISIBLE_WORKSPACE_CANDIDATES + 1,
         )
         visible = matches[:MAX_VISIBLE_WORKSPACE_CANDIDATES]
-        labels: list[str] = []
-        if snapshot.truncated:
-            labels.append("索引已截断")
-        if len(matches) > MAX_VISIBLE_WORKSPACE_CANDIDATES:
-            labels.append("候选已截断")
-        suffix = f" · {' · '.join(labels)}" if labels else ""
-        self.suggestion_title.setText(f"@ 工作区文件{suffix}")
 
         if not visible:
             item = QListWidgetItem("没有匹配的工作区文件")
@@ -1658,11 +1666,7 @@ class AgentChatDrawer(_BoundaryFrame):
             self._workspace_index = result.index
             self._workspace_references.clear()
             self._update_workspace_state()
-            count = len(result.index.files) if result.index else 0
-            suffix = "，索引已截断" if result.index and result.index.truncated else ""
-            self._show_preview_notice(
-                f"已选择工作区 · {count} 个文件{suffix}"
-            )
+            self._show_preview_notice("Enter 发送 · Shift+Enter 换行")
         elif result.cancelled:
             self._show_preview_notice("已取消选择，工作区保持不变")
         else:
@@ -1680,10 +1684,8 @@ class AgentChatDrawer(_BoundaryFrame):
             )
             return
         workspace = snapshot.workspace
-        truncated = " · 索引已截断" if snapshot.truncated else ""
         self.workspace_state.setText(
-            f"工作区  {workspace.root.name or workspace.root} · "
-            f"{len(snapshot.files)} 个文件{truncated}"
+            f"工作区  {workspace.root.name or workspace.root}"
         )
         self.workspace_state.setToolTip(
             f"用户工作区：{workspace.root}\n"
@@ -1720,11 +1722,6 @@ class AgentChatDrawer(_BoundaryFrame):
     def _show_preview_notice(self, text: str) -> None:
         self.composer_hint.setText(text)
 
-    def _new_runtime_session(self) -> None:
-        if self.agent_runtime.new_session():
-            self.set_runtime_busy(True)
-            self._show_preview_notice("正在创建新的 Agent 会话…")
-
     def _cancel_runtime_operation(self) -> None:
         if self.agent_runtime.cancel():
             self._show_preview_notice("正在取消当前操作…")
@@ -1752,6 +1749,52 @@ class AgentChatDrawer(_BoundaryFrame):
     ) -> None:
         bridge = self.authoring_bridge
         if bridge is None:
+            return
+        if proposal.proposal_kind == "project_save":
+            controller = self.agent_runtime.authoring_controller
+            context = bridge.context
+            handler = self._project_save_handler
+            if (
+                controller is None
+                or context is None
+                or handler is None
+                or not self._proposal_targets_live_binding(proposal)
+            ):
+                self._show_preview_notice("保存请求已陈旧，请重新生成")
+                return
+            try:
+                controller.begin_project_save_from_gui(
+                    proposal.proposal_id,
+                    proposal.proposal_hash,
+                    context,
+                )
+            except Exception as exc:
+                self._show_preview_notice(
+                    str(exc).strip() or "保存请求无法接受"
+                )
+                return
+            proposal.status = ProposalViewStatus.RUNNING
+            proposal.status_message = "等待本地保存完成"
+            self._render_event_presentation(
+                preserve_tool_expansion=True
+            )
+            try:
+                started = handler(
+                    lambda state, message, item=proposal: (
+                        self._finish_project_save(item, state, message)
+                    )
+                )
+            except Exception:
+                started = False
+            if (
+                not started
+                and proposal.status is ProposalViewStatus.RUNNING
+            ):
+                self._finish_project_save(
+                    proposal,
+                    ProposalState.FAILED,
+                    "保存任务未能启动",
+                )
             return
         if proposal.proposal_kind == "requirement_review":
             if not self._proposal_targets_live_binding(proposal):
@@ -1809,7 +1852,16 @@ class AgentChatDrawer(_BoundaryFrame):
                     "提案已由 GUI 控件接受；A1 Fake Port 未修改模型"
                     if receipt.state.value == "accepted"
                     else (
-                        "几何已加入模型"
+                        (
+                            "几何已加入模型"
+                            if proposal.proposal_kind == "geometry"
+                            else (
+                                "模型修改已完成"
+                                if proposal.proposal_kind
+                                == "destructive_edit"
+                                else "提案已完成"
+                            )
+                        )
                         if receipt.state.value == "succeeded"
                         else "提案处理失败"
                     )
@@ -1824,6 +1876,33 @@ class AgentChatDrawer(_BoundaryFrame):
     ) -> None:
         bridge = self.authoring_bridge
         if bridge is None:
+            return
+        if proposal.proposal_kind == "project_save":
+            controller = self.agent_runtime.authoring_controller
+            context = bridge.context
+            if (
+                controller is None
+                or context is None
+                or not controller.can_accept_project_save_from_gui(
+                    proposal.proposal_id,
+                    proposal.proposal_hash,
+                    context,
+                )
+            ):
+                self._show_preview_notice("保存请求已陈旧，请重新生成")
+                return
+            controller.record_project_save_state(
+                proposal.proposal_id,
+                proposal.proposal_hash,
+                ProposalState.REJECTED,
+                "用户拒绝保存请求",
+            )
+            proposal.status = ProposalViewStatus.REJECTED
+            proposal.status_message = "模型保持不变"
+            self._show_preview_notice("保存请求已拒绝，未写入文件")
+            self._render_event_presentation(
+                preserve_tool_expansion=True
+            )
             return
         if proposal.proposal_kind == "requirement_review":
             if not self._proposal_targets_live_binding(proposal):
@@ -1900,6 +1979,16 @@ class AgentChatDrawer(_BoundaryFrame):
                 proposal.proposal_id,
                 proposal.proposal_hash,
             )
+        if proposal.proposal_kind == "project_save":
+            controller = self.agent_runtime.authoring_controller
+            return bool(
+                controller is not None
+                and controller.can_accept_project_save_from_gui(
+                    proposal.proposal_id,
+                    proposal.proposal_hash,
+                    bridge.context,
+                )
+            )
         try:
             check = getattr(bridge, "can_accept_from_gui_control", None)
             if callable(check):
@@ -1909,25 +1998,54 @@ class AgentChatDrawer(_BoundaryFrame):
             return False
 
     def refresh_authoring_binding(self) -> None:
-        self._update_authoring_binding_state()
         self._render_event_presentation(preserve_tool_expansion=True)
 
-    def _update_authoring_binding_state(self) -> None:
-        label = getattr(self, "authoring_binding_state", None)
-        if label is None:
-            return
-        bridge = self.authoring_bridge
-        context = None if bridge is None else bridge.context
-        if context is None or not context.binding.supported:
-            label.setText("未绑定模型")
-            label.setToolTip("V1 只支持空白会话和 native 项目")
-            return
-        model_name = context.model_name or "空白会话"
-        label.setText(f"已绑定 · {model_name}")
-        label.setToolTip(
-            f"{context.binding.document_id} · "
-            f"revision {context.binding.session_revision}"
-        )
+    def _finish_project_save(
+        self,
+        proposal: ProposalView,
+        state: ProposalState | str,
+        message: str,
+    ) -> None:
+        normalized = ProposalState(state)
+        controller = self.agent_runtime.authoring_controller
+        if controller is not None:
+            try:
+                controller.record_project_save_state(
+                    proposal.proposal_id,
+                    proposal.proposal_hash,
+                    normalized,
+                    message,
+                )
+            except ValueError:
+                record = controller.project_save_record
+                normalized = (
+                    record.state
+                    if (
+                        record is not None
+                        and record.proposal_id == proposal.proposal_id
+                        and record.proposal_hash == proposal.proposal_hash
+                        and record.state
+                        in {
+                            ProposalState.SUCCEEDED,
+                            ProposalState.FAILED,
+                            ProposalState.CANCELLED,
+                            ProposalState.STALE,
+                            ProposalState.REJECTED,
+                        }
+                    )
+                    else ProposalState.STALE
+                )
+        proposal.status = ProposalViewStatus(normalized.value)
+        proposal.status_message = str(message).strip()
+        notices = {
+            ProposalState.SUCCEEDED: "自主项目保存完成",
+            ProposalState.FAILED: "自主项目保存失败",
+            ProposalState.CANCELLED: "已取消保存，未写入文件",
+            ProposalState.STALE: "保存快照已陈旧，当前修改仍未保存",
+            ProposalState.REJECTED: "保存请求已拒绝",
+        }
+        self._show_preview_notice(notices[normalized])
+        self._render_event_presentation(preserve_tool_expansion=True)
 
     def _solve_finished(
         self,
@@ -1985,7 +2103,6 @@ class AgentChatDrawer(_BoundaryFrame):
         self._runtime_busy = self.agent_runtime.busy
         self.input.setEnabled(not self._runtime_busy)
         self.add_button.setEnabled(not self._runtime_busy)
-        self.new_session_button.setEnabled(not self._runtime_busy)
         self.send_state.setCurrentWidget(
             self.stop_button if self._runtime_busy else self.send_button
         )
@@ -2065,6 +2182,16 @@ class AgentChatDrawer(_BoundaryFrame):
             return self._requirement_review_is_current(
                 str(button.property("proposalId")),
                 str(button.property("proposalHash")),
+            )
+        if button.property("proposalKind") == "project_save":
+            controller = self.agent_runtime.authoring_controller
+            return bool(
+                controller is not None
+                and controller.can_accept_project_save_from_gui(
+                    str(button.property("proposalId")),
+                    str(button.property("proposalHash")),
+                    bridge.context,
+                )
             )
         try:
             proposal_id = str(button.property("proposalId"))

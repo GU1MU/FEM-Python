@@ -93,7 +93,8 @@ def test_workspace_menu_and_slash_share_handler_and_cancel_is_stable(
     assert handler.execution_count == 2
     assert handler.user_workspace is not None
     assert handler.user_workspace.root == workspace.resolve()
-    assert workspace.name in drawer.workspace_state.text()
+    assert drawer.workspace_state.text() == f"工作区  {workspace.name}"
+    assert drawer.composer_hint.text() == "Enter 发送 · Shift+Enter 换行"
     assert drawer.input.toPlainText() == ""
     assert message_spy.count() == 0
     assert [action.text() for action in drawer.add_menu.actions()] == [
@@ -373,8 +374,12 @@ def test_bounded_index_reports_truncation_to_ui(tmp_path):
 
     assert handler.workspace_index.truncated
     assert len(handler.workspace_index.files) <= 2
-    assert "索引已截断" in drawer.workspace_state.text()
-    assert "索引已截断" in drawer.suggestion_title.text()
+    assert drawer.workspace_state.text() == f"工作区  {workspace.name}"
+    assert "个文件" not in drawer.workspace_state.text()
+    assert "索引已截断" not in drawer.workspace_state.text()
+    assert "已选择工作区" not in drawer.composer_hint.text()
+    assert drawer.suggestion_title.text() == ""
+    assert drawer.suggestion_title.isHidden()
 
 
 def test_workspace_and_reference_controls_preserve_viewport_geometry(

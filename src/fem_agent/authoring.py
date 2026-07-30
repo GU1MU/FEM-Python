@@ -959,6 +959,8 @@ class OperationKind(str, Enum):
     REQUEST_PREFLIGHT = "request_preflight"
     REQUEST_SOLVE = "request_solve"
     REQUEST_RESULT_QUERY = "request_result_query"
+    DELETE_MODEL_OBJECT = "delete_model_object"
+    EDIT_MODEL_OBJECT = "edit_model_object"
 
 
 _OPERATION_PARAMETER_FIELDS: dict[
@@ -1009,7 +1011,35 @@ _OPERATION_PARAMETER_FIELDS: dict[
         frozenset({"query"}),
         frozenset({"query"}),
     ),
+    OperationKind.DELETE_MODEL_OBJECT: (
+        frozenset({"object_type", "target_id", "step_name"}),
+        frozenset({"object_type", "target_id"}),
+    ),
+    OperationKind.EDIT_MODEL_OBJECT: (
+        frozenset({"object_type", "target_id", "step_name", "changes"}),
+        frozenset({"object_type", "target_id", "changes"}),
+    ),
 }
+
+
+_DELETE_MODEL_OBJECT_TYPES = frozenset(
+    {
+        "part",
+        "generated_mesh",
+        "named_region",
+        "analysis_step",
+        "boundary_condition",
+        "load",
+        "result_request",
+    }
+)
+_STEP_CHILD_DELETE_TYPES = frozenset(
+    {"boundary_condition", "load", "result_request"}
+)
+_EDIT_MODEL_OBJECT_TYPES = frozenset(
+    {"named_region", "boundary_condition", "load"}
+)
+_STEP_CHILD_EDIT_TYPES = frozenset({"boundary_condition", "load"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -1055,6 +1085,53 @@ class ModelOperation:
             raise AuthoringContractError(
                 "request_solve must use either the legacy or exact A6 field set"
             )
+        if kind is OperationKind.DELETE_MODEL_OBJECT:
+            object_type = parameters.get("object_type")
+            target_id = parameters.get("target_id")
+            step_name = parameters.get("step_name")
+            if object_type not in _DELETE_MODEL_OBJECT_TYPES:
+                raise AuthoringContractError(
+                    "delete_model_object has an unsupported object_type"
+                )
+            if type(target_id) is not str or not target_id.strip():
+                raise AuthoringContractError(
+                    "delete_model_object target_id must be non-blank"
+                )
+            if object_type in _STEP_CHILD_DELETE_TYPES:
+                if type(step_name) is not str or not step_name.strip():
+                    raise AuthoringContractError(
+                        "step_name is required for this delete target"
+                    )
+            elif "step_name" in parameters:
+                raise AuthoringContractError(
+                    "step_name is only valid for step child delete targets"
+                )
+        if kind is OperationKind.EDIT_MODEL_OBJECT:
+            object_type = parameters.get("object_type")
+            target_id = parameters.get("target_id")
+            step_name = parameters.get("step_name")
+            changes = parameters.get("changes")
+            if object_type not in _EDIT_MODEL_OBJECT_TYPES:
+                raise AuthoringContractError(
+                    "edit_model_object has an unsupported object_type"
+                )
+            if type(target_id) is not str or not target_id.strip():
+                raise AuthoringContractError(
+                    "edit_model_object target_id must be non-blank"
+                )
+            if not isinstance(changes, Mapping) or not changes:
+                raise AuthoringContractError(
+                    "edit_model_object changes must be a non-empty object"
+                )
+            if object_type in _STEP_CHILD_EDIT_TYPES:
+                if type(step_name) is not str or not step_name.strip():
+                    raise AuthoringContractError(
+                        "step_name is required for this edit target"
+                    )
+            elif "step_name" in parameters:
+                raise AuthoringContractError(
+                    "step_name is only valid for step child edit targets"
+                )
         object.__setattr__(self, "parameters", parameters)
 
     def to_dict(self) -> dict[str, object]:

@@ -855,7 +855,7 @@ def test_new_session_resets_projector_and_runs_in_background(tmp_path):
     _wait_until(lambda: bool(drawer.event_presentation.turns))
     first_session = runtime.session_id
 
-    drawer.new_session_button.click()
+    assert runtime.new_session()
     _wait_until(lambda: not runtime.busy)
     _wait_until(lambda: runtime.session_id != first_session)
     application.processEvents()

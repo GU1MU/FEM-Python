@@ -19,6 +19,7 @@ from .authoring_runtime import (
     AuthoringToolOutcome,
     AuthoringWorkflowController,
     AuthoringWorkflowStage,
+    ProjectSaveProposalRecord,
     provider_safe_authoring_payload,
 )
 from .analysis_authoring import (
@@ -47,6 +48,18 @@ from .definition_authoring import (
     ScopeSelectionEvidence,
     build_eccentric_plate_scopes,
     create_scope_definition_change,
+)
+from .deletion_authoring import (
+    DeletableObject,
+    apply_delete_operation,
+    create_delete_proposal,
+    deletable_object_catalog,
+)
+from .editing_authoring import (
+    EditableObject,
+    apply_edit_operation,
+    create_edit_proposal,
+    editable_object_catalog,
 )
 from .naming import NameAllocator, NamePolicy
 from .mesh_authoring import (
@@ -111,9 +124,12 @@ __all__ = [
     "AuthoringToolOutcome",
     "AuthoringWorkflowController",
     "AuthoringWorkflowStage",
+    "ProjectSaveProposalRecord",
     "ConfirmedDisplacement",
     "ConfirmedLoad",
     "ConfirmedResultRequest",
+    "DeletableObject",
+    "EditableObject",
     "FakeAuthoringPort",
     "FakeAgentResultQueryPort",
     "LocalModelBinding",
@@ -139,15 +155,21 @@ __all__ = [
     "StaticGeometryPreview",
     "UnitContextSummary",
     "box_geometry",
+    "apply_delete_operation",
+    "apply_edit_operation",
     "build_eccentric_plate_scopes",
     "build_solve_summary",
     "create_scope_definition_change",
+    "create_delete_proposal",
+    "create_edit_proposal",
     "create_analysis_definition_change",
     "create_mesh_proposal",
     "create_solve_proposal",
     "create_geometry_proposal",
     "cylinder_geometry",
     "disk_geometry",
+    "deletable_object_catalog",
+    "editable_object_catalog",
     "explain_result_response",
     "plate_with_hole_geometry",
     "provider_safe_authoring_payload",
