@@ -108,6 +108,25 @@ class AgentToolRegistry:
             )
         return static + dynamic
 
+    def available_definitions(
+        self,
+        session_id: str,
+    ) -> tuple[ToolDefinition, ...]:
+        """Return tools valid for the current analysis-revision state."""
+
+        definitions = self.definitions
+        if self.revisions.latest(session_id) is not None:
+            return definitions
+        static_names = set(self._tools)
+        return tuple(
+            item
+            for item in definitions
+            if (
+                item.name == "show_capabilities"
+                or item.name not in static_names
+            )
+        )
+
     def dispatch(
         self,
         name: str,

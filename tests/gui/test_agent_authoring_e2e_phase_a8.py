@@ -123,9 +123,12 @@ def test_a8_qt_runtime_dispatches_dynamic_tool_on_owner_thread(
 
     assert reader_threads == [owner_thread]
     assert provider.requests
-    assert "read_authoring_context" in {
+    available_names = {
         item.name for item in provider.requests[0].tools
     }
+    assert "read_authoring_context" in available_names
+    assert "set_authoring_requirements" in available_names
+    assert "set_unit_context" not in available_names
     assert any(
         event.event_type.value == "tool_requested"
         and event.payload["tool_name"] == "read_authoring_context"

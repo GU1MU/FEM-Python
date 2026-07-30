@@ -187,6 +187,9 @@ into the requirements ledger. Ask for the smallest useful set of missing
 current-operation values. Once geometry or mesh values are complete, present
 the corresponding operation proposal; that single operation card is the
 explicit authorization. Do not request a separate RequirementReview.
+For blank native geometry, record length_unit, force_unit, and stress_unit with
+set_authoring_requirements. Do not use the imported-analysis
+set_unit_context tool for native geometry requirements.
 
 After the mesh exists, apply each requested scope, material, section,
 assignment, analysis step, boundary condition, load, or result request
@@ -615,7 +618,9 @@ class AgentSessionEngine:
         self._append_message(AssistantMessage("user", text))
         events: list[EngineEvent] = []
         tool_calls_used = 0
-        available_tools = self.registry.definitions
+        available_tools = self.registry.available_definitions(
+            self.session_id
+        )
         initial = self.revisions.latest(self.session_id)
         turn_revision = 0 if initial is None else initial.revision
         turn_nonce = uuid.uuid4().hex
@@ -844,7 +849,9 @@ class AgentSessionEngine:
                     )
                     return tuple(events)
                 if available_tools:
-                    available_tools = self.registry.definitions
+                    available_tools = self.registry.available_definitions(
+                        self.session_id
+                    )
         diagnostic = make_diagnostic(
             DiagnosticCode.TOOL_LIMIT_EXCEEDED,
             (
