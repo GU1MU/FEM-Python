@@ -231,9 +231,18 @@ QLabel#agentChatDiagnosticTitle {
     font-size: 9.5pt;
     font-weight: 600;
 }
+QLabel#agentChatDiagnosticTitle[severity="error"],
+QLabel#agentChatDiagnosticTitle[severity="blocking"] {
+    color: #b42318;
+}
 QLabel#agentChatDiagnosticText {
     color: #65562f;
     font-size: 9.5pt;
+}
+QLabel#agentChatDiagnosticCode {
+    color: #8a9299;
+    font-size: 7.5pt;
+    font-weight: 400;
 }
 QFrame#agentChatDiagnostic[severity="info"] {
     background: #edf5fa;
@@ -1111,6 +1120,7 @@ class AgentChatDrawer(_BoundaryFrame):
         layout.setSpacing(2)
         title = _plain_label(diagnostic.title, card)
         title.setObjectName("agentChatDiagnosticTitle")
+        title.setProperty("severity", diagnostic.severity.value)
         layout.addWidget(title)
         text = _plain_label(diagnostic.message, card)
         text.setObjectName("agentChatDiagnosticText")
@@ -1118,7 +1128,7 @@ class AgentChatDrawer(_BoundaryFrame):
         layout.addWidget(text)
         if diagnostic.code:
             code = _plain_label(diagnostic.code, card)
-            code.setObjectName("agentChatMuted")
+            code.setObjectName("agentChatDiagnosticCode")
             layout.addWidget(code)
         self.event_feed_layout.addWidget(card)
 

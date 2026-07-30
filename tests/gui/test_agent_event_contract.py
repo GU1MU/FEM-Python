@@ -28,6 +28,7 @@ from fem_gui.agent_events import (
 from fem_gui.widgets.agent_chat import (
     AgentChatDrawer,
     ToolActivityPreview,
+    _AGENT_CHAT_STYLESHEET,
 )
 
 
@@ -714,6 +715,7 @@ def test_failed_turn_keeps_diagnostic_without_duplicate_status_box():
     application = _application()
     events = _Events(session_id="failed-turn-ui")
     drawer = AgentChatDrawer()
+    drawer.setStyleSheet(_AGENT_CHAT_STYLESHEET)
     drawer.replay_agent_events(
         (
             _turn_start(events),
@@ -738,6 +740,14 @@ def test_failed_turn_keeps_diagnostic_without_duplicate_status_box():
 
     assert drawer.findChild(QWidget, "agentChatDiagnostic") is not None
     assert drawer.findChild(QLabel, "agentChatTurnStatus") is None
+    title = drawer.findChild(QLabel, "agentChatDiagnosticTitle")
+    code = drawer.findChild(QLabel, "agentChatDiagnosticCode")
+    assert title is not None
+    assert code is not None
+    assert title.property("severity") == "error"
+    assert title.palette().color(title.foregroundRole()).name() == "#b42318"
+    assert code.text() == "GUI-AGENT-CONFIG"
+    assert code.font().pointSizeF() == 7.5
     drawer.close()
 
 
