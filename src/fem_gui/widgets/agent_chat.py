@@ -1397,6 +1397,7 @@ class AgentChatDrawer(_BoundaryFrame):
                 proposal.proposal_id: proposal
                 for proposal in turn.proposals
             }
+            deferred_proposal_ids: list[str] = []
             for timeline_item in turn.timeline:
                 if timeline_item.kind is TimelineKind.MESSAGE:
                     self._add_agent_message(
@@ -1422,10 +1423,7 @@ class AgentChatDrawer(_BoundaryFrame):
                         confirmations[timeline_item.item_id]
                     )
                 elif timeline_item.kind is TimelineKind.PROPOSAL:
-                    self._add_proposal_card(
-                        proposals[timeline_item.item_id],
-                        turn.turn_id,
-                    )
+                    deferred_proposal_ids.append(timeline_item.item_id)
             if turn.status is TurnStatus.CANCELLED:
                 status = _plain_label(
                     "本轮已取消 · " + turn.failure_reason,
@@ -1434,6 +1432,11 @@ class AgentChatDrawer(_BoundaryFrame):
                 status.setObjectName("agentChatTurnStatus")
                 status.setWordWrap(True)
                 self.event_feed_layout.addWidget(status)
+            for proposal_id in deferred_proposal_ids:
+                self._add_proposal_card(
+                    proposals[proposal_id],
+                    turn.turn_id,
+                )
         for record in self._applied_patch_records.values():
             self._add_applied_patch_card(record)
         self._conversation_auto_follow = follow_latest

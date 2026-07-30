@@ -475,3 +475,68 @@ def test_minimal_gui_card_binds_and_only_buttons_authorize() -> None:
     assert accept is not None and not accept.isEnabled()
     assert "A1 Fake Port" in drawer.composer_hint.text()
     drawer.close()
+
+
+def test_proposal_card_is_rendered_after_the_turn_messages() -> None:
+    _application()
+    events = _Events()
+    proposal_hash = "b" * 64
+    log = (
+        events.make(
+            EventType.TURN_STARTED,
+            {"user_message": "建立偏心孔板"},
+        ),
+        events.make(
+            EventType.MESSAGE_START,
+            {
+                "message_id": "before-proposal",
+                "role": "assistant",
+                "format": "restricted_markdown",
+            },
+        ),
+        events.make(
+            EventType.MESSAGE_DELTA,
+            {
+                "message_id": "before-proposal",
+                "delta": "几何参数已经记录。",
+            },
+        ),
+        events.make(
+            EventType.MESSAGE_COMPLETE,
+            {"message_id": "before-proposal"},
+        ),
+        events.make(
+            EventType.PROPOSAL_REQUESTED,
+            _proposal_payload("proposal-last", proposal_hash),
+        ),
+        events.make(
+            EventType.MESSAGE_START,
+            {
+                "message_id": "after-proposal",
+                "role": "assistant",
+                "format": "restricted_markdown",
+            },
+        ),
+        events.make(
+            EventType.MESSAGE_DELTA,
+            {
+                "message_id": "after-proposal",
+                "delta": "请确认是否创建。",
+            },
+        ),
+        events.make(
+            EventType.MESSAGE_COMPLETE,
+            {"message_id": "after-proposal"},
+        ),
+        events.make(EventType.TURN_COMPLETE, {}),
+    )
+
+    drawer = AgentChatDrawer()
+    drawer.replay_agent_events(log)
+
+    last_item = drawer.event_feed_layout.itemAt(
+        drawer.event_feed_layout.count() - 1
+    )
+    assert last_item.widget() is not None
+    assert last_item.widget().objectName() == "agentChatProposal"
+    drawer.close()
