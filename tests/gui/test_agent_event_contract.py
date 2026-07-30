@@ -11,7 +11,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QToolButton, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QLabel,
+    QSizePolicy,
+    QToolButton,
+    QWidget,
+)
 
 from fem_gui.agent_events import (
     AGENT_EVENT_SCHEMA_VERSION,
@@ -693,8 +699,13 @@ def test_fake_event_stream_drives_tool_message_diagnostic_and_confirmation_ui():
 
     tools = drawer.findChild(ToolActivityPreview)
     assert tools is not None
-    assert "3 个工具" in tools.summary_button.text()
-    assert "3 项完成" in tools.summary_button.text()
+    assert tools.summary_button.text() == "工具 3 · 完成 3"
+    assert "秒" in tools.summary_button.toolTip()
+    assert (
+        tools.summary_button.sizePolicy().horizontalPolicy()
+        == QSizePolicy.Policy.Fixed
+    )
+    assert tools.summary_button.width() < tools.width() // 2
 
     confirmation_button = drawer.findChild(
         QToolButton,

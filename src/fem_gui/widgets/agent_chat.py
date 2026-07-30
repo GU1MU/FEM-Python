@@ -237,7 +237,7 @@ QToolButton#agentChatToolSummary {
     color: #707981;
     background: transparent;
     border: none;
-    padding: 5px 1px;
+    padding: 4px 0;
     text-align: left;
     font-size: 8.5pt;
 }
@@ -914,6 +914,25 @@ def _plain_label(text: str, parent: QWidget) -> QLabel:
 
 
 def _tool_summary_text(group: ToolGroupView) -> str:
+    parts = [f"工具 {len(group.calls)}"]
+    if group.completed_count:
+        parts.append(f"完成 {group.completed_count}")
+    if group.warning_count:
+        parts.append(f"警告 {group.warning_count}")
+    if group.failed_count:
+        parts.append(f"失败 {group.failed_count}")
+    if group.cancelled_count:
+        parts.append(f"取消 {group.cancelled_count}")
+    running = sum(
+        call.status in {ToolStatus.REQUESTED, ToolStatus.RUNNING}
+        for call in group.calls
+    )
+    if running:
+        parts.append(f"进行中 {running}")
+    return " · ".join(parts)
+
+
+def _tool_summary_tooltip(group: ToolGroupView) -> str:
     parts = [f"已调用 {len(group.calls)} 个工具"]
     if group.completed_count:
         parts.append(f"{group.completed_count} 项完成")
@@ -956,8 +975,16 @@ class ToolActivityPreview(_BoundaryFrame):
         )
         self.summary_button.setCheckable(True)
         self.summary_button.setChecked(False)
+        self.summary_button.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Fixed,
+        )
         self.summary_button.toggled.connect(self._set_expanded)
-        layout.addWidget(self.summary_button)
+        layout.addWidget(
+            self.summary_button,
+            0,
+            Qt.AlignmentFlag.AlignLeft,
+        )
 
         self.details = _BoundaryFrame(self)
         self.details.setObjectName("agentChatToolDetails")
@@ -1048,6 +1075,9 @@ class ToolActivityPreview(_BoundaryFrame):
             else Qt.ArrowType.RightArrow
         )
         self.summary_button.setText(_tool_summary_text(self._group))
+        self.summary_button.setToolTip(
+            _tool_summary_tooltip(self._group)
+        )
 
 
 class AgentChatDrawer(_BoundaryFrame):
