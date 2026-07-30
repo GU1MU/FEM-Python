@@ -77,6 +77,7 @@ def test_provider_prompt_contains_restrained_engineering_response_contract(
     )
     assert contract["generic_disclaimers"] == "omit"
     assert "local deterministic fem package" not in system_prompt.casefold()
+    assert "do not write guessed or inferred values" not in system_prompt
 
 
 def _attached_engine(tmp_path, provider):

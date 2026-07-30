@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from fem_agent.authoring_runtime import AuthoringWorkflowController
+
 from ..agent_authoring import AgentAuthoringBridge
 from ..icons import icon
 from .agent_chat import ModelViewportOverlayHost
@@ -167,6 +169,7 @@ class ViewportPanel(QWidget):
         parent=None,
         *,
         authoring_bridge: AgentAuthoringBridge | None = None,
+        authoring_controller: AuthoringWorkflowController | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("viewportPanel")
@@ -179,6 +182,7 @@ class ViewportPanel(QWidget):
             viewport,
             self,
             authoring_bridge=authoring_bridge,
+            authoring_controller=authoring_controller,
         )
         self.agent_chat_drawer = self.overlay_host.agent_chat_drawer
         self.scope_creation_bar = ScopeCreationBar(self.overlay_host)

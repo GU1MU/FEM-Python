@@ -16,9 +16,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Qt, Signal
 
 from fem_agent.artifacts import ArtifactStore, InputRejectedError
+from fem_agent.authoring import ProposalState, RequirementReview
+from fem_agent.authoring_runtime import AuthoringWorkflowController
 from fem_agent.config import (
     ConfigError,
     LocalAgentConfig,
@@ -33,6 +35,11 @@ from fem_agent.engine import (
 from fem_agent.providers.base import CloudModelProvider
 from fem_agent.providers.deepseek import DeepSeekProvider
 from fem_agent.providers.fake import FakeProvider
+from fem_agent.schemas import ToolResult
+from fem_agent.tools.registry import (
+    DynamicToolRegistry,
+    ToolExecutionContext,
+)
 
 from .agent_context import (
     PreparedWorkspaceContext,
@@ -92,6 +99,7 @@ EngineFactory = Callable[
 ]
 
 _MAX_MESSAGE_DELTA_CHARACTERS = 8_000
+_AUTHORING_TOOL_OWNER_TIMEOUT_SECONDS = 30.0
 
 _TOOL_DISPLAY_NAMES = {
     "show_capabilities": "检查 Agent 能力",
@@ -134,6 +142,76 @@ class _TurnContext:
     solve_call_id: str | None = None
     solve_succeeded: bool = False
     seen_engine_events: list[EngineEvent] = field(default_factory=list)
+
+
+@dataclass
+class _AuthoringToolInvocation:
+    name: str
+    arguments: Mapping[str, Any]
+    context: ToolExecutionContext
+    completed: threading.Event = field(default_factory=threading.Event)
+    result: ToolResult | None = None
+    error: BaseException | None = None
+    cancelled: bool = False
+    started: bool = False
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def claim(self) -> bool:
+        with self._lock:
+            if self.cancelled or self.completed.is_set():
+                return False
+            self.started = True
+            return True
+
+    def cancel(self, error: BaseException) -> bool:
+        with self._lock:
+            if self.completed.is_set():
+                return False
+            self.cancelled = True
+            self.error = error
+            self.completed.set()
+            return True
+
+    def finish(
+        self,
+        *,
+        result: ToolResult | None = None,
+        error: BaseException | None = None,
+    ) -> None:
+        with self._lock:
+            if self.cancelled or self.completed.is_set():
+                return
+            self.result = result
+            self.error = error
+            self.completed.set()
+
+
+class _QtAuthoringToolProxy(DynamicToolRegistry):
+    """Expose definitions off-thread while dispatching on the Qt owner."""
+
+    def __init__(
+        self,
+        runtime: "QtAgentRuntime",
+        controller: AuthoringWorkflowController,
+    ) -> None:
+        self._runtime = runtime
+        self._controller = controller
+
+    @property
+    def definitions(self):
+        return self._controller.definitions
+
+    def dispatch(
+        self,
+        name: str,
+        arguments: Mapping[str, Any],
+        context: ToolExecutionContext,
+    ) -> ToolResult:
+        return self._runtime._dispatch_authoring_tool(
+            name,
+            arguments,
+            context,
+        )
 
 
 def _default_provider_factory() -> CloudModelProvider:
@@ -194,6 +272,7 @@ class QtAgentRuntime(QObject):
     operationRejected = Signal(str)
     eventRejected = Signal(str)
     shutdownFinished = Signal()
+    authoringToolRequested = Signal(object)
 
     def __init__(
         self,
@@ -202,11 +281,36 @@ class QtAgentRuntime(QObject):
         *,
         provider_factory: ProviderFactory | None = None,
         engine_factory: EngineFactory | None = None,
+        authoring_controller: AuthoringWorkflowController | None = None,
     ) -> None:
         super().__init__(parent)
         self.agent_data_root = Path(os.path.abspath(os.fspath(agent_data_root)))
         self._provider_factory = provider_factory or _default_provider_factory
-        self._engine_factory = engine_factory or _default_engine_factory
+        self._authoring_controller = authoring_controller
+        self._owner_thread_id = threading.get_ident()
+        self._dynamic_tools = (
+            None
+            if authoring_controller is None
+            else _QtAuthoringToolProxy(self, authoring_controller)
+        )
+        if engine_factory is None:
+            dynamic_tools = self._dynamic_tools
+
+            def default_factory(
+                root: Path,
+                provider: CloudModelProvider,
+                event_sink: Callable[[EngineEvent], None],
+            ) -> AgentEnginePort:
+                return AgentSessionEngine(
+                    root,
+                    provider,
+                    event_sink=event_sink,
+                    dynamic_tools=dynamic_tools,
+                )
+
+            self._engine_factory = default_factory
+        else:
+            self._engine_factory = engine_factory
         self._session_executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="fem-agent-session",
@@ -226,7 +330,20 @@ class QtAgentRuntime(QObject):
         self._busy = False
         self._cancel_requested = False
         self._shutdown = False
+        self._authoring_invocations: dict[int, _AuthoringToolInvocation] = {}
         self._attached_input_key: tuple[str, str, str] | None = None
+        self.sessionReset.connect(
+            self._reset_authoring_controller_for_session,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self.authoringToolRequested.connect(
+            self._execute_authoring_tool,
+            Qt.ConnectionType.QueuedConnection,
+        )
+
+    @property
+    def authoring_controller(self) -> AuthoringWorkflowController | None:
+        return self._authoring_controller
 
     @property
     def busy(self) -> bool:
@@ -356,7 +473,49 @@ class QtAgentRuntime(QObject):
                 self._run_cancel,
                 generation,
             )
+        controller = self._authoring_controller
+        if controller is not None:
+            controller.cancel_turn()
         return True
+
+    def resolve_requirement_review_from_gui(
+        self,
+        review: RequirementReview,
+    ) -> None:
+        self._require_owner_thread()
+        controller = self._authoring_controller
+        if controller is None:
+            raise RuntimeError("authoring controller is not configured")
+        controller.resolve_requirement_review(review)
+
+    def record_authoring_proposal_state_from_gui(
+        self,
+        operation: str,
+        state: ProposalState | str,
+        message: str = "",
+    ) -> None:
+        self._require_owner_thread()
+        controller = self._authoring_controller
+        if controller is None:
+            raise RuntimeError("authoring controller is not configured")
+        controller.record_proposal_state(operation, state, message)
+
+    def invalidate_authoring_binding_from_gui(self, reason: str) -> None:
+        self._require_owner_thread()
+        controller = self._authoring_controller
+        if controller is not None:
+            controller.invalidate_binding(reason)
+
+    def record_authoring_preflight_state_from_gui(
+        self,
+        state: str,
+        message: str = "",
+    ) -> None:
+        self._require_owner_thread()
+        controller = self._authoring_controller
+        if controller is None:
+            raise RuntimeError("authoring controller is not configured")
+        controller.record_preflight_state(state, message)
 
     def shutdown(self, *, wait: bool = True) -> None:
         """Cancel, close the engine off-thread, and join owned executors."""
@@ -365,6 +524,8 @@ class QtAgentRuntime(QObject):
                 return
             self._shutdown = True
             self._cancel_requested = True
+            authoring_invocations = tuple(self._authoring_invocations.values())
+            self._authoring_invocations.clear()
             generation = self._generation
             if self._busy:
                 self._control_executor.submit(
@@ -376,6 +537,12 @@ class QtAgentRuntime(QObject):
                 self._session_executor.submit(self._run_close)
                 if should_close
                 else None
+            )
+        for invocation in authoring_invocations:
+            invocation.cancel(
+                RuntimeError(
+                    "Agent runtime closed during an authoring tool call"
+                )
             )
         close_failed = False
         if wait and close_future is not None:
@@ -457,6 +624,113 @@ class QtAgentRuntime(QObject):
             candidate.model_name,
         )
         return engine
+
+    def _dispatch_authoring_tool(
+        self,
+        name: str,
+        arguments: Mapping[str, Any],
+        context: ToolExecutionContext,
+    ) -> ToolResult:
+        controller = self._authoring_controller
+        if controller is None:
+            raise RuntimeError("authoring controller is not configured")
+        if threading.get_ident() == self._owner_thread_id:
+            with self._lock:
+                if self._shutdown:
+                    raise RuntimeError("Agent runtime is closed")
+            return controller.dispatch(name, arguments, context)
+        invocation = _AuthoringToolInvocation(
+            name,
+            dict(arguments),
+            context,
+        )
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("Agent runtime is closed")
+            self._authoring_invocations[id(invocation)] = invocation
+        self.authoringToolRequested.emit(invocation)
+        deadline = (
+            time.monotonic() + _AUTHORING_TOOL_OWNER_TIMEOUT_SECONDS
+        )
+        while not invocation.completed.wait(timeout=0.05):
+            with self._lock:
+                if self._shutdown:
+                    error = RuntimeError(
+                        "Agent runtime closed during an authoring tool call"
+                    )
+                    invocation.cancel(error)
+                    self._authoring_invocations.pop(id(invocation), None)
+                    raise error
+            if time.monotonic() >= deadline:
+                error = TimeoutError(
+                    "Agent authoring tool exceeded its owner-thread budget"
+                )
+                invocation.cancel(error)
+                with self._lock:
+                    self._authoring_invocations.pop(id(invocation), None)
+                raise error
+        with self._lock:
+            self._authoring_invocations.pop(id(invocation), None)
+        if invocation.cancelled:
+            if invocation.error is None:
+                raise RuntimeError("Agent authoring tool call was cancelled")
+            raise invocation.error
+        if invocation.error is not None:
+            raise RuntimeError(
+                "Agent authoring tool failed on the owner thread"
+            ) from invocation.error
+        if type(invocation.result) is not ToolResult:
+            raise TypeError("Agent authoring tool returned an invalid result")
+        return invocation.result
+
+    def _execute_authoring_tool(
+        self,
+        invocation: _AuthoringToolInvocation,
+    ) -> None:
+        with self._lock:
+            shutdown = self._shutdown
+        if shutdown:
+            invocation.cancel(
+                RuntimeError(
+                    "Agent runtime closed before an authoring tool call"
+                )
+            )
+            return
+        if not invocation.claim():
+            return
+        try:
+            controller = self._authoring_controller
+            if controller is None:
+                raise RuntimeError("authoring controller is not configured")
+            result = controller.dispatch(
+                invocation.name,
+                invocation.arguments,
+                invocation.context,
+            )
+        except BaseException as error:
+            invocation.finish(error=error)
+        else:
+            invocation.finish(result=result)
+        finally:
+            with self._lock:
+                self._authoring_invocations.pop(id(invocation), None)
+
+    def _reset_authoring_controller_for_session(
+        self,
+        _session_id: str,
+    ) -> None:
+        self._require_owner_thread()
+        controller = self._authoring_controller
+        if controller is None:
+            return
+        controller.invalidate_binding("Agent session changed")
+        controller.reset_for_binding()
+
+    def _require_owner_thread(self) -> None:
+        if threading.get_ident() != self._owner_thread_id:
+            raise RuntimeError(
+                "authoring GUI state must be changed on the runtime owner thread"
+            )
 
     def _run_send(
         self,
@@ -1098,7 +1372,7 @@ class QtAgentRuntime(QObject):
                     },
                 ),
             ]
-        return [
+        completed_events = [
             *events,
             self._new_event_locked(
                 context,
@@ -1110,6 +1384,21 @@ class QtAgentRuntime(QObject):
                 },
             ),
         ]
+        data = result_mapping.get("data")
+        proposal_view = (
+            data.get("proposal_view")
+            if isinstance(data, Mapping)
+            else None
+        )
+        if isinstance(proposal_view, Mapping):
+            completed_events.append(
+                self._new_event_locked(
+                    context,
+                    EventType.PROPOSAL_REQUESTED,
+                    dict(proposal_view),
+                )
+            )
+        return completed_events
 
     def _analysis_summary_events_locked(
         self,

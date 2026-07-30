@@ -44,6 +44,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from fem_agent.authoring_runtime import (
+    AuthoringWorkflowController,
+    AuthoringWorkflowStage,
+)
+
 from ..agent_events import (
     AgentEvent,
     AgentEventProjector,
@@ -699,6 +704,7 @@ class AgentChatDrawer(_BoundaryFrame):
         workspace_commands: WorkspaceCommandHandler | None = None,
         agent_runtime: QtAgentRuntime | None = None,
         authoring_bridge: object | None = None,
+        authoring_controller: AuthoringWorkflowController | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("agentChatDrawer")
@@ -722,6 +728,7 @@ class AgentChatDrawer(_BoundaryFrame):
         self.agent_runtime = agent_runtime or QtAgentRuntime(
             self.workspace_commands.agent_data_root,
             self,
+            authoring_controller=authoring_controller,
         )
         patch_listener = getattr(
             self.authoring_bridge,
@@ -1261,6 +1268,8 @@ class AgentChatDrawer(_BoundaryFrame):
         accept.setObjectName("agentChatProposalAcceptButton")
         accept.setText(proposal.confirm_label)
         accept.setProperty("proposalId", proposal.proposal_id)
+        accept.setProperty("proposalHash", proposal.proposal_hash)
+        accept.setProperty("proposalKind", proposal.proposal_kind)
         accept.setProperty(
             "targetDocumentId",
             proposal.target_document_id,
@@ -1289,6 +1298,8 @@ class AgentChatDrawer(_BoundaryFrame):
         reject.setObjectName("agentChatProposalRejectButton")
         reject.setText("拒绝")
         reject.setProperty("proposalId", proposal.proposal_id)
+        reject.setProperty("proposalHash", proposal.proposal_hash)
+        reject.setProperty("proposalKind", proposal.proposal_kind)
         reject.setProperty(
             "targetDocumentId",
             proposal.target_document_id,
@@ -1742,6 +1753,41 @@ class AgentChatDrawer(_BoundaryFrame):
         bridge = self.authoring_bridge
         if bridge is None:
             return
+        if proposal.proposal_kind == "requirement_review":
+            if not self._proposal_targets_live_binding(proposal):
+                self._show_preview_notice("需求审查已陈旧，请重新生成")
+                return
+            controller = self.agent_runtime.authoring_controller
+            review = (
+                None
+                if controller is None
+                else controller.pending_review
+            )
+            if not self._requirement_review_is_current(
+                proposal.proposal_id,
+                proposal.proposal_hash,
+            ):
+                self._show_preview_notice("需求审查已陈旧，请重新生成")
+                return
+            try:
+                confirmed = bridge.confirm_requirement_review_from_gui(
+                    controller.ledger,
+                    review,
+                )
+                self.agent_runtime.resolve_requirement_review_from_gui(
+                    confirmed
+                )
+            except Exception as exc:
+                self._show_preview_notice(
+                    str(exc).strip() or "需求确认失败"
+                )
+            else:
+                proposal.status = ProposalViewStatus.ACCEPTED
+                self._show_preview_notice("完整工程需求已由 GUI 控件确认")
+            self._render_event_presentation(
+                preserve_tool_expansion=True
+            )
+            return
         try:
             receipt = bridge.accept_from_gui_control(proposal.proposal_id)
         except Exception as exc:
@@ -1749,6 +1795,14 @@ class AgentChatDrawer(_BoundaryFrame):
                 str(exc).strip() or "提案接受失败"
             )
         else:
+            try:
+                self.agent_runtime.record_authoring_proposal_state_from_gui(
+                    proposal.proposal_kind,
+                    receipt.state.value,
+                    receipt.message,
+                )
+            except (RuntimeError, ValueError):
+                pass
             self._show_preview_notice(
                 receipt.message
                 or (
@@ -1771,6 +1825,41 @@ class AgentChatDrawer(_BoundaryFrame):
         bridge = self.authoring_bridge
         if bridge is None:
             return
+        if proposal.proposal_kind == "requirement_review":
+            if not self._proposal_targets_live_binding(proposal):
+                self._show_preview_notice("需求审查已陈旧，请重新生成")
+                return
+            controller = self.agent_runtime.authoring_controller
+            review = (
+                None
+                if controller is None
+                else controller.pending_review
+            )
+            if not self._requirement_review_is_current(
+                proposal.proposal_id,
+                proposal.proposal_hash,
+            ):
+                self._show_preview_notice("需求审查已陈旧，请重新生成")
+                return
+            try:
+                rejected = bridge.reject_requirement_review_from_gui(
+                    controller.ledger,
+                    review,
+                )
+                self.agent_runtime.resolve_requirement_review_from_gui(
+                    rejected
+                )
+            except Exception as exc:
+                self._show_preview_notice(
+                    str(exc).strip() or "需求拒绝失败"
+                )
+            else:
+                proposal.status = ProposalViewStatus.REJECTED
+                self._show_preview_notice("需求审查已拒绝，模型保持不变")
+            self._render_event_presentation(
+                preserve_tool_expansion=True
+            )
+            return
         try:
             receipt = bridge.reject_from_gui_control(proposal.proposal_id)
         except Exception as exc:
@@ -1778,6 +1867,14 @@ class AgentChatDrawer(_BoundaryFrame):
                 str(exc).strip() or "提案拒绝失败"
             )
         else:
+            try:
+                self.agent_runtime.record_authoring_proposal_state_from_gui(
+                    proposal.proposal_kind,
+                    receipt.state.value,
+                    receipt.message,
+                )
+            except (RuntimeError, ValueError):
+                pass
             self._show_preview_notice(
                 receipt.message or "提案已拒绝，当前模型保持不变"
             )
@@ -1798,6 +1895,11 @@ class AgentChatDrawer(_BoundaryFrame):
             or binding.session_revision != proposal.base_session_revision
         ):
             return False
+        if proposal.proposal_kind == "requirement_review":
+            return self._requirement_review_is_current(
+                proposal.proposal_id,
+                proposal.proposal_hash,
+            )
         try:
             check = getattr(bridge, "can_accept_from_gui_control", None)
             if callable(check):
@@ -1842,6 +1944,20 @@ class AgentChatDrawer(_BoundaryFrame):
         )
 
     def _reset_runtime_session(self, _session_id: str) -> None:
+        bridge = self.authoring_bridge
+        stale_pending = getattr(
+            bridge,
+            "stale_pending_proposals_from_gui",
+            None,
+        )
+        if callable(stale_pending):
+            stale_pending("Agent session changed")
+        controller = self.agent_runtime.authoring_controller
+        if controller is not None:
+            controller.reset_for_binding()
+            context = None if bridge is None else bridge.context
+            if context is not None:
+                controller.observe_binding(context)
         self.event_projector = AgentEventProjector()
         self._expanded_tool_group_ids.clear()
         self._pending_solve_confirmations.clear()
@@ -1945,6 +2061,11 @@ class AgentChatDrawer(_BoundaryFrame):
             != button.property("baseSessionRevision")
         ):
             return False
+        if button.property("proposalKind") == "requirement_review":
+            return self._requirement_review_is_current(
+                str(button.property("proposalId")),
+                str(button.property("proposalHash")),
+            )
         try:
             proposal_id = str(button.property("proposalId"))
             check = getattr(bridge, "can_accept_from_gui_control", None)
@@ -1953,6 +2074,24 @@ class AgentChatDrawer(_BoundaryFrame):
             return bridge.state(proposal_id).value == "pending_confirmation"
         except Exception:
             return False
+
+    def _requirement_review_is_current(
+        self,
+        review_id: str,
+        review_hash: str,
+    ) -> bool:
+        controller = self.agent_runtime.authoring_controller
+        if (
+            controller is None
+            or controller.stage is not AuthoringWorkflowStage.REVIEW_PENDING
+        ):
+            return False
+        pending = controller.pending_review
+        return (
+            pending is not None
+            and pending.review_id == review_id
+            and pending.review_hash == review_hash
+        )
 
     def shutdown_runtime(self) -> None:
         """安全关闭后台执行边界；收起聊天框不会调用本方法。"""
@@ -2002,6 +2141,7 @@ class ModelViewportOverlayHost(QWidget):
         workspace_commands: WorkspaceCommandHandler | None = None,
         agent_runtime: QtAgentRuntime | None = None,
         authoring_bridge: object | None = None,
+        authoring_controller: AuthoringWorkflowController | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("modelViewportOverlayHost")
@@ -2022,6 +2162,7 @@ class ModelViewportOverlayHost(QWidget):
             workspace_commands=workspace_commands,
             agent_runtime=agent_runtime,
             authoring_bridge=authoring_bridge,
+            authoring_controller=authoring_controller,
         )
         self.chat_launcher = AgentChatLauncher(self)
         self._bottom_overlay: QWidget | None = None

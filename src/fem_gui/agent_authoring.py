@@ -49,16 +49,33 @@ from fem_agent.authoring import (
     UnitContextSummary,
 )
 from fem_agent.analysis_authoring import require_non_destructive_a5_batch
+from fem_agent.analysis_authoring import (
+    ConfirmedDisplacement,
+    ConfirmedLoad,
+    ConfirmedResultRequest,
+    LinearStaticAnalysis,
+    create_analysis_definition_change,
+)
+from fem_agent.authoring_runtime import (
+    AuthoringToolOutcome,
+    AuthoringWorkflowController,
+)
 from fem_agent.definition_authoring import (
+    create_scope_definition_change,
     inverse_operations_for_snapshot,
     require_non_destructive_a4_batch,
     scoped_definition_batch_from_operations,
 )
-from fem_agent.geometry_authoring import geometry_recipe_from_payload
-from fem_agent.mesh_authoring import MeshIntent
+from fem_agent.geometry_authoring import (
+    create_geometry_proposal,
+    geometry_recipe_from_payload,
+    plate_with_hole_geometry,
+)
+from fem_agent.mesh_authoring import MeshIntent, create_mesh_proposal
 from fem_agent.naming import NameAllocator
 from fem_agent.solve_authoring import (
     SolveValidationStamp,
+    create_solve_proposal,
     solve_operation_identity,
     validation_stamp_for_snapshot,
 )
@@ -73,7 +90,10 @@ from fem_agent.result_authoring import (
     AgentResultQueryResponse,
     AgentResultScalar,
     AgentResultVariable,
+    AgentResultQueryBridge,
 )
+from fem.geometry import LogicalEntityRef
+from fem.mesh.settings import LocalMeshControl, MeshSizeFalloff
 
 
 class _SessionSnapshot(Protocol):
@@ -1586,6 +1606,7 @@ class AgentAuthoringBridge:
         self._patch_idempotency: dict[str, str] = {}
         self._authorization_nonce = 0
         self._unused_authorizations: set[_GuiControlAuthorization] = set()
+        self._accepting_proposal_id: str | None = None
         self._gui_thread_id = threading.get_ident()
         self._patch_listener: Callable[[AppliedPatchRecord], None] | None = None
         listener = getattr(port, "set_record_listener", None)
@@ -1625,13 +1646,35 @@ class AgentAuthoringBridge:
 
         stale_ids: list[str] = []
         for proposal_id, record in tuple(self._records.items()):
-            if record.state is ProposalState.PENDING_CONFIRMATION:
+            if (
+                record.state is ProposalState.PENDING_CONFIRMATION
+                and proposal_id != self._accepting_proposal_id
+            ):
                 stale = self._port.stale(
                     proposal_id,
                     "绑定文档、session 或 revision 已改变",
                 )
                 self._records[proposal_id] = stale
                 stale_ids.append(proposal_id)
+        return tuple(stale_ids)
+
+    def stale_pending_proposals_from_gui(
+        self,
+        reason: str,
+    ) -> tuple[str, ...]:
+        """Make every old Agent-session proposal terminal on the GUI owner."""
+
+        self._require_gui_thread()
+        message = str(reason).strip()
+        if not message:
+            raise ValueError("stale reason must be non-blank")
+        stale_ids: list[str] = []
+        for proposal_id, record in tuple(self._records.items()):
+            if record.state is not ProposalState.PENDING_CONFIRMATION:
+                continue
+            stale = self._port.stale(proposal_id, message)
+            self._records[proposal_id] = stale
+            stale_ids.append(proposal_id)
         return tuple(stale_ids)
 
     def register_proposal(self, proposal: AgentProposal) -> BridgeReceipt:
@@ -1714,6 +1757,7 @@ class AgentAuthoringBridge:
         del token
         record = self._pending_record(proposal_id)
         self._require_live_target(record.proposal)
+        self._accepting_proposal_id = proposal_id
         try:
             accepted = self._port.accept(proposal_id)
         except Exception as exc:
@@ -1727,6 +1771,8 @@ class AgentAuthoringBridge:
                 failed = marker(proposal_id, failed.message)
             self._records[proposal_id] = failed
             return self._receipt(failed)
+        finally:
+            self._accepting_proposal_id = None
         self._records[proposal_id] = accepted
         if (
             accepted.state is ProposalState.SUCCEEDED
@@ -1923,6 +1969,407 @@ class AgentAuthoringBridge:
         )
 
 
+def create_session_authoring_workflow_controller(
+    session: ModelSession,
+    authoring_bridge: AgentAuthoringBridge,
+    result_bridge: AgentResultQueryBridge,
+) -> AuthoringWorkflowController:
+    """Wire A1-A7 handlers to one GUI-owner A8 controller."""
+
+    if type(session) is not ModelSession:
+        raise TypeError("session must be exactly ModelSession")
+    if type(authoring_bridge) is not AgentAuthoringBridge:
+        raise TypeError("authoring_bridge must be AgentAuthoringBridge")
+    if type(result_bridge) is not AgentResultQueryBridge:
+        raise TypeError("result_bridge must be AgentResultQueryBridge")
+
+    def current_context() -> AuthoringContext:
+        context = authoring_bridge.context
+        if context is None:
+            raise AuthoringContractError("there is no current authoring binding")
+        return context
+
+    def envelope(
+        controller: AuthoringWorkflowController,
+        prefix: str,
+    ) -> dict[str, object]:
+        return controller.invocation_metadata(prefix)
+
+    def proposal_outcome(
+        proposal: AgentProposal,
+        *,
+        summary: str,
+        impact: str,
+        confirm_label: str,
+    ) -> AuthoringToolOutcome:
+        receipt = authoring_bridge.register_proposal(proposal)
+        return AuthoringToolOutcome(
+            summary,
+            {
+                "proposal_id": proposal.proposal_id,
+                "proposal_hash": proposal.proposal_hash,
+                "state": receipt.state.value,
+                "proposal_view": {
+                    "proposal_id": proposal.proposal_id,
+                    "proposal_hash": proposal.proposal_hash,
+                    "proposal_kind": proposal.proposal_kind.value,
+                    "title": str(proposal.display_summary.get("title", summary)),
+                    "summary": summary,
+                    "impact": impact,
+                    "confirm_label": confirm_label,
+                    "target_document_id": proposal.target_document_id,
+                    "target_session_id": proposal.target_session_id,
+                    "base_session_revision": proposal.base_session_revision,
+                },
+            },
+        )
+
+    def prepare_geometry(
+        _arguments: Mapping[str, object],
+        controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        requirements = controller.confirmed_requirements()
+        metadata = envelope(controller, "geometry")
+        context = current_context()
+        draft = plate_with_hole_geometry(
+            "实体-偏心孔板",
+            width=float(requirements["plate_width"]),
+            height=float(requirements["plate_height"]),
+            hole_radius=float(requirements["hole_radius"]),
+            hole_center=(
+                float(requirements["hole_center_x"]),
+                float(requirements["hole_center_y"]),
+            ),
+        )
+        suffix = str(metadata.pop("identity_suffix"))
+        proposal = create_geometry_proposal(
+            proposal_id=f"proposal-{suffix}",
+            context=context,
+            draft=draft,
+            part_function="偏心孔板",
+            project_function=(
+                "偏心孔板"
+                if context.binding.source_kind == "blank"
+                else None
+            ),
+            unit_context=UnitContextSummary(
+                str(requirements["length_unit"]),
+                str(requirements["force_unit"]),
+                str(requirements["stress_unit"]),
+                convention=(
+                    f"{requirements['force_unit']}-"
+                    f"{requirements['length_unit']}-"
+                    f"{requirements['stress_unit']}"
+                ),
+            ),
+            **metadata,
+        )
+        return proposal_outcome(
+            proposal,
+            summary="创建模型-偏心孔板和部件-偏心孔板",
+            impact="接受后一次性加入已确认的偏心带孔平板几何",
+            confirm_label="加入模型",
+        )
+
+    def prepare_mesh(
+        _arguments: Mapping[str, object],
+        controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        requirements = controller.confirmed_requirements()
+        metadata = envelope(controller, "mesh")
+        context = current_context()
+        part_id = context.active_part_id
+        if part_id is None:
+            raise AuthoringContractError("there is no active Part to mesh")
+        intent = MeshIntent(
+            str(requirements["mesh_cell_shape"]),
+            int(requirements["mesh_order"]),
+            global_size=float(requirements["mesh_global_size"]),
+            local_controls=(
+                LocalMeshControl(
+                    LogicalEntityRef("edge:hole-loop"),
+                    float(requirements["hole_mesh_size"]),
+                    MeshSizeFalloff("target_radius", 0.0, 2.0),
+                ),
+            ),
+        )
+        suffix = str(metadata.pop("identity_suffix"))
+        proposal = create_mesh_proposal(
+            proposal_id=f"proposal-{suffix}",
+            context=context,
+            part_id=part_id,
+            mesh_intent=intent,
+            **metadata,
+        )
+        return proposal_outcome(
+            proposal,
+            summary="为部件-偏心孔板设置全局网格和边-孔边局部加密",
+            impact="接受后后台调用 Gmsh，成功时原子安装网格",
+            confirm_label="开始划分",
+        )
+
+    def apply_scopes_and_materials(
+        _arguments: Mapping[str, object],
+        controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        requirements = controller.confirmed_requirements()
+        first = envelope(controller, "definitions-a4")
+        first_suffix = str(first.pop("identity_suffix"))
+        snapshot = session.snapshot()
+        a4_change = create_scope_definition_change(
+            patch_id=f"patch-{first_suffix}",
+            proposal_id=f"proposal-{first_suffix}",
+            context=current_context(),
+            snapshot=snapshot,
+            material_function="结构钢",
+            material_properties={
+                "E": float(requirements["young_modulus"]),
+                "nu": float(requirements["poisson_ratio"]),
+            },
+            section_function=(
+                "平面应力"
+                if requirements["modeling_assumption"] == "plane_stress"
+                else "平面应变"
+            ),
+            plane_type=(
+                "stress"
+                if requirements["modeling_assumption"] == "plane_stress"
+                else "strain"
+            ),
+            thickness=float(requirements["plate_thickness"]),
+            **first,
+        )
+        if type(a4_change) is AgentProposal:
+            raise AuthoringAuthorizationError(
+                "existing results require a destructive-edit proposal"
+            )
+        applied_a4 = authoring_bridge.apply_automatic_patch(a4_change)
+        return AuthoringToolOutcome(
+            "Scopes, material, section and assignment were applied.",
+            {
+                "state": "succeeded",
+                "patch_id": applied_a4.patch.patch_id,
+                "undo_available": applied_a4.undo_available,
+                "names": [
+                    "边-固定端",
+                    "边-加载端",
+                    "边-孔边",
+                    "域-板体",
+                    "材料-结构钢",
+                    (
+                        "截面-平面应力"
+                        if requirements["modeling_assumption"]
+                        == "plane_stress"
+                        else "截面-平面应变"
+                    ),
+                ],
+            },
+        )
+
+    def apply_analysis_definitions(
+        _arguments: Mapping[str, object],
+        controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        requirements = controller.confirmed_requirements()
+        fixed_dofs = tuple(int(item) for item in requirements["fixed_dofs"])
+        if fixed_dofs != tuple(
+            range(min(fixed_dofs), max(fixed_dofs) + 1)
+        ):
+            raise AuthoringContractError(
+                "fixed_dofs must be one contiguous explicit range"
+            )
+        direction = str(requirements["load_direction"])
+        magnitude = float(requirements["load_magnitude"])
+        load_type = str(requirements["load_type"])
+        vector = (
+            (magnitude, 0.0)
+            if direction == "x"
+            else (0.0, magnitude)
+            if direction == "y"
+            else ()
+        )
+        load = ConfirmedLoad(
+            "载荷-拉伸",
+            "分析步-静力",
+            "边-加载端",
+            "edge",
+            load_type,
+            None,
+            vector,
+            (
+                magnitude
+                if "pressure" in load_type
+                else None
+            ),
+            (
+                direction
+                if "pressure" in load_type
+                else "global_xy"
+            ),
+            str(requirements["load_unit"]),
+            str(requirements["load_distribution"]),
+            True,
+        )
+        requested = tuple(requirements["result_requests"])
+        outputs: list[ConfirmedResultRequest] = []
+        nodal = tuple(item for item in requested if item in {"U", "RF"})
+        if nodal:
+            outputs.append(
+                ConfirmedResultRequest(
+                    "结果请求-位移反力",
+                    "分析步-静力",
+                    "field",
+                    "node",
+                    nodal,
+                    tuple(
+                        str(requirements["length_unit"])
+                        if item == "U"
+                        else str(requirements["force_unit"])
+                        for item in nodal
+                    ),
+                    True,
+                )
+            )
+        if "S" in requested:
+            outputs.append(
+                ConfirmedResultRequest(
+                    "结果请求-应力",
+                    "分析步-静力",
+                    "field",
+                    "element",
+                    ("S",),
+                    (str(requirements["stress_unit"]),),
+                    True,
+                )
+            )
+        analysis = LinearStaticAnalysis(
+            "分析步-静力",
+            2,
+            "static",
+            False,
+            (
+                ConfirmedDisplacement(
+                    "位移-固定端",
+                    "分析步-静力",
+                    "边-固定端",
+                    "edge",
+                    min(fixed_dofs),
+                    max(fixed_dofs),
+                    0.0,
+                    str(requirements["length_unit"]),
+                    "uniform",
+                    True,
+                ),
+            ),
+            (load,),
+            tuple(outputs),
+            True,
+        )
+        second = envelope(controller, "definitions-a5")
+        second_suffix = str(second.pop("identity_suffix"))
+        current = session.snapshot()
+        a5_change = create_analysis_definition_change(
+            patch_id=f"patch-{second_suffix}",
+            proposal_id=f"proposal-{second_suffix}",
+            context=current_context(),
+            snapshot=current,
+            analysis=analysis,
+            **second,
+        )
+        if type(a5_change) is AgentProposal:
+            raise AuthoringAuthorizationError(
+                "existing analysis requires a destructive-edit proposal"
+            )
+        applied_a5 = authoring_bridge.apply_automatic_patch(a5_change)
+        return AuthoringToolOutcome(
+            "Complete linear-static analysis definitions were applied.",
+            {
+                "state": "succeeded",
+                "patch_id": applied_a5.patch.patch_id,
+                "undo_available": applied_a5.undo_available,
+                "names": [
+                    "分析步-静力",
+                    "位移-固定端",
+                    "载荷-拉伸",
+                    "结果请求-位移反力",
+                    "结果请求-应力",
+                ],
+            },
+        )
+
+    def run_preflight(
+        _arguments: Mapping[str, object],
+        _controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        record = authoring_bridge.request_preflight("分析步-静力")
+        return AuthoringToolOutcome(
+            "Native preflight was submitted through the existing GUI task.",
+            {
+                "request_id": record.request_id,
+                "state": record.state.value,
+                "passed": record.state is AgentPreflightState.PASSED,
+            },
+        )
+
+    def prepare_solve(
+        _arguments: Mapping[str, object],
+        controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        metadata = envelope(controller, "solve")
+        suffix = str(metadata.pop("identity_suffix"))
+        proposal = create_solve_proposal(
+            proposal_id=f"proposal-{suffix}",
+            snapshot=session.snapshot(),
+            step_name="分析步-静力",
+            job_name="作业-静力1",
+            **metadata,
+        )
+        return proposal_outcome(
+            proposal,
+            summary="提交作业-静力1并绑定当前 validation stamp",
+            impact="接受后后台执行当前已预检的线性静力模型",
+            confirm_label="开始求解",
+        )
+
+    def read_catalog(
+        _arguments: Mapping[str, object],
+        _controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        response = result_bridge.catalog()
+        return AuthoringToolOutcome(
+            "Accepted result catalog read locally.",
+            response.to_dict(),
+            ok=response.ok,
+        )
+
+    def query_result(
+        arguments: Mapping[str, object],
+        _controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        response = result_bridge.query(arguments)
+        return AuthoringToolOutcome(
+            "One accepted result scalar read locally.",
+            response.to_dict(),
+            ok=response.ok,
+        )
+
+    controller = AuthoringWorkflowController(
+        current_context,
+        {
+            "prepare_geometry_proposal": prepare_geometry,
+            "prepare_mesh_proposal": prepare_mesh,
+            "apply_scopes_and_materials": apply_scopes_and_materials,
+            "apply_analysis_definitions": apply_analysis_definitions,
+            "run_native_preflight": run_preflight,
+            "prepare_solve_proposal": prepare_solve,
+            "read_accepted_result_catalog": read_catalog,
+            "query_accepted_result": query_result,
+        },
+    )
+    controller.observe_binding(current_context())
+    return controller
+
+
 __all__ = [
     "AppliedPatchRecord",
     "AppliedPatchState",
@@ -1936,4 +2383,5 @@ __all__ = [
     "SessionResultQueryPort",
     "SessionGeometryAuthoringPort",
     "authoring_context_from_snapshot",
+    "create_session_authoring_workflow_controller",
 ]

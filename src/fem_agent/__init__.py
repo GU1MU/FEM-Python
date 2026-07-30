@@ -14,6 +14,13 @@ from .authoring import (
     RequirementReview,
     UnitContextSummary,
 )
+from .authoring_runtime import (
+    AuthoringTerminalRecord,
+    AuthoringToolOutcome,
+    AuthoringWorkflowController,
+    AuthoringWorkflowStage,
+    provider_safe_authoring_payload,
+)
 from .analysis_authoring import (
     AnalysisAuthoringError,
     ConfirmedDisplacement,
@@ -100,6 +107,10 @@ __all__ = [
     "AgentResultScalar",
     "AgentResultVariable",
     "AuthoringContext",
+    "AuthoringTerminalRecord",
+    "AuthoringToolOutcome",
+    "AuthoringWorkflowController",
+    "AuthoringWorkflowStage",
     "ConfirmedDisplacement",
     "ConfirmedLoad",
     "ConfirmedResultRequest",
@@ -139,6 +150,7 @@ __all__ = [
     "disk_geometry",
     "explain_result_response",
     "plate_with_hole_geometry",
+    "provider_safe_authoring_payload",
     "rectangle_geometry",
     "result_catalog_tool_schema",
     "result_query_tool_schema",

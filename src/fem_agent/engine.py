@@ -47,7 +47,11 @@ from .schemas import (
     ToolResult,
 )
 from .state import RevisionRecord, RevisionStore, hash_revision_spec
-from .tools.registry import AgentToolRegistry, ToolExecutionContext
+from .tools.registry import (
+    AgentToolRegistry,
+    DynamicToolRegistry,
+    ToolExecutionContext,
+)
 from .worker import (
     IsolatedFEMWorker,
     WorkerResponse,
@@ -159,6 +163,14 @@ WORKER_CRASH or WORKER_TIMEOUT, do not call another tool in the same user turn.
 Those inspection tools share one backend, so one is not a fallback for another.
 Report the temporary inspection failure briefly and wait for the next user
 turn."""
+_AUTHORING_SYSTEM_PROMPT = """
+
+When native authoring tools are available, treat ambiguous requirements as a
+request for clarification: do not write guessed or inferred values into the
+requirements ledger. Request a RequirementReview only after every required
+engineering value was explicitly supplied. Geometry, mesh, and solve proposals
+only present local GUI cards; never claim that they were accepted or executed,
+and wait for the GUI-controlled terminal state before advancing."""
 
 
 class _ConversationStorageLimit(ValueError):
@@ -272,6 +284,7 @@ class AgentSessionEngine:
         session_id: str | None = None,
         config: EngineConfig | None = None,
         event_sink: Callable[[EngineEvent], None] | None = None,
+        dynamic_tools: DynamicToolRegistry | None = None,
     ):
         self.config = config or EngineConfig()
         self.provider = provider
@@ -286,6 +299,12 @@ class AgentSessionEngine:
         self.registry = AgentToolRegistry(
             self.artifacts.root,
             cancel_event=self._cancel_event,
+            dynamic_tools=dynamic_tools,
+        )
+        self._system_prompt = (
+            _SYSTEM_PROMPT + _AUTHORING_SYSTEM_PROMPT
+            if dynamic_tools is not None
+            else _SYSTEM_PROMPT
         )
         self.worker = IsolatedFEMWorker(self.artifacts.root)
         self._state_lock = threading.RLock()
@@ -791,6 +810,8 @@ class AgentSessionEngine:
                         )
                     )
                     return tuple(events)
+                if available_tools:
+                    available_tools = self.registry.definitions
         diagnostic = make_diagnostic(
             DiagnosticCode.TOOL_LIMIT_EXCEEDED,
             (
@@ -1157,7 +1178,7 @@ class AgentSessionEngine:
                 AssistantMessage("user", request_context),
             )
         return (
-            AssistantMessage("system", _SYSTEM_PROMPT),
+            AssistantMessage("system", self._system_prompt),
             AssistantMessage(
                 "system",
                 "Current local state (structured metadata only): "

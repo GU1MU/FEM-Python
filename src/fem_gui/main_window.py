@@ -156,6 +156,7 @@ from .agent_authoring import (
     AgentSolveTaskRequest,
     SessionGeometryAuthoringPort,
     SessionResultQueryPort,
+    create_session_authoring_workflow_controller,
 )
 from .part_boolean import PartBooleanController
 from .planar_boolean import PlanarBooleanController
@@ -523,6 +524,13 @@ class FEMMainWindow(QMainWindow):
             )
         )
         self.agent_authoring_bridge.bind_snapshot(self.document)
+        self.agent_authoring_controller = (
+            create_session_authoring_workflow_controller(
+                self.session,
+                self.agent_authoring_bridge,
+                self.agent_result_query_bridge,
+            )
+        )
         self._applied_session_revision = self.document.session_revision
         self._import_notices: tuple[object, ...] = ()
         self._current_step_name: str | None = None
@@ -2056,7 +2064,15 @@ class FEMMainWindow(QMainWindow):
             else None
         )
         self.document = snapshot
-        self.agent_authoring_bridge.bind_snapshot(snapshot)
+        stale_agent_proposals = self.agent_authoring_bridge.bind_snapshot(
+            snapshot
+        )
+        current_authoring_context = self.agent_authoring_bridge.context
+        if current_authoring_context is not None:
+            self.agent_authoring_controller.observe_binding(
+                current_authoring_context,
+                proposal_staled=bool(stale_agent_proposals),
+            )
         if hasattr(self, "viewport_panel"):
             self.viewport_panel.agent_chat_drawer.refresh_authoring_binding()
         if (
@@ -2847,6 +2863,7 @@ class FEMMainWindow(QMainWindow):
             self.actions,
             self,
             authoring_bridge=self.agent_authoring_bridge,
+            authoring_controller=self.agent_authoring_controller,
         )
         self.viewport_panel.scope_creation_bar.createRequested.connect(
             self._complete_scope_creation_from_bar
@@ -6415,6 +6432,40 @@ class FEMMainWindow(QMainWindow):
         if receipt.diagnostic is not None:
             self._show_command_rejection("网格生成失败", receipt)
 
+    def _record_agent_workflow_proposal_state(
+        self,
+        operation: str,
+        state: ProposalState,
+        message: str,
+    ) -> None:
+        if not hasattr(self, "viewport_panel"):
+            return
+        runtime = self.viewport_panel.agent_chat_drawer.agent_runtime
+        try:
+            runtime.record_authoring_proposal_state_from_gui(
+                operation,
+                state,
+                message,
+            )
+        except (RuntimeError, ValueError):
+            pass
+
+    def _record_agent_workflow_preflight_state(
+        self,
+        state: str,
+        message: str,
+    ) -> None:
+        if not hasattr(self, "viewport_panel"):
+            return
+        runtime = self.viewport_panel.agent_chat_drawer.agent_runtime
+        try:
+            runtime.record_authoring_preflight_state_from_gui(
+                state,
+                message,
+            )
+        except (RuntimeError, ValueError):
+            pass
+
     def _begin_agent_mesh_generation(
         self,
         request: AgentMeshTaskRequest,
@@ -6481,6 +6532,11 @@ class FEMMainWindow(QMainWindow):
 
         def terminal(record: TaskCompletion) -> None:
             if record.state is BackgroundTaskState.SUCCEEDED:
+                self._record_agent_workflow_proposal_state(
+                    "mesh",
+                    ProposalState.SUCCEEDED,
+                    "Agent 网格已原子安装",
+                )
                 return
             state = {
                 BackgroundTaskState.CANCELLED: ProposalState.CANCELLED,
@@ -6488,6 +6544,11 @@ class FEMMainWindow(QMainWindow):
             }.get(record.state, ProposalState.FAILED)
             terminate_mesh(
                 request.proposal_id,
+                state,
+                record.message or record.state.value,
+            )
+            self._record_agent_workflow_proposal_state(
+                "mesh",
                 state,
                 record.message or record.state.value,
             )
@@ -8374,19 +8435,19 @@ class FEMMainWindow(QMainWindow):
             if record.state is BackgroundTaskState.SUCCEEDED:
                 validation = self.session.validation_for(request.step_name)
                 if validation is None:
-                    complete_preflight(
+                    completed = complete_preflight(
                         request.request_id,
                         AgentPreflightState.STALE,
                         "预检结果未绑定当前模型",
                     )
                 elif validation.passed:
-                    complete_preflight(
+                    completed = complete_preflight(
                         request.request_id,
                         AgentPreflightState.PASSED,
                         "确定性模型预检通过",
                     )
                 else:
-                    complete_preflight(
+                    completed = complete_preflight(
                         request.request_id,
                         AgentPreflightState.BLOCKED,
                         (
@@ -8394,15 +8455,23 @@ class FEMMainWindow(QMainWindow):
                             "项阻塞诊断"
                         ),
                     )
+                self._record_agent_workflow_preflight_state(
+                    completed.state.value,
+                    completed.message,
+                )
                 return
             state = {
                 BackgroundTaskState.CANCELLED: AgentPreflightState.CANCELLED,
                 BackgroundTaskState.DISCARDED: AgentPreflightState.STALE,
             }.get(record.state, AgentPreflightState.FAILED)
-            complete_preflight(
+            completed = complete_preflight(
                 request.request_id,
                 state,
                 record.message or record.state.value,
+            )
+            self._record_agent_workflow_preflight_state(
+                completed.state.value,
+                completed.message,
             )
 
         completion.observe(terminal)
@@ -8760,8 +8829,13 @@ class FEMMainWindow(QMainWindow):
                         ProposalState.FAILED,
                         "求解成功终态缺少精确 artifact/run/model provenance",
                     )
+                    self._record_agent_workflow_proposal_state(
+                        "solve",
+                        ProposalState.FAILED,
+                        "求解成功终态缺少精确 provenance",
+                    )
                     return
-                complete_solve(
+                completed = complete_solve(
                     request.proposal_id,
                     ProposalState.SUCCEEDED,
                     (
@@ -8770,15 +8844,25 @@ class FEMMainWindow(QMainWindow):
                         f"{request.model_revision}"
                     ),
                 )
+                self._record_agent_workflow_proposal_state(
+                    "solve",
+                    completed.state,
+                    completed.message,
+                )
                 return
             state = {
                 BackgroundTaskState.CANCELLED: ProposalState.CANCELLED,
                 BackgroundTaskState.DISCARDED: ProposalState.STALE,
             }.get(record.state, ProposalState.FAILED)
-            complete_solve(
+            completed = complete_solve(
                 request.proposal_id,
                 state,
                 record.message or record.state.value,
+            )
+            self._record_agent_workflow_proposal_state(
+                "solve",
+                completed.state,
+                completed.message,
             )
 
         completion.observe(terminal)
@@ -9098,7 +9182,13 @@ class FEMMainWindow(QMainWindow):
             raise RuntimeError("Agent definitions require a current model artifact")
 
         self.document = snapshot
-        self.agent_authoring_bridge.bind_snapshot(snapshot)
+        stale_agent_proposals = self.agent_authoring_bridge.bind_snapshot(snapshot)
+        current_authoring_context = self.agent_authoring_bridge.context
+        if current_authoring_context is not None:
+            self.agent_authoring_controller.observe_binding(
+                current_authoring_context,
+                proposal_staled=bool(stale_agent_proposals),
+            )
         if hasattr(self, "viewport_panel"):
             self.viewport_panel.agent_chat_drawer.refresh_authoring_binding()
         self._scope_selection_topology_cache = None

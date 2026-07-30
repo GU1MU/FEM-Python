@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import threading
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping, Protocol
 
 from ..artifacts import ArtifactStore
 from ..capabilities import show_capabilities
@@ -37,6 +37,18 @@ if TYPE_CHECKING:
     from ..worker import InspectionResponse, WorkerResponse
 
 
+class DynamicToolRegistry(Protocol):
+    @property
+    def definitions(self) -> tuple[ToolDefinition, ...]: ...
+
+    def dispatch(
+        self,
+        name: str,
+        arguments: Mapping[str, Any],
+        context: "ToolExecutionContext",
+    ) -> ToolResult: ...
+
+
 @dataclass(frozen=True)
 class ToolExecutionContext:
     session_id: str
@@ -60,6 +72,7 @@ class AgentToolRegistry:
         workspace: str | Path,
         *,
         cancel_event: threading.Event | None = None,
+        dynamic_tools: DynamicToolRegistry | None = None,
     ):
         self.artifacts = ArtifactStore(workspace)
         self.revisions = RevisionStore(self.artifacts.root)
@@ -76,10 +89,24 @@ class AgentToolRegistry:
         ] = {}
         self._inspection_lock = threading.RLock()
         self._tools = _registered_tools()
+        self._dynamic_tools = dynamic_tools
 
     @property
     def definitions(self) -> tuple[ToolDefinition, ...]:
-        return tuple(item.definition for item in self._tools.values())
+        static = tuple(item.definition for item in self._tools.values())
+        if self._dynamic_tools is None:
+            return static
+        dynamic = tuple(self._dynamic_tools.definitions)
+        static_names = {item.name for item in static}
+        duplicates = static_names.intersection(
+            item.name for item in dynamic
+        )
+        if duplicates:
+            raise ValueError(
+                "dynamic Agent tools conflict with V0 tools: "
+                + ", ".join(sorted(duplicates))
+            )
+        return static + dynamic
 
     def dispatch(
         self,
@@ -89,6 +116,14 @@ class AgentToolRegistry:
     ) -> ToolResult:
         tool = self._tools.get(str(name))
         if tool is None:
+            if self._dynamic_tools is not None and name in {
+                item.name for item in self._dynamic_tools.definitions
+            }:
+                return self._dynamic_tools.dispatch(
+                    name,
+                    arguments,
+                    context,
+                )
             return self._failure(
                 context,
                 DiagnosticCode.UNKNOWN_TOOL,
@@ -734,6 +769,7 @@ def _array(value: Any, name: str) -> list[Any]:
 
 __all__ = [
     "AgentToolRegistry",
+    "DynamicToolRegistry",
     "RegisteredTool",
     "ToolExecutionContext",
 ]
