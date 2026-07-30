@@ -912,6 +912,10 @@ def _restricted_markdown_html(markdown: str) -> str:
             rendered.append(f"</{active_list}>")
             active_list = None
 
+    def drop_break_before_block() -> None:
+        if rendered and rendered[-1] == "<br>":
+            rendered.pop()
+
     index = 0
     while index < len(lines):
         line = lines[index]
@@ -928,6 +932,7 @@ def _restricted_markdown_html(markdown: str) -> str:
         )
         if header is not None and alignments is not None:
             close_list()
+            drop_break_before_block()
             rows: list[tuple[str, ...]] = []
             index += 2
             while index < len(lines):
@@ -949,6 +954,7 @@ def _restricted_markdown_html(markdown: str) -> str:
         if list_type is not None:
             if active_list != list_type:
                 close_list()
+                drop_break_before_block()
                 rendered.append(
                     f"<{list_type} style='margin-top:2px; "
                     "margin-bottom:2px;'>"
@@ -1347,7 +1353,7 @@ class AgentChatDrawer(_BoundaryFrame):
         )
         self.event_feed_layout = QVBoxLayout(self.event_feed)
         self.event_feed_layout.setContentsMargins(0, 0, 0, 0)
-        self.event_feed_layout.setSpacing(11)
+        self.event_feed_layout.setSpacing(6)
         layout.addWidget(self.event_feed)
         layout.addStretch(1)
 

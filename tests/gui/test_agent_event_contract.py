@@ -903,12 +903,15 @@ def test_restricted_markdown_renders_ordered_and_unordered_lists():
     assert "<li>建立几何</li>" in rendered
     assert "<li>生成网格</li>" in rendered
     assert "<br><br>" not in rendered
+    assert "<br><ul" not in rendered
+    assert "<br><ol" not in rendered
     assert "</ul><br>" not in rendered
     assert "&lt;img src=&#x27;https://example.test/unsafe.png&#x27;&gt;" in (
         rendered
     )
     assert "<img src=" not in rendered
     assert not label.openExternalLinks()
+    assert drawer.event_feed_layout.spacing() == 6
     drawer.close()
 
 
@@ -952,7 +955,8 @@ def test_restricted_markdown_renders_safe_aligned_tables():
     assert label is not None
     rendered = label.text()
     assert "<table " in rendered
-    assert "操作摘要：<br><table " in rendered
+    assert "操作摘要：<table " in rendered
+    assert "<br><table " not in rendered
     assert "<br><br>" not in rendered
     assert rendered.count("<th ") == 3
     assert rendered.count("<td ") == 9
