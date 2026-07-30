@@ -358,10 +358,6 @@ QLabel#agentChatProposalSummary {
     color: #344b5b;
     font-size: 9.5pt;
 }
-QLabel#agentChatProposalImpact {
-    color: #526674;
-    font-size: 9pt;
-}
 QLabel#agentChatProposalStatus {
     color: #55758c;
     font-size: 8.5pt;
@@ -1635,10 +1631,6 @@ class AgentChatDrawer(_BoundaryFrame):
         summary.setObjectName("agentChatProposalSummary")
         summary.setWordWrap(True)
         layout.addWidget(summary)
-        impact = _plain_label(f"影响 · {proposal.impact}", card)
-        impact.setObjectName("agentChatProposalImpact")
-        impact.setWordWrap(True)
-        layout.addWidget(impact)
         status = proposal.status
         bridge = self.authoring_bridge
         if proposal.proposal_kind == "project_save":

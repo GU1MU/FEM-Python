@@ -458,6 +458,7 @@ def test_minimal_gui_card_binds_and_only_buttons_authorize() -> None:
     assert accept.text() == "确认"
     assert reject.text() == "拒绝"
     assert accept.palette().color(accept.foregroundRole()).name() == "#ffffff"
+    assert drawer.findChild(QLabel, "agentChatProposalImpact") is None
     assert drawer.findChild(QLabel, "agentChatProposalRevision") is None
     assert bridge.state(proposal.proposal_id) is (
         ProposalState.PENDING_CONFIRMATION
