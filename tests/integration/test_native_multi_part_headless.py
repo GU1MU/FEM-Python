@@ -16,6 +16,11 @@ from fem.geometry import (
     LogicalEntityRef,
     MovedGeometry,
     RectangleGeometry,
+    SketchCircle,
+    SketchGeometry,
+    SketchLine,
+    SketchPlane,
+    SketchPoint,
 )
 from fem.mesh.settings import MeshSettings
 
@@ -72,6 +77,51 @@ def test_disjoint_parts_mesh_with_deterministic_global_ids(real_gmsh) -> None:
     assert set(model.element_sets["全部材料面"].element_ids) == {
         element.id for element in model.mesh.elements
     }
+
+
+def test_sketch_hole_center_nodes_stay_out_of_scope_catalog(
+    real_gmsh,
+) -> None:
+    del real_gmsh
+    session = ModelSession()
+    session.new_native_project("两孔平板模型")
+    session.add_native_part(
+        SketchGeometry(
+            "两孔平板",
+            SketchPlane.xy(),
+            (
+                SketchPoint("P1", 0.0, 0.0),
+                SketchPoint("P2", 100.0, 0.0),
+                SketchPoint("P3", 100.0, 200.0),
+                SketchPoint("P4", 0.0, 200.0),
+                SketchPoint("P5", 30.0, 60.0),
+                SketchPoint("P6", 70.0, 140.0),
+            ),
+            (
+                SketchLine("L1", "P1", "P2"),
+                SketchLine("L2", "P2", "P3"),
+                SketchLine("L3", "P3", "P4"),
+                SketchLine("L4", "P4", "P1"),
+                SketchCircle("C5", "P5", 10.0),
+                SketchCircle("C6", "P6", 15.0),
+            ),
+        ),
+        name="部件-两孔板",
+        mesh_settings=MeshSettings(15.0),
+    )
+
+    # 孔心点的 gmsh 节点不属于任何域单元；聚合重编号曾因 catalog
+    # 引用这些幽灵节点抛出 KeyError。
+    model = generate_fem_model(session.prepare_mesh_generation())
+
+    mesh_node_ids = {int(node.id) for node in model.mesh.nodes}
+    catalog = model.metadata["_native_scope_catalog"]
+    assert "point:P1/P5" in catalog
+    assert "point:P1/P6" in catalog
+    assert catalog["point:P1/P5"]["node_ids"] == ()
+    assert catalog["point:P1/P6"]["node_ids"] == ()
+    for entry in catalog.values():
+        assert set(entry["node_ids"]) <= mesh_node_ids
 
 
 def test_mixed_dimensions_are_rejected_before_analysis() -> None:

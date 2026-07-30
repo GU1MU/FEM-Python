@@ -755,6 +755,7 @@ def _native_scope_catalog(
         else ()
     )
     catalog: dict[str, dict[str, Any]] = {}
+    mesh_node_ids = {int(node.id) for node in mesh.nodes}
     for logical_id, raw_entities in topology.logical_entities.items():
         entities = _unique_entities(raw_entities)
         if not entities:
@@ -765,7 +766,14 @@ def _native_scope_catalog(
                 f"{logical_id} resolves to mixed CAD dimensions"
             )
         entity_dimension = next(iter(entity_dimensions))
-        node_ids = gmsh_io.entity_node_ids(native_mesh, entities)
+        # Gmsh also meshes construction-only CAD points (such as hole
+        # centers) whose nodes belong to no domain element and are dropped
+        # from the FEM mesh, so the catalog keeps mesh-backed nodes only.
+        node_ids = tuple(
+            int(node_id)
+            for node_id in gmsh_io.entity_node_ids(native_mesh, entities)
+            if int(node_id) in mesh_node_ids
+        )
         node_id_set = set(node_ids)
         edge_rows = (
             tuple(
@@ -795,7 +803,7 @@ def _native_scope_catalog(
         )
         catalog[str(logical_id)] = {
             "kind": str(logical_id).partition(":")[0],
-            "node_ids": tuple(int(node_id) for node_id in node_ids),
+            "node_ids": node_ids,
             "element_ids": (
                 gmsh_io.entity_element_ids(native_mesh, entities)
                 if entity_dimension == dimension
