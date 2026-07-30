@@ -1,4 +1,4 @@
-"""Bounded catalogs and GUI-confirmed edits for accepted model definitions."""
+"""Bounded catalogs and direct edits for accepted model definitions."""
 
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ from fem.geometry import LogicalEntityRef
 from .authoring import (
     AgentProposal,
     AuthoringContext,
+    ModelPatch,
     ModelOperation,
     OperationKind,
     ProposalKind,
@@ -290,6 +291,66 @@ def create_edit_proposal(
         },
     )
     return proposal, target
+
+
+def create_edit_patch(
+    *,
+    patch_id: str,
+    agent_session_id: str,
+    turn_id: str,
+    source_tool_call_ids: Sequence[str],
+    context: AuthoringContext,
+    snapshot: _Snapshot,
+    draft_revision: int,
+    object_type: object,
+    target_id: object,
+    changes: object,
+    step_name: object = None,
+) -> tuple[ModelPatch, EditableObject]:
+    """Create one revision-bound patch for an immediate supported edit."""
+
+    proposal, target = create_edit_proposal(
+        proposal_id=f"validated-{patch_id}",
+        agent_session_id=agent_session_id,
+        turn_id=turn_id,
+        source_tool_call_ids=source_tool_call_ids,
+        context=context,
+        snapshot=snapshot,
+        draft_revision=draft_revision,
+        object_type=object_type,
+        target_id=target_id,
+        changes=changes,
+        step_name=step_name,
+    )
+    label = {
+        "named_region": "作用域",
+        "boundary_condition": "边界条件",
+        "load": "载荷",
+    }[target.object_type]
+    patch = ModelPatch.create(
+        patch_id=patch_id,
+        agent_session_id=proposal.agent_session_id,
+        turn_id=proposal.turn_id,
+        source_tool_call_ids=proposal.source_tool_call_ids,
+        target_document_id=proposal.target_document_id,
+        target_session_id=proposal.target_session_id,
+        base_session_revision=proposal.base_session_revision,
+        draft_revision=proposal.draft_revision,
+        operations=proposal.operations,
+        preconditions={
+            **dict(proposal.preconditions),
+            "authoring_mode": "direct_edit",
+        },
+        expected_changes=proposal.expected_changes,
+        invalidation_impact=proposal.invalidation_impact,
+        display_summary={
+            "title": f"Agent 已编辑{label}",
+            "summary": str(proposal.display_summary["summary"]),
+            "objects": [target.display_name],
+            "undo_label": "撤销本次 Agent 修改",
+        },
+    )
+    return patch, target
 
 
 def apply_edit_operation(
@@ -859,6 +920,7 @@ def _string_list(
 __all__ = [
     "EditableObject",
     "apply_edit_operation",
+    "create_edit_patch",
     "create_edit_proposal",
     "editable_object_catalog",
 ]

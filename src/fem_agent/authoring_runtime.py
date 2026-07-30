@@ -293,16 +293,13 @@ _HANDLER_REQUIREMENTS: dict[str, tuple[str, ...]] = {
 }
 _REQUIREMENT_GATE_BY_STAGE = {
     AuthoringWorkflowStage.REQUIREMENTS: "geometry",
+    AuthoringWorkflowStage.GEOMETRY_READY: "geometry",
     AuthoringWorkflowStage.MESH_READY: "mesh",
-    AuthoringWorkflowStage.DEFINITIONS_READY: "definitions",
-    AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY: "analysis",
 }
 _GATED_OPERATION_BY_STAGE = {
+    AuthoringWorkflowStage.REQUIREMENTS: "prepare_geometry_proposal",
+    AuthoringWorkflowStage.GEOMETRY_READY: "prepare_geometry_proposal",
     AuthoringWorkflowStage.MESH_READY: "prepare_mesh_proposal",
-    AuthoringWorkflowStage.DEFINITIONS_READY: "apply_scopes_and_materials",
-    AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY: (
-        "apply_analysis_definitions"
-    ),
 }
 
 
@@ -331,8 +328,8 @@ _SET_REQUIREMENTS = _tool(
     "set_authoring_requirements",
     (
         "Record only current-stage engineering values explicitly supplied by "
-        "the user. Values remain proposed until the matching GUI "
-        "RequirementReview is confirmed."
+        "the user. Complete geometry or mesh values may then be presented in "
+        "the corresponding operation confirmation card."
     ),
     {
         "type": "object",
@@ -374,21 +371,111 @@ _PREPARE_MESH = _tool(
     ),
     _NO_ARGUMENTS,
 )
-_APPLY_SCOPES = _tool(
-    "apply_scopes_and_materials",
+_APPLY_DEFINITION = _tool(
+    "apply_model_definition",
     (
-        "Apply confirmed additive A4 scopes, material, section and assignment "
-        "through one reversible local patch."
+        "Immediately apply one supported scope, material, section, assignment, "
+        "analysis-step, boundary-condition, load, or result-request action and "
+        "synchronize the GUI. This tool does not create a confirmation card."
     ),
-    _NO_ARGUMENTS,
-)
-_APPLY_ANALYSIS = _tool(
-    "apply_analysis_definitions",
-    (
-        "Apply the confirmed additive A5 step, boundary, load and result "
-        "requests through one reversible local patch."
-    ),
-    _NO_ARGUMENTS,
+    {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": [
+                    "create_plate_scopes",
+                    "create_material",
+                    "create_section",
+                    "assign_section",
+                    "create_static_step",
+                    "create_boundary_condition",
+                    "create_load",
+                    "create_result_request",
+                ],
+            },
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "minLength": 1, "maxLength": 160},
+                    "properties": {
+                        "type": "object",
+                        "additionalProperties": {"type": "number"},
+                        "minProperties": 1,
+                    },
+                    "material": {"type": "string", "minLength": 1, "maxLength": 160},
+                    "plane_type": {
+                        "type": "string",
+                        "enum": ["stress", "strain"],
+                    },
+                    "thickness": {"type": "number", "exclusiveMinimum": 0},
+                    "section_name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160,
+                    },
+                    "region_name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160,
+                    },
+                    "step_name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160,
+                    },
+                    "target_scope": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160,
+                    },
+                    "target_kind": {
+                        "type": "string",
+                        "enum": ["node", "edge", "face", "element"],
+                    },
+                    "first_component": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 6,
+                    },
+                    "last_component": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 6,
+                    },
+                    "value": {"type": "number"},
+                    "load_type": {
+                        "type": "string",
+                        "enum": ["edge_traction", "edge_pressure"],
+                    },
+                    "vector": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 2,
+                        "maxItems": 2,
+                    },
+                    "magnitude": {"type": "number"},
+                    "target": {
+                        "type": "string",
+                        "enum": ["node", "element"],
+                    },
+                    "variables": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["U", "RF", "S"],
+                        },
+                        "minItems": 1,
+                        "maxItems": 3,
+                        "uniqueItems": True,
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+        "required": ["action", "parameters"],
+        "additionalProperties": False,
+    },
 )
 _RUN_PREFLIGHT = _tool(
     "run_native_preflight",
@@ -465,12 +552,12 @@ _READ_EDITABLE_OBJECTS = _tool(
     ),
     _NO_ARGUMENTS,
 )
-_PREPARE_EDIT = _tool(
-    "prepare_edit_model_object_proposal",
+_EDIT_MODEL_OBJECT = _tool(
+    "edit_model_object",
     (
-        "Build and present one revision-bound edit card for an exact object "
-        "returned by read_editable_model_objects. This tool cannot modify the "
-        "model; only its GUI button may apply the edit."
+        "Immediately edit one exact object returned by "
+        "read_editable_model_objects and synchronize the GUI. Supported edits "
+        "do not create a confirmation card."
     ),
     {
         "type": "object",
@@ -596,7 +683,7 @@ _DESTRUCTIVE_EDIT_TOOLS = frozenset(
     {_READ_DELETABLE_OBJECTS.name, _PREPARE_DELETE.name}
 )
 _MODEL_EDIT_TOOLS = frozenset(
-    {_READ_EDITABLE_OBJECTS.name, _PREPARE_EDIT.name}
+    {_READ_EDITABLE_OBJECTS.name, _EDIT_MODEL_OBJECT.name}
 )
 
 
@@ -604,87 +691,91 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
     AuthoringWorkflowStage.REQUIREMENTS: (
         _READ_CONTEXT,
         _SET_REQUIREMENTS,
-        _REQUEST_REVIEW,
+        _PREPARE_GEOMETRY,
+        _APPLY_DEFINITION,
         _REQUEST_PROJECT_SAVE,
         _READ_DELETABLE_OBJECTS,
         _PREPARE_DELETE,
         _READ_EDITABLE_OBJECTS,
-        _PREPARE_EDIT,
+        _EDIT_MODEL_OBJECT,
     ),
     AuthoringWorkflowStage.REVIEW_PENDING: (_READ_CONTEXT,),
     AuthoringWorkflowStage.GEOMETRY_READY: (
         _READ_CONTEXT,
+        _SET_REQUIREMENTS,
         _PREPARE_GEOMETRY,
+        _APPLY_DEFINITION,
         _REQUEST_PROJECT_SAVE,
         _READ_DELETABLE_OBJECTS,
         _PREPARE_DELETE,
         _READ_EDITABLE_OBJECTS,
-        _PREPARE_EDIT,
+        _EDIT_MODEL_OBJECT,
     ),
     AuthoringWorkflowStage.GEOMETRY_PENDING: (_READ_CONTEXT,),
     AuthoringWorkflowStage.MESH_READY: (
         _READ_CONTEXT,
         _SET_REQUIREMENTS,
-        _REQUEST_REVIEW,
         _PREPARE_MESH,
+        _APPLY_DEFINITION,
         _REQUEST_PROJECT_SAVE,
         _READ_DELETABLE_OBJECTS,
         _PREPARE_DELETE,
         _READ_EDITABLE_OBJECTS,
-        _PREPARE_EDIT,
+        _EDIT_MODEL_OBJECT,
     ),
     AuthoringWorkflowStage.MESH_PENDING: (_READ_CONTEXT,),
     AuthoringWorkflowStage.DEFINITIONS_READY: (
         _READ_CONTEXT,
-        _SET_REQUIREMENTS,
-        _REQUEST_REVIEW,
-        _APPLY_SCOPES,
-        _REQUEST_PROJECT_SAVE,
-        _READ_DELETABLE_OBJECTS,
-        _PREPARE_DELETE,
-        _READ_EDITABLE_OBJECTS,
-        _PREPARE_EDIT,
-    ),
-    AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY: (
-        _READ_CONTEXT,
-        _SET_REQUIREMENTS,
-        _REQUEST_REVIEW,
-        _APPLY_ANALYSIS,
-        _REQUEST_PROJECT_SAVE,
-        _READ_DELETABLE_OBJECTS,
-        _PREPARE_DELETE,
-        _READ_EDITABLE_OBJECTS,
-        _PREPARE_EDIT,
-    ),
-    AuthoringWorkflowStage.PREFLIGHT_READY: (
-        _READ_CONTEXT,
+        _APPLY_DEFINITION,
         _RUN_PREFLIGHT,
         _REQUEST_PROJECT_SAVE,
         _READ_DELETABLE_OBJECTS,
         _PREPARE_DELETE,
         _READ_EDITABLE_OBJECTS,
-        _PREPARE_EDIT,
+        _EDIT_MODEL_OBJECT,
+    ),
+    AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY: (
+        _READ_CONTEXT,
+        _APPLY_DEFINITION,
+        _RUN_PREFLIGHT,
+        _REQUEST_PROJECT_SAVE,
+        _READ_DELETABLE_OBJECTS,
+        _PREPARE_DELETE,
+        _READ_EDITABLE_OBJECTS,
+        _EDIT_MODEL_OBJECT,
+    ),
+    AuthoringWorkflowStage.PREFLIGHT_READY: (
+        _READ_CONTEXT,
+        _APPLY_DEFINITION,
+        _RUN_PREFLIGHT,
+        _REQUEST_PROJECT_SAVE,
+        _READ_DELETABLE_OBJECTS,
+        _PREPARE_DELETE,
+        _READ_EDITABLE_OBJECTS,
+        _EDIT_MODEL_OBJECT,
     ),
     AuthoringWorkflowStage.PREFLIGHT_PENDING: (_READ_CONTEXT,),
     AuthoringWorkflowStage.SOLVE_READY: (
         _READ_CONTEXT,
+        _APPLY_DEFINITION,
         _PREPARE_SOLVE,
         _REQUEST_PROJECT_SAVE,
         _READ_DELETABLE_OBJECTS,
         _PREPARE_DELETE,
         _READ_EDITABLE_OBJECTS,
-        _PREPARE_EDIT,
+        _EDIT_MODEL_OBJECT,
     ),
     AuthoringWorkflowStage.SOLVE_PENDING: (_READ_CONTEXT,),
     AuthoringWorkflowStage.RESULTS_READY: (
         _READ_CONTEXT,
         _RESULT_CATALOG,
         _RESULT_QUERY,
+        _APPLY_DEFINITION,
         _REQUEST_PROJECT_SAVE,
         _READ_DELETABLE_OBJECTS,
         _PREPARE_DELETE,
         _READ_EDITABLE_OBJECTS,
-        _PREPARE_EDIT,
+        _EDIT_MODEL_OBJECT,
     ),
     AuthoringWorkflowStage.PROJECT_SAVE_PENDING: (_READ_CONTEXT,),
     AuthoringWorkflowStage.DESTRUCTIVE_EDIT_PENDING: (_READ_CONTEXT,),
@@ -699,8 +790,8 @@ def _stage_requirement_tool(group: str) -> ToolDefinition:
         _SET_REQUIREMENTS.name,
         (
             f"Record only explicitly supplied {group} values for the current "
-            "stage. Values remain proposed until the matching GUI "
-            "RequirementReview is confirmed."
+            "stage. Complete values may be used only to present the matching "
+            "geometry or mesh operation card."
         ),
         {
             "type": "object",
@@ -758,6 +849,7 @@ class AuthoringWorkflowController:
         self._terminals: list[AuthoringTerminalRecord] = []
         self._active_tool_context: ToolExecutionContext | None = None
         self._binding_identity: tuple[str, str, int] | None = None
+        self._observed_context: AuthoringContext | None = None
         self._lock = threading.RLock()
 
     @property
@@ -789,25 +881,28 @@ class AuthoringWorkflowController:
         with self._lock:
             definitions = _STAGE_TOOLS[self._stage]
             requirement_group = self._current_requirement_group()
-            requirements_confirmed = (
+            requirements_complete = (
                 requirement_group is not None
-                and self._requirement_group_confirmed(requirement_group)
+                and self._requirement_group_complete(requirement_group)
             )
             gated_operation = _GATED_OPERATION_BY_STAGE.get(self._stage)
             visible: list[ToolDefinition] = []
             for item in definitions:
                 if (
-                    item.name in {
-                        _SET_REQUIREMENTS.name,
-                        _REQUEST_REVIEW.name,
-                    }
-                    and requirements_confirmed
+                    gated_operation is not None
+                    and item.name == gated_operation
+                    and not requirements_complete
                 ):
                     continue
                 if (
-                    gated_operation is not None
-                    and item.name == gated_operation
-                    and not requirements_confirmed
+                    item.name == _APPLY_DEFINITION.name
+                    and self._stage
+                    in {
+                        AuthoringWorkflowStage.REQUIREMENTS,
+                        AuthoringWorkflowStage.GEOMETRY_READY,
+                        AuthoringWorkflowStage.MESH_READY,
+                    }
+                    and not self._current_mesh_available()
                 ):
                     continue
                 if (
@@ -825,7 +920,6 @@ class AuthoringWorkflowController:
                         in {
                             _READ_CONTEXT.name,
                             _SET_REQUIREMENTS.name,
-                            _REQUEST_REVIEW.name,
                         }
                         or item.name in self._handlers
                     )
@@ -871,7 +965,8 @@ class AuthoringWorkflowController:
                     _require_exact_fields(arguments, set()) if name not in {
                         RESULT_QUERY_TOOL_NAME,
                         _PREPARE_DELETE.name,
-                        _PREPARE_EDIT.name,
+                        _EDIT_MODEL_OBJECT.name,
+                        _APPLY_DEFINITION.name,
                     } else None
                     self._active_tool_context = context
                     try:
@@ -1012,6 +1107,7 @@ class AuthoringWorkflowController:
             context.binding.session_revision,
         )
         with self._lock:
+            self._observed_context = context
             prior = self._binding_identity
             if prior is None:
                 self._binding_identity = current
@@ -1232,6 +1328,7 @@ class AuthoringWorkflowController:
             self._project_save_record = None
             self._clear_destructive_pending()
             self._binding_identity = None
+            self._observed_context = None
             self._stage = AuthoringWorkflowStage.REQUIREMENTS
 
     def register_project_save_proposal(
@@ -1390,6 +1487,32 @@ class AuthoringWorkflowController:
             )
         }
 
+    def collected_requirements(
+        self,
+        group: str,
+    ) -> dict[str, object]:
+        """Return a complete explicit geometry or mesh requirement group."""
+
+        try:
+            keys = _HANDLER_REQUIREMENTS[group]
+        except KeyError as exc:
+            raise ValueError("unknown requirement group") from exc
+        values = {
+            item.key: item.value
+            for item in self._ledger.entries
+            if item.status
+            in {
+                RequirementStatus.PROPOSED,
+                RequirementStatus.CONFIRMED,
+            }
+        }
+        missing = [key for key in keys if key not in values]
+        if missing:
+            raise ValueError(
+                "clarification_required: " + ", ".join(missing)
+            )
+        return {key: values[key] for key in keys}
+
     def _current_requirement_group(self) -> str | None:
         stage = (
             self._review_source_stage
@@ -1400,14 +1523,18 @@ class AuthoringWorkflowController:
             return None
         return _REQUIREMENT_GATE_BY_STAGE.get(stage)
 
-    def _requirement_group_confirmed(self, group: str) -> bool:
+    def _requirement_group_complete(self, group: str) -> bool:
         required = set(_REQUIREMENT_GROUPS[group])
-        confirmed = {
+        recorded = {
             item.key
             for item in self._ledger.entries
-            if item.status is RequirementStatus.CONFIRMED
+            if item.status
+            in {
+                RequirementStatus.PROPOSED,
+                RequirementStatus.CONFIRMED,
+            }
         }
-        return required <= confirmed
+        return required <= recorded
 
     def invocation_metadata(self, prefix: str) -> dict[str, object]:
         """Return bounded envelope identities for the active local handler."""
@@ -1536,13 +1663,13 @@ class AuthoringWorkflowController:
             if key not in recorded
         ]
         return AuthoringToolOutcome(
-            "Explicit authoring requirements recorded as proposed.",
+            "Explicit current-operation requirements recorded.",
             {
                 "ledger_revision": self._ledger.revision,
                 "requirement_stage": requirement_group,
                 "recorded": sorted(raw_requirements),
                 "missing_requirements": missing,
-                "review_required": True,
+                "operation_confirmation_required": not missing,
             },
         )
 
@@ -1657,12 +1784,12 @@ class AuthoringWorkflowController:
         elif name == _PREPARE_MESH.name:
             self._stage = AuthoringWorkflowStage.MESH_PENDING
             self._pending_operation = "mesh"
-        elif name == _APPLY_SCOPES.name:
-            self._stage = AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
-            self._record_terminal("scopes_and_materials", "succeeded", outcome.summary)
-        elif name == _APPLY_ANALYSIS.name:
-            self._stage = AuthoringWorkflowStage.PREFLIGHT_READY
-            self._record_terminal("analysis_definitions", "succeeded", outcome.summary)
+        elif name == _APPLY_DEFINITION.name:
+            self._stage = AuthoringWorkflowStage.DEFINITIONS_READY
+            self._record_terminal("model_definition", "succeeded", outcome.summary)
+        elif name == _EDIT_MODEL_OBJECT.name:
+            self._stage = AuthoringWorkflowStage.DEFINITIONS_READY
+            self._record_terminal("model_edit", "succeeded", outcome.summary)
         elif name == _RUN_PREFLIGHT.name:
             if outcome.data.get("passed") is True:
                 self._stage = AuthoringWorkflowStage.SOLVE_READY
@@ -1680,10 +1807,8 @@ class AuthoringWorkflowController:
                 raise ValueError("project save handler registered no proposal")
             self._stage = AuthoringWorkflowStage.PROJECT_SAVE_PENDING
             self._pending_operation = "project_save"
-        elif name in {_PREPARE_DELETE.name, _PREPARE_EDIT.name}:
+        elif name == _PREPARE_DELETE.name:
             object_type = outcome.data.get("delete_object_type")
-            if name == _PREPARE_EDIT.name:
-                object_type = outcome.data.get("edit_object_type")
             if (
                 type(object_type) is not str
                 or object_type
@@ -1775,6 +1900,17 @@ class AuthoringWorkflowController:
             binding.supported
             and binding.source_kind == "native"
             and _capability_enabled(context, "edit_model_objects")
+        )
+
+    def _current_mesh_available(self) -> bool:
+        context = self._observed_context
+        return bool(
+            type(context) is AuthoringContext
+            and context.binding.supported
+            and context.binding.source_kind == "native"
+            and context.mesh.present
+            and context.mesh.current
+            and _APPLY_DEFINITION.name in self._handlers
         )
 
     def _clear_destructive_pending(self) -> None:

@@ -2099,7 +2099,7 @@ class AgentChatDrawer(_BoundaryFrame):
                 )
             else:
                 proposal.status = ProposalViewStatus.ACCEPTED
-                self._show_preview_notice("完整工程需求已由 GUI 控件确认")
+                self._show_preview_notice("需求审查已由 GUI 控件确认")
             self._render_event_presentation(
                 preserve_tool_expansion=True
             )

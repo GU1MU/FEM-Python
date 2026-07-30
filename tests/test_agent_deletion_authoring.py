@@ -599,7 +599,7 @@ def test_invalid_edit_is_rejected_without_changing_the_session() -> None:
     assert session.session_revision == revision
 
 
-def test_controller_publishes_edit_tools_and_waits_for_gui_terminal() -> None:
+def test_controller_applies_supported_edit_directly_and_refreshes_binding() -> None:
     session = _session()
     holders: dict[str, object] = {}
 
@@ -613,7 +613,11 @@ def test_controller_publishes_edit_tools_and_waits_for_gui_terminal() -> None:
             proposal_staled=bool(stale),
         )
 
-    port = SessionGeometryAuthoringPort(session, refresh)
+    port = SessionGeometryAuthoringPort(
+        session,
+        refresh,
+        apply_definition_delta=lambda _delta: refresh(),
+    )
     bridge = AgentAuthoringBridge(port)
     bridge.bind_snapshot(session.snapshot())
     controller = create_session_authoring_workflow_controller(
@@ -625,7 +629,8 @@ def test_controller_publishes_edit_tools_and_waits_for_gui_terminal() -> None:
     names = {item.name for item in controller.definitions}
 
     assert "read_editable_model_objects" in names
-    assert "prepare_edit_model_object_proposal" in names
+    assert "edit_model_object" in names
+    assert "prepare_edit_model_object_proposal" not in names
     context = ToolExecutionContext("agent-edit", 0, "edit-load")
     catalog = controller.dispatch(
         "read_editable_model_objects",
@@ -633,7 +638,7 @@ def test_controller_publishes_edit_tools_and_waits_for_gui_terminal() -> None:
         context,
     )
     result = controller.dispatch(
-        "prepare_edit_model_object_proposal",
+        "edit_model_object",
         {
             "object_type": "load",
             "target_id": "载荷-拉伸",
@@ -644,14 +649,7 @@ def test_controller_publishes_edit_tools_and_waits_for_gui_terminal() -> None:
     )
 
     assert catalog.ok and result.ok
-    assert controller.stage is AuthoringWorkflowStage.DESTRUCTIVE_EDIT_PENDING
-    receipt = bridge.accept_from_gui_control(str(result.data["proposal_id"]))
-    controller.record_proposal_state(
-        "destructive_edit",
-        receipt.state,
-        receipt.message,
-    )
-
-    assert receipt.state is ProposalState.SUCCEEDED
-    assert controller.stage is AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
+    assert result.data["gui_synchronized"] is True
+    assert "proposal_id" not in result.data
+    assert controller.stage is AuthoringWorkflowStage.DEFINITIONS_READY
     assert session.snapshot().steps[0].edge_loads[0].vector == (25.0, 0.0)

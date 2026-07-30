@@ -248,22 +248,13 @@ def test_a8_delayed_authoring_invocation_cannot_run_after_abort(
         runtime.shutdown()
 
 
-def test_a8_requirement_review_tool_emits_a_local_proposal_card_event(
+def test_a8_geometry_operation_emits_the_only_local_confirmation_card(
     tmp_path,
 ) -> None:
     _application()
-    controller = AuthoringWorkflowController(
-        lambda: {
-            "binding": {
-                "document_id": "document:a8",
-                "session_id": "native-a8",
-                "session_revision": 0,
-                "source_kind": "blank",
-                "supported": True,
-            }
-        },
-        {},
-    )
+    bridge = AgentAuthoringBridge(FakeAuthoringPort())
+    bridge.bind_context(_context())
+    controller, _calls, _queries = _controller(bridge)
     provider = FakeProvider(
         [
             ProviderResponse(
@@ -278,38 +269,48 @@ def test_a8_requirement_review_tool_emits_a_local_proposal_card_event(
                                 "requirements": _requirements_for("geometry"),
                             },
                         ),
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+            ProviderResponse(
+                AssistantMessage(
+                    "assistant",
+                    tool_calls=(
                         ToolCall(
-                            "review-a8",
-                            "request_requirement_review",
+                            "geometry-a8",
+                            "prepare_geometry_proposal",
                             {},
                         ),
                     ),
                 ),
                 finish_reason="tool_calls",
             ),
-            _text_response("请使用本地 GUI 审查需求。"),
+            _text_response("几何创建等待确认。"),
         ]
     )
     runtime = QtAgentRuntime(
-        tmp_path / "agent-private",
+        tmp_path / "agent-private-operation-card",
         provider_factory=lambda: provider,
         authoring_controller=controller,
     )
     events = []
     runtime.agentEventReady.connect(events.append)
 
-    assert runtime.send_message("这是完整工程参数")
+    assert runtime.send_message("创建这个带孔平板")
     _wait_until(lambda: not runtime.busy)
 
-    proposal = next(
+    proposals = [
         event
         for event in events
         if event.event_type is EventType.PROPOSAL_REQUESTED
-    )
-    assert proposal.payload["proposal_kind"] == "requirement_review"
-    assert proposal.payload["proposal_id"] == controller.pending_review.review_id
-    assert proposal.payload["proposal_hash"] == controller.pending_review.review_hash
-    assert proposal.payload["confirm_label"] == "确认"
+    ]
+    assert len(proposals) == 1
+    proposal = proposals[0]
+    assert proposal.payload["proposal_kind"] == "geometry"
+    assert proposal.payload["confirm_label"] == "加入模型"
+    assert controller.pending_review is None
+    assert controller.stage is AuthoringWorkflowStage.GEOMETRY_PENDING
     runtime.shutdown()
 
 
@@ -318,15 +319,15 @@ def test_a8_requirement_review_tool_emits_a_local_proposal_card_event(
     [
         (
             "agentChatProposalAcceptButton",
-            AuthoringWorkflowStage.GEOMETRY_READY,
+            AuthoringWorkflowStage.GEOMETRY_PENDING,
         ),
         (
             "agentChatProposalRejectButton",
-            AuthoringWorkflowStage.REQUIREMENTS,
+            AuthoringWorkflowStage.GEOMETRY_READY,
         ),
     ],
 )
-def test_a8_requirement_review_drawer_buttons_reach_gui_boundary(
+def test_a8_geometry_card_buttons_reach_gui_boundary(
     tmp_path,
     button_name,
     expected_stage,
@@ -349,16 +350,24 @@ def test_a8_requirement_review_drawer_buttons_reach_gui_boundary(
                                 "requirements": _requirements_for("geometry"),
                             },
                         ),
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+            ProviderResponse(
+                AssistantMessage(
+                    "assistant",
+                    tool_calls=(
                         ToolCall(
-                            "review-a8",
-                            "request_requirement_review",
+                            "geometry-a8",
+                            "prepare_geometry_proposal",
                             {},
                         ),
                     ),
                 ),
                 finish_reason="tool_calls",
             ),
-            _text_response("请使用本地 GUI 审查需求。"),
+            _text_response("几何创建等待确认。"),
         ]
     )
     runtime = QtAgentRuntime(
@@ -372,11 +381,11 @@ def test_a8_requirement_review_drawer_buttons_reach_gui_boundary(
     )
     drawer.resize(720, 800)
     drawer.show()
-
-    assert runtime.send_message("这是完整工程参数")
+    assert runtime.send_message("创建这个带孔平板")
     _wait_until(lambda: not runtime.busy)
+
     button = drawer.findChild(QToolButton, button_name)
-    assert controller.stage is AuthoringWorkflowStage.REVIEW_PENDING
+    assert controller.stage is AuthoringWorkflowStage.GEOMETRY_PENDING
     assert button is not None and button.isEnabled()
 
     QTest.mouseClick(button, Qt.MouseButton.LeftButton)
@@ -387,7 +396,7 @@ def test_a8_requirement_review_drawer_buttons_reach_gui_boundary(
     runtime.shutdown()
 
 
-def test_a8_new_agent_session_discards_controller_and_pending_proposal(
+def test_a8_new_agent_session_discards_pending_geometry_proposal(
     tmp_path,
 ) -> None:
     _application()
@@ -402,17 +411,6 @@ def test_a8_new_agent_session_discards_controller_and_pending_proposal(
         },
         ToolExecutionContext("session-a8", 0, "requirements-before-reset"),
     )
-    controller.dispatch(
-        "request_requirement_review",
-        {},
-        ToolExecutionContext("session-a8", 0, "review-before-reset"),
-    )
-    pending = controller.pending_review
-    confirmed = bridge.confirm_requirement_review_from_gui(
-        controller.ledger,
-        pending,
-    )
-    controller.resolve_requirement_review(confirmed)
     prepared = controller.dispatch(
         "prepare_geometry_proposal",
         {},
@@ -438,7 +436,6 @@ def test_a8_new_agent_session_discards_controller_and_pending_proposal(
     assert controller.stage is AuthoringWorkflowStage.REQUIREMENTS
     assert controller.ledger.entries == ()
     assert bridge.state(proposal_id) is ProposalState.STALE
-    assert controller.terminal_records[-1].state == "stale"
     drawer.close()
     runtime.shutdown()
 
@@ -458,9 +455,7 @@ def test_a8_production_main_window_injects_the_real_controller() -> None:
     window.close()
 
 
-def test_a8_production_geometry_handler_keeps_draft_local_until_gui_accepts() -> (
-    None
-):
+def test_a8_production_geometry_waits_for_one_gui_acceptance() -> None:
     _application()
     window = FEMMainWindow()
     controller = window.agent_authoring_controller
@@ -468,7 +463,7 @@ def test_a8_production_geometry_handler_keeps_draft_local_until_gui_accepts() ->
     before = window.session.snapshot()
     assert before.source_kind is None
 
-    controller.dispatch(
+    recorded = controller.dispatch(
         "set_authoring_requirements",
         {
             "turn_id": "turn-a8",
@@ -476,18 +471,6 @@ def test_a8_production_geometry_handler_keeps_draft_local_until_gui_accepts() ->
         },
         ToolExecutionContext("session-a8", 0, "requirements-a8"),
     )
-    controller.dispatch(
-        "request_requirement_review",
-        {},
-        ToolExecutionContext("session-a8", 0, "review-a8"),
-    )
-    review = controller.pending_review
-    confirmed = bridge.confirm_requirement_review_from_gui(
-        controller.ledger,
-        review,
-    )
-    controller.resolve_requirement_review(confirmed)
-
     prepared = controller.dispatch(
         "prepare_geometry_proposal",
         {},
@@ -496,15 +479,13 @@ def test_a8_production_geometry_handler_keeps_draft_local_until_gui_accepts() ->
     proposal_id = prepared.data["proposal_id"]
 
     draft_state = window.session.snapshot()
-    assert prepared.ok is True
+    assert recorded.ok and prepared.ok
+    assert controller.pending_review is None
     assert controller.stage is AuthoringWorkflowStage.GEOMETRY_PENDING
     assert draft_state.session_revision == before.session_revision
-    assert draft_state.source_kind is None
     assert draft_state.parts == ()
-    assert bridge.state(proposal_id) is ProposalState.PENDING_CONFIRMATION
 
     accepted = bridge.accept_from_gui_control(proposal_id)
-    assert controller.stage is AuthoringWorkflowStage.GEOMETRY_PENDING
     controller.record_proposal_state("geometry", accepted.state)
     after = window.session.snapshot()
 
@@ -518,7 +499,7 @@ def test_a8_production_geometry_handler_keeps_draft_local_until_gui_accepts() ->
     window.close()
 
 
-def test_a8_a4_revision_stays_live_and_a5_failure_is_atomic(monkeypatch) -> None:
+def test_a8_direct_definition_actions_apply_one_by_one_and_refresh_gui() -> None:
     session = _a4_session()
     projections = []
     controller_holder = {}
@@ -538,132 +519,103 @@ def test_a8_a4_revision_stays_live_and_a5_failure_is_atomic(monkeypatch) -> None
     )
     bridge = AgentAuthoringBridge(port)
     bridge.bind_snapshot(session.snapshot())
-    result_bridge = AgentResultQueryBridge(SessionResultQueryPort(session))
     controller = create_session_authoring_workflow_controller(
         session,
         bridge,
-        result_bridge,
+        AgentResultQueryBridge(SessionResultQueryPort(session)),
     )
     controller_holder["controller"] = controller
-    recorded = controller.dispatch(
-        "set_authoring_requirements",
-        {
-            "turn_id": "turn-geometry",
-            "requirements": _requirements_for("geometry"),
-        },
-        ToolExecutionContext("session-a8", 0, "requirements-a8"),
-    )
-    review_result = controller.dispatch(
-        "request_requirement_review",
-        {},
-        ToolExecutionContext("session-a8", 0, "review-a8"),
-    )
-    assert recorded.ok and review_result.ok
-    pending = controller.pending_review
-    confirmed = bridge.confirm_requirement_review_from_gui(
-        controller.ledger,
-        pending,
-    )
-    controller.resolve_requirement_review(confirmed)
     controller._stage = AuthoringWorkflowStage.DEFINITIONS_READY
-    recorded = controller.dispatch(
-        "set_authoring_requirements",
-        {
-            "turn_id": "turn-definitions",
-            "requirements": _requirements_for("definitions"),
-        },
-        ToolExecutionContext("session-a8", 0, "definitions-a8"),
-    )
-    review_result = controller.dispatch(
-        "request_requirement_review",
-        {},
-        ToolExecutionContext("session-a8", 0, "definitions-review-a8"),
-    )
-    assert recorded.ok and review_result.ok
-    pending = controller.pending_review
-    confirmed = bridge.confirm_requirement_review_from_gui(
-        controller.ledger,
-        pending,
-    )
-    controller.resolve_requirement_review(confirmed)
+    before_revision = session.session_revision
 
-    scopes = controller.dispatch(
-        "apply_scopes_and_materials",
-        {},
-        ToolExecutionContext("session-a8", 0, "scopes-a8"),
-    )
-    assert scopes.ok is True
-    context_result = controller.dispatch(
-        "read_authoring_context",
-        {},
-        ToolExecutionContext("session-a8", 0, "context-after-a4"),
-    )
-    assert context_result.ok is True
-    assert controller.stage is AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
-    recorded = controller.dispatch(
-        "set_authoring_requirements",
-        {
-            "turn_id": "turn-analysis",
-            "requirements": _requirements_for("analysis"),
-        },
-        ToolExecutionContext("session-a8", 0, "analysis-requirements-a8"),
-    )
-    review_result = controller.dispatch(
-        "request_requirement_review",
-        {},
-        ToolExecutionContext("session-a8", 0, "analysis-review-a8"),
-    )
-    assert recorded.ok and review_result.ok
-    pending = controller.pending_review
-    confirmed = bridge.confirm_requirement_review_from_gui(
-        controller.ledger,
-        pending,
-    )
-    controller.resolve_requirement_review(confirmed)
-    before = session.snapshot()
-
-    def fail_analysis_change(**_arguments):
-        raise RuntimeError("injected A5 failure")
-
-    monkeypatch.setattr(
-        "fem_gui.agent_authoring.create_analysis_definition_change",
-        fail_analysis_change,
-    )
-
-    failed = controller.dispatch(
-        "apply_analysis_definitions",
-        {},
-        ToolExecutionContext("session-a8", 0, "analysis-a8"),
-    )
-    after = session.snapshot()
-
-    assert failed.ok is False
-    assert after.session_revision == before.session_revision
-    assert after.named_regions == before.named_regions
-    assert after.materials == before.materials
-    assert after.sections == before.sections
-    assert after.assignments == before.assignments
-    assert after.steps == before.steps
-
-    bound = bridge.context
-    external_context = AuthoringContext(
-        binding=LocalModelBinding(
-            bound.binding.document_id,
-            bound.binding.session_id,
-            bound.binding.session_revision + 1,
-            bound.binding.source_kind,
-            bound.binding.supported,
+    actions = [
+        ("create_plate_scopes", {}),
+        (
+            "create_material",
+            {
+                "name": "材料-铝合金",
+                "properties": {"E": 70000.0, "nu": 0.33},
+            },
         ),
-        model_name=bound.model_name,
-        active_part_id=bound.active_part_id,
-        parts=bound.parts,
-        mesh=bound.mesh,
-        definitions=bound.definitions,
-        validation_status=bound.validation_status,
-        job_status=bound.job_status,
-        result_available=bound.result_available,
-        capabilities=bound.capabilities,
-        unit_context=bound.unit_context,
-    )
-    assert controller.observe_binding(external_context) is False
-    assert controller.stage is AuthoringWorkflowStage.STALE
+        (
+            "create_section",
+            {
+                "name": "截面-平面应力",
+                "material": "材料-铝合金",
+                "plane_type": "stress",
+                "thickness": 1.0,
+            },
+        ),
+        (
+            "assign_section",
+            {
+                "section_name": "截面-平面应力",
+                "region_name": "域-板体",
+            },
+        ),
+        ("create_static_step", {"name": "分析步-静力"}),
+        (
+            "create_boundary_condition",
+            {
+                "name": "位移-固定端",
+                "step_name": "分析步-静力",
+                "target_scope": "边-固定端",
+                "target_kind": "edge",
+                "first_component": 1,
+                "last_component": 2,
+                "value": 0.0,
+            },
+        ),
+        (
+            "create_load",
+            {
+                "name": "载荷-拉伸",
+                "step_name": "分析步-静力",
+                "target_scope": "边-加载端",
+                "load_type": "edge_traction",
+                "vector": [10.0, 0.0],
+            },
+        ),
+        (
+            "create_result_request",
+            {
+                "name": "结果请求-位移反力",
+                "step_name": "分析步-静力",
+                "target": "node",
+                "variables": ["U", "RF"],
+            },
+        ),
+    ]
+
+    results = []
+    for index, (action, parameters) in enumerate(actions):
+        result = controller.dispatch(
+            "apply_model_definition",
+            {"action": action, "parameters": parameters},
+            ToolExecutionContext(
+                "session-a8",
+                session.session_revision,
+                f"direct-{index}",
+            ),
+        )
+        assert result.ok, result.to_json()
+        assert result.data["gui_synchronized"] is True
+        assert "proposal_id" not in result.data
+        results.append(result)
+
+    after = session.snapshot()
+    assert after.session_revision == before_revision + len(actions)
+    assert len(projections) == len(actions)
+    assert set(after.named_regions) == {
+        "边-固定端",
+        "边-加载端",
+        "边-孔边",
+        "域-板体",
+    }
+    assert [item.name for item in after.materials] == ["材料-铝合金"]
+    assert [item.name for item in after.sections] == ["截面-平面应力"]
+    assert [item.name for item in after.steps] == ["分析步-静力"]
+    assert len(after.steps[0].boundaries) == 1
+    assert len(after.steps[0].edge_loads) == 1
+    assert len(after.steps[0].outputs) == 1
+    assert controller.stage is AuthoringWorkflowStage.DEFINITIONS_READY

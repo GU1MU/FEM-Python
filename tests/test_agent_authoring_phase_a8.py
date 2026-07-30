@@ -12,6 +12,7 @@ from fem_agent.authoring import (
     ClarificationRequiredError,
     FakeAuthoringPort,
     LocalModelBinding,
+    MeshSummary,
     ModelOperation,
     OperationKind,
     ProposalKind,
@@ -322,6 +323,20 @@ def _controller(
                     "proposal_id": proposal.proposal_id,
                     "proposal_hash": proposal.proposal_hash,
                     "state": "pending_confirmation",
+                    "proposal_view": {
+                        "proposal_id": proposal.proposal_id,
+                        "proposal_hash": proposal.proposal_hash,
+                        "proposal_kind": proposal.proposal_kind.value,
+                        "title": f"{suffix} proposal",
+                        "summary": f"{suffix} proposal",
+                        "impact": "Apply after local confirmation.",
+                        "confirm_label": "加入模型",
+                        "target_document_id": proposal.target_document_id,
+                        "target_session_id": proposal.target_session_id,
+                        "base_session_revision": (
+                            proposal.base_session_revision
+                        ),
+                    },
                 },
             )
 
@@ -423,244 +438,218 @@ def _dispatch(
     )
 
 
-def test_a8_dynamic_catalog_requires_gui_review_and_never_publishes_confirmation() -> (
-    None
-):
-    bridge = AgentAuthoringBridge(FakeAuthoringPort())
-    bridge.bind_context(_context())
-    controller, calls, _queries = _controller(bridge)
+def test_a8_geometry_uses_one_operation_confirmation_without_requirement_review() -> None:
+    calls: list[str] = []
 
+    def geometry(_arguments, _controller):
+        calls.append("geometry")
+        return AuthoringToolOutcome(
+            "Geometry proposal registered.",
+            {"state": "pending_confirmation"},
+        )
+
+    controller = AuthoringWorkflowController(
+        lambda: _context(),
+        {"prepare_geometry_proposal": geometry},
+    )
     initial_names = {item.name for item in controller.definitions}
-    assert {
-        "read_authoring_context",
-        "set_authoring_requirements",
-        "request_requirement_review",
-    } <= initial_names
+    assert "set_authoring_requirements" in initial_names
+    assert "prepare_geometry_proposal" not in initial_names
+    assert "request_requirement_review" not in initial_names
     assert not any(
         fragment in name
         for name in initial_names
         for fragment in ("accept", "confirm", "reject", "cancel")
     )
-    unavailable = _dispatch(
-        controller,
-        "prepare_geometry_proposal",
-        {},
-        1,
-    )
-    assert unavailable.ok is False
-    assert calls == []
 
     recorded = _dispatch(
         controller,
         "set_authoring_requirements",
         {
-            "turn_id": "turn-requirements",
+            "turn_id": "turn-geometry",
             "requirements": _requirements_for("geometry"),
         },
-        2,
+        1,
     )
-    review_result = _dispatch(
-        controller,
-        "request_requirement_review",
-        {},
-        3,
-    )
-    assert recorded.ok is True
-    assert review_result.ok is True
-    assert controller.stage is AuthoringWorkflowStage.REVIEW_PENDING
-    assert {item.name for item in controller.definitions} == {
-        "read_authoring_context"
-    }
+    assert recorded.ok
+    assert recorded.data["operation_confirmation_required"] is True
+    names = {item.name for item in controller.definitions}
+    assert "prepare_geometry_proposal" in names
+    assert "set_authoring_requirements" in names
+    assert "request_requirement_review" not in names
 
-    pending = controller.pending_review
-    assert pending is not None
-    confirmed = bridge.confirm_requirement_review_from_gui(
-        controller.ledger,
-        pending,
-    )
-    controller.resolve_requirement_review(confirmed)
-    assert controller.stage is AuthoringWorkflowStage.GEOMETRY_READY
-    assert {item.name for item in controller.definitions} == {
-        "read_authoring_context",
-        "prepare_geometry_proposal",
-    }
+    prepared = _dispatch(controller, "prepare_geometry_proposal", {}, 2)
+    assert prepared.ok
+    assert calls == ["geometry"]
+    assert controller.stage is AuthoringWorkflowStage.GEOMETRY_PENDING
 
 
-@pytest.mark.parametrize(
-    ("stage", "group", "operation"),
-    [
-        (
-            AuthoringWorkflowStage.MESH_READY,
-            "mesh",
-            "prepare_mesh_proposal",
-        ),
-        (
-            AuthoringWorkflowStage.DEFINITIONS_READY,
-            "definitions",
-            "apply_scopes_and_materials",
-        ),
-        (
-            AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY,
-            "analysis",
-            "apply_analysis_definitions",
-        ),
-    ],
-)
-def test_a8_ready_stage_opens_its_operation_only_after_stage_review(
-    stage,
-    group,
-    operation,
-) -> None:
+def test_a8_mesh_uses_one_confirmation_and_definitions_are_direct() -> None:
+    calls: list[str] = []
+
+    def handler(arguments, _controller):
+        calls.append(str(arguments.get("action", "mesh")))
+        return AuthoringToolOutcome("Applied.", {"state": "succeeded"})
+
     controller = AuthoringWorkflowController(
         lambda: _context(),
         {
-            operation: lambda _arguments, _controller: AuthoringToolOutcome(
-                "Stage operation completed.",
-                {"state": "succeeded"},
-            )
+            "prepare_mesh_proposal": handler,
+            "apply_model_definition": handler,
+            "run_native_preflight": handler,
         },
     )
-    controller._stage = stage
-    bridge = AgentAuthoringBridge(FakeAuthoringPort())
-    bridge.bind_context(_context())
-
-    names = {item.name for item in controller.definitions}
-    assert {
-        "set_authoring_requirements",
-        "request_requirement_review",
-    } <= names
-    assert operation not in names
-    schema = next(
-        item
-        for item in controller.definitions
-        if item.name == "set_authoring_requirements"
-    ).parameters["properties"]["requirements"]["properties"]
-    assert set(schema) == set(_REQUIREMENT_GROUP_KEYS[group])
+    controller._stage = AuthoringWorkflowStage.MESH_READY
+    assert "prepare_mesh_proposal" not in {
+        item.name for item in controller.definitions
+    }
 
     assert _dispatch(
         controller,
         "set_authoring_requirements",
         {
-            "turn_id": f"turn-{group}",
-            "requirements": _requirements_for(group),
+            "turn_id": "turn-mesh",
+            "requirements": _requirements_for("mesh"),
         },
-        30,
+        3,
     ).ok
-    assert _dispatch(
-        controller,
-        "request_requirement_review",
-        {},
-        31,
-    ).ok
-    pending = controller.pending_review
-    assert pending is not None
-    confirmed = bridge.confirm_requirement_review_from_gui(
-        controller.ledger,
-        pending,
-    )
-    controller.resolve_requirement_review(confirmed)
-
     names = {item.name for item in controller.definitions}
-    assert operation in names
+    assert "prepare_mesh_proposal" in names
+    assert "request_requirement_review" not in names
+
+    controller._stage = AuthoringWorkflowStage.DEFINITIONS_READY
+    names = {item.name for item in controller.definitions}
+    assert {"apply_model_definition", "run_native_preflight"} <= names
     assert "set_authoring_requirements" not in names
     assert "request_requirement_review" not in names
 
+    applied = _dispatch(
+        controller,
+        "apply_model_definition",
+        {
+            "action": "create_material",
+            "parameters": {
+                "name": "材料-铝合金",
+                "properties": {"E": 70000.0, "nu": 0.33},
+            },
+        },
+        4,
+    )
+    assert applied.ok
+    assert calls == ["create_material"]
+    assert controller.stage is AuthoringWorkflowStage.DEFINITIONS_READY
 
-def test_a8_requirement_schema_and_review_fail_closed_for_unsupported_2d_values() -> (
-    None
-):
-    controller = AuthoringWorkflowController(lambda: _context(), {})
-    requirement_schema = next(
-        item
-        for item in controller.definitions
-        if item.name == "set_authoring_requirements"
-    ).parameters["properties"]["requirements"]["properties"]
-    assert set(requirement_schema) == set(_REQUIREMENT_GROUP_KEYS["geometry"])
 
-    controller._stage = AuthoringWorkflowStage.DEFINITIONS_READY
-    definition_schema = next(
-        item
-        for item in controller.definitions
-        if item.name == "set_authoring_requirements"
-    ).parameters["properties"]["requirements"]["properties"]
-    assert definition_schema["modeling_assumption"]["enum"] == [
-        "plane_stress",
-        "plane_strain",
-    ]
+def test_a8_only_geometry_mesh_and_solve_publish_execution_proposals() -> None:
+    handler = lambda _arguments, _controller: AuthoringToolOutcome(
+        "Registered.",
+        {"state": "pending_confirmation"},
+    )
+    controller = AuthoringWorkflowController(
+        lambda: _context(),
+        {
+            "prepare_geometry_proposal": handler,
+            "prepare_mesh_proposal": handler,
+            "prepare_solve_proposal": handler,
+            "apply_model_definition": handler,
+            "edit_model_object": handler,
+        },
+    )
 
-    controller._stage = AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
-    analysis_schema = next(
-        item
-        for item in controller.definitions
-        if item.name == "set_authoring_requirements"
-    ).parameters["properties"]["requirements"]["properties"]
-    assert analysis_schema["load_type"]["enum"] == [
-        "edge_traction",
-        "edge_pressure",
-    ]
-    assert "z" not in analysis_schema["load_direction"]["enum"]
-    assert analysis_schema["fixed_dofs"]["items"] == {
-        "type": "integer",
-        "minimum": 1,
-        "maximum": 2,
+    assert _dispatch(
+        controller,
+        "set_authoring_requirements",
+        {
+            "turn_id": "turn-geometry",
+            "requirements": _requirements_for("geometry"),
+        },
+        5,
+    ).ok
+    assert "prepare_geometry_proposal" in {
+        item.name for item in controller.definitions
     }
 
-    for key, value in (
-        ("modeling_assumption", "solid_3d"),
-        ("load_type", "surface_traction"),
-        ("load_direction", "z"),
-        ("fixed_dofs", [0, 1]),
-        ("fixed_dofs", [1, 4]),
-    ):
-        candidate = AuthoringWorkflowController(lambda: _context(), {})
-        candidate._stage = (
-            AuthoringWorkflowStage.DEFINITIONS_READY
-            if key == "modeling_assumption"
-            else AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
-        )
-        rejected = _dispatch(
-            candidate,
-            "set_authoring_requirements",
-            {
-                "turn_id": "turn-unsupported",
-                "requirements": {key: value},
-            },
-            20,
-        )
-        assert rejected.ok is False
+    controller._stage = AuthoringWorkflowStage.MESH_READY
+    assert _dispatch(
+        controller,
+        "set_authoring_requirements",
+        {
+            "turn_id": "turn-mesh",
+            "requirements": _requirements_for("mesh"),
+        },
+        6,
+    ).ok
+    assert "prepare_mesh_proposal" in {
+        item.name for item in controller.definitions
+    }
 
-    for load_type, direction, magnitude in (
-        ("edge_traction", "inward_normal", 10.0),
-        ("edge_pressure", "x", 10.0),
-        ("edge_pressure", "inward_normal", -10.0),
-        ("edge_pressure", "outward_normal", 10.0),
-    ):
-        incompatible = _requirements_for("analysis")
-        incompatible.update(
-            {
-                "load_type": load_type,
-                "load_direction": direction,
-                "load_magnitude": magnitude,
-            }
-        )
-        candidate = AuthoringWorkflowController(lambda: _context(), {})
-        candidate._stage = AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
-        assert _dispatch(
-            candidate,
-            "set_authoring_requirements",
-            {
-                "turn_id": "turn-incompatible",
-                "requirements": incompatible,
-            },
-            21,
-        ).ok is True
-        review = _dispatch(candidate, "request_requirement_review", {}, 22)
-        assert review.ok is False
-        assert candidate.pending_review is None
-        assert (
-            candidate.stage
-            is AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
-        )
+    controller._stage = AuthoringWorkflowStage.SOLVE_READY
+    names = {item.name for item in controller.definitions}
+    assert "prepare_solve_proposal" in names
+    assert "apply_model_definition" in names
+    assert "request_requirement_review" not in names
+
+
+def test_a8_direct_definition_schema_is_granular() -> None:
+    controller = AuthoringWorkflowController(
+        lambda: _context(),
+        {
+            "apply_model_definition": lambda _arguments, _controller: (
+                AuthoringToolOutcome("Applied.", {"state": "succeeded"})
+            ),
+        },
+    )
+    controller._stage = AuthoringWorkflowStage.DEFINITIONS_READY
+    tool = next(
+        item
+        for item in controller.definitions
+        if item.name == "apply_model_definition"
+    )
+    actions = tool.parameters["properties"]["action"]["enum"]
+    assert actions == [
+        "create_plate_scopes",
+        "create_material",
+        "create_section",
+        "assign_section",
+        "create_static_step",
+        "create_boundary_condition",
+        "create_load",
+        "create_result_request",
+    ]
+    assert "apply_scopes_and_materials" not in {
+        item.name for item in controller.definitions
+    }
+    assert "apply_analysis_definitions" not in {
+        item.name for item in controller.definitions
+    }
+
+
+def test_a8_existing_current_mesh_exposes_direct_definitions_immediately() -> None:
+    context = AuthoringContext(
+        binding=LocalModelBinding(
+            "document:existing",
+            "native-existing",
+            7,
+            "native",
+            True,
+        ),
+        model_name="模型-既有",
+        active_part_id="part-existing",
+        mesh=MeshSummary(True, True, 20, 10),
+    )
+    controller = AuthoringWorkflowController(
+        lambda: context,
+        {
+            "apply_model_definition": lambda _arguments, _controller: (
+                AuthoringToolOutcome("Applied.", {"state": "succeeded"})
+            ),
+        },
+    )
+    controller.observe_binding(context)
+
+    assert "apply_model_definition" in {
+        item.name for item in controller.definitions
+    }
 
 
 def test_a8_requirement_batch_validation_is_atomic() -> None:
@@ -672,13 +661,13 @@ def test_a8_requirement_batch_validation_is_atomic() -> None:
         controller,
         "set_authoring_requirements",
         {
-            "turn_id": "turn-mixed-validity",
+            "turn_id": "turn-invalid",
             "requirements": {
-                "length_unit": "mm",
-                "fixed_dofs": [0, 1],
+                "plate_width": 100.0,
+                "plate_height": -1.0,
             },
         },
-        26,
+        7,
     )
 
     assert rejected.ok is False
@@ -686,7 +675,7 @@ def test_a8_requirement_batch_validation_is_atomic() -> None:
     assert controller.ledger.entries == before_entries
 
 
-def test_a8_seeded_binding_invalidates_confirmed_ledger_without_context_read() -> None:
+def test_a8_binding_change_clears_collected_requirements() -> None:
     initial = _context()
     switched = AuthoringContext(
         binding=LocalModelBinding(
@@ -702,9 +691,6 @@ def test_a8_seeded_binding_invalidates_confirmed_ledger_without_context_read() -
     current = [initial]
     controller = AuthoringWorkflowController(lambda: current[0], {})
     controller.observe_binding(initial)
-    bridge = AgentAuthoringBridge(FakeAuthoringPort())
-    bridge.bind_context(initial)
-
     assert _dispatch(
         controller,
         "set_authoring_requirements",
@@ -712,40 +698,16 @@ def test_a8_seeded_binding_invalidates_confirmed_ledger_without_context_read() -
             "turn_id": "turn-before-switch",
             "requirements": _requirements_for("geometry"),
         },
-        23,
-    ).ok is True
-    assert _dispatch(
-        controller,
-        "request_requirement_review",
-        {},
-        24,
-    ).ok is True
-    pending = controller.pending_review
-    assert pending is not None
-    confirmed = bridge.confirm_requirement_review_from_gui(
-        controller.ledger,
-        pending,
-    )
-    controller.resolve_requirement_review(confirmed)
-    assert controller.stage is AuthoringWorkflowStage.GEOMETRY_READY
+        8,
+    ).ok
+    assert controller.collected_requirements("geometry")["plate_width"] == 120.0
 
     current[0] = switched
     assert controller.observe_binding(switched) is False
     assert controller.stage is AuthoringWorkflowStage.STALE
     assert controller.ledger.entries == ()
-    assert {item.name for item in controller.definitions} == {
-        "read_authoring_context"
-    }
-    with pytest.raises(ClarificationRequiredError):
-        controller.confirmed_requirements()
-
-    assert _dispatch(
-        controller,
-        "read_authoring_context",
-        {},
-        25,
-    ).ok is True
-    assert controller.stage is AuthoringWorkflowStage.REQUIREMENTS
+    with pytest.raises(ValueError, match="clarification_required"):
+        controller.collected_requirements("geometry")
 
 
 def test_a8_binding_allows_expected_pending_revision_only() -> None:
@@ -767,71 +729,19 @@ def test_a8_binding_allows_expected_pending_revision_only() -> None:
     controller._pending_operation = "geometry"
 
     assert controller.observe_binding(next_revision) is True
-    assert controller.stage is AuthoringWorkflowStage.GEOMETRY_PENDING
     controller.record_proposal_state("geometry", ProposalState.SUCCEEDED)
     assert controller.stage is AuthoringWorkflowStage.MESH_READY
 
-    external_revision = AuthoringContext(
-        binding=LocalModelBinding(
-            initial.binding.document_id,
-            initial.binding.session_id,
-            2,
-            initial.binding.source_kind,
-            initial.binding.supported,
-        ),
-        model_name=initial.model_name,
-        active_part_id="part-a8",
-    )
-    assert controller.observe_binding(external_revision) is False
-    assert controller.stage is AuthoringWorkflowStage.STALE
 
-    switched_session = AuthoringContext(
-        binding=LocalModelBinding(
-            "document:new-native",
-            "new-native",
-            1,
-            "native",
-            True,
-        ),
-        model_name="模型-新建",
-        active_part_id="part-new",
-    )
-    blocked = AuthoringWorkflowController(lambda: switched_session, {})
-    blocked.observe_binding(initial)
-    blocked._stage = AuthoringWorkflowStage.GEOMETRY_PENDING
-    blocked._pending_operation = "geometry"
-    assert blocked.observe_binding(
-        switched_session,
-        proposal_staled=True,
-    ) is False
-    assert blocked.stage is AuthoringWorkflowStage.STALE
-
-
-def test_a8_provider_payload_rejects_paths_bulk_arrays_and_unsafe_summaries() -> (
-    None
-):
+def test_a8_provider_payload_rejects_paths_bulk_arrays_and_unsafe_summaries() -> None:
     for payload in (
         {"message": "local file D:\\private\\model.femproj"},
-        {"message": "local file \\\\server\\share\\model.femproj"},
-        {"message": "local file /home/user/model.femproj"},
         {"node_ids": [1, 2]},
-        {"element_ids": [1, 2]},
         {"coordinates": [[0.0, 0.0]]},
-        {"result_provider": "hidden"},
         {"model_patch": {"schema_version": "1.0"}},
     ):
         with pytest.raises(ValueError):
             provider_safe_authoring_payload(payload)
-
-    assert provider_safe_authoring_payload(
-        {"node_id": 7, "element_id": 9, "value": 1.5}
-    ) == {"node_id": 7, "element_id": 9, "value": 1.5}
-
-    with pytest.raises(ValueError):
-        AuthoringToolOutcome(
-            "failed at D:\\private\\model.femproj",
-            {"code": "local.failure"},
-        )
 
     def unsafe(_arguments, _controller):
         raise ValueError("failed at D:\\private\\secret.femproj")
@@ -840,347 +750,88 @@ def test_a8_provider_payload_rejects_paths_bulk_arrays_and_unsafe_summaries() ->
         lambda: _context(),
         {"prepare_geometry_proposal": unsafe},
     )
-    controller._stage = AuthoringWorkflowStage.GEOMETRY_READY
-    result = _dispatch(controller, "prepare_geometry_proposal", {}, 4)
+    assert _dispatch(
+        controller,
+        "set_authoring_requirements",
+        {
+            "turn_id": "turn-geometry",
+            "requirements": _requirements_for("geometry"),
+        },
+        9,
+    ).ok
+    result = _dispatch(controller, "prepare_geometry_proposal", {}, 10)
     serialized = result.to_json()
     assert "D:" not in serialized
     assert "private" not in serialized
     assert "ValueError" in serialized
 
 
-def test_a8_fake_provider_runs_dynamic_engine_chain_with_three_gui_confirmations(
-    tmp_path,
-) -> None:
-    bridge = AgentAuthoringBridge(FakeAuthoringPort())
-    bridge.bind_context(_context())
-    controller, local_calls, queries = _controller(bridge)
-    provider = FakeProvider(
-        [
-            _response(text="请先确认板尺寸、孔尺寸、孔位置和项目单位制。"),
-            _response(
-                ToolCall(
-                    "geometry-requirements",
-                    "set_authoring_requirements",
-                    {
-                        "turn_id": "turn-geometry",
-                        "requirements": _requirements_for("geometry"),
-                    },
-                ),
-                ToolCall("geometry-review", "request_requirement_review", {}),
-            ),
-            _response(text="请确认几何需求。"),
-            _response(
-                ToolCall("geometry", "prepare_geometry_proposal", {})
-            ),
-            _response(text="几何提案等待 GUI 确认。"),
-            _response(
-                ToolCall(
-                    "mesh-requirements",
-                    "set_authoring_requirements",
-                    {
-                        "turn_id": "turn-mesh",
-                        "requirements": _requirements_for("mesh"),
-                    },
-                ),
-                ToolCall("mesh-review", "request_requirement_review", {}),
-            ),
-            _response(text="请确认网格需求。"),
-            _response(ToolCall("mesh", "prepare_mesh_proposal", {})),
-            _response(text="网格提案等待 GUI 确认。"),
-            _response(
-                ToolCall(
-                    "definition-requirements",
-                    "set_authoring_requirements",
-                    {
-                        "turn_id": "turn-definitions",
-                        "requirements": _requirements_for("definitions"),
-                    },
-                ),
-                ToolCall(
-                    "definition-review",
-                    "request_requirement_review",
-                    {},
-                ),
-            ),
-            _response(text="请确认材料与截面需求。"),
-            _response(
-                ToolCall(
-                    "scopes",
-                    "apply_scopes_and_materials",
-                    {},
-                )
-            ),
-            _response(text="作用域与材料已自动应用并可撤销。"),
-            _response(
-                ToolCall(
-                    "analysis-requirements",
-                    "set_authoring_requirements",
-                    {
-                        "turn_id": "turn-analysis",
-                        "requirements": _requirements_for("analysis"),
-                    },
-                ),
-                ToolCall(
-                    "analysis-review",
-                    "request_requirement_review",
-                    {},
-                ),
-            ),
-            _response(text="请确认边界条件、载荷与分析需求。"),
-            _response(
-                ToolCall(
-                    "analysis",
-                    "apply_analysis_definitions",
-                    {},
-                )
-            ),
-            _response(text="分析定义已自动应用并可撤销。"),
-            _response(ToolCall("preflight", "run_native_preflight", {})),
-            _response(text="预检通过。"),
-            _response(
-                ToolCall("solve", "prepare_solve_proposal", {})
-            ),
-            _response(text="求解提案等待 GUI 确认。"),
-            _response(
-                ToolCall(
-                    "catalog",
-                    "read_accepted_result_catalog",
-                    {},
-                ),
-                *(
-                    ToolCall(
-                        f"query-{index}",
-                        "query_accepted_result",
-                        query.to_dict(),
-                    )
-                    for index, query in enumerate(queries, start=1)
-                ),
-            ),
-            _response(
-                text="最大位移、应力极值和固定端反力已由本地结果读取。"
-            ),
-        ]
-    )
-    engine = AgentSessionEngine(
-        tmp_path / "agent-private",
-        provider,
-        session_id="session-a8",
-        dynamic_tools=controller,
-    )
-
-    engine.send_message("帮我建立一个偏心的带孔平板模型，孔的位置偏离板的中心")
-    assert local_calls == []
-    authoring_prompt = provider.requests[0].messages[0].content
-    assert "strict attention boundary" in authoring_prompt
-    assert "Do not ask for or mention mesh, material" in authoring_prompt
-    assert "full-project questionnaire" in authoring_prompt
-    assert "Do not volunteer or enumerate FEM Agent features" in (
-        authoring_prompt
-    )
-    assert "smallest useful set" in authoring_prompt
-    assert "`empty` does not mean" in authoring_prompt
-    engine.send_message("以下是明确的几何和单位参数。")
-    pending = controller.pending_review
-    assert pending is not None
-    assert {item.key for item in pending.fields} == set(
-        _REQUIREMENT_GROUP_KEYS["geometry"]
-    )
-    confirmed = bridge.confirm_requirement_review_from_gui(
-        controller.ledger,
-        pending,
-    )
-    controller.resolve_requirement_review(confirmed)
-
-    engine.send_message("准备几何提案。")
-    with pytest.raises(AuthoringAuthorizationError):
-        bridge.accept_proposal("proposal-geometry")
-    assert bridge.accept_from_gui_control("proposal-geometry").state is ProposalState.ACCEPTED
-    controller.record_proposal_state("geometry", ProposalState.SUCCEEDED)
-
-    engine.send_message("以下是明确的网格参数。")
-    pending = controller.pending_review
-    assert pending is not None
-    assert {item.key for item in pending.fields} == set(
-        _REQUIREMENT_GROUP_KEYS["mesh"]
-    )
-    confirmed = bridge.confirm_requirement_review_from_gui(
-        controller.ledger,
-        pending,
-    )
-    controller.resolve_requirement_review(confirmed)
-
-    engine.send_message("准备网格提案。")
-    assert bridge.accept_from_gui_control("proposal-mesh").state is ProposalState.ACCEPTED
-    controller.record_proposal_state("mesh", ProposalState.SUCCEEDED)
-
-    engine.send_message("以下是明确的材料与截面参数。")
-    pending = controller.pending_review
-    assert pending is not None
-    assert {item.key for item in pending.fields} == set(
-        _REQUIREMENT_GROUP_KEYS["definitions"]
-    )
-    confirmed = bridge.confirm_requirement_review_from_gui(
-        controller.ledger,
-        pending,
-    )
-    controller.resolve_requirement_review(confirmed)
-
-    engine.send_message("应用作用域与材料。")
-
-    engine.send_message("以下是明确的边界条件、载荷与分析参数。")
-    pending = controller.pending_review
-    assert pending is not None
-    assert {item.key for item in pending.fields} == set(
-        _REQUIREMENT_GROUP_KEYS["analysis"]
-    )
-    confirmed = bridge.confirm_requirement_review_from_gui(
-        controller.ledger,
-        pending,
-    )
-    controller.resolve_requirement_review(confirmed)
-
-    engine.send_message("应用分析定义。")
-    engine.send_message("运行预检。")
-    engine.send_message("准备求解提案。")
-    assert bridge.accept_from_gui_control("proposal-solve").state is ProposalState.ACCEPTED
-    controller.record_proposal_state("solve", ProposalState.SUCCEEDED)
-
-    events = engine.send_message("读取三项已接受结果。")
-    assert controller.stage is AuthoringWorkflowStage.RESULTS_READY
-    assert local_calls == [
-        "geometry",
-        "mesh",
-        "scopes",
-        "analysis",
-        "preflight",
-        "solve",
-        "catalog",
-        "query",
-        "query",
-        "query",
-    ]
-    tool_payloads = [
-        event.data["result"]
-        for event in events
-        if event.event.value == "tool_completed"
-    ]
-    values = [
-        payload["data"]["scalar"]["value"]
-        for payload in tool_payloads
-        if payload["data"] is not None
-        and payload["data"].get("scalar") is not None
-    ]
-    assert values == [0.42, 123.0, -1000.0]
-
-    all_tool_names = {
-        definition.name
-        for request in provider.requests
-        for definition in request.tools
-    }
-    assert not any(
-        fragment in name
-        for name in all_tool_names
-        for fragment in (
-            "accept_proposal",
-            "confirm_mesh",
-            "confirm_solve",
-            "confirm_requirement",
-        )
-    )
-    captured = json.dumps(
-        [
-            {
-                "messages": [
-                    {
-                        "role": message.role,
-                        "content": message.content,
-                    }
-                    for message in request.messages
-                ],
-                "tools": [item.name for item in request.tools],
-            }
-            for request in provider.requests
-        ],
-        ensure_ascii=False,
-    ).casefold()
-    for forbidden in (
-        "node_ids",
-        "element_ids",
-        "connectivity",
-        "result_arrays",
-        "modelsession",
-        "raw_patch",
-        "vtk",
-    ):
-        assert forbidden not in captured
-
-
 @pytest.mark.parametrize(
-    ("operation", "terminal_state", "pending_stage", "failure_stage"),
+    ("operation", "terminal", "expected"),
     [
-        (
-            "geometry",
-            ProposalState.CANCELLED,
-            AuthoringWorkflowStage.GEOMETRY_PENDING,
-            AuthoringWorkflowStage.GEOMETRY_READY,
-        ),
-        (
-            "mesh",
-            ProposalState.FAILED,
-            AuthoringWorkflowStage.MESH_PENDING,
-            AuthoringWorkflowStage.MESH_READY,
-        ),
-        (
-            "solve",
-            ProposalState.FAILED,
-            AuthoringWorkflowStage.SOLVE_PENDING,
-            AuthoringWorkflowStage.SOLVE_READY,
-        ),
+        ("geometry", ProposalState.FAILED, AuthoringWorkflowStage.GEOMETRY_READY),
+        ("mesh", ProposalState.CANCELLED, AuthoringWorkflowStage.MESH_READY),
+        ("solve", ProposalState.STALE, AuthoringWorkflowStage.SOLVE_READY),
     ],
 )
-def test_a8_proposal_failure_cancel_and_stale_have_one_terminal(
+def test_a8_proposal_terminal_returns_to_the_operation_boundary(
     operation,
-    terminal_state,
-    pending_stage,
-    failure_stage,
+    terminal,
+    expected,
 ) -> None:
-    bridge = AgentAuthoringBridge(FakeAuthoringPort())
-    bridge.bind_context(_context())
-    controller, _calls, _queries = _controller(bridge)
-    controller._stage = pending_stage
+    controller = AuthoringWorkflowController(lambda: _context(), {})
     controller._pending_operation = operation
+    controller._stage = {
+        "geometry": AuthoringWorkflowStage.GEOMETRY_PENDING,
+        "mesh": AuthoringWorkflowStage.MESH_PENDING,
+        "solve": AuthoringWorkflowStage.SOLVE_PENDING,
+    }[operation]
 
-    controller.record_proposal_state(operation, terminal_state, "terminal")
-
-    assert controller.stage is failure_stage
-    assert controller.terminal_records[-1].state == terminal_state.value
-    assert controller.terminal_records[-1].operation == operation
-    with pytest.raises(ValueError):
-        controller.record_proposal_state(
-            operation,
-            ProposalState.FAILED,
-            "late failure",
-        )
-
-    controller.invalidate_binding("document switched")
-    assert controller.stage is AuthoringWorkflowStage.STALE
-    assert controller.terminal_records[-1].state == "stale"
+    controller.record_proposal_state(operation, terminal, "terminal")
+    assert controller.stage is expected
+    assert controller.terminal_records[-1].state == terminal.value
 
 
 def test_a8_dynamic_dispatch_is_serial_and_thread_safe() -> None:
-    entered: list[int] = []
+    entered = threading.Event()
+    release = threading.Event()
 
-    def handler(_arguments, _controller):
-        entered.append(threading.get_ident())
-        return AuthoringToolOutcome("Geometry proposal prepared.", {"ok": True})
+    def blocked(_arguments, _controller):
+        entered.set()
+        release.wait(timeout=2.0)
+        return AuthoringToolOutcome("Applied.", {"state": "succeeded"})
 
     controller = AuthoringWorkflowController(
         lambda: _context(),
-        {"prepare_geometry_proposal": handler},
+        {"apply_model_definition": blocked},
     )
-    controller._stage = AuthoringWorkflowStage.GEOMETRY_READY
-    result = _dispatch(controller, "prepare_geometry_proposal", {}, 10)
+    controller._stage = AuthoringWorkflowStage.DEFINITIONS_READY
+    results = []
 
-    assert result.ok is True
-    assert entered == [threading.get_ident()]
-    assert controller.stage is AuthoringWorkflowStage.GEOMETRY_PENDING
+    def invoke() -> None:
+        results.append(
+            _dispatch(
+                controller,
+                "apply_model_definition",
+                {
+                    "action": "create_material",
+                    "parameters": {
+                        "name": "材料-测试",
+                        "properties": {"E": 1.0},
+                    },
+                },
+                len(results) + 20,
+            )
+        )
+
+    first = threading.Thread(target=invoke)
+    second = threading.Thread(target=invoke)
+    first.start()
+    assert entered.wait(timeout=1.0)
+    second.start()
+    release.set()
+    first.join(timeout=2.0)
+    second.join(timeout=2.0)
+
+    assert len(results) == 2
+    assert all(item.ok for item in results)

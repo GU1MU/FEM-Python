@@ -49,19 +49,11 @@ from fem_agent.authoring import (
     UnitContextSummary,
 )
 from fem_agent.analysis_authoring import require_non_destructive_a5_batch
-from fem_agent.analysis_authoring import (
-    ConfirmedDisplacement,
-    ConfirmedLoad,
-    ConfirmedResultRequest,
-    LinearStaticAnalysis,
-    create_analysis_definition_change,
-)
 from fem_agent.authoring_runtime import (
     AuthoringToolOutcome,
     AuthoringWorkflowController,
 )
 from fem_agent.definition_authoring import (
-    create_scope_definition_change,
     inverse_operations_for_snapshot,
     require_non_destructive_a4_batch,
     scoped_definition_batch_from_operations,
@@ -73,7 +65,7 @@ from fem_agent.deletion_authoring import (
 )
 from fem_agent.editing_authoring import (
     apply_edit_operation,
-    create_edit_proposal,
+    create_edit_patch,
     editable_object_catalog,
 )
 from fem_agent.geometry_authoring import (
@@ -82,6 +74,10 @@ from fem_agent.geometry_authoring import (
     plate_with_hole_geometry,
 )
 from fem_agent.mesh_authoring import MeshIntent, create_mesh_proposal
+from fem_agent.incremental_authoring import (
+    create_incremental_definition_patch,
+    require_incremental_definition_batch,
+)
 from fem_agent.naming import NameAllocator
 from fem_agent.solve_authoring import (
     SolveValidationStamp,
@@ -1045,17 +1041,23 @@ class SessionGeometryAuthoringPort:
             if len(proposal.operations) == 1:
                 operation = proposal.operations[0]
                 if operation.kind is OperationKind.DELETE_MODEL_OBJECT:
-                    apply_delete_operation(
+                    delta = apply_delete_operation(
                         self._session,
                         operation,
                         base_session_revision=proposal.base_session_revision,
                     )
+                    if operation.parameters["object_type"] not in {
+                        "part",
+                        "generated_mesh",
+                    }:
+                        self._project_definition_delta(delta)
                 elif operation.kind is OperationKind.EDIT_MODEL_OBJECT:
-                    apply_edit_operation(
+                    delta = apply_edit_operation(
                         self._session,
                         operation,
                         base_session_revision=proposal.base_session_revision,
                     )
+                    self._project_definition_delta(delta)
                 else:
                     raise AuthoringContractError(
                         "unsupported destructive edit operation"
@@ -1251,25 +1253,57 @@ class SessionGeometryAuthoringPort:
             or patch.base_session_revision != snapshot.session_revision
         ):
             raise AuthoringContractError("automatic patch target is stale")
-        if any(bool(getattr(run, "has_result", False)) for run in snapshot.runs):
+        preconditions = patch.preconditions
+        authoring_mode = (
+            preconditions.get("authoring_mode")
+            if isinstance(preconditions, Mapping)
+            else None
+        )
+        has_results = any(
+            bool(getattr(run, "has_result", False)) for run in snapshot.runs
+        )
+        if has_results and authoring_mode not in {
+            "direct_incremental",
+            "direct_edit",
+        }:
             raise AuthoringAuthorizationError(
                 "a result-invalidating edit requires GUI confirmation"
             )
         inverse_operations = inverse_operations_for_snapshot(snapshot)
-        batch = scoped_definition_batch_from_operations(
-            patch.operations,
-            snapshot,
-            base_session_revision=patch.base_session_revision,
-        )
-        preconditions = patch.preconditions
-        if (
-            isinstance(preconditions, Mapping)
-            and preconditions.get("authoring_phase") == "A5"
-        ):
-            require_non_destructive_a5_batch(snapshot, batch)
+        if authoring_mode == "direct_edit":
+            if (
+                len(patch.operations) != 1
+                or patch.operations[0].kind
+                is not OperationKind.EDIT_MODEL_OBJECT
+            ):
+                raise AuthoringContractError(
+                    "direct edit patch requires one edit operation"
+                )
+            delta = apply_edit_operation(
+                self._session,
+                patch.operations[0],
+                base_session_revision=patch.base_session_revision,
+            )
         else:
-            require_non_destructive_a4_batch(snapshot, batch)
-        delta = self._session.apply_scoped_definition_batch(batch)
+            batch = scoped_definition_batch_from_operations(
+                patch.operations,
+                snapshot,
+                base_session_revision=patch.base_session_revision,
+            )
+            if authoring_mode == "direct_incremental":
+                require_incremental_definition_batch(
+                    snapshot,
+                    batch,
+                    preconditions.get("direct_action"),
+                )
+            elif (
+                isinstance(preconditions, Mapping)
+                and preconditions.get("authoring_phase") == "A5"
+            ):
+                require_non_destructive_a5_batch(snapshot, batch)
+            else:
+                require_non_destructive_a4_batch(snapshot, batch)
+            delta = self._session.apply_scoped_definition_batch(batch)
         inverse = ModelPatch.create(
             patch_id=f"inverse-{patch.patch_hash[:24]}",
             agent_session_id=patch.agent_session_id,
@@ -1289,7 +1323,7 @@ class SessionGeometryAuthoringPort:
             invalidation_impact={
                 "model": True,
                 "validation": True,
-                "results": False,
+                "results": has_results,
             },
             display_summary={
                 "title": "撤销本次 Agent 修改",
@@ -2112,7 +2146,7 @@ def create_session_authoring_workflow_controller(
         _arguments: Mapping[str, object],
         controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
-        requirements = controller.confirmed_requirements("geometry")
+        requirements = controller.collected_requirements("geometry")
         metadata = envelope(controller, "geometry")
         context = current_context()
         draft = plate_with_hole_geometry(
@@ -2150,8 +2184,15 @@ def create_session_authoring_workflow_controller(
         )
         return proposal_outcome(
             proposal,
-            summary="创建模型-偏心孔板和部件-偏心孔板",
-            impact="接受后一次性加入已确认的偏心带孔平板几何",
+            summary=(
+                f"创建 {requirements['plate_width']} × "
+                f"{requirements['plate_height']} "
+                f"{requirements['length_unit']} 的偏心孔板；孔半径 "
+                f"{requirements['hole_radius']}，孔心 "
+                f"({requirements['hole_center_x']}, "
+                f"{requirements['hole_center_y']})"
+            ),
+            impact="确认后创建该几何并刷新 GUI",
             confirm_label="加入模型",
         )
 
@@ -2159,7 +2200,7 @@ def create_session_authoring_workflow_controller(
         _arguments: Mapping[str, object],
         controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
-        requirements = controller.confirmed_requirements("mesh")
+        requirements = controller.collected_requirements("mesh")
         metadata = envelope(controller, "mesh")
         context = current_context()
         part_id = context.active_part_id
@@ -2187,197 +2228,46 @@ def create_session_authoring_workflow_controller(
         )
         return proposal_outcome(
             proposal,
-            summary="为部件-偏心孔板设置全局网格和边-孔边局部加密",
-            impact="接受后后台调用 Gmsh，成功时原子安装网格",
+            summary=(
+                f"划分 {requirements['mesh_order']} 阶"
+                f"{requirements['mesh_cell_shape']}网格；全局尺寸 "
+                f"{requirements['mesh_global_size']}，孔边尺寸 "
+                f"{requirements['hole_mesh_size']}"
+            ),
+            impact="确认后划分网格，成功时安装网格并刷新 GUI",
             confirm_label="开始划分",
         )
 
-    def apply_scopes_and_materials(
-        _arguments: Mapping[str, object],
+    def apply_model_definition(
+        arguments: Mapping[str, object],
         controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
-        requirements = controller.confirmed_requirements("definitions")
-        first = envelope(controller, "definitions-a4")
-        first_suffix = str(first.pop("identity_suffix"))
-        snapshot = session.snapshot()
-        a4_change = create_scope_definition_change(
-            patch_id=f"patch-{first_suffix}",
-            proposal_id=f"proposal-{first_suffix}",
-            context=current_context(),
-            snapshot=snapshot,
-            material_function="结构钢",
-            material_properties={
-                "E": float(requirements["young_modulus"]),
-                "nu": float(requirements["poisson_ratio"]),
-            },
-            section_function=(
-                "平面应力"
-                if requirements["modeling_assumption"] == "plane_stress"
-                else "平面应变"
-            ),
-            plane_type=(
-                "stress"
-                if requirements["modeling_assumption"] == "plane_stress"
-                else "strain"
-            ),
-            thickness=float(requirements["plate_thickness"]),
-            **first,
-        )
-        if type(a4_change) is AgentProposal:
-            raise AuthoringAuthorizationError(
-                "existing results require a destructive-edit proposal"
-            )
-        applied_a4 = authoring_bridge.apply_automatic_patch(a4_change)
-        return AuthoringToolOutcome(
-            "Scopes, material, section and assignment were applied.",
-            {
-                "state": "succeeded",
-                "patch_id": applied_a4.patch.patch_id,
-                "undo_available": applied_a4.undo_available,
-                "names": [
-                    "边-固定端",
-                    "边-加载端",
-                    "边-孔边",
-                    "域-板体",
-                    "材料-结构钢",
-                    (
-                        "截面-平面应力"
-                        if requirements["modeling_assumption"]
-                        == "plane_stress"
-                        else "截面-平面应变"
-                    ),
-                ],
-            },
-        )
-
-    def apply_analysis_definitions(
-        _arguments: Mapping[str, object],
-        controller: AuthoringWorkflowController,
-    ) -> AuthoringToolOutcome:
-        requirements = controller.confirmed_requirements("analysis")
-        fixed_dofs = tuple(int(item) for item in requirements["fixed_dofs"])
-        if fixed_dofs != tuple(
-            range(min(fixed_dofs), max(fixed_dofs) + 1)
-        ):
+        if set(arguments) != {"action", "parameters"}:
             raise AuthoringContractError(
-                "fixed_dofs must be one contiguous explicit range"
+                "apply_model_definition requires action and parameters"
             )
-        direction = str(requirements["load_direction"])
-        magnitude = float(requirements["load_magnitude"])
-        load_type = str(requirements["load_type"])
-        vector = (
-            (magnitude, 0.0)
-            if direction == "x"
-            else (0.0, magnitude)
-            if direction == "y"
-            else ()
-        )
-        load = ConfirmedLoad(
-            "载荷-拉伸",
-            "分析步-静力",
-            "边-加载端",
-            "edge",
-            load_type,
-            None,
-            vector,
-            (
-                magnitude
-                if "pressure" in load_type
-                else None
-            ),
-            (
-                direction
-                if "pressure" in load_type
-                else "global_xy"
-            ),
-            str(requirements["load_unit"]),
-            str(requirements["load_distribution"]),
-            True,
-        )
-        requested = tuple(requirements["result_requests"])
-        outputs: list[ConfirmedResultRequest] = []
-        nodal = tuple(item for item in requested if item in {"U", "RF"})
-        if nodal:
-            outputs.append(
-                ConfirmedResultRequest(
-                    "结果请求-位移反力",
-                    "分析步-静力",
-                    "field",
-                    "node",
-                    nodal,
-                    tuple(
-                        str(requirements["length_unit"])
-                        if item == "U"
-                        else str(requirements["force_unit"])
-                        for item in nodal
-                    ),
-                    True,
-                )
-            )
-        if "S" in requested:
-            outputs.append(
-                ConfirmedResultRequest(
-                    "结果请求-应力",
-                    "分析步-静力",
-                    "field",
-                    "element",
-                    ("S",),
-                    (str(requirements["stress_unit"]),),
-                    True,
-                )
-            )
-        analysis = LinearStaticAnalysis(
-            "分析步-静力",
-            2,
-            "static",
-            False,
-            (
-                ConfirmedDisplacement(
-                    "位移-固定端",
-                    "分析步-静力",
-                    "边-固定端",
-                    "edge",
-                    min(fixed_dofs),
-                    max(fixed_dofs),
-                    0.0,
-                    str(requirements["length_unit"]),
-                    "uniform",
-                    True,
-                ),
-            ),
-            (load,),
-            tuple(outputs),
-            True,
-        )
-        second = envelope(controller, "definitions-a5")
-        second_suffix = str(second.pop("identity_suffix"))
-        current = session.snapshot()
-        a5_change = create_analysis_definition_change(
-            patch_id=f"patch-{second_suffix}",
-            proposal_id=f"proposal-{second_suffix}",
+        metadata = envelope(controller, "definition")
+        suffix = str(metadata.pop("identity_suffix"))
+        patch = create_incremental_definition_patch(
+            patch_id=f"patch-{suffix}",
             context=current_context(),
-            snapshot=current,
-            analysis=analysis,
-            **second,
+            snapshot=session.snapshot(),
+            action=arguments["action"],
+            parameters=arguments["parameters"],
+            **metadata,
         )
-        if type(a5_change) is AgentProposal:
-            raise AuthoringAuthorizationError(
-                "existing analysis requires a destructive-edit proposal"
-            )
-        applied_a5 = authoring_bridge.apply_automatic_patch(a5_change)
+        applied = authoring_bridge.apply_automatic_patch(patch)
         return AuthoringToolOutcome(
-            "Complete linear-static analysis definitions were applied.",
+            str(patch.display_summary["summary"]),
             {
                 "state": "succeeded",
-                "patch_id": applied_a5.patch.patch_id,
-                "undo_available": applied_a5.undo_available,
-                "names": [
-                    "分析步-静力",
-                    "位移-固定端",
-                    "载荷-拉伸",
-                    "结果请求-位移反力",
-                    "结果请求-应力",
-                ],
+                "action": arguments["action"],
+                "patch_id": applied.patch.patch_id,
+                "undo_available": applied.undo_available,
+                "objects": list(
+                    patch.expected_changes.get("created_names", ())
+                ),
+                "gui_synchronized": True,
             },
         )
 
@@ -2385,7 +2275,12 @@ def create_session_authoring_workflow_controller(
         _arguments: Mapping[str, object],
         _controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
-        record = authoring_bridge.request_preflight("分析步-静力")
+        steps = tuple(session.snapshot().steps)
+        if len(steps) != 1:
+            raise AuthoringContractError(
+                "preflight requires exactly one current analysis step"
+            )
+        record = authoring_bridge.request_preflight(str(steps[0].name))
         return AuthoringToolOutcome(
             "Native preflight was submitted through the existing GUI task.",
             {
@@ -2401,16 +2296,22 @@ def create_session_authoring_workflow_controller(
     ) -> AuthoringToolOutcome:
         metadata = envelope(controller, "solve")
         suffix = str(metadata.pop("identity_suffix"))
+        steps = tuple(session.snapshot().steps)
+        if len(steps) != 1:
+            raise AuthoringContractError(
+                "solve requires exactly one current analysis step"
+            )
+        step_name = str(steps[0].name)
         proposal = create_solve_proposal(
             proposal_id=f"proposal-{suffix}",
             snapshot=session.snapshot(),
-            step_name="分析步-静力",
-            job_name="作业-静力1",
+            step_name=step_name,
+            job_name=f"作业-{step_name.removeprefix('分析步-')}",
             **metadata,
         )
         return proposal_outcome(
             proposal,
-            summary="提交作业-静力1并绑定当前 validation stamp",
+            summary=f"提交 {step_name} 并绑定当前 validation stamp",
             impact="接受后后台执行当前已预检的线性静力模型",
             confirm_label="开始求解",
         )
@@ -2509,24 +2410,24 @@ def create_session_authoring_workflow_controller(
             },
         )
 
-    def prepare_edit(
+    def edit_model_object(
         arguments: Mapping[str, object],
         controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
         allowed = {"object_type", "target_id", "step_name", "changes"}
         if set(arguments) - allowed:
             raise AuthoringContractError(
-                "prepare_edit_model_object_proposal has unknown fields"
+                "edit_model_object has unknown fields"
             )
         if not {"object_type", "target_id", "changes"}.issubset(arguments):
             raise AuthoringContractError(
-                "prepare_edit_model_object_proposal requires "
+                "edit_model_object requires "
                 "object_type, target_id, and changes"
             )
         metadata = envelope(controller, "edit")
         suffix = str(metadata.pop("identity_suffix"))
-        proposal, target = create_edit_proposal(
-            proposal_id=f"proposal-{suffix}",
+        patch, target = create_edit_patch(
+            patch_id=f"patch-{suffix}",
             context=current_context(),
             snapshot=session.snapshot(),
             object_type=arguments["object_type"],
@@ -2535,12 +2436,17 @@ def create_session_authoring_workflow_controller(
             changes=arguments["changes"],
             **metadata,
         )
-        return proposal_outcome(
-            proposal,
-            summary=str(proposal.display_summary["summary"]),
-            impact=str(proposal.display_summary["impact"]),
-            confirm_label=str(proposal.display_summary["confirm_label"]),
-            extra_data={"edit_object_type": target.object_type},
+        applied = authoring_bridge.apply_automatic_patch(patch)
+        return AuthoringToolOutcome(
+            str(patch.display_summary["summary"]),
+            {
+                "state": "succeeded",
+                "edit_object_type": target.object_type,
+                "target_id": target.target_id,
+                "patch_id": applied.patch.patch_id,
+                "undo_available": applied.undo_available,
+                "gui_synchronized": True,
+            },
         )
 
     def read_catalog(
@@ -2570,15 +2476,14 @@ def create_session_authoring_workflow_controller(
         {
             "prepare_geometry_proposal": prepare_geometry,
             "prepare_mesh_proposal": prepare_mesh,
-            "apply_scopes_and_materials": apply_scopes_and_materials,
-            "apply_analysis_definitions": apply_analysis_definitions,
+            "apply_model_definition": apply_model_definition,
             "run_native_preflight": run_preflight,
             "prepare_solve_proposal": prepare_solve,
             "request_project_save": request_project_save,
             "read_deletable_objects": read_deletable_objects,
             "prepare_delete_proposal": prepare_delete,
             "read_editable_model_objects": read_editable_objects,
-            "prepare_edit_model_object_proposal": prepare_edit,
+            "edit_model_object": edit_model_object,
             "read_accepted_result_catalog": read_catalog,
             "query_accepted_result": query_result,
         },
