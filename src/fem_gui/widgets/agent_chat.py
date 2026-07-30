@@ -163,7 +163,10 @@ QScrollArea#agentChatScroll {
     background: #ffffff;
     border: none;
 }
-QWidget#agentChatConversation {
+QWidget#agentChatScrollViewport,
+QWidget#agentChatConversation,
+QWidget#agentChatEventFeed,
+QWidget#agentChatUserRow {
     background: #ffffff;
 }
 QFrame#agentChatDrawer QScrollBar:vertical {
@@ -1201,15 +1204,28 @@ class AgentChatDrawer(_BoundaryFrame):
         scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
+        scroll.viewport().setObjectName("agentChatScrollViewport")
+        scroll.viewport().setAttribute(
+            Qt.WidgetAttribute.WA_StyledBackground,
+            True,
+        )
 
         conversation = QWidget(scroll)
         conversation.setObjectName("agentChatConversation")
+        conversation.setAttribute(
+            Qt.WidgetAttribute.WA_StyledBackground,
+            True,
+        )
         layout = QVBoxLayout(conversation)
-        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setContentsMargins(6, 14, 14, 14)
         layout.setSpacing(12)
 
         self.event_feed = QWidget(conversation)
         self.event_feed.setObjectName("agentChatEventFeed")
+        self.event_feed.setAttribute(
+            Qt.WidgetAttribute.WA_StyledBackground,
+            True,
+        )
         self.event_feed_layout = QVBoxLayout(self.event_feed)
         self.event_feed_layout.setContentsMargins(0, 0, 0, 0)
         self.event_feed_layout.setSpacing(11)

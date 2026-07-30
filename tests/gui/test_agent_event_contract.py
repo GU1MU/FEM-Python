@@ -966,6 +966,34 @@ def test_conversation_follows_stream_until_user_scrolls_up():
     drawer.close()
 
 
+def test_conversation_uses_white_background_and_compact_left_inset():
+    application = _application()
+    drawer = AgentChatDrawer()
+    drawer.setStyleSheet(_AGENT_CHAT_STYLESHEET)
+    drawer.resize(420, 320)
+    drawer.show()
+    application.processEvents()
+
+    background_widgets = (
+        drawer.conversation_scroll.viewport(),
+        drawer.conversation_widget,
+        drawer.event_feed,
+    )
+    for widget in background_widgets:
+        assert widget.testAttribute(
+            Qt.WidgetAttribute.WA_StyledBackground
+        )
+        assert (
+            widget.palette().color(widget.backgroundRole()).name()
+            == "#ffffff"
+        )
+
+    margins = drawer.conversation_layout.contentsMargins()
+    assert margins.left() == 6
+    assert margins.right() == 14
+    drawer.close()
+
+
 def test_incremental_render_preserves_expanded_tool_group():
     application = _application()
     events = _Events(session_id="expanded-session")
