@@ -1538,6 +1538,7 @@ class AgentChatDrawer(_BoundaryFrame):
         patch_id = getattr(patch, "patch_id", None)
         if type(patch_id) is not str or not patch_id:
             raise TypeError("record must contain one applied ModelPatch")
+        self._applied_patch_records.clear()
         self._applied_patch_records[patch_id] = record
         self._render_event_presentation()
 
@@ -1575,12 +1576,26 @@ class AgentChatDrawer(_BoundaryFrame):
             if raw_title == "Agent 修改已同步" and raw_detail
             else raw_title
         )
+        state_value = str(
+            getattr(getattr(record, "state", None), "value", "")
+        )
+        if state_value == "undone":
+            visible_title = "Agent 已撤销修改"
+        elif state_value == "stale":
+            visible_title = "Agent 修改已无法撤销"
         title = _plain_label(
             visible_title,
             card,
         )
         title.setObjectName("agentChatAppliedPatchText")
         layout.addWidget(title)
+        if state_value and state_value != "applied":
+            self.event_feed_layout.addWidget(
+                card,
+                0,
+                Qt.AlignmentFlag.AlignLeft,
+            )
+            return
         undo = _BoundaryToolButton(card)
         undo.setObjectName("agentChatPatchUndoButton")
         undo.setProperty("patchId", patch_id)
@@ -1623,6 +1638,7 @@ class AgentChatDrawer(_BoundaryFrame):
             self._show_runtime_notice(str(error))
         else:
             self._applied_patch_records[patch_id] = record
+            self._show_preview_notice("已撤销 Agent 修改")
         self._render_event_presentation()
 
     def _add_user_message(self, text: str, turn_id: str) -> None:
@@ -2271,6 +2287,8 @@ class AgentChatDrawer(_BoundaryFrame):
             workspace_root=workspace_root,
         ):
             return
+        self._applied_patch_records.clear()
+        self._render_event_presentation()
         self._conversation_auto_follow = True
         self._queue_conversation_scroll()
         self.messagePreviewRequested.emit(
@@ -2644,6 +2662,7 @@ class AgentChatDrawer(_BoundaryFrame):
         self._expanded_tool_group_ids.clear()
         self._pending_solve_confirmations.clear()
         self._completed_solve_confirmations.clear()
+        self._applied_patch_records.clear()
         self._conversation_auto_follow = True
         self._render_event_presentation(preserve_tool_expansion=False)
         self.input.clear()

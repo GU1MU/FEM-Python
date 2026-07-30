@@ -44,7 +44,7 @@ def _application() -> QApplication:
 
 
 def test_a4_bridge_applies_once_and_gui_card_undoes_once() -> None:
-    _application()
+    application = _application()
     session = _session()
     full_refreshes: list[str] = []
     definition_deltas: list[object] = []
@@ -75,17 +75,25 @@ def test_a4_bridge_applies_once_and_gui_card_undoes_once() -> None:
     assert undo is not None and undo.isEnabled()
 
     QTest.mouseClick(undo, Qt.MouseButton.LeftButton)
+    application.processEvents()
 
     restored = port.patch_record(record.patch.patch_id)
+    notice = drawer.findChild(QLabel, "agentChatAppliedPatchText")
     assert restored.state is AppliedPatchState.UNDONE
     assert not restored.undo_available
     assert len(definition_deltas) == 2
     assert full_refreshes == []
     assert not session.snapshot().named_regions
     assert not session.snapshot().materials
+    assert notice is not None
+    assert notice.text() == "Agent 已撤销修改"
+    assert drawer.findChild(QToolButton, "agentChatPatchUndoButton") is None
+    assert drawer.composer_hint.text() == "已撤销 Agent 修改"
 
 
-def test_direct_material_patch_uses_compact_inline_undo_notice() -> None:
+def test_direct_material_patch_uses_compact_inline_undo_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     application = _application()
     session = _session()
     port = SessionGeometryAuthoringPort(
@@ -129,6 +137,18 @@ def test_direct_material_patch_uses_compact_inline_undo_notice() -> None:
     assert abs(notice.geometry().center().y() - undo.geometry().center().y()) <= 2
     assert undo.palette().color(undo.foregroundRole()).name() == "#315d7c"
     assert detail_label is None
+
+    monkeypatch.setattr(
+        drawer.agent_runtime,
+        "send_message",
+        lambda *_args, **_kwargs: True,
+    )
+    drawer.input.setPlainText("继续下一轮")
+    drawer._send_to_runtime()
+    application.processEvents()
+
+    assert drawer.findChild(QLabel, "agentChatAppliedPatchText") is None
+    assert drawer.findChild(QToolButton, "agentChatPatchUndoButton") is None
     drawer.close()
 
 
