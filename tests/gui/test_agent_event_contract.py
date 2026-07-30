@@ -9,7 +9,8 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtGui import QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
@@ -979,6 +980,61 @@ def test_conversation_follows_stream_until_user_scrolls_up():
     QTest.qWait(10)
 
     assert scroll_bar.value() == scroll_bar.maximum()
+    drawer.close()
+
+
+def test_wheel_over_agent_text_scrolls_the_conversation():
+    application = _application()
+    events = _Events(session_id="wheel-over-text-session")
+    drawer = AgentChatDrawer()
+    drawer.resize(420, 320)
+    drawer.replay_agent_events(
+        (
+            _turn_start(events),
+            events.make(
+                EventType.MESSAGE_START,
+                {
+                    "message_id": "wheel-target-message",
+                    "role": "assistant",
+                    "format": "restricted_markdown",
+                },
+            ),
+            events.make(
+                EventType.MESSAGE_DELTA,
+                {
+                    "message_id": "wheel-target-message",
+                    "delta": "\n".join(
+                        f"可滚动内容 {index}" for index in range(50)
+                    ),
+                },
+            ),
+        )
+    )
+    drawer.show()
+    application.processEvents()
+    QTest.qWait(10)
+
+    scroll_bar = drawer.conversation_scroll.verticalScrollBar()
+    scroll_bar.setValue(scroll_bar.maximum())
+    before = scroll_bar.value()
+    label = drawer.findChild(QLabel, "agentChatAgentMessage")
+    assert label is not None
+    wheel = QWheelEvent(
+        QPointF(2.0, 2.0),
+        QPointF(label.mapToGlobal(QPoint(2, 2))),
+        QPoint(0, 0),
+        QPoint(0, 120),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.ScrollUpdate,
+        False,
+    )
+
+    QApplication.sendEvent(label, wheel)
+    application.processEvents()
+
+    assert wheel.isAccepted()
+    assert scroll_bar.value() < before
     drawer.close()
 
 

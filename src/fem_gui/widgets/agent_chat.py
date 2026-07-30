@@ -24,7 +24,13 @@ from PySide6.QtCore import (
     Qt,
     Signal,
 )
-from PySide6.QtGui import QKeyEvent, QMouseEvent, QRegion, QTextCursor
+from PySide6.QtGui import (
+    QKeyEvent,
+    QMouseEvent,
+    QRegion,
+    QTextCursor,
+    QWheelEvent,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -1292,6 +1298,53 @@ class AgentChatDrawer(_BoundaryFrame):
         ):
             self._queue_conversation_scroll()
 
+    def _install_conversation_wheel_filters(self) -> None:
+        widgets = (
+            self.conversation_widget,
+            *self.conversation_widget.findChildren(QWidget),
+        )
+        for widget in widgets:
+            widget.installEventFilter(self)
+
+    def _scroll_conversation_from_wheel(
+        self,
+        event: QWheelEvent,
+    ) -> None:
+        scroll_bar = self.conversation_scroll.verticalScrollBar()
+        pixel_delta = event.pixelDelta().y()
+        if pixel_delta:
+            distance = pixel_delta
+        else:
+            angle_delta = event.angleDelta().y()
+            line_step = max(
+                scroll_bar.singleStep(),
+                self.fontMetrics().lineSpacing(),
+            )
+            distance = round(
+                angle_delta
+                / 120
+                * line_step
+                * max(QApplication.wheelScrollLines(), 1)
+            )
+        if event.inverted():
+            distance = -distance
+        if distance:
+            scroll_bar.setValue(scroll_bar.value() - distance)
+        event.accept()
+
+    def eventFilter(self, watched: object, event: object) -> bool:
+        if (
+            isinstance(watched, QWidget)
+            and isinstance(event, QWheelEvent)
+            and (
+                watched is self.conversation_widget
+                or self.conversation_widget.isAncestorOf(watched)
+            )
+        ):
+            self._scroll_conversation_from_wheel(event)
+            return True
+        return super().eventFilter(watched, event)
+
     def _queue_conversation_scroll(
         self,
         restore_value: int | None = None,
@@ -1439,6 +1492,7 @@ class AgentChatDrawer(_BoundaryFrame):
                 )
         for record in self._applied_patch_records.values():
             self._add_applied_patch_card(record)
+        self._install_conversation_wheel_filters()
         self._conversation_auto_follow = follow_latest
         self._queue_conversation_scroll(
             None if follow_latest else previous_scroll_value
