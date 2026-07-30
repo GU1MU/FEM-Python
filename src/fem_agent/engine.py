@@ -271,7 +271,7 @@ class EngineSnapshot:
 
 @dataclass(frozen=True)
 class EngineConfig:
-    max_cloud_turns: int = 6
+    max_cloud_turns: int = 12
     max_tool_calls: int = 12
     max_tool_payload_bytes: int = 64 * 1024
     max_conversation_messages: int = 64
