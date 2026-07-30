@@ -43,6 +43,44 @@ def _text_response(text):
     )
 
 
+class _StreamingFakeProvider(FakeProvider):
+    def complete_stream(self, messages, tools, on_text_delta):
+        response = super().complete(messages, tools)
+        content = response.message.content or ""
+        split = max(1, len(content) // 2)
+        for delta in (content[:split], content[split:]):
+            if delta:
+                on_text_delta(delta)
+        return response
+
+
+def test_engine_forwards_provider_text_deltas_without_rebuffering(tmp_path):
+    provider = _StreamingFakeProvider([_text_response("正在检查当前模型")])
+    streamed = []
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_streaming_text",
+        event_sink=streamed.append,
+    )
+
+    returned = engine.send_message("检查模型")
+
+    sink_deltas = [
+        event.data["text"]
+        for event in streamed
+        if event.event is EngineEventType.MESSAGE_DELTA
+    ]
+    returned_deltas = [
+        event.data["text"]
+        for event in returned
+        if event.event is EngineEventType.MESSAGE_DELTA
+    ]
+    assert sink_deltas == ["正在检查", "当前模型"]
+    assert returned_deltas == sink_deltas
+    assert "".join(sink_deltas) == "正在检查当前模型"
+
+
 def test_provider_prompt_contains_restrained_engineering_response_contract(
     tmp_path,
 ):

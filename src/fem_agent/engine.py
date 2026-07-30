@@ -637,12 +637,51 @@ class AgentSessionEngine:
             try:
                 self._provider_active = True
                 try:
-                    response = self.provider.complete(
-                        self._provider_messages(
-                            request_context=request_context,
-                        ),
-                        available_tools,
+                    streamed_text_parts: list[str] = []
+                    stream_started = False
+
+                    def receive_text_delta(delta: str) -> None:
+                        nonlocal stream_started
+                        if not isinstance(delta, str) or not delta:
+                            raise ProviderMalformedResponseError(
+                                "provider stream emitted an invalid text delta"
+                            )
+                        if not stream_started:
+                            events.append(
+                                self._event(
+                                    EngineEventType.MESSAGE_STARTED,
+                                    {"role": "assistant"},
+                                )
+                            )
+                            stream_started = True
+                        streamed_text_parts.append(delta)
+                        events.append(
+                            self._event(
+                                EngineEventType.MESSAGE_DELTA,
+                                {"text": delta},
+                            )
+                        )
+
+                    stream_completion = getattr(
+                        self.provider,
+                        "complete_stream",
+                        None,
                     )
+                    if callable(stream_completion):
+                        response = stream_completion(
+                            self._provider_messages(
+                                request_context=request_context,
+                            ),
+                            available_tools,
+                            receive_text_delta,
+                        )
+                    else:
+                        response = self.provider.complete(
+                            self._provider_messages(
+                                request_context=request_context,
+                            ),
+                            available_tools,
+                        )
                 finally:
                     self._provider_active = False
             except Exception as error:
@@ -686,6 +725,24 @@ class AgentSessionEngine:
                     )
                 )
                 return tuple(events)
+            if (
+                stream_started
+                and "".join(streamed_text_parts)
+                != (response.message.content or "")
+            ):
+                diagnostic = make_diagnostic(
+                    DiagnosticCode.PROVIDER_MALFORMED_RESPONSE,
+                    "The provider stream did not match its final response.",
+                    source="agent.provider",
+                )
+                events.append(self._diagnostic_event(diagnostic))
+                events.append(
+                    self._event(
+                        EngineEventType.ERROR,
+                        {"diagnostic": diagnostic.to_dict()},
+                    )
+                )
+                return tuple(events)
 
             try:
                 self._append_message(response.message)
@@ -706,19 +763,20 @@ class AgentSessionEngine:
                     )
                 )
                 return tuple(events)
-            events.append(
-                self._event(
-                    EngineEventType.MESSAGE_STARTED,
-                    {"role": "assistant"},
-                )
-            )
-            if response.message.content:
+            if not stream_started:
                 events.append(
                     self._event(
-                        EngineEventType.MESSAGE_DELTA,
-                        {"text": response.message.content},
+                        EngineEventType.MESSAGE_STARTED,
+                        {"role": "assistant"},
                     )
                 )
+                if response.message.content:
+                    events.append(
+                        self._event(
+                            EngineEventType.MESSAGE_DELTA,
+                            {"text": response.message.content},
+                        )
+                    )
             if not response.message.tool_calls:
                 return tuple(events)
 

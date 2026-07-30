@@ -234,6 +234,11 @@ QLabel#agentChatAgentMessage {
     color: #28313a;
     font-size: 9.5pt;
 }
+QLabel#agentChatLiveActivity {
+    color: #6f7f8b;
+    font-size: 8.5pt;
+    padding: 1px 0;
+}
 QFrame#agentChatToolActivity {
     background: #f2f4f6;
     border: 1px solid #e0e4e7;
@@ -953,6 +958,17 @@ def _plain_label(text: str, parent: QWidget) -> QLabel:
 
 
 def _tool_summary_text(group: ToolGroupView) -> str:
+    if len(group.calls) == 1:
+        call = group.calls[0]
+        prefix = {
+            ToolStatus.REQUESTED: "准备调用",
+            ToolStatus.RUNNING: "正在执行",
+            ToolStatus.COMPLETED: "已完成",
+            ToolStatus.WARNING: "已完成，有警告",
+            ToolStatus.FAILED: "调用失败",
+            ToolStatus.CANCELLED: "已取消",
+        }[call.status]
+        return f"{prefix} · {call.display_name}"
     parts = [f"工具 {len(group.calls)}"]
     if group.completed_count:
         parts.append(f"完成 {group.completed_count}")
@@ -1178,6 +1194,15 @@ class AgentChatDrawer(_BoundaryFrame):
         self._conversation_scroll_suspended = False
         self._conversation_scroll_update_pending = False
         self._conversation_scroll_restore_value: int | None = None
+        self._live_activity_label: QLabel | None = None
+        self._live_activity_base = ""
+        self._live_activity_tick = 0
+        self._live_activity_timer = QTimer(self)
+        self._live_activity_timer.setInterval(320)
+        self._live_activity_timer.timeout.connect(
+            self._animate_live_activity
+        )
+        self._live_activity_timer.start()
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -1430,6 +1455,7 @@ class AgentChatDrawer(_BoundaryFrame):
         *,
         preserve_tool_expansion: bool,
     ) -> None:
+        self._live_activity_label = None
         if preserve_tool_expansion:
             for tools in self.event_feed.findChildren(ToolActivityPreview):
                 group_id = tools.group.group_id
@@ -1523,6 +1549,8 @@ class AgentChatDrawer(_BoundaryFrame):
                     proposals[proposal_id],
                     turn.turn_id,
                 )
+            if turn.status is TurnStatus.RUNNING:
+                self._add_live_activity(turn)
         for record in self._applied_patch_records.values():
             self._add_applied_patch_card(record)
         self._install_conversation_wheel_filters()
@@ -1530,6 +1558,54 @@ class AgentChatDrawer(_BoundaryFrame):
         self._queue_conversation_scroll(
             None if follow_latest else previous_scroll_value
         )
+
+    def _add_live_activity(self, turn: object) -> None:
+        running_calls = [
+            call
+            for group in getattr(turn, "tool_groups", ())
+            for call in group.calls
+            if call.status in {
+                ToolStatus.REQUESTED,
+                ToolStatus.RUNNING,
+            }
+        ]
+        messages = tuple(getattr(turn, "messages", ()))
+        tool_groups = tuple(getattr(turn, "tool_groups", ()))
+        if running_calls:
+            base = f"正在执行 · {running_calls[-1].display_name}"
+        elif any(
+            message.status is MessageStatus.STREAMING
+            for message in messages
+        ):
+            base = "正在生成回复"
+        elif tool_groups:
+            base = "正在整理工具结果"
+        else:
+            base = "正在分析请求"
+        label = _plain_label("", self.event_feed)
+        label.setObjectName("agentChatLiveActivity")
+        self._live_activity_label = label
+        self._live_activity_base = base
+        self._update_live_activity_text()
+        self.event_feed_layout.addWidget(
+            label,
+            0,
+            Qt.AlignmentFlag.AlignLeft,
+        )
+
+    def _animate_live_activity(self) -> None:
+        label = self._live_activity_label
+        if label is None or not label.isVisible():
+            return
+        self._live_activity_tick = (self._live_activity_tick + 1) % 3
+        self._update_live_activity_text()
+
+    def _update_live_activity_text(self) -> None:
+        label = self._live_activity_label
+        if label is None:
+            return
+        dots = "·" * (self._live_activity_tick + 1)
+        label.setText(f"●  {self._live_activity_base} {dots}")
 
     def show_applied_patch(self, record: object) -> None:
         """Show one local automatic edit with its revision-gated undo entry."""

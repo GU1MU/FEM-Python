@@ -7,6 +7,7 @@ import os
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
+from types import SimpleNamespace
 from typing import Any
 
 from .base import (
@@ -118,6 +119,78 @@ class DeepSeekProvider:
                 normalized, retryable = _normalize_sdk_error(error)
                 last_error = normalized
                 if not retryable or attempt + 1 >= attempts:
+                    raise normalized from error
+                delay = min(
+                    self.config.retry_delay_seconds * (2**attempt),
+                    60.0,
+                )
+                if delay:
+                    self._wait_before_retry(delay)
+        raise ProviderUnavailableError(str(last_error or "DeepSeek request failed"))
+
+    def complete_stream(
+        self,
+        messages: Sequence[AssistantMessage],
+        tools: Sequence[ToolDefinition],
+        on_text_delta: Callable[[str], None],
+    ) -> ProviderResponse:
+        """Stream visible assistant text while retaining one normalized response."""
+
+        if not callable(on_text_delta):
+            raise TypeError("on_text_delta must be callable")
+        if self._cancel_event.is_set():
+            raise ProviderUnavailableError("The DeepSeek request was cancelled.")
+        attempts = self.config.max_retries + 1
+        last_error: Exception | None = None
+        emitted_text = False
+
+        def emit_text(delta: str) -> None:
+            nonlocal emitted_text
+            emitted_text = True
+            on_text_delta(delta)
+
+        for attempt in range(attempts):
+            if self._cancel_event.is_set():
+                raise ProviderUnavailableError(
+                    "The DeepSeek request was cancelled."
+                )
+            try:
+                client = self._client or self._create_client()
+                request: dict[str, Any] = {
+                    "model": self.config.model,
+                    "messages": [
+                        _message_payload(message) for message in messages
+                    ],
+                    "stream": True,
+                    "max_tokens": self.config.max_output_tokens,
+                    "extra_body": {"thinking": {"type": "disabled"}},
+                }
+                if tools:
+                    request["tools"] = [_tool_payload(tool) for tool in tools]
+                    request["tool_choice"] = "auto"
+                return self._request_stream_with_deadline(
+                    client,
+                    request,
+                    emit_text,
+                )
+            except (
+                ProviderAuthenticationError,
+                ProviderPaymentRequiredError,
+                ProviderMalformedResponseError,
+            ):
+                raise
+            except Exception as error:
+                if self._cancel_event.is_set():
+                    raise ProviderUnavailableError(
+                        "The DeepSeek request was cancelled."
+                    ) from error
+                normalized, retryable = _normalize_sdk_error(error)
+                last_error = normalized
+                if (
+                    emitted_text
+                    or not retryable
+                    or attempt + 1 >= attempts
+                ):
                     raise normalized from error
                 delay = min(
                     self.config.retry_delay_seconds * (2**attempt),
@@ -244,6 +317,88 @@ class DeepSeekProvider:
                 "The DeepSeek request ended without a response."
             )
         return outcome["response"]
+
+    def _request_stream_with_deadline(
+        self,
+        client: Any,
+        request: Mapping[str, Any],
+        on_text_delta: Callable[[str], None],
+    ) -> ProviderResponse:
+        done = threading.Event()
+        aborted = threading.Event()
+        outcome: dict[str, Any] = {}
+
+        def invoke() -> None:
+            try:
+                stream = client.chat.completions.create(**dict(request))
+                outcome["response"] = _normalize_stream_response(
+                    stream,
+                    on_text_delta,
+                    lambda: (
+                        aborted.is_set()
+                        or self._cancel_event.is_set()
+                    ),
+                )
+            except Exception as error:
+                outcome["error"] = error
+            finally:
+                done.set()
+
+        thread = threading.Thread(
+            target=invoke,
+            name="fem-agent-deepseek-stream",
+            daemon=True,
+        )
+        with self._client_lock:
+            previous = self._inflight_thread
+            if previous is not None and previous.is_alive():
+                raise ProviderUnavailableError(
+                    "A previous DeepSeek request is still stopping."
+                )
+            self._inflight_thread = thread
+        try:
+            thread.start()
+        except Exception:
+            with self._client_lock:
+                if self._inflight_thread is thread:
+                    self._inflight_thread = None
+            raise
+        deadline = time.monotonic() + self.config.timeout_seconds
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                aborted.set()
+                self._close_client(client)
+                if done.wait(0.1):
+                    self._clear_inflight_thread(thread)
+                raise ProviderTimeoutError(
+                    "The DeepSeek stream exceeded its wall-clock deadline."
+                )
+            if done.wait(min(remaining, 0.05)):
+                break
+            if self._cancel_event.is_set():
+                aborted.set()
+                self._close_client(client)
+                if done.wait(0.1):
+                    self._clear_inflight_thread(thread)
+                raise ProviderUnavailableError(
+                    "The DeepSeek request was cancelled."
+                )
+        self._clear_inflight_thread(thread)
+        if self._cancel_event.is_set():
+            self._close_client(client)
+            raise ProviderUnavailableError(
+                "The DeepSeek request was cancelled."
+            )
+        error = outcome.get("error")
+        if isinstance(error, Exception):
+            raise error
+        response = outcome.get("response")
+        if not isinstance(response, ProviderResponse):
+            raise ProviderUnavailableError(
+                "The DeepSeek stream ended without a response."
+            )
+        return response
 
     def _clear_inflight_thread(self, thread: threading.Thread) -> None:
         with self._client_lock:
@@ -396,6 +551,105 @@ def _normalize_response(response: Any) -> ProviderResponse:
         finish_reason=finish_reason,
         usage=usage,
     )
+
+
+def _normalize_stream_response(
+    stream: Any,
+    on_text_delta: Callable[[str], None],
+    cancelled: Callable[[], bool],
+) -> ProviderResponse:
+    content_parts: list[str] = []
+    tool_parts: dict[int, dict[str, str]] = {}
+    finish_reason = ""
+    usage: Any = None
+    saw_choice = False
+
+    for chunk in stream:
+        if cancelled():
+            raise ProviderUnavailableError(
+                "The DeepSeek request was cancelled."
+            )
+        chunk_usage = getattr(chunk, "usage", None)
+        if chunk_usage is not None:
+            usage = chunk_usage
+        choices = getattr(chunk, "choices", None) or ()
+        if not choices:
+            continue
+        saw_choice = True
+        choice = choices[0]
+        current_finish = str(
+            getattr(choice, "finish_reason", "") or ""
+        )
+        if current_finish:
+            finish_reason = current_finish
+        delta = getattr(choice, "delta", None)
+        if delta is None:
+            continue
+        content = getattr(delta, "content", None)
+        if content is not None:
+            if not isinstance(content, str):
+                content = str(content)
+            try:
+                content.encode("utf-8")
+            except UnicodeEncodeError as error:
+                raise ProviderMalformedResponseError(
+                    "DeepSeek returned invalid Unicode text"
+                ) from error
+            if content:
+                content_parts.append(content)
+                on_text_delta(content)
+        for raw_call in getattr(delta, "tool_calls", None) or ():
+            index = getattr(raw_call, "index", None)
+            if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+                raise ProviderMalformedResponseError(
+                    "DeepSeek streamed an invalid tool call index"
+                )
+            parts = tool_parts.setdefault(
+                index,
+                {"id": "", "name": "", "arguments": ""},
+            )
+            call_id = getattr(raw_call, "id", None)
+            if call_id:
+                parts["id"] += str(call_id)
+            function = getattr(raw_call, "function", None)
+            name = None if function is None else getattr(function, "name", None)
+            arguments = (
+                None
+                if function is None
+                else getattr(function, "arguments", None)
+            )
+            if name:
+                parts["name"] += str(name)
+            if arguments:
+                parts["arguments"] += str(arguments)
+
+    if not saw_choice:
+        raise ProviderMalformedResponseError(
+            "DeepSeek stream contained no choices"
+        )
+    raw_calls = [
+        SimpleNamespace(
+            id=parts["id"],
+            function=SimpleNamespace(
+                name=parts["name"],
+                arguments=parts["arguments"],
+            ),
+        )
+        for _index, parts in sorted(tool_parts.items())
+    ]
+    raw_response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                finish_reason=finish_reason,
+                message=SimpleNamespace(
+                    content="".join(content_parts) or None,
+                    tool_calls=raw_calls,
+                ),
+            )
+        ],
+        usage=usage,
+    )
+    return _normalize_response(raw_response)
 
 
 def _reject_json_constant(value: str) -> None:

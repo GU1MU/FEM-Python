@@ -814,6 +814,48 @@ def test_incremental_ui_escapes_raw_html_and_shows_stream_status():
     drawer.close()
 
 
+def test_live_activity_shows_analysis_and_current_tool_progress():
+    application = _application()
+    events = _Events(session_id="live-activity-session")
+    drawer = AgentChatDrawer()
+    drawer.replay_agent_events((_turn_start(events),))
+    drawer.show()
+    application.processEvents()
+
+    activity = drawer.findChild(QLabel, "agentChatLiveActivity")
+    assert activity is not None
+    assert "正在分析请求" in activity.text()
+
+    drawer.apply_agent_event(
+        events.make(
+            EventType.TOOL_REQUESTED,
+            {
+                "call_id": "context-call",
+                "tool_name": "read_authoring_context",
+                "display_name": "读取当前建模上下文",
+                "request": {},
+            },
+        )
+    )
+    drawer.apply_agent_event(
+        events.make(
+            EventType.TOOL_STARTED,
+            {"call_id": "context-call"},
+        )
+    )
+    application.processEvents()
+
+    activity = drawer.findChild(QLabel, "agentChatLiveActivity")
+    tools = drawer.findChild(ToolActivityPreview)
+    assert activity is not None
+    assert "正在执行 · 读取当前建模上下文" in activity.text()
+    assert tools is not None
+    assert tools.summary_button.text() == (
+        "正在执行 · 读取当前建模上下文"
+    )
+    drawer.close()
+
+
 def test_restricted_markdown_renders_ordered_and_unordered_lists():
     application = _application()
     events = _Events(session_id="markdown-list-session")

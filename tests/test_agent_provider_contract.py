@@ -57,6 +57,44 @@ def _tool_call(arguments='{"session_id":"ses_test"}'):
     )
 
 
+def _stream_chunk(
+    *,
+    content=None,
+    tool_calls=(),
+    finish_reason=None,
+    usage=None,
+):
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                finish_reason=finish_reason,
+                delta=SimpleNamespace(
+                    content=content,
+                    tool_calls=tool_calls,
+                ),
+            )
+        ],
+        usage=usage,
+    )
+
+
+def _stream_tool_call(
+    *,
+    index=0,
+    call_id=None,
+    name=None,
+    arguments=None,
+):
+    return SimpleNamespace(
+        index=index,
+        id=call_id,
+        function=SimpleNamespace(
+            name=name,
+            arguments=arguments,
+        ),
+    )
+
+
 def _tool_definition():
     return ToolDefinition(
         name="get_analysis_summary",
@@ -89,6 +127,88 @@ def test_deepseek_request_uses_openai_compatibility_and_disables_thinking():
     assert call["extra_body"] == {"thinking": {"type": "disabled"}}
     assert call["stream"] is False
     assert call["tools"][0]["function"]["name"] == "get_analysis_summary"
+
+
+def test_deepseek_streams_visible_text_and_returns_normalized_response():
+    spy = _CompletionsSpy(
+        [
+            iter(
+                (
+                    _stream_chunk(content="正在"),
+                    _stream_chunk(content="检查模型"),
+                    _stream_chunk(finish_reason="stop"),
+                )
+            )
+        ]
+    )
+    provider = DeepSeekProvider(
+        ProviderConfig(max_retries=0),
+        client=_client(spy),
+        environ={},
+    )
+    deltas = []
+
+    result = provider.complete_stream(
+        [AssistantMessage("user", "检查模型")],
+        [],
+        deltas.append,
+    )
+
+    assert deltas == ["正在", "检查模型"]
+    assert result.message.content == "正在检查模型"
+    assert result.finish_reason == "stop"
+    assert spy.calls[0]["stream"] is True
+    assert spy.calls[0]["extra_body"] == {
+        "thinking": {"type": "disabled"}
+    }
+
+
+def test_deepseek_stream_assembles_tool_call_fragments():
+    spy = _CompletionsSpy(
+        [
+            iter(
+                (
+                    _stream_chunk(
+                        tool_calls=(
+                            _stream_tool_call(
+                                call_id="call_1",
+                                name="get_analysis_summary",
+                                arguments='{"session_',
+                            ),
+                        )
+                    ),
+                    _stream_chunk(
+                        tool_calls=(
+                            _stream_tool_call(
+                                arguments='id":"ses_test"}',
+                            ),
+                        )
+                    ),
+                    _stream_chunk(finish_reason="tool_calls"),
+                )
+            )
+        ]
+    )
+    provider = DeepSeekProvider(
+        ProviderConfig(max_retries=0),
+        client=_client(spy),
+    )
+
+    result = provider.complete_stream(
+        [AssistantMessage("user", "检查模型")],
+        [_tool_definition()],
+        lambda _delta: None,
+    )
+
+    assert result.message.content is None
+    assert result.message.tool_calls == (
+        ToolCall(
+            "call_1",
+            "get_analysis_summary",
+            {"session_id": "ses_test"},
+        ),
+    )
+    assert result.finish_reason == "tool_calls"
 
 
 def test_provider_contract_rejects_non_json_tool_values_and_bad_tool_ids():
@@ -317,6 +437,45 @@ def test_deepseek_enforces_an_outer_wall_clock_deadline():
 
     assert started.is_set()
     assert released.is_set()
+    assert time.monotonic() - before < 1.0
+
+
+def test_deepseek_stream_enforces_an_outer_wall_clock_deadline():
+    started = threading.Event()
+    released = threading.Event()
+
+    class BlockingStreamCompletions:
+        def create(self, **kwargs):
+            def chunks():
+                started.set()
+                released.wait(5.0)
+                yield _stream_chunk(content="late")
+
+            return chunks()
+
+    client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=BlockingStreamCompletions()
+        ),
+        close=released.set,
+    )
+    provider = DeepSeekProvider(
+        ProviderConfig(timeout_seconds=0.05, max_retries=0),
+        client=client,
+    )
+    before = time.monotonic()
+    deltas = []
+
+    with pytest.raises(ProviderTimeoutError, match="stream"):
+        provider.complete_stream(
+            [AssistantMessage("user", "status")],
+            [],
+            deltas.append,
+        )
+
+    assert started.is_set()
+    assert released.is_set()
+    assert deltas == []
     assert time.monotonic() - before < 1.0
 
 
