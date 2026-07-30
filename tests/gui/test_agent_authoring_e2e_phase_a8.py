@@ -12,11 +12,16 @@ from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QToolButton
 
-from fem.geometry import SketchCircle, SketchGeometry
+from fem.application import ModelSession, UnitContext
+from fem.geometry import (
+    SketchCircle,
+    SketchGeometry,
+    SketchRectangle,
+    legacy_sketch_to_strict,
+)
+from fem.mesh.settings import MeshSettings
 from fem_agent.authoring import (
-    AuthoringContext,
     FakeAuthoringPort,
-    LocalModelBinding,
     ProposalState,
 )
 from fem_agent.authoring_runtime import (
@@ -42,7 +47,7 @@ from fem_gui.agent_events import EventType
 from fem_gui.agent_runtime import QtAgentRuntime
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.widgets.agent_chat import AgentChatDrawer
-from tests.test_agent_authoring_phase_a4 import _session as _a4_session
+from tests.test_agent_authoring_phase_a4 import _plate_model
 from tests.test_agent_authoring_phase_a8 import (
     _context,
     _controller,
@@ -62,6 +67,36 @@ def _text_response(text: str) -> ProviderResponse:
         AssistantMessage("assistant", content=text),
         finish_reason="stop",
     )
+
+
+def _generic_a4_session() -> ModelSession:
+    session = ModelSession()
+    recipe = legacy_sketch_to_strict(
+        SketchGeometry(
+            "草图-通用孔板",
+            (
+                SketchRectangle("material", 0.0, 0.0, 10.0, 6.0),
+                SketchCircle("cut", 6.5, 2.0, 1.0),
+            ),
+        )
+    )
+    session.create_native_project_with_first_part(
+        "模型-通用孔板",
+        UnitContext("mm", "N", "MPa"),
+        recipe,
+        part_name="部件-通用孔板",
+    )
+    task = session.prepare_agent_mesh_generation(
+        "P1",
+        MeshSettings(1.0),
+        "a" * 64,
+        expected_session_revision=session.session_revision,
+    )
+    assert session.accept_agent_generated_model(
+        task.token,
+        _plate_model(),
+    ).accepted
+    return session
 
 
 def _application() -> QApplication:
@@ -523,8 +558,242 @@ def test_a8_production_geometry_waits_for_one_gui_acceptance() -> None:
     window.close()
 
 
+def test_a8_production_mesh_uses_catalogued_generic_local_refinement() -> None:
+    session = ModelSession()
+    recipe = legacy_sketch_to_strict(
+        SketchGeometry(
+            "草图-通用孔板",
+            (
+                SketchRectangle("material", 0.0, 0.0, 10.0, 6.0),
+                SketchCircle("cut", 6.5, 2.0, 1.0),
+            ),
+        )
+    )
+    session.create_native_project_with_first_part(
+        "模型-通用孔板",
+        UnitContext("mm", "N", "MPa"),
+        recipe,
+        part_name="部件-通用孔板",
+    )
+    port = SessionGeometryAuthoringPort(session, lambda: None)
+    bridge = AgentAuthoringBridge(port)
+    bridge.bind_snapshot(session.snapshot())
+    controller = create_session_authoring_workflow_controller(
+        session,
+        bridge,
+        AgentResultQueryBridge(SessionResultQueryPort(session)),
+    )
+    controller._stage = AuthoringWorkflowStage.MESH_READY
+    assert controller.dispatch(
+        "set_authoring_requirements",
+        {
+            "turn_id": "turn-mesh-refinement",
+            "requirements": _requirements_for("mesh"),
+        },
+        ToolExecutionContext("session-a8", 0, "mesh-requirements"),
+    ).ok
+
+    catalog = controller.dispatch(
+        "read_mesh_refinement_context",
+        {},
+        ToolExecutionContext("session-a8", 0, "mesh-refinement-context"),
+    )
+    assert catalog.ok, catalog.diagnostics[0].message
+    available_ids = {
+        item["logical_id"] for item in catalog.data["entities"]
+    }
+    assert "edge:C5" in available_ids
+    target_radius_entity = next(
+        item
+        for item in catalog.data["entities"]
+        if item["logical_id"] == "edge:C5"
+    )
+    line_entity = next(
+        item
+        for item in catalog.data["entities"]
+        if item["logical_id"] == "edge:L1"
+    )
+    assert "target_radius" in target_radius_entity[
+        "allowed_falloff_references"
+    ]
+    assert line_entity["allowed_falloff_references"] == ["global_size"]
+
+    rejected = controller.dispatch(
+        "prepare_mesh_proposal",
+        {
+            "local_refinements": [
+                {
+                    "target": "edge:not-current",
+                    "size": 0.2,
+                    "falloff": {
+                        "reference": "global_size",
+                        "start_factor": 0.0,
+                        "end_factor": 1.5,
+                    },
+                }
+            ]
+        },
+        ToolExecutionContext("session-a8", 0, "mesh-refinement-stale-target"),
+    )
+    assert not rejected.ok
+    assert controller.stage is AuthoringWorkflowStage.MESH_READY
+
+    unsupported_radius = controller.dispatch(
+        "prepare_mesh_proposal",
+        {
+            "local_refinements": [
+                {
+                    "target": "edge:C1",
+                    "size": 0.2,
+                    "falloff": {
+                        "reference": "target_radius",
+                        "start_factor": 0.25,
+                        "end_factor": 2.0,
+                    },
+                }
+            ]
+        },
+        ToolExecutionContext("session-a8", 0, "mesh-radius-unsupported"),
+    )
+    assert not unsupported_radius.ok
+    assert controller.stage is AuthoringWorkflowStage.MESH_READY
+    assert bridge._records == {}
+
+    prepared = controller.dispatch(
+        "prepare_mesh_proposal",
+        {
+            "local_refinements": [
+                {
+                    "target": "edge:C5",
+                    "size": 0.2,
+                    "falloff": {
+                        "reference": "target_radius",
+                        "start_factor": 0.25,
+                        "end_factor": 2.0,
+                    },
+                }
+            ]
+        },
+        ToolExecutionContext("session-a8", 0, "mesh-refinement-proposal"),
+    )
+
+    assert catalog.ok and prepared.ok
+    assert prepared.data["local_refinements"] == [
+        {
+            "target": "edge:C5",
+            "size": 0.2,
+            "falloff": {
+                "reference": "target_radius",
+                "start_factor": 0.25,
+                "end_factor": 2.0,
+            },
+        }
+    ]
+    proposal = bridge._records[prepared.data["proposal_id"]].proposal
+    mesh_intent = proposal.operations[0].parameters["mesh_intent"]
+    assert mesh_intent["local_controls"][0]["target"] == "edge:C5"
+    assert controller.stage is AuthoringWorkflowStage.MESH_PENDING
+
+
+def test_a8_existing_mesh_can_be_remeshed_without_preemptive_deletion() -> None:
+    session = _generic_a4_session()
+    before = session.snapshot()
+    started = []
+    port = SessionGeometryAuthoringPort(
+        session,
+        lambda: None,
+        start_mesh_task=lambda request: started.append(request) or True,
+    )
+    bridge = AgentAuthoringBridge(port)
+    bridge.bind_snapshot(before)
+    controller = create_session_authoring_workflow_controller(
+        session,
+        bridge,
+        AgentResultQueryBridge(SessionResultQueryPort(session)),
+    )
+
+    assert controller.stage is AuthoringWorkflowStage.DEFINITIONS_READY
+    initial_tools = {tool.name for tool in controller.definitions}
+    assert {
+        "set_authoring_requirements",
+        "read_mesh_refinement_context",
+    } <= initial_tools
+    assert "prepare_mesh_proposal" not in initial_tools
+    recorded = controller.dispatch(
+        "set_authoring_requirements",
+        {
+            "turn_id": "turn-remesh",
+            "requirements": {
+                "mesh_cell_shape": "triangle",
+                "mesh_order": 1,
+                "mesh_global_size": 0.8,
+            },
+        },
+        ToolExecutionContext(
+            before.session_id,
+            before.session_revision,
+            "remesh-requirements",
+        ),
+    )
+    assert recorded.ok
+
+    first = controller.dispatch(
+        "prepare_mesh_proposal",
+        {},
+        ToolExecutionContext(
+            before.session_id,
+            before.session_revision,
+            "remesh-reject",
+        ),
+    )
+    assert first.ok
+    unchanged = session.snapshot()
+    assert unchanged.session_revision == before.session_revision
+    assert unchanged.mesh_current
+    assert unchanged.mesh_settings == before.mesh_settings
+
+    rejected = bridge.reject_from_gui_control(first.data["proposal_id"])
+    controller.record_proposal_state("mesh", rejected.state)
+    assert controller.stage is AuthoringWorkflowStage.DEFINITIONS_READY
+    still_unchanged = session.snapshot()
+    assert still_unchanged.session_revision == before.session_revision
+    assert still_unchanged.mesh_current
+    assert still_unchanged.mesh_settings == before.mesh_settings
+
+    second = controller.dispatch(
+        "prepare_mesh_proposal",
+        {},
+        ToolExecutionContext(
+            before.session_id,
+            before.session_revision,
+            "remesh-accept",
+        ),
+    )
+    running = bridge.accept_from_gui_control(second.data["proposal_id"])
+    assert running.state is ProposalState.RUNNING
+    assert session.snapshot().mesh_current
+    assert session.snapshot().mesh_settings == before.mesh_settings
+
+    accepted = port.accept_mesh_result(
+        second.data["proposal_id"],
+        _plate_model(),
+    )
+    assert accepted.accepted
+    terminal = bridge._records[second.data["proposal_id"]]
+    controller.record_proposal_state("mesh", terminal.state, terminal.message)
+    after = session.snapshot()
+
+    assert terminal.state is ProposalState.SUCCEEDED
+    assert controller.stage is AuthoringWorkflowStage.DEFINITIONS_READY
+    assert after.session_revision == before.session_revision + 1
+    assert after.mesh_current
+    assert after.mesh_settings is not None
+    assert after.mesh_settings.size == 0.8
+    assert len(started) == 1
+
+
 def test_a8_production_geometry_edit_adds_second_hole_in_place() -> None:
-    session = _a4_session()
+    session = _generic_a4_session()
     before = session.snapshot()
     part_id = str(before.parts[0].id)
     refreshes: list[int] = []
@@ -590,7 +859,7 @@ def test_a8_production_geometry_edit_adds_second_hole_in_place() -> None:
 
 
 def test_a8_direct_definition_actions_apply_one_by_one_and_refresh_gui() -> None:
-    session = _a4_session()
+    session = _generic_a4_session()
     projections = []
     controller_holder = {}
 
@@ -618,8 +887,68 @@ def test_a8_direct_definition_actions_apply_one_by_one_and_refresh_gui() -> None
     controller._stage = AuthoringWorkflowStage.DEFINITIONS_READY
     before_revision = session.session_revision
 
+    topology = controller.dispatch(
+        "read_model_topology_context",
+        {},
+        ToolExecutionContext(
+            "session-a8",
+            session.session_revision,
+            "definition-topology",
+        ),
+    )
+    assert topology.ok, topology.to_json()
+
+    def topology_entry(semantic_role: str, mesh_kind: str):
+        return next(
+            item
+            for item in topology.data["entries"]
+            if item["semantic_role"] == semantic_role
+            and item["mesh_kind"] == mesh_kind
+        )
+
+    def scope_parameters(
+        name: str,
+        semantic_role: str,
+        mesh_kind: str,
+    ) -> dict[str, object]:
+        entry = topology_entry(semantic_role, mesh_kind)
+        return {
+            "name": name,
+            "part_id": entry["part_id"],
+            "logical_ids": [entry["logical_id"]],
+            "mesh_kind": entry["mesh_kind"],
+            "expected_count": entry["matched_count"],
+        }
+
     actions = [
-        ("create_plate_scopes", {}),
+        (
+            "create_named_region",
+            scope_parameters(
+                "边-固定端",
+                "boundary.left",
+                "edge",
+            ),
+        ),
+        (
+            "create_named_region",
+            scope_parameters(
+                "边-加载端",
+                "boundary.right",
+                "edge",
+            ),
+        ),
+        (
+            "create_named_region",
+            scope_parameters(
+                "边-孔边",
+                "boundary.hole-loop",
+                "edge",
+            ),
+        ),
+        (
+            "create_named_region",
+            scope_parameters("域-板体", "domain", "element"),
+        ),
         (
             "create_material",
             {
@@ -655,6 +984,9 @@ def test_a8_direct_definition_actions_apply_one_by_one_and_refresh_gui() -> None
                 "first_component": 1,
                 "last_component": 2,
                 "value": 0.0,
+                "unit": "mm",
+                "distribution": "uniform",
+                "confirmed": True,
             },
         ),
         (
@@ -663,8 +995,15 @@ def test_a8_direct_definition_actions_apply_one_by_one_and_refresh_gui() -> None
                 "name": "载荷-拉伸",
                 "step_name": "分析步-静力",
                 "target_scope": "边-加载端",
+                "entity_type": "edge",
                 "load_type": "edge_traction",
+                "component": None,
                 "vector": [10.0, 0.0],
+                "magnitude": None,
+                "direction": "global_xy",
+                "unit": "N/mm",
+                "distribution": "uniform",
+                "confirmed": True,
             },
         ),
         (
@@ -674,6 +1013,8 @@ def test_a8_direct_definition_actions_apply_one_by_one_and_refresh_gui() -> None
                 "step_name": "分析步-静力",
                 "target": "node",
                 "variables": ["U", "RF"],
+                "units": ["mm", "N"],
+                "confirmed": True,
             },
         ),
     ]
@@ -709,4 +1050,25 @@ def test_a8_direct_definition_actions_apply_one_by_one_and_refresh_gui() -> None
     assert len(after.steps[0].boundaries) == 1
     assert len(after.steps[0].edge_loads) == 1
     assert len(after.steps[0].outputs) == 1
-    assert controller.stage is AuthoringWorkflowStage.DEFINITIONS_READY
+    assert controller.stage is AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
+
+    before_unsafe = session.snapshot()
+    projected_count = len(projections)
+    unsafe = controller.dispatch(
+        "apply_model_definition",
+        {
+            "action": "create_material",
+            "parameters": {
+                "name": "材料-D:\\private\\steel",
+                "properties": {"E": 210000.0, "nu": 0.3},
+            },
+        },
+        ToolExecutionContext(
+            "session-a8",
+            session.session_revision,
+            "direct-provider-unsafe",
+        ),
+    )
+    assert not unsafe.ok
+    assert session.snapshot() == before_unsafe
+    assert len(projections) == projected_count

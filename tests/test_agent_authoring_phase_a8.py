@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-import json
+from dataclasses import replace
 import threading
 
 import pytest
 
 from fem_agent.authoring import (
     AgentProposal,
-    AuthoringAuthorizationError,
     AuthoringContext,
     CapabilitySummary,
-    ClarificationRequiredError,
-    FakeAuthoringPort,
+    DefinitionSummary,
     LocalModelBinding,
     MeshSummary,
     ModelOperation,
@@ -26,13 +24,11 @@ from fem_agent.authoring_runtime import (
     AuthoringWorkflowStage,
     provider_safe_authoring_payload,
 )
-from fem_agent.engine import AgentSessionEngine
 from fem_agent.providers.base import (
     AssistantMessage,
     ProviderResponse,
     ToolCall,
 )
-from fem_agent.providers.fake import FakeProvider
 from fem_agent.result_authoring import (
     AcceptedResultSource,
     AgentResultAggregation,
@@ -142,7 +138,7 @@ def _proposal(kind: ProposalKind, suffix: str) -> AgentProposal:
             OperationKind.ADD_NATIVE_PART,
             {
                 "part_name": "部件-偏心孔板",
-                "recipe": {"kind": "plate_with_hole"},
+                "recipe": {"kind": "planar_sketch"},
             },
         ),
         ProposalKind.MESH: (
@@ -491,7 +487,13 @@ def test_a8_mesh_uses_one_confirmation_and_definitions_are_direct() -> None:
 
     def handler(arguments, _controller):
         calls.append(str(arguments.get("action", "mesh")))
-        return AuthoringToolOutcome("Applied.", {"state": "succeeded"})
+        return AuthoringToolOutcome(
+            "Applied.",
+            {
+                "state": "succeeded",
+                "definition_object_type": "named_region",
+            },
+        )
 
     controller = AuthoringWorkflowController(
         lambda: _context(),
@@ -522,7 +524,8 @@ def test_a8_mesh_uses_one_confirmation_and_definitions_are_direct() -> None:
     controller._stage = AuthoringWorkflowStage.DEFINITIONS_READY
     names = {item.name for item in controller.definitions}
     assert {"apply_model_definition", "run_native_preflight"} <= names
-    assert "set_authoring_requirements" not in names
+    assert "set_authoring_requirements" in names
+    assert "prepare_mesh_proposal" in names
     assert "request_requirement_review" not in names
 
     applied = _dispatch(
@@ -543,10 +546,12 @@ def test_a8_mesh_uses_one_confirmation_and_definitions_are_direct() -> None:
 
 
 def test_a8_only_geometry_mesh_and_solve_publish_execution_proposals() -> None:
-    handler = lambda _arguments, _controller: AuthoringToolOutcome(
-        "Registered.",
-        {"state": "pending_confirmation"},
-    )
+    def handler(_arguments, _controller) -> AuthoringToolOutcome:
+        return AuthoringToolOutcome(
+            "Registered.",
+            {"state": "pending_confirmation"},
+        )
+
     controller = AuthoringWorkflowController(
         lambda: _context(),
         {
@@ -662,11 +667,21 @@ def test_a8_geometry_edit_is_available_after_creation_and_returns_to_mesh() -> N
 
 
 def test_a8_direct_definition_schema_is_granular() -> None:
+    schema_context = replace(
+        _context(),
+        capabilities=(CapabilitySummary("edit_model_objects", True),),
+    )
     controller = AuthoringWorkflowController(
-        lambda: _context(),
+        lambda: schema_context,
         {
             "apply_model_definition": lambda _arguments, _controller: (
                 AuthoringToolOutcome("Applied.", {"state": "succeeded"})
+            ),
+            "read_editable_model_objects": lambda _arguments, _controller: (
+                AuthoringToolOutcome("Read.", {"objects": []})
+            ),
+            "edit_model_object": lambda _arguments, _controller: (
+                AuthoringToolOutcome("Edited.", {"state": "succeeded"})
             ),
         },
     )
@@ -676,9 +691,13 @@ def test_a8_direct_definition_schema_is_granular() -> None:
         for item in controller.definitions
         if item.name == "apply_model_definition"
     )
-    actions = tool.parameters["properties"]["action"]["enum"]
+    schemas = tool.parameters["oneOf"]
+    actions = [
+        schema["properties"]["action"]["const"]
+        for schema in schemas
+    ]
     assert actions == [
-        "create_plate_scopes",
+        "create_named_region",
         "create_material",
         "create_section",
         "assign_section",
@@ -687,6 +706,43 @@ def test_a8_direct_definition_schema_is_granular() -> None:
         "create_load",
         "create_result_request",
     ]
+    material = next(
+        schema
+        for schema in schemas
+        if schema["properties"]["action"]["const"] == "create_material"
+    )
+    material_parameters = material["properties"]["parameters"]
+    assert material_parameters["required"] == ["name", "properties"]
+    assert material_parameters["additionalProperties"] is False
+    assert material_parameters["properties"]["name"]["maxLength"] == 96
+    assert material_parameters["properties"]["name"]["pattern"] == (
+        "^(材料)-.+$"
+    )
+    assert material_parameters["properties"]["properties"]["required"] == [
+        "E",
+        "nu",
+    ]
+    edit_tool = next(
+        item
+        for item in controller.definitions
+        if item.name == "edit_model_object"
+    )
+    change_properties = edit_tool.parameters["properties"]["changes"][
+        "properties"
+    ]
+    assert {
+        "part_id",
+        "logical_ids",
+        "mesh_kind",
+        "expected_count",
+        "unit",
+        "distribution",
+        "confirmed",
+        "entity_type",
+        "direction",
+    } <= set(change_properties)
+    assert change_properties["vector"]["type"] == ["array", "null"]
+    assert change_properties["component"]["maximum"] == 3
     assert "apply_scopes_and_materials" not in {
         item.name for item in controller.definitions
     }
@@ -721,6 +777,103 @@ def test_a8_existing_current_mesh_exposes_direct_definitions_immediately() -> No
     assert "apply_model_definition" in {
         item.name for item in controller.definitions
     }
+
+
+@pytest.mark.parametrize("job_status", ["running", "queued", "cancelling"])
+def test_a8_restore_active_job_is_read_only_and_never_exposes_solve(
+    job_status: str,
+) -> None:
+    context = AuthoringContext(
+        binding=LocalModelBinding(
+            "document:active-job",
+            "native-active-job",
+            7,
+            "native",
+            True,
+        ),
+        model_name="模型-活动作业",
+        active_part_id="part-active",
+        parts=(
+            PartSummary(
+                "part-active",
+                "部件-活动作业",
+                "planar_sketch",
+                2,
+                False,
+            ),
+        ),
+        mesh=MeshSummary(True, True, 20, 10),
+        definitions=DefinitionSummary(analysis_step_count=1),
+        validation_status="passed",
+        job_status=job_status,
+    )
+    controller = AuthoringWorkflowController(
+        lambda: context,
+        {
+            "prepare_solve_proposal": lambda _arguments, _controller: (
+                AuthoringToolOutcome("Prepared.", {"state": "pending_confirmation"})
+            ),
+        },
+    )
+
+    controller.observe_binding(context)
+
+    assert controller.stage is AuthoringWorkflowStage.SOLVE_PENDING
+    assert {tool.name for tool in controller.definitions} == {
+        "read_authoring_context"
+    }
+
+
+@pytest.mark.parametrize(
+    ("terminal_status", "result_available", "expected_stage"),
+    [
+        ("completed", True, AuthoringWorkflowStage.RESULTS_READY),
+        ("failed", False, AuthoringWorkflowStage.SOLVE_READY),
+    ],
+)
+def test_a8_restored_job_terminal_refreshes_without_revision_change(
+    terminal_status: str,
+    result_available: bool,
+    expected_stage: AuthoringWorkflowStage,
+) -> None:
+    active = AuthoringContext(
+        binding=LocalModelBinding(
+            "document:active-job",
+            "native-active-job",
+            7,
+            "native",
+            True,
+        ),
+        model_name="模型-活动作业",
+        active_part_id="part-active",
+        parts=(
+            PartSummary(
+                "part-active",
+                "部件-活动作业",
+                "planar_sketch",
+                2,
+                False,
+            ),
+        ),
+        mesh=MeshSummary(True, True, 20, 10),
+        definitions=DefinitionSummary(analysis_step_count=1),
+        validation_status="passed",
+        job_status="running",
+    )
+    current = [active]
+    controller = AuthoringWorkflowController(lambda: current[0], {})
+    controller.observe_binding(active)
+    assert controller.stage is AuthoringWorkflowStage.SOLVE_PENDING
+
+    terminal = replace(
+        active,
+        job_status=terminal_status,
+        result_available=result_available,
+    )
+    current[0] = terminal
+
+    assert controller.observe_binding(terminal)
+    assert controller.stage is expected_stage
 
 
 def test_a8_requirement_batch_validation_is_atomic() -> None:
@@ -863,6 +1016,54 @@ def test_a8_proposal_terminal_returns_to_the_operation_boundary(
     assert controller.terminal_records[-1].state == terminal.value
 
 
+@pytest.mark.parametrize(
+    "resume_stage",
+    [
+        AuthoringWorkflowStage.DEFINITIONS_READY,
+        AuthoringWorkflowStage.PREFLIGHT_READY,
+        AuthoringWorkflowStage.SOLVE_READY,
+        AuthoringWorkflowStage.RESULTS_READY,
+    ],
+)
+def test_a8_remesh_terminal_returns_to_the_existing_mesh_stage(
+    resume_stage: AuthoringWorkflowStage,
+) -> None:
+    controller = AuthoringWorkflowController(
+        lambda: _context(),
+        {
+            "prepare_mesh_proposal": lambda _arguments, _controller: (
+                AuthoringToolOutcome(
+                    "Prepared.",
+                    {"state": "pending_confirmation"},
+                )
+            ),
+        },
+    )
+    controller._stage = resume_stage
+    assert _dispatch(
+        controller,
+        "set_authoring_requirements",
+        {
+            "turn_id": "turn-remesh",
+            "requirements": _requirements_for("mesh"),
+        },
+        90,
+    ).ok
+    prepared = _dispatch(
+        controller,
+        "prepare_mesh_proposal",
+        {},
+        91,
+    )
+
+    assert prepared.ok
+    assert controller.stage is AuthoringWorkflowStage.MESH_PENDING
+
+    controller.record_proposal_state("mesh", ProposalState.REJECTED)
+
+    assert controller.stage is resume_stage
+
+
 def test_a8_dynamic_dispatch_is_serial_and_thread_safe() -> None:
     entered = threading.Event()
     release = threading.Event()
@@ -870,7 +1071,13 @@ def test_a8_dynamic_dispatch_is_serial_and_thread_safe() -> None:
     def blocked(_arguments, _controller):
         entered.set()
         release.wait(timeout=2.0)
-        return AuthoringToolOutcome("Applied.", {"state": "succeeded"})
+        return AuthoringToolOutcome(
+            "Applied.",
+            {
+                "state": "succeeded",
+                "definition_object_type": "named_region",
+            },
+        )
 
     controller = AuthoringWorkflowController(
         lambda: _context(),

@@ -102,7 +102,10 @@ def resolve_target_radius(
                 if len(circles) == 1:
                     return circles[0].radius
             curve_id = entity.logical_id.split(":", 1)[1]
-            curve = recipe.curve(curve_id)
+            try:
+                curve = recipe.curve(curve_id)
+            except KeyError:
+                curve = None
             if isinstance(curve, SketchCircle) and any(
                 profile.is_hole
                 and curve_id in {item.lstrip("-") for item in profile.curve_ids}

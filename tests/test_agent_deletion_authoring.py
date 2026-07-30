@@ -523,9 +523,12 @@ def test_boundary_and_load_edits_are_atomic_and_gui_authorized() -> None:
         "位移-固定端",
         {
             "target_scope": "边-加载端",
-            "first_component": 2,
-            "last_component": 2,
-            "value": 1.5,
+                "first_component": 2,
+                "last_component": 2,
+                "value": 1.5,
+                "unit": "mm",
+                "distribution": "uniform",
+                "confirmed": True,
         },
         "分析步-静力",
     )
@@ -560,7 +563,12 @@ def test_boundary_and_load_edits_are_atomic_and_gui_authorized() -> None:
         {
             "target_scope": "边-固定端",
             "vector": [20.0, 5.0],
-            "load_type": "traction",
+            "entity_type": "edge",
+            "load_type": "edge_traction",
+            "direction": "global_xy",
+            "unit": "N/mm",
+            "distribution": "uniform",
+            "confirmed": True,
         },
         "分析步-静力",
     )
@@ -643,7 +651,15 @@ def test_controller_applies_supported_edit_directly_and_refreshes_binding() -> N
             "object_type": "load",
             "target_id": "载荷-拉伸",
             "step_name": "分析步-静力",
-            "changes": {"vector": [25.0, 0.0]},
+            "changes": {
+                "vector": [25.0, 0.0],
+                "entity_type": "edge",
+                "load_type": "edge_traction",
+                "direction": "global_xy",
+                "unit": "N/mm",
+                "distribution": "uniform",
+                "confirmed": True,
+            },
         },
         context,
     )

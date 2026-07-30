@@ -283,11 +283,21 @@ _REQUIREMENT_GATE_BY_STAGE = {
     AuthoringWorkflowStage.REQUIREMENTS: "geometry",
     AuthoringWorkflowStage.GEOMETRY_READY: "geometry",
     AuthoringWorkflowStage.MESH_READY: "mesh",
+    AuthoringWorkflowStage.DEFINITIONS_READY: "mesh",
+    AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY: "mesh",
+    AuthoringWorkflowStage.PREFLIGHT_READY: "mesh",
+    AuthoringWorkflowStage.SOLVE_READY: "mesh",
+    AuthoringWorkflowStage.RESULTS_READY: "mesh",
 }
 _GATED_OPERATION_BY_STAGE = {
     AuthoringWorkflowStage.REQUIREMENTS: "prepare_geometry_proposal",
     AuthoringWorkflowStage.GEOMETRY_READY: "prepare_geometry_proposal",
     AuthoringWorkflowStage.MESH_READY: "prepare_mesh_proposal",
+    AuthoringWorkflowStage.DEFINITIONS_READY: "prepare_mesh_proposal",
+    AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY: "prepare_mesh_proposal",
+    AuthoringWorkflowStage.PREFLIGHT_READY: "prepare_mesh_proposal",
+    AuthoringWorkflowStage.SOLVE_READY: "prepare_mesh_proposal",
+    AuthoringWorkflowStage.RESULTS_READY: "prepare_mesh_proposal",
 }
 
 
@@ -652,122 +662,465 @@ _PREPARE_GEOMETRY_EDIT = _tool(
         "additionalProperties": False,
     },
 )
+_READ_MESH_REFINEMENT_CONTEXT = _tool(
+    "read_mesh_refinement_context",
+    (
+        "Read the bounded selectable logical entities of the active Part. "
+        "Use their stable logical_id values for optional local mesh refinement."
+    ),
+    _NO_ARGUMENTS,
+)
 _PREPARE_MESH = _tool(
     "prepare_mesh_proposal",
     (
         "Build and present a mesh proposal. Gmsh is not called until the GUI "
         "control is clicked."
     ),
+    {
+        "type": "object",
+        "properties": {
+            "local_refinements": {
+                "type": "array",
+                "maxItems": 32,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "target": {
+                            "type": "string",
+                            "pattern": "^(point|edge|face):",
+                            "minLength": 3,
+                            "maxLength": 256,
+                        },
+                        "size": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                        },
+                        "falloff": {
+                            "type": "object",
+                            "properties": {
+                                "reference": {
+                                    "type": "string",
+                                    "enum": [
+                                        "global_size",
+                                        "target_radius",
+                                    ],
+                                },
+                                "start_factor": {
+                                    "type": "number",
+                                    "minimum": 0,
+                                },
+                                "end_factor": {
+                                    "type": "number",
+                                    "exclusiveMinimum": 0,
+                                },
+                            },
+                            "required": [
+                                "reference",
+                                "start_factor",
+                                "end_factor",
+                            ],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "required": ["target", "size", "falloff"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": [],
+        "additionalProperties": False,
+    },
+)
+_READ_MODEL_TOPOLOGY_CONTEXT = _tool(
+    "read_model_topology_context",
+    (
+        "Read a bounded catalog of current exact logical geometry entities "
+        "and their materializable mesh reference counts. Use the returned "
+        "part_id, logical_id, mesh_kind, and matched_count unchanged when "
+        "calling create_named_region."
+    ),
     _NO_ARGUMENTS,
 )
+def _exact_schema(
+    properties: Mapping[str, object],
+    *,
+    required: tuple[str, ...] | None = None,
+) -> dict[str, object]:
+    fields = dict(properties)
+    return {
+        "type": "object",
+        "properties": fields,
+        "required": list(fields if required is None else required),
+        "additionalProperties": False,
+    }
+
+
+def _controlled_name_schema(*prefixes: str) -> dict[str, object]:
+    alternatives = "|".join(re.escape(prefix) for prefix in prefixes)
+    return {
+        "type": "string",
+        "pattern": f"^({alternatives})-.+$",
+        "minLength": 3,
+        "maxLength": 96,
+    }
+
+
+def _definition_action_schema(
+    action: str,
+    parameters: Mapping[str, object],
+) -> dict[str, object]:
+    return _exact_schema(
+        {
+            "action": {"type": "string", "const": action},
+            "parameters": dict(parameters),
+        }
+    )
+
+
+def _one_of_object_schema(
+    schemas: list[dict[str, object]],
+) -> dict[str, object]:
+    return {"type": "object", "oneOf": schemas}
+
+
+_UNIT_SCHEMA = {"type": "string", "minLength": 1, "maxLength": 64}
+_CONFIRMED_SCHEMA = {"type": "boolean", "const": True}
+_STEP_NAME_SCHEMA = _controlled_name_schema("分析步")
+_LOGICAL_IDS_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "string",
+        "pattern": "^(point|edge|face|body):.+$",
+        "minLength": 3,
+        "maxLength": 256,
+    },
+    "minItems": 1,
+    "maxItems": 128,
+    "uniqueItems": True,
+}
+
+
+def _named_region_parameters(
+    mesh_kind: str,
+    name_prefix: str,
+) -> dict[str, object]:
+    return _exact_schema(
+        {
+            "name": _controlled_name_schema(name_prefix),
+            "part_id": {
+                "type": "string",
+                "pattern": "^P[1-9][0-9]*$",
+            },
+            "logical_ids": _LOGICAL_IDS_SCHEMA,
+            "mesh_kind": {"type": "string", "const": mesh_kind},
+            "expected_count": {"type": "integer", "minimum": 1},
+        }
+    )
+
+
+def _boundary_parameters(
+    target_kind: str,
+    scope_prefix: str,
+) -> dict[str, object]:
+    return _exact_schema(
+        {
+            "name": _controlled_name_schema("位移"),
+            "step_name": _STEP_NAME_SCHEMA,
+            "target_scope": _controlled_name_schema(scope_prefix),
+            "target_kind": {"type": "string", "const": target_kind},
+            "first_component": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3,
+            },
+            "last_component": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3,
+            },
+            "value": {"type": "number"},
+            "unit": _UNIT_SCHEMA,
+            "distribution": {"type": "string", "const": "uniform"},
+            "confirmed": _CONFIRMED_SCHEMA,
+        }
+    )
+
+
+def _load_parameters(
+    *,
+    entity_type: str,
+    load_type: str,
+    scope_prefix: str,
+    component: Mapping[str, object],
+    vector: Mapping[str, object],
+    magnitude: Mapping[str, object],
+    direction: str,
+    distribution: str,
+) -> dict[str, object]:
+    return _exact_schema(
+        {
+            "name": _controlled_name_schema("载荷"),
+            "step_name": _STEP_NAME_SCHEMA,
+            "target_scope": _controlled_name_schema(scope_prefix),
+            "entity_type": {"type": "string", "const": entity_type},
+            "load_type": {"type": "string", "const": load_type},
+            "component": dict(component),
+            "vector": dict(vector),
+            "magnitude": dict(magnitude),
+            "direction": {"type": "string", "const": direction},
+            "unit": _UNIT_SCHEMA,
+            "distribution": {"type": "string", "const": distribution},
+            "confirmed": _CONFIRMED_SCHEMA,
+        }
+    )
+
+
+_NULL_SCHEMA = {"type": "null"}
+_NUMBER_SCHEMA = {"type": "number"}
+_LOAD_PARAMETER_SCHEMAS = [
+    _load_parameters(
+        entity_type="node",
+        load_type="nodal",
+        scope_prefix="点",
+        component={"type": "integer", "const": component},
+        vector=_NULL_SCHEMA,
+        magnitude=_NUMBER_SCHEMA,
+        direction=direction,
+        distribution="concentrated",
+    )
+    for component, direction in (
+        (1, "global_x"),
+        (2, "global_y"),
+        (3, "global_z"),
+    )
+] + [
+    _load_parameters(
+        entity_type="edge",
+        load_type="edge_traction",
+        scope_prefix="边",
+        component=_NULL_SCHEMA,
+        vector={
+            "type": "array",
+            "items": {"type": "number"},
+            "minItems": 2,
+            "maxItems": 2,
+        },
+        magnitude=_NULL_SCHEMA,
+        direction="global_xy",
+        distribution="uniform",
+    ),
+    _load_parameters(
+        entity_type="edge",
+        load_type="edge_pressure",
+        scope_prefix="边",
+        component=_NULL_SCHEMA,
+        vector=_NULL_SCHEMA,
+        magnitude=_NUMBER_SCHEMA,
+        direction="inward_normal",
+        distribution="uniform",
+    ),
+    _load_parameters(
+        entity_type="edge",
+        load_type="edge_pressure",
+        scope_prefix="边",
+        component=_NULL_SCHEMA,
+        vector=_NULL_SCHEMA,
+        magnitude=_NUMBER_SCHEMA,
+        direction="outward_normal",
+        distribution="uniform",
+    ),
+    _load_parameters(
+        entity_type="surface",
+        load_type="surface_traction",
+        scope_prefix="面",
+        component=_NULL_SCHEMA,
+        vector={
+            "type": "array",
+            "items": {"type": "number"},
+            "minItems": 3,
+            "maxItems": 3,
+        },
+        magnitude=_NULL_SCHEMA,
+        direction="global_xyz",
+        distribution="uniform",
+    ),
+    _load_parameters(
+        entity_type="surface",
+        load_type="surface_pressure",
+        scope_prefix="面",
+        component=_NULL_SCHEMA,
+        vector=_NULL_SCHEMA,
+        magnitude=_NUMBER_SCHEMA,
+        direction="inward_normal",
+        distribution="uniform",
+    ),
+    _load_parameters(
+        entity_type="surface",
+        load_type="surface_pressure",
+        scope_prefix="面",
+        component=_NULL_SCHEMA,
+        vector=_NULL_SCHEMA,
+        magnitude=_NUMBER_SCHEMA,
+        direction="outward_normal",
+        distribution="uniform",
+    ),
+]
+
+
 _APPLY_DEFINITION = _tool(
     "apply_model_definition",
     (
         "Immediately apply one supported scope, material, section, assignment, "
         "analysis-step, boundary-condition, load, or result-request action and "
-        "synchronize the GUI. This tool does not create a confirmation card."
+        "synchronize the GUI. Only an edit that invalidates accepted results "
+        "creates a confirmation card."
     ),
     {
         "type": "object",
-        "properties": {
-            "action": {
-                "type": "string",
-                "enum": [
-                    "create_plate_scopes",
-                    "create_material",
-                    "create_section",
-                    "assign_section",
-                    "create_static_step",
-                    "create_boundary_condition",
-                    "create_load",
-                    "create_result_request",
-                ],
-            },
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "minLength": 1, "maxLength": 160},
-                    "properties": {
-                        "type": "object",
-                        "additionalProperties": {"type": "number"},
-                        "minProperties": 1,
-                        "description": (
-                            "Material properties for create_material only; "
-                            "omit for every other action."
+        "oneOf": [
+            _definition_action_schema(
+                "create_named_region",
+                _one_of_object_schema(
+                    [
+                        _named_region_parameters("node", "点"),
+                        _named_region_parameters("edge", "边"),
+                        _named_region_parameters("face", "面"),
+                        _named_region_parameters("element", "域"),
+                    ]
+                ),
+            ),
+            _definition_action_schema(
+                "create_material",
+                _exact_schema(
+                    {
+                        "name": _controlled_name_schema("材料"),
+                        "properties": _exact_schema(
+                            {
+                                "E": {
+                                    "type": "number",
+                                    "exclusiveMinimum": 0,
+                                },
+                                "nu": {
+                                    "type": "number",
+                                    "exclusiveMinimum": -1,
+                                    "exclusiveMaximum": 0.5,
+                                },
+                                "density": {
+                                    "type": "number",
+                                    "exclusiveMinimum": 0,
+                                },
+                            },
+                            required=("E", "nu"),
                         ),
-                    },
-                    "material": {"type": "string", "minLength": 1, "maxLength": 160},
-                    "plane_type": {
-                        "type": "string",
-                        "enum": ["stress", "strain"],
-                    },
-                    "thickness": {"type": "number", "exclusiveMinimum": 0},
-                    "section_name": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 160,
-                    },
-                    "region_name": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 160,
-                    },
-                    "step_name": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 160,
-                    },
-                    "target_scope": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 160,
-                    },
-                    "target_kind": {
-                        "type": "string",
-                        "enum": ["node", "edge", "face", "element"],
-                    },
-                    "first_component": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 6,
-                    },
-                    "last_component": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 6,
-                    },
-                    "value": {"type": "number"},
-                    "load_type": {
-                        "type": "string",
-                        "enum": ["edge_traction", "edge_pressure"],
-                    },
-                    "vector": {
-                        "type": "array",
-                        "items": {"type": "number"},
-                        "minItems": 2,
-                        "maxItems": 2,
-                    },
-                    "magnitude": {"type": "number"},
-                    "target": {
-                        "type": "string",
-                        "enum": ["node", "element"],
-                    },
-                    "variables": {
-                        "type": "array",
-                        "items": {
+                    }
+                ),
+            ),
+            _definition_action_schema(
+                "create_section",
+                _exact_schema(
+                    {
+                        "name": _controlled_name_schema("截面"),
+                        "material": _controlled_name_schema("材料"),
+                        "plane_type": {
                             "type": "string",
-                            "enum": ["U", "RF", "S"],
+                            "enum": ["stress", "strain"],
                         },
-                        "minItems": 1,
-                        "maxItems": 3,
-                        "uniqueItems": True,
-                    },
-                },
-                "additionalProperties": False,
-            },
-        },
-        "required": ["action", "parameters"],
-        "additionalProperties": False,
+                        "thickness": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                        },
+                        "properties": _exact_schema({}),
+                    }
+                ),
+            ),
+            _definition_action_schema(
+                "assign_section",
+                _exact_schema(
+                    {
+                        "section_name": _controlled_name_schema("截面"),
+                        "region_name": _controlled_name_schema("域"),
+                    }
+                ),
+            ),
+            _definition_action_schema(
+                "create_static_step",
+                _exact_schema({"name": _STEP_NAME_SCHEMA}),
+            ),
+            _definition_action_schema(
+                "create_boundary_condition",
+                _one_of_object_schema(
+                    [
+                        _boundary_parameters("node_set", "点"),
+                        _boundary_parameters("edge", "边"),
+                        _boundary_parameters("surface", "面"),
+                    ]
+                ),
+            ),
+            _definition_action_schema(
+                "create_load",
+                _one_of_object_schema(_LOAD_PARAMETER_SCHEMAS),
+            ),
+            _definition_action_schema(
+                "create_result_request",
+                _one_of_object_schema(
+                    [
+                        _exact_schema(
+                            {
+                                "name": _controlled_name_schema("结果请求"),
+                                "step_name": _STEP_NAME_SCHEMA,
+                                "target": {
+                                    "type": "string",
+                                    "const": "node",
+                                },
+                                "variables": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string",
+                                        "enum": ["U", "RF"],
+                                    },
+                                    "minItems": 1,
+                                    "maxItems": 2,
+                                    "uniqueItems": True,
+                                },
+                                "units": {
+                                    "type": "array",
+                                    "items": _UNIT_SCHEMA,
+                                    "minItems": 1,
+                                    "maxItems": 2,
+                                },
+                                "confirmed": _CONFIRMED_SCHEMA,
+                            }
+                        ),
+                        _exact_schema(
+                            {
+                                "name": _controlled_name_schema("结果请求"),
+                                "step_name": _STEP_NAME_SCHEMA,
+                                "target": {
+                                    "type": "string",
+                                    "const": "element",
+                                },
+                                "variables": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string",
+                                        "const": "S",
+                                    },
+                                    "minItems": 1,
+                                    "maxItems": 1,
+                                },
+                                "units": {
+                                    "type": "array",
+                                    "items": _UNIT_SCHEMA,
+                                    "minItems": 1,
+                                    "maxItems": 1,
+                                },
+                                "confirmed": _CONFIRMED_SCHEMA,
+                            }
+                        ),
+                    ]
+                ),
+            ),
+        ]
     },
 )
 _RUN_PREFLIGHT = _tool(
@@ -849,8 +1202,8 @@ _EDIT_MODEL_OBJECT = _tool(
     "edit_model_object",
     (
         "Immediately edit one exact object returned by "
-        "read_editable_model_objects and synchronize the GUI. Supported edits "
-        "do not create a confirmation card."
+        "read_editable_model_objects and synchronize the GUI. An edit that "
+        "invalidates accepted results creates a confirmation card."
     ),
     {
         "type": "object",
@@ -866,12 +1219,12 @@ _EDIT_MODEL_OBJECT = _tool(
             "target_id": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 160,
+                "maxLength": 96,
             },
             "step_name": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 160,
+                "maxLength": 96,
             },
             "changes": {
                 "type": "object",
@@ -879,14 +1232,27 @@ _EDIT_MODEL_OBJECT = _tool(
                     "new_name": {
                         "type": "string",
                         "minLength": 1,
-                        "maxLength": 160,
+                        "maxLength": 96,
+                    },
+                    "part_id": {
+                        "type": "string",
+                        "pattern": "^P[1-9][0-9]*$",
+                    },
+                    "logical_ids": _LOGICAL_IDS_SCHEMA,
+                    "mesh_kind": {
+                        "type": "string",
+                        "enum": ["node", "edge", "face", "element"],
+                    },
+                    "expected_count": {
+                        "type": "integer",
+                        "minimum": 1,
                     },
                     "reference_keys": {
                         "type": "array",
                         "items": {
                             "type": "string",
                             "minLength": 1,
-                            "maxLength": 160,
+                            "maxLength": 96,
                         },
                         "minItems": 1,
                         "maxItems": 128,
@@ -897,7 +1263,7 @@ _EDIT_MODEL_OBJECT = _tool(
                             {
                                 "type": "string",
                                 "minLength": 1,
-                                "maxLength": 160,
+                                "maxLength": 96,
                             },
                             {"type": "null"},
                         ]
@@ -905,21 +1271,21 @@ _EDIT_MODEL_OBJECT = _tool(
                     "first_component": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": 6,
+                        "maximum": 3,
                     },
                     "last_component": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": 6,
+                        "maximum": 3,
                     },
                     "component": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": 6,
+                        "maximum": 3,
                     },
                     "value": {"type": "number"},
                     "vector": {
-                        "type": "array",
+                        "type": ["array", "null"],
                         "items": {"type": "number"},
                         "minItems": 1,
                         "maxItems": 3,
@@ -932,8 +1298,29 @@ _EDIT_MODEL_OBJECT = _tool(
                     },
                     "load_type": {
                         "type": "string",
-                        "minLength": 1,
-                        "maxLength": 64,
+                        "enum": [
+                            "nodal",
+                            "edge_traction",
+                            "edge_pressure",
+                            "surface_traction",
+                            "surface_pressure",
+                        ],
+                    },
+                    "entity_type": {
+                        "type": "string",
+                        "enum": ["node", "edge", "surface"],
+                    },
+                    "direction": {
+                        "type": "string",
+                        "enum": [
+                            "global_x",
+                            "global_y",
+                            "global_z",
+                            "global_xy",
+                            "global_xyz",
+                            "inward_normal",
+                            "outward_normal",
+                        ],
                     },
                     "coordinate_system": {
                         "type": "string",
@@ -946,6 +1333,12 @@ _EDIT_MODEL_OBJECT = _tool(
                         "minItems": 1,
                         "maxItems": 3,
                     },
+                    "unit": _UNIT_SCHEMA,
+                    "distribution": {
+                        "type": "string",
+                        "enum": ["uniform", "concentrated"],
+                    },
+                    "confirmed": _CONFIRMED_SCHEMA,
                 },
                 "minProperties": 1,
                 "additionalProperties": False,
@@ -1018,6 +1411,7 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
     AuthoringWorkflowStage.MESH_READY: (
         _READ_CONTEXT,
         _SET_REQUIREMENTS,
+        _READ_MESH_REFINEMENT_CONTEXT,
         _PREPARE_MESH,
         _READ_GEOMETRY_EDIT_CONTEXT,
         _PREPARE_GEOMETRY_EDIT,
@@ -1031,6 +1425,10 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
     AuthoringWorkflowStage.MESH_PENDING: (_READ_CONTEXT,),
     AuthoringWorkflowStage.DEFINITIONS_READY: (
         _READ_CONTEXT,
+        _SET_REQUIREMENTS,
+        _READ_MESH_REFINEMENT_CONTEXT,
+        _PREPARE_MESH,
+        _READ_MODEL_TOPOLOGY_CONTEXT,
         _APPLY_DEFINITION,
         _RUN_PREFLIGHT,
         _READ_GEOMETRY_EDIT_CONTEXT,
@@ -1043,6 +1441,10 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
     ),
     AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY: (
         _READ_CONTEXT,
+        _SET_REQUIREMENTS,
+        _READ_MESH_REFINEMENT_CONTEXT,
+        _PREPARE_MESH,
+        _READ_MODEL_TOPOLOGY_CONTEXT,
         _APPLY_DEFINITION,
         _RUN_PREFLIGHT,
         _READ_GEOMETRY_EDIT_CONTEXT,
@@ -1055,6 +1457,10 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
     ),
     AuthoringWorkflowStage.PREFLIGHT_READY: (
         _READ_CONTEXT,
+        _SET_REQUIREMENTS,
+        _READ_MESH_REFINEMENT_CONTEXT,
+        _PREPARE_MESH,
+        _READ_MODEL_TOPOLOGY_CONTEXT,
         _APPLY_DEFINITION,
         _RUN_PREFLIGHT,
         _READ_GEOMETRY_EDIT_CONTEXT,
@@ -1068,6 +1474,10 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
     AuthoringWorkflowStage.PREFLIGHT_PENDING: (_READ_CONTEXT,),
     AuthoringWorkflowStage.SOLVE_READY: (
         _READ_CONTEXT,
+        _SET_REQUIREMENTS,
+        _READ_MESH_REFINEMENT_CONTEXT,
+        _PREPARE_MESH,
+        _READ_MODEL_TOPOLOGY_CONTEXT,
         _APPLY_DEFINITION,
         _PREPARE_SOLVE,
         _READ_GEOMETRY_EDIT_CONTEXT,
@@ -1081,6 +1491,10 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
     AuthoringWorkflowStage.SOLVE_PENDING: (_READ_CONTEXT,),
     AuthoringWorkflowStage.RESULTS_READY: (
         _READ_CONTEXT,
+        _SET_REQUIREMENTS,
+        _READ_MESH_REFINEMENT_CONTEXT,
+        _PREPARE_MESH,
+        _READ_MODEL_TOPOLOGY_CONTEXT,
         _RESULT_CATALOG,
         _RESULT_QUERY,
         _READ_GEOMETRY_EDIT_CONTEXT,
@@ -1160,6 +1574,7 @@ class AuthoringWorkflowController:
         self._pending_operation: str | None = None
         self._project_save_record: ProjectSaveProposalRecord | None = None
         self._geometry_resume_stage: AuthoringWorkflowStage | None = None
+        self._mesh_resume_stage: AuthoringWorkflowStage | None = None
         self._destructive_resume_stage: AuthoringWorkflowStage | None = None
         self._pending_destructive_object_type: str | None = None
         self._terminals: list[AuthoringTerminalRecord] = []
@@ -1288,6 +1703,7 @@ class AuthoringWorkflowController:
                         _PREPARE_GEOMETRY.name,
                         _READ_GEOMETRY_EDIT_CONTEXT.name,
                         _PREPARE_GEOMETRY_EDIT.name,
+                        _PREPARE_MESH.name,
                         _EDIT_MODEL_OBJECT.name,
                         _APPLY_DEFINITION.name,
                     } else None
@@ -1430,12 +1846,25 @@ class AuthoringWorkflowController:
             context.binding.session_revision,
         )
         with self._lock:
+            previous_context = self._observed_context
             self._observed_context = context
             prior = self._binding_identity
             if prior is None:
                 self._binding_identity = current
+                self._stage = _restored_stage_for_context(context)
                 return True
             if prior == current:
+                if self._pending_operation is None:
+                    was_active_job = (
+                        previous_context is not None
+                        and _job_status_is_active(previous_context.job_status)
+                    )
+                    is_active_job = _job_status_is_active(context.job_status)
+                    if is_active_job or (
+                        self._stage is AuthoringWorkflowStage.SOLVE_PENDING
+                        and was_active_job
+                    ):
+                        self._stage = _restored_stage_for_context(context)
                 return True
             same_session = prior[:2] == current[:2]
             revision_increased = current[2] > prior[2]
@@ -1541,8 +1970,12 @@ class AuthoringWorkflowController:
                 self._stage = (
                     AuthoringWorkflowStage.DEFINITIONS_READY
                     if normalized_state is ProposalState.SUCCEEDED
-                    else AuthoringWorkflowStage.MESH_READY
+                    else (
+                        self._mesh_resume_stage
+                        or AuthoringWorkflowStage.MESH_READY
+                    )
                 )
+                self._mesh_resume_stage = None
             elif normalized_operation == "solve":
                 self._stage = (
                     AuthoringWorkflowStage.RESULTS_READY
@@ -1654,6 +2087,7 @@ class AuthoringWorkflowController:
             self._pending_operation = None
             self._project_save_record = None
             self._geometry_resume_stage = None
+            self._mesh_resume_stage = None
             self._clear_destructive_pending()
             self._binding_identity = None
             self._observed_context = None
@@ -1665,6 +2099,18 @@ class AuthoringWorkflowController:
         context: AuthoringContext,
     ) -> ProjectSaveProposalRecord:
         """Register one path-free save card during a model tool dispatch."""
+
+        record = self.preview_project_save_proposal(proposal_id, context)
+        with self._lock:
+            self._project_save_record = record
+            return record
+
+    def preview_project_save_proposal(
+        self,
+        proposal_id: str,
+        context: AuthoringContext,
+    ) -> ProjectSaveProposalRecord:
+        """Build the path-free save card record without registering it."""
 
         normalized_id = _nonblank_string(proposal_id, "proposal_id")
         if type(context) is not AuthoringContext:
@@ -1698,7 +2144,7 @@ class AuthoringWorkflowController:
                     separators=(",", ":"),
                 ).encode("utf-8")
             ).hexdigest()
-            record = ProjectSaveProposalRecord(
+            return ProjectSaveProposalRecord(
                 normalized_id,
                 proposal_hash,
                 binding.document_id,
@@ -1706,8 +2152,6 @@ class AuthoringWorkflowController:
                 binding.session_revision,
                 self._stage,
             )
-            self._project_save_record = record
-            return record
 
     def can_accept_project_save_from_gui(
         self,
@@ -2114,14 +2558,53 @@ class AuthoringWorkflowController:
             self._stage = AuthoringWorkflowStage.GEOMETRY_PENDING
             self._pending_operation = "geometry"
         elif name == _PREPARE_MESH.name:
+            self._mesh_resume_stage = self._stage
             self._stage = AuthoringWorkflowStage.MESH_PENDING
             self._pending_operation = "mesh"
         elif name == _APPLY_DEFINITION.name:
-            self._stage = AuthoringWorkflowStage.DEFINITIONS_READY
-            self._record_terminal("model_definition", "succeeded", outcome.summary)
+            object_type = outcome.data.get("definition_object_type")
+            if object_type not in {"named_region", "analysis_step"}:
+                raise ValueError(
+                    "definition handler registered no exact resume object type"
+                )
+            if "proposal_id" in outcome.data:
+                self._destructive_resume_stage = self._stage
+                self._pending_destructive_object_type = object_type
+                self._stage = AuthoringWorkflowStage.DESTRUCTIVE_EDIT_PENDING
+                self._pending_operation = "destructive_edit"
+            else:
+                self._stage = (
+                    AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
+                    if object_type == "analysis_step"
+                    else AuthoringWorkflowStage.DEFINITIONS_READY
+                )
+                self._record_terminal(
+                    "model_definition",
+                    "succeeded",
+                    outcome.summary,
+                )
         elif name == _EDIT_MODEL_OBJECT.name:
-            self._stage = AuthoringWorkflowStage.DEFINITIONS_READY
-            self._record_terminal("model_edit", "succeeded", outcome.summary)
+            object_type = outcome.data.get("edit_object_type")
+            if object_type not in {
+                "named_region",
+                "boundary_condition",
+                "load",
+            }:
+                raise ValueError(
+                    "edit handler registered no exact edited object type"
+                )
+            if "proposal_id" in outcome.data:
+                self._destructive_resume_stage = self._stage
+                self._pending_destructive_object_type = object_type
+                self._stage = AuthoringWorkflowStage.DESTRUCTIVE_EDIT_PENDING
+                self._pending_operation = "destructive_edit"
+            else:
+                self._stage = AuthoringWorkflowStage.DEFINITIONS_READY
+                self._record_terminal(
+                    "model_edit",
+                    "succeeded",
+                    outcome.summary,
+                )
         elif name == _RUN_PREFLIGHT.name:
             if outcome.data.get("passed") is True:
                 self._stage = AuthoringWorkflowStage.SOLVE_READY
@@ -2342,6 +2825,43 @@ def provider_safe_authoring_payload(
     if len(encoded) > _MAX_PROVIDER_PAYLOAD_BYTES:
         raise ValueError("authoring payload exceeds the provider-safe byte budget")
     return normalized
+
+
+def _restored_stage_for_context(
+    context: AuthoringContext,
+) -> AuthoringWorkflowStage:
+    """Resume one accepted native project from its authoritative local state."""
+
+    binding = context.binding
+    if not binding.supported:
+        return AuthoringWorkflowStage.STALE
+    if binding.source_kind != "native" or not context.parts:
+        return AuthoringWorkflowStage.REQUIREMENTS
+    if _job_status_is_active(context.job_status):
+        return AuthoringWorkflowStage.SOLVE_PENDING
+    if context.result_available:
+        return AuthoringWorkflowStage.RESULTS_READY
+    if (
+        context.mesh.current
+        and context.validation_status == "passed"
+        and context.definitions.analysis_step_count > 0
+    ):
+        return AuthoringWorkflowStage.SOLVE_READY
+    if context.mesh.current and context.definitions.analysis_step_count > 0:
+        return AuthoringWorkflowStage.PREFLIGHT_READY
+    if context.mesh.current:
+        return AuthoringWorkflowStage.DEFINITIONS_READY
+    return AuthoringWorkflowStage.MESH_READY
+
+
+def _job_status_is_active(value: str) -> bool:
+    return value.casefold() in {
+        "running",
+        "queued",
+        "pending",
+        "cancelling",
+        "canceling",
+    }
 
 
 def _provider_safe_summary(value: str) -> str:

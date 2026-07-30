@@ -183,7 +183,7 @@ def migrate_project_v1(
             code="project.schema.v1",
             message=(
                 "项目已通过 schema 1 compatibility migration 打开；"
-                "下次显式保存将升级为 schema 9（v9）当前项目格式"
+                "下次显式保存将升级为 schema 10（v10）当前项目格式"
             ),
             path="$.schema",
         )

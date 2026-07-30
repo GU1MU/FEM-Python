@@ -107,6 +107,7 @@ from .measurements import (
     resolve_target_radius,
 )
 from .references import EntityKind, LogicalEntityRef, logical_ref_sort_key
+from .recipe_topology import describe_recipe_topology
 from .extrusion_selection import (
     ExtrusionSourceResolutionError,
     ExtrusionSourceSelection,
@@ -223,6 +224,7 @@ __all__ = [
     "analyze_sketch_profiles",
     "analyze_body_relations",
     "delete_solid_body",
+    "describe_recipe_topology",
     "expand_sketch_recipe",
     "geometry_dimension",
     "is_single_solid_recipe",

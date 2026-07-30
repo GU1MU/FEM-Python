@@ -25,6 +25,8 @@ from fem.geometry import (
     retired_recipe_ids,
     RevolvedGeometry,
     RotatedGeometry,
+    SketchGeometry,
+    analyze_sketch_profiles,
     supports_structured_hexahedron,
     namespace_part_logical_id,
     part_id_from_logical_id,
@@ -5865,8 +5867,31 @@ def _validate_native_part_inputs(
         (),
         (),
     )
-    if authenticate_geometry and part.dimension == 3:
-        _authenticate_native_part_single_solid(part)
+    if authenticate_geometry:
+        if part.dimension == 2:
+            _authenticate_native_part_planar_profiles(part)
+        elif part.dimension == 3:
+            _authenticate_native_part_single_solid(part)
+
+
+def _authenticate_native_part_planar_profiles(part: NativePart) -> None:
+    """Require every submitted strict planar sketch to form valid Profiles."""
+
+    recipe = part.geometry_recipe
+    while isinstance(recipe, (MovedGeometry, RotatedGeometry)):
+        recipe = recipe.base
+    if not isinstance(recipe, SketchGeometry):
+        return
+    analysis = analyze_sketch_profiles(recipe)
+    if analysis.valid:
+        return
+    diagnostic = next(iter(analysis.blocking_diagnostics), None)
+    message = (
+        "严格草图没有可提交的闭合 Profile"
+        if diagnostic is None
+        else diagnostic.message
+    )
+    raise ValueError(f"Part {part.id} 的二维几何 Profile 无效：{message}")
 
 
 def _authenticate_native_part_single_solid(part: NativePart) -> None:

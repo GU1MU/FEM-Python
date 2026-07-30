@@ -16,6 +16,9 @@ from typing import Callable, Protocol
 
 from fem.application import ModelSession, UnitContext
 from fem.application.changes import SessionDelta
+from fem.application.native_scope_materialization import (
+    mesh_references_for_logical_entities,
+)
 from fem.application.results import (
     FieldMaterializationKey,
     FieldPosition,
@@ -52,11 +55,16 @@ from fem_agent.analysis_authoring import require_non_destructive_a5_batch
 from fem_agent.authoring_runtime import (
     AuthoringToolOutcome,
     AuthoringWorkflowController,
+    provider_safe_authoring_payload,
 )
 from fem_agent.definition_authoring import (
     inverse_operations_for_snapshot,
     require_non_destructive_a4_batch,
     scoped_definition_batch_from_operations,
+)
+from fem_agent.definition_action_authoring import (
+    create_definition_change,
+    require_strict_definition_batch,
 )
 from fem_agent.deletion_authoring import (
     apply_delete_operation,
@@ -88,7 +96,6 @@ from fem_agent.geometry_authoring import (
 )
 from fem_agent.mesh_authoring import MeshIntent, create_mesh_proposal
 from fem_agent.incremental_authoring import (
-    create_incremental_definition_patch,
     require_incremental_definition_batch,
 )
 from fem_agent.naming import NameAllocator
@@ -111,7 +118,15 @@ from fem_agent.result_authoring import (
     AgentResultVariable,
     AgentResultQueryBridge,
 )
-from fem.geometry import SketchCircle, SketchRectangle
+from fem.geometry import (
+    LogicalEntityRef,
+    SketchCircle,
+    SketchRectangle,
+    describe_recipe_topology,
+    namespace_part_logical_id,
+    resolve_target_radius,
+)
+from fem.mesh.settings import LocalMeshControl, MeshSizeFalloff
 
 
 class _SessionSnapshot(Protocol):
@@ -1137,6 +1152,19 @@ class SessionGeometryAuthoringPort:
                     self._session.snapshot(),
                     base_session_revision=proposal.base_session_revision,
                 )
+                authoring_mode = proposal.preconditions.get("authoring_mode")
+                if authoring_mode == "strict_incremental":
+                    require_strict_definition_batch(
+                        self._session.snapshot(),
+                        batch,
+                        proposal.preconditions.get("direct_action"),
+                    )
+                elif authoring_mode == "direct_incremental":
+                    require_incremental_definition_batch(
+                        self._session.snapshot(),
+                        batch,
+                        proposal.preconditions.get("direct_action"),
+                    )
                 delta = self._session.apply_scoped_definition_batch(batch)
                 self._project_definition_delta(delta)
             succeeded = replace(record, state=ProposalState.SUCCEEDED)
@@ -1370,6 +1398,12 @@ class SessionGeometryAuthoringPort:
             )
             if authoring_mode == "direct_incremental":
                 require_incremental_definition_batch(
+                    snapshot,
+                    batch,
+                    preconditions.get("direct_action"),
+                )
+            elif authoring_mode == "strict_incremental":
+                require_strict_definition_batch(
                     snapshot,
                     batch,
                     preconditions.get("direct_action"),
@@ -2195,11 +2229,10 @@ def create_session_authoring_workflow_controller(
         confirm_label: str,
         extra_data: Mapping[str, object] | None = None,
     ) -> AuthoringToolOutcome:
-        receipt = authoring_bridge.register_proposal(proposal)
         data = {
             "proposal_id": proposal.proposal_id,
             "proposal_hash": proposal.proposal_hash,
-            "state": receipt.state.value,
+            "state": ProposalState.PENDING_CONFIRMATION.value,
             "proposal_view": {
                 "proposal_id": proposal.proposal_id,
                 "proposal_hash": proposal.proposal_hash,
@@ -2215,10 +2248,17 @@ def create_session_authoring_workflow_controller(
         }
         if extra_data is not None:
             data.update(dict(extra_data))
-        return AuthoringToolOutcome(
+        provisional = AuthoringToolOutcome(summary, data)
+        provider_safe_authoring_payload(provisional.data)
+        receipt = authoring_bridge.register_proposal(proposal)
+        if receipt.state is ProposalState.PENDING_CONFIRMATION:
+            return provisional
+        final = AuthoringToolOutcome(
             summary,
-            data,
+            {**data, "state": receipt.state.value},
         )
+        provider_safe_authoring_payload(final.data)
+        return final
 
     def prepare_geometry(
         arguments: Mapping[str, object],
@@ -2532,20 +2572,223 @@ def create_session_authoring_workflow_controller(
             confirm_label="应用修改",
         )
 
-    def prepare_mesh(
+    def mesh_refinement_entities():
+        snapshot = session.snapshot()
+        part = next(
+            (
+                candidate
+                for candidate in snapshot.parts
+                if candidate.id == snapshot.active_part_id
+                and not candidate.suppressed
+            ),
+            None,
+        )
+        if part is None or part.geometry_recipe is None:
+            raise AuthoringContractError(
+                "there is no active Part with editable mesh topology"
+            )
+        topology = describe_recipe_topology(part.geometry_recipe)
+        if not topology.exact:
+            raise AuthoringContractError(
+                "active Part topology is not exact enough for local refinement"
+            )
+        entities = tuple(
+            entity
+            for entity in topology.selectable_entities()
+            if entity.kind in {"point", "edge", "face"}
+        )
+        return part, entities
+
+    def read_mesh_refinement_context(
         _arguments: Mapping[str, object],
+        _controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        part, entities = mesh_refinement_entities()
+        visible = entities[:128]
+        rows = []
+        for entity in visible:
+            falloff_references = ["global_size"]
+            try:
+                resolve_target_radius(
+                    part.geometry_recipe,
+                    LogicalEntityRef(entity.logical_id),
+                )
+            except ValueError:
+                pass
+            else:
+                falloff_references.append("target_radius")
+            rows.append(
+                {
+                    "logical_id": entity.logical_id,
+                    "kind": entity.kind,
+                    "semantic_role": entity.semantic_role,
+                    "allowed_falloff_references": falloff_references,
+                }
+            )
+        return AuthoringToolOutcome(
+            f"已读取 {len(visible)} 个可用于局部加密的稳定逻辑实体。",
+            {
+                "part_id": str(part.id),
+                "entities": rows,
+                "entity_count": len(entities),
+                "truncated": len(entities) > len(visible),
+            },
+        )
+
+    def read_model_topology_context(
+        _arguments: Mapping[str, object],
+        _controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        snapshot = session.snapshot()
+        model = getattr(snapshot.artifact, "model", None)
+        if (
+            snapshot.source_kind != "native"
+            or not snapshot.model_current
+            or not snapshot.mesh_current
+            or model is None
+        ):
+            raise AuthoringContractError(
+                "model topology context requires one current native mesh"
+            )
+        entries: list[dict[str, object]] = []
+        truncated = False
+        for part in sorted(snapshot.parts, key=lambda item: str(item.id)):
+            if part.suppressed or part.geometry_recipe is None:
+                continue
+            topology = describe_recipe_topology(part.geometry_recipe)
+            if not topology.exact:
+                raise AuthoringContractError(
+                    f"Part {part.id} has no exact logical topology"
+                )
+            for entity in topology.selectable_entities():
+                reference = LogicalEntityRef(
+                    namespace_part_logical_id(
+                        str(part.id),
+                        entity.logical_id,
+                    )
+                )
+                for mesh_kind in ("node", "edge", "face", "element"):
+                    try:
+                        materialized = mesh_references_for_logical_entities(
+                            model,
+                            (reference,),
+                            mesh_kind=mesh_kind,
+                        )
+                    except ValueError:
+                        continue
+                    if len(entries) == 128:
+                        truncated = True
+                        break
+                    entries.append(
+                        {
+                            "part_id": str(part.id),
+                            "part_name": str(part.name),
+                            "logical_id": entity.logical_id,
+                            "kind": entity.kind,
+                            "semantic_role": entity.semantic_role,
+                            "mesh_kind": mesh_kind,
+                            "matched_count": len(materialized),
+                        }
+                    )
+                if truncated:
+                    break
+            if truncated:
+                break
+        if not entries:
+            raise AuthoringContractError(
+                "current native mesh exposes no materializable logical entities"
+            )
+        return AuthoringToolOutcome(
+            f"已读取 {len(entries)} 项可物化的模型拓扑。",
+            {
+                "entries": entries,
+                "entry_count": len(entries),
+                "truncated": truncated,
+            },
+        )
+
+    def prepare_mesh(
+        arguments: Mapping[str, object],
         controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
+        if not set(arguments) <= {"local_refinements"}:
+            raise AuthoringContractError(
+                "prepare_mesh_proposal accepts only local_refinements"
+            )
         requirements = controller.collected_requirements("mesh")
         metadata = envelope(controller, "mesh")
         context = current_context()
         part_id = context.active_part_id
         if part_id is None:
             raise AuthoringContractError("there is no active Part to mesh")
+        part, entities = mesh_refinement_entities()
+        available_targets = {entity.logical_id for entity in entities}
+        raw_refinements = arguments.get("local_refinements", [])
+        if not isinstance(raw_refinements, list):
+            raise TypeError("local_refinements must be an array")
+        if len(raw_refinements) > 32:
+            raise ValueError("local_refinements exceeds the 32-item bound")
+        local_controls = []
+        local_summary = []
+        for raw_refinement in raw_refinements:
+            if not isinstance(raw_refinement, Mapping):
+                raise TypeError("each local refinement must be an object")
+            refinement = dict(raw_refinement)
+            if set(refinement) != {"target", "size", "falloff"}:
+                raise ValueError("local refinement fields do not match")
+            target = str(refinement["target"])
+            if target not in available_targets:
+                raise ValueError(
+                    "local refinement target is not one current selectable "
+                    "logical entity"
+                )
+            raw_falloff = refinement["falloff"]
+            if not isinstance(raw_falloff, Mapping):
+                raise TypeError("local refinement falloff must be an object")
+            falloff = dict(raw_falloff)
+            if set(falloff) != {
+                "reference",
+                "start_factor",
+                "end_factor",
+            }:
+                raise ValueError("local refinement falloff fields do not match")
+            if falloff["reference"] == "target_radius":
+                try:
+                    resolve_target_radius(
+                        part.geometry_recipe,
+                        LogicalEntityRef(target),
+                    )
+                except ValueError as error:
+                    raise ValueError(
+                        "target_radius falloff is unavailable for the selected "
+                        "logical entity"
+                    ) from error
+            control = LocalMeshControl(
+                LogicalEntityRef(target),
+                refinement["size"],
+                MeshSizeFalloff(
+                    falloff["reference"],
+                    falloff["start_factor"],
+                    falloff["end_factor"],
+                ),
+            )
+            local_controls.append(control)
+            local_summary.append(
+                {
+                    "target": control.target.logical_id,
+                    "size": control.size,
+                    "falloff": {
+                        "reference": control.falloff.reference,
+                        "start_factor": control.falloff.start_factor,
+                        "end_factor": control.falloff.end_factor,
+                    },
+                }
+            )
         intent = MeshIntent(
             str(requirements["mesh_cell_shape"]),
             int(requirements["mesh_order"]),
             global_size=float(requirements["mesh_global_size"]),
+            local_controls=tuple(local_controls),
         )
         suffix = str(metadata.pop("identity_suffix"))
         proposal = create_mesh_proposal(
@@ -2560,10 +2803,14 @@ def create_session_authoring_workflow_controller(
             summary=(
                 f"划分 {requirements['mesh_order']} 阶"
                 f"{requirements['mesh_cell_shape']}网格；全局尺寸 "
-                f"{requirements['mesh_global_size']}"
+                f"{requirements['mesh_global_size']}；局部加密 "
+                f"{len(local_controls)} 项"
             ),
             impact="确认后划分网格，成功时安装网格并刷新 GUI",
             confirm_label="开始划分",
+            extra_data={
+                "local_refinements": local_summary,
+            },
         )
 
     def apply_model_definition(
@@ -2573,19 +2820,51 @@ def create_session_authoring_workflow_controller(
         if set(arguments) != {"action", "parameters"}:
             raise AuthoringContractError(
                 "apply_model_definition requires action and parameters"
-            )
+        )
         metadata = envelope(controller, "definition")
         suffix = str(metadata.pop("identity_suffix"))
-        patch = create_incremental_definition_patch(
+        change = create_definition_change(
             patch_id=f"patch-{suffix}",
+            proposal_id=f"proposal-{suffix}",
             context=current_context(),
             snapshot=session.snapshot(),
             action=arguments["action"],
             parameters=arguments["parameters"],
             **metadata,
         )
+        if type(change.value) is AgentProposal:
+            proposal = change.value
+            return proposal_outcome(
+                proposal,
+                summary=str(proposal.display_summary["summary"]),
+                impact=str(proposal.display_summary["impact"]),
+                confirm_label=str(proposal.display_summary["confirm_label"]),
+                extra_data={
+                    "action": change.action,
+                    "definition_object_type": change.resume_object_type,
+                    "objects": list(
+                        proposal.expected_changes.get("created_names", ())
+                    ),
+                },
+            )
+        patch = change.value
+        provisional = AuthoringToolOutcome(
+            str(patch.display_summary["summary"]),
+            {
+                "state": "succeeded",
+                "action": arguments["action"],
+                "patch_id": patch.patch_id,
+                "undo_available": True,
+                "objects": list(
+                    patch.expected_changes.get("created_names", ())
+                ),
+                "gui_synchronized": True,
+                "definition_object_type": change.resume_object_type,
+            },
+        )
+        provider_safe_authoring_payload(provisional.data)
         applied = authoring_bridge.apply_automatic_patch(patch)
-        return AuthoringToolOutcome(
+        final = AuthoringToolOutcome(
             str(patch.display_summary["summary"]),
             {
                 "state": "succeeded",
@@ -2596,8 +2875,11 @@ def create_session_authoring_workflow_controller(
                     patch.expected_changes.get("created_names", ())
                 ),
                 "gui_synchronized": True,
+                "definition_object_type": change.resume_object_type,
             },
         )
+        provider_safe_authoring_payload(final.data)
+        return final
 
     def run_preflight(
         _arguments: Mapping[str, object],
@@ -2651,30 +2933,36 @@ def create_session_authoring_workflow_controller(
         metadata = envelope(controller, "project-save")
         suffix = str(metadata["identity_suffix"])
         context = current_context()
-        record = controller.register_project_save_proposal(
+        preview = controller.preview_project_save_proposal(
             f"proposal-{suffix}",
             context,
         )
-        return AuthoringToolOutcome(
+        provisional = AuthoringToolOutcome(
             "Project save is waiting for the local GUI control.",
             {
-                "proposal_id": record.proposal_id,
-                "proposal_hash": record.proposal_hash,
-                "state": record.state.value,
+                "proposal_id": preview.proposal_id,
+                "proposal_hash": preview.proposal_hash,
+                "state": preview.state.value,
                 "proposal_view": {
-                    "proposal_id": record.proposal_id,
-                    "proposal_hash": record.proposal_hash,
+                    "proposal_id": preview.proposal_id,
+                    "proposal_hash": preview.proposal_hash,
                     "proposal_kind": "project_save",
                     "title": "保存当前自主项目",
                     "summary": "保存当前已接受的模型状态",
                     "impact": "确认后调用本地项目保存；未确认草稿不会写入",
                     "confirm_label": "保存模型",
-                    "target_document_id": record.target_document_id,
-                    "target_session_id": record.target_session_id,
-                    "base_session_revision": record.base_session_revision,
+                    "target_document_id": preview.target_document_id,
+                    "target_session_id": preview.target_session_id,
+                    "base_session_revision": preview.base_session_revision,
                 },
             },
         )
+        provider_safe_authoring_payload(provisional.data)
+        controller.register_project_save_proposal(
+            preview.proposal_id,
+            context,
+        )
+        return provisional
 
     def read_deletable_objects(
         _arguments: Mapping[str, object],
@@ -2764,8 +3052,55 @@ def create_session_authoring_workflow_controller(
             changes=arguments["changes"],
             **metadata,
         )
+        if patch.invalidation_impact.get("results") is True:
+            proposal = AgentProposal.create(
+                proposal_id=f"proposal-{suffix}",
+                proposal_kind=ProposalKind.DESTRUCTIVE_EDIT,
+                agent_session_id=patch.agent_session_id,
+                turn_id=patch.turn_id,
+                source_tool_call_ids=patch.source_tool_call_ids,
+                target_document_id=patch.target_document_id,
+                target_session_id=patch.target_session_id,
+                base_session_revision=patch.base_session_revision,
+                draft_revision=patch.draft_revision,
+                operations=patch.operations,
+                preconditions={
+                    **patch.preconditions,
+                    "accepted_result_confirmation_required": True,
+                },
+                expected_changes=patch.expected_changes,
+                invalidation_impact=patch.invalidation_impact,
+                display_summary={
+                    "title": "编辑将使已有结果失效",
+                    "summary": str(patch.display_summary["summary"]),
+                    "impact": "已有验证、作业和结果将失效",
+                    "confirm_label": "确认修改",
+                },
+            )
+            return proposal_outcome(
+                proposal,
+                summary=str(proposal.display_summary["summary"]),
+                impact=str(proposal.display_summary["impact"]),
+                confirm_label=str(proposal.display_summary["confirm_label"]),
+                extra_data={
+                    "edit_object_type": target.object_type,
+                    "target_id": target.target_id,
+                },
+            )
+        provisional = AuthoringToolOutcome(
+            str(patch.display_summary["summary"]),
+            {
+                "state": "succeeded",
+                "edit_object_type": target.object_type,
+                "target_id": target.target_id,
+                "patch_id": patch.patch_id,
+                "undo_available": True,
+                "gui_synchronized": True,
+            },
+        )
+        provider_safe_authoring_payload(provisional.data)
         applied = authoring_bridge.apply_automatic_patch(patch)
-        return AuthoringToolOutcome(
+        final = AuthoringToolOutcome(
             str(patch.display_summary["summary"]),
             {
                 "state": "succeeded",
@@ -2776,6 +3111,8 @@ def create_session_authoring_workflow_controller(
                 "gui_synchronized": True,
             },
         )
+        provider_safe_authoring_payload(final.data)
+        return final
 
     def read_catalog(
         _arguments: Mapping[str, object],
@@ -2805,6 +3142,8 @@ def create_session_authoring_workflow_controller(
             "prepare_geometry_proposal": prepare_geometry,
             "read_geometry_edit_context": read_geometry_edit_context,
             "prepare_geometry_edit": prepare_geometry_edit,
+            "read_mesh_refinement_context": read_mesh_refinement_context,
+            "read_model_topology_context": read_model_topology_context,
             "prepare_mesh_proposal": prepare_mesh,
             "apply_model_definition": apply_model_definition,
             "run_native_preflight": run_preflight,

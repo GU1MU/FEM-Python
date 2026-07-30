@@ -21,6 +21,7 @@ from fem.application import (
     ProjectSnapshot,
     RegionAssignment,
     SectionDefinition,
+    with_compatibility_analysis_names,
 )
 from fem.geometry import LogicalEntityRef
 from fem.core.model import (
@@ -150,7 +151,7 @@ def test_native_project_round_trip_returns_a_detached_snapshot(tmp_path) -> None
     reopened = loaded.snapshot
 
     assert isinstance(reopened, ProjectSnapshot)
-    assert loaded.source_schema == 9
+    assert loaded.source_schema == 10
     assert loaded.notices == ()
     assert reopened.source_kind == "native"
     assert reopened.source_path == target
@@ -164,14 +165,14 @@ def test_native_project_round_trip_returns_a_detached_snapshot(tmp_path) -> None
     assert reopened.section_definitions[0].properties["thickness"] == 2.0
     assert reopened.region_assignments[0].region_name == "DOMAIN"
     assert reopened.analysis_definitions[0].cloads[0].value == 100.0
-    assert reopened.analysis_definitions[0].edge_loads == (
-        EdgeLoad("TOP", (0.0, -5.0)),
-    )
-    assert reopened.analysis_definitions[0].body_loads == (
-        BodyForce("DOMAIN", (1.0, -2.0)),
-    )
-    assert reopened.analysis_definitions[0].gravity_loads == (
-        GravityLoad((0.0, -9.81)),
+    expected_step = with_compatibility_analysis_names(
+        original.analysis_definitions
+    )[0]
+    assert reopened.analysis_definitions[0].edge_loads == expected_step.edge_loads
+    assert reopened.analysis_definitions[0].body_loads == expected_step.body_loads
+    assert (
+        reopened.analysis_definitions[0].gravity_loads
+        == expected_step.gravity_loads
     )
 
 
@@ -294,13 +295,13 @@ def test_main_window_v1_open_then_save_upgrades_the_same_path(
     assert source.read_bytes() == original
     upgrade_notice = window.status_panel.state_label.text()
     assert "下次显式保存" in upgrade_notice
-    assert "schema 9" in upgrade_notice
-    assert "v9" in upgrade_notice
+    assert "schema 10" in upgrade_notice
+    assert "v10" in upgrade_notice
 
     assert window.save_native_project()
     _wait_for_task(window)
-    assert json.loads(source.read_text(encoding="utf-8"))["schema"] == 9
-    assert load_project(source).source_schema == 9
+    assert json.loads(source.read_text(encoding="utf-8"))["schema"] == 10
+    assert load_project(source).source_schema == 10
     assert not window.document.dirty
     window.close()
 

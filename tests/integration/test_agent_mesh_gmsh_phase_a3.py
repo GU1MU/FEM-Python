@@ -4,8 +4,11 @@ from fem.application.preprocessing import generate_fem_model
 from fem.geometry import (
     DiskGeometry,
     LogicalEntityRef,
-    PlateWithHoleGeometry,
     RectangleGeometry,
+    SketchCircle,
+    SketchGeometry,
+    SketchRectangle,
+    legacy_sketch_to_strict,
 )
 from fem.geometry.errors import GeometryError
 from fem.mesh import gmsh as gmsh_meshing
@@ -56,7 +59,7 @@ def test_real_a3_explicit_strict_quad_uses_requested_size_without_fallback(
     )
 
 
-def test_real_a3_auto_triangle_with_local_hole_refinement_keeps_absolute_sizes(
+def test_real_a3_auto_triangle_with_generic_local_refinement_keeps_absolute_sizes(
     real_gmsh,
     monkeypatch,
 ) -> None:
@@ -69,24 +72,25 @@ def test_real_a3_auto_triangle_with_local_hole_refinement_keeps_absolute_sizes(
         return original_generate(self, spec)
 
     monkeypatch.setattr(gmsh_meshing.Mesher, "generate", capture_generate)
-    recipe = PlateWithHoleGeometry(
-        "实体-偏心孔板",
-        10.0,
-        6.0,
-        6.5,
-        2.0,
-        1.0,
+    recipe = legacy_sketch_to_strict(
+        SketchGeometry(
+            "草图-通用孔板",
+            (
+                SketchRectangle("material", 0.0, 0.0, 10.0, 6.0),
+                SketchCircle("cut", 6.5, 2.0, 1.0),
+            ),
+        )
     )
     intent = MeshIntent(
         "triangle",
         1,
         auto_level=4,
         local_controls=(
-            LocalMeshControl(
-                LogicalEntityRef("edge:hole-loop"),
-                0.2,
-                MeshSizeFalloff("target_radius", 0.25, 2.0),
-            ),
+                LocalMeshControl(
+                    LogicalEntityRef("edge:C5"),
+                    0.1,
+                    MeshSizeFalloff("target_radius", 0.25, 2.0),
+                ),
         ),
     )
     settings = intent.to_mesh_settings(recipe)

@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from fem.geometry import LogicalEntityRef, PlateWithHoleGeometry
+from fem.geometry import (
+    LogicalEntityRef,
+    SketchCircle,
+    SketchGeometry,
+    SketchRectangle,
+    legacy_sketch_to_strict,
+)
 from fem.mesh.settings import LocalMeshControl, MeshSizeFalloff
 from fem_agent.mesh_authoring import MeshIntent, create_mesh_proposal
 from fem_agent.tools.registry import AgentToolRegistry
@@ -10,20 +16,21 @@ from fem_gui.agent_authoring import authoring_context_from_snapshot
 from fem.application import ModelSession, UnitContext
 
 
-def _recipe() -> PlateWithHoleGeometry:
-    return PlateWithHoleGeometry(
-        "实体-偏心孔板",
-        10.0,
-        6.0,
-        6.5,
-        2.0,
-        1.0,
+def _recipe() -> SketchGeometry:
+    return legacy_sketch_to_strict(
+        SketchGeometry(
+            "草图-通用孔板",
+            (
+                SketchRectangle("material", 0.0, 0.0, 10.0, 6.0),
+                SketchCircle("cut", 6.5, 2.0, 1.0),
+            ),
+        )
     )
 
 
 def _local_control() -> LocalMeshControl:
     return LocalMeshControl(
-        LogicalEntityRef("edge:hole-loop"),
+        LogicalEntityRef("edge:C5"),
         0.2,
         MeshSizeFalloff("target_radius", 0.25, 2.0),
     )
@@ -54,7 +61,7 @@ def test_a3_mesh_intent_requires_exactly_one_density_mode() -> None:
         )
 
 
-def test_a3_mesh_intent_json_round_trip_keeps_stable_hole_ref_and_falloff() -> None:
+def test_a3_mesh_intent_json_round_trip_keeps_generic_stable_ref_and_falloff() -> None:
     intent = MeshIntent(
         "quadrilateral",
         2,
@@ -67,7 +74,7 @@ def test_a3_mesh_intent_json_round_trip_keeps_stable_hole_ref_and_falloff() -> N
     assert restored == intent
     assert restored.intent_hash == intent.intent_hash
     assert restored.local_controls[0].target == LogicalEntityRef(
-        "edge:hole-loop"
+        "edge:C5"
     )
     assert restored.local_controls[0].falloff == MeshSizeFalloff(
         "target_radius",
@@ -141,7 +148,7 @@ def test_a3_mesh_proposal_is_revision_bound_and_uses_local_gui_summary() -> None
     assert proposal.display_summary["confirm_label"] == "开始划分"
     assert proposal.display_summary["estimate_only"] is True
     assert proposal.display_summary["local_refinements"][0]["target"] == (
-        "edge:hole-loop"
+        "edge:C5"
     )
     assert proposal.operations[1].parameters["mesh_intent_hash"] == (
         intent.intent_hash

@@ -15,8 +15,13 @@ from fem.application import (
     ModelSession,
     NamedRegion,
     ScopedDefinitionBatch,
+    UnitContext,
+    validate_logical_reference,
 )
 from fem.application.changes import SessionDelta
+from fem.application.native_scope_materialization import (
+    mesh_references_for_logical_entities,
+)
 from fem.core.model import (
     BodyForce,
     DisplacementConstraint,
@@ -26,8 +31,13 @@ from fem.core.model import (
     NodalLoad,
     SurfaceLoad,
 )
-from fem.geometry import LogicalEntityRef
+from fem.geometry import (
+    LogicalEntityRef,
+    geometry_dimension,
+    namespace_part_logical_id,
+)
 
+from .analysis_authoring import ConfirmedDisplacement, ConfirmedLoad
 from .authoring import (
     AgentProposal,
     AuthoringContext,
@@ -36,6 +46,7 @@ from .authoring import (
     OperationKind,
     ProposalKind,
 )
+from .naming import NamePolicy
 
 
 _LOAD_COLLECTIONS = (
@@ -67,6 +78,10 @@ class _Snapshot(Protocol):
     assignments: object
     steps: object
     artifact: object | None
+    parts: Sequence[object]
+    active_part_id: str | None
+    unit_context: UnitContext | None
+    runs: Sequence[object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,7 +157,14 @@ def editable_object_catalog(
                         for reference in region.references
                     ],
                     "reference_count": len(region.references),
-                    "editable_fields": ["new_name", "reference_keys"],
+                    "editable_fields": [
+                        "new_name",
+                        "reference_keys",
+                        "part_id",
+                        "logical_ids",
+                        "mesh_kind",
+                        "expected_count",
+                    ],
                 },
             )
         )
@@ -167,12 +189,18 @@ def editable_object_catalog(
                         "first_component": boundary.first_component,
                         "last_component": boundary.last_component,
                         "value": boundary.value,
+                        "unit": _require_units(snapshot).length,
+                        "distribution": "uniform",
+                        "confirmed": True,
                         "editable_fields": [
                             "new_name",
                             "target_scope",
                             "first_component",
                             "last_component",
                             "value",
+                            "unit",
+                            "distribution",
+                            "confirmed",
                         ],
                     },
                 )
@@ -190,7 +218,7 @@ def editable_object_catalog(
                         name,
                         name,
                         step_name,
-                        _load_details(load, load_kind),
+                        _load_details(snapshot, load, load_kind),
                     )
                 )
 
@@ -327,6 +355,9 @@ def create_edit_patch(
         "boundary_condition": "边界条件",
         "load": "载荷",
     }[target.object_type]
+    result_invalidating = any(
+        bool(getattr(run, "has_result", False)) for run in snapshot.runs
+    )
     patch = ModelPatch.create(
         patch_id=patch_id,
         agent_session_id=proposal.agent_session_id,
@@ -342,7 +373,10 @@ def create_edit_patch(
             "authoring_mode": "direct_edit",
         },
         expected_changes=proposal.expected_changes,
-        invalidation_impact=proposal.invalidation_impact,
+        invalidation_impact={
+            **proposal.invalidation_impact,
+            "results": result_invalidating,
+        },
         display_summary={
             "title": f"Agent 已编辑{label}",
             "summary": str(proposal.display_summary["summary"]),
@@ -473,16 +507,35 @@ def _validated_region_edit(
     target: EditableObject,
     changes: dict[object, object],
 ) -> tuple[dict[str, object], NamedRegion]:
-    allowed = {"new_name", "reference_keys"}
+    topology_fields = {
+        "part_id",
+        "logical_ids",
+        "mesh_kind",
+        "expected_count",
+    }
+    allowed = {"new_name", "reference_keys", *topology_fields}
     _require_change_keys(changes, allowed)
     current = snapshot.named_regions[target.target_id]
     updates: dict[str, object] = {}
     normalized: dict[str, object] = {}
     if "new_name" in changes:
-        name = _required_text(changes["new_name"], "new_name")
+        name = _controlled_name(
+            changes["new_name"],
+            "new_name",
+            {
+                "node": "点",
+                "edge": "边",
+                "face": "面",
+                "element": "域",
+            }[current.entity_kind],
+        )
         updates["name"] = name
         normalized["new_name"] = name
     if "reference_keys" in changes:
+        if set(changes) & topology_fields:
+            raise ValueError(
+                "reference_keys cannot be combined with logical topology fields"
+            )
         keys = _string_list(
             changes["reference_keys"],
             "reference_keys",
@@ -494,6 +547,61 @@ def _validated_region_edit(
             raise ValueError("reference_keys contains an unavailable identity")
         updates["references"] = tuple(reference_map[key] for key in keys)
         normalized["reference_keys"] = list(keys)
+    elif set(changes) & topology_fields:
+        if not topology_fields <= set(changes):
+            raise ValueError(
+                "logical topology redirect requires part_id, logical_ids, "
+                "mesh_kind, and expected_count"
+            )
+        part_id = _required_text(changes["part_id"], "part_id")
+        part = _require_part(snapshot, part_id)
+        recipe = getattr(part, "geometry_recipe", None)
+        if recipe is None:
+            raise ValueError("selected Part has no geometry recipe")
+        mesh_kind = _required_text(changes["mesh_kind"], "mesh_kind")
+        if mesh_kind != current.entity_kind:
+            raise ValueError(
+                "scope redirect must preserve the current mesh entity kind"
+            )
+        logical_ids = _string_list(
+            changes["logical_ids"],
+            "logical_ids",
+            max_items=128,
+        )
+        logical_references = []
+        for logical_id in logical_ids:
+            local = LogicalEntityRef(logical_id)
+            validate_logical_reference(recipe, local, require_exact=True)
+            logical_references.append(
+                LogicalEntityRef(
+                    namespace_part_logical_id(part_id, logical_id)
+                )
+            )
+        model = getattr(snapshot.artifact, "model", None)
+        if model is None:
+            raise ValueError("current native artifact has no model")
+        references = mesh_references_for_logical_entities(
+            model,
+            logical_references,
+            mesh_kind=mesh_kind,
+        )
+        expected_count = _positive_int(
+            changes["expected_count"],
+            "expected_count",
+        )
+        if len(references) != expected_count:
+            raise ValueError(
+                "scope selection count does not match expected_count"
+            )
+        updates["references"] = references
+        normalized.update(
+            {
+                "part_id": part_id,
+                "logical_ids": list(logical_ids),
+                "mesh_kind": mesh_kind,
+                "expected_count": expected_count,
+            }
+        )
     replacement = replace(current, **updates)
     if replacement == current:
         raise ValueError("changes do not modify the selected named region")
@@ -505,19 +613,25 @@ def _validated_boundary_edit(
     target: EditableObject,
     changes: dict[object, object],
 ) -> tuple[dict[str, object], DisplacementConstraint]:
+    engineering_fields = {"unit", "distribution", "confirmed"}
     allowed = {
         "new_name",
         "target_scope",
         "first_component",
         "last_component",
         "value",
+        *engineering_fields,
     }
     _require_change_keys(changes, allowed)
+    if not engineering_fields <= set(changes):
+        raise ValueError(
+            "boundary edit requires explicit unit, distribution, and confirmed"
+        )
     current = _find_boundary(snapshot, target)
     updates: dict[str, object] = {}
     normalized: dict[str, object] = {}
     if "new_name" in changes:
-        name = _required_text(changes["new_name"], "new_name")
+        name = _controlled_name(changes["new_name"], "new_name", "位移")
         updates["name"] = name
         normalized["new_name"] = name
     if "target_scope" in changes:
@@ -540,6 +654,38 @@ def _validated_boundary_edit(
         raise ValueError("first_component must not exceed last_component")
     if replacement == current:
         raise ValueError("changes do not modify the selected boundary condition")
+    region = _require_region(snapshot, str(replacement.target))
+    if _boundary_target_kind(region) != replacement.target_kind:
+        raise ValueError(
+            "boundary target kind does not match its target scope"
+        )
+    dimension = _part_dimension_for_region(snapshot, region)
+    units = _require_units(snapshot)
+    confirmed = ConfirmedDisplacement(
+        _controlled_name(replacement.name, "boundary name", "位移"),
+        _controlled_name(target.step_name, "step_name", "分析步"),
+        str(replacement.target),
+        str(replacement.target_kind),
+        int(replacement.first_component),
+        int(replacement.last_component),
+        float(replacement.value),
+        _required_text(changes["unit"], "unit"),
+        _required_text(changes["distribution"], "distribution"),
+        _confirmed(changes["confirmed"]),
+    )
+    if confirmed.last_component > dimension:
+        raise ValueError("boundary component exceeds the current Part dimension")
+    if confirmed.unit != units.length:
+        raise ValueError(
+            "boundary unit must exactly match the project length unit"
+        )
+    normalized.update(
+        {
+            "unit": confirmed.unit,
+            "distribution": confirmed.distribution,
+            "confirmed": True,
+        }
+    )
     return normalized, replacement
 
 
@@ -550,21 +696,35 @@ def _validated_load_edit(
 ) -> tuple[dict[str, object], object]:
     collection_name, current, load_kind = _find_load(snapshot, target)
     del collection_name
+    engineering_fields = {
+        "entity_type",
+        "load_type",
+        "direction",
+        "unit",
+        "distribution",
+        "confirmed",
+    }
     allowed_by_kind = {
-        "nodal": {"new_name", "target_scope", "component", "value"},
+        "nodal": {
+            "new_name",
+            "target_scope",
+            "component",
+            "value",
+            *engineering_fields,
+        },
         "edge": {
             "new_name",
             "target_scope",
             "vector",
             "magnitude",
-            "load_type",
+            *engineering_fields,
         },
         "surface": {
             "new_name",
             "target_scope",
             "vector",
             "magnitude",
-            "load_type",
+            *engineering_fields,
         },
         "line": {
             "new_name",
@@ -576,10 +736,16 @@ def _validated_load_edit(
         "gravity": {"new_name", "target_scope", "acceleration"},
     }
     _require_change_keys(changes, allowed_by_kind[load_kind])
+    strict_kind = load_kind in {"nodal", "edge", "surface"}
+    if strict_kind and not engineering_fields <= set(changes):
+        raise ValueError(
+            "load edit requires explicit entity_type, load_type, direction, "
+            "unit, distribution, and confirmed"
+        )
     updates: dict[str, object] = {}
     normalized: dict[str, object] = {}
     if "new_name" in changes:
-        name = _required_text(changes["new_name"], "new_name")
+        name = _controlled_name(changes["new_name"], "new_name", "载荷")
         updates["name"] = name
         normalized["new_name"] = name
     if "target_scope" in changes:
@@ -605,7 +771,17 @@ def _validated_load_edit(
         normalized["value"] = value
     for field_name in ("vector", "acceleration"):
         if field_name in changes:
-            values = _number_list(changes[field_name], field_name)
+            values = (
+                ()
+                if field_name == "vector"
+                and strict_kind
+                and (
+                    changes[field_name] is None
+                    or changes[field_name] == ()
+                    or changes[field_name] == []
+                )
+                else _number_list(changes[field_name], field_name)
+            )
             updates[field_name] = values
             normalized[field_name] = list(values)
     if "magnitude" in changes:
@@ -617,18 +793,157 @@ def _validated_load_edit(
         )
         updates["magnitude"] = magnitude
         normalized["magnitude"] = magnitude
-    for field_name in ("load_type", "coordinate_system"):
-        if field_name in changes:
-            value = _required_text(changes[field_name], field_name)
-            updates[field_name] = value
-            normalized[field_name] = value
+    if "coordinate_system" in changes:
+        value = _required_text(
+            changes["coordinate_system"],
+            "coordinate_system",
+        )
+        updates["coordinate_system"] = value
+        normalized["coordinate_system"] = value
+    if strict_kind:
+        load_type = _required_text(changes["load_type"], "load_type")
+        expected_prefix = {
+            "nodal": "nodal",
+            "edge": "edge_",
+            "surface": "surface_",
+        }[load_kind]
+        if (
+            load_kind == "nodal"
+            and load_type != expected_prefix
+        ) or (
+            load_kind != "nodal"
+            and not load_type.startswith(expected_prefix)
+        ):
+            raise ValueError("load_type does not match the edited load entity")
+        if load_kind in {"edge", "surface"}:
+            kernel_type = load_type.removeprefix(expected_prefix)
+            if kernel_type not in {"traction", "pressure"}:
+                raise ValueError("load_type is unsupported")
+            updates["load_type"] = kernel_type
+        normalized["load_type"] = load_type
+    elif "load_type" in changes:
+        value = _required_text(changes["load_type"], "load_type")
+        updates["load_type"] = value
+        normalized["load_type"] = value
     replacement = replace(current, **updates)
     if replacement == current:
         raise ValueError("changes do not modify the selected load")
+    if strict_kind:
+        confirmed = _confirmed_load_after_edit(
+            snapshot,
+            target,
+            replacement,
+            load_kind,
+            changes,
+        )
+        normalized.update(
+            {
+                "entity_type": confirmed.entity_type,
+                "direction": confirmed.direction,
+                "unit": confirmed.unit,
+                "distribution": confirmed.distribution,
+                "confirmed": True,
+            }
+        )
     return normalized, replacement
 
 
-def _load_details(load: object, load_kind: str) -> dict[str, object]:
+def _confirmed_load_after_edit(
+    snapshot: _Snapshot,
+    target: EditableObject,
+    replacement: object,
+    load_kind: str,
+    changes: Mapping[object, object],
+) -> ConfirmedLoad:
+    target_field = {
+        "edge": "edge",
+        "surface": "surface",
+    }.get(load_kind, "target")
+    scope_name = _required_text(
+        getattr(replacement, target_field),
+        "target_scope",
+    )
+    region = _require_region(snapshot, scope_name)
+    entity_type = _required_text(changes["entity_type"], "entity_type")
+    expected_region_kind = {
+        "nodal": "node",
+        "edge": "edge",
+        "surface": "face",
+    }[load_kind]
+    if region.entity_kind != expected_region_kind:
+        raise ValueError("load target scope has the wrong mesh entity kind")
+    load_type = _required_text(changes["load_type"], "load_type")
+    confirmed = ConfirmedLoad(
+        _controlled_name(replacement.name, "load name", "载荷"),
+        _controlled_name(target.step_name, "step_name", "分析步"),
+        scope_name,
+        entity_type,
+        load_type,
+        (
+            int(getattr(replacement, "component"))
+            if load_kind == "nodal"
+            else None
+        ),
+        (
+            tuple(getattr(replacement, "vector"))
+            if load_kind in {"edge", "surface"}
+            else ()
+        ),
+        (
+            float(getattr(replacement, "value"))
+            if load_kind == "nodal"
+            else getattr(replacement, "magnitude")
+        ),
+        _required_text(changes["direction"], "direction"),
+        _required_text(changes["unit"], "unit"),
+        _required_text(changes["distribution"], "distribution"),
+        _confirmed(changes["confirmed"]),
+    )
+    dimension = _part_dimension_for_region(snapshot, region)
+    units = _require_units(snapshot)
+    if confirmed.load_type == "nodal":
+        if int(confirmed.component or 0) > dimension:
+            raise ValueError("load component exceeds the current Part dimension")
+        expected_direction = {
+            1: "global_x",
+            2: "global_y",
+            3: "global_z",
+        }[int(confirmed.component)]
+        if confirmed.direction != expected_direction:
+            raise ValueError("load direction does not match its component")
+        expected_unit = units.force
+    elif confirmed.load_type.startswith("edge_"):
+        if dimension != 2:
+            raise ValueError("edge load requires a two-dimensional Part")
+        if (
+            confirmed.load_type == "edge_traction"
+            and confirmed.direction != "global_xy"
+        ):
+            raise ValueError("two-dimensional traction requires global_xy")
+        expected_unit = f"{units.force}/{units.length}"
+    else:
+        if dimension != 3:
+            raise ValueError("surface load requires a three-dimensional Part")
+        if (
+            confirmed.load_type == "surface_traction"
+            and confirmed.direction != "global_xyz"
+        ):
+            raise ValueError(
+                "three-dimensional traction requires global_xyz"
+            )
+        expected_unit = units.stress
+    if confirmed.vector and len(confirmed.vector) != dimension:
+        raise ValueError("load vector dimension does not match the current Part")
+    if confirmed.unit != expected_unit:
+        raise ValueError("load unit does not match the project unit context")
+    return confirmed
+
+
+def _load_details(
+    snapshot: _Snapshot,
+    load: object,
+    load_kind: str,
+) -> dict[str, object]:
     details: dict[str, object] = {
         "load_kind": load_kind,
         "editable_fields": {
@@ -657,6 +972,15 @@ def _load_details(load: object, load_kind: str) -> dict[str, object]:
             "gravity": ["new_name", "target_scope", "acceleration"],
         }[load_kind],
     }
+    if load_kind in {"nodal", "edge", "surface"}:
+        details["editable_fields"] = [
+            *details["editable_fields"],  # type: ignore[list-item]
+            "entity_type",
+            "direction",
+            "unit",
+            "distribution",
+            "confirmed",
+        ]
     target_field = {
         "edge": "edge",
         "surface": "surface",
@@ -676,6 +1000,50 @@ def _load_details(load: object, load_kind: str) -> dict[str, object]:
             details[field_name] = (
                 list(value) if isinstance(value, tuple) else value
             )
+    if load_kind in {"nodal", "edge", "surface"}:
+        entity_type = {
+            "nodal": "node",
+            "edge": "edge",
+            "surface": "surface",
+        }[load_kind]
+        details["entity_type"] = entity_type
+        if load_kind == "nodal":
+            component = int(getattr(load, "component"))
+            details["load_type"] = "nodal"
+            details["direction"] = {
+                1: "global_x",
+                2: "global_y",
+                3: "global_z",
+            }.get(component)
+        else:
+            load_type = str(getattr(load, "load_type"))
+            details["load_type"] = f"{load_kind}_{load_type}"
+            details["direction"] = (
+                f"global_{'xy' if load_kind == 'edge' else 'xyz'}"
+                if load_type == "traction"
+                else (
+                    "inward_normal"
+                    if float(getattr(load, "magnitude") or 0.0) > 0.0
+                    else "outward_normal"
+                )
+            )
+        region = _require_region(
+            snapshot,
+            _required_text(details["target_scope"], "target_scope"),
+        )
+        dimension = _part_dimension_for_region(snapshot, region)
+        units = _require_units(snapshot)
+        details["unit"] = (
+            units.force
+            if load_kind == "nodal"
+            else f"{units.force}/{units.length}"
+            if dimension == 2
+            else units.stress
+        )
+        details["distribution"] = (
+            "concentrated" if load_kind == "nodal" else "uniform"
+        )
+        details["confirmed"] = True
     return details
 
 
@@ -838,6 +1206,52 @@ def _unsupported_boundary_scope() -> str:
     raise ValueError("target_scope cannot support a displacement boundary")
 
 
+def _require_part(snapshot: _Snapshot, part_id: str) -> object:
+    matches = tuple(
+        part
+        for part in snapshot.parts
+        if getattr(part, "id", None) == part_id
+        and not bool(getattr(part, "suppressed", False))
+    )
+    if len(matches) != 1:
+        raise ValueError("selected Part is unavailable or ambiguous")
+    return matches[0]
+
+
+def _part_dimension_for_region(
+    snapshot: _Snapshot,
+    region: NamedRegion,
+) -> int:
+    part_ids = {
+        reference.part_id
+        for reference in region.references
+        if type(reference) is MeshEntityRef and reference.part_id is not None
+    }
+    if len(part_ids) > 1:
+        raise ValueError("engineering scope spans multiple Parts")
+    part_id = (
+        next(iter(part_ids))
+        if part_ids
+        else snapshot.active_part_id
+    )
+    if part_id is None:
+        raise ValueError("engineering scope has no exact owning Part")
+    part = _require_part(snapshot, part_id)
+    recipe = getattr(part, "geometry_recipe", None)
+    if recipe is None:
+        raise ValueError("engineering Part has no geometry recipe")
+    return int(geometry_dimension(recipe))
+
+
+def _require_units(snapshot: _Snapshot) -> UnitContext:
+    units = snapshot.unit_context
+    if type(units) is not UnitContext:
+        raise ValueError(
+            "engineering edit requires the current project unit context"
+        )
+    return units
+
+
 def _require_change_keys(
     changes: Mapping[object, object],
     allowed: set[str],
@@ -858,6 +1272,31 @@ def _required_text(value: object, field_name: str) -> str:
     if len(normalized) > 160:
         raise ValueError(f"{field_name} must be at most 160 characters")
     return normalized
+
+
+def _controlled_name(
+    value: object,
+    field_name: str,
+    object_type: str,
+) -> str:
+    name = NamePolicy().validate(_required_text(value, field_name))
+    if not name.startswith(f"{object_type}-"):
+        raise ValueError(
+            f"{field_name} must use the {object_type}- prefix"
+        )
+    return name
+
+
+def _confirmed(value: object) -> bool:
+    if value is not True:
+        raise ValueError("engineering edit fields must be explicitly confirmed")
+    return True
+
+
+def _positive_int(value: object, field_name: str) -> int:
+    if type(value) is not int or value <= 0:
+        raise ValueError(f"{field_name} must be a positive integer")
+    return value
 
 
 def _optional_name(value: object) -> str | None:

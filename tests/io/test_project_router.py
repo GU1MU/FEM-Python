@@ -29,7 +29,7 @@ from fem.io.project_v2 import (
     load_project_v2,
 )
 from fem.io.project_v5 import dumps_project_v5
-from fem.io.project_v9 import ProjectV9DecodeError, load_project_v9
+from fem.io.project_v10 import ProjectV10DecodeError, load_project_v10
 from fem.mesh.settings import MeshSettings
 
 
@@ -55,11 +55,11 @@ def test_generic_writer_always_emits_current_schema(tmp_path: Path) -> None:
     dumped = dumps_project(snapshot)
     target = save_project(tmp_path / "current.femproj", snapshot)
 
-    assert CURRENT_PROJECT_SCHEMA == 9
+    assert CURRENT_PROJECT_SCHEMA == 10
     assert payload["schema"] == CURRENT_PROJECT_SCHEMA
     assert json.loads(dumped)["schema"] == CURRENT_PROJECT_SCHEMA
-    assert json.loads(target.read_text(encoding="utf-8"))["schema"] == 9
-    assert load_project_v9(target).source_path == target
+    assert json.loads(target.read_text(encoding="utf-8"))["schema"] == 10
+    assert load_project_v10(target).source_path == target
 
 
 def test_generic_current_reader_returns_loaded_project_with_path_invariant(
@@ -73,7 +73,7 @@ def test_generic_current_reader_returns_loaded_project_with_path_invariant(
     assert type(loaded) is LoadedProject
     assert loaded.path == target
     assert loaded.snapshot.source_path == target
-    assert loaded.source_schema == 9
+    assert loaded.source_schema == 10
     assert loaded.notices == ()
 
 
@@ -136,7 +136,7 @@ def test_router_requires_schema_and_rejects_future_schema() -> None:
         decode_project({})
     with pytest.raises(
         UnsupportedProjectSchemaError,
-        match=r"\$\.schema=99.*schema 1、2、3、4、5、6、7、8 和 9",
+        match=r"\$\.schema=99.*schema 1、2、3、4、5、6、7、8、9 和 10",
     ):
         decode_project({"schema": 99})
 
@@ -151,11 +151,11 @@ def test_decode_project_rejects_serialized_input() -> None:
         decode_project(b'{"schema": 2}')  # type: ignore[arg-type]
 
 
-def test_v9_format_error_keeps_concrete_version_error() -> None:
+def test_v10_format_error_keeps_concrete_version_error() -> None:
     payload = encode_project(_snapshot())
     payload["format"] = "wrong"
 
-    with pytest.raises(ProjectV9DecodeError, match=r"\$\.format"):
+    with pytest.raises(ProjectV10DecodeError, match=r"\$\.format"):
         decode_project(payload)
 
 
@@ -203,6 +203,10 @@ def test_fem_io_exports_generic_and_explicit_versioned_project_apis() -> None:
         "encode_project_v9",
         "load_project_v9",
         "save_project_v9",
+        "decode_project_v10",
+        "encode_project_v10",
+        "load_project_v10",
+        "save_project_v10",
         "ProjectMigrationNotice",
     }
 

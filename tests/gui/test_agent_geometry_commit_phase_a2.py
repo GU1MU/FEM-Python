@@ -6,7 +6,14 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 from fem.application import ModelSession, UnitContext
-from fem.geometry import RectangleGeometry, SketchCircle, SketchGeometry
+from fem.geometry import (
+    RectangleGeometry,
+    SketchCircle,
+    SketchGeometry,
+    SketchLine,
+    SketchPlane,
+    SketchPoint,
+)
 from fem_agent.authoring import (
     AgentProposal,
     AuthoringAuthorizationError,
@@ -21,6 +28,7 @@ from fem_agent.geometry_authoring import (
     create_geometry_edit_proposal,
     create_geometry_proposal,
     disk_geometry,
+    geometry_draft,
     plate_with_hole_geometry,
 )
 from fem_gui.agent_authoring import (
@@ -88,6 +96,41 @@ def _bridge(session: ModelSession, refreshes: list[int]) -> AgentAuthoringBridge
     )
     bridge.bind_snapshot(session.snapshot())
     return bridge
+
+
+def _open_sketch() -> SketchGeometry:
+    return SketchGeometry(
+        "草图-开放轮廓",
+        SketchPlane.xy(),
+        (
+            SketchPoint("P1", 0.0, 0.0),
+            SketchPoint("P2", 2.0, 0.0),
+            SketchPoint("P3", 2.0, 1.0),
+        ),
+        (
+            SketchLine("L1", "P1", "P2"),
+            SketchLine("L2", "P2", "P3"),
+        ),
+    )
+
+
+def _self_intersecting_sketch() -> SketchGeometry:
+    return SketchGeometry(
+        "草图-自交轮廓",
+        SketchPlane.xy(),
+        (
+            SketchPoint("P1", 0.0, 0.0),
+            SketchPoint("P2", 2.0, 1.0),
+            SketchPoint("P3", 0.0, 1.0),
+            SketchPoint("P4", 2.0, 0.0),
+        ),
+        (
+            SketchLine("L1", "P1", "P2"),
+            SketchLine("L2", "P2", "P3"),
+            SketchLine("L3", "P3", "P4"),
+            SketchLine("L4", "P4", "P1"),
+        ),
+    )
 
 
 def test_a2_blank_creation_is_atomic_and_refreshes_once_only_after_accept() -> None:
@@ -319,6 +362,58 @@ def test_a2_invalid_hole_commit_failure_is_atomic() -> None:
     assert after.session_revision == before.session_revision
     assert after.source_kind is None
     assert after.parts == ()
+    assert refreshes == []
+
+
+@pytest.mark.parametrize(
+    "invalid_recipe",
+    (_open_sketch(), _self_intersecting_sketch()),
+    ids=("open-profile", "self-intersecting-profile"),
+)
+@pytest.mark.parametrize("replace_existing", (False, True))
+def test_a2_invalid_strict_profile_create_or_replace_is_atomic(
+    invalid_recipe: SketchGeometry,
+    replace_existing: bool,
+) -> None:
+    session = ModelSession()
+    if replace_existing:
+        session.create_native_project_with_first_part(
+            "模型-现有板",
+            _application_units(),
+            RectangleGeometry("实体-现有板", 4.0, 2.0),
+            part_name="部件-现有板",
+        )
+    refreshes: list[int] = []
+    bridge = _bridge(session, refreshes)
+    before = session.snapshot()
+    draft = geometry_draft(invalid_recipe)
+    suffix = "open" if len(invalid_recipe.curves) == 2 else "self-intersecting"
+    if replace_existing:
+        part_id = str(before.parts[0].id)
+        proposal = create_geometry_edit_proposal(
+            proposal_id=f"proposal-invalid-replace-{suffix}",
+            agent_session_id="agent-session-a2",
+            turn_id="turn-invalid-replace",
+            source_tool_call_ids=("call-invalid-replace",),
+            context=authoring_context_from_snapshot(before),
+            draft_revision=1,
+            part_id=part_id,
+            draft=draft,
+            summary="替换为无效严格草图",
+        )
+    else:
+        proposal = _proposal(
+            session,
+            proposal_id=f"proposal-invalid-create-{suffix}",
+            draft=draft,
+            project_function="无效严格草图",
+        )
+
+    bridge.register_proposal(proposal)
+    receipt = bridge.accept_from_gui_control(proposal.proposal_id)
+
+    assert receipt.state is ProposalState.FAILED
+    assert session.snapshot() == before
     assert refreshes == []
 
 
