@@ -1491,6 +1491,7 @@ def test_oversized_tool_call_batch_is_rejected_before_persistence(tmp_path):
         tmp_path / "workspace",
         provider,
         session_id="ses_tool_batch",
+        config=EngineConfig(max_tool_calls=12),
     )
 
     events = engine.send_message("列出能力。")
