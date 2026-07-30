@@ -9,12 +9,14 @@ from fem_agent.authoring import (
     AgentProposal,
     AuthoringAuthorizationError,
     AuthoringContext,
+    CapabilitySummary,
     ClarificationRequiredError,
     FakeAuthoringPort,
     LocalModelBinding,
     MeshSummary,
     ModelOperation,
     OperationKind,
+    PartSummary,
     ProposalKind,
     ProposalState,
 )
@@ -80,18 +82,12 @@ def _requirements() -> dict[str, object]:
         "length_unit": "mm",
         "force_unit": "N",
         "stress_unit": "MPa",
-        "plate_width": 120.0,
-        "plate_height": 60.0,
         "plate_thickness": 2.0,
-        "hole_radius": 8.0,
-        "hole_center_x": 68.0,
-        "hole_center_y": 26.0,
         "young_modulus": 210000.0,
         "poisson_ratio": 0.3,
         "mesh_cell_shape": "quadrilateral",
         "mesh_order": 1,
         "mesh_global_size": 5.0,
-        "hole_mesh_size": 2.0,
         "fixed_dofs": [1, 2],
         "load_type": "edge_traction",
         "load_direction": "x",
@@ -109,17 +105,11 @@ _REQUIREMENT_GROUP_KEYS = {
         "length_unit",
         "force_unit",
         "stress_unit",
-        "plate_width",
-        "plate_height",
-        "hole_radius",
-        "hole_center_x",
-        "hole_center_y",
     ),
     "mesh": (
         "mesh_cell_shape",
         "mesh_order",
         "mesh_global_size",
-        "hole_mesh_size",
     ),
     "definitions": (
         "modeling_assumption",
@@ -477,6 +467,18 @@ def test_a8_geometry_uses_one_operation_confirmation_without_requirement_review(
     assert "prepare_geometry_proposal" in names
     assert "set_authoring_requirements" in names
     assert "request_requirement_review" not in names
+    geometry_tool = next(
+        item
+        for item in controller.definitions
+        if item.name == "prepare_geometry_proposal"
+    )
+    geometry_schemas = geometry_tool.parameters["properties"]["geometry"][
+        "oneOf"
+    ]
+    assert [
+        schema["properties"]["kind"]["const"]
+        for schema in geometry_schemas
+    ] == ["planar_profiles", "box", "cylinder"]
 
     prepared = _dispatch(controller, "prepare_geometry_proposal", {}, 2)
     assert prepared.ok
@@ -590,6 +592,75 @@ def test_a8_only_geometry_mesh_and_solve_publish_execution_proposals() -> None:
     assert "request_requirement_review" not in names
 
 
+def test_a8_geometry_edit_is_available_after_creation_and_returns_to_mesh() -> None:
+    context = AuthoringContext(
+        binding=LocalModelBinding(
+            "document:edit",
+            "native-edit",
+            4,
+            "native",
+            True,
+        ),
+        model_name="模型-双孔板",
+        active_part_id="part-1",
+        parts=(
+            PartSummary(
+                "part-1",
+                "部件-孔板",
+                "planar_sketch",
+                2,
+                False,
+            ),
+        ),
+        capabilities=(CapabilitySummary("edit_native_geometry", True),),
+    )
+    calls: list[str] = []
+
+    def handler(arguments, _controller):
+        calls.append(str(arguments.get("part_id")))
+        return AuthoringToolOutcome(
+            "Geometry edit prepared.",
+            {"state": "pending_confirmation"},
+        )
+
+    controller = AuthoringWorkflowController(
+        lambda: context,
+        {
+            "read_geometry_edit_context": handler,
+            "prepare_geometry_edit": handler,
+        },
+    )
+    controller._stage = AuthoringWorkflowStage.MESH_READY
+
+    names = {item.name for item in controller.definitions}
+    assert {
+        "read_geometry_edit_context",
+        "prepare_geometry_edit",
+    } <= names
+    prepared = _dispatch(
+        controller,
+        "prepare_geometry_edit",
+        {
+            "part_id": "part-1",
+            "edit": {
+                "operation": "add_circle",
+                "center_x": 50.0,
+                "center_y": 130.0,
+                "radius": 5.0,
+            },
+        },
+        7,
+    )
+
+    assert prepared.ok
+    assert calls == ["part-1"]
+    assert controller.stage is AuthoringWorkflowStage.GEOMETRY_PENDING
+
+    controller.record_proposal_state("geometry", ProposalState.SUCCEEDED)
+
+    assert controller.stage is AuthoringWorkflowStage.MESH_READY
+
+
 def test_a8_direct_definition_schema_is_granular() -> None:
     controller = AuthoringWorkflowController(
         lambda: _context(),
@@ -663,8 +734,8 @@ def test_a8_requirement_batch_validation_is_atomic() -> None:
         {
             "turn_id": "turn-invalid",
             "requirements": {
-                "plate_width": 100.0,
-                "plate_height": -1.0,
+                "length_unit": "mm",
+                "force_unit": 1,
             },
         },
         7,
@@ -700,7 +771,7 @@ def test_a8_binding_change_clears_collected_requirements() -> None:
         },
         8,
     ).ok
-    assert controller.collected_requirements("geometry")["plate_width"] == 120.0
+    assert controller.collected_requirements("geometry")["length_unit"] == "mm"
 
     current[0] = switched
     assert controller.observe_binding(switched) is False

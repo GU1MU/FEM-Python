@@ -34,7 +34,14 @@ from fem.core.model import (
     OutputRequest,
     SurfaceLoad,
 )
-from fem.geometry import LogicalEntityRef, namespace_part_logical_id
+from fem.geometry import (
+    LogicalEntityRef,
+    SketchCircle,
+    SketchGeometry,
+    SketchLine,
+    analyze_sketch_profiles,
+    namespace_part_logical_id,
+)
 from fem.geometry.recipe_topology import describe_recipe_topology
 from fem.geometry.recipes import PlateWithHoleGeometry
 from fem.selection import edges as mesh_edges
@@ -52,6 +59,14 @@ from .naming import NameAllocator
 
 class ScopeSelectionError(ValueError):
     """A semantic scope cannot be proved against the accepted mesh."""
+
+
+@dataclass(frozen=True, slots=True)
+class _PlateScopeGeometry:
+    left_x: float
+    right_x: float
+    height: float
+    hole_curves: tuple[tuple[str, float, float, float], ...]
 
 
 class _Snapshot(Protocol):
@@ -159,17 +174,14 @@ def build_eccentric_plate_scopes(
         raise ValueError("scope tolerance must be a positive finite number")
     part = _active_part(snapshot)
     recipe = getattr(part, "geometry_recipe", None)
-    if type(recipe) is not PlateWithHoleGeometry:
-        raise ScopeSelectionError(
-            "first-milestone scopes require PlateWithHoleGeometry"
-        )
+    scope_geometry = _plate_scope_geometry(recipe)
     topology = describe_recipe_topology(recipe)
     if not topology.exact:
         raise ScopeSelectionError(
             "scope selection requires exact recipe topology lineage"
         )
     descriptors = describe_native_regions(recipe)
-    required_builtins = {"LEFT", "RIGHT", "HOLE", "DOMAIN"}
+    required_builtins = {"LEFT", "RIGHT", "DOMAIN"}
     if {
         item.name for item in descriptors if item.name in required_builtins
     } != required_builtins:
@@ -198,11 +210,15 @@ def build_eccentric_plate_scopes(
         "edge:outer-loop",
         allowed_kind="edge",
     )
-    hole_ref = _part_logical_ref(
-        part_id,
-        recipe,
-        "edge:hole-loop",
-        allowed_kind="edge",
+    hole_refs = tuple(
+        _part_logical_ref(
+            part_id,
+            recipe,
+            f"edge:{curve_id}",
+            allowed_kind="edge",
+        )
+        for curve_id, _center_x, _center_y, _radius
+        in scope_geometry.hole_curves
     )
     domain_ref = _part_logical_ref(
         part_id,
@@ -217,7 +233,7 @@ def build_eccentric_plate_scopes(
     )
     hole = mesh_references_for_logical_entities(
         model,
-        (hole_ref,),
+        hole_refs,
         mesh_kind="edge",
     )
     domain = mesh_references_for_logical_entities(
@@ -229,8 +245,8 @@ def build_eccentric_plate_scopes(
     node_by_id = {int(node.id): node for node in mesh.nodes}
     selection_tolerance = tolerance * max(
         1.0,
-        float(recipe.width),
-        float(recipe.height),
+        abs(scope_geometry.right_x - scope_geometry.left_x),
+        scope_geometry.height,
     )
     expected_left = tuple(
         reference
@@ -238,7 +254,7 @@ def build_eccentric_plate_scopes(
         if _reference_on_x(
             reference,
             node_by_id,
-            0.0,
+            scope_geometry.left_x,
             selection_tolerance,
         )
     )
@@ -248,20 +264,20 @@ def build_eccentric_plate_scopes(
         if _reference_on_x(
             reference,
             node_by_id,
-            float(recipe.width),
+            scope_geometry.right_x,
             selection_tolerance,
         )
     )
     actual_left = _coordinate_edge_references(
         model,
         part_id,
-        x=0.0,
+        x=scope_geometry.left_x,
         tolerance=selection_tolerance,
     )
     actual_right = _coordinate_edge_references(
         model,
         part_id,
-        x=float(recipe.width),
+        x=scope_geometry.right_x,
         tolerance=selection_tolerance,
     )
     _require_exact_reference_set(
@@ -278,13 +294,17 @@ def build_eccentric_plate_scopes(
     radial = tuple(
         reference
         for reference in _boundary_edge_references(model, part_id)
-        if _reference_on_circle(
-            reference,
-            node_by_id,
-            float(recipe.hole_x),
-            float(recipe.hole_y),
-            float(recipe.hole_radius),
-            selection_tolerance,
+        if any(
+            _reference_on_circle(
+                reference,
+                node_by_id,
+                center_x,
+                center_y,
+                radius,
+                selection_tolerance,
+            )
+            for _curve_id, center_x, center_y, radius
+            in scope_geometry.hole_curves
         )
     )
     _require_exact_reference_set("hole edge", hole, radial)
@@ -307,7 +327,7 @@ def build_eccentric_plate_scopes(
         (
             names["hole"],
             "hole_edge",
-            "LogicalEntityRef(edge:hole-loop) + radial rule",
+            "logical sketch circles + radial rule",
             hole,
         ),
         (
@@ -578,9 +598,109 @@ def _active_part(snapshot: _Snapshot) -> object:
     return matches[0]
 
 
+def _plate_scope_geometry(recipe: object) -> _PlateScopeGeometry:
+    if type(recipe) is PlateWithHoleGeometry:
+        return _PlateScopeGeometry(
+            0.0,
+            float(recipe.width),
+            float(recipe.height),
+            (
+                (
+                    "hole-loop",
+                    float(recipe.hole_x),
+                    float(recipe.hole_y),
+                    float(recipe.hole_radius),
+                ),
+            ),
+        )
+    if type(recipe) is not SketchGeometry or not recipe.is_strict:
+        raise ScopeSelectionError(
+            "plate scopes require one rectangular planar profile with circular holes"
+        )
+    assert recipe.plane is not None
+    if recipe.plane != recipe.plane.xy():
+        raise ScopeSelectionError(
+            "automatic plate scopes currently require the global XY sketch plane"
+        )
+    analysis = analyze_sketch_profiles(recipe)
+    if analysis.blocking_diagnostics:
+        raise ScopeSelectionError(
+            "plate scopes require a valid closed planar sketch"
+        )
+    material_profiles = tuple(
+        profile
+        for profile in analysis.profiles
+        if profile.is_material and profile.nesting_depth == 0
+    )
+    hole_profiles = tuple(
+        profile for profile in analysis.profiles if profile.is_hole
+    )
+    if len(material_profiles) != 1 or not hole_profiles:
+        raise ScopeSelectionError(
+            "plate scopes require one outer profile and at least one hole"
+        )
+    material_curves = tuple(
+        recipe.curve(curve_id.lstrip("-"))
+        for curve_id in material_profiles[0].curve_ids
+    )
+    if len(material_curves) != 4 or any(
+        not isinstance(curve, SketchLine) for curve in material_curves
+    ):
+        raise ScopeSelectionError(
+            "automatic plate scopes require a rectangular outer profile"
+        )
+    material_points = tuple(
+        recipe.point(point_id)
+        for point_id in {
+            point_id
+            for curve in material_curves
+            for point_id in (curve.start_point_id, curve.end_point_id)
+        }
+    )
+    x_values = {round(point.u, 12) for point in material_points}
+    y_values = {round(point.v, 12) for point in material_points}
+    if len(material_points) != 4 or len(x_values) != 2 or len(y_values) != 2:
+        raise ScopeSelectionError(
+            "automatic plate scopes require an axis-aligned rectangle"
+        )
+    hole_curves: list[tuple[str, float, float, float]] = []
+    for profile in hole_profiles:
+        curve_ids = tuple(
+            curve_id.lstrip("-") for curve_id in profile.curve_ids
+        )
+        if len(curve_ids) != 1:
+            raise ScopeSelectionError(
+                "automatic plate scopes require circular hole profiles"
+            )
+        circle = recipe.curve(curve_ids[0])
+        if not isinstance(circle, SketchCircle) or circle.center_point_id is None:
+            raise ScopeSelectionError(
+                "automatic plate scopes require circular hole profiles"
+            )
+        center = recipe.point(circle.center_point_id)
+        hole_curves.append(
+            (
+                circle.id,
+                float(center.u),
+                float(center.v),
+                float(circle.radius),
+            )
+        )
+    min_x = min(float(point.u) for point in material_points)
+    max_x = max(float(point.u) for point in material_points)
+    min_y = min(float(point.v) for point in material_points)
+    max_y = max(float(point.v) for point in material_points)
+    return _PlateScopeGeometry(
+        min_x,
+        max_x,
+        max_y - min_y,
+        tuple(hole_curves),
+    )
+
+
 def _part_logical_ref(
     part_id: str,
-    recipe: PlateWithHoleGeometry,
+    recipe: object,
     logical_id: str,
     *,
     allowed_kind: str,

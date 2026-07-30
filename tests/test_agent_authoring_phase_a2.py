@@ -2,15 +2,23 @@ from __future__ import annotations
 
 import pytest
 
+from fem.geometry import SketchCircle, SketchGeometry, SketchRectangle
 from fem_agent.authoring import UnitContextSummary
 from fem_agent.geometry_authoring import (
+    add_planar_circle,
+    add_planar_polygon,
     box_geometry,
     cylinder_geometry,
     disk_geometry,
+    geometry_recipe_from_payload,
+    planar_geometry_catalog,
+    planar_polygon_geometry,
+    planar_sketch_geometry,
     plate_with_hole_geometry,
     rectangle_geometry,
     rotate_geometry,
     translate_geometry,
+    update_planar_point,
 )
 from fem_agent.naming import NameAllocator, NamePolicy, NamePolicyError
 
@@ -100,6 +108,85 @@ def test_a2_plate_hole_accepts_coordinates_or_offset_and_rejects_incomplete_hole
             hole_radius=1.0,
             hole_center=(0.5, 3.0),
         )
+
+
+def test_a2_incremental_circle_migrates_legacy_recipe_to_general_sketch() -> None:
+    legacy = plate_with_hole_geometry(
+        "实体-旧孔板",
+        width=100.0,
+        height=200.0,
+        hole_radius=10.0,
+        hole_center=(50.0, 100.0),
+    )
+
+    edited = add_planar_circle(
+        legacy.recipe,
+        center_x=50.0,
+        center_y=130.0,
+        radius=5.0,
+    )
+    restored = geometry_recipe_from_payload(edited.recipe_payload)
+
+    assert type(edited.recipe) is SketchGeometry
+    assert edited.recipe_payload["kind"] == "planar_sketch"
+    assert type(restored) is SketchGeometry
+    assert len(
+        [
+            curve
+            for curve in restored.curves
+            if isinstance(curve, SketchCircle)
+        ]
+    ) == 2
+    catalog = planar_geometry_catalog(restored)
+    assert catalog["kind"] == "planar_sketch"
+    assert catalog["point_count"] == 6
+    assert catalog["curve_count"] == 6
+    assert [
+        (curve["center_x"], curve["center_y"], curve["radius"])
+        for curve in catalog["curves"]
+        if curve["kind"] == "circle"
+    ] == [(50.0, 100.0, 10.0), (50.0, 130.0, 5.0)]
+
+
+def test_a2_active_planar_draft_uses_no_single_hole_recipe() -> None:
+    draft = planar_sketch_geometry(
+        "草图-双孔板",
+        contours=(
+            SketchRectangle("material", 0.0, 0.0, 100.0, 200.0),
+            SketchCircle("cut", 50.0, 100.0, 10.0),
+            SketchCircle("cut", 50.0, 130.0, 5.0),
+        ),
+    )
+
+    assert type(draft.recipe) is SketchGeometry
+    assert draft.recipe_payload["kind"] == "planar_sketch"
+    assert len(draft.preview.points) == 54
+
+
+def test_a2_general_polygon_profile_can_be_extended_and_reshaped() -> None:
+    polygon = planar_polygon_geometry(
+        "草图-三角板",
+        vertices=((0.0, 0.0), (10.0, 0.0), (0.0, 10.0)),
+    )
+    with_cutout = add_planar_circle(
+        polygon.recipe,
+        center_x=2.0,
+        center_y=2.0,
+        radius=0.5,
+    )
+    reshaped = update_planar_point(
+        with_cutout.recipe,
+        point_id="P2",
+        x=12.0,
+    )
+    with_second_profile = add_planar_polygon(
+        reshaped.recipe,
+        vertices=((6.0, 1.0), (7.0, 1.0), (6.5, 2.0)),
+    )
+
+    assert with_second_profile.recipe_payload["kind"] == "planar_sketch"
+    assert with_second_profile.recipe.point("P2").u == 12.0
+    assert len(with_second_profile.recipe.curves) == 7
 
 
 def test_a2_unit_summary_keeps_explicit_not_applicable_fields() -> None:

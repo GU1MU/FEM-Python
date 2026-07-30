@@ -69,9 +69,22 @@ from fem_agent.editing_authoring import (
     editable_object_catalog,
 )
 from fem_agent.geometry_authoring import (
+    add_planar_circle,
+    add_planar_polygon,
+    add_planar_rectangle,
+    box_geometry,
+    create_geometry_edit_proposal,
     create_geometry_proposal,
+    cylinder_geometry,
+    geometry_draft,
     geometry_recipe_from_payload,
-    plate_with_hole_geometry,
+    planar_geometry_catalog,
+    planar_polygon_geometry,
+    planar_sketch_geometry,
+    rotate_geometry,
+    translate_geometry,
+    update_planar_circle,
+    update_planar_point,
 )
 from fem_agent.mesh_authoring import MeshIntent, create_mesh_proposal
 from fem_agent.incremental_authoring import (
@@ -98,8 +111,7 @@ from fem_agent.result_authoring import (
     AgentResultVariable,
     AgentResultQueryBridge,
 )
-from fem.geometry import LogicalEntityRef
-from fem.mesh.settings import LocalMeshControl, MeshSizeFalloff
+from fem.geometry import SketchCircle, SketchRectangle
 
 
 class _SessionSnapshot(Protocol):
@@ -159,6 +171,35 @@ def _model_counts(artifact: object | None) -> tuple[int | None, int | None]:
     return _bounded_count(nodes), _bounded_count(elements)
 
 
+def _provider_recipe_kind(recipe: object | None) -> str | None:
+    if recipe is None:
+        return None
+    return {
+        "SketchGeometry": "planar_sketch",
+        "PlateWithHoleGeometry": "planar_sketch",
+        "RectangleGeometry": "planar_profile",
+        "DiskGeometry": "planar_profile",
+        "WireGeometry": "wire",
+        "BoxGeometry": "solid_primitive",
+        "CylinderGeometry": "solid_primitive",
+        "MovedGeometry": "transformed_geometry",
+        "RotatedGeometry": "transformed_geometry",
+    }.get(type(recipe).__name__, "native_geometry")
+
+
+def _profile_vertices(value: object) -> tuple[tuple[object, object], ...]:
+    if (
+        not isinstance(value, list)
+        or not 3 <= len(value) <= 64
+        or any(
+            not isinstance(item, Mapping) or set(item) != {"x", "y"}
+            for item in value
+        )
+    ):
+        raise ValueError("polygon vertices must contain 3 to 64 x/y objects")
+    return tuple((item["x"], item["y"]) for item in value)
+
+
 def authoring_context_from_snapshot(
     snapshot: _SessionSnapshot,
 ) -> AuthoringContext:
@@ -183,7 +224,7 @@ def authoring_context_from_snapshot(
                 PartSummary(
                     part_id=str(getattr(part, "id")),
                     name=str(getattr(part, "name")),
-                    recipe_kind=(None if recipe is None else type(recipe).__name__),
+                    recipe_kind=_provider_recipe_kind(recipe),
                     dimension=_recipe_dimension(recipe),
                     suppressed=bool(getattr(part, "suppressed", False)),
                 )
@@ -221,6 +262,15 @@ def authoring_context_from_snapshot(
     blocked_reason = None if supported else "V1 只绑定空白或 native 文档"
     deletable_objects_available = bool(deletable_object_catalog(snapshot))
     editable_objects_available = bool(editable_object_catalog(snapshot))
+    editable_geometry_available = bool(
+        supported
+        and source_kind == "native"
+        and any(
+            getattr(part, "geometry_recipe", None) is not None
+            and not bool(getattr(part, "suppressed", False))
+            for part in tuple(snapshot.parts)[:128]  # type: ignore[arg-type]
+        )
+    )
     capabilities = (
         CapabilitySummary("read_authoring_context", supported, blocked_reason),
         CapabilitySummary("review_requirements", supported, blocked_reason),
@@ -228,6 +278,15 @@ def authoring_context_from_snapshot(
         CapabilitySummary("present_static_proposal", supported, blocked_reason),
         CapabilitySummary("draft_native_geometry", supported, blocked_reason),
         CapabilitySummary("commit_native_geometry", supported, blocked_reason),
+        CapabilitySummary(
+            "edit_native_geometry",
+            editable_geometry_available,
+            (
+                None
+                if editable_geometry_available
+                else "当前 native 项目没有可编辑的部件几何"
+            ),
+        ),
         CapabilitySummary(
             "draft_mesh_intent",
             supported and source_kind == "native",
@@ -976,6 +1035,7 @@ class SessionGeometryAuthoringPort:
             in {
                 OperationKind.CREATE_NATIVE_PROJECT,
                 OperationKind.ADD_NATIVE_PART,
+                OperationKind.REPLACE_PART_GEOMETRY,
             }
         )
         mesh_valid = (
@@ -1086,6 +1146,15 @@ class SessionGeometryAuthoringPort:
         parameters = operation.parameters
         recipe = geometry_recipe_from_payload(parameters["recipe"])
         snapshot = self._session.snapshot()
+        if operation.kind is OperationKind.REPLACE_PART_GEOMETRY:
+            self._session.replace_part_geometry(
+                str(parameters["part_id"]),
+                recipe,
+                expected_session_revision=proposal.base_session_revision,
+            )
+            succeeded = replace(record, state=ProposalState.SUCCEEDED)
+            self._records[proposal_id] = succeeded
+            return succeeded
         part_name = NameAllocator(
             {"parts": (part.name for part in snapshot.parts)}
         ).require_next(
@@ -2152,30 +2221,138 @@ def create_session_authoring_workflow_controller(
         )
 
     def prepare_geometry(
-        _arguments: Mapping[str, object],
+        arguments: Mapping[str, object],
         controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
+        if set(arguments) != {"part_function", "geometry"}:
+            raise AuthoringContractError(
+                "prepare_geometry_proposal requires part_function and geometry"
+            )
+        part_function = str(arguments["part_function"]).strip()
+        raw_geometry = arguments["geometry"]
+        if not part_function or not isinstance(raw_geometry, Mapping):
+            raise AuthoringContractError(
+                "part_function and geometry must be non-empty"
+            )
+        geometry = dict(raw_geometry)
+        kind = str(geometry.get("kind", ""))
+        recipe_name = (
+            f"草图-{part_function}"
+            if kind == "planar_profiles"
+            else f"实体-{part_function}"
+        )
+        if kind == "planar_profiles":
+            if set(geometry) != {"kind", "profiles"}:
+                raise ValueError("planar geometry fields do not match")
+            raw_profiles = geometry["profiles"]
+            if not isinstance(raw_profiles, list) or not raw_profiles:
+                raise ValueError("profiles must be a non-empty array")
+            profiles = []
+            for raw_profile in raw_profiles:
+                if not isinstance(raw_profile, Mapping):
+                    raise ValueError("each profile must be an object")
+                profiles.append(dict(raw_profile))
+            first = profiles[0]
+            first_kind = str(first.pop("kind", ""))
+            if first_kind == "rectangle":
+                if set(first) != {"x", "y", "width", "height"}:
+                    raise ValueError("rectangle profile fields do not match")
+                draft = planar_sketch_geometry(
+                    recipe_name,
+                    contours=(
+                        SketchRectangle(
+                            "material",
+                            first["x"],
+                            first["y"],
+                            first["width"],
+                            first["height"],
+                        ),
+                    ),
+                )
+            elif first_kind == "circle":
+                if set(first) != {"center_x", "center_y", "radius"}:
+                    raise ValueError("circle profile fields do not match")
+                draft = planar_sketch_geometry(
+                    recipe_name,
+                    contours=(
+                        SketchCircle(
+                            "material",
+                            first["center_x"],
+                            first["center_y"],
+                            first["radius"],
+                        ),
+                    ),
+                )
+            elif first_kind == "polygon":
+                if set(first) != {"vertices"}:
+                    raise ValueError("polygon profile fields do not match")
+                draft = planar_polygon_geometry(
+                    recipe_name,
+                    vertices=_profile_vertices(first["vertices"]),
+                )
+            else:
+                raise ValueError("unsupported planar profile kind")
+            for profile in profiles[1:]:
+                profile_kind = str(profile.pop("kind", ""))
+                if profile_kind == "rectangle":
+                    if set(profile) != {"x", "y", "width", "height"}:
+                        raise ValueError(
+                            "rectangle profile fields do not match"
+                        )
+                    draft = add_planar_rectangle(draft.recipe, **profile)
+                elif profile_kind == "circle":
+                    if set(profile) != {"center_x", "center_y", "radius"}:
+                        raise ValueError("circle profile fields do not match")
+                    draft = add_planar_circle(draft.recipe, **profile)
+                elif profile_kind == "polygon":
+                    if set(profile) != {"vertices"}:
+                        raise ValueError("polygon profile fields do not match")
+                    draft = add_planar_polygon(
+                        draft.recipe,
+                        vertices=_profile_vertices(profile["vertices"]),
+                    )
+                else:
+                    raise ValueError("unsupported planar profile kind")
+            geometry_summary = (
+                f"{len(profiles)} 个闭合平面轮廓"
+            )
+        elif kind == "box":
+            if set(geometry) != {"kind", "width", "depth", "height"}:
+                raise ValueError("box geometry fields do not match")
+            draft = box_geometry(
+                recipe_name,
+                width=geometry["width"],
+                depth=geometry["depth"],
+                height=geometry["height"],
+            )
+            geometry_summary = (
+                f"长方体 {geometry['width']} × {geometry['depth']} × "
+                f"{geometry['height']}"
+            )
+        elif kind == "cylinder":
+            if set(geometry) != {"kind", "radius", "height"}:
+                raise ValueError("cylinder geometry fields do not match")
+            draft = cylinder_geometry(
+                recipe_name,
+                radius=geometry["radius"],
+                height=geometry["height"],
+            )
+            geometry_summary = (
+                f"圆柱，半径 {geometry['radius']}，高度 {geometry['height']}"
+            )
+        else:
+            raise ValueError("unsupported geometry kind")
         requirements = controller.collected_requirements("geometry")
         metadata = envelope(controller, "geometry")
         context = current_context()
-        draft = plate_with_hole_geometry(
-            "实体-偏心孔板",
-            width=float(requirements["plate_width"]),
-            height=float(requirements["plate_height"]),
-            hole_radius=float(requirements["hole_radius"]),
-            hole_center=(
-                float(requirements["hole_center_x"]),
-                float(requirements["hole_center_y"]),
-            ),
-        )
         suffix = str(metadata.pop("identity_suffix"))
         proposal = create_geometry_proposal(
             proposal_id=f"proposal-{suffix}",
             context=context,
             draft=draft,
-            part_function="偏心孔板",
+            part_function=part_function,
             project_function=(
-                "偏心孔板"
+                part_function
                 if context.binding.source_kind == "blank"
                 else None
             ),
@@ -2194,15 +2371,165 @@ def create_session_authoring_workflow_controller(
         return proposal_outcome(
             proposal,
             summary=(
-                f"创建 {requirements['plate_width']} × "
-                f"{requirements['plate_height']} "
-                f"{requirements['length_unit']} 的偏心孔板；孔半径 "
-                f"{requirements['hole_radius']}，孔心 "
-                f"({requirements['hole_center_x']}, "
-                f"{requirements['hole_center_y']})"
+                f"创建{geometry_summary}，长度单位 "
+                f"{requirements['length_unit']}"
             ),
             impact="确认后创建该几何并刷新 GUI",
             confirm_label="加入模型",
+        )
+
+    def read_geometry_edit_context(
+        arguments: Mapping[str, object],
+        _controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        part_id = str(arguments["part_id"])
+        snapshot = session.snapshot()
+        part = next(
+            (
+                candidate
+                for candidate in snapshot.parts
+                if str(candidate.id) == part_id and not candidate.suppressed
+            ),
+            None,
+        )
+        if part is None or part.geometry_recipe is None:
+            raise AuthoringContractError(
+                "part_id does not identify one editable native Part"
+            )
+        try:
+            catalog = planar_geometry_catalog(part.geometry_recipe)
+        except TypeError:
+            catalog = {
+                "kind": _provider_recipe_kind(part.geometry_recipe),
+                "supported_edits": ["translate", "rotate"],
+            }
+        else:
+            catalog["supported_edits"] = [
+                "add_circle",
+                "add_rectangle",
+                "add_polygon",
+                "update_point",
+                "update_circle",
+                "translate",
+                "rotate",
+            ]
+        return AuthoringToolOutcome(
+            "Editable geometry context read locally.",
+            {
+                "part_id": part_id,
+                "part_name": str(part.name),
+                **catalog,
+            },
+        )
+
+    def prepare_geometry_edit(
+        arguments: Mapping[str, object],
+        controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        part_id = str(arguments["part_id"])
+        raw_edit = arguments["edit"]
+        if not isinstance(raw_edit, Mapping):
+            raise TypeError("edit must be an object")
+        edit = dict(raw_edit)
+        operation = str(edit.pop("operation"))
+        snapshot = session.snapshot()
+        part = next(
+            (
+                candidate
+                for candidate in snapshot.parts
+                if str(candidate.id) == part_id and not candidate.suppressed
+            ),
+            None,
+        )
+        if part is None or part.geometry_recipe is None:
+            raise AuthoringContractError(
+                "part_id does not identify one editable native Part"
+            )
+        if operation == "add_circle":
+            if set(edit) != {"center_x", "center_y", "radius"}:
+                raise ValueError("add_circle fields do not match")
+            draft = add_planar_circle(part.geometry_recipe, **edit)
+            summary = (
+                f"在部件 {part.name} 的平面草图中增加圆："
+                f"圆心 ({edit['center_x']}, {edit['center_y']})，"
+                f"半径 {edit['radius']}"
+            )
+        elif operation == "add_rectangle":
+            if set(edit) != {"x", "y", "width", "height"}:
+                raise ValueError("add_rectangle fields do not match")
+            draft = add_planar_rectangle(part.geometry_recipe, **edit)
+            summary = (
+                f"在部件 {part.name} 的平面草图中增加矩形轮廓："
+                f"起点 ({edit['x']}, {edit['y']})，"
+                f"尺寸 {edit['width']} × {edit['height']}"
+            )
+        elif operation == "add_polygon":
+            if set(edit) != {"vertices"}:
+                raise ValueError("add_polygon fields do not match")
+            raw_vertices = edit["vertices"]
+            if not isinstance(raw_vertices, list) or any(
+                not isinstance(item, Mapping) or set(item) != {"x", "y"}
+                for item in raw_vertices
+            ):
+                raise ValueError("vertices must contain x/y objects")
+            vertices = tuple(
+                (item["x"], item["y"]) for item in raw_vertices
+            )
+            draft = add_planar_polygon(
+                part.geometry_recipe,
+                vertices=vertices,
+            )
+            summary = (
+                f"在部件 {part.name} 的平面草图中增加"
+                f"{len(vertices)} 边闭合轮廓"
+            )
+        elif operation == "update_point":
+            allowed = {"point_id", "x", "y"}
+            if (
+                not {"point_id"} <= set(edit) <= allowed
+                or len(edit) == 1
+            ):
+                raise ValueError("update_point fields do not match")
+            draft = update_planar_point(part.geometry_recipe, **edit)
+            summary = f"更新部件 {part.name} 中的草图点 {edit['point_id']}"
+        elif operation == "update_circle":
+            allowed = {"circle_id", "center_x", "center_y", "radius"}
+            if (
+                not {"circle_id"} <= set(edit) <= allowed
+                or len(edit) == 1
+            ):
+                raise ValueError("update_circle fields do not match")
+            draft = update_planar_circle(part.geometry_recipe, **edit)
+            summary = f"更新部件 {part.name} 中的圆 {edit['circle_id']}"
+        elif operation == "translate":
+            if not {"dx", "dy"} <= set(edit) <= {"dx", "dy", "dz"}:
+                raise ValueError("translate fields do not match")
+            base_draft = geometry_draft(part.geometry_recipe)
+            draft = translate_geometry(base_draft, **edit)
+            summary = f"平移部件 {part.name}"
+        elif operation == "rotate":
+            if set(edit) != {"axis", "angle_degrees"}:
+                raise ValueError("rotate fields do not match")
+            base_draft = geometry_draft(part.geometry_recipe)
+            draft = rotate_geometry(base_draft, **edit)
+            summary = f"旋转部件 {part.name}"
+        else:
+            raise ValueError("unsupported incremental geometry edit")
+        metadata = envelope(controller, "geometry-edit")
+        suffix = str(metadata.pop("identity_suffix"))
+        proposal = create_geometry_edit_proposal(
+            proposal_id=f"proposal-{suffix}",
+            context=current_context(),
+            part_id=part_id,
+            draft=draft,
+            summary=summary,
+            **metadata,
+        )
+        return proposal_outcome(
+            proposal,
+            summary=summary,
+            impact="确认后原位更新该部件，并使旧网格与结果失效",
+            confirm_label="应用修改",
         )
 
     def prepare_mesh(
@@ -2219,13 +2546,6 @@ def create_session_authoring_workflow_controller(
             str(requirements["mesh_cell_shape"]),
             int(requirements["mesh_order"]),
             global_size=float(requirements["mesh_global_size"]),
-            local_controls=(
-                LocalMeshControl(
-                    LogicalEntityRef("edge:hole-loop"),
-                    float(requirements["hole_mesh_size"]),
-                    MeshSizeFalloff("target_radius", 0.0, 2.0),
-                ),
-            ),
         )
         suffix = str(metadata.pop("identity_suffix"))
         proposal = create_mesh_proposal(
@@ -2240,8 +2560,7 @@ def create_session_authoring_workflow_controller(
             summary=(
                 f"划分 {requirements['mesh_order']} 阶"
                 f"{requirements['mesh_cell_shape']}网格；全局尺寸 "
-                f"{requirements['mesh_global_size']}，孔边尺寸 "
-                f"{requirements['hole_mesh_size']}"
+                f"{requirements['mesh_global_size']}"
             ),
             impact="确认后划分网格，成功时安装网格并刷新 GUI",
             confirm_label="开始划分",
@@ -2484,6 +2803,8 @@ def create_session_authoring_workflow_controller(
         current_context,
         {
             "prepare_geometry_proposal": prepare_geometry,
+            "read_geometry_edit_context": read_geometry_edit_context,
+            "prepare_geometry_edit": prepare_geometry_edit,
             "prepare_mesh_proposal": prepare_mesh,
             "apply_model_definition": apply_model_definition,
             "run_native_preflight": run_preflight,

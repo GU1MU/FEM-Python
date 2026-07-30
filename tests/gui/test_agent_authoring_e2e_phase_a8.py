@@ -12,6 +12,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QToolButton
 
+from fem.geometry import SketchCircle, SketchGeometry
 from fem_agent.authoring import (
     AuthoringContext,
     FakeAuthoringPort,
@@ -476,7 +477,27 @@ def test_a8_production_geometry_waits_for_one_gui_acceptance() -> None:
     )
     prepared = controller.dispatch(
         "prepare_geometry_proposal",
-        {},
+        {
+            "part_function": "偏心孔板",
+            "geometry": {
+                "kind": "planar_profiles",
+                "profiles": [
+                    {
+                        "kind": "rectangle",
+                        "x": 0.0,
+                        "y": 0.0,
+                        "width": 120.0,
+                        "height": 60.0,
+                    },
+                    {
+                        "kind": "circle",
+                        "center_x": 68.0,
+                        "center_y": 26.0,
+                        "radius": 8.0,
+                    },
+                ],
+            },
+        },
         ToolExecutionContext("session-a8", 0, "geometry-a8"),
     )
     proposal_id = prepared.data["proposal_id"]
@@ -500,6 +521,72 @@ def test_a8_production_geometry_waits_for_one_gui_acceptance() -> None:
 
     window.viewport_panel.agent_chat_drawer.agent_runtime.shutdown()
     window.close()
+
+
+def test_a8_production_geometry_edit_adds_second_hole_in_place() -> None:
+    session = _a4_session()
+    before = session.snapshot()
+    part_id = str(before.parts[0].id)
+    refreshes: list[int] = []
+    port = SessionGeometryAuthoringPort(
+        session,
+        lambda: refreshes.append(session.session_revision),
+    )
+    bridge = AgentAuthoringBridge(port)
+    bridge.bind_snapshot(before)
+    controller = create_session_authoring_workflow_controller(
+        session,
+        bridge,
+        AgentResultQueryBridge(SessionResultQueryPort(session)),
+    )
+    controller._stage = AuthoringWorkflowStage.DEFINITIONS_READY
+
+    tool_names = {tool.name for tool in controller.definitions}
+    assert {
+        "read_geometry_edit_context",
+        "prepare_geometry_edit",
+    } <= tool_names
+    context_result = controller.dispatch(
+        "read_geometry_edit_context",
+        {"part_id": part_id},
+        ToolExecutionContext("session-a8", 0, "geometry-edit-context"),
+    )
+    prepared = controller.dispatch(
+        "prepare_geometry_edit",
+        {
+            "part_id": part_id,
+            "edit": {
+                "operation": "add_circle",
+                "center_x": 6.5,
+                "center_y": 4.0,
+                "radius": 0.5,
+            },
+        },
+        ToolExecutionContext("session-a8", 0, "geometry-edit-proposal"),
+    )
+
+    assert context_result.ok and prepared.ok
+    assert controller.stage is AuthoringWorkflowStage.GEOMETRY_PENDING
+    proposal_id = prepared.data["proposal_id"]
+    accepted = bridge.accept_from_gui_control(proposal_id)
+    controller.record_proposal_state("geometry", accepted.state)
+    after = session.snapshot()
+
+    assert accepted.state is ProposalState.SUCCEEDED
+    assert controller.stage is AuthoringWorkflowStage.MESH_READY
+    assert len(after.parts) == 1
+    assert str(after.parts[0].id) == part_id
+    assert type(after.parts[0].geometry_recipe) is SketchGeometry
+    assert len(
+        [
+            curve
+            for curve in after.parts[0].geometry_recipe.curves
+            if isinstance(curve, SketchCircle)
+        ]
+    ) == 2
+    assert not after.model_current
+    assert not after.mesh_current
+    assert refreshes == [after.session_revision]
 
 
 def test_a8_direct_definition_actions_apply_one_by_one_and_refresh_gui() -> None:

@@ -6,7 +6,7 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 from fem.application import ModelSession, UnitContext
-from fem.geometry import RectangleGeometry
+from fem.geometry import RectangleGeometry, SketchCircle, SketchGeometry
 from fem_agent.authoring import (
     AgentProposal,
     AuthoringAuthorizationError,
@@ -17,6 +17,8 @@ from fem_agent.authoring import (
     UnitContextSummary,
 )
 from fem_agent.geometry_authoring import (
+    add_planar_circle,
+    create_geometry_edit_proposal,
     create_geometry_proposal,
     disk_geometry,
     plate_with_hole_geometry,
@@ -170,6 +172,65 @@ def test_a2_native_accept_adds_exactly_one_allocated_part_and_one_refresh() -> N
     assert receipt.state is ProposalState.SUCCEEDED
     assert after.session_revision == before.session_revision + 1
     assert [part.name for part in after.parts] == ["部件-板", "部件-圆盘"]
+    assert refreshes == [after.session_revision]
+
+
+def test_a2_existing_part_adds_second_hole_without_delete_or_recreate() -> None:
+    session = ModelSession()
+    original = plate_with_hole_geometry(
+        "实体-旧孔板",
+        width=100.0,
+        height=200.0,
+        hole_radius=10.0,
+        hole_center=(50.0, 100.0),
+    )
+    session.create_native_project_with_first_part(
+        "模型-双孔板",
+        _application_units(),
+        original.recipe,
+        part_name="部件-孔板",
+    )
+    refreshes: list[int] = []
+    bridge = _bridge(session, refreshes)
+    before = session.snapshot()
+    part_id = str(before.parts[0].id)
+    context = authoring_context_from_snapshot(before)
+    assert context.parts[0].recipe_kind == "planar_sketch"
+    edited = add_planar_circle(
+        before.parts[0].geometry_recipe,
+        center_x=50.0,
+        center_y=130.0,
+        radius=5.0,
+    )
+    proposal = create_geometry_edit_proposal(
+        proposal_id="proposal-add-second-hole",
+        agent_session_id="agent-session-a2",
+        turn_id="turn-add-second-hole",
+        source_tool_call_ids=("call-add-second-hole",),
+        context=context,
+        draft_revision=1,
+        part_id=part_id,
+        draft=edited,
+        summary="增加第二个圆孔",
+    )
+
+    bridge.register_proposal(proposal)
+    receipt = bridge.accept_from_gui_control(proposal.proposal_id)
+    after = session.snapshot()
+
+    assert receipt.state is ProposalState.SUCCEEDED
+    assert len(after.parts) == 1
+    assert str(after.parts[0].id) == part_id
+    assert after.parts[0].name == "部件-孔板"
+    assert type(after.parts[0].geometry_recipe) is SketchGeometry
+    assert len(
+        [
+            curve
+            for curve in after.parts[0].geometry_recipe.curves
+            if isinstance(curve, SketchCircle)
+        ]
+    ) == 2
+    assert after.session_revision == before.session_revision + 1
     assert refreshes == [after.session_revision]
 
 

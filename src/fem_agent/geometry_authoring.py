@@ -1,4 +1,4 @@
-"""Typed A2 geometry drafts, bounded previews, and geometry proposals."""
+"""Typed native geometry drafts, bounded previews, and edit proposals."""
 
 from __future__ import annotations
 
@@ -16,7 +16,15 @@ from fem.geometry import (
     PlateWithHoleGeometry,
     RectangleGeometry,
     RotatedGeometry,
+    SketchArc,
+    SketchCircle,
+    SketchGeometry,
+    SketchLine,
+    SketchPlane,
+    SketchPoint,
+    SketchRectangle,
     geometry_dimension,
+    legacy_sketch_to_strict,
 )
 
 from .authoring import (
@@ -32,7 +40,7 @@ from .naming import NameAllocator
 
 
 _PREVIEW_SEGMENTS = 24
-_MAX_PREVIEW_POINTS = 64
+_MAX_PREVIEW_POINTS = 128
 
 
 def _finite(value: object, field_name: str) -> float:
@@ -99,6 +107,15 @@ class GeometryDraft:
     def __post_init__(self) -> None:
         if not isinstance(self.recipe, NATIVE_GEOMETRY_TYPES):
             raise TypeError("recipe must be native geometry")
+        if (
+            type(self.recipe) is SketchGeometry
+            and self.recipe.is_strict
+            and (
+                len(self.recipe.points) > 128
+                or len(self.recipe.curves) > 128
+            )
+        ):
+            raise ValueError("planar sketch exceeds the 128-entity bound")
         payload = geometry_recipe_to_payload(self.recipe)
         if dict(self.recipe_payload) != payload:
             raise ValueError("recipe_payload does not match recipe")
@@ -134,6 +151,88 @@ def disk_geometry(name: str, *, radius: Real) -> GeometryDraft:
     return _draft(recipe, {"radius": recipe.radius})
 
 
+def planar_sketch_geometry(
+    name: str,
+    *,
+    contours: Sequence[SketchRectangle | SketchCircle],
+) -> GeometryDraft:
+    """Build a general strict XY sketch from bounded closed contours."""
+
+    values = tuple(contours)
+    if not values:
+        raise ValueError("contours must contain at least one closed contour")
+    if any(
+        type(item) not in {SketchRectangle, SketchCircle}
+        or (isinstance(item, SketchCircle) and not item.is_legacy)
+        for item in values
+    ):
+        raise TypeError(
+            "contours must contain legacy SketchRectangle or SketchCircle values"
+        )
+    recipe = legacy_sketch_to_strict(SketchGeometry(name, values))
+    return _draft(
+        recipe,
+        {
+            "point_count": float(len(recipe.points)),
+            "curve_count": float(len(recipe.curves)),
+        },
+    )
+
+
+def planar_polygon_geometry(
+    name: str,
+    *,
+    vertices: Sequence[Sequence[Real]],
+) -> GeometryDraft:
+    """Build a strict XY sketch containing one polygonal profile."""
+
+    values = tuple(vertices)
+    if not 3 <= len(values) <= 64:
+        raise ValueError("polygon vertices must contain between 3 and 64 points")
+    coordinates: list[tuple[float, float]] = []
+    for index, vertex in enumerate(values):
+        if isinstance(vertex, (str, bytes, bytearray)):
+            raise TypeError("polygon vertices must contain coordinate pairs")
+        components = tuple(vertex)
+        if len(components) != 2:
+            raise ValueError("polygon vertices must contain coordinate pairs")
+        coordinates.append(
+            (
+                _finite(components[0], f"vertices[{index}].x"),
+                _finite(components[1], f"vertices[{index}].y"),
+            )
+        )
+    if len(set(coordinates)) != len(coordinates):
+        raise ValueError("polygon vertices must be distinct")
+    point_ids = tuple(f"P{index + 1}" for index in range(len(coordinates)))
+    line_ids = tuple(f"L{index + 1}" for index in range(len(coordinates)))
+    points = tuple(
+        SketchPoint(point_id, x, y)
+        for point_id, (x, y) in zip(point_ids, coordinates, strict=True)
+    )
+    curves = tuple(
+        SketchLine(
+            line_ids[index],
+            point_ids[index],
+            point_ids[(index + 1) % len(point_ids)],
+        )
+        for index in range(len(point_ids))
+    )
+    recipe = SketchGeometry(
+        name,
+        SketchPlane.xy(),
+        points,
+        curves,
+    )
+    return _draft(
+        recipe,
+        {
+            "point_count": float(len(points)),
+            "curve_count": float(len(curves)),
+        },
+    )
+
+
 def plate_with_hole_geometry(
     name: str,
     *,
@@ -143,7 +242,11 @@ def plate_with_hole_geometry(
     hole_center: Sequence[Real] | None = None,
     center_offset: Sequence[Real] | None = None,
 ) -> GeometryDraft:
-    """Build a plate using exactly one explicit hole-position convention."""
+    """Build the legacy single-hole compatibility recipe.
+
+    Active Agent tools use general strict planar sketches. This constructor is
+    retained only to decode and test projects authored before that migration.
+    """
 
     if (hole_center is None) == (center_offset is None):
         raise ValueError("provide exactly one of hole_center or center_offset")
@@ -400,6 +503,372 @@ def create_geometry_proposal(
     )
 
 
+def create_geometry_edit_proposal(
+    *,
+    proposal_id: str,
+    agent_session_id: str,
+    turn_id: str,
+    source_tool_call_ids: Sequence[str],
+    context: AuthoringContext,
+    draft_revision: int,
+    part_id: str,
+    draft: GeometryDraft,
+    summary: str,
+) -> AgentProposal:
+    """Create a revision-bound in-place Part geometry edit proposal."""
+
+    if type(context) is not AuthoringContext:
+        raise TypeError("context must be AuthoringContext")
+    if type(draft) is not GeometryDraft:
+        raise TypeError("draft must be GeometryDraft")
+    target = next(
+        (
+            part
+            for part in context.parts
+            if part.part_id == str(part_id) and not part.suppressed
+        ),
+        None,
+    )
+    if (
+        not context.binding.supported
+        or context.binding.source_kind != "native"
+        or target is None
+    ):
+        raise AuthoringContractError(
+            "geometry edit requires one editable native Part"
+        )
+    return AgentProposal.create(
+        proposal_id=proposal_id,
+        proposal_kind=ProposalKind.GEOMETRY,
+        agent_session_id=agent_session_id,
+        turn_id=turn_id,
+        source_tool_call_ids=tuple(source_tool_call_ids),
+        target_document_id=context.binding.document_id,
+        target_session_id=context.binding.session_id,
+        base_session_revision=context.binding.session_revision,
+        draft_revision=draft_revision,
+        operations=(
+            ModelOperation(
+                OperationKind.REPLACE_PART_GEOMETRY,
+                {
+                    "part_id": target.part_id,
+                    "recipe": dict(draft.recipe_payload),
+                },
+            ),
+        ),
+        preconditions={
+            "source_kind": "native",
+            "part_id": target.part_id,
+        },
+        expected_changes={
+            "part_count_delta": 0,
+            "edited_part_id": target.part_id,
+            "projection_refresh_count": 1,
+        },
+        invalidation_impact={
+            "mesh": True,
+            "definitions": True,
+            "results": True,
+        },
+        display_summary={
+            "title": f"修改部件 {target.name}",
+            "target_model": context.model_name,
+            "operation": OperationKind.REPLACE_PART_GEOMETRY.value,
+            "part_id": target.part_id,
+            "part_name": target.name,
+            "recipe_type": "planar_sketch",
+            "dimension": geometry_dimension(draft.recipe),
+            "key_dimensions": dict(draft.key_dimensions),
+            "summary": str(summary).strip(),
+            "expected_new_objects": [],
+            "invalidated_objects": ["mesh", "definitions", "results"],
+            "base_session_revision": context.binding.session_revision,
+            "preview": draft.preview.to_dict(),
+        },
+    )
+
+
+def add_planar_circle(
+    recipe: object,
+    *,
+    center_x: Real,
+    center_y: Real,
+    radius: Real,
+) -> GeometryDraft:
+    sketch = _as_strict_planar_sketch(recipe)
+    point_id = _next_sketch_ids(sketch, "P", 1)[0]
+    curve_id = _next_sketch_ids(sketch, "C", 1)[0]
+    updated = SketchGeometry(
+        sketch.name,
+        sketch.plane,
+        (
+            *sketch.points,
+            SketchPoint(
+                point_id,
+                _finite(center_x, "center_x"),
+                _finite(center_y, "center_y"),
+            ),
+        ),
+        (
+            *sketch.curves,
+            SketchCircle(curve_id, point_id, _finite(radius, "radius")),
+        ),
+    )
+    return _draft(
+        updated,
+        {
+            "point_count": float(len(updated.points)),
+            "curve_count": float(len(updated.curves)),
+        },
+    )
+
+
+def add_planar_rectangle(
+    recipe: object,
+    *,
+    x: Real,
+    y: Real,
+    width: Real,
+    height: Real,
+) -> GeometryDraft:
+    sketch = _as_strict_planar_sketch(recipe)
+    x_value = _finite(x, "x")
+    y_value = _finite(y, "y")
+    width_value = _finite(width, "width")
+    height_value = _finite(height, "height")
+    if width_value <= 0.0 or height_value <= 0.0:
+        raise ValueError("rectangle width and height must be positive")
+    point_ids = _next_sketch_ids(sketch, "P", 4)
+    line_ids = _next_sketch_ids(sketch, "L", 4)
+    points = (
+        SketchPoint(point_ids[0], x_value, y_value),
+        SketchPoint(point_ids[1], x_value + width_value, y_value),
+        SketchPoint(
+            point_ids[2],
+            x_value + width_value,
+            y_value + height_value,
+        ),
+        SketchPoint(point_ids[3], x_value, y_value + height_value),
+    )
+    lines = tuple(
+        SketchLine(
+            line_ids[index],
+            point_ids[index],
+            point_ids[(index + 1) % 4],
+        )
+        for index in range(4)
+    )
+    updated = SketchGeometry(
+        sketch.name,
+        sketch.plane,
+        (*sketch.points, *points),
+        (*sketch.curves, *lines),
+    )
+    return _draft(
+        updated,
+        {
+            "point_count": float(len(updated.points)),
+            "curve_count": float(len(updated.curves)),
+        },
+    )
+
+
+def add_planar_polygon(
+    recipe: object,
+    *,
+    vertices: Sequence[Sequence[Real]],
+) -> GeometryDraft:
+    sketch = _as_strict_planar_sketch(recipe)
+    values = tuple(vertices)
+    if not 3 <= len(values) <= 64:
+        raise ValueError("polygon vertices must contain between 3 and 64 points")
+    coordinates: list[tuple[float, float]] = []
+    for index, vertex in enumerate(values):
+        if isinstance(vertex, (str, bytes, bytearray)):
+            raise TypeError("polygon vertices must contain coordinate pairs")
+        components = tuple(vertex)
+        if len(components) != 2:
+            raise ValueError("polygon vertices must contain coordinate pairs")
+        coordinates.append(
+            (
+                _finite(components[0], f"vertices[{index}].x"),
+                _finite(components[1], f"vertices[{index}].y"),
+            )
+        )
+    if len(set(coordinates)) != len(coordinates):
+        raise ValueError("polygon vertices must be distinct")
+    point_ids = _next_sketch_ids(sketch, "P", len(coordinates))
+    line_ids = _next_sketch_ids(sketch, "L", len(coordinates))
+    points = tuple(
+        SketchPoint(point_id, x, y)
+        for point_id, (x, y) in zip(point_ids, coordinates, strict=True)
+    )
+    lines = tuple(
+        SketchLine(
+            line_ids[index],
+            point_ids[index],
+            point_ids[(index + 1) % len(point_ids)],
+        )
+        for index in range(len(point_ids))
+    )
+    updated = SketchGeometry(
+        sketch.name,
+        sketch.plane,
+        (*sketch.points, *points),
+        (*sketch.curves, *lines),
+    )
+    return _draft(
+        updated,
+        {
+            "point_count": float(len(updated.points)),
+            "curve_count": float(len(updated.curves)),
+        },
+    )
+
+
+def update_planar_point(
+    recipe: object,
+    *,
+    point_id: str,
+    x: Real | None = None,
+    y: Real | None = None,
+) -> GeometryDraft:
+    sketch = _as_strict_planar_sketch(recipe)
+    if x is None and y is None:
+        raise ValueError("update_planar_point requires x or y")
+    if str(point_id) not in {point.id for point in sketch.points}:
+        raise ValueError("point_id does not identify one editable point")
+    updated = SketchGeometry(
+        sketch.name,
+        sketch.plane,
+        tuple(
+            SketchPoint(
+                point.id,
+                point.u if point.id != str(point_id) or x is None else _finite(x, "x"),
+                point.v if point.id != str(point_id) or y is None else _finite(y, "y"),
+            )
+            for point in sketch.points
+        ),
+        sketch.curves,
+    )
+    return _draft(
+        updated,
+        {
+            "point_count": float(len(updated.points)),
+            "curve_count": float(len(updated.curves)),
+        },
+    )
+
+
+def update_planar_circle(
+    recipe: object,
+    *,
+    circle_id: str,
+    center_x: Real | None = None,
+    center_y: Real | None = None,
+    radius: Real | None = None,
+) -> GeometryDraft:
+    sketch = _as_strict_planar_sketch(recipe)
+    target = next(
+        (
+            curve
+            for curve in sketch.curves
+            if isinstance(curve, SketchCircle) and curve.id == str(circle_id)
+        ),
+        None,
+    )
+    if target is None or target.center_point_id is None:
+        raise ValueError("circle_id does not identify one editable circle")
+    points = []
+    for point in sketch.points:
+        if point.id != target.center_point_id:
+            points.append(point)
+            continue
+        points.append(
+            SketchPoint(
+                point.id,
+                point.u if center_x is None else _finite(center_x, "center_x"),
+                point.v if center_y is None else _finite(center_y, "center_y"),
+            )
+        )
+    curves = tuple(
+        (
+            SketchCircle(
+                curve.id,
+                curve.center_point_id,
+                curve.radius if radius is None else _finite(radius, "radius"),
+            )
+            if curve is target
+            else curve
+        )
+        for curve in sketch.curves
+    )
+    updated = SketchGeometry(
+        sketch.name,
+        sketch.plane,
+        tuple(points),
+        curves,
+    )
+    return _draft(
+        updated,
+        {
+            "point_count": float(len(updated.points)),
+            "curve_count": float(len(updated.curves)),
+        },
+    )
+
+
+def planar_geometry_catalog(recipe: object) -> dict[str, object]:
+    """Return a bounded editable projection without exposing CAD internals."""
+
+    sketch = _as_strict_planar_sketch(recipe)
+    point_by_id = {point.id: point for point in sketch.points}
+    curves: list[dict[str, object]] = []
+    for curve in sketch.curves:
+        if isinstance(curve, SketchLine):
+            curves.append(
+                {
+                    "kind": "line",
+                    "id": curve.id,
+                    "start_point_id": curve.start_point_id,
+                    "end_point_id": curve.end_point_id,
+                }
+            )
+        elif isinstance(curve, SketchArc):
+            curves.append(
+                {
+                    "kind": "arc",
+                    "id": curve.id,
+                    "start_point_id": curve.start_point_id,
+                    "center_point_id": curve.center_point_id,
+                    "end_point_id": curve.end_point_id,
+                    "orientation": curve.orientation,
+                }
+            )
+        elif curve.center_point_id is not None:
+            center = point_by_id[curve.center_point_id]
+            curves.append(
+                {
+                    "kind": "circle",
+                    "id": curve.id,
+                    "center_point_id": curve.center_point_id,
+                    "center_x": center.u,
+                    "center_y": center.v,
+                    "radius": curve.radius,
+                }
+            )
+    return {
+        "kind": "planar_sketch",
+        "point_count": len(sketch.points),
+        "curve_count": len(sketch.curves),
+        "points": [
+            {"id": point.id, "x": point.u, "y": point.v}
+            for point in sketch.points
+        ],
+        "curves": curves,
+    }
+
+
 def geometry_recipe_to_payload(recipe: object) -> dict[str, object]:
     if type(recipe) is RectangleGeometry:
         return {
@@ -450,6 +919,24 @@ def geometry_recipe_to_payload(recipe: object) -> dict[str, object]:
             "axis": recipe.axis,
             "angle_degrees": recipe.angle_degrees,
         }
+    if type(recipe) is SketchGeometry and recipe.is_strict:
+        return {
+            "kind": "planar_sketch",
+            "name": recipe.name,
+            "plane": {
+                "origin": list(recipe.plane.origin),
+                "x_direction": list(recipe.plane.x_direction),
+                "y_direction": list(recipe.plane.y_direction),
+            },
+            "points": [
+                {"id": point.id, "u": point.u, "v": point.v}
+                for point in recipe.points
+            ],
+            "curves": [
+                _sketch_curve_to_payload(curve)
+                for curve in recipe.curves
+            ],
+        }
     raise TypeError("recipe is outside the A2 geometry subset")
 
 
@@ -473,6 +960,7 @@ def geometry_recipe_from_payload(value: object) -> object:
         "cylinder": {"kind", "name", "radius", "height"},
         "translated": {"kind", "base", "dx", "dy", "dz"},
         "rotated": {"kind", "base", "axis", "angle_degrees"},
+        "planar_sketch": {"kind", "name", "plane", "points", "curves"},
     }
     if kind not in fields or set(value) != fields[kind]:  # type: ignore[index]
         raise ValueError("geometry recipe fields do not match the A2 schema")
@@ -509,6 +997,42 @@ def geometry_recipe_from_payload(value: object) -> object:
             value["dy"],
             value["dz"],
         )
+    if kind == "planar_sketch":
+        plane = value["plane"]
+        if not isinstance(plane, Mapping) or set(plane) != {
+            "origin",
+            "x_direction",
+            "y_direction",
+        }:
+            raise ValueError("planar sketch plane fields do not match")
+        points = value["points"]
+        curves = value["curves"]
+        if (
+            not isinstance(points, list)
+            or not isinstance(curves, list)
+            or not 1 <= len(points) <= 128
+            or not 1 <= len(curves) <= 128
+        ):
+            raise ValueError("planar sketch entities exceed the bounded schema")
+        if any(
+            not isinstance(item, Mapping)
+            or set(item) != {"id", "u", "v"}
+            for item in points
+        ):
+            raise ValueError("planar sketch point fields do not match")
+        return SketchGeometry(
+            value["name"],
+            SketchPlane(
+                tuple(plane["origin"]),
+                tuple(plane["x_direction"]),
+                tuple(plane["y_direction"]),
+            ),
+            tuple(
+                SketchPoint(item["id"], item["u"], item["v"])
+                for item in points
+            ),
+            tuple(_sketch_curve_from_payload(item) for item in curves),
+        )
     return RotatedGeometry(
         geometry_recipe_from_payload(value["base"]),
         value["axis"],
@@ -528,6 +1052,12 @@ def _draft(
         key_dimensions=key_dimensions,
         transforms=transforms,
     )
+
+
+def geometry_draft(recipe: object) -> GeometryDraft:
+    """Wrap one accepted native recipe for a subsequent generic transform."""
+
+    return _draft(recipe, {})
 
 
 def _preview(recipe: object) -> StaticGeometryPreview:
@@ -584,6 +1114,111 @@ def _preview(recipe: object) -> StaticGeometryPreview:
                 (0, 1, 2, 3, 0),
                 tuple(range(4, 4 + len(hole))) + (4,),
             ),
+        )
+    if type(recipe) is SketchGeometry:
+        sketch = recipe if recipe.is_strict else legacy_sketch_to_strict(recipe)
+        assert sketch.plane is not None
+        points = tuple(
+            sketch.plane.to_global(point.u, point.v)
+            for point in sketch.points
+        )
+        point_indexes = {
+            point.id: index for index, point in enumerate(sketch.points)
+        }
+        preview_points = list(points)
+        lines: list[tuple[int, ...]] = []
+        point_by_id = {point.id: point for point in sketch.points}
+        curved_count = sum(
+            isinstance(curve, (SketchCircle, SketchArc))
+            for curve in sketch.curves
+        )
+        curved_samples = (
+            0
+            if curved_count == 0
+            else min(
+                _PREVIEW_SEGMENTS,
+                max(
+                    0,
+                    (_MAX_PREVIEW_POINTS - len(preview_points))
+                    // curved_count,
+                ),
+            )
+        )
+        for curve in sketch.curves:
+            if isinstance(curve, SketchLine):
+                lines.append(
+                    (
+                        point_indexes[curve.start_point_id],
+                        point_indexes[curve.end_point_id],
+                    )
+                )
+            elif isinstance(curve, SketchCircle):
+                if curved_samples < 4:
+                    continue
+                center = point_by_id[curve.center_point_id]
+                circle = tuple(
+                    sketch.plane.to_global(
+                        center.u
+                        + curve.radius
+                        * math.cos(2.0 * math.pi * index / curved_samples),
+                        center.v
+                        + curve.radius
+                        * math.sin(2.0 * math.pi * index / curved_samples),
+                    )
+                    for index in range(curved_samples)
+                )
+                start = len(preview_points)
+                preview_points.extend(circle)
+                lines.append(
+                    tuple(range(start, start + len(circle))) + (start,)
+                )
+            elif isinstance(curve, SketchArc):
+                if curved_samples < 2:
+                    continue
+                start_point = point_by_id[curve.start_point_id]
+                center = point_by_id[curve.center_point_id]
+                end_point = point_by_id[curve.end_point_id]
+                start_angle = math.atan2(
+                    start_point.v - center.v,
+                    start_point.u - center.u,
+                )
+                end_angle = math.atan2(
+                    end_point.v - center.v,
+                    end_point.u - center.u,
+                )
+                sweep = end_angle - start_angle
+                if curve.orientation == "ccw" and sweep <= 0.0:
+                    sweep += 2.0 * math.pi
+                elif curve.orientation == "cw" and sweep >= 0.0:
+                    sweep -= 2.0 * math.pi
+                radius = math.hypot(
+                    start_point.u - center.u,
+                    start_point.v - center.v,
+                )
+                arc = tuple(
+                    sketch.plane.to_global(
+                        center.u
+                        + radius
+                        * math.cos(
+                            start_angle
+                            + sweep * index / (curved_samples - 1)
+                        ),
+                        center.v
+                        + radius
+                        * math.sin(
+                            start_angle
+                            + sweep * index / (curved_samples - 1)
+                        ),
+                    )
+                    for index in range(curved_samples)
+                )
+                start = len(preview_points)
+                preview_points.extend(arc)
+                lines.append(tuple(range(start, start + len(arc))))
+        return _make_preview(
+            2,
+            tuple(preview_points),
+            tuple(lines),
         )
     if type(recipe) is BoxGeometry:
         points = tuple(
@@ -655,17 +1290,167 @@ def _make_preview(
     )
 
 
+def _as_strict_planar_sketch(recipe: object) -> SketchGeometry:
+    if type(recipe) is SketchGeometry:
+        return recipe if recipe.is_strict else legacy_sketch_to_strict(recipe)
+    if type(recipe) is RectangleGeometry:
+        return planar_sketch_geometry(
+            recipe.name,
+            contours=(
+                SketchRectangle(
+                    "material",
+                    0.0,
+                    0.0,
+                    recipe.width,
+                    recipe.height,
+                ),
+            ),
+        ).recipe
+    if type(recipe) is DiskGeometry:
+        return planar_sketch_geometry(
+            recipe.name,
+            contours=(SketchCircle("material", 0.0, 0.0, recipe.radius),),
+        ).recipe
+    if type(recipe) is PlateWithHoleGeometry:
+        return planar_sketch_geometry(
+            recipe.name,
+            contours=(
+                SketchRectangle(
+                    "material",
+                    0.0,
+                    0.0,
+                    recipe.width,
+                    recipe.height,
+                ),
+                SketchCircle(
+                    "cut",
+                    recipe.hole_x,
+                    recipe.hole_y,
+                    recipe.hole_radius,
+                ),
+            ),
+        ).recipe
+    raise TypeError(
+        "incremental planar edits require a planar primitive or sketch"
+    )
+
+
+def _next_sketch_ids(
+    sketch: SketchGeometry,
+    prefix: str,
+    count: int,
+) -> tuple[str, ...]:
+    used = {
+        item.id
+        for item in (*sketch.points, *sketch.curves)
+        if getattr(item, "id", None) is not None
+    }
+    index = 1
+    allocated: list[str] = []
+    while len(allocated) < count:
+        candidate = f"{prefix}{index}"
+        if candidate not in used:
+            allocated.append(candidate)
+            used.add(candidate)
+        index += 1
+    return tuple(allocated)
+
+
+def _sketch_curve_to_payload(
+    curve: SketchLine | SketchArc | SketchCircle,
+) -> dict[str, object]:
+    if isinstance(curve, SketchLine):
+        return {
+            "kind": "line",
+            "id": curve.id,
+            "start_point_id": curve.start_point_id,
+            "end_point_id": curve.end_point_id,
+        }
+    if isinstance(curve, SketchArc):
+        return {
+            "kind": "arc",
+            "id": curve.id,
+            "start_point_id": curve.start_point_id,
+            "center_point_id": curve.center_point_id,
+            "end_point_id": curve.end_point_id,
+            "orientation": curve.orientation,
+        }
+    if not curve.is_curve:
+        raise TypeError("planar sketch payload requires strict circles")
+    return {
+        "kind": "circle",
+        "id": curve.id,
+        "center_point_id": curve.center_point_id,
+        "radius": curve.radius,
+    }
+
+
+def _sketch_curve_from_payload(
+    value: object,
+) -> SketchLine | SketchArc | SketchCircle:
+    if not isinstance(value, Mapping):
+        raise TypeError("sketch curve payload must be an object")
+    kind = value.get("kind")
+    if kind == "line" and set(value) == {
+        "kind",
+        "id",
+        "start_point_id",
+        "end_point_id",
+    }:
+        return SketchLine(
+            value["id"],
+            value["start_point_id"],
+            value["end_point_id"],
+        )
+    if kind == "arc" and set(value) == {
+        "kind",
+        "id",
+        "start_point_id",
+        "center_point_id",
+        "end_point_id",
+        "orientation",
+    }:
+        return SketchArc(
+            value["id"],
+            value["start_point_id"],
+            value["center_point_id"],
+            value["end_point_id"],
+            value["orientation"],
+        )
+    if kind == "circle" and set(value) == {
+        "kind",
+        "id",
+        "center_point_id",
+        "radius",
+    }:
+        return SketchCircle(
+            value["id"],
+            value["center_point_id"],
+            value["radius"],
+        )
+    raise ValueError("sketch curve fields do not match the bounded schema")
+
+
 __all__ = [
     "GeometryDraft",
     "StaticGeometryPreview",
     "box_geometry",
+    "add_planar_circle",
+    "add_planar_polygon",
+    "add_planar_rectangle",
+    "create_geometry_edit_proposal",
     "create_geometry_proposal",
     "cylinder_geometry",
     "disk_geometry",
     "geometry_recipe_from_payload",
     "geometry_recipe_to_payload",
-    "plate_with_hole_geometry",
+    "geometry_draft",
+    "planar_geometry_catalog",
+    "planar_polygon_geometry",
+    "planar_sketch_geometry",
     "rectangle_geometry",
     "rotate_geometry",
     "translate_geometry",
+    "update_planar_circle",
+    "update_planar_point",
 ]

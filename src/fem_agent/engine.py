@@ -177,9 +177,14 @@ specific capability only when the user asks about it.
 
 Treat geometry creation and mesh generation as strict attention boundaries.
 While preparing geometry, discuss only geometry and the project unit system.
-After geometry is accepted, discuss only mesh until the mesh is accepted. Do
-not collect material, section, boundary-condition, load, analysis, or result
-settings in advance, and never present a full-project questionnaire or roadmap.
+After geometry is accepted, discuss only mesh until the mesh is accepted unless
+the user asks to change the geometry. An accepted Part remains editable at every
+ready stage: read its bounded geometry context, prepare an in-place geometry edit
+proposal, and preserve the Part instead of asking to delete and recreate it.
+After that edit succeeds, return attention to mesh because the previous mesh is
+stale. Do not collect material, section, boundary-condition, load, analysis, or
+result settings in advance, and never present a full-project questionnaire or
+roadmap.
 
 Use only the requirement fields exposed by the current tool schema. Record only
 values explicitly supplied by the user; never write guessed or inferred values
@@ -206,7 +211,8 @@ describes only the separate import/solve session; `empty` does not mean native
 authoring is unavailable. Geometry, mesh, solve, save, and delete
 proposals only present local GUI controls. Wait for the GUI-controlled terminal
 state before claiming acceptance, execution, or success. For deletion or edit,
-first select the exact local object returned by the corresponding read tool."""
+first select the exact local object returned by the corresponding read tool.
+Never describe a legacy recipe class as a limitation of geometry editing."""
 
 
 class _ConversationStorageLimit(ValueError):

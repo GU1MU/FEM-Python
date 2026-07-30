@@ -19,7 +19,11 @@ from fem.application.native_scope_materialization import (
 )
 from fem.core.mesh import Element2D, Mesh2D, Node2D
 from fem.core.model import FEMModel
-from fem.geometry import PlateWithHoleGeometry
+from fem.geometry import (
+    PlateWithHoleGeometry,
+    SketchCircle,
+    SketchRectangle,
+)
 from fem.mesh.settings import MeshSettings
 from fem.io.project import dumps_project, loads_project
 from fem.selection import edges as mesh_edges
@@ -30,6 +34,7 @@ from fem_agent.definition_authoring import (
     create_scope_definition_change,
     scoped_definition_batch_from_operations,
 )
+from fem_agent.geometry_authoring import planar_sketch_geometry
 from fem_agent.tools.registry import AgentToolRegistry
 from fem_gui.agent_authoring import authoring_context_from_snapshot
 
@@ -183,6 +188,47 @@ def test_a4_plate_scopes_have_four_semantic_aliases_and_exact_evidence() -> None
         for region in scopes.regions
         for reference in region.references
     )
+
+
+def test_a4_plate_scopes_accept_general_strict_sketch_recipe() -> None:
+    draft = planar_sketch_geometry(
+        "草图-孔板",
+        contours=(
+            SketchRectangle("material", 0.0, 0.0, 10.0, 6.0),
+            SketchCircle("cut", 6.5, 2.0, 1.0),
+        ),
+    )
+    circle = next(
+        curve
+        for curve in draft.recipe.curves
+        if isinstance(curve, SketchCircle)
+    )
+    session = ModelSession()
+    session.create_native_project_with_first_part(
+        "模型-通用草图",
+        UnitContext("mm", "N", "MPa"),
+        draft.recipe,
+        part_name="部件-孔板",
+    )
+    task = session.prepare_agent_mesh_generation(
+        "P1",
+        MeshSettings(1.0),
+        "b" * 64,
+        expected_session_revision=session.session_revision,
+    )
+    model = _plate_model()
+    catalog = model.metadata[NATIVE_SCOPE_CATALOG_KEY]
+    catalog[f"edge:P1/{circle.id}"] = catalog.pop("edge:P1/hole-loop")
+    assert session.accept_agent_generated_model(task.token, model).accepted
+
+    scopes = build_eccentric_plate_scopes(session.snapshot())
+
+    assert {region.name for region in scopes.regions} == {
+        "边-固定端",
+        "边-加载端",
+        "边-孔边",
+        "域-板体",
+    }
 
 
 def test_a4_scope_selection_fails_closed_on_abnormal_catalog_identity() -> None:

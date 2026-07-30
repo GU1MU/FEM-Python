@@ -195,12 +195,7 @@ _REQUIREMENT_SPECS: dict[str, dict[str, object]] = {
     "length_unit": {"type": "string"},
     "force_unit": {"type": "string"},
     "stress_unit": {"type": "string"},
-    "plate_width": {"type": "number", "exclusiveMinimum": 0},
-    "plate_height": {"type": "number", "exclusiveMinimum": 0},
     "plate_thickness": {"type": "number", "exclusiveMinimum": 0},
-    "hole_radius": {"type": "number", "exclusiveMinimum": 0},
-    "hole_center_x": {"type": "number"},
-    "hole_center_y": {"type": "number"},
     "young_modulus": {"type": "number", "exclusiveMinimum": 0},
     "poisson_ratio": {
         "type": "number",
@@ -213,7 +208,6 @@ _REQUIREMENT_SPECS: dict[str, dict[str, object]] = {
     },
     "mesh_order": {"type": "integer", "enum": [1, 2]},
     "mesh_global_size": {"type": "number", "exclusiveMinimum": 0},
-    "hole_mesh_size": {"type": "number", "exclusiveMinimum": 0},
     "fixed_dofs": {
         "type": "array",
         "items": {"type": "integer", "minimum": 1, "maximum": 2},
@@ -247,17 +241,11 @@ _GEOMETRY_REQUIREMENTS = (
     "length_unit",
     "force_unit",
     "stress_unit",
-    "plate_width",
-    "plate_height",
-    "hole_radius",
-    "hole_center_x",
-    "hole_center_y",
 )
 _MESH_REQUIREMENTS = (
     "mesh_cell_shape",
     "mesh_order",
     "mesh_global_size",
-    "hole_mesh_size",
 )
 _DEFINITION_REQUIREMENTS = (
     "modeling_assumption",
@@ -358,10 +346,311 @@ _REQUEST_REVIEW = _tool(
 _PREPARE_GEOMETRY = _tool(
     "prepare_geometry_proposal",
     (
-        "Build and present a revision-bound geometry proposal. The geometry "
-        "is not added until the GUI control is clicked."
+        "Build and present a revision-bound geometry proposal from general "
+        "planar profiles or a supported solid primitive. Record the project "
+        "unit context first. The geometry is not added until the local GUI "
+        "control is clicked."
     ),
-    _NO_ARGUMENTS,
+    {
+        "type": "object",
+        "properties": {
+            "part_function": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 96,
+            },
+            "geometry": {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"const": "planar_profiles"},
+                            "profiles": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 32,
+                                "items": {
+                                    "oneOf": [
+                                        {
+                                            "type": "object",
+                                            "properties": {
+                                                "kind": {"const": "rectangle"},
+                                                "x": {"type": "number"},
+                                                "y": {"type": "number"},
+                                                "width": {
+                                                    "type": "number",
+                                                    "exclusiveMinimum": 0,
+                                                },
+                                                "height": {
+                                                    "type": "number",
+                                                    "exclusiveMinimum": 0,
+                                                },
+                                            },
+                                            "required": [
+                                                "kind",
+                                                "x",
+                                                "y",
+                                                "width",
+                                                "height",
+                                            ],
+                                            "additionalProperties": False,
+                                        },
+                                        {
+                                            "type": "object",
+                                            "properties": {
+                                                "kind": {"const": "circle"},
+                                                "center_x": {"type": "number"},
+                                                "center_y": {"type": "number"},
+                                                "radius": {
+                                                    "type": "number",
+                                                    "exclusiveMinimum": 0,
+                                                },
+                                            },
+                                            "required": [
+                                                "kind",
+                                                "center_x",
+                                                "center_y",
+                                                "radius",
+                                            ],
+                                            "additionalProperties": False,
+                                        },
+                                        {
+                                            "type": "object",
+                                            "properties": {
+                                                "kind": {"const": "polygon"},
+                                                "vertices": {
+                                                    "type": "array",
+                                                    "minItems": 3,
+                                                    "maxItems": 64,
+                                                    "items": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "x": {
+                                                                "type": "number"
+                                                            },
+                                                            "y": {
+                                                                "type": "number"
+                                                            },
+                                                        },
+                                                        "required": ["x", "y"],
+                                                        "additionalProperties": (
+                                                            False
+                                                        ),
+                                                    },
+                                                },
+                                            },
+                                            "required": ["kind", "vertices"],
+                                            "additionalProperties": False,
+                                        },
+                                    ]
+                                },
+                            },
+                        },
+                        "required": ["kind", "profiles"],
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"const": "box"},
+                            "width": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                            },
+                            "depth": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                            },
+                            "height": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                            },
+                        },
+                        "required": ["kind", "width", "depth", "height"],
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"const": "cylinder"},
+                            "radius": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                            },
+                            "height": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                            },
+                        },
+                        "required": ["kind", "radius", "height"],
+                        "additionalProperties": False,
+                    },
+                ]
+            },
+        },
+        "required": ["part_function", "geometry"],
+        "additionalProperties": False,
+    },
+)
+_READ_GEOMETRY_EDIT_CONTEXT = _tool(
+    "read_geometry_edit_context",
+    (
+        "Read a bounded editable projection of one existing native Part. "
+        "Use this before changing an accepted geometry."
+    ),
+    {
+        "type": "object",
+        "properties": {
+            "part_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        },
+        "required": ["part_id"],
+        "additionalProperties": False,
+    },
+)
+_PREPARE_GEOMETRY_EDIT = _tool(
+    "prepare_geometry_edit",
+    (
+        "Prepare an in-place, revision-bound edit of an existing native Part. "
+        "The Part is retained; the edit runs only after the local GUI control "
+        "is clicked."
+    ),
+    {
+        "type": "object",
+        "properties": {
+            "part_id": {"type": "string", "minLength": 1, "maxLength": 128},
+            "edit": {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "operation": {"const": "add_circle"},
+                            "center_x": {"type": "number"},
+                            "center_y": {"type": "number"},
+                            "radius": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                            },
+                        },
+                        "required": [
+                            "operation",
+                            "center_x",
+                            "center_y",
+                            "radius",
+                        ],
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "operation": {"const": "add_rectangle"},
+                            "x": {"type": "number"},
+                            "y": {"type": "number"},
+                            "width": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                            },
+                            "height": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                            },
+                        },
+                        "required": [
+                            "operation",
+                            "x",
+                            "y",
+                            "width",
+                            "height",
+                        ],
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "operation": {"const": "add_polygon"},
+                            "vertices": {
+                                "type": "array",
+                                "minItems": 3,
+                                "maxItems": 64,
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "x": {"type": "number"},
+                                        "y": {"type": "number"},
+                                    },
+                                    "required": ["x", "y"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                        },
+                        "required": ["operation", "vertices"],
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "operation": {"const": "update_point"},
+                            "point_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 128,
+                            },
+                            "x": {"type": "number"},
+                            "y": {"type": "number"},
+                        },
+                        "required": ["operation", "point_id"],
+                        "minProperties": 3,
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "operation": {"const": "update_circle"},
+                            "circle_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 128,
+                            },
+                            "center_x": {"type": "number"},
+                            "center_y": {"type": "number"},
+                            "radius": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                            },
+                        },
+                        "required": ["operation", "circle_id"],
+                        "minProperties": 3,
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "operation": {"const": "translate"},
+                            "dx": {"type": "number"},
+                            "dy": {"type": "number"},
+                            "dz": {"type": "number"},
+                        },
+                        "required": ["operation", "dx", "dy"],
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "operation": {"const": "rotate"},
+                            "axis": {
+                                "type": "string",
+                                "enum": ["x", "y", "z"],
+                            },
+                            "angle_degrees": {"type": "number"},
+                        },
+                        "required": ["operation", "axis", "angle_degrees"],
+                        "additionalProperties": False,
+                    },
+                ]
+            },
+        },
+        "required": ["part_id", "edit"],
+        "additionalProperties": False,
+    },
 )
 _PREPARE_MESH = _tool(
     "prepare_mesh_proposal",
@@ -689,6 +978,12 @@ _DESTRUCTIVE_EDIT_TOOLS = frozenset(
 _MODEL_EDIT_TOOLS = frozenset(
     {_READ_EDITABLE_OBJECTS.name, _EDIT_MODEL_OBJECT.name}
 )
+_GEOMETRY_EDIT_TOOLS = frozenset(
+    {
+        _READ_GEOMETRY_EDIT_CONTEXT.name,
+        _PREPARE_GEOMETRY_EDIT.name,
+    }
+)
 
 
 _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
@@ -696,6 +991,8 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
         _READ_CONTEXT,
         _SET_REQUIREMENTS,
         _PREPARE_GEOMETRY,
+        _READ_GEOMETRY_EDIT_CONTEXT,
+        _PREPARE_GEOMETRY_EDIT,
         _APPLY_DEFINITION,
         _REQUEST_PROJECT_SAVE,
         _READ_DELETABLE_OBJECTS,
@@ -708,6 +1005,8 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
         _READ_CONTEXT,
         _SET_REQUIREMENTS,
         _PREPARE_GEOMETRY,
+        _READ_GEOMETRY_EDIT_CONTEXT,
+        _PREPARE_GEOMETRY_EDIT,
         _APPLY_DEFINITION,
         _REQUEST_PROJECT_SAVE,
         _READ_DELETABLE_OBJECTS,
@@ -720,6 +1019,8 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
         _READ_CONTEXT,
         _SET_REQUIREMENTS,
         _PREPARE_MESH,
+        _READ_GEOMETRY_EDIT_CONTEXT,
+        _PREPARE_GEOMETRY_EDIT,
         _APPLY_DEFINITION,
         _REQUEST_PROJECT_SAVE,
         _READ_DELETABLE_OBJECTS,
@@ -732,6 +1033,8 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
         _READ_CONTEXT,
         _APPLY_DEFINITION,
         _RUN_PREFLIGHT,
+        _READ_GEOMETRY_EDIT_CONTEXT,
+        _PREPARE_GEOMETRY_EDIT,
         _REQUEST_PROJECT_SAVE,
         _READ_DELETABLE_OBJECTS,
         _PREPARE_DELETE,
@@ -742,6 +1045,8 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
         _READ_CONTEXT,
         _APPLY_DEFINITION,
         _RUN_PREFLIGHT,
+        _READ_GEOMETRY_EDIT_CONTEXT,
+        _PREPARE_GEOMETRY_EDIT,
         _REQUEST_PROJECT_SAVE,
         _READ_DELETABLE_OBJECTS,
         _PREPARE_DELETE,
@@ -752,6 +1057,8 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
         _READ_CONTEXT,
         _APPLY_DEFINITION,
         _RUN_PREFLIGHT,
+        _READ_GEOMETRY_EDIT_CONTEXT,
+        _PREPARE_GEOMETRY_EDIT,
         _REQUEST_PROJECT_SAVE,
         _READ_DELETABLE_OBJECTS,
         _PREPARE_DELETE,
@@ -763,6 +1070,8 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
         _READ_CONTEXT,
         _APPLY_DEFINITION,
         _PREPARE_SOLVE,
+        _READ_GEOMETRY_EDIT_CONTEXT,
+        _PREPARE_GEOMETRY_EDIT,
         _REQUEST_PROJECT_SAVE,
         _READ_DELETABLE_OBJECTS,
         _PREPARE_DELETE,
@@ -774,6 +1083,8 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
         _READ_CONTEXT,
         _RESULT_CATALOG,
         _RESULT_QUERY,
+        _READ_GEOMETRY_EDIT_CONTEXT,
+        _PREPARE_GEOMETRY_EDIT,
         _APPLY_DEFINITION,
         _REQUEST_PROJECT_SAVE,
         _READ_DELETABLE_OBJECTS,
@@ -848,6 +1159,7 @@ class AuthoringWorkflowController:
         self._review_source_stage: AuthoringWorkflowStage | None = None
         self._pending_operation: str | None = None
         self._project_save_record: ProjectSaveProposalRecord | None = None
+        self._geometry_resume_stage: AuthoringWorkflowStage | None = None
         self._destructive_resume_stage: AuthoringWorkflowStage | None = None
         self._pending_destructive_object_type: str | None = None
         self._terminals: list[AuthoringTerminalRecord] = []
@@ -939,6 +1251,10 @@ class AuthoringWorkflowController:
                         item.name not in _MODEL_EDIT_TOOLS
                         or self._model_edit_available()
                     )
+                    and (
+                        item.name not in _GEOMETRY_EDIT_TOOLS
+                        or self._geometry_edit_available()
+                    )
                 )
             )
 
@@ -969,6 +1285,9 @@ class AuthoringWorkflowController:
                     _require_exact_fields(arguments, set()) if name not in {
                         RESULT_QUERY_TOOL_NAME,
                         _PREPARE_DELETE.name,
+                        _PREPARE_GEOMETRY.name,
+                        _READ_GEOMETRY_EDIT_CONTEXT.name,
+                        _PREPARE_GEOMETRY_EDIT.name,
                         _EDIT_MODEL_OBJECT.name,
                         _APPLY_DEFINITION.name,
                     } else None
@@ -1212,8 +1531,12 @@ class AuthoringWorkflowController:
                 self._stage = (
                     AuthoringWorkflowStage.MESH_READY
                     if normalized_state is ProposalState.SUCCEEDED
-                    else AuthoringWorkflowStage.GEOMETRY_READY
+                    else (
+                        self._geometry_resume_stage
+                        or AuthoringWorkflowStage.GEOMETRY_READY
+                    )
                 )
+                self._geometry_resume_stage = None
             elif normalized_operation == "mesh":
                 self._stage = (
                     AuthoringWorkflowStage.DEFINITIONS_READY
@@ -1330,6 +1653,7 @@ class AuthoringWorkflowController:
             self._review_source_stage = None
             self._pending_operation = None
             self._project_save_record = None
+            self._geometry_resume_stage = None
             self._clear_destructive_pending()
             self._binding_identity = None
             self._observed_context = None
@@ -1785,6 +2109,10 @@ class AuthoringWorkflowController:
         if name == _PREPARE_GEOMETRY.name:
             self._stage = AuthoringWorkflowStage.GEOMETRY_PENDING
             self._pending_operation = "geometry"
+        elif name == _PREPARE_GEOMETRY_EDIT.name:
+            self._geometry_resume_stage = self._stage
+            self._stage = AuthoringWorkflowStage.GEOMETRY_PENDING
+            self._pending_operation = "geometry"
         elif name == _PREPARE_MESH.name:
             self._stage = AuthoringWorkflowStage.MESH_PENDING
             self._pending_operation = "mesh"
@@ -1904,6 +2232,31 @@ class AuthoringWorkflowController:
             binding.supported
             and binding.source_kind == "native"
             and _capability_enabled(context, "edit_model_objects")
+        )
+
+    def _geometry_edit_available(
+        self,
+        context: AuthoringContext | None = None,
+    ) -> bool:
+        if (
+            self._stage not in _PROJECT_SAVE_READY_STAGES
+            or not _GEOMETRY_EDIT_TOOLS.issubset(self._handlers)
+        ):
+            return False
+        if context is None:
+            try:
+                raw = self._context_reader()
+            except Exception:
+                return False
+            if type(raw) is not AuthoringContext:
+                return False
+            context = raw
+        binding = context.binding
+        return bool(
+            binding.supported
+            and binding.source_kind == "native"
+            and bool(context.parts)
+            and _capability_enabled(context, "edit_native_geometry")
         )
 
     def _current_mesh_available(self) -> bool:
