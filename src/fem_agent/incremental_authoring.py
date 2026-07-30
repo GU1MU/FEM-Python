@@ -275,10 +275,10 @@ def create_incremental_definition_patch(
             "results": result_invalidating,
         },
         display_summary={
-            "title": "Agent 修改已同步",
+            "title": f"Agent {_ACTION_SUMMARIES[normalized_action]}",
             "summary": _ACTION_SUMMARIES[normalized_action],
             "objects": list(created_names),
-            "undo_label": "撤销本次 Agent 修改",
+            "undo_label": "撤销修改",
         },
     )
 

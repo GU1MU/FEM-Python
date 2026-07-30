@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QToolButton
+from PySide6.QtWidgets import QApplication, QLabel, QToolButton
 
 from fem.application import AnalysisRun, ModelSession, RunStatus, UnitContext
 from fem.mesh.settings import MeshSettings
@@ -18,13 +18,19 @@ from fem_agent.authoring import (
     ProposalState,
 )
 from fem_agent.definition_authoring import create_scope_definition_change
+from fem_agent.incremental_authoring import (
+    create_incremental_definition_patch,
+)
 from fem_gui.agent_authoring import (
     AgentAuthoringBridge,
     AppliedPatchState,
     SessionGeometryAuthoringPort,
     authoring_context_from_snapshot,
 )
-from fem_gui.widgets.agent_chat import AgentChatDrawer
+from fem_gui.widgets.agent_chat import (
+    AgentChatDrawer,
+    _AGENT_CHAT_STYLESHEET,
+)
 from tests.test_agent_authoring_phase_a4 import (
     _change,
     _plate_model,
@@ -77,6 +83,53 @@ def test_a4_bridge_applies_once_and_gui_card_undoes_once() -> None:
     assert full_refreshes == []
     assert not session.snapshot().named_regions
     assert not session.snapshot().materials
+
+
+def test_direct_material_patch_uses_compact_inline_undo_notice() -> None:
+    application = _application()
+    session = _session()
+    port = SessionGeometryAuthoringPort(
+        session,
+        lambda: None,
+        apply_definition_delta=lambda _delta: None,
+    )
+    bridge = AgentAuthoringBridge(port)
+    bridge.bind_snapshot(session.snapshot())
+    drawer = AgentChatDrawer(authoring_bridge=bridge)
+    drawer.setStyleSheet(_AGENT_CHAT_STYLESHEET)
+    drawer.resize(760, 400)
+    snapshot = session.snapshot()
+    patch = create_incremental_definition_patch(
+        patch_id="patch-material-notice",
+        agent_session_id="agent-a4",
+        turn_id="turn-material-notice",
+        source_tool_call_ids=("call-material-notice",),
+        context=authoring_context_from_snapshot(snapshot),
+        snapshot=snapshot,
+        draft_revision=1,
+        action="create_material",
+        parameters={
+            "name": "材料-尼龙PA",
+            "properties": {"E": 2600.0, "nu": 0.39},
+        },
+    )
+
+    bridge.apply_automatic_patch(patch)
+    drawer.show()
+    application.processEvents()
+
+    notice = drawer.findChild(QLabel, "agentChatAppliedPatchText")
+    undo = drawer.findChild(QToolButton, "agentChatPatchUndoButton")
+    detail_label = drawer.findChild(QLabel, "agentChatProposalSummary")
+    assert notice is not None
+    assert undo is not None
+    assert notice.text() == "Agent 已创建材料"
+    assert undo.text() == "撤销修改"
+    assert undo.width() < 110
+    assert abs(notice.geometry().center().y() - undo.geometry().center().y()) <= 2
+    assert undo.palette().color(undo.foregroundRole()).name() == "#315d7c"
+    assert detail_label is None
+    drawer.close()
 
 
 def test_a4_automatic_port_rejects_destructive_inverse_as_forward_patch() -> None:

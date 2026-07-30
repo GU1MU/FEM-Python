@@ -403,6 +403,38 @@ QToolButton#agentChatProposalRejectButton:hover {
 QToolButton#agentChatProposalRejectButton:pressed {
     background: #dfe8ed;
 }
+QFrame#agentChatAppliedPatch {
+    background: #f5f8fb;
+    border: 1px solid #cad7e1;
+    border-radius: 5px;
+}
+QLabel#agentChatAppliedPatchText {
+    color: #294b63;
+    font-size: 9pt;
+    font-weight: 600;
+}
+QToolButton#agentChatPatchUndoButton {
+    color: #315d7c;
+    background: #ffffff;
+    border: 1px solid #8faec2;
+    border-radius: 5px;
+    padding: 3px 9px;
+    font-size: 8.5pt;
+    font-weight: 600;
+}
+QToolButton#agentChatPatchUndoButton:hover {
+    color: #244f6d;
+    background: #e8f0f6;
+    border-color: #6f98b2;
+}
+QToolButton#agentChatPatchUndoButton:pressed {
+    background: #d9e7f0;
+}
+QToolButton#agentChatPatchUndoButton:disabled {
+    color: #8a949c;
+    background: #eceff1;
+    border-color: #d4dadd;
+}
 QToolButton#agentChatProposalAcceptButton:disabled,
 QToolButton#agentChatProposalRejectButton:disabled {
     color: #8a949c;
@@ -1526,27 +1558,39 @@ class AgentChatDrawer(_BoundaryFrame):
         card = _BoundaryFrame(self.event_feed)
         card.setObjectName("agentChatAppliedPatch")
         card.setProperty("patchId", patch_id)
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(9, 7, 9, 7)
-        layout.setSpacing(4)
+        card.setMaximumWidth(520)
+        card.setSizePolicy(
+            QSizePolicy.Policy.Maximum,
+            QSizePolicy.Policy.Fixed,
+        )
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(8, 5, 8, 5)
+        layout.setSpacing(10)
+        raw_title = str(
+            summary.get("title", "Agent 已应用模型修改")
+        )
+        raw_detail = str(summary.get("summary", "")).strip()
+        visible_title = (
+            f"Agent {raw_detail}"
+            if raw_title == "Agent 修改已同步" and raw_detail
+            else raw_title
+        )
         title = _plain_label(
-            str(summary.get("title", "Agent 已应用模型修改")),
+            visible_title,
             card,
         )
-        title.setObjectName("agentChatProposalTitle")
+        title.setObjectName("agentChatAppliedPatchText")
         layout.addWidget(title)
-        detail = _plain_label(
-            str(summary.get("summary", "已应用可逆模型补丁")),
-            card,
-        )
-        detail.setObjectName("agentChatProposalSummary")
-        detail.setWordWrap(True)
-        layout.addWidget(detail)
         undo = _BoundaryToolButton(card)
         undo.setObjectName("agentChatPatchUndoButton")
         undo.setProperty("patchId", patch_id)
-        undo.setText(
+        undo.setText("撤销修改")
+        undo.setToolTip(
             str(summary.get("undo_label", "撤销本次 Agent 修改"))
+        )
+        undo.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Fixed,
         )
         undo.setEnabled(
             not self._runtime_busy
@@ -1558,8 +1602,16 @@ class AgentChatDrawer(_BoundaryFrame):
                 self._undo_applied_patch(value)
             )
         )
-        layout.addWidget(undo)
-        self.event_feed_layout.addWidget(card)
+        layout.addWidget(
+            undo,
+            0,
+            Qt.AlignmentFlag.AlignVCenter,
+        )
+        self.event_feed_layout.addWidget(
+            card,
+            0,
+            Qt.AlignmentFlag.AlignLeft,
+        )
 
     def _undo_applied_patch(self, patch_id: str) -> None:
         bridge = self.authoring_bridge
