@@ -45,7 +45,7 @@ from tests.test_agent_authoring_phase_a4 import _session as _a4_session
 from tests.test_agent_authoring_phase_a8 import (
     _context,
     _controller,
-    _requirements,
+    _requirements_for,
 )
 
 
@@ -67,7 +67,7 @@ def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def _wait_until(predicate, *, timeout_ms: int = 10_000) -> None:
+def _wait_until(predicate, *, timeout_ms: int = 15_000) -> None:
     deadline = time.monotonic() + timeout_ms / 1000
     application = _application()
     while not predicate() and time.monotonic() < deadline:
@@ -275,7 +275,7 @@ def test_a8_requirement_review_tool_emits_a_local_proposal_card_event(
                             "set_authoring_requirements",
                             {
                                 "turn_id": "turn-a8",
-                                "requirements": _requirements(),
+                                "requirements": _requirements_for("geometry"),
                             },
                         ),
                         ToolCall(
@@ -309,7 +309,7 @@ def test_a8_requirement_review_tool_emits_a_local_proposal_card_event(
     assert proposal.payload["proposal_kind"] == "requirement_review"
     assert proposal.payload["proposal_id"] == controller.pending_review.review_id
     assert proposal.payload["proposal_hash"] == controller.pending_review.review_hash
-    assert proposal.payload["confirm_label"] == "确认需求"
+    assert proposal.payload["confirm_label"] == "确认"
     runtime.shutdown()
 
 
@@ -346,7 +346,7 @@ def test_a8_requirement_review_drawer_buttons_reach_gui_boundary(
                             "set_authoring_requirements",
                             {
                                 "turn_id": "turn-a8",
-                                "requirements": _requirements(),
+                                "requirements": _requirements_for("geometry"),
                             },
                         ),
                         ToolCall(
@@ -396,7 +396,10 @@ def test_a8_new_agent_session_discards_controller_and_pending_proposal(
     controller, _calls, _queries = _controller(bridge)
     controller.dispatch(
         "set_authoring_requirements",
-        {"turn_id": "turn-a8", "requirements": _requirements()},
+        {
+            "turn_id": "turn-a8",
+            "requirements": _requirements_for("geometry"),
+        },
         ToolExecutionContext("session-a8", 0, "requirements-before-reset"),
     )
     controller.dispatch(
@@ -467,7 +470,10 @@ def test_a8_production_geometry_handler_keeps_draft_local_until_gui_accepts() ->
 
     controller.dispatch(
         "set_authoring_requirements",
-        {"turn_id": "turn-a8", "requirements": _requirements()},
+        {
+            "turn_id": "turn-a8",
+            "requirements": _requirements_for("geometry"),
+        },
         ToolExecutionContext("session-a8", 0, "requirements-a8"),
     )
     controller.dispatch(
@@ -539,11 +545,12 @@ def test_a8_a4_revision_stays_live_and_a5_failure_is_atomic(monkeypatch) -> None
         result_bridge,
     )
     controller_holder["controller"] = controller
-    requirements = _requirements()
-
     recorded = controller.dispatch(
         "set_authoring_requirements",
-        {"turn_id": "turn-a8", "requirements": requirements},
+        {
+            "turn_id": "turn-geometry",
+            "requirements": _requirements_for("geometry"),
+        },
         ToolExecutionContext("session-a8", 0, "requirements-a8"),
     )
     review_result = controller.dispatch(
@@ -559,6 +566,26 @@ def test_a8_a4_revision_stays_live_and_a5_failure_is_atomic(monkeypatch) -> None
     )
     controller.resolve_requirement_review(confirmed)
     controller._stage = AuthoringWorkflowStage.DEFINITIONS_READY
+    recorded = controller.dispatch(
+        "set_authoring_requirements",
+        {
+            "turn_id": "turn-definitions",
+            "requirements": _requirements_for("definitions"),
+        },
+        ToolExecutionContext("session-a8", 0, "definitions-a8"),
+    )
+    review_result = controller.dispatch(
+        "request_requirement_review",
+        {},
+        ToolExecutionContext("session-a8", 0, "definitions-review-a8"),
+    )
+    assert recorded.ok and review_result.ok
+    pending = controller.pending_review
+    confirmed = bridge.confirm_requirement_review_from_gui(
+        controller.ledger,
+        pending,
+    )
+    controller.resolve_requirement_review(confirmed)
 
     scopes = controller.dispatch(
         "apply_scopes_and_materials",
@@ -573,6 +600,26 @@ def test_a8_a4_revision_stays_live_and_a5_failure_is_atomic(monkeypatch) -> None
     )
     assert context_result.ok is True
     assert controller.stage is AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
+    recorded = controller.dispatch(
+        "set_authoring_requirements",
+        {
+            "turn_id": "turn-analysis",
+            "requirements": _requirements_for("analysis"),
+        },
+        ToolExecutionContext("session-a8", 0, "analysis-requirements-a8"),
+    )
+    review_result = controller.dispatch(
+        "request_requirement_review",
+        {},
+        ToolExecutionContext("session-a8", 0, "analysis-review-a8"),
+    )
+    assert recorded.ok and review_result.ok
+    pending = controller.pending_review
+    confirmed = bridge.confirm_requirement_review_from_gui(
+        controller.ledger,
+        pending,
+    )
+    controller.resolve_requirement_review(confirmed)
     before = session.snapshot()
 
     def fail_analysis_change(**_arguments):

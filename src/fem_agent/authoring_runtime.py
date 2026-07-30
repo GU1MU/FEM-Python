@@ -243,6 +243,67 @@ _REQUIREMENT_SPECS: dict[str, dict[str, object]] = {
     },
 }
 _REQUIRED_REQUIREMENTS = tuple(_REQUIREMENT_SPECS)
+_GEOMETRY_REQUIREMENTS = (
+    "length_unit",
+    "force_unit",
+    "stress_unit",
+    "plate_width",
+    "plate_height",
+    "hole_radius",
+    "hole_center_x",
+    "hole_center_y",
+)
+_MESH_REQUIREMENTS = (
+    "mesh_cell_shape",
+    "mesh_order",
+    "mesh_global_size",
+    "hole_mesh_size",
+)
+_DEFINITION_REQUIREMENTS = (
+    "modeling_assumption",
+    "plate_thickness",
+    "young_modulus",
+    "poisson_ratio",
+)
+_ANALYSIS_REQUIREMENTS = (
+    "fixed_dofs",
+    "load_type",
+    "load_direction",
+    "load_magnitude",
+    "load_unit",
+    "load_distribution",
+    "analysis_procedure",
+    "nlgeom",
+    "result_requests",
+)
+_REQUIREMENT_GROUPS: dict[str, tuple[str, ...]] = {
+    "geometry": _GEOMETRY_REQUIREMENTS,
+    "mesh": _MESH_REQUIREMENTS,
+    "definitions": _DEFINITION_REQUIREMENTS,
+    "analysis": _ANALYSIS_REQUIREMENTS,
+}
+_HANDLER_REQUIREMENTS: dict[str, tuple[str, ...]] = {
+    **_REQUIREMENT_GROUPS,
+    "analysis": (
+        "length_unit",
+        "force_unit",
+        "stress_unit",
+        *_ANALYSIS_REQUIREMENTS,
+    ),
+}
+_REQUIREMENT_GATE_BY_STAGE = {
+    AuthoringWorkflowStage.REQUIREMENTS: "geometry",
+    AuthoringWorkflowStage.MESH_READY: "mesh",
+    AuthoringWorkflowStage.DEFINITIONS_READY: "definitions",
+    AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY: "analysis",
+}
+_GATED_OPERATION_BY_STAGE = {
+    AuthoringWorkflowStage.MESH_READY: "prepare_mesh_proposal",
+    AuthoringWorkflowStage.DEFINITIONS_READY: "apply_scopes_and_materials",
+    AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY: (
+        "apply_analysis_definitions"
+    ),
+}
 
 
 def _tool(
@@ -269,8 +330,9 @@ _READ_CONTEXT = _tool(
 _SET_REQUIREMENTS = _tool(
     "set_authoring_requirements",
     (
-        "Record only engineering values explicitly supplied by the user. "
-        "Values remain proposed until a GUI RequirementReview is confirmed."
+        "Record only current-stage engineering values explicitly supplied by "
+        "the user. Values remain proposed until the matching GUI "
+        "RequirementReview is confirmed."
     ),
     {
         "type": "object",
@@ -290,8 +352,9 @@ _SET_REQUIREMENTS = _tool(
 _REQUEST_REVIEW = _tool(
     "request_requirement_review",
     (
-        "Create a local RequirementReview after every required engineering "
-        "value has been explicitly supplied. This tool cannot confirm it."
+        "Create a local RequirementReview after every required value for the "
+        "current stage has been explicitly supplied. This tool cannot confirm "
+        "it."
     ),
     _NO_ARGUMENTS,
 )
@@ -561,6 +624,8 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
     AuthoringWorkflowStage.GEOMETRY_PENDING: (_READ_CONTEXT,),
     AuthoringWorkflowStage.MESH_READY: (
         _READ_CONTEXT,
+        _SET_REQUIREMENTS,
+        _REQUEST_REVIEW,
         _PREPARE_MESH,
         _REQUEST_PROJECT_SAVE,
         _READ_DELETABLE_OBJECTS,
@@ -571,6 +636,8 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
     AuthoringWorkflowStage.MESH_PENDING: (_READ_CONTEXT,),
     AuthoringWorkflowStage.DEFINITIONS_READY: (
         _READ_CONTEXT,
+        _SET_REQUIREMENTS,
+        _REQUEST_REVIEW,
         _APPLY_SCOPES,
         _REQUEST_PROJECT_SAVE,
         _READ_DELETABLE_OBJECTS,
@@ -580,6 +647,8 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
     ),
     AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY: (
         _READ_CONTEXT,
+        _SET_REQUIREMENTS,
+        _REQUEST_REVIEW,
         _APPLY_ANALYSIS,
         _REQUEST_PROJECT_SAVE,
         _READ_DELETABLE_OBJECTS,
@@ -624,6 +693,34 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
 }
 
 
+def _stage_requirement_tool(group: str) -> ToolDefinition:
+    keys = _REQUIREMENT_GROUPS[group]
+    return _tool(
+        _SET_REQUIREMENTS.name,
+        (
+            f"Record only explicitly supplied {group} values for the current "
+            "stage. Values remain proposed until the matching GUI "
+            "RequirementReview is confirmed."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "turn_id": {"type": "string"},
+                "requirements": {
+                    "type": "object",
+                    "properties": {
+                        key: _REQUIREMENT_SPECS[key] for key in keys
+                    },
+                    "additionalProperties": False,
+                    "minProperties": 1,
+                },
+            },
+            "required": ["turn_id", "requirements"],
+            "additionalProperties": False,
+        },
+    )
+
+
 class AuthoringWorkflowController:
     """Strict A8 state machine over injected A1-A7 local handlers."""
 
@@ -653,6 +750,7 @@ class AuthoringWorkflowController:
         self._stage = AuthoringWorkflowStage.REQUIREMENTS
         self._pending_review: RequirementReview | None = None
         self._review_binding: tuple[str, str, int] | None = None
+        self._review_source_stage: AuthoringWorkflowStage | None = None
         self._pending_operation: str | None = None
         self._project_save_record: ProjectSaveProposalRecord | None = None
         self._destructive_resume_stage: AuthoringWorkflowStage | None = None
@@ -690,9 +788,37 @@ class AuthoringWorkflowController:
     def definitions(self) -> tuple[ToolDefinition, ...]:
         with self._lock:
             definitions = _STAGE_TOOLS[self._stage]
+            requirement_group = self._current_requirement_group()
+            requirements_confirmed = (
+                requirement_group is not None
+                and self._requirement_group_confirmed(requirement_group)
+            )
+            gated_operation = _GATED_OPERATION_BY_STAGE.get(self._stage)
+            visible: list[ToolDefinition] = []
+            for item in definitions:
+                if (
+                    item.name in {
+                        _SET_REQUIREMENTS.name,
+                        _REQUEST_REVIEW.name,
+                    }
+                    and requirements_confirmed
+                ):
+                    continue
+                if (
+                    gated_operation is not None
+                    and item.name == gated_operation
+                    and not requirements_confirmed
+                ):
+                    continue
+                if (
+                    item.name == _SET_REQUIREMENTS.name
+                    and requirement_group is not None
+                ):
+                    item = _stage_requirement_tool(requirement_group)
+                visible.append(item)
             return tuple(
                 item
-                for item in definitions
+                for item in visible
                 if (
                     (
                         item.name
@@ -811,23 +937,30 @@ class AuthoringWorkflowController:
             raise TypeError("review must be RequirementReview")
         with self._lock:
             pending = self._pending_review
+            source_stage = self._review_source_stage
             if (
                 pending is None
+                or source_stage is None
                 or pending.review_id != review.review_id
                 or pending.review_hash != review.review_hash
             ):
                 raise ValueError("RequirementReview does not match the pending review")
             if review.status is RequirementReviewStatus.CONFIRMED:
-                self._stage = AuthoringWorkflowStage.GEOMETRY_READY
+                self._stage = (
+                    AuthoringWorkflowStage.GEOMETRY_READY
+                    if source_stage is AuthoringWorkflowStage.REQUIREMENTS
+                    else source_stage
+                )
             elif review.status in {
                 RequirementReviewStatus.REJECTED,
                 RequirementReviewStatus.STALE,
             }:
-                self._stage = AuthoringWorkflowStage.REQUIREMENTS
+                self._stage = source_stage
             else:
                 raise ValueError("RequirementReview is not terminal")
             self._pending_review = None
             self._review_binding = None
+            self._review_source_stage = None
             self._record_terminal("requirement_review", review.status.value, "")
 
     def stale_review_for_binding(
@@ -855,6 +988,7 @@ class AuthoringWorkflowController:
             )
             self._pending_review = None
             self._review_binding = None
+            self._review_source_stage = None
             self._binding_identity = current
             self._ledger = RequirementLedger()
             self._stage = AuthoringWorkflowStage.STALE
@@ -950,6 +1084,7 @@ class AuthoringWorkflowController:
             self._clear_destructive_pending()
             self._pending_review = None
             self._review_binding = None
+            self._review_source_stage = None
             self._ledger = RequirementLedger()
             self._stage = AuthoringWorkflowStage.STALE
             return False
@@ -1042,6 +1177,7 @@ class AuthoringWorkflowController:
             self._clear_destructive_pending()
             self._pending_review = None
             self._review_binding = None
+            self._review_source_stage = None
             self._ledger = RequirementLedger()
             self._stage = AuthoringWorkflowStage.STALE
 
@@ -1091,6 +1227,7 @@ class AuthoringWorkflowController:
             self._ledger = RequirementLedger()
             self._pending_review = None
             self._review_binding = None
+            self._review_source_stage = None
             self._pending_operation = None
             self._project_save_record = None
             self._clear_destructive_pending()
@@ -1234,14 +1371,43 @@ class AuthoringWorkflowController:
                 message,
             )
 
-    def confirmed_requirements(self) -> dict[str, object]:
+    def confirmed_requirements(
+        self,
+        group: str = "all",
+    ) -> dict[str, object]:
+        if group == "all":
+            keys = _REQUIRED_REQUIREMENTS
+        else:
+            try:
+                keys = _HANDLER_REQUIREMENTS[group]
+            except KeyError as exc:
+                raise ValueError("unknown requirement group") from exc
         return {
             item.key: item.value
             for item in self._ledger.require_confirmed(
-                "authoring",
-                _REQUIRED_REQUIREMENTS,
+                group,
+                keys,
             )
         }
+
+    def _current_requirement_group(self) -> str | None:
+        stage = (
+            self._review_source_stage
+            if self._stage is AuthoringWorkflowStage.REVIEW_PENDING
+            else self._stage
+        )
+        if stage is None:
+            return None
+        return _REQUIREMENT_GATE_BY_STAGE.get(stage)
+
+    def _requirement_group_confirmed(self, group: str) -> bool:
+        required = set(_REQUIREMENT_GROUPS[group])
+        confirmed = {
+            item.key
+            for item in self._ledger.entries
+            if item.status is RequirementStatus.CONFIRMED
+        }
+        return required <= confirmed
 
     def invocation_metadata(self, prefix: str) -> dict[str, object]:
         """Return bounded envelope identities for the active local handler."""
@@ -1284,24 +1450,31 @@ class AuthoringWorkflowController:
             raise TypeError(
                 "context_reader must return AuthoringContext or an object"
             )
+        requirement_group = self._current_requirement_group()
+        required = (
+            ()
+            if requirement_group is None
+            else _REQUIREMENT_GROUPS[requirement_group]
+        )
+        recorded = {
+            item.key
+            for item in self._ledger.entries
+            if item.status
+            in {
+                RequirementStatus.PROPOSED,
+                RequirementStatus.CONFIRMED,
+            }
+        }
         return AuthoringToolOutcome(
             "Bounded authoring context read locally.",
             {
                 "workflow_stage": self._stage.value,
+                "requirement_stage": requirement_group,
                 "context": data,
                 "missing_requirements": [
                     key
-                    for key in _REQUIRED_REQUIREMENTS
-                    if key
-                    not in {
-                        item.key
-                        for item in self._ledger.entries
-                        if item.status
-                        in {
-                            RequirementStatus.PROPOSED,
-                            RequirementStatus.CONFIRMED,
-                        }
-                    }
+                    for key in required
+                    if key not in recorded
                 ],
             },
         )
@@ -1318,10 +1491,20 @@ class AuthoringWorkflowController:
         raw_requirements = data["requirements"]
         if not isinstance(raw_requirements, Mapping) or not raw_requirements:
             raise ValueError("requirements must be a non-empty object")
+        requirement_group = self._current_requirement_group()
+        if requirement_group is None:
+            raise ValueError("there is no active requirement stage")
+        allowed = set(_REQUIREMENT_GROUPS[requirement_group])
         unknown = set(raw_requirements) - set(_REQUIREMENT_SPECS)
         if unknown:
             raise ValueError(
                 f"unknown requirement fields: {', '.join(sorted(unknown))}"
+            )
+        out_of_stage = set(raw_requirements) - allowed
+        if out_of_stage:
+            raise ValueError(
+                "out-of-stage requirement fields: "
+                + ", ".join(sorted(out_of_stage))
             )
         for key, value in raw_requirements.items():
             _validate_requirement_value(
@@ -1338,15 +1521,25 @@ class AuthoringWorkflowController:
                 source_turn_id=turn_id,
                 status=RequirementStatus.PROPOSED,
             )
+        recorded = {
+            item.key
+            for item in self._ledger.entries
+            if item.status
+            in {
+                RequirementStatus.PROPOSED,
+                RequirementStatus.CONFIRMED,
+            }
+        }
         missing = [
             key
-            for key in _REQUIRED_REQUIREMENTS
-            if key not in {item.key for item in self._ledger.entries}
+            for key in _REQUIREMENT_GROUPS[requirement_group]
+            if key not in recorded
         ]
         return AuthoringToolOutcome(
             "Explicit authoring requirements recorded as proposed.",
             {
                 "ledger_revision": self._ledger.revision,
+                "requirement_stage": requirement_group,
                 "recorded": sorted(raw_requirements),
                 "missing_requirements": missing,
                 "review_required": True,
@@ -1354,20 +1547,34 @@ class AuthoringWorkflowController:
         )
 
     def _request_review(self) -> AuthoringToolOutcome:
+        requirement_group = self._current_requirement_group()
+        if requirement_group is None:
+            raise ValueError("there is no active requirement stage")
+        required = _REQUIREMENT_GROUPS[requirement_group]
+        recorded = {
+            item.key
+            for item in self._ledger.entries
+            if item.status
+            in {
+                RequirementStatus.PROPOSED,
+                RequirementStatus.CONFIRMED,
+            }
+        }
         missing = [
             key
-            for key in _REQUIRED_REQUIREMENTS
-            if key not in {item.key for item in self._ledger.entries}
+            for key in required
+            if key not in recorded
         ]
         if missing:
             raise ValueError(
                 "clarification_required: " + ", ".join(missing)
             )
         values = {item.key: item.value for item in self._ledger.entries}
-        _validate_supported_requirement_combination(values)
+        if requirement_group == "analysis":
+            _validate_supported_requirement_combination(values)
         review = self._ledger.create_review(
             f"review-{uuid.uuid4().hex}",
-            _REQUIRED_REQUIREMENTS,
+            required,
         )
         raw_context = self._context_reader()
         context_data = (
@@ -1384,12 +1591,35 @@ class AuthoringWorkflowController:
             raise TypeError("context_reader returned no binding")
         binding = dict(context_data["binding"])
         self._pending_review = review
+        self._review_source_stage = self._stage
         self._review_binding = (
             str(binding["document_id"]),
             str(binding["session_id"]),
             int(binding["session_revision"]),
         )
         self._stage = AuthoringWorkflowStage.REVIEW_PENDING
+        title, summary, impact = {
+            "geometry": (
+                "确认几何需求",
+                f"请审阅 {len(review.fields)} 项几何与项目单位参数",
+                "确认后这些值才可用于创建几何",
+            ),
+            "mesh": (
+                "确认网格需求",
+                f"请审阅 {len(review.fields)} 项网格参数",
+                "确认后这些值才可用于划分网格",
+            ),
+            "definitions": (
+                "确认材料与截面需求",
+                f"请审阅 {len(review.fields)} 项材料与截面参数",
+                "确认后这些值才可用于材料、截面和指派",
+            ),
+            "analysis": (
+                "确认分析需求",
+                f"请审阅 {len(review.fields)} 项边界条件、载荷与结果参数",
+                "确认后这些值才可用于分析定义",
+            ),
+        }[requirement_group]
         return AuthoringToolOutcome(
             "RequirementReview is waiting for the local GUI control.",
             {
@@ -1397,18 +1627,16 @@ class AuthoringWorkflowController:
                 "review_hash": review.review_hash,
                 "ledger_revision": review.ledger_revision,
                 "status": review.status.value,
+                "requirement_stage": requirement_group,
                 "fields": [item.to_dict() for item in review.fields],
                 "proposal_view": {
                     "proposal_id": review.review_id,
                     "proposal_hash": review.review_hash,
                     "proposal_kind": "requirement_review",
-                    "title": "确认完整工程需求",
-                    "summary": (
-                        f"请审阅 {len(review.fields)} 项几何、材料、"
-                        "网格、分析和结果参数"
-                    ),
-                    "impact": "确认后这些工程值才可用于建模工具",
-                    "confirm_label": "确认需求",
+                    "title": title,
+                    "summary": summary,
+                    "impact": impact,
+                    "confirm_label": "确认",
                     "target_document_id": binding["document_id"],
                     "target_session_id": binding["session_id"],
                     "base_session_revision": binding["session_revision"],
@@ -1775,15 +2003,10 @@ def _validate_supported_requirement_combination(
 
 
 def _requirement_stage(key: str) -> str:
-    if key.startswith(("plate_", "hole_", "modeling_", "length_")):
-        return "geometry"
-    if key.startswith("mesh_"):
-        return "mesh"
-    if key in {"young_modulus", "poisson_ratio", "stress_unit"}:
-        return "definitions"
-    if key.startswith(("fixed_", "load_", "analysis_", "nlgeom")):
-        return "analysis"
-    return "results"
+    for stage, keys in _REQUIREMENT_GROUPS.items():
+        if key in keys:
+            return stage
+    raise ValueError("unknown requirement field")
 
 
 def _capability_enabled(

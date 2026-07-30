@@ -2112,7 +2112,7 @@ def create_session_authoring_workflow_controller(
         _arguments: Mapping[str, object],
         controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
-        requirements = controller.confirmed_requirements()
+        requirements = controller.confirmed_requirements("geometry")
         metadata = envelope(controller, "geometry")
         context = current_context()
         draft = plate_with_hole_geometry(
@@ -2159,7 +2159,7 @@ def create_session_authoring_workflow_controller(
         _arguments: Mapping[str, object],
         controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
-        requirements = controller.confirmed_requirements()
+        requirements = controller.confirmed_requirements("mesh")
         metadata = envelope(controller, "mesh")
         context = current_context()
         part_id = context.active_part_id
@@ -2196,7 +2196,7 @@ def create_session_authoring_workflow_controller(
         _arguments: Mapping[str, object],
         controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
-        requirements = controller.confirmed_requirements()
+        requirements = controller.confirmed_requirements("definitions")
         first = envelope(controller, "definitions-a4")
         first_suffix = str(first.pop("identity_suffix"))
         snapshot = session.snapshot()
@@ -2254,7 +2254,7 @@ def create_session_authoring_workflow_controller(
         _arguments: Mapping[str, object],
         controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
-        requirements = controller.confirmed_requirements()
+        requirements = controller.confirmed_requirements("analysis")
         fixed_dofs = tuple(int(item) for item in requirements["fixed_dofs"])
         if fixed_dofs != tuple(
             range(min(fixed_dofs), max(fixed_dofs) + 1)

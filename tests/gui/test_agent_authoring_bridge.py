@@ -12,7 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QToolButton
+from PySide6.QtWidgets import QApplication, QLabel, QToolButton
 
 from fem_agent.authoring import (
     AgentProposal,
@@ -37,7 +37,10 @@ from fem_gui.agent_events import (
     AgentEventProjector,
     EventType,
 )
-from fem_gui.widgets.agent_chat import AgentChatDrawer
+from fem_gui.widgets.agent_chat import (
+    AgentChatDrawer,
+    _AGENT_CHAT_STYLESHEET,
+)
 
 
 def _application() -> QApplication:
@@ -436,6 +439,7 @@ def test_minimal_gui_card_binds_and_only_buttons_authorize() -> None:
     )
 
     drawer = AgentChatDrawer(authoring_bridge=bridge)
+    drawer.setStyleSheet(_AGENT_CHAT_STYLESHEET)
     drawer.replay_agent_events(log)
     drawer.show()
     application.processEvents()
@@ -451,6 +455,10 @@ def test_minimal_gui_card_binds_and_only_buttons_authorize() -> None:
 
     assert accept is not None and accept.isEnabled()
     assert reject is not None and reject.isEnabled()
+    assert accept.text() == "确认"
+    assert reject.text() == "拒绝"
+    assert accept.palette().color(accept.foregroundRole()).name() == "#ffffff"
+    assert drawer.findChild(QLabel, "agentChatProposalRevision") is None
     assert bridge.state(proposal.proposal_id) is (
         ProposalState.PENDING_CONFIRMATION
     )

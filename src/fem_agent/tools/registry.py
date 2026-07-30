@@ -140,7 +140,7 @@ class AgentToolRegistry:
                 _require_fields(arguments, required=set())
                 return self._success(
                     context,
-                    "V0 capabilities are available.",
+                    "Local analysis capabilities are available.",
                     data=show_capabilities(),
                     allow_empty=True,
                 )
@@ -599,7 +599,10 @@ def _registered_tools() -> dict[str, RegisteredTool]:
         RegisteredTool(
             ToolDefinition(
                 "show_capabilities",
-                "Report the supported local FEM Agent V0 capabilities.",
+                (
+                    "Report supported local Abaqus import, solve, and "
+                    "result-query capabilities."
+                ),
                 no_arguments,
             )
         ),

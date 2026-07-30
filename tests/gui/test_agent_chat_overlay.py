@@ -108,10 +108,23 @@ def test_drawer_removes_phase_copy_and_uses_compact_composer_controls():
     drawer = host.agent_chat_drawer
     labels = drawer.findChildren(QLabel)
     title = drawer.findChild(QLabel, "agentChatTitle")
+    header = drawer.findChild(QWidget, "agentChatHeader")
 
     assert title is not None
+    assert header is not None
     assert title.text() == "FEM Agent"
     assert title.font().pointSizeF() >= 12
+    assert header.height() <= 40
+    assert (
+        drawer.palette().color(drawer.backgroundRole()).name()
+        == "#ffffff"
+    )
+    assert (
+        drawer.conversation_widget.palette()
+        .color(drawer.conversation_widget.backgroundRole())
+        .name()
+        == "#ffffff"
+    )
     assert all("Phase 5" not in label.text() for label in labels)
     assert drawer.findChild(QWidget, "agentChatPreviewBadge") is None
     assert drawer.findChild(QWidget, "agentChatSubtitle") is None
@@ -120,7 +133,8 @@ def test_drawer_removes_phase_copy_and_uses_compact_composer_controls():
     assert not hasattr(drawer, "new_session_button")
     assert drawer.input.font().pointSizeF() >= 10
     assert drawer.input.height() == 44
-    assert drawer.close_button.sizeHint().height() >= 32
+    assert drawer.close_button.width() <= 30
+    assert drawer.close_button.height() <= 30
     assert drawer.send_state.size() == QSize(30, 30)
     host.close()
 
@@ -135,19 +149,31 @@ def test_composer_input_expands_for_multiple_lines_and_collapses_when_cleared():
 
     editor = host.agent_chat_drawer.input
     collapsed_height = editor.height()
-    editor.setPlainText("保持单行")
-    application.processEvents()
-    assert editor.height() == collapsed_height
+    line_height = editor.fontMetrics().lineSpacing()
+    for line_count in range(1, 6):
+        editor.setPlainText(
+            "\n".join(f"第 {index} 行" for index in range(line_count))
+        )
+        application.processEvents()
+        assert editor.height() == (
+            collapsed_height + (line_count - 1) * line_height
+        )
+        assert editor.verticalScrollBarPolicy() == (
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
 
-    editor.setPlainText("第一行\n第二行\n第三行")
+    maximum_height = collapsed_height + 4 * line_height
+    editor.setPlainText("\n".join(f"第 {index} 行" for index in range(6)))
     application.processEvents()
+    assert editor.height() == maximum_height
+    assert editor.verticalScrollBarPolicy() == (
+        Qt.ScrollBarPolicy.ScrollBarAsNeeded
+    )
 
-    assert editor.height() > collapsed_height
-    assert editor.height() <= 124
-
-    editor.setPlainText("\n".join(f"第 {index} 行" for index in range(20)))
+    editor.setPlainText("自动折行内容" * 100)
     application.processEvents()
-    assert editor.height() == 124
+    assert editor.height() == maximum_height
+    assert editor.verticalScrollBar().maximum() > 0
 
     editor.clear()
     application.processEvents()
@@ -433,7 +459,7 @@ def test_drawer_hit_area_consumes_input_and_outside_remains_viewport():
     host.close()
 
 
-def test_static_preview_controls_do_not_create_files_or_agent_dependencies(
+def test_static_preview_controls_do_not_create_files_or_unbounded_dependencies(
     tmp_path,
     monkeypatch,
 ):
@@ -455,7 +481,6 @@ def test_static_preview_controls_do_not_create_files_or_agent_dependencies(
             )
         elif isinstance(node, ast.ImportFrom) and node.module is not None:
             imported_roots.add(node.module.split(".", 1)[0])
-    assert "fem_agent" not in imported_roots
     assert imported_roots <= {
         "__future__",
         "PySide6",
@@ -463,7 +488,9 @@ def test_static_preview_controls_do_not_create_files_or_agent_dependencies(
         "agent_runtime",
         "agent_workspace",
         "collections",
+        "fem_agent",
         "html",
+        "pathlib",
         "re",
     }
 
@@ -491,7 +518,7 @@ def test_static_preview_controls_do_not_create_files_or_agent_dependencies(
     assert drawer.add_button.text() == "＋"
     assert drawer.send_button.text() == ""
     assert not drawer.send_button.icon().isNull()
-    assert drawer.send_button.iconSize() == QSize(18, 18)
+    assert drawer.send_button.iconSize() == QSize(16, 16)
 
     drawer.input.setPlainText("@")
     application.processEvents()

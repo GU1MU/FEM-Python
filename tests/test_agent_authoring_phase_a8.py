@@ -103,6 +103,48 @@ def _requirements() -> dict[str, object]:
     }
 
 
+_REQUIREMENT_GROUP_KEYS = {
+    "geometry": (
+        "length_unit",
+        "force_unit",
+        "stress_unit",
+        "plate_width",
+        "plate_height",
+        "hole_radius",
+        "hole_center_x",
+        "hole_center_y",
+    ),
+    "mesh": (
+        "mesh_cell_shape",
+        "mesh_order",
+        "mesh_global_size",
+        "hole_mesh_size",
+    ),
+    "definitions": (
+        "modeling_assumption",
+        "plate_thickness",
+        "young_modulus",
+        "poisson_ratio",
+    ),
+    "analysis": (
+        "fixed_dofs",
+        "load_type",
+        "load_direction",
+        "load_magnitude",
+        "load_unit",
+        "load_distribution",
+        "analysis_procedure",
+        "nlgeom",
+        "result_requests",
+    ),
+}
+
+
+def _requirements_for(group: str) -> dict[str, object]:
+    values = _requirements()
+    return {key: values[key] for key in _REQUIREMENT_GROUP_KEYS[group]}
+
+
 def _proposal(kind: ProposalKind, suffix: str) -> AgentProposal:
     operation, parameters = {
         ProposalKind.GEOMETRY: (
@@ -286,7 +328,7 @@ def _controller(
         return handle
 
     def scopes(_arguments, controller):
-        controller.confirmed_requirements()
+        controller.confirmed_requirements("definitions")
         calls.append("scopes")
         return AuthoringToolOutcome(
             "Scopes and materials applied through one reversible patch.",
@@ -305,7 +347,7 @@ def _controller(
         )
 
     def analysis(_arguments, controller):
-        controller.confirmed_requirements()
+        controller.confirmed_requirements("analysis")
         calls.append("analysis")
         return AuthoringToolOutcome(
             "Analysis definitions applied through one reversible patch.",
@@ -411,7 +453,10 @@ def test_a8_dynamic_catalog_requires_gui_review_and_never_publishes_confirmation
     recorded = _dispatch(
         controller,
         "set_authoring_requirements",
-        {"turn_id": "turn-requirements", "requirements": _requirements()},
+        {
+            "turn_id": "turn-requirements",
+            "requirements": _requirements_for("geometry"),
+        },
         2,
     )
     review_result = _dispatch(
@@ -441,6 +486,86 @@ def test_a8_dynamic_catalog_requires_gui_review_and_never_publishes_confirmation
     }
 
 
+@pytest.mark.parametrize(
+    ("stage", "group", "operation"),
+    [
+        (
+            AuthoringWorkflowStage.MESH_READY,
+            "mesh",
+            "prepare_mesh_proposal",
+        ),
+        (
+            AuthoringWorkflowStage.DEFINITIONS_READY,
+            "definitions",
+            "apply_scopes_and_materials",
+        ),
+        (
+            AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY,
+            "analysis",
+            "apply_analysis_definitions",
+        ),
+    ],
+)
+def test_a8_ready_stage_opens_its_operation_only_after_stage_review(
+    stage,
+    group,
+    operation,
+) -> None:
+    controller = AuthoringWorkflowController(
+        lambda: _context(),
+        {
+            operation: lambda _arguments, _controller: AuthoringToolOutcome(
+                "Stage operation completed.",
+                {"state": "succeeded"},
+            )
+        },
+    )
+    controller._stage = stage
+    bridge = AgentAuthoringBridge(FakeAuthoringPort())
+    bridge.bind_context(_context())
+
+    names = {item.name for item in controller.definitions}
+    assert {
+        "set_authoring_requirements",
+        "request_requirement_review",
+    } <= names
+    assert operation not in names
+    schema = next(
+        item
+        for item in controller.definitions
+        if item.name == "set_authoring_requirements"
+    ).parameters["properties"]["requirements"]["properties"]
+    assert set(schema) == set(_REQUIREMENT_GROUP_KEYS[group])
+
+    assert _dispatch(
+        controller,
+        "set_authoring_requirements",
+        {
+            "turn_id": f"turn-{group}",
+            "requirements": _requirements_for(group),
+        },
+        30,
+    ).ok
+    assert _dispatch(
+        controller,
+        "request_requirement_review",
+        {},
+        31,
+    ).ok
+    pending = controller.pending_review
+    assert pending is not None
+    confirmed = bridge.confirm_requirement_review_from_gui(
+        controller.ledger,
+        pending,
+    )
+    controller.resolve_requirement_review(confirmed)
+
+    names = {item.name for item in controller.definitions}
+    assert operation in names
+    assert "set_authoring_requirements" not in names
+    assert "request_requirement_review" not in names
+
+
 def test_a8_requirement_schema_and_review_fail_closed_for_unsupported_2d_values() -> (
     None
 ):
@@ -450,16 +575,31 @@ def test_a8_requirement_schema_and_review_fail_closed_for_unsupported_2d_values(
         for item in controller.definitions
         if item.name == "set_authoring_requirements"
     ).parameters["properties"]["requirements"]["properties"]
-    assert requirement_schema["modeling_assumption"]["enum"] == [
+    assert set(requirement_schema) == set(_REQUIREMENT_GROUP_KEYS["geometry"])
+
+    controller._stage = AuthoringWorkflowStage.DEFINITIONS_READY
+    definition_schema = next(
+        item
+        for item in controller.definitions
+        if item.name == "set_authoring_requirements"
+    ).parameters["properties"]["requirements"]["properties"]
+    assert definition_schema["modeling_assumption"]["enum"] == [
         "plane_stress",
         "plane_strain",
     ]
-    assert requirement_schema["load_type"]["enum"] == [
+
+    controller._stage = AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
+    analysis_schema = next(
+        item
+        for item in controller.definitions
+        if item.name == "set_authoring_requirements"
+    ).parameters["properties"]["requirements"]["properties"]
+    assert analysis_schema["load_type"]["enum"] == [
         "edge_traction",
         "edge_pressure",
     ]
-    assert "z" not in requirement_schema["load_direction"]["enum"]
-    assert requirement_schema["fixed_dofs"]["items"] == {
+    assert "z" not in analysis_schema["load_direction"]["enum"]
+    assert analysis_schema["fixed_dofs"]["items"] == {
         "type": "integer",
         "minimum": 1,
         "maximum": 2,
@@ -472,8 +612,14 @@ def test_a8_requirement_schema_and_review_fail_closed_for_unsupported_2d_values(
         ("fixed_dofs", [0, 1]),
         ("fixed_dofs", [1, 4]),
     ):
+        candidate = AuthoringWorkflowController(lambda: _context(), {})
+        candidate._stage = (
+            AuthoringWorkflowStage.DEFINITIONS_READY
+            if key == "modeling_assumption"
+            else AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
+        )
         rejected = _dispatch(
-            AuthoringWorkflowController(lambda: _context(), {}),
+            candidate,
             "set_authoring_requirements",
             {
                 "turn_id": "turn-unsupported",
@@ -489,7 +635,7 @@ def test_a8_requirement_schema_and_review_fail_closed_for_unsupported_2d_values(
         ("edge_pressure", "inward_normal", -10.0),
         ("edge_pressure", "outward_normal", 10.0),
     ):
-        incompatible = _requirements()
+        incompatible = _requirements_for("analysis")
         incompatible.update(
             {
                 "load_type": load_type,
@@ -498,6 +644,7 @@ def test_a8_requirement_schema_and_review_fail_closed_for_unsupported_2d_values(
             }
         )
         candidate = AuthoringWorkflowController(lambda: _context(), {})
+        candidate._stage = AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
         assert _dispatch(
             candidate,
             "set_authoring_requirements",
@@ -510,7 +657,10 @@ def test_a8_requirement_schema_and_review_fail_closed_for_unsupported_2d_values(
         review = _dispatch(candidate, "request_requirement_review", {}, 22)
         assert review.ok is False
         assert candidate.pending_review is None
-        assert candidate.stage is AuthoringWorkflowStage.REQUIREMENTS
+        assert (
+            candidate.stage
+            is AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
+        )
 
 
 def test_a8_requirement_batch_validation_is_atomic() -> None:
@@ -560,7 +710,7 @@ def test_a8_seeded_binding_invalidates_confirmed_ledger_without_context_read() -
         "set_authoring_requirements",
         {
             "turn_id": "turn-before-switch",
-            "requirements": _requirements(),
+            "requirements": _requirements_for("geometry"),
         },
         23,
     ).ok is True
@@ -706,30 +856,53 @@ def test_a8_fake_provider_runs_dynamic_engine_chain_with_three_gui_confirmations
     controller, local_calls, queries = _controller(bridge)
     provider = FakeProvider(
         [
-            _response(
-                text=(
-                    "请补充建模假设、单位、板尺寸、孔位置、材料、网格、"
-                    "约束、载荷和结果请求。"
-                )
-            ),
+            _response(text="请先确认板尺寸、孔尺寸、孔位置和项目单位制。"),
             _response(
                 ToolCall(
-                    "requirements",
+                    "geometry-requirements",
                     "set_authoring_requirements",
                     {
-                        "turn_id": "turn-2",
-                        "requirements": _requirements(),
+                        "turn_id": "turn-geometry",
+                        "requirements": _requirements_for("geometry"),
                     },
                 ),
-                ToolCall("review", "request_requirement_review", {}),
+                ToolCall("geometry-review", "request_requirement_review", {}),
             ),
-            _response(text="请在 GUI 中审阅完整 RequirementReview。"),
+            _response(text="请确认几何需求。"),
             _response(
                 ToolCall("geometry", "prepare_geometry_proposal", {})
             ),
             _response(text="几何提案等待 GUI 确认。"),
+            _response(
+                ToolCall(
+                    "mesh-requirements",
+                    "set_authoring_requirements",
+                    {
+                        "turn_id": "turn-mesh",
+                        "requirements": _requirements_for("mesh"),
+                    },
+                ),
+                ToolCall("mesh-review", "request_requirement_review", {}),
+            ),
+            _response(text="请确认网格需求。"),
             _response(ToolCall("mesh", "prepare_mesh_proposal", {})),
             _response(text="网格提案等待 GUI 确认。"),
+            _response(
+                ToolCall(
+                    "definition-requirements",
+                    "set_authoring_requirements",
+                    {
+                        "turn_id": "turn-definitions",
+                        "requirements": _requirements_for("definitions"),
+                    },
+                ),
+                ToolCall(
+                    "definition-review",
+                    "request_requirement_review",
+                    {},
+                ),
+            ),
+            _response(text="请确认材料与截面需求。"),
             _response(
                 ToolCall(
                     "scopes",
@@ -738,6 +911,22 @@ def test_a8_fake_provider_runs_dynamic_engine_chain_with_three_gui_confirmations
                 )
             ),
             _response(text="作用域与材料已自动应用并可撤销。"),
+            _response(
+                ToolCall(
+                    "analysis-requirements",
+                    "set_authoring_requirements",
+                    {
+                        "turn_id": "turn-analysis",
+                        "requirements": _requirements_for("analysis"),
+                    },
+                ),
+                ToolCall(
+                    "analysis-review",
+                    "request_requirement_review",
+                    {},
+                ),
+            ),
+            _response(text="请确认边界条件、载荷与分析需求。"),
             _response(
                 ToolCall(
                     "analysis",
@@ -782,12 +971,20 @@ def test_a8_fake_provider_runs_dynamic_engine_chain_with_three_gui_confirmations
     engine.send_message("帮我建立一个偏心的带孔平板模型，孔的位置偏离板的中心")
     assert local_calls == []
     authoring_prompt = provider.requests[0].messages[0].content
-    assert "do not write guessed or inferred values" in authoring_prompt
-    assert "RequirementReview only after every required" in authoring_prompt
-    assert "only present local GUI cards" in authoring_prompt
-    engine.send_message("以下是全部明确工程参数。")
+    assert "strict attention boundary" in authoring_prompt
+    assert "Do not ask for or mention mesh, material" in authoring_prompt
+    assert "full-project questionnaire" in authoring_prompt
+    assert "Do not volunteer or enumerate FEM Agent features" in (
+        authoring_prompt
+    )
+    assert "smallest useful set" in authoring_prompt
+    assert "`empty` does not mean" in authoring_prompt
+    engine.send_message("以下是明确的几何和单位参数。")
     pending = controller.pending_review
     assert pending is not None
+    assert {item.key for item in pending.fields} == set(
+        _REQUIREMENT_GROUP_KEYS["geometry"]
+    )
     confirmed = bridge.confirm_requirement_review_from_gui(
         controller.ledger,
         pending,
@@ -800,11 +997,48 @@ def test_a8_fake_provider_runs_dynamic_engine_chain_with_three_gui_confirmations
     assert bridge.accept_from_gui_control("proposal-geometry").state is ProposalState.ACCEPTED
     controller.record_proposal_state("geometry", ProposalState.SUCCEEDED)
 
+    engine.send_message("以下是明确的网格参数。")
+    pending = controller.pending_review
+    assert pending is not None
+    assert {item.key for item in pending.fields} == set(
+        _REQUIREMENT_GROUP_KEYS["mesh"]
+    )
+    confirmed = bridge.confirm_requirement_review_from_gui(
+        controller.ledger,
+        pending,
+    )
+    controller.resolve_requirement_review(confirmed)
+
     engine.send_message("准备网格提案。")
     assert bridge.accept_from_gui_control("proposal-mesh").state is ProposalState.ACCEPTED
     controller.record_proposal_state("mesh", ProposalState.SUCCEEDED)
 
+    engine.send_message("以下是明确的材料与截面参数。")
+    pending = controller.pending_review
+    assert pending is not None
+    assert {item.key for item in pending.fields} == set(
+        _REQUIREMENT_GROUP_KEYS["definitions"]
+    )
+    confirmed = bridge.confirm_requirement_review_from_gui(
+        controller.ledger,
+        pending,
+    )
+    controller.resolve_requirement_review(confirmed)
+
     engine.send_message("应用作用域与材料。")
+
+    engine.send_message("以下是明确的边界条件、载荷与分析参数。")
+    pending = controller.pending_review
+    assert pending is not None
+    assert {item.key for item in pending.fields} == set(
+        _REQUIREMENT_GROUP_KEYS["analysis"]
+    )
+    confirmed = bridge.confirm_requirement_review_from_gui(
+        controller.ledger,
+        pending,
+    )
+    controller.resolve_requirement_review(confirmed)
+
     engine.send_message("应用分析定义。")
     engine.send_message("运行预检。")
     engine.send_message("准备求解提案。")

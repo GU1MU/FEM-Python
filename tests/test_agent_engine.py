@@ -76,6 +76,10 @@ def test_provider_prompt_contains_restrained_engineering_response_contract(
         "only_when_explicitly_requested_and_reference_evidence_is_available"
     )
     assert contract["generic_disclaimers"] == "omit"
+    assert system_prompt.startswith(
+        "You are FEM Agent, an in-application assistant"
+    )
+    assert "FEM Agent V0" not in system_prompt
     assert "local deterministic fem package" not in system_prompt.casefold()
     assert "do not write guessed or inferred values" not in system_prompt
 

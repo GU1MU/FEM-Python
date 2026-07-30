@@ -9,6 +9,7 @@ from __future__ import annotations
 import html
 import re
 from collections.abc import Callable, Iterable, Mapping
+from pathlib import Path
 
 from PySide6.QtCore import (
     QAbstractAnimation,
@@ -107,9 +108,20 @@ def _shutdown_runtime_safely(runtime: QtAgentRuntime) -> None:
         pass
 
 
+_AGENT_CHAT_ICON_ROOT = (
+    Path(__file__).resolve().parents[1] / "resources" / "icons"
+)
+_AGENT_CHAT_SCROLL_UP_ARROW = (
+    _AGENT_CHAT_ICON_ROOT / "agent_chat_scroll_up.svg"
+).as_posix()
+_AGENT_CHAT_SCROLL_DOWN_ARROW = (
+    _AGENT_CHAT_ICON_ROOT / "agent_chat_scroll_down.svg"
+).as_posix()
+
+
 _AGENT_CHAT_STYLESHEET = """
 QFrame#agentChatDrawer {
-    background: #f8f9fb;
+    background: #ffffff;
     border-left: 1px solid #c7ccd2;
     font-size: 9.5pt;
 }
@@ -136,23 +148,64 @@ QToolButton#agentChatHeaderButton {
     background: transparent;
     border: 1px solid transparent;
     border-radius: 5px;
-    min-width: 32px;
-    max-width: 32px;
-    min-height: 32px;
-    max-height: 32px;
+    min-width: 28px;
+    max-width: 28px;
+    min-height: 28px;
+    max-height: 28px;
     padding: 0;
-    font-size: 14pt;
+    font-size: 13pt;
 }
 QToolButton#agentChatHeaderButton:hover {
     background: #edf2f5;
     border-color: #d7dde2;
 }
 QScrollArea#agentChatScroll {
-    background: #f8f9fb;
+    background: #ffffff;
     border: none;
 }
 QWidget#agentChatConversation {
-    background: #f8f9fb;
+    background: #ffffff;
+}
+QFrame#agentChatDrawer QScrollBar:vertical {
+    background: transparent;
+    width: 10px;
+    margin: 12px 0 12px 0;
+}
+QFrame#agentChatDrawer QScrollBar::handle:vertical {
+    background: rgba(76, 88, 98, 92);
+    min-height: 34px;
+    border-radius: 4px;
+    margin: 1px 2px;
+}
+QFrame#agentChatDrawer QScrollBar::handle:vertical:hover {
+    background: rgba(76, 88, 98, 138);
+}
+QFrame#agentChatDrawer QScrollBar::add-line:vertical,
+QFrame#agentChatDrawer QScrollBar::sub-line:vertical {
+    background: transparent;
+    border: none;
+    height: 12px;
+    subcontrol-origin: margin;
+}
+QFrame#agentChatDrawer QScrollBar::sub-line:vertical {
+    subcontrol-position: top;
+}
+QFrame#agentChatDrawer QScrollBar::add-line:vertical {
+    subcontrol-position: bottom;
+}
+QFrame#agentChatDrawer QScrollBar::up-arrow:vertical {
+    image: url("__AGENT_CHAT_SCROLL_UP_ARROW__");
+    width: 8px;
+    height: 6px;
+}
+QFrame#agentChatDrawer QScrollBar::down-arrow:vertical {
+    image: url("__AGENT_CHAT_SCROLL_DOWN_ARROW__");
+    width: 8px;
+    height: 6px;
+}
+QFrame#agentChatDrawer QScrollBar::add-page:vertical,
+QFrame#agentChatDrawer QScrollBar::sub-page:vertical {
+    background: transparent;
 }
 QFrame#agentChatUserMessage {
     background: #e7eff5;
@@ -173,10 +226,9 @@ QLabel#agentChatAgentMessage {
     font-size: 9.5pt;
 }
 QFrame#agentChatToolActivity {
-    background: transparent;
-    border: none;
-    border-top: 1px solid #e1e4e7;
-    border-bottom: 1px solid #e1e4e7;
+    background: #f2f4f6;
+    border: 1px solid #e0e4e7;
+    border-radius: 6px;
 }
 QToolButton#agentChatToolSummary {
     color: #707981;
@@ -188,11 +240,11 @@ QToolButton#agentChatToolSummary {
 }
 QToolButton#agentChatToolSummary:hover {
     color: #45515b;
-    background: #f1f3f5;
+    background: #e8ecef;
 }
 QFrame#agentChatToolDetails {
-    background: #f3f4f6;
-    border: 1px solid #e2e5e8;
+    background: #e9edf0;
+    border: 1px solid #dce2e6;
     border-radius: 5px;
 }
 QLabel#agentChatToolColumn {
@@ -270,17 +322,86 @@ QLabel#agentChatConfirmationText {
     color: #435665;
     font-size: 9.5pt;
 }
-QLabel#agentChatConfirmationRevision {
-    color: #6c7680;
-    font-size: 8pt;
-}
 QToolButton#agentChatConfirmationButton {
-    color: #76818a;
-    background: #e5e9ed;
-    border: 1px solid #d2d8dd;
-    border-radius: 4px;
-    padding: 5px 10px;
+    color: #ffffff;
+    background: #477a9f;
+    border: 1px solid #477a9f;
+    border-radius: 5px;
+    padding: 6px 14px;
+    font-size: 9pt;
+    font-weight: 600;
+}
+QToolButton#agentChatConfirmationButton:hover {
+    background: #3c6b8d;
+    border-color: #3c6b8d;
+}
+QToolButton#agentChatConfirmationButton:disabled {
+    color: #7c8790;
+    background: #e3e7ea;
+    border-color: #d2d8dd;
+}
+QFrame#agentChatProposal {
+    background: #f5f8fb;
+    border: 1px solid #cad7e1;
+    border-left: 3px solid #4c7fa5;
+    border-radius: 6px;
+}
+QLabel#agentChatProposalTitle {
+    color: #294b63;
+    font-size: 9.5pt;
+    font-weight: 600;
+}
+QLabel#agentChatProposalSummary {
+    color: #344b5b;
+    font-size: 9.5pt;
+}
+QLabel#agentChatProposalImpact {
+    color: #526674;
+    font-size: 9pt;
+}
+QLabel#agentChatProposalStatus {
+    color: #55758c;
     font-size: 8.5pt;
+}
+QToolButton#agentChatProposalAcceptButton,
+QToolButton#agentChatProposalRejectButton {
+    border-radius: 5px;
+    padding: 6px 18px;
+    min-width: 52px;
+    font-size: 9pt;
+    font-weight: 600;
+}
+QToolButton#agentChatProposalAcceptButton {
+    color: #ffffff;
+    background: #477a9f;
+    border: 1px solid #477a9f;
+}
+QToolButton#agentChatProposalAcceptButton:hover {
+    background: #3c6b8d;
+    border-color: #3c6b8d;
+}
+QToolButton#agentChatProposalAcceptButton:pressed {
+    background: #315d7c;
+    border-color: #315d7c;
+}
+QToolButton#agentChatProposalRejectButton {
+    color: #3f5666;
+    background: #ffffff;
+    border: 1px solid #9eacb7;
+}
+QToolButton#agentChatProposalRejectButton:hover {
+    color: #263d4d;
+    background: #edf2f5;
+    border-color: #718591;
+}
+QToolButton#agentChatProposalRejectButton:pressed {
+    background: #dfe8ed;
+}
+QToolButton#agentChatProposalAcceptButton:disabled,
+QToolButton#agentChatProposalRejectButton:disabled {
+    color: #8a949c;
+    background: #eceff1;
+    border-color: #d9dee2;
 }
 QLabel#agentChatTurnStatus {
     color: #a14444;
@@ -420,7 +541,13 @@ QFrame#agentChatResizeHandle {
 QFrame#agentChatResizeHandle:hover {
     background: #8bb0c8;
 }
-"""
+""".replace(
+    "__AGENT_CHAT_SCROLL_UP_ARROW__",
+    _AGENT_CHAT_SCROLL_UP_ARROW,
+).replace(
+    "__AGENT_CHAT_SCROLL_DOWN_ARROW__",
+    _AGENT_CHAT_SCROLL_DOWN_ARROW,
+)
 
 
 class _EventBoundaryMixin:
@@ -450,8 +577,7 @@ class _ChatInput(QPlainTextEdit):
     """在输入框内路由发送与候选键盘操作。"""
 
     COLLAPSED_HEIGHT = 44
-    MAXIMUM_HEIGHT = 124
-    _CONTENT_VERTICAL_PADDING = 14
+    MAXIMUM_VISIBLE_LINES = 5
 
     submitRequested = Signal()
     suggestionMoveRequested = Signal(int)
@@ -466,6 +592,9 @@ class _ChatInput(QPlainTextEdit):
             QSizePolicy.Policy.Fixed,
         )
         self.setFixedHeight(self.COLLAPSED_HEIGHT)
+        self.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         self.document().documentLayout().documentSizeChanged.connect(
             self._fit_height_to_content
         )
@@ -475,19 +604,25 @@ class _ChatInput(QPlainTextEdit):
         document = self.document()
         document_layout = document.documentLayout()
         block = document.begin()
-        document_height = 0.0
+        visual_line_count = 0
         while block.isValid():
-            document_height += document_layout.blockBoundingRect(
-                block
-            ).height()
+            document_layout.blockBoundingRect(block)
+            visual_line_count += max(block.layout().lineCount(), 1)
             block = block.next()
-        target_height = max(
-            self.COLLAPSED_HEIGHT,
-            min(
-                self.MAXIMUM_HEIGHT,
-                round(document_height) + self._CONTENT_VERTICAL_PADDING,
-            ),
+        visible_lines = min(
+            max(visual_line_count, 1),
+            self.MAXIMUM_VISIBLE_LINES,
         )
+        target_height = self.COLLAPSED_HEIGHT + (
+            visible_lines - 1
+        ) * self.fontMetrics().lineSpacing()
+        scroll_policy = (
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+            if visual_line_count > self.MAXIMUM_VISIBLE_LINES
+            else Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        if self.verticalScrollBarPolicy() != scroll_policy:
+            self.setVerticalScrollBarPolicy(scroll_policy)
         if self.height() != target_height:
             self.setFixedHeight(target_height)
 
@@ -575,8 +710,11 @@ _TOOL_STATUS_LABELS = {
 }
 
 
-def _restricted_markdown_html(markdown: str) -> str:
-    """把受限 Markdown 转成不含链接、图片或原始 HTML 的 Qt 富文本。"""
+_UNORDERED_LIST_PATTERN = re.compile(r"^\s{0,3}[-+*]\s+(.+)$")
+_ORDERED_LIST_PATTERN = re.compile(r"^\s{0,3}(\d+)[.)]\s+(.+)$")
+
+
+def _restricted_inline_markdown_html(markdown: str) -> str:
     escaped = html.escape(markdown, quote=True)
     escaped = re.sub(
         r"`([^`\n]+)`",
@@ -585,7 +723,55 @@ def _restricted_markdown_html(markdown: str) -> str:
     )
     escaped = re.sub(r"\*\*([^*\n]+)\*\*", r"<b>\1</b>", escaped)
     escaped = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<i>\1</i>", escaped)
-    return escaped.replace("\n", "<br>")
+    return escaped
+
+
+def _restricted_markdown_html(markdown: str) -> str:
+    """把受限 Markdown 转成不含链接、图片或原始 HTML 的 Qt 富文本。"""
+    rendered: list[str] = []
+    active_list: str | None = None
+
+    def close_list() -> None:
+        nonlocal active_list
+        if active_list is not None:
+            rendered.append(f"</{active_list}>")
+            active_list = None
+
+    for line in markdown.split("\n"):
+        unordered = _UNORDERED_LIST_PATTERN.match(line)
+        ordered = _ORDERED_LIST_PATTERN.match(line)
+        list_type = "ul" if unordered is not None else (
+            "ol" if ordered is not None else None
+        )
+        if list_type is not None:
+            if active_list != list_type:
+                close_list()
+                rendered.append(
+                    f"<{list_type} style='margin-top:4px; "
+                    "margin-bottom:4px;'>"
+                )
+                active_list = list_type
+            content = (
+                unordered.group(1)
+                if unordered is not None
+                else ordered.group(2)
+            )
+            rendered.append(
+                "<li>"
+                + _restricted_inline_markdown_html(content)
+                + "</li>"
+            )
+            continue
+
+        close_list()
+        if line:
+            rendered.append(_restricted_inline_markdown_html(line))
+        rendered.append("<br>")
+
+    close_list()
+    if rendered and rendered[-1] == "<br>":
+        rendered.pop()
+    return "".join(rendered)
 
 
 def _plain_label(text: str, parent: QWidget) -> QLabel:
@@ -628,7 +814,7 @@ class ToolActivityPreview(_BoundaryFrame):
         self.setObjectName("agentChatToolActivity")
         self._group = group or ToolGroupView(group_id="empty")
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 2, 0, 2)
+        layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(3)
 
         self.summary_button = _BoundaryToolButton(self)
@@ -787,6 +973,10 @@ class AgentChatDrawer(_BoundaryFrame):
         self._workspace_references: list[
             WorkspaceFileReference
         ] = []
+        self._conversation_auto_follow = True
+        self._conversation_scroll_suspended = False
+        self._conversation_scroll_update_pending = False
+        self._conversation_scroll_restore_value: int | None = None
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -853,8 +1043,8 @@ class AgentChatDrawer(_BoundaryFrame):
         header = _BoundaryFrame(parent)
         header.setObjectName("agentChatHeader")
         layout = QHBoxLayout(header)
-        layout.setContentsMargins(14, 10, 10, 10)
-        layout.setSpacing(8)
+        layout.setContentsMargins(14, 4, 8, 4)
+        layout.setSpacing(6)
 
         title = QLabel("FEM Agent", header)
         title.setObjectName("agentChatTitle")
@@ -894,10 +1084,64 @@ class AgentChatDrawer(_BoundaryFrame):
         layout.addStretch(1)
 
         scroll.setWidget(conversation)
+        scroll_bar = scroll.verticalScrollBar()
+        scroll_bar.valueChanged.connect(
+            self._conversation_scroll_value_changed
+        )
+        scroll_bar.rangeChanged.connect(
+            self._conversation_scroll_range_changed
+        )
         self.conversation_widget = conversation
         self.conversation_layout = layout
         self.conversation_scroll = scroll
         return scroll
+
+    def _conversation_is_near_bottom(self) -> bool:
+        scroll_bar = self.conversation_scroll.verticalScrollBar()
+        return scroll_bar.maximum() - scroll_bar.value() <= 24
+
+    def _conversation_scroll_value_changed(self, _value: int) -> None:
+        if not self._conversation_scroll_suspended:
+            self._conversation_auto_follow = (
+                self._conversation_is_near_bottom()
+            )
+
+    def _conversation_scroll_range_changed(
+        self,
+        _minimum: int,
+        _maximum: int,
+    ) -> None:
+        if (
+            self._conversation_auto_follow
+            and not self._conversation_scroll_suspended
+        ):
+            self._queue_conversation_scroll()
+
+    def _queue_conversation_scroll(
+        self,
+        restore_value: int | None = None,
+    ) -> None:
+        self._conversation_scroll_suspended = True
+        self._conversation_scroll_restore_value = restore_value
+        if self._conversation_scroll_update_pending:
+            return
+        self._conversation_scroll_update_pending = True
+        QTimer.singleShot(0, self._apply_queued_conversation_scroll)
+
+    def _apply_queued_conversation_scroll(self) -> None:
+        self._conversation_scroll_update_pending = False
+        scroll_bar = self.conversation_scroll.verticalScrollBar()
+        if self._conversation_auto_follow:
+            scroll_bar.setValue(scroll_bar.maximum())
+        elif self._conversation_scroll_restore_value is not None:
+            scroll_bar.setValue(
+                min(
+                    self._conversation_scroll_restore_value,
+                    scroll_bar.maximum(),
+                )
+            )
+        self._conversation_scroll_restore_value = None
+        self._conversation_scroll_suspended = False
 
     @property
     def event_presentation(self) -> SessionPresentation:
@@ -911,6 +1155,7 @@ class AgentChatDrawer(_BoundaryFrame):
         """用完整事件日志替换当前展示并一次性重绘。"""
         self.event_projector = AgentEventProjector.replay(events)
         self._expanded_tool_group_ids.clear()
+        self._conversation_auto_follow = True
         self._render_event_presentation(preserve_tool_expansion=False)
 
     def apply_agent_event(self, event: AgentEvent) -> None:
@@ -944,6 +1189,10 @@ class AgentChatDrawer(_BoundaryFrame):
         *,
         preserve_tool_expansion: bool = True,
     ) -> None:
+        scroll_bar = self.conversation_scroll.verticalScrollBar()
+        previous_scroll_value = scroll_bar.value()
+        follow_latest = self._conversation_auto_follow
+        self._conversation_scroll_suspended = True
         self._clear_event_feed(
             preserve_tool_expansion=preserve_tool_expansion,
         )
@@ -1012,6 +1261,10 @@ class AgentChatDrawer(_BoundaryFrame):
                 self.event_feed_layout.addWidget(status)
         for record in self._applied_patch_records.values():
             self._add_applied_patch_card(record)
+        self._conversation_auto_follow = follow_latest
+        self._queue_conversation_scroll(
+            None if follow_latest else previous_scroll_value
+        )
 
     def show_applied_patch(self, record: object) -> None:
         """Show one local automatic edit with its revision-gated undo entry."""
@@ -1056,13 +1309,6 @@ class AgentChatDrawer(_BoundaryFrame):
         detail.setObjectName("agentChatProposalSummary")
         detail.setWordWrap(True)
         layout.addWidget(detail)
-        revision = _plain_label(
-            f"revision {getattr(record, 'session_revision')} · "
-            f"sha256 {str(getattr(patch, 'patch_hash'))[:16]}…",
-            card,
-        )
-        revision.setObjectName("agentChatProposalRevision")
-        layout.addWidget(revision)
         undo = _BoundaryToolButton(card)
         undo.setObjectName("agentChatPatchUndoButton")
         undo.setProperty("patchId", patch_id)
@@ -1182,14 +1428,6 @@ class AgentChatDrawer(_BoundaryFrame):
         text.setObjectName("agentChatConfirmationText")
         text.setWordWrap(True)
         layout.addWidget(text)
-        revision = QLabel(
-            f"revision {confirmation.revision} · "
-            f"sha256 {confirmation.revision_hash[:16]}…",
-            card,
-        )
-        revision.setObjectName("agentChatConfirmationRevision")
-        revision.setToolTip(confirmation.revision_hash)
-        layout.addWidget(revision)
         key = (
             confirmation.revision,
             confirmation.revision_hash,
@@ -1251,15 +1489,6 @@ class AgentChatDrawer(_BoundaryFrame):
         impact.setObjectName("agentChatProposalImpact")
         impact.setWordWrap(True)
         layout.addWidget(impact)
-        revision = QLabel(
-            f"revision {proposal.base_session_revision} · "
-            f"sha256 {proposal.proposal_hash[:16]}…",
-            card,
-        )
-        revision.setObjectName("agentChatProposalRevision")
-        revision.setToolTip(proposal.proposal_hash)
-        layout.addWidget(revision)
-
         status = proposal.status
         bridge = self.authoring_bridge
         if proposal.proposal_kind == "project_save":
@@ -1322,7 +1551,8 @@ class AgentChatDrawer(_BoundaryFrame):
         actions_layout.setSpacing(6)
         accept = _BoundaryToolButton(actions)
         accept.setObjectName("agentChatProposalAcceptButton")
-        accept.setText(proposal.confirm_label)
+        accept.setText("确认")
+        accept.setToolTip(proposal.confirm_label)
         accept.setProperty("proposalId", proposal.proposal_id)
         accept.setProperty("proposalHash", proposal.proposal_hash)
         accept.setProperty("proposalKind", proposal.proposal_kind)
@@ -1750,6 +1980,8 @@ class AgentChatDrawer(_BoundaryFrame):
             workspace_root=workspace_root,
         ):
             return
+        self._conversation_auto_follow = True
+        self._queue_conversation_scroll()
         self.messagePreviewRequested.emit(
             text,
             references,
@@ -2121,6 +2353,7 @@ class AgentChatDrawer(_BoundaryFrame):
         self._expanded_tool_group_ids.clear()
         self._pending_solve_confirmations.clear()
         self._completed_solve_confirmations.clear()
+        self._conversation_auto_follow = True
         self._render_event_presentation(preserve_tool_expansion=False)
         self.input.clear()
         self._workspace_references.clear()

@@ -10,6 +10,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QToolButton, QWidget
 
 from fem_gui.agent_events import (
@@ -706,6 +707,10 @@ def test_fake_event_stream_drives_tool_message_diagnostic_and_confirmation_ui():
         confirmation_button.property("revisionHash")
         == confirmation.revision_hash
     )
+    assert (
+        drawer.findChild(QLabel, "agentChatConfirmationRevision")
+        is None
+    )
     assert not confirmation_button.property("authorized")
     assert not confirmation_button.isEnabled()
     drawer.close()
@@ -789,6 +794,126 @@ def test_incremental_ui_escapes_raw_html_and_shows_stream_status():
     drawer.close()
 
 
+def test_restricted_markdown_renders_ordered_and_unordered_lists():
+    application = _application()
+    events = _Events(session_id="markdown-list-session")
+    drawer = AgentChatDrawer()
+    drawer.replay_agent_events(
+        (
+            _turn_start(events),
+            events.make(
+                EventType.MESSAGE_START,
+                {
+                    "message_id": "markdown-list-message",
+                    "role": "assistant",
+                    "format": "restricted_markdown",
+                },
+            ),
+        )
+    )
+    drawer.show()
+    drawer.apply_agent_event(
+        events.make(
+            EventType.MESSAGE_DELTA,
+            {
+                "message_id": "markdown-list-message",
+                "delta": (
+                    "支持的操作：\n"
+                    "- **模型检查**：读取模型\n"
+                    "* `求解`：等待确认\n\n"
+                    "执行顺序：\n"
+                    "1. 建立几何\n"
+                    "2. 生成网格\n"
+                    "<img src='https://example.test/unsafe.png'>"
+                ),
+            },
+        )
+    )
+    application.processEvents()
+
+    label = drawer.findChild(QLabel, "agentChatAgentMessage")
+    assert label is not None
+    rendered = label.text()
+    assert "<ul " in rendered
+    assert "<li><b>模型检查</b>：读取模型</li>" in rendered
+    assert "<li><span style='font-family:monospace'>求解</span>" in rendered
+    assert "<ol " in rendered
+    assert "<li>建立几何</li>" in rendered
+    assert "<li>生成网格</li>" in rendered
+    assert "&lt;img src=&#x27;https://example.test/unsafe.png&#x27;&gt;" in (
+        rendered
+    )
+    assert "<img src=" not in rendered
+    assert not label.openExternalLinks()
+    drawer.close()
+
+
+def test_conversation_follows_stream_until_user_scrolls_up():
+    application = _application()
+    events = _Events(session_id="scroll-follow-session")
+    start = _turn_start(events)
+    message_start = events.make(
+        EventType.MESSAGE_START,
+        {
+            "message_id": "scrolling-message",
+            "role": "assistant",
+            "format": "restricted_markdown",
+        },
+    )
+    first_delta = events.make(
+        EventType.MESSAGE_DELTA,
+        {
+            "message_id": "scrolling-message",
+            "delta": "\n".join(f"初始内容 {index}" for index in range(40)),
+        },
+    )
+    drawer = AgentChatDrawer()
+    drawer.setStyleSheet(_AGENT_CHAT_STYLESHEET)
+    drawer.resize(420, 320)
+    drawer.replay_agent_events((start, message_start, first_delta))
+    drawer.show()
+    application.processEvents()
+    QTest.qWait(10)
+
+    scroll_bar = drawer.conversation_scroll.verticalScrollBar()
+    assert scroll_bar.maximum() > 0
+    assert scroll_bar.width() <= 10
+    assert scroll_bar.value() == scroll_bar.maximum()
+
+    previous_value = scroll_bar.maximum() // 3
+    scroll_bar.setValue(previous_value)
+    drawer.apply_agent_event(
+        events.make(
+            EventType.MESSAGE_DELTA,
+            {
+                "message_id": "scrolling-message",
+                "delta": "\n用户上滑后新增的流式内容",
+            },
+        )
+    )
+    application.processEvents()
+    QTest.qWait(10)
+
+    assert scroll_bar.value() == previous_value
+    assert scroll_bar.value() < scroll_bar.maximum()
+
+    scroll_bar.setValue(scroll_bar.maximum())
+    drawer.apply_agent_event(
+        events.make(
+            EventType.MESSAGE_DELTA,
+            {
+                "message_id": "scrolling-message",
+                "delta": "\n恢复跟随后的新增内容",
+            },
+        )
+    )
+    application.processEvents()
+    QTest.qWait(10)
+
+    assert scroll_bar.value() == scroll_bar.maximum()
+    drawer.close()
+
+
 def test_incremental_render_preserves_expanded_tool_group():
     application = _application()
     events = _Events(session_id="expanded-session")
@@ -805,11 +930,16 @@ def test_incremental_render_preserves_expanded_tool_group():
         )
     )
     drawer = AgentChatDrawer()
+    drawer.setStyleSheet(_AGENT_CHAT_STYLESHEET)
     drawer.replay_agent_events(log)
     drawer.show()
     application.processEvents()
 
     tools = drawer.findChild(ToolActivityPreview)
+    assert (
+        tools.palette().color(tools.backgroundRole()).name()
+        == "#f2f4f6"
+    )
     tools.summary_button.click()
     assert tools.details.isVisible()
 

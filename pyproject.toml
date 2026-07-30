@@ -42,7 +42,7 @@ gui = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-fem_gui = ["resources/icons/*.png", "resources/icons/combo_down_arrow.svg"]
+fem_gui = ["resources/icons/*.png", "resources/icons/*.svg"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
