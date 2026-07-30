@@ -851,6 +851,8 @@ def test_restricted_markdown_renders_ordered_and_unordered_lists():
     assert "<ol " in rendered
     assert "<li>建立几何</li>" in rendered
     assert "<li>生成网格</li>" in rendered
+    assert "<br><br>" not in rendered
+    assert "</ul><br>" not in rendered
     assert "&lt;img src=&#x27;https://example.test/unsafe.png&#x27;&gt;" in (
         rendered
     )
@@ -883,6 +885,7 @@ def test_restricted_markdown_renders_safe_aligned_tables():
             {
                 "message_id": "markdown-table-message",
                 "delta": (
+                    "操作摘要：\n\n"
                     "| 参数 | 默认值 | 说明 |\n"
                     "| :--- | ---: | :---: |\n"
                     "| **厚度** | 1 mm | `plane stress` |\n"
@@ -898,6 +901,8 @@ def test_restricted_markdown_renders_safe_aligned_tables():
     assert label is not None
     rendered = label.text()
     assert "<table " in rendered
+    assert "操作摘要：<br><table " in rendered
+    assert "<br><br>" not in rendered
     assert rendered.count("<th ") == 3
     assert rendered.count("<td ") == 9
     assert "text-align:left" in rendered

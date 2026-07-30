@@ -804,8 +804,8 @@ def _restricted_table_html(
     rendered = [
         "<table width='100%' border='1' bordercolor='#d6dce3' "
         "cellspacing='0' cellpadding='0' "
-        "style='border-collapse:collapse; margin-top:5px; "
-        "margin-bottom:5px;'>",
+        "style='border-collapse:collapse; margin-top:2px; "
+        "margin-bottom:2px;'>",
         "<tr>",
     ]
     for cell, alignment in zip(header, alignments, strict=True):
@@ -877,8 +877,8 @@ def _restricted_markdown_html(markdown: str) -> str:
             if active_list != list_type:
                 close_list()
                 rendered.append(
-                    f"<{list_type} style='margin-top:4px; "
-                    "margin-bottom:4px;'>"
+                    f"<{list_type} style='margin-top:2px; "
+                    "margin-bottom:2px;'>"
                 )
                 active_list = list_type
             content = (
@@ -895,9 +895,9 @@ def _restricted_markdown_html(markdown: str) -> str:
             continue
 
         close_list()
-        if line:
+        if line.strip():
             rendered.append(_restricted_inline_markdown_html(line))
-        rendered.append("<br>")
+            rendered.append("<br>")
         index += 1
 
     close_list()
