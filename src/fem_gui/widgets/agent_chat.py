@@ -25,6 +25,7 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import (
+    QFocusEvent,
     QKeyEvent,
     QMouseEvent,
     QRegion,
@@ -630,6 +631,7 @@ class _ChatInput(QPlainTextEdit):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._suggestions_active = False
+        self._idle_placeholder = ""
         self.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Fixed,
@@ -642,6 +644,20 @@ class _ChatInput(QPlainTextEdit):
             self._fit_height_to_content
         )
         self.textChanged.connect(self._fit_height_to_content)
+
+    def setPlaceholderText(self, placeholder_text: str) -> None:
+        self._idle_placeholder = placeholder_text
+        super().setPlaceholderText(
+            "" if self.hasFocus() else self._idle_placeholder
+        )
+
+    def focusInEvent(self, event: QFocusEvent) -> None:
+        super().setPlaceholderText("")
+        super().focusInEvent(event)
+
+    def focusOutEvent(self, event: QFocusEvent) -> None:
+        super().focusOutEvent(event)
+        super().setPlaceholderText(self._idle_placeholder)
 
     def _fit_height_to_content(self, *_args: object) -> None:
         document = self.document()

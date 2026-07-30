@@ -181,6 +181,30 @@ def test_composer_input_expands_for_multiple_lines_and_collapses_when_cleared():
     host.close()
 
 
+def test_composer_placeholder_hides_on_focus_and_returns_when_unfocused():
+    application = _application()
+    viewport = _ViewportProbe()
+    host = ModelViewportOverlayHost(viewport)
+    host.resize(720, 520)
+    host.show()
+    application.processEvents()
+
+    editor = host.agent_chat_drawer.input
+    expected_placeholder = "询问 FEM Agent；使用 @ 引用工作区文件…"
+    assert editor.placeholderText() == expected_placeholder
+
+    editor.setFocus()
+    application.processEvents()
+    assert editor.hasFocus()
+    assert editor.placeholderText() == ""
+
+    editor.clearFocus()
+    application.processEvents()
+    assert not editor.hasFocus()
+    assert editor.placeholderText() == expected_placeholder
+    host.close()
+
+
 def test_drawer_open_close_and_width_only_change_overlay_geometry():
     application = _application()
     viewport = FEMViewport()
