@@ -14,6 +14,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QToolButton
 
+from fem.core.model import FEMModel
 from fem_agent.authoring import (
     AgentProposal,
     AuthoringAuthorizationError,
@@ -41,6 +42,7 @@ from fem_gui.widgets.agent_chat import (
     AgentChatDrawer,
     _AGENT_CHAT_STYLESHEET,
 )
+from tests.helpers.mesh_builders import make_selection_quad_mesh
 
 
 def _application() -> QApplication:
@@ -136,6 +138,51 @@ def test_snapshot_adapter_omits_paths_arrays_and_gui_objects() -> None:
     assert "private" not in encoded
     assert "_GuiObject" not in encoded
     assert context.binding.document_id == "document:session-1"
+
+
+def test_snapshot_adapter_reads_counts_from_actual_fem_model_mesh() -> None:
+    model = FEMModel(make_selection_quad_mesh(), name="模型-已划分网格")
+    snapshot = SimpleNamespace(
+        session_id="session-meshed",
+        session_revision=8,
+        source_kind="native",
+        can_save=True,
+        model_name=model.name,
+        active_part_id=None,
+        parts=(),
+        named_regions={},
+        materials=(),
+        sections=(),
+        assignments=(),
+        steps=(),
+        artifact=SimpleNamespace(model=model),
+        validations={},
+        runs=(),
+        displayed_result=None,
+        mesh_current=True,
+        unit_context=None,
+    )
+
+    context = authoring_context_from_snapshot(snapshot)
+
+    assert context.mesh.present
+    assert context.mesh.current
+    assert context.mesh.node_count == 4
+    assert context.mesh.element_count == 1
+
+    empty_model = FEMModel(type(model.mesh)([], []), name="模型-仅几何")
+    empty_snapshot = SimpleNamespace(
+        **{
+            **vars(snapshot),
+            "artifact": SimpleNamespace(model=empty_model),
+        }
+    )
+    empty_context = authoring_context_from_snapshot(empty_snapshot)
+
+    assert not empty_context.mesh.present
+    assert not empty_context.mesh.current
+    assert empty_context.mesh.node_count == 0
+    assert empty_context.mesh.element_count == 0
 
 
 def test_bridge_gui_authorization_replay_stale_and_exception_paths() -> None:

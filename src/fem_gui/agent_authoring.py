@@ -152,8 +152,10 @@ def _model_counts(artifact: object | None) -> tuple[int | None, int | None]:
     model = None if artifact is None else getattr(artifact, "model", None)
     if model is None:
         return None, None
-    nodes = getattr(model, "nodes", None)
-    elements = getattr(model, "elements", None)
+    mesh = getattr(model, "mesh", None)
+    count_source = model if mesh is None else mesh
+    nodes = getattr(count_source, "nodes", None)
+    elements = getattr(count_source, "elements", None)
     return _bounded_count(nodes), _bounded_count(elements)
 
 
@@ -188,7 +190,14 @@ def authoring_context_from_snapshot(
             )
 
     node_count, element_count = _model_counts(snapshot.artifact)
-    mesh_present = snapshot.artifact is not None
+    mesh_present = bool(
+        snapshot.artifact is not None
+        and element_count is not None
+        and element_count > 0
+    )
+    mesh_current = bool(
+        mesh_present and getattr(snapshot, "mesh_current", False)
+    )
     validation_status = "not_run"
     validations = getattr(snapshot, "validations", {})
     if _bounded_count(validations):
@@ -331,7 +340,7 @@ def authoring_context_from_snapshot(
         parts=tuple(parts),
         mesh=MeshSummary(
             present=mesh_present,
-            current=bool(getattr(snapshot, "mesh_current", False)),
+            current=mesh_current,
             node_count=node_count,
             element_count=element_count,
         ),

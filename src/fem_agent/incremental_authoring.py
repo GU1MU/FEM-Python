@@ -105,8 +105,22 @@ def create_incremental_definition_patch(
     elif normalized_action == "create_section":
         _exact_fields(
             values,
-            {"name", "material", "plane_type", "thickness"},
+            {
+                "name",
+                "material",
+                "plane_type",
+                "thickness",
+                "properties",
+            },
         )
+        compatibility_properties = _mapping(
+            values.get("properties", {}),
+            "section properties",
+        )
+        if compatibility_properties:
+            raise ValueError(
+                "create_section properties must be omitted or empty"
+            )
         name = _nonblank(values["name"], "section name")
         material = _nonblank(values["material"], "section material")
         if name in {str(item.name) for item in sections}:

@@ -546,6 +546,7 @@ def test_a8_direct_definition_actions_apply_one_by_one_and_refresh_gui() -> None
                 "name": "截面-平面应力",
                 "material": "材料-铝合金",
                 "plane_type": "stress",
+                "properties": {},
                 "thickness": 1.0,
             },
         ),

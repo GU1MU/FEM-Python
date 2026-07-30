@@ -402,6 +402,10 @@ _APPLY_DEFINITION = _tool(
                         "type": "object",
                         "additionalProperties": {"type": "number"},
                         "minProperties": 1,
+                        "description": (
+                            "Material properties for create_material only; "
+                            "omit for every other action."
+                        ),
                     },
                     "material": {"type": "string", "minLength": 1, "maxLength": 160},
                     "plane_type": {
