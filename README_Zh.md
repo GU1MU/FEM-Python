@@ -1,26 +1,78 @@
 # FEM Python
 
 FEM Python 是一个用于脚本化有限元建模与线性静力分析的 Python 项目
+
 项目覆盖几何建模、网格生成或导入、模型定义、求解、结果查询以及 CSV/VTK 导出
 
-支持两类主要入口：
-
-- 使用 OCC/Gmsh 在 Python 中创建几何和网格
-- 将受支持的 Abaqus `.inp` 内容构建为 `FEMModel`
+项目同时提供 Python API 和桌面 GUI，GUI 内集成 FEM Agent，模型既可自主创建，也可从受支持的 Abaqus `.inp` 文件导入
 
 ## 安装
 
-需要 Python 3.13 或更高版本，以下命令在仓库根目录执行，以
-PowerShell 为例：
+需要 Python 3.13 或更高版本和 `uv`，以下命令均在仓库根目录的 PowerShell 中执行
+
+创建虚拟环境：
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[cad]"
+uv venv --python 3.13
 ```
 
-`cad` 可选依赖用于 OCC/Gmsh 建模和网格功能
+安装桌面 GUI、FEM Agent 以及网格功能：
 
-## 示例
+```powershell
+uv pip install --python .venv\Scripts\python.exe -e ".[cad,gui,agent]"
+```
+
+如果只使用 Python API 和示例，可以仅安装网格依赖：
+
+```powershell
+uv pip install --python .venv\Scripts\python.exe -e ".[cad]"
+```
+
+## 桌面 GUI
+
+### 启动
+
+激活虚拟环境并启动 GUI：
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+fem-gui
+```
+
+### 功能
+
+桌面 GUI 将项目管理、前处理、分析和后处理组织在同一会话中
+
+- 新建、打开和保存自主项目，或导入 Abaqus `.inp` 模型
+- 创建和编辑几何、作用域、材料、截面及分析定义
+- 设置并生成网格，完成质量评估、模型检查和后台分析
+- 显示、查询和导出结果
+
+## FEM Agent
+
+### 配置
+
+在仓库根目录创建 `fem-agent.config.json`：
+
+```json
+{
+  "enabled": true,
+  "api_key": "your-api-key"
+}
+```
+
+启动 GUI 后，点击模型视口右上角的 `FA` 按钮打开 FEM Agent
+
+### 功能
+
+FEM Agent 根据当前 GUI 会话和用户提供的工程参数，协助完成受支持的自主建模与分析流程
+
+- 读取当前模型状态，并可通过 `@` 引用工作区文件
+- 创建或修改几何、网格
+- 定义并赋予材料、分析步及边界条件
+- 提交求解并查询分析结果
+
+## Python API 示例
 
 仓库保留三个代表性示例：
 
@@ -39,20 +91,6 @@ python -m venv .venv
 ```
 
 结果默认写入 `results/`
-
-## 工作流程
-
-```text
-OCC/Gmsh 建模或 Abaqus .inp 导入
-    → FEMModel
-    → 集合、材料与截面
-    → AnalysisStep
-    → static_linear.solve()
-    → ModelResult / ModelResults
-    → CSV / VTK
-```
-
-求解一个工况时返回 `ModelResult`；求解多个工况时返回可迭代的 `ModelResults`
 
 ## 当前能力
 
@@ -75,12 +113,3 @@ Beam2 支持圆形、空心圆形和矩形截面
 - 当前求解范围为各向同性线弹性、小变形、线性静力分析
 - Abaqus 适配层只解析项目明确支持的关键字和分析数据
 - 项目不强制单位制，也不执行单位换算；所有输入必须使用一致单位
-
-## 测试
-
-安装测试依赖并运行完整测试：
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -e ".[cad,test]"
-.\.venv\Scripts\python.exe -m pytest -q
-```

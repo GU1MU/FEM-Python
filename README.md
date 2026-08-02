@@ -1,25 +1,82 @@
 # FEM Python
 
+[Chinese](README_Zh.md)
+
 FEM Python is a Python project for script-based finite element modeling and linear static analysis
+
 It covers geometry creation, mesh generation or import, model definition, solving, result queries, and CSV/VTK export
 
-Two primary workflows are supported:
-
-- Create geometry and meshes in Python with OCC/Gmsh
-- Build an `FEMModel` from supported content in Abaqus `.inp` files
+The project provides both a Python API and a desktop GUI with an integrated FEM Agent, and models can be created natively or imported from supported Abaqus `.inp` files
 
 ## Installation
 
-Python 3.13 or later is required, and the following commands should be run from the repository root in PowerShell:
+Python 3.13 or later and `uv` are required, and the following commands run from the repository root in PowerShell
+
+Create the virtual environment:
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[cad]"
+uv venv --python 3.13
 ```
 
-The optional `cad` dependencies provide OCC/Gmsh modeling and meshing support
+Install the desktop GUI, FEM Agent, and meshing support:
 
-## Examples
+```powershell
+uv pip install --python .venv\Scripts\python.exe -e ".[cad,gui,agent]"
+```
+
+If you only use the Python API and examples, install only the meshing
+dependencies:
+
+```powershell
+uv pip install --python .venv\Scripts\python.exe -e ".[cad]"
+```
+
+## Desktop GUI
+
+### Launch
+
+Activate the virtual environment and start the GUI:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+fem-gui
+```
+
+### Features
+
+The desktop GUI brings project management, preprocessing, analysis, and postprocessing into one session
+
+- Create, open, and save native projects, or import Abaqus `.inp` models
+- Create and edit geometry, scopes, materials, sections, and analysis definitions
+- Configure and generate meshes, assess quality, validate models, and run background analyses
+- Display, query, and export results
+
+## FEM Agent
+
+### Configuration
+
+Create `fem-agent.config.json` in the repository root:
+
+```json
+{
+  "enabled": true,
+  "api_key": "your-api-key"
+}
+```
+
+After starting the GUI, click the `FA` button in the upper-right corner of the
+model viewport to open FEM Agent
+
+### Features
+
+FEM Agent uses the current GUI session and user-provided engineering parameters to assist supported native modeling and analysis workflows
+
+- Read the current model state and reference workspace files with `@`
+- Create or modify geometry and meshes
+- Define and assign materials, analysis steps, and boundary conditions
+- Submit solves and query analysis results
+
+## Examples for Python API
 
 The repository contains three representative examples:
 
@@ -38,33 +95,6 @@ Run the examples:
 ```
 
 Results are written to `results/` by default
-
-## Desktop GUI
-
-Install the GUI dependencies and start the Chinese desktop application:
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -e ".[cad,gui]"
-.\.venv\Scripts\python.exe -m fem_gui.app
-```
-
-The GUI supports native sketch/feature modeling, Abaqus `.inp` import,
-materials and sections, analysis definitions, mesh generation, background
-linear-static jobs, result queries, and CSV/VTK export.
-
-## Workflow
-
-```text
-OCC/Gmsh modeling or Abaqus .inp import
-    → FEMModel
-    → Sets, materials, and sections
-    → AnalysisStep
-    → static_linear.solve()
-    → ModelResult / ModelResults
-    → CSV / VTK
-```
-
-Solving one load case returns a `ModelResult`; solving multiple load cases returns an iterable `ModelResults`
 
 ## Capabilities
 
@@ -87,12 +117,3 @@ Beam2 supports solid circular, hollow circular, and rectangular sections
 - Isotropic linear elasticity, small deformation, and linear static analysis
 - The Abaqus adapter parses only the keywords and analysis data explicitly supported by the project
 - The project does not enforce a unit system or perform unit conversion, so all input data must use consistent units
-
-## Testing
-
-Install the test dependencies and run the full test suite:
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -e ".[cad,test]"
-.\.venv\Scripts\python.exe -m pytest -q
-```
