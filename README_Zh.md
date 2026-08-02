@@ -57,11 +57,14 @@ fem-gui
 ```json
 {
   "enabled": true,
+  "provider": "deepseek",
+  "model": "deepseek-v4-pro",
+  "base_url": "https://api.deepseek.com",
   "api_key": "your-api-key"
 }
 ```
 
-启动 GUI 后，点击模型视口右上角的 `FA` 按钮打开 FEM Agent
+默认使用 DeepSeek 模型，可根据实际情况更换模型
 
 ### 功能
 

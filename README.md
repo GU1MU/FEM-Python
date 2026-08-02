@@ -60,12 +60,14 @@ Create `fem-agent.config.json` in the repository root:
 ```json
 {
   "enabled": true,
+  "provider": "deepseek",
+  "model": "deepseek-v4-pro",
+  "base_url": "https://api.deepseek.com",
   "api_key": "your-api-key"
 }
 ```
 
-After starting the GUI, click the `FA` button in the upper-right corner of the
-model viewport to open FEM Agent
+The default is a DeepSeek model, and the model can be changed based on availability
 
 ### Features
 
