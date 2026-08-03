@@ -53,6 +53,7 @@ from fem.application import (
     StrictPartBooleanResult,
     StrictPlanarBooleanPreview,
     StrictPlanarBooleanResult,
+    FaceSketchBooleanResult,
     TokenStatus,
     TransitionEffect,
     describe_model_capabilities,
@@ -69,6 +70,7 @@ from fem.application import (
     prepare_strict_part_recipe_preview,
     prepare_strict_body_recipe_preview,
     prepare_planar_boolean,
+    prepare_face_sketch_boolean,
     prepare_strict_planar_recipe_preview,
 )
 from fem.application.preprocessing import generate_fem_model
@@ -115,6 +117,9 @@ from fem.geometry import (
     ExtrudedGeometry,
     ExtrusionSourceResolutionError,
     LogicalEntityRef,
+    FaceSketchBooleanGeometry,
+    FaceSketchBooleanOperation,
+    FaceWorkplaneResolutionError,
     MovedGeometry,
     MultiBodyGeometry,
     NATIVE_GEOMETRY_TYPES,
@@ -124,8 +129,10 @@ from fem.geometry import (
     RevolvedGeometry,
     RotatedGeometry,
     SketchGeometry,
+    SketchReferencePoint,
     WireGeometry,
     geometry_dimension,
+    analyze_sketch_profiles,
     logical_ref_sort_key,
     recipe_characteristic_size,
     resolve_extrusion_source_faces,
@@ -136,6 +143,8 @@ from fem.geometry import (
     namespace_part_logical_id,
     strip_part_logical_id,
     rename_solid_body,
+    provide_face_reference_points,
+    resolve_face_workplane,
     undo_solid_body_feature,
 )
 from fem.geometry.gmsh_coordinator import GmshExecutionCancelled
@@ -196,10 +205,20 @@ from .mesh_browser import MeshBrowserDialog
 from .geometry_preview import (
     GeometryPreview,
     build_geometry_preview,
+    build_face_sketch_boolean_display,
+    build_face_sketch_boolean_result_preview,
     namespace_part_geometry_preview,
     build_strict_body_boolean_previews,
     build_strict_part_boolean_preview,
     build_strict_planar_boolean_preview,
+)
+from .face_sketch_boolean_dialog import (
+    FaceSketchBooleanDialog,
+    FaceSketchBooleanParameters,
+)
+from .face_sketch_editor import (
+    FaceSketchBooleanFeatureRequest,
+    FaceSupportedSketchController,
 )
 from .part_geometry_preview import build_multi_part_geometry_preview
 from .scope_selection import (
@@ -505,6 +524,7 @@ class FEMMainWindow(QMainWindow):
     """只暴露当前内核已经实现的有限元工作流。"""
 
     resultQueryCompleted = Signal(object)
+    faceSketchBooleanFeatureRequested = Signal(object)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -582,6 +602,17 @@ class FEMMainWindow(QMainWindow):
         self._planar_boolean_preview_generation = 0
         self._planar_boolean_original_selection: set[LogicalEntityRef] = set()
         self._sketch_editor_is_planar_boolean_tool = False
+        self._sketch_editor_is_face_sketch = False
+        self._face_sketch_controller: FaceSupportedSketchController | None = None
+        self._face_sketch_dialog: FaceSketchBooleanDialog | None = None
+        self._face_sketch_parameters: FaceSketchBooleanParameters | None = None
+        self._face_sketch_preview_result: FaceSketchBooleanResult | None = None
+        self._face_sketch_preview_generation = 0
+        self._face_sketch_reference_points: tuple[SketchReferencePoint, ...] = ()
+        self._face_sketch_original_selection: set[LogicalEntityRef] = set()
+        self._face_sketch_selection_cache: dict[
+            tuple[str, str, int, str], bool
+        ] = {}
         self._geometry_preview_cache: (
             tuple[str, object, GeometryPreview] | None
         ) = None
@@ -2617,8 +2648,8 @@ class FEMMainWindow(QMainWindow):
         self._add_ribbon_page("几何", (
             (
                 "创建",
-                ("geometry_create",),
-                ("geometry_create",),
+                ("geometry_create", "geometry_face_sketch"),
+                ("geometry_create", "geometry_face_sketch"),
             ),
             (
                 "特征",
@@ -3335,6 +3366,59 @@ class FEMMainWindow(QMainWindow):
         if self._scale_mode == "custom":
             self._apply_scale()
 
+    def _face_sketch_selection_is_valid(self) -> bool:
+        if (
+            self.busy
+            or self._face_sketch_controller is not None
+            or self.document.source_kind != "native"
+            or len(self._selected_geometry_refs) != 1
+        ):
+            return False
+        reference = next(iter(self._selected_geometry_refs))
+        if reference.kind != "face":
+            return False
+        part_id = part_id_from_logical_id(reference.logical_id)
+        if part_id is None:
+            part_id = self.document.active_part_id
+            local_id = reference.logical_id
+        else:
+            try:
+                local_id = strip_part_logical_id(part_id, reference.logical_id)
+            except ValueError:
+                return False
+        if part_id is None or part_id != self.document.active_part_id:
+            return False
+        try:
+            part = self.document.part(part_id)
+            part_revision = self.document.part_revision(part_id)
+        except KeyError:
+            return False
+        recipe = part.geometry_recipe
+        if recipe is None or part.suppressed or geometry_dimension(recipe) != 3:
+            return False
+        key = (
+            self.document.session_id,
+            part_id,
+            part_revision,
+            local_id,
+        )
+        cached = self._face_sketch_selection_cache.get(key)
+        if cached is not None:
+            return cached
+        valid = False
+        try:
+            with geometry_runtime.model(
+                f"{getattr(recipe, 'name', 'solid')}-face-selection",
+                dimension=3,
+            ) as cad:
+                compiled = compile_recipe(cad, recipe)
+                resolve_face_workplane(cad, compiled.logical_entities, local_id)
+            valid = True
+        except (FaceWorkplaneResolutionError, RuntimeError, TypeError, ValueError):
+            valid = False
+        self._face_sketch_selection_cache[key] = valid
+        return valid
+
     def _update_action_states(self) -> None:
         authoring = describe_session_authoring(self.document)
         selection_kind = (
@@ -3411,6 +3495,10 @@ class FEMMainWindow(QMainWindow):
             boolean_editor_active=(
                 self._body_boolean_controller is not None
                 or self._planar_boolean_controller is not None
+                or self._face_sketch_controller is not None
+            ),
+            planar_solid_face_selected=(
+                self._face_sketch_selection_is_valid()
             ),
         )
         for availability in derive_action_availability(
@@ -3683,6 +3771,403 @@ class FEMMainWindow(QMainWindow):
 
         self.start_sketch_geometry()
 
+    def start_face_sketch_boolean(self) -> None:
+        """Resolve the selected solid plane Face before opening a detached draft."""
+
+        if (
+            self.busy
+            or self._wire_editor_controller is not None
+            or self._sketch_editor_controller is not None
+            or self._face_sketch_controller is not None
+            or not self._face_sketch_selection_is_valid()
+        ):
+            return
+        selected = next(iter(self._selected_geometry_refs))
+        part_id = part_id_from_logical_id(selected.logical_id)
+        if part_id is None:
+            part_id = self.document.active_part_id
+            support_face_id = selected.logical_id
+        else:
+            support_face_id = strip_part_logical_id(
+                part_id,
+                selected.logical_id,
+            )
+        if part_id is None:
+            return
+        part = self.document.part(part_id)
+        source_geometry = part.geometry_recipe
+        if source_geometry is None:
+            return
+        session_id = self.document.session_id
+        session_revision = self.document.session_revision
+        part_revision = self.document.part_revision(part_id)
+        original_selection = set(self._selected_geometry_refs)
+        self.status_panel.set_state("正在解析实体平面工作面和关联参考点…", 0)
+
+        def workload(context: TaskContext) -> object:
+            context.report("正在解析实体平面工作面和关联参考点…")
+            with geometry_runtime.model(
+                f"{getattr(source_geometry, 'name', 'solid')}-face-sketch",
+                dimension=3,
+            ) as cad:
+                compiled = compile_recipe(cad, source_geometry)
+                workplane = resolve_face_workplane(
+                    cad,
+                    compiled.logical_entities,
+                    support_face_id,
+                )
+                reference_points = provide_face_reference_points(
+                    cad,
+                    compiled.logical_entities,
+                    workplane,
+                )
+            context.checkpoint()
+            return workplane, reference_points
+
+        def apply_result(payload: object) -> TaskApplyOutcome:
+            current = self.document
+            if (
+                current.session_id != session_id
+                or current.session_revision != session_revision
+                or current.part_revision(part_id) != part_revision
+                or current.part(part_id).geometry_recipe != source_geometry
+            ):
+                return TaskApplyOutcome.stale("工作面解析结果已过期，未进入草图")
+            return TaskApplyOutcome.accepted(payload)
+
+        def on_success(payload: object) -> None:
+            workplane, reference_points = payload
+            try:
+                controller = FaceSupportedSketchController(
+                    self.document,
+                    part_id,
+                    workplane,
+                    reference_points=tuple(reference_points),
+                )
+            except (KeyError, RuntimeError, TypeError, ValueError) as error:
+                self._show_error("在面上创建草图", str(error))
+                return
+            self._face_sketch_controller = controller
+            self._face_sketch_reference_points = tuple(reference_points)
+            self._face_sketch_original_selection = original_selection
+            self._face_sketch_parameters = None
+            self._face_sketch_preview_result = None
+            self._begin_face_sketch_editor()
+
+        self._start_task(
+            workload,
+            on_success,
+            "在面上创建草图",
+            task_name="解析面草图工作面",
+            apply_result=apply_result,
+        )
+
+    def _begin_face_sketch_editor(self) -> None:
+        controller = self._face_sketch_controller
+        if controller is None:
+            return
+        draft = controller.draft
+        self._sketch_editor_controller = draft
+        self._sketch_editor_original_recipe = None
+        self._sketch_editor_base_revision = controller.launch_snapshot.session_revision
+        self._sketch_editor_part_name = None
+        self._sketch_editor_is_face_sketch = True
+        self.sketch_editor_panel.set_controller(
+            draft,
+            base_snapshot=draft.snapshot(),
+        )
+        self.sketch_editor_panel.set_reference_points(
+            self._face_sketch_reference_points
+        )
+        self.sketch_editor_panel.begin(self.viewport, purpose="face_sketch")
+        self.main_splitter.setSizes([260, 720, 0, 400, 0, 0])
+        launch = controller.launch_snapshot
+        source_preview = build_geometry_preview(launch.part.geometry_recipe)
+        self.viewport.show_sketch_reference_preview(
+            source_preview,
+            support_face_id=launch.workplane.support_face_id,
+            target_body_id=launch.workplane.target_body_id,
+        )
+        self.ribbon.set_current("几何")
+        self.status_panel.set_state(
+            "面草图编辑已启动；完成闭合材料轮廓后选择“创建”",
+            0,
+        )
+        self._update_action_states()
+
+    def _open_face_sketch_boolean_dialog(self, sketch: SketchGeometry) -> None:
+        controller = self._face_sketch_controller
+        if controller is None:
+            return
+        material_ids = tuple(
+            profile.id
+            for profile in analyze_sketch_profiles(sketch).profiles
+            if profile.is_material
+        )
+        previous = self._face_sketch_parameters
+        selected_ids = (
+            material_ids
+            if previous is None
+            else tuple(
+                profile_id
+                for profile_id in previous.participating_profile_ids
+                if profile_id in material_ids
+            )
+        )
+        if not selected_ids:
+            selected_ids = material_ids
+        dialog = FaceSketchBooleanDialog(self)
+        dialog.set_profiles(material_ids, selected_ids=selected_ids)
+        if previous is not None:
+            dialog.set_parameters(
+                FaceSketchBooleanParameters(
+                    previous.operation,
+                    previous.direction,
+                    previous.distance,
+                    selected_ids,
+                )
+            )
+        dialog.parametersChanged.connect(
+            self._face_sketch_boolean_parameters_changed
+        )
+        dialog.createFeatureRequested.connect(
+            self._request_face_sketch_boolean_feature
+        )
+        dialog.returnSketchRequested.connect(
+            self._return_to_face_sketch
+        )
+        dialog.cancelRequested.connect(self.cancel_face_sketch_boolean)
+        self._face_sketch_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self._face_sketch_boolean_parameters_changed(dialog.parameters())
+        self.status_panel.set_state("拉伸布尔参数已打开，正在准备精确预览", 0)
+        self._update_action_states()
+
+    def _face_sketch_boolean_parameters_changed(self, payload: object) -> None:
+        dialog = self._face_sketch_dialog
+        controller = self._face_sketch_controller
+        if dialog is None or controller is None:
+            return
+        self._face_sketch_preview_generation += 1
+        generation = self._face_sketch_preview_generation
+        self._face_sketch_preview_result = None
+        dialog.set_preview_running(generation)
+        if type(payload) is not FaceSketchBooleanParameters:
+            self._face_sketch_parameters = None
+            dialog.set_preview_invalid(generation, dialog.validation_reason())
+            return
+        self._face_sketch_parameters = payload
+        self._launch_face_sketch_boolean_preview(payload, generation)
+
+    def _launch_face_sketch_boolean_preview(
+        self,
+        parameters: FaceSketchBooleanParameters,
+        generation: int,
+    ) -> None:
+        controller = self._face_sketch_controller
+        dialog = self._face_sketch_dialog
+        if controller is None or dialog is None:
+            return
+        if generation != self._face_sketch_preview_generation:
+            return
+        if self.busy:
+            dialog.set_preview_invalid(generation, "等待上一代精确预览结束…")
+            return
+        try:
+            sketch = controller.draft.to_sketch_geometry()
+            sketch_snapshot = controller.sketch_snapshot()
+            launch = controller.launch_snapshot
+            recipe = FaceSketchBooleanGeometry(
+                launch.part.geometry_recipe,
+                "FSB-draft",
+                (
+                    "拉伸合并-预览"
+                    if parameters.operation is FaceSketchBooleanOperation.FUSE
+                    else "拉伸切除-预览"
+                ),
+                launch.workplane.support_face_id,
+                launch.workplane.strategy,
+                sketch,
+                parameters.operation,
+                parameters.direction,
+                parameters.distance,
+                parameters.participating_profile_ids,
+                sketch_snapshot.external_references,
+                sketch_snapshot.external_coincidences,
+            )
+        except (RuntimeError, TypeError, ValueError) as error:
+            dialog.set_preview_invalid(generation, str(error))
+            return
+        sketch_revision = sketch_snapshot.revision
+        dialog.set_preview_running(generation)
+
+        def workload(context: TaskContext) -> FaceSketchBooleanResult:
+            context.report("正在执行精确拉伸布尔并验证拓扑…")
+            with geometry_runtime.model(
+                f"{recipe.name}-{generation}",
+                dimension=3,
+            ) as cad:
+                result = prepare_face_sketch_boolean(cad, recipe)
+            context.checkpoint()
+            return result
+
+        def apply_result(payload: object) -> TaskApplyOutcome:
+            return TaskApplyOutcome.accepted(payload)
+
+        def on_success(payload: object) -> None:
+            current = self._face_sketch_controller
+            current_dialog = self._face_sketch_dialog
+            is_current = (
+                type(payload) is FaceSketchBooleanResult
+                and current is controller
+                and current_dialog is dialog
+                and generation == self._face_sketch_preview_generation
+                and current.sketch_snapshot().revision == sketch_revision
+                and self._face_sketch_parameters == parameters
+                and current.launch_is_current(self.document)
+            )
+            if not is_current:
+                QTimer.singleShot(0, self._refresh_current_face_sketch_preview)
+                return
+            display = build_face_sketch_boolean_display(
+                sketch,
+                parameters.participating_profile_ids,
+                launch.workplane.direction_vector(parameters.direction),
+                parameters.distance,
+            )
+            exact = build_face_sketch_boolean_result_preview(payload.preview)
+            target = build_geometry_preview(launch.part.geometry_recipe)
+            self._face_sketch_preview_result = payload
+            self.viewport.show_face_sketch_boolean_preview(
+                target,
+                display,
+                exact,
+                target_body_id=launch.workplane.target_body_id,
+                origin=launch.workplane.origin,
+                direction=launch.workplane.direction_vector(parameters.direction),
+                distance=parameters.distance,
+                operation_name=parameters.operation.chinese_name,
+            )
+            dialog.set_preview_valid(generation)
+
+        def on_failure(message: str) -> None:
+            if (
+                self._face_sketch_controller is controller
+                and self._face_sketch_dialog is dialog
+                and generation == self._face_sketch_preview_generation
+            ):
+                self._face_sketch_preview_result = None
+                dialog.set_preview_invalid(
+                    generation,
+                    f"精确预览失败：{message}",
+                )
+            else:
+                QTimer.singleShot(0, self._refresh_current_face_sketch_preview)
+
+        started = self._start_task(
+            workload,
+            on_success,
+            "拉伸布尔",
+            on_failure,
+            task_name="拉伸布尔精确预览",
+            on_cancelled=self._refresh_current_face_sketch_preview,
+            apply_result=apply_result,
+        )
+        if not started:
+            dialog.set_preview_invalid(generation, "等待上一代精确预览结束…")
+
+    def _refresh_current_face_sketch_preview(self) -> None:
+        parameters = self._face_sketch_parameters
+        dialog = self._face_sketch_dialog
+        if parameters is None or dialog is None:
+            return
+        generation = self._face_sketch_preview_generation
+        if dialog.preview_is_valid:
+            return
+        self._launch_face_sketch_boolean_preview(parameters, generation)
+
+    def _request_face_sketch_boolean_feature(
+        self,
+        parameters: object,
+        generation: int,
+    ) -> None:
+        controller = self._face_sketch_controller
+        result = self._face_sketch_preview_result
+        dialog = self._face_sketch_dialog
+        if (
+            controller is None
+            or result is None
+            or dialog is None
+            or type(parameters) is not FaceSketchBooleanParameters
+            or parameters != self._face_sketch_parameters
+            or int(generation) != self._face_sketch_preview_generation
+            or not dialog.preview_is_valid
+        ):
+            return
+        request = FaceSketchBooleanFeatureRequest(
+            controller.launch_snapshot,
+            result.geometry,
+            controller.sketch_snapshot().revision,
+            int(generation),
+        )
+        self.faceSketchBooleanFeatureRequested.emit(request)
+        self.status_panel.set_state(
+            "拉伸布尔创建请求已准备，等待原子特征提交",
+            5000,
+        )
+
+    def _return_to_face_sketch(self, parameters: object) -> None:
+        if (
+            type(parameters) is not FaceSketchBooleanParameters
+            or self._face_sketch_controller is None
+        ):
+            return
+        self._face_sketch_parameters = parameters
+        self._face_sketch_preview_result = None
+        self._face_sketch_preview_generation += 1
+        dialog = self._face_sketch_dialog
+        self._face_sketch_dialog = None
+        if dialog is not None:
+            dialog.close_for_workflow()
+        self._begin_face_sketch_editor()
+
+    def cancel_face_sketch_boolean(self) -> None:
+        if self._face_sketch_controller is None:
+            return
+        self._face_sketch_preview_generation += 1
+        original_selection = set(self._face_sketch_original_selection)
+        dialog = self._face_sketch_dialog
+        self._face_sketch_dialog = None
+        if dialog is not None:
+            dialog.close_for_workflow()
+
+        def cleanup() -> None:
+            if self._sketch_editor_is_face_sketch:
+                self._exit_sketch_editor()
+            self._face_sketch_controller = None
+            self._face_sketch_parameters = None
+            self._face_sketch_preview_result = None
+            self._face_sketch_reference_points = ()
+            self._face_sketch_original_selection = set()
+            self._rebuild_full_projection()
+            self._selected_geometry_refs = original_selection
+            if original_selection:
+                self.viewport.highlight_geometry_entities(
+                    tuple(sorted(original_selection, key=logical_ref_sort_key))
+                )
+            self.status_panel.set_state(
+                "已取消拉伸布尔；模型和历史保持不变",
+                4000,
+            )
+            self._update_action_states()
+
+        if self.task_controller.current_task_name == "拉伸布尔精确预览":
+            if self.cancel_current_task(after_cleanup=cleanup):
+                return
+        cleanup()
+
     def start_sketch_geometry(self) -> None:
         if (
             self.busy
@@ -3761,6 +4246,19 @@ class FEMMainWindow(QMainWindow):
             root = controller.to_sketch_geometry()
         except SketchDraftValidationError as error:
             self.sketch_editor_panel.show_status(str(error))
+            return
+        if self._sketch_editor_is_face_sketch:
+            face_controller = self._face_sketch_controller
+            if (
+                face_controller is None
+                or not face_controller.launch_is_current(self.document)
+            ):
+                self.sketch_editor_panel.show_status(
+                    "项目已变化；面草图未应用，请取消后重新开始"
+                )
+                return
+            self._exit_sketch_editor()
+            self._open_face_sketch_boolean_dialog(root)
             return
         if self._sketch_editor_is_planar_boolean_tool:
             planar = self._planar_boolean_controller
@@ -3842,6 +4340,9 @@ class FEMMainWindow(QMainWindow):
             return
         if controller.dirty and not self._confirm_sketch_editor_discard():
             return
+        if self._sketch_editor_is_face_sketch:
+            self.cancel_face_sketch_boolean()
+            return
         tool_mode = self._sketch_editor_is_planar_boolean_tool
         self._exit_sketch_editor(return_to_planar_boolean=tool_mode)
         if tool_mode:
@@ -3864,6 +4365,7 @@ class FEMMainWindow(QMainWindow):
         self._sketch_editor_base_revision = None
         self._sketch_editor_part_name = None
         self._sketch_editor_is_planar_boolean_tool = False
+        self._sketch_editor_is_face_sketch = False
         self.main_splitter.setSizes(
             [260, 720, 0, 0, 0, 400]
             if return_to_planar_boolean

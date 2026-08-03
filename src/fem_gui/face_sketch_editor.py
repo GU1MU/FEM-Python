@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 
 from fem.application import NativePart, SessionSnapshot
 from fem.geometry import (
+    FaceSketchBooleanGeometry,
     MultiBodyGeometry,
     ResolvedFaceWorkplane,
     SketchExternalCoincidence,
@@ -50,6 +51,16 @@ class FaceSketchLaunchSnapshot:
     @property
     def sketch_revision(self) -> int:
         return self.sketch.revision
+
+
+@dataclass(frozen=True, slots=True)
+class FaceSketchBooleanFeatureRequest:
+    """Detached hand-off for the Phase-6 atomic Session commit."""
+
+    launch: FaceSketchLaunchSnapshot
+    geometry: FaceSketchBooleanGeometry
+    sketch_revision: int
+    preview_generation: int
 
 
 class FaceSupportedSketchController:
@@ -178,6 +189,7 @@ def _body_snapshot(
 
 
 __all__ = [
+    "FaceSketchBooleanFeatureRequest",
     "FaceSketchBodySnapshot",
     "FaceSketchLaunchSnapshot",
     "FaceSupportedSketchController",

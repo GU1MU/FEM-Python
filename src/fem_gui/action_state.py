@@ -42,6 +42,7 @@ class GuiActionKey(str, Enum):
     SECTION_ASSIGN = "section_assign"
     GEOMETRY_CREATE = "geometry_create"
     GEOMETRY_SKETCH = "geometry_sketch"
+    GEOMETRY_FACE_SKETCH = "geometry_face_sketch"
     GEOMETRY_WIRE = "geometry_wire"
     GEOMETRY_MOVE = "geometry_move"
     GEOMETRY_ROTATE = "geometry_rotate"
@@ -165,6 +166,12 @@ ACTION_DESCRIPTORS: tuple[GuiActionDescriptor, ...] = (
     _d(GuiActionKey.SECTION_ASSIGN, "截面分配", "assign_section_to_region", "section_assign"),
     _d(GuiActionKey.GEOMETRY_CREATE, "新建部件", "create_geometry", "sketch"),
     _d(GuiActionKey.GEOMETRY_SKETCH, "新建草图", "create_sketch_geometry", "sketch"),
+    _d(
+        GuiActionKey.GEOMETRY_FACE_SKETCH,
+        "在面上创建草图",
+        "start_face_sketch_boolean",
+        "sketch",
+    ),
     _d(GuiActionKey.GEOMETRY_WIRE, "新建线体", "start_wire_geometry", "wire"),
     _d(GuiActionKey.GEOMETRY_MOVE, "移动", "move_geometry", "geometry_move"),
     _d(GuiActionKey.GEOMETRY_ROTATE, "旋转", "rotate_geometry", "geometry_rotate"),
@@ -263,6 +270,7 @@ class GuiActionContext:
     wire_editor_active: bool = False
     sketch_editor_active: bool = False
     boolean_editor_active: bool = False
+    planar_solid_face_selected: bool = False
 
     def __post_init__(self) -> None:
         for name in (
@@ -278,6 +286,7 @@ class GuiActionContext:
             "wire_editor_active",
             "sketch_editor_active",
             "boolean_editor_active",
+            "planar_solid_face_selected",
         ):
             if type(getattr(self, name)) is not bool:
                 raise TypeError(f"{name} must be a bool")
@@ -396,6 +405,19 @@ def derive_action_availability(
         GuiActionKey.GEOMETRY_SKETCH,
         snapshot.source_kind == "native" and not busy,
         geometry_reason,
+    )
+    set_state(
+        GuiActionKey.GEOMETRY_FACE_SKETCH,
+        has_native_geometry
+        and geometry_dimension(recipe) == 3
+        and context.planar_solid_face_selected
+        and not busy
+        and not editor_active,
+        (
+            "请先完成当前几何编辑"
+            if editor_active
+            else "请选择当前部件的一个有效实体平面面"
+        ),
     )
     set_state(
         GuiActionKey.GEOMETRY_WIRE,
@@ -841,6 +863,7 @@ def derive_action_availability(
             GuiActionKey.SECTION_ASSIGN,
             GuiActionKey.GEOMETRY_CREATE,
             GuiActionKey.GEOMETRY_SKETCH,
+            GuiActionKey.GEOMETRY_FACE_SKETCH,
             GuiActionKey.GEOMETRY_WIRE,
             GuiActionKey.GEOMETRY_MOVE,
             GuiActionKey.GEOMETRY_ROTATE,

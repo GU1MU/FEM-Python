@@ -359,13 +359,15 @@ class SketchEditorPanel(QWidget):
         if self._controller is None:
             raise RuntimeError("sketch editor requires a draft controller")
         normalized = str(purpose).strip().casefold()
-        if normalized not in {"geometry", "planar_boolean_tool"}:
+        if normalized not in {"geometry", "planar_boolean_tool", "face_sketch"}:
             raise ValueError("unsupported sketch authoring purpose")
         self._authoring_purpose = normalized
         self.finish_button.setText(
-            "完成工具草图"
-            if normalized == "planar_boolean_tool"
-            else "完成草图"
+            {
+                "geometry": "完成草图",
+                "planar_boolean_tool": "完成工具草图",
+                "face_sketch": "创建",
+            }[normalized]
         )
         self.attach_viewport(viewport)
         self.show()

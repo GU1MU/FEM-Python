@@ -37,7 +37,7 @@ from fem.geometry import (
 )
 from fem.selection import edges as mesh_edges
 from fem.selection import faces as mesh_faces
-from ..geometry_preview import GeometryPreview
+from ..geometry_preview import FaceSketchBooleanDisplay, GeometryPreview
 from ..wire_editor import (
     intersect_ray_with_work_plane,
     snap_work_plane_point,
@@ -1743,6 +1743,153 @@ class FEMViewport(QWidget):
                 )
         if render:
             self._render()
+
+    def show_face_sketch_boolean_preview(
+        self,
+        target: GeometryPreview,
+        display: FaceSketchBooleanDisplay,
+        exact_result: GeometryPreview,
+        *,
+        target_body_id: str,
+        origin: tuple[float, float, float],
+        direction: tuple[float, float, float],
+        distance: float,
+        operation_name: str,
+    ) -> None:
+        """Show all detached layers for the current exact preview generation."""
+
+        if type(target) is not GeometryPreview:
+            raise TypeError("target must be a GeometryPreview")
+        if type(display) is not FaceSketchBooleanDisplay:
+            raise TypeError("display must be FaceSketchBooleanDisplay")
+        if type(exact_result) is not GeometryPreview:
+            raise TypeError("exact_result must be a GeometryPreview")
+        for name in (
+            "face_boolean_target",
+            "face_boolean_unselected_profiles",
+            "face_boolean_selected_profiles",
+            "face_boolean_tool",
+            "face_boolean_exact_result",
+            "face_boolean_direction",
+            "face_boolean_distance",
+        ):
+            self._remove_actor(name)
+        if is_offscreen_environment():
+            self._message.setText(
+                f"拉伸布尔精确预览有效（{operation_name}，距离 {distance:g}）"
+            )
+            self._stack.setCurrentWidget(self._message)
+            return
+        if not self._ensure_plotter() or _pyvista is None:
+            return
+
+        def surface(
+            name: str,
+            preview: GeometryPreview,
+            color: str,
+            opacity: float,
+            *,
+            face_indices: tuple[int, ...] | None = None,
+            show_edges: bool = False,
+        ) -> None:
+            indices = (
+                tuple(range(len(preview.faces)))
+                if face_indices is None
+                else face_indices
+            )
+            if not indices:
+                return
+            mesh = _pyvista.PolyData()
+            mesh.points = np.asarray(preview.points, dtype=float)
+            mesh.faces = np.hstack(
+                tuple(
+                    (len(preview.faces[index]), *preview.faces[index])
+                    for index in indices
+                )
+            ).astype(np.int64)
+            actor = self._plotter.add_mesh(
+                mesh,
+                color=color,
+                opacity=opacity,
+                show_edges=show_edges,
+                edge_color=color,
+                line_width=2,
+                name=name,
+                reset_camera=False,
+                pickable=False,
+            )
+            actor.SetPickable(False)
+            self._actors[name] = actor
+
+        has_body_ids = any(
+            value is not None for value in target.face_body_logical_ids
+        )
+        target_indices = tuple(
+            index
+            for index, body_id in enumerate(target.face_body_logical_ids)
+            if not has_body_ids or body_id == target_body_id
+        )
+        surface(
+            "face_boolean_target",
+            target,
+            "#71808e",
+            0.18,
+            face_indices=target_indices,
+            show_edges=True,
+        )
+        surface(
+            "face_boolean_unselected_profiles",
+            display.unselected_profiles,
+            "#8c96a0",
+            0.45,
+            show_edges=True,
+        )
+        surface(
+            "face_boolean_selected_profiles",
+            display.selected_profiles,
+            "#25a7d9",
+            0.72,
+            show_edges=True,
+        )
+        surface(
+            "face_boolean_tool",
+            display.tool,
+            "#36a269" if operation_name == "合并材料" else "#d9544d",
+            0.28,
+            show_edges=True,
+        )
+        surface(
+            "face_boolean_exact_result",
+            exact_result,
+            "#4f81bd",
+            0.62,
+            show_edges=True,
+        )
+        arrow = self._plotter.add_arrows(
+            np.asarray((origin,), dtype=float),
+            np.asarray((direction,), dtype=float),
+            mag=float(distance),
+            color="#ff9800",
+            name="face_boolean_direction",
+            reset_camera=False,
+        )
+        arrow.SetPickable(False)
+        self._actors["face_boolean_direction"] = arrow
+        endpoint = np.asarray(origin, dtype=float) + float(distance) * np.asarray(
+            direction,
+            dtype=float,
+        )
+        self._actors["face_boolean_distance"] = self._plotter.add_point_labels(
+            np.asarray((endpoint,), dtype=float),
+            (f"距离：{distance:g}",),
+            point_size=0,
+            font_size=12,
+            shape=None,
+            text_color="#ff9800",
+            name="face_boolean_distance",
+            reset_camera=False,
+        )
+        self._render()
 
     def set_sketch_authoring_mode(self, mode: str) -> None:
         normalized = str(mode).strip().casefold()

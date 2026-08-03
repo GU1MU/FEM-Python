@@ -131,6 +131,15 @@ class GeometryPreview:
         return self.topological_dimension
 
 
+@dataclass(frozen=True, slots=True)
+class FaceSketchBooleanDisplay:
+    """Detached sketch and tool layers displayed around one exact result."""
+
+    selected_profiles: GeometryPreview
+    unselected_profiles: GeometryPreview
+    tool: GeometryPreview
+
+
 def _validate_preview_logical_ids(
     topology: RecipeTopology,
     recipe_type: str,
@@ -277,6 +286,134 @@ def build_strict_body_boolean_preview(
         recipe,
         (boolean_preview,),
         segments=segments,
+    )
+
+
+def build_face_sketch_boolean_result_preview(
+    boolean_preview: StrictBodyBooleanPreview,
+) -> GeometryPreview:
+    """Convert the exact Phase-4 result mesh without exposing pick identities."""
+
+    if type(boolean_preview) is not StrictBodyBooleanPreview:
+        raise TypeError("boolean_preview must be StrictBodyBooleanPreview")
+    body_id = boolean_preview.target_body_id
+    return GeometryPreview(
+        boolean_preview.points,
+        boolean_preview.faces,
+        boolean_preview.edges,
+        (None,) * len(boolean_preview.faces),
+        (None,) * len(boolean_preview.edges),
+        (None,) * len(boolean_preview.points),
+        body_id,
+        3,
+    )
+
+
+def build_face_sketch_boolean_display(
+    sketch: SketchGeometry,
+    participating_profile_ids: tuple[str, ...],
+    direction: tuple[float, float, float],
+    distance: float,
+    *,
+    segments: int = 48,
+) -> FaceSketchBooleanDisplay:
+    """Build selected/unselected profile and oriented tool display layers."""
+
+    if type(sketch) is not SketchGeometry or not sketch.is_strict:
+        raise TypeError("face sketch Boolean display requires a strict sketch")
+    selected_ids = set(participating_profile_ids)
+    analysis = analyze_sketch_profiles(sketch)
+    material_ids = {profile.id for profile in analysis.profiles if profile.is_material}
+    if not selected_ids or not selected_ids.issubset(material_ids):
+        raise ValueError("参与轮廓必须引用当前草图材料轮廓")
+    vector = tuple(float(value) for value in direction)
+    if len(vector) != 3 or not all(math.isfinite(value) for value in vector):
+        raise ValueError("拉伸方向必须是有限三维向量")
+    distance_value = float(distance)
+    if not math.isfinite(distance_value) or distance_value <= 0.0:
+        raise ValueError("拉伸距离必须为有限正值")
+
+    draft = build_strict_sketch_draft_preview(sketch, segments=segments)
+    selected_face_ids = {
+        f"face:profile/{profile_id.split('/', 1)[-1]}"
+        for profile_id in selected_ids
+    }
+    selected_face_indices = tuple(
+        index
+        for index, logical_id in enumerate(draft.face_logical_ids)
+        if logical_id in selected_face_ids
+    )
+    unselected_face_indices = tuple(
+        index
+        for index, logical_id in enumerate(draft.face_logical_ids)
+        if logical_id not in selected_face_ids
+    )
+    included_profiles = tuple(
+        profile
+        for profile in analysis.profiles
+        if profile.id in selected_ids or profile.parent_profile_id in selected_ids
+    )
+    selected_curve_ids = {
+        f"edge:{curve_id}"
+        for profile in included_profiles
+        for curve_id in profile.curve_ids
+    }
+    selected_edge_indices = tuple(
+        index
+        for index, logical_id in enumerate(draft.edge_logical_ids)
+        if logical_id in selected_curve_ids
+    )
+    unselected_edge_indices = tuple(
+        index
+        for index, logical_id in enumerate(draft.edge_logical_ids)
+        if logical_id not in selected_curve_ids
+    )
+
+    def layer(
+        face_indices: tuple[int, ...],
+        edge_indices: tuple[int, ...],
+    ) -> GeometryPreview:
+        return GeometryPreview(
+            draft.points,
+            tuple(draft.faces[index] for index in face_indices),
+            tuple(draft.edges[index] for index in edge_indices),
+            topological_dimension=2,
+        )
+
+    offset = tuple(distance_value * value for value in vector)
+    point_count = len(draft.points)
+    tool_points = draft.points + tuple(
+        tuple(value + delta for value, delta in zip(point, offset, strict=True))
+        for point in draft.points
+    )
+    tool_faces: list[tuple[int, ...]] = [
+        tuple(reversed(draft.faces[index])) for index in selected_face_indices
+    ]
+    tool_faces.extend(
+        tuple(point_count + value for value in draft.faces[index])
+        for index in selected_face_indices
+    )
+    for edge_index in selected_edge_indices:
+        path = draft.edges[edge_index]
+        for first, second in zip(path, path[1:]):
+            tool_faces.append(
+                (
+                    first,
+                    second,
+                    point_count + second,
+                    point_count + first,
+                )
+            )
+    tool = GeometryPreview(
+        tool_points,
+        tuple(tool_faces),
+        (),
+        topological_dimension=3,
+    )
+    return FaceSketchBooleanDisplay(
+        layer(selected_face_indices, selected_edge_indices),
+        layer(unselected_face_indices, unselected_edge_indices),
+        tool,
     )
 
 
@@ -2009,7 +2146,10 @@ def _angles(count: int) -> tuple[float, ...]:
 
 
 __all__ = [
+    "FaceSketchBooleanDisplay",
     "GeometryPreview",
+    "build_face_sketch_boolean_display",
+    "build_face_sketch_boolean_result_preview",
     "build_geometry_preview",
     "build_strict_body_boolean_preview",
     "build_strict_body_boolean_previews",
