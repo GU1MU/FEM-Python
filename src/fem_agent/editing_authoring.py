@@ -169,7 +169,10 @@ def editable_object_catalog(
             )
         )
 
+    units = getattr(snapshot, "unit_context", None)
     for step in tuple(snapshot.steps):
+        if type(units) is not UnitContext:
+            continue
         step_name = str(getattr(step, "name", "")).strip()
         if not step_name or len(step_name) > 160:
             continue
@@ -189,7 +192,7 @@ def editable_object_catalog(
                         "first_component": boundary.first_component,
                         "last_component": boundary.last_component,
                         "value": boundary.value,
-                        "unit": _require_units(snapshot).length,
+                        "unit": units.length,
                         "distribution": "uniform",
                         "confirmed": True,
                         "editable_fields": [

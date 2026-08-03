@@ -14,7 +14,12 @@ from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QToolButton
 
-from fem.core.model import FEMModel
+from fem.core.model import (
+    AnalysisStep,
+    DisplacementConstraint,
+    FEMModel,
+    NodalLoad,
+)
 from fem_agent.authoring import (
     AgentProposal,
     AuthoringAuthorizationError,
@@ -185,6 +190,47 @@ def test_snapshot_adapter_reads_counts_from_actual_fem_model_mesh() -> None:
     assert not empty_context.mesh.current
     assert empty_context.mesh.node_count == 0
     assert empty_context.mesh.element_count == 0
+
+
+def test_snapshot_adapter_skips_engineering_edits_without_units() -> None:
+    model = FEMModel(make_selection_quad_mesh(), name="模型-无单位")
+    snapshot = SimpleNamespace(
+        session_id="session-without-units",
+        session_revision=9,
+        source_kind="native",
+        can_save=True,
+        model_name=model.name,
+        active_part_id=None,
+        parts=(),
+        named_regions={},
+        materials=(),
+        sections=(),
+        assignments=(),
+        steps=(
+            AnalysisStep(
+                "Load",
+                boundaries=(
+                    DisplacementConstraint("Root", 1, 2, name="Fixed"),
+                ),
+                cloads=(NodalLoad("Tip", 1, 10.0, name="Force"),),
+            ),
+        ),
+        artifact=SimpleNamespace(model=model),
+        validations={},
+        runs=(),
+        displayed_result=None,
+        mesh_current=True,
+        unit_context=None,
+    )
+
+    context = authoring_context_from_snapshot(snapshot)
+    edit_capability = next(
+        item
+        for item in context.capabilities
+        if item.operation == "edit_model_objects"
+    )
+
+    assert not edit_capability.enabled
 
 
 def test_bridge_gui_authorization_replay_stale_and_exception_paths() -> None:
