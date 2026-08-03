@@ -17,6 +17,7 @@ from fem.geometry import (
     MultiBodyGeometry,
     NativeGeometry,
     PlateWithHoleGeometry,
+    PathSweptGeometry,
     RectangleGeometry,
     RevolvedGeometry,
     RotatedGeometry,
@@ -453,6 +454,8 @@ def _build_geometry_preview(
         return _extruded_preview(recipe, segments)
     if isinstance(recipe, RevolvedGeometry):
         return _revolved_preview(recipe, segments)
+    if isinstance(recipe, PathSweptGeometry):
+        return _path_swept_preview(recipe, segments)
     if isinstance(recipe, WireGeometry):
         return _wire_preview(recipe)
     if isinstance(recipe, RectangleGeometry):
@@ -1494,6 +1497,113 @@ def _revolved_preview(
     )
 
 
+def _path_swept_preview(
+    recipe: PathSweptGeometry,
+    segments: int,
+) -> GeometryPreview:
+    """Tessellate the explicit path deterministically for GUI confirmation."""
+
+    base = _build_geometry_preview(recipe.base, segments)
+    selection = resolve_extrusion_source_faces(
+        recipe.base,
+        recipe.source_face_ids,
+    )
+    source_face_id = selection.face_ids[0]
+    selected_face_indices = tuple(
+        index
+        for index, logical_id in enumerate(base.face_logical_ids)
+        if logical_id == source_face_id
+    )
+    selected_edge_indices = tuple(
+        index
+        for index, logical_id in enumerate(base.edge_logical_ids)
+        if logical_id in set(selection.boundary_edge_ids)
+    )
+    required_points = {
+        point
+        for index in (*selected_face_indices,)
+        for point in base.faces[index]
+    }
+    required_points.update(
+        point
+        for index in selected_edge_indices
+        for point in base.edges[index]
+    )
+    ordered_points = tuple(sorted(required_points))
+    index_map = {old: new for new, old in enumerate(ordered_points)}
+    source_points = tuple(base.points[index] for index in ordered_points)
+    source_faces = tuple(
+        tuple(index_map[index] for index in base.faces[face_index])
+        for face_index in selected_face_indices
+    )
+    source_edges = tuple(
+        (
+            base.edge_logical_ids[edge_index],
+            tuple(index_map[index] for index in base.edges[edge_index]),
+        )
+        for edge_index in selected_edge_indices
+    )
+    path_points = {point.name: point for point in recipe.path.points}
+    traversal_names = (
+        recipe.path.members[0].start,
+        *(member.end for member in recipe.path.members),
+    )
+    traversal = tuple(path_points[name] for name in traversal_names)
+    start = traversal[0]
+    point_count = len(source_points)
+    points = tuple(
+        (
+            x + path_point.x - start.x,
+            y + path_point.y - start.y,
+            z + path_point.z - start.z,
+        )
+        for path_point in traversal
+        for x, y, z in source_points
+    )
+    faces: list[tuple[int, ...]] = []
+    face_ids: list[str | None] = []
+    for face in source_faces:
+        faces.append(tuple(reversed(face)))
+        face_ids.append("face:start")
+    end_offset = (len(traversal) - 1) * point_count
+    for face in source_faces:
+        faces.append(tuple(end_offset + index for index in face))
+        face_ids.append("face:end")
+    for layer in range(len(traversal) - 1):
+        first_offset = layer * point_count
+        second_offset = (layer + 1) * point_count
+        for logical_id, edge in source_edges:
+            side_id = (
+                None
+                if logical_id is None
+                else f"face:side/{logical_id.split(':', 1)[1]}"
+            )
+            for first, second in zip(edge, edge[1:]):
+                faces.append(
+                    (
+                        first_offset + first,
+                        first_offset + second,
+                        second_offset + second,
+                        second_offset + first,
+                    )
+                )
+                face_ids.append(side_id)
+    edges = tuple(
+        tuple(layer * point_count + index for index in edge)
+        for layer in range(len(traversal))
+        for _logical_id, edge in source_edges
+    )
+    return _make_preview(
+        recipe,
+        points,
+        tuple(faces),
+        edges,
+        tuple(face_ids),
+        (None,) * len(edges),
+        (None,) * len(points),
+    )
+
+
 def _strict_body_boolean_preview(
     recipe: BooleanGeometry,
     segments: int,
@@ -1837,7 +1947,13 @@ def _contains_proven_strict_boolean(recipe: object) -> bool:
         ) or _contains_proven_strict_boolean(recipe.tool_geometry)
     if isinstance(
         recipe,
-        (MovedGeometry, RotatedGeometry, ExtrudedGeometry, RevolvedGeometry),
+        (
+            MovedGeometry,
+            RotatedGeometry,
+            ExtrudedGeometry,
+            RevolvedGeometry,
+            PathSweptGeometry,
+        ),
     ):
         return _contains_proven_strict_boolean(recipe.base)
     if isinstance(recipe, MultiBodyGeometry):

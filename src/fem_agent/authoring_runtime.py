@@ -600,8 +600,10 @@ _PREPARE_GEOMETRY_EDIT = _tool(
         "Prepare an in-place, revision-bound edit of an existing native Part. "
         "Selected-Profile extrusion requires explicit canonical source_face_ids "
         "from read_geometry_feature_catalog and creates one independent Part per "
-        "selected material Profile. The edit runs only after the local GUI "
-        "control is clicked."
+        "selected material Profile. Revolution and path sweep require one explicit "
+        "canonical Profile; path sweep also requires an ordered open polyline and "
+        "a fixed or transport frame. The edit runs only after the local GUI control "
+        "is clicked."
     ),
     {
         "type": "object",
@@ -635,6 +637,90 @@ _PREPARE_GEOMETRY_EDIT = _tool(
                         },
                         "required": [
                             "operation", "source_face_ids", "height"
+                        ],
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "operation": {"const": "revolve_profile"},
+                            "source_face_id": {
+                                "type": "string",
+                                "pattern": "^face:[^\\s]+$",
+                                "maxLength": 192,
+                            },
+                            "axis": {
+                                "type": "string",
+                                "enum": ["x", "y", "z"],
+                            },
+                            "angle_degrees": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                                "maximum": 360,
+                            },
+                        },
+                        "required": [
+                            "operation", "source_face_id", "axis", "angle_degrees"
+                        ],
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "operation": {"const": "path_sweep_profile"},
+                            "source_face_id": {
+                                "type": "string",
+                                "pattern": "^face:[^\\s]+$",
+                                "maxLength": 192,
+                            },
+                            "path": {
+                                "type": "object",
+                                "properties": {
+                                    "points": {
+                                        "type": "array",
+                                        "minItems": 2,
+                                        "maxItems": 64,
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "name": {"type": "string", "minLength": 1, "maxLength": 64},
+                                                "x": {"type": "number"},
+                                                "y": {"type": "number"},
+                                                "z": {"type": "number"},
+                                            },
+                                            "required": ["name", "x", "y", "z"],
+                                            "additionalProperties": False,
+                                        },
+                                    },
+                                    "members": {
+                                        "type": "array",
+                                        "minItems": 1,
+                                        "maxItems": 63,
+                                        "description": (
+                                            "Explicit traversal order; ordinary 1D graph order is never inferred."
+                                        ),
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "name": {"type": "string", "minLength": 1, "maxLength": 64},
+                                                "start": {"type": "string", "minLength": 1, "maxLength": 64},
+                                                "end": {"type": "string", "minLength": 1, "maxLength": 64},
+                                            },
+                                            "required": ["name", "start", "end"],
+                                            "additionalProperties": False,
+                                        },
+                                    },
+                                },
+                                "required": ["points", "members"],
+                                "additionalProperties": False,
+                            },
+                            "frame_strategy": {
+                                "type": "string",
+                                "enum": ["fixed", "transport"],
+                            },
+                        },
+                        "required": [
+                            "operation", "source_face_id", "path", "frame_strategy"
                         ],
                         "additionalProperties": False,
                     },

@@ -53,6 +53,7 @@ from fem.geometry.recipes import (
     MultiBodyGeometry,
     NativeGeometry,
     PlateWithHoleGeometry,
+    PathSweptGeometry,
     RectangleGeometry,
     RevolvedGeometry,
     RotatedGeometry,
@@ -194,6 +195,8 @@ def _compile_exact(cad: Any, recipe: NativeGeometry) -> _CompiledDraft:
         return _compile_extrusion(cad, recipe)
     if isinstance(recipe, RevolvedGeometry):
         return _compile_revolution(cad, recipe)
+    if isinstance(recipe, PathSweptGeometry):
+        return _compile_path_sweep(cad, recipe)
     if isinstance(recipe, MultiBodyGeometry):
         return _compile_multi_body(cad, recipe)
     if isinstance(recipe, BooleanGeometry):
@@ -1612,6 +1615,46 @@ def _compile_revolution(cad: Any, recipe: RevolvedGeometry) -> _CompiledDraft:
                 "revolve.compile.surface-not-unique: "
                 f"{source_face_id} 没有唯一 OCC plane surface"
             )
+        surface_normal = cad.geometry_direction(source_surfaces[0])
+        if surface_normal is not None:
+            axis_dot_normal = sum(
+                left * right for left, right in zip(axis, surface_normal, strict=True)
+            )
+            surface_center = tuple(cad.center_of_mass(source_surfaces[0]))
+            plane_offset = sum(
+                left * right
+                for left, right in zip(surface_center, surface_normal, strict=True)
+            )
+            tolerance = max(
+                1.0e-9,
+                float(cad.effective_bounding_box_tolerance(1.0e-9)),
+            )
+            if (
+                math.isclose(axis_dot_normal, 0.0, rel_tol=0.0, abs_tol=tolerance)
+                and math.isclose(plane_offset, 0.0, rel_tol=0.0, abs_tol=tolerance)
+            ):
+                radial = (
+                    surface_normal[1] * axis[2] - surface_normal[2] * axis[1],
+                    surface_normal[2] * axis[0] - surface_normal[0] * axis[2],
+                    surface_normal[0] * axis[1] - surface_normal[1] * axis[0],
+                )
+                point_coordinates = tuple(
+                    tuple(cad.center_of_mass(entity))
+                    for entity in _domain_boundary_closure(cad, source_surfaces)
+                    if entity.dimension == 0
+                )
+                signed = tuple(
+                    sum(
+                        left * right
+                        for left, right in zip(point, radial, strict=True)
+                    )
+                    for point in point_coordinates
+                )
+                if signed and min(signed) < -tolerance and max(signed) > tolerance:
+                    raise TopologyResolutionError(
+                        "revolve.compile.profile-crosses-axis: "
+                        f"{source_face_id} 穿过旋转轴，会生成重叠或退化体"
+                    )
         feature = cad.revolve(
             source_surfaces,
             0.0,
@@ -1639,6 +1682,255 @@ def _compile_revolution(cad: Any, recipe: RevolvedGeometry) -> _CompiledDraft:
         {"body:domain": compiled_domain},
         {},
     )
+
+
+def _compile_path_sweep(cad: Any, recipe: PathSweptGeometry) -> _CompiledDraft:
+    """Compile one explicit ordered polyline path through the Gmsh pipe seam."""
+
+    base = _compile_exact(cad, recipe.base)
+    try:
+        selection = resolve_extrusion_source_faces(
+            recipe.base,
+            recipe.source_face_ids,
+        )
+    except ExtrusionSourceResolutionError as error:
+        raise TopologyResolutionError(f"{error.code}: {error}") from error
+    if len(selection.face_ids) != 1:
+        raise TopologyResolutionError(
+            "path-sweep.compile.source-not-unique: "
+            "路径扫掠必须显式选择一个 material Profile"
+        )
+    source_face_id = selection.face_ids[0]
+    source_surfaces = tuple(base.logical_entities.get(source_face_id, ()))
+    if len(source_surfaces) != 1 or source_surfaces[0].dimension != 2:
+        raise TopologyResolutionError(
+            "path-sweep.compile.surface-not-unique: "
+            f"{source_face_id} 没有唯一 OCC plane surface"
+        )
+
+    ordered_names = (
+        recipe.path.members[0].start,
+        *(member.end for member in recipe.path.members),
+    )
+    points = {point.name: point for point in recipe.path.points}
+    start = points[ordered_names[0]]
+    following = points[ordered_names[1]]
+    origin = _planar_recipe_origin(recipe.base)
+    normal = planar_geometry_normal(recipe.base)
+    tolerance = 1.0e-9 * max(
+        1.0,
+        *(abs(value) for value in (*origin, start.x, start.y, start.z)),
+    )
+    if math.dist(origin, (start.x, start.y, start.z)) > tolerance:
+        raise TopologyResolutionError(
+            "path-sweep.compile.start-position-mismatch: "
+            "路径起点必须与 Profile 平面原点一致，以显式确定起始姿态"
+        )
+    tangent = (
+        following.x - start.x,
+        following.y - start.y,
+        following.z - start.z,
+    )
+    tangent_length = math.sqrt(sum(value * value for value in tangent))
+    alignment = abs(
+        sum(left * right for left, right in zip(tangent, normal, strict=True))
+    ) / tangent_length
+    if not math.isclose(alignment, 1.0, rel_tol=0.0, abs_tol=1.0e-9):
+        raise TopologyResolutionError(
+            "path-sweep.compile.start-orientation-mismatch: "
+            "Profile 正法向必须与路径首段平行，以显式确定起始姿态"
+        )
+
+    path_points = {
+        name: cad.point(points[name].x, points[name].y, points[name].z)
+        for name in ordered_names
+    }
+    path_curves = tuple(
+        cad.line(path_points[member.start], path_points[member.end])
+        for member in recipe.path.members
+    )
+    path_wire = cad.wire(
+        tuple(cad.orient(curve) for curve in path_curves),
+        closed=False,
+    )
+    feature = cad.sweep(
+        source_surfaces,
+        path_wire,
+        frame="fixed" if recipe.frame_strategy == "fixed" else "discrete",
+    )
+    volumes = tuple(feature.primary)
+    if len(volumes) != 1 or volumes[0].dimension != 3:
+        raise TopologyResolutionError(
+            "path-sweep.compile.multi-solid: "
+            "路径扫掠未生成唯一 volume"
+        )
+    if cad.volume(volumes[0]) <= 0.0:
+        raise TopologyResolutionError(
+            "path-sweep.compile.zero-volume: 路径扫掠生成了非正体积实体"
+        )
+    source_center = tuple(cad.center_of_mass(source_surfaces[0]))
+    end_faces = tuple(feature.ends)
+    start_faces = tuple(
+        entity
+        for entity in end_faces
+        if all(
+            math.isclose(actual, expected, rel_tol=1.0e-9, abs_tol=tolerance)
+            for actual, expected in zip(
+                cad.center_of_mass(entity), source_center, strict=True
+            )
+        )
+    )
+    terminals = tuple(entity for entity in end_faces if entity not in start_faces)
+    if len(start_faces) != 1 or len(terminals) != 1:
+        raise TopologyResolutionError(
+            "path-sweep.compile.end-not-unique: 路径扫掠端面 lineage 不唯一"
+        )
+    sides = tuple(feature.sides)
+    if not sides:
+        raise TopologyResolutionError(
+            "path-sweep.compile.side-missing: 路径扫掠没有可证明的侧面"
+        )
+    side_boundaries = {
+        side: set(cad.boundary((side,), combined=False))
+        for side in sides
+    }
+    start_curves = tuple(cad.boundary(start_faces, combined=False))
+    terminal_curves = set(cad.boundary(terminals, combined=False))
+    edge_ids, _point_ids = extrusion_face_boundary_ids(
+        recipe.base,
+        source_face_id,
+    )
+    logical: dict[str, tuple[Any, ...]] = {
+        "face:start": start_faces,
+        "face:end": terminals,
+        "body:domain": volumes,
+    }
+    base_catalog = describe_recipe_topology(recipe.base)
+    hole_edges = {
+        edge_id
+        for edge_id in edge_ids
+        if "hole" in base_catalog.entity(edge_id).semantic_role
+    }
+    outer_sides: list[Any] = []
+    hole_sides: list[Any] = []
+    claimed: set[Any] = set()
+    edge_seed_indexes: dict[str, int] = {}
+    for edge_id in edge_ids:
+        source_curves = set(base.logical_entities.get(edge_id, ()))
+        copied_curves: set[Any] = set()
+        for source_curve in source_curves:
+            source_curve_center = tuple(cad.center_of_mass(source_curve))
+            source_curve_measure = _entity_measure(cad, source_curve)
+            source_curve_type = cad.geometry_type(source_curve)
+            matches = tuple(
+                candidate
+                for candidate in start_curves
+                if cad.geometry_type(candidate) == source_curve_type
+                and math.isclose(
+                    _entity_measure(cad, candidate),
+                    source_curve_measure,
+                    rel_tol=1.0e-9,
+                    abs_tol=tolerance,
+                )
+                and all(
+                    math.isclose(actual, expected, rel_tol=1.0e-9, abs_tol=tolerance)
+                    for actual, expected in zip(
+                        cad.center_of_mass(candidate),
+                        source_curve_center,
+                        strict=True,
+                    )
+                )
+            )
+            if len(matches) != 1:
+                raise TopologyResolutionError(
+                    "path-sweep.compile.start-edge-lineage: "
+                    f"无法唯一追踪源边 {edge_id} 的起始副本"
+                )
+            copied_curves.add(matches[0])
+        seed_indexes = tuple(
+            index
+            for index, side in enumerate(sides)
+            if side_boundaries[side] & copied_curves
+        )
+        if len(seed_indexes) != 1:
+            raise TopologyResolutionError(
+                "path-sweep.compile.side-seed-not-unique: "
+                f"源边 {edge_id} 没有唯一起始侧面"
+            )
+        edge_seed_indexes[edge_id] = seed_indexes[0]
+    ordered_seeds = tuple(edge_seed_indexes[edge_id] for edge_id in edge_ids)
+    if tuple(sorted(ordered_seeds)) != ordered_seeds:
+        raise TopologyResolutionError(
+            "path-sweep.compile.side-order-ambiguous: "
+            "Gmsh 侧面顺序无法与 Profile 边界顺序对齐"
+        )
+    for edge_index, edge_id in enumerate(edge_ids):
+        start_index = edge_seed_indexes[edge_id]
+        stop_index = (
+            len(sides)
+            if edge_index + 1 == len(edge_ids)
+            else edge_seed_indexes[edge_ids[edge_index + 1]]
+        )
+        matched = sides[start_index:stop_index]
+        if not matched:
+            raise TopologyResolutionError(
+                "path-sweep.compile.side-lineage-missing: "
+                f"无法追踪源边 {edge_id} 的侧面"
+            )
+        if any(
+            not (side_boundaries[first] & side_boundaries[second])
+            for first, second in zip(matched, matched[1:])
+        ) or not (side_boundaries[matched[-1]] & terminal_curves):
+            raise TopologyResolutionError(
+                "path-sweep.compile.side-lineage-disconnected: "
+                f"源边 {edge_id} 的侧面链未连续达到终端面"
+            )
+        logical[f"face:side/{edge_id.split(':', 1)[1]}"] = matched
+        claimed.update(matched)
+        if edge_id in hole_edges:
+            hole_sides.extend(matched)
+        else:
+            outer_sides.extend(matched)
+    if claimed != set(sides):
+        raise TopologyResolutionError(
+            "path-sweep.compile.side-lineage-incomplete: 路径扫掠侧面 lineage 不完整"
+        )
+    region_bindings = {
+        RecipeRegionSelector.BOTTOM: start_faces,
+        RecipeRegionSelector.TOP: terminals,
+        RecipeRegionSelector.OUTER: _unique(outer_sides),
+    }
+    if hole_sides:
+        region_bindings[RecipeRegionSelector.HOLE] = _unique(hole_sides)
+    return _CompiledDraft(
+        volumes,
+        logical,
+        region_bindings,
+        _unique(hole_sides),
+    )
+
+
+def _planar_recipe_origin(recipe: NativeGeometry) -> tuple[float, float, float]:
+    """Return the authoring origin that anchors an explicit sweep start pose."""
+
+    if isinstance(recipe, SketchGeometry) and recipe.is_strict:
+        assert recipe.plane is not None
+        return recipe.plane.origin
+    if isinstance(recipe, MovedGeometry):
+        x, y, z = _planar_recipe_origin(recipe.base)
+        return x + recipe.dx, y + recipe.dy, z + recipe.dz
+    if isinstance(recipe, RotatedGeometry):
+        x, y, z = _planar_recipe_origin(recipe.base)
+        angle = math.radians(recipe.angle_degrees)
+        cosine, sine = math.cos(angle), math.sin(angle)
+        if recipe.axis == "x":
+            return x, y * cosine - z * sine, y * sine + z * cosine
+        if recipe.axis == "y":
+            return x * cosine + z * sine, y, -x * sine + z * cosine
+        return x * cosine - y * sine, x * sine + y * cosine, z
+    if isinstance(recipe, BooleanGeometry):
+        return _planar_recipe_origin(recipe.object_geometry)
+    return 0.0, 0.0, 0.0
 
 
 def _compile_strict_body_boolean(
@@ -1898,6 +2190,8 @@ def _build_domain_only(cad: Any, recipe: NativeGeometry) -> tuple[Any, ...]:
         return _compile_extrusion(cad, recipe).domain
     if isinstance(recipe, RevolvedGeometry):
         return _compile_revolution(cad, recipe).domain
+    if isinstance(recipe, PathSweptGeometry):
+        return _compile_path_sweep(cad, recipe).domain
     raise TypeError(f"不支持的几何配方: {type(recipe).__name__}")
 
 

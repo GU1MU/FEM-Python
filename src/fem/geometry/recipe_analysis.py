@@ -18,6 +18,7 @@ from .recipes import (
     NATIVE_GEOMETRY_TYPES,
     NativeGeometry,
     PlateWithHoleGeometry,
+    PathSweptGeometry,
     RectangleGeometry,
     RevolvedGeometry,
     RotatedGeometry,
@@ -1241,6 +1242,11 @@ def recipe_characteristic_size(recipe: NativeGeometry) -> float:
         return min(recipe_characteristic_size(recipe.base), recipe.height)
     if isinstance(recipe, RevolvedGeometry):
         return recipe_characteristic_size(recipe.base)
+    if isinstance(recipe, PathSweptGeometry):
+        return min(
+            recipe_characteristic_size(recipe.base),
+            recipe_characteristic_size(recipe.path),
+        )
     if isinstance(recipe, SketchGeometry):
         if recipe.is_strict:
             analysis = analyze_sketch_profiles(recipe)

@@ -1309,6 +1309,7 @@ class MovedGeometry:
                 RotatedGeometry,
                 ExtrudedGeometry,
                 RevolvedGeometry,
+                PathSweptGeometry,
                 BooleanGeometry,
             ),
         ):
@@ -1343,6 +1344,7 @@ class RotatedGeometry:
                 RotatedGeometry,
                 ExtrudedGeometry,
                 RevolvedGeometry,
+                PathSweptGeometry,
                 BooleanGeometry,
             ),
         ):
@@ -1513,6 +1515,14 @@ class PathSweptGeometry:
             raise ValueError("只有二维几何可以沿路径扫掠")
         if type(self.path) is not WireGeometry:
             raise TypeError("路径扫掠 path 必须是 WireGeometry")
+        degrees = {point.name: 0 for point in self.path.points}
+        for member in self.path.members:
+            degrees[member.start] += 1
+            degrees[member.end] += 1
+        if any(degree > 2 for degree in degrees.values()):
+            raise ValueError("路径扫掠首版不支持分支路径")
+        if sorted(degrees.values()).count(1) != 2:
+            raise ValueError("路径扫掠需要一条有两个端点的开放路径")
         if any(
             current.end != following.start
             for current, following in zip(
@@ -1529,6 +1539,15 @@ class PathSweptGeometry:
             raise ValueError("路径扫掠首版只支持开放路径")
         if set(ordered_points) != {point.name for point in self.path.points}:
             raise ValueError("路径扫掠 path 不得包含未使用的点")
+        coordinates = {
+            point.name: (point.x, point.y, point.z)
+            for point in self.path.points
+        }
+        traversal = tuple(coordinates[name] for name in ordered_points)
+        if len(traversal) != len(set(traversal)):
+            raise ValueError("路径扫掠路径不得重访同一空间点")
+        if _polyline_self_intersects(traversal):
+            raise ValueError("路径扫掠首版不支持自相交路径")
         if self.frame_strategy not in {"fixed", "transport"}:
             raise ValueError("路径扫掠 frame_strategy 必须是 fixed 或 transport")
         if isinstance(self.source_face_ids, (str, bytes, bytearray)):
@@ -1547,6 +1566,64 @@ class PathSweptGeometry:
                 references,
             ).face_ids
         object.__setattr__(self, "source_face_ids", normalized_ids)
+
+
+def _polyline_self_intersects(
+    points: tuple[tuple[float, float, float], ...],
+) -> bool:
+    """Return whether non-neighbouring straight path segments touch or cross."""
+
+    segments = tuple(zip(points, points[1:]))
+    scale = max(1.0, *(abs(value) for point in points for value in point))
+    tolerance = 1.0e-10 * scale
+    for first_index, (first_start, first_end) in enumerate(segments):
+        for second_index in range(first_index + 2, len(segments)):
+            second_start, second_end = segments[second_index]
+            if _segment_distance_squared(
+                first_start,
+                first_end,
+                second_start,
+                second_end,
+            ) <= tolerance * tolerance:
+                return True
+    return False
+
+
+def _segment_distance_squared(
+    first_start: tuple[float, float, float],
+    first_end: tuple[float, float, float],
+    second_start: tuple[float, float, float],
+    second_end: tuple[float, float, float],
+) -> float:
+    """Squared closest distance between two finite spatial segments."""
+
+    first = tuple(end - start for start, end in zip(first_start, first_end, strict=True))
+    second = tuple(end - start for start, end in zip(second_start, second_end, strict=True))
+    offset = tuple(start - end for start, end in zip(first_start, second_start, strict=True))
+    aa = sum(value * value for value in first)
+    bb = sum(left * right for left, right in zip(first, second, strict=True))
+    cc = sum(value * value for value in second)
+    dd = sum(left * right for left, right in zip(first, offset, strict=True))
+    ee = sum(left * right for left, right in zip(second, offset, strict=True))
+    denominator = aa * cc - bb * bb
+    first_parameter = 0.0
+    second_parameter = 0.0
+    if denominator > 1.0e-30:
+        first_parameter = min(1.0, max(0.0, (bb * ee - cc * dd) / denominator))
+    second_parameter = (bb * first_parameter + ee) / cc
+    if second_parameter < 0.0:
+        second_parameter = 0.0
+        first_parameter = min(1.0, max(0.0, -dd / aa))
+    elif second_parameter > 1.0:
+        second_parameter = 1.0
+        first_parameter = min(1.0, max(0.0, (bb - dd) / aa))
+    delta = tuple(
+        offset_value + first_parameter * first_value - second_parameter * second_value
+        for offset_value, first_value, second_value in zip(
+            offset, first, second, strict=True
+        )
+    )
+    return sum(value * value for value in delta)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1789,7 +1866,14 @@ def is_single_solid_recipe(recipe: object) -> bool:
             ).face_ids
         ) == 1
     if isinstance(recipe, PathSweptGeometry):
-        return False
+        from .extrusion_selection import resolve_extrusion_source_faces
+
+        return len(
+            resolve_extrusion_source_faces(
+                recipe.base,
+                recipe.source_face_ids,
+            ).face_ids
+        ) == 1
     if isinstance(recipe, BooleanGeometry):
         if recipe.body_context is not None:
             return recipe.body_context.proven

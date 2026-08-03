@@ -119,6 +119,7 @@ from fem.geometry import (
     MultiBodyGeometry,
     NATIVE_GEOMETRY_TYPES,
     PlateWithHoleGeometry,
+    PathSweptGeometry,
     RectangleGeometry,
     RevolvedGeometry,
     RotatedGeometry,
@@ -5033,7 +5034,7 @@ class FEMMainWindow(QMainWindow):
             ) or cls._recipe_contains_strict_boolean(recipe.tool_geometry)
         if isinstance(
             recipe,
-            (MovedGeometry, RotatedGeometry, ExtrudedGeometry, RevolvedGeometry),
+            (MovedGeometry, RotatedGeometry, ExtrudedGeometry, RevolvedGeometry, PathSweptGeometry),
         ):
             return cls._recipe_contains_strict_boolean(recipe.base)
         return False
@@ -5056,7 +5057,7 @@ class FEMMainWindow(QMainWindow):
             )
         if isinstance(
             recipe,
-            (MovedGeometry, RotatedGeometry, ExtrudedGeometry, RevolvedGeometry),
+            (MovedGeometry, RotatedGeometry, ExtrudedGeometry, RevolvedGeometry, PathSweptGeometry),
         ):
             return cls._recipe_contains_strict_part_boolean(recipe.base)
         return False
@@ -5079,7 +5080,7 @@ class FEMMainWindow(QMainWindow):
             )
         if isinstance(
             recipe,
-            (MovedGeometry, RotatedGeometry, ExtrudedGeometry, RevolvedGeometry),
+            (MovedGeometry, RotatedGeometry, ExtrudedGeometry, RevolvedGeometry, PathSweptGeometry),
         ):
             return cls._recipe_contains_strict_planar_boolean(recipe.base)
         return False
@@ -5389,6 +5390,7 @@ class FEMMainWindow(QMainWindow):
                 RotatedGeometry,
                 ExtrudedGeometry,
                 RevolvedGeometry,
+                PathSweptGeometry,
             ),
         ):
             current = current.base
@@ -5401,6 +5403,7 @@ class FEMMainWindow(QMainWindow):
                     RotatedGeometry,
                     ExtrudedGeometry,
                     RevolvedGeometry,
+                    PathSweptGeometry,
                 ),
             ):
                 current = current.base
@@ -5431,7 +5434,7 @@ class FEMMainWindow(QMainWindow):
     ) -> object:
         if isinstance(
             recipe,
-            (MovedGeometry, RotatedGeometry, ExtrudedGeometry, RevolvedGeometry),
+            (MovedGeometry, RotatedGeometry, ExtrudedGeometry, RevolvedGeometry, PathSweptGeometry),
         ):
             return replace(
                 recipe,
@@ -5501,6 +5504,7 @@ class FEMMainWindow(QMainWindow):
                 RotatedGeometry,
                 ExtrudedGeometry,
                 RevolvedGeometry,
+                PathSweptGeometry,
             ),
         ):
             self._set_native_geometry(current.base, "撤销后的")
@@ -5554,7 +5558,7 @@ class FEMMainWindow(QMainWindow):
                 )
         elif isinstance(
             current,
-            (MovedGeometry, RotatedGeometry, ExtrudedGeometry, RevolvedGeometry),
+            (MovedGeometry, RotatedGeometry, ExtrudedGeometry, RevolvedGeometry, PathSweptGeometry),
         ):
             self._set_native_geometry(current.base, "撤销后的")
         elif (

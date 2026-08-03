@@ -187,8 +187,9 @@ def test_phase1_catalog_proof_and_project_round_trip_preserve_identity(
         assert type(restored) is PathSweptGeometry
         assert topology_fingerprint_for_recipe(restored) == before_fingerprint
         assert feature_topology_catalog(restored, part_id="P1") == before_catalog
-        assert not proof.exact
-        assert proof.expected_body_count == 0
+        assert proof.exact
+        assert proof.expected_body_count == 1
+        assert is_single_solid_recipe(restored)
         return
     snapshot = ProjectSnapshot(
         source_kind="native",
@@ -228,16 +229,20 @@ def test_phase1_catalog_proof_and_project_round_trip_preserve_identity(
         assert proof.expected_body_count >= 1
 
 
-def test_phase1_unproven_path_and_boolean_never_guess_a_solid_body() -> None:
+def test_phase3_proves_path_body_while_unproven_boolean_never_guesses() -> None:
     path_sweep = _recipes()[2]
     boolean = _recipes()[3]
 
-    for recipe in (path_sweep, boolean):
-        proof = geometry_contract_proof(recipe)
-        assert proof.to_dict()["body_count_proven"] is False
-        assert proof.expected_body_count == 0
-        assert not feature_topology_catalog(recipe)["exact"]
-    assert not is_single_solid_recipe(path_sweep)
+    path_proof = geometry_contract_proof(path_sweep)
+    assert path_proof.to_dict()["body_count_proven"] is True
+    assert path_proof.expected_body_count == 1
+    assert feature_topology_catalog(path_sweep)["exact"]
+    assert is_single_solid_recipe(path_sweep)
+
+    boolean_proof = geometry_contract_proof(boolean)
+    assert boolean_proof.to_dict()["body_count_proven"] is False
+    assert boolean_proof.expected_body_count == 0
+    assert not feature_topology_catalog(boolean)["exact"]
 
 
 def test_phase1_feature_catalog_rejects_an_unbounded_topology() -> None:

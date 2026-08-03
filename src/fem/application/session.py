@@ -19,6 +19,7 @@ from fem.geometry import (
     MultiBodyGeometry,
     PlanarBooleanContext,
     PartBooleanContext,
+    PathSweptGeometry,
     geometry_dimension,
     historical_recipe_ids,
     recipe_characteristic_size,
@@ -5948,7 +5949,13 @@ def _contains_unproven_boolean(recipe: Any) -> bool:
         )
     if isinstance(
         recipe,
-        (MovedGeometry, RotatedGeometry, ExtrudedGeometry, RevolvedGeometry),
+        (
+            MovedGeometry,
+            RotatedGeometry,
+            ExtrudedGeometry,
+            RevolvedGeometry,
+            PathSweptGeometry,
+        ),
     ):
         return _contains_unproven_boolean(recipe.base)
     return False

@@ -1512,7 +1512,7 @@ def _revolved_topology(recipe: RevolvedGeometry) -> RecipeTopology:
 
 
 def _path_swept_topology(recipe: PathSweptGeometry) -> RecipeTopology:
-    """Keep the result unselectable until exact sweep proof is implemented."""
+    """Describe the deterministic lineage of one validated open-path sweep."""
 
     base = describe_recipe_topology(recipe.base)
     path = describe_recipe_topology(recipe.path)
@@ -1529,7 +1529,13 @@ def _path_swept_topology(recipe: PathSweptGeometry) -> RecipeTopology:
             operation="path_sweep",
             source_signatures=(("base", base.signature), ("path", path.signature)),
         )
-    if not base.exact or not path.exact or len(selection.face_ids) != 1:
+    if (
+        not base.exact
+        or not path.exact
+        or len(selection.face_ids) != 1
+        or len(base.entities_of("body", selectable_only=True)) != 1
+        or len(path.entities_of("body", selectable_only=True)) != 1
+    ):
         return _unknown_topology(
             recipe,
             code="path-sweep.source.topology-unproven",
@@ -1537,14 +1543,65 @@ def _path_swept_topology(recipe: PathSweptGeometry) -> RecipeTopology:
             operation="path_sweep",
             source_signatures=(("base", base.signature), ("path", path.signature)),
         )
-    return _unknown_topology(
-        recipe,
-        code="path-sweep.cad-proof-unavailable",
-        message=(
-            "路径扫掠尚未经过本地 CAD 编译、正体积和端面/侧面 lineage 验证"
+    source_face_id = selection.face_ids[0]
+    source_face = base.entity(source_face_id)
+    edge_ids, _point_ids = extrusion_face_boundary_ids(
+        recipe.base,
+        source_face_id,
+    )
+    base_edges = tuple(base.entity(logical_id) for logical_id in edge_ids)
+    entities: list[LogicalEntity] = [
+        _logical_entity(
+            "face",
+            "start",
+            f"copy.start.{source_face.semantic_role}",
         ),
+        _logical_entity(
+            "face",
+            "end",
+            f"copy.end.{source_face.semantic_role}",
+        ),
+    ]
+    mappings: list[TopologyMapping] = [
+        TopologyMapping("base", source_face_id, "face:start", "derived"),
+        TopologyMapping("base", source_face_id, "face:end", "derived"),
+    ]
+    hole_edges = _extrusion_hole_edges_by_face(
+        recipe.base,
+        selection.face_ids,
+    )[source_face_id]
+    for edge in base_edges:
+        name = _logical_name(edge.logical_id)
+        side = _logical_entity(
+            "face",
+            f"side/{name}",
+            (
+                "sweep.boundary.hole"
+                if edge.logical_id in hole_edges or "hole" in edge.semantic_role
+                else "sweep.boundary.outer"
+            ),
+        )
+        entities.append(side)
+        mappings.append(
+            TopologyMapping("base", edge.logical_id, side.logical_id, "derived")
+        )
+    body = _logical_entity("body", "domain", "path-sweep.domain", dimension=3)
+    entities.append(body)
+    base_body = base.entities_of("body", selectable_only=True)[0]
+    path_body = path.entities_of("body", selectable_only=True)[0]
+    mappings.extend(
+        (
+            TopologyMapping("base", base_body.logical_id, body.logical_id, "derived"),
+            TopologyMapping("path", path_body.logical_id, body.logical_id, "derived"),
+        )
+    )
+    return _make_topology(
+        recipe,
+        tuple(entities),
+        exact=True,
         operation="path_sweep",
         source_signatures=(("base", base.signature), ("path", path.signature)),
+        mappings=tuple(mappings),
     )
 def _boolean_topology(recipe: BooleanGeometry) -> RecipeTopology:
     if recipe.body_context is not None:

@@ -835,6 +835,200 @@ def create_profile_extrusion_proposal(
     )
 
 
+def create_profile_revolution_proposal(
+    *,
+    proposal_id: str,
+    agent_session_id: str,
+    turn_id: str,
+    source_tool_call_ids: Sequence[str],
+    context: AuthoringContext,
+    draft_revision: int,
+    part_id: str,
+    base_recipe: object,
+    source_face_id: str,
+    axis: str,
+    angle_degrees: Real,
+    summary: str,
+) -> AgentProposal:
+    """Create a revision-bound proposal for one canonical Profile revolution."""
+
+    recipe = RevolvedGeometry(
+        base_recipe,
+        axis,
+        _finite(angle_degrees, "angle_degrees"),
+        (source_face_id,),
+    )
+    return _create_single_profile_derived_proposal(
+        proposal_id=proposal_id,
+        agent_session_id=agent_session_id,
+        turn_id=turn_id,
+        source_tool_call_ids=source_tool_call_ids,
+        context=context,
+        draft_revision=draft_revision,
+        part_id=part_id,
+        base_recipe=base_recipe,
+        recipe=recipe,
+        operation_kind=OperationKind.REVOLVE_PART_PROFILE,
+        parameters={
+            "axis": recipe.axis,
+            "angle_degrees": recipe.angle_degrees,
+        },
+        summary=summary,
+    )
+
+
+def create_profile_path_sweep_proposal(
+    *,
+    proposal_id: str,
+    agent_session_id: str,
+    turn_id: str,
+    source_tool_call_ids: Sequence[str],
+    context: AuthoringContext,
+    draft_revision: int,
+    part_id: str,
+    base_recipe: object,
+    source_face_id: str,
+    path: WireGeometry,
+    frame_strategy: str,
+    summary: str,
+) -> AgentProposal:
+    """Create a revision-bound proposal for one explicit open-path sweep."""
+
+    recipe = PathSweptGeometry(
+        base_recipe,
+        path,
+        (source_face_id,),
+        frame_strategy,
+    )
+    return _create_single_profile_derived_proposal(
+        proposal_id=proposal_id,
+        agent_session_id=agent_session_id,
+        turn_id=turn_id,
+        source_tool_call_ids=source_tool_call_ids,
+        context=context,
+        draft_revision=draft_revision,
+        part_id=part_id,
+        base_recipe=base_recipe,
+        recipe=recipe,
+        operation_kind=OperationKind.SWEEP_PART_PROFILE,
+        parameters={
+            "ordered_wire": _geometry_recipe_to_payload(path),
+            "frame_strategy": recipe.frame_strategy,
+        },
+        summary=summary,
+    )
+
+
+def _create_single_profile_derived_proposal(
+    *,
+    proposal_id: str,
+    agent_session_id: str,
+    turn_id: str,
+    source_tool_call_ids: Sequence[str],
+    context: AuthoringContext,
+    draft_revision: int,
+    part_id: str,
+    base_recipe: object,
+    recipe: RevolvedGeometry | PathSweptGeometry,
+    operation_kind: OperationKind,
+    parameters: Mapping[str, object],
+    summary: str,
+) -> AgentProposal:
+    if type(context) is not AuthoringContext:
+        raise TypeError("context must be AuthoringContext")
+    target = next(
+        (
+            part
+            for part in context.parts
+            if part.part_id == str(part_id) and not part.suppressed
+        ),
+        None,
+    )
+    if (
+        not context.binding.supported
+        or context.binding.source_kind != "native"
+        or target is None
+    ):
+        raise AuthoringContractError(
+            "derived Profile feature requires one editable native Part"
+        )
+    if type(base_recipe) is not SketchGeometry or not base_recipe.is_strict:
+        raise AuthoringContractError(
+            "derived Profile feature requires one strict planar sketch recipe"
+        )
+    if len(recipe.source_face_ids) != 1:
+        raise AuthoringContractError(
+            "derived Profile feature requires one explicit canonical source Profile"
+        )
+    draft = geometry_draft(recipe)
+    if not draft.proof.exact or draft.proof.expected_body_count != 1:
+        raise AuthoringContractError(
+            "derived Profile feature must prove exactly one solid Body"
+        )
+    normalized_summary = str(summary).strip()
+    if not normalized_summary:
+        raise AuthoringContractError("derived Profile proposal summary is blank")
+    source_face_id = recipe.source_face_ids[0]
+    operation_parameters = {
+        "part_id": target.part_id,
+        "base_recipe": geometry_recipe_to_payload(base_recipe),
+        "source_face_id": source_face_id,
+        **dict(parameters),
+    }
+    return AgentProposal.create(
+        proposal_id=proposal_id,
+        proposal_kind=ProposalKind.GEOMETRY,
+        agent_session_id=agent_session_id,
+        turn_id=turn_id,
+        source_tool_call_ids=tuple(source_tool_call_ids),
+        target_document_id=context.binding.document_id,
+        target_session_id=context.binding.session_id,
+        base_session_revision=context.binding.session_revision,
+        draft_revision=draft_revision,
+        operations=(ModelOperation(operation_kind, operation_parameters),),
+        preconditions={
+            "source_kind": "native",
+            "part_id": target.part_id,
+            "source_face_id": source_face_id,
+        },
+        expected_changes={
+            "part_count_delta": 0,
+            "edited_part_id": target.part_id,
+            "result_part_count": 1,
+            "projection_refresh_count": 1,
+        },
+        invalidation_impact={"mesh": True, "definitions": True, "results": True},
+        display_summary={
+            "title": f"从部件 {target.name} 创建三维派生特征",
+            "summary": normalized_summary,
+            "target_model": context.model_name,
+            "operation": operation_kind.value,
+            "feature_operation": _proposal_operation(recipe),
+            "part_id": target.part_id,
+            "part_name": target.name,
+            "source": [source_face_id],
+            "key_dimensions": dict(draft.key_dimensions),
+            "frame_strategy": (
+                recipe.frame_strategy
+                if isinstance(recipe, PathSweptGeometry)
+                else None
+            ),
+            "expected_entity_count": 1,
+            "expected_part_count": 1,
+            "expected_new_objects": ["1 solid Part"],
+            "invalidated_objects": ["mesh", "definitions", "results"],
+            "invalidation_impact": {
+                "mesh": True,
+                "definitions": True,
+                "results": True,
+            },
+            "base_session_revision": context.binding.session_revision,
+            "preview": draft.preview.to_dict(),
+            "proof": draft.proof.to_dict(),
+        },
+    )
+
+
 def add_planar_circle(
     recipe: object,
     *,
@@ -1892,8 +2086,26 @@ def _preview(recipe: object) -> StaticGeometryPreview:
         samples = min(4, max(2, _MAX_PREVIEW_POINTS // len(base.points)))
         previews = []
         for index in range(samples):
-            angle = recipe.angle_degrees * index / (samples - 1)
-            previews.append(_preview(RotatedGeometry(recipe.base, recipe.axis, angle)))
+            angle = math.radians(
+                recipe.angle_degrees * index / (samples - 1)
+            )
+            cosine, sine = math.cos(angle), math.sin(angle)
+
+            def rotate(point: tuple[float, float, float]) -> tuple[float, float, float]:
+                x, y, z = point
+                if recipe.axis == "x":
+                    return x, y * cosine - z * sine, y * sine + z * cosine
+                if recipe.axis == "y":
+                    return x * cosine + z * sine, y, -x * sine + z * cosine
+                return x * cosine - y * sine, x * sine + y * cosine, z
+
+            previews.append(
+                _make_preview(
+                    3,
+                    tuple(rotate(point) for point in base.points),
+                    base.lines,
+                )
+            )
         return _combine_previews(tuple(previews), 3)
     if type(recipe) is PathSweptGeometry:
         return _combine_previews((_preview(recipe.base), _preview(recipe.path)), 3)
@@ -2304,6 +2516,8 @@ __all__ = [
     "create_geometry_edit_proposal",
     "create_geometry_proposal",
     "create_profile_extrusion_proposal",
+    "create_profile_path_sweep_proposal",
+    "create_profile_revolution_proposal",
     "cylinder_geometry",
     "disk_geometry",
     "geometry_recipe_from_payload",

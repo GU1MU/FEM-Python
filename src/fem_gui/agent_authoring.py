@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -86,6 +87,8 @@ from fem_agent.geometry_authoring import (
     create_geometry_edit_proposal,
     create_geometry_proposal,
     create_profile_extrusion_proposal,
+    create_profile_path_sweep_proposal,
+    create_profile_revolution_proposal,
     cylinder_geometry,
     geometry_draft,
     feature_topology_catalog,
@@ -126,10 +129,13 @@ from fem_agent.result_authoring import (
 from fem.geometry import (
     ExtrudedGeometry,
     LogicalEntityRef,
+    PathSweptGeometry,
+    RevolvedGeometry,
     SketchGeometry,
     SketchCircle,
     SketchRectangle,
     WireMember,
+    WireGeometry,
     WirePoint,
     describe_recipe_topology,
     namespace_part_logical_id,
@@ -165,12 +171,42 @@ def _preflight_profile_extrusions(
 ) -> None:
     """Compile selected Profiles in detached OCC models before proposal display."""
 
-    for index, recipe in enumerate(recipes, start=1):
+    def compile_all() -> None:
+        for index, recipe in enumerate(recipes, start=1):
+            with geometry_runtime.model(
+                f"agent-extrusion-preflight-{index}",
+                dimension=3,
+            ) as cad:
+                compile_recipe(cad, recipe)
+
+    with ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix="agent-extrusion-preflight",
+    ) as executor:
+        executor.submit(compile_all).result()
+
+
+def _preflight_derived_geometry(
+    recipe: RevolvedGeometry | PathSweptGeometry,
+) -> None:
+    """Compile OCC evidence off the GUI owner thread and finalize there."""
+
+    def compile_one() -> None:
         with geometry_runtime.model(
-            f"agent-extrusion-preflight-{index}",
+            f"agent-{type(recipe).__name__}-preflight",
             dimension=3,
         ) as cad:
-            compile_recipe(cad, recipe)
+            compiled = compile_recipe(cad, recipe)
+            if len(compiled.domain) != 1 or cad.volume(compiled.domain[0]) <= 0.0:
+                raise AuthoringContractError(
+                    "derived Profile preflight did not prove one positive volume"
+                )
+
+    with ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix="agent-derived-preflight",
+    ) as executor:
+        executor.submit(compile_one).result()
 
 
 def _bounded_count(value: object) -> int:
@@ -1159,6 +1195,8 @@ class SessionGeometryAuthoringPort:
                 OperationKind.ADD_NATIVE_PART,
                 OperationKind.REPLACE_PART_GEOMETRY,
                 OperationKind.EXTRUDE_PART_PROFILES,
+                OperationKind.REVOLVE_PART_PROFILE,
+                OperationKind.SWEEP_PART_PROFILE,
             }
         )
         mesh_valid = (
@@ -1323,6 +1361,68 @@ class SessionGeometryAuthoringPort:
                 recipes,
                 expected_session_revision=proposal.base_session_revision,
             )
+            succeeded = replace(record, state=ProposalState.SUCCEEDED)
+            self._records[proposal_id] = succeeded
+            return succeeded
+        if operation.kind in {
+            OperationKind.REVOLVE_PART_PROFILE,
+            OperationKind.SWEEP_PART_PROFILE,
+        }:
+            base_recipe = geometry_recipe_from_payload(parameters["base_recipe"])
+            source_face_id = str(parameters["source_face_id"])
+            selection = resolve_extrusion_source_faces(
+                base_recipe,
+                (source_face_id,),
+            )
+            if selection.face_ids != (source_face_id,):
+                raise AuthoringContractError(
+                    "derived Profile source is not canonical"
+                )
+            part_id = str(parameters["part_id"])
+            snapshot = self._session.snapshot()
+            source_part = next(
+                (
+                    part
+                    for part in snapshot.parts
+                    if str(part.id) == part_id and not part.suppressed
+                ),
+                None,
+            )
+            if source_part is None or source_part.geometry_recipe != base_recipe:
+                raise AuthoringContractError(
+                    "derived Profile source Part no longer matches its proposal"
+                )
+            if operation.kind is OperationKind.REVOLVE_PART_PROFILE:
+                recipe = RevolvedGeometry(
+                    base_recipe,
+                    str(parameters["axis"]),
+                    parameters["angle_degrees"],
+                    (source_face_id,),
+                )
+            else:
+                path = geometry_recipe_from_payload(parameters["ordered_wire"])
+                if type(path) is not WireGeometry:
+                    raise AuthoringContractError(
+                        "path sweep proposal path is not an explicit WireGeometry"
+                    )
+                recipe = PathSweptGeometry(
+                    base_recipe,
+                    path,
+                    (source_face_id,),
+                    str(parameters["frame_strategy"]),
+                )
+            def commit_derived_feature() -> None:
+                self._session.replace_part_geometry(
+                    part_id,
+                    recipe,
+                    expected_session_revision=proposal.base_session_revision,
+                )
+
+            with ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="agent-derived-commit",
+            ) as executor:
+                executor.submit(commit_derived_feature).result()
             succeeded = replace(record, state=ProposalState.SUCCEEDED)
             self._records[proposal_id] = succeeded
             return succeeded
@@ -2780,7 +2880,11 @@ def create_session_authoring_workflow_controller(
                 type(part.geometry_recipe) is SketchGeometry
                 and part.geometry_recipe.is_strict
             ):
-                catalog["supported_edits"].insert(0, "extrude_profiles")
+                catalog["supported_edits"][:0] = [
+                    "extrude_profiles",
+                    "revolve_profile",
+                    "path_sweep_profile",
+                ]
         return AuthoringToolOutcome(
             "Editable geometry context read locally.",
             {
@@ -2865,6 +2969,138 @@ def create_session_authoring_workflow_controller(
                     "并使旧网格、定义与结果失效"
                 ),
                 confirm_label="拉伸选定 Profiles",
+            )
+        if operation == "revolve_profile":
+            if set(edit) != {"source_face_id", "axis", "angle_degrees"}:
+                raise ValueError("revolve_profile fields do not match")
+            base_recipe = part.geometry_recipe
+            if type(base_recipe) is not SketchGeometry or not base_recipe.is_strict:
+                raise AuthoringContractError(
+                    "Agent Profile revolution requires a strict planar sketch Part"
+                )
+            source_face_id = str(edit["source_face_id"])
+            selection = resolve_extrusion_source_faces(
+                base_recipe,
+                (source_face_id,),
+            )
+            if selection.face_ids != (source_face_id,):
+                raise AuthoringContractError(
+                    "revolve_profile requires one canonical material Profile"
+                )
+            recipe = RevolvedGeometry(
+                base_recipe,
+                str(edit["axis"]),
+                edit["angle_degrees"],
+                (source_face_id,),
+            )
+            _preflight_derived_geometry(recipe)
+            summary = (
+                f"绕 {recipe.axis.upper()} 轴旋转扫掠部件 {part.name} 的 "
+                f"Profile {source_face_id}：角度 {recipe.angle_degrees:g}°，"
+                "生成 1 个实体 Part"
+            )
+            metadata = envelope(controller, "geometry-revolve")
+            suffix = str(metadata.pop("identity_suffix"))
+            proposal = create_profile_revolution_proposal(
+                proposal_id=f"proposal-{suffix}",
+                context=current_context(),
+                part_id=part_id,
+                base_recipe=base_recipe,
+                source_face_id=source_face_id,
+                axis=recipe.axis,
+                angle_degrees=recipe.angle_degrees,
+                summary=summary,
+                **metadata,
+            )
+            return proposal_outcome(
+                proposal,
+                summary=summary,
+                impact=(
+                    "确认后将 Profile 原子替换为旋转实体，"
+                    "并使旧网格、定义与结果失效"
+                ),
+                confirm_label="旋转扫掠 Profile",
+            )
+        if operation == "path_sweep_profile":
+            if set(edit) != {"source_face_id", "path", "frame_strategy"}:
+                raise ValueError("path_sweep_profile fields do not match")
+            base_recipe = part.geometry_recipe
+            if type(base_recipe) is not SketchGeometry or not base_recipe.is_strict:
+                raise AuthoringContractError(
+                    "Agent path sweep requires a strict planar sketch Part"
+                )
+            source_face_id = str(edit["source_face_id"])
+            selection = resolve_extrusion_source_faces(
+                base_recipe,
+                (source_face_id,),
+            )
+            if selection.face_ids != (source_face_id,):
+                raise AuthoringContractError(
+                    "path_sweep_profile requires one canonical material Profile"
+                )
+            raw_path = edit["path"]
+            if not isinstance(raw_path, Mapping) or set(raw_path) != {"points", "members"}:
+                raise ValueError("path fields do not match")
+            raw_points = raw_path["points"]
+            raw_members = raw_path["members"]
+            if not isinstance(raw_points, list) or not isinstance(raw_members, list):
+                raise TypeError("path points and members must be arrays")
+            if any(
+                not isinstance(item, Mapping)
+                or set(item) != {"name", "x", "y", "z"}
+                for item in raw_points
+            ):
+                raise ValueError("path point fields do not match")
+            if any(
+                not isinstance(item, Mapping)
+                or set(item) != {"name", "start", "end"}
+                for item in raw_members
+            ):
+                raise ValueError("path member fields do not match")
+            path = WireGeometry(
+                f"扫掠路径-{part.id}",
+                tuple(
+                    WirePoint(item["name"], item["x"], item["y"], item["z"])
+                    for item in raw_points
+                ),
+                tuple(
+                    WireMember(item["name"], item["start"], item["end"])
+                    for item in raw_members
+                ),
+            )
+            recipe = PathSweptGeometry(
+                base_recipe,
+                path,
+                (source_face_id,),
+                str(edit["frame_strategy"]),
+            )
+            _preflight_derived_geometry(recipe)
+            summary = (
+                f"沿 {len(path.members)} 段显式开放折线路径扫掠部件 "
+                f"{part.name} 的 Profile {source_face_id}；"
+                f"frame={recipe.frame_strategy}，生成 1 个实体 Part"
+            )
+            metadata = envelope(controller, "geometry-path-sweep")
+            suffix = str(metadata.pop("identity_suffix"))
+            proposal = create_profile_path_sweep_proposal(
+                proposal_id=f"proposal-{suffix}",
+                context=current_context(),
+                part_id=part_id,
+                base_recipe=base_recipe,
+                source_face_id=source_face_id,
+                path=path,
+                frame_strategy=recipe.frame_strategy,
+                summary=summary,
+                **metadata,
+            )
+            return proposal_outcome(
+                proposal,
+                summary=summary,
+                impact=(
+                    "确认后将 Profile 原子替换为路径扫掠实体，"
+                    "并使旧网格、定义与结果失效"
+                ),
+                confirm_label="沿路径扫掠 Profile",
             )
         if operation == "add_circle":
             if set(edit) != {"center_x", "center_y", "radius"}:
