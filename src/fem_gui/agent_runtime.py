@@ -99,6 +99,7 @@ EngineFactory = Callable[
 ]
 
 _MAX_MESSAGE_DELTA_CHARACTERS = 8_000
+_MAX_ADAPTIVE_MESSAGE_DELTA_CHARACTERS = 64_000
 _MESSAGE_DELTA_FRAME_SECONDS = 0.03
 _AUTHORING_TOOL_OWNER_TIMEOUT_SECONDS = 30.0
 
@@ -154,8 +155,12 @@ class _TurnContext:
     tools: dict[str, _ToolActivity] = field(default_factory=dict)
     solve_call_id: str | None = None
     solve_succeeded: bool = False
-    seen_engine_events: list[EngineEvent] = field(default_factory=list)
+    seen_engine_events: dict[int, EngineEvent] = field(default_factory=dict)
     pending_delta_chunks: list[str] = field(default_factory=list)
+    pending_delta_characters: int = 0
+    pending_delta_started_at: float | None = None
+    max_pending_delta_characters: int = 0
+    max_pending_delta_wait_seconds: float = 0.0
     delta_timer: threading.Timer | None = None
     embedded_tool_diagnostics: list[
         tuple[str, str, str]
@@ -345,6 +350,11 @@ class QtAgentRuntime(QObject):
         self._turn_counter = 0
         self._generation = 0
         self._active_turn: _TurnContext | None = None
+        self._last_stream_backlog_metrics: dict[str, int | float] = {
+            "pending_characters": 0,
+            "max_pending_characters": 0,
+            "max_wait_seconds": 0.0,
+        }
         self._busy = False
         self._cancel_requested = False
         self._shutdown = False
@@ -377,6 +387,15 @@ class QtAgentRuntime(QObject):
     def session_id(self) -> str | None:
         with self._lock:
             return self._gui_session_id
+
+    @property
+    def stream_backlog_metrics(self) -> dict[str, int | float]:
+        """Return bounded coalescer backlog metrics for the active/last turn."""
+
+        with self._lock:
+            if self._active_turn is None:
+                return dict(self._last_stream_backlog_metrics)
+            return self._stream_backlog_metrics_locked(self._active_turn)
 
     def send_message(
         self,
@@ -1142,13 +1161,10 @@ class QtAgentRuntime(QObject):
                 rejection = "已拒绝 turn 结束后的晚到 EngineEvent"
             elif event.session_id != context.session_id:
                 rejection = "已拒绝跨 session 的 EngineEvent"
-            elif any(
-                seen is event
-                for seen in context.seen_engine_events
-            ):
+            elif context.seen_engine_events.get(id(event)) is event:
                 rejection = "已拒绝重复 EngineEvent"
             else:
-                context.seen_engine_events.append(event)
+                context.seen_engine_events[id(event)] = event
                 if event.event is not EngineEventType.MESSAGE_DELTA:
                     emitted.extend(
                         self._flush_pending_delta_locked(context)
@@ -1193,7 +1209,10 @@ class QtAgentRuntime(QObject):
                 and not context.terminal
                 and context.pending_delta_chunks
             ):
-                event = self._flush_one_pending_delta_locked(context)
+                event = self._flush_one_pending_delta_locked(
+                    context,
+                    adaptive=True,
+                )
                 if context.pending_delta_chunks:
                     self._schedule_delta_flush_locked(context)
                 if event is not None:
@@ -1202,13 +1221,49 @@ class QtAgentRuntime(QObject):
     def _flush_one_pending_delta_locked(
         self,
         context: _TurnContext,
+        *,
+        adaptive: bool = False,
     ) -> AgentEvent | None:
         if not context.pending_delta_chunks:
             return None
+        now = time.monotonic()
+        wait_seconds = 0.0
+        if context.pending_delta_started_at is not None:
+            wait_seconds = now - context.pending_delta_started_at
+            context.max_pending_delta_wait_seconds = max(
+                context.max_pending_delta_wait_seconds,
+                wait_seconds,
+            )
+        batch_characters = _MAX_MESSAGE_DELTA_CHARACTERS
+        if adaptive:
+            backlog_batches = max(
+                1,
+                (
+                    context.pending_delta_characters
+                    + _MAX_MESSAGE_DELTA_CHARACTERS
+                    - 1
+                )
+                // _MAX_MESSAGE_DELTA_CHARACTERS,
+            )
+            waited_batches = max(
+                1,
+                int(
+                    wait_seconds
+                    / _MESSAGE_DELTA_FRAME_SECONDS
+                ),
+            )
+            batch_characters = min(
+                _MAX_ADAPTIVE_MESSAGE_DELTA_CHARACTERS,
+                _MAX_MESSAGE_DELTA_CHARACTERS
+                * max(backlog_batches, waited_batches),
+            )
         text = "".join(context.pending_delta_chunks)
-        delta = text[:_MAX_MESSAGE_DELTA_CHARACTERS]
-        remainder = text[_MAX_MESSAGE_DELTA_CHARACTERS:]
+        delta = text[:batch_characters]
+        remainder = text[batch_characters:]
         context.pending_delta_chunks = [remainder] if remainder else []
+        context.pending_delta_characters = len(remainder)
+        if not remainder:
+            context.pending_delta_started_at = None
         if not delta or context.active_message_id is None:
             return None
         return self._new_event_locked(
@@ -1232,6 +1287,38 @@ class QtAgentRuntime(QObject):
                 events.append(event)
         return events
 
+    def _complete_active_message_locked(
+        self,
+        context: _TurnContext,
+    ) -> list[AgentEvent]:
+        message_id = context.active_message_id
+        if message_id is None:
+            return []
+        context.active_message_id = None
+        return [
+            self._new_event_locked(
+                context,
+                EventType.MESSAGE_COMPLETE,
+                {"message_id": message_id},
+            )
+        ]
+
+    def _stream_backlog_metrics_locked(
+        self,
+        context: _TurnContext,
+    ) -> dict[str, int | float]:
+        max_wait = context.max_pending_delta_wait_seconds
+        if context.pending_delta_started_at is not None:
+            max_wait = max(
+                max_wait,
+                time.monotonic() - context.pending_delta_started_at,
+            )
+        return {
+            "pending_characters": context.pending_delta_characters,
+            "max_pending_characters": context.max_pending_delta_characters,
+            "max_wait_seconds": max_wait,
+        }
+
     def _map_engine_event_locked(
         self,
         context: _TurnContext,
@@ -1240,18 +1327,7 @@ class QtAgentRuntime(QObject):
         if event.event is not EngineEventType.DIAGNOSTIC:
             context.embedded_tool_diagnostics.clear()
         if event.event is EngineEventType.MESSAGE_STARTED:
-            events: list[AgentEvent] = []
-            if context.active_message_id is not None:
-                events.append(
-                    self._new_event_locked(
-                        context,
-                        EventType.MESSAGE_COMPLETE,
-                        {
-                            "message_id": context.active_message_id,
-                        },
-                    )
-                )
-                context.active_message_id = None
+            events = self._complete_active_message_locked(context)
             # Provider tool loops often emit an empty assistant envelope before
             # tool calls.  Wait for text before creating a visible message.
             return events
@@ -1276,7 +1352,14 @@ class QtAgentRuntime(QObject):
                 )
             text = event.data.get("text")
             if isinstance(text, str) and text:
+                if context.pending_delta_characters == 0:
+                    context.pending_delta_started_at = time.monotonic()
                 context.pending_delta_chunks.append(text)
+                context.pending_delta_characters += len(text)
+                context.max_pending_delta_characters = max(
+                    context.max_pending_delta_characters,
+                    context.pending_delta_characters,
+                )
                 self._schedule_delta_flush_locked(context)
             return events
         if event.event is EngineEventType.DIAGNOSTIC:
@@ -1346,12 +1429,14 @@ class QtAgentRuntime(QObject):
         if call_id in context.tools:
             self.eventRejected.emit("已拒绝重复的工具调用标识")
             return []
+        events = self._complete_active_message_locked(context)
         context.tools[call_id] = _ToolActivity(
             tool_name,
             time.monotonic(),
         )
         arguments = event.data.get("arguments")
         return [
+            *events,
             self._new_event_locked(
                 context,
                 EventType.TOOL_REQUESTED,
@@ -1639,19 +1724,9 @@ class QtAgentRuntime(QObject):
                     )
                 )
             else:
-                if context.active_message_id is not None:
-                    emitted.append(
-                        self._new_event_locked(
-                            context,
-                            EventType.MESSAGE_COMPLETE,
-                            {
-                                "message_id": (
-                                    context.active_message_id
-                                )
-                            },
-                        )
-                    )
-                    context.active_message_id = None
+                emitted.extend(
+                    self._complete_active_message_locked(context)
+                )
                 if context.pending_confirmation is not None:
                     emitted.append(
                         self._new_event_locked(
@@ -1795,6 +1870,10 @@ class QtAgentRuntime(QObject):
         with self._lock:
             if generation != self._generation:
                 return
+            if self._active_turn is not None:
+                self._last_stream_backlog_metrics = (
+                    self._stream_backlog_metrics_locked(self._active_turn)
+                )
             self._active_turn = None
             self._busy = False
             self._cancel_requested = False

@@ -440,7 +440,7 @@ def test_deepseek_enforces_an_outer_wall_clock_deadline():
     assert time.monotonic() - before < 1.0
 
 
-def test_deepseek_stream_enforces_an_outer_wall_clock_deadline():
+def test_deepseek_stream_enforces_first_chunk_timeout():
     started = threading.Event()
     released = threading.Event()
 
@@ -466,7 +466,7 @@ def test_deepseek_stream_enforces_an_outer_wall_clock_deadline():
     before = time.monotonic()
     deltas = []
 
-    with pytest.raises(ProviderTimeoutError, match="stream"):
+    with pytest.raises(ProviderTimeoutError, match="first-chunk"):
         provider.complete_stream(
             [AssistantMessage("user", "status")],
             [],
@@ -477,6 +477,117 @@ def test_deepseek_stream_enforces_an_outer_wall_clock_deadline():
     assert released.is_set()
     assert deltas == []
     assert time.monotonic() - before < 1.0
+
+
+def test_deepseek_stream_refreshes_idle_timeout_for_active_long_stream():
+    class ActiveStreamCompletions:
+        def create(self, **kwargs):
+            del kwargs
+
+            def chunks():
+                for index in range(5):
+                    time.sleep(0.02)
+                    yield _stream_chunk(
+                        content=str(index),
+                        finish_reason="stop" if index == 4 else None,
+                    )
+
+            return chunks()
+
+    provider = DeepSeekProvider(
+        ProviderConfig(timeout_seconds=0.05, max_retries=0),
+        client=SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=ActiveStreamCompletions()
+            ),
+        ),
+    )
+    before = time.monotonic()
+    deltas: list[str] = []
+
+    response = provider.complete_stream(
+        [AssistantMessage("user", "status")],
+        [],
+        deltas.append,
+    )
+
+    assert time.monotonic() - before > provider.config.timeout_seconds
+    assert deltas == ["0", "1", "2", "3", "4"]
+    assert response.message.content == "01234"
+
+
+def test_deepseek_stream_enforces_idle_timeout_after_first_chunk():
+    released = threading.Event()
+
+    class IdleStreamCompletions:
+        def create(self, **kwargs):
+            del kwargs
+
+            def chunks():
+                yield _stream_chunk(content="early")
+                released.wait(5.0)
+                yield _stream_chunk(content="late", finish_reason="stop")
+
+            return chunks()
+
+    provider = DeepSeekProvider(
+        ProviderConfig(timeout_seconds=0.05, max_retries=0),
+        client=SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=IdleStreamCompletions()
+            ),
+            close=released.set,
+        ),
+    )
+    deltas: list[str] = []
+
+    with pytest.raises(ProviderTimeoutError, match="idle timeout"):
+        provider.complete_stream(
+            [AssistantMessage("user", "status")],
+            [],
+            deltas.append,
+        )
+
+    assert released.is_set()
+    assert deltas == ["early"]
+
+
+def test_deepseek_stream_enforces_longer_total_timeout():
+    closed = threading.Event()
+
+    class EndlessActiveStreamCompletions:
+        def create(self, **kwargs):
+            del kwargs
+
+            def chunks():
+                while not closed.is_set():
+                    time.sleep(0.02)
+                    yield _stream_chunk(content="active")
+
+            return chunks()
+
+    provider = DeepSeekProvider(
+        ProviderConfig(timeout_seconds=0.05, max_retries=0),
+        client=SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=EndlessActiveStreamCompletions()
+            ),
+            close=closed.set,
+        ),
+    )
+    before = time.monotonic()
+
+    with pytest.raises(ProviderTimeoutError, match="total deadline"):
+        provider.complete_stream(
+            [AssistantMessage("user", "status")],
+            [],
+            lambda _delta: None,
+        )
+
+    elapsed = time.monotonic() - before
+    assert closed.is_set()
+    assert elapsed > provider.config.timeout_seconds
+    assert elapsed < 1.0
 
 
 def test_deepseek_does_not_stack_requests_when_timed_out_thread_survives():

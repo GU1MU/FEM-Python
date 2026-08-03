@@ -716,6 +716,14 @@ def test_text_around_tool_loop_keeps_message_tool_message_timeline(
         item.kind.value
         for item in turn.timeline
     ] == ["message", "tool_group", "message"]
+    event_types = [event.event_type for event in collector.events]
+    first_complete = event_types.index(EventType.MESSAGE_COMPLETE)
+    assert event_types[first_complete - 1 : first_complete + 3] == [
+        EventType.MESSAGE_DELTA,
+        EventType.MESSAGE_COMPLETE,
+        EventType.TOOL_REQUESTED,
+        EventType.TOOL_STARTED,
+    ]
     runtime.shutdown()
 
 
@@ -850,8 +858,17 @@ def test_busy_session_rejects_duplicate_send_and_drawer_hide_does_not_cancel(
             "2026-07-30T00:00:01Z",
         )
     )
+    runtime._receive_engine_event(
+        EngineEvent(
+            duplicate.event,
+            duplicate.session_id,
+            duplicate.data,
+            duplicate.timestamp,
+        )
+    )
     application.processEvents()
     assert event_rejections.count() == 2
+    assert len(runtime._active_turn.seen_engine_events) == 2
 
     host.set_drawer_open(False, animated=False)
     application.processEvents()
@@ -1093,6 +1110,56 @@ def test_runtime_coalesces_high_frequency_provider_chunks(tmp_path):
     assert "".join(deltas) == provider.reply
     replayed = AgentEventProjector.replay(collector.events)
     assert replayed.presentation.turns[-1].messages[-1].text == provider.reply
+    runtime.shutdown()
+
+
+def test_runtime_adapts_delta_batch_to_backlog_and_reports_metrics(tmp_path):
+    class BackloggedStreamingProvider(FakeProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reply = "积" * 10_000
+
+        def complete_stream(self, messages, tools, on_text_delta):
+            del messages, tools
+            on_text_delta(self.reply)
+            threading.Event().wait(0.06)
+            return ProviderResponse(
+                AssistantMessage("assistant", self.reply),
+                finish_reason="stop",
+            )
+
+    provider = BackloggedStreamingProvider()
+    runtime = QtAgentRuntime(
+        tmp_path / "agent-private",
+        provider_factory=lambda: provider,
+    )
+    collector = _EventCollector()
+    runtime.agentEventReady.connect(
+        collector.receive,
+        Qt.ConnectionType.QueuedConnection,
+    )
+
+    assert runtime.send_message("制造待刷新积压")
+    _wait_until(lambda: not runtime.busy)
+    _wait_until(
+        lambda: any(
+            event.event_type is EventType.TURN_COMPLETE
+            for event in collector.events
+        )
+    )
+
+    deltas = [
+        event.payload["delta"]
+        for event in collector.events
+        if event.event_type is EventType.MESSAGE_DELTA
+    ]
+    assert "".join(deltas) == provider.reply
+    assert len(deltas) <= 2
+    assert max(map(len, deltas)) > 8_000
+    metrics = runtime.stream_backlog_metrics
+    assert metrics["pending_characters"] == 0
+    assert metrics["max_pending_characters"] >= 8_000
+    assert metrics["max_wait_seconds"] >= 0.02
     runtime.shutdown()
 
 

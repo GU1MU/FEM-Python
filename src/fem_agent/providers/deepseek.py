@@ -326,7 +326,17 @@ class DeepSeekProvider:
     ) -> ProviderResponse:
         done = threading.Event()
         aborted = threading.Event()
+        received_chunk = threading.Event()
+        activity_lock = threading.Lock()
         outcome: dict[str, Any] = {}
+        started_at = time.monotonic()
+        last_activity_at = started_at
+
+        def record_chunk_activity() -> None:
+            nonlocal last_activity_at
+            with activity_lock:
+                last_activity_at = time.monotonic()
+            received_chunk.set()
 
         def invoke() -> None:
             try:
@@ -338,6 +348,7 @@ class DeepSeekProvider:
                         aborted.is_set()
                         or self._cancel_event.is_set()
                     ),
+                    record_chunk_activity,
                 )
             except Exception as error:
                 outcome["error"] = error
@@ -363,18 +374,50 @@ class DeepSeekProvider:
                 if self._inflight_thread is thread:
                     self._inflight_thread = None
             raise
-        deadline = time.monotonic() + self.config.timeout_seconds
+        first_chunk_timeout = self.config.timeout_seconds
+        idle_timeout = self.config.timeout_seconds
+        total_timeout = self.config.timeout_seconds * 10.0
+        total_deadline = started_at + total_timeout
         while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            if done.is_set():
+                break
+            now = time.monotonic()
+            with activity_lock:
+                activity_at = last_activity_at
+            timeout_message: str | None = None
+            if now >= total_deadline:
+                timeout_message = (
+                    "The DeepSeek stream exceeded its total deadline."
+                )
+            elif not received_chunk.is_set():
+                if now - started_at >= first_chunk_timeout:
+                    timeout_message = (
+                        "The DeepSeek stream exceeded its first-chunk timeout."
+                    )
+            elif now - activity_at >= idle_timeout:
+                timeout_message = (
+                    "The DeepSeek stream exceeded its idle timeout."
+                )
+            if timeout_message is not None:
+                if done.is_set():
+                    break
                 aborted.set()
                 self._close_client(client)
                 if done.wait(0.1):
                     self._clear_inflight_thread(thread)
-                raise ProviderTimeoutError(
-                    "The DeepSeek stream exceeded its wall-clock deadline."
+                raise ProviderTimeoutError(timeout_message)
+            next_deadline = total_deadline
+            if received_chunk.is_set():
+                next_deadline = min(
+                    next_deadline,
+                    activity_at + idle_timeout,
                 )
-            if done.wait(min(remaining, 0.05)):
+            else:
+                next_deadline = min(
+                    next_deadline,
+                    started_at + first_chunk_timeout,
+                )
+            if done.wait(min(max(0.0, next_deadline - now), 0.05)):
                 break
             if self._cancel_event.is_set():
                 aborted.set()
@@ -557,6 +600,7 @@ def _normalize_stream_response(
     stream: Any,
     on_text_delta: Callable[[str], None],
     cancelled: Callable[[], bool],
+    on_chunk: Callable[[], None] | None = None,
 ) -> ProviderResponse:
     content_parts: list[str] = []
     tool_parts: dict[int, dict[str, str]] = {}
@@ -565,6 +609,8 @@ def _normalize_stream_response(
     saw_choice = False
 
     for chunk in stream:
+        if on_chunk is not None:
+            on_chunk()
         if cancelled():
             raise ProviderUnavailableError(
                 "The DeepSeek request was cancelled."
