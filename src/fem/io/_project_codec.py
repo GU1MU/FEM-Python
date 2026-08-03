@@ -42,9 +42,11 @@ from fem.geometry.recipes import (
     MovedGeometry,
     MultiBodyGeometry,
     PartBooleanContext,
+    PathSweptGeometry,
     PlateWithHoleGeometry,
     PlanarBooleanContext,
     RectangleGeometry,
+    RevolvedGeometry,
     RotatedGeometry,
     SketchArc,
     SketchCircle,
@@ -88,6 +90,8 @@ class ProjectFieldCodecPolicy:
     allow_multi_body: bool = False
     allow_planar_boolean: bool = False
     allow_part_boolean: bool = False
+    allow_revolved_geometry: bool = False
+    allow_path_swept_geometry: bool = False
 
 
 def loads_json_strict(
@@ -606,6 +610,78 @@ def decode_geometry_field(
             else:
                 error_path = path
             raise policy.decode_error(f"{error_path} 无效：{error}") from error
+    if kind == "RevolvedGeometry":
+        if not policy.allow_revolved_geometry:
+            raise policy.decode_error(f"{path}.type 是未知几何类型：{kind!r}")
+        _field_keys(
+            data,
+            path,
+            required={"type", "base", "axis", "angle_degrees", "source_face_ids"},
+            optional=set(),
+            policy=policy,
+            error_type=policy.decode_error,
+        )
+        return _field_construct(
+            RevolvedGeometry,
+            path,
+            policy,
+            decode_geometry_field(data["base"], f"{path}.base", policy=policy),
+            _field_string(data["axis"], f"{path}.axis", policy.decode_error),
+            _field_number(
+                data["angle_degrees"], f"{path}.angle_degrees",
+                policy.decode_error, policy=policy,
+            ),
+            tuple(
+                _field_string(
+                    item, f"{path}.source_face_ids[{index}]", policy.decode_error,
+                )
+                for index, item in enumerate(
+                    _field_array(
+                        data["source_face_ids"], f"{path}.source_face_ids",
+                        policy.decode_error,
+                    )
+                )
+            ),
+        )
+    if kind == "PathSweptGeometry":
+        if not policy.allow_path_swept_geometry:
+            raise policy.decode_error(f"{path}.type 是未知几何类型：{kind!r}")
+        _field_keys(
+            data,
+            path,
+            required={
+                "type", "base", "path", "source_face_ids", "frame_strategy"
+            },
+            optional=set(),
+            policy=policy,
+            error_type=policy.decode_error,
+        )
+        path_recipe = decode_geometry_field(
+            data["path"], f"{path}.path", policy=policy,
+        )
+        if type(path_recipe) is not WireGeometry:
+            raise policy.decode_error(f"{path}.path 必须是 WireGeometry")
+        return _field_construct(
+            PathSweptGeometry,
+            path,
+            policy,
+            decode_geometry_field(data["base"], f"{path}.base", policy=policy),
+            path_recipe,
+            tuple(
+                _field_string(
+                    item, f"{path}.source_face_ids[{index}]", policy.decode_error,
+                )
+                for index, item in enumerate(
+                    _field_array(
+                        data["source_face_ids"], f"{path}.source_face_ids",
+                        policy.decode_error,
+                    )
+                )
+            ),
+            _field_string(
+                data["frame_strategy"], f"{path}.frame_strategy", policy.decode_error,
+            ),
+        )
     if kind == "BooleanGeometry":
         optional = set()
         if policy.allow_multi_body:
@@ -1830,6 +1906,67 @@ def encode_geometry_field(
                     for index, logical_id in enumerate(recipe.source_face_ids)
                 ]
             return encoded
+        if type(recipe) is RevolvedGeometry:
+            if not policy.allow_revolved_geometry:
+                raise policy.encode_error(
+                    f"{path} 的几何类型无法由 {policy.version_label} 无损编码"
+                )
+            _field_exact_dataclass(
+                recipe,
+                RevolvedGeometry,
+                {"base", "axis", "angle_degrees", "source_face_ids"},
+                path,
+                policy,
+            )
+            return {
+                "type": "RevolvedGeometry",
+                "base": encode_geometry_field(
+                    recipe.base, f"{path}.base", ancestors, policy=policy,
+                ),
+                "axis": _field_string(
+                    recipe.axis, f"{path}.axis", policy.encode_error,
+                ),
+                "angle_degrees": _field_number(
+                    recipe.angle_degrees, f"{path}.angle_degrees",
+                    policy.encode_error, policy=policy,
+                ),
+                "source_face_ids": [
+                    _field_string(
+                        item, f"{path}.source_face_ids[{index}]", policy.encode_error,
+                    )
+                    for index, item in enumerate(recipe.source_face_ids)
+                ],
+            }
+        if type(recipe) is PathSweptGeometry:
+            if not policy.allow_path_swept_geometry:
+                raise policy.encode_error(
+                    f"{path} 的几何类型无法由 {policy.version_label} 无损编码"
+                )
+            _field_exact_dataclass(
+                recipe,
+                PathSweptGeometry,
+                {"base", "path", "source_face_ids", "frame_strategy"},
+                path,
+                policy,
+            )
+            return {
+                "type": "PathSweptGeometry",
+                "base": encode_geometry_field(
+                    recipe.base, f"{path}.base", ancestors, policy=policy,
+                ),
+                "path": encode_geometry_field(
+                    recipe.path, f"{path}.path", ancestors, policy=policy,
+                ),
+                "source_face_ids": [
+                    _field_string(
+                        item, f"{path}.source_face_ids[{index}]", policy.encode_error,
+                    )
+                    for index, item in enumerate(recipe.source_face_ids)
+                ],
+                "frame_strategy": _field_string(
+                    recipe.frame_strategy, f"{path}.frame_strategy", policy.encode_error,
+                ),
+            }
         if type(recipe) is BooleanGeometry:
             _field_exact_dataclass(
                 recipe,

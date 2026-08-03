@@ -1482,6 +1482,74 @@ class RevolvedGeometry:
 
 
 @dataclass(frozen=True, slots=True)
+class PathSweptGeometry:
+    """A planar Profile swept along one explicitly ordered open wire path.
+
+    This recipe is the backend-neutral authoring contract.  Exact OCC/Gmsh
+    compilation and path-shape validation belong to the sweep execution phase.
+    """
+
+    base: object
+    path: WireGeometry
+    source_face_ids: tuple[str, ...] = ()
+    frame_strategy: Literal["fixed", "transport"] = "transport"
+
+    @property
+    def name(self) -> str:
+        return self.base.name
+
+    def __post_init__(self) -> None:
+        if not isinstance(
+            self.base,
+            (
+                *BASE_GEOMETRY_TYPES,
+                MovedGeometry,
+                RotatedGeometry,
+                BooleanGeometry,
+            ),
+        ):
+            raise TypeError("路径扫掠需要已有二维几何")
+        if geometry_dimension(self.base) != 2:
+            raise ValueError("只有二维几何可以沿路径扫掠")
+        if type(self.path) is not WireGeometry:
+            raise TypeError("路径扫掠 path 必须是 WireGeometry")
+        if any(
+            current.end != following.start
+            for current, following in zip(
+                self.path.members,
+                self.path.members[1:],
+            )
+        ):
+            raise ValueError("路径扫掠 path 必须按连续遍历顺序给出")
+        ordered_points = (
+            self.path.members[0].start,
+            *(member.end for member in self.path.members),
+        )
+        if len(ordered_points) != len(set(ordered_points)):
+            raise ValueError("路径扫掠首版只支持开放路径")
+        if set(ordered_points) != {point.name for point in self.path.points}:
+            raise ValueError("路径扫掠 path 不得包含未使用的点")
+        if self.frame_strategy not in {"fixed", "transport"}:
+            raise ValueError("路径扫掠 frame_strategy 必须是 fixed 或 transport")
+        if isinstance(self.source_face_ids, (str, bytes, bytearray)):
+            raise TypeError("source_face_ids 必须是 face logical ID iterable")
+        references = tuple(LogicalEntityRef(value) for value in self.source_face_ids)
+        if any(reference.kind != "face" for reference in references):
+            raise ValueError("source_face_ids 只能包含 face logical IDs")
+        if len(references) != len(set(item.logical_id for item in references)):
+            raise ValueError("source_face_ids 不能包含重复 logical IDs")
+        normalized_ids: tuple[str, ...] = ()
+        if references:
+            from .extrusion_selection import resolve_extrusion_source_faces
+
+            normalized_ids = resolve_extrusion_source_faces(
+                self.base,
+                references,
+            ).face_ids
+        object.__setattr__(self, "source_face_ids", normalized_ids)
+
+
+@dataclass(frozen=True, slots=True)
 class BooleanGeometry:
     """A boolean feature combining one object and one tool geometry."""
 
@@ -1505,6 +1573,7 @@ class BooleanGeometry:
             RotatedGeometry,
             ExtrudedGeometry,
             RevolvedGeometry,
+            PathSweptGeometry,
             BooleanGeometry,
         )
         if not isinstance(self.object_geometry, supported) or not isinstance(
@@ -1719,6 +1788,8 @@ def is_single_solid_recipe(recipe: object) -> bool:
                 recipe.source_face_ids,
             ).face_ids
         ) == 1
+    if isinstance(recipe, PathSweptGeometry):
+        return False
     if isinstance(recipe, BooleanGeometry):
         if recipe.body_context is not None:
             return recipe.body_context.proven
@@ -1758,6 +1829,7 @@ NativeGeometry = (
     | RotatedGeometry
     | ExtrudedGeometry
     | RevolvedGeometry
+    | PathSweptGeometry
     | BooleanGeometry
     | MultiBodyGeometry
 )
@@ -1769,6 +1841,7 @@ NATIVE_GEOMETRY_TYPES = (
     RotatedGeometry,
     ExtrudedGeometry,
     RevolvedGeometry,
+    PathSweptGeometry,
     BooleanGeometry,
     MultiBodyGeometry,
 )
@@ -1780,7 +1853,7 @@ def geometry_dimension(recipe: NativeGeometry) -> Literal[1, 2, 3]:
         return geometry_dimension(recipe.object_geometry)
     if isinstance(recipe, MultiBodyGeometry):
         return 3
-    if isinstance(recipe, (ExtrudedGeometry, RevolvedGeometry)):
+    if isinstance(recipe, (ExtrudedGeometry, RevolvedGeometry, PathSweptGeometry)):
         return 3
     if isinstance(recipe, (MovedGeometry, RotatedGeometry)):
         return geometry_dimension(recipe.base)
@@ -1807,6 +1880,7 @@ __all__ = [
     "PlateWithHoleGeometry",
     "PlanarBooleanContext",
     "PartBooleanContext",
+    "PathSweptGeometry",
     "PrimitiveGeometry",
     "RectangleGeometry",
     "RevolvedGeometry",

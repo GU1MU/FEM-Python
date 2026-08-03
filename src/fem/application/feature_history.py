@@ -15,6 +15,7 @@ from fem.geometry.recipes import (
     NATIVE_GEOMETRY_TYPES,
     NativeGeometry,
     PlateWithHoleGeometry,
+    PathSweptGeometry,
     RectangleGeometry,
     RevolvedGeometry,
     RotatedGeometry,
@@ -78,6 +79,9 @@ def derive_feature_history(recipe: NativeGeometry) -> tuple[FeatureRecord, ...]:
         elif isinstance(item, RevolvedGeometry):
             visit(item.base)
             add("Sweep", derive_geometry_feature_rows(item)[-1])
+        elif isinstance(item, PathSweptGeometry):
+            visit(item.base)
+            add("PathSweep", derive_geometry_feature_rows(item)[-1])
         elif isinstance(item, BooleanGeometry):
             visit(item.object_geometry)
             kind = {
@@ -162,6 +166,11 @@ def derive_geometry_feature_rows(
         return derive_geometry_feature_rows(recipe.base) + (
             f"扫掠  {recipe.axis.upper()} 轴，"
             f"{recipe.angle_degrees:g}°{profile_summary}",
+        )
+    if isinstance(recipe, PathSweptGeometry):
+        return derive_geometry_feature_rows(recipe.base) + (
+            f"路径扫掠  路径段={len(recipe.path.members)}，"
+            f"frame={recipe.frame_strategy}",
         )
     if isinstance(recipe, BooleanGeometry):
         names = {"fuse": "合并", "cut": "切除", "fragment": "分割"}

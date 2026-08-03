@@ -3,18 +3,29 @@
 from __future__ import annotations
 
 import math
+import json
 from dataclasses import dataclass
 from numbers import Real
 from typing import Mapping, Sequence
 
 from fem.geometry import (
+    BooleanBodyContext,
+    BooleanGeometry,
+    BooleanLineageEntity,
+    BooleanLineageMapping,
     BoxGeometry,
     CylinderGeometry,
     DiskGeometry,
+    ExtrudedGeometry,
     MovedGeometry,
+    MultiBodyGeometry,
     NATIVE_GEOMETRY_TYPES,
     PlateWithHoleGeometry,
+    PartBooleanContext,
+    PathSweptGeometry,
+    PlanarBooleanContext,
     RectangleGeometry,
+    RevolvedGeometry,
     RotatedGeometry,
     SketchArc,
     SketchCircle,
@@ -23,11 +34,17 @@ from fem.geometry import (
     SketchPlane,
     SketchPoint,
     SketchRectangle,
+    SolidBody,
     WireGeometry,
     WireMember,
     WirePoint,
     geometry_dimension,
     legacy_sketch_to_strict,
+)
+from fem.application.feature_history import derive_feature_history
+from fem.geometry.recipe_topology import (
+    describe_recipe_topology,
+    topology_fingerprint_for_recipe,
 )
 
 from .authoring import (
@@ -44,6 +61,31 @@ from .naming import NameAllocator
 
 _PREVIEW_SEGMENTS = 24
 _MAX_PREVIEW_POINTS = 128
+_RECIPE_SCHEMA_VERSION = 1
+_MAX_RECIPE_BYTES = 65536
+_MAX_RECIPE_NODES = 128
+_MAX_RECIPE_DEPTH = 16
+GEOMETRY_FEATURE_CATALOG_TOOL_NAME = "read_geometry_feature_catalog"
+
+
+@dataclass(frozen=True, slots=True)
+class GeometryContractProof:
+    """Bounded provider-safe proof derived without exposing CAD state."""
+
+    exact: bool
+    topology_fingerprint: Mapping[str, object]
+    expected_body_count: int
+    diagnostics: tuple[Mapping[str, object], ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": "local_recipe_topology_proof",
+            "exact": self.exact,
+            "expected_body_count": self.expected_body_count,
+            "body_count_proven": self.exact,
+            "topology_fingerprint": dict(self.topology_fingerprint),
+            "diagnostics": [dict(item) for item in self.diagnostics],
+        }
 
 
 def _finite(value: object, field_name: str) -> float:
@@ -123,6 +165,7 @@ class GeometryDraft:
     preview: StaticGeometryPreview
     key_dimensions: Mapping[str, float]
     transforms: tuple[Mapping[str, object], ...] = ()
+    proof: GeometryContractProof | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.recipe, NATIVE_GEOMETRY_TYPES):
@@ -150,6 +193,10 @@ class GeometryDraft:
             "transforms",
             tuple(dict(item) for item in self.transforms),
         )
+        proof = geometry_contract_proof(self.recipe)
+        if self.proof is not None and self.proof != proof:
+            raise ValueError("proof does not match recipe")
+        object.__setattr__(self, "proof", proof)
 
 
 def rectangle_geometry(
@@ -546,14 +593,23 @@ def create_geometry_proposal(
             "operation": operation.kind.value,
             "part_name": part_name,
             "recipe_type": type(draft.recipe).__name__,
+            "source": _proposal_source(draft.recipe),
+            "feature_operation": _proposal_operation(draft.recipe),
             "dimension": geometry_dimension(draft.recipe),
             "key_dimensions": dict(draft.key_dimensions),
+            "expected_entity_count": draft.proof.expected_body_count,
             "length_unit": unit_context.length,
             "transforms": [dict(item) for item in draft.transforms],
             "expected_new_objects": [part_name],
             "invalidated_objects": [],
+            "invalidation_impact": {
+                "mesh": False,
+                "definitions": False,
+                "results": False,
+            },
             "base_session_revision": binding.session_revision,
             "preview": draft.preview.to_dict(),
+            "proof": draft.proof.to_dict(),
         },
     )
 
@@ -631,14 +687,23 @@ def create_geometry_edit_proposal(
             "operation": OperationKind.REPLACE_PART_GEOMETRY.value,
             "part_id": target.part_id,
             "part_name": target.name,
-            "recipe_type": "planar_sketch",
+            "recipe_type": type(draft.recipe).__name__,
+            "source": _proposal_source(draft.recipe),
+            "feature_operation": _proposal_operation(draft.recipe),
             "dimension": geometry_dimension(draft.recipe),
             "key_dimensions": dict(draft.key_dimensions),
+            "expected_entity_count": draft.proof.expected_body_count,
             "summary": str(summary).strip(),
             "expected_new_objects": [],
             "invalidated_objects": ["mesh", "definitions", "results"],
+            "invalidation_impact": {
+                "mesh": True,
+                "definitions": True,
+                "results": True,
+            },
             "base_session_revision": context.binding.session_revision,
             "preview": draft.preview.to_dict(),
+            "proof": draft.proof.to_dict(),
         },
     )
 
@@ -924,7 +989,122 @@ def planar_geometry_catalog(recipe: object) -> dict[str, object]:
     }
 
 
+def feature_topology_catalog(
+    recipe: object,
+    *,
+    part_id: str | None = None,
+) -> dict[str, object]:
+    """Return a bounded read-only feature and logical-topology projection."""
+
+    if not isinstance(recipe, NATIVE_GEOMETRY_TYPES):
+        raise TypeError("recipe must be native geometry")
+    topology = describe_recipe_topology(recipe)
+    features = derive_feature_history(recipe)
+    if (
+        len(features) > _MAX_RECIPE_NODES
+        or len(topology.entities) > _MAX_RECIPE_NODES
+    ):
+        raise ValueError("feature/topology catalog exceeds the bounded contract")
+    catalog = {
+        "kind": "native_feature_topology_catalog",
+        "schema_version": _RECIPE_SCHEMA_VERSION,
+        "part_id": part_id,
+        "recipe_type": type(recipe).__name__,
+        "dimension": topology.dimension,
+        "exact": topology.exact,
+        "features": [
+            {
+                "feature_id": record.name,
+                "kind": record.kind,
+                "summary": record.payload.get("summary"),
+            }
+            for record in features
+        ],
+        "entities": [
+            {
+                "kind": entity.kind,
+                "logical_id": entity.logical_id,
+                "semantic_role": entity.semantic_role,
+                "selectable": entity.selectable,
+                "topology_links": list(entity.topology_links),
+            }
+            for entity in topology.entities
+        ],
+        "diagnostics": [
+            {
+                "diagnostic_id": item.code,
+                "message": item.message,
+                "affected_logical_ids": list(item.affected_logical_ids),
+            }
+            for item in topology.diagnostics[:32]
+        ],
+    }
+    if isinstance(recipe, MultiBodyGeometry):
+        catalog["canonical_part_ownership"] = [
+            {"body_id": body.id, "part_id": f"P{body.id[1:]}"}
+            for body in recipe.bodies
+        ]
+    return catalog
+
+
+def geometry_feature_catalog_tool_schema() -> dict[str, object]:
+    """Return the strict no-argument schema for the local catalog read."""
+
+    return {
+        "name": GEOMETRY_FEATURE_CATALOG_TOOL_NAME,
+        "description": (
+            "Read the bounded native Part feature and logical-topology catalog. "
+            "This local read does not require a current mesh and exposes no CAD tags."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        },
+    }
+
+
+def geometry_contract_proof(recipe: object) -> GeometryContractProof:
+    """Perform one detached, bounded recipe/topology preflight."""
+
+    catalog = feature_topology_catalog(recipe)
+    fingerprint = topology_fingerprint_for_recipe(recipe)
+    fingerprint_payload = {
+        "contract": fingerprint.contract,
+        "dimension": fingerprint.dimension,
+        "exact": fingerprint.exact,
+        "entities": [
+            {
+                "kind": entity.kind,
+                "logical_id": entity.logical_id,
+                "semantic_role": entity.semantic_role,
+                "selectable": entity.selectable,
+                "topology_links": list(entity.topology_links),
+            }
+            for entity in fingerprint.entities
+        ],
+    }
+    bodies = sum(
+        item["kind"] == "body" and item["selectable"]
+        for item in catalog["entities"]
+    )
+    return GeometryContractProof(
+        exact=bool(catalog["exact"]),
+        topology_fingerprint=fingerprint_payload,
+        expected_body_count=bodies,
+        diagnostics=tuple(catalog["diagnostics"]),
+    )
+
+
 def geometry_recipe_to_payload(recipe: object) -> dict[str, object]:
+    payload = _geometry_recipe_to_payload(recipe)
+    payload = {"schema_version": _RECIPE_SCHEMA_VERSION, **payload}
+    _validate_recipe_payload_budget(payload)
+    return payload
+
+
+def _geometry_recipe_to_payload(recipe: object) -> dict[str, object]:
     if type(recipe) is WireGeometry:
         return {
             "kind": "wire",
@@ -984,7 +1164,7 @@ def geometry_recipe_to_payload(recipe: object) -> dict[str, object]:
     if type(recipe) is MovedGeometry:
         return {
             "kind": "translated",
-            "base": geometry_recipe_to_payload(recipe.base),
+            "base": _geometry_recipe_to_payload(recipe.base),
             "dx": recipe.dx,
             "dy": recipe.dy,
             "dz": recipe.dz,
@@ -992,9 +1172,60 @@ def geometry_recipe_to_payload(recipe: object) -> dict[str, object]:
     if type(recipe) is RotatedGeometry:
         return {
             "kind": "rotated",
-            "base": geometry_recipe_to_payload(recipe.base),
+            "base": _geometry_recipe_to_payload(recipe.base),
             "axis": recipe.axis,
             "angle_degrees": recipe.angle_degrees,
+        }
+    if type(recipe) is ExtrudedGeometry:
+        return {
+            "kind": "extruded",
+            "base": _geometry_recipe_to_payload(recipe.base),
+            "height": recipe.height,
+            "source_face_ids": list(recipe.source_face_ids),
+        }
+    if type(recipe) is RevolvedGeometry:
+        return {
+            "kind": "revolved",
+            "base": _geometry_recipe_to_payload(recipe.base),
+            "axis": recipe.axis,
+            "angle_degrees": recipe.angle_degrees,
+            "source_face_ids": list(recipe.source_face_ids),
+        }
+    if type(recipe) is PathSweptGeometry:
+        return {
+            "kind": "path_swept",
+            "base": _geometry_recipe_to_payload(recipe.base),
+            "path": _geometry_recipe_to_payload(recipe.path),
+            "source_face_ids": list(recipe.source_face_ids),
+            "frame_strategy": recipe.frame_strategy,
+        }
+    if type(recipe) is BooleanGeometry:
+        return {
+            "kind": "boolean",
+            "name": recipe.name,
+            "operation": recipe.operation,
+            "object": _geometry_recipe_to_payload(recipe.object_geometry),
+            "tool": _geometry_recipe_to_payload(recipe.tool_geometry),
+            "body_context": _boolean_context_to_payload(recipe.body_context),
+            "planar_context": _boolean_context_to_payload(recipe.planar_context),
+            "part_context": _boolean_context_to_payload(recipe.part_context),
+        }
+    if type(recipe) is MultiBodyGeometry:
+        return {
+            "kind": "multi_body",
+            "name": recipe.name,
+            "bodies": [
+                {
+                    "id": body.id,
+                    "name": body.name,
+                    "recipe": _geometry_recipe_to_payload(body.recipe),
+                }
+                for body in recipe.bodies
+            ],
+            "retired_body_ids": list(recipe.retired_body_ids),
+            "retired_boolean_feature_ids": list(
+                recipe.retired_boolean_feature_ids
+            ),
         }
     if type(recipe) is SketchGeometry and recipe.is_strict:
         return {
@@ -1014,10 +1245,29 @@ def geometry_recipe_to_payload(recipe: object) -> dict[str, object]:
                 for curve in recipe.curves
             ],
         }
-    raise TypeError("recipe is outside the A2 geometry subset")
+    raise TypeError("recipe is outside the native Agent geometry subset")
 
 
 def geometry_recipe_from_payload(value: object) -> object:
+    if not isinstance(value, Mapping):
+        raise TypeError("geometry recipe payload must be an object")
+    payload = dict(value)
+    version = payload.pop("schema_version", None)
+    if version is not None and version != _RECIPE_SCHEMA_VERSION:
+        raise ValueError("unknown geometry recipe schema_version")
+    if version is None and payload.get("kind") in {
+        "extruded",
+        "revolved",
+        "path_swept",
+        "boolean",
+        "multi_body",
+    }:
+        raise ValueError("3D feature payload requires schema_version")
+    _validate_recipe_payload_budget(value)
+    return _geometry_recipe_from_payload(payload)
+
+
+def _geometry_recipe_from_payload(value: object) -> object:
     if not isinstance(value, Mapping):
         raise TypeError("geometry recipe payload must be an object")
     kind = value.get("kind")
@@ -1039,6 +1289,21 @@ def geometry_recipe_from_payload(value: object) -> object:
         "rotated": {"kind", "base", "axis", "angle_degrees"},
         "planar_sketch": {"kind", "name", "plane", "points", "curves"},
         "wire": {"kind", "name", "points", "members"},
+        "extruded": {"kind", "base", "height", "source_face_ids"},
+        "revolved": {
+            "kind", "base", "axis", "angle_degrees", "source_face_ids"
+        },
+        "path_swept": {
+            "kind", "base", "path", "source_face_ids", "frame_strategy"
+        },
+        "boolean": {
+            "kind", "name", "operation", "object", "tool",
+            "body_context", "planar_context", "part_context",
+        },
+        "multi_body": {
+            "kind", "name", "bodies", "retired_body_ids",
+            "retired_boolean_feature_ids",
+        },
     }
     if kind not in fields or set(value) != fields[kind]:  # type: ignore[index]
         raise ValueError("geometry recipe fields do not match the A2 schema")
@@ -1101,9 +1366,68 @@ def geometry_recipe_from_payload(value: object) -> object:
             value["radius"],
             value["height"],
         )
+    if kind == "extruded":
+        return ExtrudedGeometry(
+            _geometry_recipe_from_payload(value["base"]),
+            value["height"],
+            _logical_id_list(value["source_face_ids"], "source_face_ids"),
+        )
+    if kind == "revolved":
+        return RevolvedGeometry(
+            _geometry_recipe_from_payload(value["base"]),
+            value["axis"],
+            value["angle_degrees"],
+            _logical_id_list(value["source_face_ids"], "source_face_ids"),
+        )
+    if kind == "path_swept":
+        path = _geometry_recipe_from_payload(value["path"])
+        if type(path) is not WireGeometry:
+            raise ValueError("path_swept.path must decode to WireGeometry")
+        return PathSweptGeometry(
+            _geometry_recipe_from_payload(value["base"]),
+            path,
+            _logical_id_list(value["source_face_ids"], "source_face_ids"),
+            value["frame_strategy"],
+        )
+    if kind == "boolean":
+        return BooleanGeometry(
+            value["name"],
+            value["operation"],
+            _geometry_recipe_from_payload(value["object"]),
+            _geometry_recipe_from_payload(value["tool"]),
+            _boolean_context_from_payload(value["body_context"], "body"),
+            _boolean_context_from_payload(value["planar_context"], "planar"),
+            _boolean_context_from_payload(value["part_context"], "part"),
+        )
+    if kind == "multi_body":
+        bodies = value["bodies"]
+        if not isinstance(bodies, list) or not 1 <= len(bodies) <= _MAX_RECIPE_NODES:
+            raise ValueError("multi_body bodies exceed the bounded schema")
+        if any(
+            not isinstance(item, Mapping)
+            or set(item) != {"id", "name", "recipe"}
+            for item in bodies
+        ):
+            raise ValueError("multi_body Body fields do not match")
+        return MultiBodyGeometry(
+            value["name"],
+            tuple(
+                SolidBody(
+                    item["id"],
+                    item["name"],
+                    _geometry_recipe_from_payload(item["recipe"]),
+                )
+                for item in bodies
+            ),
+            _string_list(value["retired_body_ids"], "retired_body_ids"),
+            _string_list(
+                value["retired_boolean_feature_ids"],
+                "retired_boolean_feature_ids",
+            ),
+        )
     if kind == "translated":
         return MovedGeometry(
-            geometry_recipe_from_payload(value["base"]),
+            _geometry_recipe_from_payload(value["base"]),
             value["dx"],
             value["dy"],
             value["dz"],
@@ -1145,9 +1469,178 @@ def geometry_recipe_from_payload(value: object) -> object:
             tuple(_sketch_curve_from_payload(item) for item in curves),
         )
     return RotatedGeometry(
-        geometry_recipe_from_payload(value["base"]),
+        _geometry_recipe_from_payload(value["base"]),
         value["axis"],
         value["angle_degrees"],
+    )
+
+
+def _validate_recipe_payload_budget(value: object) -> None:
+    try:
+        size = len(
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+    except (TypeError, ValueError, RecursionError) as error:
+        raise ValueError("geometry recipe payload must be finite JSON") from error
+    if size > _MAX_RECIPE_BYTES:
+        raise ValueError("geometry recipe payload exceeds the byte budget")
+    nodes = 0
+
+    def visit(item: object, depth: int) -> None:
+        nonlocal nodes
+        if depth > _MAX_RECIPE_DEPTH:
+            raise ValueError("geometry recipe payload exceeds the depth budget")
+        if isinstance(item, Mapping):
+            nodes += 1
+            if nodes > _MAX_RECIPE_NODES:
+                raise ValueError("geometry recipe payload exceeds the node budget")
+            for child in item.values():
+                visit(child, depth + 1)
+        elif isinstance(item, list):
+            for child in item:
+                visit(child, depth + 1)
+
+    visit(value, 0)
+
+
+def _string_list(value: object, field_name: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or len(value) > _MAX_RECIPE_NODES:
+        raise ValueError(f"{field_name} must be a bounded array")
+    if any(type(item) is not str for item in value):
+        raise ValueError(f"{field_name} must contain strings")
+    return tuple(value)
+
+
+def _logical_id_list(value: object, field_name: str) -> tuple[str, ...]:
+    return _string_list(value, field_name)
+
+
+def _lineage_to_payload(
+    entities: Sequence[BooleanLineageEntity],
+    mappings: Sequence[BooleanLineageMapping],
+) -> dict[str, object]:
+    return {
+        "result_entities": [
+            {
+                "kind": item.kind,
+                "logical_id": item.logical_id,
+                "semantic_role": item.semantic_role,
+                "topology_links": list(item.topology_links),
+            }
+            for item in entities
+        ],
+        "topology_mappings": [
+            {
+                "source": item.source,
+                "source_logical_id": item.source_logical_id,
+                "target_logical_id": item.target_logical_id,
+                "relation": item.relation,
+            }
+            for item in mappings
+        ],
+    }
+
+
+def _boolean_context_to_payload(value: object) -> dict[str, object] | None:
+    if value is None:
+        return None
+    lineage = _lineage_to_payload(value.result_entities, value.topology_mappings)
+    if type(value) is BooleanBodyContext:
+        return {
+            "feature_id": value.feature_id,
+            "target_body_id": value.target_body_id,
+            "tool_body_id": value.tool_body_id,
+            "tool_body_name": value.tool_body_name,
+            **lineage,
+        }
+    if type(value) is PlanarBooleanContext:
+        return {
+            "feature_id": value.feature_id,
+            "target_face_id": value.target_face_id,
+            "tool_face_ids": list(value.tool_face_ids),
+            **lineage,
+        }
+    if type(value) is PartBooleanContext:
+        return {
+            "feature_id": value.feature_id,
+            "target_part_id": value.target_part_id,
+            "tool_part_id": value.tool_part_id,
+            "result_part_id": value.result_part_id,
+            **lineage,
+        }
+    raise TypeError("unknown Boolean context type")
+
+
+def _boolean_context_from_payload(value: object, kind: str) -> object:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{kind}_context must be an object or null")
+    common = {"feature_id", "result_entities", "topology_mappings"}
+    specific = {
+        "body": {"target_body_id", "tool_body_id", "tool_body_name"},
+        "planar": {"target_face_id", "tool_face_ids"},
+        "part": {"target_part_id", "tool_part_id", "result_part_id"},
+    }[kind]
+    if set(value) != common | specific:
+        raise ValueError(f"{kind}_context fields do not match")
+    raw_entities = value["result_entities"]
+    raw_mappings = value["topology_mappings"]
+    if not isinstance(raw_entities, list) or not isinstance(raw_mappings, list):
+        raise ValueError("Boolean lineage must use arrays")
+    if len(raw_entities) > 512 or len(raw_mappings) > 1024:
+        raise ValueError("Boolean lineage exceeds the bounded schema")
+    if any(
+        not isinstance(item, Mapping)
+        or set(item) != {"kind", "logical_id", "semantic_role", "topology_links"}
+        for item in raw_entities
+    ):
+        raise ValueError("Boolean lineage entity fields do not match")
+    if any(
+        not isinstance(item, Mapping)
+        or set(item) != {
+            "source", "source_logical_id", "target_logical_id", "relation"
+        }
+        for item in raw_mappings
+    ):
+        raise ValueError("Boolean lineage mapping fields do not match")
+    entities = tuple(
+        BooleanLineageEntity(
+            item["kind"],
+            item["logical_id"],
+            item["semantic_role"],
+            _string_list(item["topology_links"], "topology_links"),
+        )
+        for item in raw_entities
+    )
+    mappings = tuple(
+        BooleanLineageMapping(
+            item["source"],
+            item["source_logical_id"],
+            item["target_logical_id"],
+            item["relation"],
+        )
+        for item in raw_mappings
+    )
+    if kind == "body":
+        return BooleanBodyContext(
+            value["feature_id"], value["target_body_id"],
+            value["tool_body_id"], value["tool_body_name"], entities, mappings,
+        )
+    if kind == "planar":
+        return PlanarBooleanContext(
+            value["feature_id"], value["target_face_id"],
+            _string_list(value["tool_face_ids"], "tool_face_ids"),
+            entities, mappings,
+        )
+    return PartBooleanContext(
+        value["feature_id"], value["target_part_id"], value["tool_part_id"],
+        value["result_part_id"], entities, mappings,
     )
 
 
@@ -1168,7 +1661,52 @@ def _draft(
 def geometry_draft(recipe: object) -> GeometryDraft:
     """Wrap one accepted native recipe for a subsequent generic transform."""
 
-    return _draft(recipe, {})
+    dimensions: dict[str, float] = {}
+    if isinstance(recipe, ExtrudedGeometry):
+        dimensions["height"] = recipe.height
+    elif isinstance(recipe, RevolvedGeometry):
+        dimensions["angle_degrees"] = recipe.angle_degrees
+    elif isinstance(recipe, PathSweptGeometry):
+        dimensions["path_segment_count"] = float(len(recipe.path.members))
+    return _draft(recipe, dimensions)
+
+
+def _proposal_source(recipe: object) -> object:
+    if isinstance(recipe, (ExtrudedGeometry, RevolvedGeometry, PathSweptGeometry)):
+        return list(recipe.source_face_ids)
+    if isinstance(recipe, BooleanGeometry):
+        context = recipe.body_context or recipe.part_context or recipe.planar_context
+        if isinstance(context, BooleanBodyContext):
+            return {
+                "target_body_id": context.target_body_id,
+                "tool_body_id": context.tool_body_id,
+            }
+        if isinstance(context, PartBooleanContext):
+            return {
+                "target_part_id": context.target_part_id,
+                "tool_part_id": context.tool_part_id,
+            }
+        if isinstance(context, PlanarBooleanContext):
+            return {
+                "target_face_id": context.target_face_id,
+                "tool_face_ids": list(context.tool_face_ids),
+            }
+        return {
+            "target": recipe.object_geometry.name,
+            "tool": recipe.tool_geometry.name,
+        }
+    return recipe.name
+
+
+def _proposal_operation(recipe: object) -> str:
+    if isinstance(recipe, BooleanGeometry):
+        return recipe.operation
+    return {
+        ExtrudedGeometry: "extrude",
+        RevolvedGeometry: "revolve",
+        PathSweptGeometry: "path_sweep",
+        MultiBodyGeometry: "multi_body",
+    }.get(type(recipe), "create")
 
 
 def _preview(recipe: object) -> StaticGeometryPreview:
@@ -1203,6 +1741,38 @@ def _preview(recipe: object) -> StaticGeometryPreview:
             base.lines,
             point_names=base.point_names,
             member_names=base.member_names,
+        )
+    if type(recipe) is ExtrudedGeometry:
+        base = _preview(recipe.base)
+        count = len(base.points)
+        if count * 2 > _MAX_PREVIEW_POINTS:
+            raise ValueError("extruded preview exceeds the point budget")
+        points = base.points + tuple(
+            (x, y, z + recipe.height) for x, y, z in base.points
+        )
+        lines = base.lines + tuple(
+            tuple(index + count for index in line) for line in base.lines
+        ) + tuple((index, index + count) for index in range(count))
+        return _make_preview(3, points, lines)
+    if type(recipe) is RevolvedGeometry:
+        base = _preview(recipe.base)
+        samples = min(4, max(2, _MAX_PREVIEW_POINTS // len(base.points)))
+        previews = []
+        for index in range(samples):
+            angle = recipe.angle_degrees * index / (samples - 1)
+            previews.append(_preview(RotatedGeometry(recipe.base, recipe.axis, angle)))
+        return _combine_previews(tuple(previews), 3)
+    if type(recipe) is PathSweptGeometry:
+        return _combine_previews((_preview(recipe.base), _preview(recipe.path)), 3)
+    if type(recipe) is BooleanGeometry:
+        return _combine_previews(
+            (_preview(recipe.object_geometry), _preview(recipe.tool_geometry)),
+            3,
+        )
+    if type(recipe) is MultiBodyGeometry:
+        return _combine_previews(
+            tuple(_preview(body.recipe) for body in recipe.bodies),
+            3,
         )
     if type(recipe) is WireGeometry:
         point_indexes = {
@@ -1409,6 +1979,24 @@ def _circle_points(
     )
 
 
+def _combine_previews(
+    previews: tuple[StaticGeometryPreview, ...],
+    dimension: int,
+) -> StaticGeometryPreview:
+    points: list[tuple[float, float, float]] = []
+    lines: list[tuple[int, ...]] = []
+    for preview in previews:
+        if len(points) + len(preview.points) > _MAX_PREVIEW_POINTS:
+            raise ValueError("combined preview exceeds the point budget")
+        offset = len(points)
+        points.extend(preview.points)
+        lines.extend(
+            tuple(index + offset for index in line)
+            for line in preview.lines
+        )
+    return _make_preview(dimension, tuple(points), tuple(lines))
+
+
 def _make_preview(
     dimension: int,
     points: tuple[tuple[float, float, float], ...],
@@ -1572,6 +2160,8 @@ def _sketch_curve_from_payload(
 
 
 __all__ = [
+    "GEOMETRY_FEATURE_CATALOG_TOOL_NAME",
+    "GeometryContractProof",
     "GeometryDraft",
     "StaticGeometryPreview",
     "box_geometry",
@@ -1585,6 +2175,9 @@ __all__ = [
     "geometry_recipe_from_payload",
     "geometry_recipe_to_payload",
     "geometry_draft",
+    "geometry_contract_proof",
+    "geometry_feature_catalog_tool_schema",
+    "feature_topology_catalog",
     "planar_geometry_catalog",
     "planar_polygon_geometry",
     "planar_sketch_geometry",

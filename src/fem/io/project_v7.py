@@ -99,6 +99,8 @@ _V7_FIELD_POLICY = ProjectFieldCodecPolicy(
     allow_multi_body=False,
     allow_planar_boolean=True,
     allow_part_boolean=True,
+    allow_revolved_geometry=True,
+    allow_path_swept_geometry=True,
 )
 
 

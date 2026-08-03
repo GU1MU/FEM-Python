@@ -22,6 +22,7 @@ from .authoring import (
     RequirementStatus,
 )
 from .diagnostics import DiagnosticCode, make_diagnostic
+from .geometry_authoring import geometry_feature_catalog_tool_schema
 from .providers.base import ToolDefinition
 from .result_authoring import (
     RESULT_QUERY_TOOL_NAME,
@@ -1529,6 +1530,9 @@ _EDIT_MODEL_OBJECT = _tool(
 )
 _RESULT_CATALOG = _result_tool_definition(result_catalog_tool_schema())
 _RESULT_QUERY = _result_tool_definition(result_query_tool_schema())
+_GEOMETRY_FEATURE_CATALOG = _result_tool_definition(
+    geometry_feature_catalog_tool_schema()
+)
 
 
 _PROJECT_SAVE_READY_STAGES = frozenset(
@@ -1556,11 +1560,13 @@ _GEOMETRY_EDIT_TOOLS = frozenset(
         _PREPARE_GEOMETRY_EDIT.name,
     }
 )
+_GEOMETRY_CATALOG_TOOLS = frozenset({_GEOMETRY_FEATURE_CATALOG.name})
 
 
 _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
     AuthoringWorkflowStage.REQUIREMENTS: (
         _READ_CONTEXT,
+        _GEOMETRY_FEATURE_CATALOG,
         _SET_REQUIREMENTS,
         _PREPARE_GEOMETRY,
         _READ_GEOMETRY_EDIT_CONTEXT,
@@ -1575,6 +1581,7 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
     AuthoringWorkflowStage.REVIEW_PENDING: (_READ_CONTEXT,),
     AuthoringWorkflowStage.GEOMETRY_READY: (
         _READ_CONTEXT,
+        _GEOMETRY_FEATURE_CATALOG,
         _SET_REQUIREMENTS,
         _PREPARE_GEOMETRY,
         _READ_GEOMETRY_EDIT_CONTEXT,
@@ -1589,6 +1596,7 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
     AuthoringWorkflowStage.GEOMETRY_PENDING: (_READ_CONTEXT,),
     AuthoringWorkflowStage.MESH_READY: (
         _READ_CONTEXT,
+        _GEOMETRY_FEATURE_CATALOG,
         _SET_REQUIREMENTS,
         _READ_MESH_REFINEMENT_CONTEXT,
         _PREPARE_MESH,
@@ -1604,6 +1612,7 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
     AuthoringWorkflowStage.MESH_PENDING: (_READ_CONTEXT,),
     AuthoringWorkflowStage.DEFINITIONS_READY: (
         _READ_CONTEXT,
+        _GEOMETRY_FEATURE_CATALOG,
         _SET_REQUIREMENTS,
         _READ_MESH_REFINEMENT_CONTEXT,
         _PREPARE_MESH,
@@ -1620,6 +1629,7 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
     ),
     AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY: (
         _READ_CONTEXT,
+        _GEOMETRY_FEATURE_CATALOG,
         _SET_REQUIREMENTS,
         _READ_MESH_REFINEMENT_CONTEXT,
         _PREPARE_MESH,
@@ -1636,6 +1646,7 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
     ),
     AuthoringWorkflowStage.PREFLIGHT_READY: (
         _READ_CONTEXT,
+        _GEOMETRY_FEATURE_CATALOG,
         _SET_REQUIREMENTS,
         _READ_MESH_REFINEMENT_CONTEXT,
         _PREPARE_MESH,
@@ -1653,6 +1664,7 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
     AuthoringWorkflowStage.PREFLIGHT_PENDING: (_READ_CONTEXT,),
     AuthoringWorkflowStage.SOLVE_READY: (
         _READ_CONTEXT,
+        _GEOMETRY_FEATURE_CATALOG,
         _SET_REQUIREMENTS,
         _READ_MESH_REFINEMENT_CONTEXT,
         _PREPARE_MESH,
@@ -1670,6 +1682,7 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
     AuthoringWorkflowStage.SOLVE_PENDING: (_READ_CONTEXT,),
     AuthoringWorkflowStage.RESULTS_READY: (
         _READ_CONTEXT,
+        _GEOMETRY_FEATURE_CATALOG,
         _SET_REQUIREMENTS,
         _READ_MESH_REFINEMENT_CONTEXT,
         _PREPARE_MESH,
@@ -1873,6 +1886,10 @@ class AuthoringWorkflowController:
                     and (
                         item.name not in _GEOMETRY_EDIT_TOOLS
                         or self._geometry_edit_available()
+                    )
+                    and (
+                        item.name not in _GEOMETRY_CATALOG_TOOLS
+                        or self._geometry_catalog_available()
                     )
                 )
             )
@@ -3043,6 +3060,31 @@ class AuthoringWorkflowController:
             and binding.source_kind == "native"
             and bool(context.parts)
             and _capability_enabled(context, "edit_native_geometry")
+        )
+
+    def _geometry_catalog_available(
+        self,
+        context: AuthoringContext | None = None,
+    ) -> bool:
+        if (
+            self._stage not in _PROJECT_SAVE_READY_STAGES
+            or not _GEOMETRY_CATALOG_TOOLS.issubset(self._handlers)
+        ):
+            return False
+        if context is None:
+            try:
+                raw = self._context_reader()
+            except Exception:
+                return False
+            if type(raw) is not AuthoringContext:
+                return False
+            context = raw
+        binding = context.binding
+        return bool(
+            binding.supported
+            and binding.source_kind == "native"
+            and any(not part.suppressed for part in context.parts)
+            and _capability_enabled(context, "read_geometry_feature_catalog")
         )
 
     def _current_mesh_available(self) -> bool:

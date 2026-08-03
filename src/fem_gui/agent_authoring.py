@@ -85,6 +85,7 @@ from fem_agent.geometry_authoring import (
     create_geometry_proposal,
     cylinder_geometry,
     geometry_draft,
+    feature_topology_catalog,
     geometry_recipe_from_payload,
     planar_geometry_catalog,
     planar_polygon_geometry,
@@ -366,6 +367,15 @@ def authoring_context_from_snapshot(
     )
     capabilities = (
         CapabilitySummary("read_authoring_context", supported, blocked_reason),
+        CapabilitySummary(
+            "read_geometry_feature_catalog",
+            editable_geometry_available,
+            (
+                None
+                if editable_geometry_available
+                else "当前 native 项目没有可读取的部件几何"
+            ),
+        ),
         CapabilitySummary("review_requirements", supported, blocked_reason),
         CapabilitySummary("build_agent_draft", supported, blocked_reason),
         CapabilitySummary("present_static_proposal", supported, blocked_reason),
@@ -3389,6 +3399,51 @@ def create_session_authoring_workflow_controller(
             ok=response.ok,
         )
 
+    def read_geometry_feature_catalog(
+        _arguments: Mapping[str, object],
+        _controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        snapshot = session.snapshot()
+        active_parts = tuple(
+            part
+            for part in snapshot.parts
+            if not part.suppressed and part.geometry_recipe is not None
+        )
+        source_parts = active_parts[:128]
+        catalogs: list[dict[str, object]] = []
+        for part in source_parts:
+            item = feature_topology_catalog(
+                part.geometry_recipe,
+                part_id=str(part.id),
+            )
+            candidate = {
+                "kind": "native_geometry_feature_catalog",
+                "schema_version": 1,
+                "session_revision": snapshot.session_revision,
+                "parts": [*catalogs, item],
+                "truncated": False,
+                "omitted_part_count": 0,
+            }
+            try:
+                provider_safe_authoring_payload(candidate)
+            except ValueError:
+                break
+            catalogs.append(item)
+        omitted = len(active_parts) - len(catalogs)
+        data = {
+            "kind": "native_geometry_feature_catalog",
+            "schema_version": 1,
+            "session_revision": snapshot.session_revision,
+            "parts": catalogs,
+            "truncated": omitted > 0,
+            "omitted_part_count": omitted,
+        }
+        provider_safe_authoring_payload(data)
+        return AuthoringToolOutcome(
+            "Native geometry feature catalog read locally.",
+            data,
+        )
+
     def query_result(
         arguments: Mapping[str, object],
         _controller: AuthoringWorkflowController,
@@ -3418,6 +3473,7 @@ def create_session_authoring_workflow_controller(
             "read_editable_model_objects": read_editable_objects,
             "edit_model_object": edit_model_object,
             "read_accepted_result_catalog": read_catalog,
+            "read_geometry_feature_catalog": read_geometry_feature_catalog,
             "query_accepted_result": query_result,
         },
     )

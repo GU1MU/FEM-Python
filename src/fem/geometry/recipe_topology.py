@@ -45,6 +45,7 @@ from .recipes import (
     NATIVE_GEOMETRY_TYPES,
     NativeGeometry,
     PlateWithHoleGeometry,
+    PathSweptGeometry,
     PlanarBooleanContext,
     RectangleGeometry,
     RevolvedGeometry,
@@ -353,6 +354,8 @@ def describe_recipe_topology(recipe: NativeGeometry) -> RecipeTopology:
         return _extruded_topology(recipe)
     if isinstance(recipe, RevolvedGeometry):
         return _revolved_topology(recipe)
+    if isinstance(recipe, PathSweptGeometry):
+        return _path_swept_topology(recipe)
     if isinstance(recipe, MultiBodyGeometry):
         return _multi_body_topology(recipe)
     if isinstance(recipe, BooleanGeometry):
@@ -1477,6 +1480,41 @@ def _revolved_topology(recipe: RevolvedGeometry) -> RecipeTopology:
     )
 
 
+def _path_swept_topology(recipe: PathSweptGeometry) -> RecipeTopology:
+    """Keep the result unselectable until exact sweep proof is implemented."""
+
+    base = describe_recipe_topology(recipe.base)
+    path = describe_recipe_topology(recipe.path)
+    try:
+        selection = resolve_extrusion_source_faces(
+            recipe.base,
+            recipe.source_face_ids,
+        )
+    except ExtrusionSourceResolutionError as error:
+        return _unknown_topology(
+            recipe,
+            code=error.code,
+            message=str(error),
+            operation="path_sweep",
+            source_signatures=(("base", base.signature), ("path", path.signature)),
+        )
+    if not base.exact or not path.exact or len(selection.face_ids) != 1:
+        return _unknown_topology(
+            recipe,
+            code="path-sweep.source.topology-unproven",
+            message="路径扫掠需要一个可验证的 material Profile 和开放路径",
+            operation="path_sweep",
+            source_signatures=(("base", base.signature), ("path", path.signature)),
+        )
+    return _unknown_topology(
+        recipe,
+        code="path-sweep.cad-proof-unavailable",
+        message=(
+            "路径扫掠尚未经过本地 CAD 编译、正体积和端面/侧面 lineage 验证"
+        ),
+        operation="path_sweep",
+        source_signatures=(("base", base.signature), ("path", path.signature)),
+    )
 def _boolean_topology(recipe: BooleanGeometry) -> RecipeTopology:
     if recipe.body_context is not None:
         return _strict_body_boolean_topology(recipe, recipe.body_context)
