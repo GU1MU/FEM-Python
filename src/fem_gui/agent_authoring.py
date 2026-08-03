@@ -157,6 +157,81 @@ def _bounded_count(value: object) -> int:
         return 0
 
 
+def _display_number(value: object) -> str:
+    normalized = float(value)
+    if normalized == 0.0:
+        normalized = 0.0
+    return format(normalized, ".12g")
+
+
+def _planar_profile_design_summary(
+    kind: str,
+    values: Mapping[str, object],
+    index: int,
+) -> str:
+    if kind == "rectangle":
+        return (
+            f"矩形{index}(x={_display_number(values['x'])}, "
+            f"y={_display_number(values['y'])}, "
+            f"宽={_display_number(values['width'])}, "
+            f"高={_display_number(values['height'])})"
+        )
+    if kind == "circle":
+        return (
+            f"圆{index}(圆心="
+            f"({_display_number(values['center_x'])}, "
+            f"{_display_number(values['center_y'])}), "
+            f"半径={_display_number(values['radius'])})"
+        )
+    vertices = tuple(values["vertices"])  # type: ignore[arg-type]
+    shown = vertices[:8]
+    coordinates = ", ".join(
+        f"({_display_number(vertex[0])}, {_display_number(vertex[1])})"
+        for vertex in shown
+    )
+    if len(vertices) > len(shown):
+        coordinates += f", …共{len(vertices)}点"
+    return f"多边形{index}(顶点={coordinates})"
+
+
+def _bounded_geometry_design_summary(
+    prefix: str,
+    details: list[str],
+) -> str:
+    kept: list[str] = []
+    for index, detail in enumerate(details):
+        candidate = f"{prefix}：" + "；".join((*kept, detail))
+        if len(candidate) > 720:
+            return (
+                f"{prefix}：" + "；".join(kept)
+                + f"；另有 {len(details) - index} 个轮廓"
+            )
+        kept.append(detail)
+    return f"{prefix}：" + "；".join(kept)
+
+
+def _geometry_unit_summary(
+    requirements: Mapping[str, object],
+    defaulted_keys: tuple[str, ...],
+) -> str:
+    label = (
+        f"{requirements['length_unit']}-"
+        f"{requirements['force_unit']}-"
+        f"{requirements['stress_unit']}"
+    )
+    if len(defaulted_keys) == 3:
+        return f"{label}（默认）"
+    if defaulted_keys:
+        names = {
+            "length_unit": "长度",
+            "force_unit": "力",
+            "stress_unit": "应力",
+        }
+        defaulted = "、".join(names[key] for key in defaulted_keys)
+        return f"{label}（{defaulted}使用默认值）"
+    return label
+
+
 def _recipe_dimension(recipe: object | None) -> int | None:
     if recipe is None:
         return None
@@ -2292,6 +2367,7 @@ def create_session_authoring_workflow_controller(
                 if not isinstance(raw_profile, Mapping):
                     raise ValueError("each profile must be an object")
                 profiles.append(dict(raw_profile))
+            profile_summaries: list[str] = []
             first = profiles[0]
             first_kind = str(first.pop("kind", ""))
             if first_kind == "rectangle":
@@ -2309,6 +2385,13 @@ def create_session_authoring_workflow_controller(
                         ),
                     ),
                 )
+                profile_summaries.append(
+                    _planar_profile_design_summary(
+                        first_kind,
+                        first,
+                        1,
+                    )
+                )
             elif first_kind == "circle":
                 if set(first) != {"center_x", "center_y", "radius"}:
                     raise ValueError("circle profile fields do not match")
@@ -2323,16 +2406,31 @@ def create_session_authoring_workflow_controller(
                         ),
                     ),
                 )
+                profile_summaries.append(
+                    _planar_profile_design_summary(
+                        first_kind,
+                        first,
+                        1,
+                    )
+                )
             elif first_kind == "polygon":
                 if set(first) != {"vertices"}:
                     raise ValueError("polygon profile fields do not match")
+                vertices = _profile_vertices(first["vertices"])
                 draft = planar_polygon_geometry(
                     recipe_name,
-                    vertices=_profile_vertices(first["vertices"]),
+                    vertices=vertices,
+                )
+                profile_summaries.append(
+                    _planar_profile_design_summary(
+                        first_kind,
+                        {"vertices": vertices},
+                        1,
+                    )
                 )
             else:
                 raise ValueError("unsupported planar profile kind")
-            for profile in profiles[1:]:
+            for index, profile in enumerate(profiles[1:], start=2):
                 profile_kind = str(profile.pop("kind", ""))
                 if profile_kind == "rectangle":
                     if set(profile) != {"x", "y", "width", "height"}:
@@ -2340,21 +2438,44 @@ def create_session_authoring_workflow_controller(
                             "rectangle profile fields do not match"
                         )
                     draft = add_planar_rectangle(draft.recipe, **profile)
+                    profile_summaries.append(
+                        _planar_profile_design_summary(
+                            profile_kind,
+                            profile,
+                            index,
+                        )
+                    )
                 elif profile_kind == "circle":
                     if set(profile) != {"center_x", "center_y", "radius"}:
                         raise ValueError("circle profile fields do not match")
                     draft = add_planar_circle(draft.recipe, **profile)
+                    profile_summaries.append(
+                        _planar_profile_design_summary(
+                            profile_kind,
+                            profile,
+                            index,
+                        )
+                    )
                 elif profile_kind == "polygon":
                     if set(profile) != {"vertices"}:
                         raise ValueError("polygon profile fields do not match")
+                    vertices = _profile_vertices(profile["vertices"])
                     draft = add_planar_polygon(
                         draft.recipe,
-                        vertices=_profile_vertices(profile["vertices"]),
+                        vertices=vertices,
+                    )
+                    profile_summaries.append(
+                        _planar_profile_design_summary(
+                            profile_kind,
+                            {"vertices": vertices},
+                            index,
+                        )
                     )
                 else:
                     raise ValueError("unsupported planar profile kind")
-            geometry_summary = (
-                f"{len(profiles)} 个闭合平面轮廓"
+            geometry_summary = _bounded_geometry_design_summary(
+                "2D 平面轮廓",
+                profile_summaries,
             )
         elif kind == "box":
             if set(geometry) != {"kind", "width", "depth", "height"}:
@@ -2366,8 +2487,9 @@ def create_session_authoring_workflow_controller(
                 height=geometry["height"],
             )
             geometry_summary = (
-                f"长方体 {geometry['width']} × {geometry['depth']} × "
-                f"{geometry['height']}"
+                f"3D 长方体(宽={_display_number(geometry['width'])}, "
+                f"深={_display_number(geometry['depth'])}, "
+                f"高={_display_number(geometry['height'])})"
             )
         elif kind == "cylinder":
             if set(geometry) != {"kind", "radius", "height"}:
@@ -2378,11 +2500,17 @@ def create_session_authoring_workflow_controller(
                 height=geometry["height"],
             )
             geometry_summary = (
-                f"圆柱，半径 {geometry['radius']}，高度 {geometry['height']}"
+                f"3D 圆柱(半径={_display_number(geometry['radius'])}, "
+                f"高={_display_number(geometry['height'])})"
             )
         else:
             raise ValueError("unsupported geometry kind")
         requirements = controller.collected_requirements("geometry")
+        defaulted_keys = controller.defaulted_requirement_keys("geometry")
+        proposal_summary = (
+            f"设计提案：{geometry_summary}；单位制 "
+            f"{_geometry_unit_summary(requirements, defaulted_keys)}"
+        )
         metadata = envelope(controller, "geometry")
         context = current_context()
         suffix = str(metadata.pop("identity_suffix"))
@@ -2396,6 +2524,7 @@ def create_session_authoring_workflow_controller(
                 if context.binding.source_kind == "blank"
                 else None
             ),
+            summary=proposal_summary,
             unit_context=UnitContextSummary(
                 str(requirements["length_unit"]),
                 str(requirements["force_unit"]),
@@ -2410,10 +2539,7 @@ def create_session_authoring_workflow_controller(
         )
         return proposal_outcome(
             proposal,
-            summary=(
-                f"创建{geometry_summary}，长度单位 "
-                f"{requirements['length_unit']}"
-            ),
+            summary=proposal_summary,
             impact="确认后创建该几何并刷新 GUI",
             confirm_label="加入模型",
         )

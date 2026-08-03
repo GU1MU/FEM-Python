@@ -5,6 +5,7 @@ from dataclasses import replace
 import pytest
 
 from fem_agent.artifacts import ArtifactStore
+from fem_agent.authoring_runtime import AuthoringWorkflowController
 from fem_agent.diagnostics import DiagnosticCode
 from fem_agent.engine import (
     AgentSessionEngine,
@@ -120,6 +121,27 @@ def test_provider_prompt_contains_restrained_engineering_response_contract(
     assert "FEM Agent V0" not in system_prompt
     assert "local deterministic fem package" not in system_prompt.casefold()
     assert "do not write guessed or inferred values" not in system_prompt
+
+
+def test_authoring_prompt_uses_proposal_first_geometry_and_local_unit_defaults(
+    tmp_path,
+):
+    provider = FakeProvider([_text_response("已准备设计提案。")])
+    controller = AuthoringWorkflowController(lambda: {}, {})
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_proposal_first",
+        dynamic_tools=controller,
+    )
+
+    engine.send_message("建立一个模型")
+
+    system_prompt = provider.requests[0].messages[0].content
+    assert "Use a proposal-first policy for native geometry." in system_prompt
+    assert "propose a basic planar rectangular Part" in system_prompt
+    assert "local defaults length=mm, force=N, and" in system_prompt
+    assert "never create a separate unit-selection" in system_prompt
 
 
 def _attached_engine(tmp_path, provider):

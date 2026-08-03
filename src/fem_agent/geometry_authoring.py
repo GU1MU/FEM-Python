@@ -404,6 +404,7 @@ def create_geometry_proposal(
     part_function: str,
     unit_context: UnitContextSummary,
     project_function: str | None = None,
+    summary: str | None = None,
 ) -> AgentProposal:
     """Create one revision-bound proposal for blank or native sessions."""
 
@@ -460,6 +461,15 @@ def create_geometry_proposal(
         )
         operation_label = "向 native 项目增加部件"
         target_model = context.model_name
+    proposal_summary = (
+        operation_label
+        if summary is None
+        else str(summary).strip()
+    )
+    if not proposal_summary:
+        raise AuthoringContractError("geometry proposal summary is blank")
+    if len(proposal_summary.encode("utf-8")) > 2048:
+        raise AuthoringContractError("geometry proposal summary is too long")
     return AgentProposal.create(
         proposal_id=proposal_id,
         proposal_kind=ProposalKind.GEOMETRY,
@@ -487,6 +497,7 @@ def create_geometry_proposal(
         },
         display_summary={
             "title": operation_label,
+            "summary": proposal_summary,
             "target_model": target_model,
             "operation": operation.kind.value,
             "part_name": part_name,

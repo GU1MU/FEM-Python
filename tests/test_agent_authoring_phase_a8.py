@@ -482,6 +482,80 @@ def test_a8_geometry_uses_one_operation_confirmation_without_requirement_review(
     assert controller.stage is AuthoringWorkflowStage.GEOMETRY_PENDING
 
 
+def test_a8_blank_project_seeds_default_units_without_a_clarification_gate() -> None:
+    context = AuthoringContext(
+        binding=LocalModelBinding(
+            "document:blank-a8",
+            "blank-a8",
+            0,
+            "blank",
+            True,
+        ),
+        model_name=None,
+        active_part_id=None,
+    )
+    controller = AuthoringWorkflowController(
+        lambda: context,
+        {
+            "prepare_geometry_proposal": lambda _arguments, _controller: (
+                AuthoringToolOutcome(
+                    "Geometry proposal registered.",
+                    {"state": "pending_confirmation"},
+                )
+            ),
+        },
+    )
+
+    controller.observe_binding(context)
+
+    assert controller.collected_requirements("geometry") == {
+        "length_unit": "mm",
+        "force_unit": "N",
+        "stress_unit": "MPa",
+    }
+    assert controller.defaulted_requirement_keys("geometry") == (
+        "length_unit",
+        "force_unit",
+        "stress_unit",
+    )
+    assert "prepare_geometry_proposal" in {
+        item.name for item in controller.definitions
+    }
+    context_result = _dispatch(
+        controller,
+        "read_authoring_context",
+        {},
+        20,
+    )
+    assert context_result.data["missing_requirements"] == []
+    assert context_result.data["defaulted_requirements"] == [
+        "length_unit",
+        "force_unit",
+        "stress_unit",
+    ]
+
+    overridden = _dispatch(
+        controller,
+        "set_authoring_requirements",
+        {
+            "turn_id": "turn-explicit-units",
+            "requirements": {
+                "length_unit": "m",
+                "force_unit": "kN",
+                "stress_unit": "GPa",
+            },
+        },
+        21,
+    )
+    assert overridden.ok
+    assert controller.collected_requirements("geometry") == {
+        "length_unit": "m",
+        "force_unit": "kN",
+        "stress_unit": "GPa",
+    }
+    assert controller.defaulted_requirement_keys("geometry") == ()
+
+
 def test_a8_mesh_uses_one_confirmation_and_definitions_are_direct() -> None:
     calls: list[str] = []
 

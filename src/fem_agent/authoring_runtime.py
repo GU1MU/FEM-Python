@@ -242,6 +242,12 @@ _GEOMETRY_REQUIREMENTS = (
     "force_unit",
     "stress_unit",
 )
+_DEFAULT_GEOMETRY_REQUIREMENTS: dict[str, str] = {
+    "length_unit": "mm",
+    "force_unit": "N",
+    "stress_unit": "MPa",
+}
+_DEFAULT_REQUIREMENT_SOURCE_TURN_ID = "agent-default"
 _MESH_REQUIREMENTS = (
     "mesh_cell_shape",
     "mesh_order",
@@ -325,9 +331,11 @@ _READ_CONTEXT = _tool(
 _SET_REQUIREMENTS = _tool(
     "set_authoring_requirements",
     (
-        "Record only current-stage engineering values explicitly supplied by "
-        "the user. Complete geometry or mesh values may then be presented in "
-        "the corresponding operation confirmation card."
+        "Record current-stage engineering values explicitly supplied by the "
+        "user. Blank projects already provide mm-N-MPa geometry defaults; "
+        "this tool overrides them only when the user requests other units. "
+        "Complete geometry or mesh values may then be presented in the "
+        "corresponding operation confirmation card."
     ),
     {
         "type": "object",
@@ -1515,13 +1523,20 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
 
 def _stage_requirement_tool(group: str) -> ToolDefinition:
     keys = _REQUIREMENT_GROUPS[group]
-    return _tool(
-        _SET_REQUIREMENTS.name,
-        (
+    description = (
+        "Override the blank-project mm-N-MPa defaults only with geometry "
+        "units explicitly supplied by the user. Complete values may be used "
+        "only to present the geometry operation card."
+        if group == "geometry"
+        else (
             f"Record only explicitly supplied {group} values for the current "
             "stage. Complete values may be used only to present the matching "
             "geometry or mesh operation card."
-        ),
+        )
+    )
+    return _tool(
+        _SET_REQUIREMENTS.name,
+        description,
         {
             "type": "object",
             "properties": {
@@ -1852,8 +1867,10 @@ class AuthoringWorkflowController:
             if prior is None:
                 self._binding_identity = current
                 self._stage = _restored_stage_for_context(context)
+                self._seed_default_geometry_requirements(context)
                 return True
             if prior == current:
+                self._seed_default_geometry_requirements(context)
                 if self._pending_operation is None:
                     was_active_job = (
                         previous_context is not None
@@ -2285,6 +2302,33 @@ class AuthoringWorkflowController:
             )
         return {key: values[key] for key in keys}
 
+    def defaulted_requirement_keys(
+        self,
+        group: str,
+    ) -> tuple[str, ...]:
+        """Return active requirement keys supplied by local defaults."""
+
+        try:
+            keys = _HANDLER_REQUIREMENTS[group]
+        except KeyError as exc:
+            raise ValueError("unknown requirement group") from exc
+        entries = {
+            item.key: item
+            for item in self._ledger.entries
+            if item.status
+            in {
+                RequirementStatus.PROPOSED,
+                RequirementStatus.CONFIRMED,
+            }
+        }
+        return tuple(
+            key
+            for key in keys
+            if key in entries
+            and entries[key].source_turn_id
+            == _DEFAULT_REQUIREMENT_SOURCE_TURN_ID
+        )
+
     def _current_requirement_group(self) -> str | None:
         stage = (
             self._review_source_stage
@@ -2307,6 +2351,37 @@ class AuthoringWorkflowController:
             }
         }
         return required <= recorded
+
+    def _seed_default_geometry_requirements(
+        self,
+        context: AuthoringContext,
+    ) -> None:
+        if (
+            context.binding.source_kind != "blank"
+            or context.unit_context is not None
+            or context.parts
+        ):
+            return
+        recorded = {
+            item.key
+            for item in self._ledger.entries
+            if item.status
+            in {
+                RequirementStatus.PROPOSED,
+                RequirementStatus.CONFIRMED,
+            }
+        }
+        for key, value in _DEFAULT_GEOMETRY_REQUIREMENTS.items():
+            if key in recorded:
+                continue
+            self._ledger.record(
+                key,
+                field_type=str(_REQUIREMENT_SPECS[key]["type"]),
+                stage=_requirement_stage(key),
+                value=value,
+                source_turn_id=_DEFAULT_REQUIREMENT_SOURCE_TURN_ID,
+                status=RequirementStatus.PROPOSED,
+            )
 
     def invocation_metadata(self, prefix: str) -> dict[str, object]:
         """Return bounded envelope identities for the active local handler."""
@@ -2375,6 +2450,11 @@ class AuthoringWorkflowController:
                     for key in required
                     if key not in recorded
                 ],
+                "defaulted_requirements": list(
+                    self.defaulted_requirement_keys(requirement_group)
+                    if requirement_group is not None
+                    else ()
+                ),
             },
         )
 

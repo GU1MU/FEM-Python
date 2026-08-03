@@ -501,15 +501,9 @@ def test_a8_production_geometry_waits_for_one_gui_acceptance() -> None:
     bridge = window.agent_authoring_bridge
     before = window.session.snapshot()
     assert before.source_kind is None
-
-    recorded = controller.dispatch(
-        "set_authoring_requirements",
-        {
-            "turn_id": "turn-a8",
-            "requirements": _requirements_for("geometry"),
-        },
-        ToolExecutionContext("session-a8", 0, "requirements-a8"),
-    )
+    assert "prepare_geometry_proposal" in {
+        item.name for item in controller.definitions
+    }
     prepared = controller.dispatch(
         "prepare_geometry_proposal",
         {
@@ -538,7 +532,13 @@ def test_a8_production_geometry_waits_for_one_gui_acceptance() -> None:
     proposal_id = prepared.data["proposal_id"]
 
     draft_state = window.session.snapshot()
-    assert recorded.ok and prepared.ok
+    assert prepared.ok
+    assert prepared.data["proposal_view"]["summary"] == (
+        "设计提案：2D 平面轮廓："
+        "矩形1(x=0, y=0, 宽=120, 高=60)；"
+        "圆2(圆心=(68, 26), 半径=8)；"
+        "单位制 mm-N-MPa（默认）"
+    )
     assert controller.pending_review is None
     assert controller.stage is AuthoringWorkflowStage.GEOMETRY_PENDING
     assert draft_state.session_revision == before.session_revision
@@ -553,6 +553,12 @@ def test_a8_production_geometry_waits_for_one_gui_acceptance() -> None:
     assert after.source_kind == "native"
     assert after.session_revision == before.session_revision + 1
     assert [part.name for part in after.parts] == ["部件-偏心孔板"]
+    assert after.unit_context == UnitContext(
+        "mm",
+        "N",
+        "MPa",
+        convention="N-mm-MPa",
+    )
 
     window.viewport_panel.agent_chat_drawer.agent_runtime.shutdown()
     window.close()
