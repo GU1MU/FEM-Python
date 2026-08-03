@@ -1949,6 +1949,62 @@ class GeometryModel:
             )
         return tuple(value / magnitude for value in values)
 
+    def outward_surface_normal(
+        self,
+        surface: EntityRef,
+        volume: EntityRef,
+    ) -> tuple[float, float, float]:
+        """Return the analytic plane normal oriented out of one owning volume."""
+
+        operation = "outward_surface_normal"
+        normalized_surface, normalized_volume = self._normalize_entities(
+            (surface, volume),
+            operation=operation,
+        )
+        if normalized_surface.dimension != 2 or normalized_volume.dimension != 3:
+            raise ValueError(
+                "outward_surface_normal requires one surface and one volume"
+            )
+        self._check_state(operation, _QUERY_STATES)
+        self._activate(operation)
+        self._gmsh.model.occ.synchronize()
+        self._assert_occ_liveness(
+            (normalized_surface, normalized_volume),
+            operation,
+        )
+        if self.geometry_type(normalized_surface).casefold() != "plane":
+            raise ValueError("outward_surface_normal requires an OCC Plane surface")
+        raw_boundary = self._gmsh.model.getBoundary(
+            [(3, normalized_volume.tag)],
+            combined=False,
+            oriented=True,
+            recursive=False,
+        )
+        occurrences = 0
+        for raw_pair in raw_boundary:
+            try:
+                dimension, signed_tag = raw_pair
+                dimension = int(dimension)
+                signed_tag = int(signed_tag)
+            except (TypeError, ValueError, OverflowError) as error:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: invalid oriented boundary"
+                ) from error
+            if dimension == 2 and abs(signed_tag) == normalized_surface.tag:
+                occurrences += 1
+        if occurrences != 1:
+            raise ValueError("surface must occur exactly once on the volume boundary")
+        analytic = self.geometry_direction(normalized_surface)
+        if analytic is None:
+            raise GeometryError(
+                f"geometry model {self.name!r}: plane has no analytic normal"
+            )
+        # Gmsh's OCC surface parametrization already carries the TopoDS_Face
+        # orientation used by getNormal.  Signed tags from getBoundary prove
+        # membership and uniqueness; applying that sign a second time would
+        # invert every reversed OCC face.
+        return analytic
+
     def tessellate_surfaces(
         self,
         faces: Iterable[EntityRef],

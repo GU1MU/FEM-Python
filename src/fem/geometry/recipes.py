@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from enum import Enum
 import math
 from numbers import Real
 import re
@@ -506,6 +507,125 @@ class SketchPlane:
         return (
             sum(value * axis for value, axis in zip(delta, self.x_direction, strict=True)),
             sum(value * axis for value, axis in zip(delta, self.y_direction, strict=True)),
+        )
+
+
+class FaceSketchBooleanOperation(str, Enum):
+    """The two material operations supported by a face-supported sketch."""
+
+    FUSE = "fuse"
+    CUT = "cut"
+
+    @property
+    def chinese_name(self) -> str:
+        return {
+            type(self).FUSE: "合并材料",
+            type(self).CUT: "切除材料",
+        }[self]
+
+
+class FaceSketchBooleanDirection(str, Enum):
+    """Extrusion direction relative to the oriented supporting face."""
+
+    OUTWARD = "outward"
+    INWARD = "inward"
+
+    @property
+    def chinese_name(self) -> str:
+        return {
+            type(self).OUTWARD: "沿外法向",
+            type(self).INWARD: "沿内法向",
+        }[self]
+
+    def vector(
+        self,
+        outward_normal: tuple[float, float, float],
+    ) -> tuple[float, float, float]:
+        """Return the signed unit vector for this direction."""
+
+        normal = _normalize_sketch_vector(
+            outward_normal,
+            "outward_normal",
+            length=3,
+        )
+        magnitude = math.sqrt(sum(component * component for component in normal))
+        if magnitude <= _SKETCH_GEOMETRY_TOLERANCE:
+            raise ValueError("工作面外法向必须为非零向量")
+        sign = 1.0 if self is type(self).OUTWARD else -1.0
+        return tuple(sign * component / magnitude for component in normal)
+
+
+@dataclass(frozen=True, slots=True)
+class FaceSketchWorkplaneStrategy:
+    """Persisted deterministic U-axis construction strategy."""
+
+    seed_axis: Literal["x", "y", "z"]
+    sign: Literal[-1, 1] = 1
+    origin_rule: Literal["area_center"] = "area_center"
+
+    def __post_init__(self) -> None:
+        normalized_axis = str(self.seed_axis).lower()
+        if normalized_axis not in {"x", "y", "z"}:
+            raise ValueError("工作面 U 轴种子必须是全局 X、Y 或 Z 轴")
+        if isinstance(self.sign, bool) or self.sign not in {-1, 1}:
+            raise ValueError("工作面 U 轴符号必须是 1 或 -1")
+        if self.origin_rule != "area_center":
+            raise ValueError("工作面原点规则必须为面积中心")
+        object.__setattr__(self, "seed_axis", normalized_axis)
+
+
+class SketchExternalReferenceType(str, Enum):
+    """A point derivation supported by associated sketch snapping."""
+
+    TOPOLOGY_VERTEX = "topology_vertex"
+    LINE_MIDPOINT = "line_midpoint"
+    CIRCLE_CENTER = "circle_center"
+    ARC_CENTER = "arc_center"
+    FACE_CENTER = "face_center"
+
+
+@dataclass(frozen=True, slots=True)
+class SketchExternalReference:
+    """One stable derived point reference into the supporting topology."""
+
+    id: str
+    source: LogicalEntityRef
+    derived_type: SketchExternalReferenceType
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "id", _normalize_sketch_id(self.id, "外部参考 ID"))
+        if type(self.source) is not LogicalEntityRef:
+            raise TypeError("外部参考来源必须是 LogicalEntityRef")
+        if type(self.derived_type) is not SketchExternalReferenceType:
+            raise TypeError("外部参考派生类型无效")
+        expected_kind = {
+            SketchExternalReferenceType.TOPOLOGY_VERTEX: "point",
+            SketchExternalReferenceType.LINE_MIDPOINT: "edge",
+            SketchExternalReferenceType.CIRCLE_CENTER: "edge",
+            SketchExternalReferenceType.ARC_CENTER: "edge",
+            SketchExternalReferenceType.FACE_CENTER: "face",
+        }[self.derived_type]
+        if self.source.kind != expected_kind:
+            raise ValueError("外部参考来源类型与派生类型不匹配")
+
+
+@dataclass(frozen=True, slots=True)
+class SketchExternalCoincidence:
+    """Association between one strict-sketch point and an external reference."""
+
+    point_id: str
+    reference_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "point_id",
+            _normalize_sketch_id(self.point_id, "外部重合草图点 ID"),
+        )
+        object.__setattr__(
+            self,
+            "reference_id",
+            _normalize_sketch_id(self.reference_id, "外部重合参考 ID"),
         )
 
 
@@ -1842,7 +1962,135 @@ class MultiBodyGeometry:
         raise KeyError(normalized)
 
 
+@dataclass(frozen=True, slots=True)
+class FaceSketchBooleanStepProof:
+    """Persisted exact lineage for one stable material-profile Boolean step."""
+
+    profile_id: str
+    result_entities: tuple[BooleanLineageEntity, ...]
+    topology_mappings: tuple[BooleanLineageMapping, ...]
+
+    def __post_init__(self) -> None:
+        profile_id = _normalize_sketch_id(self.profile_id, "轮廓 ID")
+        entities = tuple(self.result_entities)
+        mappings = tuple(self.topology_mappings)
+        if any(type(item) is not BooleanLineageEntity for item in entities):
+            raise TypeError("分步布尔结果必须包含 BooleanLineageEntity")
+        if any(type(item) is not BooleanLineageMapping for item in mappings):
+            raise TypeError("分步布尔谱系必须包含 BooleanLineageMapping")
+        object.__setattr__(self, "profile_id", profile_id)
+        object.__setattr__(self, "result_entities", entities)
+        object.__setattr__(self, "topology_mappings", mappings)
+
+
+@dataclass(frozen=True, slots=True)
+class FaceSketchBooleanGeometry:
+    """One three-dimensional Boolean feature authored on a planar solid face."""
+
+    base: object
+    feature_id: str
+    name: str
+    support_face_id: str
+    workplane_strategy: FaceSketchWorkplaneStrategy
+    sketch: SketchGeometry
+    operation: FaceSketchBooleanOperation
+    direction: FaceSketchBooleanDirection
+    distance: float
+    participating_profile_ids: tuple[str, ...]
+    external_references: tuple[SketchExternalReference, ...] = ()
+    external_coincidences: tuple[SketchExternalCoincidence, ...] = ()
+    step_proofs: tuple[FaceSketchBooleanStepProof, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.base, NATIVE_GEOMETRY_TYPES):
+            raise TypeError("面草图布尔需要已有原生几何")
+        if geometry_dimension(self.base) != 3:
+            raise ValueError("面草图布尔的基础几何必须为三维")
+        if not isinstance(self.base, MultiBodyGeometry) and not is_single_solid_recipe(
+            self.base
+        ):
+            raise ValueError("面草图布尔的基础几何必须为单实体或显式 MultiBody")
+        feature_id = _normalize_sketch_id(self.feature_id, "特征 ID")
+        name = _normalize_body_name(self.name, "特征名称")
+        face_reference = LogicalEntityRef(self.support_face_id)
+        if face_reference.kind != "face":
+            raise ValueError("工作面逻辑 ID 必须引用面")
+        if type(self.workplane_strategy) is not FaceSketchWorkplaneStrategy:
+            raise TypeError("工作面坐标策略无效")
+        if type(self.sketch) is not SketchGeometry or not self.sketch.is_strict:
+            raise TypeError("面草图布尔必须保存严格平面草图")
+        if type(self.operation) is not FaceSketchBooleanOperation:
+            raise TypeError("拉伸布尔操作无效")
+        if type(self.direction) is not FaceSketchBooleanDirection:
+            raise TypeError("拉伸布尔方向无效")
+        distance = _normalize_sketch_scalar(self.distance, "拉伸距离")
+        if distance <= 0.0:
+            raise ValueError("拉伸距离必须为有限正值")
+        profile_ids = tuple(
+            _normalize_sketch_id(value, "参与轮廓 ID")
+            for value in self.participating_profile_ids
+        )
+        if not profile_ids:
+            raise ValueError("至少需要一个参与轮廓")
+        if len(profile_ids) != len(set(profile_ids)):
+            raise ValueError("参与轮廓 ID 不能重复")
+        references = tuple(self.external_references)
+        coincidences = tuple(self.external_coincidences)
+        proofs = tuple(self.step_proofs)
+        if any(type(item) is not SketchExternalReference for item in references):
+            raise TypeError("外部参考集合包含无效值")
+        if any(type(item) is not SketchExternalCoincidence for item in coincidences):
+            raise TypeError("外部重合集合包含无效值")
+        if any(type(item) is not FaceSketchBooleanStepProof for item in proofs):
+            raise TypeError("分步布尔证明集合包含无效值")
+        reference_ids = tuple(item.id for item in references)
+        if len(reference_ids) != len(set(reference_ids)):
+            raise ValueError("外部参考 ID 不能重复")
+        sketch_point_ids = {point.id for point in self.sketch.points}
+        linked_point_ids: set[str] = set()
+        for coincidence in coincidences:
+            if coincidence.point_id not in sketch_point_ids:
+                raise ValueError("外部重合引用了不存在的草图点")
+            if coincidence.reference_id not in set(reference_ids):
+                raise ValueError("外部重合引用了不存在的外部参考")
+            if coincidence.point_id in linked_point_ids:
+                raise ValueError("每个草图点最多绑定一个外部参考")
+            linked_point_ids.add(coincidence.point_id)
+        proof_ids = tuple(item.profile_id for item in proofs)
+        if len(proof_ids) != len(set(proof_ids)):
+            raise ValueError("分步布尔证明的轮廓 ID 不能重复")
+        if not set(proof_ids).issubset(profile_ids):
+            raise ValueError("分步布尔证明只能引用参与轮廓")
+        object.__setattr__(self, "feature_id", feature_id)
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "distance", distance)
+        object.__setattr__(self, "participating_profile_ids", tuple(sorted(profile_ids)))
+        object.__setattr__(self, "external_references", references)
+        object.__setattr__(self, "external_coincidences", coincidences)
+        object.__setattr__(self, "step_proofs", proofs)
+
+    @property
+    def dimension(self) -> Literal[3]:
+        """Declare the feature's invariant topological dimension."""
+
+        return 3
+
+    @property
+    def result_body_count(self) -> Literal[1]:
+        """Declare the single-solid constraint for the modified target Body."""
+
+        return 1
+
+    @property
+    def result_constraint(self) -> Literal["single_solid"]:
+        """Declare that the modified target must remain one solid."""
+
+        return "single_solid"
+
+
 def is_single_solid_recipe(recipe: object) -> bool:
+    if isinstance(recipe, FaceSketchBooleanGeometry):
+        return is_single_solid_recipe(recipe.base)
     if isinstance(recipe, (BoxGeometry, CylinderGeometry)):
         return True
     if isinstance(recipe, (MovedGeometry, RotatedGeometry)):
@@ -1916,6 +2164,7 @@ NativeGeometry = (
     | PathSweptGeometry
     | BooleanGeometry
     | MultiBodyGeometry
+    | FaceSketchBooleanGeometry
 )
 NATIVE_GEOMETRY_TYPES = (
     *PRIMITIVE_GEOMETRY_TYPES,
@@ -1928,6 +2177,7 @@ NATIVE_GEOMETRY_TYPES = (
     PathSweptGeometry,
     BooleanGeometry,
     MultiBodyGeometry,
+    FaceSketchBooleanGeometry,
 )
 
 
@@ -1935,7 +2185,7 @@ def geometry_dimension(recipe: NativeGeometry) -> Literal[1, 2, 3]:
     """Return the topological dimension of a native geometry recipe."""
     if isinstance(recipe, BooleanGeometry):
         return geometry_dimension(recipe.object_geometry)
-    if isinstance(recipe, MultiBodyGeometry):
+    if isinstance(recipe, (MultiBodyGeometry, FaceSketchBooleanGeometry)):
         return 3
     if isinstance(recipe, (ExtrudedGeometry, RevolvedGeometry, PathSweptGeometry)):
         return 3
@@ -1988,6 +2238,11 @@ __all__ = [
     "CylinderGeometry",
     "DiskGeometry",
     "ExtrudedGeometry",
+    "FaceSketchBooleanDirection",
+    "FaceSketchBooleanGeometry",
+    "FaceSketchBooleanOperation",
+    "FaceSketchBooleanStepProof",
+    "FaceSketchWorkplaneStrategy",
     "MovedGeometry",
     "MultiBodyGeometry",
     "NATIVE_GEOMETRY_TYPES",
@@ -2008,6 +2263,9 @@ __all__ = [
     "SketchContour",
     "SketchCurve",
     "SketchGeometry",
+    "SketchExternalCoincidence",
+    "SketchExternalReference",
+    "SketchExternalReferenceType",
     "SketchLine",
     "SketchPlane",
     "SketchPoint",
