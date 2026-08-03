@@ -21,11 +21,14 @@ from fem.geometry.recipes import (
     SketchArc,
     SketchCircle,
     SketchCurve,
+    SketchExternalCoincidence,
+    SketchExternalReference,
     SketchGeometry,
     SketchLine,
     SketchPlane,
     SketchPoint,
 )
+from fem.geometry.sketch_support import SketchReferencePoint
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +55,9 @@ class SketchDraftSnapshot:
     selected_kind: str | None = None
     pending_command: str | None = None
     revision: int = 0
+    external_references: tuple[SketchExternalReference, ...] = ()
+    external_coincidences: tuple[SketchExternalCoincidence, ...] = ()
+    unresolved_reference_ids: tuple[str, ...] = ()
 
     @property
     def selected_entity_ids(self) -> tuple[str, ...]:
@@ -141,6 +147,23 @@ class SketchDraftController:
         self._selected_kind: str | None = initial.selected_kind
         self._pending_command: str | None = initial.pending_command
         self._revision = initial.revision
+        if len({item.id for item in initial.external_references}) != len(
+            initial.external_references
+        ):
+            raise ValueError("外部参考 ID 不能重复")
+        if len({item.point_id for item in initial.external_coincidences}) != len(
+            initial.external_coincidences
+        ):
+            raise ValueError("每个草图点最多只能绑定一个外部参考")
+        self._external_references: dict[str, SketchExternalReference] = {
+            reference.id: reference for reference in initial.external_references
+        }
+        self._external_coincidences: dict[str, SketchExternalCoincidence] = {
+            coincidence.point_id: coincidence
+            for coincidence in initial.external_coincidences
+        }
+        self._unresolved_reference_ids = set(initial.unresolved_reference_ids)
+        self._validate_associations()
         self._undo: list[SketchDraftSnapshot] = []
         self._redo: list[SketchDraftSnapshot] = []
         self._history_limit = history_limit
@@ -183,6 +206,9 @@ class SketchDraftController:
         self._selected_kind = None
         self._pending_command = None
         self._revision = 0
+        self._external_references.clear()
+        self._external_coincidences.clear()
+        self._unresolved_reference_ids.clear()
         self._undo.clear()
         self._redo.clear()
 
@@ -245,6 +271,9 @@ class SketchDraftController:
             self._selected_kind,
             self._pending_command,
             self._revision,
+            tuple(self._external_references.values()),
+            tuple(self._external_coincidences.values()),
+            tuple(sorted(self._unresolved_reference_ids)),
         )
 
     @property
@@ -274,6 +303,7 @@ class SketchDraftController:
         v: float | None = None,
         x: float | None = None,
         y: float | None = None,
+        external_reference: SketchReferencePoint | None = None,
     ) -> SketchPoint:
         if point_id is not None and name is not None:
             raise ValueError("point_id and name are aliases; provide only one")
@@ -302,10 +332,16 @@ class SketchDraftController:
             raise TypeError("point requires u/v coordinates")
         normalized_id = normalized_id or self._next_id("P", self._points)
         point = SketchPoint(normalized_id, u, v)
+        if external_reference is not None and type(external_reference) is not SketchReferencePoint:
+            raise TypeError("external_reference must be a SketchReferencePoint")
+        if external_reference is not None:
+            point = SketchPoint(point.id, external_reference.u, external_reference.v)
 
         def apply() -> None:
             self._assert_new_id(point.id)
             self._points[point.id] = point
+            if external_reference is not None:
+                self._bind_external_reference(point.id, external_reference)
 
         self._mutate(apply)
         return point
@@ -322,6 +358,8 @@ class SketchDraftController:
         y: float | None = None,
     ) -> SketchPoint:
         point = self._require_point(point_id)
+        if point_id in self._external_coincidences:
+            raise ValueError("关联点不能直接移动，请先执行“解除关联”")
         replacement = SketchPoint(
             point.id,
             point.u if u is None and x is None else (u if u is not None else x),
@@ -337,6 +375,75 @@ class SketchDraftController:
     update_point = move_point
     set_point_coordinates = move_point
 
+    def external_reference_for_point(
+        self,
+        point_id: str,
+    ) -> SketchExternalReference | None:
+        self._require_point(point_id)
+        coincidence = self._external_coincidences.get(point_id)
+        return (
+            None
+            if coincidence is None
+            else self._external_references[coincidence.reference_id]
+        )
+
+    def association_status(self, point_id: str) -> str:
+        reference = self.external_reference_for_point(point_id)
+        if reference is None:
+            return "自由"
+        if reference.id in self._unresolved_reference_ids:
+            return "未解析"
+        return "已关联"
+
+    def associate_point(
+        self,
+        point_id: str,
+        reference_point: SketchReferencePoint,
+    ) -> None:
+        self._require_point(point_id)
+        if type(reference_point) is not SketchReferencePoint:
+            raise TypeError("reference_point must be a SketchReferencePoint")
+
+        def apply() -> None:
+            self._points[point_id] = SketchPoint(
+                point_id,
+                reference_point.u,
+                reference_point.v,
+            )
+            self._bind_external_reference(point_id, reference_point)
+
+        self._mutate(apply)
+
+    def release_point_association(self, point_id: str) -> None:
+        self._require_point(point_id)
+        if point_id not in self._external_coincidences:
+            return
+
+        def apply() -> None:
+            self._remove_point_association(point_id)
+
+        self._mutate(apply)
+
+    def refresh_external_references(
+        self,
+        available: tuple[SketchReferencePoint, ...],
+    ) -> None:
+        """Re-resolve exact sources and retain coordinates for missing sources."""
+
+        lookup = {
+            (point.reference.source.logical_id, point.derived_type): point
+            for point in available
+        }
+        unresolved: set[str] = set()
+        for point_id, coincidence in self._external_coincidences.items():
+            reference = self._external_references[coincidence.reference_id]
+            resolved = lookup.get((reference.source.logical_id, reference.derived_type))
+            if resolved is None:
+                unresolved.add(reference.id)
+                continue
+            self._points[point_id] = SketchPoint(point_id, resolved.u, resolved.v)
+        self._unresolved_reference_ids = unresolved
+
     def delete_point(self, point_id: str) -> None:
         self._require_point(point_id)
 
@@ -349,6 +456,7 @@ class SketchDraftController:
             )
             for curve_id in dependent:
                 del self._curves[curve_id]
+            self._remove_point_association(point_id)
             self._clear_selection_id(point_id)
 
         self._mutate(apply)
@@ -402,6 +510,12 @@ class SketchDraftController:
         height: float | None = None,
         point_ids: tuple[str, str, str, str] | None = None,
         curve_ids: tuple[str, str, str, str] | None = None,
+        external_references: tuple[
+            SketchReferencePoint | None,
+            SketchReferencePoint | None,
+            SketchReferencePoint | None,
+            SketchReferencePoint | None,
+        ] | None = None,
     ) -> tuple[SketchPoint, ...]:
         if len(args) == 2:
             if first is not None or second is not None:
@@ -439,6 +553,12 @@ class SketchDraftController:
             SketchPoint(ids[2], right, top),
             SketchPoint(ids[3], left, top),
         )
+        references = external_references or (None, None, None, None)
+        if len(references) != 4 or any(
+            item is not None and type(item) is not SketchReferencePoint
+            for item in references
+        ):
+            raise TypeError("rectangle external references must contain four values")
         lines = (
             SketchLine(curve_names[0], ids[0], ids[1]),
             SketchLine(curve_names[1], ids[1], ids[2]),
@@ -451,6 +571,14 @@ class SketchDraftController:
                 self._assert_new_id(item.id)
             self._points.update({item.id: item for item in points})
             self._curves.update({item.id: item for item in lines})
+            for point, reference_point in zip(points, references, strict=True):
+                if reference_point is not None:
+                    self._points[point.id] = SketchPoint(
+                        point.id,
+                        reference_point.u,
+                        reference_point.v,
+                    )
+                    self._bind_external_reference(point.id, reference_point)
 
         self._mutate(apply)
         return points
@@ -463,6 +591,7 @@ class SketchDraftController:
         *,
         point_id: str | None = None,
         curve_id: str | None = None,
+        external_reference: SketchReferencePoint | None = None,
     ) -> SketchCircle:
         if isinstance(center, (int, float)) and radius is not None and third is not None:
             center_pair = (center, radius)
@@ -476,6 +605,10 @@ class SketchDraftController:
         center_name = point_id or self._next_id("P", self._points)
         circle_name = curve_id or self._next_id("C", self._curves)
         point = SketchPoint(center_name, x, y)
+        if external_reference is not None and type(external_reference) is not SketchReferencePoint:
+            raise TypeError("external_reference must be a SketchReferencePoint")
+        if external_reference is not None:
+            point = SketchPoint(center_name, external_reference.u, external_reference.v)
         circle = SketchCircle(circle_name, center_name, radius_value)
 
         def apply() -> None:
@@ -483,6 +616,8 @@ class SketchDraftController:
             self._assert_new_id(circle.id)
             self._points[point.id] = point
             self._curves[circle.id] = circle
+            if external_reference is not None:
+                self._bind_external_reference(point.id, external_reference)
 
         self._mutate(apply)
         return circle
@@ -497,6 +632,9 @@ class SketchDraftController:
         end_point_id: str | None = None,
         center_point_id: str | None = None,
         curve_id: str | None = None,
+        start_external_reference: SketchReferencePoint | None = None,
+        center_external_reference: SketchReferencePoint | None = None,
+        end_external_reference: SketchReferencePoint | None = None,
     ) -> SketchArc:
         new_points: list[SketchPoint] = []
         start_id = self._coerce_endpoint(start, start_point_id, "P", new_points)
@@ -526,6 +664,13 @@ class SketchDraftController:
             end_id,
             orientation,
         )
+        for reference_point in (
+            start_external_reference,
+            center_external_reference,
+            end_external_reference,
+        ):
+            if reference_point is not None and type(reference_point) is not SketchReferencePoint:
+                raise TypeError("arc external references must be SketchReferencePoint values")
 
         def apply() -> None:
             for point in (*new_points, center_point):
@@ -533,6 +678,19 @@ class SketchDraftController:
             self._assert_new_id(arc.id)
             self._points.update({point.id: point for point in (*new_points, center_point)})
             self._curves[arc.id] = arc
+            for point_id, reference_point in (
+                (start_id, start_external_reference),
+                (center_id, center_external_reference),
+                (end_id, end_external_reference),
+            ):
+                if reference_point is not None:
+                    if point_id != center_id:
+                        self._points[point_id] = SketchPoint(
+                            point_id,
+                            reference_point.u,
+                            reference_point.v,
+                        )
+                    self._bind_external_reference(point_id, reference_point)
 
         self._mutate(apply)
         return arc
@@ -599,6 +757,7 @@ class SketchDraftController:
             for point_id in candidate_point_ids:
                 if point_id not in used_point_ids:
                     self._points.pop(point_id, None)
+                    self._remove_point_association(point_id)
             self._clear_selection_id(curve_id)
 
         self._mutate(apply)
@@ -750,6 +909,7 @@ class SketchDraftController:
             for point_id in _curve_point_ids(target):
                 if point_id not in used_point_ids:
                     self._points.pop(point_id, None)
+                    self._remove_point_association(point_id)
 
         self._mutate(apply)
         return tuple(replacements)
@@ -970,6 +1130,14 @@ class SketchDraftController:
         return result
 
     def _restore_state(self, snapshot: SketchDraftSnapshot) -> None:
+        if len({item.id for item in snapshot.external_references}) != len(
+            snapshot.external_references
+        ):
+            raise ValueError("外部参考 ID 不能重复")
+        if len({item.point_id for item in snapshot.external_coincidences}) != len(
+            snapshot.external_coincidences
+        ):
+            raise ValueError("每个草图点最多只能绑定一个外部参考")
         self._name = snapshot.name
         self._plane = snapshot.plane
         self._points = {point.id: point for point in snapshot.points}
@@ -978,6 +1146,50 @@ class SketchDraftController:
         self._selected_kind = snapshot.selected_kind
         self._pending_command = snapshot.pending_command
         self._revision = snapshot.revision
+        self._external_references = {
+            reference.id: reference for reference in snapshot.external_references
+        }
+        self._external_coincidences = {
+            coincidence.point_id: coincidence
+            for coincidence in snapshot.external_coincidences
+        }
+        self._unresolved_reference_ids = set(snapshot.unresolved_reference_ids)
+        self._validate_associations()
+
+    def _bind_external_reference(
+        self,
+        point_id: str,
+        reference_point: SketchReferencePoint,
+    ) -> None:
+        self._remove_point_association(point_id)
+        reference = reference_point.reference
+        self._external_references[reference.id] = reference
+        self._external_coincidences[point_id] = SketchExternalCoincidence(
+            point_id,
+            reference.id,
+        )
+        self._unresolved_reference_ids.discard(reference.id)
+
+    def _remove_point_association(self, point_id: str) -> None:
+        coincidence = self._external_coincidences.pop(point_id, None)
+        if coincidence is None:
+            return
+        reference_id = coincidence.reference_id
+        if not any(
+            item.reference_id == reference_id
+            for item in self._external_coincidences.values()
+        ):
+            self._external_references.pop(reference_id, None)
+            self._unresolved_reference_ids.discard(reference_id)
+
+    def _validate_associations(self) -> None:
+        for point_id, coincidence in self._external_coincidences.items():
+            if point_id not in self._points:
+                raise ValueError("外部重合关系引用了不存在的草图点")
+            if coincidence.reference_id not in self._external_references:
+                raise ValueError("外部重合关系引用了不存在的外部参考")
+        if not self._unresolved_reference_ids.issubset(self._external_references):
+            raise ValueError("未解析状态引用了不存在的外部参考")
 
     def _assert_new_id(self, entity_id: str) -> None:
         folded = entity_id.casefold()

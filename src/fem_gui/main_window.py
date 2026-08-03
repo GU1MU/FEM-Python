@@ -161,7 +161,7 @@ from .agent_authoring import (
     create_session_authoring_workflow_controller,
 )
 from .part_boolean import PartBooleanController
-from .planar_boolean import PlanarBooleanController
+from .planar_boolean import PlanarBooleanController, planar_reference_points
 from .analysis_dialogs import JobManagerDialog, JobSubmitDialog
 from .analysis_definition_dialogs import (
     AnalysisDefinitionManagerDialog,
@@ -3774,7 +3774,13 @@ class FEMMainWindow(QMainWindow):
                 )
                 return
             try:
-                planar.set_tool_recipe(root)
+                snapshot = controller.snapshot()
+                planar.set_tool_recipe(
+                    root,
+                    external_references=snapshot.external_references,
+                    external_coincidences=snapshot.external_coincidences,
+                    unresolved_reference_ids=snapshot.unresolved_reference_ids,
+                )
             except (TypeError, ValueError) as error:
                 self.sketch_editor_panel.show_status(str(error))
                 return
@@ -4406,11 +4412,18 @@ class FEMMainWindow(QMainWindow):
             )
             return
         root = controller.tool_geometry
-        draft = (
-            SketchDraftController(root=root)
-            if root is not None
-            else SketchDraftController(name="布尔工具草图")
-        )
+        if root is not None:
+            restored = SketchDraftController.snapshot_from_geometry(root)
+            draft = SketchDraftController(
+                snapshot=replace(
+                    restored,
+                    external_references=controller.external_references,
+                    external_coincidences=controller.external_coincidences,
+                    unresolved_reference_ids=controller.unresolved_reference_ids,
+                )
+            )
+        else:
+            draft = SketchDraftController(name="布尔工具草图")
         self._sketch_editor_controller = draft
         self._sketch_editor_original_recipe = None
         self._sketch_editor_base_revision = controller.base_session_revision
@@ -4443,6 +4456,14 @@ class FEMMainWindow(QMainWindow):
         )
         if not target_faces:
             target_faces = source_preview.faces
+        if controller.target_face_id is not None:
+            self.sketch_editor_panel.set_reference_points(
+                planar_reference_points(
+                    source_preview,
+                    controller.target_face_id,
+                    plane=draft.plane,
+                )
+            )
         if target_faces:
             self.viewport.show_sketch_reference_preview(
                 GeometryPreview(

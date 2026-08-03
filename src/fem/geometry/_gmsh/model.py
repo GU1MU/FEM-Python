@@ -2161,6 +2161,53 @@ class GeometryModel:
             "curve length",
         )
 
+    def circle_center(self, curve: EntityRef) -> tuple[float, float, float]:
+        """Return the exact analytic center of one OCC Circle edge."""
+
+        operation = "circle_center"
+        target = self._prepare_geometry_query_entity(curve, operation=operation)
+        if target.dimension != 1:
+            raise ValueError("circle_center requires a dimension-one curve reference")
+        if self.geometry_type(target).casefold() not in {"circle", "ellipse"}:
+            raise ValueError("circle_center requires an OCC Circle curve")
+        self._activate(operation)
+        self._gmsh.model.occ.synchronize()
+        minimum, maximum = self._gmsh.model.getParametrizationBounds(1, target.tag)
+        start = float(minimum[0])
+        span = float(maximum[0]) - start
+        if not math.isfinite(span) or span <= 0.0:
+            raise GeometryError(
+                f"geometry model {self.name!r}: invalid Circle parametrization"
+            )
+        samples = tuple(
+            tuple(
+                _finite_float(value, "Circle sample coordinate")
+                for value in self._gmsh.model.getValue(
+                    1,
+                    target.tag,
+                    (start + fraction * span,),
+                )[:3]
+            )
+            for fraction in tuple(index / 8.0 for index in range(8))
+        )
+        center = _three_point_circle_center(samples[0], samples[2], samples[5])
+        radii = tuple(
+            math.sqrt(
+                sum(
+                    (sample[index] - center[index]) ** 2
+                    for index in range(3)
+                )
+            )
+            for sample in samples
+        )
+        radius = sum(radii) / len(radii)
+        if radius <= 0.0 or max(abs(value - radius) for value in radii) > max(
+            1.0e-10,
+            radius * 1.0e-7,
+        ):
+            raise ValueError("circle_center requires a circular OCC edge")
+        return center
+
     def area(self, surface: EntityRef) -> float:
         """Return the OCC area of one live surface."""
         target = self._prepare_geometry_query_entity(surface, operation="area")
@@ -4403,6 +4450,42 @@ def _positive_integer_sequence(values: Sequence[int], label: str) -> tuple[int, 
 
 def _dim_tags(entities: Iterable[EntityRef]) -> list[tuple[int, int]]:
     return [(entity.dimension, entity.tag) for entity in entities]
+
+
+def _three_point_circle_center(
+    first: tuple[float, ...],
+    second: tuple[float, ...],
+    third: tuple[float, ...],
+) -> tuple[float, float, float]:
+    """Return the 3D circumcenter of three points on one known circle."""
+
+    left = tuple(second[index] - first[index] for index in range(3))
+    right = tuple(third[index] - first[index] for index in range(3))
+
+    def cross(a, b):
+        return (
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        )
+
+    normal = cross(left, right)
+    normal_squared = sum(value * value for value in normal)
+    if not math.isfinite(normal_squared) or normal_squared <= 1.0e-24:
+        raise GeometryError("Circle samples do not define a stable center")
+    left_squared = sum(value * value for value in left)
+    right_squared = sum(value * value for value in right)
+    first_term = cross(right, normal)
+    second_term = cross(normal, left)
+    offset = tuple(
+        (
+            left_squared * first_term[index]
+            + right_squared * second_term[index]
+        )
+        / (2.0 * normal_squared)
+        for index in range(3)
+    )
+    return tuple(first[index] + offset[index] for index in range(3))
 
 
 __all__ = [

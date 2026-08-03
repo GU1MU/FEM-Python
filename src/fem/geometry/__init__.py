@@ -156,7 +156,12 @@ from ._gmsh.model import GeometryModel, model
 from .sketch_support import (
     FaceWorkplaneResolutionError,
     ResolvedFaceWorkplane,
+    SketchReferencePoint,
+    SketchSnapCandidate,
+    provide_face_reference_points,
+    resolve_external_reference_points,
     resolve_face_workplane,
+    select_sketch_snap_candidate,
 )
 
 __all__ = [
@@ -230,6 +235,8 @@ __all__ = [
     "SketchExternalReferenceType",
     "SketchLine",
     "SketchPlane",
+    "SketchReferencePoint",
+    "SketchSnapCandidate",
     "SketchPoint",
     "SketchProfile",
     "SketchProfileAnalysis",
@@ -273,11 +280,13 @@ __all__ = [
     "next_body_id",
     "next_boolean_feature_id",
     "provisional_body_boolean",
+    "provide_face_reference_points",
     "rename_solid_body",
     "retired_recipe_ids",
     "recipe_characteristic_size",
     "resolve_legacy_hole_target",
     "resolve_extrusion_source_faces",
+    "resolve_external_reference_points",
     "resolve_face_workplane",
     "resolve_planar_boolean_faces",
     "resolve_planar_boolean_lineage",
@@ -287,6 +296,7 @@ __all__ = [
     "supports_structured_hexahedron",
     "strip_part_logical_id",
     "strip_part_reference",
+    "select_sketch_snap_candidate",
     "transform_solid_body",
     "transformed_circle",
     "undo_solid_body_feature",

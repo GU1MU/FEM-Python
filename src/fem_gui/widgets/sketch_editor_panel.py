@@ -30,6 +30,7 @@ from fem.geometry import (
     SketchGeometry,
     SketchLine,
     SketchPlane,
+    SketchReferencePoint,
 )
 
 from ..geometry_preview import build_strict_sketch_draft_preview
@@ -64,6 +65,9 @@ class SketchEditorPanel(QWidget):
         self._base_snapshot: SketchDraftSnapshot | None = None
         self._refreshing = False
         self._pending_points: list[tuple[float, float]] = []
+        self._pending_references: list[SketchReferencePoint | None] = []
+        self._incoming_reference: SketchReferencePoint | None = None
+        self._reference_points: tuple[SketchReferencePoint, ...] = ()
         self._polyline_start_id: str | None = None
         self._polyline_first_id: str | None = None
         self._authoring_purpose = "geometry"
@@ -124,9 +128,9 @@ class SketchEditorPanel(QWidget):
         self.spacing_spin.setValue(0.1)
         self.spacing_spin.valueChanged.connect(self._grid_changed)
 
-        self.points_table = QTableWidget(0, 3, self)
+        self.points_table = QTableWidget(0, 4, self)
         self.points_table.setObjectName("sketchPointsTable")
-        self.points_table.setHorizontalHeaderLabels(("ID", "U", "V"))
+        self.points_table.setHorizontalHeaderLabels(("ID", "U", "V", "关联"))
         self.points_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
         )
@@ -213,6 +217,9 @@ class SketchEditorPanel(QWidget):
 
         self.delete_button = QPushButton("删除所选", self)
         self.delete_button.clicked.connect(self.delete_selected)
+        self.release_association_button = QPushButton("解除关联", self)
+        self.release_association_button.setObjectName("sketchReleaseAssociationButton")
+        self.release_association_button.clicked.connect(self.release_selected_association)
         self.undo_button = QPushButton("撤销", self)
         self.redo_button = QPushButton("重做", self)
         self.undo_button.clicked.connect(self.undo)
@@ -253,6 +260,7 @@ class SketchEditorPanel(QWidget):
         form.addRow("网格间距", self.spacing_spin)
         edit_row = QHBoxLayout()
         edit_row.addWidget(self.delete_button)
+        edit_row.addWidget(self.release_association_button)
         edit_row.addWidget(self.undo_button)
         edit_row.addWidget(self.redo_button)
         bottom = QHBoxLayout()
@@ -286,6 +294,20 @@ class SketchEditorPanel(QWidget):
         self._clear_pending()
         self._refresh()
 
+    def set_reference_points(
+        self,
+        reference_points: tuple[SketchReferencePoint, ...],
+    ) -> None:
+        values = tuple(reference_points)
+        if any(type(item) is not SketchReferencePoint for item in values):
+            raise TypeError("reference_points must contain SketchReferencePoint values")
+        self._reference_points = values
+        if self._controller is not None:
+            self._controller.refresh_external_references(values)
+        if self._viewport is not None:
+            self._viewport.set_sketch_reference_points(values)
+        self._refresh()
+
     def attach_viewport(self, viewport) -> None:
         if self._viewport is viewport:
             return
@@ -295,6 +317,7 @@ class SketchEditorPanel(QWidget):
         if viewport is None:
             return
         viewport.sketchWorkPlanePointSelected.connect(self._point_from_viewport)
+        viewport.sketchReferencePointSelected.connect(self._reference_from_viewport)
         viewport.sketchDraftPointSelected.connect(self._select_point)
         viewport.sketchDraftCurveSelected.connect(self._select_curve)
         viewport.sketchDraftProfileSelected.connect(self._select_profile)
@@ -309,6 +332,7 @@ class SketchEditorPanel(QWidget):
     def _disconnect_viewport(self, viewport) -> None:
         connections = (
             (viewport.sketchWorkPlanePointSelected, self._point_from_viewport),
+            (viewport.sketchReferencePointSelected, self._reference_from_viewport),
             (viewport.sketchDraftPointSelected, self._select_point),
             (viewport.sketchDraftCurveSelected, self._select_curve),
             (viewport.sketchDraftProfileSelected, self._select_profile),
@@ -349,6 +373,7 @@ class SketchEditorPanel(QWidget):
             self.render_data(),
             snap=self.snap_check.isChecked(),
             spacing=self.spacing_spin.value(),
+            reference_points=self._reference_points,
         )
         self.set_mode("polyline")
 
@@ -531,12 +556,18 @@ class SketchEditorPanel(QWidget):
     ) -> None:
         controller = self._require_controller()
         u, v = controller.plane.to_local(tuple(global_point))
+        reference_point = self._incoming_reference
+        self._incoming_reference = None
         try:
             if self.mode == "polyline":
                 closed = False
                 point_id = self._point_id_at(u, v)
                 if point_id is None:
-                    point_id = controller.add_point(u, v).id
+                    point_id = controller.add_point(
+                        u,
+                        v,
+                        external_reference=reference_point,
+                    ).id
                 if self._polyline_start_id is None:
                     self._polyline_start_id = point_id
                     self._polyline_first_id = point_id
@@ -551,25 +582,73 @@ class SketchEditorPanel(QWidget):
                     self._pending_points = [(u, v)]
             elif self.mode == "rectangle":
                 self._pending_points.append((u, v))
+                self._pending_references.append(reference_point)
                 if len(self._pending_points) == 2:
-                    controller.add_rectangle(*self._pending_points)
+                    first, second = self._pending_points
+                    left, right = sorted((first[0], second[0]))
+                    bottom, top = sorted((first[1], second[1]))
+                    corners = (
+                        (left, bottom),
+                        (right, bottom),
+                        (right, top),
+                        (left, top),
+                    )
+                    clicked = tuple(
+                        zip(
+                            self._pending_points,
+                            self._pending_references,
+                            strict=True,
+                        )
+                    )
+                    references = tuple(
+                        next(
+                            (
+                                item
+                                for coordinate, item in clicked
+                                if coordinate == corner
+                            ),
+                            None,
+                        )
+                        for corner in corners
+                    )
+                    controller.add_rectangle(
+                        *self._pending_points,
+                        external_references=references,
+                    )
                     self._clear_pending()
             elif self.mode == "circle":
                 self._pending_points.append((u, v))
+                self._pending_references.append(reference_point)
                 if len(self._pending_points) == 2:
                     center, rim = self._pending_points
                     radius = math.hypot(rim[0] - center[0], rim[1] - center[1])
-                    controller.add_circle(center, radius)
+                    controller.add_circle(
+                        center,
+                        radius,
+                        external_reference=self._pending_references[0],
+                    )
                     self._clear_pending()
             elif self.mode == "arc":
                 self._pending_points.append((u, v))
+                self._pending_references.append(reference_point)
                 if len(self._pending_points) == 3:
-                    controller.add_arc(*self._pending_points)
+                    controller.add_arc(
+                        *self._pending_points,
+                        start_external_reference=self._pending_references[0],
+                        center_external_reference=self._pending_references[1],
+                        end_external_reference=self._pending_references[2],
+                    )
                     self._clear_pending()
         except (TypeError, ValueError) as error:
             self._set_status(str(error))
             self._clear_pending()
         self._refresh()
+
+    def _reference_from_viewport(
+        self,
+        reference_point: SketchReferencePoint | None,
+    ) -> None:
+        self._incoming_reference = reference_point
 
     def _point_id_at(self, u: float, v: float) -> str | None:
         controller = self._require_controller()
@@ -625,6 +704,24 @@ class SketchEditorPanel(QWidget):
         else:
             self._set_status(f"已删除草图实体 {entity_id}")
         self._refresh()
+
+    def release_selected_association(self) -> None:
+        controller = self._require_controller()
+        snapshot = controller.snapshot()
+        point_id = (
+            snapshot.selected_ids[0]
+            if snapshot.selected_ids and snapshot.selected_kind == "point"
+            else None
+        )
+        if point_id is None:
+            self._set_status("请先选择一个关联草图点")
+            return
+        if controller.external_reference_for_point(point_id) is None:
+            self._set_status("所选草图点没有外部关联")
+            return
+        controller.release_point_association(point_id)
+        self._set_status(f"已解除草图点 {point_id} 的关联，当前位置保持不变")
+        self._refresh(selected_id=point_id)
 
     def undo(self) -> None:
         self._require_controller().undo()
@@ -954,10 +1051,15 @@ class SketchEditorPanel(QWidget):
             for row, point in enumerate(snapshot.points):
                 self.points_table.insertRow(row)
                 for column, value in enumerate(
-                    (point.id, f"{point.u:.6g}", f"{point.v:.6g}")
+                    (
+                        point.id,
+                        f"{point.u:.6g}",
+                        f"{point.v:.6g}",
+                        controller.association_status(point.id),
+                    )
                 ):
                     item = QTableWidgetItem(value)
-                    if column == 0:
+                    if column in {0, 3}:
                         item.setFlags(
                             item.flags() & ~Qt.ItemFlag.ItemIsEditable
                         )
@@ -976,6 +1078,15 @@ class SketchEditorPanel(QWidget):
             )
             self.undo_button.setEnabled(controller.can_undo)
             self.redo_button.setEnabled(controller.can_redo)
+            associated_selection = (
+                snapshot.selected_kind == "point"
+                and bool(snapshot.selected_ids)
+                and controller.external_reference_for_point(
+                    snapshot.selected_ids[0]
+                )
+                is not None
+            )
+            self.release_association_button.setEnabled(associated_selection)
             self._refresh_curve_parameters(snapshot)
             if selected_id is not None:
                 for row, point in enumerate(snapshot.points):
@@ -1000,6 +1111,8 @@ class SketchEditorPanel(QWidget):
 
     def _clear_pending(self) -> None:
         self._pending_points.clear()
+        self._pending_references.clear()
+        self._incoming_reference = None
         self._polyline_start_id = None
         self._polyline_first_id = None
         if self._viewport is not None:

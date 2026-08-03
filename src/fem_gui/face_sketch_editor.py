@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from fem.application import NativePart, SessionSnapshot
-from fem.geometry import MultiBodyGeometry, ResolvedFaceWorkplane, SketchGeometry
+from fem.geometry import (
+    MultiBodyGeometry,
+    ResolvedFaceWorkplane,
+    SketchExternalCoincidence,
+    SketchExternalReference,
+    SketchGeometry,
+    SketchReferencePoint,
+)
 
 from .sketch_editor import SketchDraftController, SketchDraftSnapshot
 
@@ -56,6 +63,10 @@ class FaceSupportedSketchController:
         *,
         root: SketchGeometry | None = None,
         name: str = "面草图-1",
+        reference_points: tuple[SketchReferencePoint, ...] = (),
+        external_references: tuple[SketchExternalReference, ...] = (),
+        external_coincidences: tuple[SketchExternalCoincidence, ...] = (),
+        unresolved_reference_ids: tuple[str, ...] = (),
     ) -> None:
         if type(session) is not SessionSnapshot:
             raise TypeError("session must be a SessionSnapshot")
@@ -72,6 +83,16 @@ class FaceSupportedSketchController:
             if root is not None
             else SketchDraftController(name=name, plane=workplane.plane)
         )
+        if external_references or external_coincidences or unresolved_reference_ids:
+            draft = SketchDraftController(
+                snapshot=replace(
+                    draft.snapshot(),
+                    external_references=tuple(external_references),
+                    external_coincidences=tuple(external_coincidences),
+                    unresolved_reference_ids=tuple(unresolved_reference_ids),
+                )
+            )
+        draft.refresh_external_references(tuple(reference_points))
         if draft.plane != workplane.plane:
             raise ValueError("草图工作平面与所选支撑面不一致")
         sketch_snapshot = draft.snapshot()
@@ -101,6 +122,15 @@ class FaceSupportedSketchController:
     def sketch_snapshot(self) -> SketchDraftSnapshot:
         """Return the current detached sketch revision without touching Session."""
 
+        return self._draft.snapshot()
+
+    def refresh_reference_points(
+        self,
+        reference_points: tuple[SketchReferencePoint, ...],
+    ) -> SketchDraftSnapshot:
+        """Rebuild associations by exact source identity for the current Face."""
+
+        self._draft.refresh_external_references(tuple(reference_points))
         return self._draft.snapshot()
 
     def launch_is_current(self, session: SessionSnapshot) -> bool:
