@@ -7,7 +7,7 @@ import logging
 import math
 import os
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -27,7 +27,7 @@ from fem.core._constraint_targets import (
     displacement_target_kind,
     resolve_displacement_node_ids,
 )
-from fem.geometry import LogicalEntityRef, logical_ref_sort_key
+from fem.geometry import LogicalEntityRef, SketchPlane, logical_ref_sort_key
 from fem.selection import edges as mesh_edges
 from fem.selection import faces as mesh_faces
 from ..geometry_preview import GeometryPreview
@@ -431,6 +431,7 @@ class SketchDraftRenderData:
     face_ids: tuple[str, ...] = ()
     selected_kind: str | None = None
     selected_id: str | None = None
+    plane: SketchPlane = field(default_factory=SketchPlane.xy)
 
     def __post_init__(self) -> None:
         points = tuple(
@@ -468,6 +469,8 @@ class SketchDraftRenderData:
             raise ValueError("invalid sketch draft selection kind")
         if self.selected_id is None and self.selected_kind is not None:
             raise ValueError("sketch selection kind requires an entity ID")
+        if type(self.plane) is not SketchPlane:
+            raise TypeError("sketch draft plane must be a SketchPlane")
         object.__setattr__(self, "points", points)
         object.__setattr__(self, "point_ids", point_ids)
         object.__setattr__(self, "curves", curves)
@@ -584,24 +587,108 @@ def _wire_coordinate_label(point: Iterable[float]) -> str:
     return f"({x:.2f}, {y:.2f}, {z:.2f})"
 
 
-def _sketch_camera_bounds(
-    points: Iterable[tuple[float, float, float]],
+def _intersect_ray_with_sketch_plane(
+    ray_start: Iterable[float],
+    ray_end: Iterable[float],
+    plane: SketchPlane,
+) -> tuple[float, float, float] | None:
+    """Intersect a display ray with an arbitrary immutable sketch frame."""
+
+    if type(plane) is not SketchPlane:
+        raise TypeError("plane must be a SketchPlane")
+    start = np.asarray(tuple(ray_start), dtype=float)
+    end = np.asarray(tuple(ray_end), dtype=float)
+    origin = np.asarray(plane.origin, dtype=float)
+    normal = np.asarray(plane.normal, dtype=float)
+    direction = end - start
+    denominator = float(np.dot(direction, normal))
+    if abs(denominator) <= 1.0e-12:
+        return None
+    parameter = float(np.dot(origin - start, normal) / denominator)
+    point = start + parameter * direction
+    return tuple(float(value) for value in point)
+
+
+def _snap_sketch_plane_point(
+    point: Iterable[float],
+    plane: SketchPlane,
     spacing: float,
-) -> tuple[float, float, float, float, float, float]:
-    """Frame a useful XY authoring area independently of the full grid actor."""
+) -> tuple[float, float, float]:
+    """Snap in U/V coordinates and map the result back to global space."""
 
     clean_spacing = float(spacing)
     if not np.isfinite(clean_spacing) or clean_spacing <= 0.0:
         raise ValueError("sketch grid spacing must be positive")
-    values = np.asarray(tuple(points), dtype=float)
-    if values.size:
-        values = values.reshape((-1, 3))
-        values = values[np.all(np.isfinite(values), axis=1)]
-    else:
-        values = np.empty((0, 3), dtype=float)
+    u, v = plane.to_local(tuple(float(value) for value in point))
+    return plane.to_global(
+        round(u / clean_spacing) * clean_spacing,
+        round(v / clean_spacing) * clean_spacing,
+    )
+
+
+def _sketch_local_points(
+    points: Iterable[tuple[float, float, float]],
+    plane: SketchPlane,
+) -> np.ndarray:
+    values = tuple(points)
+    if not values:
+        return np.empty((0, 2), dtype=float)
+    return np.asarray(
+        tuple(plane.to_local(point) for point in values),
+        dtype=float,
+    )
+
+
+def _sketch_grid_polydata(
+    pyvista,
+    plane: SketchPlane,
+    points: Iterable[tuple[float, float, float]],
+    spacing: float,
+):
+    """Build a bounded grid aligned to the frame's U/V axes."""
+
+    local = _sketch_local_points(points, plane)
+    local_3d = np.column_stack(
+        (local, np.zeros(len(local), dtype=float))
+    )
+    layout = _wire_grid_layout(local_3d, "XY", 0.0, spacing)
+    grid = _wire_grid_polydata(pyvista, layout)
+    grid.points = np.asarray(
+        tuple(
+            plane.to_global(float(point[0]), float(point[1]))
+            for point in grid.points
+        ),
+        dtype=float,
+    )
+    return grid, layout
+
+
+def _sketch_coordinate_label(
+    point: Iterable[float],
+    plane: SketchPlane,
+) -> str:
+    u, v = plane.to_local(tuple(float(value) for value in point))
+    return f"(U={u:.2f}, V={v:.2f})"
+
+
+def _sketch_camera_bounds(
+    points: Iterable[tuple[float, float, float]],
+    spacing: float,
+    plane: SketchPlane | None = None,
+) -> tuple[float, float, float, float, float, float]:
+    """Frame a useful authoring area independently of the full grid actor."""
+
+    clean_spacing = float(spacing)
+    if not np.isfinite(clean_spacing) or clean_spacing <= 0.0:
+        raise ValueError("sketch grid spacing must be positive")
+    frame = SketchPlane.xy() if plane is None else plane
+    if type(frame) is not SketchPlane:
+        raise TypeError("plane must be a SketchPlane")
+    values = _sketch_local_points(points, frame)
+    values = values[np.all(np.isfinite(values), axis=1)]
     if len(values):
-        minimum = np.min(values[:, :2], axis=0)
-        maximum = np.max(values[:, :2], axis=0)
+        minimum = np.min(values, axis=0)
+        maximum = np.max(values, axis=0)
         center = 0.5 * (minimum + maximum)
         spans = maximum - minimum
     else:
@@ -618,13 +705,30 @@ def _sketch_camera_bounds(
         minimum_half_extent,
     )
     depth = max(float(np.max(half_extents)) * 1.0e-6, 1.0e-6)
-    return (
-        float(center[0] - half_extents[0]),
-        float(center[0] + half_extents[0]),
-        float(center[1] - half_extents[1]),
-        float(center[1] + half_extents[1]),
-        -depth,
-        depth,
+    corners = np.asarray(
+        tuple(
+            frame.to_global(u, v)
+            for u in (
+                center[0] - half_extents[0],
+                center[0] + half_extents[0],
+            )
+            for v in (
+                center[1] - half_extents[1],
+                center[1] + half_extents[1],
+            )
+        ),
+        dtype=float,
+    )
+    normal = np.asarray(frame.normal, dtype=float)
+    corners = np.vstack(
+        (corners - depth * normal, corners + depth * normal)
+    )
+    minimum = np.min(corners, axis=0)
+    maximum = np.max(corners, axis=0)
+    return tuple(
+        float(value)
+        for pair in zip(minimum, maximum, strict=True)
+        for value in pair
     )
 
 
@@ -632,6 +736,7 @@ def _sketch_shape_preview_points(
     mode: str,
     pending_points: Iterable[tuple[float, float, float]],
     cursor_point: tuple[float, float, float] | None,
+    plane: SketchPlane | None = None,
 ) -> tuple[tuple[float, float, float], ...]:
     """Build the transient rectangle or circle polyline for a second click."""
 
@@ -646,35 +751,36 @@ def _sketch_shape_preview_points(
         or cursor_point is None
     ):
         return ()
-    start = np.asarray(pending[0], dtype=float)
-    cursor = np.asarray(cursor_point, dtype=float)
+    frame = SketchPlane.xy() if plane is None else plane
+    if type(frame) is not SketchPlane:
+        raise TypeError("plane must be a SketchPlane")
+    start = np.asarray(frame.to_local(pending[0]), dtype=float)
+    cursor = np.asarray(frame.to_local(cursor_point), dtype=float)
     if (
-        start.shape != (3,)
-        or cursor.shape != (3,)
+        start.shape != (2,)
+        or cursor.shape != (2,)
         or not np.all(np.isfinite(start))
         or not np.all(np.isfinite(cursor))
     ):
         return ()
     if normalized_mode == "rectangle":
-        if np.allclose(start[:2], cursor[:2], rtol=0.0, atol=1.0e-12):
+        if np.allclose(start, cursor, rtol=0.0, atol=1.0e-12):
             return ()
-        z = float(start[2])
         return (
-            (float(start[0]), float(start[1]), z),
-            (float(cursor[0]), float(start[1]), z),
-            (float(cursor[0]), float(cursor[1]), z),
-            (float(start[0]), float(cursor[1]), z),
-            (float(start[0]), float(start[1]), z),
+            frame.to_global(float(start[0]), float(start[1])),
+            frame.to_global(float(cursor[0]), float(start[1])),
+            frame.to_global(float(cursor[0]), float(cursor[1])),
+            frame.to_global(float(start[0]), float(cursor[1])),
+            frame.to_global(float(start[0]), float(start[1])),
         )
-    radius = float(np.linalg.norm(cursor[:2] - start[:2]))
+    radius = float(np.linalg.norm(cursor - start))
     if radius <= 1.0e-12:
         return ()
     angles = np.linspace(0.0, 2.0 * math.pi, 65)
     return tuple(
-        (
+        frame.to_global(
             float(start[0] + radius * math.cos(angle)),
             float(start[1] + radius * math.sin(angle)),
-            float(start[2]),
         )
         for angle in angles
     )
@@ -1489,7 +1595,7 @@ class FEMViewport(QWidget):
         snap: bool = True,
         spacing: float = 0.1,
     ) -> None:
-        """Enter transient XY sketch authoring without touching Session state."""
+        """Enter transient planar sketch authoring without touching Session."""
 
         if type(render_data) is not SketchDraftRenderData:
             raise TypeError("render_data must be a SketchDraftRenderData")
@@ -1523,26 +1629,47 @@ class FEMViewport(QWidget):
         self,
         preview: GeometryPreview,
         *,
+        support_face_id: str | None = None,
+        target_body_id: str | None = None,
         render: bool = True,
     ) -> None:
-        """Show a translucent, non-pickable reference below a tool sketch."""
+        """Show the target Body translucently and emphasize its support Face."""
 
         if type(preview) is not GeometryPreview:
             raise TypeError("preview must be a GeometryPreview")
         if not self._sketch_authoring_active:
             raise RuntimeError("sketch authoring must be active")
         self._remove_actor("sketch_reference_surface")
+        self._remove_actor("sketch_support_face_highlight")
         if is_offscreen_environment():
             return
         if not preview.faces or not self._ensure_plotter() or _pyvista is None:
             return
-        surface = _geometry_surface_polydata(
-            _pyvista,
-            np.asarray(preview.points, dtype=float),
-            preview,
-            (0,) * len(preview.faces),
-            (0,) * len(preview.faces),
+        has_body_ids = any(
+            body_id is not None
+            for body_id in preview.face_body_logical_ids
         )
+        face_indices = tuple(
+            index
+            for index, body_id in enumerate(
+                preview.face_body_logical_ids
+            )
+            if (
+                target_body_id is None
+                or not has_body_ids
+                or body_id == target_body_id
+            )
+        )
+        if not face_indices:
+            return
+        surface = _pyvista.PolyData()
+        surface.points = np.asarray(preview.points, dtype=float)
+        surface.faces = np.hstack(
+            tuple(
+                (len(preview.faces[index]), *preview.faces[index])
+                for index in face_indices
+            )
+        ).astype(np.int64)
         actor = self._plotter.add_mesh(
             surface,
             color="#7194ab",
@@ -1555,8 +1682,40 @@ class FEMViewport(QWidget):
             reset_camera=False,
         )
         actor.SetPickable(False)
-        actor.SetPosition(0.0, 0.0, -1.0e-6)
         self._actors["sketch_reference_surface"] = actor
+        if support_face_id is not None:
+            support_faces = tuple(
+                preview.faces[index]
+                for index in face_indices
+                if preview.face_logical_ids[index] == support_face_id
+            )
+            if support_faces:
+                highlight = _pyvista.PolyData()
+                highlight.points = np.asarray(
+                    preview.points,
+                    dtype=float,
+                )
+                highlight.faces = np.hstack(
+                    tuple(
+                        (len(face), *face)
+                        for face in support_faces
+                    )
+                ).astype(np.int64)
+                support_actor = self._plotter.add_mesh(
+                    highlight,
+                    color="#f5a623",
+                    opacity=0.52,
+                    show_edges=True,
+                    edge_color="#ff8c00",
+                    line_width=4,
+                    name="sketch_support_face_highlight",
+                    reset_camera=False,
+                    pickable=False,
+                )
+                support_actor.SetPickable(False)
+                self._actors["sketch_support_face_highlight"] = (
+                    support_actor
+                )
         if render:
             self._render()
 
@@ -1633,6 +1792,7 @@ class FEMViewport(QWidget):
             "sketch_authoring_hover",
             "sketch_authoring_hover_label",
             "sketch_reference_surface",
+            "sketch_support_face_highlight",
         ):
             self._remove_actor(name)
         self._sketch_authoring_active = False
@@ -1686,13 +1846,12 @@ class FEMViewport(QWidget):
         if not self._ensure_plotter() or _pyvista is None:
             return
         coordinates = np.asarray(data.points, dtype=float).reshape((-1, 3))
-        grid_layout = _wire_grid_layout(
-            coordinates,
-            "XY",
-            0.0,
+        grid, grid_layout = _sketch_grid_polydata(
+            _pyvista,
+            data.plane,
+            data.points,
             self._sketch_grid_spacing,
         )
-        grid = _wire_grid_polydata(_pyvista, grid_layout)
         self._actors["sketch_work_plane_grid"] = self._plotter.add_mesh(
             grid,
             color="#7f8f9f",
@@ -1702,16 +1861,24 @@ class FEMViewport(QWidget):
             reset_camera=False,
             pickable=False,
         )
-        center = np.asarray(grid_layout.center, dtype=float)
-        origin = np.zeros(3, dtype=float)
+        center = np.asarray(grid_layout.center[:2], dtype=float)
+        origin = np.asarray(data.plane.origin, dtype=float)
         half_size = 0.5 * grid_layout.plane_size
         label_points = [origin]
         axis_labels = ["O"]
-        for index, axis in enumerate((0, 1)):
-            start = origin.copy()
-            end = origin.copy()
-            start[axis] = center[axis] - half_size
-            end[axis] = center[axis] + half_size
+        for index in range(2):
+            local_start = center.copy()
+            local_end = center.copy()
+            local_start[index] -= half_size
+            local_end[index] += half_size
+            start = np.asarray(
+                data.plane.to_global(*local_start),
+                dtype=float,
+            )
+            end = np.asarray(
+                data.plane.to_global(*local_end),
+                dtype=float,
+            )
             axis_line = _pyvista.PolyData()
             axis_line.points = np.asarray((start, end), dtype=float)
             axis_line.lines = np.asarray((2, 0, 1), dtype=np.int64)
@@ -1725,7 +1892,7 @@ class FEMViewport(QWidget):
                 pickable=False,
             )
             label_points.append(end)
-            axis_labels.append(("X", "Y")[index])
+            axis_labels.append(("U", "V")[index])
         self._actors["sketch_work_plane_origin"] = self._plotter.add_mesh(
             _pyvista.PolyData(np.asarray((origin,), dtype=float)),
             color="#ff8c00",
@@ -1806,11 +1973,41 @@ class FEMViewport(QWidget):
             )
         self._show_sketch_authoring_hover(render=False)
         if reset_camera:
+            bounds = _sketch_camera_bounds(
+                data.points,
+                self._sketch_grid_spacing,
+                data.plane,
+            )
+            local_points = _sketch_local_points(
+                data.points,
+                data.plane,
+            )
+            local_center = (
+                np.mean(local_points, axis=0)
+                if len(local_points)
+                else np.zeros(2, dtype=float)
+            )
+            focal = np.asarray(
+                data.plane.to_global(*local_center),
+                dtype=float,
+            )
+            span = max(
+                bounds[1] - bounds[0],
+                bounds[3] - bounds[2],
+                bounds[5] - bounds[4],
+                1.0,
+            )
+            position = focal + 2.0 * span * np.asarray(
+                data.plane.normal
+            )
+            camera = self._plotter.camera
+            camera.SetFocalPoint(*focal)
+            camera.SetPosition(*position)
+            camera.SetViewUp(*data.plane.y_direction)
+            camera.ParallelProjectionOn()
+            camera.OrthogonalizeViewUp()
             self._plotter.reset_camera(
-                bounds=_sketch_camera_bounds(
-                    data.points,
-                    self._sketch_grid_spacing,
-                ),
+                bounds=bounds,
                 render=False,
             )
         if render:
@@ -2285,6 +2482,11 @@ class FEMViewport(QWidget):
             self._sketch_authoring_mode,
             self._sketch_pending_points,
             point,
+            (
+                None
+                if self._sketch_draft_render_data is None
+                else self._sketch_draft_render_data.plane
+            ),
         )
         if shape_points:
             shape = _pyvista.PolyData()
@@ -2327,7 +2529,16 @@ class FEMViewport(QWidget):
         self._actors["sketch_authoring_hover_label"] = (
             self._plotter.add_point_labels(
                 label_point,
-                [_wire_coordinate_label(point)],
+                [
+                    _sketch_coordinate_label(
+                        point,
+                        (
+                            SketchPlane.xy()
+                            if self._sketch_draft_render_data is None
+                            else self._sketch_draft_render_data.plane
+                        ),
+                    )
+                ],
                 point_size=0,
                 font_size=11,
                 shape=None,
@@ -2425,13 +2636,15 @@ class FEMViewport(QWidget):
         far = self._display_to_world(float(x), float(y), 1.0)
         if near is None or far is None:
             return None, "point.ray"
-        point = intersect_ray_with_work_plane(near, far, "XY", 0.0)
+        data = self._sketch_draft_render_data
+        plane = SketchPlane.xy() if data is None else data.plane
+        point = _intersect_ray_with_sketch_plane(near, far, plane)
         if point is None:
             return None, "point.parallel"
         if snap and self._sketch_grid_snap:
-            point = snap_work_plane_point(
+            point = _snap_sketch_plane_point(
                 point,
-                "XY",
+                plane,
                 self._sketch_grid_spacing,
             )
         return point, None
@@ -4108,6 +4321,7 @@ class FEMViewport(QWidget):
             return _sketch_camera_bounds(
                 () if data is None else data.points,
                 self._sketch_grid_spacing,
+                None if data is None else data.plane,
             )
         if self._wire_authoring_active:
             if (

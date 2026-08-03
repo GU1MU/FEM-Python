@@ -24,7 +24,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fem.geometry import SketchArc, SketchCircle, SketchGeometry, SketchLine
+from fem.geometry import (
+    SketchArc,
+    SketchCircle,
+    SketchGeometry,
+    SketchLine,
+    SketchPlane,
+)
 
 from ..geometry_preview import build_strict_sketch_draft_preview
 from ..sketch_editor import (
@@ -240,7 +246,9 @@ class SketchEditorPanel(QWidget):
 
         form = QFormLayout()
         form.addRow("草图名称", self.name_edit)
-        form.addRow("工作平面", QLabel("全局 XY", self))
+        self.work_plane_label = QLabel("全局 XY", self)
+        self.work_plane_label.setObjectName("sketchWorkPlaneLabel")
+        form.addRow("工作平面", self.work_plane_label)
         form.addRow(self.snap_check)
         form.addRow("网格间距", self.spacing_spin)
         edit_row = QHBoxLayout()
@@ -434,6 +442,7 @@ class SketchEditorPanel(QWidget):
                     "curve" if selected_kind == "edge" else selected_kind
                 ),
                 selected_id=selected_id,
+                plane=snapshot.plane,
             )
         return self._incomplete_render_data(snapshot, selected_kind, selected_id)
 
@@ -513,6 +522,7 @@ class SketchEditorPanel(QWidget):
                 "curve" if selected_kind == "edge" else selected_kind
             ),
             selected_id=selected_id,
+            plane=snapshot.plane,
         )
 
     def _point_from_viewport(
@@ -935,6 +945,11 @@ class SketchEditorPanel(QWidget):
         self._refreshing = True
         try:
             self.name_edit.setText(snapshot.name)
+            self.work_plane_label.setText(
+                "全局 XY"
+                if snapshot.plane == SketchPlane.xy()
+                else "实体平面面（U/V）"
+            )
             self.points_table.setRowCount(0)
             for row, point in enumerate(snapshot.points):
                 self.points_table.insertRow(row)
@@ -976,7 +991,10 @@ class SketchEditorPanel(QWidget):
         if self._viewport is not None:
             self._viewport.update_sketch_draft(self.render_data())
             self._viewport.set_sketch_pending_points(
-                tuple((u, v, 0.0) for u, v in self._pending_points)
+                tuple(
+                    self._controller.plane.to_global(u, v)
+                    for u, v in self._pending_points
+                )
             )
         self.draftChanged.emit(self._controller.snapshot())
 
@@ -995,8 +1013,8 @@ class SketchEditorPanel(QWidget):
         messages = {
             "select": "当前位置没有可选择的草图实体",
             "trim": "请单击需要修剪的曲线",
-            "point.ray": "无法将单击位置投影到 XY 工作平面",
-            "point.parallel": "当前视线与 XY 工作平面平行",
+            "point.ray": "无法将单击位置投影到当前工作平面",
+            "point.parallel": "当前视线与工作平面平行",
         }
         self._set_status(messages.get(reason, f"草图操作未完成：{reason}"))
 
