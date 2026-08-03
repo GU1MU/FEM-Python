@@ -20,7 +20,7 @@ from fem_agent.providers.base import (
 )
 from fem_agent.providers.deepseek import DeepSeekProvider
 from fem_agent.providers.fake import FakeProvider
-from fem_agent.schemas import RunStatus, SessionPhase
+from fem_agent.schemas import RunStatus, SessionPhase, ToolResult
 from fem_agent.tools.registry import ToolExecutionContext
 from fem_agent.worker import (
     InspectionWorkerError,
@@ -142,6 +142,113 @@ def test_authoring_prompt_uses_proposal_first_geometry_and_local_unit_defaults(
     assert "propose a basic planar rectangular Part" in system_prompt
     assert "local defaults length=mm, force=N, and" in system_prompt
     assert "never create a separate unit-selection" in system_prompt
+
+
+def _register_test_continuation(engine, *, revision=4):
+    engine._register_continuation_from_result(
+        ToolResult(
+            ok=True,
+            session_id=engine.session_id,
+            input_revision=0,
+            idempotency_key="checkpoint-result",
+            summary="proposal waiting",
+            data={
+                "continuation_checkpoint": {
+                    "session_id": engine.session_id,
+                    "source_turn_id": "source-turn-1",
+                    "proposal_id": "proposal-continue-1",
+                    "proposal_hash": "a" * 64,
+                    "model_revision": revision,
+                }
+            },
+        )
+    )
+
+
+def test_proposal_continuation_uses_system_envelope_and_consumes_once(tmp_path):
+    provider = FakeProvider(
+        [_text_response("等待本地确认"), _text_response("继续下一阶段")]
+    )
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_continuation_success",
+    )
+    engine.send_message("建立模型")
+    _register_test_continuation(engine)
+
+    events = engine.continue_after_proposal(
+        "proposal-continue-1",
+        "a" * 64,
+        "source-turn-1",
+        4,
+        "succeeded",
+        "几何创建完成",
+    )
+
+    assert any(
+        event.event is EngineEventType.MESSAGE_DELTA
+        and event.data["text"] == "继续下一阶段"
+        for event in events
+    )
+    continuation_request = provider.requests[1]
+    assert continuation_request.messages[-1].role == "system"
+    assert "proposal_terminal" in continuation_request.messages[-1].content
+    assert sum(
+        message.role == "user" for message in continuation_request.messages
+    ) == 1
+    assert continuation_request.tools
+    assert engine.continue_after_proposal(
+        "proposal-continue-1",
+        "a" * 64,
+        "source-turn-1",
+        4,
+        "succeeded",
+    ) == ()
+    assert len(provider.requests) == 2
+
+    _register_test_continuation(engine, revision=9)
+    assert engine.continue_after_proposal(
+        "proposal-continue-1",
+        "a" * 64,
+        "source-turn-1",
+        9,
+        "cancelled",
+    ) == ()
+    assert len(provider.requests) == 2
+
+
+def test_failed_or_revision_changed_continuation_cannot_advance_tools(tmp_path):
+    provider = FakeProvider(
+        [_text_response("等待本地确认"), _text_response("请修正后重试")]
+    )
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_continuation_failure",
+    )
+    engine.send_message("建立模型")
+    _register_test_continuation(engine)
+
+    engine.continue_after_proposal(
+        "proposal-continue-1",
+        "a" * 64,
+        "source-turn-1",
+        4,
+        "failed",
+        "本地任务失败",
+    )
+
+    assert provider.requests[1].tools == ()
+    _register_test_continuation(engine, revision=7)
+    assert engine.continue_after_proposal(
+        "proposal-continue-1",
+        "a" * 64,
+        "source-turn-1",
+        8,
+        "succeeded",
+    ) == ()
+    assert len(provider.requests) == 2
 
 
 def _attached_engine(tmp_path, provider):

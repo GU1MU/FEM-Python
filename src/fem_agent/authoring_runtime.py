@@ -1618,6 +1618,13 @@ class AuthoringWorkflowController:
             return tuple(self._terminals)
 
     @property
+    def binding_identity(self) -> tuple[str, str, int] | None:
+        """Return the last owner-thread-observed model identity."""
+
+        with self._lock:
+            return self._binding_identity
+
+    @property
     def project_save_record(self) -> ProjectSaveProposalRecord | None:
         with self._lock:
             return self._project_save_record

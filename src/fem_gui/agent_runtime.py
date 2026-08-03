@@ -74,6 +74,18 @@ class AgentEnginePort(Protocol):
         request_context: str | None = None,
     ) -> tuple[EngineEvent, ...]: ...
 
+    def continue_after_proposal(
+        self,
+        proposal_id: str,
+        proposal_hash: str,
+        source_turn_id: str,
+        model_revision: int,
+        status: str,
+        summary: str = "",
+    ) -> tuple[EngineEvent, ...]: ...
+
+    def discard_continuation(self, proposal_id: str) -> bool: ...
+
     def create_session(self) -> tuple[EngineEvent, ...]: ...
 
     def attach_artifact(
@@ -174,8 +186,21 @@ class _ProposalLifecycle:
     proposal_id: str
     proposal_hash: str
     proposal_kind: str
+    source_turn_id: str
+    model_revision: int
     state: ProposalState = ProposalState.PENDING_CONFIRMATION
     progress: float = 0.0
+
+
+@dataclass(frozen=True)
+class _ProposalContinuation:
+    session_id: str
+    proposal_id: str
+    proposal_hash: str
+    source_turn_id: str
+    model_revision: int
+    status: str
+    summary: str
 
 
 @dataclass
@@ -371,6 +396,7 @@ class QtAgentRuntime(QObject):
         self._shutdown = False
         self._authoring_invocations: dict[int, _AuthoringToolInvocation] = {}
         self._proposal_lifecycles: dict[str, _ProposalLifecycle] = {}
+        self._pending_continuation: _ProposalContinuation | None = None
         self._attached_input_key: tuple[str, str, str] | None = None
         self.sessionReset.connect(
             self._reset_authoring_controller_for_session,
@@ -565,6 +591,8 @@ class QtAgentRuntime(QObject):
         self._require_owner_thread()
         normalized = ProposalState(state)
         emitted: list[AgentEvent] = []
+        continuation: _ProposalContinuation | None = None
+        discard_checkpoint = False
         with self._lock:
             lifecycle = self._proposal_lifecycles.get(str(proposal_id))
             if lifecycle is None:
@@ -573,7 +601,10 @@ class QtAgentRuntime(QObject):
             identity_matches = (
                 lifecycle.proposal_hash == str(proposal_hash)
                 and lifecycle.session_id == str(agent_session_id)
-                and lifecycle.turn_id == str(turn_id)
+                and str(turn_id) in {
+                    lifecycle.turn_id,
+                    lifecycle.source_turn_id,
+                }
                 and (
                     self._gui_session_id is None
                     or self._gui_session_id == lifecycle.session_id
@@ -657,7 +688,40 @@ class QtAgentRuntime(QObject):
                     {**identity, "reason": text or normalized.value},
                 )
                 lifecycle.state = normalized
+            if normalized in {
+                ProposalState.SUCCEEDED,
+                ProposalState.REJECTED,
+                ProposalState.STALE,
+                ProposalState.FAILED,
+                ProposalState.CANCELLED,
+            }:
+                controller = self._authoring_controller
+                binding_identity = (
+                    None
+                    if controller is None
+                    else controller.binding_identity
+                )
+                revision_changed = (
+                    binding_identity is not None
+                    and binding_identity[2] != lifecycle.model_revision
+                )
+                if normalized is ProposalState.CANCELLED or revision_changed:
+                    discard_checkpoint = True
+                else:
+                    continuation = _ProposalContinuation(
+                        session_id=lifecycle.session_id,
+                        proposal_id=lifecycle.proposal_id,
+                        proposal_hash=lifecycle.proposal_hash,
+                        source_turn_id=lifecycle.source_turn_id,
+                        model_revision=lifecycle.model_revision,
+                        status=normalized.value,
+                        summary=text or normalized.value,
+                    )
         self._emit_events(emitted)
+        if discard_checkpoint:
+            self._discard_proposal_continuation(str(proposal_id))
+        elif continuation is not None:
+            self._queue_proposal_continuation(continuation)
         return bool(emitted)
 
     def synchronize_event_projection_from_gui(self, presentation: object) -> None:
@@ -677,6 +741,8 @@ class QtAgentRuntime(QObject):
                     proposal_id=str(proposal.proposal_id),
                     proposal_hash=str(proposal.proposal_hash),
                     proposal_kind=str(proposal.proposal_kind),
+                    source_turn_id=turn_id,
+                    model_revision=int(proposal.base_session_revision),
                     state=state,
                     progress=float(proposal.progress),
                 )
@@ -1188,6 +1254,116 @@ class QtAgentRuntime(QObject):
             self.sessionReset.emit(engine.session_id)
         except Exception:
             self.operationRejected.emit("无法创建新的 Agent 会话")
+        finally:
+            self._finish_operation(generation)
+
+    def _queue_proposal_continuation(
+        self,
+        continuation: _ProposalContinuation,
+    ) -> None:
+        emit_busy = False
+        discard = False
+        with self._lock:
+            continuation_entry = getattr(
+                self._engine,
+                "continue_after_proposal",
+                None,
+            )
+            if not callable(continuation_entry):
+                discard = True
+            elif self._shutdown or continuation.session_id != self._gui_session_id:
+                discard = True
+            elif self._pending_continuation is not None:
+                discard = True
+            elif self._busy:
+                self._pending_continuation = continuation
+            else:
+                self._busy = True
+                self._cancel_requested = False
+                self._generation += 1
+                generation = self._generation
+                self._session_executor.submit(
+                    self._run_continuation,
+                    generation,
+                    continuation,
+                )
+                emit_busy = True
+        if discard:
+            self._discard_proposal_continuation(continuation.proposal_id)
+        elif emit_busy:
+            self.busyChanged.emit(True)
+
+    def _discard_proposal_continuation(self, proposal_id: str) -> None:
+        with self._lock:
+            engine = self._engine
+        discard = getattr(engine, "discard_continuation", None)
+        if callable(discard):
+            discard(proposal_id)
+
+    def _run_continuation(
+        self,
+        generation: int,
+        continuation: _ProposalContinuation,
+    ) -> None:
+        context: _TurnContext | None = None
+        try:
+            with self._lock:
+                engine = self._engine
+                stopped = self._shutdown or generation != self._generation
+            if stopped or engine is None:
+                self._discard_proposal_continuation(
+                    continuation.proposal_id
+                )
+                return
+            if engine.session_id != continuation.session_id:
+                self._discard_proposal_continuation(
+                    continuation.proposal_id
+                )
+                return
+            context, reset_session = self._start_turn(
+                generation,
+                continuation.session_id,
+                operation="continuation",
+            )
+            if reset_session:
+                self.sessionReset.emit(continuation.session_id)
+            self.agentEventReady.emit(
+                self._new_event(
+                    context,
+                    EventType.CONTINUATION_STARTED,
+                    {
+                        "proposal_id": continuation.proposal_id,
+                        "proposal_hash": continuation.proposal_hash,
+                        "source_turn_id": continuation.source_turn_id,
+                        "status": continuation.status,
+                    },
+                )
+            )
+            continuation_entry = getattr(
+                engine,
+                "continue_after_proposal",
+                None,
+            )
+            if not callable(continuation_entry):
+                return
+            engine.reset_operation_start_signal()
+            continuation_entry(
+                continuation.proposal_id,
+                continuation.proposal_hash,
+                continuation.source_turn_id,
+                continuation.model_revision,
+                continuation.status,
+                continuation.summary,
+            )
+            self._finish_success(context)
+        except Exception:
+            if context is not None:
+                self._fail_turn(
+                    context,
+                    title="Agent 续跑失败",
+                    message="Agent 未能处理本地任务终态。",
+                    code="GUI-CONTINUATION-ERROR",
+                )
         finally:
             self._finish_operation(generation)
 
@@ -1728,12 +1904,33 @@ class QtAgentRuntime(QObject):
             proposal_id = str(proposal_view.get("proposal_id", ""))
             proposal_hash = str(proposal_view.get("proposal_hash", ""))
             proposal_kind = str(proposal_view.get("proposal_kind", ""))
+            checkpoint = (
+                data.get("continuation_checkpoint")
+                if isinstance(data, Mapping)
+                else None
+            )
+            source_turn_id = context.turn_id
+            model_revision = int(
+                proposal_view.get("base_session_revision", 0)
+            )
+            if isinstance(checkpoint, Mapping):
+                source_turn_id = str(
+                    checkpoint.get("source_turn_id", source_turn_id)
+                )
+                raw_revision = checkpoint.get(
+                    "model_revision",
+                    model_revision,
+                )
+                if type(raw_revision) is int:
+                    model_revision = raw_revision
             self._proposal_lifecycles[proposal_id] = _ProposalLifecycle(
                 session_id=context.session_id,
                 turn_id=context.turn_id,
                 proposal_id=proposal_id,
                 proposal_hash=proposal_hash,
                 proposal_kind=proposal_kind,
+                source_turn_id=source_turn_id,
+                model_revision=model_revision,
             )
             completed_events.append(
                 self._new_event_locked(
@@ -2026,6 +2223,7 @@ class QtAgentRuntime(QObject):
         return created
 
     def _finish_operation(self, generation: int) -> None:
+        continuation: _ProposalContinuation | None = None
         with self._lock:
             if generation != self._generation:
                 return
@@ -2034,9 +2232,21 @@ class QtAgentRuntime(QObject):
                     self._stream_backlog_metrics_locked(self._active_turn)
                 )
             self._active_turn = None
-            self._busy = False
             self._cancel_requested = False
-        self.busyChanged.emit(False)
+            continuation = self._pending_continuation
+            self._pending_continuation = None
+            if continuation is None or self._shutdown:
+                self._busy = False
+            else:
+                self._generation += 1
+                next_generation = self._generation
+                self._session_executor.submit(
+                    self._run_continuation,
+                    next_generation,
+                    continuation,
+                )
+        if continuation is None or self._shutdown:
+            self.busyChanged.emit(False)
 
     def _current_generation(self) -> int:
         with self._lock:

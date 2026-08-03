@@ -13,6 +13,8 @@ from PySide6.QtCore import QObject, Qt, Slot
 from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication, QWidget
 
+from fem_agent.authoring import ProposalState
+from fem_agent.authoring_runtime import AuthoringWorkflowController
 from fem_agent.engine import (
     AgentSessionEngine,
     EngineEvent,
@@ -245,6 +247,180 @@ class _ConfirmableEngine:
             revision=self.revision,
             revision_hash=self.revision_hash,
         )
+
+
+class _ContinuationEngine:
+    def __init__(self) -> None:
+        self.session_id = "agent-session-continuation"
+        self.continue_calls: list[tuple[object, ...]] = []
+        self.discard_calls: list[str] = []
+        self.closed = False
+
+    def reset_operation_start_signal(self) -> None:
+        return None
+
+    def continue_after_proposal(self, *arguments):
+        self.continue_calls.append(arguments)
+        return ()
+
+    def discard_continuation(self, proposal_id: str) -> bool:
+        self.discard_calls.append(proposal_id)
+        return True
+
+    def cancel_active_operation(self):
+        return ()
+
+    def close_session(self):
+        self.closed = True
+        return ()
+
+
+def _continuation_projection(*, revision: int = 7):
+    session_id = "agent-session-continuation"
+    proposal_hash = "c" * 64
+    events = (
+        AgentEvent.create(
+            event_id="continuation-seed-1",
+            session_id=session_id,
+            turn_id="turn-card-1",
+            sequence=1,
+            event_type=EventType.TURN_STARTED,
+            payload={"user_message": "建立模型"},
+        ),
+        AgentEvent.create(
+            event_id="continuation-seed-2",
+            session_id=session_id,
+            turn_id="turn-card-1",
+            sequence=2,
+            event_type=EventType.PROPOSAL_REQUESTED,
+            payload={
+                "proposal_id": "proposal-runtime-1",
+                "proposal_hash": proposal_hash,
+                "proposal_kind": "geometry",
+                "title": "建立几何",
+                "summary": "建立矩形",
+                "impact": "修改模型",
+                "confirm_label": "确认",
+                "target_document_id": "document:model-session-1",
+                "target_session_id": "model-session-1",
+                "base_session_revision": revision,
+            },
+        ),
+        AgentEvent.create(
+            event_id="continuation-seed-3",
+            session_id=session_id,
+            turn_id="turn-card-1",
+            sequence=3,
+            event_type=EventType.TURN_COMPLETE,
+            payload={},
+        ),
+    )
+    return AgentEventProjector.replay(events).presentation
+
+
+def test_runtime_serializes_one_continuation_and_rejects_late_terminal(tmp_path):
+    runtime = QtAgentRuntime(tmp_path / "agent-private")
+    continuation_events = []
+    runtime.agentEventReady.connect(continuation_events.append)
+    engine = _ContinuationEngine()
+    runtime._engine = engine
+    runtime._engine_ready.set()
+    runtime._gui_session_id = engine.session_id
+    runtime.synchronize_event_projection_from_gui(_continuation_projection())
+
+    assert runtime.record_proposal_lifecycle_from_gui(
+        "proposal-runtime-1",
+        "c" * 64,
+        engine.session_id,
+        "turn-card-1",
+        ProposalState.SUCCEEDED,
+        "完成",
+    )
+    _wait_until(lambda: not runtime.busy)
+    assert len(engine.continue_calls) == 1, [
+        (event.event_type.value, dict(event.payload))
+        for event in continuation_events
+    ]
+    assert engine.continue_calls[0][4] == "succeeded"
+    assert not runtime.record_proposal_lifecycle_from_gui(
+        "proposal-runtime-1",
+        "c" * 64,
+        engine.session_id,
+        "turn-card-1",
+        ProposalState.FAILED,
+        "迟到",
+    )
+    assert len(engine.continue_calls) == 1
+    runtime.shutdown()
+
+
+def test_runtime_defers_continuation_until_active_operation_finishes(tmp_path):
+    runtime = QtAgentRuntime(tmp_path / "deferred-agent-private")
+    engine = _ContinuationEngine()
+    runtime._engine = engine
+    runtime._engine_ready.set()
+    runtime._gui_session_id = engine.session_id
+    runtime.synchronize_event_projection_from_gui(_continuation_projection())
+    runtime._busy = True
+    runtime._generation = 1
+
+    assert runtime.record_proposal_lifecycle_from_gui(
+        "proposal-runtime-1",
+        "c" * 64,
+        engine.session_id,
+        "turn-card-1",
+        ProposalState.SUCCEEDED,
+        "完成",
+    )
+    assert engine.continue_calls == []
+
+    runtime._finish_operation(1)
+    _wait_until(lambda: not runtime.busy)
+    assert len(engine.continue_calls) == 1
+    runtime.shutdown()
+
+
+def test_runtime_discards_revision_changed_or_shutdown_continuation(tmp_path):
+    controller = AuthoringWorkflowController(lambda: {}, {})
+    controller._binding_identity = ("document:model-session-1", "model-session-1", 8)
+    runtime = QtAgentRuntime(
+        tmp_path / "revision-agent-private",
+        authoring_controller=controller,
+    )
+    engine = _ContinuationEngine()
+    runtime._engine = engine
+    runtime._engine_ready.set()
+    runtime._gui_session_id = engine.session_id
+    runtime.synchronize_event_projection_from_gui(_continuation_projection())
+
+    assert runtime.record_proposal_lifecycle_from_gui(
+        "proposal-runtime-1",
+        "c" * 64,
+        engine.session_id,
+        "turn-card-1",
+        ProposalState.SUCCEEDED,
+        "陈旧完成",
+    )
+    assert engine.continue_calls == []
+    assert engine.discard_calls == ["proposal-runtime-1"]
+    runtime.shutdown()
+
+    stopped = QtAgentRuntime(tmp_path / "shutdown-agent-private")
+    stopped_engine = _ContinuationEngine()
+    stopped._engine = stopped_engine
+    stopped._engine_ready.set()
+    stopped._gui_session_id = stopped_engine.session_id
+    stopped.synchronize_event_projection_from_gui(_continuation_projection())
+    stopped.shutdown()
+    assert stopped.record_proposal_lifecycle_from_gui(
+        "proposal-runtime-1",
+        "c" * 64,
+        stopped_engine.session_id,
+        "turn-card-1",
+        ProposalState.SUCCEEDED,
+        "晚到完成",
+    )
+    assert stopped_engine.continue_calls == []
 
 
 def _workspace_handler(

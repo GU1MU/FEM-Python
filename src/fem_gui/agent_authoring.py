@@ -2381,6 +2381,13 @@ def create_session_authoring_workflow_controller(
                 "target_session_id": proposal.target_session_id,
                 "base_session_revision": proposal.base_session_revision,
             },
+            "continuation_checkpoint": {
+                "session_id": proposal.agent_session_id,
+                "source_turn_id": proposal.turn_id,
+                "proposal_id": proposal.proposal_id,
+                "proposal_hash": proposal.proposal_hash,
+                "model_revision": proposal.base_session_revision,
+            },
         }
         if extra_data is not None:
             data.update(dict(extra_data))
@@ -3141,6 +3148,13 @@ def create_session_authoring_workflow_controller(
                     "target_document_id": preview.target_document_id,
                     "target_session_id": preview.target_session_id,
                     "base_session_revision": preview.base_session_revision,
+                },
+                "continuation_checkpoint": {
+                    "session_id": str(metadata["agent_session_id"]),
+                    "source_turn_id": str(metadata["turn_id"]),
+                    "proposal_id": preview.proposal_id,
+                    "proposal_hash": preview.proposal_hash,
+                    "model_revision": preview.base_session_revision,
                 },
             },
         )

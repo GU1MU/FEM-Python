@@ -297,6 +297,17 @@ class EngineSnapshot:
 
 
 @dataclass(frozen=True)
+class ContinuationCheckpoint:
+    """One process-local, single-use proposal continuation identity."""
+
+    session_id: str
+    source_turn_id: str
+    proposal_id: str
+    proposal_hash: str
+    model_revision: int
+
+
+@dataclass(frozen=True)
 class EngineConfig:
     max_cloud_turns: int = 12
     max_tool_calls: int = 48
@@ -387,6 +398,7 @@ class AgentSessionEngine:
         self._active_run: WorkerResponse | None = None
         self._summary_shown_revision: tuple[int, str] | None = None
         self._tool_result_cache: dict[str, ToolResult] = {}
+        self._continuations: dict[str, ContinuationCheckpoint] = {}
         self.session_id = self.artifacts.create_session(session_id)
         self.revisions.create_session(self.session_id)
         self._history = self._load_conversation()
@@ -437,6 +449,7 @@ class AgentSessionEngine:
             self._active_run = None
             self._summary_shown_revision = None
             self._tool_result_cache = {}
+            self._continuations = {}
         return (self._state_event(),)
 
     new_session = create_session
@@ -647,12 +660,25 @@ class AgentSessionEngine:
                     {"diagnostic": diagnostic.to_dict()},
                 ),
             )
-        self._reset_provider_cancellation()
         self._append_message(AssistantMessage("user", text))
+        return self._run_provider_loop(
+            request_context=request_context,
+            allow_tools=True,
+        )
+
+    def _run_provider_loop(
+        self,
+        *,
+        request_context: str | None,
+        allow_tools: bool,
+    ) -> tuple[EngineEvent, ...]:
+        self._reset_provider_cancellation()
         events: list[EngineEvent] = []
         tool_calls_used = 0
-        available_tools = self.registry.available_definitions(
-            self.session_id
+        available_tools = (
+            self.registry.available_definitions(self.session_id)
+            if allow_tools
+            else ()
         )
         initial = self.revisions.latest(self.session_id)
         turn_revision = 0 if initial is None else initial.revision
@@ -864,6 +890,7 @@ class AgentSessionEngine:
                         context,
                     )
                     self._tool_result_cache[context.idempotency_key] = result
+                self._register_continuation_from_result(result)
                 self._append_audit(call, context, result)
                 events.append(
                     self._event(
@@ -953,6 +980,113 @@ class AgentSessionEngine:
         )
         events.append(self._diagnostic_event(diagnostic))
         return tuple(events)
+
+    def continue_after_proposal(
+        self,
+        proposal_id: str,
+        proposal_hash: str,
+        source_turn_id: str,
+        model_revision: int,
+        status: str,
+        summary: str = "",
+    ) -> tuple[EngineEvent, ...]:
+        """Consume one checkpoint and resume without synthesizing user input."""
+
+        if not self._operation_lock.acquire(blocking=False):
+            self._operation_started_event.set()
+            return self._operation_in_progress_events()
+        self._begin_operation()
+        try:
+            self._ensure_open()
+            checkpoint = self._consume_continuation(proposal_id)
+            normalized_status = str(status).strip().casefold()
+            if checkpoint is None or normalized_status not in {
+                "succeeded",
+                "rejected",
+                "failed",
+                "stale",
+                "cancelled",
+            }:
+                return ()
+            if (
+                checkpoint.session_id != self.session_id
+                or checkpoint.proposal_hash != str(proposal_hash)
+                or checkpoint.source_turn_id != str(source_turn_id)
+                or checkpoint.model_revision != model_revision
+            ):
+                return ()
+            bounded_summary = str(summary).strip()[:1_000]
+            envelope = {
+                "kind": "proposal_terminal",
+                "session_id": checkpoint.session_id,
+                "source_turn_id": checkpoint.source_turn_id,
+                "proposal_id": checkpoint.proposal_id,
+                "proposal_hash": checkpoint.proposal_hash,
+                "model_revision": checkpoint.model_revision,
+                "status": normalized_status,
+                "summary": bounded_summary,
+            }
+            self._append_message(
+                AssistantMessage(
+                    "system",
+                    "Local GUI proposal terminal (trusted control result): "
+                    + json.dumps(
+                        envelope,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                )
+            )
+            if normalized_status == "cancelled":
+                return ()
+            return self._run_provider_loop(
+                request_context=None,
+                allow_tools=normalized_status == "succeeded",
+            )
+        finally:
+            self._operation_lock.release()
+
+    def discard_continuation(self, proposal_id: str) -> bool:
+        """Consume a checkpoint without invoking the provider."""
+
+        return self._consume_continuation(proposal_id) is not None
+
+    def _consume_continuation(
+        self,
+        proposal_id: str,
+    ) -> ContinuationCheckpoint | None:
+        with self._state_lock:
+            return self._continuations.pop(str(proposal_id), None)
+
+    def _register_continuation_from_result(self, result: ToolResult) -> None:
+        if not result.ok or not isinstance(result.data, Mapping):
+            return
+        raw = result.data.get("continuation_checkpoint")
+        if not isinstance(raw, Mapping):
+            return
+        try:
+            checkpoint = ContinuationCheckpoint(
+                session_id=str(raw["session_id"]),
+                source_turn_id=str(raw["source_turn_id"]),
+                proposal_id=str(raw["proposal_id"]),
+                proposal_hash=str(raw["proposal_hash"]),
+                model_revision=int(raw["model_revision"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            return
+        if (
+            checkpoint.session_id != self.session_id
+            or not checkpoint.source_turn_id
+            or not checkpoint.proposal_id
+            or len(checkpoint.proposal_hash) != 64
+            or checkpoint.model_revision < 0
+        ):
+            return
+        with self._state_lock:
+            existing = self._continuations.get(checkpoint.proposal_id)
+            if existing is None:
+                self._continuations[checkpoint.proposal_id] = checkpoint
 
     def confirm_revision(self) -> tuple[EngineEvent, ...]:
         """Confirm the exact current revision and run the complete pipeline."""
@@ -1279,6 +1413,8 @@ class AgentSessionEngine:
         self.cancel_active_operation()
         with self._operation_lock:
             self._closed = True
+            with self._state_lock:
+                self._continuations.clear()
             return (self._state_event(),)
 
     def _provider_messages(
@@ -1906,6 +2042,7 @@ def _utc_now() -> str:
 
 
 __all__ = [
+    "ContinuationCheckpoint",
     "AgentSessionEngine",
     "EngineConfig",
     "EngineEvent",

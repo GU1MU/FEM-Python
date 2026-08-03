@@ -53,6 +53,7 @@ class AgentEventError(ValueError):
 
 class EventType(str, Enum):
     TURN_STARTED = "turn_started"
+    CONTINUATION_STARTED = "continuation_started"
     MESSAGE_START = "message_start"
     MESSAGE_DELTA = "message_delta"
     MESSAGE_COMPLETE = "message_complete"
@@ -128,6 +129,14 @@ class ProposalViewStatus(str, Enum):
 
 _REQUIRED_PAYLOAD_FIELDS: dict[EventType, frozenset[str]] = {
     EventType.TURN_STARTED: frozenset({"user_message"}),
+    EventType.CONTINUATION_STARTED: frozenset(
+        {
+            "proposal_id",
+            "proposal_hash",
+            "source_turn_id",
+            "status",
+        }
+    ),
     EventType.MESSAGE_START: frozenset(
         {"message_id", "role", "format"}
     ),
@@ -203,6 +212,7 @@ _REQUIRED_PAYLOAD_FIELDS: dict[EventType, frozenset[str]] = {
 
 _OPTIONAL_PAYLOAD_FIELDS: dict[EventType, frozenset[str]] = {
     EventType.TURN_STARTED: frozenset(),
+    EventType.CONTINUATION_STARTED: frozenset(),
     EventType.MESSAGE_START: frozenset(),
     EventType.MESSAGE_DELTA: frozenset(),
     EventType.MESSAGE_COMPLETE: frozenset(),
@@ -334,6 +344,25 @@ def _validate_payload(event_type: EventType, payload: Mapping[str, Any]) -> None
 
     if event_type is EventType.TURN_STARTED:
         _require_string(payload["user_message"], "user_message")
+        return
+    if event_type is EventType.CONTINUATION_STARTED:
+        _require_identifier(payload["proposal_id"], "proposal_id")
+        _require_identifier(payload["source_turn_id"], "source_turn_id")
+        proposal_hash = payload["proposal_hash"]
+        if (
+            not isinstance(proposal_hash, str)
+            or not _REVISION_HASH_PATTERN.fullmatch(proposal_hash)
+        ):
+            raise AgentEventError(
+                "proposal_hash 必须是完整 SHA-256 十六进制值"
+            )
+        if payload["status"] not in {
+            "succeeded",
+            "rejected",
+            "failed",
+            "stale",
+        }:
+            raise AgentEventError("continuation status 不是可续跑终态")
         return
     if event_type is EventType.MESSAGE_START:
         _require_identifier(payload["message_id"], "message_id")
@@ -869,7 +898,10 @@ class AgentEventProjector:
             and event.session_id != self._presentation.session_id
         ):
             raise AgentEventError("事件跨越了当前 session")
-        if event.event_type is EventType.TURN_STARTED:
+        if event.event_type in {
+            EventType.TURN_STARTED,
+            EventType.CONTINUATION_STARTED,
+        }:
             self._apply_turn_started(event)
         elif event.event_type in {
             EventType.PROPOSAL_ACCEPTED,
@@ -915,9 +947,13 @@ class AgentEventProjector:
             raise AgentEventError("turn_id 已存在，不能重新开始")
         turn = TurnView(
             turn_id=event.turn_id,
-            user_message=safe_tool_summary(
-                event.payload["user_message"],
-                max_characters=4_000,
+            user_message=(
+                safe_tool_summary(
+                    event.payload["user_message"],
+                    max_characters=4_000,
+                )
+                if event.event_type is EventType.TURN_STARTED
+                else ""
             ),
         )
         self._presentation.turns.append(turn)
