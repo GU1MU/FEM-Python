@@ -30,6 +30,7 @@ from fem.core.model import (
     LineLoad,
     MaterialDefinition,
     NodalLoad,
+    OutputRequest,
 )
 from fem.geometry.recipes import WireGeometry, WireMember, WirePoint
 from fem.mesh.settings import MeshSettings
@@ -174,6 +175,7 @@ def test_native_1d_public_gui_workflow_persists_checks_solves_and_displays(
                 DisplacementConstraint("Tip", 2, 3),
             ),
             cloads=(NodalLoad("Tip", 1, 10.0),),
+            outputs=(OutputRequest("field", "node", ("U",)),),
         )
     else:
         section = SectionDefinition(
@@ -187,6 +189,7 @@ def test_native_1d_public_gui_workflow_persists_checks_solves_and_displays(
             "Load",
             boundaries=(DisplacementConstraint("Root", 1, 6),),
             cloads=(NodalLoad("Tip", 2, -10.0),),
+            outputs=(OutputRequest("field", "node", ("U",)),),
         )
 
     require_accepted(
