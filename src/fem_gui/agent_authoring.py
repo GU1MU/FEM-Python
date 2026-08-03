@@ -144,6 +144,7 @@ from fem.geometry import (
     ExtrudedGeometry,
     LogicalEntityRef,
     MultiBodyGeometry,
+    NATIVE_GEOMETRY_TYPES,
     PathSweptGeometry,
     RevolvedGeometry,
     SketchGeometry,
@@ -153,6 +154,7 @@ from fem.geometry import (
     WireGeometry,
     WirePoint,
     describe_recipe_topology,
+    geometry_dimension,
     namespace_part_logical_id,
     resolve_extrusion_source_faces,
     resolve_target_radius,
@@ -376,6 +378,8 @@ def _recipe_dimension(recipe: object | None) -> int | None:
     dimension = getattr(recipe, "dimension", None)
     if dimension in {1, 2, 3}:
         return int(dimension)
+    if isinstance(recipe, NATIVE_GEOMETRY_TYPES):
+        return int(geometry_dimension(recipe))
     name = type(recipe).__name__.casefold()
     if any(
         token in name for token in ("rectangle", "disk", "plate", "sketch", "planar")
@@ -3765,6 +3769,20 @@ def create_session_authoring_workflow_controller(
                 else None
             ),
         )
+        try:
+            intent.validate_recipe_capability(part.geometry_recipe)
+        except ValueError as error:
+            message = str(error)
+            if not message.startswith("mesh.hex.unsupported-shape:"):
+                raise
+            return AuthoringToolOutcome(
+                message,
+                {
+                    "state": "failed",
+                    "diagnostic_code": "mesh.hex.unsupported-shape",
+                },
+                ok=False,
+            )
         suffix = str(metadata.pop("identity_suffix"))
         proposal = create_mesh_proposal(
             proposal_id=f"proposal-{suffix}",

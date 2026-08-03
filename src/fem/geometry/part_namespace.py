@@ -9,6 +9,7 @@ from .references import LogicalEntityRef
 
 _PART_ID_PATTERN = re.compile(r"P([1-9][0-9]*)\Z")
 _PART_BOOLEAN_FEATURE_ID_PATTERN = re.compile(r"PBF([1-9][0-9]*)\Z")
+_BODY_ID_PATTERN = re.compile(r"B([1-9][0-9]*)\Z")
 
 
 def normalize_part_id(value: object, field_name: str = "part id") -> str:
@@ -60,9 +61,12 @@ def namespace_part_logical_id(part_id: str, logical_id: str) -> str:
         return logical_id
     _kind, semantic_name = logical_id.split(":", 1)
     if reference.kind == "body":
-        if semantic_name != "domain":
-            raise ValueError("recipe-local body reference must be body:domain")
-        semantic_name = "domain"
+        if semantic_name != "domain" and _BODY_ID_PATTERN.fullmatch(
+            semantic_name
+        ) is None:
+            raise ValueError(
+                "recipe-local body reference must use body:domain or body:B*"
+            )
     return f"{reference.kind}:{normalized_part_id}/{semantic_name}"
 
 
@@ -85,9 +89,11 @@ def strip_part_logical_id(part_id: str, logical_id: str) -> str:
     if not semantic_name:
         raise ValueError("Part-namespaced logical reference has no local name")
     if reference.kind == "body":
-        if semantic_name != "domain":
-            raise ValueError("Part body reference must use /domain")
-        return "body:domain"
+        if semantic_name != "domain" and _BODY_ID_PATTERN.fullmatch(
+            semantic_name
+        ) is None:
+            raise ValueError("Part body reference must use /domain or /B*")
+        return f"body:{semantic_name}"
     return f"{reference.kind}:{semantic_name}"
 
 

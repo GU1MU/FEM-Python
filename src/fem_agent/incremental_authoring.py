@@ -147,13 +147,20 @@ def create_incremental_definition_patch(
             section_type = _enum(
                 values["section_type"],
                 "section_type",
-                {"truss", "rectangle", "solid_circle", "hollow_circle"},
+                {
+                    "solid",
+                    "truss",
+                    "rectangle",
+                    "solid_circle",
+                    "hollow_circle",
+                },
             )
             line_properties = _mapping(
                 values["properties"],
                 "section properties",
             )
             expected_fields = {
+                "solid": set(),
                 "truss": {"area"},
                 "rectangle": {"height", "width"},
                 "solid_circle": {"radius"},

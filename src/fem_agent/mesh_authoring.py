@@ -10,7 +10,10 @@ from numbers import Real
 from typing import Mapping, Sequence
 
 from fem.geometry import NATIVE_GEOMETRY_TYPES, geometry_dimension
-from fem.geometry.recipe_analysis import recipe_characteristic_size
+from fem.geometry.recipe_analysis import (
+    recipe_characteristic_size,
+    supports_structured_hexahedron,
+)
 from fem.mesh.gmsh import AutoMeshSpec
 from fem.mesh.settings import LocalMeshControl, MeshSettings
 
@@ -24,9 +27,11 @@ from .authoring import (
 )
 
 
-MESH_INTENT_SCHEMA_VERSION = "1.1"
+MESH_INTENT_SCHEMA_VERSION = "1.2"
+_LINE_MESH_INTENT_SCHEMA_VERSION = "1.1"
 _LEGACY_MESH_INTENT_SCHEMA_VERSION = "1.0"
 _PLANAR_CELL_SHAPES = frozenset({"triangle", "quadrilateral"})
+_SOLID_CELL_SHAPES = frozenset({"tetrahedron", "hexahedron"})
 _LINE_ELEMENT_TYPES = frozenset({"Truss2", "Beam2"})
 
 
@@ -72,13 +77,16 @@ class MeshIntent:
         schema_version = self.schema_version
         if schema_version is None:
             schema_version = (
-                MESH_INTENT_SCHEMA_VERSION
+                _LINE_MESH_INTENT_SCHEMA_VERSION
                 if self.cell_shape == "line"
+                else MESH_INTENT_SCHEMA_VERSION
+                if self.cell_shape in _SOLID_CELL_SHAPES
                 else _LEGACY_MESH_INTENT_SCHEMA_VERSION
             )
             object.__setattr__(self, "schema_version", schema_version)
         if schema_version not in {
             _LEGACY_MESH_INTENT_SCHEMA_VERSION,
+            _LINE_MESH_INTENT_SCHEMA_VERSION,
             MESH_INTENT_SCHEMA_VERSION,
         }:
             raise ValueError("unknown MeshIntent schema_version")
@@ -95,10 +103,22 @@ class MeshIntent:
                 raise ValueError(
                     "MeshIntent schema 1.0 does not support line_element_type"
                 )
-        elif self.cell_shape != "line":
+        elif schema_version == _LINE_MESH_INTENT_SCHEMA_VERSION and (
+            self.cell_shape != "line"
+        ):
             raise ValueError(
                 "MeshIntent schema 1.1 cell_shape must be 'line'"
             )
+        elif schema_version == MESH_INTENT_SCHEMA_VERSION:
+            if self.cell_shape not in _SOLID_CELL_SHAPES:
+                raise ValueError(
+                    "MeshIntent schema 1.2 cell_shape must be 'tetrahedron' "
+                    "or 'hexahedron'"
+                )
+            if self.line_element_type is not None:
+                raise ValueError(
+                    "MeshIntent schema 1.2 does not support line_element_type"
+                )
         if isinstance(self.order, bool) or type(self.order) is not int:
             raise TypeError("MeshIntent order must be an integer")
         if self.cell_shape == "line" and self.order != 1:
@@ -187,7 +207,7 @@ class MeshIntent:
                 for item in self.local_controls
             ],
         }
-        if self.schema_version == MESH_INTENT_SCHEMA_VERSION:
+        if self.schema_version == _LINE_MESH_INTENT_SCHEMA_VERSION:
             payload["line_element_type"] = self.line_element_type
         return payload
 
@@ -205,9 +225,12 @@ class MeshIntent:
             "order",
             "local_controls",
         }
-        if schema_version == MESH_INTENT_SCHEMA_VERSION:
+        if schema_version == _LINE_MESH_INTENT_SCHEMA_VERSION:
             expected.add("line_element_type")
-        elif schema_version != _LEGACY_MESH_INTENT_SCHEMA_VERSION:
+        elif schema_version not in {
+            _LEGACY_MESH_INTENT_SCHEMA_VERSION,
+            MESH_INTENT_SCHEMA_VERSION,
+        }:
             raise ValueError("unknown MeshIntent schema_version")
         if set(value) != expected:
             raise ValueError(
@@ -267,13 +290,8 @@ class MeshIntent:
     def to_mesh_settings(self, recipe: object) -> MeshSettings:
         if not isinstance(recipe, NATIVE_GEOMETRY_TYPES):
             raise TypeError("recipe must be native geometry")
+        self.validate_recipe_capability(recipe)
         dimension = geometry_dimension(recipe)
-        if dimension == 1 and self.cell_shape != "line":
-            raise ValueError("one-dimensional Parts require a line MeshIntent")
-        if dimension == 2 and self.cell_shape not in _PLANAR_CELL_SHAPES:
-            raise ValueError("two-dimensional Parts require a planar MeshIntent")
-        if dimension not in {1, 2}:
-            raise ValueError("MeshIntent supports one- or two-dimensional Parts")
         if self.global_size is not None:
             effective_size = self.global_size
         else:
@@ -298,6 +316,28 @@ class MeshIntent:
             strict_cell_shape=self.cell_shape != "line",
         )
 
+    def validate_recipe_capability(self, recipe: object) -> None:
+        """Fail closed before a proposal exists for unsupported mesh families."""
+
+        if not isinstance(recipe, NATIVE_GEOMETRY_TYPES):
+            raise TypeError("recipe must be native geometry")
+        dimension = geometry_dimension(recipe)
+        if dimension == 1 and self.cell_shape != "line":
+            raise ValueError("one-dimensional Parts require a line MeshIntent")
+        if dimension == 2 and self.cell_shape not in _PLANAR_CELL_SHAPES:
+            raise ValueError("two-dimensional Parts require a planar MeshIntent")
+        if dimension == 3 and self.cell_shape not in _SOLID_CELL_SHAPES:
+            raise ValueError("three-dimensional Parts require a solid MeshIntent")
+        if dimension not in {1, 2, 3}:
+            raise ValueError("MeshIntent supports one-, two-, or three-dimensional Parts")
+        if self.cell_shape == "hexahedron" and not supports_structured_hexahedron(
+            recipe,
+        ):
+            raise ValueError(
+                "mesh.hex.unsupported-shape: structured hexahedron meshing is "
+                "unavailable for this exact geometry"
+            )
+
     def to_auto_mesh_spec(self) -> AutoMeshSpec | None:
         if self.auto_level is None:
             return None
@@ -309,6 +349,10 @@ class MeshIntent:
                 else "tri"
                 if self.cell_shape == "triangle"
                 else "quad"
+                if self.cell_shape == "quadrilateral"
+                else "tet"
+                if self.cell_shape == "tetrahedron"
+                else "hex"
             ),
             order=self.order,  # type: ignore[arg-type]
         )
@@ -337,9 +381,14 @@ def create_mesh_proposal(
     part = next((item for item in context.parts if item.part_id == part_id), None)
     if part is None or part.suppressed:
         raise AuthoringContractError("mesh proposal target Part is unavailable")
-    if part.dimension not in {1, 2}:
-        raise AuthoringContractError("mesh proposal requires a 1D or 2D Part")
-    if (part.dimension == 1) != (mesh_intent.cell_shape == "line"):
+    if part.dimension not in {1, 2, 3}:
+        raise AuthoringContractError("mesh proposal requires a 1D, 2D, or 3D Part")
+    expected_shapes = {
+        1: frozenset({"line"}),
+        2: _PLANAR_CELL_SHAPES,
+        3: _SOLID_CELL_SHAPES,
+    }[part.dimension]
+    if mesh_intent.cell_shape not in expected_shapes:
         raise AuthoringContractError(
             "mesh intent cell shape does not match the Part dimension"
         )

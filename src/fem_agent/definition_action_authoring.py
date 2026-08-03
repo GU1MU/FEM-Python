@@ -605,9 +605,13 @@ def _validate_non_analysis_action(
         section_type = _enum(
             values["section_type"],
             "section_type",
-            {"truss", *BEAM_SECTION_TYPES},
+            {"solid", "truss", *BEAM_SECTION_TYPES},
         )
         properties = _mapping(values["properties"], "section properties")
+        if section_type == "solid":
+            _exact_fields(properties, set())
+            _require_elastic_material(snapshot, values["material"])
+            return
         if section_type == "truss":
             _exact_fields(properties, {"area"})
             if _finite(properties["area"], "truss section area") <= 0.0:

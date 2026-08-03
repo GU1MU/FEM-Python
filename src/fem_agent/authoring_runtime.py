@@ -205,7 +205,13 @@ _REQUIREMENT_SPECS: dict[str, dict[str, object]] = {
     },
     "mesh_cell_shape": {
         "type": "string",
-        "enum": ["line", "triangle", "quadrilateral"],
+        "enum": [
+            "line",
+            "triangle",
+            "quadrilateral",
+            "tetrahedron",
+            "hexahedron",
+        ],
     },
     "mesh_order": {"type": "integer", "enum": [1, 2]},
     "mesh_global_size": {"type": "number", "exclusiveMinimum": 0},
@@ -215,18 +221,30 @@ _REQUIREMENT_SPECS: dict[str, dict[str, object]] = {
     },
     "fixed_dofs": {
         "type": "array",
-        "items": {"type": "integer", "minimum": 1, "maximum": 2},
+        "items": {"type": "integer", "minimum": 1, "maximum": 3},
         "minItems": 1,
-        "maxItems": 2,
+        "maxItems": 3,
         "uniqueItems": True,
     },
     "load_type": {
         "type": "string",
-        "enum": ["edge_traction", "edge_pressure"],
+        "enum": [
+            "edge_traction",
+            "edge_pressure",
+            "surface_traction",
+            "surface_pressure",
+            "nodal",
+        ],
     },
     "load_direction": {
         "type": "string",
-        "enum": ["x", "y", "inward_normal", "outward_normal"],
+        "enum": [
+            "x",
+            "y",
+            "z",
+            "inward_normal",
+            "outward_normal",
+        ],
     },
     "load_magnitude": {"type": "number"},
     "load_unit": {"type": "string"},
@@ -1294,6 +1312,17 @@ _APPLY_DEFINITION = _tool(
                                 "thickness": {
                                     "type": "number",
                                     "exclusiveMinimum": 0,
+                                },
+                                "properties": _exact_schema({}),
+                            }
+                        ),
+                        _exact_schema(
+                            {
+                                "name": _controlled_name_schema("截面"),
+                                "material": _controlled_name_schema("材料"),
+                                "section_type": {
+                                    "type": "string",
+                                    "const": "solid",
                                 },
                                 "properties": _exact_schema({}),
                             }
@@ -2755,12 +2784,48 @@ class AuthoringWorkflowController:
         if key == "mesh_cell_shape":
             if dimension == 1:
                 return {"type": "string", "enum": ["line"]}
+            if dimension == 3:
+                return {
+                    "type": "string",
+                    "enum": ["tetrahedron", "hexahedron"],
+                }
             return {
                 "type": "string",
                 "enum": ["triangle", "quadrilateral"],
             }
         if key == "mesh_order" and dimension == 1:
             return {"type": "integer", "enum": [1]}
+        if key == "fixed_dofs":
+            maximum = 3 if dimension == 3 else 2
+            return {
+                "type": "array",
+                "items": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": maximum,
+                },
+                "minItems": 1,
+                "maxItems": maximum,
+                "uniqueItems": True,
+            }
+        if key == "load_type":
+            return {
+                "type": "string",
+                "enum": (
+                    ["nodal", "surface_traction", "surface_pressure"]
+                    if dimension == 3
+                    else ["nodal", "edge_traction", "edge_pressure"]
+                ),
+            }
+        if key == "load_direction":
+            return {
+                "type": "string",
+                "enum": (
+                    ["x", "y", "z", "inward_normal", "outward_normal"]
+                    if dimension == 3
+                    else ["x", "y", "inward_normal", "outward_normal"]
+                ),
+            }
         return spec
 
     def _requirement_group_complete(self, group: str) -> bool:
@@ -2974,7 +3039,10 @@ class AuthoringWorkflowController:
             )
         values = {item.key: item.value for item in self._ledger.entries}
         if requirement_group == "analysis":
-            _validate_supported_requirement_combination(values)
+            _validate_supported_requirement_combination(
+                values,
+                dimension=self._active_part_dimension(),
+            )
         review = self._ledger.create_review(
             f"review-{uuid.uuid4().hex}",
             required,
@@ -3513,24 +3581,41 @@ def _validate_requirement_value(
 
 def _validate_supported_requirement_combination(
     values: Mapping[str, object],
+    *,
+    dimension: int | None = None,
 ) -> None:
+    active_dimension = 3 if dimension == 3 else 2
     fixed_dofs = tuple(values["fixed_dofs"])
     if fixed_dofs != tuple(range(min(fixed_dofs), max(fixed_dofs) + 1)):
         raise ValueError(
-            "clarification_required: fixed_dofs must be one contiguous 2D range"
+            "clarification_required: fixed_dofs must be one contiguous "
+            f"{active_dimension}D translation range"
         )
     load_type = str(values["load_type"])
     direction = str(values["load_direction"])
     magnitude = float(values["load_magnitude"])
-    if load_type == "edge_traction":
-        if direction not in {"x", "y"}:
+    if load_type == "nodal":
+        if direction not in ({"x", "y", "z"} if active_dimension == 3 else {"x", "y"}):
             raise ValueError(
-                "clarification_required: edge traction direction must be x or y"
+                "clarification_required: nodal force requires a global "
+                "translation direction"
             )
         return
-    if direction not in {"inward_normal", "outward_normal"}:
+    if load_type.endswith("traction"):
+        if direction not in (
+            {"x", "y", "z"} if active_dimension == 3 else {"x", "y"}
+        ):
+            raise ValueError(
+                "clarification_required: traction requires an explicit global "
+                "translation direction"
+            )
+        return
+    if not load_type.endswith("pressure") or direction not in {
+        "inward_normal",
+        "outward_normal",
+    }:
         raise ValueError(
-            "clarification_required: edge pressure requires a normal direction"
+            "clarification_required: pressure requires a normal direction"
         )
     if (
         direction == "inward_normal"
