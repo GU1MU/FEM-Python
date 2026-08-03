@@ -1463,11 +1463,11 @@ def _extrusion_hole_edges_by_face(
 
 
 def _revolved_topology(recipe: RevolvedGeometry) -> RecipeTopology:
-    """Expose a stable result Body while swept face naming remains conservative."""
+    """Expose deterministic cap and grouped-side lineage for one revolution."""
 
     base = describe_recipe_topology(recipe.base)
     try:
-        resolve_extrusion_source_faces(
+        selection = resolve_extrusion_source_faces(
             recipe.base,
             recipe.source_face_ids,
         )
@@ -1480,7 +1480,11 @@ def _revolved_topology(recipe: RevolvedGeometry) -> RecipeTopology:
             source_signatures=(("base", base.signature),),
         )
     base_bodies = base.entities_of("body", selectable_only=True)
-    if not base.exact or len(base_bodies) != 1:
+    if (
+        not base.exact
+        or len(base_bodies) != 1
+        or len(selection.face_ids) != 1
+    ):
         return _unknown_topology(
             recipe,
             code="revolve.source-face.topology-unproven",
@@ -1488,26 +1492,61 @@ def _revolved_topology(recipe: RevolvedGeometry) -> RecipeTopology:
             operation="revolve",
             source_signatures=(("base", base.signature),),
         )
+    source_face = base.entity(selection.face_ids[0])
+    entities: list[LogicalEntity] = []
+    mappings: list[TopologyMapping] = []
+    if recipe.angle_degrees < 360.0:
+        for level in ("start", "end"):
+            face = _logical_entity(
+                "face",
+                level,
+                f"revolve.{level}.{source_face.semantic_role}",
+            )
+            entities.append(face)
+            mappings.append(
+                TopologyMapping(
+                    "base",
+                    source_face.logical_id,
+                    face.logical_id,
+                    "derived",
+                )
+            )
+    sides = _logical_entity(
+        "face",
+        "sides",
+        "revolve.boundary.sides",
+    )
+    entities.append(sides)
+    mappings.append(
+        TopologyMapping(
+            "base",
+            source_face.logical_id,
+            sides.logical_id,
+            "derived",
+        )
+    )
     body = _logical_entity(
         "body",
         "domain",
         "revolve.domain",
         dimension=3,
     )
+    entities.append(body)
+    mappings.append(
+        TopologyMapping(
+            "base",
+            base_bodies[0].logical_id,
+            body.logical_id,
+            "derived",
+        )
+    )
     return _make_topology(
         recipe,
-        (body,),
+        tuple(entities),
         exact=True,
         operation="revolve",
         source_signatures=(("base", base.signature),),
-        mappings=(
-            TopologyMapping(
-                "base",
-                base_bodies[0].logical_id,
-                body.logical_id,
-                "derived",
-            ),
-        ),
+        mappings=tuple(mappings),
     )
 
 

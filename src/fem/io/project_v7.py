@@ -40,7 +40,6 @@ from fem.geometry.references import LogicalEntityRef
 from fem.geometry.recipes import (
     BooleanGeometry,
     ExtrudedGeometry,
-    MultiBodyGeometry,
     MovedGeometry,
     NATIVE_GEOMETRY_TYPES,
     RotatedGeometry,
@@ -96,7 +95,7 @@ _V7_FIELD_POLICY = ProjectFieldCodecPolicy(
     extrusion_source_faces=True,
     displacement_region_targets=True,
     body_force_loads=True,
-    allow_multi_body=False,
+    allow_multi_body=True,
     allow_planar_boolean=True,
     allow_part_boolean=True,
     allow_revolved_geometry=True,
@@ -424,12 +423,9 @@ def _decode_part(value: Any, path: str) -> NativePart:
         f"{path}.geometry",
         policy=_V7_FIELD_POLICY,
     )
-    if (
-        not isinstance(recipe, NATIVE_GEOMETRY_TYPES)
-        or isinstance(recipe, MultiBodyGeometry)
-    ):
+    if not isinstance(recipe, NATIVE_GEOMETRY_TYPES):
         raise ProjectV7DecodeError(
-            f"{path}.geometry 必须是单部件 native recipe"
+            f"{path}.geometry 必须是 native recipe"
         )
     stored = _v4._decode_topology_fingerprint_v4(
         data["logical_topology"],

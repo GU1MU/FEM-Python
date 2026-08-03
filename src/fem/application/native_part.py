@@ -173,16 +173,14 @@ class NativePart:
                 raise TypeError(
                     "NativePart.geometry_recipe must be native geometry or None"
                 )
-            if isinstance(owned_recipe, MultiBodyGeometry):
-                raise ValueError(
-                    "NativePart.geometry_recipe cannot be MultiBodyGeometry"
-                )
             if (
                 geometry_dimension(owned_recipe) == 3
+                and not isinstance(owned_recipe, MultiBodyGeometry)
                 and not is_single_solid_recipe(owned_recipe)
             ):
                 raise ValueError(
-                    "3D NativePart geometry must be an exact single solid"
+                    "3D NativePart geometry must be an exact single solid or "
+                    "a canonical MultiBodyGeometry"
                 )
         owned_settings = deepcopy(mesh_settings)
         if owned_settings is not None and type(owned_settings) is not MeshSettings:

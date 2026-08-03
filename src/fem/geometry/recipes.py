@@ -895,12 +895,12 @@ class BooleanLineageMapping:
             raise ValueError("preserved Boolean lineage must keep its logical ID")
         dimensions = {"point": 0, "edge": 1, "face": 2, "body": 3}
         descent = dimensions[source.kind] - dimensions[target.kind]
-        if descent not in {0, 1}:
+        if descent not in {0, 1, 2}:
             raise ValueError(
-                "Boolean lineage may preserve dimension or derive one "
-                "lower-dimensional intersection"
+                "Boolean lineage may preserve dimension or derive a generated "
+                "intersection edge/point from operand support"
             )
-        if descent == 1 and "/intersection/" not in target.logical_id:
+        if descent > 0 and "/intersection/" not in target.logical_id:
             raise ValueError(
                 "cross-dimensional Boolean lineage is only valid for "
                 "generated intersections"

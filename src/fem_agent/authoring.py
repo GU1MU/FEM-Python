@@ -956,6 +956,8 @@ class OperationKind(str, Enum):
     EXTRUDE_PART_PROFILES = "extrude_part_profiles"
     REVOLVE_PART_PROFILE = "revolve_part_profile"
     SWEEP_PART_PROFILE = "sweep_part_profile"
+    APPLY_PART_BOOLEAN = "apply_part_boolean"
+    APPLY_BODY_BOOLEAN = "apply_body_boolean"
     SET_PART_MESH_INTENT = "set_part_mesh_intent"
     UPSERT_NAMED_REGIONS = "upsert_named_regions"
     UPSERT_MODEL_DEFINITIONS = "upsert_model_definitions"
@@ -1001,6 +1003,56 @@ _OPERATION_PARAMETER_FIELDS: dict[
         ),
         frozenset(
             {"part_id", "base_recipe", "source_face_id", "ordered_wire", "frame_strategy"}
+        ),
+    ),
+    OperationKind.APPLY_PART_BOOLEAN: (
+        frozenset(
+            {
+                "target_part_id",
+                "tool_part_id",
+                "operation",
+                "result_name",
+                "tool_handling",
+                "result_part_id",
+                "feature_id",
+                "recipe_json",
+            }
+        ),
+        frozenset(
+            {
+                "target_part_id",
+                "tool_part_id",
+                "operation",
+                "result_name",
+                "tool_handling",
+                "result_part_id",
+                "feature_id",
+                "recipe_json",
+            }
+        ),
+    ),
+    OperationKind.APPLY_BODY_BOOLEAN: (
+        frozenset(
+            {
+                "part_id",
+                "target_body_id",
+                "tool_body_id",
+                "operation",
+                "result_name",
+                "tool_handling",
+                "recipe_json",
+            }
+        ),
+        frozenset(
+            {
+                "part_id",
+                "target_body_id",
+                "tool_body_id",
+                "operation",
+                "result_name",
+                "tool_handling",
+                "recipe_json",
+            }
         ),
     ),
     OperationKind.SET_PART_MESH_INTENT: (

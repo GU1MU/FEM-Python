@@ -164,6 +164,17 @@ def resolve_solid_boolean_lineage(
         raise BooleanLineageResolutionError(
             "boolean.fuse.no-op: result did not combine both operands"
         )
+    if operation == "fuse":
+        overlap_measure = (
+            target_compiled.volume_measure
+            + tool_compiled.volume_measure
+            - result_measure
+        )
+        if overlap_measure <= tolerance:
+            raise BooleanLineageResolutionError(
+                "boolean.fuse.non-positive-overlap: operands only touch; "
+                "strict fuse requires positive shared volume"
+            )
 
     faces = _unique(
         entity for entity in result_boundary if entity.dimension == 2
@@ -436,6 +447,10 @@ def resolve_solid_boolean_lineage(
                     if source_id.startswith(("point:", "edge:"))
                 ),
             }
+        if not mapping_target and target_ids:
+            mapping_target = set(target_ids)
+        if not mapping_tool and tool_ids:
+            mapping_tool = set(tool_ids)
         _record_group(
             grouped,
             roles,

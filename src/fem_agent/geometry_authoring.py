@@ -65,6 +65,7 @@ _MAX_PREVIEW_POINTS = 128
 _RECIPE_SCHEMA_VERSION = 1
 _MAX_RECIPE_BYTES = 65536
 _MAX_RECIPE_NODES = 128
+_MAX_BOOLEAN_RECIPE_PAYLOAD_NODES = 512
 _MAX_RECIPE_DEPTH = 16
 GEOMETRY_FEATURE_CATALOG_TOOL_NAME = "read_geometry_feature_catalog"
 
@@ -1811,6 +1812,12 @@ def _validate_recipe_payload_budget(value: object) -> None:
     if size > _MAX_RECIPE_BYTES:
         raise ValueError("geometry recipe payload exceeds the byte budget")
     nodes = 0
+    root_kind = value.get("kind") if isinstance(value, Mapping) else None
+    node_budget = (
+        _MAX_BOOLEAN_RECIPE_PAYLOAD_NODES
+        if root_kind in {"boolean", "multi_body"}
+        else _MAX_RECIPE_NODES
+    )
 
     def visit(item: object, depth: int) -> None:
         nonlocal nodes
@@ -1818,7 +1825,7 @@ def _validate_recipe_payload_budget(value: object) -> None:
             raise ValueError("geometry recipe payload exceeds the depth budget")
         if isinstance(item, Mapping):
             nodes += 1
-            if nodes > _MAX_RECIPE_NODES:
+            if nodes > node_budget:
                 raise ValueError("geometry recipe payload exceeds the node budget")
             for child in item.values():
                 visit(child, depth + 1)

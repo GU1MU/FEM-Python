@@ -2323,6 +2323,127 @@ class ModelSession:
             effects={TransitionEffect.REFERENCES_PRESERVED},
         )
 
+    def apply_body_boolean(
+        self,
+        part_id: str,
+        target_body_id: str,
+        tool_body_id: str,
+        operation: str,
+        result_name: str,
+        *,
+        result: Any,
+        expected_part_revision: int | None = None,
+        expected_session_revision: int | None = None,
+    ) -> SessionDelta:
+        """Commit one proven same-Part MultiBody Boolean through canonical state."""
+
+        self._check_expected(expected_session_revision)
+        self._require_native()
+        normalized = normalize_part_id(part_id)
+        self._check_part_revision(normalized, expected_part_revision)
+        current = self._require_editable_part(normalized)
+        source = current.geometry_recipe
+        if type(source) is not MultiBodyGeometry:
+            raise ValueError(
+                "Body Boolean requires one canonical MultiBodyGeometry Part"
+            )
+        if operation not in {"fuse", "cut"}:
+            raise ValueError("Body Boolean operation must be fuse or cut")
+        normalized_name = str(result_name).strip()
+        if not normalized_name:
+            raise ValueError("Body Boolean result name must not be blank")
+
+        from .solid_boolean import StrictBodyBooleanResult
+
+        candidate = deepcopy(
+            result.geometry
+            if type(result) is StrictBodyBooleanResult
+            else result
+        )
+        if type(candidate) is not MultiBodyGeometry:
+            raise TypeError(
+                "Body Boolean commit requires StrictBodyBooleanResult or "
+                "MultiBodyGeometry"
+            )
+        target = source.body(target_body_id)
+        tool = source.body(tool_body_id)
+        result_body = candidate.body(target_body_id)
+        recipe = result_body.recipe
+        if not isinstance(recipe, BooleanGeometry):
+            raise ValueError("Body Boolean result target lacks BooleanGeometry")
+        context = recipe.body_context
+        if (
+            context is None
+            or not context.proven
+            or context.target_body_id != target.id
+            or context.tool_body_id != tool.id
+            or recipe.operation != operation
+            or recipe.name != normalized_name
+            or recipe.object_geometry != target.recipe
+            or recipe.tool_geometry != tool.recipe
+        ):
+            raise SessionStateError(
+                "detached Body Boolean proof no longer matches source geometry"
+            )
+        source_by_id = {body.id: body for body in source.bodies}
+        candidate_by_id = {body.id: body for body in candidate.bodies}
+        if set(candidate_by_id) != set(source_by_id) - {tool.id}:
+            raise SessionStateError(
+                "Body Boolean result changed unexpected Body ownership"
+            )
+        if any(
+            candidate_by_id[body_id] != body
+            for body_id, body in source_by_id.items()
+            if body_id not in {target.id, tool.id}
+        ):
+            raise SessionStateError(
+                "Body Boolean result changed an unaffected Body"
+            )
+        return self.replace_part_geometry(
+            normalized,
+            candidate,
+            expected_part_revision=(
+                self.part_revision(normalized)
+                if expected_part_revision is None
+                else expected_part_revision
+            ),
+            expected_session_revision=expected_session_revision,
+        )
+
+    def undo_body_boolean(
+        self,
+        part_id: str,
+        target_body_id: str,
+        *,
+        expected_part_revision: int | None = None,
+        expected_session_revision: int | None = None,
+    ) -> SessionDelta:
+        """Undo a persisted Body Boolean and restore its consumed tool Body."""
+
+        self._check_expected(expected_session_revision)
+        self._require_native()
+        normalized = normalize_part_id(part_id)
+        self._check_part_revision(normalized, expected_part_revision)
+        current = self._require_editable_part(normalized)
+        if type(current.geometry_recipe) is not MultiBodyGeometry:
+            raise ValueError("Body Boolean undo requires a MultiBodyGeometry Part")
+        from fem.geometry import undo_solid_body_feature
+
+        restored = undo_solid_body_feature(
+            current.geometry_recipe,
+            target_body_id,
+        )
+        return self.replace_part_geometry(
+            normalized,
+            restored,
+            expected_part_revision=(
+                self.part_revision(normalized)
+                if expected_part_revision is None
+                else expected_part_revision
+            ),
+            expected_session_revision=expected_session_revision,
+        )
+
     def undo_part_boolean(
         self,
         result_part_id: str,
@@ -5872,7 +5993,7 @@ def _validate_native_part_inputs(
         if part.dimension == 2:
             _authenticate_native_part_planar_profiles(part)
         elif part.dimension == 3:
-            _authenticate_native_part_single_solid(part)
+            _authenticate_native_part_solids(part)
 
 
 def _authenticate_native_part_planar_profiles(part: NativePart) -> None:
@@ -5895,8 +6016,8 @@ def _authenticate_native_part_planar_profiles(part: NativePart) -> None:
     raise ValueError(f"Part {part.id} 的二维几何 Profile 无效：{message}")
 
 
-def _authenticate_native_part_single_solid(part: NativePart) -> None:
-    """Require OCC replay to produce exactly one three-dimensional domain."""
+def _authenticate_native_part_solids(part: NativePart) -> None:
+    """Require OCC replay to match canonical single- or MultiBody ownership."""
 
     from fem.geometry import model as geometry_model
 
@@ -5917,9 +6038,17 @@ def _authenticate_native_part_single_solid(part: NativePart) -> None:
         raise ValueError(
             f"Part {part.id} 的三维几何无法通过 OCC 单实体认证：{error}"
         ) from error
-    if len(domains) != 1 or domains[0].dimension != 3:
+    expected_count = (
+        len(part.geometry_recipe.bodies)
+        if isinstance(part.geometry_recipe, MultiBodyGeometry)
+        else 1
+    )
+    if (
+        len(domains) != expected_count
+        or any(domain.dimension != 3 for domain in domains)
+    ):
         raise ValueError(
-            f"Part {part.id} 的三维几何必须精确生成一个实体；"
+            f"Part {part.id} 的三维几何必须精确生成 {expected_count} 个实体；"
             f"当前生成 {len(domains)} 个"
         )
 
@@ -5935,6 +6064,11 @@ def _recipe_contains_geometry_state(current: Any, expected: Any) -> bool:
 
 
 def _contains_unproven_boolean(recipe: Any) -> bool:
+    if isinstance(recipe, MultiBodyGeometry):
+        return any(
+            _contains_unproven_boolean(body.recipe)
+            for body in recipe.bodies
+        )
     if isinstance(recipe, BooleanGeometry):
         context = (
             recipe.body_context

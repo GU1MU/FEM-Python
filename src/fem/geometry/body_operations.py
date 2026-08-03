@@ -207,6 +207,8 @@ def provisional_body_boolean(
     target_body_id: str,
     tool_body_id: str,
     operation: Literal["fuse", "cut"],
+    *,
+    result_name: str | None = None,
 ) -> BooleanGeometry:
     """Build an uncommitted strict Boolean recipe awaiting CAD proof."""
 
@@ -221,7 +223,7 @@ def provisional_body_boolean(
         tool.name,
     )
     return BooleanGeometry(
-        target.name,
+        target.name if result_name is None else result_name,
         operation,
         target.recipe,
         tool.recipe,

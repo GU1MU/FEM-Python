@@ -7,6 +7,7 @@ owns only those DTOs and an ``AuthoringPort``; it never stores or mutates a
 
 from __future__ import annotations
 
+import json
 import math
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -16,7 +17,12 @@ from enum import Enum
 from typing import Callable, Protocol
 
 from fem import geometry as geometry_runtime
-from fem.application import ModelSession, UnitContext
+from fem.application import (
+    ModelSession,
+    UnitContext,
+    prepare_part_boolean,
+    prepare_solid_body_boolean,
+)
 from fem.application.changes import SessionDelta
 from fem.application.recipe_compiler import compile_recipe
 from fem.application.native_scope_materialization import (
@@ -55,6 +61,12 @@ from fem_agent.authoring import (
     UnitContextSummary,
 )
 from fem_agent.analysis_authoring import require_non_destructive_a5_batch
+from fem_agent.boolean_authoring import (
+    BODY_BOOLEAN_TOOL_HANDLING,
+    PART_BOOLEAN_TOOL_HANDLING,
+    create_body_boolean_proposal,
+    create_part_boolean_proposal,
+)
 from fem_agent.authoring_runtime import (
     AuthoringToolOutcome,
     AuthoringWorkflowController,
@@ -127,8 +139,11 @@ from fem_agent.result_authoring import (
     AgentResultQueryBridge,
 )
 from fem.geometry import (
+    BooleanGeometry,
+    BooleanLineageResolutionError,
     ExtrudedGeometry,
     LogicalEntityRef,
+    MultiBodyGeometry,
     PathSweptGeometry,
     RevolvedGeometry,
     SketchGeometry,
@@ -207,6 +222,70 @@ def _preflight_derived_geometry(
         thread_name_prefix="agent-derived-preflight",
     ) as executor:
         executor.submit(compile_one).result()
+
+
+def _preflight_part_boolean(
+    target,
+    tool,
+    operation: str,
+    *,
+    result_part_id: str,
+    feature_id: str,
+    result_name: str,
+):
+    """Prepare a detached exact Part proof on the Phase-3 worker seam."""
+
+    def compile_one():
+        with geometry_runtime.model(
+            f"agent-part-boolean-{operation}-preflight",
+            dimension=3,
+        ) as cad:
+            return prepare_part_boolean(
+                cad,
+                target,
+                tool,
+                operation,
+                result_part_id=result_part_id,
+                feature_id=feature_id,
+                result_name=result_name,
+            )
+
+    with ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix="agent-part-boolean-preflight",
+    ) as executor:
+        return executor.submit(compile_one).result()
+
+
+def _preflight_body_boolean(
+    geometry: MultiBodyGeometry,
+    target_body_id: str,
+    tool_body_id: str,
+    operation: str,
+    *,
+    result_name: str,
+):
+    """Prepare a detached exact same-Part Body proof off the GUI thread."""
+
+    def compile_one():
+        with geometry_runtime.model(
+            f"agent-body-boolean-{operation}-preflight",
+            dimension=3,
+        ) as cad:
+            return prepare_solid_body_boolean(
+                cad,
+                geometry,
+                target_body_id,
+                tool_body_id,
+                operation,
+                result_name=result_name,
+            )
+
+    with ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix="agent-body-boolean-preflight",
+    ) as executor:
+        return executor.submit(compile_one).result()
 
 
 def _bounded_count(value: object) -> int:
@@ -1197,6 +1276,8 @@ class SessionGeometryAuthoringPort:
                 OperationKind.EXTRUDE_PART_PROFILES,
                 OperationKind.REVOLVE_PART_PROFILE,
                 OperationKind.SWEEP_PART_PROFILE,
+                OperationKind.APPLY_PART_BOOLEAN,
+                OperationKind.APPLY_BODY_BOOLEAN,
             }
         )
         mesh_valid = (
@@ -1318,6 +1399,69 @@ class SessionGeometryAuthoringPort:
             return succeeded
         operation = proposal.operations[0]
         parameters = operation.parameters
+        if operation.kind is OperationKind.APPLY_PART_BOOLEAN:
+            if parameters["tool_handling"] != PART_BOOLEAN_TOOL_HANDLING:
+                raise AuthoringContractError(
+                    "Part Boolean tool handling does not match canonical policy"
+                )
+            recipe = geometry_recipe_from_payload(
+                json.loads(str(parameters["recipe_json"]))
+            )
+            if not isinstance(recipe, BooleanGeometry):
+                raise AuthoringContractError(
+                    "Part Boolean proposal recipe is not BooleanGeometry"
+                )
+
+            def commit_part_boolean() -> None:
+                self._session.apply_part_boolean(
+                    str(parameters["target_part_id"]),
+                    str(parameters["tool_part_id"]),
+                    str(parameters["operation"]),
+                    str(parameters["result_name"]),
+                    result_recipe=recipe,
+                    expected_session_revision=proposal.base_session_revision,
+                )
+
+            with ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="agent-part-boolean-commit",
+            ) as executor:
+                executor.submit(commit_part_boolean).result()
+            succeeded = replace(record, state=ProposalState.SUCCEEDED)
+            self._records[proposal_id] = succeeded
+            return succeeded
+        if operation.kind is OperationKind.APPLY_BODY_BOOLEAN:
+            if parameters["tool_handling"] != BODY_BOOLEAN_TOOL_HANDLING:
+                raise AuthoringContractError(
+                    "Body Boolean tool handling does not match canonical policy"
+                )
+            geometry = geometry_recipe_from_payload(
+                json.loads(str(parameters["recipe_json"]))
+            )
+            if type(geometry) is not MultiBodyGeometry:
+                raise AuthoringContractError(
+                    "Body Boolean proposal recipe is not MultiBodyGeometry"
+                )
+
+            def commit_body_boolean() -> None:
+                self._session.apply_body_boolean(
+                    str(parameters["part_id"]),
+                    str(parameters["target_body_id"]),
+                    str(parameters["tool_body_id"]),
+                    str(parameters["operation"]),
+                    str(parameters["result_name"]),
+                    result=geometry,
+                    expected_session_revision=proposal.base_session_revision,
+                )
+
+            with ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="agent-body-boolean-commit",
+            ) as executor:
+                executor.submit(commit_body_boolean).result()
+            succeeded = replace(record, state=ProposalState.SUCCEEDED)
+            self._records[proposal_id] = succeeded
+            return succeeded
         if operation.kind is OperationKind.EXTRUDE_PART_PROFILES:
             base_recipe = geometry_recipe_from_payload(parameters["base_recipe"])
             raw_source_ids = parameters["source_face_ids"]
@@ -2885,6 +3029,50 @@ def create_session_authoring_workflow_controller(
                     "revolve_profile",
                     "path_sweep_profile",
                 ]
+        if part.dimension == 3:
+            if type(part.geometry_recipe) is MultiBodyGeometry:
+                catalog["supported_edits"][:0] = ["body_boolean"]
+                body_candidates = [
+                    {"body_id": body.id, "body_name": body.name}
+                    for body in part.geometry_recipe.bodies
+                ]
+            else:
+                catalog["supported_edits"][:0] = ["part_boolean"]
+                body_candidates = []
+            catalog["exact_boolean"] = {
+                "supported_operations": ["fuse", "cut"],
+                "disabled_operations": [
+                    {
+                        "operation": "intersect",
+                        "code": "boolean.agent.operation-disabled",
+                        "message": (
+                            "intersect is disabled until stable result Body IDs, "
+                            "lineage replay, and edit semantics are proven"
+                        ),
+                    },
+                    {
+                        "operation": "fragment",
+                        "code": "boolean.agent.operation-disabled",
+                        "message": (
+                            "fragment is disabled until stable multi-result Body "
+                            "IDs, lineage replay, and edit semantics are proven"
+                        ),
+                    },
+                ],
+                "part_tool_handling": PART_BOOLEAN_TOOL_HANDLING,
+                "body_tool_handling": BODY_BOOLEAN_TOOL_HANDLING,
+                "body_candidates": body_candidates,
+                "part_tool_candidates": [
+                    {"part_id": candidate.id, "part_name": candidate.name}
+                    for candidate in snapshot.parts
+                    if (
+                        candidate.id != part.id
+                        and not candidate.suppressed
+                        and candidate.dimension == 3
+                        and type(candidate.geometry_recipe) is not MultiBodyGeometry
+                    )
+                ],
+            }
         return AuthoringToolOutcome(
             "Editable geometry context read locally.",
             {
@@ -2916,6 +3104,171 @@ def create_session_authoring_workflow_controller(
         if part is None or part.geometry_recipe is None:
             raise AuthoringContractError(
                 "part_id does not identify one editable native Part"
+            )
+        if operation == "part_boolean":
+            if set(edit) != {
+                "boolean_operation",
+                "tool_part_id",
+                "result_name",
+                "tool_handling",
+            }:
+                raise ValueError("part_boolean fields do not match")
+            if type(part.geometry_recipe) is MultiBodyGeometry or part.dimension != 3:
+                raise AuthoringContractError(
+                    "Part Boolean operands must each own one exact solid"
+                )
+            boolean_operation = str(edit["boolean_operation"])
+            if boolean_operation not in {"fuse", "cut"}:
+                raise AuthoringContractError(
+                    "intersect/fragment are disabled until stable result Body "
+                    "IDs and lineage replay are proven"
+                )
+            tool_part_id = str(edit["tool_part_id"])
+            tool = next(
+                (
+                    candidate
+                    for candidate in snapshot.parts
+                    if (
+                        candidate.id == tool_part_id
+                        and candidate.id != part.id
+                        and not candidate.suppressed
+                        and candidate.dimension == 3
+                        and type(candidate.geometry_recipe) is not MultiBodyGeometry
+                    )
+                ),
+                None,
+            )
+            if tool is None:
+                raise AuthoringContractError(
+                    "tool_part_id must identify another active single-solid Part"
+                )
+            result_name = str(edit["result_name"]).strip()
+            tool_handling = str(edit["tool_handling"])
+            if tool_handling != PART_BOOLEAN_TOOL_HANDLING:
+                raise AuthoringContractError(
+                    f"tool_handling must be {PART_BOOLEAN_TOOL_HANDLING!r}"
+                )
+            try:
+                prepared = _preflight_part_boolean(
+                    part,
+                    tool,
+                    boolean_operation,
+                    result_part_id=session.next_native_part_id,
+                    feature_id=session.next_part_boolean_feature_id,
+                    result_name=result_name,
+                )
+            except BooleanLineageResolutionError as error:
+                return AuthoringToolOutcome(str(error), {}, ok=False)
+            summary = (
+                f"精确 {boolean_operation}：target Part {part.name} [{part.id}]，"
+                f"tool Part {tool.name} [{tool.id}]；结果 {result_name} "
+                f"[{prepared.context.result_part_id}]；两源 Part 抑制并可撤销恢复，"
+                f"tool policy={tool_handling}"
+            )
+            metadata = envelope(controller, "geometry-part-boolean")
+            suffix = str(metadata.pop("identity_suffix"))
+            proposal = create_part_boolean_proposal(
+                proposal_id=f"proposal-{suffix}",
+                context=current_context(),
+                target_part_id=part.id,
+                tool_part_id=tool.id,
+                operation=boolean_operation,
+                result_name=result_name,
+                tool_handling=tool_handling,
+                prepared=prepared,
+                summary=summary,
+                **metadata,
+            )
+            return proposal_outcome(
+                proposal,
+                summary=summary,
+                impact=(
+                    "确认后创建一个 proven 结果 Part，抑制 target/tool 源 Part，"
+                    "并使旧网格、定义与结果失效"
+                ),
+                confirm_label="执行精确 Part 布尔",
+                extra_data={
+                    "result_part_id": prepared.context.result_part_id,
+                    "feature_id": prepared.context.feature_id,
+                    "lineage_proven": True,
+                },
+            )
+        if operation == "body_boolean":
+            if set(edit) != {
+                "boolean_operation",
+                "target_body_id",
+                "tool_body_id",
+                "result_name",
+                "tool_handling",
+            }:
+                raise ValueError("body_boolean fields do not match")
+            geometry = part.geometry_recipe
+            if type(geometry) is not MultiBodyGeometry:
+                raise AuthoringContractError(
+                    "Body Boolean requires one canonical same-Part MultiBodyGeometry"
+                )
+            boolean_operation = str(edit["boolean_operation"])
+            if boolean_operation not in {"fuse", "cut"}:
+                raise AuthoringContractError(
+                    "intersect/fragment are disabled until stable result Body "
+                    "IDs and lineage replay are proven"
+                )
+            target_body_id = str(edit["target_body_id"])
+            tool_body_id = str(edit["tool_body_id"])
+            if target_body_id == tool_body_id:
+                raise AuthoringContractError("target and tool Bodies must differ")
+            geometry.body(target_body_id)
+            geometry.body(tool_body_id)
+            result_name = str(edit["result_name"]).strip()
+            tool_handling = str(edit["tool_handling"])
+            if tool_handling != BODY_BOOLEAN_TOOL_HANDLING:
+                raise AuthoringContractError(
+                    f"tool_handling must be {BODY_BOOLEAN_TOOL_HANDLING!r}"
+                )
+            try:
+                prepared = _preflight_body_boolean(
+                    geometry,
+                    target_body_id,
+                    tool_body_id,
+                    boolean_operation,
+                    result_name=result_name,
+                )
+            except BooleanLineageResolutionError as error:
+                return AuthoringToolOutcome(str(error), {}, ok=False)
+            summary = (
+                f"精确 {boolean_operation}：Part {part.name} [{part.id}] 内 "
+                f"target Body {target_body_id}，tool Body {tool_body_id}；"
+                f"结果特征 {result_name}，保留 target ID、消费 tool，"
+                f"policy={tool_handling}"
+            )
+            metadata = envelope(controller, "geometry-body-boolean")
+            suffix = str(metadata.pop("identity_suffix"))
+            proposal = create_body_boolean_proposal(
+                proposal_id=f"proposal-{suffix}",
+                context=current_context(),
+                part_id=part.id,
+                target_body_id=target_body_id,
+                tool_body_id=tool_body_id,
+                operation=boolean_operation,
+                result_name=result_name,
+                tool_handling=tool_handling,
+                prepared=prepared,
+                summary=summary,
+                **metadata,
+            )
+            return proposal_outcome(
+                proposal,
+                summary=summary,
+                impact=(
+                    "确认后在同一 Part 内保留 target Body ID、消费 tool Body，"
+                    "并使旧网格、定义与结果失效"
+                ),
+                confirm_label="执行精确 Body 布尔",
+                extra_data={
+                    "target_body_id": target_body_id,
+                    "consumed_tool_body_id": tool_body_id,
+                    "lineage_proven": True,
+                },
             )
         if operation == "extrude_profiles":
             if set(edit) != {"source_face_ids", "height"}:

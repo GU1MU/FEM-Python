@@ -602,7 +602,9 @@ _PREPARE_GEOMETRY_EDIT = _tool(
         "from read_geometry_feature_catalog and creates one independent Part per "
         "selected material Profile. Revolution and path sweep require one explicit "
         "canonical Profile; path sweep also requires an ordered open polyline and "
-        "a fixed or transport frame. The edit runs only after the local GUI control "
+        "a fixed or transport frame. Exact Part/Body Boolean requires explicit "
+        "target, tool, fuse/cut operation, result name, and the sole supported "
+        "tool-consumption policy. The edit runs only after the local GUI control "
         "is clicked."
     ),
     {
@@ -721,6 +723,71 @@ _PREPARE_GEOMETRY_EDIT = _tool(
                         },
                         "required": [
                             "operation", "source_face_id", "path", "frame_strategy"
+                        ],
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "operation": {"const": "part_boolean"},
+                            "boolean_operation": {
+                                "type": "string",
+                                "enum": ["fuse", "cut"],
+                            },
+                            "tool_part_id": {
+                                "type": "string",
+                                "pattern": "^P[1-9][0-9]*$",
+                            },
+                            "result_name": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 128,
+                            },
+                            "tool_handling": {
+                                "const": "consume_tool_part",
+                            },
+                        },
+                        "required": [
+                            "operation",
+                            "boolean_operation",
+                            "tool_part_id",
+                            "result_name",
+                            "tool_handling",
+                        ],
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "operation": {"const": "body_boolean"},
+                            "boolean_operation": {
+                                "type": "string",
+                                "enum": ["fuse", "cut"],
+                            },
+                            "target_body_id": {
+                                "type": "string",
+                                "pattern": "^B[1-9][0-9]*$",
+                            },
+                            "tool_body_id": {
+                                "type": "string",
+                                "pattern": "^B[1-9][0-9]*$",
+                            },
+                            "result_name": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 128,
+                            },
+                            "tool_handling": {
+                                "const": "consume_tool_body",
+                            },
+                        },
+                        "required": [
+                            "operation",
+                            "boolean_operation",
+                            "target_body_id",
+                            "tool_body_id",
+                            "result_name",
+                            "tool_handling",
                         ],
                         "additionalProperties": False,
                     },

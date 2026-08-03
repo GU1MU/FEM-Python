@@ -45,6 +45,8 @@ def prepare_solid_body_boolean(
     target_body_id: str,
     tool_body_id: str,
     operation: Literal["fuse", "cut"],
+    *,
+    result_name: str | None = None,
 ) -> StrictBodyBooleanResult:
     """Execute and prove one Boolean without mutating the live Session."""
 
@@ -55,6 +57,7 @@ def prepare_solid_body_boolean(
         target_body_id,
         tool_body_id,
         operation,
+        result_name=result_name,
     )
     target_compiled = compile_recipe(cad, draft.object_geometry)
     tool_compiled = compile_recipe(cad, draft.tool_geometry)

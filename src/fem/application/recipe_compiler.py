@@ -1607,7 +1607,13 @@ def _compile_revolution(cad: Any, recipe: RevolvedGeometry) -> _CompiledDraft:
         "y": (0.0, 1.0, 0.0),
         "z": (0.0, 0.0, 1.0),
     }[recipe.axis]
+    if len(selection.face_ids) != 1:
+        raise TopologyResolutionError(
+            "revolve.compile.source-not-unique: strict revolution lineage "
+            "requires one selected material Profile"
+        )
     domain: list[Any] = []
+    logical: dict[str, tuple[Any, ...]] = {}
     for source_face_id in selection.face_ids:
         source_surfaces = tuple(base.logical_entities.get(source_face_id, ()))
         if len(source_surfaces) != 1 or source_surfaces[0].dimension != 2:
@@ -1675,11 +1681,26 @@ def _compile_revolution(cad: Any, recipe: RevolvedGeometry) -> _CompiledDraft:
                 "当前二维面、扫掠轴和角度会生成零体积或退化实体；"
                 "请改用与草图平面不垂直的轴"
             )
+        sides = tuple(feature.sides)
+        if not sides:
+            raise TopologyResolutionError(
+                "revolve.compile.side-missing: 旋转扫掠没有可证明的侧面"
+            )
+        logical["face:sides"] = sides
+        if recipe.angle_degrees < 360.0:
+            ends = tuple(feature.ends)
+            if len(ends) != 1:
+                raise TopologyResolutionError(
+                    "revolve.compile.end-not-unique: 旋转终止面 lineage 不唯一"
+                )
+            logical["face:start"] = source_surfaces
+            logical["face:end"] = ends
         domain.extend(volumes)
     compiled_domain = _unique(domain)
+    logical["body:domain"] = compiled_domain
     return _CompiledDraft(
         compiled_domain,
-        {"body:domain": compiled_domain},
+        logical,
         {},
     )
 
