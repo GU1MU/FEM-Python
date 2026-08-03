@@ -12,6 +12,7 @@ from fem.application.session import ProjectSaveSnapshot, ProjectSnapshot
 from fem.application.units import UnitContext
 
 from ._project_codec import (
+    ProjectFieldCodecPolicy,
     atomic_write_project,
     dumps_canonical_json,
     loads_json_strict,
@@ -54,6 +55,7 @@ def decode_project_v8(
     payload: Mapping[str, Any] | str | bytes | bytearray,
     *,
     source_path: str | Path | None = None,
+    _field_policy: ProjectFieldCodecPolicy | None = None,
 ) -> ProjectSnapshot:
     """Decode v8 after removing its one additive field for the v7 core."""
 
@@ -92,9 +94,13 @@ def decode_project_v8(
         v7_payload["schema"] = 7
         v7_authoring = v7_payload["project"]["authoring"]
         del v7_authoring["unit_context"]
+        decode_options = (
+            {} if _field_policy is None else {"_field_policy": _field_policy}
+        )
         snapshot = decode_project_v7(
             v7_payload,
             source_path=source_path,
+            **decode_options,
         )
         return replace(snapshot, unit_context=units)
     except ProjectV8Error:
@@ -105,12 +111,17 @@ def decode_project_v8(
 
 def encode_project_v8(
     snapshot: ProjectSnapshot | ProjectSaveSnapshot,
+    *,
+    _field_policy: ProjectFieldCodecPolicy | None = None,
 ) -> dict[str, Any]:
     """Encode canonical v7 authoring plus the typed unit convention."""
 
     try:
         project = unwrap_project_snapshot(snapshot)
-        payload = encode_project_v7(project)
+        encode_options = (
+            {} if _field_policy is None else {"_field_policy": _field_policy}
+        )
+        payload = encode_project_v7(project, **encode_options)
         payload["schema"] = SCHEMA_VERSION
         payload["project"]["authoring"]["unit_context"] = (
             None if project.unit_context is None else project.unit_context.to_dict()

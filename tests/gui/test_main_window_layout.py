@@ -7,9 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QPoint, QSize
 from PySide6.QtWidgets import QApplication, QLabel, QMenu, QToolBar, QToolButton
 
-from fem.abaqus import read
 from fem_gui.main_window import FEMMainWindow
-from fem_gui.visualization.model_adapter import build_model_geometry
 
 
 def _application() -> QApplication:

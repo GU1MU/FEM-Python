@@ -19,7 +19,11 @@ from fem.io.project_v9 import (
     decode_project_v9,
     encode_project_v9,
 )
-from fem.io.project_v10 import ProjectV10DecodeError, decode_project_v10
+from fem.io.project_v10 import (
+    ProjectV10DecodeError,
+    decode_project_v10,
+    encode_project_v10,
+)
 
 
 def _snapshot(*, named: bool):
@@ -67,11 +71,10 @@ def _snapshot(*, named: bool):
 
 
 def test_a5_schema_v10_round_trip_preserves_named_analysis_identity() -> None:
-    payload = encode_project(_snapshot(named=True))
-    loaded = decode_project(payload)
-    step = loaded.snapshot.analysis_definitions[0]
+    payload = encode_project_v10(_snapshot(named=True))
+    step = decode_project_v10(payload).analysis_definitions[0]
 
-    assert CURRENT_PROJECT_SCHEMA == 10
+    assert CURRENT_PROJECT_SCHEMA == 11
     assert payload["schema"] == 10
     encoded = payload["project"]["authoring"]["definitions"]["steps"][0]
     assert encoded["boundaries"][0]["name"] == "位移-固定端"
@@ -80,7 +83,7 @@ def test_a5_schema_v10_round_trip_preserves_named_analysis_identity() -> None:
     assert step.boundaries[0].name == "位移-固定端"
     assert step.edge_loads[0].name == "载荷-拉伸"
     assert step.outputs[0].name == "结果请求-位移反力"
-    assert loaded.snapshot.unit_context == UnitContext("mm", "N", "MPa")
+    assert decode_project_v10(payload).unit_context == UnitContext("mm", "N", "MPa")
 
 
 def test_a5_anonymous_v9_project_migrates_deterministic_names() -> None:
@@ -116,7 +119,7 @@ def test_a5_v9_remains_strict_and_v10_requires_exact_name_fields() -> None:
     with pytest.raises(ProjectV9DecodeError, match="未知字段|字段"):
         decode_project_v9(widened)
 
-    v10 = encode_project(_snapshot(named=True))
+    v10 = encode_project_v10(_snapshot(named=True))
     missing = deepcopy(v10)
     del missing["project"]["authoring"]["definitions"]["steps"][0][
         "edge_loads"

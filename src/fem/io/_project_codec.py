@@ -39,6 +39,12 @@ from fem.geometry.recipes import (
     CylinderGeometry,
     DiskGeometry,
     ExtrudedGeometry,
+    FaceSeedConnectionProof,
+    FaceSketchBooleanDirection,
+    FaceSketchBooleanGeometry,
+    FaceSketchBooleanOperation,
+    FaceSketchBooleanStepProof,
+    FaceSketchWorkplaneStrategy,
     MovedGeometry,
     MultiBodyGeometry,
     PartBooleanContext,
@@ -50,6 +56,9 @@ from fem.geometry.recipes import (
     RotatedGeometry,
     SketchArc,
     SketchCircle,
+    SketchExternalCoincidence,
+    SketchExternalReference,
+    SketchExternalReferenceType,
     SketchGeometry,
     SketchLine,
     SketchPlane,
@@ -92,6 +101,7 @@ class ProjectFieldCodecPolicy:
     allow_part_boolean: bool = False
     allow_revolved_geometry: bool = False
     allow_path_swept_geometry: bool = False
+    allow_face_sketch_boolean: bool = False
 
 
 def loads_json_strict(
@@ -472,6 +482,97 @@ def decode_geometry_field(
             points,
             curves,
         )
+    if kind == "FaceSketchBooleanGeometry":
+        if not policy.allow_face_sketch_boolean:
+            raise policy.decode_error(
+                f"{path}.type 的几何类型无法由 {policy.version_label} "
+                "无损解码：'FaceSketchBooleanGeometry'"
+            )
+        _field_keys(
+            data,
+            path,
+            required={
+                "type",
+                "base",
+                "feature_id",
+                "name",
+                "support_face_id",
+                "workplane_strategy",
+                "sketch",
+                "operation",
+                "direction",
+                "distance",
+                "participating_profile_ids",
+                "external_references",
+                "external_coincidences",
+                "step_proofs",
+            },
+            optional=set(),
+            policy=policy,
+            error_type=policy.decode_error,
+        )
+        sketch = decode_geometry_field(
+            data["sketch"], f"{path}.sketch", policy=policy
+        )
+        if type(sketch) is not SketchGeometry or not sketch.is_strict:
+            raise policy.decode_error(f"{path}.sketch 必须是严格平面草图")
+        result = _field_construct(
+            FaceSketchBooleanGeometry,
+            path,
+            policy,
+            decode_geometry_field(data["base"], f"{path}.base", policy=policy),
+            _field_string(data["feature_id"], f"{path}.feature_id", policy.decode_error),
+            _field_string(data["name"], f"{path}.name", policy.decode_error),
+            _field_string(
+                data["support_face_id"], f"{path}.support_face_id", policy.decode_error
+            ),
+            _decode_face_sketch_workplane_strategy(
+                data["workplane_strategy"], f"{path}.workplane_strategy", policy=policy
+            ),
+            sketch,
+            _field_enum(
+                data["operation"], f"{path}.operation", FaceSketchBooleanOperation, policy
+            ),
+            _field_enum(
+                data["direction"], f"{path}.direction", FaceSketchBooleanDirection, policy
+            ),
+            _field_number(data["distance"], f"{path}.distance", policy.decode_error, policy=policy),
+            tuple(
+                _field_string(item, f"{path}.participating_profile_ids[{index}]", policy.decode_error)
+                for index, item in enumerate(
+                    _field_array(data["participating_profile_ids"], f"{path}.participating_profile_ids", policy.decode_error)
+                )
+            ),
+            tuple(
+                _decode_face_sketch_external_reference(
+                    item, f"{path}.external_references[{index}]", policy=policy
+                )
+                for index, item in enumerate(
+                    _field_array(data["external_references"], f"{path}.external_references", policy.decode_error)
+                )
+            ),
+            tuple(
+                _decode_face_sketch_external_coincidence(
+                    item, f"{path}.external_coincidences[{index}]", policy=policy
+                )
+                for index, item in enumerate(
+                    _field_array(data["external_coincidences"], f"{path}.external_coincidences", policy.decode_error)
+                )
+            ),
+            tuple(
+                _decode_face_sketch_step_proof(
+                    item, f"{path}.step_proofs[{index}]", policy=policy
+                )
+                for index, item in enumerate(
+                    _field_array(data["step_proofs"], f"{path}.step_proofs", policy.decode_error)
+                )
+            ),
+        )
+        if tuple(item.profile_id for item in result.step_proofs) != result.participating_profile_ids:
+            raise policy.decode_error(f"{path}.step_proofs 必须完整覆盖参与轮廓并保持稳定顺序")
+        if any(not item.result_entities or not item.topology_mappings for item in result.step_proofs):
+            raise policy.decode_error(f"{path}.step_proofs 包含不完整的布尔证明")
+        return result
     if kind == "MovedGeometry":
         required = {"type", "base", "dx", "dy"}
         optional = {"dz"}
@@ -994,6 +1095,226 @@ def _decode_sketch_plane_field(
             f"{path}.y_direction",
             policy,
         ),
+    )
+
+
+def _decode_face_sketch_workplane_strategy(
+    value: Any,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> FaceSketchWorkplaneStrategy:
+    data = _field_mapping(value, path, policy.decode_error)
+    _field_keys(
+        data,
+        path,
+        required={"seed_axis", "sign", "origin_rule"},
+        optional=set(),
+        policy=policy,
+        error_type=policy.decode_error,
+    )
+    return _field_construct(
+        FaceSketchWorkplaneStrategy,
+        path,
+        policy,
+        _field_string(data["seed_axis"], f"{path}.seed_axis", policy.decode_error),
+        _field_integer(
+            data["sign"],
+            f"{path}.sign",
+            policy.decode_error,
+            policy=policy,
+        ),
+        _field_string(data["origin_rule"], f"{path}.origin_rule", policy.decode_error),
+    )
+
+
+def _decode_face_sketch_external_reference(
+    value: Any,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> SketchExternalReference:
+    data = _field_mapping(value, path, policy.decode_error)
+    _field_keys(
+        data,
+        path,
+        required={"id", "source_logical_id", "derived_type"},
+        optional=set(),
+        policy=policy,
+        error_type=policy.decode_error,
+    )
+    return _field_construct(
+        SketchExternalReference,
+        path,
+        policy,
+        _field_string(data["id"], f"{path}.id", policy.decode_error),
+        _field_construct(
+            LogicalEntityRef,
+            f"{path}.source_logical_id",
+            policy,
+            _field_string(
+                data["source_logical_id"],
+                f"{path}.source_logical_id",
+                policy.decode_error,
+            ),
+        ),
+        _field_enum(
+            data["derived_type"],
+            f"{path}.derived_type",
+            SketchExternalReferenceType,
+            policy,
+        ),
+    )
+
+
+def _decode_face_sketch_external_coincidence(
+    value: Any,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> SketchExternalCoincidence:
+    data = _field_mapping(value, path, policy.decode_error)
+    _field_keys(
+        data,
+        path,
+        required={"point_id", "reference_id"},
+        optional=set(),
+        policy=policy,
+        error_type=policy.decode_error,
+    )
+    return _field_construct(
+        SketchExternalCoincidence,
+        path,
+        policy,
+        _field_string(data["point_id"], f"{path}.point_id", policy.decode_error),
+        _field_string(
+            data["reference_id"], f"{path}.reference_id", policy.decode_error
+        ),
+    )
+
+
+def _decode_face_sketch_step_proof(
+    value: Any,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> FaceSketchBooleanStepProof:
+    data = _field_mapping(value, path, policy.decode_error)
+    _field_keys(
+        data,
+        path,
+        required={
+            "profile_id",
+            "result_entities",
+            "topology_mappings",
+            "connection_proof",
+        },
+        optional=set(),
+        policy=policy,
+        error_type=policy.decode_error,
+    )
+    raw_entities = _field_array(
+        data["result_entities"], f"{path}.result_entities", policy.decode_error
+    )
+    raw_mappings = _field_array(
+        data["topology_mappings"], f"{path}.topology_mappings", policy.decode_error
+    )
+    lineage = _decode_boolean_body_context(
+        {
+            "feature_id": "BF1",
+            "target_body_id": "B1",
+            "tool_body_id": "B2",
+            "tool_body_name": "Face sketch proof",
+            "result_entities": sorted(
+                raw_entities,
+                key=lambda item: logical_ref_sort_key(
+                    LogicalEntityRef(item["logical_id"])
+                ),
+            ),
+            "topology_mappings": sorted(
+                raw_mappings,
+                key=lambda item: (
+                    item["source"],
+                    logical_ref_sort_key(
+                        LogicalEntityRef(item["source_logical_id"])
+                    ),
+                    logical_ref_sort_key(
+                        LogicalEntityRef(item["target_logical_id"])
+                    ),
+                    item["relation"],
+                ),
+            ),
+        },
+        path,
+        policy=policy,
+    )
+    if lineage is None:
+        raise policy.decode_error(f"{path} 的布尔谱系不能为空")
+    entities_by_id = {item.logical_id: item for item in lineage.result_entities}
+    entities = tuple(entities_by_id[item["logical_id"]] for item in raw_entities)
+    mappings_by_key = {
+        (
+            item.source,
+            item.source_logical_id,
+            item.target_logical_id,
+            item.relation,
+        ): item
+        for item in lineage.topology_mappings
+    }
+    mappings = tuple(
+        mappings_by_key[
+            (
+                item["source"],
+                item["source_logical_id"],
+                item["target_logical_id"],
+                item["relation"],
+            )
+        ]
+        for item in raw_mappings
+    )
+    raw_connection = data["connection_proof"]
+    connection = None
+    if raw_connection is not None:
+        connection_data = _field_mapping(
+            raw_connection, f"{path}.connection_proof", policy.decode_error
+        )
+        _field_keys(
+            connection_data,
+            f"{path}.connection_proof",
+            required={"support_face_id", "tool_start_face_id", "overlap_area"},
+            optional=set(),
+            policy=policy,
+            error_type=policy.decode_error,
+        )
+        connection = _field_construct(
+            FaceSeedConnectionProof,
+            f"{path}.connection_proof",
+            policy,
+            _field_string(
+                connection_data["support_face_id"],
+                f"{path}.connection_proof.support_face_id",
+                policy.decode_error,
+            ),
+            _field_string(
+                connection_data["tool_start_face_id"],
+                f"{path}.connection_proof.tool_start_face_id",
+                policy.decode_error,
+            ),
+            _field_number(
+                connection_data["overlap_area"],
+                f"{path}.connection_proof.overlap_area",
+                policy.decode_error,
+                policy=policy,
+            ),
+        )
+    return _field_construct(
+        FaceSketchBooleanStepProof,
+        path,
+        policy,
+        _field_string(data["profile_id"], f"{path}.profile_id", policy.decode_error),
+        entities,
+        mappings,
+        connection,
     )
 
 
@@ -1805,6 +2126,80 @@ def encode_geometry_field(
                     )
                 ],
             }
+        if type(recipe) is FaceSketchBooleanGeometry:
+            if not policy.allow_face_sketch_boolean:
+                raise policy.encode_error(
+                    f"{path} 的几何类型无法由 {policy.version_label} "
+                    "无损编码：FaceSketchBooleanGeometry"
+                )
+            _field_exact_dataclass(
+                recipe,
+                FaceSketchBooleanGeometry,
+                {
+                    "base",
+                    "feature_id",
+                    "name",
+                    "support_face_id",
+                    "workplane_strategy",
+                    "sketch",
+                    "operation",
+                    "direction",
+                    "distance",
+                    "participating_profile_ids",
+                    "external_references",
+                    "external_coincidences",
+                    "step_proofs",
+                },
+                path,
+                policy,
+            )
+            if tuple(item.profile_id for item in recipe.step_proofs) != recipe.participating_profile_ids:
+                raise policy.encode_error(
+                    f"{path}.step_proofs 必须完整覆盖参与轮廓并保持稳定顺序"
+                )
+            if any(not item.result_entities or not item.topology_mappings for item in recipe.step_proofs):
+                raise policy.encode_error(f"{path}.step_proofs 包含不完整的布尔证明")
+            return {
+                "type": "FaceSketchBooleanGeometry",
+                "base": encode_geometry_field(
+                    recipe.base, f"{path}.base", ancestors, policy=policy
+                ),
+                "feature_id": recipe.feature_id,
+                "name": recipe.name,
+                "support_face_id": recipe.support_face_id,
+                "workplane_strategy": _encode_face_sketch_workplane_strategy(
+                    recipe.workplane_strategy,
+                    f"{path}.workplane_strategy",
+                    policy=policy,
+                ),
+                "sketch": encode_geometry_field(
+                    recipe.sketch, f"{path}.sketch", ancestors, policy=policy
+                ),
+                "operation": recipe.operation.value,
+                "direction": recipe.direction.value,
+                "distance": _field_number(
+                    recipe.distance, f"{path}.distance", policy.encode_error, policy=policy
+                ),
+                "participating_profile_ids": list(recipe.participating_profile_ids),
+                "external_references": [
+                    _encode_face_sketch_external_reference(
+                        item, f"{path}.external_references[{index}]", policy=policy
+                    )
+                    for index, item in enumerate(recipe.external_references)
+                ],
+                "external_coincidences": [
+                    _encode_face_sketch_external_coincidence(
+                        item, f"{path}.external_coincidences[{index}]", policy=policy
+                    )
+                    for index, item in enumerate(recipe.external_coincidences)
+                ],
+                "step_proofs": [
+                    _encode_face_sketch_step_proof(
+                        item, f"{path}.step_proofs[{index}]", policy=policy
+                    )
+                    for index, item in enumerate(recipe.step_proofs)
+                ],
+            }
         if type(recipe) is MovedGeometry:
             _field_exact_dataclass(
                 recipe,
@@ -2127,6 +2522,147 @@ def _encode_sketch_plane_field(
             f"{path}.y_direction",
             policy,
         ),
+    }
+
+
+def _encode_face_sketch_workplane_strategy(
+    strategy: FaceSketchWorkplaneStrategy,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> dict[str, Any]:
+    _field_exact_dataclass(
+        strategy,
+        FaceSketchWorkplaneStrategy,
+        {"seed_axis", "sign", "origin_rule"},
+        path,
+        policy,
+    )
+    return {
+        "seed_axis": strategy.seed_axis,
+        "sign": strategy.sign,
+        "origin_rule": strategy.origin_rule,
+    }
+
+
+def _encode_face_sketch_external_reference(
+    reference: SketchExternalReference,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> dict[str, Any]:
+    _field_exact_dataclass(
+        reference,
+        SketchExternalReference,
+        {"id", "source", "derived_type"},
+        path,
+        policy,
+    )
+    return {
+        "id": reference.id,
+        "source_logical_id": reference.source.logical_id,
+        "derived_type": reference.derived_type.value,
+    }
+
+
+def _encode_face_sketch_external_coincidence(
+    coincidence: SketchExternalCoincidence,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> dict[str, Any]:
+    _field_exact_dataclass(
+        coincidence,
+        SketchExternalCoincidence,
+        {"point_id", "reference_id"},
+        path,
+        policy,
+    )
+    return {
+        "point_id": coincidence.point_id,
+        "reference_id": coincidence.reference_id,
+    }
+
+
+def _encode_face_sketch_step_proof(
+    proof: FaceSketchBooleanStepProof,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> dict[str, Any]:
+    _field_exact_dataclass(
+        proof,
+        FaceSketchBooleanStepProof,
+        {"profile_id", "result_entities", "topology_mappings", "connection_proof"},
+        path,
+        policy,
+    )
+    lineage = _encode_boolean_body_context(
+        BooleanBodyContext(
+            "BF1",
+            "B1",
+            "B2",
+            "Face sketch proof",
+            proof.result_entities,
+            proof.topology_mappings,
+        ),
+        path,
+        policy=policy,
+    )
+    if lineage is None:
+        raise policy.encode_error(f"{path} 的布尔谱系不能为空")
+    encoded_entities_by_id = {
+        item["logical_id"]: item for item in lineage["result_entities"]
+    }
+    encoded_entities = [
+        encoded_entities_by_id[item.logical_id] for item in proof.result_entities
+    ]
+    encoded_mappings_by_key = {
+        (
+            item["source"],
+            item["source_logical_id"],
+            item["target_logical_id"],
+            item["relation"],
+        ): item
+        for item in lineage["topology_mappings"]
+    }
+    encoded_mappings = [
+        encoded_mappings_by_key[
+            (
+                item.source,
+                item.source_logical_id,
+                item.target_logical_id,
+                item.relation,
+            )
+        ]
+        for item in proof.topology_mappings
+    ]
+    connection = proof.connection_proof
+    if connection is None:
+        encoded_connection = None
+    else:
+        _field_exact_dataclass(
+            connection,
+            FaceSeedConnectionProof,
+            {"support_face_id", "tool_start_face_id", "overlap_area"},
+            f"{path}.connection_proof",
+            policy,
+        )
+        encoded_connection = {
+            "support_face_id": connection.support_face_id,
+            "tool_start_face_id": connection.tool_start_face_id,
+            "overlap_area": _field_number(
+                connection.overlap_area,
+                f"{path}.connection_proof.overlap_area",
+                policy.encode_error,
+                policy=policy,
+            ),
+        }
+    return {
+        "profile_id": proof.profile_id,
+        "result_entities": encoded_entities,
+        "topology_mappings": encoded_mappings,
+        "connection_proof": encoded_connection,
     }
 
 
@@ -3709,6 +4245,19 @@ def _field_string(
     if not value.strip():
         raise error_type(f"{path} 不能为空")
     return value
+
+
+def _field_enum(
+    value: Any,
+    path: str,
+    enum_type: Any,
+    policy: ProjectFieldCodecPolicy,
+) -> Any:
+    raw = _field_string(value, path, policy.decode_error)
+    try:
+        return enum_type(raw)
+    except ValueError as error:
+        raise policy.decode_error(f"{path} 包含不支持的枚举值：{raw!r}") from error
 
 
 def _field_integer(

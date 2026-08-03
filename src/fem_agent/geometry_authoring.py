@@ -17,6 +17,7 @@ from fem.geometry import (
     CylinderGeometry,
     DiskGeometry,
     ExtrudedGeometry,
+    FaceSketchBooleanGeometry,
     MovedGeometry,
     MultiBodyGeometry,
     NATIVE_GEOMETRY_TYPES,
@@ -1366,6 +1367,13 @@ def feature_topology_catalog(
             {"body_id": body.id, "part_id": f"P{body.id[1:]}"}
             for body in recipe.bodies
         ]
+    if any(record.kind.startswith("face_sketch_boolean_") for record in features):
+        catalog["face_sketch_boolean_capability"] = {
+            "read": True,
+            "create": False,
+            "edit": False,
+            "message": "Agent 可只读识别面草图拉伸布尔特征，暂不支持创建或编辑。",
+        }
     return catalog
 
 
@@ -1532,6 +1540,32 @@ def _geometry_recipe_to_payload(recipe: object) -> dict[str, object]:
             "planar_context": _boolean_context_to_payload(recipe.planar_context),
             "part_context": _boolean_context_to_payload(recipe.part_context),
         }
+    if type(recipe) is FaceSketchBooleanGeometry:
+        return {
+            "kind": "face_sketch_boolean",
+            "feature_id": recipe.feature_id,
+            "name": recipe.name,
+            "base": _geometry_recipe_to_payload(recipe.base),
+            "support_face_id": recipe.support_face_id,
+            "workplane_strategy": {
+                "seed_axis": recipe.workplane_strategy.seed_axis,
+                "sign": recipe.workplane_strategy.sign,
+                "origin_rule": recipe.workplane_strategy.origin_rule,
+            },
+            "sketch": _geometry_recipe_to_payload(recipe.sketch),
+            "operation": recipe.operation.value,
+            "direction": recipe.direction.value,
+            "distance": recipe.distance,
+            "participating_profile_ids": list(recipe.participating_profile_ids),
+            "external_reference_count": len(recipe.external_references),
+            "step_proof_count": len(recipe.step_proofs),
+            "capability": {
+                "read": True,
+                "create": False,
+                "edit": False,
+                "message": "Agent 可只读识别面草图拉伸布尔特征，暂不支持创建或编辑。",
+            },
+        }
     if type(recipe) is MultiBodyGeometry:
         return {
             "kind": "multi_body",
@@ -1593,6 +1627,10 @@ def _geometry_recipe_from_payload(value: object) -> object:
     if not isinstance(value, Mapping):
         raise TypeError("geometry recipe payload must be an object")
     kind = value.get("kind")
+    if kind == "face_sketch_boolean":
+        raise ValueError(
+            "Agent 暂不支持创建或编辑面草图拉伸布尔特征；仅支持只读识别。"
+        )
     fields: dict[str, set[str]] = {
         "rectangle": {"kind", "name", "width", "height"},
         "disk": {"kind", "name", "radius"},

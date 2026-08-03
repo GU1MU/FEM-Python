@@ -392,7 +392,7 @@ class _PartExtrusionUndoRecord:
 
 
 @dataclass(frozen=True, slots=True)
-class _FaceSketchBooleanUndoRecord:
+class FaceSketchBooleanUndoRecord:
     feature_id: str
     part_id: str
     before_part: NativePart
@@ -403,6 +403,24 @@ class _FaceSketchBooleanUndoRecord:
     after_assignments: tuple[RegionAssignment, ...]
     before_steps: tuple[Any, ...]
     after_steps: tuple[Any, ...]
+
+    def __post_init__(self) -> None:
+        normalize_part_id(self.part_id)
+        if type(self.feature_id) is not str or not self.feature_id.strip():
+            raise ValueError("面草图撤销记录缺少特征 ID")
+        if self.before_part.id != self.part_id or self.after_part.id != self.part_id:
+            raise ValueError("面草图撤销记录的 Part ID 不一致")
+        for field_name in (
+            "before_part",
+            "after_part",
+            "before_named_regions",
+            "after_named_regions",
+            "before_assignments",
+            "after_assignments",
+            "before_steps",
+            "after_steps",
+        ):
+            object.__setattr__(self, field_name, deepcopy(getattr(self, field_name)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -431,6 +449,8 @@ class ProjectSnapshot:
     retired_part_boolean_feature_ids: tuple[str, ...] = ()
     active_part_id: str | None = None
     unit_context: UnitContext | None = None
+    face_sketch_boolean_undo_records: tuple[FaceSketchBooleanUndoRecord, ...] = ()
+    face_sketch_boolean_redo_records: tuple[FaceSketchBooleanUndoRecord, ...] = ()
 
     def __post_init__(self) -> None:
         source_kind = _canonical_source_kind(self.source_kind)
@@ -520,6 +540,24 @@ class ProjectSnapshot:
             "part_boolean_undo_records",
             deepcopy(part_records),
         )
+        for field_name in (
+            "face_sketch_boolean_undo_records",
+            "face_sketch_boolean_redo_records",
+        ):
+            face_records = tuple(getattr(self, field_name))
+            if any(
+                type(record) is not FaceSketchBooleanUndoRecord
+                for record in face_records
+            ):
+                raise TypeError(
+                    f"{field_name} must contain FaceSketchBooleanUndoRecord"
+                )
+            identities = tuple(
+                (record.part_id, record.feature_id) for record in face_records
+            )
+            if len(identities) != len(set(identities)):
+                raise ValueError(f"{field_name} contains duplicate feature records")
+            object.__setattr__(self, field_name, deepcopy(face_records))
         retired_parts = tuple(
             sorted(
                 {
@@ -1112,6 +1150,16 @@ class ModelSession:
                 ),
                 active_part_id=getattr(snapshot, "active_part_id", None),
                 unit_context=getattr(snapshot, "unit_context", None),
+                face_sketch_boolean_undo_records=getattr(
+                    snapshot,
+                    "face_sketch_boolean_undo_records",
+                    (),
+                ),
+                face_sketch_boolean_redo_records=getattr(
+                    snapshot,
+                    "face_sketch_boolean_redo_records",
+                    (),
+                ),
             )
         )
         # ProjectSnapshot already owns a detached copy; copy once more so the
@@ -1294,6 +1342,12 @@ class ModelSession:
             record.feature_id: deepcopy(record)
             for record in detached.part_boolean_undo_records
         }
+        self._face_sketch_boolean_undo_records = _group_face_sketch_records(
+            detached.face_sketch_boolean_undo_records
+        )
+        self._face_sketch_boolean_redo_records = _group_face_sketch_records(
+            detached.face_sketch_boolean_redo_records
+        )
         self._definitions_explicit = True
         self._increment_domain_revisions(project=True, mesh=True, model=True)
         if model is not None:
@@ -1749,7 +1803,7 @@ class ModelSession:
             expected_session_revision=expected_session_revision,
         )
         after = self._require_part(normalized)
-        record = _FaceSketchBooleanUndoRecord(
+        record = FaceSketchBooleanUndoRecord(
             feature_id,
             normalized,
             deepcopy(current),
@@ -5087,6 +5141,12 @@ class ModelSession:
                 self._active_part_id if canonical_part_mode else None
             ),
             unit_context=self._unit_context,
+            face_sketch_boolean_undo_records=_flatten_face_sketch_records(
+                self._face_sketch_boolean_undo_records
+            ),
+            face_sketch_boolean_redo_records=_flatten_face_sketch_records(
+                self._face_sketch_boolean_redo_records
+            ),
         )
         token = self._issue_token(
             "project_save",
@@ -5546,11 +5606,11 @@ class ModelSession:
         ] = {}
         self._face_sketch_boolean_undo_records: dict[
             str,
-            list[_FaceSketchBooleanUndoRecord],
+            list[FaceSketchBooleanUndoRecord],
         ] = {}
         self._face_sketch_boolean_redo_records: dict[
             str,
-            list[_FaceSketchBooleanUndoRecord],
+            list[FaceSketchBooleanUndoRecord],
         ] = {}
         self._feature_history: tuple[FeatureRecord, ...] = ()
         self._named_regions: dict[str, NamedRegion] = {}
@@ -6369,6 +6429,25 @@ def _face_sketch_target_body_recipe(
     if target.logical_id != "body:domain":
         raise ValueError("单实体 Part 的目标 Body ID 已失效")
     return recipe
+
+
+def _flatten_face_sketch_records(
+    records: Mapping[str, list[FaceSketchBooleanUndoRecord]],
+) -> tuple[FaceSketchBooleanUndoRecord, ...]:
+    return tuple(
+        deepcopy(record)
+        for part_id in sorted(records, key=part_id_sort_key)
+        for record in records[part_id]
+    )
+
+
+def _group_face_sketch_records(
+    records: tuple[FaceSketchBooleanUndoRecord, ...],
+) -> dict[str, list[FaceSketchBooleanUndoRecord]]:
+    grouped: dict[str, list[FaceSketchBooleanUndoRecord]] = {}
+    for record in records:
+        grouped.setdefault(record.part_id, []).append(deepcopy(record))
+    return grouped
 
 
 def _next_face_sketch_boolean_feature_id(recipe: object) -> str:

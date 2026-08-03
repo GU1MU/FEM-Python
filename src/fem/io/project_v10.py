@@ -16,6 +16,7 @@ from fem.application.analysis_identity import (
 from fem.application.session import ProjectSaveSnapshot, ProjectSnapshot
 
 from ._project_codec import (
+    ProjectFieldCodecPolicy,
     atomic_write_project,
     dumps_canonical_json,
     loads_json_strict,
@@ -60,6 +61,7 @@ def decode_project_v10(
     payload: Mapping[str, Any] | str | bytes | bytearray,
     *,
     source_path: str | Path | None = None,
+    _field_policy: ProjectFieldCodecPolicy | None = None,
 ) -> ProjectSnapshot:
     if isinstance(payload, (str, bytes, bytearray)):
         return loads_project_v10(payload, source_path=source_path)
@@ -116,7 +118,14 @@ def decode_project_v10(
                 step_names[collection] = tuple(collected)
             names.append(step_names)
 
-        decoded = decode_project_v9(v9_payload, source_path=source_path)
+        decode_options = (
+            {} if _field_policy is None else {"_field_policy": _field_policy}
+        )
+        decoded = decode_project_v9(
+            v9_payload,
+            source_path=source_path,
+            **decode_options,
+        )
         if len(decoded.analysis_definitions) != len(names):
             raise ProjectV10DecodeError("分析步名称映射数量不匹配")
         named_steps = deepcopy(tuple(decoded.analysis_definitions))
@@ -148,6 +157,8 @@ def decode_project_v10(
 
 def encode_project_v10(
     snapshot: ProjectSnapshot | ProjectSaveSnapshot,
+    *,
+    _field_policy: ProjectFieldCodecPolicy | None = None,
 ) -> dict[str, Any]:
     try:
         project = unwrap_project_snapshot(snapshot)
@@ -161,7 +172,10 @@ def encode_project_v10(
                 project.analysis_definitions
             ),
         )
-        payload = encode_project_v9(legacy_project)
+        encode_options = (
+            {} if _field_policy is None else {"_field_policy": _field_policy}
+        )
+        payload = encode_project_v9(legacy_project, **encode_options)
         payload["schema"] = SCHEMA_VERSION
         raw_steps = _steps(payload)
         for step_index, source_step in enumerate(

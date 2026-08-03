@@ -13,6 +13,7 @@ from fem.application.session import ProjectSaveSnapshot, ProjectSnapshot
 from fem.mesh.settings import MeshSettings
 
 from ._project_codec import (
+    ProjectFieldCodecPolicy,
     atomic_write_project,
     dumps_canonical_json,
     loads_json_strict,
@@ -70,6 +71,7 @@ def decode_project_v9(
     payload: Mapping[str, Any] | str | bytes | bytearray,
     *,
     source_path: str | Path | None = None,
+    _field_policy: ProjectFieldCodecPolicy | None = None,
 ) -> ProjectSnapshot:
     if isinstance(payload, (str, bytes, bytearray)):
         return loads_project_v9(payload, source_path=source_path)
@@ -139,7 +141,14 @@ def decode_project_v9(
             del settings["auto_level"]
             del settings["strict_cell_shape"]
 
-        decoded = decode_project_v8(v8_payload, source_path=source_path)
+        decode_options = (
+            {} if _field_policy is None else {"_field_policy": _field_policy}
+        )
+        decoded = decode_project_v8(
+            v8_payload,
+            source_path=source_path,
+            **decode_options,
+        )
         parts: list[NativePart] = []
         for part in decoded.parts:
             settings = part.mesh_settings
@@ -180,6 +189,8 @@ def decode_project_v9(
 
 def encode_project_v9(
     snapshot: ProjectSnapshot | ProjectSaveSnapshot,
+    *,
+    _field_policy: ProjectFieldCodecPolicy | None = None,
 ) -> dict[str, Any]:
     try:
         project = unwrap_project_snapshot(snapshot)
@@ -192,7 +203,10 @@ def encode_project_v9(
             raise ProjectV9EncodeError(
                 "schema v9 首轮不允许 Boolean 结果 Part 使用 AutoMesh"
             )
-        payload = encode_project_v8(project)
+        encode_options = (
+            {} if _field_policy is None else {"_field_policy": _field_policy}
+        )
+        payload = encode_project_v8(project, **encode_options)
         payload["schema"] = SCHEMA_VERSION
         by_id = {part.id: part for part in project.parts}
         for raw_part in payload["project"]["authoring"]["parts"]:

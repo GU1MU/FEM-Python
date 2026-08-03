@@ -40,6 +40,7 @@ from fem.geometry.references import LogicalEntityRef
 from fem.geometry.recipes import (
     BooleanGeometry,
     ExtrudedGeometry,
+    FaceSketchBooleanGeometry,
     MovedGeometry,
     NATIVE_GEOMETRY_TYPES,
     RotatedGeometry,
@@ -120,6 +121,7 @@ def decode_project_v7(
     payload: Mapping[str, Any] | str | bytes | bytearray,
     *,
     source_path: str | Path | None = None,
+    _field_policy: ProjectFieldCodecPolicy = _V7_FIELD_POLICY,
 ) -> ProjectSnapshot:
     """Decode canonical v7 Parts and authenticate every strict proof."""
 
@@ -159,6 +161,7 @@ def decode_project_v7(
             _decode_part(
                 item,
                 f"$.project.authoring.parts[{index}]",
+                field_policy=_field_policy,
             )
             for index, item in enumerate(
                 _array(authoring["parts"], "$.project.authoring.parts")
@@ -228,21 +231,25 @@ def decode_project_v7(
             definitions["materials"],
             "$.project.authoring.definitions.materials",
             decode_material_field,
+            field_policy=_field_policy,
         )
         sections = _decode_array(
             definitions["sections"],
             "$.project.authoring.definitions.sections",
             decode_section_field,
+            field_policy=_field_policy,
         )
         assignments = _decode_array(
             definitions["assignments"],
             "$.project.authoring.definitions.assignments",
             decode_assignment_field,
+            field_policy=_field_policy,
         )
         steps = _decode_array(
             definitions["steps"],
             "$.project.authoring.definitions.steps",
             decode_step_field,
+            field_policy=_field_policy,
         )
         normalized = normalize_model_definitions(
             materials,
@@ -254,6 +261,7 @@ def decode_project_v7(
             _decode_part_boolean_undo_record(
                 item,
                 f"$.project.authoring.part_boolean_undo_records[{index}]",
+                field_policy=_field_policy,
             )
             for index, item in enumerate(
                 _array(
@@ -316,6 +324,8 @@ def decode_project_v7(
 
 def encode_project_v7(
     snapshot: ProjectSnapshot | ProjectSaveSnapshot,
+    *,
+    _field_policy: ProjectFieldCodecPolicy = _V7_FIELD_POLICY,
 ) -> dict[str, Any]:
     """Encode only canonical Part-owned authoring state."""
 
@@ -346,6 +356,7 @@ def encode_project_v7(
                         _encode_part(
                             part,
                             f"snapshot.parts[{index}]",
+                            field_policy=_field_policy,
                         )
                         for index, part in enumerate(parts)
                     ],
@@ -365,21 +376,25 @@ def encode_project_v7(
                             normalized.materials,
                             "snapshot.material_definitions",
                             encode_material_field,
+                            field_policy=_field_policy,
                         ),
                         "sections": _encode_array(
                             normalized.sections,
                             "snapshot.section_definitions",
                             encode_section_field,
+                            field_policy=_field_policy,
                         ),
                         "assignments": _encode_array(
                             normalized.assignments,
                             "snapshot.region_assignments",
                             encode_assignment_field,
+                            field_policy=_field_policy,
                         ),
                         "steps": _encode_array(
                             normalized.steps,
                             "snapshot.analysis_definitions",
                             encode_step_field,
+                            field_policy=_field_policy,
                         ),
                     },
                     "part_boolean_undo_records": [
@@ -387,6 +402,7 @@ def encode_project_v7(
                             record,
                             "snapshot.part_boolean_undo_records"
                             f"[{index}]",
+                            field_policy=_field_policy,
                         )
                         for index, record in enumerate(records)
                     ],
@@ -403,7 +419,12 @@ def encode_project_v7(
         ) from error
 
 
-def _decode_part(value: Any, path: str) -> NativePart:
+def _decode_part(
+    value: Any,
+    path: str,
+    *,
+    field_policy: ProjectFieldCodecPolicy = _V7_FIELD_POLICY,
+) -> NativePart:
     data = _mapping(value, path)
     _keys(
         data,
@@ -421,7 +442,7 @@ def _decode_part(value: Any, path: str) -> NativePart:
     recipe = decode_geometry_field(
         data["geometry"],
         f"{path}.geometry",
-        policy=_V7_FIELD_POLICY,
+        policy=field_policy,
     )
     if not isinstance(recipe, NATIVE_GEOMETRY_TYPES):
         raise ProjectV7DecodeError(
@@ -460,7 +481,12 @@ def _decode_part(value: Any, path: str) -> NativePart:
     )
 
 
-def _encode_part(part: NativePart, path: str) -> dict[str, Any]:
+def _encode_part(
+    part: NativePart,
+    path: str,
+    *,
+    field_policy: ProjectFieldCodecPolicy = _V7_FIELD_POLICY,
+) -> dict[str, Any]:
     if type(part) is not NativePart or part.geometry_recipe is None:
         raise ProjectV7EncodeError(f"{path} 必须是完整 NativePart")
     recipe = legacy_sketches_to_strict(part.geometry_recipe)
@@ -478,7 +504,7 @@ def _encode_part(part: NativePart, path: str) -> dict[str, Any]:
             part.geometry_recipe,
             f"{path}.geometry",
             set(),
-            policy=_V7_FIELD_POLICY,
+            policy=field_policy,
         ),
         "logical_topology": _v4._encode_topology_fingerprint_v4(
             topology_fingerprint_for_recipe(part.geometry_recipe)
@@ -776,6 +802,8 @@ def _encode_mesh_entity_reference(
 def _decode_part_boolean_undo_record(
     value: Any,
     path: str,
+    *,
+    field_policy: ProjectFieldCodecPolicy = _V7_FIELD_POLICY,
 ) -> PartBooleanUndoRecord:
     data = _mapping(value, path)
     _keys(
@@ -795,7 +823,11 @@ def _decode_part_boolean_undo_record(
         },
     )
     source_parts = tuple(
-        _decode_part(item, f"{path}.source_parts[{index}]")
+        _decode_part(
+            item,
+            f"{path}.source_parts[{index}]",
+            field_policy=field_policy,
+        )
         for index, item in enumerate(
             _array(data["source_parts"], f"{path}.source_parts")
         )
@@ -804,7 +836,11 @@ def _decode_part_boolean_undo_record(
         _string(data["feature_id"], f"{path}.feature_id"),
         _string(data["result_part_id"], f"{path}.result_part_id"),
         source_parts,
-        _decode_part(data["result_part"], f"{path}.result_part"),
+        _decode_part(
+            data["result_part"],
+            f"{path}.result_part",
+            field_policy=field_policy,
+        ),
         tuple(
             _decode_named_region(
                 item,
@@ -833,21 +869,25 @@ def _decode_part_boolean_undo_record(
             data["before_assignments"],
             f"{path}.before_assignments",
             decode_assignment_field,
+            field_policy=field_policy,
         ),
         _decode_array(
             data["after_assignments"],
             f"{path}.after_assignments",
             decode_assignment_field,
+            field_policy=field_policy,
         ),
         _decode_array(
             data["before_steps"],
             f"{path}.before_steps",
             decode_step_field,
+            field_policy=field_policy,
         ),
         _decode_array(
             data["after_steps"],
             f"{path}.after_steps",
             decode_step_field,
+            field_policy=field_policy,
         ),
     )
 
@@ -855,6 +895,8 @@ def _decode_part_boolean_undo_record(
 def _encode_part_boolean_undo_record(
     value: PartBooleanUndoRecord,
     path: str,
+    *,
+    field_policy: ProjectFieldCodecPolicy = _V7_FIELD_POLICY,
 ) -> dict[str, Any]:
     if type(value) is not PartBooleanUndoRecord:
         raise ProjectV7EncodeError(
@@ -864,10 +906,18 @@ def _encode_part_boolean_undo_record(
         "feature_id": value.feature_id,
         "result_part_id": value.result_part_id,
         "source_parts": [
-            _encode_part(part, f"{path}.source_parts[{index}]")
+            _encode_part(
+                part,
+                f"{path}.source_parts[{index}]",
+                field_policy=field_policy,
+            )
             for index, part in enumerate(value.source_parts)
         ],
-        "result_part": _encode_part(value.result_part, f"{path}.result_part"),
+        "result_part": _encode_part(
+            value.result_part,
+            f"{path}.result_part",
+            field_policy=field_policy,
+        ),
         "before_named_regions": [
             _encode_named_region(
                 region,
@@ -886,21 +936,25 @@ def _encode_part_boolean_undo_record(
             value.before_assignments,
             f"{path}.before_assignments",
             encode_assignment_field,
+            field_policy=field_policy,
         ),
         "after_assignments": _encode_array(
             value.after_assignments,
             f"{path}.after_assignments",
             encode_assignment_field,
+            field_policy=field_policy,
         ),
         "before_steps": _encode_array(
             value.before_steps,
             f"{path}.before_steps",
             encode_step_field,
+            field_policy=field_policy,
         ),
         "after_steps": _encode_array(
             value.after_steps,
             f"{path}.after_steps",
             encode_step_field,
+            field_policy=field_policy,
         ),
     }
 
@@ -1026,6 +1080,8 @@ def _authenticate_part(part: NativePart, *, encode: bool) -> None:
 
 
 def _contains_strict_boolean(recipe: object) -> bool:
+    if isinstance(recipe, FaceSketchBooleanGeometry):
+        return True
     if isinstance(recipe, BooleanGeometry):
         return (
             recipe.body_context is not None
@@ -1038,16 +1094,28 @@ def _contains_strict_boolean(recipe: object) -> bool:
     return base is not None and _contains_strict_boolean(base)
 
 
-def _decode_array(value: Any, path: str, decoder) -> tuple[Any, ...]:
+def _decode_array(
+    value: Any,
+    path: str,
+    decoder,
+    *,
+    field_policy: ProjectFieldCodecPolicy = _V7_FIELD_POLICY,
+) -> tuple[Any, ...]:
     return tuple(
-        decoder(item, f"{path}[{index}]", policy=_V7_FIELD_POLICY)
+        decoder(item, f"{path}[{index}]", policy=field_policy)
         for index, item in enumerate(_array(value, path))
     )
 
 
-def _encode_array(values: tuple[Any, ...], path: str, encoder) -> list[Any]:
+def _encode_array(
+    values: tuple[Any, ...],
+    path: str,
+    encoder,
+    *,
+    field_policy: ProjectFieldCodecPolicy = _V7_FIELD_POLICY,
+) -> list[Any]:
     return [
-        encoder(item, f"{path}[{index}]", policy=_V7_FIELD_POLICY)
+        encoder(item, f"{path}[{index}]", policy=field_policy)
         for index, item in enumerate(values)
     ]
 

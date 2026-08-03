@@ -13,6 +13,7 @@ from .recipes import (
     CylinderGeometry,
     DiskGeometry,
     ExtrudedGeometry,
+    FaceSketchBooleanGeometry,
     MovedGeometry,
     MultiBodyGeometry,
     NATIVE_GEOMETRY_TYPES,
@@ -1236,6 +1237,8 @@ def recipe_characteristic_size(recipe: NativeGeometry) -> float:
             recipe_characteristic_size(body.recipe)
             for body in recipe.bodies
         )
+    if isinstance(recipe, FaceSketchBooleanGeometry):
+        return min(recipe_characteristic_size(recipe.base), recipe.distance)
     if isinstance(recipe, (MovedGeometry, RotatedGeometry)):
         return recipe_characteristic_size(recipe.base)
     if isinstance(recipe, ExtrudedGeometry):
