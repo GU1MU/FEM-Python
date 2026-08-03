@@ -99,6 +99,7 @@ EngineFactory = Callable[
 ]
 
 _MAX_MESSAGE_DELTA_CHARACTERS = 8_000
+_MESSAGE_DELTA_FRAME_SECONDS = 0.03
 _AUTHORING_TOOL_OWNER_TIMEOUT_SECONDS = 30.0
 
 _TOOL_DISPLAY_NAMES = {
@@ -154,6 +155,8 @@ class _TurnContext:
     solve_call_id: str | None = None
     solve_succeeded: bool = False
     seen_engine_events: list[EngineEvent] = field(default_factory=list)
+    pending_delta_chunks: list[str] = field(default_factory=list)
+    delta_timer: threading.Timer | None = None
     embedded_tool_diagnostics: list[
         tuple[str, str, str]
     ] = field(default_factory=list)
@@ -539,6 +542,8 @@ class QtAgentRuntime(QObject):
                 return
             self._shutdown = True
             self._cancel_requested = True
+            if self._active_turn is not None:
+                self._cancel_delta_timer_locked(self._active_turn)
             authoring_invocations = tuple(self._authoring_invocations.values())
             self._authoring_invocations.clear()
             generation = self._generation
@@ -1042,16 +1047,20 @@ class QtAgentRuntime(QObject):
             )
 
     def _cancel_turn(self, context: _TurnContext) -> None:
+        emitted: list[AgentEvent] = []
         with self._lock:
             if self._active_turn is not context or context.terminal:
                 return
-            event = self._new_event_locked(
-                context,
-                EventType.TURN_CANCELLED,
-                {"reason": "用户已取消本轮操作。"},
+            emitted.extend(self._flush_pending_delta_locked(context))
+            emitted.append(
+                self._new_event_locked(
+                    context,
+                    EventType.TURN_CANCELLED,
+                    {"reason": "用户已取消本轮操作。"},
+                )
             )
             context.terminal = True
-        self.agentEventReady.emit(event)
+        self._emit_events(emitted)
 
     def _run_close(self) -> None:
         with self._lock:
@@ -1061,6 +1070,8 @@ class QtAgentRuntime(QObject):
                 engine.close_session()
         finally:
             with self._lock:
+                if self._active_turn is not None:
+                    self._cancel_delta_timer_locked(self._active_turn)
                 self._engine = None
                 self._engine_ready.clear()
                 self._active_turn = None
@@ -1100,6 +1111,8 @@ class QtAgentRuntime(QObject):
 
     def _reset_gui_session(self, session_id: str) -> None:
         with self._lock:
+            if self._active_turn is not None:
+                self._cancel_delta_timer_locked(self._active_turn)
             self._gui_session_id = session_id
             self._sequence = 0
             self._turn_counter = 0
@@ -1136,6 +1149,10 @@ class QtAgentRuntime(QObject):
                 rejection = "已拒绝重复 EngineEvent"
             else:
                 context.seen_engine_events.append(event)
+                if event.event is not EngineEventType.MESSAGE_DELTA:
+                    emitted.extend(
+                        self._flush_pending_delta_locked(context)
+                    )
                 emitted.extend(self._map_engine_event_locked(context, event))
             if rejection is None:
                 for mapped in emitted:
@@ -1143,6 +1160,77 @@ class QtAgentRuntime(QObject):
         if rejection is not None:
             self.eventRejected.emit(rejection)
             return
+
+    def _schedule_delta_flush_locked(self, context: _TurnContext) -> None:
+        if context.delta_timer is not None:
+            return
+        timer: threading.Timer
+        timer = threading.Timer(
+            _MESSAGE_DELTA_FRAME_SECONDS,
+            lambda: self._flush_delta_timer(context, timer),
+        )
+        timer.daemon = True
+        context.delta_timer = timer
+        timer.start()
+
+    def _cancel_delta_timer_locked(self, context: _TurnContext) -> None:
+        timer = context.delta_timer
+        context.delta_timer = None
+        if timer is not None:
+            timer.cancel()
+
+    def _flush_delta_timer(
+        self,
+        context: _TurnContext,
+        timer: threading.Timer,
+    ) -> None:
+        with self._lock:
+            if context.delta_timer is not timer:
+                return
+            context.delta_timer = None
+            if (
+                self._active_turn is context
+                and not context.terminal
+                and context.pending_delta_chunks
+            ):
+                event = self._flush_one_pending_delta_locked(context)
+                if context.pending_delta_chunks:
+                    self._schedule_delta_flush_locked(context)
+                if event is not None:
+                    self.agentEventReady.emit(event)
+
+    def _flush_one_pending_delta_locked(
+        self,
+        context: _TurnContext,
+    ) -> AgentEvent | None:
+        if not context.pending_delta_chunks:
+            return None
+        text = "".join(context.pending_delta_chunks)
+        delta = text[:_MAX_MESSAGE_DELTA_CHARACTERS]
+        remainder = text[_MAX_MESSAGE_DELTA_CHARACTERS:]
+        context.pending_delta_chunks = [remainder] if remainder else []
+        if not delta or context.active_message_id is None:
+            return None
+        return self._new_event_locked(
+            context,
+            EventType.MESSAGE_DELTA,
+            {
+                "message_id": context.active_message_id,
+                "delta": delta,
+            },
+        )
+
+    def _flush_pending_delta_locked(
+        self,
+        context: _TurnContext,
+    ) -> list[AgentEvent]:
+        self._cancel_delta_timer_locked(context)
+        events: list[AgentEvent] = []
+        while context.pending_delta_chunks:
+            event = self._flush_one_pending_delta_locked(context)
+            if event is not None:
+                events.append(event)
+        return events
 
     def _map_engine_event_locked(
         self,
@@ -1188,24 +1276,8 @@ class QtAgentRuntime(QObject):
                 )
             text = event.data.get("text")
             if isinstance(text, str) and text:
-                for start in range(
-                    0,
-                    len(text),
-                    _MAX_MESSAGE_DELTA_CHARACTERS,
-                ):
-                    events.append(
-                        self._new_event_locked(
-                        context,
-                        EventType.MESSAGE_DELTA,
-                        {
-                            "message_id": context.active_message_id,
-                            "delta": text[
-                                start : start
-                                + _MAX_MESSAGE_DELTA_CHARACTERS
-                                ],
-                            },
-                        )
-                    )
+                context.pending_delta_chunks.append(text)
+                self._schedule_delta_flush_locked(context)
             return events
         if event.event is EngineEventType.DIAGNOSTIC:
             raw_diagnostic = event.data.get("diagnostic")
@@ -1557,6 +1629,7 @@ class QtAgentRuntime(QObject):
         with self._lock:
             if self._active_turn is not context or context.terminal:
                 return
+            emitted.extend(self._flush_pending_delta_locked(context))
             if context.failure_reason is not None:
                 emitted.append(
                     self._new_event_locked(
@@ -1610,6 +1683,7 @@ class QtAgentRuntime(QObject):
         with self._lock:
             if self._active_turn is not context or context.terminal:
                 return
+            emitted.extend(self._flush_pending_delta_locked(context))
             emitted.append(
                 self._diagnostic_event_locked(
                     context,

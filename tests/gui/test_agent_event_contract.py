@@ -801,6 +801,7 @@ def test_incremental_ui_escapes_raw_html_and_shows_stream_status():
             },
         )
     )
+    QTest.qWait(35)
     application.processEvents()
 
     labels = drawer.findChildren(QLabel, "agentChatAgentMessage")
@@ -809,8 +810,109 @@ def test_incremental_ui_escapes_raw_html_and_shows_stream_status():
     assert label.property("messageStatus") == "streaming"
     assert "&lt;img" in label.text()
     assert "<img src=" not in label.text()
-    assert "<b>安全文本</b>" in label.text()
+    assert "**安全文本**" in label.text()
     assert not label.openExternalLinks()
+    drawer.apply_agent_event(
+        events.make(
+            EventType.MESSAGE_COMPLETE,
+            {"message_id": "ui-message"},
+        )
+    )
+    assert label.property("messageStatus") == "completed"
+    assert "<b>安全文本</b>" in label.text()
+    drawer.close()
+
+
+def test_projector_in_place_preserves_10000_single_character_deltas(
+    monkeypatch,
+):
+    import fem_gui.agent_events as agent_events_module
+
+    events = _Events(session_id="many-deltas-session")
+    projector = AgentEventProjector()
+    projector.apply_in_place(_turn_start(events))
+    projector.apply_in_place(
+        events.make(
+            EventType.MESSAGE_START,
+            {
+                "message_id": "many-deltas-message",
+                "role": "assistant",
+                "format": "restricted_markdown",
+            },
+        )
+    )
+
+    def unexpected_deepcopy(_value):
+        raise AssertionError("in-place projection must not deepcopy")
+
+    monkeypatch.setattr(agent_events_module, "deepcopy", unexpected_deepcopy)
+    for _index in range(10_000):
+        projector.apply_in_place(
+            events.make(
+                EventType.MESSAGE_DELTA,
+                {
+                    "message_id": "many-deltas-message",
+                    "delta": "字",
+                },
+            )
+        )
+    projector.apply_in_place(
+        events.make(
+            EventType.MESSAGE_COMPLETE,
+            {"message_id": "many-deltas-message"},
+        )
+    )
+
+    assert projector.message_view("many-deltas-message").text == "字" * 10_000
+
+
+def test_streaming_deltas_keep_existing_widgets_and_skip_full_render():
+    application = _application()
+    events = _Events(session_id="stable-widget-session")
+    log = [_turn_start(events)]
+    log.extend(_tool_events(events, "stable-tool"))
+    log.append(
+        events.make(
+            EventType.MESSAGE_START,
+            {
+                "message_id": "stable-message",
+                "role": "assistant",
+                "format": "restricted_markdown",
+            },
+        )
+    )
+    drawer = AgentChatDrawer()
+    drawer.replay_agent_events(log)
+    drawer.show()
+    application.processEvents()
+    message_widget = drawer._message_widgets["stable-message"]
+    tool_widget = drawer._tool_group_widgets[
+        "turn-1:tools:1"
+    ]
+    render_calls = 0
+    original_render = drawer._render_event_presentation
+
+    def counted_render(*args, **kwargs):
+        nonlocal render_calls
+        render_calls += 1
+        return original_render(*args, **kwargs)
+
+    drawer._render_event_presentation = counted_render
+    for _index in range(1_000):
+        drawer.apply_agent_event(
+            events.make(
+                EventType.MESSAGE_DELTA,
+                {"message_id": "stable-message", "delta": "x"},
+            )
+        )
+
+    QTest.qWait(35)
+    application.processEvents()
+    assert drawer._message_widgets["stable-message"] is message_widget
+    assert drawer._tool_group_widgets["turn-1:tools:1"] is tool_widget
+    assert drawer.findChild(QLabel, "agentChatAgentMessage") is message_widget
+    assert message_widget.text() == "x" * 1_000 + " ▌"
+    assert render_calls == 0
     drawer.close()
 
 
@@ -891,6 +993,12 @@ def test_restricted_markdown_renders_ordered_and_unordered_lists():
             },
         )
     )
+    drawer.apply_agent_event(
+        events.make(
+            EventType.MESSAGE_COMPLETE,
+            {"message_id": "markdown-list-message"},
+        )
+    )
     application.processEvents()
 
     label = drawer.findChild(QLabel, "agentChatAgentMessage")
@@ -947,6 +1055,12 @@ def test_restricted_markdown_renders_safe_aligned_tables():
                     "| 转义 | A \\| B | `x|y` |"
                 ),
             },
+        )
+    )
+    drawer.apply_agent_event(
+        events.make(
+            EventType.MESSAGE_COMPLETE,
+            {"message_id": "markdown-table-message"},
         )
     )
     application.processEvents()

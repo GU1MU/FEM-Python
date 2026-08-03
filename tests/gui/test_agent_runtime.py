@@ -1046,6 +1046,56 @@ def test_long_fake_reply_is_split_into_replayable_message_deltas(tmp_path):
     runtime.shutdown()
 
 
+def test_runtime_coalesces_high_frequency_provider_chunks(tmp_path):
+    class BurstStreamingProvider(FakeProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reply = "流" * 1_000
+
+        def complete_stream(self, messages, tools, on_text_delta):
+            del messages, tools
+            waiter = threading.Event()
+            for batch in range(4):
+                for character in self.reply[batch * 250 : (batch + 1) * 250]:
+                    on_text_delta(character)
+                waiter.wait(0.035)
+            return ProviderResponse(
+                AssistantMessage("assistant", self.reply),
+                finish_reason="stop",
+            )
+
+    provider = BurstStreamingProvider()
+    runtime = QtAgentRuntime(
+        tmp_path / "agent-private",
+        provider_factory=lambda: provider,
+    )
+    collector = _EventCollector()
+    runtime.agentEventReady.connect(
+        collector.receive,
+        Qt.ConnectionType.QueuedConnection,
+    )
+
+    assert runtime.send_message("逐字符返回")
+    _wait_until(lambda: not runtime.busy)
+    _wait_until(
+        lambda: any(
+            event.event_type is EventType.TURN_COMPLETE
+            for event in collector.events
+        )
+    )
+
+    deltas = [
+        event.payload["delta"]
+        for event in collector.events
+        if event.event_type is EventType.MESSAGE_DELTA
+    ]
+    assert 3 <= len(deltas) <= 8
+    assert "".join(deltas) == provider.reply
+    replayed = AgentEventProjector.replay(collector.events)
+    assert replayed.presentation.turns[-1].messages[-1].text == provider.reply
+    runtime.shutdown()
+
+
 def test_phase5_rejects_unregistered_provider_before_complete(tmp_path):
     class ForbiddenProvider:
         provider_name = "network"

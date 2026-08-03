@@ -63,6 +63,7 @@ from ..agent_events import (
     AgentEventProjector,
     ConfirmationView,
     DiagnosticView,
+    EventType,
     MessageStatus,
     MessageView,
     ProposalView,
@@ -1202,6 +1203,16 @@ class AgentChatDrawer(_BoundaryFrame):
         self._completed_solve_confirmations: set[tuple[int, str]] = set()
         self._applied_patch_records: dict[str, object] = {}
         self.event_projector = AgentEventProjector()
+        self._message_widgets: dict[str, QLabel] = {}
+        self._tool_group_widgets: dict[str, ToolActivityPreview] = {}
+        self._diagnostic_widgets: dict[str, QWidget] = {}
+        self._pending_message_refreshes: set[str] = set()
+        self._stream_refresh_timer = QTimer(self)
+        self._stream_refresh_timer.setSingleShot(True)
+        self._stream_refresh_timer.setInterval(30)
+        self._stream_refresh_timer.timeout.connect(
+            self._flush_streaming_message_updates
+        )
         self.authoring_bridge = authoring_bridge
         self._project_save_handler: (
             Callable[[Callable[[ProposalState, str], None]], bool] | None
@@ -1474,6 +1485,8 @@ class AgentChatDrawer(_BoundaryFrame):
         events: Iterable[AgentEvent],
     ) -> None:
         """用完整事件日志替换当前展示并一次性重绘。"""
+        self._stream_refresh_timer.stop()
+        self._pending_message_refreshes.clear()
         self.event_projector = AgentEventProjector.replay(events)
         self._expanded_tool_group_ids.clear()
         self._conversation_auto_follow = True
@@ -1481,9 +1494,41 @@ class AgentChatDrawer(_BoundaryFrame):
 
     def apply_agent_event(self, event: AgentEvent) -> None:
         """消费一个已验证事件；不解析 CLI 文本。"""
-        self.event_projector.apply(event)
-        self._render_event_presentation()
+        self.event_projector.apply_in_place(event)
+        if event.event_type is EventType.MESSAGE_DELTA:
+            self._pending_message_refreshes.add(
+                str(event.payload["message_id"])
+            )
+            if not self._stream_refresh_timer.isActive():
+                self._stream_refresh_timer.start()
+        elif event.event_type is EventType.MESSAGE_COMPLETE:
+            self._pending_message_refreshes.add(
+                str(event.payload["message_id"])
+            )
+            self._flush_streaming_message_updates()
+        else:
+            self._flush_streaming_message_updates()
+            self._render_event_presentation()
         self.agentEventApplied.emit(event)
+
+    def _flush_streaming_message_updates(self) -> None:
+        self._stream_refresh_timer.stop()
+        if not self._pending_message_refreshes:
+            return
+        scroll_bar = self.conversation_scroll.verticalScrollBar()
+        previous_scroll_value = scroll_bar.value()
+        follow_latest = self._conversation_auto_follow
+        message_ids = tuple(self._pending_message_refreshes)
+        self._pending_message_refreshes.clear()
+        for message_id in message_ids:
+            label = self._message_widgets.get(message_id)
+            if label is None:
+                continue
+            message = self.event_projector.message_view(message_id)
+            self._update_agent_message_widget(label, message)
+        self._queue_conversation_scroll(
+            None if follow_latest else previous_scroll_value
+        )
 
     def _clear_event_feed(
         self,
@@ -1491,6 +1536,9 @@ class AgentChatDrawer(_BoundaryFrame):
         preserve_tool_expansion: bool,
     ) -> None:
         self._live_activity_label = None
+        self._message_widgets.clear()
+        self._tool_group_widgets.clear()
+        self._diagnostic_widgets.clear()
         if preserve_tool_expansion:
             for tools in self.event_feed.findChildren(ToolActivityPreview):
                 group_id = tools.group.group_id
@@ -1518,7 +1566,7 @@ class AgentChatDrawer(_BoundaryFrame):
         self._clear_event_feed(
             preserve_tool_expansion=preserve_tool_expansion,
         )
-        for turn in self.event_projector.presentation.turns:
+        for turn in self.event_projector.presentation_view.turns:
             self._add_user_message(turn.user_message, turn.turn_id)
             speaker = QLabel("FEM Agent", self.event_feed)
             speaker.setObjectName("agentChatSpeaker")
@@ -1556,6 +1604,7 @@ class AgentChatDrawer(_BoundaryFrame):
                         group=tool_groups[timeline_item.item_id],
                     )
                     tools.setProperty("groupId", timeline_item.item_id)
+                    self._tool_group_widgets[timeline_item.item_id] = tools
                     tools.summary_button.setChecked(
                         timeline_item.item_id
                         in self._expanded_tool_group_ids
@@ -1785,21 +1834,17 @@ class AgentChatDrawer(_BoundaryFrame):
         self.event_feed_layout.addWidget(user_row)
 
     def _add_agent_message(self, message: MessageView) -> None:
-        text = message.text
-        rendered_text = _restricted_markdown_html(text)
-        if message.status is MessageStatus.STREAMING:
-            rendered_text += " ▌"
         label = QLabel(self.event_feed)
         label.setObjectName("agentChatAgentMessage")
         label.setProperty("messageId", message.message_id)
-        label.setProperty("messageStatus", message.status.value)
         label.setTextFormat(Qt.TextFormat.RichText)
-        label.setText(rendered_text)
         label.setOpenExternalLinks(False)
         label.setWordWrap(True)
         label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
+        self._update_agent_message_widget(label, message)
+        self._message_widgets[message.message_id] = label
         self.event_feed_layout.addWidget(label)
         if message.status in {
             MessageStatus.CANCELLED,
@@ -1816,11 +1861,27 @@ class AgentChatDrawer(_BoundaryFrame):
             suffix.setObjectName("agentChatMuted")
             self.event_feed_layout.addWidget(suffix)
 
+    @staticmethod
+    def _update_agent_message_widget(
+        label: QLabel,
+        message: MessageView,
+    ) -> None:
+        if message.status is MessageStatus.STREAMING:
+            rendered_text = html.escape(
+                message.text,
+                quote=True,
+            ).replace("\n", "<br>") + " ▌"
+        else:
+            rendered_text = _restricted_markdown_html(message.text)
+        label.setProperty("messageStatus", message.status.value)
+        label.setText(rendered_text)
+
     def _add_diagnostic_card(self, diagnostic: DiagnosticView) -> None:
         card = _BoundaryFrame(self.event_feed)
         card.setObjectName("agentChatDiagnostic")
         card.setProperty("diagnosticId", diagnostic.diagnostic_id)
         card.setProperty("severity", diagnostic.severity.value)
+        self._diagnostic_widgets[diagnostic.diagnostic_id] = card
         card.setMaximumWidth(520)
         card.setSizePolicy(
             QSizePolicy.Policy.Preferred,
@@ -2799,6 +2860,8 @@ class AgentChatDrawer(_BoundaryFrame):
             context = None if bridge is None else bridge.context
             if context is not None:
                 controller.observe_binding(context)
+        self._stream_refresh_timer.stop()
+        self._pending_message_refreshes.clear()
         self.event_projector = AgentEventProjector()
         self._expanded_tool_group_ids.clear()
         self._pending_solve_confirmations.clear()

@@ -667,6 +667,20 @@ class MessageView:
     format: str
     text: str = ""
     status: MessageStatus = MessageStatus.STREAMING
+    _text_chunks: list[str] = field(
+        default_factory=list,
+        repr=False,
+        compare=False,
+    )
+
+    def append_delta(self, delta: str) -> None:
+        self._text_chunks.append(delta)
+
+    def materialize_text(self) -> str:
+        if self._text_chunks:
+            self.text = "".join((self.text, *self._text_chunks))
+            self._text_chunks.clear()
+        return self.text
 
 
 @dataclass
@@ -781,7 +795,11 @@ class SessionPresentation:
             if isinstance(value, Enum):
                 return value.value
             if isinstance(value, dict):
-                return {str(key): convert(item) for key, item in value.items()}
+                return {
+                    str(key): convert(item)
+                    for key, item in value.items()
+                    if not str(key).startswith("_")
+                }
             if isinstance(value, list):
                 return [convert(item) for item in value]
             return value
@@ -801,7 +819,14 @@ class AgentEventProjector:
 
     @property
     def presentation(self) -> SessionPresentation:
+        self._materialize_message_text()
         return deepcopy(self._presentation)
+
+    @property
+    def presentation_view(self) -> SessionPresentation:
+        """返回仅供 GUI 所有者线程即时读取的内部投影。"""
+        self._materialize_message_text()
+        return self._presentation
 
     @property
     def last_sequence(self) -> int:
@@ -814,7 +839,7 @@ class AgentEventProjector:
     def replay(cls, events: Iterable[AgentEvent]) -> AgentEventProjector:
         projector = cls()
         for event in events:
-            projector.apply(event)
+            projector.apply_in_place(event)
         return projector
 
     @classmethod
@@ -825,6 +850,11 @@ class AgentEventProjector:
         return cls.replay(AgentEvent.from_dict(record) for record in records)
 
     def apply(self, event: AgentEvent) -> SessionPresentation:
+        self.apply_in_place(event)
+        return self.presentation
+
+    def apply_in_place(self, event: AgentEvent) -> SessionPresentation:
+        """应用事件并返回内部投影，避免 GUI 热路径创建深拷贝。"""
         if not isinstance(event, AgentEvent):
             raise AgentEventError("projector 只接受 AgentEvent")
         if event.event_id in self._event_ids:
@@ -862,7 +892,21 @@ class AgentEventProjector:
         self._presentation.last_sequence = event.sequence
         self._event_ids.add(event.event_id)
         self._events.append(event)
-        return self.presentation
+        return self._presentation
+
+    def message_view(self, message_id: str) -> MessageView:
+        """返回内部消息视图，供所有者线程执行增量控件刷新。"""
+        for turn in reversed(self._presentation.turns):
+            for message in reversed(turn.messages):
+                if message.message_id == message_id:
+                    message.materialize_text()
+                    return message
+        raise AgentEventError(f"未知 message_id：{message_id}")
+
+    def _materialize_message_text(self) -> None:
+        for turn in self._presentation.turns:
+            for message in turn.messages:
+                message.materialize_text()
 
     def _apply_turn_started(self, event: AgentEvent) -> None:
         if self._active_turn_id is not None:
@@ -958,13 +1002,14 @@ class AgentEventProjector:
         message = self._find_message(turn, event.payload["message_id"])
         if message.status is not MessageStatus.STREAMING:
             raise AgentEventError("已结束的消息不能继续追加 delta")
-        message.text += event.payload["delta"]
+        message.append_delta(event.payload["delta"])
         self._last_timeline_kind = TimelineKind.MESSAGE
 
     def _message_complete(self, turn: TurnView, event: AgentEvent) -> None:
         message = self._find_message(turn, event.payload["message_id"])
         if message.status is not MessageStatus.STREAMING:
             raise AgentEventError("消息已经结束")
+        message.materialize_text()
         message.status = MessageStatus.COMPLETED
         self._last_timeline_kind = TimelineKind.MESSAGE
 
