@@ -3034,16 +3034,28 @@ class AgentChatDrawer(_BoundaryFrame):
             "project_save",
             "requirement_review",
         }:
+            source_turn = self.agent_runtime.proposal_source_turn_from_gui(
+                proposal.proposal_id,
+                proposal.proposal_hash,
+                self.event_projector.presentation_view.session_id,
+                turn_id,
+            )
             identity_check = getattr(
                 bridge,
                 "ensure_display_identity_from_gui",
                 None,
             )
-            if callable(identity_check) and not identity_check(
-                proposal.proposal_id,
-                proposal.proposal_hash,
-                self.event_projector.presentation_view.session_id,
-                turn_id,
+            if (
+                source_turn is None
+                or (
+                    callable(identity_check)
+                    and not identity_check(
+                        proposal.proposal_id,
+                        proposal.proposal_hash,
+                        self.event_projector.presentation_view.session_id,
+                        source_turn,
+                    )
+                )
             ):
                 return False
         binding = bridge.context.binding
@@ -3165,6 +3177,20 @@ class AgentChatDrawer(_BoundaryFrame):
         state: ProposalState,
         message: str,
     ) -> None:
+        if self.agent_runtime.proposal_lifecycle_matches_from_gui(
+            proposal.proposal_id,
+            proposal.proposal_hash,
+            proposal.agent_session_id,
+            proposal.turn_id,
+        ):
+            try:
+                self.agent_runtime.record_authoring_proposal_state_from_gui(
+                    proposal.proposal_kind.value,
+                    state,
+                    message,
+                )
+            except (RuntimeError, ValueError):
+                pass
         self.agent_runtime.record_proposal_lifecycle_from_gui(
             proposal.proposal_id,
             proposal.proposal_hash,

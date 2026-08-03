@@ -299,8 +299,25 @@ def _controller(
         kind: ProposalKind,
         suffix: str,
     ):
-        def handle(_arguments, _controller):
-            proposal = _proposal(kind, suffix)
+        def handle(_arguments, controller):
+            template = _proposal(kind, suffix)
+            metadata = controller.invocation_metadata(suffix)
+            proposal = AgentProposal.create(
+                proposal_id=template.proposal_id,
+                proposal_kind=template.proposal_kind,
+                agent_session_id=str(metadata["agent_session_id"]),
+                turn_id=str(metadata["turn_id"]),
+                source_tool_call_ids=tuple(metadata["source_tool_call_ids"]),
+                target_document_id=template.target_document_id,
+                target_session_id=template.target_session_id,
+                base_session_revision=template.base_session_revision,
+                draft_revision=template.draft_revision,
+                operations=template.operations,
+                preconditions=template.preconditions,
+                expected_changes=template.expected_changes,
+                invalidation_impact=template.invalidation_impact,
+                display_summary=template.display_summary,
+            )
             bridge.register_proposal(proposal)
             calls.append(suffix)
             return AuthoringToolOutcome(
@@ -322,6 +339,13 @@ def _controller(
                         "base_session_revision": (
                             proposal.base_session_revision
                         ),
+                    },
+                    "continuation_checkpoint": {
+                        "session_id": proposal.agent_session_id,
+                        "source_turn_id": proposal.turn_id,
+                        "proposal_id": proposal.proposal_id,
+                        "proposal_hash": proposal.proposal_hash,
+                        "model_revision": proposal.base_session_revision,
                     },
                 },
             )

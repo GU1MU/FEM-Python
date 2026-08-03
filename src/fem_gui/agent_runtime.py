@@ -715,7 +715,11 @@ class QtAgentRuntime(QObject):
                         source_turn_id=lifecycle.source_turn_id,
                         model_revision=lifecycle.model_revision,
                         status=normalized.value,
-                        summary=text or normalized.value,
+                        summary=self._provider_safe_text(
+                            text or normalized.value,
+                            (),
+                            workspace_root=None,
+                        ),
                     )
         self._emit_events(emitted)
         if discard_checkpoint:
@@ -749,6 +753,45 @@ class QtAgentRuntime(QObject):
         with self._lock:
             self._sequence = last_sequence
             self._proposal_lifecycles = lifecycles
+
+    def proposal_source_turn_from_gui(
+        self,
+        proposal_id: str,
+        proposal_hash: str,
+        agent_session_id: str,
+        display_turn_id: str,
+    ) -> str | None:
+        """Resolve a rendered proposal to its checkpoint-bound source turn."""
+
+        self._require_owner_thread()
+        with self._lock:
+            lifecycle = self._proposal_lifecycles.get(str(proposal_id))
+            if lifecycle is None or (
+                lifecycle.proposal_hash != str(proposal_hash)
+                or lifecycle.session_id != str(agent_session_id)
+                or lifecycle.turn_id != str(display_turn_id)
+            ):
+                return None
+            return lifecycle.source_turn_id
+
+    def proposal_lifecycle_matches_from_gui(
+        self,
+        proposal_id: str,
+        proposal_hash: str,
+        agent_session_id: str,
+        source_turn_id: str,
+    ) -> bool:
+        """Check the bridge identity before changing workflow stage."""
+
+        self._require_owner_thread()
+        with self._lock:
+            lifecycle = self._proposal_lifecycles.get(str(proposal_id))
+            return bool(
+                lifecycle is not None
+                and lifecycle.proposal_hash == str(proposal_hash)
+                and lifecycle.session_id == str(agent_session_id)
+                and lifecycle.source_turn_id == str(source_turn_id)
+            )
 
     def invalidate_authoring_binding_from_gui(self, reason: str) -> None:
         self._require_owner_thread()
