@@ -731,6 +731,56 @@ def _build_native_fem_model(
         dimension,
         topology,
     )
+    return _canonicalize_native_model_ids(model)
+
+
+def _canonicalize_native_model_ids(model: FEMModel) -> FEMModel:
+    """Remove backend tag gaps before mesh references become user-visible."""
+
+    local_nodes = tuple(sorted(model.mesh.nodes, key=lambda node: int(node.id)))
+    local_elements = tuple(
+        sorted(model.mesh.elements, key=lambda element: int(element.id))
+    )
+    node_map = {
+        int(node.id): index
+        for index, node in enumerate(local_nodes, start=1)
+    }
+    element_map = {
+        int(element.id): index
+        for index, element in enumerate(local_elements, start=1)
+    }
+
+    nodes: list[Node2D | Node3D] = []
+    for node in local_nodes:
+        owned_node = deepcopy(node)
+        owned_node.id = node_map[int(node.id)]
+        nodes.append(owned_node)
+
+    elements: list[Element2D | Element3D] = []
+    for element in local_elements:
+        owned_element = deepcopy(element)
+        owned_element.id = element_map[int(element.id)]
+        owned_element.node_ids = [
+            node_map[int(node_id)] for node_id in element.node_ids
+        ]
+        elements.append(owned_element)
+
+    model.mesh = type(model.mesh)(
+        nodes=nodes,
+        elements=elements,
+        dofs_per_node=int(model.mesh.dofs_per_node),
+    )
+    source_catalog = model.metadata.get(NATIVE_SCOPE_CATALOG_KEY, {})
+    if not isinstance(source_catalog, Mapping):
+        raise TypeError("native model lacks a scope catalog")
+    model.metadata[NATIVE_SCOPE_CATALOG_KEY] = {
+        str(logical_id): _renumber_scope_catalog_entry(
+            raw,
+            node_map,
+            element_map,
+        )
+        for logical_id, raw in source_catalog.items()
+    }
     return model
 
 

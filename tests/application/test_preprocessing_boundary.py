@@ -33,6 +33,11 @@ def test_native_1d_preprocessing_generates_a_truss_model() -> None:
 
     assert model.mesh.dofs_per_node == 3
     assert {element.type for element in model.mesh.elements} == {"Truss2"}
+    assert [node.id for node in model.mesh.nodes] == [1, 2]
+    assert [element.id for element in model.mesh.elements] == [1]
+    catalog = model.metadata["_native_scope_catalog"]
+    assert catalog["edge:M1"]["element_ids"] == (1,)
+    assert catalog["body:domain"]["element_ids"] == (1,)
     assert not model.element_sets
     assert not model.edges
     assert not model.surfaces
