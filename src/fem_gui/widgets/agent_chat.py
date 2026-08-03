@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMenu,
     QPlainTextEdit,
+    QProgressBar,
     QScrollArea,
     QSizePolicy,
     QStackedWidget,
@@ -468,6 +469,34 @@ QFrame#agentChatComposerSurface {
 }
 QFrame#agentChatComposerSurface[focused="true"] {
     border-color: #4c7fa5;
+}
+QFrame#agentChatComposerTaskSurface {
+    background: #f7f9fb;
+    border: 1px solid #cbd2d8;
+    border-radius: 10px;
+}
+QLabel#agentChatComposerTaskTitle {
+    color: #294b63;
+    font-size: 9.5pt;
+    font-weight: 600;
+}
+QLabel#agentChatComposerTaskSummary,
+QLabel#agentChatComposerTaskImpact,
+QLabel#agentChatComposerTaskStatus {
+    color: #344b5b;
+    font-size: 9pt;
+}
+QProgressBar#agentChatComposerProgress {
+    min-height: 5px;
+    max-height: 5px;
+    border: none;
+    border-radius: 2px;
+    background: #dfe6eb;
+    text-align: center;
+}
+QProgressBar#agentChatComposerProgress::chunk {
+    border-radius: 2px;
+    background: #4c7fa5;
 }
 QLabel#agentChatWorkspaceState {
     color: #66717b;
@@ -1198,6 +1227,12 @@ class AgentChatDrawer(_BoundaryFrame):
             QSizePolicy.Policy.Ignored,
         )
         self._runtime_busy = False
+        self._composer_proposal: tuple[ProposalView, str] | None = None
+        self._manual_composer_proposal: tuple[ProposalView, str] | None = None
+        self._continuation_active = False
+        self._composer_accepting_id: str | None = None
+        self._composer_task_was_visible = False
+        self._rendering_event_presentation = False
         self._expanded_tool_group_ids: set[str] = set()
         self._pending_solve_confirmations: set[tuple[int, str]] = set()
         self._completed_solve_confirmations: set[tuple[int, str]] = set()
@@ -1500,11 +1535,45 @@ class AgentChatDrawer(_BoundaryFrame):
         )
         self._expanded_tool_group_ids.clear()
         self._conversation_auto_follow = True
+        latest = self._latest_projected_proposal()
+        self._continuation_active = bool(
+            latest is not None
+            and latest[0].status
+            in {
+                ProposalViewStatus.SUCCEEDED,
+                ProposalViewStatus.REJECTED,
+                ProposalViewStatus.STALE,
+                ProposalViewStatus.FAILED,
+            }
+            and self._runtime_busy
+        )
         self._render_event_presentation(preserve_tool_expansion=False)
 
     def apply_agent_event(self, event: AgentEvent) -> None:
         """消费一个已验证事件；不解析 CLI 文本。"""
         self.event_projector.apply_in_place(event)
+        if event.event_type is EventType.CONTINUATION_STARTED:
+            self._continuation_active = True
+        elif event.event_type in {
+            EventType.PROPOSAL_SUCCEEDED,
+            EventType.PROPOSAL_REJECTED,
+            EventType.PROPOSAL_STALE,
+            EventType.PROPOSAL_FAILED,
+        }:
+            self._continuation_active = True
+            QTimer.singleShot(0, self._settle_continuation_state)
+        if event.event_type in {
+            EventType.PROPOSAL_ACCEPTED,
+            EventType.PROPOSAL_STARTED,
+            EventType.PROPOSAL_REJECTED,
+            EventType.PROPOSAL_STALE,
+            EventType.PROPOSAL_SUCCEEDED,
+            EventType.PROPOSAL_FAILED,
+            EventType.PROPOSAL_CANCELLED,
+        }:
+            proposal_id = str(event.payload["proposal_id"])
+            if self._composer_accepting_id == proposal_id:
+                self._composer_accepting_id = None
         if event.event_type is EventType.MESSAGE_DELTA:
             self._pending_message_refreshes.add(
                 str(event.payload["message_id"])
@@ -1576,6 +1645,7 @@ class AgentChatDrawer(_BoundaryFrame):
         self._clear_event_feed(
             preserve_tool_expansion=preserve_tool_expansion,
         )
+        self._rendering_event_presentation = True
         for turn in self.event_projector.presentation_view.turns:
             self._add_user_message(turn.user_message, turn.turn_id)
             speaker = QLabel("FEM Agent", self.event_feed)
@@ -1645,8 +1715,10 @@ class AgentChatDrawer(_BoundaryFrame):
                 )
             if turn.status is TurnStatus.RUNNING:
                 self._add_live_activity(turn)
+        self._rendering_event_presentation = False
         for record in self._applied_patch_records.values():
             self._add_applied_patch_card(record)
+        self._sync_composer_state()
         self._install_conversation_wheel_filters()
         self._conversation_auto_follow = follow_latest
         self._queue_conversation_scroll(
@@ -2022,7 +2094,7 @@ class AgentChatDrawer(_BoundaryFrame):
         actions_layout.setContentsMargins(0, 2, 0, 0)
         actions_layout.setSpacing(6)
         accept = _BoundaryToolButton(actions)
-        accept.setObjectName("agentChatProposalAcceptButton")
+        accept.setObjectName("agentChatProposalHistoryAcceptButton")
         accept.setText("确认")
         accept.setToolTip(proposal.confirm_label)
         accept.setProperty("proposalId", proposal.proposal_id)
@@ -2040,20 +2112,11 @@ class AgentChatDrawer(_BoundaryFrame):
             "baseSessionRevision",
             proposal.base_session_revision,
         )
-        accept.setEnabled(
-            status is ProposalViewStatus.PENDING_CONFIRMATION
-            and not self._runtime_busy
-            and self._proposal_targets_live_binding(proposal, turn_id)
-        )
-        accept.clicked.connect(
-            lambda _checked=False, item=proposal, item_turn=turn_id: (
-                self._accept_authoring_proposal(item, item_turn)
-            )
-        )
+        accept.setEnabled(False)
         actions_layout.addWidget(accept)
 
         reject = _BoundaryToolButton(actions)
-        reject.setObjectName("agentChatProposalRejectButton")
+        reject.setObjectName("agentChatProposalHistoryRejectButton")
         reject.setText("拒绝")
         reject.setProperty("proposalId", proposal.proposal_id)
         reject.setProperty("proposalHash", proposal.proposal_hash)
@@ -2070,16 +2133,15 @@ class AgentChatDrawer(_BoundaryFrame):
             "baseSessionRevision",
             proposal.base_session_revision,
         )
-        reject.setEnabled(accept.isEnabled())
-        reject.clicked.connect(
-            lambda _checked=False, item=proposal, item_turn=turn_id: (
-                self._reject_authoring_proposal(item, item_turn)
-            )
-        )
+        reject.setEnabled(False)
         actions_layout.addWidget(reject)
         actions_layout.addStretch(1)
         layout.addWidget(actions)
+        actions.hide()
         self.event_feed_layout.addWidget(card)
+        if not self._rendering_event_presentation:
+            self._manual_composer_proposal = (proposal, turn_id)
+            self._sync_composer_state()
 
     def _build_composer(self, parent: QWidget) -> QWidget:
         composer = _BoundaryFrame(parent)
@@ -2200,7 +2262,72 @@ class AgentChatDrawer(_BoundaryFrame):
         self.send_state.setCurrentWidget(self.send_button)
         footer.addWidget(self.send_state)
         surface_layout.addLayout(footer)
-        layout.addWidget(self.composer_surface)
+        self.composer_stack = QStackedWidget(composer)
+        self.composer_stack.setObjectName("agentChatComposerStack")
+        self.composer_stack.addWidget(self.composer_surface)
+        self.composer_task_surface = _BoundaryFrame(self.composer_stack)
+        self.composer_task_surface.setObjectName("agentChatComposerTaskSurface")
+        task_layout = QVBoxLayout(self.composer_task_surface)
+        task_layout.setContentsMargins(10, 8, 10, 8)
+        task_layout.setSpacing(4)
+        self.composer_task_title = _plain_label("", self.composer_task_surface)
+        self.composer_task_title.setObjectName("agentChatComposerTaskTitle")
+        task_layout.addWidget(self.composer_task_title)
+        self.composer_task_summary = _plain_label("", self.composer_task_surface)
+        self.composer_task_summary.setObjectName("agentChatComposerTaskSummary")
+        self.composer_task_summary.setWordWrap(True)
+        task_layout.addWidget(self.composer_task_summary)
+        self.composer_task_impact = _plain_label("", self.composer_task_surface)
+        self.composer_task_impact.setObjectName("agentChatComposerTaskImpact")
+        self.composer_task_impact.setWordWrap(True)
+        task_layout.addWidget(self.composer_task_impact)
+        self.composer_progress = QProgressBar(self.composer_task_surface)
+        self.composer_progress.setObjectName("agentChatComposerProgress")
+        self.composer_progress.setTextVisible(False)
+        self.composer_progress.setRange(0, 100)
+        task_layout.addWidget(self.composer_progress)
+        self.composer_task_status = _plain_label("", self.composer_task_surface)
+        self.composer_task_status.setObjectName("agentChatComposerTaskStatus")
+        self.composer_task_status.setWordWrap(True)
+        task_layout.addWidget(self.composer_task_status)
+        task_actions = QHBoxLayout()
+        task_actions.setContentsMargins(0, 2, 0, 0)
+        task_actions.setSpacing(6)
+        self.composer_accept_button = _BoundaryToolButton(
+            self.composer_task_surface
+        )
+        self.composer_accept_button.setObjectName(
+            "agentChatProposalAcceptButton"
+        )
+        self.composer_accept_button.clicked.connect(
+            self._accept_composer_proposal
+        )
+        task_actions.addWidget(self.composer_accept_button)
+        self.composer_reject_button = _BoundaryToolButton(
+            self.composer_task_surface
+        )
+        self.composer_reject_button.setObjectName(
+            "agentChatProposalRejectButton"
+        )
+        self.composer_reject_button.setText("拒绝")
+        self.composer_reject_button.clicked.connect(
+            self._reject_composer_proposal
+        )
+        task_actions.addWidget(self.composer_reject_button)
+        self.composer_stop_button = _BoundaryToolButton(
+            self.composer_task_surface
+        )
+        self.composer_stop_button.setObjectName("agentChatComposerStopButton")
+        self.composer_stop_button.setText("停止")
+        self.composer_stop_button.clicked.connect(
+            self._cancel_runtime_operation
+        )
+        task_actions.addWidget(self.composer_stop_button)
+        task_actions.addStretch(1)
+        task_layout.addLayout(task_actions)
+        self.composer_stack.addWidget(self.composer_task_surface)
+        self.composer_stack.setCurrentWidget(self.composer_surface)
+        layout.addWidget(self.composer_stack)
         return composer
 
     def _set_composer_surface_focused(self, focused: bool) -> None:
@@ -2209,6 +2336,173 @@ class AgentChatDrawer(_BoundaryFrame):
         style.unpolish(self.composer_surface)
         style.polish(self.composer_surface)
         self.composer_surface.update()
+
+    def _latest_projected_proposal(
+        self,
+    ) -> tuple[ProposalView, str] | None:
+        latest: tuple[ProposalView, str] | None = None
+        for turn in self.event_projector.presentation_view.turns:
+            for proposal in turn.proposals:
+                latest = (proposal, turn.turn_id)
+        return latest
+
+    def _set_composer_proposal_properties(
+        self,
+        proposal: ProposalView,
+    ) -> None:
+        for button in (
+            self.composer_accept_button,
+            self.composer_reject_button,
+        ):
+            button.setProperty("proposalId", proposal.proposal_id)
+            button.setProperty("proposalHash", proposal.proposal_hash)
+            button.setProperty("proposalKind", proposal.proposal_kind)
+            button.setProperty(
+                "targetDocumentId",
+                proposal.target_document_id,
+            )
+            button.setProperty(
+                "targetSessionId",
+                proposal.target_session_id,
+            )
+            button.setProperty(
+                "baseSessionRevision",
+                proposal.base_session_revision,
+            )
+
+    def _sync_composer_state(self) -> None:
+        projected = self._latest_projected_proposal()
+        if projected is not None:
+            self._manual_composer_proposal = None
+        manual = projected is None and self._manual_composer_proposal is not None
+        latest = projected or self._manual_composer_proposal
+        self._composer_proposal = latest
+        proposal = None if latest is None else latest[0]
+        turn_id = None if latest is None else latest[1]
+
+        pending = (
+            proposal is not None
+            and proposal.status is ProposalViewStatus.PENDING_CONFIRMATION
+            and proposal.proposal_id != self._composer_accepting_id
+        )
+        local = (
+            proposal is not None
+            and (
+                proposal.status
+                in {ProposalViewStatus.ACCEPTED, ProposalViewStatus.RUNNING}
+                or proposal.proposal_id == self._composer_accepting_id
+            )
+        )
+        continuing = self._continuation_active and not pending and not local
+        show_task = pending or local or continuing
+        self.composer_stack.setCurrentWidget(
+            self.composer_task_surface if show_task else self.composer_surface
+        )
+        self.suggestion.setVisible(
+            self.suggestion.isVisible() and not show_task
+        )
+
+        if not show_task:
+            if self._composer_task_was_visible and self.isVisible():
+                QTimer.singleShot(0, self.input.setFocus)
+            self._composer_task_was_visible = False
+            return
+        self._composer_task_was_visible = True
+
+        self.composer_accept_button.setVisible(pending)
+        self.composer_reject_button.setVisible(pending)
+        self.composer_stop_button.setVisible(
+            (local or continuing) and self._runtime_busy
+        )
+        self.composer_progress.setVisible(local or continuing)
+        self.composer_task_impact.setVisible(pending)
+
+        if pending and proposal is not None and turn_id is not None:
+            self.composer_task_title.setText(proposal.title)
+            self.composer_task_summary.setText("摘要 · " + proposal.summary)
+            self.composer_task_impact.setText("影响 · " + proposal.impact)
+            self.composer_task_status.setText("等待确认后执行本地操作")
+            self.composer_accept_button.setText("确认")
+            self.composer_accept_button.setToolTip(proposal.confirm_label)
+            self._set_composer_proposal_properties(proposal)
+            enabled = (
+                not self._runtime_busy
+                and self._proposal_targets_live_binding(
+                    proposal,
+                    None if manual else turn_id,
+                )
+            )
+            self.composer_accept_button.setEnabled(enabled)
+            self.composer_reject_button.setEnabled(enabled)
+            return
+
+        self.composer_accept_button.setEnabled(False)
+        self.composer_reject_button.setEnabled(False)
+        self.composer_task_impact.clear()
+        if local and proposal is not None:
+            self.composer_task_title.setText(proposal.title)
+            self.composer_task_summary.setText(proposal.summary)
+            progress = max(0, min(100, round(proposal.progress * 100)))
+            if proposal.status is ProposalViewStatus.ACCEPTED and progress == 0:
+                self.composer_progress.setRange(0, 0)
+            else:
+                self.composer_progress.setRange(0, 100)
+                self.composer_progress.setValue(progress)
+            self.composer_task_status.setText(
+                (
+                    "正在启动本地任务…"
+                    if proposal.proposal_id == self._composer_accepting_id
+                    else proposal.status_message or "正在执行本地任务…"
+                )
+            )
+            return
+
+        self.composer_task_title.setText("FEM Agent 正在续跑")
+        self.composer_task_summary.setText(
+            "本地任务已进入终态，Agent 正在继续下一阶段。"
+        )
+        self.composer_progress.setRange(0, 0)
+        self.composer_task_status.setText(
+            "可等待下一项确认，或在需要时停止 Agent。"
+        )
+
+    def _accept_composer_proposal(self) -> None:
+        if self._composer_proposal is None:
+            return
+        proposal, turn_id = self._composer_proposal
+        if proposal.status is not ProposalViewStatus.PENDING_CONFIRMATION:
+            return
+        self._composer_accepting_id = proposal.proposal_id
+        self._sync_composer_state()
+        self._accept_authoring_proposal(proposal, turn_id)
+        QTimer.singleShot(0, self._settle_composer_accepting)
+
+    def _reject_composer_proposal(self) -> None:
+        if self._composer_proposal is None:
+            return
+        proposal, turn_id = self._composer_proposal
+        if proposal.status is not ProposalViewStatus.PENDING_CONFIRMATION:
+            return
+        self._reject_authoring_proposal(proposal, turn_id)
+        self._sync_composer_state()
+
+    def _settle_composer_accepting(self) -> None:
+        if self._composer_accepting_id is None:
+            return
+        proposal = None
+        if self._composer_proposal is not None:
+            proposal = self._composer_proposal[0]
+        if (
+            proposal is None
+            or proposal.status is ProposalViewStatus.PENDING_CONFIRMATION
+        ):
+            self._composer_accepting_id = None
+        self._sync_composer_state()
+
+    def _settle_continuation_state(self) -> None:
+        if not self.agent_runtime.busy:
+            self._continuation_active = False
+            self._sync_composer_state()
 
     def _show_add_menu(self) -> None:
         menu_size = self.add_menu.sizeHint()
@@ -2944,6 +3238,10 @@ class AgentChatDrawer(_BoundaryFrame):
         self._pending_solve_confirmations.clear()
         self._completed_solve_confirmations.clear()
         self._applied_patch_records.clear()
+        self._manual_composer_proposal = None
+        self._composer_proposal = None
+        self._composer_accepting_id = None
+        self._continuation_active = False
         self._conversation_auto_follow = True
         self._render_event_presentation(preserve_tool_expansion=False)
         self.input.clear()
@@ -2966,6 +3264,8 @@ class AgentChatDrawer(_BoundaryFrame):
     def set_runtime_busy(self, _busy: bool) -> None:
         """投影后台 runtime 的串行操作状态。"""
         self._runtime_busy = self.agent_runtime.busy
+        if not self._runtime_busy:
+            self._continuation_active = False
         self.input.setEnabled(not self._runtime_busy)
         self.add_button.setEnabled(not self._runtime_busy)
         self.send_state.setCurrentWidget(
@@ -3026,6 +3326,7 @@ class AgentChatDrawer(_BoundaryFrame):
                 and bridge is not None
                 and bridge.can_undo_patch(str(button.property("patchId")))
             )
+        self._sync_composer_state()
 
     def _proposal_button_targets_live_binding(
         self,

@@ -9,10 +9,17 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QPoint, QPointF, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QAction, QWheelEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QLabel,
+    QProgressBar,
+    QToolButton,
+    QWidget,
+)
 
-from fem_gui.agent_events import FakeAgentEventStream
+from fem_gui.agent_events import EventType, FakeAgentEventStream
 from fem_gui.widgets.agent_chat import (
+    AgentChatDrawer,
     ModelViewportOverlayHost,
     ToolActivityPreview,
 )
@@ -216,6 +223,159 @@ def test_composer_placeholder_hides_on_focus_and_returns_when_unfocused():
     assert not editor.hasFocus()
     assert editor.placeholderText() == expected_placeholder
     assert host.agent_chat_drawer.composer_surface.property("focused") is False
+    host.close()
+
+
+def test_composer_projects_one_proposal_through_local_and_continuation_states():
+    application = _application()
+    stream = FakeAgentEventStream(
+        session_id="composer-session",
+        event_prefix="composer-event",
+    )
+    turn_id = "composer-turn"
+    proposal_hash = "a" * 64
+    events = [
+        stream._event(
+            turn_id,
+            EventType.TURN_STARTED,
+            {"user_message": "生成网格"},
+        )
+    ]
+    for index in (1, 2):
+        events.append(
+            stream._event(
+                turn_id,
+                EventType.PROPOSAL_REQUESTED,
+                {
+                    "proposal_id": f"mesh-proposal-{index}",
+                    "proposal_hash": proposal_hash,
+                    "proposal_kind": "mesh",
+                    "title": f"网格提案 {index}",
+                    "summary": f"生成第 {index} 版网格",
+                    "impact": "将替换当前网格",
+                    "confirm_label": "确认生成",
+                    "target_document_id": "document-1",
+                    "target_session_id": "model-session-1",
+                    "base_session_revision": 3,
+                },
+            )
+        )
+
+    drawer = AgentChatDrawer()
+    drawer.resize(460, 420)
+    drawer.replay_agent_events(events)
+    drawer.show()
+    application.processEvents()
+
+    assert drawer.composer_stack.currentWidget() is drawer.composer_task_surface
+    assert drawer.composer_task_title.text() == "网格提案 2"
+    assert "生成第 2 版网格" in drawer.composer_task_summary.text()
+    assert "将替换当前网格" in drawer.composer_task_impact.text()
+    visible_accepts = [
+        button
+        for button in drawer.findChildren(
+            QToolButton,
+            "agentChatProposalAcceptButton",
+        )
+        if button.isVisible()
+    ]
+    assert visible_accepts == [drawer.composer_accept_button]
+    assert drawer.composer_accept_button.property("proposalId") == (
+        "mesh-proposal-2"
+    )
+
+    identity = {
+        "proposal_id": "mesh-proposal-2",
+        "proposal_hash": proposal_hash,
+    }
+    drawer.apply_agent_event(
+        stream._event(turn_id, EventType.PROPOSAL_ACCEPTED, identity)
+    )
+    drawer.apply_agent_event(
+        stream._event(turn_id, EventType.PROPOSAL_STARTED, identity)
+    )
+    drawer.apply_agent_event(
+        stream._event(
+            turn_id,
+            EventType.PROPOSAL_PROGRESS,
+            {**identity, "progress": 0.42, "message": "正在划分单元"},
+        )
+    )
+    progress = drawer.findChild(
+        QProgressBar,
+        "agentChatComposerProgress",
+    )
+    assert progress is not None
+    assert progress.value() == 42
+    assert drawer.composer_task_status.text() == "正在划分单元"
+    assert not drawer.composer_accept_button.isVisible()
+
+    drawer.apply_agent_event(
+        stream._event(
+            turn_id,
+            EventType.PROPOSAL_SUCCEEDED,
+            {**identity, "summary": "网格生成完成"},
+        )
+    )
+    assert drawer.composer_task_title.text() == "FEM Agent 正在续跑"
+    drawer.set_runtime_busy(False)
+    application.processEvents()
+    assert drawer.composer_stack.currentWidget() is drawer.composer_surface
+    assert drawer.input.isEnabled()
+    assert drawer.input.hasFocus()
+    drawer.close()
+
+
+def test_proposal_composer_survives_drawer_resize_and_reopen():
+    application = _application()
+    viewport = _ViewportProbe()
+    host = ModelViewportOverlayHost(viewport)
+    host.resize(720, 520)
+    host.show()
+    application.processEvents()
+    drawer = host.agent_chat_drawer
+    stream = FakeAgentEventStream(
+        session_id="composer-reopen-session",
+        event_prefix="composer-reopen-event",
+    )
+    turn_id = "composer-reopen-turn"
+    drawer.replay_agent_events(
+        (
+            stream._event(
+                turn_id,
+                EventType.TURN_STARTED,
+                {"user_message": "保存项目"},
+            ),
+            stream._event(
+                turn_id,
+                EventType.PROPOSAL_REQUESTED,
+                {
+                    "proposal_id": "save-proposal",
+                    "proposal_hash": "b" * 64,
+                    "proposal_kind": "project_save",
+                    "title": "保存项目",
+                    "summary": "写入当前项目快照",
+                    "impact": "将更新项目文件",
+                    "confirm_label": "确认保存",
+                    "target_document_id": "document-1",
+                    "target_session_id": "model-session-1",
+                    "base_session_revision": 2,
+                },
+            ),
+        )
+    )
+    host.set_drawer_open(True, animated=False)
+    application.processEvents()
+    host.set_drawer_width(360)
+    host.set_drawer_open(False, animated=False)
+    host.resize(800, 560)
+    host.set_drawer_open(True, animated=False)
+    application.processEvents()
+
+    assert drawer.composer_stack.currentWidget() is drawer.composer_task_surface
+    assert drawer.composer_task_title.text() == "保存项目"
+    assert drawer.geometry().width() == 360
+    assert drawer.composer_task_surface.width() > 0
     host.close()
 
 
