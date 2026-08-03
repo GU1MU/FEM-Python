@@ -613,6 +613,9 @@ class FEMMainWindow(QMainWindow):
         self._face_sketch_selection_cache: dict[
             tuple[str, str, int, str], bool
         ] = {}
+        self.faceSketchBooleanFeatureRequested.connect(
+            self._commit_face_sketch_boolean_feature
+        )
         self._geometry_preview_cache: (
             tuple[str, object, GeometryPreview] | None
         ) = None
@@ -3979,13 +3982,30 @@ class FEMMainWindow(QMainWindow):
             sketch = controller.draft.to_sketch_geometry()
             sketch_snapshot = controller.sketch_snapshot()
             launch = controller.launch_snapshot
+            feature_ids = {
+                str(record.payload.get("feature_id"))
+                for record in launch.part.feature_history
+                if record.payload.get("feature_id")
+            }
+            feature_index = 1
+            while f"FSB{feature_index}" in feature_ids:
+                feature_index += 1
+            operation_kind = (
+                "face_sketch_boolean_fuse"
+                if parameters.operation is FaceSketchBooleanOperation.FUSE
+                else "face_sketch_boolean_cut"
+            )
+            operation_index = 1 + sum(
+                record.kind == operation_kind
+                for record in launch.part.feature_history
+            )
             recipe = FaceSketchBooleanGeometry(
                 launch.part.geometry_recipe,
-                "FSB-draft",
+                f"FSB{feature_index}",
                 (
-                    "拉伸合并-预览"
+                    f"拉伸合并-{operation_index}"
                     if parameters.operation is FaceSketchBooleanOperation.FUSE
-                    else "拉伸切除-预览"
+                    else f"拉伸切除-{operation_index}"
                 ),
                 launch.workplane.support_face_id,
                 launch.workplane.strategy,
@@ -4117,6 +4137,96 @@ class FEMMainWindow(QMainWindow):
             "拉伸布尔创建请求已准备，等待原子特征提交",
             5000,
         )
+
+    def _commit_face_sketch_boolean_feature(self, payload: object) -> None:
+        controller = self._face_sketch_controller
+        result = self._face_sketch_preview_result
+        dialog = self._face_sketch_dialog
+        parameters = self._face_sketch_parameters
+        if (
+            type(payload) is not FaceSketchBooleanFeatureRequest
+            or controller is None
+            or result is None
+            or dialog is None
+            or parameters is None
+        ):
+            return
+        launch = controller.launch_snapshot
+        current_sketch = controller.sketch_snapshot()
+        request_is_current = (
+            payload.launch == launch
+            and payload.geometry == result.geometry
+            and payload.sketch_revision == current_sketch.revision
+            and payload.preview_generation == self._face_sketch_preview_generation
+            and dialog.preview_is_valid
+            and controller.launch_is_current(self.document)
+            and payload.geometry.sketch == controller.draft.to_sketch_geometry()
+            and payload.geometry.external_references
+            == current_sketch.external_references
+            and payload.geometry.external_coincidences
+            == current_sketch.external_coincidences
+            and payload.geometry.support_face_id == launch.workplane.support_face_id
+            and payload.geometry.workplane_strategy == launch.workplane.strategy
+            and payload.geometry.operation is parameters.operation
+            and payload.geometry.direction is parameters.direction
+            and payload.geometry.distance == parameters.distance
+            and payload.geometry.participating_profile_ids
+            == tuple(sorted(parameters.participating_profile_ids))
+        )
+        if not request_is_current:
+            dialog.set_preview_invalid(
+                self._face_sketch_preview_generation,
+                "提交前状态已变化，精确预览已过期，请重新生成预览",
+            )
+            self.status_panel.set_state(
+                "提交前状态已变化；模型未修改，请重新生成精确预览",
+                6000,
+            )
+            return
+        try:
+            delta = self.session.commit_face_sketch_boolean(
+                launch.part_id,
+                launch.body_id,
+                payload.geometry,
+                expected_session_id=launch.session_id,
+                expected_part_revision=launch.part_revision,
+                expected_session_revision=launch.session_revision,
+                expected_body_recipe=launch.body.recipe,
+                expected_support_face_id=launch.workplane.support_face_id,
+                expected_workplane_strategy=launch.workplane.strategy,
+                expected_sketch_revision=payload.sketch_revision,
+                sketch_revision=current_sketch.revision,
+                expected_preview_generation=payload.preview_generation,
+                preview_generation=self._face_sketch_preview_generation,
+            )
+            if not self._apply_session_delta(delta):
+                raise RuntimeError("Session 未接受拉伸布尔提交")
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            dialog.set_preview_invalid(
+                self._face_sketch_preview_generation,
+                f"提交被拒绝：{error}",
+            )
+            self.status_panel.set_state(
+                f"拉伸布尔提交被拒绝，模型未修改：{error}",
+                7000,
+            )
+            return
+
+        feature_name = self.document.part(launch.part_id).feature_history[-1].name
+        dialog.close_for_workflow()
+        self._face_sketch_dialog = None
+        self._face_sketch_controller = None
+        self._face_sketch_parameters = None
+        self._face_sketch_preview_result = None
+        self._face_sketch_reference_points = ()
+        self._face_sketch_original_selection = set()
+        self._selected_geometry_refs.clear()
+        self._selected_mesh_scope_refs.clear()
+        self.status_panel.set_state(
+            f"{feature_name} 已作为一个撤销单元提交",
+            6000,
+        )
+        self._update_action_states()
 
     def _return_to_face_sketch(self, parameters: object) -> None:
         if (
@@ -6039,7 +6149,29 @@ class FEMMainWindow(QMainWindow):
 
     def undo_geometry_feature(self) -> None:
         current = self.document.geometry_recipe
-        if isinstance(current, MultiBodyGeometry):
+        active_part_id = self.document.active_part_id
+        if (
+            active_part_id is not None
+            and self.session.can_undo_face_sketch_boolean(active_part_id)
+        ):
+            try:
+                self._apply_session_delta(
+                    self.session.undo_face_sketch_boolean(
+                        active_part_id,
+                        expected_part_revision=self.document.part_revision(
+                            active_part_id
+                        ),
+                        expected_session_revision=self.document.session_revision,
+                    )
+                )
+            except (RuntimeError, TypeError, ValueError, KeyError) as error:
+                self._show_error("撤销拉伸布尔", str(error))
+                return
+            self.status_panel.set_state(
+                "拉伸布尔已完整撤销；几何、引用和特征历史已恢复",
+                5000,
+            )
+        elif isinstance(current, MultiBodyGeometry):
             body_id = self._selected_body_id(current)
             if body_id is None:
                 self.status_panel.set_state("请先选择一个实体", 5000)

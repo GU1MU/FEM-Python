@@ -93,6 +93,8 @@ def _native_feature_label(value: object) -> str:
     text = str(value)
     namespace, separator, leaf = text.rpartition("/")
     prefix = f"{namespace}/" if separator else ""
+    if leaf.startswith(("拉伸合并-", "拉伸切除-")):
+        return leaf
     for source, translated in _NATIVE_FEATURE_NAMES.items():
         suffix = leaf.removeprefix(source)
         if leaf == source or (
@@ -246,13 +248,15 @@ class ModelTree(QTreeWidget):
                     active=native_part.id == active_part_id,
                 )
                 for record in native_part.feature_history:
-                    native_item.addChild(
-                        self._item(
-                            _native_feature_label(record.name),
-                            "feature",
-                            str(record.name),
-                        )
+                    feature_item = self._item(
+                        _native_feature_label(record.name),
+                        "feature",
+                        str(record.name),
                     )
+                    summary = record.payload.get("summary")
+                    if summary:
+                        feature_item.setToolTip(0, str(summary))
+                    native_item.addChild(feature_item)
                 native_item.addChild(
                     self._item(
                         "网格设置",
@@ -508,13 +512,15 @@ class ModelTree(QTreeWidget):
                     active=is_active,
                 )
                 for row in native_part.feature_history:
-                    part.addChild(
-                        self._item(
-                            _native_feature_label(row.name),
-                            "feature",
-                            str(row.name),
-                        )
+                    feature_item = self._item(
+                        _native_feature_label(row.name),
+                        "feature",
+                        str(row.name),
                     )
+                    summary = row.payload.get("summary")
+                    if summary:
+                        feature_item.setToolTip(0, str(summary))
+                    part.addChild(feature_item)
                 provenance = native_part.provenance
                 if provenance is not None:
                     operation = (

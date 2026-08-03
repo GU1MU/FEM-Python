@@ -10,6 +10,9 @@ from fem.geometry.recipes import (
     CylinderGeometry,
     DiskGeometry,
     ExtrudedGeometry,
+    FaceSketchBooleanDirection,
+    FaceSketchBooleanGeometry,
+    FaceSketchBooleanOperation,
     MovedGeometry,
     MultiBodyGeometry,
     NATIVE_GEOMETRY_TYPES,
@@ -63,7 +66,9 @@ def derive_feature_history(recipe: NativeGeometry) -> tuple[FeatureRecord, ...]:
         )
 
     def visit(item: NativeGeometry) -> None:
-        if isinstance(item, WireGeometry):
+        if isinstance(item, MultiBodyGeometry):
+            records.extend(derive_feature_history(item))
+        elif isinstance(item, WireGeometry):
             add("Wire", derive_geometry_feature_rows(item)[0])
         elif isinstance(item, SketchGeometry):
             add("Sketch", derive_geometry_feature_rows(item)[0])
@@ -82,6 +87,27 @@ def derive_feature_history(recipe: NativeGeometry) -> tuple[FeatureRecord, ...]:
         elif isinstance(item, PathSweptGeometry):
             visit(item.base)
             add("PathSweep", derive_geometry_feature_rows(item)[-1])
+        elif isinstance(item, FaceSketchBooleanGeometry):
+            visit(item.base)
+            records.append(
+                FeatureRecord(
+                    item.name,
+                    (
+                        "face_sketch_boolean_fuse"
+                        if item.operation is FaceSketchBooleanOperation.FUSE
+                        else "face_sketch_boolean_cut"
+                    ),
+                    {
+                        "summary": derive_geometry_feature_rows(item)[-1],
+                        "feature_id": item.feature_id,
+                        "support_face_id": item.support_face_id,
+                        "direction": item.direction.chinese_name,
+                        "distance": item.distance,
+                        "profile_count": len(item.participating_profile_ids),
+                        "association_count": len(item.external_references),
+                    },
+                )
+            )
         elif isinstance(item, BooleanGeometry):
             visit(item.object_geometry)
             kind = {
@@ -171,6 +197,23 @@ def derive_geometry_feature_rows(
         return derive_geometry_feature_rows(recipe.base) + (
             f"路径扫掠  路径段={len(recipe.path.members)}，"
             f"frame={recipe.frame_strategy}",
+        )
+    if isinstance(recipe, FaceSketchBooleanGeometry):
+        operation = (
+            "拉伸合并"
+            if recipe.operation is FaceSketchBooleanOperation.FUSE
+            else "拉伸切除"
+        )
+        direction = (
+            "向外"
+            if recipe.direction is FaceSketchBooleanDirection.OUTWARD
+            else "向内"
+        )
+        return derive_geometry_feature_rows(recipe.base) + (
+            f"{operation}  工作面={recipe.support_face_id}，"
+            f"方向={direction}，距离={recipe.distance:g}，"
+            f"轮廓={len(recipe.participating_profile_ids)}，"
+            f"外部关联={len(recipe.external_references)}",
         )
     if isinstance(recipe, BooleanGeometry):
         names = {"fuse": "合并", "cut": "切除", "fragment": "分割"}

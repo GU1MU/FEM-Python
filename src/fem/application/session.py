@@ -13,6 +13,8 @@ from fem.geometry import (
     BooleanBodyContext,
     BooleanGeometry,
     ExtrudedGeometry,
+    FaceSketchBooleanGeometry,
+    FaceSketchBooleanOperation,
     LogicalEntityRef,
     logical_ref_sort_key,
     MovedGeometry,
@@ -35,6 +37,7 @@ from fem.geometry import (
 )
 from fem.geometry.recipe_topology import (
     can_preserve_logical_references,
+    describe_recipe_topology,
     logical_reference_transition_map,
     surviving_logical_reference_ids,
 )
@@ -380,6 +383,20 @@ class _PartExtrusionUndoRecord:
     primary_part_id: str
     before_part: NativePart
     after_parts: tuple[NativePart, ...]
+    before_named_regions: tuple[NamedRegion, ...]
+    after_named_regions: tuple[NamedRegion, ...]
+    before_assignments: tuple[RegionAssignment, ...]
+    after_assignments: tuple[RegionAssignment, ...]
+    before_steps: tuple[Any, ...]
+    after_steps: tuple[Any, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _FaceSketchBooleanUndoRecord:
+    feature_id: str
+    part_id: str
+    before_part: NativePart
+    after_part: NativePart
     before_named_regions: tuple[NamedRegion, ...]
     after_named_regions: tuple[NamedRegion, ...]
     before_assignments: tuple[RegionAssignment, ...]
@@ -1647,6 +1664,228 @@ class ModelSession:
             _MODEL_INVALIDATIONS,
             "Part geometry replaced",
             effects=mesh_effects,
+        )
+
+    def commit_face_sketch_boolean(
+        self,
+        part_id: str,
+        target_body_id: str,
+        recipe: FaceSketchBooleanGeometry,
+        *,
+        expected_session_id: str,
+        expected_part_revision: int,
+        expected_session_revision: int,
+        expected_body_recipe: object,
+        expected_support_face_id: str,
+        expected_workplane_strategy: object,
+        expected_sketch_revision: int,
+        sketch_revision: int,
+        expected_preview_generation: int,
+        preview_generation: int,
+    ) -> SessionDelta:
+        """Commit one generation-bound proven face-sketch Boolean atomically."""
+
+        if self._session_id != str(expected_session_id):
+            raise SessionStateError("Session 已变化，拉伸布尔预览已过期")
+        self._check_expected(expected_session_revision)
+        self._require_native()
+        normalized = normalize_part_id(part_id)
+        self._check_part_revision(normalized, expected_part_revision)
+        if type(recipe) is not FaceSketchBooleanGeometry:
+            raise TypeError("recipe must be a FaceSketchBooleanGeometry")
+        if int(sketch_revision) != int(expected_sketch_revision):
+            raise SessionStateError("草图已变化，拉伸布尔预览已过期")
+        if int(preview_generation) != int(expected_preview_generation):
+            raise SessionStateError("精确预览代次已过期，请重新生成预览")
+        if (
+            recipe.support_face_id != expected_support_face_id
+            or recipe.workplane_strategy != expected_workplane_strategy
+        ):
+            raise SessionStateError("工作面已变化，拉伸布尔预览已过期")
+
+        current = self._require_editable_part(normalized)
+        current_recipe = current.geometry_recipe
+        if recipe.base != current_recipe:
+            raise SessionStateError("目标 Part 几何已变化，拉伸布尔预览已过期")
+        current_body_recipe = _face_sketch_target_body_recipe(
+            current_recipe,
+            target_body_id,
+        )
+        if current_body_recipe != expected_body_recipe:
+            raise SessionStateError("目标 Body 已变化，拉伸布尔预览已过期")
+        if tuple(item.profile_id for item in recipe.step_proofs) != (
+            recipe.participating_profile_ids
+        ):
+            raise ValueError("拉伸布尔逐轮廓拓扑证明不完整，未修改模型")
+        if any(
+            not item.result_entities or not item.topology_mappings
+            for item in recipe.step_proofs
+        ):
+            raise ValueError("拉伸布尔逐轮廓拓扑证明不完整，未修改模型")
+
+        feature_id = _next_face_sketch_boolean_feature_id(current_recipe)
+        feature_name = _next_face_sketch_boolean_feature_name(
+            current_recipe,
+            recipe.operation,
+        )
+        if recipe.feature_id != feature_id or recipe.name != feature_name:
+            raise SessionStateError("特征序号已变化，拉伸布尔预览已过期")
+        candidate = _committed_face_sketch_boolean_recipe(
+            current_recipe,
+            target_body_id,
+            recipe,
+        )
+        topology = describe_recipe_topology(candidate)
+        if not topology.exact or not topology.transition.proven:
+            raise ValueError("拉伸布尔最终逻辑拓扑证明不完整，未修改模型")
+
+        before_regions = tuple(self._named_regions.values())
+        before_assignments = self._assignments
+        before_steps = self._steps
+        delta = self.replace_part_geometry(
+            normalized,
+            candidate,
+            expected_part_revision=expected_part_revision,
+            expected_session_revision=expected_session_revision,
+        )
+        after = self._require_part(normalized)
+        record = _FaceSketchBooleanUndoRecord(
+            feature_id,
+            normalized,
+            deepcopy(current),
+            deepcopy(after),
+            deepcopy(before_regions),
+            deepcopy(tuple(self._named_regions.values())),
+            deepcopy(before_assignments),
+            deepcopy(self._assignments),
+            deepcopy(before_steps),
+            deepcopy(self._steps),
+        )
+        self._face_sketch_boolean_undo_records.setdefault(normalized, []).append(
+            record
+        )
+        self._face_sketch_boolean_redo_records.pop(normalized, None)
+        return replace(delta, reason="face-sketch Boolean committed")
+
+    def can_undo_face_sketch_boolean(self, part_id: str) -> bool:
+        normalized = normalize_part_id(part_id)
+        return bool(self._face_sketch_boolean_undo_records.get(normalized))
+
+    def can_redo_face_sketch_boolean(self, part_id: str) -> bool:
+        normalized = normalize_part_id(part_id)
+        return bool(self._face_sketch_boolean_redo_records.get(normalized))
+
+    def undo_face_sketch_boolean(
+        self,
+        part_id: str,
+        *,
+        expected_part_revision: int | None = None,
+        expected_session_revision: int | None = None,
+    ) -> SessionDelta:
+        """Restore the exact state before the latest face-sketch feature."""
+
+        return self._restore_face_sketch_boolean(
+            part_id,
+            undo=True,
+            expected_part_revision=expected_part_revision,
+            expected_session_revision=expected_session_revision,
+        )
+
+    def redo_face_sketch_boolean(
+        self,
+        part_id: str,
+        *,
+        expected_part_revision: int | None = None,
+        expected_session_revision: int | None = None,
+    ) -> SessionDelta:
+        """Restore the exact committed state of the latest undone feature."""
+
+        return self._restore_face_sketch_boolean(
+            part_id,
+            undo=False,
+            expected_part_revision=expected_part_revision,
+            expected_session_revision=expected_session_revision,
+        )
+
+    def _restore_face_sketch_boolean(
+        self,
+        part_id: str,
+        *,
+        undo: bool,
+        expected_part_revision: int | None,
+        expected_session_revision: int | None,
+    ) -> SessionDelta:
+        self._check_expected(expected_session_revision)
+        self._require_native()
+        normalized = normalize_part_id(part_id)
+        self._check_part_revision(normalized, expected_part_revision)
+        source = (
+            self._face_sketch_boolean_undo_records
+            if undo
+            else self._face_sketch_boolean_redo_records
+        )
+        destination = (
+            self._face_sketch_boolean_redo_records
+            if undo
+            else self._face_sketch_boolean_undo_records
+        )
+        records = source.get(normalized)
+        if not records:
+            raise SessionStateError(
+                "当前 Part 没有可撤销的面草图特征"
+                if undo
+                else "当前 Part 没有可重做的面草图特征"
+            )
+        record = records[-1]
+        expected_part = record.after_part if undo else record.before_part
+        expected_regions = (
+            record.after_named_regions if undo else record.before_named_regions
+        )
+        expected_assignments = (
+            record.after_assignments if undo else record.before_assignments
+        )
+        expected_steps = record.after_steps if undo else record.before_steps
+        if (
+            self._require_part(normalized) != expected_part
+            or tuple(self._named_regions.values()) != expected_regions
+            or self._assignments != expected_assignments
+            or self._steps != expected_steps
+        ):
+            raise SessionStateError("后续编辑与面草图特征状态冲突，无法完整恢复")
+
+        replacement = record.before_part if undo else record.after_part
+        regions = record.before_named_regions if undo else record.after_named_regions
+        assignments = record.before_assignments if undo else record.after_assignments
+        steps = record.before_steps if undo else record.after_steps
+        self._replace_part(deepcopy(replacement))
+        self._named_regions = {
+            region.name: region for region in deepcopy(regions)
+        }
+        self._assignments = deepcopy(assignments)
+        self._steps = deepcopy(steps)
+        self._part_revisions[normalized] += 1
+        self._active_part_id = normalized
+        self._sync_active_part_projection()
+        self._drop_model_state()
+        records.pop()
+        if not records:
+            source.pop(normalized, None)
+        destination.setdefault(normalized, []).append(record)
+        self._increment_domain_revisions(project=True, mesh=True, model=True)
+        return self._emit(
+            {
+                ChangeKind.PROJECT_INPUTS,
+                ChangeKind.GEOMETRY,
+                ChangeKind.MESH_SETTINGS,
+                ChangeKind.NAMED_REGIONS,
+                ChangeKind.DEFINITIONS,
+                ChangeKind.MODEL,
+                ChangeKind.VALIDATIONS,
+                ChangeKind.RUNS,
+                ChangeKind.DISPLAYED_RESULT,
+            },
+            _MODEL_INVALIDATIONS,
+            "face-sketch Boolean undone" if undo else "face-sketch Boolean redone",
         )
 
     def replace_part_with_extruded_siblings(
@@ -5305,6 +5544,14 @@ class ModelSession:
             str,
             _PartExtrusionUndoRecord,
         ] = {}
+        self._face_sketch_boolean_undo_records: dict[
+            str,
+            list[_FaceSketchBooleanUndoRecord],
+        ] = {}
+        self._face_sketch_boolean_redo_records: dict[
+            str,
+            list[_FaceSketchBooleanUndoRecord],
+        ] = {}
         self._feature_history: tuple[FeatureRecord, ...] = ()
         self._named_regions: dict[str, NamedRegion] = {}
         self._materials: tuple[Any, ...] = ()
@@ -6038,9 +6285,12 @@ def _authenticate_native_part_solids(part: NativePart) -> None:
         raise ValueError(
             f"Part {part.id} 的三维几何无法通过 OCC 单实体认证：{error}"
         ) from error
+    ownership_recipe = part.geometry_recipe
+    while isinstance(ownership_recipe, FaceSketchBooleanGeometry):
+        ownership_recipe = ownership_recipe.base
     expected_count = (
-        len(part.geometry_recipe.bodies)
-        if isinstance(part.geometry_recipe, MultiBodyGeometry)
+        len(ownership_recipe.bodies)
+        if isinstance(ownership_recipe, MultiBodyGeometry)
         else 1
     )
     if (
@@ -6064,6 +6314,16 @@ def _recipe_contains_geometry_state(current: Any, expected: Any) -> bool:
 
 
 def _contains_unproven_boolean(recipe: Any) -> bool:
+    if isinstance(recipe, FaceSketchBooleanGeometry):
+        return (
+            tuple(item.profile_id for item in recipe.step_proofs)
+            != recipe.participating_profile_ids
+            or any(
+                not item.result_entities or not item.topology_mappings
+                for item in recipe.step_proofs
+            )
+            or _contains_unproven_boolean(recipe.base)
+        )
     if isinstance(recipe, MultiBodyGeometry):
         return any(
             _contains_unproven_boolean(body.recipe)
@@ -6093,6 +6353,78 @@ def _contains_unproven_boolean(recipe: Any) -> bool:
     ):
         return _contains_unproven_boolean(recipe.base)
     return False
+
+
+def _face_sketch_target_body_recipe(
+    recipe: object,
+    target_body_id: str,
+) -> object:
+    target = LogicalEntityRef(target_body_id)
+    if target.kind != "body":
+        raise ValueError("面草图目标必须是 Body")
+    if isinstance(recipe, MultiBodyGeometry):
+        if target.logical_id == "body:domain":
+            raise ValueError("MultiBody 面草图必须指定唯一目标 Body")
+        return recipe.body(target.logical_id.removeprefix("body:")).recipe
+    if target.logical_id != "body:domain":
+        raise ValueError("单实体 Part 的目标 Body ID 已失效")
+    return recipe
+
+
+def _next_face_sketch_boolean_feature_id(recipe: object) -> str:
+    ids = {
+        item.feature_id
+        for item in _face_sketch_boolean_features(recipe)
+        if item.feature_id.startswith("FSB")
+        and item.feature_id[3:].isdigit()
+    }
+    index = 1
+    while f"FSB{index}" in ids:
+        index += 1
+    return f"FSB{index}"
+
+
+def _next_face_sketch_boolean_feature_name(
+    recipe: object,
+    operation: FaceSketchBooleanOperation,
+) -> str:
+    prefix = (
+        "拉伸合并"
+        if operation is FaceSketchBooleanOperation.FUSE
+        else "拉伸切除"
+    )
+    count = sum(
+        item.operation is operation
+        for item in _face_sketch_boolean_features(recipe)
+    )
+    return f"{prefix}-{count + 1}"
+
+
+def _face_sketch_boolean_features(
+    recipe: object,
+) -> tuple[FaceSketchBooleanGeometry, ...]:
+    if isinstance(recipe, FaceSketchBooleanGeometry):
+        return (*_face_sketch_boolean_features(recipe.base), recipe)
+    if isinstance(recipe, MultiBodyGeometry):
+        return tuple(
+            feature
+            for body in recipe.bodies
+            for feature in _face_sketch_boolean_features(body.recipe)
+        )
+    if isinstance(recipe, (MovedGeometry, RotatedGeometry)):
+        return _face_sketch_boolean_features(recipe.base)
+    return ()
+
+
+def _committed_face_sketch_boolean_recipe(
+    current: object,
+    target_body_id: str,
+    prepared: FaceSketchBooleanGeometry,
+) -> object:
+    _face_sketch_target_body_recipe(current, target_body_id)
+    return prepared
+
+
 
 
 def _validate_native_parts_project_inputs(

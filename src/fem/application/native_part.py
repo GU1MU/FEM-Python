@@ -19,6 +19,7 @@ from fem.geometry.part_namespace import (
     part_id_sort_key,
 )
 from fem.geometry.recipes import (
+    FaceSketchBooleanGeometry,
     MultiBodyGeometry,
     NATIVE_GEOMETRY_TYPES,
     geometry_dimension,
@@ -176,6 +177,10 @@ class NativePart:
             if (
                 geometry_dimension(owned_recipe) == 3
                 and not isinstance(owned_recipe, MultiBodyGeometry)
+                and not (
+                    isinstance(owned_recipe, FaceSketchBooleanGeometry)
+                    and isinstance(owned_recipe.base, MultiBodyGeometry)
+                )
                 and not is_single_solid_recipe(owned_recipe)
             ):
                 raise ValueError(

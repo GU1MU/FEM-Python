@@ -526,6 +526,30 @@ def logical_reference_transition_map(
             planar_reverse.planar_context,
             reverse=True,
         )
+    face_sketch_forward = (
+        after
+        if isinstance(after, FaceSketchBooleanGeometry)
+        and after.base == before
+        else None
+    )
+    face_sketch_reverse = (
+        before
+        if isinstance(before, FaceSketchBooleanGeometry)
+        and before.base == after
+        else None
+    )
+    if face_sketch_forward is not None:
+        _extend_face_sketch_boolean_reference_map(
+            rewrites,
+            face_sketch_forward,
+            reverse=False,
+        )
+    elif face_sketch_reverse is not None:
+        _extend_face_sketch_boolean_reference_map(
+            rewrites,
+            face_sketch_reverse,
+            reverse=True,
+        )
     if not isinstance(before, MultiBodyGeometry) or not isinstance(
         after,
         MultiBodyGeometry,
@@ -540,6 +564,16 @@ def logical_reference_transition_map(
     for target_id in before_by_id.keys() & after_by_id.keys():
         before_body = before_by_id[target_id]
         after_body = after_by_id[target_id]
+        body_rewrites = logical_reference_transition_map(
+            before_body.recipe,
+            after_body.recipe,
+        )
+        for source, targets in body_rewrites.items():
+            namespaced_source = _namespace_local_logical_id(target_id, source)
+            rewrites.setdefault(namespaced_source, set()).update(
+                _namespace_local_logical_id(target_id, target)
+                for target in targets
+            )
         forward = _top_strict_body_boolean(after_body.recipe)
         reverse = _top_strict_body_boolean(before_body.recipe)
         if (
@@ -569,6 +603,45 @@ def logical_reference_transition_map(
         for source, targets in rewrites.items()
         if targets
     }
+
+
+def _extend_face_sketch_boolean_reference_map(
+    rewrites: dict[str, set[str]],
+    recipe: FaceSketchBooleanGeometry,
+    *,
+    reverse: bool,
+) -> None:
+    topology = describe_recipe_topology(recipe)
+    if not topology.exact or not topology.transition.proven:
+        return
+    candidates = tuple(
+        (mapping.source_logical_id, mapping.target_logical_id)
+        for mapping in topology.transition.mappings
+        if mapping.source == "base"
+        and LogicalEntityRef(mapping.source_logical_id).kind
+        == LogicalEntityRef(mapping.target_logical_id).kind
+    )
+    if not reverse:
+        targets_by_source: dict[str, set[str]] = {}
+        for source, target in candidates:
+            targets_by_source.setdefault(source, set()).add(target)
+        for source, targets in targets_by_source.items():
+            kind = LogicalEntityRef(source).kind
+            if kind != "face" and len(targets) != 1:
+                continue
+            rewrites.setdefault(source, set()).update(targets)
+        return
+    sources_by_target: dict[str, set[str]] = {}
+    for source, target in candidates:
+        sources_by_target.setdefault(target, set()).add(source)
+    for target, sources in sources_by_target.items():
+        if len(sources) != 1:
+            continue
+        source = next(iter(sources))
+        existing = rewrites.get(target, set())
+        if existing and existing != {source}:
+            continue
+        rewrites.setdefault(target, set()).add(source)
 
 
 def _extend_planar_boolean_reference_map(
