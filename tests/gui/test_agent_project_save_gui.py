@@ -194,7 +194,7 @@ def test_agent_gui_save_uses_save_as_then_reuses_existing_path(
     assert dialog_calls == ["save-as"]
     assert len(save_command_calls) == 1
     assert "secret-draft-unit" not in target.read_text(encoding="utf-8")
-    assert controller.stage is AuthoringWorkflowStage.REQUIREMENTS
+    assert controller.stage is AuthoringWorkflowStage.MESH_READY
 
     _change_accepted_geometry(window, 3.0)
     controller.reset_for_binding()
@@ -214,7 +214,7 @@ def test_agent_gui_save_uses_save_as_then_reuses_existing_path(
     assert dialog_calls == ["save-as"]
     assert len(save_command_calls) == 2
     assert not window.document.dirty
-    assert controller.stage is AuthoringWorkflowStage.REQUIREMENTS
+    assert controller.stage is AuthoringWorkflowStage.MESH_READY
     window.close()
 
 
@@ -234,7 +234,7 @@ def test_agent_gui_save_cancel_failure_and_reject_are_terminal(
     _click_accept(window, cancelled)
     assert controller.project_save_record.state is ProposalState.CANCELLED
     assert cancelled.status is ProposalViewStatus.CANCELLED
-    assert controller.stage is AuthoringWorkflowStage.REQUIREMENTS
+    assert controller.stage is AuthoringWorkflowStage.MESH_READY
 
     rejected = _request_save(window, index=4)
     reject = _proposal_button(
@@ -269,7 +269,7 @@ def test_agent_gui_save_cancel_failure_and_reject_are_terminal(
     ), controller.project_save_record
     assert controller.project_save_record.message == "保存自主项目失败"
     assert not target.exists()
-    assert controller.stage is AuthoringWorkflowStage.REQUIREMENTS
+    assert controller.stage is AuthoringWorkflowStage.MESH_READY
     window.close()
 
 
