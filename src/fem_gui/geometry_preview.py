@@ -1359,7 +1359,7 @@ def _revolved_preview(
     recipe: RevolvedGeometry,
     segments: int,
 ) -> GeometryPreview:
-    """Tessellate an axis-angle sweep without claiming stable face identity."""
+    """Tessellate an axis-angle sweep with grouped stable face lineage."""
 
     base = _build_geometry_preview(recipe.base, segments)
     selection = resolve_extrusion_source_faces(
@@ -1450,13 +1450,16 @@ def _revolved_preview(
         for point in source_points
     )
     faces: list[tuple[int, ...]] = []
+    face_ids: list[str | None] = []
     if not full_turn:
         faces.extend(tuple(reversed(face)) for face in source_faces)
+        face_ids.extend(("face:start",) * len(source_faces))
         end_offset = (layer_count - 1) * point_count
         faces.extend(
             tuple(end_offset + index for index in face)
             for face in source_faces
         )
+        face_ids.extend(("face:end",) * len(source_faces))
     for layer in range(sweep_segments):
         next_layer = (layer + 1) % layer_count
         start_offset = layer * point_count
@@ -1471,6 +1474,7 @@ def _revolved_preview(
                         end_offset + start,
                     )
                 )
+                face_ids.append("face:sides")
 
     edges: list[tuple[int, ...]] = []
     boundary_layers = (0,) if full_turn else (0, layer_count - 1)
@@ -1491,7 +1495,7 @@ def _revolved_preview(
         points,
         tuple(faces),
         tuple(edges),
-        (None,) * len(faces),
+        tuple(face_ids),
         (None,) * len(edges),
         (None,) * len(points),
     )

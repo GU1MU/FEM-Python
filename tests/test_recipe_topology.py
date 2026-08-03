@@ -348,7 +348,9 @@ def test_rectangle_extrusion_derives_box_topology_without_backend_tags() -> None
     assert first.exact is True
     assert _counts(first) == (8, 12, 6, 1)
     assert first.signature == resized.signature
-    assert first.entity("face:side/bottom").semantic_role == ("sweep.boundary.bottom")
+    assert first.entity("face:side/bottom").semantic_role == (
+        "sweep.boundary.outer"
+    )
     assert first.entity("edge:vertical/bottom-left").semantic_role == (
         "sweep.corner.bottom-left"
     )
@@ -391,7 +393,10 @@ def test_disk_and_plate_with_hole_extrusions_keep_only_proven_semantics() -> Non
         "face:side/outer-loop",
     )
     assert perforated.entity("face:side/hole-loop").semantic_role == (
-        "sweep.boundary.hole-loop"
+        "sweep.boundary.hole"
+    )
+    assert perforated.entity("face:side/outer-loop").semantic_role == (
+        "sweep.boundary.outer"
     )
 
 

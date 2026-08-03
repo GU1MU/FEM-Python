@@ -53,6 +53,9 @@ def test_revolved_recipe_validates_axis_angle_and_source_profile() -> None:
     assert recipe.source_face_ids == ("face:domain",)
     assert geometry_dimension(recipe) == 3
     assert describe_recipe_topology(recipe).signature.logical_ids == (
+        "face:start",
+        "face:end",
+        "face:sides",
         "body:domain",
     )
     with pytest.raises(ValueError, match="扫掠轴"):
@@ -142,7 +145,11 @@ def test_sweep_preview_is_three_dimensional_and_body_pickable() -> None:
     assert preview.body_logical_id == "body:domain"
     assert preview.points
     assert preview.faces
-    assert all(logical_id is None for logical_id in preview.face_logical_ids)
+    assert set(preview.face_logical_ids) == {
+        "face:start",
+        "face:end",
+        "face:sides",
+    }
 
 
 def test_sweep_dialog_builds_axis_angle_recipe() -> None:
