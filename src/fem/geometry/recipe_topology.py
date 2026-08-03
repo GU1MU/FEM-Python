@@ -1289,6 +1289,10 @@ def _extruded_topology(recipe: ExtrudedGeometry) -> RecipeTopology:
     entities: list[LogicalEntity] = []
     mappings: list[TopologyMapping] = []
     single_source = len(selection.face_ids) == 1
+    hole_edges_by_face = _extrusion_hole_edges_by_face(
+        recipe.base,
+        selection.face_ids,
+    )
 
     for source_face_id in selection.face_ids:
         source_face = base.entity(source_face_id)
@@ -1399,7 +1403,12 @@ def _extruded_topology(recipe: ExtrudedGeometry) -> RecipeTopology:
             side = _logical_entity(
                 "face",
                 target_name,
-                f"sweep.{edge.semantic_role}",
+                (
+                    "sweep.boundary.hole"
+                    if edge.logical_id in hole_edges_by_face[source_face_id]
+                    or "hole" in edge.semantic_role
+                    else "sweep.boundary.outer"
+                ),
             )
             entities.append(side)
             mappings.append(
@@ -1429,6 +1438,28 @@ def _extruded_topology(recipe: ExtrudedGeometry) -> RecipeTopology:
         source_signatures=(("base", base.signature),),
         mappings=tuple(mappings),
     )
+
+
+def _extrusion_hole_edges_by_face(
+    base: object,
+    face_ids: tuple[str, ...],
+) -> dict[str, frozenset[str]]:
+    strict_base = base
+    while isinstance(strict_base, (MovedGeometry, RotatedGeometry)):
+        strict_base = strict_base.base
+    if type(strict_base) is not SketchGeometry or not strict_base.is_strict:
+        return {face_id: frozenset() for face_id in face_ids}
+    analysis = analyze_sketch_profiles(strict_base)
+    return {
+        face_id: frozenset(
+            f"edge:{curve_id.lstrip('-')}"
+            for profile in analysis.profiles
+            if profile.is_hole
+            and profile.parent_profile_id == face_id.split(":", 1)[1]
+            for curve_id in profile.curve_ids
+        )
+        for face_id in face_ids
+    }
 
 
 def _revolved_topology(recipe: RevolvedGeometry) -> RecipeTopology:

@@ -33,6 +33,7 @@ from fem.geometry import (
     geometry_dimension,
     namespace_part_logical_id,
     resolve_extrusion_source_faces,
+    planar_geometry_normal,
     transformed_circle,
 )
 from fem.geometry.part_namespace import normalize_part_id
@@ -1197,8 +1198,13 @@ def _extruded_preview(
     }
     bottom_points = tuple(base.points[index] for index in ordered_point_indices)
     point_count = len(bottom_points)
+    nx, ny, nz = planar_geometry_normal(recipe.base)
     points = bottom_points + tuple(
-        (x, y, z + recipe.height)
+        (
+            x + nx * recipe.height,
+            y + ny * recipe.height,
+            z + nz * recipe.height,
+        )
         for x, y, z in bottom_points
     )
     bottom_faces = tuple(
@@ -1306,8 +1312,14 @@ def _unselectable_extruded_fallback(
     """Display the pre-Boolean sweep shape while exact OCC replay is pending."""
 
     point_count = len(base.points)
+    nx, ny, nz = planar_geometry_normal(recipe.base)
     points = base.points + tuple(
-        (x, y, z + recipe.height) for x, y, z in base.points
+        (
+            x + nx * recipe.height,
+            y + ny * recipe.height,
+            z + nz * recipe.height,
+        )
+        for x, y, z in base.points
     )
     faces = [
         *base.faces,

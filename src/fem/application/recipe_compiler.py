@@ -63,6 +63,7 @@ from fem.geometry.recipes import (
     WireGeometry,
     WirePoint,
     geometry_dimension,
+    planar_geometry_normal,
 )
 
 from .native_regions import RecipeRegionSelector
@@ -1397,6 +1398,7 @@ def _compile_extrusion(cad: Any, recipe: ExtrudedGeometry) -> _CompiledDraft:
     outer_sides: list[Any] = []
     hole_sides: list[Any] = []
     logical: dict[str, tuple[Any, ...]] = {}
+    normal = planar_geometry_normal(recipe.base)
 
     for source_face_id in selection.face_ids:
         source_surfaces = tuple(base.logical_entities.get(source_face_id, ()))
@@ -1407,9 +1409,9 @@ def _compile_extrusion(cad: Any, recipe: ExtrudedGeometry) -> _CompiledDraft:
             )
         feature = cad.extrude(
             source_surfaces,
-            0.0,
-            0.0,
-            recipe.height,
+            normal[0] * recipe.height,
+            normal[1] * recipe.height,
+            normal[2] * recipe.height,
         )
         source_domain = tuple(feature.primary)
         bottom = tuple(feature.inputs)

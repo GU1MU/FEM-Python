@@ -14,8 +14,10 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Callable, Protocol
 
+from fem import geometry as geometry_runtime
 from fem.application import ModelSession, UnitContext
 from fem.application.changes import SessionDelta
+from fem.application.recipe_compiler import compile_recipe
 from fem.application.native_scope_materialization import (
     mesh_references_for_logical_entities,
 )
@@ -83,6 +85,7 @@ from fem_agent.geometry_authoring import (
     box_geometry,
     create_geometry_edit_proposal,
     create_geometry_proposal,
+    create_profile_extrusion_proposal,
     cylinder_geometry,
     geometry_draft,
     feature_topology_catalog,
@@ -121,13 +124,16 @@ from fem_agent.result_authoring import (
     AgentResultQueryBridge,
 )
 from fem.geometry import (
+    ExtrudedGeometry,
     LogicalEntityRef,
+    SketchGeometry,
     SketchCircle,
     SketchRectangle,
     WireMember,
     WirePoint,
     describe_recipe_topology,
     namespace_part_logical_id,
+    resolve_extrusion_source_faces,
     resolve_target_radius,
 )
 from fem.mesh.settings import LocalMeshControl, MeshSizeFalloff
@@ -152,6 +158,19 @@ class _SessionSnapshot(Protocol):
     displayed_result: object | None
     mesh_current: bool
     unit_context: object | None
+
+
+def _preflight_profile_extrusions(
+    recipes: tuple[ExtrudedGeometry, ...],
+) -> None:
+    """Compile selected Profiles in detached OCC models before proposal display."""
+
+    for index, recipe in enumerate(recipes, start=1):
+        with geometry_runtime.model(
+            f"agent-extrusion-preflight-{index}",
+            dimension=3,
+        ) as cad:
+            compile_recipe(cad, recipe)
 
 
 def _bounded_count(value: object) -> int:
@@ -1139,6 +1158,7 @@ class SessionGeometryAuthoringPort:
                 OperationKind.CREATE_NATIVE_PROJECT,
                 OperationKind.ADD_NATIVE_PART,
                 OperationKind.REPLACE_PART_GEOMETRY,
+                OperationKind.EXTRUDE_PART_PROFILES,
             }
         )
         mesh_valid = (
@@ -1260,6 +1280,52 @@ class SessionGeometryAuthoringPort:
             return succeeded
         operation = proposal.operations[0]
         parameters = operation.parameters
+        if operation.kind is OperationKind.EXTRUDE_PART_PROFILES:
+            base_recipe = geometry_recipe_from_payload(parameters["base_recipe"])
+            raw_source_ids = parameters["source_face_ids"]
+            if not isinstance(raw_source_ids, list) or not raw_source_ids:
+                raise AuthoringContractError(
+                    "Profile extrusion requires explicit source_face_ids"
+                )
+            source_face_ids = tuple(str(item) for item in raw_source_ids)
+            selection = resolve_extrusion_source_faces(
+                base_recipe,
+                source_face_ids,
+            )
+            if selection.face_ids != source_face_ids:
+                raise AuthoringContractError(
+                    "Profile extrusion sources are not canonical"
+                )
+            part_id = str(parameters["part_id"])
+            snapshot = self._session.snapshot()
+            source_part = next(
+                (
+                    part
+                    for part in snapshot.parts
+                    if str(part.id) == part_id and not part.suppressed
+                ),
+                None,
+            )
+            if source_part is None or source_part.geometry_recipe != base_recipe:
+                raise AuthoringContractError(
+                    "Profile extrusion source Part no longer matches its proposal"
+                )
+            recipes = tuple(
+                ExtrudedGeometry(
+                    base_recipe,
+                    parameters["height"],
+                    (face_id,),
+                )
+                for face_id in source_face_ids
+            )
+            self._session.replace_part_with_extruded_siblings(
+                part_id,
+                recipes,
+                expected_session_revision=proposal.base_session_revision,
+            )
+            succeeded = replace(record, state=ProposalState.SUCCEEDED)
+            self._records[proposal_id] = succeeded
+            return succeeded
         recipe = geometry_recipe_from_payload(parameters["recipe"])
         snapshot = self._session.snapshot()
         if operation.kind is OperationKind.REPLACE_PART_GEOMETRY:
@@ -2710,6 +2776,11 @@ def create_session_authoring_workflow_controller(
                 "translate",
                 "rotate",
             ]
+            if (
+                type(part.geometry_recipe) is SketchGeometry
+                and part.geometry_recipe.is_strict
+            ):
+                catalog["supported_edits"].insert(0, "extrude_profiles")
         return AuthoringToolOutcome(
             "Editable geometry context read locally.",
             {
@@ -2741,6 +2812,59 @@ def create_session_authoring_workflow_controller(
         if part is None or part.geometry_recipe is None:
             raise AuthoringContractError(
                 "part_id does not identify one editable native Part"
+            )
+        if operation == "extrude_profiles":
+            if set(edit) != {"source_face_ids", "height"}:
+                raise ValueError("extrude_profiles fields do not match")
+            base_recipe = part.geometry_recipe
+            if type(base_recipe) is not SketchGeometry or not base_recipe.is_strict:
+                raise AuthoringContractError(
+                    "Agent Profile extrusion requires a strict planar sketch Part"
+                )
+            raw_source_ids = edit["source_face_ids"]
+            if not isinstance(raw_source_ids, list) or not raw_source_ids:
+                raise ValueError(
+                    "source_face_ids must explicitly select material Profiles"
+                )
+            if any(not isinstance(item, str) for item in raw_source_ids):
+                raise TypeError("source_face_ids must contain strings")
+            selection = resolve_extrusion_source_faces(
+                base_recipe,
+                tuple(raw_source_ids),
+            )
+            if len(selection.face_ids) != len(raw_source_ids):
+                raise ValueError("source_face_ids contain duplicate Profile aliases")
+            height = float(edit["height"])
+            recipes = tuple(
+                ExtrudedGeometry(base_recipe, height, (face_id,))
+                for face_id in selection.face_ids
+            )
+            _preflight_profile_extrusions(recipes)
+            summary = (
+                f"选择式拉伸部件 {part.name} 的 {len(selection.face_ids)} 个 "
+                f"Profile：高度 {_display_number(height)}，沿草图正法向，"
+                f"生成 {len(selection.face_ids)} 个独立 Part"
+            )
+            metadata = envelope(controller, "geometry-edit")
+            suffix = str(metadata.pop("identity_suffix"))
+            proposal = create_profile_extrusion_proposal(
+                proposal_id=f"proposal-{suffix}",
+                context=current_context(),
+                part_id=part_id,
+                base_recipe=base_recipe,
+                source_face_ids=selection.face_ids,
+                height=height,
+                summary=summary,
+                **metadata,
+            )
+            return proposal_outcome(
+                proposal,
+                summary=summary,
+                impact=(
+                    "确认后将选定 Profiles 原子转换为独立实体 Part，"
+                    "并使旧网格、定义与结果失效"
+                ),
+                confirm_label="拉伸选定 Profiles",
             )
         if operation == "add_circle":
             if set(edit) != {"center_x", "center_y", "radius"}:

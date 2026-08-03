@@ -598,8 +598,10 @@ _PREPARE_GEOMETRY_EDIT = _tool(
     "prepare_geometry_edit",
     (
         "Prepare an in-place, revision-bound edit of an existing native Part. "
-        "The Part is retained; the edit runs only after the local GUI control "
-        "is clicked."
+        "Selected-Profile extrusion requires explicit canonical source_face_ids "
+        "from read_geometry_feature_catalog and creates one independent Part per "
+        "selected material Profile. The edit runs only after the local GUI "
+        "control is clicked."
     ),
     {
         "type": "object",
@@ -607,6 +609,35 @@ _PREPARE_GEOMETRY_EDIT = _tool(
             "part_id": {"type": "string", "minLength": 1, "maxLength": 128},
             "edit": {
                 "oneOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "operation": {"const": "extrude_profiles"},
+                            "source_face_ids": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 32,
+                                "uniqueItems": True,
+                                "items": {
+                                    "type": "string",
+                                    "pattern": "^face:[^\\s]+$",
+                                    "maxLength": 192,
+                                },
+                                "description": (
+                                    "Explicit canonical material Profile IDs "
+                                    "from read_geometry_feature_catalog."
+                                ),
+                            },
+                            "height": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                            },
+                        },
+                        "required": [
+                            "operation", "source_face_ids", "height"
+                        ],
+                        "additionalProperties": False,
+                    },
                     {
                         "type": "object",
                         "properties": {

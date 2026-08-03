@@ -1361,7 +1361,7 @@ class RotatedGeometry:
 
 @dataclass(frozen=True, slots=True)
 class ExtrudedGeometry:
-    """A planar geometry extruded along the positive Z axis."""
+    """A planar geometry extruded along its positive sketch-plane normal."""
 
     base: object
     height: float
@@ -1862,6 +1862,38 @@ def geometry_dimension(recipe: NativeGeometry) -> Literal[1, 2, 3]:
     return 3 if isinstance(recipe, (BoxGeometry, CylinderGeometry)) else 2
 
 
+def planar_geometry_normal(recipe: NativeGeometry) -> tuple[float, float, float]:
+    """Return the positive unit normal of one planar native recipe."""
+
+    if geometry_dimension(recipe) != 2:
+        raise ValueError("geometry must be planar")
+    if isinstance(recipe, SketchGeometry) and recipe.is_strict:
+        assert recipe.plane is not None
+        return recipe.plane.normal
+    if isinstance(recipe, MovedGeometry):
+        return planar_geometry_normal(recipe.base)
+    if isinstance(recipe, RotatedGeometry):
+        x, y, z = planar_geometry_normal(recipe.base)
+        angle = math.radians(recipe.angle_degrees)
+        cosine = math.cos(angle)
+        sine = math.sin(angle)
+        if recipe.axis == "x":
+            return x, y * cosine - z * sine, y * sine + z * cosine
+        if recipe.axis == "y":
+            return x * cosine + z * sine, y, -x * sine + z * cosine
+        return x * cosine - y * sine, x * sine + y * cosine, z
+    if isinstance(recipe, BooleanGeometry):
+        object_normal = planar_geometry_normal(recipe.object_geometry)
+        tool_normal = planar_geometry_normal(recipe.tool_geometry)
+        if any(
+            not math.isclose(left, right, rel_tol=0.0, abs_tol=1.0e-12)
+            for left, right in zip(object_normal, tool_normal, strict=True)
+        ):
+            raise ValueError("planar Boolean operands must share one positive normal")
+        return object_normal
+    return 0.0, 0.0, 1.0
+
+
 __all__ = [
     "BASE_GEOMETRY_TYPES",
     "BooleanBodyContext",
@@ -1902,4 +1934,5 @@ __all__ = [
     "WirePoint",
     "geometry_dimension",
     "is_single_solid_recipe",
+    "planar_geometry_normal",
 ]

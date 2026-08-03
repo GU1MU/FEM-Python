@@ -953,6 +953,7 @@ class OperationKind(str, Enum):
     CREATE_NATIVE_PROJECT = "create_native_project"
     ADD_NATIVE_PART = "add_native_part"
     REPLACE_PART_GEOMETRY = "replace_part_geometry"
+    EXTRUDE_PART_PROFILES = "extrude_part_profiles"
     SET_PART_MESH_INTENT = "set_part_mesh_intent"
     UPSERT_NAMED_REGIONS = "upsert_named_regions"
     UPSERT_MODEL_DEFINITIONS = "upsert_model_definitions"
@@ -979,6 +980,10 @@ _OPERATION_PARAMETER_FIELDS: dict[
     OperationKind.REPLACE_PART_GEOMETRY: (
         frozenset({"part_id", "recipe"}),
         frozenset({"part_id", "recipe"}),
+    ),
+    OperationKind.EXTRUDE_PART_PROFILES: (
+        frozenset({"part_id", "base_recipe", "source_face_ids", "height"}),
+        frozenset({"part_id", "base_recipe", "source_face_ids", "height"}),
     ),
     OperationKind.SET_PART_MESH_INTENT: (
         frozenset({"part_id", "mesh_intent"}),

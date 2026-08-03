@@ -9,7 +9,6 @@ from fem.application.feature_history import derive_feature_history
 from fem.application.session import ProjectSnapshot
 from fem.geometry import (
     ExtrudedGeometry,
-    MultiBodyGeometry,
     SketchGeometry,
     SketchRectangle,
 )
@@ -130,8 +129,8 @@ def test_v3_writer_rejects_selected_source_faces_but_legacy_migrates_empty() -> 
     loaded = decode_project(encode_project_v3(legacy))
     assert loaded.source_schema == 3
     geometry = loaded.snapshot.geometry_recipe
-    assert isinstance(geometry, MultiBodyGeometry)
-    assert geometry.body("B1").recipe.source_face_ids
+    assert isinstance(geometry, ExtrudedGeometry)
+    assert geometry.source_face_ids
 
 
 def test_v3_unproven_strict_extrusion_fingerprint_migrates_to_exact() -> None:
@@ -213,7 +212,6 @@ def test_old_schema_legacy_extrusion_can_save_as_v5_and_reopen(
     reopened = decode_project(encode_project(migrated)).snapshot
 
     geometry = reopened.geometry_recipe
-    assert isinstance(geometry, MultiBodyGeometry)
-    body_recipe = geometry.body("B1").recipe
-    assert body_recipe.base.is_strict
-    assert len(body_recipe.source_face_ids) == 1
+    assert isinstance(geometry, ExtrudedGeometry)
+    assert geometry.base.is_strict
+    assert len(geometry.source_face_ids) == 1

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from fem import geometry
@@ -11,7 +13,7 @@ from fem.application.recipe_compiler import compile_recipe
 from fem.geometry import (
     ExtrudedGeometry,
     LogicalEntityRef,
-    MultiBodyGeometry,
+    SketchPlane,
 )
 from fem.application.native_regions import RecipeRegionSelector
 from fem.io.project import load_project, save_project
@@ -107,10 +109,8 @@ def test_selected_profile_save_reopen_and_remesh(
         reopened.mesh_settings,
     )
 
-    assert isinstance(reopened.geometry_recipe, MultiBodyGeometry)
-    assert reopened.geometry_recipe.body("B1").recipe.source_face_ids == (
-        first,
-    )
+    assert isinstance(reopened.geometry_recipe, ExtrudedGeometry)
+    assert reopened.geometry_recipe.source_face_ids == (first,)
     assert model.mesh.nodes
     assert max(node.x for node in model.mesh.nodes) == pytest.approx(
         2.0,
@@ -148,3 +148,34 @@ def test_strict_hole_profile_keeps_inner_side_lineage(real_gmsh) -> None:
         assert set(
             compiled.region_bindings[RecipeRegionSelector.HOLE]
         ) == inner_sides
+
+
+def test_strict_profile_extrudes_along_positive_sketch_normal(real_gmsh) -> None:
+    del real_gmsh
+    sketch = two_profile_sketch()
+    sketch = replace(
+        sketch,
+        plane=SketchPlane(
+            origin=(1.0, 2.0, 3.0),
+            x_direction=(1.0, 0.0, 0.0),
+            y_direction=(0.0, 0.0, 1.0),
+        ),
+    )
+    source = profile_face_id(sketch, "L1")
+
+    with geometry.model("positive-sketch-normal", dimension=3) as cad:
+        compiled = compile_recipe(
+            cad,
+            ExtrudedGeometry(sketch, 2.0, (source,)),
+        )
+        bottom = compiled.resolve(LogicalEntityRef("face:bottom"))[0]
+        top = compiled.resolve(LogicalEntityRef("face:top"))[0]
+        bottom_center = cad.center_of_mass(bottom)
+        top_center = cad.center_of_mass(top)
+
+        assert tuple(
+            top_value - bottom_value
+            for bottom_value, top_value in zip(
+                bottom_center, top_center, strict=True
+            )
+        ) == pytest.approx((0.0, -2.0, 0.0), abs=1.0e-8)

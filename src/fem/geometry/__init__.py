@@ -63,6 +63,7 @@ from .recipes import (
     WirePoint,
     geometry_dimension,
     is_single_solid_recipe,
+    planar_geometry_normal,
 )
 from .part_namespace import (
     namespace_part_logical_id,
@@ -230,6 +231,7 @@ __all__ = [
     "expand_sketch_recipe",
     "geometry_dimension",
     "is_single_solid_recipe",
+    "planar_geometry_normal",
     "historical_recipe_ids",
     "capture_boolean_operand_evidence",
     "capture_planar_operand_evidence",

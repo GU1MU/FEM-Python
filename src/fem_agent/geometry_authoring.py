@@ -40,6 +40,7 @@ from fem.geometry import (
     WirePoint,
     geometry_dimension,
     legacy_sketch_to_strict,
+    planar_geometry_normal,
 )
 from fem.application.feature_history import derive_feature_history
 from fem.geometry.recipe_topology import (
@@ -704,6 +705,132 @@ def create_geometry_edit_proposal(
             "base_session_revision": context.binding.session_revision,
             "preview": draft.preview.to_dict(),
             "proof": draft.proof.to_dict(),
+        },
+    )
+
+
+def create_profile_extrusion_proposal(
+    *,
+    proposal_id: str,
+    agent_session_id: str,
+    turn_id: str,
+    source_tool_call_ids: Sequence[str],
+    context: AuthoringContext,
+    draft_revision: int,
+    part_id: str,
+    base_recipe: object,
+    source_face_ids: Sequence[str],
+    height: Real,
+    summary: str,
+) -> AgentProposal:
+    """Create one atomic proposal for explicitly selected material Profiles."""
+
+    if type(context) is not AuthoringContext:
+        raise TypeError("context must be AuthoringContext")
+    target = next(
+        (
+            part
+            for part in context.parts
+            if part.part_id == str(part_id) and not part.suppressed
+        ),
+        None,
+    )
+    if (
+        not context.binding.supported
+        or context.binding.source_kind != "native"
+        or target is None
+    ):
+        raise AuthoringContractError(
+            "Profile extrusion requires one editable native Part"
+        )
+    if type(base_recipe) is not SketchGeometry or not base_recipe.is_strict:
+        raise AuthoringContractError(
+            "Profile extrusion requires one strict planar sketch recipe"
+        )
+    requested = tuple(source_face_ids)
+    if not requested:
+        raise AuthoringContractError(
+            "source_face_ids must explicitly select at least one material Profile"
+        )
+    normalized_height = _finite(height, "height")
+    recipes = tuple(
+        ExtrudedGeometry(base_recipe, normalized_height, (source_face_id,))
+        for source_face_id in requested
+    )
+    canonical_ids = tuple(recipe.source_face_ids[0] for recipe in recipes)
+    if len(canonical_ids) != len(set(canonical_ids)):
+        raise AuthoringContractError("source_face_ids select duplicate Profiles")
+    drafts = tuple(geometry_draft(recipe) for recipe in recipes)
+    if any(
+        not draft.proof.exact or draft.proof.expected_body_count != 1
+        for draft in drafts
+    ):
+        raise AuthoringContractError(
+            "each selected Profile must prove exactly one solid Body"
+        )
+    proposal_summary = str(summary).strip()
+    if not proposal_summary:
+        raise AuthoringContractError("Profile extrusion proposal summary is blank")
+    operation = ModelOperation(
+        OperationKind.EXTRUDE_PART_PROFILES,
+        {
+            "part_id": target.part_id,
+            "base_recipe": geometry_recipe_to_payload(base_recipe),
+            "source_face_ids": list(canonical_ids),
+            "height": normalized_height,
+        },
+    )
+    return AgentProposal.create(
+        proposal_id=proposal_id,
+        proposal_kind=ProposalKind.GEOMETRY,
+        agent_session_id=agent_session_id,
+        turn_id=turn_id,
+        source_tool_call_ids=tuple(source_tool_call_ids),
+        target_document_id=context.binding.document_id,
+        target_session_id=context.binding.session_id,
+        base_session_revision=context.binding.session_revision,
+        draft_revision=draft_revision,
+        operations=(operation,),
+        preconditions={
+            "source_kind": "native",
+            "part_id": target.part_id,
+            "source_face_ids": list(canonical_ids),
+        },
+        expected_changes={
+            "part_count_delta": len(canonical_ids) - 1,
+            "edited_part_id": target.part_id,
+            "result_part_count": len(canonical_ids),
+            "projection_refresh_count": 1,
+        },
+        invalidation_impact={
+            "mesh": True,
+            "definitions": True,
+            "results": True,
+        },
+        display_summary={
+            "title": f"拉伸部件 {target.name} 的选定 Profiles",
+            "summary": proposal_summary,
+            "target_model": context.model_name,
+            "operation": OperationKind.EXTRUDE_PART_PROFILES.value,
+            "feature_operation": "extrude",
+            "part_id": target.part_id,
+            "part_name": target.name,
+            "source": list(canonical_ids),
+            "key_dimensions": {"height": normalized_height},
+            "direction": "positive_sketch_normal",
+            "expected_entity_count": len(canonical_ids),
+            "expected_part_count": len(canonical_ids),
+            "expected_new_objects": [
+                f"{len(canonical_ids)} independent solid Part(s)"
+            ],
+            "invalidated_objects": ["mesh", "definitions", "results"],
+            "invalidation_impact": {
+                "mesh": True,
+                "definitions": True,
+                "results": True,
+            },
+            "base_session_revision": context.binding.session_revision,
+            "proofs": [draft.proof.to_dict() for draft in drafts],
         },
     )
 
@@ -1747,8 +1874,14 @@ def _preview(recipe: object) -> StaticGeometryPreview:
         count = len(base.points)
         if count * 2 > _MAX_PREVIEW_POINTS:
             raise ValueError("extruded preview exceeds the point budget")
+        nx, ny, nz = planar_geometry_normal(recipe.base)
         points = base.points + tuple(
-            (x, y, z + recipe.height) for x, y, z in base.points
+            (
+                x + nx * recipe.height,
+                y + ny * recipe.height,
+                z + nz * recipe.height,
+            )
+            for x, y, z in base.points
         )
         lines = base.lines + tuple(
             tuple(index + count for index in line) for line in base.lines
@@ -2170,6 +2303,7 @@ __all__ = [
     "add_planar_rectangle",
     "create_geometry_edit_proposal",
     "create_geometry_proposal",
+    "create_profile_extrusion_proposal",
     "cylinder_geometry",
     "disk_geometry",
     "geometry_recipe_from_payload",
