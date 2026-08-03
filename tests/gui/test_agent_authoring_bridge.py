@@ -37,7 +37,9 @@ from fem_gui.agent_events import (
     AgentEventError,
     AgentEventProjector,
     EventType,
+    ProposalViewStatus,
 )
+from fem_gui.agent_runtime import QtAgentRuntime
 from fem_gui.widgets.agent_chat import (
     AgentChatDrawer,
     _AGENT_CHAT_STYLESHEET,
@@ -515,6 +517,10 @@ def test_minimal_gui_card_binds_and_only_buttons_authorize() -> None:
     application.processEvents()
 
     assert bridge.state(proposal.proposal_id) is ProposalState.ACCEPTED
+    assert (
+        drawer.event_presentation.turns[0].proposals[0].status
+        is ProposalViewStatus.ACCEPTED
+    )
     accept = drawer.findChild(
         QToolButton,
         "agentChatProposalAcceptButton",
@@ -522,6 +528,91 @@ def test_minimal_gui_card_binds_and_only_buttons_authorize() -> None:
     assert accept is not None and not accept.isEnabled()
     assert "A1 Fake Port" in drawer.composer_hint.text()
     drawer.close()
+
+
+def test_runtime_emits_ordered_unique_lifecycle_and_stales_bad_identity(
+    tmp_path,
+) -> None:
+    application = _application()
+    runtime = QtAgentRuntime(tmp_path / "agent-private")
+    collector: list[AgentEvent] = []
+    runtime.agentEventReady.connect(collector.append)
+    events = _Events()
+    proposal_hash = "c" * 64
+    log = (
+        events.make(
+            EventType.TURN_STARTED,
+            {"user_message": "建立偏心孔板"},
+        ),
+        events.make(
+            EventType.PROPOSAL_REQUESTED,
+            _proposal_payload("proposal-success", proposal_hash),
+        ),
+        events.make(EventType.TURN_COMPLETE, {}),
+    )
+    projection = AgentEventProjector.replay(log).presentation
+    runtime.synchronize_event_projection_from_gui(projection)
+
+    assert runtime.record_proposal_lifecycle_from_gui(
+        "proposal-success",
+        proposal_hash,
+        "agent-session-1",
+        "turn-1",
+        ProposalState.SUCCEEDED,
+        "完成",
+    )
+    application.processEvents()
+    assert [event.event_type for event in collector] == [
+        EventType.PROPOSAL_ACCEPTED,
+        EventType.PROPOSAL_STARTED,
+        EventType.PROPOSAL_SUCCEEDED,
+    ]
+    assert not runtime.record_proposal_lifecycle_from_gui(
+        "proposal-success",
+        proposal_hash,
+        "agent-session-1",
+        "turn-1",
+        ProposalState.FAILED,
+        "迟到失败",
+    )
+    assert (
+        AgentEventProjector.replay((*log, *collector))
+        .presentation.turns[0]
+        .proposals[0]
+        .status
+        is ProposalViewStatus.SUCCEEDED
+    )
+
+    events = _Events()
+    stale_hash = "d" * 64
+    stale_log = (
+        events.make(
+            EventType.TURN_STARTED,
+            {"user_message": "建立另一个部件"},
+        ),
+        events.make(
+            EventType.PROPOSAL_REQUESTED,
+            _proposal_payload("proposal-stale-identity", stale_hash),
+        ),
+        events.make(EventType.TURN_COMPLETE, {}),
+    )
+    runtime.synchronize_event_projection_from_gui(
+        AgentEventProjector.replay(stale_log).presentation
+    )
+    collector.clear()
+    assert runtime.record_proposal_lifecycle_from_gui(
+        "proposal-stale-identity",
+        "e" * 64,
+        "wrong-agent-session",
+        "turn-1",
+        ProposalState.ACCEPTED,
+    )
+    application.processEvents()
+    assert [event.event_type for event in collector] == [
+        EventType.PROPOSAL_STALE
+    ]
+    assert collector[0].payload["proposal_hash"] == stale_hash
+    runtime.shutdown()
 
 
 def test_proposal_card_is_rendered_after_the_turn_messages() -> None:

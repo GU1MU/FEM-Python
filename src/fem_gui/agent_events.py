@@ -1198,7 +1198,11 @@ class AgentEventProjector:
                 {ProposalViewStatus.PENDING_CONFIRMATION}
             ),
             EventType.PROPOSAL_STALE: frozenset(
-                {ProposalViewStatus.PENDING_CONFIRMATION}
+                {
+                    ProposalViewStatus.PENDING_CONFIRMATION,
+                    ProposalViewStatus.ACCEPTED,
+                    ProposalViewStatus.RUNNING,
+                }
             ),
             EventType.PROPOSAL_STARTED: frozenset(
                 {ProposalViewStatus.ACCEPTED}

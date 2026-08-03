@@ -168,6 +168,17 @@ class _TurnContext:
 
 
 @dataclass
+class _ProposalLifecycle:
+    session_id: str
+    turn_id: str
+    proposal_id: str
+    proposal_hash: str
+    proposal_kind: str
+    state: ProposalState = ProposalState.PENDING_CONFIRMATION
+    progress: float = 0.0
+
+
+@dataclass
 class _AuthoringToolInvocation:
     name: str
     arguments: Mapping[str, Any]
@@ -359,6 +370,7 @@ class QtAgentRuntime(QObject):
         self._cancel_requested = False
         self._shutdown = False
         self._authoring_invocations: dict[int, _AuthoringToolInvocation] = {}
+        self._proposal_lifecycles: dict[str, _ProposalLifecycle] = {}
         self._attached_input_key: tuple[str, str, str] | None = None
         self.sessionReset.connect(
             self._reset_authoring_controller_for_session,
@@ -536,6 +548,141 @@ class QtAgentRuntime(QObject):
         if controller is None:
             raise RuntimeError("authoring controller is not configured")
         controller.record_proposal_state(operation, state, message)
+
+    def record_proposal_lifecycle_from_gui(
+        self,
+        proposal_id: str,
+        proposal_hash: str,
+        agent_session_id: str,
+        turn_id: str,
+        state: ProposalState | str,
+        message: str = "",
+        *,
+        progress: float | None = None,
+    ) -> bool:
+        """Emit the event-only lifecycle for one GUI-controlled proposal."""
+
+        self._require_owner_thread()
+        normalized = ProposalState(state)
+        emitted: list[AgentEvent] = []
+        with self._lock:
+            lifecycle = self._proposal_lifecycles.get(str(proposal_id))
+            if lifecycle is None:
+                self.eventRejected.emit("提案生命周期尚未登记")
+                return False
+            identity_matches = (
+                lifecycle.proposal_hash == str(proposal_hash)
+                and lifecycle.session_id == str(agent_session_id)
+                and lifecycle.turn_id == str(turn_id)
+                and (
+                    self._gui_session_id is None
+                    or self._gui_session_id == lifecycle.session_id
+                )
+            )
+            if not identity_matches:
+                normalized = ProposalState.STALE
+                message = "proposal hash、Agent session 或 turn identity 不匹配"
+            if lifecycle.state in {
+                ProposalState.REJECTED,
+                ProposalState.STALE,
+                ProposalState.SUCCEEDED,
+                ProposalState.FAILED,
+                ProposalState.CANCELLED,
+            }:
+                self.eventRejected.emit("已拒绝重复或迟到的提案终态")
+                return False
+            context = _TurnContext(
+                generation=self._generation,
+                session_id=lifecycle.session_id,
+                turn_id=lifecycle.turn_id,
+            )
+
+            def append(event_type: EventType, payload: Mapping[str, object]) -> None:
+                emitted.append(
+                    self._new_event_locked(context, event_type, payload)
+                )
+
+            identity = {
+                "proposal_id": lifecycle.proposal_id,
+                "proposal_hash": lifecycle.proposal_hash,
+            }
+            if normalized in {
+                ProposalState.ACCEPTED,
+                ProposalState.RUNNING,
+                ProposalState.SUCCEEDED,
+            } and lifecycle.state is ProposalState.PENDING_CONFIRMATION:
+                append(EventType.PROPOSAL_ACCEPTED, identity)
+                lifecycle.state = ProposalState.ACCEPTED
+            if normalized in {
+                ProposalState.RUNNING,
+                ProposalState.SUCCEEDED,
+            } and lifecycle.state is ProposalState.ACCEPTED:
+                append(EventType.PROPOSAL_STARTED, identity)
+                lifecycle.state = ProposalState.RUNNING
+
+            text = str(message).strip()
+            if normalized is ProposalState.RUNNING:
+                if progress is not None:
+                    lifecycle.progress = float(progress)
+                if text and lifecycle.state is ProposalState.RUNNING:
+                    append(
+                        EventType.PROPOSAL_PROGRESS,
+                        {
+                            **identity,
+                            "progress": lifecycle.progress,
+                            "message": text,
+                        },
+                    )
+            elif normalized is ProposalState.SUCCEEDED:
+                append(
+                    EventType.PROPOSAL_SUCCEEDED,
+                    {**identity, "summary": text or "提案执行完成"},
+                )
+                lifecycle.state = normalized
+                lifecycle.progress = 1.0
+            elif normalized in {
+                ProposalState.REJECTED,
+                ProposalState.STALE,
+                ProposalState.FAILED,
+                ProposalState.CANCELLED,
+            }:
+                event_type = {
+                    ProposalState.REJECTED: EventType.PROPOSAL_REJECTED,
+                    ProposalState.STALE: EventType.PROPOSAL_STALE,
+                    ProposalState.FAILED: EventType.PROPOSAL_FAILED,
+                    ProposalState.CANCELLED: EventType.PROPOSAL_CANCELLED,
+                }[normalized]
+                append(
+                    event_type,
+                    {**identity, "reason": text or normalized.value},
+                )
+                lifecycle.state = normalized
+        self._emit_events(emitted)
+        return bool(emitted)
+
+    def synchronize_event_projection_from_gui(self, presentation: object) -> None:
+        """Restore proposal identities when the GUI replays a complete log."""
+
+        self._require_owner_thread()
+        session_id = str(getattr(presentation, "session_id", ""))
+        last_sequence = int(getattr(presentation, "last_sequence", 0))
+        lifecycles: dict[str, _ProposalLifecycle] = {}
+        for turn in tuple(getattr(presentation, "turns", ())):
+            turn_id = str(getattr(turn, "turn_id", ""))
+            for proposal in tuple(getattr(turn, "proposals", ())):
+                state = ProposalState(str(getattr(proposal, "status").value))
+                lifecycles[str(proposal.proposal_id)] = _ProposalLifecycle(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    proposal_id=str(proposal.proposal_id),
+                    proposal_hash=str(proposal.proposal_hash),
+                    proposal_kind=str(proposal.proposal_kind),
+                    state=state,
+                    progress=float(proposal.progress),
+                )
+        with self._lock:
+            self._sequence = last_sequence
+            self._proposal_lifecycles = lifecycles
 
     def invalidate_authoring_binding_from_gui(self, reason: str) -> None:
         self._require_owner_thread()
@@ -1110,6 +1257,7 @@ class QtAgentRuntime(QObject):
                 self._gui_session_id = session_id
                 self._sequence = 0
                 self._turn_counter = 0
+                self._proposal_lifecycles.clear()
             self._turn_counter += 1
             turn_id = f"turn-{self._turn_counter:08d}"
             context = _TurnContext(
@@ -1137,6 +1285,7 @@ class QtAgentRuntime(QObject):
             self._turn_counter = 0
             self._active_turn = None
             self._attached_input_key = None
+            self._proposal_lifecycles.clear()
 
     def _receive_engine_event(self, event: EngineEvent) -> None:
         if event.event is EngineEventType.STATE_CHANGED:
@@ -1576,6 +1725,16 @@ class QtAgentRuntime(QObject):
             else None
         )
         if isinstance(proposal_view, Mapping):
+            proposal_id = str(proposal_view.get("proposal_id", ""))
+            proposal_hash = str(proposal_view.get("proposal_hash", ""))
+            proposal_kind = str(proposal_view.get("proposal_kind", ""))
+            self._proposal_lifecycles[proposal_id] = _ProposalLifecycle(
+                session_id=context.session_id,
+                turn_id=context.turn_id,
+                proposal_id=proposal_id,
+                proposal_hash=proposal_hash,
+                proposal_kind=proposal_kind,
+            )
             completed_events.append(
                 self._new_event_locked(
                     context,

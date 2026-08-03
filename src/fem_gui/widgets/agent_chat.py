@@ -56,7 +56,7 @@ from fem_agent.authoring_runtime import (
     AuthoringWorkflowController,
     AuthoringWorkflowStage,
 )
-from fem_agent.authoring import ProposalState
+from fem_agent.authoring import AgentProposal, ProposalState
 
 from ..agent_events import (
     AgentEvent,
@@ -1232,6 +1232,13 @@ class AgentChatDrawer(_BoundaryFrame):
         )
         if callable(patch_listener):
             patch_listener(self.show_applied_patch)
+        lifecycle_listener = getattr(
+            self.authoring_bridge,
+            "set_lifecycle_listener",
+            None,
+        )
+        if callable(lifecycle_listener):
+            lifecycle_listener(self._record_bridge_proposal_lifecycle)
         self._workspace_index = self.workspace_commands.workspace_index
         self._workspace_references: list[
             WorkspaceFileReference
@@ -1488,6 +1495,9 @@ class AgentChatDrawer(_BoundaryFrame):
         self._stream_refresh_timer.stop()
         self._pending_message_refreshes.clear()
         self.event_projector = AgentEventProjector.replay(events)
+        self.agent_runtime.synchronize_event_projection_from_gui(
+            self.event_projector.presentation_view
+        )
         self._expanded_tool_group_ids.clear()
         self._conversation_auto_follow = True
         self._render_event_presentation(preserve_tool_expansion=False)
@@ -1983,37 +1993,6 @@ class AgentChatDrawer(_BoundaryFrame):
         summary.setWordWrap(True)
         layout.addWidget(summary)
         status = proposal.status
-        bridge = self.authoring_bridge
-        if proposal.proposal_kind == "project_save":
-            controller = self.agent_runtime.authoring_controller
-            record = (
-                None
-                if controller is None
-                else controller.project_save_record
-            )
-            if (
-                record is not None
-                and record.proposal_id == proposal.proposal_id
-                and record.proposal_hash == proposal.proposal_hash
-            ):
-                status = ProposalViewStatus(record.state.value)
-                if record.message:
-                    proposal.status_message = record.message
-        if (
-            status is ProposalViewStatus.PENDING_CONFIRMATION
-            and bridge is not None
-            and proposal.proposal_kind != "project_save"
-        ):
-            try:
-                bridge_status = bridge.state(proposal.proposal_id)
-            except Exception:
-                bridge_status = None
-            if bridge_status is not None:
-                try:
-                    status = ProposalViewStatus(bridge_status.value)
-                except ValueError:
-                    pass
-
         status_labels = {
             ProposalViewStatus.PENDING_CONFIRMATION: "等待 GUI 确认",
             ProposalViewStatus.ACCEPTED: "已接受",
@@ -2064,7 +2043,7 @@ class AgentChatDrawer(_BoundaryFrame):
         accept.setEnabled(
             status is ProposalViewStatus.PENDING_CONFIRMATION
             and not self._runtime_busy
-            and self._proposal_targets_live_binding(proposal)
+            and self._proposal_targets_live_binding(proposal, turn_id)
         )
         accept.clicked.connect(
             lambda _checked=False, item=proposal, item_turn=turn_id: (
@@ -2529,7 +2508,7 @@ class AgentChatDrawer(_BoundaryFrame):
     def _accept_authoring_proposal(
         self,
         proposal: ProposalView,
-        _turn_id: str,
+        turn_id: str,
     ) -> None:
         bridge = self.authoring_bridge
         if bridge is None:
@@ -2542,7 +2521,7 @@ class AgentChatDrawer(_BoundaryFrame):
                 controller is None
                 or context is None
                 or handler is None
-                or not self._proposal_targets_live_binding(proposal)
+                or not self._proposal_targets_live_binding(proposal, turn_id)
             ):
                 self._show_preview_notice("保存请求已陈旧，请重新生成")
                 return
@@ -2557,23 +2536,26 @@ class AgentChatDrawer(_BoundaryFrame):
                     str(exc).strip() or "保存请求无法接受"
                 )
                 return
-            proposal.status = ProposalViewStatus.RUNNING
-            proposal.status_message = "等待本地保存完成"
-            self._render_event_presentation(
-                preserve_tool_expansion=True
+            self._record_projected_proposal_lifecycle(
+                proposal,
+                turn_id,
+                ProposalState.RUNNING,
+                "等待本地保存完成",
             )
             try:
                 started = handler(
-                    lambda state, message, item=proposal: (
-                        self._finish_project_save(item, state, message)
+                    lambda state, message, item=proposal, item_turn=turn_id: (
+                        self._finish_project_save(
+                            item,
+                            state,
+                            message,
+                            item_turn,
+                        )
                     )
                 )
             except Exception:
                 started = False
-            if (
-                not started
-                and proposal.status is ProposalViewStatus.RUNNING
-            ):
+            if not started and proposal.status is ProposalViewStatus.RUNNING:
                 self._finish_project_save(
                     proposal,
                     ProposalState.FAILED,
@@ -2581,7 +2563,7 @@ class AgentChatDrawer(_BoundaryFrame):
                 )
             return
         if proposal.proposal_kind == "requirement_review":
-            if not self._proposal_targets_live_binding(proposal):
+            if not self._proposal_targets_live_binding(proposal, turn_id):
                 self._show_preview_notice("需求审查已陈旧，请重新生成")
                 return
             controller = self.agent_runtime.authoring_controller
@@ -2609,11 +2591,13 @@ class AgentChatDrawer(_BoundaryFrame):
                     str(exc).strip() or "需求确认失败"
                 )
             else:
-                proposal.status = ProposalViewStatus.ACCEPTED
+                self._record_projected_proposal_lifecycle(
+                    proposal,
+                    turn_id,
+                    ProposalState.SUCCEEDED,
+                    "需求审查已确认",
+                )
                 self._show_preview_notice("需求审查已由 GUI 控件确认")
-            self._render_event_presentation(
-                preserve_tool_expansion=True
-            )
             return
         try:
             receipt = bridge.accept_from_gui_control(proposal.proposal_id)
@@ -2651,12 +2635,11 @@ class AgentChatDrawer(_BoundaryFrame):
                     )
                 )
             )
-        self._render_event_presentation(preserve_tool_expansion=True)
 
     def _reject_authoring_proposal(
         self,
         proposal: ProposalView,
-        _turn_id: str,
+        turn_id: str,
     ) -> None:
         bridge = self.authoring_bridge
         if bridge is None:
@@ -2681,15 +2664,16 @@ class AgentChatDrawer(_BoundaryFrame):
                 ProposalState.REJECTED,
                 "用户拒绝保存请求",
             )
-            proposal.status = ProposalViewStatus.REJECTED
-            proposal.status_message = "模型保持不变"
-            self._show_preview_notice("保存请求已拒绝，未写入文件")
-            self._render_event_presentation(
-                preserve_tool_expansion=True
+            self._record_projected_proposal_lifecycle(
+                proposal,
+                turn_id,
+                ProposalState.REJECTED,
+                "用户拒绝保存请求",
             )
+            self._show_preview_notice("保存请求已拒绝，未写入文件")
             return
         if proposal.proposal_kind == "requirement_review":
-            if not self._proposal_targets_live_binding(proposal):
+            if not self._proposal_targets_live_binding(proposal, turn_id):
                 self._show_preview_notice("需求审查已陈旧，请重新生成")
                 return
             controller = self.agent_runtime.authoring_controller
@@ -2717,11 +2701,13 @@ class AgentChatDrawer(_BoundaryFrame):
                     str(exc).strip() or "需求拒绝失败"
                 )
             else:
-                proposal.status = ProposalViewStatus.REJECTED
+                self._record_projected_proposal_lifecycle(
+                    proposal,
+                    turn_id,
+                    ProposalState.REJECTED,
+                    "用户拒绝需求审查",
+                )
                 self._show_preview_notice("需求审查已拒绝，模型保持不变")
-            self._render_event_presentation(
-                preserve_tool_expansion=True
-            )
             return
         try:
             receipt = bridge.reject_from_gui_control(proposal.proposal_id)
@@ -2741,15 +2727,31 @@ class AgentChatDrawer(_BoundaryFrame):
             self._show_preview_notice(
                 receipt.message or "提案已拒绝，当前模型保持不变"
             )
-        self._render_event_presentation(preserve_tool_expansion=True)
 
     def _proposal_targets_live_binding(
         self,
         proposal: ProposalView,
+        turn_id: str | None = None,
     ) -> bool:
         bridge = self.authoring_bridge
         if bridge is None or bridge.context is None:
             return False
+        if turn_id is not None and proposal.proposal_kind not in {
+            "project_save",
+            "requirement_review",
+        }:
+            identity_check = getattr(
+                bridge,
+                "ensure_display_identity_from_gui",
+                None,
+            )
+            if callable(identity_check) and not identity_check(
+                proposal.proposal_id,
+                proposal.proposal_hash,
+                self.event_projector.presentation_view.session_id,
+                turn_id,
+            ):
+                return False
         binding = bridge.context.binding
         if (
             not binding.supported
@@ -2757,15 +2759,33 @@ class AgentChatDrawer(_BoundaryFrame):
             or binding.session_id != proposal.target_session_id
             or binding.session_revision != proposal.base_session_revision
         ):
+            if turn_id is not None and proposal.proposal_kind in {
+                "project_save",
+                "requirement_review",
+            }:
+                self._record_projected_proposal_lifecycle(
+                    proposal,
+                    turn_id,
+                    ProposalState.STALE,
+                    "绑定文档、session 或 revision 已改变",
+                )
             return False
         if proposal.proposal_kind == "requirement_review":
-            return self._requirement_review_is_current(
+            current = self._requirement_review_is_current(
                 proposal.proposal_id,
                 proposal.proposal_hash,
             )
+            if not current and turn_id is not None:
+                self._record_projected_proposal_lifecycle(
+                    proposal,
+                    turn_id,
+                    ProposalState.STALE,
+                    "需求审查 identity 已改变",
+                )
+            return current
         if proposal.proposal_kind == "project_save":
             controller = self.agent_runtime.authoring_controller
-            return bool(
+            current = bool(
                 controller is not None
                 and controller.can_accept_project_save_from_gui(
                     proposal.proposal_id,
@@ -2773,6 +2793,14 @@ class AgentChatDrawer(_BoundaryFrame):
                     bridge.context,
                 )
             )
+            if not current and turn_id is not None and controller is not None:
+                self._record_projected_proposal_lifecycle(
+                    proposal,
+                    turn_id,
+                    ProposalState.STALE,
+                    "保存请求 identity 已改变",
+                )
+            return current
         try:
             check = getattr(bridge, "can_accept_from_gui_control", None)
             if callable(check):
@@ -2789,6 +2817,7 @@ class AgentChatDrawer(_BoundaryFrame):
         proposal: ProposalView,
         state: ProposalState | str,
         message: str,
+        turn_id: str | None = None,
     ) -> None:
         normalized = ProposalState(state)
         controller = self.agent_runtime.authoring_controller
@@ -2819,8 +2848,14 @@ class AgentChatDrawer(_BoundaryFrame):
                     )
                     else ProposalState.STALE
                 )
-        proposal.status = ProposalViewStatus(normalized.value)
-        proposal.status_message = str(message).strip()
+        turn_id = turn_id or self._proposal_turn_id(proposal.proposal_id)
+        if turn_id is not None:
+            self._record_projected_proposal_lifecycle(
+                proposal,
+                turn_id,
+                normalized,
+                message,
+            )
         notices = {
             ProposalState.SUCCEEDED: "自主项目保存完成",
             ProposalState.FAILED: "自主项目保存失败",
@@ -2829,7 +2864,49 @@ class AgentChatDrawer(_BoundaryFrame):
             ProposalState.REJECTED: "保存请求已拒绝",
         }
         self._show_preview_notice(notices[normalized])
-        self._render_event_presentation(preserve_tool_expansion=True)
+
+    def _record_bridge_proposal_lifecycle(
+        self,
+        proposal: AgentProposal,
+        state: ProposalState,
+        message: str,
+    ) -> None:
+        self.agent_runtime.record_proposal_lifecycle_from_gui(
+            proposal.proposal_id,
+            proposal.proposal_hash,
+            proposal.agent_session_id,
+            proposal.turn_id,
+            state,
+            message,
+        )
+
+    def _record_projected_proposal_lifecycle(
+        self,
+        proposal: ProposalView,
+        turn_id: str,
+        state: ProposalState,
+        message: str,
+    ) -> None:
+        emitted = self.agent_runtime.record_proposal_lifecycle_from_gui(
+            proposal.proposal_id,
+            proposal.proposal_hash,
+            self.event_projector.presentation_view.session_id,
+            turn_id,
+            state,
+            message,
+        )
+        if not emitted:
+            proposal.status = ProposalViewStatus(state.value)
+            proposal.status_message = str(message).strip()
+
+    def _proposal_turn_id(self, proposal_id: str) -> str | None:
+        for turn in self.event_projector.presentation_view.turns:
+            if any(
+                proposal.proposal_id == proposal_id
+                for proposal in turn.proposals
+            ):
+                return turn.turn_id
+        return None
 
     def _solve_finished(
         self,

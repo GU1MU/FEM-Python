@@ -1899,6 +1899,10 @@ class AgentAuthoringBridge:
         self._accepting_proposal_id: str | None = None
         self._gui_thread_id = threading.get_ident()
         self._patch_listener: Callable[[AppliedPatchRecord], None] | None = None
+        self._lifecycle_listener: (
+            Callable[[AgentProposal, ProposalState, str], None] | None
+        ) = None
+        self._last_lifecycle_notice: dict[str, tuple[ProposalState, str]] = {}
         listener = getattr(port, "set_record_listener", None)
         if callable(listener):
             listener(self._receive_port_record)
@@ -1918,6 +1922,14 @@ class AgentAuthoringBridge:
         if not callable(callback):
             raise TypeError("patch listener must be callable")
         self._patch_listener = callback
+
+    def set_lifecycle_listener(
+        self,
+        callback: Callable[[AgentProposal, ProposalState, str], None],
+    ) -> None:
+        if not callable(callback):
+            raise TypeError("lifecycle listener must be callable")
+        self._lifecycle_listener = callback
 
     def bind_snapshot(
         self,
@@ -1945,6 +1957,7 @@ class AgentAuthoringBridge:
                     "绑定文档、session 或 revision 已改变",
                 )
                 self._records[proposal_id] = stale
+                self._notify_lifecycle(stale)
                 stale_ids.append(proposal_id)
         return tuple(stale_ids)
 
@@ -1964,6 +1977,7 @@ class AgentAuthoringBridge:
                 continue
             stale = self._port.stale(proposal_id, message)
             self._records[proposal_id] = stale
+            self._notify_lifecycle(stale)
             stale_ids.append(proposal_id)
         return tuple(stale_ids)
 
@@ -2060,10 +2074,12 @@ class AgentAuthoringBridge:
             if callable(marker):
                 failed = marker(proposal_id, failed.message)
             self._records[proposal_id] = failed
+            self._notify_lifecycle(failed)
             return self._receipt(failed)
         finally:
             self._accepting_proposal_id = None
         self._records[proposal_id] = accepted
+        self._notify_lifecycle(accepted)
         if (
             accepted.state is ProposalState.SUCCEEDED
             and (
@@ -2099,6 +2115,7 @@ class AgentAuthoringBridge:
         self._pending_record(proposal_id)
         rejected = self._port.reject(proposal_id)
         self._records[proposal_id] = rejected
+        self._notify_lifecycle(rejected)
         return self._receipt(rejected)
 
     def accept_from_gui_control(self, proposal_id: str) -> BridgeReceipt:
@@ -2169,6 +2186,36 @@ class AgentAuthoringBridge:
             return self._records[proposal_id].state
         except KeyError as exc:
             raise AuthoringContractError("proposal is not registered") from exc
+
+    def ensure_display_identity_from_gui(
+        self,
+        proposal_id: str,
+        proposal_hash: str,
+        agent_session_id: str,
+        turn_id: str,
+    ) -> bool:
+        """Stale a pending proposal if its rendered identity was substituted."""
+
+        self._require_gui_thread()
+        record = self._records.get(str(proposal_id))
+        if record is None:
+            return False
+        proposal = record.proposal
+        matches = (
+            proposal.proposal_hash == str(proposal_hash)
+            and proposal.agent_session_id == str(agent_session_id)
+            and proposal.turn_id == str(turn_id)
+        )
+        if matches:
+            return record.state is ProposalState.PENDING_CONFIRMATION
+        if record.state is ProposalState.PENDING_CONFIRMATION:
+            stale = self._port.stale(
+                proposal.proposal_id,
+                "proposal hash、Agent session 或 turn identity 不匹配",
+            )
+            self._records[proposal.proposal_id] = stale
+            self._notify_lifecycle(stale)
+        return False
 
     def _require_live_target(self, proposal: AgentProposal) -> None:
         context = self._context
@@ -2255,6 +2302,20 @@ class AgentAuthoringBridge:
                 "port lifecycle update does not match a registered proposal"
             )
         self._records[record.proposal.proposal_id] = record
+        self._notify_lifecycle(record)
+
+    def _notify_lifecycle(self, record: ProposalPortRecord) -> None:
+        notice = (record.state, record.message)
+        proposal_id = record.proposal.proposal_id
+        if self._last_lifecycle_notice.get(proposal_id) == notice:
+            return
+        self._last_lifecycle_notice[proposal_id] = notice
+        if self._lifecycle_listener is not None:
+            self._lifecycle_listener(
+                record.proposal,
+                record.state,
+                record.message,
+            )
 
     @staticmethod
     def _receipt(
