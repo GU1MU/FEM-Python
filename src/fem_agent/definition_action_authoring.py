@@ -16,8 +16,11 @@ from typing import Protocol
 from fem.application import (
     ModelDefinitions,
     NamedRegion,
+    RegionRef,
     ScopedDefinitionBatch,
     UnitContext,
+    describe_model_capabilities,
+    describe_region_capabilities,
     validate_logical_reference,
 )
 from fem.application.native_scope_materialization import (
@@ -353,6 +356,7 @@ def _create_analysis_child_patch(
     if steps[0].procedure != "static" or steps[0].metadata.get("nlgeom") is not False:
         raise ValueError("analysis actions require one linear static NLGEOM=false step")
     dimension = _part_dimension(snapshot)
+    dofs_per_node = _model_dofs_per_node(snapshot)
     units = snapshot.unit_context
     assert units is not None
 
@@ -392,9 +396,9 @@ def _create_analysis_child_patch(
             _enum(values["distribution"], "distribution", {"uniform"}),
             _confirmed(values["confirmed"]),
         )
-        if confirmed.last_component > dimension:
+        if confirmed.last_component > dofs_per_node:
             raise AnalysisAuthoringError(
-                "displacement DOF exceeds the current Part dimension"
+                "displacement DOF exceeds the current model capability"
             )
         if confirmed.unit != units.length:
             raise AnalysisAuthoringError(
@@ -467,7 +471,12 @@ def _create_analysis_child_patch(
             _nonblank(values["distribution"], "load distribution"),
             _confirmed(values["confirmed"]),
         )
-        _validate_load_dimension_and_unit(confirmed, dimension, units)
+        _validate_load_dimension_and_unit(
+            confirmed,
+            dimension,
+            dofs_per_node,
+            units,
+        )
         field, child = _load_child(confirmed)
         steps = _append_step_child(steps, field, child, confirmed.name)
         details = confirmed.summary()
@@ -568,20 +577,27 @@ def _validate_non_analysis_action(
             raise ValueError("density must be positive")
         return
     if action == "create_section":
-        allowed = {
-            "name",
-            "material",
-            "plane_type",
-            "thickness",
-            "properties",
+        planar_fields = {
+            "name", "material", "plane_type", "thickness", "properties"
         }
-        if set(values) != allowed:
+        truss_fields = {"name", "material", "section_type", "properties"}
+        if set(values) == planar_fields:
+            return
+        if set(values) != truss_fields:
             raise ValueError(
-                "first-milestone section requires planar type and thickness"
+                "section requires either planar properties or a truss area"
             )
+        if values["section_type"] != "truss":
+            raise ValueError("line section_type must be truss")
+        properties = _mapping(values["properties"], "section properties")
+        _exact_fields(properties, {"area"})
+        if _finite(properties["area"], "truss section area") <= 0.0:
+            raise ValueError("truss section area must be positive")
+        _require_elastic_material(snapshot, values["material"])
         return
     if action == "assign_section":
         _exact_fields(values, {"section_name", "region_name"})
+        _require_supported_section_assignment(snapshot, values)
         return
     if action == "create_static_step":
         _exact_fields(values, {"name"})
@@ -728,12 +744,13 @@ def _load_child(load: ConfirmedLoad) -> tuple[str, object]:
 def _validate_load_dimension_and_unit(
     load: ConfirmedLoad,
     dimension: int,
+    dofs_per_node: int,
     units: UnitContext,
 ) -> None:
     if load.load_type == "nodal":
-        if int(load.component or 0) > dimension:
+        if int(load.component or 0) > dofs_per_node:
             raise AnalysisAuthoringError(
-                "nodal load component exceeds the current Part dimension"
+                "nodal load component exceeds the current model capability"
             )
         expected_direction = {
             1: "global_x",
@@ -789,6 +806,74 @@ def _part_dimension(snapshot: _Snapshot) -> int:
             "analysis Part dimension must be explicitly two or three"
         )
     return int(geometry_dimension(recipe))
+
+
+def _model_dofs_per_node(snapshot: _Snapshot) -> int:
+    model = getattr(snapshot.artifact, "model", None)
+    if model is None:
+        raise AnalysisAuthoringError(
+            "analysis requires a current realized model capability"
+        )
+    report = describe_model_capabilities(model)
+    if not report.compatible or report.dofs_per_node is None:
+        raise AnalysisAuthoringError(
+            "analysis model has no compatible nodal DOF capability"
+        )
+    return int(report.dofs_per_node)
+
+
+def _require_elastic_material(snapshot: _Snapshot, value: object) -> None:
+    material_name = _nonblank(value, "section material")
+    matches = [
+        material
+        for material in snapshot.materials
+        if str(getattr(material, "name", "")) == material_name
+    ]
+    if len(matches) != 1:
+        raise ValueError("section material does not exist")
+    properties = _mapping(
+        getattr(matches[0], "properties", None),
+        "material properties",
+    )
+    if "E" not in properties or "nu" not in properties:
+        raise ValueError("truss section requires an elastic material")
+    if _finite(properties["E"], "Young modulus") <= 0.0:
+        raise ValueError("Young modulus must be positive")
+    poisson = _finite(properties["nu"], "Poisson ratio")
+    if not -1.0 < poisson < 0.5:
+        raise ValueError("Poisson ratio must be between -1 and 0.5")
+
+
+def _require_supported_section_assignment(
+    snapshot: _Snapshot,
+    values: Mapping[str, object],
+) -> None:
+    section_name = _nonblank(values["section_name"], "section name")
+    matches = [
+        section
+        for section in snapshot.sections
+        if str(getattr(section, "name", "")) == section_name
+    ]
+    if len(matches) != 1:
+        raise ValueError("assigned section does not exist")
+    if str(getattr(matches[0], "section_type", "")).casefold() != "truss":
+        return
+    region_name = _nonblank(values["region_name"], "region name")
+    model = getattr(snapshot.artifact, "model", None)
+    if model is None:
+        raise ValueError("truss assignment requires a current realized model")
+    capability = describe_region_capabilities(
+        model,
+        RegionRef("element_set", region_name),
+    )
+    if (
+        not capability.compatible
+        or not capability.homogeneous
+        or capability.canonical_element_types != ("Truss2",)
+    ):
+        raise ValueError(
+            "truss section can target only a non-empty pure Truss2 element region"
+        )
 
 
 def _one_part(snapshot: _Snapshot, part_id: object) -> object:

@@ -104,23 +104,17 @@ def create_incremental_definition_patch(
         materials = materials + (MaterialDefinition(name, properties),)
         created_names = (name,)
     elif normalized_action == "create_section":
-        _exact_fields(
-            values,
-            {
-                "name",
-                "material",
-                "plane_type",
-                "thickness",
-                "properties",
-            },
-        )
-        compatibility_properties = _mapping(
-            values.get("properties", {}),
-            "section properties",
-        )
-        if compatibility_properties:
+        planar_fields = {
+            "name", "material", "plane_type", "thickness", "properties"
+        }
+        truss_fields = {"name", "material", "section_type", "properties"}
+        supplied_fields = frozenset(values)
+        if supplied_fields not in {
+            frozenset(planar_fields),
+            frozenset(truss_fields),
+        }:
             raise ValueError(
-                "create_section properties must be omitted or empty"
+                "section requires either planar properties or a truss area"
             )
         name = _controlled_name(values["name"], "section name", "截面")
         material = _nonblank(values["material"], "section material")
@@ -128,15 +122,45 @@ def create_incremental_definition_patch(
             raise ValueError("section name already exists")
         if material not in {str(item.name) for item in materials}:
             raise ValueError("section material does not exist")
-        plane_type = _enum(values["plane_type"], "plane_type", {"stress", "strain"})
-        thickness = _positive(values["thickness"], "section thickness")
+        if set(values) == planar_fields:
+            compatibility_properties = _mapping(
+                values["properties"],
+                "section properties",
+            )
+            if compatibility_properties:
+                raise ValueError("planar section properties must be empty")
+            plane_type = _enum(
+                values["plane_type"],
+                "plane_type",
+                {"stress", "strain"},
+            )
+            section_type = "solid"
+            section_properties = {
+                "plane_type": plane_type,
+                "thickness": _positive(
+                    values["thickness"],
+                    "section thickness",
+                ),
+            }
+        else:
+            section_type = _enum(
+                values["section_type"],
+                "section_type",
+                {"truss"},
+            )
+            truss_properties = _mapping(
+                values["properties"],
+                "section properties",
+            )
+            _exact_fields(truss_properties, {"area"})
+            section_properties = {
+                "area": _positive(
+                    truss_properties["area"],
+                    "truss section area",
+                )
+            }
         sections = sections + (
-            SectionDefinition(
-                name,
-                material,
-                "solid",
-                {"plane_type": plane_type, "thickness": thickness},
-            ),
+            SectionDefinition(name, material, section_type, section_properties),
         )
         created_names = (name,)
     elif normalized_action == "assign_section":

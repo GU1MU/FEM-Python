@@ -1093,20 +1093,42 @@ _APPLY_DEFINITION = _tool(
             ),
             _definition_action_schema(
                 "create_section",
-                _exact_schema(
-                    {
-                        "name": _controlled_name_schema("截面"),
-                        "material": _controlled_name_schema("材料"),
-                        "plane_type": {
-                            "type": "string",
-                            "enum": ["stress", "strain"],
-                        },
-                        "thickness": {
-                            "type": "number",
-                            "exclusiveMinimum": 0,
-                        },
-                        "properties": _exact_schema({}),
-                    }
+                _one_of_object_schema(
+                    [
+                        _exact_schema(
+                            {
+                                "name": _controlled_name_schema("截面"),
+                                "material": _controlled_name_schema("材料"),
+                                "plane_type": {
+                                    "type": "string",
+                                    "enum": ["stress", "strain"],
+                                },
+                                "thickness": {
+                                    "type": "number",
+                                    "exclusiveMinimum": 0,
+                                },
+                                "properties": _exact_schema({}),
+                            }
+                        ),
+                        _exact_schema(
+                            {
+                                "name": _controlled_name_schema("截面"),
+                                "material": _controlled_name_schema("材料"),
+                                "section_type": {
+                                    "type": "string",
+                                    "const": "truss",
+                                },
+                                "properties": _exact_schema(
+                                    {
+                                        "area": {
+                                            "type": "number",
+                                            "exclusiveMinimum": 0,
+                                        }
+                                    }
+                                ),
+                            }
+                        ),
+                    ]
                 ),
             ),
             _definition_action_schema(
