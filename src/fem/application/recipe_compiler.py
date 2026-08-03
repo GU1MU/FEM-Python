@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from typing import Any
 
@@ -12,6 +12,7 @@ from fem.geometry.recipe_analysis import (
     axis_aligned_rectangle,
     expand_sketch_recipe,
 )
+from fem.geometry.sketch_support import resolve_face_workplane
 from fem.geometry.extrusion_selection import (
     ExtrusionSourceResolutionError,
     extrusion_face_boundary_ids,
@@ -49,6 +50,10 @@ from fem.geometry.recipes import (
     CylinderGeometry,
     DiskGeometry,
     ExtrudedGeometry,
+    FaceSeedConnectionProof,
+    FaceSketchBooleanGeometry,
+    FaceSketchBooleanOperation,
+    FaceSketchBooleanStepProof,
     MovedGeometry,
     MultiBodyGeometry,
     NativeGeometry,
@@ -61,6 +66,7 @@ from fem.geometry.recipes import (
     SketchCircle,
     SketchGeometry,
     SketchLine,
+    SketchPlane,
     WireGeometry,
     WirePoint,
     geometry_dimension,
@@ -197,6 +203,8 @@ def _compile_exact(cad: Any, recipe: NativeGeometry) -> _CompiledDraft:
         return _compile_revolution(cad, recipe)
     if isinstance(recipe, PathSweptGeometry):
         return _compile_path_sweep(cad, recipe)
+    if isinstance(recipe, FaceSketchBooleanGeometry):
+        return _compile_face_sketch_boolean(cad, recipe)
     if isinstance(recipe, MultiBodyGeometry):
         return _compile_multi_body(cad, recipe)
     if isinstance(recipe, BooleanGeometry):
@@ -1954,6 +1962,408 @@ def _planar_recipe_origin(recipe: NativeGeometry) -> tuple[float, float, float]:
     return 0.0, 0.0, 0.0
 
 
+@dataclass(frozen=True, slots=True)
+class _FaceSketchBooleanCompileResult:
+    draft: _CompiledDraft
+    target_body_id: str
+    target_logical_entities: Mapping[str, tuple[Any, ...]]
+    step_proofs: tuple[FaceSketchBooleanStepProof, ...]
+
+
+class _BooleanProofCatalog:
+    def __init__(self, entities: tuple[Any, ...]) -> None:
+        self._entities = {item.logical_id: item for item in entities}
+
+    def entity(self, logical_id: str) -> Any:
+        try:
+            return self._entities[logical_id]
+        except KeyError as error:
+            raise KeyError(logical_id) from error
+
+
+def _compile_face_sketch_boolean(
+    cad: Any,
+    recipe: FaceSketchBooleanGeometry,
+) -> _CompiledDraft:
+    prepared = _prepare_face_sketch_boolean_draft(cad, recipe)
+    if prepared.step_proofs != recipe.step_proofs:
+        raise TopologyResolutionError(
+            "face-sketch-boolean.lineage.catalog-mismatch: "
+            "保存的逐轮廓证明与当前 OCC 结果不一致"
+        )
+    return prepared.draft
+
+
+def _prepare_face_sketch_boolean_draft(
+    cad: Any,
+    recipe: FaceSketchBooleanGeometry,
+) -> _FaceSketchBooleanCompileResult:
+    """Build and prove a detached face-sketch Boolean chain."""
+
+    analysis = analyze_sketch_profiles(recipe.sketch)
+    if analysis.blocking_diagnostics:
+        raise TopologyResolutionError(analysis.blocking_diagnostics[0].message)
+    material = {item.id: item for item in analysis.profiles if item.is_material}
+    missing = tuple(
+        profile_id
+        for profile_id in recipe.participating_profile_ids
+        if profile_id not in material
+    )
+    if missing:
+        raise TopologyResolutionError(
+            "face-sketch-boolean.profile.invalid: 参与轮廓不存在或不是材料轮廓 "
+            f"{missing!r}"
+        )
+
+    base = compile_recipe(cad, recipe.base)
+    workplane = resolve_face_workplane(
+        cad,
+        base.logical_entities,
+        recipe.support_face_id,
+        recipe.workplane_strategy,
+    )
+    _require_matching_sketch_plane(recipe.sketch.plane, workplane.plane)
+    target_compiled = _target_body_operand(cad, base, workplane.volume)
+
+    tool_rows: list[tuple[str, CompiledRecipeTopology, Any]] = []
+    for profile_id in recipe.participating_profile_ids:
+        tool_sketch = _profile_tool_sketch(
+            recipe.sketch,
+            analysis.profiles,
+            profile_id,
+            inward=recipe.direction.value == "inward",
+        )
+        tool_recipe = ExtrudedGeometry(
+            tool_sketch,
+            recipe.distance,
+            (f"face:{profile_id}",),
+        )
+        tool = compile_recipe(cad, tool_recipe)
+        start_faces = tuple(tool.logical_entities.get("face:bottom", ()))
+        if len(start_faces) != 1:
+            raise TopologyResolutionError(
+                "face-sketch-boolean.tool.start-face: 工具体起始面无法唯一解析"
+            )
+        _positive_face_overlap(
+            cad,
+            workplane.surface,
+            start_faces[0],
+        )
+        tool_rows.append((profile_id, tool, start_faces[0]))
+
+    proofs: list[FaceSketchBooleanStepProof] = []
+    current = target_compiled
+    final_proof = None
+    for step_index, (profile_id, tool, tool_start) in enumerate(tool_rows, start=1):
+        target_evidence = capture_boolean_operand_evidence(cad, current)
+        tool_evidence = capture_boolean_operand_evidence(cad, tool)
+        seed_proof = (
+            _resolve_current_face_seed(cad, current, tool_start)
+            if recipe.operation is FaceSketchBooleanOperation.FUSE
+            and recipe.direction.value == "outward"
+            else None
+        )
+        operation = (
+            cad.fuse
+            if recipe.operation is FaceSketchBooleanOperation.FUSE
+            else cad.cut
+        )
+        boolean_result = operation(current.domain, tool.domain)
+        try:
+            validate_solid_boolean_input_map(
+                boolean_result,
+                face_seed_connection=(
+                    seed_proof
+                ),
+            )
+            volumes = boolean_result.of_dimension(3)
+            boundary = (
+                ()
+                if len(volumes) != 1
+                else tuple(cad.boundary(volumes, combined=False))
+            )
+            context = _face_step_context(step_index)
+            final_proof = resolve_solid_boolean_lineage(
+                cad,
+                target_evidence,
+                tool_evidence,
+                boolean_result,
+                boundary,
+                context,
+                operation=recipe.operation.value,
+                face_seed_connection=(
+                    seed_proof
+                    if recipe.operation is FaceSketchBooleanOperation.FUSE
+                    and recipe.direction.value == "outward"
+                    else None
+                ),
+                feature_id=f"{recipe.feature_id}/{profile_id}",
+            )
+        except BooleanLineageResolutionError as error:
+            raise TopologyResolutionError(
+                f"face-sketch-boolean.step.{profile_id}: {error}"
+            ) from error
+        step = FaceSketchBooleanStepProof(
+            profile_id,
+            final_proof.result_entities,
+            final_proof.topology_mappings,
+            final_proof.connection_proof,
+        )
+        proofs.append(step)
+        current = CompiledRecipeTopology(
+            (final_proof.result_volume,),
+            boundary,
+            _BooleanProofCatalog(final_proof.result_entities),
+            final_proof.logical_entities,
+            {},
+        )
+
+    if final_proof is None:
+        raise TopologyResolutionError(
+            "face-sketch-boolean.profile.required: 至少需要一个参与轮廓"
+        )
+    _require_unaffected_body_isolation(
+        cad,
+        base,
+        workplane.volume,
+        final_proof.result_volume,
+    )
+    draft, target_logical = _assemble_face_sketch_result(
+        base,
+        workplane.volume,
+        workplane.target_body_id,
+        final_proof,
+    )
+    return _FaceSketchBooleanCompileResult(
+        draft,
+        workplane.target_body_id,
+        target_logical,
+        tuple(proofs),
+    )
+
+
+def _face_step_context(step_index: int) -> Any:
+    from fem.geometry.recipes import BooleanBodyContext
+
+    return BooleanBodyContext(
+        f"BF{step_index}",
+        "B1",
+        "B2",
+        f"面草图工具-{step_index}",
+    )
+
+
+def _target_body_operand(
+    cad: Any,
+    base: CompiledRecipeTopology,
+    volume: Any,
+) -> CompiledRecipeTopology:
+    faces = tuple(cad.boundary((volume,), combined=False))
+    edges = tuple(cad.boundary(faces, combined=False))
+    points = tuple(cad.boundary(edges, combined=False))
+    closure = {volume, *faces, *edges, *points}
+    logical = {
+        logical_id: tuple(entity for entity in entities if entity in closure)
+        for logical_id, entities in base.logical_entities.items()
+    }
+    logical = {
+        logical_id: entities
+        for logical_id, entities in logical.items()
+        if entities and not logical_id.startswith("body:")
+    }
+    logical["body:domain"] = (volume,)
+    return CompiledRecipeTopology(
+        (volume,),
+        faces,
+        base.catalog,
+        logical,
+        {},
+    )
+
+
+def _require_matching_sketch_plane(
+    sketch_plane: SketchPlane | None,
+    support_plane: SketchPlane,
+) -> None:
+    if sketch_plane is None:
+        raise TopologyResolutionError(
+            "face-sketch-boolean.sketch.strict: 面草图必须是严格平面草图"
+        )
+    left = (*sketch_plane.origin, *sketch_plane.x_direction, *sketch_plane.y_direction)
+    right = (*support_plane.origin, *support_plane.x_direction, *support_plane.y_direction)
+    scale = max(*(abs(value) for value in (*left, *right)), 1.0)
+    if any(abs(a - b) > 1.0e-8 * scale for a, b in zip(left, right, strict=True)):
+        raise TopologyResolutionError(
+            "face-sketch-boolean.sketch.workplane-mismatch: 草图坐标系与工作面不一致"
+        )
+
+
+def _profile_tool_sketch(
+    sketch: SketchGeometry,
+    profiles: tuple[Any, ...],
+    profile_id: str,
+    *,
+    inward: bool,
+) -> SketchGeometry:
+    profile = next(item for item in profiles if item.id == profile_id)
+    children = tuple(
+        item
+        for item in profiles
+        if item.is_hole and item.parent_profile_id == profile_id
+    )
+    curve_ids = {
+        signed_id.lstrip("-")
+        for item in (profile, *children)
+        for signed_id in item.curve_ids
+    }
+    curves = tuple(curve for curve in sketch.curves if curve.id in curve_ids)
+    point_ids = {
+        point_id
+        for curve in curves
+        for point_id in _strict_curve_point_ids(curve)
+    }
+    points = tuple(point for point in sketch.points if point.id in point_ids)
+    plane = sketch.plane
+    if plane is None:
+        raise TopologyResolutionError("面草图必须是严格平面草图")
+    if inward:
+        plane = SketchPlane(
+            plane.origin,
+            plane.x_direction,
+            tuple(-value for value in plane.y_direction),
+        )
+        points = tuple(replace(point, v=-point.v) for point in points)
+        curves = tuple(
+            replace(
+                curve,
+                orientation="cw" if curve.orientation == "ccw" else "ccw",
+            )
+            if isinstance(curve, SketchArc)
+            else curve
+            for curve in curves
+        )
+    return SketchGeometry(
+        f"{sketch.name}-{profile_id}",
+        plane,
+        points,
+        curves,
+    )
+
+
+def _strict_curve_point_ids(curve: Any) -> tuple[str, ...]:
+    if isinstance(curve, SketchLine):
+        return curve.start_point_id, curve.end_point_id
+    if isinstance(curve, SketchArc):
+        return curve.start_point_id, curve.center_point_id, curve.end_point_id
+    if isinstance(curve, SketchCircle):
+        return (curve.center_point_id,)
+    raise TypeError(f"不支持的草图曲线: {type(curve).__name__}")
+
+
+def _positive_face_overlap(cad: Any, support: Any, tool_start: Any) -> float:
+    try:
+        support_copy = cad.copy((support,))
+        tool_copy = cad.copy((tool_start,))
+        result = cad.intersect(support_copy, tool_copy)
+        area = sum(float(cad.area(item)) for item in result.of_dimension(2))
+        cad.remove(result.outputs, recursive=True)
+    except Exception as error:
+        raise TopologyResolutionError(
+            "face-sketch-boolean.profile.overlap-unresolved: "
+            "无法校验轮廓与工作面的材料重叠"
+        ) from error
+    tolerance = (
+        float(cad.effective_bounding_box_tolerance(1.0e-9)) ** 2
+        if hasattr(cad, "effective_bounding_box_tolerance")
+        else 1.0e-18
+    )
+    if not math.isfinite(area) or area <= tolerance:
+        raise TopologyResolutionError(
+            "face-sketch-boolean.profile.no-overlap: 参与轮廓与工作面没有正面积材料重叠"
+        )
+    return area
+
+
+def _resolve_current_face_seed(
+    cad: Any,
+    target: CompiledRecipeTopology,
+    tool_start: Any,
+) -> FaceSeedConnectionProof:
+    for logical_id, entities in sorted(target.logical_entities.items()):
+        if not logical_id.startswith("face:"):
+            continue
+        for entity in entities:
+            if entity.dimension != 2:
+                continue
+            if str(cad.geometry_type(entity)).casefold() != "plane":
+                continue
+            try:
+                area = _positive_face_overlap(cad, entity, tool_start)
+            except TopologyResolutionError:
+                continue
+            return FaceSeedConnectionProof(logical_id, "face:bottom", area)
+    raise TopologyResolutionError(
+        "face-sketch-boolean.fuse.face-seed-unresolved: "
+        "当前结果与工具体起始面没有可证明的正面积面种子连接"
+    )
+
+
+def _require_unaffected_body_isolation(
+    cad: Any,
+    base: CompiledRecipeTopology,
+    target_volume: Any,
+    result_volume: Any,
+) -> None:
+    tolerance = (
+        float(cad.effective_bounding_box_tolerance(1.0e-9))
+        if hasattr(cad, "effective_bounding_box_tolerance")
+        else 1.0e-9
+    )
+    for volume in base.domain:
+        if volume == target_volume:
+            continue
+        if float(cad.distance(result_volume, volume)) <= tolerance:
+            raise TopologyResolutionError(
+                "face-sketch-boolean.multibody.isolation: "
+                "结果与非目标 Body 相交或接触"
+            )
+
+
+def _assemble_face_sketch_result(
+    base: CompiledRecipeTopology,
+    original_target: Any,
+    target_body_id: str,
+    proof: Any,
+) -> tuple[_CompiledDraft, Mapping[str, tuple[Any, ...]]]:
+    target_logical = dict(proof.logical_entities)
+    if target_body_id == "body:domain":
+        return (
+            _CompiledDraft(
+                (proof.result_volume,),
+                target_logical,
+                {},
+            ),
+            target_logical,
+        )
+    target_logical[target_body_id] = target_logical.pop("body:domain")
+    owner = target_body_id.split(":", 1)[1]
+    target_prefix = f"{owner}/"
+    unaffected = {
+        logical_id: entities
+        for logical_id, entities in base.logical_entities.items()
+        if logical_id != "body:domain"
+        and logical_id != target_body_id
+        and not logical_id.split(":", 1)[1].startswith(target_prefix)
+    }
+    logical = {**unaffected, **target_logical}
+    domain = tuple(
+        proof.result_volume if volume == original_target else volume
+        for volume in base.domain
+    )
+    logical["body:domain"] = domain
+    return _CompiledDraft(domain, logical, {}), target_logical
+
+
 def _compile_strict_body_boolean(
     cad: Any,
     recipe: BooleanGeometry,
@@ -2131,6 +2541,12 @@ def _validate_logical_entities(
 
 
 def _build_domain_only(cad: Any, recipe: NativeGeometry) -> tuple[Any, ...]:
+    if isinstance(recipe, FaceSketchBooleanGeometry):
+        if len(recipe.step_proofs) != len(recipe.participating_profile_ids):
+            raise TopologyResolutionError(
+                "face-sketch-boolean.lineage.unproven: 面草图布尔缺少完整逐轮廓证明"
+            )
+        return _compile_face_sketch_boolean(cad, recipe).domain
     if isinstance(recipe, MultiBodyGeometry):
         return _compile_multi_body(cad, recipe).domain
     if isinstance(recipe, SketchGeometry):

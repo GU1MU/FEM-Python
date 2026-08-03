@@ -40,6 +40,7 @@ from .recipes import (
     CylinderGeometry,
     DiskGeometry,
     ExtrudedGeometry,
+    FaceSketchBooleanGeometry,
     MovedGeometry,
     MultiBodyGeometry,
     NATIVE_GEOMETRY_TYPES,
@@ -356,6 +357,8 @@ def describe_recipe_topology(recipe: NativeGeometry) -> RecipeTopology:
         return _revolved_topology(recipe)
     if isinstance(recipe, PathSweptGeometry):
         return _path_swept_topology(recipe)
+    if isinstance(recipe, FaceSketchBooleanGeometry):
+        return _face_sketch_boolean_topology(recipe)
     if isinstance(recipe, MultiBodyGeometry):
         return _multi_body_topology(recipe)
     if isinstance(recipe, BooleanGeometry):
@@ -1808,6 +1811,218 @@ def _strict_body_boolean_topology(
         source_signatures=sources,
         mappings=mappings,
     )
+
+
+def _face_sketch_boolean_topology(
+    recipe: FaceSketchBooleanGeometry,
+) -> RecipeTopology:
+    base = describe_recipe_topology(recipe.base)
+    sketch = describe_recipe_topology(recipe.sketch)
+    sources = (("base", base.signature), ("sketch", sketch.signature))
+    proof_ids = tuple(item.profile_id for item in recipe.step_proofs)
+    if proof_ids != recipe.participating_profile_ids:
+        return _unknown_topology(
+            recipe,
+            code="face-sketch-boolean.lineage.unproven",
+            message="面草图布尔尚未完成全部参与轮廓的 OCC 谱系证明。",
+            operation=f"face-sketch-boolean.{recipe.operation.value}",
+            source_signatures=sources,
+        )
+
+    final_entities = list(recipe.step_proofs[-1].result_entities)
+    target_body_id = "body:domain"
+    unaffected: list[LogicalEntity] = []
+    is_multi_body = isinstance(recipe.base, MultiBodyGeometry)
+    if is_multi_body:
+        owner = recipe.support_face_id.split(":", 1)[1].split("/", 1)[0]
+        target_body_id = f"body:{owner}"
+        body_ids = {f"body:{body.id}" for body in recipe.base.bodies}
+        if target_body_id not in body_ids:
+            return _unknown_topology(
+                recipe,
+                code="face-sketch-boolean.body-unresolved",
+                message="工作面无法在 MultiBody 中唯一确定目标 Body。",
+                operation=f"face-sketch-boolean.{recipe.operation.value}",
+                source_signatures=sources,
+            )
+        prefix = f"{owner}/"
+        unaffected = [
+            item
+            for item in base.entities
+            if item.logical_id != "body:domain"
+            and item.logical_id != target_body_id
+            and not item.logical_id.split(":", 1)[1].startswith(prefix)
+        ]
+
+    entities = [
+        LogicalEntity(
+            item.kind,
+            {"point": 0, "edge": 1, "face": 2, "body": 3}[item.kind],
+            (
+                target_body_id
+                if item.logical_id == "body:domain"
+                else item.logical_id
+            ),
+            item.semantic_role,
+            True,
+            None,
+            tuple(
+                target_body_id if link == "body:domain" else link
+                for link in item.topology_links
+            ),
+        )
+        for item in final_entities
+    ]
+    if is_multi_body:
+        entities.extend(unaffected)
+        entities.append(
+            LogicalEntity(
+                "body",
+                3,
+                "body:domain",
+                "aggregate.domain",
+                False,
+                "multi_body.aggregate",
+            )
+        )
+
+    mappings = _compose_face_sketch_boolean_mappings(
+        recipe,
+        base,
+        sketch,
+        target_body_id,
+        {item.logical_id for item in entities},
+    )
+    diagnostics = (
+        (
+            TopologyDiagnostic(
+                "multi_body.aggregate",
+                "body:domain is an internal aggregate and is not selectable.",
+                ("body:domain",),
+            ),
+        )
+        if is_multi_body
+        else ()
+    )
+    return _make_topology(
+        recipe,
+        tuple(entities),
+        exact=True,
+        operation=f"face-sketch-boolean.{recipe.operation.value}",
+        diagnostics=diagnostics,
+        source_signatures=sources,
+        mappings=mappings,
+    )
+
+
+def _compose_face_sketch_boolean_mappings(
+    recipe: FaceSketchBooleanGeometry,
+    base: RecipeTopology,
+    sketch: RecipeTopology,
+    target_body_id: str,
+    output_ids: set[str],
+) -> tuple[TopologyMapping, ...]:
+    origins: dict[str, set[tuple[str, str, bool]]] = {}
+    owner = None if target_body_id == "body:domain" else target_body_id.split(":", 1)[1]
+    for item in base.entities:
+        logical_id = item.logical_id
+        if owner is not None:
+            local_name = logical_id.split(":", 1)[1]
+            if logical_id == target_body_id:
+                logical_id = "body:domain"
+            elif not local_name.startswith(f"{owner}/"):
+                continue
+        origins.setdefault(logical_id, set()).add(
+            ("base", item.logical_id, True)
+        )
+
+    sketch_ids = set(sketch.signature.logical_ids)
+    for step in recipe.step_proofs:
+        next_origins: dict[str, set[tuple[str, str, bool]]] = {}
+        for mapping in step.topology_mappings:
+            if mapping.source == "target":
+                sources = origins.get(mapping.source_logical_id, set())
+            else:
+                source_id = _face_tool_sketch_source_id(
+                    mapping.source_logical_id,
+                    step.profile_id,
+                )
+                sources = (
+                    {("sketch", source_id, False)}
+                    if source_id in sketch_ids
+                    else set()
+                )
+            for source, source_id, preserved in sources:
+                next_origins.setdefault(mapping.target_logical_id, set()).add(
+                    (
+                        source,
+                        source_id,
+                        preserved
+                        and mapping.relation == "preserved"
+                        and source_id == mapping.target_logical_id,
+                    )
+                )
+        origins = next_origins
+
+    result: set[TopologyMapping] = set()
+    for current_id, source_records in origins.items():
+        target_id = target_body_id if current_id == "body:domain" else current_id
+        if target_id not in output_ids:
+            continue
+        for source, source_id, preserved in source_records:
+            result.add(
+                TopologyMapping(
+                    source,
+                    source_id,
+                    target_id,
+                    "preserved" if preserved else "derived",
+                )
+            )
+    for item in base.entities:
+        if item.logical_id in output_ids and item.logical_id != "body:domain":
+            result.add(
+                TopologyMapping(
+                    "base",
+                    item.logical_id,
+                    item.logical_id,
+                    "preserved",
+                )
+            )
+    if "body:domain" in output_ids and "body:domain" in base.signature.logical_ids:
+        result.add(
+            TopologyMapping(
+                "base",
+                "body:domain",
+                "body:domain",
+                "preserved",
+            )
+        )
+    return tuple(
+        sorted(
+            result,
+            key=lambda item: (
+                item.source,
+                logical_ref_sort_key(LogicalEntityRef(item.source_logical_id)),
+                logical_ref_sort_key(LogicalEntityRef(item.target_logical_id)),
+                item.relation,
+            ),
+        )
+    )
+
+
+def _face_tool_sketch_source_id(tool_id: str, profile_id: str) -> str:
+    kind, name = tool_id.split(":", 1)
+    if tool_id in {"face:bottom", "face:top", "body:domain"}:
+        return f"face:{profile_id}"
+    if name.startswith("side/"):
+        return f"edge:{name.split('/', 1)[1]}"
+    if name.startswith(("bottom/", "top/", "vertical/")):
+        local_name = name.split("/", 1)[1]
+        source_kind = "point" if kind in {"point", "edge"} and name.startswith("vertical/") else kind
+        if name.startswith(("bottom/", "top/")):
+            source_kind = "point" if kind == "point" else "edge"
+        return f"{source_kind}:{local_name}"
+    return tool_id
 
 
 def _multi_body_topology(recipe: MultiBodyGeometry) -> RecipeTopology:

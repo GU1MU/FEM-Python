@@ -1963,12 +1963,32 @@ class MultiBodyGeometry:
 
 
 @dataclass(frozen=True, slots=True)
+class FaceSeedConnectionProof:
+    """Positive-area support evidence for one face-seeded solid fuse."""
+
+    support_face_id: str
+    tool_start_face_id: str
+    overlap_area: float
+
+    def __post_init__(self) -> None:
+        support = LogicalEntityRef(self.support_face_id)
+        tool_start = LogicalEntityRef(self.tool_start_face_id)
+        if support.kind != "face" or tool_start.kind != "face":
+            raise ValueError("面种子连接证明必须引用两个面")
+        area = _normalize_sketch_scalar(self.overlap_area, "面种子重叠面积")
+        if area <= 0.0:
+            raise ValueError("面种子连接证明需要正面积重叠")
+        object.__setattr__(self, "overlap_area", area)
+
+
+@dataclass(frozen=True, slots=True)
 class FaceSketchBooleanStepProof:
     """Persisted exact lineage for one stable material-profile Boolean step."""
 
     profile_id: str
     result_entities: tuple[BooleanLineageEntity, ...]
     topology_mappings: tuple[BooleanLineageMapping, ...]
+    connection_proof: FaceSeedConnectionProof | None = None
 
     def __post_init__(self) -> None:
         profile_id = _normalize_sketch_id(self.profile_id, "轮廓 ID")
@@ -1978,6 +1998,10 @@ class FaceSketchBooleanStepProof:
             raise TypeError("分步布尔结果必须包含 BooleanLineageEntity")
         if any(type(item) is not BooleanLineageMapping for item in mappings):
             raise TypeError("分步布尔谱系必须包含 BooleanLineageMapping")
+        if self.connection_proof is not None and type(
+            self.connection_proof
+        ) is not FaceSeedConnectionProof:
+            raise TypeError("分步布尔连接证明无效")
         object.__setattr__(self, "profile_id", profile_id)
         object.__setattr__(self, "result_entities", entities)
         object.__setattr__(self, "topology_mappings", mappings)
@@ -2243,6 +2267,7 @@ __all__ = [
     "FaceSketchBooleanOperation",
     "FaceSketchBooleanStepProof",
     "FaceSketchWorkplaneStrategy",
+    "FaceSeedConnectionProof",
     "MovedGeometry",
     "MultiBodyGeometry",
     "NATIVE_GEOMETRY_TYPES",

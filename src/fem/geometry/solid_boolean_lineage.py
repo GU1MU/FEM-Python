@@ -10,6 +10,7 @@ from .recipes import (
     BooleanBodyContext,
     BooleanLineageEntity,
     BooleanLineageMapping,
+    FaceSeedConnectionProof,
 )
 
 
@@ -43,6 +44,7 @@ class BooleanLineageProof:
     result_entities: tuple[BooleanLineageEntity, ...]
     topology_mappings: tuple[BooleanLineageMapping, ...]
     generated_intersections: tuple[str, ...]
+    connection_proof: FaceSeedConnectionProof | None = None
     diagnostics: tuple[str, ...] = ()
 
 
@@ -50,13 +52,21 @@ class BooleanLineageResolutionError(ValueError):
     """A strict Boolean result cannot be assigned proven stable lineage."""
 
 
-def validate_solid_boolean_input_map(boolean_result: Any) -> None:
+def validate_solid_boolean_input_map(
+    boolean_result: Any,
+    *,
+    face_seed_connection: FaceSeedConnectionProof | None = None,
+) -> None:
     """Require the OCC target/tool map to identify the single result volume."""
 
     if len(boolean_result.input_map) != 2:
         raise BooleanLineageResolutionError(
             "boolean.input-map.invalid: OCC did not return target/tool mapping"
         )
+    if face_seed_connection is not None and type(
+        face_seed_connection
+    ) is not FaceSeedConnectionProof:
+        raise TypeError("face_seed_connection must be FaceSeedConnectionProof")
     volumes = tuple(
         entity for entity in boolean_result.outputs if entity.dimension == 3
     )
@@ -69,8 +79,13 @@ def validate_solid_boolean_input_map(boolean_result: Any) -> None:
     result_volume = volumes[0]
     target_outputs, tool_outputs = boolean_result.input_map
     mapped = (*target_outputs, *tool_outputs)
+    if face_seed_connection is not None and not mapped:
+        return
+    owns_result = result_volume in target_outputs or (
+        face_seed_connection is not None and result_volume in tool_outputs
+    )
     if (
-        result_volume not in target_outputs
+        not owns_result
         or any(entity.dimension != 3 for entity in mapped)
         or any(entity not in boolean_result.outputs for entity in mapped)
     ):
@@ -122,6 +137,8 @@ def resolve_solid_boolean_lineage(
     body_context: BooleanBodyContext,
     *,
     operation: str,
+    face_seed_connection: FaceSeedConnectionProof | None = None,
+    feature_id: str | None = None,
 ) -> BooleanLineageProof:
     """Prove complete face/edge/point coverage for one result volume."""
 
@@ -129,6 +146,14 @@ def resolve_solid_boolean_lineage(
         raise TypeError("body_context must be BooleanBodyContext")
     if operation not in {"fuse", "cut"}:
         raise ValueError("strict solid Boolean operation must be fuse or cut")
+    if face_seed_connection is not None:
+        if type(face_seed_connection) is not FaceSeedConnectionProof:
+            raise TypeError("face_seed_connection must be FaceSeedConnectionProof")
+        if operation != "fuse":
+            raise ValueError("face seed connection proof is restricted to fuse")
+    result_feature_id = body_context.feature_id if feature_id is None else feature_id
+    if type(result_feature_id) is not str or not result_feature_id.strip():
+        raise ValueError("Boolean result feature_id must not be empty")
     volumes = tuple(
         entity
         for entity in boolean_result.outputs
@@ -164,6 +189,7 @@ def resolve_solid_boolean_lineage(
         raise BooleanLineageResolutionError(
             "boolean.fuse.no-op: result did not combine both operands"
         )
+    accepted_connection_proof: FaceSeedConnectionProof | None = None
     if operation == "fuse":
         overlap_measure = (
             target_compiled.volume_measure
@@ -171,10 +197,17 @@ def resolve_solid_boolean_lineage(
             - result_measure
         )
         if overlap_measure <= tolerance:
-            raise BooleanLineageResolutionError(
-                "boolean.fuse.non-positive-overlap: operands only touch; "
-                "strict fuse requires positive shared volume"
+            if face_seed_connection is None:
+                raise BooleanLineageResolutionError(
+                    "boolean.fuse.non-positive-overlap: operands only touch; "
+                    "strict fuse requires positive shared volume"
+                )
+            _validate_face_seed_connection(
+                face_seed_connection,
+                target_compiled,
+                tool_compiled,
             )
+            accepted_connection_proof = face_seed_connection
 
     faces = _unique(
         entity for entity in result_boundary if entity.dimension == 2
@@ -218,7 +251,7 @@ def resolve_solid_boolean_lineage(
         )
         logical_id, role = _logical_result_id(
             "face",
-            body_context.feature_id,
+            result_feature_id,
             target_ids,
             tool_ids,
         )
@@ -287,7 +320,7 @@ def resolve_solid_boolean_lineage(
             target_ids, tool_ids = face_target, face_tool
             logical_id = _generated_result_id(
                 "edge",
-                body_context.feature_id,
+                result_feature_id,
                 "intersection",
                 target_ids,
                 tool_ids,
@@ -297,7 +330,7 @@ def resolve_solid_boolean_lineage(
             target_ids, tool_ids = direct_target, direct_tool
             logical_id, role = _logical_result_id(
                 "edge",
-                body_context.feature_id,
+                result_feature_id,
                 target_ids,
                 tool_ids,
             )
@@ -305,7 +338,7 @@ def resolve_solid_boolean_lineage(
             target_ids, tool_ids = face_target, face_tool
             logical_id = _generated_result_id(
                 "edge",
-                body_context.feature_id,
+                result_feature_id,
                 "intersection",
                 target_ids,
                 tool_ids,
@@ -389,7 +422,7 @@ def resolve_solid_boolean_lineage(
             target_ids, tool_ids = direct_target, direct_tool
             logical_id, role = _logical_result_id(
                 "point",
-                body_context.feature_id,
+                result_feature_id,
                 target_ids,
                 tool_ids,
             )
@@ -398,7 +431,7 @@ def resolve_solid_boolean_lineage(
             tool_ids = {*direct_tool, *edge_tool}
             logical_id = _generated_result_id(
                 "point",
-                body_context.feature_id,
+                result_feature_id,
                 "intersection" if intersection else "combined",
                 target_ids,
                 tool_ids,
@@ -500,12 +533,45 @@ def resolve_solid_boolean_lineage(
         tuple(result_entities),
         tuple(mappings),
         tuple(sorted(generated_intersections)),
+        accepted_connection_proof,
+        (
+            ("boolean.fuse.face-seed-connection",)
+            if accepted_connection_proof is not None
+            else ()
+        ),
     )
     _validate_coverage(
         (*faces, *edges, *points, result_volume),
         proof.logical_entities,
     )
     return proof
+
+
+def _validate_face_seed_connection(
+    proof: FaceSeedConnectionProof,
+    target: BooleanOperandEvidence,
+    tool: BooleanOperandEvidence,
+) -> None:
+    target_faces = {
+        item.logical_id
+        for item in target.entities
+        if item.dimension == 2
+    }
+    tool_faces = {
+        item.logical_id
+        for item in tool.entities
+        if item.dimension == 2
+    }
+    if proof.support_face_id not in target_faces:
+        raise BooleanLineageResolutionError(
+            "boolean.fuse.face-seed.target-mismatch: support face is absent "
+            "from target evidence"
+        )
+    if proof.tool_start_face_id not in tool_faces:
+        raise BooleanLineageResolutionError(
+            "boolean.fuse.face-seed.tool-mismatch: start face is absent "
+            "from tool evidence"
+        )
 
 
 def _source_matches(

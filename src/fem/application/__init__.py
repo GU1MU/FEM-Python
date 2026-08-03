@@ -60,6 +60,11 @@ from .feature_history import (
     derive_feature_history,
     derive_geometry_feature_rows,
 )
+from .face_sketch_boolean import (
+    FaceSketchBooleanResult,
+    prepare_face_sketch_boolean,
+    prepare_face_sketch_boolean_preview,
+)
 from .native_part import (
     PartBooleanProvenance,
     next_part_boolean_feature_id,
@@ -186,6 +191,7 @@ __all__ = [
     "DeleteIntent",
     "EffectiveBeamFrame",
     "FeatureRecord",
+    "FaceSketchBooleanResult",
     "ImportTaskSnapshot",
     "LogicalRecipeTopologyResolver",
     "LogicalReferencesRegionSource",
@@ -274,6 +280,8 @@ __all__ = [
     "internal_error_report",
     "normalize_model_definitions",
     "prepare_solid_body_boolean",
+    "prepare_face_sketch_boolean",
+    "prepare_face_sketch_boolean_preview",
     "prepare_static_preflight",
     "prepare_strict_body_recipe_preview",
     "next_planar_boolean_feature_id",

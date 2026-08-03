@@ -900,6 +900,26 @@ class GeometryModel:
                 self._fail_closed_after_unknown_occ_mutation()
             raise
 
+    def remove(
+        self,
+        entities: Iterable[EntityRef],
+        *,
+        recursive: bool = False,
+    ) -> None:
+        """Remove explicitly disposable OCC entities from the active model."""
+
+        operation = "remove"
+        self._check_state(operation, _GEOMETRY_MUTATION_STATES)
+        normalized = self._normalize_entities(entities, operation=operation)
+        if not isinstance(recursive, bool):
+            raise TypeError("recursive must be a boolean")
+        self._activate(operation)
+        self._assert_occ_liveness(normalized, operation)
+        invalidated = self._entity_boundary_closure_keys(normalized)
+        self._gmsh.model.occ.remove(_dim_tags(normalized), recursive)
+        self._gmsh.model.occ.synchronize()
+        self._invalidate_entity_keys(invalidated)
+
     def translate(
         self,
         entities: Iterable[EntityRef],
