@@ -24,8 +24,10 @@ from .authoring import (
 )
 
 
-MESH_INTENT_SCHEMA_VERSION = "1.0"
-_A3_CELL_SHAPES = frozenset({"triangle", "quadrilateral"})
+MESH_INTENT_SCHEMA_VERSION = "1.1"
+_LEGACY_MESH_INTENT_SCHEMA_VERSION = "1.0"
+_PLANAR_CELL_SHAPES = frozenset({"triangle", "quadrilateral"})
+_LINE_ELEMENT_TYPES = frozenset({"Truss2", "Beam2"})
 
 
 def _positive_float(value: object, field_name: str) -> float:
@@ -50,7 +52,7 @@ def _canonical_hash(value: object) -> str:
 
 @dataclass(frozen=True, slots=True)
 class MeshIntent:
-    """Provider-safe, persistable A3 mesh policy for one two-dimensional Part.
+    """Provider-safe, persistable mesh policy for one native Part.
 
     ``effective MeshSettings.size`` is derived only when an automatic intent
     needs an absolute far-field size for an existing typed local refinement.
@@ -63,19 +65,53 @@ class MeshIntent:
     global_size: float | None = None
     auto_level: int | None = None
     local_controls: tuple[LocalMeshControl, ...] = ()
-    schema_version: str = MESH_INTENT_SCHEMA_VERSION
+    line_element_type: str | None = None
+    schema_version: str | None = None
 
     def __post_init__(self) -> None:
-        if self.schema_version != MESH_INTENT_SCHEMA_VERSION:
+        schema_version = self.schema_version
+        if schema_version is None:
+            schema_version = (
+                MESH_INTENT_SCHEMA_VERSION
+                if self.cell_shape == "line"
+                else _LEGACY_MESH_INTENT_SCHEMA_VERSION
+            )
+            object.__setattr__(self, "schema_version", schema_version)
+        if schema_version not in {
+            _LEGACY_MESH_INTENT_SCHEMA_VERSION,
+            MESH_INTENT_SCHEMA_VERSION,
+        }:
             raise ValueError("unknown MeshIntent schema_version")
-        if type(self.cell_shape) is not str or self.cell_shape not in _A3_CELL_SHAPES:
+        if schema_version == _LEGACY_MESH_INTENT_SCHEMA_VERSION:
+            if (
+                type(self.cell_shape) is not str
+                or self.cell_shape not in _PLANAR_CELL_SHAPES
+            ):
+                raise ValueError(
+                    "MeshIntent schema 1.0 cell_shape must be 'triangle' or "
+                    "'quadrilateral'"
+                )
+            if self.line_element_type is not None:
+                raise ValueError(
+                    "MeshIntent schema 1.0 does not support line_element_type"
+                )
+        elif self.cell_shape != "line":
             raise ValueError(
-                "A3 cell_shape must be 'triangle' or 'quadrilateral'"
+                "MeshIntent schema 1.1 cell_shape must be 'line'"
             )
         if isinstance(self.order, bool) or type(self.order) is not int:
             raise TypeError("MeshIntent order must be an integer")
-        if self.order not in {1, 2}:
+        if self.cell_shape == "line" and self.order != 1:
+            raise ValueError("line MeshIntent order must be 1")
+        if self.cell_shape != "line" and self.order not in {1, 2}:
             raise ValueError("MeshIntent order must be 1 or 2")
+        if self.cell_shape == "line" and (
+            type(self.line_element_type) is not str
+            or self.line_element_type not in _LINE_ELEMENT_TYPES
+        ):
+            raise ValueError(
+                "line MeshIntent requires line_element_type Truss2 or Beam2"
+            )
         explicit = self.global_size is not None
         automatic = self.auto_level is not None
         if explicit == automatic:
@@ -118,6 +154,7 @@ class MeshIntent:
                 order=self.order,
                 cell_shape=self.cell_shape,
                 local_controls=controls,
+                line_element_type=self.line_element_type,  # type: ignore[arg-type]
             ).local_controls,
         )
 
@@ -130,7 +167,7 @@ class MeshIntent:
         return _canonical_hash(self.to_dict())
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "schema_version": self.schema_version,
             "mode": self.mode,
             "global_size": self.global_size,
@@ -150,11 +187,15 @@ class MeshIntent:
                 for item in self.local_controls
             ],
         }
+        if self.schema_version == MESH_INTENT_SCHEMA_VERSION:
+            payload["line_element_type"] = self.line_element_type
+        return payload
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> MeshIntent:
         if not isinstance(value, Mapping):
             raise TypeError("MeshIntent payload must be an object")
+        schema_version = value.get("schema_version")
         expected = {
             "schema_version",
             "mode",
@@ -164,8 +205,14 @@ class MeshIntent:
             "order",
             "local_controls",
         }
+        if schema_version == MESH_INTENT_SCHEMA_VERSION:
+            expected.add("line_element_type")
+        elif schema_version != _LEGACY_MESH_INTENT_SCHEMA_VERSION:
+            raise ValueError("unknown MeshIntent schema_version")
         if set(value) != expected:
-            raise ValueError("MeshIntent payload fields do not match schema 1.0")
+            raise ValueError(
+                f"MeshIntent payload fields do not match schema {schema_version}"
+            )
         mode = value["mode"]
         if mode not in {"explicit", "automatic"}:
             raise ValueError("MeshIntent mode must be explicit or automatic")
@@ -205,12 +252,13 @@ class MeshIntent:
                 )
             )
         intent = cls(
-            schema_version=str(value["schema_version"]),
-            cell_shape=str(value["cell_shape"]),
+            schema_version=value["schema_version"],  # type: ignore[arg-type]
+            cell_shape=value["cell_shape"],  # type: ignore[arg-type]
             order=value["order"],  # type: ignore[arg-type]
             global_size=value["global_size"],  # type: ignore[arg-type]
             auto_level=value["auto_level"],  # type: ignore[arg-type]
             local_controls=tuple(controls),
+            line_element_type=value.get("line_element_type"),  # type: ignore[arg-type]
         )
         if intent.mode != mode:
             raise ValueError("MeshIntent mode conflicts with its size selector")
@@ -220,8 +268,12 @@ class MeshIntent:
         if not isinstance(recipe, NATIVE_GEOMETRY_TYPES):
             raise TypeError("recipe must be native geometry")
         dimension = geometry_dimension(recipe)
-        if dimension != 2:
-            raise ValueError("A3 MeshIntent supports two-dimensional Parts")
+        if dimension == 1 and self.cell_shape != "line":
+            raise ValueError("one-dimensional Parts require a line MeshIntent")
+        if dimension == 2 and self.cell_shape not in _PLANAR_CELL_SHAPES:
+            raise ValueError("two-dimensional Parts require a planar MeshIntent")
+        if dimension not in {1, 2}:
+            raise ValueError("MeshIntent supports one- or two-dimensional Parts")
         if self.global_size is not None:
             effective_size = self.global_size
         else:
@@ -239,8 +291,11 @@ class MeshIntent:
             order=self.order,  # type: ignore[arg-type]
             cell_shape=self.cell_shape,  # type: ignore[arg-type]
             local_controls=self.local_controls,
-            auto_level=self.auto_level,  # type: ignore[arg-type]
-            strict_cell_shape=True,
+            line_element_type=self.line_element_type,  # type: ignore[arg-type]
+            auto_level=(
+                None if self.cell_shape == "line" else self.auto_level
+            ),  # type: ignore[arg-type]
+            strict_cell_shape=self.cell_shape != "line",
         )
 
     def to_auto_mesh_spec(self) -> AutoMeshSpec | None:
@@ -249,7 +304,11 @@ class MeshIntent:
         return AutoMeshSpec(
             level=self.auto_level,  # type: ignore[arg-type]
             cell_shape=(
-                "tri" if self.cell_shape == "triangle" else "quad"
+                None
+                if self.cell_shape == "line"
+                else "tri"
+                if self.cell_shape == "triangle"
+                else "quad"
             ),
             order=self.order,  # type: ignore[arg-type]
         )
@@ -278,8 +337,12 @@ def create_mesh_proposal(
     part = next((item for item in context.parts if item.part_id == part_id), None)
     if part is None or part.suppressed:
         raise AuthoringContractError("mesh proposal target Part is unavailable")
-    if part.dimension != 2:
-        raise AuthoringContractError("A3 mesh proposal requires a 2D Part")
+    if part.dimension not in {1, 2}:
+        raise AuthoringContractError("mesh proposal requires a 1D or 2D Part")
+    if (part.dimension == 1) != (mesh_intent.cell_shape == "line"):
+        raise AuthoringContractError(
+            "mesh intent cell shape does not match the Part dimension"
+        )
     mode_value: object = (
         mesh_intent.global_size
         if mesh_intent.global_size is not None
@@ -363,6 +426,7 @@ def create_mesh_proposal(
             mode_label: mode_value,
             "cell_shape": mesh_intent.cell_shape,
             "order": mesh_intent.order,
+            "line_element_type": mesh_intent.line_element_type,
             "local_refinements": local_summary,
             "resource_level": resource_level,
             "estimate_only": True,

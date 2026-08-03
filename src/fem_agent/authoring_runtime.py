@@ -204,10 +204,14 @@ _REQUIREMENT_SPECS: dict[str, dict[str, object]] = {
     },
     "mesh_cell_shape": {
         "type": "string",
-        "enum": ["triangle", "quadrilateral"],
+        "enum": ["line", "triangle", "quadrilateral"],
     },
     "mesh_order": {"type": "integer", "enum": [1, 2]},
     "mesh_global_size": {"type": "number", "exclusiveMinimum": 0},
+    "line_element_type": {
+        "type": "string",
+        "enum": ["Truss2", "Beam2"],
+    },
     "fixed_dofs": {
         "type": "array",
         "items": {"type": "integer", "minimum": 1, "maximum": 2},
@@ -236,7 +240,9 @@ _REQUIREMENT_SPECS: dict[str, dict[str, object]] = {
         "uniqueItems": True,
     },
 }
-_REQUIRED_REQUIREMENTS = tuple(_REQUIREMENT_SPECS)
+_REQUIRED_REQUIREMENTS = tuple(
+    key for key in _REQUIREMENT_SPECS if key != "line_element_type"
+)
 _GEOMETRY_REQUIREMENTS = (
     "length_unit",
     "force_unit",
@@ -252,6 +258,12 @@ _MESH_REQUIREMENTS = (
     "mesh_cell_shape",
     "mesh_order",
     "mesh_global_size",
+)
+_LINE_MESH_REQUIREMENTS = (
+    "mesh_cell_shape",
+    "mesh_order",
+    "mesh_global_size",
+    "line_element_type",
 )
 _DEFINITION_REQUIREMENTS = (
     "modeling_assumption",
@@ -1577,8 +1589,11 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
 }
 
 
-def _stage_requirement_tool(group: str) -> ToolDefinition:
-    keys = _REQUIREMENT_GROUPS[group]
+def _stage_requirement_tool(
+    group: str,
+    keys: tuple[str, ...],
+    specs: Mapping[str, Mapping[str, object]],
+) -> ToolDefinition:
     description = (
         "Override the blank-project mm-N-MPa defaults only with geometry "
         "units explicitly supplied by the user. Complete values may be used "
@@ -1600,7 +1615,7 @@ def _stage_requirement_tool(group: str) -> ToolDefinition:
                 "requirements": {
                     "type": "object",
                     "properties": {
-                        key: _REQUIREMENT_SPECS[key] for key in keys
+                        key: specs[key] for key in keys
                     },
                     "additionalProperties": False,
                     "minProperties": 1,
@@ -1718,7 +1733,15 @@ class AuthoringWorkflowController:
                     item.name == _SET_REQUIREMENTS.name
                     and requirement_group is not None
                 ):
-                    item = _stage_requirement_tool(requirement_group)
+                    keys = self._requirement_keys(requirement_group)
+                    item = _stage_requirement_tool(
+                        requirement_group,
+                        keys,
+                        {
+                            key: self._requirement_spec(key)
+                            for key in keys
+                        },
+                    )
                 visible.append(item)
             return tuple(
                 item
@@ -2327,10 +2350,7 @@ class AuthoringWorkflowController:
         if group == "all":
             keys = _REQUIRED_REQUIREMENTS
         else:
-            try:
-                keys = _HANDLER_REQUIREMENTS[group]
-            except KeyError as exc:
-                raise ValueError("unknown requirement group") from exc
+            keys = self._requirement_keys(group, handler=True)
         return {
             item.key: item.value
             for item in self._ledger.require_confirmed(
@@ -2345,10 +2365,7 @@ class AuthoringWorkflowController:
     ) -> dict[str, object]:
         """Return a complete explicit geometry or mesh requirement group."""
 
-        try:
-            keys = _HANDLER_REQUIREMENTS[group]
-        except KeyError as exc:
-            raise ValueError("unknown requirement group") from exc
+        keys = self._requirement_keys(group, handler=True)
         values = {
             item.key: item.value
             for item in self._ledger.entries
@@ -2371,10 +2388,7 @@ class AuthoringWorkflowController:
     ) -> tuple[str, ...]:
         """Return active requirement keys supplied by local defaults."""
 
-        try:
-            keys = _HANDLER_REQUIREMENTS[group]
-        except KeyError as exc:
-            raise ValueError("unknown requirement group") from exc
+        keys = self._requirement_keys(group, handler=True)
         entries = {
             item.key: item
             for item in self._ledger.entries
@@ -2402,8 +2416,51 @@ class AuthoringWorkflowController:
             return None
         return _REQUIREMENT_GATE_BY_STAGE.get(stage)
 
+    def _active_part_dimension(self) -> int | None:
+        context = self._observed_context
+        if context is None or context.active_part_id is None:
+            return None
+        part = next(
+            (
+                item
+                for item in context.parts
+                if item.part_id == context.active_part_id and not item.suppressed
+            ),
+            None,
+        )
+        return None if part is None else part.dimension
+
+    def _requirement_keys(
+        self,
+        group: str,
+        *,
+        handler: bool = False,
+    ) -> tuple[str, ...]:
+        source = _HANDLER_REQUIREMENTS if handler else _REQUIREMENT_GROUPS
+        try:
+            keys = source[group]
+        except KeyError as exc:
+            raise ValueError("unknown requirement group") from exc
+        if group == "mesh" and self._active_part_dimension() == 1:
+            return _LINE_MESH_REQUIREMENTS
+        return keys
+
+    def _requirement_spec(self, key: str) -> Mapping[str, object]:
+        spec = _REQUIREMENT_SPECS[key]
+        dimension = self._active_part_dimension()
+        if key == "mesh_cell_shape":
+            if dimension == 1:
+                return {"type": "string", "enum": ["line"]}
+            return {
+                "type": "string",
+                "enum": ["triangle", "quadrilateral"],
+            }
+        if key == "mesh_order" and dimension == 1:
+            return {"type": "integer", "enum": [1]}
+        return spec
+
     def _requirement_group_complete(self, group: str) -> bool:
-        required = set(_REQUIREMENT_GROUPS[group])
+        required = set(self._requirement_keys(group))
         recorded = {
             item.key
             for item in self._ledger.entries
@@ -2491,7 +2548,7 @@ class AuthoringWorkflowController:
         required = (
             ()
             if requirement_group is None
-            else _REQUIREMENT_GROUPS[requirement_group]
+            else self._requirement_keys(requirement_group)
         )
         recorded = {
             item.key
@@ -2536,7 +2593,7 @@ class AuthoringWorkflowController:
         requirement_group = self._current_requirement_group()
         if requirement_group is None:
             raise ValueError("there is no active requirement stage")
-        allowed = set(_REQUIREMENT_GROUPS[requirement_group])
+        allowed = set(self._requirement_keys(requirement_group))
         unknown = set(raw_requirements) - set(_REQUIREMENT_SPECS)
         if unknown:
             raise ValueError(
@@ -2552,12 +2609,12 @@ class AuthoringWorkflowController:
             _validate_requirement_value(
                 key,
                 value,
-                _REQUIREMENT_SPECS[key],
+                self._requirement_spec(key),
             )
         for key, value in raw_requirements.items():
             self._ledger.record(
                 key,
-                field_type=str(_REQUIREMENT_SPECS[key]["type"]),
+                field_type=str(self._requirement_spec(key)["type"]),
                 stage=_requirement_stage(key),
                 value=value,
                 source_turn_id=turn_id,
@@ -2574,7 +2631,7 @@ class AuthoringWorkflowController:
         }
         missing = [
             key
-            for key in _REQUIREMENT_GROUPS[requirement_group]
+            for key in self._requirement_keys(requirement_group)
             if key not in recorded
         ]
         return AuthoringToolOutcome(
@@ -2592,7 +2649,7 @@ class AuthoringWorkflowController:
         requirement_group = self._current_requirement_group()
         if requirement_group is None:
             raise ValueError("there is no active requirement stage")
-        required = _REQUIREMENT_GROUPS[requirement_group]
+        required = self._requirement_keys(requirement_group)
         recorded = {
             item.key
             for item in self._ledger.entries
@@ -3159,6 +3216,8 @@ def _validate_supported_requirement_combination(
 
 
 def _requirement_stage(key: str) -> str:
+    if key == "line_element_type":
+        return "mesh"
     for stage, keys in _REQUIREMENT_GROUPS.items():
         if key in keys:
             return stage

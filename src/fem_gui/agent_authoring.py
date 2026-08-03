@@ -3036,6 +3036,11 @@ def create_session_authoring_workflow_controller(
             int(requirements["mesh_order"]),
             global_size=float(requirements["mesh_global_size"]),
             local_controls=tuple(local_controls),
+            line_element_type=(
+                str(requirements["line_element_type"])
+                if part.dimension == 1
+                else None
+            ),
         )
         suffix = str(metadata.pop("identity_suffix"))
         proposal = create_mesh_proposal(
@@ -3052,6 +3057,11 @@ def create_session_authoring_workflow_controller(
                 f"{requirements['mesh_cell_shape']}网格；全局尺寸 "
                 f"{requirements['mesh_global_size']}；局部加密 "
                 f"{len(local_controls)} 项"
+                + (
+                    f"；线单元 {requirements['line_element_type']}"
+                    if part.dimension == 1
+                    else ""
+                )
             ),
             impact="确认后划分网格，成功时安装网格并刷新 GUI",
             confirm_label="开始划分",
