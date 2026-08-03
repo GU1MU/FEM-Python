@@ -14,13 +14,16 @@ from dataclasses import dataclass, replace
 from typing import Protocol
 
 from fem.application import (
+    BeamOrientation,
     ModelDefinitions,
     NamedRegion,
     RegionRef,
+    RegionAssignment,
     ScopedDefinitionBatch,
     UnitContext,
     describe_model_capabilities,
     describe_region_capabilities,
+    evaluate_native_assignment_candidate,
     validate_logical_reference,
 )
 from fem.application.native_scope_materialization import (
@@ -38,6 +41,7 @@ from fem.geometry import (
     geometry_dimension,
     namespace_part_logical_id,
 )
+from fem.materials import BEAM_SECTION_TYPES, resolve_section_properties
 
 from .analysis_authoring import (
     AnalysisAuthoringError,
@@ -400,9 +404,20 @@ def _create_analysis_child_patch(
             raise AnalysisAuthoringError(
                 "displacement DOF exceeds the current model capability"
             )
-        if confirmed.unit != units.length:
+        if confirmed.last_component <= 3 and confirmed.unit != units.length:
             raise AnalysisAuthoringError(
                 "displacement unit must exactly match the project length unit"
+            )
+        if confirmed.first_component >= 4 and confirmed.unit != "rad":
+            raise AnalysisAuthoringError(
+                "rotation unit must be rad"
+            )
+        if confirmed.first_component <= 3 < confirmed.last_component and (
+            confirmed.value != 0.0 or confirmed.unit != units.length
+        ):
+            raise AnalysisAuthoringError(
+                "a mixed translation/rotation range must be a zero fixed "
+                "constraint using the project length unit"
             )
         child = DisplacementConstraint(
             confirmed.target_scope,
@@ -580,23 +595,51 @@ def _validate_non_analysis_action(
         planar_fields = {
             "name", "material", "plane_type", "thickness", "properties"
         }
-        truss_fields = {"name", "material", "section_type", "properties"}
+        line_fields = {"name", "material", "section_type", "properties"}
         if set(values) == planar_fields:
             return
-        if set(values) != truss_fields:
+        if set(values) != line_fields:
             raise ValueError(
-                "section requires either planar properties or a truss area"
+                "section requires either planar properties or strict line properties"
             )
-        if values["section_type"] != "truss":
-            raise ValueError("line section_type must be truss")
+        section_type = _enum(
+            values["section_type"],
+            "section_type",
+            {"truss", *BEAM_SECTION_TYPES},
+        )
         properties = _mapping(values["properties"], "section properties")
-        _exact_fields(properties, {"area"})
-        if _finite(properties["area"], "truss section area") <= 0.0:
-            raise ValueError("truss section area must be positive")
-        _require_elastic_material(snapshot, values["material"])
+        if section_type == "truss":
+            _exact_fields(properties, {"area"})
+            if _finite(properties["area"], "truss section area") <= 0.0:
+                raise ValueError("truss section area must be positive")
+            _require_elastic_material(snapshot, values["material"])
+            return
+        expected_fields = {
+            "rectangle": {"height", "width"},
+            "solid_circle": {"radius"},
+            "hollow_circle": {"outer_radius", "inner_radius"},
+        }[section_type]
+        _exact_fields(properties, expected_fields)
+        material_properties = _elastic_material_properties(
+            snapshot,
+            values["material"],
+        )
+        resolve_section_properties(
+            "Beam2",
+            material_properties,
+            section_type,
+            properties,
+        )
         return
     if action == "assign_section":
-        _exact_fields(values, {"section_name", "region_name"})
+        supplied = set(values)
+        if supplied not in (
+            {"section_name", "region_name"},
+            {"section_name", "region_name", "local_y_reference"},
+        ):
+            raise ValueError(
+                "section assignment fields do not match the strict schema"
+            )
         _require_supported_section_assignment(snapshot, values)
         return
     if action == "create_static_step":
@@ -750,18 +793,26 @@ def _validate_load_dimension_and_unit(
     if load.load_type == "nodal":
         if int(load.component or 0) > dofs_per_node:
             raise AnalysisAuthoringError(
-                "nodal load component exceeds the current model capability"
+                "load component must be an integer from 1 to "
+                f"{dofs_per_node} for the current model capability"
             )
         expected_direction = {
             1: "global_x",
             2: "global_y",
             3: "global_z",
+            4: "global_rx",
+            5: "global_ry",
+            6: "global_rz",
         }[int(load.component)]
         if load.direction != expected_direction:
             raise AnalysisAuthoringError(
                 "nodal load direction does not match its component"
             )
-        expected_unit = units.force
+        expected_unit = (
+            units.force
+            if int(load.component) <= 3
+            else f"{units.force}*{units.length}"
+        )
     elif load.load_type.startswith("edge_"):
         if dimension != 2:
             raise AnalysisAuthoringError(
@@ -823,6 +874,20 @@ def _model_dofs_per_node(snapshot: _Snapshot) -> int:
 
 
 def _require_elastic_material(snapshot: _Snapshot, value: object) -> None:
+    properties = _elastic_material_properties(snapshot, value)
+    if "E" not in properties or "nu" not in properties:
+        raise ValueError("truss section requires an elastic material")
+    if _finite(properties["E"], "Young modulus") <= 0.0:
+        raise ValueError("Young modulus must be positive")
+    poisson = _finite(properties["nu"], "Poisson ratio")
+    if not -1.0 < poisson < 0.5:
+        raise ValueError("Poisson ratio must be between -1 and 0.5")
+
+
+def _elastic_material_properties(
+    snapshot: _Snapshot,
+    value: object,
+) -> Mapping[str, object]:
     material_name = _nonblank(value, "section material")
     matches = [
         material
@@ -831,17 +896,10 @@ def _require_elastic_material(snapshot: _Snapshot, value: object) -> None:
     ]
     if len(matches) != 1:
         raise ValueError("section material does not exist")
-    properties = _mapping(
+    return _mapping(
         getattr(matches[0], "properties", None),
         "material properties",
     )
-    if "E" not in properties or "nu" not in properties:
-        raise ValueError("truss section requires an elastic material")
-    if _finite(properties["E"], "Young modulus") <= 0.0:
-        raise ValueError("Young modulus must be positive")
-    poisson = _finite(properties["nu"], "Poisson ratio")
-    if not -1.0 < poisson < 0.5:
-        raise ValueError("Poisson ratio must be between -1 and 0.5")
 
 
 def _require_supported_section_assignment(
@@ -856,7 +914,15 @@ def _require_supported_section_assignment(
     ]
     if len(matches) != 1:
         raise ValueError("assigned section does not exist")
-    if str(getattr(matches[0], "section_type", "")).casefold() != "truss":
+    section_type = str(getattr(matches[0], "section_type", "")).casefold()
+    if (
+        "local_y_reference" in values
+        and section_type not in BEAM_SECTION_TYPES
+    ):
+        raise ValueError(
+            "Beam local-y reference is valid only for a Beam2 section"
+        )
+    if section_type not in {"truss", *BEAM_SECTION_TYPES}:
         return
     region_name = _nonblank(values["region_name"], "region name")
     model = getattr(snapshot.artifact, "model", None)
@@ -866,14 +932,52 @@ def _require_supported_section_assignment(
         model,
         RegionRef("element_set", region_name),
     )
+    expected_type = "Truss2" if section_type == "truss" else "Beam2"
     if (
         not capability.compatible
         or not capability.homogeneous
-        or capability.canonical_element_types != ("Truss2",)
+        or capability.canonical_element_types != (expected_type,)
     ):
         raise ValueError(
-            "truss section can target only a non-empty pure Truss2 element region"
+            f"{section_type} section can target only a non-empty pure "
+            f"{expected_type} element region"
         )
+    if section_type in BEAM_SECTION_TYPES:
+        orientation = (
+            None
+            if "local_y_reference" not in values
+            else BeamOrientation(
+                _strict_vector3(
+                    values["local_y_reference"],
+                    "Beam local-y reference",
+                )
+            )
+        )
+        decision = evaluate_native_assignment_candidate(
+            snapshot,
+            RegionAssignment(section_name, region_name, orientation),
+        )
+        if not decision.can_submit:
+            message = "; ".join(
+                diagnostic.message for diagnostic in decision.diagnostics
+            )
+            raise ValueError(message or "Beam orientation is invalid")
+
+
+def _strict_vector3(value: object, label: str) -> tuple[float, float, float]:
+    if isinstance(value, (str, bytes, bytearray)) or not isinstance(
+        value,
+        Sequence,
+    ):
+        raise TypeError(f"{label} must be an array of three finite numbers")
+    components = tuple(value)
+    if len(components) != 3:
+        raise ValueError(f"{label} must contain exactly three components")
+    result = tuple(
+        _finite(component, f"{label}[{index}]")
+        for index, component in enumerate(components)
+    )
+    return result  # type: ignore[return-value]
 
 
 def _one_part(snapshot: _Snapshot, part_id: object) -> object:
@@ -1000,8 +1104,8 @@ def _optional_finite(value: object, label: str) -> float | None:
 
 
 def _component(value: object, label: str) -> int:
-    if type(value) is not int or not 1 <= value <= 3:
-        raise ValueError(f"{label} must be an integer from 1 to 3")
+    if type(value) is not int or not 1 <= value <= 6:
+        raise ValueError(f"{label} must be an integer from 1 to 6")
     return value
 
 

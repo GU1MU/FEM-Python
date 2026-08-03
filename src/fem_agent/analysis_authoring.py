@@ -88,6 +88,16 @@ class ConfirmedDisplacement:
             )
 
     def summary(self) -> dict[str, object]:
+        translations = tuple(
+            component
+            for component in range(self.first_component, self.last_component + 1)
+            if component <= 3
+        )
+        rotations = tuple(
+            component
+            for component in range(self.first_component, self.last_component + 1)
+            if component >= 4
+        )
         return {
             "name": self.name,
             "step": self.step_name,
@@ -102,6 +112,10 @@ class ConfirmedDisplacement:
                 if self.first_component == self.last_component
                 else f"U{self.first_component}..U{self.last_component}"
             ),
+            "translation_components": list(translations),
+            "rotation_components": list(rotations),
+            "translation_unit": self.unit if translations else None,
+            "rotation_unit": "rad" if rotations else None,
             "signed_value": self.value,
             "unit": self.unit,
             "distribution": self.distribution,
@@ -207,6 +221,11 @@ class ConfirmedLoad:
             )
 
     def summary(self) -> dict[str, object]:
+        nodal_family = (
+            None
+            if self.load_type != "nodal"
+            else "force" if int(self.component or 0) <= 3 else "moment"
+        )
         return {
             "name": self.name,
             "step": self.step_name,
@@ -214,6 +233,7 @@ class ConfirmedLoad:
             "entity_type": self.entity_type,
             "load_type": self.load_type,
             "component": self.component,
+            "nodal_family": nodal_family,
             "direction": self.direction,
             "signed_components": list(self.vector),
             "signed_magnitude": self.magnitude,

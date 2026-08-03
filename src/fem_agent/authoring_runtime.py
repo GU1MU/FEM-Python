@@ -907,12 +907,12 @@ def _boundary_parameters(
             "first_component": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 3,
+                "maximum": 6,
             },
             "last_component": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 3,
+                "maximum": 6,
             },
             "value": {"type": "number"},
             "unit": _UNIT_SCHEMA,
@@ -968,6 +968,9 @@ _LOAD_PARAMETER_SCHEMAS = [
         (1, "global_x"),
         (2, "global_y"),
         (3, "global_z"),
+        (4, "global_rx"),
+        (5, "global_ry"),
+        (6, "global_rz"),
     )
 ] + [
     _load_parameters(
@@ -1128,16 +1131,94 @@ _APPLY_DEFINITION = _tool(
                                 ),
                             }
                         ),
+                        _exact_schema(
+                            {
+                                "name": _controlled_name_schema("截面"),
+                                "material": _controlled_name_schema("材料"),
+                                "section_type": {
+                                    "type": "string",
+                                    "const": "rectangle",
+                                },
+                                "properties": _exact_schema(
+                                    {
+                                        "height": {
+                                            "type": "number",
+                                            "exclusiveMinimum": 0,
+                                        },
+                                        "width": {
+                                            "type": "number",
+                                            "exclusiveMinimum": 0,
+                                        },
+                                    }
+                                ),
+                            }
+                        ),
+                        _exact_schema(
+                            {
+                                "name": _controlled_name_schema("截面"),
+                                "material": _controlled_name_schema("材料"),
+                                "section_type": {
+                                    "type": "string",
+                                    "const": "solid_circle",
+                                },
+                                "properties": _exact_schema(
+                                    {
+                                        "radius": {
+                                            "type": "number",
+                                            "exclusiveMinimum": 0,
+                                        }
+                                    }
+                                ),
+                            }
+                        ),
+                        _exact_schema(
+                            {
+                                "name": _controlled_name_schema("截面"),
+                                "material": _controlled_name_schema("材料"),
+                                "section_type": {
+                                    "type": "string",
+                                    "const": "hollow_circle",
+                                },
+                                "properties": _exact_schema(
+                                    {
+                                        "outer_radius": {
+                                            "type": "number",
+                                            "exclusiveMinimum": 0,
+                                        },
+                                        "inner_radius": {
+                                            "type": "number",
+                                            "exclusiveMinimum": 0,
+                                        },
+                                    }
+                                ),
+                            }
+                        ),
                     ]
                 ),
             ),
             _definition_action_schema(
                 "assign_section",
-                _exact_schema(
-                    {
-                        "section_name": _controlled_name_schema("截面"),
-                        "region_name": _controlled_name_schema("域"),
-                    }
+                _one_of_object_schema(
+                    [
+                        _exact_schema(
+                            {
+                                "section_name": _controlled_name_schema("截面"),
+                                "region_name": _controlled_name_schema("域"),
+                            }
+                        ),
+                        _exact_schema(
+                            {
+                                "section_name": _controlled_name_schema("截面"),
+                                "region_name": _controlled_name_schema("域"),
+                                "local_y_reference": {
+                                    "type": "array",
+                                    "items": {"type": "number"},
+                                    "minItems": 3,
+                                    "maxItems": 3,
+                                },
+                            }
+                        ),
+                    ]
                 ),
             ),
             _definition_action_schema(

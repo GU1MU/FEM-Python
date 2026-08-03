@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from fem.application import (
+    BeamOrientation,
     MeshEntityRef,
     ModelDefinitions,
     NamedRegion,
@@ -999,11 +1000,6 @@ def _decode_reference(
 def _encode_definitions(
     definitions: ModelDefinitions,
 ) -> dict[str, object]:
-    for assignment in definitions.assignments:
-        if assignment.beam_orientation is not None:
-            raise ValueError(
-                "A4 patch does not edit oriented beam assignments"
-            )
     return {
         "materials": [
             {
@@ -1022,14 +1018,23 @@ def _encode_definitions(
             for section in definitions.sections
         ],
         "assignments": [
-            {
-                "section_name": assignment.section_name,
-                "region_name": assignment.region_name,
-            }
+            _encode_assignment(assignment)
             for assignment in definitions.assignments
         ],
         "steps": [_encode_step(step) for step in definitions.steps],
     }
+
+
+def _encode_assignment(assignment: RegionAssignment) -> dict[str, object]:
+    encoded: dict[str, object] = {
+        "section_name": assignment.section_name,
+        "region_name": assignment.region_name,
+    }
+    if assignment.beam_orientation is not None:
+        encoded["beam_orientation"] = list(
+            assignment.beam_orientation.local_y_reference
+        )
+    return encoded
 
 
 def _decode_definitions(
@@ -1085,15 +1090,30 @@ def _decode_definitions(
     assignments = []
     for row in _require_list(data["assignments"], "assignments"):
         item = _require_mapping(row, "assignment")
-        _require_keys(
-            item,
+        fields = set(item)
+        if fields not in (
             {"section_name", "region_name"},
-            "assignment",
-        )
+            {"section_name", "region_name", "beam_orientation"},
+        ):
+            raise ValueError(
+                "assignment fields do not match the strict A4/A5 schema"
+            )
+        has_orientation = "beam_orientation" in item
+        orientation = item.get("beam_orientation")
         assignments.append(
             RegionAssignment(
                 str(item["section_name"]),
                 str(item["region_name"]),
+                (
+                    None
+                    if not has_orientation
+                    else BeamOrientation(
+                        _strict_number_array(
+                            orientation,
+                            "beam orientation",
+                        )
+                    )
+                ),
             )
         )
     return ModelDefinitions(

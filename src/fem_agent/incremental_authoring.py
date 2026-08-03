@@ -9,6 +9,7 @@ import math
 from typing import Protocol
 
 from fem.application import (
+    BeamOrientation,
     ModelDefinitions,
     NamedRegion,
     RegionAssignment,
@@ -107,14 +108,14 @@ def create_incremental_definition_patch(
         planar_fields = {
             "name", "material", "plane_type", "thickness", "properties"
         }
-        truss_fields = {"name", "material", "section_type", "properties"}
+        line_fields = {"name", "material", "section_type", "properties"}
         supplied_fields = frozenset(values)
         if supplied_fields not in {
             frozenset(planar_fields),
-            frozenset(truss_fields),
+            frozenset(line_fields),
         }:
             raise ValueError(
-                "section requires either planar properties or a truss area"
+                "section requires either planar properties or strict line properties"
             )
         name = _controlled_name(values["name"], "section name", "截面")
         material = _nonblank(values["material"], "section material")
@@ -146,32 +147,61 @@ def create_incremental_definition_patch(
             section_type = _enum(
                 values["section_type"],
                 "section_type",
-                {"truss"},
+                {"truss", "rectangle", "solid_circle", "hollow_circle"},
             )
-            truss_properties = _mapping(
+            line_properties = _mapping(
                 values["properties"],
                 "section properties",
             )
-            _exact_fields(truss_properties, {"area"})
+            expected_fields = {
+                "truss": {"area"},
+                "rectangle": {"height", "width"},
+                "solid_circle": {"radius"},
+                "hollow_circle": {"outer_radius", "inner_radius"},
+            }[section_type]
+            _exact_fields(line_properties, expected_fields)
             section_properties = {
-                "area": _positive(
-                    truss_properties["area"],
-                    "truss section area",
+                field: _positive(
+                    line_properties[field],
+                    f"{section_type} section {field}",
                 )
+                for field in expected_fields
             }
+            if (
+                section_type == "hollow_circle"
+                and section_properties["inner_radius"]
+                >= section_properties["outer_radius"]
+            ):
+                raise ValueError(
+                    "hollow_circle inner_radius must be smaller than outer_radius"
+                )
         sections = sections + (
             SectionDefinition(name, material, section_type, section_properties),
         )
         created_names = (name,)
     elif normalized_action == "assign_section":
-        _exact_fields(values, {"section_name", "region_name"})
+        supplied = set(values)
+        if supplied not in (
+            {"section_name", "region_name"},
+            {"section_name", "region_name", "local_y_reference"},
+        ):
+            raise ValueError(
+                "section assignment fields do not match the strict schema"
+            )
         section_name = _nonblank(values["section_name"], "section name")
         region_name = _nonblank(values["region_name"], "region name")
         if section_name not in {str(item.name) for item in sections}:
             raise ValueError("assigned section does not exist")
         if region_name not in {item.name for item in regions}:
             raise ValueError("assignment region does not exist")
-        assignment = RegionAssignment(section_name, region_name)
+        orientation = (
+            None
+            if "local_y_reference" not in values
+            else BeamOrientation(
+                _vector(values["local_y_reference"], "Beam local-y reference", 3)
+            )
+        )
+        assignment = RegionAssignment(section_name, region_name, orientation)
         if assignment in assignments:
             raise ValueError("section assignment already exists")
         assignments = assignments + (assignment,)
