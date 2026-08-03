@@ -23,6 +23,9 @@ from fem.geometry import (
     SketchPlane,
     SketchPoint,
     SketchRectangle,
+    WireGeometry,
+    WireMember,
+    WirePoint,
     geometry_dimension,
     legacy_sketch_to_strict,
 )
@@ -60,12 +63,16 @@ class StaticGeometryPreview:
     points: tuple[tuple[float, float, float], ...]
     lines: tuple[tuple[int, ...], ...]
     bounds: tuple[float, float, float, float, float, float]
+    point_names: tuple[str, ...] = ()
+    member_names: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.dimension not in {2, 3}:
-            raise ValueError("preview dimension must be 2 or 3")
+        if self.dimension not in {1, 2, 3}:
+            raise ValueError("preview dimension must be 1, 2, or 3")
         points = tuple(self.points)
         lines = tuple(self.lines)
+        point_names = tuple(self.point_names)
+        member_names = tuple(self.member_names)
         if not points or len(points) > _MAX_PREVIEW_POINTS:
             raise ValueError("preview point count is outside the A2 bound")
         if any(
@@ -83,9 +90,17 @@ class StaticGeometryPreview:
             not math.isfinite(float(value)) for value in self.bounds
         ):
             raise ValueError("preview bounds must contain six finite values")
+        if point_names and len(point_names) != len(points):
+            raise ValueError("preview point names must match preview points")
+        if member_names and len(member_names) != len(lines):
+            raise ValueError("preview member names must match preview lines")
+        if any(not name.strip() for name in (*point_names, *member_names)):
+            raise ValueError("preview entity names must not be blank")
+        object.__setattr__(self, "point_names", point_names)
+        object.__setattr__(self, "member_names", member_names)
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload = {
             "kind": "bounded_wireframe",
             "dimension": self.dimension,
             "point_count": len(self.points),
@@ -94,6 +109,11 @@ class StaticGeometryPreview:
             "lines": [list(line) for line in self.lines],
             "bounds": list(self.bounds),
         }
+        if self.point_names:
+            payload["point_names"] = list(self.point_names)
+        if self.member_names:
+            payload["member_names"] = list(self.member_names)
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,6 +357,30 @@ def cylinder_geometry(
     return _draft(
         recipe,
         {"radius": recipe.radius, "height": recipe.height},
+    )
+
+
+def wire_geometry(
+    name: str,
+    *,
+    points: Sequence[WirePoint],
+    members: Sequence[WireMember],
+) -> GeometryDraft:
+    """Build one bounded spatial wire from stable named entities."""
+
+    point_values = tuple(points)
+    member_values = tuple(members)
+    if not 2 <= len(point_values) <= _MAX_PREVIEW_POINTS:
+        raise ValueError("wire points must contain between 2 and 128 items")
+    if not 1 <= len(member_values) <= _MAX_PREVIEW_POINTS:
+        raise ValueError("wire members must contain between 1 and 128 items")
+    recipe = WireGeometry(name, point_values, member_values)
+    return _draft(
+        recipe,
+        {
+            "point_count": float(len(recipe.points)),
+            "member_count": float(len(recipe.members)),
+        },
     )
 
 
@@ -881,6 +925,28 @@ def planar_geometry_catalog(recipe: object) -> dict[str, object]:
 
 
 def geometry_recipe_to_payload(recipe: object) -> dict[str, object]:
+    if type(recipe) is WireGeometry:
+        return {
+            "kind": "wire",
+            "name": recipe.name,
+            "points": [
+                {
+                    "name": point.name,
+                    "x": point.x,
+                    "y": point.y,
+                    "z": point.z,
+                }
+                for point in recipe.points
+            ],
+            "members": [
+                {
+                    "name": member.name,
+                    "start": member.start,
+                    "end": member.end,
+                }
+                for member in recipe.members
+            ],
+        }
     if type(recipe) is RectangleGeometry:
         return {
             "kind": "rectangle",
@@ -972,9 +1038,43 @@ def geometry_recipe_from_payload(value: object) -> object:
         "translated": {"kind", "base", "dx", "dy", "dz"},
         "rotated": {"kind", "base", "axis", "angle_degrees"},
         "planar_sketch": {"kind", "name", "plane", "points", "curves"},
+        "wire": {"kind", "name", "points", "members"},
     }
     if kind not in fields or set(value) != fields[kind]:  # type: ignore[index]
         raise ValueError("geometry recipe fields do not match the A2 schema")
+    if kind == "wire":
+        points = value["points"]
+        members = value["members"]
+        if (
+            not isinstance(points, list)
+            or not isinstance(members, list)
+            or not 2 <= len(points) <= _MAX_PREVIEW_POINTS
+            or not 1 <= len(members) <= _MAX_PREVIEW_POINTS
+        ):
+            raise ValueError("wire entities exceed the bounded schema")
+        if any(
+            not isinstance(item, Mapping)
+            or set(item) != {"name", "x", "y", "z"}
+            for item in points
+        ):
+            raise ValueError("wire point fields do not match")
+        if any(
+            not isinstance(item, Mapping)
+            or set(item) != {"name", "start", "end"}
+            for item in members
+        ):
+            raise ValueError("wire member fields do not match")
+        return WireGeometry(
+            value["name"],
+            tuple(
+                WirePoint(item["name"], item["x"], item["y"], item["z"])
+                for item in points
+            ),
+            tuple(
+                WireMember(item["name"], item["start"], item["end"])
+                for item in members
+            ),
+        )
     if kind == "rectangle":
         return RectangleGeometry(value["name"], value["width"], value["height"])
     if kind == "disk":
@@ -1077,7 +1177,13 @@ def _preview(recipe: object) -> StaticGeometryPreview:
         points = tuple(
             (x + recipe.dx, y + recipe.dy, z + recipe.dz) for x, y, z in base.points
         )
-        return _make_preview(base.dimension, points, base.lines)
+        return _make_preview(
+            base.dimension,
+            points,
+            base.lines,
+            point_names=base.point_names,
+            member_names=base.member_names,
+        )
     if type(recipe) is RotatedGeometry:
         base = _preview(recipe.base)
         angle = math.radians(recipe.angle_degrees)
@@ -1092,7 +1198,25 @@ def _preview(recipe: object) -> StaticGeometryPreview:
             return x * cosine - y * sine, x * sine + y * cosine, z
 
         return _make_preview(
-            base.dimension, tuple(map(rotated, base.points)), base.lines
+            base.dimension,
+            tuple(map(rotated, base.points)),
+            base.lines,
+            point_names=base.point_names,
+            member_names=base.member_names,
+        )
+    if type(recipe) is WireGeometry:
+        point_indexes = {
+            point.name: index for index, point in enumerate(recipe.points)
+        }
+        return _make_preview(
+            1,
+            tuple((point.x, point.y, point.z) for point in recipe.points),
+            tuple(
+                (point_indexes[member.start], point_indexes[member.end])
+                for member in recipe.members
+            ),
+            point_names=tuple(point.name for point in recipe.points),
+            member_names=tuple(member.name for member in recipe.members),
         )
     if type(recipe) is RectangleGeometry:
         points = (
@@ -1289,6 +1413,9 @@ def _make_preview(
     dimension: int,
     points: tuple[tuple[float, float, float], ...],
     lines: tuple[tuple[int, ...], ...],
+    *,
+    point_names: tuple[str, ...] = (),
+    member_names: tuple[str, ...] = (),
 ) -> StaticGeometryPreview:
     xs = tuple(point[0] for point in points)
     ys = tuple(point[1] for point in points)
@@ -1298,6 +1425,8 @@ def _make_preview(
         points=points,
         lines=lines,
         bounds=(min(xs), max(xs), min(ys), max(ys), min(zs), max(zs)),
+        point_names=point_names,
+        member_names=member_names,
     )
 
 
@@ -1464,4 +1593,5 @@ __all__ = [
     "translate_geometry",
     "update_planar_circle",
     "update_planar_point",
+    "wire_geometry",
 ]

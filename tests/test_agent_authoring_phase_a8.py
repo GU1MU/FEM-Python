@@ -498,7 +498,7 @@ def test_a8_geometry_uses_one_operation_confirmation_without_requirement_review(
     assert [
         schema["properties"]["kind"]["const"]
         for schema in geometry_schemas
-    ] == ["planar_profiles", "box", "cylinder"]
+    ] == ["wire", "planar_profiles", "box", "cylinder"]
 
     prepared = _dispatch(controller, "prepare_geometry_proposal", {}, 2)
     assert prepared.ok

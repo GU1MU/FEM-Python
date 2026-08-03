@@ -50,6 +50,7 @@ from .geometry_authoring import (
     translate_geometry,
     update_planar_circle,
     update_planar_point,
+    wire_geometry,
 )
 from .definition_authoring import (
     PlateScopeSet,
@@ -197,6 +198,7 @@ __all__ = [
     "translate_geometry",
     "update_planar_circle",
     "update_planar_point",
+    "wire_geometry",
     "validation_stamp_for_snapshot",
     "SCHEMA_VERSION",
 ]

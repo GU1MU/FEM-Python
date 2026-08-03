@@ -365,7 +365,8 @@ _PREPARE_GEOMETRY = _tool(
     "prepare_geometry_proposal",
     (
         "Build and present a revision-bound geometry proposal from general "
-        "planar profiles or a supported solid primitive. Record the project "
+        "planar profiles, a named spatial wire, or a supported solid primitive. "
+        "Record the project "
         "unit context first. The geometry is not added until the local GUI "
         "control is clicked."
     ),
@@ -379,6 +380,61 @@ _PREPARE_GEOMETRY = _tool(
             },
             "geometry": {
                 "oneOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"const": "wire"},
+                            "points": {
+                                "type": "array",
+                                "minItems": 2,
+                                "maxItems": 128,
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 96,
+                                        },
+                                        "x": {"type": "number"},
+                                        "y": {"type": "number"},
+                                        "z": {"type": "number"},
+                                    },
+                                    "required": ["name", "x", "y", "z"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                            "members": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 128,
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 96,
+                                        },
+                                        "start": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 96,
+                                        },
+                                        "end": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 96,
+                                        },
+                                    },
+                                    "required": ["name", "start", "end"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                        },
+                        "required": ["kind", "points", "members"],
+                        "additionalProperties": False,
+                    },
                     {
                         "type": "object",
                         "properties": {

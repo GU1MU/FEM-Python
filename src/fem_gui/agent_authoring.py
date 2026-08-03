@@ -93,6 +93,7 @@ from fem_agent.geometry_authoring import (
     translate_geometry,
     update_planar_circle,
     update_planar_point,
+    wire_geometry,
 )
 from fem_agent.mesh_authoring import MeshIntent, create_mesh_proposal
 from fem_agent.incremental_authoring import (
@@ -122,6 +123,8 @@ from fem.geometry import (
     LogicalEntityRef,
     SketchCircle,
     SketchRectangle,
+    WireMember,
+    WirePoint,
     describe_recipe_topology,
     namespace_part_logical_id,
     resolve_target_radius,
@@ -2422,7 +2425,11 @@ def create_session_authoring_workflow_controller(
         recipe_name = (
             f"草图-{part_function}"
             if kind == "planar_profiles"
-            else f"实体-{part_function}"
+            else (
+                f"线框-{part_function}"
+                if kind == "wire"
+                else f"实体-{part_function}"
+            )
         )
         if kind == "planar_profiles":
             if set(geometry) != {"kind", "profiles"}:
@@ -2544,6 +2551,52 @@ def create_session_authoring_workflow_controller(
             geometry_summary = _bounded_geometry_design_summary(
                 "2D 平面轮廓",
                 profile_summaries,
+            )
+        elif kind == "wire":
+            if set(geometry) != {"kind", "points", "members"}:
+                raise ValueError("wire geometry fields do not match")
+            raw_points = geometry["points"]
+            raw_members = geometry["members"]
+            if not isinstance(raw_points, list):
+                raise ValueError("wire points must be an array")
+            if not isinstance(raw_members, list):
+                raise ValueError("wire members must be an array")
+            points = []
+            for raw_point in raw_points:
+                if (
+                    not isinstance(raw_point, Mapping)
+                    or set(raw_point) != {"name", "x", "y", "z"}
+                ):
+                    raise ValueError("wire point fields do not match")
+                points.append(
+                    WirePoint(
+                        raw_point["name"],
+                        raw_point["x"],
+                        raw_point["y"],
+                        raw_point["z"],
+                    )
+                )
+            members = []
+            for raw_member in raw_members:
+                if (
+                    not isinstance(raw_member, Mapping)
+                    or set(raw_member) != {"name", "start", "end"}
+                ):
+                    raise ValueError("wire member fields do not match")
+                members.append(
+                    WireMember(
+                        raw_member["name"],
+                        raw_member["start"],
+                        raw_member["end"],
+                    )
+                )
+            draft = wire_geometry(
+                recipe_name,
+                points=points,
+                members=members,
+            )
+            geometry_summary = (
+                f"1D 空间线几何(点={len(points)}，杆件={len(members)})"
             )
         elif kind == "box":
             if set(geometry) != {"kind", "width", "depth", "height"}:
