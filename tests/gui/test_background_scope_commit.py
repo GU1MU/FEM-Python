@@ -236,6 +236,7 @@ def test_later_scope_edit_supersedes_running_request(
     assert second_terminal.state is BackgroundTaskState.SUCCEEDED
     assert tuple(window.document.named_regions) == ("Second",)
     assert call_count == 2
+    _process_until(lambda: not window.busy)
     assert not window.busy
     window.close()
 

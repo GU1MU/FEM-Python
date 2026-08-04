@@ -7043,6 +7043,12 @@ class FEMMainWindow(QMainWindow):
             self.viewport.hide_geometry_selection_overlay()
             self._scope_selection_overlay_active = False
         bar.finish()
+        self._selected_geometry_refs.clear()
+        self._selected_mesh_scope_refs.clear()
+        self.viewport.clear_selection()
+        self.status_panel.set_object()
+        self.actions["selected_info"].setEnabled(False)
+        self._update_action_states()
         callback = None
         if resumed_edit is not None:
             definition_key, _requested_kind, edit_steps = resumed_edit
@@ -10642,12 +10648,20 @@ class FEMMainWindow(QMainWindow):
             self._mesh_scope_selection_kind() != reference.kind
             or not additive
         ):
+            changed = self._selected_mesh_scope_refs.symmetric_difference(
+                {reference}
+            )
             self._selected_mesh_scope_refs = {reference}
         elif reference in self._selected_mesh_scope_refs:
             self._selected_mesh_scope_refs.remove(reference)
+            changed = {reference}
         else:
             self._selected_mesh_scope_refs.add(reference)
-        self._refresh_mesh_scope_selection(reference.kind)
+            changed = {reference}
+        self._refresh_mesh_scope_selection(
+            reference.kind,
+            changed_references=changed,
+        )
 
     def _on_mesh_entities_box_selected(
         self,
@@ -10670,16 +10684,29 @@ class FEMMainWindow(QMainWindow):
             self._selected_mesh_scope_refs.symmetric_difference_update(
                 selected
             )
+            changed = set(selected)
         else:
+            changed = self._selected_mesh_scope_refs.symmetric_difference(
+                selected
+            )
             self._selected_mesh_scope_refs = set(selected)
-        self._refresh_mesh_scope_selection(kind)
+        self._refresh_mesh_scope_selection(kind, changed_references=changed)
 
-    def _refresh_mesh_scope_selection(self, kind: str) -> None:
-        references = self._canonical_mesh_scope_selection()
+    def _refresh_mesh_scope_selection(
+        self,
+        kind: str,
+        *,
+        changed_references: set[MeshEntityRef] | None = None,
+    ) -> None:
+        references = self._selected_mesh_scope_refs
         self.viewport_panel.scope_creation_bar.set_selection_ready(
             bool(references)
         )
-        self.viewport.highlight_mesh_entities(references)
+        self.viewport.highlight_mesh_entities(
+            references,
+            changed_references=changed_references,
+            entity_kind=kind,
+        )
         labels = {
             "node": "节点",
             "edge": "单元边",

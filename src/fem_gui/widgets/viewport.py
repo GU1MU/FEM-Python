@@ -391,6 +391,56 @@ class PickHit:
     vtk_cell_id: int | None = None
 
 
+@dataclass(slots=True)
+class _MeshScopeHighlightPipeline:
+    """One persistent VTK mask/filter/actor chain for a mesh entity kind."""
+
+    kind: str
+    dataset: Any
+    algorithm: Any
+    mask: np.ndarray
+    vtk_mask: Any
+    actor: Any
+    selected_indices: set[int] = field(default_factory=set)
+
+    def update(self, target: set[int]) -> bool:
+        return self.update_changes(
+            {
+                index: index in target
+                for index in self.selected_indices.symmetric_difference(target)
+            }
+        )
+
+    def update_changes(self, changes: dict[int, bool]) -> bool:
+        changed = False
+        for index, selected in changes.items():
+            if (index in self.selected_indices) == selected:
+                continue
+            self.mask[index] = 1 if selected else 0
+            if selected:
+                self.selected_indices.add(index)
+            else:
+                self.selected_indices.discard(index)
+            changed = True
+        if not changed:
+            return False
+        self.vtk_mask.Modified()
+        self.dataset.Modified()
+        self.algorithm.Modified()
+        return True
+
+    def clear(self) -> bool:
+        if not self.selected_indices:
+            return False
+        for index in self.selected_indices:
+            self.mask[index] = 0
+        self.selected_indices.clear()
+        self.vtk_mask.Modified()
+        self.dataset.Modified()
+        self.algorithm.Modified()
+        return True
+
+
 @dataclass(frozen=True, slots=True)
 class WireDraftRenderData:
     """Detached display data for an incomplete wire draft."""
@@ -975,7 +1025,16 @@ class FEMViewport(QWidget):
             MeshEntityRef,
         ] = {}
         self._mesh_scope_ref_to_pick_id: dict[MeshEntityRef, int] = {}
+        self._mesh_scope_identity_to_pick_id: dict[
+            tuple[str, tuple[int, int]],
+            int,
+        ] = {}
         self._mesh_scope_pick_bindings_ready = False
+        self._mesh_scope_highlight_pipelines: dict[
+            str,
+            _MeshScopeHighlightPipeline,
+        ] = {}
+        self._mesh_scope_highlight_kind: str | None = None
         self._pick_grid = None
         self._pick_locators: dict[int, tuple[int, Any]] = {}
         self._result_render_payload: ResultRenderPayload | None = None
@@ -1046,6 +1105,12 @@ class FEMViewport(QWidget):
         self._hover_timer.setSingleShot(True)
         self._hover_timer.setInterval(40)
         self._hover_timer.timeout.connect(self._update_preselection)
+        self._mesh_scope_render_timer = QTimer(self)
+        self._mesh_scope_render_timer.setSingleShot(True)
+        self._mesh_scope_render_timer.setInterval(0)
+        self._mesh_scope_render_timer.timeout.connect(
+            self._render_mesh_scope_highlight
+        )
         self._contour = {
             "manual": False, "minimum": 0.0, "maximum": 1.0, "levels": 12,
             "colormap": ABAQUS_RAINBOW, "style": "segmented",
@@ -1490,6 +1555,7 @@ class FEMViewport(QWidget):
         self._geometry_face_body_pick_ids = ()
         self._geometry_edge_body_pick_ids = ()
         self._geometry_point_body_pick_ids = ()
+        self._reset_mesh_scope_highlight_pipelines()
         self._clear_mesh_scope_pick_bindings()
         self._pick_grid = None
         self._pick_locators.clear()
@@ -1526,6 +1592,8 @@ class FEMViewport(QWidget):
         self._grid = self._make_grid(geometry.points)
         self._pick_grid = self._grid
         self._add_base_layers(reset_camera=True, render=False)
+        self._install_mesh_scope_pick_bindings()
+        self._install_mesh_scope_highlight_pipelines()
         if refresh_symbols:
             self.show_boundary_and_loads(render=render)
         elif render:
@@ -1575,6 +1643,7 @@ class FEMViewport(QWidget):
         self._geometry_face_body_pick_ids = ()
         self._geometry_edge_body_pick_ids = ()
         self._geometry_point_body_pick_ids = ()
+        self._reset_mesh_scope_highlight_pipelines()
         self._clear_mesh_scope_pick_bindings()
         self._pick_grid = None
         self._pick_locators.clear()
@@ -3568,6 +3637,9 @@ class FEMViewport(QWidget):
                 reference = MeshEntityRef.edge(*row)
                 self._mesh_scope_pick_to_ref[("edge", pick_id)] = reference
                 self._mesh_scope_ref_to_pick_id[reference] = pick_id
+                self._mesh_scope_identity_to_pick_id[
+                    (reference.kind, reference.identity)
+                ] = pick_id
         if face_rows:
             self._mesh_scope_faces = _mesh_face_polydata(
                 _pyvista,
@@ -3578,6 +3650,9 @@ class FEMViewport(QWidget):
                 reference = MeshEntityRef.face(*row)
                 self._mesh_scope_pick_to_ref[("face", pick_id)] = reference
                 self._mesh_scope_ref_to_pick_id[reference] = pick_id
+                self._mesh_scope_identity_to_pick_id[
+                    (reference.kind, reference.identity)
+                ] = pick_id
         self._mesh_scope_pick_bindings_ready = True
 
     def _ensure_mesh_scope_pick_bindings(self) -> None:
@@ -3591,7 +3666,142 @@ class FEMViewport(QWidget):
         self._mesh_scope_edge_cells = ()
         self._mesh_scope_pick_to_ref.clear()
         self._mesh_scope_ref_to_pick_id.clear()
+        self._mesh_scope_identity_to_pick_id.clear()
         self._mesh_scope_pick_bindings_ready = False
+
+    def _reset_mesh_scope_highlight_pipelines(self) -> None:
+        self._mesh_scope_render_timer.stop()
+        self._mesh_scope_highlight_pipelines.clear()
+        self._mesh_scope_highlight_kind = None
+
+    def _install_mesh_scope_highlight_pipelines(self) -> None:
+        """Create all four empty selection pipelines once for the installed mesh."""
+
+        self._mesh_scope_highlight_pipelines.clear()
+        self._mesh_scope_highlight_kind = None
+        if (
+            self._plotter is None
+            or _pyvista is None
+            or self._geometry is None
+            or self._pick_grid is None
+        ):
+            return
+        import vtk
+
+        node_dataset = _pyvista.PolyData(np.asarray(self._geometry.points, dtype=float))
+        sources = {
+            "node": (node_dataset, vtk.vtkDataObject.FIELD_ASSOCIATION_POINTS),
+            "element": (
+                self._pick_grid,
+                vtk.vtkDataObject.FIELD_ASSOCIATION_CELLS,
+            ),
+            "edge": (
+                self._mesh_scope_edges,
+                vtk.vtkDataObject.FIELD_ASSOCIATION_CELLS,
+            ),
+            "face": (
+                self._mesh_scope_faces,
+                vtk.vtkDataObject.FIELD_ASSOCIATION_CELLS,
+            ),
+        }
+        styles: dict[str, dict[str, Any]] = {
+            "node": {
+                "point_size": 13,
+                "render_points_as_spheres": True,
+            },
+            "element": {"style": "wireframe", "line_width": 3},
+            "edge": {"line_width": 5},
+            "face": {"opacity": 0.8},
+        }
+        for kind, (dataset, association) in sources.items():
+            if dataset is None:
+                continue
+            mask = np.zeros(
+                dataset.n_points
+                if association == vtk.vtkDataObject.FIELD_ASSOCIATION_POINTS
+                else dataset.n_cells,
+                dtype=np.uint8,
+            )
+            mask_name = f"mesh_scope_{kind}_mask"
+            if association == vtk.vtkDataObject.FIELD_ASSOCIATION_POINTS:
+                dataset.point_data[mask_name] = mask
+                algorithm = vtk.vtkThresholdPoints()
+                vtk_mask = dataset.GetPointData().GetArray(mask_name)
+            else:
+                dataset.cell_data[mask_name] = mask
+                algorithm = vtk.vtkThreshold()
+                vtk_mask = dataset.GetCellData().GetArray(mask_name)
+            algorithm.SetInputData(dataset)
+            algorithm.SetInputArrayToProcess(
+                0,
+                0,
+                0,
+                association,
+                mask_name,
+            )
+            algorithm.SetUpperThreshold(0.5)
+            algorithm.SetThresholdFunction(algorithm.THRESHOLD_UPPER)
+            actor_name = f"mesh_scope_selection_{kind}"
+            actor = self._plotter.add_mesh(
+                algorithm,
+                color="#f5a623",
+                show_edges=False,
+                show_scalar_bar=False,
+                name=actor_name,
+                reset_camera=False,
+                pickable=False,
+                **styles[kind],
+            )
+            actor.SetVisibility(False)
+            self._actors[actor_name] = actor
+            self._offset_highlight_actor(actor)
+            self._mesh_scope_highlight_pipelines[kind] = (
+                _MeshScopeHighlightPipeline(
+                    kind,
+                    dataset,
+                    algorithm,
+                    np.asarray(
+                        dataset.point_data[mask_name]
+                        if association
+                        == vtk.vtkDataObject.FIELD_ASSOCIATION_POINTS
+                        else dataset.cell_data[mask_name]
+                    ),
+                    vtk_mask,
+                    actor,
+                )
+            )
+
+    def _mesh_scope_highlight_index(self, reference: MeshEntityRef) -> int | None:
+        if self._geometry is None:
+            return None
+        if reference.kind == "node":
+            return self._geometry.node_id_to_point_index.get(int(reference.node_id))
+        if reference.kind == "element":
+            return self._geometry.element_id_to_cell_index.get(
+                int(reference.element_id)
+            )
+        pick_id = self._mesh_scope_identity_to_pick_id.get(
+            (reference.kind, reference.identity)
+        )
+        return None if pick_id is None else int(pick_id) - 1
+
+    def _schedule_mesh_scope_render(self) -> None:
+        if self._plotter is not None and not self._mesh_scope_render_timer.isActive():
+            self._mesh_scope_render_timer.start()
+
+    def _render_mesh_scope_highlight(self) -> None:
+        if self._plotter is not None:
+            self._render()
+
+    def _clear_mesh_scope_highlight(self, *, schedule_render: bool) -> bool:
+        changed = self._mesh_scope_highlight_kind is not None
+        for pipeline in self._mesh_scope_highlight_pipelines.values():
+            changed = pipeline.clear() or changed
+            pipeline.actor.SetVisibility(False)
+        self._mesh_scope_highlight_kind = None
+        if changed and schedule_render:
+            self._schedule_mesh_scope_render()
+        return changed
 
     def set_result_render_payload(
         self,
@@ -3813,6 +4023,17 @@ class FEMViewport(QWidget):
             self._ensure_mesh_scope_pick_bindings()
         if previous != self._selection_mode:
             self._clear_preselection(render=False)
+            highlighted_kind = self._mesh_scope_highlight_kind
+            active_mesh_kind = (
+                self._selection_mode.removeprefix("mesh_")
+                if self._selection_mode.startswith("mesh_")
+                else None
+            )
+            if (
+                highlighted_kind is not None
+                and highlighted_kind != active_mesh_kind
+            ):
+                self._clear_mesh_scope_highlight(schedule_render=True)
         points_actor = self._actors.get("geometry_points")
         points_visibility_changed = False
         if points_actor is not None:
@@ -3839,9 +4060,12 @@ class FEMViewport(QWidget):
         visual_names = {
             "selection",
             "geometry_selection",
-            "mesh_scope_selection",
             "preselection",
         }
+        had_mesh_scope_selection = any(
+            pipeline.selected_indices
+            for pipeline in self._mesh_scope_highlight_pipelines.values()
+        )
         had_visible_selection = any(
             name in visual_names or name.startswith("beam_frame_")
             for name in self._actors
@@ -3852,12 +4076,14 @@ class FEMViewport(QWidget):
         self._selection_highlight_visible = True
         self._remove_actor("selection")
         self._remove_actor("geometry_selection")
-        self._remove_actor("mesh_scope_selection")
+        self._clear_mesh_scope_highlight(schedule_render=False)
         self._clear_beam_frame_preview(render=False)
         self._clear_preselection(render=False)
         self._update_pickable_actors()
         if had_visible_selection:
             self._render()
+        elif had_mesh_scope_selection:
+            self._schedule_mesh_scope_render()
 
     def highlight_geometry(self, reference: LogicalEntityRef) -> None:
         """Highlight one stable logical preview reference."""
@@ -4089,90 +4315,54 @@ class FEMViewport(QWidget):
     def highlight_mesh_entities(
         self,
         references: Iterable[MeshEntityRef],
+        *,
+        changed_references: Iterable[MeshEntityRef] | None = None,
+        entity_kind: str | None = None,
     ) -> None:
-        """Highlight a homogeneous collection of generated-mesh entities."""
+        """Update one persistent mesh-selection mask by its changed references."""
 
-        self._remove_actor("mesh_scope_selection")
-        canonical = tuple(references)
-        if self._plotter is None or _pyvista is None or not canonical:
-            self._render()
+        selected = references if isinstance(references, set) else set(references)
+        if not selected:
+            self._clear_mesh_scope_highlight(schedule_render=True)
             return
-        kinds = {reference.kind for reference in canonical}
-        if len(kinds) != 1:
-            raise ValueError("mesh scope highlight requires one entity kind")
-        kind = canonical[0].kind
-        data = None
-        kwargs: dict[str, Any] = {}
-        if kind == "node" and self._geometry is not None:
-            indices = tuple(
-                self._geometry.node_id_to_point_index[int(reference.node_id)]
-                for reference in canonical
-                if int(reference.node_id)
-                in self._geometry.node_id_to_point_index
-            )
-            if indices:
-                data = _pyvista.PolyData(
-                    np.asarray(self._geometry.points)[
-                        np.asarray(indices, dtype=np.int64)
-                    ]
-                )
-                kwargs = {
-                    "point_size": 13,
-                    "render_points_as_spheres": True,
-                }
-        elif kind == "element" and self._pick_grid is not None:
-            indices = tuple(
-                self._geometry.element_id_to_cell_index[
-                    int(reference.element_id)
-                ]
-                for reference in canonical
-                if self._geometry is not None
-                and int(reference.element_id)
-                in self._geometry.element_id_to_cell_index
-            )
-            if indices:
-                data = self._pick_grid.extract_cells(indices)
-                kwargs = {"style": "wireframe", "line_width": 3}
-        elif kind in {"edge", "face"}:
-            self._ensure_mesh_scope_pick_bindings()
-            dataset = (
-                self._mesh_scope_edges
-                if kind == "edge"
-                else self._mesh_scope_faces
-            )
-            pick_ids = tuple(
-                self._mesh_scope_ref_to_pick_id[reference]
-                for reference in canonical
-                if reference in self._mesh_scope_ref_to_pick_id
-            )
-            if dataset is not None and pick_ids:
-                ids = np.asarray(
-                    dataset.cell_data["mesh_scope_pick_id"],
-                    dtype=np.int64,
-                )
-                cells = np.flatnonzero(np.isin(ids, pick_ids))
-                if len(cells):
-                    data = dataset.extract_cells(cells)
-                    kwargs = (
-                        {"line_width": 5}
-                        if kind == "edge"
-                        else {"opacity": 0.8}
-                    )
-        if data is None:
-            self._render()
+        if entity_kind is None:
+            kinds = {reference.kind for reference in selected}
+            if len(kinds) != 1:
+                raise ValueError("mesh scope highlight requires one entity kind")
+            kind = next(iter(kinds))
+        else:
+            kind = str(entity_kind)
+            if kind not in {"node", "element", "edge", "face"}:
+                raise ValueError("unsupported mesh scope highlight kind")
+        pipeline = self._mesh_scope_highlight_pipelines.get(kind)
+        if pipeline is None:
             return
-        self._actors["mesh_scope_selection"] = self._plotter.add_mesh(
-            data,
-            color="#f5a623",
-            show_edges=False,
-            show_scalar_bar=False,
-            name="mesh_scope_selection",
-            reset_camera=False,
-            **kwargs,
+        visibility_changed = self._mesh_scope_highlight_kind != kind
+        if visibility_changed:
+            self._clear_mesh_scope_highlight(schedule_render=False)
+            pipeline.actor.SetVisibility(True)
+            self._mesh_scope_highlight_kind = kind
+        changes = None
+        if changed_references is not None and not visibility_changed:
+            changes = {}
+            for reference in changed_references:
+                index = self._mesh_scope_highlight_index(reference)
+                if index is None:
+                    continue
+                changes[index] = reference in selected
+        else:
+            target = {
+                index
+                for reference in selected
+                if (index := self._mesh_scope_highlight_index(reference)) is not None
+            }
+        updated = (
+            pipeline.update_changes(changes)
+            if changes is not None
+            else pipeline.update(target)
         )
-        self._offset_highlight_actor(self._actors["mesh_scope_selection"])
-        self._update_pickable_actors()
-        self._render()
+        if updated or visibility_changed:
+            self._schedule_mesh_scope_render()
 
     def highlight_node(self, node_id: int) -> None:
         if self._geometry is None or node_id not in self._geometry.node_id_to_point_index:
