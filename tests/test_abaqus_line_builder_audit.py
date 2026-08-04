@@ -374,12 +374,14 @@ def test_topology_locations_include_node_and_effective_orientation(
     ]
     path = write_inp(tmp_path, "kink_locations.inp", lines)
 
-    with pytest.raises(abaqus.UnsupportedAbaqusFeatureError) as caught:
-        abaqus.read(path)
+    result = abaqus.read_with_report(path)
 
-    error = caught.value
-    assert error.code == "abaqus.b31.nodal_normal_averaging_unsupported"
-    location_lines = [location.line for location in error.locations]
+    notice = next(
+        notice
+        for notice in result.notices
+        if notice.code == "abaqus.b31.shared_node_frame_approximation"
+    )
+    location_lines = [location.line for location in notice.locations]
     assert lines.index("2, 2, 3") + 1 in location_lines
     assert lines.index("2, 1., 0., 0.") + 1 in location_lines
     assert lines.index("0., 0., 1.") + 1 in location_lines

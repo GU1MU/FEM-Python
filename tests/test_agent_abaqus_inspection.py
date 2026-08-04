@@ -56,6 +56,28 @@ def test_inspection_accepts_supported_line_element_inputs(
     )
 
 
+def test_connected_b31_import_notices_are_nonblocking_agent_diagnostics():
+    inspected = inspect_abaqus(
+        LINE_FIXTURES / "portal_frame_b31_wind_snow.inp"
+    )
+
+    assert inspected.ok
+    notices = tuple(
+        diagnostic
+        for diagnostic in inspected.diagnostics
+        if diagnostic.code.startswith("ABAQUS_B31_")
+    )
+    assert tuple(diagnostic.code for diagnostic in notices) == (
+        "ABAQUS_B31_EULER_BERNOULLI_APPROXIMATION",
+        "ABAQUS_B31_SHARED_NODE_FRAME_APPROXIMATION",
+    )
+    assert all(
+        diagnostic.severity == DiagnosticSeverity.WARNING
+        for diagnostic in notices
+    )
+    assert all(diagnostic.source == "abaqus_import" for diagnostic in notices)
+
+
 def _minimal_tet_lines(*extra_lines: str) -> list[str]:
     return [
         "*Heading",

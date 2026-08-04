@@ -16,7 +16,8 @@ STANDARD = (
     / "inp"
     / "abaqus_standard"
 )
-TOPOLOGY_CODE = "abaqus.b31.nodal_normal_averaging_unsupported"
+FORMULATION_NOTICE = "abaqus.b31.euler_bernoulli_approximation"
+TOPOLOGY_NOTICE = "abaqus.b31.shared_node_frame_approximation"
 
 
 def _single_section_deck(
@@ -46,39 +47,22 @@ def _single_section_deck(
     ]
 
 
-def _assert_topology_rejection(
-    path: Path,
-    *,
-    element_ids: tuple[int, ...],
-    node_ids: tuple[int, ...],
-) -> None:
-    with pytest.raises(abaqus.UnsupportedAbaqusFeatureError) as caught:
-        abaqus.read_with_report(path)
+def _assert_topology_notice(path: Path, *, reason: str) -> None:
+    result = abaqus.read_with_report(path)
 
-    error = caught.value
-    assert error.code == TOPOLOGY_CODE
-    assert Path(error.path) == path
-    assert error.line > 0
-    assert error.keyword
-    assert error.remediation
-    assert (
-        "straight" in error.remediation.casefold()
-        or "直" in error.remediation
+    assert {element.type for element in result.model.mesh.elements} == {
+        "Beam2"
+    }
+    assert tuple(notice.code for notice in result.notices) == (
+        FORMULATION_NOTICE,
+        TOPOLOGY_NOTICE,
     )
-    assert error.locations
-    assert all(Path(location.path) == path for location in error.locations)
-
-    diagnostic = repr(
-        (
-            str(error),
-            error.record,
-            getattr(error, "details", None),
-        )
-    )
-    for element_id in element_ids:
-        assert str(element_id) in diagnostic
-    for node_id in node_ids:
-        assert str(node_id) in diagnostic
+    notice = result.notices[1]
+    assert reason in notice.message.casefold()
+    assert "abaqus" in notice.message.casefold()
+    assert "local frame" in notice.message.casefold()
+    assert notice.locations
+    assert all(Path(location.path) == path for location in notice.locations)
 
 
 @pytest.mark.parametrize(
@@ -96,6 +80,9 @@ def test_literal_isolated_or_directed_straight_b31_fixtures_are_accepted(
     assert {element.type for element in result.model.mesh.elements} == {
         "Beam2"
     }
+    assert tuple(notice.code for notice in result.notices) == (
+        FORMULATION_NOTICE,
+    )
 
 
 def test_disconnected_straight_b31_members_are_accepted(tmp_path) -> None:
@@ -149,7 +136,7 @@ def test_collinear_directed_open_chain_is_accepted(tmp_path) -> None:
     ) == ((1, 2), (2, 3), (3, 4))
 
 
-def test_kinked_shared_node_requires_unsupported_normal_averaging(
+def test_kinked_shared_node_imports_with_frame_approximation_notice(
     tmp_path,
 ) -> None:
     path = write_inp(
@@ -166,14 +153,10 @@ def test_kinked_shared_node_requires_unsupported_normal_averaging(
         ),
     )
 
-    _assert_topology_rejection(
-        path,
-        element_ids=(1, 2),
-        node_ids=(2,),
-    )
+    _assert_topology_notice(path, reason="kink")
 
 
-def test_branching_shared_node_requires_unsupported_normal_averaging(
+def test_branching_shared_node_imports_with_frame_approximation_notice(
     tmp_path,
 ) -> None:
     path = write_inp(
@@ -191,14 +174,10 @@ def test_branching_shared_node_requires_unsupported_normal_averaging(
         ),
     )
 
-    _assert_topology_rejection(
-        path,
-        element_ids=(1, 2, 3),
-        node_ids=(2,),
-    )
+    _assert_topology_notice(path, reason="branch")
 
 
-def test_closed_b31_loop_requires_unsupported_normal_averaging(
+def test_closed_b31_loop_imports_with_frame_approximation_notice(
     tmp_path,
 ) -> None:
     path = write_inp(
@@ -215,14 +194,10 @@ def test_closed_b31_loop_requires_unsupported_normal_averaging(
         ),
     )
 
-    _assert_topology_rejection(
-        path,
-        element_ids=(1, 2, 3),
-        node_ids=(1, 2, 3),
-    )
+    _assert_topology_notice(path, reason="closed loop")
 
 
-def test_reversed_element_connectivity_rejects_discontinuous_frames(
+def test_reversed_connectivity_imports_with_frame_approximation_notice(
     tmp_path,
 ) -> None:
     path = write_inp(
@@ -238,14 +213,10 @@ def test_reversed_element_connectivity_rejects_discontinuous_frames(
         ),
     )
 
-    _assert_topology_rejection(
-        path,
-        element_ids=(1, 2),
-        node_ids=(2,),
-    )
+    _assert_topology_notice(path, reason="reversed")
 
 
-def test_shared_node_rejects_incompatible_section_orientations(
+def test_incompatible_section_orientations_import_with_approximation_notice(
     tmp_path,
 ) -> None:
     path = write_inp(
@@ -273,11 +244,7 @@ def test_shared_node_rejects_incompatible_section_orientations(
         ],
     )
 
-    _assert_topology_rejection(
-        path,
-        element_ids=(1, 2),
-        node_ids=(2,),
-    )
+    _assert_topology_notice(path, reason="incompatible")
 
 
 def test_orientation_parallel_to_later_target_element_fails_transactionally(

@@ -12,8 +12,18 @@ from fem.abaqus.deck import AbaqusDeck
 from fem.core.model import AnalysisStep, FEMModel
 
 from ..diagnostics import DiagnosticCode, has_errors, make_diagnostic
-from ..schemas import Diagnostic, ResourceLimits
+from ..schemas import Diagnostic, DiagnosticSeverity, ResourceLimits
 from .inspection import AbaqusKeywordInspection, inspect_abaqus_keywords
+
+
+_NOTICE_DIAGNOSTIC_CODES = {
+    abaqus.B31_EULER_BERNOULLI_NOTICE_CODE: (
+        DiagnosticCode.ABAQUS_B31_EULER_BERNOULLI_APPROXIMATION
+    ),
+    abaqus.B31_SHARED_NODE_FRAME_NOTICE_CODE: (
+        DiagnosticCode.ABAQUS_B31_SHARED_NODE_FRAME_APPROXIMATION
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -107,7 +117,9 @@ def inspect_abaqus(
 
     try:
         deck = abaqus.parse_file(path)
-        model = abaqus.build_model(deck)
+        built = abaqus.build_model_with_report(deck)
+        model = built.model
+        diagnostics.extend(_notice_diagnostics(built.notices))
     except Exception:
         diagnostics.append(
             make_diagnostic(
@@ -159,6 +171,22 @@ def runnable_steps(model: FEMModel) -> tuple[AnalysisStep, ...]:
         step
         for step in model.steps
         if str(step.name).strip().casefold() != "initial"
+    )
+
+
+def _notice_diagnostics(notices: tuple[Any, ...]) -> tuple[Diagnostic, ...]:
+    return tuple(
+        make_diagnostic(
+            _NOTICE_DIAGNOSTIC_CODES.get(
+                notice.code,
+                DiagnosticCode.IMPORT_APPROXIMATION,
+            ),
+            notice.message,
+            source="abaqus_import",
+            severity=DiagnosticSeverity.WARNING,
+            entity="beam",
+        )
+        for notice in notices
     )
 
 

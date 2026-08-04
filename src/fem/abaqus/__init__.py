@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from .builder import (
+    B31_EULER_BERNOULLI_NOTICE_CODE,
+    B31_SHARED_NODE_FRAME_NOTICE_CODE,
     AbaqusBuildResult,
     AbaqusImportNotice,
     build_model,
@@ -20,6 +22,8 @@ from .read import read, read_with_report
 __all__ = [
     "ABAQUS_LINE_SUBSET",
     "STANDARD_LINE_SUBSET",
+    "B31_EULER_BERNOULLI_NOTICE_CODE",
+    "B31_SHARED_NODE_FRAME_NOTICE_CODE",
     "AbaqusBuildError",
     "AbaqusBuildResult",
     "AbaqusImportNotice",

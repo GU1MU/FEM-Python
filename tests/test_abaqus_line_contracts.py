@@ -189,6 +189,37 @@ def test_public_line_import_error_hierarchy_remains_value_error_compatible():
         assert issubclass(error_type, ValueError)
 
 
+def test_b31_preprint_metadata_is_harmlessly_ignored(tmp_path) -> None:
+    path = write_inp(
+        tmp_path,
+        "b31_preprint.inp",
+        [
+            "*Preprint, echo=NO, model=NO, history=NO, contact=NO",
+            *_minimal_b31(),
+        ],
+    )
+
+    result = abaqus.read_with_report(path)
+
+    assert {element.type for element in result.model.mesh.elements} == {
+        "Beam2"
+    }
+
+
+def test_b31_preprint_unknown_option_is_rejected(tmp_path) -> None:
+    path = write_inp(
+        tmp_path,
+        "b31_preprint_unknown_option.inp",
+        ["*Preprint, typo=YES", *_minimal_b31()],
+    )
+
+    with pytest.raises(abaqus.UnsupportedAbaqusFeatureError) as caught:
+        abaqus.read_with_report(path)
+
+    assert caught.value.code == "abaqus.line.keyword_option_unsupported"
+    assert "typo" in str(caught.value).casefold()
+
+
 def test_standard_t3d2_maps_solid_section_scalar_to_canonical_area():
     model = abaqus.read(STANDARD / "t3d2_tension.inp")
 

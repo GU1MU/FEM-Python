@@ -1751,7 +1751,7 @@ def test_abaqus_formulation_notice_has_one_adapter_owner():
 
 
 def test_b31_source_topology_audit_has_one_adapter_implementation():
-    topology_code = "abaqus.b31.nodal_normal_averaging_unsupported"
+    topology_code = "abaqus.b31.shared_node_frame_approximation"
     definitions = []
     code_occurrences = []
 
