@@ -442,13 +442,15 @@ def test_unknown_kind_and_target_are_reported_without_variable_cascade() -> None
     assert projection.variables[0].diagnostics == ()
 
 
-def test_request_level_atomicity_keeps_supported_sibling_unexecuted() -> None:
+def test_mixed_request_keeps_supported_sibling_executable() -> None:
     request = OutputRequest("field", "node", ("E", "U", "u"))
 
     projection = _project(request)
 
-    assert not projection.executable
+    assert projection.executable
     assert _codes(projection) == ("output.request.variable_unsupported",)
+    executable = projection.executable_request
+    assert executable is not None
     supported, unsupported = projection.variables
     assert supported.canonical_variable is ResultVariable.U
     assert supported.source_variable_indices == (1, 2)
@@ -458,6 +460,8 @@ def test_request_level_atomicity_keeps_supported_sibling_unexecuted() -> None:
     assert unsupported.source_variable_indices == (0,)
     assert unsupported.field_requests == ()
     assert unsupported.diagnostics == projection.diagnostics
+    assert executable.variables == (supported,)
+    assert executable.field_requests == supported.field_requests
 
 
 @pytest.mark.parametrize("frequency", (None, 1, "1"))
@@ -658,6 +662,89 @@ def test_abaqus_unsupported_parent_default_remains_typed() -> None:
         "output.request.frequency_unsupported",
     )
     assert projection.diagnostics[0].details["frequency"] == "2"
+
+
+@pytest.mark.parametrize(
+    ("target", "variables", "child_parameters"),
+    (
+        (
+            "node",
+            ("u", "RF"),
+            (("NSET", "ALL"),),
+        ),
+        (
+            "element",
+            ("S",),
+            (("ELSET", "BEAM"), ("DIRECTIONS", "YES")),
+        ),
+    ),
+)
+def test_abaqus_parent_preselect_and_child_presentation_options_project_per_variable(
+    target: str,
+    variables: tuple[str, ...],
+    child_parameters: tuple[tuple[str, str], ...],
+) -> None:
+    evidence = OutputSourceEvidence(
+        "ABAQUS",
+        parent_parameters=(
+            ("VARIABLE", "PreSelect"),
+            ("FREQUENCY", "1"),
+        ),
+        parent_flags=("FIELD",),
+        child_parameters=child_parameters,
+    )
+    request = OutputRequest(
+        "field",
+        target,
+        variables,
+        source_evidence=evidence,
+    )
+
+    projection = _project(request, ResultModelFamily.BEAM)
+
+    assert projection.executable
+    assert projection.diagnostics == ()
+    assert projection.executable_request is not None
+    assert tuple(
+        variable.canonical_variable
+        for variable in projection.executable_request.variables
+    ) == (
+        (ResultVariable.U, ResultVariable.RF)
+        if target == "node"
+        else (ResultVariable.S,)
+    )
+    assert tuple(
+        variable.source_variables
+        for variable in projection.variables
+    ) == tuple((variable,) for variable in variables)
+    assert request.variables == variables
+    assert request.source_evidence is evidence
+    assert evidence.parent_parameters[0] == ("VARIABLE", "PreSelect")
+    assert evidence.child_parameters == child_parameters
+
+
+def test_abaqus_parent_preselect_request_remains_typed_unsupported() -> None:
+    evidence = OutputSourceEvidence(
+        "abaqus",
+        parent_parameters=(
+            ("variable", "PRESELECT"),
+            ("frequency", "1"),
+        ),
+        parent_flags=("field",),
+    )
+    request = OutputRequest(
+        "field",
+        "preselect",
+        ("PRESELECT",),
+        source_evidence=evidence,
+    )
+
+    projection = _project(request)
+
+    assert not projection.executable
+    assert _codes(projection) == ("output.request.target_unsupported",)
+    assert projection.variables[0].source_variables == ("PRESELECT",)
+    assert request.source_evidence is evidence
 
 
 @pytest.mark.parametrize("layer", ("parent", "child"))

@@ -148,6 +148,26 @@ def test_bundle_catalog_publishes_only_selected_output_variables() -> None:
     ) == (ResultVariable.RF,)
 
 
+def test_bundle_publishes_supported_side_of_mixed_imported_output_request() -> None:
+    task, result = _task_and_result(
+        (OutputRequest("field", "element", ("S", "E")),)
+    )
+
+    bundle = build_solve_result_bundle(task, result)
+
+    execution = bundle.execution_report.requests[0]
+    assert execution.status is OutputExecutionStatus.UNSUPPORTED
+    assert tuple(variable.status for variable in execution.variables) == (
+        OutputExecutionStatus.EXECUTED,
+        OutputExecutionStatus.UNSUPPORTED,
+    )
+    assert bundle._provider is not None
+    assert tuple(
+        availability.descriptor.field_id.variable
+        for availability in bundle._provider.catalog().fields
+    ) == (ResultVariable.S,)
+
+
 def test_continuum_stress_is_published_only_at_the_node_position() -> None:
     task, result = _task_and_result(
         (

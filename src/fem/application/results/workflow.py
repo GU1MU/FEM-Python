@@ -69,8 +69,8 @@ class SolveResultBundle:
         executed_keys = {
             key
             for request in self.execution_report.requests
-            if request.status is OutputExecutionStatus.EXECUTED
             for variable in request.variables
+            if variable.status is OutputExecutionStatus.EXECUTED
             for key in variable.field_keys
         }
         if not executed_keys.issubset(materialized_keys):
@@ -122,8 +122,8 @@ def build_solve_result_bundle(
     published_keys = {
         key
         for request in outcome.report.requests
-        if request.status is OutputExecutionStatus.EXECUTED
         for variable in request.variables
+        if variable.status is OutputExecutionStatus.EXECUTED
         for key in variable.field_keys
     }
     published_provider = outcome.provider_draft.publish_fields(

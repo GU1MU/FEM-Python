@@ -146,8 +146,8 @@ class ResultRecord:
         executed_keys = {
             key
             for request in self.output_report.requests
-            if request.status is OutputExecutionStatus.EXECUTED
             for variable in request.variables
+            if variable.status is OutputExecutionStatus.EXECUTED
             for key in variable.field_keys
         }
         if not executed_keys.issubset(materialized_keys):

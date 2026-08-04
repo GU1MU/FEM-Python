@@ -457,7 +457,7 @@ def test_ready_primary_cache_hits_are_executed_without_a_patch(
     assert request.source_evidence is evidence
 
 
-def test_unsupported_request_is_atomic_and_unrelated_request_continues() -> None:
+def test_mixed_request_reports_variables_independently_and_unrelated_request_continues() -> None:
     provider = _truss_provider()
     requests = (
         OutputRequest("field", "node", ("U", "FUTURE")),
@@ -475,10 +475,12 @@ def test_unsupported_request_is_atomic_and_unrelated_request_continues() -> None
     assert tuple(
         variable.status for variable in unsupported.variables
     ) == (
-        OutputExecutionStatus.SKIPPED,
+        OutputExecutionStatus.EXECUTED,
         OutputExecutionStatus.UNSUPPORTED,
     )
-    assert all(not variable.field_keys for variable in unsupported.variables)
+    assert unsupported.executable_request is not None
+    assert len(unsupported.variables[0].field_keys) == 1
+    assert not unsupported.variables[1].field_keys
     assert tuple(
         diagnostic.code for diagnostic in unsupported.diagnostics
     ) == ("output.request.variable_unsupported",)
@@ -499,6 +501,45 @@ def test_unsupported_request_is_atomic_and_unrelated_request_continues() -> None
         is ResultVariable.S
     )
     assert requests == preserved
+
+
+def test_mixed_request_materialization_failure_keeps_patch_atomic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _truss_provider()
+    request = OutputRequest("field", "element", ("S", "E"))
+
+    def fail_materialization(
+        self: ResultProvider,
+        keys: object,
+        *,
+        cancellation: object | None = None,
+    ) -> ResultMaterializationPatch:
+        del self, keys, cancellation
+        raise ArithmeticError("stress recovery failed")
+
+    monkeypatch.setattr(
+        ResultProvider,
+        "materialize",
+        fail_materialization,
+    )
+
+    outcome = execute_output_requests(provider, (request,))
+
+    execution = outcome.report.requests[0]
+    assert execution.status is OutputExecutionStatus.FAILED
+    assert tuple(variable.status for variable in execution.variables) == (
+        OutputExecutionStatus.FAILED,
+        OutputExecutionStatus.UNSUPPORTED,
+    )
+    assert tuple(
+        diagnostic.code for diagnostic in execution.diagnostics
+    ) == (
+        "output.request.materialization_failed",
+        "output.request.variable_unsupported",
+    )
+    assert outcome.eager_patch.fields == ()
+    assert outcome.provider_draft is provider
 
 
 def test_shared_lazy_key_is_materialized_once_and_satisfies_each_request(

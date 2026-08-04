@@ -258,7 +258,7 @@ class ExecutableOutputRequest:
 
 @dataclass(frozen=True, slots=True)
 class OutputRequestProjection:
-    """Atomic executable-or-unsupported projection of one authoring request."""
+    """Executable subset and diagnostics for one authoring request."""
 
     request_index: int
     authoring_request: OutputRequest
@@ -316,14 +316,35 @@ class OutputRequestProjection:
             raise ValueError(
                 "variable projections must exactly cover authoring occurrences"
             )
-        if self.diagnostics and self.executable_request is not None:
-            raise ValueError(
-                "diagnostic projections cannot contain an executable request"
-            )
         if not self.diagnostics and self.executable_request is None:
             raise ValueError(
                 "supported projections require an executable request"
             )
+        if self.executable_request is not None:
+            request_level_diagnostics = tuple(
+                diagnostic
+                for diagnostic in self.diagnostics
+                if diagnostic not in variable_diagnostics
+            )
+            if request_level_diagnostics:
+                raise ValueError(
+                    "request-level diagnostics cannot contain an executable request"
+                )
+            expected_executable_variables = tuple(
+                variable
+                for variable in self.variables
+                if (
+                    variable.canonical_variable is not None
+                    and not variable.diagnostics
+                    and variable.field_requests
+                )
+            )
+            if self.executable_request.variables != (
+                expected_executable_variables
+            ):
+                raise ValueError(
+                    "executable variables must contain only supported source variables"
+                )
         if (
             self.executable_request is not None
             and self.executable_request.request_index != self.request_index
@@ -331,17 +352,10 @@ class OutputRequestProjection:
             raise ValueError(
                 "executable request index must match the projection"
             )
-        if (
-            self.executable_request is not None
-            and self.executable_request.variables != self.variables
-        ):
-            raise ValueError(
-                "executable variables must match the supported projection"
-            )
 
     @property
     def executable(self) -> bool:
-        """Whether this authoring request passed atomic projection."""
+        """Whether at least one source variable is executable."""
 
         return self.executable_request is not None
 
@@ -427,6 +441,7 @@ def project_output_request(
         position_value = metadata_result.position
         request_diagnostics.extend(metadata_result.diagnostics)
 
+    request_level_diagnostics = tuple(request_diagnostics)
     variables: list[OutputVariableProjection] = []
     for group in grouped:
         variable_diagnostics: tuple[ResultDiagnostic, ...] = ()
@@ -452,12 +467,16 @@ def project_output_request(
     variable_tuple = tuple(variables)
     diagnostics = tuple(request_diagnostics)
     executable_request = None
-    if not diagnostics:
-        executable_variables = tuple(
-            variable
-            for variable in variable_tuple
-            if variable.canonical_variable is not None
+    executable_variables = tuple(
+        variable
+        for variable in variable_tuple
+        if (
+            variable.canonical_variable is not None
+            and not variable.diagnostics
+            and variable.field_requests
         )
+    )
+    if not request_level_diagnostics and executable_variables:
         field_requests = tuple(
             field_request
             for variable in executable_variables
@@ -766,24 +785,38 @@ def _effective_metadata(
     *,
     request_index: int,
 ) -> tuple[dict[str, tuple[str, Any]], tuple[ResultDiagnostic, ...]]:
+    evidence = request.source_evidence
+    request_parameters = tuple(request.metadata.items())
+    if evidence is not None and evidence.source_kind == "abaqus":
+        request_parameters = _execution_parameters(
+            request_parameters,
+            parent=True,
+        )
     request_layer, request_collisions = _metadata_layer(
-        tuple(request.metadata.items()),
+        request_parameters,
         layer="metadata",
         request_index=request_index,
         path_suffix=("metadata",),
     )
-    evidence = request.source_evidence
     if evidence is None or evidence.source_kind != "abaqus":
         return request_layer, request_collisions
 
-    parent, parent_collisions = _metadata_layer(
+    parent_parameters = _execution_parameters(
         evidence.parent_parameters,
+        parent=True,
+    )
+    child_parameters = _execution_parameters(
+        evidence.child_parameters,
+        parent=False,
+    )
+    parent, parent_collisions = _metadata_layer(
+        parent_parameters,
         layer="parent_parameters",
         request_index=request_index,
         path_suffix=("source_evidence", "parent_parameters"),
     )
     child, child_collisions = _metadata_layer(
-        evidence.child_parameters,
+        child_parameters,
         layer="child_parameters",
         request_index=request_index,
         path_suffix=("source_evidence", "child_parameters"),
@@ -809,6 +842,35 @@ def _effective_metadata(
     for key in collision_keys:
         effective.pop(key, None)
     return effective, tuple(diagnostics)
+
+
+def _execution_parameters(
+    items: tuple[tuple[str, Any], ...],
+    *,
+    parent: bool,
+) -> tuple[tuple[str, Any], ...]:
+    """Drop Abaqus presentation-only options from execution metadata.
+
+    The original parameter tuples remain in ``OutputSourceEvidence``.  This
+    projection only removes options that the current result field contract does
+    not consume, so a parent ``VARIABLE=PRESELECT`` cannot poison its children,
+    child scopes remain authoring evidence, and ``DIRECTIONS=YES`` remains
+    source evidence rather than a capability requirement.
+    """
+
+    result: list[tuple[str, Any]] = []
+    for key, value in items:
+        normalized_key = key.casefold()
+        if normalized_key in {"directions", "nset", "elset"}:
+            continue
+        if (
+            parent
+            and normalized_key == "variable"
+            and str(value).casefold() == "preselect"
+        ):
+            continue
+        result.append((key, value))
+    return tuple(result)
 
 
 def _metadata_layer(

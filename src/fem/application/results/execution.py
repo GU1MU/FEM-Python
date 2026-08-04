@@ -193,15 +193,34 @@ class OutputRequestExecution:
                 )
                 for variable in self.variables
             )
-            if execution_identities != projected_identities:
-                raise ValueError(
-                    "request variables must match the executable projection"
-                )
-            for projected, executed in zip(
-                self.executable_request.variables,
-                self.variables,
-                strict=True,
+            if not all(
+                identity in execution_identities
+                for identity in projected_identities
             ):
+                raise ValueError(
+                    "executable variables must appear in the request execution"
+                )
+            if projected_identities != tuple(
+                identity
+                for identity in execution_identities
+                if identity in projected_identities
+            ):
+                raise ValueError(
+                    "executable variables must retain canonical execution order"
+                )
+            for projected in self.executable_request.variables:
+                executed = next(
+                    variable
+                    for variable in self.variables
+                    if (
+                        variable.source_variable_indices,
+                        variable.canonical_variable,
+                    )
+                    == (
+                        projected.source_variable_indices,
+                        projected.canonical_variable,
+                    )
+                )
                 if executed.status not in {
                     OutputExecutionStatus.EXECUTED,
                     OutputExecutionStatus.FAILED,
@@ -242,24 +261,27 @@ class OutputRequestExecution:
                     "executed requests cannot contain diagnostics"
                 )
         elif self.status is OutputExecutionStatus.UNSUPPORTED:
-            if self.executable_request is not None:
-                raise ValueError(
-                    "unsupported requests cannot contain an executable projection"
-                )
             if not self.diagnostics:
                 raise ValueError(
                     "unsupported requests require diagnostics"
                 )
-            if any(
-                status
-                not in {
-                    OutputExecutionStatus.UNSUPPORTED,
-                    OutputExecutionStatus.SKIPPED,
-                }
-                for status in statuses
+            allowed = {
+                OutputExecutionStatus.UNSUPPORTED,
+                OutputExecutionStatus.SKIPPED,
+            }
+            if self.executable_request is not None:
+                allowed.add(OutputExecutionStatus.EXECUTED)
+            if any(status not in allowed for status in statuses):
+                raise ValueError(
+                    "unsupported requests allow only executable, unsupported, "
+                    "or skipped variables"
+                )
+            if (
+                self.executable_request is not None
+                and OutputExecutionStatus.UNSUPPORTED not in statuses
             ):
                 raise ValueError(
-                    "unsupported requests allow only unsupported/skipped variables"
+                    "partially executable requests require an unsupported variable"
                 )
         elif self.status is OutputExecutionStatus.FAILED:
             if self.executable_request is None:
@@ -275,11 +297,12 @@ class OutputRequestExecution:
                 not in {
                     OutputExecutionStatus.FAILED,
                     OutputExecutionStatus.SKIPPED,
+                    OutputExecutionStatus.UNSUPPORTED,
                 }
                 for status in statuses
             ):
                 raise ValueError(
-                    "failed requests allow only failed/skipped variables"
+                    "failed requests allow only failed, unsupported, or skipped variables"
                 )
             if not self.diagnostics:
                 raise ValueError("failed requests require diagnostics")
@@ -378,8 +401,8 @@ class OutputExecutionOutcome:
         executed_keys = {
             key
             for request in self.report.requests
-            if request.status is OutputExecutionStatus.EXECUTED
             for variable in request.variables
+            if variable.status is OutputExecutionStatus.EXECUTED
             for key in variable.field_keys
         }
         eager_keys = {
@@ -531,8 +554,12 @@ def execute_output_requests(
             step_name=source.step_name,
         )
         executions.append(execution)
-        if execution.status is OutputExecutionStatus.EXECUTED:
-            successful_required_keys.update(plan.required_keys)
+        successful_required_keys.update(
+            key
+            for variable in execution.variables
+            if variable.status is OutputExecutionStatus.EXECUTED
+            for key in variable.field_keys
+        )
 
     eager_fields = tuple(
         sorted(
@@ -747,15 +774,55 @@ def _completed_execution(
     *,
     step_name: str,
 ) -> OutputRequestExecution:
+    projection = plan.projection
+    source_diagnostics = projection.diagnostics
+    qualified_diagnostics = tuple(
+        _qualify_report_diagnostic(
+            diagnostic,
+            step_name=step_name,
+        )
+        for diagnostic in source_diagnostics
+    )
     failed_variables = {
         id(variable)
         for variable, keys in plan.variable_keys
         if any(key in failures for key in keys)
     }
     request_failed = bool(failed_variables)
+    keys_by_variable = {
+        id(variable): keys
+        for variable, keys in plan.variable_keys
+    }
     variable_executions: list[OutputVariableExecution] = []
-    request_diagnostics: list[ResultDiagnostic] = []
-    for variable, keys in plan.variable_keys:
+    request_diagnostics: list[ResultDiagnostic] = list(
+        qualified_diagnostics
+    )
+    for variable in projection.variables:
+        if variable.diagnostics:
+            variable_executions.append(
+                OutputVariableExecution(
+                    source_variable_indices=variable.source_variable_indices,
+                    canonical_variable=variable.canonical_variable,
+                    field_keys=(),
+                    status=OutputExecutionStatus.UNSUPPORTED,
+                    diagnostics=tuple(
+                        _matching_qualified_diagnostic(
+                            diagnostic,
+                            source_diagnostics=source_diagnostics,
+                            qualified_diagnostics=qualified_diagnostics,
+                        )
+                        for diagnostic in variable.diagnostics
+                    ),
+                )
+            )
+            continue
+
+        try:
+            keys = keys_by_variable[id(variable)]
+        except KeyError as error:
+            raise ValueError(
+                "executable projection variable has no execution plan"
+            ) from error
         if not request_failed:
             variable_executions.append(
                 OutputVariableExecution(
@@ -802,16 +869,23 @@ def _completed_execution(
         )
 
     return OutputRequestExecution(
-        request_index=plan.projection.request_index,
+        request_index=projection.request_index,
         status=(
             OutputExecutionStatus.FAILED
             if request_failed
-            else OutputExecutionStatus.EXECUTED
+            else (
+                OutputExecutionStatus.UNSUPPORTED
+                if any(
+                    variable.diagnostics
+                    for variable in projection.variables
+                )
+                else OutputExecutionStatus.EXECUTED
+            )
         ),
-        executable_request=plan.projection.executable_request,
+        executable_request=projection.executable_request,
         variables=tuple(variable_executions),
         diagnostics=_normalized_request_diagnostics(
-            plan.projection.request_index,
+            projection.request_index,
             tuple(request_diagnostics),
         ),
     )
