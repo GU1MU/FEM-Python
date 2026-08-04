@@ -466,7 +466,7 @@ def test_set_and_mapping_order_permutation_is_stable() -> None:
     )
 
 
-def test_conflict_and_phase5_variation_are_reported_with_minimal_source_evidence() -> None:
+def test_conflict_is_reported_and_phase5_variation_is_legal() -> None:
     conflict = resolve_b31_orientations(
         _deck(
             {1: (0.0, 0.0, 0.0), 2: (1.0, 0.0, 0.0)},
@@ -496,10 +496,9 @@ def test_conflict_and_phase5_variation_are_reported_with_minimal_source_evidence
             ],
         )
     )
-    assert varying.report.unsupported_variations
-    assert varying.report.unsupported_variations[0].record["capability"] == (
-        "constant_element_frame_only"
-    )
+    assert varying.report.ok
+    assert not varying.report.unsupported_variations
+    assert varying.field.varies_by_element()
 
 
 def test_builder_consumes_orientation_node_field(tmp_path: Path) -> None:

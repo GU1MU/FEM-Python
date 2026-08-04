@@ -43,6 +43,7 @@ from fem.geometry.recipe_topology import (
 )
 from fem.mesh.settings import MeshSettings
 from fem.solvers.static_linear import PreparedSystem
+from fem.elements import validate_beam_frame_fields
 
 from .results import (
     FieldMaterializationKey,
@@ -4278,6 +4279,9 @@ class ModelSession:
         The returned payload is opaque and may be accepted only once.
         """
 
+        mesh = getattr(model, "mesh", None)
+        if mesh is not None:
+            validate_beam_frame_fields(mesh)
         owned_model = deepcopy(model)
         return _PreparedImportedModel(
             owned_model,
@@ -4316,6 +4320,10 @@ class ModelSession:
         token: TaskToken,
         prepared: _PreparedImportedModel,
     ) -> SessionDelta:
+        if prepared.model is not None:
+            mesh = getattr(prepared.model, "mesh", None)
+            if mesh is not None:
+                validate_beam_frame_fields(mesh)
         owned_model, definitions = prepared.take()
         source_path = Path(self._task_data[token.task_id])
 

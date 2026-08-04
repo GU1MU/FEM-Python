@@ -28,12 +28,16 @@ from ..core.model import (
 from ..elements import (
     BEAM_DEFAULT_LOCAL_Y_REFERENCE,
     BEAM_DEFAULT_LOCAL_Y_REFERENCE_KEY,
+    BEAM_FRAME_FIELD_KEY,
     BEAM_ELEMENT_LOCAL_Y_REFERENCE_KEY,
     BEAM_LOCAL_Y_REFERENCE_KEY,
+    BeamFrameField,
     canonical_element_type,
     get_element_capabilities,
-    resolve_beam_frame,
+    resolve_beam_frame_field,
+    validate_beam_frame_field,
 )
+from ..elements.line import line3d_geometry
 from ..materials import resolve_sections
 from ..selection import edges as edge_selection
 from ..selection import faces as face_selection
@@ -176,28 +180,79 @@ def _install_b31_source_orientations(
     model: FEMModel,
     resolution: AbaqusOrientationResolution,
 ) -> None:
-    """Project only resolver-approved constant fields into Beam2 properties."""
+    """Project resolver output into the generic core Beam2 frame contract."""
 
     field = resolution.field
     for mesh_element in model.mesh.elements:
         if str(getattr(mesh_element, "props", {}).get("abaqus_type", "")).upper() != "B31":
             continue
         element_id = int(mesh_element.id)
-        reference = field.constant_reference(element_id)
-        if reference is None:
-            # Strict resolution has already reported this as the Phase 5
-            # element-end variation capability diagnostic.
-            continue
         entries = field.for_element(element_id)
-        if not entries:
-            continue
+        if len(entries) != 2:
+            locations = tuple(
+                location
+                for entry in entries
+                for location in entry.source_locations
+            )
+            raise AbaqusBuildError(
+                f"B31 element {element_id} does not have two resolved end frames",
+                code="abaqus.b31.frame_field_invalid",
+                location=locations[0] if locations else None,
+                locations=locations,
+                record={"element": element_id, "end_count": len(entries)},
+            )
+        ordered = tuple(sorted(entries, key=lambda entry: entry.local_end))
+        try:
+            length, tangent = line3d_geometry(model.mesh, mesh_element)
+            frame_field = BeamFrameField.from_axes(
+                length,
+                ordered[0].tangent,
+                ordered[0].n1,
+                ordered[0].normal,
+                ordered[1].tangent,
+                ordered[1].n1,
+                ordered[1].normal,
+            )
+            validate_beam_frame_field(
+                frame_field,
+                length=length,
+                tangent=tangent,
+                element_id=element_id,
+            )
+        except (TypeError, ValueError) as exc:
+            locations = tuple(
+                location
+                for entry in ordered
+                for location in entry.source_locations
+            )
+            raise AbaqusBuildError(
+                f"B31 element {element_id} has invalid core frame field: {exc}",
+                code=getattr(exc, "code", "abaqus.b31.frame_field_invalid"),
+                location=locations[0] if locations else None,
+                locations=locations,
+                record={
+                    "element": element_id,
+                    "nodes": tuple(int(value) for value in mesh_element.node_ids),
+                    "ends": tuple(
+                        {
+                            "local_end": entry.local_end,
+                            "tangent": entry.tangent,
+                            "n1": entry.n1,
+                            "normal": entry.normal,
+                        }
+                        for entry in ordered
+                    ),
+                },
+            ) from exc
+        mesh_element.props[BEAM_FRAME_FIELD_KEY] = frame_field
+        reference = field.constant_reference(element_id)
         requires_override = any(
             entry.reference_source == "orientation-node"
             or entry.normal_source != "generated-normal"
             or entry.resolution_kind in {"averaged", "split-group"}
             for entry in entries
         )
-        if requires_override:
+        if reference is not None and requires_override:
             mesh_element.props[BEAM_ELEMENT_LOCAL_Y_REFERENCE_KEY] = reference
 
 
@@ -952,7 +1007,7 @@ def _validate_b31_frames(
         element_id = int(element.id)
         assignment = effective[element_id]
         try:
-            frames[element_id] = resolve_beam_frame(
+            frames[element_id] = resolve_beam_frame_field(
                 model.mesh,
                 element,
                 properties=assignment.effective_properties,

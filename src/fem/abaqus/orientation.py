@@ -929,7 +929,6 @@ def resolve_b31_orientations(
                     resolved[base.identity] = orientation
 
     field = AbaqusElementEndOrientationField(tuple(resolved.values()))
-    diagnostics.extend(_frame_variation_diagnostics(field, detached, policy))
     events = _stable_events(events)
     diagnostics = _stable_diagnostics(diagnostics)
     groups = sorted(groups, key=lambda group: group.identity)
@@ -1668,59 +1667,6 @@ def _validate_generated_normal(
             )
         )
         return None
-
-
-def _frame_variation_diagnostics(
-    field: AbaqusElementEndOrientationField,
-    topology: AbaqusOrientationTopology,
-    policy: AbaqusOrientationPolicy,
-) -> tuple[AbaqusOrientationReportEntry, ...]:
-    diagnostics: list[AbaqusOrientationReportEntry] = []
-    for element_id in field.varies_by_element(
-        tolerance=policy.comparison_tolerance
-    ):
-        entries = field.for_element(element_id)
-        element = next(
-            (item for item in topology.elements if int(item.id) == int(element_id)),
-            None,
-        )
-        locations = tuple(
-            location
-            for entry in entries
-            for location in entry.source_locations
-        )
-        if element is not None:
-            locations = (*locations, *_source_locations_for_element(element))
-        locations = _stable_locations(locations)
-        diagnostics.append(
-            _diagnostic(
-                "unsupported-variation",
-                "abaqus.b31.element_end_frame_variation_unsupported",
-                (
-                    f"B31 element {element_id} has different effective frames "
-                    "at its two local ends"
-                ),
-                identities=tuple(entry.identity for entry in entries),
-                locations=locations,
-                record={
-                    "element": int(element_id),
-                    "ends": tuple(
-                        {
-                            "identity": entry.identity,
-                            "local_y_reference": entry.n1,
-                        }
-                        for entry in entries
-                    ),
-                    "capability": "constant_element_frame_only",
-                },
-                remediation=(
-                    "Use the Phase 5 element-end frame capability or provide "
-                    "source normals that reduce to one constant frame."
-                ),
-                severity="capability",
-            )
-        )
-    return tuple(diagnostics)
 
 
 def _valid_source_vector(

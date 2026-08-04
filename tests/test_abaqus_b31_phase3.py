@@ -201,7 +201,7 @@ def test_node_extra_and_element_normal_share_comparable_typed_target_identity(
     assert frames.passed
 
 
-def test_different_element_end_frames_return_typed_phase5_capability_error(
+def test_different_element_end_frames_are_projected_to_phase5_core_field(
     tmp_path: Path,
 ) -> None:
     path = _write_deck(
@@ -217,17 +217,17 @@ def test_different_element_end_frames_return_typed_phase5_capability_error(
     )
 
     deck = parse_file(path)
-    with pytest.raises(abaqus.UnsupportedAbaqusFeatureError) as caught:
-        abaqus.build_model_with_report(deck)
-
-    error = caught.value
-    assert error.code == "abaqus.b31.element_end_frame_variation_unsupported"
-    assert error.record["capability"] == "constant_element_frame_only"
-    assert tuple(
-        item["identity"].local_end for item in error.record["ends"]
-    ) == (1, 2)
-    assert len(error.locations) >= 3
-    assert all(location.path == path for location in error.locations)
+    result = abaqus.build_model_with_report(deck)
+    field = result.model.mesh.elements[0].props["beam_frame_field"]
+    assert not field.is_constant
+    report = resolve_effective_beam_frames(
+        result.model,
+        RegionRef("element_set", "BEAM"),
+    )
+    assert report.passed
+    assert len(report.frame_fields) == 1
+    assert report.frame_fields[0] == field
+    assert not report.frame_fields[0].is_constant
 
 
 def test_missing_orientation_node_is_rejected_with_source_locations(

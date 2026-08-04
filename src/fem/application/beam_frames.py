@@ -12,10 +12,12 @@ from fem import materials
 from fem.elements import (
     BEAM_LOCAL_Y_REFERENCE_KEY,
     BeamFrame,
+    BeamFrameField,
     BeamOrientation,
     BeamOrientationError,
     get_element_capabilities,
     resolve_beam_frame,
+    resolve_beam_frame_field,
 )
 
 from .capabilities import RegionRef
@@ -32,6 +34,7 @@ class EffectiveBeamFrame:
 
     element_id: int
     frame: BeamFrame
+    field: BeamFrameField | None = None
     assignment_index: int | None = None
     element_set: str | None = None
     section_type: str | None = None
@@ -40,6 +43,10 @@ class EffectiveBeamFrame:
         object.__setattr__(self, "element_id", int(self.element_id))
         if not isinstance(self.frame, BeamFrame):
             raise TypeError("effective Beam frame entry requires BeamFrame")
+        if self.field is not None and not isinstance(self.field, BeamFrameField):
+            raise TypeError(
+                "effective Beam frame field must be BeamFrameField or None"
+            )
         if self.assignment_index is not None:
             object.__setattr__(
                 self,
@@ -112,6 +119,16 @@ class BeamFrameReport:
         """Return frames in target mesh order."""
 
         return tuple(item.frame for item in self.entries)
+
+    @property
+    def frame_fields(self) -> tuple[BeamFrameField, ...]:
+        """Return the verified two-end fields for target entries."""
+
+        return tuple(
+            item.field
+            for item in self.entries
+            if item.field is not None
+        )
 
     def for_element(self, element_id: int) -> EffectiveBeamFrame | None:
         """Return one element result, if its frame resolved."""
@@ -234,12 +251,26 @@ def resolve_effective_beam_frames(
             else deepcopy(effective.effective_properties)
         )
         try:
-            frame = resolve_beam_frame(
+            frame_field = resolve_beam_frame_field(
                 mesh,
                 element,
                 node_lookup,
                 properties=properties,
             )
+            if frame_field.is_constant:
+                frame = resolve_beam_frame(
+                    mesh,
+                    element,
+                    node_lookup,
+                    properties=properties,
+                )
+            else:
+                frame = BeamFrame(
+                    frame_field.length,
+                    frame_field.start.rotation,
+                    "automatic",
+                    None,
+                )
         except BeamOrientationError as error:
             diagnostics.append(
                 _orientation_error_diagnostic(
@@ -265,6 +296,7 @@ def resolve_effective_beam_frames(
             EffectiveBeamFrame(
                 element_id=element_id,
                 frame=frame,
+                field=frame_field,
                 assignment_index=(
                     None if effective is None else effective.assignment_index
                 ),
@@ -486,7 +518,7 @@ def _declared_orientation_diagnostics(
                 # diagnostic path above.
                 continue
             try:
-                resolve_beam_frame(
+                resolve_beam_frame_field(
                     model.mesh,
                     element,
                     properties=resolved.effective_properties,
@@ -623,6 +655,11 @@ def _suggest_orientation(
     properties_by_element: dict[int, dict[str, Any]],
 ) -> BeamOrientation | None:
     if not entries:
+        return None
+    if any(
+        entry.field is not None and not entry.field.is_constant
+        for entry in entries
+    ):
         return None
 
     authored = tuple(

@@ -5,7 +5,11 @@ from typing import Any
 import numpy as np
 
 from .base import build_node_lookup
-from .beam_frame import BeamFrame, resolve_beam_frame
+from .beam_frame import (
+    BeamFrame,
+    BeamFrameField,
+    resolve_beam_frame_field,
+)
 from .beam_section import Beam2Section, parse_beam2_section
 
 
@@ -139,6 +143,109 @@ def _beam2_local_stiffness(
     return stiffness
 
 
+def _beam2_shape_matrix(fraction: float, length: float) -> np.ndarray:
+    """Return translational Beam2 interpolation at one unit-line point."""
+    r = float(fraction)
+    n1 = 1.0 - r
+    n2 = r
+    h1 = length * (r - 2.0 * r**2 + r**3)
+    h2 = length * (-r**2 + r**3)
+    shape = np.zeros((3, 12), dtype=float)
+    shape[0, (0, 6)] = (n1, n2)
+    shape[1, (1, 5, 7, 11)] = (
+        1.0 - 3.0 * r**2 + 2.0 * r**3,
+        h1,
+        3.0 * r**2 - 2.0 * r**3,
+        h2,
+    )
+    shape[2, (2, 4, 8, 10)] = (
+        1.0 - 3.0 * r**2 + 2.0 * r**3,
+        -h1,
+        3.0 * r**2 - 2.0 * r**3,
+        -h2,
+    )
+    return shape
+
+
+def _beam2_strain_displacement(
+    fraction: float,
+    length: float,
+) -> np.ndarray:
+    """Return local axial/torsion/curvature interpolation at one point."""
+    r = float(fraction)
+    second_n1 = (-6.0 + 12.0 * r) / length**2
+    second_h1 = (-4.0 + 6.0 * r) / length
+    second_n2 = (6.0 - 12.0 * r) / length**2
+    second_h2 = (-2.0 + 6.0 * r) / length
+    strain = np.zeros((4, 12), dtype=float)
+    strain[0, (0, 6)] = (-1.0 / length, 1.0 / length)
+    strain[1, (3, 9)] = (-1.0 / length, 1.0 / length)
+    strain[2, (2, 4, 8, 10)] = (
+        second_n1,
+        -second_h1,
+        second_n2,
+        -second_h2,
+    )
+    strain[3, (1, 5, 7, 11)] = (
+        second_n1,
+        second_h1,
+        second_n2,
+        second_h2,
+    )
+    return strain
+
+
+def _beam2_variable_stiffness(
+    field: BeamFrameField,
+    E: float,
+    area: float,
+    Iyy: float,
+    Izz: float,
+    G: float,
+    J: float,
+) -> np.ndarray:
+    """Integrate the straight Beam2 EB stiffness over a varying frame field."""
+    constitutive = np.diag(
+        (E * area, G * J, E * Iyy, E * Izz),
+    )
+
+    def contribution(_fraction: float, frame: BeamFrame) -> np.ndarray:
+        strain = _beam2_strain_displacement(_fraction, field.length)
+        transformation = _beam3_transformation(frame.rotation)
+        local_strain = strain @ transformation
+        return local_strain.T @ constitutive @ local_strain
+
+    return np.asarray(field.integrate(contribution), dtype=float)
+
+
+def _beam2_variable_line_load(
+    field: BeamFrameField,
+    vector: tuple[float, float, float],
+    coordinate_system: str,
+    *,
+    scale: float = 1.0,
+) -> np.ndarray:
+    """Integrate one line load using the field's frame samples."""
+    line_vector = _body_vector_3d(vector, "line load")
+    if coordinate_system not in {"global", "local"}:
+        raise ValueError(
+            "line load coordinate_system must be 'global' or 'local', "
+            f"got {coordinate_system!r}"
+        )
+
+    def contribution(_fraction: float, frame: BeamFrame) -> np.ndarray:
+        shape = _beam2_shape_matrix(_fraction, field.length)
+        local_vector = (
+            frame.rotation @ line_vector
+            if coordinate_system == "global"
+            else line_vector
+        )
+        local_force = shape.T @ (scale * local_vector)
+        return _beam3_transformation(frame.rotation).T @ local_force
+
+    return np.asarray(field.integrate(contribution), dtype=float)
+
+
 def _beam_properties(elem: Any) -> tuple[float, float, Beam2Section]:
     """Return validated Beam2 elastic and section properties."""
     (E,) = _required_float_props(elem, "E")
@@ -219,8 +326,19 @@ class Beam2Kernel:
         """Return the transformed 12-by-12 Beam2 stiffness matrix."""
         E, nu, section = _beam_properties(elem)
         _validate_optional_rho(elem)
-        frame = resolve_beam_frame(mesh, elem, node_lookup)
+        field = resolve_beam_frame_field(mesh, elem, node_lookup)
         G = E / (2.0 * (1.0 + nu))
+        if not field.is_constant:
+            return _beam2_variable_stiffness(
+                field,
+                E,
+                section.area,
+                section.Iyy,
+                section.Izz,
+                G,
+                section.J,
+            )
+        frame = field.as_constant_frame()
         local = _beam2_local_stiffness(
             frame.length,
             E,
@@ -242,8 +360,16 @@ class Beam2Kernel:
     ) -> np.ndarray:
         """Return the consistent Beam2 body-force vector."""
         section = parse_beam2_section(elem.props)
-        frame = resolve_beam_frame(mesh, elem, node_lookup)
+        field = resolve_beam_frame_field(mesh, elem, node_lookup)
         global_vector = _body_vector_3d(vector, "Beam2")
+        if not field.is_constant:
+            return _beam2_variable_line_load(
+                field,
+                tuple(float(value) for value in global_vector),
+                "global",
+                scale=section.area,
+            )
+        frame = field.as_constant_frame()
         local_line_load = section.area * (frame.rotation @ global_vector)
         local_force = _beam2_consistent_line_load(frame.length, local_line_load)
         return _beam3_transformation(frame.rotation).T @ local_force
@@ -257,7 +383,14 @@ class Beam2Kernel:
         node_lookup: dict[int, Any] | None = None,
     ) -> np.ndarray:
         """Return the consistent Beam2 force for a constant line load."""
-        frame = resolve_beam_frame(mesh, elem, node_lookup)
+        field = resolve_beam_frame_field(mesh, elem, node_lookup)
+        if not field.is_constant:
+            return _beam2_variable_line_load(
+                field,
+                vector,
+                coordinate_system,
+            )
+        frame = field.as_constant_frame()
         local_vector = _beam2_local_line_vector(
             vector,
             coordinate_system,
@@ -274,8 +407,20 @@ class Beam2Kernel:
         coordinate_system: str = "global",
         node_lookup: dict[int, Any] | None = None,
     ) -> np.ndarray:
-        """Return the local consistent vector used by assembly and recovery."""
-        frame = resolve_beam_frame(mesh, elem, node_lookup)
+        """Return the consistent vector used by assembly and recovery.
+
+        For a varying field the vector is the global equivalent nodal load;
+        this keeps recovery on the same interpolation owner as assembly.
+        Constant fields retain the historical local-vector convention.
+        """
+        field = resolve_beam_frame_field(mesh, elem, node_lookup)
+        if not field.is_constant:
+            return _beam2_variable_line_load(
+                field,
+                vector,
+                coordinate_system,
+            )
+        frame = field.as_constant_frame()
         local_vector = _beam2_local_line_vector(
             vector,
             coordinate_system,
@@ -293,8 +438,48 @@ class Beam2Kernel:
     ) -> np.ndarray:
         """Return tension-positive (N, My, Mz) at both Beam2 ends."""
         E, nu, section = _beam_properties(elem)
-        frame = resolve_beam_frame(mesh, elem, node_lookup)
+        field = resolve_beam_frame_field(mesh, elem, node_lookup)
         G = E / (2.0 * (1.0 + nu))
+        element_displacement = np.asarray(U, dtype=float)[
+            list(mesh.element_dofs(elem))
+        ]
+        if element_displacement.shape != (12,):
+            raise ValueError(
+                f"Beam2 element {elem.id} displacement requires 12 values"
+            )
+        if not field.is_constant:
+            local_load = (
+                np.zeros(12, dtype=float)
+                if equivalent_local_load is None
+                else np.asarray(equivalent_local_load, dtype=float)
+            )
+            if local_load.shape != (12,) or not np.all(np.isfinite(local_load)):
+                raise ValueError(
+                    f"Beam2 element {elem.id} equivalent local load must have "
+                    "12 finite values"
+                )
+            stiffness = _beam2_variable_stiffness(
+                field,
+                E,
+                section.area,
+                section.Iyy,
+                section.Izz,
+                G,
+                section.J,
+            )
+            action = stiffness @ element_displacement - local_load
+            start_force = field.start.rotation @ action[:3]
+            start_moment = field.start.rotation @ action[3:6]
+            end_force = field.end.rotation @ action[6:9]
+            end_moment = field.end.rotation @ action[9:12]
+            return np.array(
+                [
+                    [-start_force[0], -start_moment[1], -start_moment[2]],
+                    [end_force[0], end_moment[1], end_moment[2]],
+                ],
+                dtype=float,
+            )
+        frame = field.as_constant_frame()
         local_stiffness = _beam2_local_stiffness(
             frame.length,
             E,
@@ -304,11 +489,6 @@ class Beam2Kernel:
             G,
             section.J,
         )
-        element_displacement = np.asarray(U, dtype=float)[list(mesh.element_dofs(elem))]
-        if element_displacement.shape != (12,):
-            raise ValueError(
-                f"Beam2 element {elem.id} displacement requires 12 values"
-            )
         local_displacement = (
             _beam3_transformation(frame.rotation) @ element_displacement
         )

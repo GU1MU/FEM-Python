@@ -16,7 +16,7 @@ from fem.elements import (
     BeamOrientationError,
     get_element_capabilities,
     parse_beam_orientation,
-    resolve_beam_frame,
+    resolve_beam_frame_field,
 )
 from fem.geometry.references import LogicalEntityRef, logical_ref_sort_key
 
@@ -1400,7 +1400,7 @@ def _compiled_orientation_diagnostics(
                 # schema/reference failures.
                 continue
             try:
-                resolve_beam_frame(
+                resolve_beam_frame_field(
                     model.mesh,
                     element,
                     properties=deepcopy(resolved.effective_properties),

@@ -11,7 +11,7 @@ from ..elements.beam_frame import (
     BeamOrientationError,
     BeamOrientationInvalidError,
     BeamOrientationUnsupportedTargetError,
-    resolve_beam_frame,
+    resolve_beam_frame_field,
 )
 from ..elements.beam_section import parse_beam2_section
 from .sections import (
@@ -539,7 +539,7 @@ def _validate_unassigned_beam_sections(
             continue
         try:
             parse_beam2_section(properties)
-            resolve_beam_frame(
+            resolve_beam_frame_field(
                 model.mesh,
                 elem,
                 properties=properties,
@@ -579,7 +579,7 @@ def _validate_declared_beam_frames(
                     elem,
                 ),
             )
-            resolve_beam_frame(
+            resolve_beam_frame_field(
                 model.mesh,
                 elem,
                 properties=resolved.effective_properties,
