@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
 from collections import defaultdict, deque
 from typing import Any
@@ -37,6 +36,12 @@ from ..elements import (
 from ..materials import resolve_sections
 from ..selection import edges as edge_selection
 from ..selection import faces as face_selection
+from ..io.inp import (
+    InpImportNotice,
+    InpImportResult,
+    InpKeywordCategory,
+    classify_keyword,
+)
 from .contracts import STANDARD_LINE_SUBSET
 from .deck import (
     AbaqusBeamSectionData,
@@ -55,21 +60,10 @@ from .errors import (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class AbaqusImportNotice:
-    """One non-authoritative limitation reported by the Abaqus adapter."""
-
-    code: str
-    message: str
-    locations: tuple[AbaqusSourceLocation, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class AbaqusBuildResult:
-    """A detached model together with source-level import notices."""
-
-    model: FEMModel
-    notices: tuple[AbaqusImportNotice, ...] = ()
+# Compatibility names remain available while the public value types are owned
+# by ``fem.io.inp``.
+AbaqusImportNotice = InpImportNotice
+AbaqusBuildResult = InpImportResult
 
 
 def build_model(deck: AbaqusDeck) -> FEMModel:
@@ -466,12 +460,6 @@ def _audit_line_subset(deck: AbaqusDeck) -> bool:
                 ),
             ) from exc
 
-    accepted = set(STANDARD_LINE_SUBSET.accepted_keywords)
-    output_keywords = set(
-        STANDARD_LINE_SUBSET.postprocess_candidate_keywords
-        | STANDARD_LINE_SUBSET.preserved_output_keywords
-    )
-    harmless = set(STANDARD_LINE_SUBSET.harmless_ignored_keywords)
     for occurrence in deck.keyword_occurrences:
         name = occurrence.name
         if name == "dsload":
@@ -481,7 +469,8 @@ def _audit_line_subset(deck: AbaqusDeck) -> bool:
                 location=occurrence.location,
                 remediation="Use supported *DLOAD records for B31 or GRAV.",
             )
-        if name not in accepted and name not in harmless:
+        category = classify_keyword(name)
+        if category is InpKeywordCategory.UNSUPPORTED_ENGINEERING_SEMANTICS:
             remediation = _unsupported_keyword_remediation(name)
             raise UnsupportedAbaqusFeatureError(
                 (
@@ -493,9 +482,12 @@ def _audit_line_subset(deck: AbaqusDeck) -> bool:
                 record=name,
                 remediation=remediation,
             )
-        if name in harmless:
+        if category is InpKeywordCategory.HARMLESS_IGNORED:
             continue
-        if name in output_keywords:
+        if category in {
+            InpKeywordCategory.POSTPROCESS_CANDIDATE,
+            InpKeywordCategory.PRESERVED,
+        }:
             # Output options are preserved authoring evidence.  Concrete
             # postprocessing support is classified after solve.
             continue

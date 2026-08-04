@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from fem import abaqus
+from fem.io import inp
 
 
 def _write_deck(
@@ -71,7 +72,9 @@ def _assert_current_topology_rejection(
     assert error.remediation
 
 
-def test_characterization_preprint_is_currently_a_build_blocker(tmp_path: Path) -> None:
+def test_phase1_preprint_is_harmless_and_preserves_source_occurrence(
+    tmp_path: Path,
+) -> None:
     path = _write_deck(
         tmp_path,
         "preprint.inp",
@@ -80,14 +83,26 @@ def test_characterization_preprint_is_currently_a_build_blocker(tmp_path: Path) 
         elements=("1, 1, 2",),
     )
 
-    with pytest.raises(abaqus.UnsupportedAbaqusFeatureError) as caught:
-        abaqus.read_with_report(path)
+    result = inp.read_with_report(path)
 
-    error = caught.value
-    assert error.code == "abaqus.line.keyword_unsupported"
-    assert error.keyword == "preprint"
-    assert error.path == path
-    assert error.remediation
+    assert result.model.mesh.num_nodes == 2
+    assert result.model.mesh.num_elements == 1
+    assert result.source_summary is not None
+    occurrences = result.source_summary.keyword_occurrences
+    preprints = tuple(
+        occurrence for occurrence in occurrences
+        if occurrence.name == "preprint"
+    )
+    assert len(preprints) == 1
+    assert preprints[0].category is inp.InpKeywordCategory.HARMLESS_IGNORED
+    assert preprints[0].params == (
+        ("echo", "NO"),
+        ("history", "NO"),
+        ("model", "NO"),
+        ("contact", "NO"),
+    )
+    assert preprints[0].location.path == path
+    assert preprints[0].location.line == 2
 
 
 @pytest.mark.parametrize(

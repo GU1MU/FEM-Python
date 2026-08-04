@@ -22,10 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from fem import geometry as geometry_runtime
-from fem.abaqus import (
-    build_model_with_report as build_abaqus_model_with_report,
-    parse_file,
-)
+from fem.io.inp import read_with_report as read_inp_with_report
 from fem.application import (
     AnalysisRun,
     AuthoringCapability,
@@ -7759,15 +7756,11 @@ class FEMMainWindow(QMainWindow):
 
         def workload(context: TaskContext):
             timings: dict[str, float] = {}
-            context.report("正在解析 INP……")
+            context.report("正在解析并构建 INP……")
             started = perf_counter()
-            deck = parse_file(path)
-            timings["INP 解析"] = perf_counter() - started
-            context.report("正在构建有限元模型……")
-            started = perf_counter()
-            build_result = build_abaqus_model_with_report(deck)
-            model = build_result.model
-            timings["有限元模型构建"] = perf_counter() - started
+            import_result = read_inp_with_report(path)
+            timings["INP 解析与构建"] = perf_counter() - started
+            model = import_result.model
             context.report("正在生成显示网格……")
             started = perf_counter()
             geometry = build_model_geometry(model)
@@ -7777,7 +7770,7 @@ class FEMMainWindow(QMainWindow):
             prepared = self.session.prepare_imported_model_transfer(model)
             timings["Session 模型所有权准备"] = perf_counter() - started
             context.checkpoint()
-            return prepared, geometry, timings, build_result.notices
+            return prepared, geometry, timings, import_result.notices
 
         def apply_result(value: object) -> TaskApplyOutcome:
             prepared, _geometry, _timings, _notices = self._unpack_model_load(

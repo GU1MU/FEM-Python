@@ -367,23 +367,17 @@ def test_background_import_uses_report_and_installs_notice_after_accept(
         "source.formulation.approximation",
         "Current solver uses an approximation.",
     )
-    parsed_deck = object()
     calls: list[tuple[str, object]] = []
     errors: list[tuple[str, str]] = []
 
-    def parse(candidate):
-        calls.append(("parse", candidate))
-        return parsed_deck
-
-    def build(deck):
-        calls.append(("build", deck))
+    def import_inp(candidate):
+        calls.append(("facade", candidate))
         return SimpleNamespace(model=model, notices=(notice,))
 
-    monkeypatch.setattr(main_window_module, "parse_file", parse)
     monkeypatch.setattr(
         main_window_module,
-        "build_abaqus_model_with_report",
-        build,
+        "read_inp_with_report",
+        import_inp,
     )
     monkeypatch.setattr(
         window,
@@ -396,7 +390,7 @@ def test_background_import_uses_report_and_installs_notice_after_accept(
         _wait_for_task(window)
 
         assert errors == []
-        assert calls == [("parse", path), ("build", parsed_deck)]
+        assert calls == [("facade", path)]
         assert window.document.source_kind == "imported"
         assert window.document.source_path == path
         assert window.import_notices == (notice,)
@@ -491,11 +485,11 @@ def test_notices_survive_edit_check_solve_stale_and_failed_import(
         )
         assert window.import_notices == (current_notice,)
 
-        def fail_parse(_path):
+        def fail_import(_path):
             raise ValueError("invalid imported input")
 
         monkeypatch.setattr(window, "_confirm_discard_changes", lambda: True)
-        monkeypatch.setattr(main_window_module, "parse_file", fail_parse)
+        monkeypatch.setattr(main_window_module, "read_inp_with_report", fail_import)
         window._load_path(tmp_path / "invalid.inp")
         _wait_for_task(window)
 

@@ -1,9 +1,295 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
 import numpy as np
-from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.mesh import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
+from ..core.model import FEMModel
+
+
+@dataclass(frozen=True, slots=True)
+class InpSourceLocation:
+    """One physical source location in an INP input artifact."""
+
+    path: Path | None
+    line: int
+    keyword: str | None = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.line, bool) or int(self.line) < 1:
+            raise ValueError("INP source line must be a positive integer")
+        object.__setattr__(self, "line", int(self.line))
+        if self.path is not None and not isinstance(self.path, Path):
+            object.__setattr__(self, "path", Path(self.path))
+
+    def format(self) -> str:
+        prefix = str(self.path) if self.path is not None else "<input>"
+        context = f"{prefix}:{self.line}"
+        if self.keyword:
+            context += f" [*{self.keyword.upper()}]"
+        return context
+
+
+@dataclass(frozen=True, slots=True)
+class InpSourceSpan:
+    """A logical keyword span and all of its physical source locations."""
+
+    start: InpSourceLocation
+    end: InpSourceLocation
+    physical_locations: tuple[InpSourceLocation, ...]
+
+    @property
+    def location(self) -> InpSourceLocation:
+        return self.start
+
+
+class InpKeywordCategory(str, Enum):
+    """The single import classification used for source keyword evidence."""
+
+    EXECUTED = "executed"
+    POSTPROCESS_CANDIDATE = "postprocess candidate"
+    PRESERVED = "preserved"
+    HARMLESS_IGNORED = "harmless ignored"
+    UNSUPPORTED_ENGINEERING_SEMANTICS = "unsupported engineering semantics"
+
+
+# A shorter discoverable name for callers that describe the field as a
+# disposition rather than a category.
+InpKeywordDisposition = InpKeywordCategory
+KeywordCategory = InpKeywordCategory
+
+
+def classify_keyword(name: str) -> InpKeywordCategory:
+    """Classify one normalized or raw INP keyword using the adapter contract."""
+
+    from ..abaqus.contracts import STANDARD_LINE_SUBSET
+
+    normalized = str(name).strip().casefold().lstrip("*")
+    if normalized in STANDARD_LINE_SUBSET.executed_keywords:
+        return InpKeywordCategory.EXECUTED
+    if normalized in STANDARD_LINE_SUBSET.postprocess_candidate_keywords:
+        return InpKeywordCategory.POSTPROCESS_CANDIDATE
+    if normalized in STANDARD_LINE_SUBSET.preserved_output_keywords:
+        return InpKeywordCategory.PRESERVED
+    if normalized in STANDARD_LINE_SUBSET.harmless_ignored_keywords:
+        return InpKeywordCategory.HARMLESS_IGNORED
+    return InpKeywordCategory.UNSUPPORTED_ENGINEERING_SEMANTICS
+
+
+@dataclass(frozen=True, slots=True)
+class InpSourceOccurrence:
+    """Detached source evidence for one keyword occurrence."""
+
+    name: str
+    params: tuple[tuple[str, str], ...]
+    flags: tuple[str, ...]
+    span: InpSourceSpan
+    raw_lines: tuple[str, ...] = ()
+    category: InpKeywordCategory = (
+        InpKeywordCategory.UNSUPPORTED_ENGINEERING_SEMANTICS
+    )
+
+    @property
+    def location(self) -> InpSourceLocation:
+        return self.span.start
+
+    @property
+    def keyword(self) -> str:
+        """Return the normalized keyword name for inspection clients."""
+
+        return self.name
+
+    @property
+    def classification(self) -> InpKeywordCategory:
+        """Return the unified category under an inspection-friendly name."""
+
+        return self.category
+
+    @property
+    def disposition(self) -> InpKeywordCategory:
+        """Return the category under the report/disposition terminology."""
+
+        return self.category
+
+
+@dataclass(frozen=True, slots=True)
+class InpSourceSummary:
+    """Read-only source evidence retained by the complete-model facade."""
+
+    occurrences: tuple[InpSourceOccurrence, ...] = ()
+
+    @property
+    def keyword_occurrences(self) -> tuple[InpSourceOccurrence, ...]:
+        """Compatibility spelling for clients that use parser terminology."""
+
+        return self.occurrences
+
+    @property
+    def source_occurrences(self) -> tuple[InpSourceOccurrence, ...]:
+        """Return all preserved source keyword occurrences."""
+
+        return self.occurrences
+
+
+@dataclass(frozen=True, slots=True)
+class InpImportNotice:
+    """One non-authoritative limitation reported by an INP import."""
+
+    code: str
+    message: str
+    locations: tuple[InpSourceLocation, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "locations", tuple(self.locations))
+
+
+@dataclass(frozen=True, slots=True)
+class InpImportResult:
+    """A detached model, notices, and optional read-only source evidence."""
+
+    model: FEMModel
+    notices: tuple[InpImportNotice, ...] = ()
+    source_summary: InpSourceSummary | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "notices", tuple(self.notices))
+
+
+class InpInputError(ValueError):
+    """Base input error retaining source and remediation evidence."""
+
+    default_code = "abaqus.input.invalid"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        location: InpSourceLocation | None = None,
+        record: Any = None,
+        remediation: str | None = None,
+        locations: Iterable[InpSourceLocation] = (),
+        path: str | Path | None = None,
+        line: int | None = None,
+        keyword: str | None = None,
+    ) -> None:
+        if location is None and (path is not None or line is not None):
+            location = InpSourceLocation(
+                None if path is None else Path(path),
+                1 if line is None else line,
+                keyword,
+            )
+
+        ordered_locations: list[InpSourceLocation] = []
+        if location is not None:
+            ordered_locations.append(location)
+        for item in locations:
+            if item not in ordered_locations:
+                ordered_locations.append(item)
+
+        self.code = str(code or self.default_code)
+        self.location = ordered_locations[0] if ordered_locations else None
+        self.locations = tuple(ordered_locations)
+        self.path = self.location.path if self.location is not None else None
+        self.line = self.location.line if self.location is not None else None
+        self.keyword = (
+            self.location.keyword if self.location is not None else keyword
+        )
+        self.record = record
+        self.remediation = remediation
+        self.message = str(message)
+
+        rendered = self.message
+        if self.location is not None:
+            rendered = f"{self.location.format()}: {rendered}"
+        if remediation:
+            rendered += f" Remediation: {remediation}"
+        super().__init__(rendered)
+
+
+class InpParseError(InpInputError):
+    """A lexical or structural INP input error."""
+
+    default_code = "abaqus.parse.invalid"
+
+
+class InpBuildError(InpInputError):
+    """A semantic construction error for a parsed INP source."""
+
+    default_code = "abaqus.build.invalid"
+
+
+class UnsupportedInpFeatureError(InpInputError):
+    """A valid INP feature outside the currently implemented capability."""
+
+    default_code = "abaqus.feature.unsupported"
+
+
+def read(path: str | Path) -> FEMModel:
+    """Read a complete INP model while discarding non-authoritative notices."""
+
+    return read_with_report(path).model
+
+
+def read_with_report(path: str | Path) -> InpImportResult:
+    """Read a complete INP model through the public facade."""
+
+    from ..abaqus.builder import build_model_with_report
+    from ..abaqus.parser import parse_file
+
+    deck = parse_file(path)
+    built = build_model_with_report(deck)
+    return InpImportResult(
+        model=built.model,
+        notices=built.notices,
+        source_summary=_source_summary(deck),
+    )
+
+
+def _source_summary(deck: Any) -> InpSourceSummary:
+    """Copy parser keyword evidence into an owned, immutable public value."""
+
+    occurrences = tuple(
+        _copy_source_occurrence(occurrence)
+        for occurrence in tuple(getattr(deck, "keyword_occurrences", ()))
+    )
+    return InpSourceSummary(occurrences=occurrences)
+
+
+def _copy_source_occurrence(occurrence: Any) -> InpSourceOccurrence:
+    source_span = occurrence.span
+    physical_locations = tuple(
+        _copy_source_location(location)
+        for location in source_span.physical_locations
+    )
+    span = InpSourceSpan(
+        start=_copy_source_location(source_span.start),
+        end=_copy_source_location(source_span.end),
+        physical_locations=physical_locations,
+    )
+    return InpSourceOccurrence(
+        name=str(occurrence.name),
+        params=tuple(
+            (str(key), str(value))
+            for key, value in tuple(occurrence.params)
+        ),
+        flags=tuple(str(flag) for flag in tuple(occurrence.flags)),
+        span=span,
+        raw_lines=tuple(str(line) for line in tuple(occurrence.raw_lines)),
+        category=classify_keyword(str(occurrence.name)),
+    )
+
+
+def _copy_source_location(location: Any) -> InpSourceLocation:
+    return InpSourceLocation(
+        getattr(location, "path", None),
+        int(location.line),
+        getattr(location, "keyword", None),
+    )
 
 
 _MIXED2D_TYPES = {

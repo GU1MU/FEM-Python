@@ -32,6 +32,7 @@ class AbaqusLineSubset:
 
         return (
             self.solver_executed_keywords
+            | self.harmless_ignored_keywords
             | self.postprocess_candidate_keywords
             | self.preserved_output_keywords
         )
@@ -68,7 +69,7 @@ STANDARD_LINE_SUBSET = AbaqusLineSubset(
             "end step",
         }
     ),
-    harmless_ignored_keywords=frozenset({"heading"}),
+    harmless_ignored_keywords=frozenset({"heading", "preprint"}),
     postprocess_candidate_keywords=frozenset(
         {
             "output",

@@ -113,11 +113,10 @@ def test_async_import_acceptance_and_projection_do_not_copy_on_gui_thread(
     model = make_static_pull_truss_model()
     captured = {}
 
-    monkeypatch.setattr(main_window_module, "parse_file", lambda _path: object())
     monkeypatch.setattr(
         main_window_module,
-        "build_abaqus_model_with_report",
-        lambda _deck: SimpleNamespace(model=model, notices=()),
+        "read_inp_with_report",
+        lambda _path: SimpleNamespace(model=model, notices=()),
     )
 
     def capture_start(workload, on_success, *_args, **kwargs):
