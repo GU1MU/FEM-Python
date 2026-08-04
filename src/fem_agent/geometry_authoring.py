@@ -1056,6 +1056,7 @@ def add_planar_circle(
             *sketch.curves,
             SketchCircle(curve_id, point_id, _finite(radius, "radius")),
         ),
+        sketch.constraints,
     )
     return _draft(
         updated,
@@ -1106,6 +1107,7 @@ def add_planar_rectangle(
         sketch.plane,
         (*sketch.points, *points),
         (*sketch.curves, *lines),
+        sketch.constraints,
     )
     return _draft(
         updated,
@@ -1159,6 +1161,7 @@ def add_planar_polygon(
         sketch.plane,
         (*sketch.points, *points),
         (*sketch.curves, *lines),
+        sketch.constraints,
     )
     return _draft(
         updated,
@@ -1193,6 +1196,7 @@ def update_planar_point(
             for point in sketch.points
         ),
         sketch.curves,
+        sketch.constraints,
     )
     return _draft(
         updated,
@@ -1251,6 +1255,7 @@ def update_planar_circle(
         sketch.plane,
         tuple(points),
         curves,
+        sketch.constraints,
     )
     return _draft(
         updated,
@@ -1304,6 +1309,7 @@ def planar_geometry_catalog(recipe: object) -> dict[str, object]:
         "kind": "planar_sketch",
         "point_count": len(sketch.points),
         "curve_count": len(sketch.curves),
+        "constraint_summary": _sketch_constraint_summary(sketch),
         "points": [
             {"id": point.id, "x": point.u, "y": point.v}
             for point in sketch.points
@@ -1584,7 +1590,7 @@ def _geometry_recipe_to_payload(recipe: object) -> dict[str, object]:
             ),
         }
     if type(recipe) is SketchGeometry and recipe.is_strict:
-        return {
+        result = {
             "kind": "planar_sketch",
             "name": recipe.name,
             "plane": {
@@ -1601,6 +1607,14 @@ def _geometry_recipe_to_payload(recipe: object) -> dict[str, object]:
                 for curve in recipe.curves
             ],
         }
+        if recipe.constraints:
+            result["constraint_summary"] = _sketch_constraint_summary(recipe)
+            result["constraint_capability"] = {
+                "read": True,
+                "create": False,
+                "edit": False,
+            }
+        return result
     raise TypeError("recipe is outside the native Agent geometry subset")
 
 
@@ -1631,6 +1645,10 @@ def _geometry_recipe_from_payload(value: object) -> object:
         raise ValueError(
             "Agent 暂不支持创建或编辑面草图拉伸布尔特征；仅支持只读识别。"
         )
+    if kind == "planar_sketch" and (
+        "constraint_summary" in value or "constraint_capability" in value
+    ):
+        raise ValueError("Agent 可只读识别草图约束摘要，暂不支持创建或编辑约束。")
     fields: dict[str, set[str]] = {
         "rectangle": {"kind", "name", "width", "height"},
         "disk": {"kind", "name", "radius"},
@@ -2472,6 +2490,19 @@ def _next_sketch_ids(
             used.add(candidate)
         index += 1
     return tuple(allocated)
+
+
+def _sketch_constraint_summary(sketch: SketchGeometry) -> dict[str, object]:
+    constraints = sketch.constraints
+    return {
+        "count": len(constraints),
+        "enabled_count": sum(item.enabled for item in constraints),
+        "driving_dimension_count": sum(
+            bool(getattr(item, "driving", False)) for item in constraints
+        ),
+        "types": sorted({type(item).__name__ for item in constraints}),
+        "capability": {"read": True, "create": False, "edit": False},
+    }
 
 
 def _sketch_curve_to_payload(

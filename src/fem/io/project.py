@@ -1,6 +1,6 @@
 """Version-neutral native project persistence API.
 
-Readers dispatch schema 1 compatibility migration or schema 2-12 codecs after
+Readers dispatch schema 1 compatibility migration or schema 2-13 codecs after
 one strict JSON parse.  Writers always emit the current schema.
 """
 
@@ -52,15 +52,16 @@ from .project_v10 import (
     decode_project_v10,
 )
 from .project_v11 import decode_project_v11
-from .project_v12 import (
-    decode_project_v12,
-    dumps_project_v12,
-    encode_project_v12,
-    save_project_v12,
+from .project_v12 import decode_project_v12
+from .project_v13 import (
+    decode_project_v13,
+    dumps_project_v13,
+    encode_project_v13,
+    save_project_v13,
 )
 
 
-CURRENT_PROJECT_SCHEMA = 12
+CURRENT_PROJECT_SCHEMA = 13
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,7 +93,7 @@ class LoadedProject:
 
 
 def load_project(path: str | Path) -> LoadedProject:
-    """Read and decode a supported schema 1-12 project from *path*."""
+    """Read and decode a supported schema 1-13 project from *path*."""
 
     source = Path(path)
     return loads_project(source.read_bytes(), source_path=source)
@@ -103,7 +104,7 @@ def loads_project(
     *,
     source_path: str | Path | None = None,
 ) -> LoadedProject:
-    """Strictly parse and decode a supported schema 1-12 JSON document."""
+    """Strictly parse and decode a supported schema 1-13 JSON document."""
 
     payload = loads_json_strict(
         data,
@@ -201,31 +202,34 @@ def decode_project(
             source_path=resolved_path,
         )
         notices = ()
-    elif schema == CURRENT_PROJECT_SCHEMA:
+    elif schema == 12:
         snapshot = decode_project_v12(
             payload,
             source_path=resolved_path,
         )
         notices = ()
+    elif schema == CURRENT_PROJECT_SCHEMA:
+        snapshot = decode_project_v13(payload, source_path=resolved_path)
+        notices = ()
     else:
         raise UnsupportedProjectSchemaError(
             f"$.schema={schema!r} 不受支持；"
             "当前版本可读取 schema 1、2、3、4、5、6、7、8、9、10 和 "
-            f"11 和 {CURRENT_PROJECT_SCHEMA}"
+            f"11、12 和 {CURRENT_PROJECT_SCHEMA}"
         )
     if schema < 7:
         try:
             snapshot, v5_notices = migrate_project_snapshot_to_v5(snapshot)
         except ProjectV1MigrationError as error:
             raise ProjectDecodeError(
-                f"schema {schema} 无法原子迁移到 schema 12：{error}"
+                f"schema {schema} 无法原子迁移到 schema 13：{error}"
             ) from error
         notices = (*notices, *v5_notices)
         try:
             snapshot, v7_notices = migrate_project_snapshot_to_v7(snapshot)
         except ProjectV1MigrationError as error:
             raise ProjectDecodeError(
-                f"schema {schema} 无法原子迁移到 schema 12：{error}"
+                f"schema {schema} 无法原子迁移到 schema 13：{error}"
             ) from error
         notices = (*notices, *v7_notices)
     if schema < CURRENT_PROJECT_SCHEMA:
@@ -248,7 +252,7 @@ def encode_project(
 ) -> dict[str, Any]:
     """Encode a detached snapshot using the current project schema."""
 
-    return encode_project_v12(_canonical_writer_snapshot(snapshot))
+    return encode_project_v13(_canonical_writer_snapshot(snapshot))
 
 
 def dumps_project(
@@ -256,7 +260,7 @@ def dumps_project(
 ) -> str:
     """Serialize a detached snapshot using canonical current-schema JSON."""
 
-    return dumps_project_v12(_canonical_writer_snapshot(snapshot))
+    return dumps_project_v13(_canonical_writer_snapshot(snapshot))
 
 
 def save_project(
@@ -267,7 +271,7 @@ def save_project(
 ) -> Path:
     """Atomically save a detached snapshot using the current schema."""
 
-    return save_project_v12(
+    return save_project_v13(
         path,
         _canonical_writer_snapshot(snapshot),
         checkpoint=checkpoint,

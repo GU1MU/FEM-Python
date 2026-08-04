@@ -709,6 +709,199 @@ SketchCurve = SketchLine | SketchArc | SketchCircle
 STRICT_SKETCH_CURVE_TYPES = (SketchLine, SketchArc, SketchCircle)
 
 
+SketchConstraintSource = Literal["manual", "inferred"]
+
+
+def _normalize_constraint_common(
+    value: object,
+    source: object,
+    enabled: object,
+) -> tuple[str, SketchConstraintSource, bool]:
+    constraint_id = _normalize_sketch_id(value, "constraint id")
+    if source not in {"manual", "inferred"}:
+        raise ValueError("constraint source must be 'manual' or 'inferred'")
+    if type(enabled) is not bool:
+        raise TypeError("constraint enabled must be a bool")
+    return constraint_id, source, enabled
+
+
+@dataclass(frozen=True, slots=True)
+class SketchCoincidentConstraint:
+    """Require two stable sketch points to occupy the same location."""
+
+    id: str
+    first_point_id: str
+    second_point_id: str
+    source: SketchConstraintSource = "manual"
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        constraint_id, source, enabled = _normalize_constraint_common(
+            self.id, self.source, self.enabled
+        )
+        first = _normalize_sketch_id(self.first_point_id, "first_point_id")
+        second = _normalize_sketch_id(self.second_point_id, "second_point_id")
+        if first == second:
+            raise ValueError("coincident constraint requires two different points")
+        object.__setattr__(self, "id", constraint_id)
+        object.__setattr__(self, "first_point_id", first)
+        object.__setattr__(self, "second_point_id", second)
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "enabled", enabled)
+
+
+@dataclass(frozen=True, slots=True)
+class SketchPointOnCurveConstraint:
+    """Require a stable sketch point to lie on one stable curve."""
+
+    id: str
+    point_id: str
+    curve_id: str
+    source: SketchConstraintSource = "manual"
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        constraint_id, source, enabled = _normalize_constraint_common(
+            self.id, self.source, self.enabled
+        )
+        object.__setattr__(self, "id", constraint_id)
+        object.__setattr__(self, "point_id", _normalize_sketch_id(self.point_id, "point_id"))
+        object.__setattr__(self, "curve_id", _normalize_sketch_id(self.curve_id, "curve_id"))
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "enabled", enabled)
+
+
+@dataclass(frozen=True, slots=True)
+class SketchHorizontalConstraint:
+    id: str
+    line_id: str
+    source: SketchConstraintSource = "manual"
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        constraint_id, source, enabled = _normalize_constraint_common(
+            self.id, self.source, self.enabled
+        )
+        object.__setattr__(self, "id", constraint_id)
+        object.__setattr__(self, "line_id", _normalize_sketch_id(self.line_id, "line_id"))
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "enabled", enabled)
+
+
+@dataclass(frozen=True, slots=True)
+class SketchVerticalConstraint:
+    id: str
+    line_id: str
+    source: SketchConstraintSource = "manual"
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        constraint_id, source, enabled = _normalize_constraint_common(
+            self.id, self.source, self.enabled
+        )
+        object.__setattr__(self, "id", constraint_id)
+        object.__setattr__(self, "line_id", _normalize_sketch_id(self.line_id, "line_id"))
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "enabled", enabled)
+
+
+@dataclass(frozen=True, slots=True)
+class SketchFixedConstraint:
+    id: str
+    point_id: str
+    u: float
+    v: float
+    source: SketchConstraintSource = "manual"
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        constraint_id, source, enabled = _normalize_constraint_common(
+            self.id, self.source, self.enabled
+        )
+        object.__setattr__(self, "id", constraint_id)
+        object.__setattr__(self, "point_id", _normalize_sketch_id(self.point_id, "point_id"))
+        object.__setattr__(self, "u", _normalize_sketch_scalar(self.u, "fixed u"))
+        object.__setattr__(self, "v", _normalize_sketch_scalar(self.v, "fixed v"))
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "enabled", enabled)
+
+
+@dataclass(frozen=True, slots=True)
+class SketchDistanceDimension:
+    id: str
+    first_point_id: str
+    second_point_id: str
+    value: float
+    driving: bool = True
+    source: SketchConstraintSource = "manual"
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        constraint_id, source, enabled = _normalize_constraint_common(
+            self.id, self.source, self.enabled
+        )
+        first = _normalize_sketch_id(self.first_point_id, "first_point_id")
+        second = _normalize_sketch_id(self.second_point_id, "second_point_id")
+        if first == second:
+            raise ValueError("distance dimension requires two different points")
+        value = _normalize_sketch_scalar(self.value, "dimension value")
+        if value <= 0.0:
+            raise ValueError("dimension value must be positive")
+        if type(self.driving) is not bool:
+            raise TypeError("dimension driving must be a bool")
+        object.__setattr__(self, "id", constraint_id)
+        object.__setattr__(self, "first_point_id", first)
+        object.__setattr__(self, "second_point_id", second)
+        object.__setattr__(self, "value", value)
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "enabled", enabled)
+
+
+@dataclass(frozen=True, slots=True)
+class SketchRadiusDimension:
+    id: str
+    curve_id: str
+    value: float
+    driving: bool = True
+    source: SketchConstraintSource = "manual"
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        constraint_id, source, enabled = _normalize_constraint_common(
+            self.id, self.source, self.enabled
+        )
+        value = _normalize_sketch_scalar(self.value, "dimension value")
+        if value <= 0.0:
+            raise ValueError("dimension value must be positive")
+        if type(self.driving) is not bool:
+            raise TypeError("dimension driving must be a bool")
+        object.__setattr__(self, "id", constraint_id)
+        object.__setattr__(self, "curve_id", _normalize_sketch_id(self.curve_id, "curve_id"))
+        object.__setattr__(self, "value", value)
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "enabled", enabled)
+
+
+SketchGeometricConstraint = (
+    SketchCoincidentConstraint
+    | SketchPointOnCurveConstraint
+    | SketchHorizontalConstraint
+    | SketchVerticalConstraint
+    | SketchFixedConstraint
+)
+SketchDimensionalConstraint = SketchDistanceDimension | SketchRadiusDimension
+SketchConstraint = SketchGeometricConstraint | SketchDimensionalConstraint
+SKETCH_CONSTRAINT_TYPES = (
+    SketchCoincidentConstraint,
+    SketchPointOnCurveConstraint,
+    SketchHorizontalConstraint,
+    SketchVerticalConstraint,
+    SketchFixedConstraint,
+    SketchDistanceDimension,
+    SketchRadiusDimension,
+)
+
+
 SketchContour = SketchRectangle | SketchCircle
 SKETCH_CONTOUR_TYPES = (SketchRectangle, SketchCircle)
 
@@ -728,6 +921,7 @@ class SketchGeometry:
     plane: SketchPlane | None
     points: tuple[SketchPoint, ...]
     curves: tuple[SketchCurve, ...]
+    constraints: tuple[SketchConstraint, ...]
 
     # Legacy contour sketches and their strict curve-graph migration describe
     # the same authoring intent.  Keep equality semantic across that boundary
@@ -743,6 +937,7 @@ class SketchGeometry:
         plane: object | None = None,
         points: object = (),
         curves: object = (),
+        constraints: object = (),
     ) -> None:
         normalized_name = str(name).strip()
         if not normalized_name:
@@ -754,6 +949,7 @@ class SketchGeometry:
         strict_plane: object | None = plane
         strict_points: object = points
         strict_curves: object = curves
+        strict_constraints: object = constraints
         legacy_contours: object = contours
         if isinstance(contours, SketchPlane):
             if plane is None:
@@ -761,6 +957,8 @@ class SketchGeometry:
             else:
                 strict_points = plane
             strict_curves = points
+            if curves:
+                strict_constraints = curves
             strict_plane = contours
             legacy_contours = ()
 
@@ -770,16 +968,19 @@ class SketchGeometry:
                 raise TypeError("strict sketch plane must be a SketchPlane")
             normalized_points = tuple(strict_points)
             normalized_curves = tuple(strict_curves)
+            normalized_constraints = tuple(strict_constraints)
             self._validate_strict(
                 strict_plane,
                 normalized_points,
                 normalized_curves,
+                normalized_constraints,
             )
             object.__setattr__(self, "name", normalized_name)
             object.__setattr__(self, "contours", ())
             object.__setattr__(self, "plane", strict_plane)
             object.__setattr__(self, "points", normalized_points)
             object.__setattr__(self, "curves", normalized_curves)
+            object.__setattr__(self, "constraints", normalized_constraints)
             return
 
         normalized_contours = tuple(legacy_contours)
@@ -796,6 +997,7 @@ class SketchGeometry:
         object.__setattr__(self, "plane", None)
         object.__setattr__(self, "points", ())
         object.__setattr__(self, "curves", ())
+        object.__setattr__(self, "constraints", ())
 
     def __eq__(self, other: object) -> bool:
         if type(other) is not SketchGeometry:
@@ -807,12 +1009,14 @@ class SketchGeometry:
                 self.plane,
                 self.points,
                 self.curves,
+                self.constraints,
             ) == (
                 other.name,
                 other.contours,
                 other.plane,
                 other.points,
                 other.curves,
+                other.constraints,
             )
         # Import lazily to avoid the recipes <-> analysis module cycle during
         # normal package initialization.
@@ -827,6 +1031,7 @@ class SketchGeometry:
         plane: SketchPlane,
         points: tuple[object, ...],
         curves: tuple[object, ...],
+        constraints: tuple[object, ...],
     ) -> None:
         del plane  # The constructor has already validated the immutable frame.
         if not points:
@@ -887,6 +1092,7 @@ class SketchGeometry:
                     )
                 if _sketch_distance(start, end) <= _SKETCH_GEOMETRY_TOLERANCE:
                     raise ValueError(f"sketch arc {curve.id!r} has identical endpoints")
+        validate_sketch_constraints(constraints, point_map, curves)
 
     @property
     def is_strict(self) -> bool:
@@ -915,6 +1121,150 @@ class SketchGeometry:
             if curve.id == curve_id:
                 return curve
         raise KeyError(curve_id)
+
+
+def sketch_constraint_entity_ids(constraint: SketchConstraint) -> tuple[str, ...]:
+    """Return stable geometry references used by one constraint."""
+
+    if isinstance(constraint, (SketchCoincidentConstraint, SketchDistanceDimension)):
+        return constraint.first_point_id, constraint.second_point_id
+    if isinstance(constraint, (SketchPointOnCurveConstraint,)):
+        return constraint.point_id, constraint.curve_id
+    if isinstance(constraint, (SketchHorizontalConstraint, SketchVerticalConstraint)):
+        return (constraint.line_id,)
+    if isinstance(constraint, SketchFixedConstraint):
+        return (constraint.point_id,)
+    if isinstance(constraint, SketchRadiusDimension):
+        return (constraint.curve_id,)
+    raise TypeError("unsupported sketch constraint")
+
+
+def constraints_without_entities(
+    constraints: tuple[SketchConstraint, ...],
+    entity_ids: set[str] | frozenset[str],
+) -> tuple[SketchConstraint, ...]:
+    """Cascade-delete constraints that reference removed geometry entities."""
+
+    return tuple(
+        constraint
+        for constraint in constraints
+        if not entity_ids.intersection(sketch_constraint_entity_ids(constraint))
+    )
+
+
+def copy_sketch_constraints(
+    constraints: tuple[SketchConstraint, ...],
+    entity_id_map: dict[str, str],
+    constraint_id_map: dict[str, str],
+) -> tuple[SketchConstraint, ...]:
+    """Copy constraints using complete, explicit stable-ID mappings.
+
+    Restore operations retain the original tuple unchanged.  Copy operations
+    must provide a new ID for every constraint and every referenced entity;
+    incomplete mappings are rejected instead of producing dangling copies.
+    """
+
+    copied: list[SketchConstraint] = []
+    for constraint in constraints:
+        try:
+            new_id = constraint_id_map[constraint.id]
+            mapped = {
+                entity_id: entity_id_map[entity_id]
+                for entity_id in sketch_constraint_entity_ids(constraint)
+            }
+        except KeyError as error:
+            raise ValueError(f"incomplete sketch constraint copy mapping: {error.args[0]}") from error
+        if isinstance(constraint, (SketchCoincidentConstraint, SketchDistanceDimension)):
+            copied.append(replace(
+                constraint,
+                id=new_id,
+                first_point_id=mapped[constraint.first_point_id],
+                second_point_id=mapped[constraint.second_point_id],
+            ))
+        elif isinstance(constraint, SketchPointOnCurveConstraint):
+            copied.append(replace(
+                constraint,
+                id=new_id,
+                point_id=mapped[constraint.point_id],
+                curve_id=mapped[constraint.curve_id],
+            ))
+        elif isinstance(constraint, (SketchHorizontalConstraint, SketchVerticalConstraint)):
+            copied.append(replace(
+                constraint, id=new_id, line_id=mapped[constraint.line_id]
+            ))
+        elif isinstance(constraint, SketchFixedConstraint):
+            copied.append(replace(
+                constraint, id=new_id, point_id=mapped[constraint.point_id]
+            ))
+        else:
+            copied.append(replace(
+                constraint, id=new_id, curve_id=mapped[constraint.curve_id]
+            ))
+    return tuple(copied)
+
+
+def constraints_after_curve_split(
+    constraints: tuple[SketchConstraint, ...],
+    original_curve_id: str,
+) -> tuple[SketchConstraint, ...]:
+    """Phase-2 split rule: retain unrelated constraints and drop ambiguous ones.
+
+    Phase 5 can replace this conservative hook with type-specific migration to
+    deterministic derived curve IDs.
+    """
+
+    return constraints_without_entities(constraints, {original_curve_id})
+
+
+def validate_sketch_constraints(
+    constraints: tuple[object, ...],
+    point_map: dict[str, SketchPoint],
+    curves: tuple[object, ...],
+) -> None:
+    if any(type(item) not in SKETCH_CONSTRAINT_TYPES for item in constraints):
+        raise TypeError("strict sketch constraints contain an unsupported value")
+    seen_ids: set[str] = set()
+    curve_map = {curve.id: curve for curve in curves}
+    for constraint in constraints:
+        folded = constraint.id.casefold()
+        if folded in seen_ids:
+            raise ValueError(f"duplicate sketch constraint id: {constraint.id!r}")
+        seen_ids.add(folded)
+
+        if isinstance(constraint, (SketchCoincidentConstraint, SketchDistanceDimension)):
+            point_ids = (constraint.first_point_id, constraint.second_point_id)
+        elif isinstance(constraint, (SketchPointOnCurveConstraint, SketchFixedConstraint)):
+            point_ids = (constraint.point_id,)
+        else:
+            point_ids = ()
+        missing_point = next((item for item in point_ids if item not in point_map), None)
+        if missing_point is not None:
+            raise ValueError(
+                f"sketch constraint {constraint.id!r} references unknown point "
+                f"{missing_point!r}"
+            )
+
+        if isinstance(constraint, SketchPointOnCurveConstraint):
+            curve_id = constraint.curve_id
+            expected = STRICT_SKETCH_CURVE_TYPES
+        elif isinstance(constraint, (SketchHorizontalConstraint, SketchVerticalConstraint)):
+            curve_id = constraint.line_id
+            expected = (SketchLine,)
+        elif isinstance(constraint, SketchRadiusDimension):
+            curve_id = constraint.curve_id
+            expected = (SketchCircle, SketchArc)
+        else:
+            continue
+        curve = curve_map.get(curve_id)
+        if curve is None:
+            raise ValueError(
+                f"sketch constraint {constraint.id!r} references unknown curve "
+                f"{curve_id!r}"
+            )
+        if not isinstance(curve, expected):
+            raise ValueError(
+                f"sketch constraint {constraint.id!r} references the wrong curve type"
+            )
 
 
 def _curve_point_ids(curve: SketchCurve) -> tuple[str, ...]:

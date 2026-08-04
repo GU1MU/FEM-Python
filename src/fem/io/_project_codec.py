@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, fields
 import json
@@ -56,14 +58,22 @@ from fem.geometry.recipes import (
     RotatedGeometry,
     SketchArc,
     SketchCircle,
+    SketchCoincidentConstraint,
+    SketchConstraint,
+    SketchDistanceDimension,
     SketchExternalCoincidence,
     SketchExternalReference,
     SketchExternalReferenceType,
     SketchGeometry,
+    SketchFixedConstraint,
+    SketchHorizontalConstraint,
     SketchLine,
     SketchPlane,
     SketchPoint,
+    SketchPointOnCurveConstraint,
+    SketchRadiusDimension,
     SketchRectangle,
+    SketchVerticalConstraint,
     SolidBody,
     WireGeometry,
     WireMember,
@@ -80,6 +90,18 @@ from ._atomic_text import atomic_write_verified_text
 
 
 _VerifiedT = TypeVar("_VerifiedT")
+_SKETCH_CONSTRAINT_CODEC = ContextVar("sketch_constraint_codec", default=False)
+
+
+@contextmanager
+def sketch_constraint_codec():
+    """Enable schema-v13 sketch constraint fields for nested geometry codecs."""
+
+    token = _SKETCH_CONSTRAINT_CODEC.set(True)
+    try:
+        yield
+    finally:
+        _SKETCH_CONSTRAINT_CODEC.reset(token)
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,10 +462,13 @@ def decode_geometry_field(
                 f"{path} 的 curve-based sketch 无法由 "
                 f"{policy.version_label} 解码"
             )
+        required = {"type", "name", "plane", "points", "curves"}
+        if _SKETCH_CONSTRAINT_CODEC.get():
+            required.add("constraints")
         _field_keys(
             data,
             path,
-            required={"type", "name", "plane", "points", "curves"},
+            required=required,
             optional=set(),
             policy=policy,
             error_type=policy.decode_error,
@@ -473,6 +498,24 @@ def decode_geometry_field(
                 _field_array(data["curves"], f"{path}.curves", policy.decode_error)
             )
         )
+        constraints = (
+            tuple(
+                _decode_sketch_constraint_field(
+                    item,
+                    f"{path}.constraints[{index}]",
+                    policy=policy,
+                )
+                for index, item in enumerate(
+                    _field_array(
+                        data["constraints"],
+                        f"{path}.constraints",
+                        policy.decode_error,
+                    )
+                )
+            )
+            if _SKETCH_CONSTRAINT_CODEC.get()
+            else ()
+        )
         return _field_construct(
             SketchGeometry,
             path,
@@ -481,6 +524,7 @@ def decode_geometry_field(
             plane,
             points,
             curves,
+            constraints,
         )
     if kind == "FaceSketchBooleanGeometry":
         if not policy.allow_face_sketch_boolean:
@@ -1971,6 +2015,125 @@ def _encode_wire_member_field(
     }
 
 
+_SKETCH_CONSTRAINT_WIRE_TYPES = {
+    "coincident": (SketchCoincidentConstraint, ("first_point_id", "second_point_id"), ()),
+    "point_on_curve": (SketchPointOnCurveConstraint, ("point_id", "curve_id"), ()),
+    "horizontal": (SketchHorizontalConstraint, ("line_id",), ()),
+    "vertical": (SketchVerticalConstraint, ("line_id",), ()),
+    "fixed": (SketchFixedConstraint, ("point_id",), ("u", "v")),
+    "distance": (
+        SketchDistanceDimension,
+        ("first_point_id", "second_point_id"),
+        ("value",),
+    ),
+    "radius": (SketchRadiusDimension, ("curve_id",), ("value",)),
+}
+_SKETCH_CONSTRAINT_TYPE_NAMES = {
+    value[0]: key for key, value in _SKETCH_CONSTRAINT_WIRE_TYPES.items()
+}
+
+
+def _field_strict_bool(value: Any, path: str, policy: ProjectFieldCodecPolicy) -> bool:
+    if type(value) is not bool:
+        raise policy.decode_error(f"{path} 必须是 bool")
+    return value
+
+
+def _decode_sketch_constraint_field(
+    value: Any,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> SketchConstraint:
+    data = _field_mapping(value, path, policy.decode_error)
+    kind = _field_string(data.get("type"), f"{path}.type", policy.decode_error)
+    contract = _SKETCH_CONSTRAINT_WIRE_TYPES.get(kind)
+    if contract is None:
+        raise policy.decode_error(f"{path}.type 包含未知草图约束类型：{kind!r}")
+    constraint_type, string_fields, number_fields = contract
+    dimensions = constraint_type in {SketchDistanceDimension, SketchRadiusDimension}
+    required = {"type", "id", "source", "enabled", *string_fields, *number_fields}
+    if dimensions:
+        required.add("driving")
+    _field_keys(
+        data,
+        path,
+        required=required,
+        optional=set(),
+        policy=policy,
+        error_type=policy.decode_error,
+    )
+    arguments = {
+        "id": _field_string(data["id"], f"{path}.id", policy.decode_error),
+        "source": _field_string(data["source"], f"{path}.source", policy.decode_error),
+        "enabled": _field_strict_bool(data["enabled"], f"{path}.enabled", policy),
+    }
+    arguments.update(
+        {
+            field: _field_string(data[field], f"{path}.{field}", policy.decode_error)
+            for field in string_fields
+        }
+    )
+    arguments.update(
+        {
+            field: _field_number(
+                data[field], f"{path}.{field}", policy.decode_error, policy=policy
+            )
+            for field in number_fields
+        }
+    )
+    if dimensions:
+        arguments["driving"] = _field_strict_bool(
+            data["driving"], f"{path}.driving", policy
+        )
+    return _field_construct(constraint_type, path, policy, **arguments)
+
+
+def _encode_sketch_constraint_field(
+    constraint: Any,
+    path: str,
+    *,
+    policy: ProjectFieldCodecPolicy,
+) -> dict[str, Any]:
+    kind = _SKETCH_CONSTRAINT_TYPE_NAMES.get(type(constraint))
+    if kind is None:
+        raise policy.encode_error(f"{path} 包含不支持的草图约束类型")
+    constraint_type, string_fields, number_fields = _SKETCH_CONSTRAINT_WIRE_TYPES[kind]
+    dimensions = constraint_type in {SketchDistanceDimension, SketchRadiusDimension}
+    expected_fields = {"id", "source", "enabled", *string_fields, *number_fields}
+    if dimensions:
+        expected_fields.add("driving")
+    _field_exact_dataclass(
+        constraint, constraint_type, expected_fields, path, policy
+    )
+    result: dict[str, Any] = {
+        "type": kind,
+        "id": _field_string(constraint.id, f"{path}.id", policy.encode_error),
+        "source": _field_string(
+            constraint.source, f"{path}.source", policy.encode_error
+        ),
+        "enabled": constraint.enabled,
+    }
+    if type(constraint.enabled) is not bool:
+        raise policy.encode_error(f"{path}.enabled 必须是 bool")
+    for field in string_fields:
+        result[field] = _field_string(
+            getattr(constraint, field), f"{path}.{field}", policy.encode_error
+        )
+    for field in number_fields:
+        result[field] = _field_number(
+            getattr(constraint, field),
+            f"{path}.{field}",
+            policy.encode_error,
+            policy=policy,
+        )
+    if dimensions:
+        if type(constraint.driving) is not bool:
+            raise policy.encode_error(f"{path}.driving 必须是 bool")
+        result["driving"] = constraint.driving
+    return result
+
+
 def encode_geometry_field(
     recipe: Any,
     path: str,
@@ -2097,7 +2260,11 @@ def encode_geometry_field(
                     f"{path} 的 curve-based sketch 无法由 "
                     f"{policy.version_label} 编码"
                 )
-            return {
+            if recipe.constraints and not _SKETCH_CONSTRAINT_CODEC.get():
+                raise policy.encode_error(
+                    f"{path}.constraints 无法由 {policy.version_label} 无损编码"
+                )
+            result = {
                 "type": "SketchGeometry",
                 "name": name,
                 "plane": _encode_sketch_plane_field(
@@ -2126,6 +2293,22 @@ def encode_geometry_field(
                     )
                 ],
             }
+            if _SKETCH_CONSTRAINT_CODEC.get():
+                result["constraints"] = [
+                    _encode_sketch_constraint_field(
+                        item,
+                        f"{path}.constraints[{index}]",
+                        policy=policy,
+                    )
+                    for index, item in enumerate(
+                        _field_runtime_sequence(
+                            recipe.constraints,
+                            f"{path}.constraints",
+                            policy,
+                        )
+                    )
+                ]
+            return result
         if type(recipe) is FaceSketchBooleanGeometry:
             if not policy.allow_face_sketch_boolean:
                 raise policy.encode_error(

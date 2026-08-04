@@ -78,7 +78,7 @@ def test_v12_round_trip_uses_ranges_grouped_part_ids_and_shared_topology() -> No
     assert edge_a.topology is edge_b.topology
 
 
-def test_schema_v11_project_is_read_edited_and_first_save_migrates_to_v12() -> None:
+def test_schema_v11_project_is_read_edited_and_first_save_migrates_to_current() -> None:
     source = _mesh_scope_snapshot()
     legacy = encode_project_v11(source)
     loaded = decode_project(legacy)
@@ -94,7 +94,7 @@ def test_schema_v11_project_is_read_edited_and_first_save_migrates_to_v12() -> N
     reopened = loads_project(dumps_project(edited))
 
     assert loaded.source_schema == 11
-    assert migrated["schema"] == 12
+    assert migrated["schema"] == 13
     assert "compact_references" in migrated["project"]["authoring"]["named_regions"][0]
     assert reopened.snapshot.named_regions == edited.named_regions
 

@@ -18,8 +18,10 @@ from fem.geometry.recipe_analysis import (
     legacy_sketch_to_strict,
 )
 from fem.geometry.recipes import (
+    SKETCH_CONSTRAINT_TYPES,
     SketchArc,
     SketchCircle,
+    SketchConstraint,
     SketchCurve,
     SketchExternalCoincidence,
     SketchExternalReference,
@@ -27,6 +29,9 @@ from fem.geometry.recipes import (
     SketchLine,
     SketchPlane,
     SketchPoint,
+    constraints_without_entities,
+    sketch_constraint_entity_ids,
+    validate_sketch_constraints,
 )
 from fem.geometry.sketch_support import SketchReferencePoint
 from fem.geometry.sketch_intersections import intersect_sketch_curves
@@ -59,6 +64,7 @@ class SketchDraftSnapshot:
     external_references: tuple[SketchExternalReference, ...] = ()
     external_coincidences: tuple[SketchExternalCoincidence, ...] = ()
     unresolved_reference_ids: tuple[str, ...] = ()
+    constraints: tuple[SketchConstraint, ...] = ()
 
     @property
     def selected_entity_ids(self) -> tuple[str, ...]:
@@ -81,6 +87,7 @@ class _SketchGeometryState:
     external_references: tuple[SketchExternalReference, ...]
     external_coincidences: tuple[SketchExternalCoincidence, ...]
     unresolved_reference_ids: tuple[str, ...]
+    constraints: tuple[SketchConstraint, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +152,7 @@ class SketchDraftController:
                 restored.plane,
                 restored.points,
                 restored.curves,
+                constraints=restored.constraints,
             )
             name = snapshot.name
             plane = snapshot.plane
@@ -167,6 +175,12 @@ class SketchDraftController:
         self._name = initial.name
         self._points: dict[str, SketchPoint] = {point.id: point for point in initial.points}
         self._curves: dict[str, SketchCurve] = {curve.id: curve for curve in initial.curves}
+        validate_sketch_constraints(
+            tuple(initial.constraints), self._points, tuple(self._curves.values())
+        )
+        self._constraints: dict[str, SketchConstraint] = {
+            constraint.id: constraint for constraint in initial.constraints
+        }
         self._selected_ids: tuple[str, ...] = tuple(initial.selected_ids)
         self._selected_kind: str | None = initial.selected_kind
         self._pending_command: str | None = initial.pending_command
@@ -202,7 +216,10 @@ class SketchDraftController:
         if type(root) is not SketchGeometry:
             raise TypeError("root must be a SketchGeometry")
         strict = root if root.is_strict else legacy_sketch_to_strict(root)
-        return SketchDraftSnapshot(strict.name, strict.plane, strict.points, strict.curves)
+        return SketchDraftSnapshot(
+            strict.name, strict.plane, strict.points, strict.curves,
+            constraints=strict.constraints,
+        )
 
     @classmethod
     def from_sketch_geometry(cls, sketch: SketchGeometry) -> "SketchDraftController":
@@ -214,6 +231,9 @@ class SketchDraftController:
         controller = cls(strict.name, plane=strict.plane)
         controller._points = {point.id: point for point in strict.points}
         controller._curves = {curve.id: curve for curve in strict.curves}
+        controller._constraints = {
+            constraint.id: constraint for constraint in strict.constraints
+        }
         controller._revision = 0
         return controller
 
@@ -227,6 +247,9 @@ class SketchDraftController:
         self._plane = strict.plane
         self._points = {point.id: point for point in strict.points}
         self._curves = {curve.id: curve for curve in strict.curves}
+        self._constraints = {
+            constraint.id: constraint for constraint in strict.constraints
+        }
         self._selected_ids = ()
         self._selected_kind = None
         self._pending_command = None
@@ -285,6 +308,50 @@ class SketchDraftController:
     def can_redo(self) -> bool:
         return bool(self._redo)
 
+    @property
+    def constraints(self) -> tuple[SketchConstraint, ...]:
+        return tuple(self._constraints.values())
+
+    def add_constraint(self, constraint: SketchConstraint) -> SketchConstraint:
+        """Add one validated constraint as one undoable draft operation."""
+
+        if type(constraint) not in SKETCH_CONSTRAINT_TYPES:
+            raise TypeError("constraint must be a SketchConstraint")
+
+        def apply() -> None:
+            if any(
+                item.casefold() == constraint.id.casefold()
+                for item in self._constraints
+            ):
+                raise ValueError(f"草图约束 ID 已被占用：{constraint.id}")
+            candidate = (*self._constraints.values(), constraint)
+            validate_sketch_constraints(
+                tuple(candidate), self._points, tuple(self._curves.values())
+            )
+            self._constraints[constraint.id] = constraint
+
+        self._mutate(apply)
+        return constraint
+
+    def delete_constraint(self, constraint_id: str) -> None:
+        if constraint_id not in self._constraints:
+            raise KeyError(constraint_id)
+
+        def apply() -> None:
+            del self._constraints[constraint_id]
+
+        self._mutate(apply)
+
+    def dependent_constraint_ids(self, entity_id: str) -> tuple[str, ...]:
+        """Return constraints that a geometry deletion will remove atomically."""
+
+        self._assert_entity(entity_id)
+        return tuple(
+            constraint.id
+            for constraint in self._constraints.values()
+            if entity_id in sketch_constraint_entity_ids(constraint)
+        )
+
     def snapshot(self) -> SketchDraftSnapshot:
         """Return a detached immutable snapshot of current draft state."""
 
@@ -300,6 +367,7 @@ class SketchDraftController:
             tuple(self._external_references.values()),
             tuple(self._external_coincidences.values()),
             tuple(sorted(self._unresolved_reference_ids)),
+            tuple(self._constraints.values()),
         )
 
     @property
@@ -506,6 +574,7 @@ class SketchDraftController:
             )
             for curve_id in dependent:
                 del self._curves[curve_id]
+            self._cascade_constraints({point_id, *dependent})
             self._remove_point_association(point_id)
             self._clear_selection_id(point_id)
 
@@ -893,6 +962,8 @@ class SketchDraftController:
                 if point_id not in used_point_ids:
                     self._points.pop(point_id, None)
                     self._remove_point_association(point_id)
+            removed = {curve_id, *(point_id for point_id in candidate_point_ids if point_id not in used_point_ids)}
+            self._cascade_constraints(removed)
             self._clear_selection_id(curve_id)
 
         self._mutate(apply)
@@ -949,6 +1020,7 @@ class SketchDraftController:
             for point_id in removable:
                 self._points.pop(point_id, None)
                 self._remove_point_association(point_id)
+            self._cascade_constraints(curve_ids | removable)
             self._selected_ids = tuple(
                 entity_id
                 for entity_id in self._selected_ids
@@ -1099,6 +1171,16 @@ class SketchDraftController:
                 if point_id not in used_point_ids:
                     self._points.pop(point_id, None)
                     self._remove_point_association(point_id)
+            # Trimming changes the original curve's topology.  Phase 2 keeps
+            # no ambiguous constraint during a future split: every constraint
+            # on the target and on removed endpoints is explicitly removed.
+            removed = {target.id}
+            removed.update(
+                point_id
+                for point_id in _curve_point_ids(target)
+                if point_id not in used_point_ids
+            )
+            self._cascade_constraints(removed)
 
         self._mutate(apply)
         return tuple(replacements)
@@ -1292,6 +1374,7 @@ class SketchDraftController:
             self._plane,
             tuple(self._points.values()),
             tuple(self._curves.values()),
+            tuple(self._constraints.values()),
         )
 
     def _mutate(self, operation):
@@ -1324,6 +1407,7 @@ class SketchDraftController:
             tuple(self._external_references.values()),
             tuple(self._external_coincidences.values()),
             tuple(sorted(self._unresolved_reference_ids)),
+            tuple(self._constraints.values()),
         )
 
     def _interaction_state(self) -> _SketchInteractionState:
@@ -1338,6 +1422,9 @@ class SketchDraftController:
         self._plane = state.plane
         self._points = {point.id: point for point in state.points}
         self._curves = {curve.id: curve for curve in state.curves}
+        self._constraints = {
+            constraint.id: constraint for constraint in state.constraints
+        }
         self._revision = state.revision
         self._external_references = {
             reference.id: reference for reference in state.external_references
@@ -1349,6 +1436,7 @@ class SketchDraftController:
         self._unresolved_reference_ids = set(state.unresolved_reference_ids)
         self._known_profile_ids.clear()
         self._validate_associations()
+        self._validate_constraints()
 
     def _restore_interaction_state(self, state: _SketchInteractionState) -> None:
         self._selected_ids = state.selected_ids
@@ -1368,6 +1456,12 @@ class SketchDraftController:
         self._plane = snapshot.plane
         self._points = {point.id: point for point in snapshot.points}
         self._curves = {curve.id: curve for curve in snapshot.curves}
+        validate_sketch_constraints(
+            tuple(snapshot.constraints), self._points, tuple(self._curves.values())
+        )
+        self._constraints = {
+            constraint.id: constraint for constraint in snapshot.constraints
+        }
         self._selected_ids = tuple(snapshot.selected_ids)
         self._selected_kind = snapshot.selected_kind
         self._pending_command = snapshot.pending_command
@@ -1382,6 +1476,7 @@ class SketchDraftController:
         self._unresolved_reference_ids = set(snapshot.unresolved_reference_ids)
         self._known_profile_ids.clear()
         self._validate_associations()
+        self._validate_constraints()
 
     def _bind_external_reference(
         self,
@@ -1417,6 +1512,19 @@ class SketchDraftController:
                 raise ValueError("外部重合关系引用了不存在的外部参考")
         if not self._unresolved_reference_ids.issubset(self._external_references):
             raise ValueError("未解析状态引用了不存在的外部参考")
+
+    def _validate_constraints(self) -> None:
+        validate_sketch_constraints(
+            tuple(self._constraints.values()),
+            self._points,
+            tuple(self._curves.values()),
+        )
+
+    def _cascade_constraints(self, entity_ids: set[str]) -> None:
+        retained = constraints_without_entities(
+            tuple(self._constraints.values()), entity_ids
+        )
+        self._constraints = {constraint.id: constraint for constraint in retained}
 
     def _assert_new_id(self, entity_id: str) -> None:
         folded = entity_id.casefold()
