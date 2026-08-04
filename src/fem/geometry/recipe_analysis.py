@@ -33,6 +33,7 @@ from .recipes import (
     SketchRectangle,
     WireGeometry,
 )
+from .sketch_intersections import intersect_sketch_curves
 
 
 _AXIS_ALIGNMENT_ABS_TOLERANCE = 1.0e-12
@@ -845,42 +846,34 @@ def _curve_intersection_diagnostics(
     points: dict[str, tuple[float, float]],
     tolerance: float,
 ) -> tuple[SketchDiagnostic, ...]:
+    del polylines
     diagnostics: list[SketchDiagnostic] = []
     for index, left in enumerate(curves):
         for right in curves[index + 1 :]:
             left_id = left.id
             right_id = right.id
-            left_segments = _polyline_segments_for_intersections(left, polylines[left_id])
-            right_segments = _polyline_segments_for_intersections(right, polylines[right_id])
             pair_code: str | None = None
-            for left_segment in left_segments:
-                for right_segment in right_segments:
-                    intersection = _segment_intersection(
-                        left_segment[0],
-                        left_segment[1],
-                        right_segment[0],
-                        right_segment[1],
-                        tolerance,
-                    )
-                    if intersection is None:
-                        continue
-                    kind, location = intersection
-                    if kind == "overlap":
-                        pair_code = "sketch.overlap"
-                        break
-                    if _is_shared_endpoint(location, left, right, points, tolerance):
-                        continue
-                    left_endpoint = _is_segment_endpoint(location, left_segment, tolerance)
-                    right_endpoint = _is_segment_endpoint(location, right_segment, tolerance)
-                    if left_endpoint and right_endpoint:
-                        pair_code = "sketch.tangent-ambiguity"
-                    elif left_endpoint or right_endpoint:
-                        pair_code = "sketch.t-junction"
-                    else:
-                        pair_code = "sketch.crossing"
-                    break
-                if pair_code is not None:
-                    break
+            result = intersect_sketch_curves(left, right, points, tolerance=tolerance)
+            if result.diagnostics:
+                if any(item.kind in {"coincident", "overlap"} for item in result.diagnostics):
+                    pair_code = "sketch.overlap"
+            for intersection in result.intersections:
+                location = (intersection.u, intersection.v)
+                if _is_shared_endpoint(location, left, right, points, tolerance):
+                    continue
+                left_endpoint = _is_curve_endpoint_parameter(
+                    left, intersection.left_parameter, tolerance
+                )
+                right_endpoint = _is_curve_endpoint_parameter(
+                    right, intersection.right_parameter, tolerance
+                )
+                if intersection.kind == "tangent" or (left_endpoint and right_endpoint):
+                    pair_code = "sketch.tangent-ambiguity"
+                elif left_endpoint or right_endpoint:
+                    pair_code = "sketch.t-junction"
+                else:
+                    pair_code = "sketch.crossing"
+                break
             if pair_code is not None:
                 diagnostics.append(
                     SketchDiagnostic(
@@ -892,78 +885,14 @@ def _curve_intersection_diagnostics(
     return tuple(diagnostics)
 
 
-def _polyline_segments_for_intersections(
+def _is_curve_endpoint_parameter(
     curve: object,
-    polyline: tuple[tuple[float, float], ...],
-) -> tuple[tuple[tuple[float, float], tuple[float, float]], ...]:
-    if isinstance(curve, SketchCircle) and polyline:
-        return tuple(zip(polyline, (*polyline[1:], polyline[0])))
-    return tuple(zip(polyline, polyline[1:]))
-
-
-def _segment_intersection(
-    left_start: tuple[float, float],
-    left_end: tuple[float, float],
-    right_start: tuple[float, float],
-    right_end: tuple[float, float],
-    tolerance: float,
-) -> tuple[str, tuple[float, float]] | None:
-    def cross(a: tuple[float, float], b: tuple[float, float]) -> float:
-        return a[0] * b[1] - a[1] * b[0]
-
-    def subtract(a: tuple[float, float], b: tuple[float, float]) -> tuple[float, float]:
-        return a[0] - b[0], a[1] - b[1]
-
-    left_vector = subtract(left_end, left_start)
-    right_vector = subtract(right_end, right_start)
-    offset = subtract(right_start, left_start)
-    denominator = cross(left_vector, right_vector)
-    if abs(denominator) <= tolerance:
-        if abs(cross(offset, left_vector)) > tolerance:
-            return None
-        length = math.hypot(*left_vector)
-        if length <= tolerance:
-            return None
-        projection = (
-            ((right_start[0] - left_start[0]) * left_vector[0]
-             + (right_start[1] - left_start[1]) * left_vector[1]) / (length * length),
-            ((right_end[0] - left_start[0]) * left_vector[0]
-             + (right_end[1] - left_start[1]) * left_vector[1]) / (length * length),
-        )
-        low = max(0.0, min(projection))
-        high = min(1.0, max(projection))
-        if high - low <= tolerance:
-            if high < -tolerance or low > 1.0 + tolerance:
-                return None
-            point = (
-                left_start[0] + low * left_vector[0],
-                left_start[1] + low * left_vector[1],
-            )
-            return "point", point
-        midpoint = 0.5 * (low + high)
-        return "overlap", (
-            left_start[0] + midpoint * left_vector[0],
-            left_start[1] + midpoint * left_vector[1],
-        )
-    t = cross(offset, right_vector) / denominator
-    u = cross(offset, left_vector) / denominator
-    if -tolerance <= t <= 1.0 + tolerance and -tolerance <= u <= 1.0 + tolerance:
-        return "point", (
-            left_start[0] + t * left_vector[0],
-            left_start[1] + t * left_vector[1],
-        )
-    return None
-
-
-def _is_segment_endpoint(
-    location: tuple[float, float],
-    segment: tuple[tuple[float, float], tuple[float, float]],
+    parameter: float,
     tolerance: float,
 ) -> bool:
-    return any(
-        math.hypot(location[0] - point[0], location[1] - point[1]) <= tolerance
-        for point in segment
-    )
+    if isinstance(curve, SketchCircle):
+        return False
+    return parameter <= tolerance or parameter >= 1.0 - tolerance
 
 
 def _is_shared_endpoint(

@@ -29,6 +29,7 @@ from fem.geometry.recipes import (
     SketchPoint,
 )
 from fem.geometry.sketch_support import SketchReferencePoint
+from fem.geometry.sketch_intersections import intersect_sketch_curves
 
 
 @dataclass(frozen=True, slots=True)
@@ -985,19 +986,20 @@ class SketchDraftController:
         for other in self._curves.values():
             if other.id == curve_id:
                 continue
-            try:
-                intersections.extend(
-                    _line_curve_intersections(
-                        start_xy,
-                        end_xy,
-                        other,
-                        self._points,
-                    )
-                )
-            except ValueError:
-                # Collinear overlaps and tangencies do not define a unique
-                # trim boundary.  Other usable intersections remain valid.
-                continue
+            result = intersect_sketch_curves(
+                target,
+                other,
+                self._points,
+                tolerance=_TRIM_TOLERANCE,
+            )
+            intersections.extend(
+                (item.left_parameter, (item.u, item.v))
+                for item in result.intersections
+                if item.kind != "tangent"
+                and _TRIM_TOLERANCE
+                < item.left_parameter
+                < 1.0 - _TRIM_TOLERANCE
+            )
         intersections = _unique_trim_intersections(intersections)
         if not intersections:
             self.delete_curve(curve_id)
@@ -1530,115 +1532,6 @@ def _curve_point_ids(curve: SketchCurve) -> tuple[str, ...]:
     if isinstance(curve, SketchArc):
         return curve.start_point_id, curve.center_point_id, curve.end_point_id
     return (curve.center_point_id,)
-
-
-def _line_curve_intersections(
-    start: tuple[float, float],
-    end: tuple[float, float],
-    curve: SketchCurve,
-    points: dict[str, SketchPoint],
-) -> list[tuple[float, tuple[float, float]]]:
-    if isinstance(curve, SketchLine):
-        other_start = points[curve.start_point_id]
-        other_end = points[curve.end_point_id]
-        other_start_xy = (other_start.u, other_start.v)
-        other_end_xy = (other_end.u, other_end.v)
-        line = (end[0] - start[0], end[1] - start[1])
-        other_line = (
-            other_end_xy[0] - other_start_xy[0],
-            other_end_xy[1] - other_start_xy[1],
-        )
-        denominator = line[0] * other_line[1] - line[1] * other_line[0]
-        offset = (
-            other_start_xy[0] - start[0],
-            other_start_xy[1] - start[1],
-        )
-        if abs(denominator) <= _TRIM_TOLERANCE:
-            if abs(offset[0] * line[1] - offset[1] * line[0]) <= _TRIM_TOLERANCE:
-                raise ValueError("trim cannot resolve overlapping line intersections")
-            return []
-        target_parameter = (
-            offset[0] * other_line[1] - offset[1] * other_line[0]
-        ) / denominator
-        other_parameter = (offset[0] * line[1] - offset[1] * line[0]) / denominator
-        if not (
-            _TRIM_TOLERANCE < target_parameter < 1.0 - _TRIM_TOLERANCE
-            and -_TRIM_TOLERANCE <= other_parameter <= 1.0 + _TRIM_TOLERANCE
-        ):
-            return []
-        return [
-            (
-                target_parameter,
-                (
-                    start[0] + target_parameter * line[0],
-                    start[1] + target_parameter * line[1],
-                ),
-            )
-        ]
-    if isinstance(curve, (SketchCircle, SketchArc)):
-        center = points[curve.center_point_id]
-        center_xy = (center.u, center.v)
-        if isinstance(curve, SketchCircle):
-            radius = curve.radius
-        else:
-            arc_start = points[curve.start_point_id]
-            radius = math.hypot(arc_start.u - center.u, arc_start.v - center.v)
-        direction = (end[0] - start[0], end[1] - start[1])
-        relative = (start[0] - center_xy[0], start[1] - center_xy[1])
-        quadratic_a = direction[0] ** 2 + direction[1] ** 2
-        quadratic_b = 2.0 * (
-            relative[0] * direction[0] + relative[1] * direction[1]
-        )
-        quadratic_c = relative[0] ** 2 + relative[1] ** 2 - radius**2
-        discriminant = quadratic_b**2 - 4.0 * quadratic_a * quadratic_c
-        if discriminant < -_TRIM_TOLERANCE:
-            return []
-        if abs(discriminant) <= _TRIM_TOLERANCE:
-            raise ValueError("trim cannot resolve a tangent intersection")
-        root = math.sqrt(discriminant)
-        candidates: list[tuple[float, tuple[float, float]]] = []
-        for target_parameter in (
-            (-quadratic_b - root) / (2.0 * quadratic_a),
-            (-quadratic_b + root) / (2.0 * quadratic_a),
-        ):
-            if not _TRIM_TOLERANCE < target_parameter < 1.0 - _TRIM_TOLERANCE:
-                continue
-            coordinate = (
-                start[0] + target_parameter * direction[0],
-                start[1] + target_parameter * direction[1],
-            )
-            if isinstance(curve, SketchArc) and not _point_on_arc(
-                coordinate,
-                curve,
-                points,
-            ):
-                continue
-            candidates.append((target_parameter, coordinate))
-        return candidates
-    raise TypeError(f"unsupported trim curve: {type(curve).__name__}")
-
-
-def _point_on_arc(
-    point: tuple[float, float],
-    arc: SketchArc,
-    points: dict[str, SketchPoint],
-) -> bool:
-    center = points[arc.center_point_id]
-    start = points[arc.start_point_id]
-    end = points[arc.end_point_id]
-    radius = math.hypot(start.u - center.u, start.v - center.v)
-    if abs(math.hypot(point[0] - center.u, point[1] - center.v) - radius) > 1.0e-7:
-        return False
-    start_angle = math.atan2(start.v - center.v, start.u - center.u)
-    point_angle = math.atan2(point[1] - center.v, point[0] - center.u)
-    end_angle = math.atan2(end.v - center.v, end.u - center.u)
-    if arc.orientation == "ccw":
-        travelled = (point_angle - start_angle) % (2.0 * math.pi)
-        total = (end_angle - start_angle) % (2.0 * math.pi)
-    else:
-        travelled = (start_angle - point_angle) % (2.0 * math.pi)
-        total = (start_angle - end_angle) % (2.0 * math.pi)
-    return travelled <= total + 1.0e-7
 
 
 def _line_parameter(

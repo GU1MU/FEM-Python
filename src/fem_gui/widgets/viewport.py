@@ -29,11 +29,17 @@ from fem.core._constraint_targets import (
 )
 from fem.geometry import (
     LogicalEntityRef,
+    SketchArc,
+    SketchCircle,
+    SketchCurve,
+    SketchLine,
     SketchPlane,
+    SketchPoint,
     SketchReferencePoint,
     SketchSnapCandidate,
     logical_ref_sort_key,
     select_sketch_snap_candidate,
+    sketch_intersections,
 )
 from fem.selection import edges as mesh_edges
 from fem.selection import faces as mesh_faces
@@ -492,6 +498,9 @@ class SketchDraftRenderData:
     selected_ids: tuple[str, ...] = ()
     snap_midpoints: tuple[tuple[float, float, float], ...] = ()
     snap_centers: tuple[tuple[float, float, float], ...] = ()
+    geometry_revision: int = 0
+    analytic_points: tuple[SketchPoint, ...] = ()
+    analytic_curves: tuple[SketchCurve, ...] = ()
 
     def __post_init__(self) -> None:
         points = tuple(
@@ -509,6 +518,8 @@ class SketchDraftRenderData:
             for face in self.faces
         )
         face_ids = tuple(str(value) for value in self.face_ids)
+        analytic_points = tuple(self.analytic_points)
+        analytic_curves = tuple(self.analytic_curves)
         if len(points) != len(point_ids):
             raise ValueError("sketch draft point IDs must match point coordinates")
         if len(curves) != len(curve_ids):
@@ -525,6 +536,17 @@ class SketchDraftRenderData:
             for index in cell
         ):
             raise ValueError("sketch draft cell index is outside point data")
+        if isinstance(self.geometry_revision, bool) or not isinstance(
+            self.geometry_revision, int
+        ):
+            raise TypeError("sketch geometry revision must be an integer")
+        if any(type(point) is not SketchPoint for point in analytic_points):
+            raise TypeError("analytic_points must contain SketchPoint values")
+        if any(
+            type(curve) not in (SketchLine, SketchCircle, SketchArc)
+            for curve in analytic_curves
+        ):
+            raise TypeError("analytic_curves must contain strict sketch curves")
         selected_ids = tuple(dict.fromkeys(str(value) for value in self.selected_ids))
         snap_midpoints = tuple(
             tuple(float(value) for value in point)
@@ -558,6 +580,8 @@ class SketchDraftRenderData:
         object.__setattr__(self, "curve_ids", curve_ids)
         object.__setattr__(self, "faces", faces)
         object.__setattr__(self, "face_ids", face_ids)
+        object.__setattr__(self, "analytic_points", analytic_points)
+        object.__setattr__(self, "analytic_curves", analytic_curves)
         object.__setattr__(self, "selected_id", selected_id)
         object.__setattr__(self, "selected_ids", selected_ids)
         object.__setattr__(self, "snap_midpoints", snap_midpoints)
@@ -884,10 +908,63 @@ def _sketch_shape_preview_points(
     )
 
 
+def _sketch_curve_sample_count(
+    radius: float,
+    sweep: float,
+    world_per_pixel: float,
+    *,
+    chord_error_pixels: float = 0.75,
+) -> int:
+    """Choose an arc segment count whose projected chord error stays below 1 px."""
+
+    clean_radius = float(radius)
+    clean_sweep = abs(float(sweep))
+    clean_world_per_pixel = float(world_per_pixel)
+    if (
+        not all(
+            math.isfinite(value)
+            for value in (
+                clean_radius,
+                clean_sweep,
+                clean_world_per_pixel,
+                chord_error_pixels,
+            )
+        )
+        or clean_radius <= 0.0
+        or clean_sweep <= 0.0
+        or clean_world_per_pixel <= 0.0
+        or chord_error_pixels <= 0.0
+    ):
+        raise ValueError("adaptive curve sampling requires positive finite values")
+    relative_error = min(1.0, chord_error_pixels * clean_world_per_pixel / clean_radius)
+    maximum_angle = 2.0 * math.acos(max(-1.0, 1.0 - relative_error))
+    if maximum_angle <= 0.0:
+        return 16384
+    minimum = 8 if math.isclose(clean_sweep, math.tau, abs_tol=1.0e-12) else 2
+    return min(16384, max(minimum, int(math.ceil(clean_sweep / maximum_angle))))
+
+
 def _sketch_intersection_points(
     data: SketchDraftRenderData,
 ) -> tuple[tuple[float, float, float], ...]:
     """Return distinct pairwise curve intersections for transient snapping."""
+
+    if data.analytic_curves:
+        point_map = {point.id: point for point in data.analytic_points}
+        result = sketch_intersections(data.analytic_curves, point_map)
+        intersections: list[tuple[float, float]] = []
+        for item in result.intersections:
+            candidate = (item.u, item.v)
+            if not any(
+                math.hypot(
+                    candidate[0] - existing[0],
+                    candidate[1] - existing[1],
+                )
+                <= 1.0e-9
+                for existing in intersections
+            ):
+                intersections.append(candidate)
+        return tuple(data.plane.to_global(u, v) for u, v in intersections)
 
     local = _sketch_local_points(data.points, data.plane)
     intersections: list[tuple[float, float]] = []
@@ -1191,7 +1268,7 @@ class FEMViewport(QWidget):
         self._sketch_show_profile_fill = True
         self._sketch_show_work_plane_axes = True
         self._sketch_draft_render_data: SketchDraftRenderData | None = None
-        self._sketch_intersection_source: SketchDraftRenderData | None = None
+        self._sketch_intersection_revision: int | None = None
         self._sketch_intersection_cache: tuple[
             tuple[float, float, float], ...
         ] = ()
@@ -1814,7 +1891,7 @@ class FEMViewport(QWidget):
         self._sketch_grid_snap = bool(snap)
         self._sketch_grid_spacing = float(spacing)
         self._sketch_draft_render_data = render_data
-        self._sketch_intersection_source = None
+        self._sketch_intersection_revision = None
         self.set_sketch_reference_points(reference_points, render=False)
         self._sketch_pending_points = ()
         self._sketch_authoring_preview_point = None
@@ -1844,7 +1921,6 @@ class FEMViewport(QWidget):
         if not self._sketch_authoring_active:
             return
         self._sketch_draft_render_data = render_data
-        self._sketch_intersection_source = None
         self._show_sketch_draft(render=True)
 
     def update_sketch_selection(
@@ -2228,7 +2304,7 @@ class FEMViewport(QWidget):
             self._remove_actor(name)
         self._sketch_authoring_active = False
         self._sketch_draft_render_data = None
-        self._sketch_intersection_source = None
+        self._sketch_intersection_revision = None
         self._sketch_intersection_cache = ()
         self._sketch_reference_points = ()
         self._sketch_authoring_snap_reference = None
@@ -2576,6 +2652,83 @@ class FEMViewport(QWidget):
                 bounds=bounds,
                 render=False,
             )
+        self._refresh_sketch_curve_sampling(render=False)
+        if render:
+            self._render()
+
+    def _refresh_sketch_curve_sampling(self, *, render: bool) -> None:
+        data = self._sketch_draft_render_data
+        world_per_pixel = self._world_per_pixel()
+        if (
+            data is None
+            or not data.analytic_curves
+            or world_per_pixel is None
+            or self._plotter is None
+            or _pyvista is None
+        ):
+            return
+        point_map = {point.id: point for point in data.analytic_points}
+        coordinates: list[tuple[float, float, float]] = []
+        cells: list[tuple[int, ...]] = []
+
+        def append_point(u: float, v: float) -> int:
+            index = len(coordinates)
+            coordinates.append(data.plane.to_global(u, v))
+            return index
+
+        for curve in data.analytic_curves:
+            if isinstance(curve, SketchLine):
+                start = point_map[curve.start_point_id]
+                end = point_map[curve.end_point_id]
+                cells.append(
+                    (append_point(start.u, start.v), append_point(end.u, end.v))
+                )
+                continue
+            center = point_map[curve.center_point_id]
+            if isinstance(curve, SketchCircle):
+                radius = curve.radius
+                start_angle = 0.0
+                sweep = math.tau
+            else:
+                start = point_map[curve.start_point_id]
+                end = point_map[curve.end_point_id]
+                radius = math.hypot(start.u - center.u, start.v - center.v)
+                start_angle = math.atan2(start.v - center.v, start.u - center.u)
+                end_angle = math.atan2(end.v - center.v, end.u - center.u)
+                sweep = (
+                    (end_angle - start_angle) % math.tau
+                    if curve.orientation == "ccw"
+                    else -((start_angle - end_angle) % math.tau)
+                )
+            count = _sketch_curve_sample_count(
+                radius,
+                sweep,
+                world_per_pixel,
+            )
+            cells.append(
+                tuple(
+                    append_point(
+                        center.u + radius * math.cos(start_angle + sweep * index / count),
+                        center.v + radius * math.sin(start_angle + sweep * index / count),
+                    )
+                    for index in range(count + 1)
+                )
+            )
+
+        polydata = _pyvista.PolyData()
+        polydata.points = np.asarray(coordinates, dtype=float).reshape((-1, 3))
+        polydata.lines = np.hstack(
+            tuple((len(cell), *cell) for cell in cells)
+        ).astype(np.int64)
+        self._remove_actor("sketch_draft_curves")
+        self._actors["sketch_draft_curves"] = self._plotter.add_mesh(
+            polydata,
+            color="#173443",
+            line_width=3,
+            name="sketch_draft_curves",
+            reset_camera=False,
+            pickable=False,
+        )
         if render:
             self._render()
 
@@ -3267,8 +3420,8 @@ class FEMViewport(QWidget):
                     )
                 )
             if data is not None and self._sketch_snap_intersections:
-                if self._sketch_intersection_source is not data:
-                    self._sketch_intersection_source = data
+                if self._sketch_intersection_revision != data.geometry_revision:
+                    self._sketch_intersection_revision = data.geometry_revision
                     self._sketch_intersection_cache = _sketch_intersection_points(
                         data
                     )
@@ -6416,7 +6569,11 @@ class FEMViewport(QWidget):
             interactor = self._plotter.iren.interactor
 
             def camera_interaction_finished(_obj=None, _event=None):
-                self._refresh_symbols_for_camera(render=True)
+                if self._sketch_authoring_active:
+                    self._refresh_sketch_curve_sampling(render=False)
+                    self._render()
+                else:
+                    self._refresh_symbols_for_camera(render=True)
 
             interactor.AddObserver("EndInteractionEvent", camera_interaction_finished, 1.0)
             self._picker_event_targets = {self._plotter}

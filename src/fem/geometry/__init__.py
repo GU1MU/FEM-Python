@@ -164,6 +164,15 @@ from .sketch_support import (
     resolve_face_workplane,
     select_sketch_snap_candidate,
 )
+from .sketch_intersections import (
+    IntersectionDiagnosticKind,
+    IntersectionKind,
+    SketchIntersection,
+    SketchIntersectionDiagnostic,
+    SketchIntersectionResult,
+    intersect_sketch_curves,
+    sketch_intersections,
+)
 
 __all__ = [
     "BASE_GEOMETRY_TYPES",
@@ -198,6 +207,8 @@ __all__ = [
     "GeometryError",
     "GeometryModel",
     "GeometryStateError",
+    "IntersectionDiagnosticKind",
+    "IntersectionKind",
     "LoftContinuity",
     "LoftParametrization",
     "LoftResult",
@@ -232,6 +243,9 @@ __all__ = [
     "SketchCurve",
     "SketchDiagnostic",
     "SketchGeometry",
+    "SketchIntersection",
+    "SketchIntersectionDiagnostic",
+    "SketchIntersectionResult",
     "SketchExternalCoincidence",
     "SketchExternalReference",
     "SketchExternalReferenceType",
@@ -268,6 +282,7 @@ __all__ = [
     "capture_boolean_operand_evidence",
     "capture_planar_operand_evidence",
     "install_proven_body_boolean",
+    "intersect_sketch_curves",
     "logical_ref_sort_key",
     "legacy_sketch_to_strict",
     "legacy_sketches_to_strict",
@@ -299,6 +314,7 @@ __all__ = [
     "strip_part_logical_id",
     "strip_part_reference",
     "select_sketch_snap_candidate",
+    "sketch_intersections",
     "transform_solid_body",
     "transformed_circle",
     "undo_solid_body_feature",

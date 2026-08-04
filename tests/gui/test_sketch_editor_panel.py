@@ -12,9 +12,12 @@ from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QListWidget
 
 from fem.geometry import (
     LogicalEntityRef,
+    SketchCircle,
     SketchExternalReference,
     SketchExternalReferenceType,
     SketchGeometry,
+    SketchLine,
+    SketchPoint,
     SketchReferencePoint,
 )
 import fem_gui.main_window as main_window_module
@@ -27,6 +30,7 @@ from fem_gui.widgets.viewport import (
     FEMViewport,
     SketchDraftRenderData,
     _sketch_camera_bounds,
+    _sketch_curve_sample_count,
     _sketch_intersection_points,
     _sketch_snap_label,
     _sketch_shape_preview_points,
@@ -908,6 +912,48 @@ def test_phase3_snap_categories_tolerance_priority_intersections_and_feedback() 
     assert _sketch_snap_label("circle_center") == "圆心"
     assert _sketch_snap_label("intersection") == "交点"
     viewport.close()
+
+
+def test_intersection_candidates_use_analytic_curves_not_display_polylines() -> None:
+    data = SketchDraftRenderData(
+        (
+            (-2.0, 0.5, 0.0),
+            (2.0, 0.5, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (-1.0, 0.0, 0.0),
+            (0.0, -1.0, 0.0),
+        ),
+        ("P0", "P1", None, None, None, None),
+        ((0, 1), (2, 3, 4, 5, 2)),
+        ("L", "C"),
+        geometry_revision=7,
+        analytic_points=(
+            SketchPoint("P0", -2.0, 0.5),
+            SketchPoint("P1", 2.0, 0.5),
+            SketchPoint("O", 0.0, 0.0),
+        ),
+        analytic_curves=(
+            SketchLine("L", "P0", "P1"),
+            SketchCircle("C", "O", 1.0),
+        ),
+    )
+
+    intersections = _sketch_intersection_points(data)
+    assert intersections[0] == pytest.approx((-math.sqrt(3.0) / 2.0, 0.5, 0.0))
+    assert intersections[1] == pytest.approx((math.sqrt(3.0) / 2.0, 0.5, 0.0))
+
+
+def test_curved_display_sampling_tracks_screen_chord_error() -> None:
+    coarse = _sketch_curve_sample_count(10.0, math.tau, 0.1)
+    zoomed = _sketch_curve_sample_count(10.0, math.tau, 0.01)
+
+    assert zoomed > coarse
+    for count, world_per_pixel in ((coarse, 0.1), (zoomed, 0.01)):
+        chord_error_pixels = (
+            10.0 * (1.0 - math.cos(math.pi / count)) / world_per_pixel
+        )
+        assert chord_error_pixels <= 0.75
 
 
 def test_phase3_auto_merge_and_drawing_behaviors(monkeypatch) -> None:

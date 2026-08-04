@@ -692,6 +692,9 @@ class SketchEditorPanel(QWidget):
                 selected_ids=snapshot.selected_ids,
                 snap_midpoints=snap_midpoints,
                 snap_centers=snap_centers,
+                geometry_revision=snapshot.revision,
+                analytic_points=snapshot.points,
+                analytic_curves=snapshot.curves,
             )
         return self._incomplete_render_data(snapshot, selected_kind, selected_id)
 
@@ -810,6 +813,9 @@ class SketchEditorPanel(QWidget):
             selected_ids=snapshot.selected_ids,
             snap_midpoints=snap_midpoints,
             snap_centers=snap_centers,
+            geometry_revision=snapshot.revision,
+            analytic_points=snapshot.points,
+            analytic_curves=snapshot.curves,
         )
 
     def _point_from_viewport(
