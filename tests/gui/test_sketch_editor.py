@@ -77,6 +77,45 @@ def test_selection_is_transient_and_does_not_change_history() -> None:
     assert not dirty
 
 
+def test_point_usage_and_multi_delete_are_one_stable_edit() -> None:
+    controller = SketchDraftController("point-list")
+    start = controller.add_point(0.0, 0.0, point_id="P1")
+    end = controller.add_point(2.0, 0.0, point_id="P2")
+    center = controller.add_point(1.0, 1.0, point_id="P3")
+    controller.add_line(start.id, end.id, curve_id="L1")
+    controller.add_circle((center.u, center.v), 0.5, point_id="P4", curve_id="C1")
+
+    assert controller.point_usage(start.id) == ("端点",)
+    assert controller.point_usage("P4") == ("圆心",)
+    before = controller.snapshot()
+    controller.select_many([start.id, end.id])
+    controller.delete_many([start.id, end.id])
+
+    assert controller.snapshot().revision == before.revision + 1
+    assert "L1" not in {curve.id for curve in controller.snapshot().curves}
+    controller.undo()
+    assert controller.snapshot() == before
+
+
+def test_profile_selection_does_not_repeat_profile_analysis(monkeypatch) -> None:
+    controller = SketchDraftController("profile-selection")
+    controller.add_rectangle((0.0, 0.0), (2.0, 1.0))
+    profile_id = controller.profiles[0].id
+    revision = controller.snapshot().revision
+    monkeypatch.setattr(
+        controller,
+        "derive_profiles",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("profile selection repeated contour analysis")
+        ),
+    )
+
+    controller.select_profile(profile_id)
+
+    assert controller.selected_ids == (profile_id,)
+    assert controller.snapshot().revision == revision
+
+
 def test_draw_segment_and_batch_move_are_single_atomic_edits() -> None:
     controller = SketchDraftController("Atomic edits")
     start = controller.add_point(0.0, 0.0)

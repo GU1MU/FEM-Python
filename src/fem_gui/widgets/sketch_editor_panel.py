@@ -1,10 +1,11 @@
-"""Non-modal Phase 1 editor panel for strict planar sketch drafts."""
+"""Non-modal editor panel for strict planar sketch drafts."""
 
 from __future__ import annotations
 
 import math
+import re
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, QItemSelectionModel, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -43,6 +44,38 @@ from ..sketch_editor import (
 from .viewport import SketchDraftRenderData
 
 
+def _stable_id_key(value: str) -> tuple[tuple[int, object], ...]:
+    return tuple(
+        (0, int(part)) if part.isdigit() else (1, part.casefold())
+        for part in re.split(r"(\d+)", str(value))
+        if part
+    )
+
+
+class _PointTableItem(QTableWidgetItem):
+    """Sort table values predictably and use the point ID as a tie-breaker."""
+
+    def __init__(self, text: str, point_id: str, *, numeric: float | None = None):
+        super().__init__(text)
+        self._point_id = point_id
+        self._numeric = numeric
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        if isinstance(other, _PointTableItem):
+            if self.column() == 0 and other.column() == 0:
+                return _stable_id_key(self.text()) < _stable_id_key(other.text())
+            left = self._numeric if self._numeric is not None else self.text().casefold()
+            right = (
+                other._numeric
+                if other._numeric is not None
+                else other.text().casefold()
+            )
+            if left == right:
+                return _stable_id_key(self._point_id) < _stable_id_key(other._point_id)
+            return left < right
+        return super().__lt__(other)
+
+
 class SketchEditorPanel(QWidget):
     """Synchronize one detached strict sketch draft with the main viewport."""
 
@@ -72,6 +105,7 @@ class SketchEditorPanel(QWidget):
         self._polyline_start_id: str | None = None
         self._polyline_first_id: str | None = None
         self._authoring_purpose = "geometry"
+        self._selection_anchor_id: str | None = None
         self._build_ui()
         if controller is not None:
             self.set_controller(controller)
@@ -129,21 +163,45 @@ class SketchEditorPanel(QWidget):
         self.spacing_spin.setValue(0.1)
         self.spacing_spin.valueChanged.connect(self._grid_changed)
 
-        self.points_table = QTableWidget(0, 4, self)
+        self.point_search_edit = QLineEdit(self)
+        self.point_search_edit.setObjectName("sketchPointSearch")
+        self.point_search_edit.setPlaceholderText("按点 ID 搜索")
+        self.point_search_edit.setClearButtonEnabled(True)
+        self.point_filter_combo = QComboBox(self)
+        self.point_filter_combo.setObjectName("sketchPointFilter")
+        for label, value in (
+            ("全部", "all"),
+            ("自由", "free"),
+            ("已关联", "associated"),
+            ("未解析", "unresolved"),
+        ):
+            self.point_filter_combo.addItem(label, value)
+        self.point_search_edit.textChanged.connect(self._point_filter_changed)
+        self.point_filter_combo.currentIndexChanged.connect(
+            self._point_filter_changed
+        )
+
+        self.points_table = QTableWidget(0, 6, self)
         self.points_table.setObjectName("sketchPointsTable")
-        self.points_table.setHorizontalHeaderLabels(("ID", "U", "V", "关联"))
+        self.points_table.setHorizontalHeaderLabels(
+            ("ID", "U", "V", "关联", "类型/用途", "依赖曲线")
+        )
         self.points_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
         )
         self.points_table.setSelectionMode(
-            QAbstractItemView.SelectionMode.SingleSelection
+            QAbstractItemView.SelectionMode.ExtendedSelection
         )
         self.points_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch
         )
         self.points_table.verticalHeader().setVisible(False)
+        self.points_table.setSortingEnabled(True)
+        self.points_table.sortItems(0, Qt.SortOrder.AscendingOrder)
+        self.points_table.installEventFilter(self)
         self.points_table.itemChanged.connect(self._point_item_changed)
         self.points_table.itemSelectionChanged.connect(self._point_row_selected)
+        self.points_table.itemDoubleClicked.connect(self._focus_point_item)
 
         def parameter_spin(object_name: str) -> QDoubleSpinBox:
             editor = QDoubleSpinBox(self)
@@ -274,6 +332,10 @@ class SketchEditorPanel(QWidget):
         layout.addLayout(first_modes)
         layout.addLayout(second_modes)
         layout.addWidget(QLabel("点坐标", self))
+        point_tools = QHBoxLayout()
+        point_tools.addWidget(self.point_search_edit, 2)
+        point_tools.addWidget(self.point_filter_combo, 1)
+        layout.addLayout(point_tools)
         layout.addWidget(self.points_table, 1)
         layout.addWidget(self.line_parameter_group)
         layout.addWidget(self.circle_parameter_group)
@@ -319,9 +381,9 @@ class SketchEditorPanel(QWidget):
             return
         viewport.sketchWorkPlanePointSelected.connect(self._point_from_viewport)
         viewport.sketchReferencePointSelected.connect(self._reference_from_viewport)
-        viewport.sketchDraftPointSelected.connect(self._select_point)
-        viewport.sketchDraftCurveSelected.connect(self._select_curve)
-        viewport.sketchDraftProfileSelected.connect(self._select_profile)
+        viewport.sketchDraftPointSelectionRequested.connect(self._select_point)
+        viewport.sketchDraftCurveSelectionRequested.connect(self._select_curve)
+        viewport.sketchDraftProfileSelectionRequested.connect(self._select_profile)
         viewport.sketchTrimRequested.connect(self._trim_from_viewport)
         viewport.sketchAuthoringMissed.connect(self._authoring_missed)
         viewport.sketchPendingInteractionCancelled.connect(
@@ -334,9 +396,9 @@ class SketchEditorPanel(QWidget):
         connections = (
             (viewport.sketchWorkPlanePointSelected, self._point_from_viewport),
             (viewport.sketchReferencePointSelected, self._reference_from_viewport),
-            (viewport.sketchDraftPointSelected, self._select_point),
-            (viewport.sketchDraftCurveSelected, self._select_curve),
-            (viewport.sketchDraftProfileSelected, self._select_profile),
+            (viewport.sketchDraftPointSelectionRequested, self._select_point),
+            (viewport.sketchDraftCurveSelectionRequested, self._select_curve),
+            (viewport.sketchDraftProfileSelectionRequested, self._select_profile),
             (viewport.sketchTrimRequested, self._trim_from_viewport),
             (viewport.sketchAuthoringMissed, self._authoring_missed),
             (
@@ -471,6 +533,7 @@ class SketchEditorPanel(QWidget):
                 ),
                 selected_id=selected_id,
                 plane=snapshot.plane,
+                selected_ids=snapshot.selected_ids,
             )
         return self._incomplete_render_data(snapshot, selected_kind, selected_id)
 
@@ -551,6 +614,7 @@ class SketchEditorPanel(QWidget):
             ),
             selected_id=selected_id,
             plane=snapshot.plane,
+            selected_ids=snapshot.selected_ids,
         )
 
     def _point_from_viewport(
@@ -671,17 +735,58 @@ class SketchEditorPanel(QWidget):
                 return point.id
         return None
 
-    def _select_point(self, point_id: str) -> None:
-        self._require_controller().select_point(point_id)
-        self._refresh(selected_id=point_id)
+    def _select_point(
+        self,
+        point_id: str,
+        modifiers: Qt.KeyboardModifier = Qt.KeyboardModifier.NoModifier,
+    ) -> None:
+        controller = self._require_controller()
+        self._ensure_point_visible(point_id)
+        visible_ids = self._visible_point_ids()
+        current_ids = (
+            controller.selected_ids
+            if controller.snapshot().selected_kind == "point"
+            else ()
+        )
+        control = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+        shift = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+        if shift and self._selection_anchor_id in visible_ids:
+            start = visible_ids.index(self._selection_anchor_id)
+            end = visible_ids.index(point_id)
+            span = visible_ids[min(start, end) : max(start, end) + 1]
+            selected_ids = tuple(dict.fromkeys((*current_ids, *span))) if control else span
+            controller.select_many(list(selected_ids))
+        elif control:
+            selected_ids = tuple(item for item in current_ids if item != point_id)
+            if point_id not in current_ids:
+                selected_ids = (*selected_ids, point_id)
+            controller.select_many(list(selected_ids))
+            self._selection_anchor_id = point_id
+        else:
+            controller.select_point(point_id)
+            self._selection_anchor_id = point_id
+        self._sync_point_table_selection(scroll_to_id=point_id)
+        self._selection_changed_lightweight()
 
-    def _select_curve(self, curve_id: str) -> None:
+    def _select_curve(
+        self,
+        curve_id: str,
+        _modifiers: Qt.KeyboardModifier = Qt.KeyboardModifier.NoModifier,
+    ) -> None:
         self._require_controller().select_curve(curve_id)
-        self._refresh(selected_id=curve_id)
+        self._selection_anchor_id = None
+        self._sync_point_table_selection()
+        self._selection_changed_lightweight()
 
-    def _select_profile(self, profile_id: str) -> None:
+    def _select_profile(
+        self,
+        profile_id: str,
+        _modifiers: Qt.KeyboardModifier = Qt.KeyboardModifier.NoModifier,
+    ) -> None:
         self._require_controller().select_profile(profile_id)
-        self._refresh(selected_id=profile_id)
+        self._selection_anchor_id = None
+        self._sync_point_table_selection()
+        self._selection_changed_lightweight()
 
     def _trim_from_viewport(
         self,
@@ -709,15 +814,21 @@ class SketchEditorPanel(QWidget):
         if not controller.selected_ids:
             self._set_status("请先用“选择”工具选中要删除的点或曲线")
             return
-        entity_id = controller.selected_ids[0]
-        if controller.selection is not None and controller.selection[0] == "point":
-            dependent_ids = controller.dependent_curve_ids(entity_id)
+        entity_ids = controller.selected_ids
+        if controller.snapshot().selected_kind == "point":
+            dependent_ids = tuple(
+                dict.fromkeys(
+                    curve_id
+                    for entity_id in entity_ids
+                    for curve_id in controller.dependent_curve_ids(entity_id)
+                )
+            )
             if dependent_ids:
                 answer = QMessageBox.question(
                     self,
-                    "删除草图点",
+                    "删除草图点" if len(entity_ids) == 1 else "删除多个草图点",
                     (
-                        f"删除点 {entity_id} 将同时删除依赖曲线：\n"
+                        f"删除点 {', '.join(entity_ids)} 将同时删除依赖曲线：\n"
                         + "\n".join(dependent_ids)
                         + "\n\n是否继续？"
                     ),
@@ -729,11 +840,11 @@ class SketchEditorPanel(QWidget):
                     self._set_status("已取消删除")
                     return
         try:
-            controller.delete(entity_id)
+            controller.delete_many(list(entity_ids))
         except (KeyError, TypeError, ValueError) as error:
             self._set_status(str(error))
         else:
-            self._set_status(f"已删除草图实体 {entity_id}")
+            self._set_status(f"已删除草图实体 {', '.join(entity_ids)}")
         self._refresh()
 
     def release_selected_association(self) -> None:
@@ -814,13 +925,42 @@ class SketchEditorPanel(QWidget):
     def _point_row_selected(self) -> None:
         if self._refreshing:
             return
-        row = self.points_table.currentRow()
-        id_item = self.points_table.item(row, 0)
-        if id_item is None:
+        selected_ids = tuple(
+            point_id
+            for index in self.points_table.selectionModel().selectedRows()
+            if (point_id := self._point_id_for_row(index.row())) is not None
+        )
+        controller = self._require_controller()
+        if selected_ids:
+            controller.select_many(list(selected_ids))
+            current_id = self._point_id_for_row(self.points_table.currentRow())
+            if current_id is not None:
+                self._selection_anchor_id = current_id
+        else:
+            controller.clear_selection()
+            self._selection_anchor_id = None
+        self._selection_changed_lightweight()
+
+    def _focus_point_item(self, item: QTableWidgetItem) -> None:
+        point_id = self._point_id_for_row(item.row())
+        if point_id is None:
             return
-        point_id = id_item.data(Qt.ItemDataRole.UserRole)
-        if isinstance(point_id, str):
-            self._select_point(point_id)
+        self._require_controller().select_point(point_id)
+        self._selection_anchor_id = point_id
+        self._sync_point_table_selection(scroll_to_id=point_id)
+        self._selection_changed_lightweight()
+        self.entityFocusRequested.emit("point", point_id)
+
+    def eventFilter(self, watched: object, event: object) -> bool:
+        if watched is self.points_table and event.type() == QEvent.Type.KeyPress:
+            editing = (
+                self.points_table.state()
+                == QAbstractItemView.State.EditingState
+            )
+            if event.key() == Qt.Key.Key_Delete and not editing:
+                self.delete_selected()
+                return True
+        return super().eventFilter(watched, event)
 
     def _selected_curve(self):
         snapshot = self._require_controller().snapshot()
@@ -1071,6 +1211,203 @@ class SketchEditorPanel(QWidget):
             for widget in widgets:
                 widget.blockSignals(False)
 
+    def _point_filter_changed(self, *_args) -> None:
+        if self._refreshing or self._controller is None:
+            return
+        self._refreshing = True
+        try:
+            self._refresh_point_table(self._controller.snapshot())
+        finally:
+            self._refreshing = False
+
+    def _filtered_points(self, snapshot: SketchDraftSnapshot):
+        controller = self._require_controller()
+        query = self.point_search_edit.text().strip().casefold()
+        status_filter = self.point_filter_combo.currentData()
+        expected_status = {
+            "free": "自由",
+            "associated": "已关联",
+            "unresolved": "未解析",
+        }.get(status_filter)
+        return tuple(
+            point
+            for point in snapshot.points
+            if (not query or query in point.id.casefold())
+            and (
+                expected_status is None
+                or controller.association_status(point.id) == expected_status
+            )
+        )
+
+    def _refresh_point_table(
+        self,
+        snapshot: SketchDraftSnapshot,
+        *,
+        selected_id: str | None = None,
+    ) -> None:
+        controller = self._require_controller()
+        vertical_scroll = self.points_table.verticalScrollBar().value()
+        horizontal_scroll = self.points_table.horizontalScrollBar().value()
+        current_id = self._point_id_for_row(self.points_table.currentRow())
+        current_column = self.points_table.currentColumn()
+        editing = (
+            self.points_table.state() == QAbstractItemView.State.EditingState
+        )
+        sort_column = self.points_table.horizontalHeader().sortIndicatorSection()
+        sort_order = self.points_table.horizontalHeader().sortIndicatorOrder()
+        sorting_enabled = self.points_table.isSortingEnabled()
+        self.points_table.setSortingEnabled(False)
+        self.points_table.setRowCount(0)
+        for row, point in enumerate(self._filtered_points(snapshot)):
+            self.points_table.insertRow(row)
+            association_status = controller.association_status(point.id)
+            usage = controller.point_usage(point.id)
+            dependency_count = len(controller.dependent_curve_ids(point.id))
+            values = (
+                point.id,
+                f"{point.u:.6g}",
+                f"{point.v:.6g}",
+                association_status,
+                "、".join(usage) if usage else "普通点",
+                str(dependency_count),
+            )
+            for column, value in enumerate(values):
+                item = _PointTableItem(
+                    value,
+                    point.id,
+                    numeric=(
+                        point.u
+                        if column == 1
+                        else point.v
+                        if column == 2
+                        else float(dependency_count)
+                        if column == 5
+                        else None
+                    ),
+                )
+                item.setData(Qt.ItemDataRole.UserRole, point.id)
+                if column in {0, 3, 4, 5} or (
+                    column in {1, 2} and association_status != "自由"
+                ):
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if column in {1, 2} and association_status != "自由":
+                    item.setToolTip("关联点坐标只读；解除关联后可编辑")
+                self.points_table.setItem(row, column, item)
+        self.points_table.setSortingEnabled(sorting_enabled)
+        if sorting_enabled and sort_column >= 0:
+            self.points_table.sortItems(sort_column, sort_order)
+
+        requested_id = selected_id or current_id
+        self._sync_point_table_selection(scroll_to_id=selected_id)
+        if requested_id is not None:
+            row = self._row_for_point_id(requested_id)
+            if row is not None:
+                item = self.points_table.item(row, max(0, current_column))
+                if item is not None:
+                    self.points_table.setCurrentItem(
+                        item,
+                        QItemSelectionModel.SelectionFlag.NoUpdate,
+                    )
+                    if editing and item.flags() & Qt.ItemFlag.ItemIsEditable:
+                        self.points_table.editItem(item)
+        self.points_table.verticalScrollBar().setValue(vertical_scroll)
+        self.points_table.horizontalScrollBar().setValue(horizontal_scroll)
+
+    def _visible_point_ids(self) -> tuple[str, ...]:
+        return tuple(
+            point_id
+            for row in range(self.points_table.rowCount())
+            if (point_id := self._point_id_for_row(row)) is not None
+        )
+
+    def _point_id_for_row(self, row: int) -> str | None:
+        item = self.points_table.item(row, 0)
+        if item is None:
+            return None
+        point_id = item.data(Qt.ItemDataRole.UserRole)
+        return point_id if isinstance(point_id, str) else None
+
+    def _row_for_point_id(self, point_id: str) -> int | None:
+        return next(
+            (
+                row
+                for row in range(self.points_table.rowCount())
+                if self._point_id_for_row(row) == point_id
+            ),
+            None,
+        )
+
+    def _ensure_point_visible(self, point_id: str) -> None:
+        if self._row_for_point_id(point_id) is not None:
+            return
+        self._refreshing = True
+        try:
+            self.point_search_edit.clear()
+            self.point_filter_combo.setCurrentIndex(
+                self.point_filter_combo.findData("all")
+            )
+        finally:
+            self._refreshing = False
+        self._refreshing = True
+        try:
+            self._refresh_point_table(self._require_controller().snapshot())
+        finally:
+            self._refreshing = False
+
+    def _sync_point_table_selection(
+        self,
+        *,
+        scroll_to_id: str | None = None,
+    ) -> None:
+        if self._controller is None:
+            return
+        snapshot = self._controller.snapshot()
+        selected_ids = (
+            set(snapshot.selected_ids) if snapshot.selected_kind == "point" else set()
+        )
+        previous = self._refreshing
+        self._refreshing = True
+        try:
+            self.points_table.clearSelection()
+            for row in range(self.points_table.rowCount()):
+                point_id = self._point_id_for_row(row)
+                if point_id in selected_ids:
+                    for column in range(self.points_table.columnCount()):
+                        item = self.points_table.item(row, column)
+                        if item is not None:
+                            item.setSelected(True)
+            target = scroll_to_id or next(iter(snapshot.selected_ids), None)
+            if target is not None:
+                row = self._row_for_point_id(target)
+                if row is not None:
+                    item = self.points_table.item(row, 0)
+                    self.points_table.setCurrentItem(
+                        item,
+                        QItemSelectionModel.SelectionFlag.NoUpdate,
+                    )
+                    self.points_table.scrollToItem(
+                        item,
+                        QAbstractItemView.ScrollHint.PositionAtCenter,
+                    )
+        finally:
+            self._refreshing = previous
+
+    def _selection_changed_lightweight(self) -> None:
+        controller = self._require_controller()
+        snapshot = controller.snapshot()
+        associated_selection = (
+            snapshot.selected_kind == "point"
+            and len(snapshot.selected_ids) == 1
+            and controller.external_reference_for_point(snapshot.selected_ids[0])
+            is not None
+        )
+        self.release_association_button.setEnabled(associated_selection)
+        self._refresh_curve_parameters(snapshot)
+        if self._viewport is not None:
+            kind = "curve" if snapshot.selected_kind == "edge" else snapshot.selected_kind
+            self._viewport.update_sketch_selection(kind, snapshot.selected_ids)
+        self.draftChanged.emit(snapshot)
+
     def _refresh(self, *, selected_id: str | None = None) -> None:
         controller = self._controller
         if controller is None:
@@ -1084,32 +1421,7 @@ class SketchEditorPanel(QWidget):
                 if snapshot.plane == SketchPlane.xy()
                 else "实体平面面（U/V）"
             )
-            sorting_enabled = self.points_table.isSortingEnabled()
-            self.points_table.setSortingEnabled(False)
-            self.points_table.setRowCount(0)
-            for row, point in enumerate(snapshot.points):
-                self.points_table.insertRow(row)
-                association_status = controller.association_status(point.id)
-                for column, value in enumerate(
-                    (
-                        point.id,
-                        f"{point.u:.6g}",
-                        f"{point.v:.6g}",
-                        association_status,
-                    )
-                ):
-                    item = QTableWidgetItem(value)
-                    item.setData(Qt.ItemDataRole.UserRole, point.id)
-                    if column in {0, 3} or (
-                        column in {1, 2} and association_status != "自由"
-                    ):
-                        item.setFlags(
-                            item.flags() & ~Qt.ItemFlag.ItemIsEditable
-                        )
-                    if column in {1, 2} and association_status != "自由":
-                        item.setToolTip("关联点坐标只读；解除关联后可编辑")
-                    self.points_table.setItem(row, column, item)
-            self.points_table.setSortingEnabled(sorting_enabled)
+            self._refresh_point_table(snapshot, selected_id=selected_id)
             diagnostics = controller.finish_diagnostics
             self.diagnostic_label.setText(
                 "\n".join(item.message for item in diagnostics)
@@ -1134,10 +1446,6 @@ class SketchEditorPanel(QWidget):
             )
             self.release_association_button.setEnabled(associated_selection)
             self._refresh_curve_parameters(snapshot)
-            if selected_id is not None:
-                for row, point in enumerate(snapshot.points):
-                    if point.id == selected_id:
-                        self.points_table.selectRow(row)
         finally:
             self._refreshing = False
         self._send_render_data()
@@ -1169,6 +1477,11 @@ class SketchEditorPanel(QWidget):
         self._set_status("已取消当前草图操作")
 
     def _authoring_missed(self, reason: str) -> None:
+        if reason == "select" and self._controller is not None:
+            self._controller.clear_selection()
+            self._selection_anchor_id = None
+            self._sync_point_table_selection()
+            self._selection_changed_lightweight()
         messages = {
             "select": "当前位置没有可选择的草图实体",
             "trim": "请单击需要修剪的曲线",

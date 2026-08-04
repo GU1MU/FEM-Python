@@ -6,8 +6,9 @@ import math
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QLabel, QListWidget
+from PySide6.QtCore import QItemSelectionModel, Qt
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QListWidget
 
 from fem.geometry import (
     LogicalEntityRef,
@@ -369,6 +370,247 @@ def test_point_table_edits_by_stable_id_after_sorting() -> None:
     points = {point.id: point for point in controller.snapshot().points}
     assert points["P10"].u == 9.0
     assert points["P2"].u == 2.0
+
+
+def test_phase2_point_search_filter_sort_edit_and_delete_stay_id_based() -> None:
+    _application()
+    controller = SketchDraftController("phase-2-list")
+    controller.add_point(10.0, 0.0, point_id="P10")
+    controller.add_point(2.0, 0.0, point_id="P2")
+    controller.add_point(
+        1.0,
+        0.0,
+        point_id="P1",
+        external_reference=_reference_point(1.0, 0.0),
+    )
+    panel = SketchEditorPanel(controller)
+
+    assert [panel.points_table.item(row, 0).text() for row in range(3)] == [
+        "P1",
+        "P2",
+        "P10",
+    ]
+    panel.point_filter_combo.setCurrentIndex(
+        panel.point_filter_combo.findData("free")
+    )
+    assert set(panel._visible_point_ids()) == {"P2", "P10"}
+    panel.point_search_edit.setText("10")
+    assert panel._visible_point_ids() == ("P10",)
+
+    panel.points_table.item(0, 1).setText("19.0")
+    assert {point.id: point.u for point in controller.snapshot().points}["P10"] == 19.0
+    panel.points_table.selectRow(0)
+    panel.delete_selected()
+    assert {point.id for point in controller.snapshot().points} == {"P1", "P2"}
+
+    panel.point_search_edit.clear()
+    panel.point_filter_combo.setCurrentIndex(
+        panel.point_filter_combo.findData("associated")
+    )
+    assert panel._visible_point_ids() == ("P1",)
+    controller.refresh_external_references(())
+    panel.point_filter_combo.setCurrentIndex(
+        panel.point_filter_combo.findData("unresolved")
+    )
+    assert panel._visible_point_ids() == ("P1",)
+
+
+def test_phase2_viewport_and_table_multi_selection_and_clear_are_symmetric() -> None:
+    _application()
+    controller = SketchDraftController("phase-2-selection")
+    for point_id in ("P10", "P2", "P1"):
+        controller.add_point(float(len(controller.snapshot().points)), 0.0, point_id=point_id)
+    panel = SketchEditorPanel(controller)
+
+    class _Viewport:
+        def __init__(self) -> None:
+            self.selections = []
+
+        def update_sketch_selection(self, kind, ids) -> None:
+            self.selections.append((kind, tuple(ids)))
+
+    viewport = _Viewport()
+    panel._viewport = viewport
+    panel._select_point("P1")
+    panel._select_point("P10", Qt.KeyboardModifier.ShiftModifier)
+
+    assert controller.selected_ids == ("P1", "P2", "P10")
+    assert set(
+        panel._point_id_for_row(index.row())
+        for index in panel.points_table.selectionModel().selectedRows()
+    ) == {"P1", "P2", "P10"}
+    assert viewport.selections[-1] == ("point", ("P1", "P2", "P10"))
+
+    panel.points_table.clearSelection()
+    assert controller.selected_ids == ()
+    assert viewport.selections[-1] == (None, ())
+    row = panel._row_for_point_id("P2")
+    panel.points_table.selectionModel().select(
+        panel.points_table.model().index(row, 0),
+        QItemSelectionModel.SelectionFlag.Select
+        | QItemSelectionModel.SelectionFlag.Rows,
+    )
+    assert controller.selected_ids == ("P2",)
+    assert viewport.selections[-1] == ("point", ("P2",))
+
+
+def test_phase2_selection_is_lightweight_and_does_not_analyze_or_rebuild(
+    monkeypatch,
+) -> None:
+    _application()
+    controller = SketchDraftController("phase-2-lightweight")
+    controller.add_point(0.0, 0.0, point_id="P1")
+    panel = SketchEditorPanel(controller)
+
+    class _Viewport:
+        def __init__(self) -> None:
+            self.light_updates = []
+
+        def update_sketch_selection(self, kind, ids) -> None:
+            self.light_updates.append((kind, tuple(ids)))
+
+        def update_sketch_draft(self, _data) -> None:
+            raise AssertionError("selection rebuilt the full sketch preview")
+
+    panel._viewport = _Viewport()
+    monkeypatch.setattr(
+        controller,
+        "derive_profiles",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("selection triggered profile analysis")
+        ),
+    )
+
+    panel._select_point("P1")
+    panel._authoring_missed("select")
+
+    assert panel._viewport.light_updates == [("point", ("P1",)), (None, ())]
+    assert controller.snapshot().revision == 1
+
+
+def test_phase2_refresh_preserves_selection_scroll_and_edit_cell() -> None:
+    app = _application()
+    controller = SketchDraftController("phase-2-refresh")
+    for index in range(40):
+        controller.add_point(float(index), 0.0, point_id=f"P{index + 1}")
+    panel = SketchEditorPanel(controller)
+    panel.resize(360, 300)
+    panel.show()
+    app.processEvents()
+    target_id = "P30"
+    row = panel._row_for_point_id(target_id)
+    target = panel.points_table.item(row, 1)
+    panel.points_table.selectRow(row)
+    panel.points_table.setCurrentItem(
+        target,
+        QItemSelectionModel.SelectionFlag.NoUpdate,
+    )
+    panel.points_table.verticalScrollBar().setValue(12)
+    scroll = panel.points_table.verticalScrollBar().value()
+    panel.points_table.editItem(target)
+    app.processEvents()
+
+    panel._refresh()
+    app.processEvents()
+
+    assert panel._point_id_for_row(panel.points_table.currentRow()) == target_id
+    assert panel.points_table.currentColumn() == 1
+    assert target_id in controller.selected_ids
+    assert panel.points_table.verticalScrollBar().value() == scroll
+    assert panel.points_table.state().name == "EditingState"
+    panel.close()
+
+
+def test_phase2_double_click_requests_point_focus() -> None:
+    _application()
+    controller = SketchDraftController("phase-2-focus")
+    controller.add_point(0.0, 0.0, point_id="P7")
+    panel = SketchEditorPanel(controller)
+    focused = []
+    panel.entityFocusRequested.connect(lambda kind, entity_id: focused.append((kind, entity_id)))
+
+    panel._focus_point_item(panel.points_table.item(0, 0))
+
+    assert focused == [("point", "P7")]
+
+
+def test_phase2_viewport_selection_update_only_rebuilds_highlight(monkeypatch) -> None:
+    _application()
+    viewport = FEMViewport()
+    viewport._sketch_authoring_active = True
+    viewport._sketch_draft_render_data = SketchDraftRenderData(
+        ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+        ("P1", "P2"),
+        (),
+        (),
+    )
+    highlight_updates = []
+    monkeypatch.setattr(
+        viewport,
+        "_show_sketch_selection",
+        lambda *, render: highlight_updates.append(render),
+    )
+    monkeypatch.setattr(
+        viewport,
+        "_show_sketch_draft",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("selection rebuilt the complete viewport draft")
+        ),
+    )
+
+    viewport.update_sketch_selection("point", ("P1", "P2"))
+    data = viewport._sketch_draft_render_data
+
+    assert data.selected_ids == ("P1", "P2")
+    assert data.selected_id == "P1"
+    assert highlight_updates == [True]
+    viewport.close()
+
+
+def test_phase2_point_editor_enter_commits_escape_cancels_and_idle_keys_are_safe() -> None:
+    app = _application()
+    controller = SketchDraftController("phase-2-edit-keys")
+    controller.add_point(1.0, 2.0, point_id="P1")
+    panel = SketchEditorPanel(controller)
+    panel.resize(420, 900)
+    panel.show()
+    app.processEvents()
+    item = panel.points_table.item(0, 1)
+
+    panel.points_table.setCurrentItem(item)
+    panel.points_table.editItem(item)
+    app.processEvents()
+    editor = panel.points_table.findChild(QLineEdit)
+    assert editor is not None
+    editor.selectAll()
+    QTest.keyClicks(editor, "4.5")
+    QTest.keyClick(editor, Qt.Key.Key_Return)
+    app.processEvents()
+    assert controller.snapshot().points[0].u == 4.5
+
+    item = panel.points_table.item(0, 1)
+    panel.points_table.setCurrentItem(item)
+    panel.points_table.editItem(item)
+    app.processEvents()
+    editor = panel.points_table.findChild(QLineEdit)
+    assert editor is not None
+    editor.selectAll()
+    QTest.keyClicks(editor, "9.0")
+    QTest.keyClick(editor, Qt.Key.Key_Escape)
+    app.processEvents()
+    assert controller.snapshot().points[0].u == 4.5
+
+    finished = []
+    cancelled = []
+    panel.finishRequested.connect(lambda: finished.append(True))
+    panel.cancelRequested.connect(lambda: cancelled.append(True))
+    panel.points_table.setFocus()
+    QTest.keyClick(panel.points_table, Qt.Key.Key_Return)
+    QTest.keyClick(panel.points_table, Qt.Key.Key_Escape)
+    app.processEvents()
+    assert finished == []
+    assert cancelled == []
+    panel.close()
 
 
 def test_associated_point_status_is_read_only_until_released() -> None:

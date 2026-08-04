@@ -190,6 +190,7 @@ class SketchDraftController:
         self._undo: list[_SketchGeometryState] = []
         self._redo: list[_SketchGeometryState] = []
         self._history_limit = history_limit
+        self._known_profile_ids: set[str] = set()
 
     @classmethod
     def from_geometry(cls, root: SketchGeometry) -> "SketchDraftController":
@@ -234,6 +235,7 @@ class SketchDraftController:
         self._unresolved_reference_ids.clear()
         self._undo.clear()
         self._redo.clear()
+        self._known_profile_ids.clear()
 
     restore_from_committed = restore_from_geometry
 
@@ -516,6 +518,36 @@ class SketchDraftController:
             curve_id
             for curve_id, curve in self._curves.items()
             if point_id in _curve_point_ids(curve)
+        )
+
+    def point_usage(self, point_id: str) -> tuple[str, ...]:
+        """Return the stable geometric roles of one draft point."""
+
+        self._require_point(point_id)
+        endpoint = False
+        circle_center = False
+        arc_center = False
+        for curve in self._curves.values():
+            if isinstance(curve, SketchLine) and point_id in {
+                curve.start_point_id,
+                curve.end_point_id,
+            }:
+                endpoint = True
+            elif isinstance(curve, SketchCircle) and point_id == curve.center_point_id:
+                circle_center = True
+            elif isinstance(curve, SketchArc):
+                if point_id in {curve.start_point_id, curve.end_point_id}:
+                    endpoint = True
+                if point_id == curve.center_point_id:
+                    arc_center = True
+        return tuple(
+            label
+            for active, label in (
+                (endpoint, "端点"),
+                (circle_center, "圆心"),
+                (arc_center, "弧心"),
+            )
+            if active
         )
 
     def add_line(
@@ -875,6 +907,59 @@ class SketchDraftController:
             return
         raise KeyError(entity_id)
 
+    def delete_many(self, entity_ids: tuple[str, ...] | list[str]) -> None:
+        """Delete several points or curves as one atomic undoable edit."""
+
+        ids = tuple(dict.fromkeys(entity_ids))
+        if not ids:
+            return
+        for entity_id in ids:
+            self._assert_entity(entity_id)
+
+        point_ids = {entity_id for entity_id in ids if entity_id in self._points}
+        explicit_curve_ids = {
+            entity_id for entity_id in ids if entity_id in self._curves
+        }
+        curve_ids = set(explicit_curve_ids)
+        curve_ids.update(
+            curve_id
+            for curve_id, curve in self._curves.items()
+            if point_ids.intersection(_curve_point_ids(curve))
+        )
+
+        def apply() -> None:
+            candidate_point_ids = {
+                point_id
+                for curve_id in explicit_curve_ids
+                for point_id in _curve_point_ids(self._curves[curve_id])
+            }
+            for curve_id in curve_ids:
+                del self._curves[curve_id]
+            used_point_ids = {
+                point_id
+                for curve in self._curves.values()
+                for point_id in _curve_point_ids(curve)
+            }
+            removable = point_ids | {
+                point_id
+                for point_id in candidate_point_ids
+                if point_id not in used_point_ids
+            }
+            for point_id in removable:
+                self._points.pop(point_id, None)
+                self._remove_point_association(point_id)
+            self._selected_ids = tuple(
+                entity_id
+                for entity_id in self._selected_ids
+                if entity_id in self._points or entity_id in self._curves
+            )
+            if not self._selected_ids:
+                self._selected_kind = None
+
+        self._mutate(apply)
+
+    delete_entities = delete_many
+
     def trim_curve(
         self,
         curve_id: str,
@@ -1020,11 +1105,13 @@ class SketchDraftController:
     trim_segment = trim_curve
 
     def select(self, entity_id: str, *, kind: str | None = None) -> tuple[str, ...]:
-        if entity_id not in self._points and entity_id not in self._curves:
-            analysis = self.derive_profiles()
-            if entity_id not in {profile.id for profile in analysis.profiles}:
-                raise KeyError(entity_id)
         normalized_kind = kind or self._kind_for_id(entity_id)
+        if normalized_kind == "point":
+            self._require_point(entity_id)
+        elif normalized_kind == "edge":
+            self._require_curve(entity_id)
+        elif normalized_kind != "profile" or entity_id not in self._known_profile_ids:
+            raise KeyError(entity_id)
 
         self._selected_ids = (entity_id,)
         self._selected_kind = normalized_kind
@@ -1042,7 +1129,7 @@ class SketchDraftController:
         return self.select(profile_id, kind="profile")
 
     def select_many(self, entity_ids: tuple[str, ...] | list[str]) -> tuple[str, ...]:
-        ids = tuple(entity_ids)
+        ids = tuple(dict.fromkeys(entity_ids))
         if not ids:
             return self.clear_selection()
         kinds = {self._kind_for_id(item) for item in ids}
@@ -1118,7 +1205,7 @@ class SketchDraftController:
         try:
             sketch = self._to_strict_unchecked()
         except (TypeError, ValueError) as error:
-            return SketchProfileAnalysis(
+            analysis = SketchProfileAnalysis(
                 (),
                 (
                     SketchDiagnostic(
@@ -1129,7 +1216,10 @@ class SketchDraftController:
                     ),
                 ),
             )
-        return analyze_sketch_profiles(sketch)
+        else:
+            analysis = analyze_sketch_profiles(sketch)
+        self._known_profile_ids = {profile.id for profile in analysis.profiles}
+        return analysis
 
     @property
     def profiles(self) -> tuple[SketchProfile, ...]:
@@ -1214,6 +1304,7 @@ class SketchDraftController:
         after = self._geometry_state()
         if after == before:
             return result
+        self._known_profile_ids.clear()
         self._undo.append(before)
         if len(self._undo) > self._history_limit:
             del self._undo[0]
@@ -1254,6 +1345,7 @@ class SketchDraftController:
             for coincidence in state.external_coincidences
         }
         self._unresolved_reference_ids = set(state.unresolved_reference_ids)
+        self._known_profile_ids.clear()
         self._validate_associations()
 
     def _restore_interaction_state(self, state: _SketchInteractionState) -> None:
@@ -1286,6 +1378,7 @@ class SketchDraftController:
             for coincidence in snapshot.external_coincidences
         }
         self._unresolved_reference_ids = set(snapshot.unresolved_reference_ids)
+        self._known_profile_ids.clear()
         self._validate_associations()
 
     def _bind_external_reference(
@@ -1379,7 +1472,7 @@ class SketchDraftController:
     def _assert_selectable(self, entity_id: str) -> None:
         if entity_id in self._points or entity_id in self._curves:
             return
-        if entity_id not in {profile.id for profile in self.derive_profiles().profiles}:
+        if entity_id not in self._known_profile_ids:
             raise KeyError(entity_id)
 
     def _kind_for_id(self, entity_id: str) -> str:
@@ -1387,7 +1480,9 @@ class SketchDraftController:
             return "point"
         if entity_id in self._curves:
             return "edge"
-        return "face"
+        if entity_id in self._known_profile_ids:
+            return "profile"
+        raise KeyError(entity_id)
 
     def _clear_selection_id(self, entity_id: str) -> None:
         self._selected_ids = tuple(item for item in self._selected_ids if item != entity_id)

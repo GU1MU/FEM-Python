@@ -489,6 +489,7 @@ class SketchDraftRenderData:
     selected_kind: str | None = None
     selected_id: str | None = None
     plane: SketchPlane = field(default_factory=SketchPlane.xy)
+    selected_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         points = tuple(
@@ -522,10 +523,16 @@ class SketchDraftRenderData:
             for index in cell
         ):
             raise ValueError("sketch draft cell index is outside point data")
+        selected_ids = tuple(dict.fromkeys(str(value) for value in self.selected_ids))
+        if self.selected_id is not None and not selected_ids:
+            selected_ids = (str(self.selected_id),)
+        selected_id = selected_ids[0] if selected_ids else None
         if self.selected_kind not in {None, "point", "curve", "profile"}:
             raise ValueError("invalid sketch draft selection kind")
-        if self.selected_id is None and self.selected_kind is not None:
+        if selected_id is None and self.selected_kind is not None:
             raise ValueError("sketch selection kind requires an entity ID")
+        if selected_id is not None and self.selected_kind is None:
+            raise ValueError("sketch selection IDs require an entity kind")
         if type(self.plane) is not SketchPlane:
             raise TypeError("sketch draft plane must be a SketchPlane")
         object.__setattr__(self, "points", points)
@@ -534,6 +541,8 @@ class SketchDraftRenderData:
         object.__setattr__(self, "curve_ids", curve_ids)
         object.__setattr__(self, "faces", faces)
         object.__setattr__(self, "face_ids", face_ids)
+        object.__setattr__(self, "selected_id", selected_id)
+        object.__setattr__(self, "selected_ids", selected_ids)
 
 
 @dataclass(frozen=True, slots=True)
@@ -980,6 +989,9 @@ class FEMViewport(QWidget):
     sketchDraftPointSelected = Signal(str)
     sketchDraftCurveSelected = Signal(str)
     sketchDraftProfileSelected = Signal(str)
+    sketchDraftPointSelectionRequested = Signal(str, object)
+    sketchDraftCurveSelectionRequested = Signal(str, object)
+    sketchDraftProfileSelectionRequested = Signal(str, object)
     sketchTrimRequested = Signal(str, object)
     sketchAuthoringMissed = Signal(str)
     sketchPendingInteractionCancelled = Signal()
@@ -1315,7 +1327,11 @@ class FEMViewport(QWidget):
                     vtk_x, vtk_y = self._qt_to_vtk_position(
                         position.x(), position.y()
                     )
-                    self._sketch_authoring_click(vtk_x, vtk_y)
+                    self._sketch_authoring_click(
+                        vtk_x,
+                        vtk_y,
+                        modifiers=event.modifiers(),
+                    )
                     return True
                 if button in {
                     Qt.MouseButton.MiddleButton,
@@ -1740,6 +1756,32 @@ class FEMViewport(QWidget):
         self._sketch_draft_render_data = render_data
         self._show_sketch_draft(render=True)
 
+    def update_sketch_selection(
+        self,
+        kind: str | None,
+        entity_ids: Iterable[str] = (),
+        *,
+        render: bool = True,
+    ) -> None:
+        """Update only the transient sketch highlight actor."""
+
+        data = self._sketch_draft_render_data
+        if data is None:
+            return
+        ids = tuple(dict.fromkeys(str(value) for value in entity_ids))
+        normalized_kind = None if not ids else str(kind)
+        if normalized_kind == "edge":
+            normalized_kind = "curve"
+        if normalized_kind not in {None, "point", "curve", "profile"}:
+            raise ValueError("invalid sketch draft selection kind")
+        self._sketch_draft_render_data = replace(
+            data,
+            selected_kind=normalized_kind,
+            selected_id=ids[0] if ids else None,
+            selected_ids=ids,
+        )
+        self._show_sketch_selection(render=render)
+
     def show_sketch_reference_preview(
         self,
         preview: GeometryPreview,
@@ -2073,12 +2115,86 @@ class FEMViewport(QWidget):
         data = self._sketch_draft_render_data
         if data is None:
             return
-        self._sketch_draft_render_data = replace(
-            data,
-            selected_kind=str(kind),
-            selected_id=str(entity_id),
-        )
-        self._show_sketch_draft(render=True)
+        normalized_kind = "curve" if kind == "edge" else str(kind)
+        self.update_sketch_selection(normalized_kind, (entity_id,), render=False)
+        if self._plotter is not None:
+            coordinates = self._sketch_entity_coordinates(
+                self._sketch_draft_render_data,
+                normalized_kind,
+                str(entity_id),
+            )
+            if coordinates is not None and len(coordinates):
+                center = np.mean(coordinates, axis=0)
+                camera = self._plotter.camera
+                old_focal = np.asarray(camera.focal_point, dtype=float)
+                old_position = np.asarray(camera.position, dtype=float)
+                camera.SetFocalPoint(*center)
+                camera.SetPosition(*(old_position + center - old_focal))
+                if camera.GetParallelProjection():
+                    local = _sketch_local_points(
+                        tuple(tuple(value) for value in coordinates),
+                        data.plane,
+                    )
+                    if len(local) > 1:
+                        span = max(
+                            float(np.ptp(local[:, 0])),
+                            float(np.ptp(local[:, 1])),
+                            self._sketch_grid_spacing,
+                        )
+                        camera.SetParallelScale(max(span * 0.75, self._sketch_grid_spacing))
+        self._render()
+
+    def _show_sketch_selection(self, *, render: bool) -> None:
+        self._remove_actor("sketch_authoring_selection")
+        data = self._sketch_draft_render_data
+        if (
+            data is not None
+            and not is_offscreen_environment()
+            and self._ensure_plotter()
+            and _pyvista is not None
+        ):
+            coordinates = np.asarray(data.points, dtype=float).reshape((-1, 3))
+            selection = self._sketch_selection_polydata(data, coordinates)
+            if selection is not None:
+                self._actors["sketch_authoring_selection"] = self._plotter.add_mesh(
+                    selection,
+                    color="#f5a623",
+                    line_width=6,
+                    point_size=15,
+                    render_points_as_spheres=True,
+                    opacity=0.75,
+                    name="sketch_authoring_selection",
+                    reset_camera=False,
+                    pickable=False,
+                )
+        if render:
+            self._render()
+
+    @staticmethod
+    def _sketch_entity_coordinates(
+        data: SketchDraftRenderData,
+        kind: str,
+        entity_id: str,
+    ) -> np.ndarray | None:
+        coordinates = np.asarray(data.points, dtype=float).reshape((-1, 3))
+        if kind == "point":
+            indices = tuple(
+                index
+                for index, point_id in enumerate(data.point_ids)
+                if point_id == entity_id
+            )
+            return coordinates[np.asarray(indices)] if indices else None
+        if kind == "curve" and entity_id in data.curve_ids:
+            return coordinates[np.asarray(data.curves[data.curve_ids.index(entity_id)])]
+        if kind == "profile":
+            indices = tuple(
+                index
+                for face, face_id in zip(data.faces, data.face_ids, strict=True)
+                if face_id == entity_id
+                for index in face
+            )
+            return coordinates[np.asarray(indices)] if indices else None
+        return None
 
     def _show_sketch_draft(
         self,
@@ -2319,22 +2435,29 @@ class FEMViewport(QWidget):
         data: SketchDraftRenderData,
         coordinates: np.ndarray,
     ):
-        if data.selected_id is None or _pyvista is None:
+        if not data.selected_ids or _pyvista is None:
             return None
         if data.selected_kind == "point":
             indices = tuple(
                 index
                 for index, point_id in enumerate(data.point_ids)
-                if point_id == data.selected_id
+                if point_id in data.selected_ids
             )
             if indices:
                 return _pyvista.PolyData(coordinates[np.asarray(indices)])
-        if data.selected_kind == "curve" and data.selected_id in data.curve_ids:
-            index = data.curve_ids.index(data.selected_id)
+        if data.selected_kind == "curve":
+            cells = tuple(
+                curve
+                for curve, curve_id in zip(data.curves, data.curve_ids, strict=True)
+                if curve_id in data.selected_ids
+            )
+            if not cells:
+                return None
             result = _pyvista.PolyData()
             result.points = coordinates
-            curve = data.curves[index]
-            result.lines = np.asarray((len(curve), *curve), dtype=np.int64)
+            result.lines = np.hstack(
+                tuple((len(curve), *curve) for curve in cells)
+            ).astype(np.int64)
             return result
         if data.selected_kind == "profile":
             cells = tuple(
@@ -2344,7 +2467,7 @@ class FEMViewport(QWidget):
                     data.face_ids,
                     strict=True,
                 )
-                if face_id == data.selected_id
+                if face_id in data.selected_ids
             )
             if cells:
                 result = _pyvista.PolyData()
@@ -3015,18 +3138,27 @@ class FEMViewport(QWidget):
                 point = grid_point
         return point, None
 
-    def _sketch_authoring_click(self, x: int, y: int) -> None:
+    def _sketch_authoring_click(
+        self,
+        x: int,
+        y: int,
+        *,
+        modifiers: Qt.KeyboardModifier = Qt.KeyboardModifier.NoModifier,
+    ) -> None:
         if self._sketch_authoring_mode == "select":
             point_id = self._sketch_point_at(x, y)
             if point_id is not None:
+                self.sketchDraftPointSelectionRequested.emit(point_id, modifiers)
                 self.sketchDraftPointSelected.emit(point_id)
                 return
             curve_id = self._sketch_curve_at(x, y)
             if curve_id is not None:
+                self.sketchDraftCurveSelectionRequested.emit(curve_id, modifiers)
                 self.sketchDraftCurveSelected.emit(curve_id)
                 return
             profile_id = self._sketch_profile_at(x, y)
             if profile_id is not None:
+                self.sketchDraftProfileSelectionRequested.emit(profile_id, modifiers)
                 self.sketchDraftProfileSelected.emit(profile_id)
                 return
             self.sketchAuthoringMissed.emit("select")
