@@ -44,6 +44,7 @@ from fem.geometry import (
 from fem.selection import edges as mesh_edges
 from fem.selection import faces as mesh_faces
 from ..geometry_preview import FaceSketchBooleanDisplay, GeometryPreview
+from ..sketch_constraint_ui import SketchConstraintOverlay
 from ..wire_editor import (
     intersect_ray_with_work_plane,
     snap_work_plane_point,
@@ -501,6 +502,8 @@ class SketchDraftRenderData:
     geometry_revision: int = 0
     analytic_points: tuple[SketchPoint, ...] = ()
     analytic_curves: tuple[SketchCurve, ...] = ()
+    constraint_overlays: tuple[SketchConstraintOverlay, ...] = ()
+    inference_preview: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         points = tuple(
@@ -520,6 +523,7 @@ class SketchDraftRenderData:
         face_ids = tuple(str(value) for value in self.face_ids)
         analytic_points = tuple(self.analytic_points)
         analytic_curves = tuple(self.analytic_curves)
+        constraint_overlays = tuple(self.constraint_overlays)
         if len(points) != len(point_ids):
             raise ValueError("sketch draft point IDs must match point coordinates")
         if len(curves) != len(curve_ids):
@@ -582,6 +586,7 @@ class SketchDraftRenderData:
         object.__setattr__(self, "face_ids", face_ids)
         object.__setattr__(self, "analytic_points", analytic_points)
         object.__setattr__(self, "analytic_curves", analytic_curves)
+        object.__setattr__(self, "constraint_overlays", constraint_overlays)
         object.__setattr__(self, "selected_id", selected_id)
         object.__setattr__(self, "selected_ids", selected_ids)
         object.__setattr__(self, "snap_midpoints", snap_midpoints)
@@ -1002,6 +1007,25 @@ def _sketch_intersection_points(
     return tuple(data.plane.to_global(u, v) for u, v in intersections)
 
 
+def _sketch_intersection_curve_ids_at(
+    data: SketchDraftRenderData,
+    u: float,
+    v: float,
+    *,
+    tolerance: float = 1.0e-8,
+) -> tuple[str, ...]:
+    """Return the stable analytic curve pair for a snapped intersection."""
+
+    if not data.analytic_curves:
+        return ()
+    point_map = {point.id: point for point in data.analytic_points}
+    result = sketch_intersections(data.analytic_curves, point_map)
+    for item in result.intersections:
+        if math.hypot(item.u - u, item.v - v) <= tolerance:
+            return item.left_curve_id, item.right_curve_id
+    return ()
+
+
 def _capture_camera_state(plotter: object) -> _ViewportCameraState | None:
     """Capture framing before transient actors are rebuilt."""
 
@@ -1147,6 +1171,10 @@ class FEMViewport(QWidget):
     sketchPendingInteractionCancelled = Signal()
     sketchAuthoringFinishRequested = Signal()
     sketchAuthoringCancelled = Signal()
+    sketchInferencePreviewChanged = Signal(object)
+    sketchSnapConfirmed = Signal(object)
+    sketchPointDragPreviewRequested = Signal(str, object)
+    sketchPointDragCommitRequested = Signal(str, object)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -1275,6 +1303,10 @@ class FEMViewport(QWidget):
         self._sketch_reference_points: tuple[SketchReferencePoint, ...] = ()
         self._sketch_authoring_snap_reference: SketchReferencePoint | None = None
         self._sketch_authoring_snap_kind: str | None = None
+        self._sketch_authoring_snap_point_id: str | None = None
+        self._sketch_authoring_intersection_curve_ids: tuple[str, ...] = ()
+        self._sketch_drag_point_id: str | None = None
+        self._sketch_drag_moved = False
         self._sketch_pending_points: tuple[tuple[float, float, float], ...] = ()
         self._sketch_authoring_preview_point: (
             tuple[float, float, float] | None
@@ -1404,7 +1436,15 @@ class FEMViewport(QWidget):
                     self.cancel_pending_sketch_interaction()
                     return True
                 if button == Qt.MouseButton.LeftButton:
-                    self._selection_press_position = None
+                    position = self._plotter_event_position(watched, event)
+                    vtk_x, vtk_y = self._qt_to_vtk_position(position.x(), position.y())
+                    self._sketch_drag_point_id = (
+                        self._sketch_point_at(vtk_x, vtk_y)
+                        if self._sketch_authoring_mode == "select"
+                        else None
+                    )
+                    self._sketch_drag_moved = False
+                    self._selection_press_position = (position.x(), position.y())
                     return True
             if self._wire_authoring_active:
                 if button in {
@@ -1445,7 +1485,26 @@ class FEMViewport(QWidget):
                     vtk_y,
                     snap=self._sketch_authoring_mode != "trim",
                 )
+                if self._sketch_drag_point_id is not None:
+                    start = self._selection_press_position
+                    if start is not None and (
+                        abs(position.x() - start[0]) + abs(position.y() - start[1]) > 2.0
+                    ):
+                        self._sketch_drag_moved = True
+                    if point is not None and self._sketch_drag_moved:
+                        self.sketchPointDragPreviewRequested.emit(
+                            self._sketch_drag_point_id, point
+                        )
+                    return True
                 self._set_sketch_authoring_preview_point(point)
+                self.sketchInferencePreviewChanged.emit(
+                    {
+                        "point": point,
+                        "snap_kind": self._sketch_authoring_snap_kind,
+                        "point_id": self._sketch_authoring_snap_point_id,
+                        "curve_ids": self._sketch_authoring_intersection_curve_ids,
+                    }
+                )
                 return True
             if self._wire_authoring_active:
                 position = self._plotter_event_position(watched, event)
@@ -1493,6 +1552,18 @@ class FEMViewport(QWidget):
                     vtk_x, vtk_y = self._qt_to_vtk_position(
                         position.x(), position.y()
                     )
+                    if self._sketch_drag_point_id is not None and self._sketch_drag_moved:
+                        point, _reason = self._sketch_work_plane_point_at(vtk_x, vtk_y)
+                        if point is not None:
+                            self.sketchPointDragCommitRequested.emit(
+                                self._sketch_drag_point_id, point
+                            )
+                        self._sketch_drag_point_id = None
+                        self._sketch_drag_moved = False
+                        self._selection_press_position = None
+                        return True
+                    self._sketch_drag_point_id = None
+                    self._selection_press_position = None
                     self._sketch_authoring_click(
                         vtk_x,
                         vtk_y,
@@ -2268,7 +2339,24 @@ class FEMViewport(QWidget):
         if self._sketch_authoring_active:
             self._show_sketch_authoring_hover(render=True)
 
+    def set_sketch_inference_preview(self, kinds: Iterable[str]) -> None:
+        """Update only transient inference labels, without rebuilding geometry."""
+
+        normalized = tuple(str(kind) for kind in kinds)
+        data = self._sketch_draft_render_data
+        if data is None or normalized == data.inference_preview:
+            return
+        self._sketch_draft_render_data = replace(data, inference_preview=normalized)
+        if self._sketch_authoring_active:
+            self._show_sketch_authoring_hover(render=True)
+
     def cancel_pending_sketch_interaction(self) -> bool:
+        if self._sketch_drag_point_id is not None:
+            self._sketch_drag_point_id = None
+            self._sketch_drag_moved = False
+            self._selection_press_position = None
+            self.sketchPendingInteractionCancelled.emit()
+            return True
         if not self._sketch_pending_points:
             return False
         self.set_sketch_pending_points(())
@@ -2298,6 +2386,7 @@ class FEMViewport(QWidget):
             "sketch_authoring_hover_outline",
             "sketch_authoring_hover",
             "sketch_authoring_hover_label",
+            "sketch_constraint_overlays",
             "sketch_reference_surface",
             "sketch_support_face_highlight",
         ):
@@ -2309,6 +2398,10 @@ class FEMViewport(QWidget):
         self._sketch_reference_points = ()
         self._sketch_authoring_snap_reference = None
         self._sketch_authoring_snap_kind = None
+        self._sketch_authoring_snap_point_id = None
+        self._sketch_authoring_intersection_curve_ids = ()
+        self._sketch_drag_point_id = None
+        self._sketch_drag_moved = False
         self._sketch_pending_points = ()
         self._sketch_authoring_preview_point = None
         self._clear_preselection(render=False)
@@ -2600,6 +2693,17 @@ class FEMViewport(QWidget):
                         reset_camera=False,
                     )
                 )
+        if data.constraint_overlays:
+            self._actors["sketch_constraint_overlays"] = self._plotter.add_point_labels(
+                np.asarray(tuple(item.position for item in data.constraint_overlays)),
+                tuple(item.text for item in data.constraint_overlays),
+                point_size=0,
+                font_size=10,
+                shape="rounded_rect",
+                text_color="#c62828" if any(item.warning for item in data.constraint_overlays) else "#5d3a9b",
+                name="sketch_constraint_overlays",
+                reset_camera=False,
+            )
         selection = self._sketch_selection_polydata(data, coordinates)
         if selection is not None:
             self._actors["sketch_authoring_selection"] = self._plotter.add_mesh(
@@ -3259,10 +3363,27 @@ class FEMViewport(QWidget):
             ),
         )
         snap_label = _sketch_snap_label(self._sketch_authoring_snap_kind)
+        inference_labels = {
+            "coincident": "重合",
+            "point_on_curve": "点在曲线上",
+            "horizontal": "水平",
+            "vertical": "垂直",
+        }
+        inference = "、".join(
+            inference_labels.get(kind, kind)
+            for kind in (
+                self._sketch_draft_render_data.inference_preview
+                if self._sketch_draft_render_data is not None
+                else ()
+            )
+        )
+        hover_text = f"{snap_label} {coordinate_label}" if snap_label else coordinate_label
+        if inference:
+            hover_text += f"  推断：{inference}"
         self._actors["sketch_authoring_hover_label"] = (
             self._plotter.add_point_labels(
                 label_point,
-                [f"{snap_label} {coordinate_label}" if snap_label else coordinate_label],
+                [hover_text],
                 point_size=0,
                 font_size=11,
                 shape=None,
@@ -3358,6 +3479,8 @@ class FEMViewport(QWidget):
     ) -> tuple[tuple[float, float, float] | None, str | None]:
         self._sketch_authoring_snap_reference = None
         self._sketch_authoring_snap_kind = None
+        self._sketch_authoring_snap_point_id = None
+        self._sketch_authoring_intersection_curve_ids = ()
         near = self._display_to_world(float(x), float(y), 0.0)
         far = self._display_to_world(float(x), float(y), 1.0)
         if near is None or far is None:
@@ -3480,6 +3603,11 @@ class FEMViewport(QWidget):
                     point = plane.to_global(selected.u, selected.v)
                     self._sketch_authoring_snap_reference = selected.reference_point
                     self._sketch_authoring_snap_kind = selected.kind
+                    self._sketch_authoring_snap_point_id = selected.sketch_point_id
+                    if selected.kind == "intersection" and data is not None:
+                        self._sketch_authoring_intersection_curve_ids = (
+                            _sketch_intersection_curve_ids_at(data, selected.u, selected.v)
+                        )
             elif self._sketch_grid_snap:
                 point = grid_point
                 self._sketch_authoring_snap_kind = "grid"
@@ -3527,6 +3655,14 @@ class FEMViewport(QWidget):
             return
         self.sketchReferencePointSelected.emit(
             self._sketch_authoring_snap_reference
+        )
+        self.sketchSnapConfirmed.emit(
+            {
+                "kind": self._sketch_authoring_snap_kind,
+                "point_id": self._sketch_authoring_snap_point_id,
+                "curve_ids": self._sketch_authoring_intersection_curve_ids,
+                "point": point,
+            }
         )
         self.sketchWorkPlanePointSelected.emit(point)
 

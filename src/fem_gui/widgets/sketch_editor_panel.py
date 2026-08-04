@@ -29,11 +29,19 @@ from PySide6.QtWidgets import (
 from fem.geometry import (
     SketchArc,
     SketchCircle,
+    SketchCoincidentConstraint,
+    SketchDistanceDimension,
+    SketchFixedConstraint,
     SketchGeometry,
+    SketchHorizontalConstraint,
     SketchLine,
     SketchPlane,
+    SketchPointOnCurveConstraint,
+    SketchRadiusDimension,
     SketchReferencePoint,
+    SketchVerticalConstraint,
 )
+from fem.geometry.recipes import sketch_constraint_entity_ids
 
 from ..geometry_preview import build_strict_sketch_draft_preview
 from ..sketch_preferences import (
@@ -45,6 +53,14 @@ from ..sketch_editor import (
     SketchDraftController,
     SketchDraftSnapshot,
     SketchDraftValidationError,
+)
+from ..sketch_constraint_ui import (
+    build_constraint_overlays,
+    constraint_text,
+    constraints_for_entities,
+    infer_line_preview,
+    measured_dimension_value,
+    solve_status_text,
 )
 from .viewport import SketchDraftRenderData
 
@@ -114,6 +130,9 @@ class SketchEditorPanel(QWidget):
         self._pending_points: list[tuple[float, float]] = []
         self._pending_references: list[SketchReferencePoint | None] = []
         self._incoming_reference: SketchReferencePoint | None = None
+        self._incoming_snap: dict[str, object] = {}
+        self._inference_preview: tuple[str, ...] = ()
+        self._drag_preview = None
         self._reference_points: tuple[SketchReferencePoint, ...] = ()
         self._polyline_start_id: str | None = None
         self._polyline_first_id: str | None = None
@@ -264,6 +283,9 @@ class SketchEditorPanel(QWidget):
             "sketchConfirmCascadeDelete",
             preferences.confirm_cascade_delete,
         )
+        self.auto_constraints_check = preference_check(
+            "自动推断约束", "sketchAutoConstraints", preferences.auto_constraints
+        )
 
         self.point_search_edit = QLineEdit(self)
         self.point_search_edit.setObjectName("sketchPointSearch")
@@ -386,6 +408,42 @@ class SketchEditorPanel(QWidget):
         self.undo_button.clicked.connect(self.undo)
         self.redo_button.clicked.connect(self.redo)
 
+        self.constraint_type_combo = QComboBox(self)
+        self.constraint_type_combo.setObjectName("sketchConstraintType")
+        for text, value in (
+            ("重合", "coincident"), ("点在曲线上", "point_on_curve"),
+            ("水平", "horizontal"), ("垂直", "vertical"), ("固定", "fixed"),
+            ("两点距离 / 直线长度", "distance"), ("圆 / 圆弧半径", "radius"),
+        ):
+            self.constraint_type_combo.addItem(text, value)
+        self.constraint_targets_edit = QLineEdit(self)
+        self.constraint_targets_edit.setObjectName("sketchConstraintTargets")
+        self.constraint_targets_edit.setPlaceholderText(
+            "目标稳定 ID（逗号分隔；留空使用当前选择）"
+        )
+        self.constraint_driving_check = QCheckBox("驱动尺寸", self)
+        self.constraint_driving_check.setChecked(True)
+        self.constraint_value_spin = QDoubleSpinBox(self)
+        self.constraint_value_spin.setObjectName("sketchConstraintValue")
+        self.constraint_value_spin.setDecimals(6)
+        self.constraint_value_spin.setRange(1.0e-12, 1.0e12)
+        self.add_constraint_button = QPushButton("添加约束", self)
+        self.add_constraint_button.clicked.connect(self._add_selected_constraint)
+        self.constraints_table = QTableWidget(0, 3, self)
+        self.constraints_table.setObjectName("sketchConstraintsTable")
+        self.constraints_table.setHorizontalHeaderLabels(("ID", "类型", "对象"))
+        self.constraints_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        self.delete_constraint_button = QPushButton("删除约束", self)
+        self.delete_constraint_button.clicked.connect(self.delete_selected_constraint)
+        self.edit_constraint_button = QPushButton("编辑尺寸", self)
+        self.edit_constraint_button.setObjectName("sketchEditDimensionButton")
+        self.edit_constraint_button.clicked.connect(self._edit_selected_constraint)
+        self.solve_status_label = QLabel(self)
+        self.solve_status_label.setObjectName("sketchSolveStatus")
+        self.solve_status_label.setWordWrap(True)
+
         self.diagnostic_label = QLabel(self)
         self.diagnostic_label.setObjectName("sketchDiagnostics")
         self.diagnostic_label.setWordWrap(True)
@@ -465,6 +523,7 @@ class SketchEditorPanel(QWidget):
         behavior_second = QHBoxLayout()
         behavior_second.addWidget(self.keep_tool_after_completion_check)
         behavior_second.addWidget(self.confirm_cascade_delete_check)
+        behavior_layout.addWidget(self.auto_constraints_check)
         behavior_layout.addLayout(behavior_first)
         behavior_layout.addLayout(behavior_second)
         edit_row = QHBoxLayout()
@@ -494,6 +553,20 @@ class SketchEditorPanel(QWidget):
         layout.addWidget(self.line_parameter_group)
         layout.addWidget(self.circle_parameter_group)
         layout.addWidget(self.arc_parameter_group)
+        constraint_group = QGroupBox("草图约束与尺寸", self)
+        constraint_layout = QVBoxLayout(constraint_group)
+        constraint_add = QHBoxLayout()
+        constraint_add.addWidget(self.constraint_type_combo, 2)
+        constraint_add.addWidget(self.constraint_value_spin, 1)
+        constraint_add.addWidget(self.constraint_driving_check)
+        constraint_layout.addLayout(constraint_add)
+        constraint_layout.addWidget(self.constraint_targets_edit)
+        constraint_layout.addWidget(self.add_constraint_button)
+        constraint_layout.addWidget(self.constraints_table)
+        constraint_layout.addWidget(self.delete_constraint_button)
+        constraint_layout.addWidget(self.edit_constraint_button)
+        constraint_layout.addWidget(self.solve_status_label)
+        layout.addWidget(constraint_group)
         layout.addLayout(edit_row)
         layout.addWidget(self.diagnostic_scroll)
         layout.addLayout(bottom)
@@ -545,6 +618,10 @@ class SketchEditorPanel(QWidget):
         )
         viewport.sketchAuthoringFinishRequested.connect(self.try_finish)
         viewport.sketchAuthoringCancelled.connect(self.cancelRequested.emit)
+        viewport.sketchSnapConfirmed.connect(self._snap_confirmed)
+        viewport.sketchInferencePreviewChanged.connect(self._inference_hovered)
+        viewport.sketchPointDragPreviewRequested.connect(self._drag_preview_requested)
+        viewport.sketchPointDragCommitRequested.connect(self._drag_commit_requested)
 
     def _disconnect_viewport(self, viewport) -> None:
         connections = (
@@ -561,6 +638,10 @@ class SketchEditorPanel(QWidget):
             ),
             (viewport.sketchAuthoringFinishRequested, self.try_finish),
             (viewport.sketchAuthoringCancelled, self.cancelRequested.emit),
+            (viewport.sketchSnapConfirmed, self._snap_confirmed),
+            (viewport.sketchInferencePreviewChanged, self._inference_hovered),
+            (viewport.sketchPointDragPreviewRequested, self._drag_preview_requested),
+            (viewport.sketchPointDragCommitRequested, self._drag_commit_requested),
         )
         for signal, slot in connections:
             try:
@@ -629,6 +710,17 @@ class SketchEditorPanel(QWidget):
     def render_data(self) -> SketchDraftRenderData:
         controller = self._require_controller()
         snapshot = controller.snapshot()
+        solve_result = controller.current_solve_result()
+        overlays = build_constraint_overlays(
+            snapshot.points,
+            snapshot.curves,
+            snapshot.constraints,
+            snapshot.plane,
+            warning_ids=(
+                *solve_result.redundant_constraint_ids,
+                *solve_result.conflicting_constraint_ids,
+            ),
+        )
         snap_midpoints, snap_centers = self._derived_snap_points(snapshot)
         selected_kind = snapshot.selected_kind
         selected_id = snapshot.selected_ids[0] if snapshot.selected_ids else None
@@ -695,6 +787,8 @@ class SketchEditorPanel(QWidget):
                 geometry_revision=snapshot.revision,
                 analytic_points=snapshot.points,
                 analytic_curves=snapshot.curves,
+                constraint_overlays=overlays,
+                inference_preview=self._inference_preview,
             )
         return self._incomplete_render_data(snapshot, selected_kind, selected_id)
 
@@ -816,6 +910,10 @@ class SketchEditorPanel(QWidget):
             geometry_revision=snapshot.revision,
             analytic_points=snapshot.points,
             analytic_curves=snapshot.curves,
+            constraint_overlays=build_constraint_overlays(
+                snapshot.points, snapshot.curves, snapshot.constraints, snapshot.plane
+            ),
+            inference_preview=self._inference_preview,
         )
 
     def _point_from_viewport(
@@ -826,6 +924,7 @@ class SketchEditorPanel(QWidget):
         u, v = controller.plane.to_local(tuple(global_point))
         reference_point = self._incoming_reference
         self._incoming_reference = None
+        self._inference_preview = ()
         try:
             if self.mode == "polyline":
                 closed = False
@@ -843,16 +942,56 @@ class SketchEditorPanel(QWidget):
                     self._polyline_start_id = point_id
                     self._polyline_first_id = point_id
                 elif point_id is None:
-                    line = controller.add_line_to_point(
+                    start = next(
+                        point for point in controller.snapshot().points
+                        if point.id == self._polyline_start_id
+                    )
+                    inference = infer_line_preview(
+                        (start.u, start.v), (u, v),
+                        auto_constraints=self._preferences.auto_constraints,
+                        snap_kind=str(self._incoming_snap.get("kind") or "") or None,
+                        snapped_point_id=self._incoming_snap.get("point_id") if isinstance(self._incoming_snap.get("point_id"), str) else None,
+                        intersection_curve_ids=tuple(self._incoming_snap.get("curve_ids", ())),
+                    )
+                    if "horizontal" in inference.kinds:
+                        v = start.v
+                    elif "vertical" in inference.kinds:
+                        u = start.u
+                    line, result = controller.add_inferred_line(
                         self._polyline_start_id,
                         (u, v),
-                        external_reference=reference_point,
+                        horizontal="horizontal" in inference.kinds,
+                        vertical="vertical" in inference.kinds,
+                        intersection_curve_ids=inference.intersection_curve_ids,
                     )
+                    if line is None:
+                        self._set_status(solve_status_text(result))
+                        self._clear_pending()
+                        self._refresh()
+                        return
                     point_id = line.end_point_id
                     self._polyline_start_id = point_id
                     segment_completed = True
                 elif point_id != self._polyline_start_id:
-                    controller.add_line(self._polyline_start_id, point_id)
+                    start = next(point for point in controller.snapshot().points if point.id == self._polyline_start_id)
+                    end = next(point for point in controller.snapshot().points if point.id == point_id)
+                    inference = infer_line_preview(
+                        (start.u, start.v), (end.u, end.v),
+                        auto_constraints=self._preferences.auto_constraints,
+                        snap_kind="sketch_point",
+                        snapped_point_id=point_id,
+                    )
+                    _line, result = controller.add_inferred_line(
+                        self._polyline_start_id,
+                        point_id,
+                        horizontal="horizontal" in inference.kinds,
+                        vertical="vertical" in inference.kinds,
+                    )
+                    if _line is None:
+                        self._set_status(solve_status_text(result))
+                        self._clear_pending()
+                        self._refresh()
+                        return
                     segment_completed = True
                     closed = point_id == self._polyline_first_id
                     self._polyline_start_id = point_id
@@ -930,6 +1069,7 @@ class SketchEditorPanel(QWidget):
         except (TypeError, ValueError) as error:
             self._set_status(str(error))
             self._clear_pending()
+        self._incoming_snap = {}
         self._refresh()
 
     def _reference_from_viewport(
@@ -1062,6 +1202,253 @@ class SketchEditorPanel(QWidget):
             self._set_status(f"已删除草图实体 {', '.join(entity_ids)}")
         self._refresh()
 
+    def create_constraint(
+        self,
+        kind: str,
+        entity_ids: tuple[str, ...],
+        *,
+        value: float | None = None,
+        driving: bool = True,
+    ):
+        """Create any first-release relation through the controller solver path."""
+
+        controller = self._require_controller()
+        snapshot = controller.snapshot()
+        point_map = {point.id: point for point in snapshot.points}
+        curve_map = {curve.id: curve for curve in snapshot.curves}
+        targets = tuple(str(item).strip() for item in entity_ids)
+        if any(not item for item in targets):
+            raise ValueError("约束目标无效：实体 ID 不能为空")
+        used = {item.id.casefold() for item in snapshot.constraints}
+        index = 1
+        while f"C{index}".casefold() in used:
+            index += 1
+        constraint_id = f"C{index}"
+        normalized = str(kind).strip().casefold()
+        if normalized == "coincident":
+            if len(targets) != 2 or any(item not in point_map for item in targets):
+                raise ValueError("约束目标无效：重合约束需要两个草图点")
+            constraint = SketchCoincidentConstraint(constraint_id, *targets)
+        elif normalized == "point_on_curve":
+            if (
+                len(targets) != 2
+                or targets[0] not in point_map
+                or targets[1] not in curve_map
+            ):
+                raise ValueError("约束目标无效：点在曲线上需要一个点 ID 和一个曲线 ID")
+            constraint = SketchPointOnCurveConstraint(constraint_id, *targets)
+        elif normalized == "horizontal":
+            if len(targets) != 1 or not isinstance(curve_map.get(targets[0]), SketchLine):
+                raise ValueError("约束目标无效：水平约束需要一条直线")
+            constraint = SketchHorizontalConstraint(constraint_id, targets[0])
+        elif normalized == "vertical":
+            if len(targets) != 1 or not isinstance(curve_map.get(targets[0]), SketchLine):
+                raise ValueError("约束目标无效：垂直约束需要一条直线")
+            constraint = SketchVerticalConstraint(constraint_id, targets[0])
+        elif normalized == "fixed":
+            if len(targets) != 1 or targets[0] not in point_map:
+                raise ValueError("约束目标无效：固定约束需要一个草图点")
+            point = point_map[targets[0]]
+            constraint = SketchFixedConstraint(
+                constraint_id, point.id, point.u, point.v
+            )
+        elif normalized == "distance":
+            ids = targets
+            if len(ids) == 1 and isinstance(curve_map.get(ids[0]), SketchLine):
+                line = curve_map[ids[0]]
+                ids = (line.start_point_id, line.end_point_id)
+            if len(ids) != 2 or any(item not in point_map for item in ids):
+                raise ValueError("约束目标无效：距离尺寸需要两个点或一条直线")
+            measured = math.hypot(
+                point_map[ids[1]].u - point_map[ids[0]].u,
+                point_map[ids[1]].v - point_map[ids[0]].v,
+            )
+            constraint = SketchDistanceDimension(
+                constraint_id, *ids, measured if value is None or not driving else value,
+                driving=driving,
+            )
+        elif normalized == "radius":
+            if len(targets) != 1:
+                raise ValueError("约束目标无效：半径尺寸需要一个圆或圆弧")
+            curve = curve_map.get(targets[0])
+            if isinstance(curve, SketchCircle):
+                measured = curve.radius
+            elif isinstance(curve, SketchArc):
+                center = point_map[curve.center_point_id]
+                start = point_map[curve.start_point_id]
+                measured = math.hypot(start.u - center.u, start.v - center.v)
+            else:
+                raise ValueError("约束目标无效：半径尺寸只适用于圆或圆弧")
+            constraint = SketchRadiusDimension(
+                constraint_id, curve.id,
+                measured if value is None or not driving else value,
+                driving=driving,
+            )
+        else:
+            raise ValueError("不支持的草图约束类型")
+        result = controller.add_constraint_and_solve(constraint)
+        self._set_status(solve_status_text(result))
+        if result.succeeded:
+            self._refresh()
+            return constraint
+        return None
+
+    def edit_dimension(
+        self, constraint_id: str, *, value: float, driving: bool
+    ) -> bool:
+        controller = self._require_controller()
+        constraint = next(
+            item for item in controller.constraints if item.id == constraint_id
+        )
+        if not isinstance(constraint, (SketchDistanceDimension, SketchRadiusDimension)):
+            raise ValueError("所选约束不是尺寸")
+        snapshot = controller.snapshot()
+        measured = measured_dimension_value(
+            constraint,
+            {point.id: point for point in snapshot.points},
+            {curve.id: curve for curve in snapshot.curves},
+        )
+        replacement = type(constraint)(
+            **{
+                field: getattr(constraint, field)
+                for field in constraint.__dataclass_fields__
+                if field not in {"value", "driving"}
+            },
+            value=value if driving else measured,
+            driving=driving,
+        )
+        result = controller.replace_constraint_and_solve(constraint_id, replacement)
+        self._set_status(solve_status_text(result))
+        if result.succeeded:
+            self._refresh()
+        return result.succeeded
+
+    def edit_constraint(self, constraint_id: str, replacement) -> bool:
+        """Replace any first-release constraint atomically after a trial solve."""
+
+        result = self._require_controller().replace_constraint_and_solve(
+            constraint_id, replacement
+        )
+        self._set_status(solve_status_text(result))
+        if result.succeeded:
+            self._refresh()
+        return result.succeeded
+
+    def delete_constraint(self, constraint_id: str) -> None:
+        self._require_controller().delete_constraint(constraint_id)
+        self._set_status(f"已删除草图约束 {constraint_id}")
+        self._refresh()
+
+    def preview_constrained_drag(
+        self, point_id: str, u: float, v: float
+    ):
+        """Continuously solve drag candidates without touching draft history."""
+
+        result = self._require_controller().solve_constraints_temporary(
+            point_coordinates={point_id: (u, v)}
+        )
+        self._drag_preview = result
+        self._set_status(solve_status_text(result))
+        return result
+
+    def commit_constrained_drag(self, point_id: str, u: float, v: float):
+        """Commit a successful point drag as exactly one undo record."""
+
+        preview = self.preview_constrained_drag(point_id, u, v)
+        if not preview.succeeded:
+            self._drag_preview = None
+            return preview
+        result = self._require_controller().move_points_constrained(
+            {point_id: (u, v)}
+        )
+        self._drag_preview = None
+        self._set_status(solve_status_text(result))
+        self._refresh(selected_id=point_id)
+        return result
+
+    def _drag_preview_requested(self, point_id: str, point: object) -> None:
+        u, v = self._require_controller().plane.to_local(tuple(point))
+        self.preview_constrained_drag(point_id, u, v)
+
+    def _drag_commit_requested(self, point_id: str, point: object) -> None:
+        u, v = self._require_controller().plane.to_local(tuple(point))
+        self.commit_constrained_drag(point_id, u, v)
+
+    def delete_selected_constraint(self) -> None:
+        row = self.constraints_table.currentRow()
+        item = self.constraints_table.item(row, 0) if row >= 0 else None
+        if item is None:
+            self._set_status("请先选择要删除的草图约束")
+            return
+        self.delete_constraint(item.text())
+
+    def _edit_selected_constraint(self) -> None:
+        row = self.constraints_table.currentRow()
+        item = self.constraints_table.item(row, 0) if row >= 0 else None
+        if item is None:
+            self._set_status("请先选择要编辑的草图约束")
+            return
+        constraint = next(
+            value for value in self._require_controller().constraints
+            if value.id == item.text()
+        )
+        if not isinstance(constraint, (SketchDistanceDimension, SketchRadiusDimension)):
+            self._set_status("几何约束可通过 API 更换引用；当前控件用于编辑尺寸")
+            return
+        try:
+            self.edit_dimension(
+                constraint.id,
+                value=self.constraint_value_spin.value(),
+                driving=self.constraint_driving_check.isChecked(),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            self._set_status(str(error))
+
+    def _add_selected_constraint(self) -> None:
+        snapshot = self._require_controller().snapshot()
+        kind = str(self.constraint_type_combo.currentData())
+        typed_targets = tuple(
+            item
+            for item in re.split(r"[,，;；\s]+", self.constraint_targets_edit.text().strip())
+            if item
+        )
+        entity_ids = typed_targets or snapshot.selected_ids
+        try:
+            self.create_constraint(
+                kind,
+                entity_ids,
+                value=self.constraint_value_spin.value(),
+                driving=self.constraint_driving_check.isChecked(),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            self._set_status(str(error))
+
+    def _snap_confirmed(self, context: object) -> None:
+        self._incoming_snap = dict(context) if isinstance(context, dict) else {}
+
+    def _inference_hovered(self, context: object) -> None:
+        if not isinstance(context, dict) or self.mode != "polyline" or not self._pending_points:
+            self._set_inference_preview(())
+            return
+        point = context.get("point")
+        if point is None:
+            self._set_inference_preview(())
+            return
+        end = self._require_controller().plane.to_local(tuple(point))
+        preview = infer_line_preview(
+            self._pending_points[-1], end,
+            auto_constraints=self._preferences.auto_constraints,
+            snap_kind=context.get("snap_kind") if isinstance(context.get("snap_kind"), str) else None,
+            snapped_point_id=context.get("point_id") if isinstance(context.get("point_id"), str) else None,
+            intersection_curve_ids=tuple(context.get("curve_ids", ())),
+        )
+        self._set_inference_preview(preview.kinds)
+
+    def _set_inference_preview(self, kinds: tuple[str, ...]) -> None:
+        self._inference_preview = tuple(kinds)
+        if self._viewport is not None:
+            self._viewport.set_sketch_inference_preview(self._inference_preview)
+
     def release_selected_association(self) -> None:
         controller = self._require_controller()
         snapshot = controller.snapshot()
@@ -1134,6 +1521,7 @@ class SketchEditorPanel(QWidget):
                 self.keep_tool_after_completion_check.isChecked()
             ),
             confirm_cascade_delete=self.confirm_cascade_delete_check.isChecked(),
+            auto_constraints=self.auto_constraints_check.isChecked(),
         ).normalized()
 
     def _preferences_changed(self, *_args) -> None:
@@ -1665,10 +2053,48 @@ class SketchEditorPanel(QWidget):
         )
         self.release_association_button.setEnabled(associated_selection)
         self._refresh_curve_parameters(snapshot)
+        self._refresh_constraints(snapshot)
         if self._viewport is not None:
             kind = "curve" if snapshot.selected_kind == "edge" else snapshot.selected_kind
             self._viewport.update_sketch_selection(kind, snapshot.selected_ids)
         self.draftChanged.emit(snapshot)
+
+    def _refresh_constraints(self, snapshot: SketchDraftSnapshot) -> None:
+        related = list(
+            constraints_for_entities(snapshot.constraints, snapshot.selected_ids)
+            if snapshot.selected_ids
+            else snapshot.constraints
+        )
+        selected_curves = {
+            curve.id: curve
+            for curve in snapshot.curves
+            if curve.id in snapshot.selected_ids
+        }
+        for constraint in snapshot.constraints:
+            if not isinstance(constraint, SketchDistanceDimension):
+                continue
+            if any(
+                isinstance(curve, SketchLine)
+                and {curve.start_point_id, curve.end_point_id}
+                == {constraint.first_point_id, constraint.second_point_id}
+                for curve in selected_curves.values()
+            ) and constraint not in related:
+                related.append(constraint)
+        self.constraints_table.setRowCount(len(related))
+        point_map = {point.id: point for point in snapshot.points}
+        curve_map = {curve.id: curve for curve in snapshot.curves}
+        for row, constraint in enumerate(related):
+            text = constraint_text(constraint)
+            if isinstance(constraint, (SketchDistanceDimension, SketchRadiusDimension)) and not constraint.driving:
+                measured = measured_dimension_value(constraint, point_map, curve_map)
+                if measured is not None:
+                    text = text.replace(f"{constraint.value:g}", f"{measured:g}")
+            self.constraints_table.setItem(row, 0, QTableWidgetItem(constraint.id))
+            self.constraints_table.setItem(row, 1, QTableWidgetItem(text))
+            self.constraints_table.setItem(
+                row, 2,
+                QTableWidgetItem("、".join(sketch_constraint_entity_ids(constraint))),
+            )
 
     def _refresh(self, *, selected_id: str | None = None) -> None:
         controller = self._controller
@@ -1708,6 +2134,10 @@ class SketchEditorPanel(QWidget):
             )
             self.release_association_button.setEnabled(associated_selection)
             self._refresh_curve_parameters(snapshot)
+            self._refresh_constraints(snapshot)
+            self.solve_status_label.setText(
+                solve_status_text(controller.current_solve_result())
+            )
         finally:
             self._refreshing = False
         self._send_render_data()
@@ -1729,10 +2159,13 @@ class SketchEditorPanel(QWidget):
         self._pending_points.clear()
         self._pending_references.clear()
         self._incoming_reference = None
+        self._incoming_snap = {}
+        self._inference_preview = ()
         self._polyline_start_id = None
         self._polyline_first_id = None
         if self._viewport is not None:
             self._viewport.set_sketch_pending_points(())
+            self._viewport.set_sketch_inference_preview(())
 
     def _pending_cancelled(self) -> None:
         self._clear_pending()

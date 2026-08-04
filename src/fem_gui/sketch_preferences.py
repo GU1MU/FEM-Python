@@ -28,6 +28,7 @@ class SketchPreferences:
     end_polyline_on_close: bool = False
     keep_tool_after_completion: bool = True
     confirm_cascade_delete: bool = True
+    auto_constraints: bool = True
 
     def normalized(self) -> "SketchPreferences":
         spacing = float(self.grid_spacing)
@@ -61,6 +62,7 @@ class SketchPreferences:
             end_polyline_on_close=bool(self.end_polyline_on_close),
             keep_tool_after_completion=bool(self.keep_tool_after_completion),
             confirm_cascade_delete=bool(self.confirm_cascade_delete),
+            auto_constraints=bool(self.auto_constraints),
         )
 
 

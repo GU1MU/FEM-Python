@@ -7,7 +7,7 @@ without changing a native project.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 
 from fem.geometry.recipe_analysis import (
@@ -22,6 +22,9 @@ from fem.geometry.recipes import (
     SketchArc,
     SketchCircle,
     SketchConstraint,
+    SketchHorizontalConstraint,
+    SketchPointOnCurveConstraint,
+    SketchVerticalConstraint,
     SketchCurve,
     SketchExternalCoincidence,
     SketchExternalReference,
@@ -457,6 +460,99 @@ class SketchDraftController:
             del self._constraints[constraint_id]
 
         self._mutate(apply)
+
+    def replace_constraint_and_solve(
+        self, constraint_id: str, replacement: SketchConstraint
+    ) -> SketchSolveResult:
+        """Edit one constraint through the same atomic solver transaction."""
+
+        if constraint_id not in self._constraints:
+            raise KeyError(constraint_id)
+        if replacement.id != constraint_id:
+            replacement = replace(replacement, id=constraint_id)
+        return self.commit_constrained_edit(
+            add_constraints=(replacement,),
+            remove_constraint_ids=(constraint_id,),
+        )
+
+    def current_solve_result(self) -> SketchSolveResult:
+        """Return derived solve diagnostics without changing state or history."""
+
+        return self.solve_constraints_temporary()
+
+    def add_inferred_line(
+        self,
+        start_point_id: str,
+        end: str | tuple[float, float],
+        *,
+        horizontal: bool = False,
+        vertical: bool = False,
+        intersection_curve_ids: tuple[str, ...] = (),
+    ) -> tuple[SketchLine | None, SketchSolveResult]:
+        """Create a line and its inferred relations in one undoable solver edit."""
+
+        self._require_point(start_point_id)
+        if isinstance(end, str):
+            end_point = self._require_point(end)
+            create_point = False
+        else:
+            u, v = _coordinate_pair(end, "end")
+            end_point = SketchPoint(self._next_id("P", self._points), u, v)
+            create_point = True
+        line = SketchLine(
+            self._next_id("L", self._curves), start_point_id, end_point.id
+        )
+        additions: list[SketchConstraint] = []
+        if horizontal:
+            additions.append(
+                SketchHorizontalConstraint(
+                    self._next_id("C", {**self._constraints, **{item.id: item for item in additions}}),
+                    line.id,
+                    source="inferred",
+                )
+            )
+        if vertical:
+            additions.append(
+                SketchVerticalConstraint(
+                    self._next_id("C", {**self._constraints, **{item.id: item for item in additions}}),
+                    line.id,
+                    source="inferred",
+                )
+            )
+        for curve_id in intersection_curve_ids:
+            additions.append(
+                SketchPointOnCurveConstraint(
+                    self._next_id("C", {**self._constraints, **{item.id: item for item in additions}}),
+                    end_point.id,
+                    curve_id,
+                    source="inferred",
+                )
+            )
+        candidate_points = (*self._points.values(),) + ((end_point,) if create_point else ())
+        candidate_curves = (*self._curves.values(), line)
+        candidate_constraints = (*self._constraints.values(), *additions)
+        validate_sketch_constraints(
+            tuple(candidate_constraints),
+            {point.id: point for point in candidate_points},
+            tuple(candidate_curves),
+        )
+        result = solve_sketch_draft(
+            tuple(candidate_points),
+            tuple(candidate_curves),
+            tuple(candidate_constraints),
+            fixed_point_ids=tuple(point.id for point in candidate_points),
+            new_constraint_ids=tuple(item.id for item in additions),
+        )
+        if not result.succeeded:
+            return None, result
+
+        def apply() -> None:
+            self._points = {point.id: point for point in result.points}
+            self._curves = {curve.id: curve for curve in result.curves}
+            self._constraints = {item.id: item for item in candidate_constraints}
+
+        self._mutate(apply)
+        return line, result
 
     def dependent_constraint_ids(self, entity_id: str) -> tuple[str, ...]:
         """Return constraints that a geometry deletion will remove atomically."""
