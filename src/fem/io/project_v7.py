@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from fem.application.definitions import (
+    CompressedMeshEntityRefs,
     MeshEntityRef,
     NamedRegion,
     mesh_entity_ref_sort_key,
@@ -71,6 +74,36 @@ from ._project_errors import ProjectDecodeError, ProjectEncodeError, ProjectErro
 
 SCHEMA_VERSION = 7
 FORMAT_NAME = "fem-python-project"
+
+
+_COMPACT_REGION_ENCODER: ContextVar[
+    Callable[[NamedRegion, str], dict[str, Any]] | None
+] = ContextVar("project_v7_compact_region_encoder", default=None)
+_COMPACT_REGION_DECODER: ContextVar[
+    Callable[[Mapping[str, Any], str], NamedRegion] | None
+] = ContextVar("project_v7_compact_region_decoder", default=None)
+
+
+@contextmanager
+def _compact_region_encoding(
+    encoder: Callable[[NamedRegion, str], dict[str, Any]],
+):
+    token = _COMPACT_REGION_ENCODER.set(encoder)
+    try:
+        yield
+    finally:
+        _COMPACT_REGION_ENCODER.reset(token)
+
+
+@contextmanager
+def _compact_region_decoding(
+    decoder: Callable[[Mapping[str, Any], str], NamedRegion],
+):
+    token = _COMPACT_REGION_DECODER.set(decoder)
+    try:
+        yield
+    finally:
+        _COMPACT_REGION_DECODER.reset(token)
 
 
 class ProjectV7Error(ProjectError):
@@ -666,6 +699,9 @@ def _encode_provenance(
 
 def _decode_named_region(value: Any, path: str) -> NamedRegion:
     data = _mapping(value, path)
+    compact_decoder = _COMPACT_REGION_DECODER.get()
+    if compact_decoder is not None and "compact_references" in data:
+        return compact_decoder(data, path)
     _keys(data, path, {"name", "references"})
     references = []
     for index, raw in enumerate(
@@ -689,6 +725,12 @@ def _decode_named_region(value: Any, path: str) -> NamedRegion:
 def _encode_named_region(value: NamedRegion, path: str) -> dict[str, Any]:
     if type(value) is not NamedRegion:
         raise ProjectV7EncodeError(f"{path} 必须是 NamedRegion")
+    compact_encoder = _COMPACT_REGION_ENCODER.get()
+    if compact_encoder is not None and isinstance(
+        value.references,
+        CompressedMeshEntityRefs,
+    ):
+        return compact_encoder(value, path)
     references = tuple(value.references)
     if all(type(reference) is MeshEntityRef for reference in references):
         canonical = tuple(
@@ -969,6 +1011,19 @@ def _validate_references(
         for part in parts
     }
     for region in regions:
+        if isinstance(region.references, CompressedMeshEntityRefs):
+            for part_id, _packed in region.references.compact_groups():
+                if part_id is None and len(parts) != 1:
+                    raise ValueError(
+                        f"region {region.name!r} mesh reference is missing "
+                        "its Part owner"
+                    )
+                if part_id is not None and part_id not in by_id:
+                    raise ValueError(
+                        f"region {region.name!r} mesh reference has no "
+                        f"active Part: {part_id!r}"
+                    )
+            continue
         for reference in region.references:
             if type(reference) is MeshEntityRef:
                 if reference.part_id is None and len(parts) != 1:

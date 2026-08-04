@@ -5,6 +5,7 @@ from copy import deepcopy
 import pytest
 
 from fem.application import (
+    CompressedMeshEntityRefs,
     DefinitionRejected,
     MeshEntityRef,
     ModelSession,
@@ -229,3 +230,26 @@ def test_task_snapshot_is_detached_from_later_batch_container_changes(tmp_path) 
     }
     assert task.request_sequence == 1
     assert copied == batch
+
+
+def test_large_scope_task_snapshot_does_not_expand_compact_references(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    session = _imported_session(tmp_path, node_count=100_000)
+    batch = _batch(session, "Compact", *range(1, 100_001))
+
+    def unexpected_iteration(self):
+        del self
+        raise AssertionError("prepare must keep compact references lazy")
+
+    monkeypatch.setattr(
+        CompressedMeshEntityRefs,
+        "__iter__",
+        unexpected_iteration,
+    )
+
+    task = session.prepare_named_region_edit(batch)
+
+    assert task.batch.regions[0].references is batch.regions[0].references
+    assert len(task.batch.regions[0].references) == 100_000

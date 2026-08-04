@@ -19,7 +19,7 @@ from fem.geometry.part_namespace import part_id_from_logical_id
 from fem.selection import edges as mesh_edges
 from fem.selection import faces as mesh_faces
 
-from .definitions import MeshEntityRef
+from .definitions import CompressedMeshEntityRefs, MeshEntityRef
 
 
 NATIVE_SCOPE_CATALOG_KEY = "_native_scope_catalog"
@@ -42,18 +42,19 @@ def can_materialize_native_scopes(
 ) -> bool:
     """Return whether every supplied scope can be rebuilt on this mesh."""
 
-    references = tuple(
-        reference
-        for region in regions
-        for reference in tuple(getattr(region, "references", ()))
-    )
-    return (
-        not references
-        or all(type(reference) is MeshEntityRef for reference in references)
-        or (
-            all(type(reference) is LogicalEntityRef for reference in references)
-            and has_native_scope_catalog(model)
-        )
+    kinds: set[type[Any]] = set()
+    has_references = False
+    for region in regions:
+        references = getattr(region, "references", ())
+        if isinstance(references, CompressedMeshEntityRefs):
+            kinds.add(MeshEntityRef)
+            has_references = True
+            continue
+        for reference in references:
+            kinds.add(type(reference))
+            has_references = True
+    return not has_references or kinds == {MeshEntityRef} or (
+        kinds == {LogicalEntityRef} and has_native_scope_catalog(model)
     )
 
 
@@ -63,6 +64,7 @@ def materialize_native_scopes(
     previous_names: Iterable[str],
     regions: Iterable[Any],
     reuse_mesh: bool = False,
+    mesh_revision: int | None = None,
 ) -> Any:
     """Return a model with scopes rebuilt, fully detached by default."""
 
@@ -95,12 +97,19 @@ def materialize_native_scopes(
         for collection in collections:
             collection.pop(normalized_name, None)
 
-    mesh_kinds = {
-        reference.kind
-        for region in region_values
-        for reference in tuple(getattr(region, "references", ()))
-        if type(reference) is MeshEntityRef
-    }
+    mesh_kinds: set[str] = set()
+    for region in region_values:
+        references = getattr(region, "references", ())
+        if isinstance(references, CompressedMeshEntityRefs):
+            if mesh_revision is not None:
+                references.require_mesh_revision(mesh_revision)
+            mesh_kinds.add(references.kind)
+        else:
+            mesh_kinds.update(
+                reference.kind
+                for reference in references
+                if type(reference) is MeshEntityRef
+            )
     node_ids = (
         {int(node.id) for node in updated.mesh.nodes}
         if "node" in mesh_kinds
@@ -134,27 +143,35 @@ def materialize_native_scopes(
     ownership_ids = (
         _mesh_ownership_ids(updated)
         if any(
-            reference.part_id is not None
+            (
+                any(part_id is not None for part_id, _packed in references.compact_groups())
+                if isinstance(references, CompressedMeshEntityRefs)
+                else any(reference.part_id is not None for reference in references)
+            )
             for region in region_values
-            for reference in tuple(getattr(region, "references", ()))
-            if type(reference) is MeshEntityRef
+            for references in (getattr(region, "references", ()),)
         )
         else None
     )
 
     for region in region_values:
         name = getattr(region, "name", None)
-        references = tuple(getattr(region, "references", ()))
+        references = getattr(region, "references", ())
         if type(name) is not str or not name.strip():
             raise ValueError("scope name must be a non-empty string")
-        if not references or any(
-            type(reference) not in {MeshEntityRef, LogicalEntityRef}
-            for reference in references
+        if not references or (
+            not isinstance(references, CompressedMeshEntityRefs)
+            and any(
+                type(reference) not in {MeshEntityRef, LogicalEntityRef}
+                for reference in references
+            )
         ):
             raise TypeError(
                 "native scopes require non-empty mesh references"
             )
-        if all(type(reference) is MeshEntityRef for reference in references):
+        if isinstance(references, CompressedMeshEntityRefs) or all(
+            type(reference) is MeshEntityRef for reference in references
+        ):
             _materialize_mesh_scope(
                 updated,
                 name.strip(),
@@ -180,7 +197,7 @@ def materialize_native_scopes(
 def _materialize_mesh_scope(
     model: Any,
     name: str,
-    references: tuple[MeshEntityRef, ...],
+    references: Iterable[MeshEntityRef] | CompressedMeshEntityRefs,
     *,
     node_ids: set[int],
     element_ids: set[int],
@@ -189,8 +206,14 @@ def _materialize_mesh_scope(
     ownership_ids: Mapping[str, Mapping[str, frozenset[int]]] | None,
 ) -> None:
     _validate_mesh_reference_owners(references, ownership_ids)
-    kind = references[0].kind
-    if any(reference.kind != kind for reference in references):
+    kind = (
+        references.kind
+        if isinstance(references, CompressedMeshEntityRefs)
+        else references[0].kind
+    )
+    if not isinstance(references, CompressedMeshEntityRefs) and any(
+        reference.kind != kind for reference in references
+    ):
         raise ValueError("one mesh scope cannot mix entity kinds")
     if kind == "node":
         selected = tuple(int(reference.node_id) for reference in references)
@@ -335,15 +358,16 @@ def _validated_boundary_nodes(
 
 
 def _validate_mesh_reference_owners(
-    references: tuple[MeshEntityRef, ...],
+    references: Iterable[MeshEntityRef],
     ownership_ids: Mapping[str, Mapping[str, frozenset[int]]] | None,
 ) -> None:
-    owned = tuple(reference for reference in references if reference.part_id)
-    if not owned:
-        return
-    if ownership_ids is None:
-        raise ValueError("mesh reference declares a Part owner without ownership data")
-    for reference in owned:
+    for reference in references:
+        if not reference.part_id:
+            continue
+        if ownership_ids is None:
+            raise ValueError(
+                "mesh reference declares a Part owner without ownership data"
+            )
         row = ownership_ids.get(reference.part_id)
         if not isinstance(row, Mapping):
             raise ValueError(

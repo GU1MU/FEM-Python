@@ -42,10 +42,12 @@ from .capabilities import (
     require_region_kind,
 )
 from .definitions import (
+    CompressedMeshEntityRefs,
     DefinitionCompileResult,
     DefinitionRejected,
     FeatureRecord,
     MeshEntityRef,
+    MeshTopologyDirectory,
     ModelDefinitions,
     NamedRegion,
     NativePart,
@@ -188,6 +190,7 @@ __all__ = [
     "BooleanReferenceUndoRecord",
     "ChangeKind",
     "CompiledDomainRegionSource",
+    "CompressedMeshEntityRefs",
     "DefinitionCompileResult",
     "DefinitionEditBatch",
     "DefinitionRejected",
@@ -201,6 +204,7 @@ __all__ = [
     "LineElementType",
     "MeshTaskSnapshot",
     "MeshEntityRef",
+    "MeshTopologyDirectory",
     "ModelArtifact",
     "ModelCapabilityReport",
     "ModelDefinitions",

@@ -58,7 +58,7 @@ from .native_scope_materialization import (
 )
 from .revisions import MeshTaskSnapshot
 from .native_part import NativePart, part_id_sort_key
-from .definitions import MeshEntityRef
+from .definitions import CompressedMeshEntityRefs, MeshEntityRef
 
 
 class RecipeTopologyResolver(Protocol):
@@ -428,7 +428,14 @@ def _active_part_regions(
 
     projected: list[Any] = []
     for region in regions:
-        references = tuple(getattr(region, "references", ()))
+        references = getattr(region, "references", ())
+        if isinstance(references, CompressedMeshEntityRefs):
+            retained_compact = references.filter_part_ids(active_part_ids)
+            if retained_compact is not None:
+                projected.append(
+                    replace(region, references=retained_compact)
+                )
+            continue
         retained = tuple(
             reference
             for reference in references

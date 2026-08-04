@@ -69,6 +69,7 @@ from .commands import (
     Unset,
 )
 from .definitions import (
+    CompressedMeshEntityRefs,
     FeatureRecord,
     MeshEntityRef,
     ModelDefinitions,
@@ -933,6 +934,10 @@ def compile_named_region_edit(
                 base_model,
             )
         )
+    mesh_revision = dict(task.token.dependency_revisions)[
+        "mesh_input_revision"
+    ]
+    owned = _bind_mesh_region_revisions(owned, mesh_revision)
     rename_map = _validate_edit_ledger(
         task.previous_regions,
         tuple(owned.values()),
@@ -993,6 +998,7 @@ def compile_named_region_edit(
         previous_names=tuple(region.name for region in task.previous_regions),
         regions=tuple(owned.values()),
         reuse_mesh=True,
+        mesh_revision=mesh_revision,
     )
     compiled_model = compile_model_definitions(
         scoped_model,
@@ -1505,6 +1511,11 @@ class ModelSession:
         )
         self._definitions_explicit = True
         self._increment_domain_revisions(project=True, mesh=True, model=True)
+        if model is not None:
+            self._named_regions = _bind_mesh_region_revisions(
+                self._named_regions,
+                self._mesh_input_revision,
+            )
         if model is not None:
             self._artifact = self._new_artifact(model, source_kind)
         self._saved_project_revision = self._project_revision
@@ -3468,6 +3479,10 @@ class ModelSession:
                     self._artifact.model,
                 )
             )
+        owned = _bind_mesh_region_revisions(
+            owned,
+            self._mesh_input_revision,
+        )
         rename_map = {
             str(old_name): str(new_name)
             for old_name, new_name in (renames or {}).items()
@@ -3786,6 +3801,10 @@ class ModelSession:
     ) -> SessionDelta:
         """Commit scope definitions, preserving an already-generated mesh."""
 
+        owned = _bind_mesh_region_revisions(
+            owned,
+            self._mesh_input_revision,
+        )
         previous_artifact = self._artifact
         compiled_model = None
         if (
@@ -3800,6 +3819,7 @@ class ModelSession:
                 previous_names=tuple(self._named_regions),
                 regions=tuple(owned.values()),
                 reuse_mesh=True,
+                mesh_revision=self._mesh_input_revision,
             )
             compiled_model = compile_model_definitions(
                 scoped_model,
@@ -4009,6 +4029,10 @@ class ModelSession:
                     self._artifact.model,
                 )
             )
+        regions = _bind_mesh_region_revisions(
+            regions,
+            self._mesh_input_revision,
+        )
         definitions = normalize_model_definitions(
             batch.materials,
             batch.sections,
@@ -4051,6 +4075,7 @@ class ModelSession:
             previous_names=tuple(self._named_regions),
             regions=tuple(regions.values()),
             reuse_mesh=True,
+            mesh_revision=self._mesh_input_revision,
         )
         compiled_model = compile_model_definitions(
             scoped_model,
@@ -4572,6 +4597,10 @@ class ModelSession:
             self._assignments = definitions.assignments
             self._steps = definitions.steps
         self._increment_domain_revisions(project=True, model=True)
+        self._named_regions = _bind_mesh_region_revisions(
+            self._named_regions,
+            self._mesh_input_revision,
+        )
         self._artifact = self._new_artifact(owned_model, "native")
         self._complete_token(token)
         return self._emit(
@@ -4640,6 +4669,10 @@ class ModelSession:
             self._assignments = definitions.assignments
             self._steps = definitions.steps
         self._increment_domain_revisions(project=True, mesh=True, model=True)
+        self._named_regions = _bind_mesh_region_revisions(
+            self._named_regions,
+            self._mesh_input_revision,
+        )
         self._artifact = self._new_artifact(owned_model, "native")
         self._complete_token(token)
         invalidated = _COMPUTATION_INVALIDATIONS
@@ -6994,9 +7027,50 @@ def _attach_mesh_reference_owners(
             raise ValueError("generated multi-Part mesh lacks ownership metadata")
         return regions
     known_ids = {part.id for part in parts}
-    ownership_ids: dict[str, dict[str, frozenset[int]]] | None = None
+    ownership_ids = {
+        part_id: {
+            "node_ids": frozenset(
+                int(value) for value in row.get("node_ids", ())
+            ),
+            "element_ids": frozenset(
+                int(value) for value in row.get("element_ids", ())
+            ),
+        }
+        for part_id, row in ownership.items()
+        if part_id in known_ids and isinstance(row, Mapping)
+    }
+
+    def owner_for(
+        part_id: str | None,
+        kind: str,
+        identity: int,
+    ) -> str:
+        if part_id is not None:
+            if part_id not in known_ids:
+                raise ValueError(f"mesh reference owner {part_id!r} is unknown")
+            return part_id
+        field = "node_ids" if kind == "node" else "element_ids"
+        candidates = tuple(
+            candidate
+            for candidate, row in ownership_ids.items()
+            if identity in row[field]
+        )
+        if len(candidates) != 1:
+            raise ValueError(
+                "mesh reference cannot be assigned to exactly one Part"
+            )
+        return candidates[0]
+
     result: list[NamedRegion] = []
     for region in regions:
+        if isinstance(region.references, CompressedMeshEntityRefs):
+            result.append(
+                NamedRegion(
+                    region.name,
+                    region.references.remap_part_ids(owner_for),
+                )
+            )
+            continue
         references: list[LogicalEntityRef | MeshEntityRef] = []
         for reference in region.references:
             if type(reference) is not MeshEntityRef:
@@ -7014,30 +7088,12 @@ def _attach_mesh_reference_owners(
                 if reference.kind == "node"
                 else int(reference.element_id)
             )
-            field = "node_ids" if reference.kind == "node" else "element_ids"
-            if ownership_ids is None:
-                ownership_ids = {
-                    part_id: {
-                        "node_ids": frozenset(
-                            int(value) for value in row.get("node_ids", ())
-                        ),
-                        "element_ids": frozenset(
-                            int(value) for value in row.get("element_ids", ())
-                        ),
-                    }
-                    for part_id, row in ownership.items()
-                    if part_id in known_ids and isinstance(row, Mapping)
-                }
-            candidates = tuple(
-                part_id
-                for part_id, row in ownership_ids.items()
-                if identity in row[field]
-            )
-            if len(candidates) != 1:
-                raise ValueError(
-                    "mesh reference cannot be assigned to exactly one Part"
+            references.append(
+                replace(
+                    reference,
+                    part_id=owner_for(None, reference.kind, identity),
                 )
-            references.append(replace(reference, part_id=candidates[0]))
+            )
         result.append(NamedRegion(region.name, tuple(references)))
     return tuple(result)
 
@@ -7647,7 +7703,26 @@ def _regions_use_mesh_entities(regions: Iterable[Any]) -> bool:
     """Return whether any supplied scope stores generated-mesh entities."""
 
     return any(
-        type(reference) is MeshEntityRef
+        isinstance(getattr(region, "references", ()), CompressedMeshEntityRefs)
+        or any(
+            type(reference) is MeshEntityRef
+            for reference in getattr(region, "references", ())
+        )
         for region in regions
-        for reference in tuple(getattr(region, "references", ()))
     )
+
+
+def _bind_mesh_region_revisions(
+    regions: Mapping[str, NamedRegion],
+    mesh_revision: int,
+) -> dict[str, NamedRegion]:
+    """Bind mesh scopes without materializing their compact references."""
+
+    return {
+        name: (
+            region.bind_mesh_revision(mesh_revision)
+            if isinstance(region.references, CompressedMeshEntityRefs)
+            else region
+        )
+        for name, region in regions.items()
+    }

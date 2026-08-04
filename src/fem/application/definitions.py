@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from array import array
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any
+from itertools import chain
+from typing import Any, Callable
 
 from fem.core.model import MaterialDefinition, SectionAssignment
 from fem.elements import (
@@ -182,6 +184,546 @@ def mesh_entity_ref_sort_key(
     )
 
 
+class MeshTopologyDirectory:
+    """Revision-bound connectivity used to inflate compact edge/face refs."""
+
+    __slots__ = ("_revision", "_rows")
+
+    def __init__(
+        self,
+        mesh_revision: int | None,
+        rows: Mapping[
+            tuple[str | None, str, int, int], Iterable[int]
+        ] | None = None,
+    ) -> None:
+        if mesh_revision is not None and (
+            type(mesh_revision) is not int or mesh_revision < 0
+        ):
+            raise ValueError("mesh_revision must be a non-negative integer or None")
+        normalized: dict[
+            tuple[str | None, str, int, int], tuple[int, ...]
+        ] = {}
+        for raw_key, raw_node_ids in (rows or {}).items():
+            part_id, kind, element_id, local_index = raw_key
+            if kind not in {"edge", "face"}:
+                raise ValueError("topology directory accepts only edge/face rows")
+            key = (
+                part_id,
+                kind,
+                int(element_id),
+                int(local_index),
+            )
+            node_ids = tuple(int(value) for value in raw_node_ids)
+            if not node_ids or len(set(node_ids)) != len(node_ids):
+                raise ValueError("topology directory rows require unique node IDs")
+            existing = normalized.get(key)
+            if existing is not None and existing != node_ids:
+                raise ValueError(f"conflicting topology directory row: {key!r}")
+            normalized[key] = node_ids
+        self._revision = mesh_revision
+        self._rows = normalized
+
+    @property
+    def mesh_revision(self) -> int | None:
+        return self._revision
+
+    def resolve(
+        self,
+        part_id: str | None,
+        kind: str,
+        element_id: int,
+        local_index: int,
+        *,
+        mesh_revision: int | None,
+    ) -> tuple[int, ...]:
+        if self._revision != mesh_revision:
+            raise ValueError(
+                "mesh topology directory revision does not match compact references"
+            )
+        key = (part_id, kind, int(element_id), int(local_index))
+        try:
+            return self._rows[key]
+        except KeyError as error:
+            raise ValueError(
+                f"mesh topology is unavailable for compact {kind} reference: "
+                f"{key!r}"
+            ) from error
+
+    def rows(
+        self,
+    ) -> tuple[tuple[str | None, str, int, int, tuple[int, ...]], ...]:
+        return tuple(
+            (*key, node_ids)
+            for key, node_ids in sorted(
+                self._rows.items(),
+                key=lambda item: (
+                    "" if item[0][0] is None else item[0][0],
+                    0 if item[0][1] == "edge" else 1,
+                    item[0][2],
+                    item[0][3],
+                ),
+            )
+        )
+
+    def rebound(self, mesh_revision: int) -> MeshTopologyDirectory:
+        return MeshTopologyDirectory(mesh_revision, self._rows)
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> MeshTopologyDirectory:
+        del memo
+        return self
+
+
+class CompressedMeshEntityRefs(Sequence[MeshEntityRef]):
+    """Canonical compact sequence of references from one mesh entity kind."""
+
+    __slots__ = ("_kind", "_groups", "_length", "_mesh_revision", "_topology")
+
+    def __init__(
+        self,
+        references: Iterable[MeshEntityRef],
+        *,
+        mesh_revision: int | None = None,
+        topology: MeshTopologyDirectory | None = None,
+    ) -> None:
+        iterator = iter(references)
+        try:
+            first = next(iterator)
+        except StopIteration:
+            raise TypeError(
+                "compressed mesh references require non-empty MeshEntityRef values"
+            ) from None
+        if type(first) is not MeshEntityRef:
+            raise TypeError(
+                "compressed mesh references require non-empty MeshEntityRef values"
+            )
+        kind = first.kind
+        inferred_rows: dict[
+            tuple[str | None, str, int, int], tuple[int, ...]
+        ] = {}
+        raw_groups: dict[str | None, array] = {}
+        length = 0
+        for value in chain((first,), iterator):
+            if type(value) is not MeshEntityRef:
+                raise TypeError(
+                    "compressed mesh references require non-empty "
+                    "MeshEntityRef values"
+                )
+            if value.kind != kind:
+                raise ValueError("one compact reference set cannot mix entity kinds")
+            packed = raw_groups.setdefault(value.part_id, array("q"))
+            if kind in {"node", "element"}:
+                packed.append(
+                    int(value.node_id if kind == "node" else value.element_id)
+                )
+            else:
+                pair = (int(value.element_id), int(value.local_index))
+                key = (value.part_id, kind, *pair)
+                if key in inferred_rows:
+                    raise ValueError("mesh reference identities must be unique")
+                packed.extend(pair)
+                inferred_rows[key] = value.node_ids
+            length += 1
+        grouped: list[tuple[str | None, array]] = []
+        for part_id in sorted(
+            raw_groups,
+            key=lambda value: "" if value is None else value,
+        ):
+            raw = raw_groups[part_id]
+            packed = array("q")
+            if kind in {"node", "element"}:
+                ids = (
+                    raw
+                    if all(
+                        raw[index - 1] <= raw[index]
+                        for index in range(1, len(raw))
+                    )
+                    else sorted(raw)
+                )
+                start = previous = ids[0]
+                for identity in ids[1:]:
+                    if identity == previous:
+                        raise ValueError("mesh reference identities must be unique")
+                    if identity == previous + 1:
+                        previous = identity
+                        continue
+                    packed.extend((start, previous))
+                    start = previous = identity
+                packed.extend((start, previous))
+            else:
+                pairs = [
+                    (raw[index], raw[index + 1])
+                    for index in range(0, len(raw), 2)
+                ]
+                if any(
+                    pairs[index - 1] > pairs[index]
+                    for index in range(1, len(pairs))
+                ):
+                    pairs.sort()
+                for pair in pairs:
+                    packed.extend(pair)
+            grouped.append((part_id, packed))
+        if topology is None and inferred_rows:
+            topology = MeshTopologyDirectory(mesh_revision, inferred_rows)
+        if topology is not None and topology.mesh_revision != mesh_revision:
+            raise ValueError("topology and compact references must share mesh revision")
+        self._kind = kind
+        self._groups = tuple(grouped)
+        self._length = length
+        self._mesh_revision = mesh_revision
+        self._topology = topology
+
+    @classmethod
+    def from_compact(
+        cls,
+        kind: str,
+        groups: Iterable[tuple[str | None, Iterable[int]]],
+        *,
+        mesh_revision: int | None,
+        topology: MeshTopologyDirectory | None = None,
+    ) -> CompressedMeshEntityRefs:
+        if kind not in {"node", "edge", "face", "element"}:
+            raise ValueError(f"unsupported mesh entity kind: {kind!r}")
+        instance = object.__new__(cls)
+        normalized_groups: list[tuple[str | None, array]] = []
+        length = 0
+        previous_part: str | None = None
+        first = True
+        for raw_part_id, raw_values in groups:
+            if raw_part_id is None:
+                part_id = None
+            else:
+                from .native_part import normalize_part_id
+
+                part_id = normalize_part_id(
+                    raw_part_id,
+                    "compact mesh reference part_id",
+                )
+            if not first and ("" if previous_part is None else previous_part) >= (
+                "" if part_id is None else part_id
+            ):
+                raise ValueError("compact reference part groups are not canonical")
+            first = False
+            previous_part = part_id
+            packed = array("q", (int(value) for value in raw_values))
+            if len(packed) == 0 or len(packed) % 2:
+                raise ValueError("compact reference arrays require integer pairs")
+            if kind in {"node", "element"}:
+                last_end: int | None = None
+                for index in range(0, len(packed), 2):
+                    start, end = packed[index], packed[index + 1]
+                    if start > end or (
+                        last_end is not None and start <= last_end + 1
+                    ):
+                        raise ValueError("compact ID ranges are not canonical")
+                    length += end - start + 1
+                    last_end = end
+            else:
+                pairs = list(zip(packed[::2], packed[1::2]))
+                if pairs != sorted(set(pairs)):
+                    raise ValueError("compact boundary identities are not canonical")
+                length += len(pairs)
+            normalized_groups.append((part_id, packed))
+        if not normalized_groups:
+            raise ValueError("compact reference groups must not be empty")
+        if mesh_revision is not None and (
+            type(mesh_revision) is not int or mesh_revision < 0
+        ):
+            raise ValueError("mesh_revision must be a non-negative integer or None")
+        if topology is not None and topology.mesh_revision != mesh_revision:
+            raise ValueError("topology and compact references must share mesh revision")
+        instance._kind = kind
+        instance._groups = tuple(normalized_groups)
+        instance._length = length
+        instance._mesh_revision = mesh_revision
+        instance._topology = topology
+        return instance
+
+    @property
+    def kind(self) -> str:
+        return self._kind
+
+    @property
+    def mesh_revision(self) -> int | None:
+        return self._mesh_revision
+
+    @property
+    def topology(self) -> MeshTopologyDirectory | None:
+        return self._topology
+
+    def compact_groups(self) -> tuple[tuple[str | None, tuple[int, ...]], ...]:
+        return tuple((part_id, tuple(values)) for part_id, values in self._groups)
+
+    def bind_mesh_revision(
+        self,
+        mesh_revision: int,
+        topology: MeshTopologyDirectory | None = None,
+    ) -> CompressedMeshEntityRefs:
+        if type(mesh_revision) is not int or mesh_revision < 0:
+            raise ValueError("mesh_revision must be a non-negative integer")
+        if (
+            self._mesh_revision is not None
+            and self._mesh_revision != mesh_revision
+        ):
+            raise ValueError(
+                "compact mesh references are stale for the requested mesh revision"
+            )
+        resolved_topology = topology
+        if resolved_topology is None and self._topology is not None:
+            resolved_topology = self._topology.rebound(mesh_revision)
+        return self.from_compact(
+            self._kind,
+            self.compact_groups(),
+            mesh_revision=mesh_revision,
+            topology=resolved_topology,
+        )
+
+    def filter_part_ids(
+        self,
+        active_part_ids: frozenset[str],
+    ) -> CompressedMeshEntityRefs | None:
+        """Retain active Part groups without inflating entity references."""
+
+        groups = tuple(
+            (part_id, packed)
+            for part_id, packed in self._groups
+            if part_id is None or part_id in active_part_ids
+        )
+        if not groups:
+            return None
+        return self.from_compact(
+            self._kind,
+            groups,
+            mesh_revision=self._mesh_revision,
+            topology=self._topology,
+        )
+
+    def remap_part_ids(
+        self,
+        resolver: Callable[[str | None, str, int], str | None],
+    ) -> CompressedMeshEntityRefs:
+        """Return a regrouped set without inflating MeshEntityRef objects."""
+
+        by_part: dict[str | None, list[tuple[int, int]]] = {}
+        topology_rows: dict[
+            tuple[str | None, str, int, int], tuple[int, ...]
+        ] = {}
+        for part_id, packed in self._groups:
+            if self._kind in {"node", "element"}:
+                for offset in range(0, len(packed), 2):
+                    for identity in range(packed[offset], packed[offset + 1] + 1):
+                        owner = resolver(part_id, self._kind, identity)
+                        ranges = by_part.setdefault(owner, [])
+                        if ranges and ranges[-1][1] + 1 == identity:
+                            ranges[-1] = (ranges[-1][0], identity)
+                        else:
+                            ranges.append((identity, identity))
+                continue
+            if self._topology is None:
+                raise ValueError(
+                    "compact edge/face references require a topology directory"
+                )
+            for offset in range(0, len(packed), 2):
+                element_id, local_index = packed[offset], packed[offset + 1]
+                owner = resolver(part_id, self._kind, element_id)
+                by_part.setdefault(owner, []).append((element_id, local_index))
+                topology_rows[(owner, self._kind, element_id, local_index)] = (
+                    self._topology.resolve(
+                        part_id,
+                        self._kind,
+                        element_id,
+                        local_index,
+                        mesh_revision=self._mesh_revision,
+                    )
+                )
+        groups: list[tuple[str | None, tuple[int, ...]]] = []
+        for part_id, pairs in sorted(
+            by_part.items(),
+            key=lambda item: "" if item[0] is None else item[0],
+        ):
+            canonical_pairs = sorted(pairs)
+            if self._kind in {"node", "element"}:
+                merged: list[tuple[int, int]] = []
+                for start, end in canonical_pairs:
+                    if merged and start <= merged[-1][1] + 1:
+                        merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+                    else:
+                        merged.append((start, end))
+                canonical_pairs = merged
+            groups.append(
+                (
+                    part_id,
+                    tuple(value for pair in canonical_pairs for value in pair),
+                )
+            )
+        topology = (
+            MeshTopologyDirectory(self._mesh_revision, topology_rows)
+            if topology_rows
+            else None
+        )
+        return self.from_compact(
+            self._kind,
+            groups,
+            mesh_revision=self._mesh_revision,
+            topology=topology,
+        )
+
+    def require_mesh_revision(self, mesh_revision: int) -> None:
+        if self._mesh_revision != mesh_revision:
+            raise ValueError(
+                "compact mesh references are stale for the current mesh revision"
+            )
+
+    def __len__(self) -> int:
+        return self._length
+
+    def __iter__(self) -> Iterator[MeshEntityRef]:
+        factory = {
+            "node": MeshEntityRef.node,
+            "element": MeshEntityRef.element,
+            "edge": MeshEntityRef.edge,
+            "face": MeshEntityRef.face,
+        }[self._kind]
+        for part_id, packed in self._groups:
+            if self._kind in {"node", "element"}:
+                for offset in range(0, len(packed), 2):
+                    for identity in range(packed[offset], packed[offset + 1] + 1):
+                        yield factory(identity, part_id=part_id)
+                continue
+            if self._topology is None:
+                raise ValueError(
+                    "compact edge/face references require a topology directory"
+                )
+            for offset in range(0, len(packed), 2):
+                element_id, local_index = packed[offset], packed[offset + 1]
+                node_ids = self._topology.resolve(
+                    part_id,
+                    self._kind,
+                    element_id,
+                    local_index,
+                    mesh_revision=self._mesh_revision,
+                )
+                yield factory(
+                    element_id,
+                    local_index,
+                    node_ids,
+                    part_id=part_id,
+                )
+
+    def __getitem__(self, index: int | slice) -> MeshEntityRef | tuple[MeshEntityRef, ...]:
+        if isinstance(index, slice):
+            return tuple(list(self)[index])
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError("compact mesh reference index out of range")
+        for offset, value in enumerate(self):
+            if offset == index:
+                return value
+        raise IndexError("compact mesh reference index out of range")
+
+    def __contains__(self, candidate: object) -> bool:
+        if type(candidate) is not MeshEntityRef or candidate.kind != self._kind:
+            return False
+        group = next(
+            (packed for part_id, packed in self._groups if part_id == candidate.part_id),
+            None,
+        )
+        if group is None:
+            return False
+        if self._kind in {"node", "element"}:
+            identity = int(
+                candidate.node_id if self._kind == "node" else candidate.element_id
+            )
+            low = 0
+            high = len(group) // 2
+            while low < high:
+                middle = (low + high) // 2
+                if group[middle * 2] <= identity:
+                    low = middle + 1
+                else:
+                    high = middle
+            position = low - 1
+            return (
+                position >= 0
+                and identity <= group[position * 2 + 1]
+            )
+        pair = (int(candidate.element_id), int(candidate.local_index))
+        low = 0
+        high = len(group) // 2
+        while low < high:
+            middle = (low + high) // 2
+            current = (group[middle * 2], group[middle * 2 + 1])
+            if current < pair:
+                low = middle + 1
+            else:
+                high = middle
+        if low >= len(group) // 2 or (
+            group[low * 2], group[low * 2 + 1]
+        ) != pair:
+            return False
+        if self._topology is None:
+            return False
+        return self._topology.resolve(
+            candidate.part_id,
+            self._kind,
+            *pair,
+            mesh_revision=self._mesh_revision,
+        ) == candidate.node_ids
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, CompressedMeshEntityRefs):
+            if (
+                self._kind != other._kind
+                or self._groups != other._groups
+            ):
+                return False
+            if self._kind in {"node", "element"}:
+                return True
+            if self._topology is None or other._topology is None:
+                return self._topology is other._topology
+            for part_id, packed in self._groups:
+                for offset in range(0, len(packed), 2):
+                    element_id, local_index = packed[offset], packed[offset + 1]
+                    if self._topology.resolve(
+                        part_id,
+                        self._kind,
+                        element_id,
+                        local_index,
+                        mesh_revision=self._mesh_revision,
+                    ) != other._topology.resolve(
+                        part_id,
+                        other._kind,
+                        element_id,
+                        local_index,
+                        mesh_revision=other._mesh_revision,
+                    ):
+                        return False
+            return True
+        if isinstance(other, Sequence):
+            return tuple(self) == tuple(other)
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        topology = ()
+        if self._kind in {"edge", "face"} and self._topology is not None:
+            topology = tuple(
+                self._topology.resolve(
+                    part_id,
+                    self._kind,
+                    packed[offset],
+                    packed[offset + 1],
+                    mesh_revision=self._mesh_revision,
+                )
+                for part_id, packed in self._groups
+                for offset in range(0, len(packed), 2)
+            )
+        return hash((self._kind, self.compact_groups(), topology))
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> CompressedMeshEntityRefs:
+        del memo
+        return self
+
+
 @dataclass(frozen=True, slots=True)
 class NamedRegion:
     """One user-authored scope on a generated finite-element mesh.
@@ -191,11 +733,21 @@ class NamedRegion:
     """
 
     name: str
-    references: tuple[MeshEntityRef | LogicalEntityRef, ...]
+    references: (
+        CompressedMeshEntityRefs
+        | tuple[MeshEntityRef | LogicalEntityRef, ...]
+    )
 
     def __post_init__(self) -> None:
         if type(self.name) is not str or not self.name.strip():
             raise ValueError("named region name must be a non-empty string")
+        compact_input = isinstance(
+            self.references, CompressedMeshEntityRefs
+        )
+        if compact_input:
+            references = self.references
+            object.__setattr__(self, "name", self.name.strip())
+            return
         references = tuple(self.references)
         if not references:
             raise ValueError("named region references must not be empty")
@@ -220,11 +772,15 @@ class NamedRegion:
             if reference_types == {MeshEntityRef}
             else logical_ref_sort_key
         )
-        object.__setattr__(
-            self,
-            "references",
-            tuple(sorted(references, key=sort_key)),
-        )
+        if reference_types == {MeshEntityRef}:
+            compact = CompressedMeshEntityRefs(references)
+            object.__setattr__(self, "references", compact)
+        else:
+            object.__setattr__(
+                self,
+                "references",
+                tuple(sorted(references, key=sort_key)),
+            )
 
     def __deepcopy__(self, memo: dict[int, Any]) -> NamedRegion:
         """Reuse this immutable value when command and snapshot state is copied."""
@@ -236,7 +792,27 @@ class NamedRegion:
     def entity_kind(self) -> str:
         """Return the single kind derived from the canonical references."""
 
+        if isinstance(self.references, CompressedMeshEntityRefs):
+            return self.references.kind
         return self.references[0].kind
+
+    @property
+    def mesh_revision(self) -> int | None:
+        if isinstance(self.references, CompressedMeshEntityRefs):
+            return self.references.mesh_revision
+        return None
+
+    def bind_mesh_revision(
+        self,
+        mesh_revision: int,
+        topology: MeshTopologyDirectory | None = None,
+    ) -> NamedRegion:
+        if not isinstance(self.references, CompressedMeshEntityRefs):
+            return self
+        return NamedRegion(
+            self.name,
+            self.references.bind_mesh_revision(mesh_revision, topology),
+        )
 
     @property
     def logical_ids(self) -> tuple[str, ...]:

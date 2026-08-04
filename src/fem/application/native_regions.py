@@ -122,10 +122,17 @@ class LogicalReferencesRegionSource:
 class MeshEntitiesRegionSource:
     """A canonical non-empty group of generated-mesh entity references."""
 
-    references: tuple[Any, ...]
+    references: Any
 
     def __post_init__(self) -> None:
-        from .definitions import MeshEntityRef, mesh_entity_ref_sort_key
+        from .definitions import (
+            CompressedMeshEntityRefs,
+            MeshEntityRef,
+            mesh_entity_ref_sort_key,
+        )
+
+        if isinstance(self.references, CompressedMeshEntityRefs):
+            return
 
         references = tuple(self.references)
         if not references or any(
@@ -220,12 +227,18 @@ def describe_native_regions(
         if isinstance(named_regions, Mapping)
         else tuple(named_regions)
     )
-    from .definitions import MeshEntityRef
+    from .definitions import CompressedMeshEntityRefs, MeshEntityRef
 
     uses_mesh_scopes = any(
-        type(reference) is MeshEntityRef
+        isinstance(
+            getattr(region, "references", ()),
+            CompressedMeshEntityRefs,
+        )
+        or any(
+            type(reference) is MeshEntityRef
+            for reference in getattr(region, "references", ())
+        )
         for region in raw_regions
-        for reference in tuple(getattr(region, "references", ()))
     )
     domain_products = _products_for_entity_dimension(
         topology.dimension,
@@ -282,13 +295,23 @@ def describe_native_regions(
             raise NativeRegionValidationError(
                 f"named region {name!r} does not provide logical references"
             )
-        if references and all(
-            type(reference) is MeshEntityRef
-            for reference in references
+        if isinstance(references, CompressedMeshEntityRefs) or (
+            references
+            and all(
+                type(reference) is MeshEntityRef
+                for reference in references
+            )
         ):
-            source = MeshEntitiesRegionSource(tuple(references))
+            source = MeshEntitiesRegionSource(references)
             products = _products_for_mesh_kind(
-                source.references[0].kind,
+                (
+                    source.references.kind
+                    if isinstance(
+                        source.references,
+                        CompressedMeshEntityRefs,
+                    )
+                    else source.references[0].kind
+                ),
                 contract,
             )
         else:

@@ -12,6 +12,7 @@ from fem.elements import get_element_capabilities
 from fem.materials.sections import section_family
 
 from .definitions import (
+    CompressedMeshEntityRefs,
     MeshEntityRef,
     NamedRegion,
     RegionAssignment,
@@ -55,7 +56,8 @@ def validate_native_project_inputs(
     logical_region_values = tuple(
         region
         for region in region_values
-        if any(
+        if not isinstance(region.references, CompressedMeshEntityRefs)
+        and any(
             type(reference) is not MeshEntityRef
             for reference in region.references
         )
