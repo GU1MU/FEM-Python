@@ -490,6 +490,8 @@ class SketchDraftRenderData:
     selected_id: str | None = None
     plane: SketchPlane = field(default_factory=SketchPlane.xy)
     selected_ids: tuple[str, ...] = ()
+    snap_midpoints: tuple[tuple[float, float, float], ...] = ()
+    snap_centers: tuple[tuple[float, float, float], ...] = ()
 
     def __post_init__(self) -> None:
         points = tuple(
@@ -524,6 +526,21 @@ class SketchDraftRenderData:
         ):
             raise ValueError("sketch draft cell index is outside point data")
         selected_ids = tuple(dict.fromkeys(str(value) for value in self.selected_ids))
+        snap_midpoints = tuple(
+            tuple(float(value) for value in point)
+            for point in self.snap_midpoints
+        )
+        snap_centers = tuple(
+            tuple(float(value) for value in point)
+            for point in self.snap_centers
+        )
+        if any(len(point) != 3 for point in (*snap_midpoints, *snap_centers)):
+            raise ValueError("sketch snap points must have three coordinates")
+        if any(
+            not np.all(np.isfinite(point))
+            for point in (*snap_midpoints, *snap_centers)
+        ):
+            raise ValueError("sketch snap point coordinates must be finite")
         if self.selected_id is not None and not selected_ids:
             selected_ids = (str(self.selected_id),)
         selected_id = selected_ids[0] if selected_ids else None
@@ -543,6 +560,8 @@ class SketchDraftRenderData:
         object.__setattr__(self, "face_ids", face_ids)
         object.__setattr__(self, "selected_id", selected_id)
         object.__setattr__(self, "selected_ids", selected_ids)
+        object.__setattr__(self, "snap_midpoints", snap_midpoints)
+        object.__setattr__(self, "snap_centers", snap_centers)
 
 
 @dataclass(frozen=True, slots=True)
@@ -737,6 +756,19 @@ def _sketch_coordinate_label(
     return f"(U={u:.2f}, V={v:.2f})"
 
 
+def _sketch_snap_label(kind: str | None) -> str | None:
+    return {
+        "sketch_point": "草图点",
+        "topology_vertex": "外部参考点",
+        "face_center": "外部参考点",
+        "line_midpoint": "中点",
+        "circle_center": "圆心",
+        "arc_center": "圆心",
+        "intersection": "交点",
+        "grid": "网格点",
+    }.get(kind)
+
+
 def _sketch_camera_bounds(
     points: Iterable[tuple[float, float, float]],
     spacing: float,
@@ -850,6 +882,47 @@ def _sketch_shape_preview_points(
         )
         for angle in angles
     )
+
+
+def _sketch_intersection_points(
+    data: SketchDraftRenderData,
+) -> tuple[tuple[float, float, float], ...]:
+    """Return distinct pairwise curve intersections for transient snapping."""
+
+    local = _sketch_local_points(data.points, data.plane)
+    intersections: list[tuple[float, float]] = []
+    for left_index, left_curve in enumerate(data.curves):
+        for right_curve in data.curves[left_index + 1 :]:
+            for left_start, left_end in zip(left_curve, left_curve[1:]):
+                p = local[left_start]
+                r = local[left_end] - p
+                for right_start, right_end in zip(right_curve, right_curve[1:]):
+                    q = local[right_start]
+                    s = local[right_end] - q
+                    denominator = float(r[0] * s[1] - r[1] * s[0])
+                    if abs(denominator) <= 1.0e-12:
+                        continue
+                    delta = q - p
+                    left_parameter = float(
+                        (delta[0] * s[1] - delta[1] * s[0]) / denominator
+                    )
+                    right_parameter = float(
+                        (delta[0] * r[1] - delta[1] * r[0]) / denominator
+                    )
+                    if not (
+                        -1.0e-12 <= left_parameter <= 1.0 + 1.0e-12
+                        and -1.0e-12 <= right_parameter <= 1.0 + 1.0e-12
+                    ):
+                        continue
+                    value = p + left_parameter * r
+                    candidate = (float(value[0]), float(value[1]))
+                    if not any(
+                        math.hypot(candidate[0] - existing[0], candidate[1] - existing[1])
+                        <= 1.0e-9
+                        for existing in intersections
+                    ):
+                        intersections.append(candidate)
+    return tuple(data.plane.to_global(u, v) for u, v in intersections)
 
 
 def _capture_camera_state(plotter: object) -> _ViewportCameraState | None:
@@ -1104,11 +1177,27 @@ class FEMViewport(QWidget):
         self._wire_authoring_preview_point: tuple[float, float, float] | None = None
         self._sketch_authoring_active = False
         self._sketch_authoring_mode = "polyline"
+        self._sketch_grid_visible = True
         self._sketch_grid_snap = True
         self._sketch_grid_spacing = 0.1
+        self._sketch_snap_sketch_points = True
+        self._sketch_snap_external_points = True
+        self._sketch_snap_midpoints = True
+        self._sketch_snap_centers = True
+        self._sketch_snap_intersections = True
+        self._sketch_screen_snap_tolerance = 9.0
+        self._sketch_show_point_ids = True
+        self._sketch_show_external_labels = True
+        self._sketch_show_profile_fill = True
+        self._sketch_show_work_plane_axes = True
         self._sketch_draft_render_data: SketchDraftRenderData | None = None
+        self._sketch_intersection_source: SketchDraftRenderData | None = None
+        self._sketch_intersection_cache: tuple[
+            tuple[float, float, float], ...
+        ] = ()
         self._sketch_reference_points: tuple[SketchReferencePoint, ...] = ()
         self._sketch_authoring_snap_reference: SketchReferencePoint | None = None
+        self._sketch_authoring_snap_kind: str | None = None
         self._sketch_pending_points: tuple[tuple[float, float, float], ...] = ()
         self._sketch_authoring_preview_point: (
             tuple[float, float, float] | None
@@ -1725,6 +1814,7 @@ class FEMViewport(QWidget):
         self._sketch_grid_snap = bool(snap)
         self._sketch_grid_spacing = float(spacing)
         self._sketch_draft_render_data = render_data
+        self._sketch_intersection_source = None
         self.set_sketch_reference_points(reference_points, render=False)
         self._sketch_pending_points = ()
         self._sketch_authoring_preview_point = None
@@ -1754,6 +1844,7 @@ class FEMViewport(QWidget):
         if not self._sketch_authoring_active:
             return
         self._sketch_draft_render_data = render_data
+        self._sketch_intersection_source = None
         self._show_sketch_draft(render=True)
 
     def update_sketch_selection(
@@ -2040,6 +2131,7 @@ class FEMViewport(QWidget):
     def set_sketch_grid(
         self,
         *,
+        visible: bool | None = None,
         snap: bool | None = None,
         spacing: float | None = None,
     ) -> None:
@@ -2047,10 +2139,42 @@ class FEMViewport(QWidget):
             not np.isfinite(float(spacing)) or float(spacing) <= 0.0
         ):
             raise ValueError("sketch grid spacing must be positive")
+        if visible is not None:
+            self._sketch_grid_visible = bool(visible)
         if snap is not None:
             self._sketch_grid_snap = bool(snap)
         if spacing is not None:
             self._sketch_grid_spacing = float(spacing)
+        if self._sketch_authoring_active:
+            self._show_sketch_draft(render=True)
+
+    def set_sketch_preferences(
+        self,
+        *,
+        snap_sketch_points: bool,
+        snap_external_points: bool,
+        snap_midpoints: bool,
+        snap_centers: bool,
+        snap_intersections: bool,
+        screen_snap_tolerance: float,
+        show_point_ids: bool,
+        show_external_labels: bool,
+        show_profile_fill: bool,
+        show_work_plane_axes: bool,
+    ) -> None:
+        tolerance = float(screen_snap_tolerance)
+        if not np.isfinite(tolerance) or tolerance < 0.0:
+            raise ValueError("sketch screen snap tolerance must be non-negative")
+        self._sketch_snap_sketch_points = bool(snap_sketch_points)
+        self._sketch_snap_external_points = bool(snap_external_points)
+        self._sketch_snap_midpoints = bool(snap_midpoints)
+        self._sketch_snap_centers = bool(snap_centers)
+        self._sketch_snap_intersections = bool(snap_intersections)
+        self._sketch_screen_snap_tolerance = tolerance
+        self._sketch_show_point_ids = bool(show_point_ids)
+        self._sketch_show_external_labels = bool(show_external_labels)
+        self._sketch_show_profile_fill = bool(show_profile_fill)
+        self._sketch_show_work_plane_axes = bool(show_work_plane_axes)
         if self._sketch_authoring_active:
             self._show_sketch_draft(render=True)
 
@@ -2090,6 +2214,7 @@ class FEMViewport(QWidget):
             "sketch_draft_faces",
             "sketch_draft_curves",
             "sketch_draft_points",
+            "sketch_draft_point_labels",
             "sketch_reference_points",
             "sketch_reference_labels",
             "sketch_authoring_selection",
@@ -2103,8 +2228,11 @@ class FEMViewport(QWidget):
             self._remove_actor(name)
         self._sketch_authoring_active = False
         self._sketch_draft_render_data = None
+        self._sketch_intersection_source = None
+        self._sketch_intersection_cache = ()
         self._sketch_reference_points = ()
         self._sketch_authoring_snap_reference = None
+        self._sketch_authoring_snap_kind = None
         self._sketch_pending_points = ()
         self._sketch_authoring_preview_point = None
         self._clear_preselection(render=False)
@@ -2214,6 +2342,7 @@ class FEMViewport(QWidget):
             "sketch_draft_faces",
             "sketch_draft_curves",
             "sketch_draft_points",
+            "sketch_draft_point_labels",
             "sketch_reference_points",
             "sketch_reference_labels",
             "sketch_authoring_selection",
@@ -2236,21 +2365,22 @@ class FEMViewport(QWidget):
             data.points,
             self._sketch_grid_spacing,
         )
-        self._actors["sketch_work_plane_grid"] = self._plotter.add_mesh(
-            grid,
-            color="#7f8f9f",
-            opacity=0.35,
-            line_width=1,
-            name="sketch_work_plane_grid",
-            reset_camera=False,
-            pickable=False,
-        )
+        if self._sketch_grid_visible:
+            self._actors["sketch_work_plane_grid"] = self._plotter.add_mesh(
+                grid,
+                color="#7f8f9f",
+                opacity=0.35,
+                line_width=1,
+                name="sketch_work_plane_grid",
+                reset_camera=False,
+                pickable=False,
+            )
         center = np.asarray(grid_layout.center[:2], dtype=float)
         origin = np.asarray(data.plane.origin, dtype=float)
         half_size = 0.5 * grid_layout.plane_size
         label_points = [origin]
         axis_labels = ["O"]
-        for index in range(2):
+        for index in range(2) if self._sketch_show_work_plane_axes else ():
             local_start = center.copy()
             local_end = center.copy()
             local_start[index] -= half_size
@@ -2277,28 +2407,29 @@ class FEMViewport(QWidget):
             )
             label_points.append(end)
             axis_labels.append(("U", "V")[index])
-        self._actors["sketch_work_plane_origin"] = self._plotter.add_mesh(
-            _pyvista.PolyData(np.asarray((origin,), dtype=float)),
-            color="#ff8c00",
-            point_size=13,
-            render_points_as_spheres=True,
-            name="sketch_work_plane_origin",
-            reset_camera=False,
-            pickable=False,
-        )
-        self._actors["sketch_work_plane_axis_labels"] = (
-            self._plotter.add_point_labels(
-                np.asarray(label_points, dtype=float),
-                axis_labels,
-                point_size=0,
-                font_size=11,
-                shape=None,
-                text_color="#ff8c00",
-                name="sketch_work_plane_axis_labels",
+        if self._sketch_show_work_plane_axes:
+            self._actors["sketch_work_plane_origin"] = self._plotter.add_mesh(
+                _pyvista.PolyData(np.asarray((origin,), dtype=float)),
+                color="#ff8c00",
+                point_size=13,
+                render_points_as_spheres=True,
+                name="sketch_work_plane_origin",
                 reset_camera=False,
+                pickable=False,
             )
-        )
-        if data.faces:
+            self._actors["sketch_work_plane_axis_labels"] = (
+                self._plotter.add_point_labels(
+                    np.asarray(label_points, dtype=float),
+                    axis_labels,
+                    point_size=0,
+                    font_size=11,
+                    shape=None,
+                    text_color="#ff8c00",
+                    name="sketch_work_plane_axis_labels",
+                    reset_camera=False,
+                )
+            )
+        if data.faces and self._sketch_show_profile_fill:
             surface = _pyvista.PolyData()
             surface.points = coordinates
             surface.faces = np.hstack(
@@ -2333,8 +2464,9 @@ class FEMViewport(QWidget):
             if point_id is not None
         )
         if authoring_points:
+            point_coordinates = coordinates[np.asarray(authoring_points)]
             self._actors["sketch_draft_points"] = self._plotter.add_mesh(
-                _pyvista.PolyData(coordinates[np.asarray(authoring_points)]),
+                _pyvista.PolyData(point_coordinates),
                 color="#1976a8",
                 point_size=10,
                 render_points_as_spheres=True,
@@ -2342,6 +2474,19 @@ class FEMViewport(QWidget):
                 reset_camera=False,
                 pickable=False,
             )
+            if self._sketch_show_point_ids:
+                self._actors["sketch_draft_point_labels"] = (
+                    self._plotter.add_point_labels(
+                        point_coordinates,
+                        tuple(str(index + 1) for index in range(len(authoring_points))),
+                        point_size=0,
+                        font_size=9,
+                        shape=None,
+                        text_color="#1976a8",
+                        name="sketch_draft_point_labels",
+                        reset_camera=False,
+                    )
+                )
         if self._sketch_reference_points:
             reference_coordinates = np.asarray(
                 tuple(point.position for point in self._sketch_reference_points),
@@ -2363,18 +2508,22 @@ class FEMViewport(QWidget):
                 "arc_center": "弧心",
                 "face_center": "面中心",
             }
-            self._actors["sketch_reference_labels"] = (
-                self._plotter.add_point_labels(
-                    reference_coordinates,
-                    [labels[point.derived_type.value] for point in self._sketch_reference_points],
-                    point_size=0,
-                    font_size=9,
-                    shape=None,
-                    text_color="#d32f2f",
-                    name="sketch_reference_labels",
-                    reset_camera=False,
+            if self._sketch_show_external_labels:
+                self._actors["sketch_reference_labels"] = (
+                    self._plotter.add_point_labels(
+                        reference_coordinates,
+                        [
+                            labels[point.derived_type.value]
+                            for point in self._sketch_reference_points
+                        ],
+                        point_size=0,
+                        font_size=9,
+                        shape=None,
+                        text_color="#d32f2f",
+                        name="sketch_reference_labels",
+                        reset_camera=False,
+                    )
                 )
-            )
         selection = self._sketch_selection_polydata(data, coordinates)
         if selection is not None:
             self._actors["sketch_authoring_selection"] = self._plotter.add_mesh(
@@ -2880,8 +3029,6 @@ class FEMViewport(QWidget):
             if point is None
             else tuple(float(value) for value in point)
         )
-        if normalized == self._sketch_authoring_preview_point:
-            return
         self._sketch_authoring_preview_point = normalized
         self._show_sketch_authoring_hover(render=True)
 
@@ -2950,19 +3097,19 @@ class FEMViewport(QWidget):
             reset_camera=False,
             pickable=False,
         )
+        coordinate_label = _sketch_coordinate_label(
+            point,
+            (
+                SketchPlane.xy()
+                if self._sketch_draft_render_data is None
+                else self._sketch_draft_render_data.plane
+            ),
+        )
+        snap_label = _sketch_snap_label(self._sketch_authoring_snap_kind)
         self._actors["sketch_authoring_hover_label"] = (
             self._plotter.add_point_labels(
                 label_point,
-                [
-                    _sketch_coordinate_label(
-                        point,
-                        (
-                            SketchPlane.xy()
-                            if self._sketch_draft_render_data is None
-                            else self._sketch_draft_render_data.plane
-                        ),
-                    )
-                ],
+                [f"{snap_label} {coordinate_label}" if snap_label else coordinate_label],
                 point_size=0,
                 font_size=11,
                 shape=None,
@@ -3057,6 +3204,7 @@ class FEMViewport(QWidget):
         snap: bool = True,
     ) -> tuple[tuple[float, float, float] | None, str | None]:
         self._sketch_authoring_snap_reference = None
+        self._sketch_authoring_snap_kind = None
         near = self._display_to_world(float(x), float(y), 0.0)
         far = self._display_to_world(float(x), float(y), 1.0)
         if near is None or far is None:
@@ -3071,7 +3219,7 @@ class FEMViewport(QWidget):
             candidate_values: list[
                 tuple[str, float, float, SketchReferencePoint | None, str | None]
             ] = []
-            if data is not None:
+            if data is not None and self._sketch_snap_sketch_points:
                 for coordinate, point_id in zip(
                     data.points,
                     data.point_ids,
@@ -3084,7 +3232,30 @@ class FEMViewport(QWidget):
                     candidate_values.append(
                         ("sketch_point", u, v, None, point_id)
                     )
+            if data is not None and self._sketch_snap_midpoints:
+                for midpoint in data.snap_midpoints:
+                    midpoint_u, midpoint_v = plane.to_local(midpoint)
+                    candidate_world.append(midpoint)
+                    candidate_values.append(
+                        ("line_midpoint", midpoint_u, midpoint_v, None, None)
+                    )
+            if data is not None and self._sketch_snap_centers:
+                for center in data.snap_centers:
+                    center_u, center_v = plane.to_local(center)
+                    candidate_world.append(center)
+                    candidate_values.append(
+                        ("circle_center", center_u, center_v, None, None)
+                    )
+            enabled_external_kinds = set()
+            if self._sketch_snap_external_points:
+                enabled_external_kinds.update(("topology_vertex", "face_center"))
+            if self._sketch_snap_midpoints:
+                enabled_external_kinds.add("line_midpoint")
+            if self._sketch_snap_centers:
+                enabled_external_kinds.update(("circle_center", "arc_center"))
             for reference_point in self._sketch_reference_points:
+                if reference_point.derived_type.value not in enabled_external_kinds:
+                    continue
                 candidate_world.append(reference_point.position)
                 candidate_values.append(
                     (
@@ -3095,6 +3266,24 @@ class FEMViewport(QWidget):
                         None,
                     )
                 )
+            if data is not None and self._sketch_snap_intersections:
+                if self._sketch_intersection_source is not data:
+                    self._sketch_intersection_source = data
+                    self._sketch_intersection_cache = _sketch_intersection_points(
+                        data
+                    )
+                for intersection in self._sketch_intersection_cache:
+                    intersection_u, intersection_v = plane.to_local(intersection)
+                    candidate_world.append(intersection)
+                    candidate_values.append(
+                        (
+                            "intersection",
+                            intersection_u,
+                            intersection_v,
+                            None,
+                            None,
+                        )
+                    )
             if self._sketch_grid_snap:
                 grid_point = _snap_sketch_plane_point(
                     point,
@@ -3129,13 +3318,18 @@ class FEMViewport(QWidget):
                 selected = select_sketch_snap_candidate(
                     candidates,
                     (float(x), float(y)),
-                    pixel_threshold=9.0 * self._device_pixel_ratio(),
+                    pixel_threshold=(
+                        self._sketch_screen_snap_tolerance
+                        * self._device_pixel_ratio()
+                    ),
                 )
                 if selected is not None:
                     point = plane.to_global(selected.u, selected.v)
                     self._sketch_authoring_snap_reference = selected.reference_point
+                    self._sketch_authoring_snap_kind = selected.kind
             elif self._sketch_grid_snap:
                 point = grid_point
+                self._sketch_authoring_snap_kind = "grid"
         return point, None
 
     def _sketch_authoring_click(

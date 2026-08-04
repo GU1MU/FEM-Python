@@ -6,7 +6,7 @@ import math
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QItemSelectionModel, Qt
+from PySide6.QtCore import QItemSelectionModel, QSettings, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QListWidget
 
@@ -20,12 +20,15 @@ from fem.geometry import (
 import fem_gui.main_window as main_window_module
 import fem_gui.widgets.sketch_editor_panel as sketch_editor_panel_module
 from fem_gui.main_window import FEMMainWindow
+from fem_gui.sketch_preferences import load_sketch_preferences
 from fem_gui.sketch_editor import SketchDraftController
 from fem_gui.widgets.sketch_editor_panel import SketchEditorPanel
 from fem_gui.widgets.viewport import (
     FEMViewport,
     SketchDraftRenderData,
     _sketch_camera_bounds,
+    _sketch_intersection_points,
+    _sketch_snap_label,
     _sketch_shape_preview_points,
 )
 
@@ -143,7 +146,9 @@ def test_panel_polyline_closes_a_profile_and_emits_finish() -> None:
     assert len(controller.snapshot().points) == 4
     assert len(controller.snapshot().curves) == 4
     assert controller.can_finish
-    assert panel._pending_points == []
+    assert panel._pending_points == [(0.0, 0.0)]
+    assert panel._polyline_start_id == panel._polyline_first_id
+    assert panel.mode == "polyline"
     render_data = panel.render_data()
     assert render_data.faces
     assert set(render_data.curve_ids) == {
@@ -673,6 +678,329 @@ def test_point_delete_prompt_lists_cascade_and_undo_restores_entities(
         first_line.id,
         second_line.id,
     }
+
+
+def test_phase3_preferences_restore_without_persisting_session_state(tmp_path) -> None:
+    _application()
+    path = tmp_path / "sketch.ini"
+    store = QSettings(str(path), QSettings.Format.IniFormat)
+    controller = SketchDraftController("phase-3-preferences")
+    point = controller.add_point(0.0, 0.0)
+    controller.select_point(point.id)
+    panel = SketchEditorPanel(controller, settings=store)
+    revision = controller.snapshot().revision
+    can_undo = controller.can_undo
+
+    panel.grid_visible_check.setChecked(False)
+    panel.snap_check.setChecked(True)
+    panel.spacing_spin.setValue(0.25)
+    panel.snap_midpoints_check.setChecked(False)
+    panel.screen_snap_tolerance_spin.setValue(13.0)
+    panel.auto_merge_tolerance_spin.setValue(0.02)
+    panel.show_point_ids_check.setChecked(False)
+    panel.show_external_labels_check.setChecked(False)
+    panel.show_profile_fill_check.setChecked(False)
+    panel.show_work_plane_axes_check.setChecked(False)
+    panel.continuous_polyline_check.setChecked(False)
+    panel.set_mode("circle")
+    panel.point_filter_combo.setCurrentIndex(
+        panel.point_filter_combo.findData("free")
+    )
+    store.sync()
+
+    assert controller.snapshot().revision == revision
+    assert controller.can_undo == can_undo
+    assert controller.selected_ids == (point.id,)
+    restored = load_sketch_preferences(
+        QSettings(str(path), QSettings.Format.IniFormat)
+    )
+    assert not restored.grid_visible
+    assert restored.grid_snap
+    assert restored.grid_spacing == 0.25
+    assert not restored.snap_midpoints
+    assert restored.screen_snap_tolerance == 13.0
+    assert restored.auto_merge_tolerance == 0.02
+    assert not restored.show_point_ids
+    assert not restored.show_external_labels
+    assert not restored.show_profile_fill
+    assert not restored.show_work_plane_axes
+    assert not restored.continuous_polyline
+    controller.undo()
+    assert controller.snapshot().points == ()
+
+    reopened = SketchEditorPanel(
+        SketchDraftController("phase-3-reopened"),
+        settings=QSettings(str(path), QSettings.Format.IniFormat),
+    )
+    assert not reopened.grid_visible_check.isChecked()
+    assert reopened.snap_check.isChecked()
+    assert reopened.mode == "polyline"
+    assert reopened.point_filter_combo.currentData() == "all"
+    assert reopened.controller.selected_ids == ()
+
+
+def test_phase3_grid_display_and_snap_are_independent() -> None:
+    _application()
+    viewport = FEMViewport()
+    viewport._display_to_world = (
+        lambda _x, _y, depth: (0.24, 0.24, float(depth))
+    )
+    viewport._world_points_to_display = lambda points: points
+    viewport._device_pixel_ratio = lambda: 1.0
+
+    viewport.set_sketch_grid(visible=False, snap=True, spacing=0.25)
+    assert not viewport._sketch_grid_visible
+    assert viewport._sketch_grid_snap
+    assert viewport._sketch_grid_spacing == 0.25
+    point, _reason = viewport._sketch_work_plane_point_at(0, 0)
+    assert point == (0.25, 0.25, 0.0)
+    assert viewport._sketch_authoring_snap_kind == "grid"
+
+    viewport.set_sketch_grid(visible=True, snap=False)
+    assert viewport._sketch_grid_visible
+    assert not viewport._sketch_grid_snap
+    assert viewport._sketch_grid_spacing == 0.25
+    point, _reason = viewport._sketch_work_plane_point_at(0, 0)
+    assert point == (0.24, 0.24, 0.0)
+    assert viewport._sketch_authoring_snap_kind is None
+    viewport.close()
+
+
+def test_phase3_snap_categories_tolerance_priority_intersections_and_feedback() -> None:
+    _application()
+    viewport = FEMViewport()
+    viewport._display_to_world = (
+        lambda x, y, depth: (float(x), float(y), float(depth))
+    )
+    viewport._world_points_to_display = lambda points: points
+    viewport._device_pixel_ratio = lambda: 1.0
+    viewport._sketch_grid_snap = False
+    viewport._sketch_draft_render_data = SketchDraftRenderData(
+        ((0.0, 0.0, 0.0),),
+        ("P1",),
+        (),
+        (),
+    )
+    viewport._sketch_reference_points = (_reference_point(0.0, 0.0),)
+
+    viewport.set_sketch_preferences(
+        snap_sketch_points=True,
+        snap_external_points=True,
+        snap_midpoints=False,
+        snap_centers=False,
+        snap_intersections=False,
+        screen_snap_tolerance=9.0,
+        show_point_ids=True,
+        show_external_labels=True,
+        show_profile_fill=True,
+        show_work_plane_axes=True,
+    )
+    point, reason = viewport._sketch_work_plane_point_at(0, 0)
+    assert reason is None
+    assert point == (0.0, 0.0, 0.0)
+    assert viewport._sketch_authoring_snap_kind == "sketch_point"
+
+    viewport._sketch_snap_sketch_points = False
+    viewport._sketch_work_plane_point_at(0, 0)
+    assert viewport._sketch_authoring_snap_kind == "topology_vertex"
+    viewport._sketch_snap_external_points = False
+    viewport._sketch_work_plane_point_at(0, 0)
+    assert viewport._sketch_authoring_snap_kind is None
+
+    def derived_reference(
+        reference_type: SketchExternalReferenceType,
+    ) -> SketchReferencePoint:
+        return SketchReferencePoint(
+            SketchExternalReference(
+                f"R-{reference_type.value}",
+                LogicalEntityRef("edge:support/E1"),
+                reference_type,
+            ),
+            (0.0, 0.0, 0.0),
+            0.0,
+            0.0,
+        )
+
+    viewport._sketch_reference_points = (
+        derived_reference(SketchExternalReferenceType.LINE_MIDPOINT),
+    )
+    viewport._sketch_snap_midpoints = False
+    viewport._sketch_work_plane_point_at(0, 0)
+    assert viewport._sketch_authoring_snap_kind is None
+    viewport._sketch_snap_midpoints = True
+    viewport._sketch_work_plane_point_at(0, 0)
+    assert viewport._sketch_authoring_snap_kind == "line_midpoint"
+
+    viewport._sketch_reference_points = (
+        derived_reference(SketchExternalReferenceType.CIRCLE_CENTER),
+    )
+    viewport._sketch_snap_midpoints = False
+    viewport._sketch_snap_centers = False
+    viewport._sketch_work_plane_point_at(0, 0)
+    assert viewport._sketch_authoring_snap_kind is None
+    viewport._sketch_snap_centers = True
+    viewport._sketch_work_plane_point_at(0, 0)
+    assert viewport._sketch_authoring_snap_kind == "circle_center"
+
+    viewport._sketch_reference_points = ()
+    viewport._sketch_draft_render_data = SketchDraftRenderData(
+        (),
+        (),
+        (),
+        (),
+        snap_midpoints=((0.0, 0.0, 0.0),),
+        snap_centers=((2.0, 0.0, 0.0),),
+    )
+    viewport._sketch_snap_midpoints = False
+    viewport._sketch_snap_centers = False
+    viewport._sketch_work_plane_point_at(0, 0)
+    assert viewport._sketch_authoring_snap_kind is None
+    viewport._sketch_snap_midpoints = True
+    viewport._sketch_work_plane_point_at(0, 0)
+    assert viewport._sketch_authoring_snap_kind == "line_midpoint"
+    viewport._sketch_snap_midpoints = False
+    viewport._sketch_snap_centers = True
+    viewport._sketch_work_plane_point_at(2, 0)
+    assert viewport._sketch_authoring_snap_kind == "circle_center"
+
+    viewport._sketch_snap_sketch_points = True
+    viewport._sketch_draft_render_data = SketchDraftRenderData(
+        ((5.0, 0.0, 0.0),),
+        ("P5",),
+        (),
+        (),
+    )
+    viewport._sketch_screen_snap_tolerance = 4.0
+    point, _reason = viewport._sketch_work_plane_point_at(0, 0)
+    assert point == (0.0, 0.0, 0.0)
+    assert viewport._sketch_authoring_snap_kind is None
+    viewport._sketch_screen_snap_tolerance = 6.0
+    point, _reason = viewport._sketch_work_plane_point_at(0, 0)
+    assert point == (5.0, 0.0, 0.0)
+    assert viewport._sketch_authoring_snap_kind == "sketch_point"
+
+    crossings = SketchDraftRenderData(
+        (
+            (-1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, -1.0, 0.0),
+            (0.0, 1.0, 0.0),
+        ),
+        (None, None, None, None),
+        ((0, 1), (2, 3)),
+        ("L1", "L2"),
+    )
+    assert _sketch_intersection_points(crossings) == ((0.0, 0.0, 0.0),)
+    viewport._sketch_draft_render_data = crossings
+    viewport._sketch_snap_sketch_points = False
+    viewport._sketch_snap_intersections = False
+    viewport._sketch_work_plane_point_at(0, 0)
+    assert viewport._sketch_authoring_snap_kind is None
+    viewport._sketch_snap_intersections = True
+    point, _reason = viewport._sketch_work_plane_point_at(0, 0)
+    assert point == (0.0, 0.0, 0.0)
+    assert viewport._sketch_authoring_snap_kind == "intersection"
+
+    assert _sketch_snap_label("sketch_point") == "草图点"
+    assert _sketch_snap_label("topology_vertex") == "外部参考点"
+    assert _sketch_snap_label("grid") == "网格点"
+    assert _sketch_snap_label("line_midpoint") == "中点"
+    assert _sketch_snap_label("circle_center") == "圆心"
+    assert _sketch_snap_label("intersection") == "交点"
+    viewport.close()
+
+
+def test_phase3_auto_merge_and_drawing_behaviors(monkeypatch) -> None:
+    _application()
+    controller = SketchDraftController("phase-3-behaviors")
+    panel = SketchEditorPanel(controller)
+    panel.auto_merge_tolerance_spin.setValue(0.1)
+    existing = controller.add_point(0.0, 0.0)
+    assert panel._point_id_at(0.05, 0.0) == existing.id
+
+    panel.continuous_polyline_check.setChecked(False)
+    panel._point_from_viewport((0.0, 0.0, 0.0))
+    panel._point_from_viewport((1.0, 0.0, 0.0))
+    assert len(controller.snapshot().curves) == 1
+    assert panel._pending_points == []
+    assert panel._polyline_start_id is None
+    assert panel.mode == "polyline"
+
+    rectangle_controller = SketchDraftController("phase-3-tool")
+    rectangle_panel = SketchEditorPanel(rectangle_controller)
+    rectangle_panel.keep_tool_after_completion_check.setChecked(False)
+    rectangle_panel.set_mode("rectangle")
+    rectangle_panel._point_from_viewport((0.0, 0.0, 0.0))
+    rectangle_panel._point_from_viewport((2.0, 1.0, 0.0))
+    assert rectangle_panel.mode == "select"
+
+    close_controller = SketchDraftController("phase-3-close")
+    close_panel = SketchEditorPanel(close_controller)
+    close_panel.end_polyline_on_close_check.setChecked(True)
+    for point in (
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (1.0, 1.0, 0.0),
+        (0.0, 0.0, 0.0),
+    ):
+        close_panel._point_from_viewport(point)
+    assert close_panel.mode == "polyline"
+    assert close_panel._pending_points == []
+    assert close_panel._polyline_start_id is None
+
+    continuing_controller = SketchDraftController("phase-3-continue-close")
+    continuing_panel = SketchEditorPanel(continuing_controller)
+    continuing_panel.continuous_polyline_check.setChecked(True)
+    continuing_panel.end_polyline_on_close_check.setChecked(False)
+    for point in (
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (1.0, 1.0, 0.0),
+        (0.0, 0.0, 0.0),
+    ):
+        continuing_panel._point_from_viewport(point)
+    first_id = continuing_panel._polyline_first_id
+    assert continuing_panel.mode == "polyline"
+    assert continuing_panel._polyline_start_id == first_id
+    assert continuing_panel._pending_points == [(0.0, 0.0)]
+    continuing_panel._point_from_viewport((-1.0, 0.0, 0.0))
+    assert len(continuing_controller.snapshot().curves) == 4
+    assert continuing_panel._polyline_start_id != first_id
+
+    switch_controller = SketchDraftController("phase-3-switch-after-close")
+    switch_panel = SketchEditorPanel(switch_controller)
+    switch_panel.end_polyline_on_close_check.setChecked(True)
+    switch_panel.keep_tool_after_completion_check.setChecked(False)
+    for point in (
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (1.0, 1.0, 0.0),
+        (0.0, 0.0, 0.0),
+    ):
+        switch_panel._point_from_viewport(point)
+    assert switch_panel.mode == "select"
+    assert switch_panel._pending_points == []
+    assert switch_panel._polyline_start_id is None
+
+    delete_controller = SketchDraftController("phase-3-delete")
+    start = delete_controller.add_point(0.0, 0.0)
+    shared = delete_controller.add_point(1.0, 0.0)
+    delete_controller.add_line(start.id, shared.id)
+    delete_controller.select_point(shared.id)
+    delete_panel = SketchEditorPanel(delete_controller)
+    delete_panel.confirm_cascade_delete_check.setChecked(False)
+    monkeypatch.setattr(
+        sketch_editor_panel_module.QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("disabled cascade confirmation was shown")
+        ),
+    )
+    delete_panel.delete_selected()
+    assert shared.id not in {
+        point.id for point in delete_controller.snapshot().points
+    }
+    assert delete_controller.snapshot().curves == ()
 
 
 def test_main_window_commits_strict_sketch_only_on_finish(monkeypatch) -> None:

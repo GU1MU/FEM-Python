@@ -3116,7 +3116,10 @@ class FEMMainWindow(QMainWindow):
         )
         self.wire_editor_panel = WireEditorPanel(parent=self)
         self.wire_editor_panel.hide()
-        self.sketch_editor_panel = SketchEditorPanel(parent=self)
+        self.sketch_editor_panel = SketchEditorPanel(
+            parent=self,
+            settings=self._application_settings,
+        )
         self.sketch_editor_panel.hide()
         self.boolean_feature_panel = BooleanFeaturePanel(parent=self)
         self.planar_boolean_panel = PlanarBooleanPanel(parent=self)

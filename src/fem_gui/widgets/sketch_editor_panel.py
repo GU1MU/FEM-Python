@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 
-from PySide6.QtCore import QEvent, QItemSelectionModel, Qt, Signal
+from PySide6.QtCore import QEvent, QItemSelectionModel, QSettings, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -36,6 +36,11 @@ from fem.geometry import (
 )
 
 from ..geometry_preview import build_strict_sketch_draft_preview
+from ..sketch_preferences import (
+    SketchPreferences,
+    load_sketch_preferences,
+    save_sketch_preferences,
+)
 from ..sketch_editor import (
     SketchDraftController,
     SketchDraftSnapshot,
@@ -89,12 +94,20 @@ class SketchEditorPanel(QWidget):
         self,
         controller: SketchDraftController | None = None,
         parent=None,
+        *,
+        settings: QSettings | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("sketchEditorPanel")
         self.setMinimumWidth(330)
         self.setMaximumWidth(500)
         self._controller: SketchDraftController | None = None
+        self._settings = settings
+        self._preferences = (
+            SketchPreferences()
+            if settings is None
+            else load_sketch_preferences(settings)
+        )
         self._viewport = None
         self._base_snapshot: SketchDraftSnapshot | None = None
         self._refreshing = False
@@ -152,16 +165,105 @@ class SketchEditorPanel(QWidget):
             "单击曲线：有交点时删除点击段；无可用交点时删除整条曲线"
         )
 
-        self.snap_check = QCheckBox("启用网格捕捉", self)
-        self.snap_check.setChecked(True)
-        self.snap_check.toggled.connect(self._grid_changed)
+        def preference_check(
+            text: str,
+            object_name: str,
+            checked: bool,
+        ) -> QCheckBox:
+            control = QCheckBox(text, self)
+            control.setObjectName(object_name)
+            control.setChecked(checked)
+            control.toggled.connect(self._preferences_changed)
+            return control
+
+        preferences = self._preferences
+        self.grid_visible_check = preference_check(
+            "显示网格", "sketchGridVisible", preferences.grid_visible
+        )
+        self.snap_check = preference_check(
+            "捕捉网格点", "sketchGridSnap", preferences.grid_snap
+        )
         self.spacing_spin = QDoubleSpinBox(self)
         self.spacing_spin.setObjectName("sketchGridSpacing")
         self.spacing_spin.setDecimals(3)
         self.spacing_spin.setRange(0.001, 1.0e12)
         self.spacing_spin.setSingleStep(0.1)
-        self.spacing_spin.setValue(0.1)
-        self.spacing_spin.valueChanged.connect(self._grid_changed)
+        self.spacing_spin.setValue(preferences.grid_spacing)
+        self.spacing_spin.valueChanged.connect(self._preferences_changed)
+
+        self.snap_sketch_points_check = preference_check(
+            "已有草图点",
+            "sketchSnapSketchPoints",
+            preferences.snap_sketch_points,
+        )
+        self.snap_external_points_check = preference_check(
+            "外部参考点",
+            "sketchSnapExternalPoints",
+            preferences.snap_external_points,
+        )
+        self.snap_midpoints_check = preference_check(
+            "中点", "sketchSnapMidpoints", preferences.snap_midpoints
+        )
+        self.snap_centers_check = preference_check(
+            "圆心", "sketchSnapCenters", preferences.snap_centers
+        )
+        self.snap_intersections_check = preference_check(
+            "交点", "sketchSnapIntersections", preferences.snap_intersections
+        )
+        self.screen_snap_tolerance_spin = QDoubleSpinBox(self)
+        self.screen_snap_tolerance_spin.setObjectName("sketchScreenSnapTolerance")
+        self.screen_snap_tolerance_spin.setDecimals(1)
+        self.screen_snap_tolerance_spin.setRange(0.0, 100.0)
+        self.screen_snap_tolerance_spin.setSuffix(" px")
+        self.screen_snap_tolerance_spin.setValue(preferences.screen_snap_tolerance)
+        self.screen_snap_tolerance_spin.valueChanged.connect(
+            self._preferences_changed
+        )
+        self.auto_merge_tolerance_spin = QDoubleSpinBox(self)
+        self.auto_merge_tolerance_spin.setObjectName("sketchAutoMergeTolerance")
+        self.auto_merge_tolerance_spin.setDecimals(9)
+        self.auto_merge_tolerance_spin.setRange(0.0, 1.0e6)
+        self.auto_merge_tolerance_spin.setValue(preferences.auto_merge_tolerance)
+        self.auto_merge_tolerance_spin.valueChanged.connect(
+            self._preferences_changed
+        )
+
+        self.show_point_ids_check = preference_check(
+            "点数字 ID", "sketchShowPointIds", preferences.show_point_ids
+        )
+        self.show_external_labels_check = preference_check(
+            "外部参考标签",
+            "sketchShowExternalLabels",
+            preferences.show_external_labels,
+        )
+        self.show_profile_fill_check = preference_check(
+            "轮廓填充", "sketchShowProfileFill", preferences.show_profile_fill
+        )
+        self.show_work_plane_axes_check = preference_check(
+            "工作平面坐标轴",
+            "sketchShowWorkPlaneAxes",
+            preferences.show_work_plane_axes,
+        )
+        self.continuous_polyline_check = preference_check(
+            "连续折线",
+            "sketchContinuousPolyline",
+            preferences.continuous_polyline,
+        )
+        self.end_polyline_on_close_check = preference_check(
+            "闭合后结束",
+            "sketchEndPolylineOnClose",
+            preferences.end_polyline_on_close,
+        )
+        self.keep_tool_after_completion_check = preference_check(
+            "完成后保持工具",
+            "sketchKeepToolAfterCompletion",
+            preferences.keep_tool_after_completion,
+        )
+        self.confirm_cascade_delete_check = preference_check(
+            "级联删除确认",
+            "sketchConfirmCascadeDelete",
+            preferences.confirm_cascade_delete,
+        )
 
         self.point_search_edit = QLineEdit(self)
         self.point_search_edit.setObjectName("sketchPointSearch")
@@ -315,8 +417,56 @@ class SketchEditorPanel(QWidget):
         self.work_plane_label = QLabel("全局 XY", self)
         self.work_plane_label.setObjectName("sketchWorkPlaneLabel")
         form.addRow("工作平面", self.work_plane_label)
-        form.addRow(self.snap_check)
-        form.addRow("网格间距", self.spacing_spin)
+
+        grid_group = QGroupBox("网格", self)
+        grid_layout = QFormLayout(grid_group)
+        grid_switches = QHBoxLayout()
+        grid_switches.addWidget(self.grid_visible_check)
+        grid_switches.addWidget(self.snap_check)
+        grid_layout.addRow(grid_switches)
+        grid_layout.addRow("间距", self.spacing_spin)
+
+        snap_group = QGroupBox("捕捉", self)
+        snap_layout = QFormLayout(snap_group)
+        snap_categories = QHBoxLayout()
+        for control in (
+            self.snap_sketch_points_check,
+            self.snap_external_points_check,
+            self.snap_midpoints_check,
+        ):
+            snap_categories.addWidget(control)
+        snap_more_categories = QHBoxLayout()
+        for control in (
+            self.snap_centers_check,
+            self.snap_intersections_check,
+        ):
+            snap_more_categories.addWidget(control)
+        snap_layout.addRow(snap_categories)
+        snap_layout.addRow(snap_more_categories)
+        snap_layout.addRow("屏幕容差", self.screen_snap_tolerance_spin)
+        snap_layout.addRow("自动合并容差", self.auto_merge_tolerance_spin)
+
+        display_group = QGroupBox("显示", self)
+        display_layout = QVBoxLayout(display_group)
+        display_first = QHBoxLayout()
+        display_first.addWidget(self.show_point_ids_check)
+        display_first.addWidget(self.show_external_labels_check)
+        display_second = QHBoxLayout()
+        display_second.addWidget(self.show_profile_fill_check)
+        display_second.addWidget(self.show_work_plane_axes_check)
+        display_layout.addLayout(display_first)
+        display_layout.addLayout(display_second)
+
+        behavior_group = QGroupBox("绘图行为", self)
+        behavior_layout = QVBoxLayout(behavior_group)
+        behavior_first = QHBoxLayout()
+        behavior_first.addWidget(self.continuous_polyline_check)
+        behavior_first.addWidget(self.end_polyline_on_close_check)
+        behavior_second = QHBoxLayout()
+        behavior_second.addWidget(self.keep_tool_after_completion_check)
+        behavior_second.addWidget(self.confirm_cascade_delete_check)
+        behavior_layout.addLayout(behavior_first)
+        behavior_layout.addLayout(behavior_second)
         edit_row = QHBoxLayout()
         edit_row.addWidget(self.delete_button)
         edit_row.addWidget(self.release_association_button)
@@ -328,6 +478,10 @@ class SketchEditorPanel(QWidget):
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
+        layout.addWidget(grid_group)
+        layout.addWidget(snap_group)
+        layout.addWidget(display_group)
+        layout.addWidget(behavior_group)
         layout.addWidget(QLabel("绘图工具", self))
         layout.addLayout(first_modes)
         layout.addLayout(second_modes)
@@ -434,6 +588,7 @@ class SketchEditorPanel(QWidget):
         )
         self.attach_viewport(viewport)
         self.show()
+        self._apply_preferences_to_viewport()
         viewport.start_sketch_authoring(
             self.render_data(),
             snap=self.snap_check.isChecked(),
@@ -474,6 +629,7 @@ class SketchEditorPanel(QWidget):
     def render_data(self) -> SketchDraftRenderData:
         controller = self._require_controller()
         snapshot = controller.snapshot()
+        snap_midpoints, snap_centers = self._derived_snap_points(snapshot)
         selected_kind = snapshot.selected_kind
         selected_id = snapshot.selected_ids[0] if snapshot.selected_ids else None
         if controller.profiles:
@@ -534,8 +690,44 @@ class SketchEditorPanel(QWidget):
                 selected_id=selected_id,
                 plane=snapshot.plane,
                 selected_ids=snapshot.selected_ids,
+                snap_midpoints=snap_midpoints,
+                snap_centers=snap_centers,
             )
         return self._incomplete_render_data(snapshot, selected_kind, selected_id)
+
+    @staticmethod
+    def _derived_snap_points(
+        snapshot: SketchDraftSnapshot,
+    ) -> tuple[
+        tuple[tuple[float, float, float], ...],
+        tuple[tuple[float, float, float], ...],
+    ]:
+        point_map = {point.id: point for point in snapshot.points}
+        midpoints = tuple(
+            snapshot.plane.to_global(
+                0.5
+                * (
+                    point_map[curve.start_point_id].u
+                    + point_map[curve.end_point_id].u
+                ),
+                0.5
+                * (
+                    point_map[curve.start_point_id].v
+                    + point_map[curve.end_point_id].v
+                ),
+            )
+            for curve in snapshot.curves
+            if isinstance(curve, SketchLine)
+        )
+        centers = tuple(
+            snapshot.plane.to_global(
+                point_map[curve.center_point_id].u,
+                point_map[curve.center_point_id].v,
+            )
+            for curve in snapshot.curves
+            if isinstance(curve, (SketchCircle, SketchArc))
+        )
+        return midpoints, centers
 
     def _incomplete_render_data(
         self,
@@ -543,6 +735,7 @@ class SketchEditorPanel(QWidget):
         selected_kind: str | None,
         selected_id: str | None,
     ) -> SketchDraftRenderData:
+        snap_midpoints, snap_centers = self._derived_snap_points(snapshot)
         points = [
             snapshot.plane.to_global(point.u, point.v)
             for point in snapshot.points
@@ -615,6 +808,8 @@ class SketchEditorPanel(QWidget):
             selected_id=selected_id,
             plane=snapshot.plane,
             selected_ids=snapshot.selected_ids,
+            snap_midpoints=snap_midpoints,
+            snap_centers=snap_centers,
         )
 
     def _point_from_viewport(
@@ -628,6 +823,7 @@ class SketchEditorPanel(QWidget):
         try:
             if self.mode == "polyline":
                 closed = False
+                segment_completed = False
                 point_id = self._point_id_at(u, v)
                 if self._polyline_start_id is None and point_id is None:
                     point_id = controller.add_point(
@@ -648,14 +844,20 @@ class SketchEditorPanel(QWidget):
                     )
                     point_id = line.end_point_id
                     self._polyline_start_id = point_id
+                    segment_completed = True
                 elif point_id != self._polyline_start_id:
                     controller.add_line(self._polyline_start_id, point_id)
-                    if point_id == self._polyline_first_id:
-                        self._clear_pending()
-                        closed = True
-                    else:
-                        self._polyline_start_id = point_id
-                if not closed:
+                    segment_completed = True
+                    closed = point_id == self._polyline_first_id
+                    self._polyline_start_id = point_id
+                chain_ended = segment_completed and (
+                    not self._preferences.continuous_polyline
+                    or (closed and self._preferences.end_polyline_on_close)
+                )
+                if chain_ended:
+                    self._clear_pending()
+                    self._finish_shape_tool()
+                else:
                     self._pending_points = [(u, v)]
             elif self.mode == "rectangle":
                 self._pending_points.append((u, v))
@@ -693,6 +895,7 @@ class SketchEditorPanel(QWidget):
                         external_references=references,
                     )
                     self._clear_pending()
+                    self._finish_shape_tool()
             elif self.mode == "circle":
                 self._pending_points.append((u, v))
                 self._pending_references.append(reference_point)
@@ -705,6 +908,7 @@ class SketchEditorPanel(QWidget):
                         external_reference=self._pending_references[0],
                     )
                     self._clear_pending()
+                    self._finish_shape_tool()
             elif self.mode == "arc":
                 self._pending_points.append((u, v))
                 self._pending_references.append(reference_point)
@@ -716,6 +920,7 @@ class SketchEditorPanel(QWidget):
                         end_external_reference=self._pending_references[2],
                     )
                     self._clear_pending()
+                    self._finish_shape_tool()
         except (TypeError, ValueError) as error:
             self._set_status(str(error))
             self._clear_pending()
@@ -729,11 +934,15 @@ class SketchEditorPanel(QWidget):
 
     def _point_id_at(self, u: float, v: float) -> str | None:
         controller = self._require_controller()
-        tolerance = max(1.0e-8, self.spacing_spin.value() * 1.0e-6)
+        tolerance = self._preferences.auto_merge_tolerance
         for point in controller.snapshot().points:
             if math.hypot(point.u - u, point.v - v) <= tolerance:
                 return point.id
         return None
+
+    def _finish_shape_tool(self) -> None:
+        if not self._preferences.keep_tool_after_completion:
+            self.set_mode("select")
 
     def _select_point(
         self,
@@ -823,7 +1032,7 @@ class SketchEditorPanel(QWidget):
                     for curve_id in controller.dependent_curve_ids(entity_id)
                 )
             )
-            if dependent_ids:
+            if dependent_ids and self._preferences.confirm_cascade_delete:
                 answer = QMessageBox.question(
                     self,
                     "删除草图点" if len(entity_ids) == 1 else "删除多个草图点",
@@ -895,11 +1104,58 @@ class SketchEditorPanel(QWidget):
         self._refresh()
 
     def _grid_changed(self, *_args) -> None:
+        self._preferences_changed()
+
+    def _current_preferences(self) -> SketchPreferences:
+        return SketchPreferences(
+            grid_visible=self.grid_visible_check.isChecked(),
+            grid_snap=self.snap_check.isChecked(),
+            grid_spacing=self.spacing_spin.value(),
+            snap_sketch_points=self.snap_sketch_points_check.isChecked(),
+            snap_external_points=self.snap_external_points_check.isChecked(),
+            snap_midpoints=self.snap_midpoints_check.isChecked(),
+            snap_centers=self.snap_centers_check.isChecked(),
+            snap_intersections=self.snap_intersections_check.isChecked(),
+            screen_snap_tolerance=self.screen_snap_tolerance_spin.value(),
+            auto_merge_tolerance=self.auto_merge_tolerance_spin.value(),
+            show_point_ids=self.show_point_ids_check.isChecked(),
+            show_external_labels=self.show_external_labels_check.isChecked(),
+            show_profile_fill=self.show_profile_fill_check.isChecked(),
+            show_work_plane_axes=self.show_work_plane_axes_check.isChecked(),
+            continuous_polyline=self.continuous_polyline_check.isChecked(),
+            end_polyline_on_close=self.end_polyline_on_close_check.isChecked(),
+            keep_tool_after_completion=(
+                self.keep_tool_after_completion_check.isChecked()
+            ),
+            confirm_cascade_delete=self.confirm_cascade_delete_check.isChecked(),
+        ).normalized()
+
+    def _preferences_changed(self, *_args) -> None:
+        self._preferences = self._current_preferences()
+        if self._settings is not None:
+            save_sketch_preferences(self._settings, self._preferences)
+        self._apply_preferences_to_viewport()
+
+    def _apply_preferences_to_viewport(self) -> None:
         if self._viewport is None:
             return
+        preferences = self._preferences
         self._viewport.set_sketch_grid(
-            snap=self.snap_check.isChecked(),
-            spacing=self.spacing_spin.value(),
+            visible=preferences.grid_visible,
+            snap=preferences.grid_snap,
+            spacing=preferences.grid_spacing,
+        )
+        self._viewport.set_sketch_preferences(
+            snap_sketch_points=preferences.snap_sketch_points,
+            snap_external_points=preferences.snap_external_points,
+            snap_midpoints=preferences.snap_midpoints,
+            snap_centers=preferences.snap_centers,
+            snap_intersections=preferences.snap_intersections,
+            screen_snap_tolerance=preferences.screen_snap_tolerance,
+            show_point_ids=preferences.show_point_ids,
+            show_external_labels=preferences.show_external_labels,
+            show_profile_fill=preferences.show_profile_fill,
+            show_work_plane_axes=preferences.show_work_plane_axes,
         )
 
     def _point_item_changed(self, item: QTableWidgetItem) -> None:

@@ -52,6 +52,7 @@ class SketchReferencePoint:
 
 SketchSnapKind = Literal[
     "sketch_point",
+    "intersection",
     "topology_vertex",
     "circle_center",
     "arc_center",
@@ -90,6 +91,7 @@ class SketchSnapCandidate:
 _SNAP_PRIORITIES: dict[str, int] = {
     "sketch_point": 0,
     "topology_vertex": 1,
+    "intersection": 2,
     "circle_center": 2,
     "arc_center": 2,
     "line_midpoint": 3,
