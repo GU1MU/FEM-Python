@@ -190,6 +190,20 @@ from .sketch_intersections import (
     intersect_sketch_curves,
     sketch_intersections,
 )
+from .sketch_constraints import (
+    SketchResidualBlock,
+    constraint_signature,
+    duplicate_constraint_ids,
+    evaluate_sketch_residuals,
+    flatten_residual_blocks,
+    sketch_characteristic_length,
+)
+from .sketch_solver import (
+    SketchSolveResult,
+    SketchSolveStatus,
+    solve_sketch_constraints,
+    solve_sketch_draft,
+)
 
 __all__ = [
     "BASE_GEOMETRY_TYPES",
@@ -285,6 +299,9 @@ __all__ = [
     "SketchProfile",
     "SketchProfileAnalysis",
     "SketchRectangle",
+    "SketchResidualBlock",
+    "SketchSolveResult",
+    "SketchSolveStatus",
     "SketchVerticalConstraint",
     "SolidBody",
     "StrictBodyBooleanPreview",
@@ -308,6 +325,10 @@ __all__ = [
     "is_single_solid_recipe",
     "planar_geometry_normal",
     "constraints_without_entities",
+    "constraint_signature",
+    "duplicate_constraint_ids",
+    "evaluate_sketch_residuals",
+    "flatten_residual_blocks",
     "constraints_after_curve_split",
     "copy_sketch_constraints",
     "sketch_constraint_entity_ids",
@@ -349,6 +370,9 @@ __all__ = [
     "strip_part_reference",
     "select_sketch_snap_candidate",
     "sketch_intersections",
+    "sketch_characteristic_length",
+    "solve_sketch_constraints",
+    "solve_sketch_draft",
     "transform_solid_body",
     "transformed_circle",
     "undo_solid_body_feature",

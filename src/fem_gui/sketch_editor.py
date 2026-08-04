@@ -35,6 +35,7 @@ from fem.geometry.recipes import (
 )
 from fem.geometry.sketch_support import SketchReferencePoint
 from fem.geometry.sketch_intersections import intersect_sketch_curves
+from fem.geometry.sketch_solver import SketchSolveResult, solve_sketch_draft
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,6 +333,121 @@ class SketchDraftController:
 
         self._mutate(apply)
         return constraint
+
+    def solve_constraints_temporary(
+        self,
+        *,
+        point_coordinates: dict[str, tuple[float, float]] | None = None,
+        constraints: tuple[SketchConstraint, ...] | None = None,
+        new_constraint_ids: tuple[str, ...] = (),
+    ) -> SketchSolveResult:
+        """Solve a detached candidate while leaving draft state and history untouched.
+
+        Explicitly edited points act as temporary known conditions for this solve,
+        matching direct-manipulation semantics without persisting a fixed constraint.
+        Existing external coincidences are known conditions on every solve.
+        """
+
+        coordinates = {} if point_coordinates is None else point_coordinates
+        if not isinstance(coordinates, dict):
+            raise TypeError("point_coordinates must be a point ID mapping")
+        candidate_points = dict(self._points)
+        for point_id, coordinate in coordinates.items():
+            point = self._require_point(point_id)
+            if point_id in self._external_coincidences:
+                raise ValueError("关联点不能直接移动，请先执行“解除关联”")
+            u, v = _coordinate_pair(coordinate, "point_coordinates")
+            candidate_points[point_id] = SketchPoint(point.id, u, v)
+        candidate_constraints = (
+            tuple(self._constraints.values())
+            if constraints is None
+            else tuple(constraints)
+        )
+        validate_sketch_constraints(
+            candidate_constraints,
+            candidate_points,
+            tuple(self._curves.values()),
+        )
+        return solve_sketch_draft(
+            tuple(candidate_points[point.id] for point in self._points.values()),
+            tuple(self._curves.values()),
+            candidate_constraints,
+            fixed_point_ids=(
+                *self._external_coincidences,
+                *coordinates,
+            ),
+            new_constraint_ids=new_constraint_ids,
+        )
+
+    temporary_constraint_solve = solve_constraints_temporary
+
+    def commit_constrained_edit(
+        self,
+        *,
+        point_coordinates: dict[str, tuple[float, float]] | None = None,
+        add_constraints: tuple[SketchConstraint, ...] = (),
+        remove_constraint_ids: tuple[str, ...] = (),
+    ) -> SketchSolveResult:
+        """Solve and atomically commit one geometry/constraint edit.
+
+        Under-, fully-, and redundantly constrained results commit in one undo
+        record.  Conflicting or failed candidates return diagnostics and leave
+        geometry, constraints, revision, selection, and history byte-for-byte
+        unchanged.
+        """
+
+        additions = tuple(add_constraints)
+        removals = tuple(remove_constraint_ids)
+        if any(type(item) not in SKETCH_CONSTRAINT_TYPES for item in additions):
+            raise TypeError("add_constraints must contain SketchConstraint values")
+        unknown_removal = next(
+            (constraint_id for constraint_id in removals if constraint_id not in self._constraints),
+            None,
+        )
+        if unknown_removal is not None:
+            raise KeyError(unknown_removal)
+        retained = tuple(
+            constraint
+            for constraint in self._constraints.values()
+            if constraint.id not in set(removals)
+        )
+        candidate_constraints = (*retained, *additions)
+        result = self.solve_constraints_temporary(
+            point_coordinates=point_coordinates,
+            constraints=candidate_constraints,
+            new_constraint_ids=tuple(constraint.id for constraint in additions),
+        )
+        if not result.succeeded:
+            return result
+
+        def apply() -> None:
+            self._points = {point.id: point for point in result.points}
+            self._curves = {curve.id: curve for curve in result.curves}
+            self._constraints = {
+                constraint.id: constraint for constraint in candidate_constraints
+            }
+            self._validate_constraints()
+
+        self._mutate(apply)
+        return result
+
+    apply_constrained_edit = commit_constrained_edit
+
+    def add_constraint_and_solve(
+        self, constraint: SketchConstraint
+    ) -> SketchSolveResult:
+        """Add one constraint through the atomic solver path."""
+
+        return self.commit_constrained_edit(add_constraints=(constraint,))
+
+    add_constraint_solved = add_constraint_and_solve
+
+    def move_points_constrained(
+        self, coordinates: dict[str, tuple[float, float]]
+    ) -> SketchSolveResult:
+        """Move driving points and solve dependent geometry as one undo step."""
+
+        return self.commit_constrained_edit(point_coordinates=coordinates)
 
     def delete_constraint(self, constraint_id: str) -> None:
         if constraint_id not in self._constraints:
