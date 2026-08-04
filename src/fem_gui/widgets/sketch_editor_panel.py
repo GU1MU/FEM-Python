@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QTableWidget,
@@ -564,15 +565,25 @@ class SketchEditorPanel(QWidget):
             if self.mode == "polyline":
                 closed = False
                 point_id = self._point_id_at(u, v)
-                if point_id is None:
+                if self._polyline_start_id is None and point_id is None:
                     point_id = controller.add_point(
                         u,
                         v,
                         external_reference=reference_point,
                     ).id
                 if self._polyline_start_id is None:
+                    if point_id is None:  # pragma: no cover - created above
+                        raise RuntimeError("polyline start point was not created")
                     self._polyline_start_id = point_id
                     self._polyline_first_id = point_id
+                elif point_id is None:
+                    line = controller.add_line_to_point(
+                        self._polyline_start_id,
+                        (u, v),
+                        external_reference=reference_point,
+                    )
+                    point_id = line.end_point_id
+                    self._polyline_start_id = point_id
                 elif point_id != self._polyline_start_id:
                     controller.add_line(self._polyline_start_id, point_id)
                     if point_id == self._polyline_first_id:
@@ -699,6 +710,24 @@ class SketchEditorPanel(QWidget):
             self._set_status("请先用“选择”工具选中要删除的点或曲线")
             return
         entity_id = controller.selected_ids[0]
+        if controller.selection is not None and controller.selection[0] == "point":
+            dependent_ids = controller.dependent_curve_ids(entity_id)
+            if dependent_ids:
+                answer = QMessageBox.question(
+                    self,
+                    "删除草图点",
+                    (
+                        f"删除点 {entity_id} 将同时删除依赖曲线：\n"
+                        + "\n".join(dependent_ids)
+                        + "\n\n是否继续？"
+                    ),
+                    QMessageBox.StandardButton.Yes
+                    | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    self._set_status("已取消删除")
+                    return
         try:
             controller.delete(entity_id)
         except (KeyError, TypeError, ValueError) as error:
@@ -766,27 +795,32 @@ class SketchEditorPanel(QWidget):
         if self._refreshing or item.column() not in {1, 2}:
             return
         controller = self._require_controller()
-        snapshot = controller.snapshot()
-        if item.row() >= len(snapshot.points):
+        id_item = self.points_table.item(item.row(), 0)
+        if id_item is None:
             return
-        point = snapshot.points[item.row()]
+        point_id = id_item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(point_id, str):
+            return
         try:
             controller.move_point(
-                point.id,
+                point_id,
                 u=float(self.points_table.item(item.row(), 1).text()),
                 v=float(self.points_table.item(item.row(), 2).text()),
             )
-        except (TypeError, ValueError) as error:
+        except (KeyError, TypeError, ValueError) as error:
             self._set_status(str(error))
-        self._refresh(selected_id=point.id)
+        self._refresh(selected_id=point_id)
 
     def _point_row_selected(self) -> None:
         if self._refreshing:
             return
         row = self.points_table.currentRow()
-        snapshot = self._require_controller().snapshot()
-        if 0 <= row < len(snapshot.points):
-            self._select_point(snapshot.points[row].id)
+        id_item = self.points_table.item(row, 0)
+        if id_item is None:
+            return
+        point_id = id_item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(point_id, str):
+            self._select_point(point_id)
 
     def _selected_curve(self):
         snapshot = self._require_controller().snapshot()
@@ -876,6 +910,7 @@ class SketchEditorPanel(QWidget):
         points = {point.id: point for point in controller.snapshot().points}
         center = points[curve.center_point_id]
         target = self.arc_radius_spin.value()
+        coordinates: dict[str, tuple[float, float]] = {}
         try:
             for point_id in (
                 curve.start_point_id,
@@ -886,11 +921,11 @@ class SketchEditorPanel(QWidget):
                     point.v - center.v,
                     point.u - center.u,
                 )
-                controller.move_point(
-                    point_id,
+                coordinates[point_id] = (
                     center.u + target * math.cos(angle),
                     center.v + target * math.sin(angle),
                 )
+            controller.move_points(coordinates)
         except (KeyError, TypeError, ValueError) as error:
             self._set_status(str(error))
         self._refresh(selected_id=curve.id)
@@ -1049,23 +1084,32 @@ class SketchEditorPanel(QWidget):
                 if snapshot.plane == SketchPlane.xy()
                 else "实体平面面（U/V）"
             )
+            sorting_enabled = self.points_table.isSortingEnabled()
+            self.points_table.setSortingEnabled(False)
             self.points_table.setRowCount(0)
             for row, point in enumerate(snapshot.points):
                 self.points_table.insertRow(row)
+                association_status = controller.association_status(point.id)
                 for column, value in enumerate(
                     (
                         point.id,
                         f"{point.u:.6g}",
                         f"{point.v:.6g}",
-                        controller.association_status(point.id),
+                        association_status,
                     )
                 ):
                     item = QTableWidgetItem(value)
-                    if column in {0, 3}:
+                    item.setData(Qt.ItemDataRole.UserRole, point.id)
+                    if column in {0, 3} or (
+                        column in {1, 2} and association_status != "自由"
+                    ):
                         item.setFlags(
                             item.flags() & ~Qt.ItemFlag.ItemIsEditable
                         )
+                    if column in {1, 2} and association_status != "自由":
+                        item.setToolTip("关联点坐标只读；解除关联后可编辑")
                     self.points_table.setItem(row, column, item)
+            self.points_table.setSortingEnabled(sorting_enabled)
             diagnostics = controller.finish_diagnostics
             self.diagnostic_label.setText(
                 "\n".join(item.message for item in diagnostics)

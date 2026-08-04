@@ -2,10 +2,29 @@ from __future__ import annotations
 
 import pytest
 
+from fem.geometry import (
+    LogicalEntityRef,
+    SketchExternalReference,
+    SketchExternalReferenceType,
+    SketchReferencePoint,
+)
 from fem_gui.sketch_editor import (
     SketchDraftController,
     SketchDraftValidationError,
 )
+
+
+def _reference_point(u: float, v: float) -> SketchReferencePoint:
+    return SketchReferencePoint(
+        SketchExternalReference(
+            "R1",
+            LogicalEntityRef("point:support/P1"),
+            SketchExternalReferenceType.TOPOLOGY_VERTEX,
+        ),
+        (u, v, 0.0),
+        u,
+        v,
+    )
 
 
 def test_empty_draft_stays_detached_until_finish() -> None:
@@ -35,6 +54,89 @@ def test_rectangle_is_one_undo_command_and_has_profile() -> None:
     assert controller.snapshot().curves == ()
     controller.redo()
     assert len(controller.snapshot().curves) == 4
+
+
+def test_selection_is_transient_and_does_not_change_history() -> None:
+    authored = SketchDraftController("Selection")
+    authored.add_rectangle((0.0, 0.0), (2.0, 1.0))
+    controller = SketchDraftController.from_sketch_geometry(authored.finish())
+    point = controller.snapshot().points[0]
+    revision = controller.snapshot().revision
+    can_undo = controller.can_undo
+    dirty = controller.dirty
+
+    controller.select_point(point.id)
+    controller.clear_selection()
+    controller.select_point(point.id)
+
+    assert controller.snapshot().revision == revision
+    assert controller.can_undo is can_undo
+    assert controller.dirty is dirty
+    assert revision == 0
+    assert not can_undo
+    assert not dirty
+
+
+def test_draw_segment_and_batch_move_are_single_atomic_edits() -> None:
+    controller = SketchDraftController("Atomic edits")
+    start = controller.add_point(0.0, 0.0)
+    before_segment = controller.snapshot()
+
+    line = controller.add_line_to_point(start.id, (2.0, 0.0))
+
+    assert line.end_point_id in {point.id for point in controller.snapshot().points}
+    controller.undo()
+    assert controller.snapshot() == before_segment
+
+    first = controller.add_point(1.0, 0.0)
+    second = controller.add_point(2.0, 0.0)
+    before_move = controller.snapshot()
+    controller.move_points(
+        {
+            first.id: (1.0, 1.0),
+            second.id: (2.0, 2.0),
+        }
+    )
+    controller.undo()
+    assert controller.snapshot() == before_move
+
+
+def test_composite_edit_failure_rolls_back_entire_draft(monkeypatch) -> None:
+    controller = SketchDraftController("Rollback")
+    start = controller.add_point(0.0, 0.0)
+    before = controller.snapshot()
+
+    def fail_binding(_point_id, _reference_point) -> None:
+        raise ValueError("binding failed")
+
+    monkeypatch.setattr(controller, "_bind_external_reference", fail_binding)
+    with pytest.raises(ValueError, match="binding failed"):
+        controller.add_line_to_point(
+            start.id,
+            (1.0, 0.0),
+            external_reference=_reference_point(1.0, 0.0),
+        )
+
+    assert controller.snapshot() == before
+
+
+def test_point_cascade_delete_lists_dependencies_and_undo_restores_all() -> None:
+    controller = SketchDraftController("Cascade")
+    first = controller.add_point(0.0, 0.0)
+    shared = controller.add_point(1.0, 0.0)
+    last = controller.add_point(2.0, 0.0)
+    first_line = controller.add_line(first.id, shared.id)
+    second_line = controller.add_line(shared.id, last.id)
+    before = controller.snapshot()
+
+    assert controller.dependent_curve_ids(shared.id) == (
+        first_line.id,
+        second_line.id,
+    )
+    controller.delete_point(shared.id)
+    assert controller.snapshot().curves == ()
+    controller.undo()
+    assert controller.snapshot() == before
 
 
 def test_id_generation_is_case_insensitive_and_redo_branch_clears() -> None:

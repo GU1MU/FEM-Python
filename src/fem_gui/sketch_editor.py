@@ -68,6 +68,29 @@ class SketchDraftSnapshot:
         return self.revision > 0
 
 
+@dataclass(frozen=True, slots=True)
+class _SketchGeometryState:
+    """Undoable draft data, excluding transient editor interaction state."""
+
+    name: str
+    plane: SketchPlane
+    points: tuple[SketchPoint, ...]
+    curves: tuple[SketchCurve, ...]
+    revision: int
+    external_references: tuple[SketchExternalReference, ...]
+    external_coincidences: tuple[SketchExternalCoincidence, ...]
+    unresolved_reference_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _SketchInteractionState:
+    """Transient selection and gesture state that never enters undo history."""
+
+    selected_ids: tuple[str, ...]
+    selected_kind: str | None
+    pending_command: str | None
+
+
 SketchDraftCurve = SketchCurve
 SketchDraftDiagnostic = SketchDiagnostic
 
@@ -164,8 +187,8 @@ class SketchDraftController:
         }
         self._unresolved_reference_ids = set(initial.unresolved_reference_ids)
         self._validate_associations()
-        self._undo: list[SketchDraftSnapshot] = []
-        self._redo: list[SketchDraftSnapshot] = []
+        self._undo: list[_SketchGeometryState] = []
+        self._redo: list[_SketchGeometryState] = []
         self._history_limit = history_limit
 
     @classmethod
@@ -375,6 +398,30 @@ class SketchDraftController:
     update_point = move_point
     set_point_coordinates = move_point
 
+    def move_points(
+        self,
+        coordinates: dict[str, tuple[float, float]],
+    ) -> tuple[SketchPoint, ...]:
+        """Move several free points as one atomic, undoable edit."""
+
+        if not isinstance(coordinates, dict):
+            raise TypeError("coordinates must be a point ID mapping")
+        replacements: list[SketchPoint] = []
+        for point_id, coordinate in coordinates.items():
+            point = self._require_point(point_id)
+            if point_id in self._external_coincidences:
+                raise ValueError("关联点不能直接移动，请先执行“解除关联”")
+            u, v = _coordinate_pair(coordinate, "coordinates")
+            replacements.append(SketchPoint(point.id, u, v))
+
+        def apply() -> None:
+            self._points.update({point.id: point for point in replacements})
+
+        self._mutate(apply)
+        return tuple(replacements)
+
+    batch_move_points = move_points
+
     def external_reference_for_point(
         self,
         point_id: str,
@@ -461,6 +508,16 @@ class SketchDraftController:
 
         self._mutate(apply)
 
+    def dependent_curve_ids(self, point_id: str) -> tuple[str, ...]:
+        """Return curves that will be removed when the point is deleted."""
+
+        self._require_point(point_id)
+        return tuple(
+            curve_id
+            for curve_id, curve in self._curves.items()
+            if point_id in _curve_point_ids(curve)
+        )
+
     def add_line(
         self,
         *args: object,
@@ -495,6 +552,51 @@ class SketchDraftController:
         def apply() -> None:
             self._assert_new_id(line.id)
             self._curves[line.id] = line
+
+        self._mutate(apply)
+        return line
+
+    def add_line_to_point(
+        self,
+        start_point_id: str,
+        end: object,
+        *,
+        curve_id: str | None = None,
+        point_id: str | None = None,
+        external_reference: SketchReferencePoint | None = None,
+    ) -> SketchLine:
+        """Draw one segment, creating its end point in the same transaction."""
+
+        self._require_point(start_point_id)
+        if external_reference is not None and type(external_reference) is not SketchReferencePoint:
+            raise TypeError("external_reference must be a SketchReferencePoint")
+        if isinstance(end, str):
+            if point_id is not None or external_reference is not None:
+                raise ValueError("existing end points cannot be replaced or associated")
+            end_point = self._require_point(end)
+            create_point = False
+        else:
+            u, v = _coordinate_pair(end, "end")
+            end_point = SketchPoint(
+                point_id or self._next_id("P", self._points),
+                external_reference.u if external_reference is not None else u,
+                external_reference.v if external_reference is not None else v,
+            )
+            create_point = True
+        line = SketchLine(
+            curve_id or self._next_id("L", self._curves),
+            start_point_id,
+            end_point.id,
+        )
+
+        def apply() -> None:
+            if create_point:
+                self._assert_new_id(end_point.id)
+                self._points[end_point.id] = end_point
+            self._assert_new_id(line.id)
+            self._curves[line.id] = line
+            if external_reference is not None:
+                self._bind_external_reference(end_point.id, external_reference)
 
         self._mutate(apply)
         return line
@@ -924,11 +1026,8 @@ class SketchDraftController:
                 raise KeyError(entity_id)
         normalized_kind = kind or self._kind_for_id(entity_id)
 
-        def apply() -> None:
-            self._selected_ids = (entity_id,)
-            self._selected_kind = normalized_kind
-
-        self._mutate(apply)
+        self._selected_ids = (entity_id,)
+        self._selected_kind = normalized_kind
         return self._selected_ids
 
     select_entity = select
@@ -950,19 +1049,14 @@ class SketchDraftController:
         if len(kinds) != 1:
             raise ValueError("同一种实体类型才能多选")
         for item in ids:
-            self.select(item)
-        # ``select`` intentionally records each single selection.  Collapse
-        # the gesture into one final state for callers that use multi-select.
+            self._assert_selectable(item)
         self._selected_ids = ids
         self._selected_kind = next(iter(kinds))
         return ids
 
     def clear_selection(self) -> tuple[str, ...]:
-        def apply() -> None:
-            self._selected_ids = ()
-            self._selected_kind = None
-
-        self._mutate(apply)
+        self._selected_ids = ()
+        self._selected_kind = None
         return ()
 
     def begin_pending_command(self, command: str) -> None:
@@ -970,10 +1064,7 @@ class SketchDraftController:
         if not normalized:
             raise ValueError("pending command cannot be empty")
 
-        def apply() -> None:
-            self._pending_command = normalized
-
-        self._mutate(apply)
+        self._pending_command = normalized
 
     begin_command = begin_pending_command
 
@@ -981,10 +1072,7 @@ class SketchDraftController:
         if self._pending_command is None:
             return
 
-        def apply() -> None:
-            self._pending_command = None
-
-        self._mutate(apply)
+        self._pending_command = None
 
     cancel_command = cancel_pending_command
 
@@ -998,19 +1086,21 @@ class SketchDraftController:
     def undo(self) -> SketchDraftSnapshot:
         if not self._undo:
             return self.snapshot()
-        current = self.snapshot()
+        current = self._geometry_state()
         previous = self._undo.pop()
         self._redo.append(current)
-        self._restore_state(previous)
+        self._restore_geometry_state(previous)
+        self._prune_selection()
         return self.snapshot()
 
     def redo(self) -> SketchDraftSnapshot:
         if not self._redo:
             return self.snapshot()
-        current = self.snapshot()
+        current = self._geometry_state()
         following = self._redo.pop()
         self._undo.append(current)
-        self._restore_state(following)
+        self._restore_geometry_state(following)
+        self._prune_selection()
         return self.snapshot()
 
     def restore_snapshot(self, snapshot: SketchDraftSnapshot) -> None:
@@ -1113,13 +1203,15 @@ class SketchDraftController:
         )
 
     def _mutate(self, operation):
-        before = self.snapshot()
+        before = self._geometry_state()
+        interaction = self._interaction_state()
         try:
             result = operation()
         except BaseException:
-            self._restore_state(before)
+            self._restore_geometry_state(before)
+            self._restore_interaction_state(interaction)
             raise
-        after = self.snapshot()
+        after = self._geometry_state()
         if after == before:
             return result
         self._undo.append(before)
@@ -1128,6 +1220,46 @@ class SketchDraftController:
         self._redo.clear()
         self._revision += 1
         return result
+
+    def _geometry_state(self) -> _SketchGeometryState:
+        return _SketchGeometryState(
+            self._name,
+            self._plane,
+            tuple(self._points.values()),
+            tuple(self._curves.values()),
+            self._revision,
+            tuple(self._external_references.values()),
+            tuple(self._external_coincidences.values()),
+            tuple(sorted(self._unresolved_reference_ids)),
+        )
+
+    def _interaction_state(self) -> _SketchInteractionState:
+        return _SketchInteractionState(
+            self._selected_ids,
+            self._selected_kind,
+            self._pending_command,
+        )
+
+    def _restore_geometry_state(self, state: _SketchGeometryState) -> None:
+        self._name = state.name
+        self._plane = state.plane
+        self._points = {point.id: point for point in state.points}
+        self._curves = {curve.id: curve for curve in state.curves}
+        self._revision = state.revision
+        self._external_references = {
+            reference.id: reference for reference in state.external_references
+        }
+        self._external_coincidences = {
+            coincidence.point_id: coincidence
+            for coincidence in state.external_coincidences
+        }
+        self._unresolved_reference_ids = set(state.unresolved_reference_ids)
+        self._validate_associations()
+
+    def _restore_interaction_state(self, state: _SketchInteractionState) -> None:
+        self._selected_ids = state.selected_ids
+        self._selected_kind = state.selected_kind
+        self._pending_command = state.pending_command
 
     def _restore_state(self, snapshot: SketchDraftSnapshot) -> None:
         if len({item.id for item in snapshot.external_references}) != len(
@@ -1244,6 +1376,12 @@ class SketchDraftController:
         if entity_id not in self._points and entity_id not in self._curves:
             raise KeyError(entity_id)
 
+    def _assert_selectable(self, entity_id: str) -> None:
+        if entity_id in self._points or entity_id in self._curves:
+            return
+        if entity_id not in {profile.id for profile in self.derive_profiles().profiles}:
+            raise KeyError(entity_id)
+
     def _kind_for_id(self, entity_id: str) -> str:
         if entity_id in self._points:
             return "point"
@@ -1253,6 +1391,19 @@ class SketchDraftController:
 
     def _clear_selection_id(self, entity_id: str) -> None:
         self._selected_ids = tuple(item for item in self._selected_ids if item != entity_id)
+        if not self._selected_ids:
+            self._selected_kind = None
+
+    def _prune_selection(self) -> None:
+        if self._selected_kind == "point":
+            valid_ids = self._points
+        elif self._selected_kind == "edge":
+            valid_ids = self._curves
+        else:
+            valid_ids = {profile.id for profile in self.derive_profiles().profiles}
+        self._selected_ids = tuple(
+            entity_id for entity_id in self._selected_ids if entity_id in valid_ids
+        )
         if not self._selected_ids:
             self._selected_kind = None
 

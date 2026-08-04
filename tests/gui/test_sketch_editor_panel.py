@@ -6,10 +6,18 @@ import math
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QLabel, QListWidget
 
-from fem.geometry import SketchGeometry
+from fem.geometry import (
+    LogicalEntityRef,
+    SketchExternalReference,
+    SketchExternalReferenceType,
+    SketchGeometry,
+    SketchReferencePoint,
+)
 import fem_gui.main_window as main_window_module
+import fem_gui.widgets.sketch_editor_panel as sketch_editor_panel_module
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.sketch_editor import SketchDraftController
 from fem_gui.widgets.sketch_editor_panel import SketchEditorPanel
@@ -23,6 +31,19 @@ from fem_gui.widgets.viewport import (
 
 def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def _reference_point(u: float, v: float) -> SketchReferencePoint:
+    return SketchReferencePoint(
+        SketchExternalReference(
+            "R1",
+            LogicalEntityRef("point:support/P1"),
+            SketchExternalReferenceType.TOPOLOGY_VERTEX,
+        ),
+        (u, v, 0.0),
+        u,
+        v,
+    )
 
 
 def test_panel_uses_fine_default_grid_and_omits_curve_profile_lists() -> None:
@@ -301,9 +322,11 @@ def test_panel_edits_circle_and_arc_parameters() -> None:
 
     panel._select_curve(arc.id)
     assert panel.arc_parameter_group.isHidden() is False
+    before_radius = controller.snapshot()
     panel.arc_radius_spin.setValue(2.0)
     panel._arc_radius_changed()
     snapshot = controller.snapshot()
+    assert snapshot.revision == before_radius.revision + 1
     points = {point.id: point for point in snapshot.points}
     updated_arc = next(
         curve for curve in snapshot.curves if curve.id == arc.id
@@ -313,6 +336,9 @@ def test_panel_edits_circle_and_arc_parameters() -> None:
     end = points[updated_arc.end_point_id]
     assert math.hypot(start.u - center.u, start.v - center.v) == 2.0
     assert math.hypot(end.u - center.u, end.v - center.v) == 2.0
+    controller.undo()
+    assert controller.snapshot() == before_radius
+    controller.redo()
 
     panel.arc_start_angle_spin.setValue(180.0)
     panel._arc_start_angle_changed()
@@ -322,6 +348,89 @@ def test_panel_edits_circle_and_arc_parameters() -> None:
     start = points[updated_arc.start_point_id]
     assert start.u == pytest.approx(center.u - 2.0)
     assert start.v == pytest.approx(center.v)
+
+
+def test_point_table_edits_by_stable_id_after_sorting() -> None:
+    _application()
+    controller = SketchDraftController("stable-rows")
+    controller.add_point(1.0, 0.0, point_id="P10")
+    controller.add_point(2.0, 0.0, point_id="P2")
+    panel = SketchEditorPanel(controller)
+    panel.points_table.setSortingEnabled(True)
+    panel.points_table.sortItems(0, Qt.SortOrder.DescendingOrder)
+    target_row = next(
+        row
+        for row in range(panel.points_table.rowCount())
+        if panel.points_table.item(row, 0).data(Qt.ItemDataRole.UserRole) == "P10"
+    )
+
+    panel.points_table.item(target_row, 1).setText("9.0")
+
+    points = {point.id: point for point in controller.snapshot().points}
+    assert points["P10"].u == 9.0
+    assert points["P2"].u == 2.0
+
+
+def test_associated_point_status_is_read_only_until_released() -> None:
+    _application()
+    controller = SketchDraftController("associations")
+    point = controller.add_point(
+        1.0,
+        2.0,
+        external_reference=_reference_point(1.0, 2.0),
+    )
+    controller.select_point(point.id)
+    panel = SketchEditorPanel(controller)
+
+    assert panel.points_table.item(0, 3).text() == "已关联"
+    assert not (
+        panel.points_table.item(0, 1).flags() & Qt.ItemFlag.ItemIsEditable
+    )
+    controller.refresh_external_references(())
+    panel._refresh()
+    assert panel.points_table.item(0, 3).text() == "未解析"
+
+    panel.release_selected_association()
+
+    assert panel.points_table.item(0, 3).text() == "自由"
+    assert panel.points_table.item(0, 1).flags() & Qt.ItemFlag.ItemIsEditable
+
+
+def test_point_delete_prompt_lists_cascade_and_undo_restores_entities(
+    monkeypatch,
+) -> None:
+    _application()
+    controller = SketchDraftController("delete-cascade")
+    first = controller.add_point(0.0, 0.0)
+    shared = controller.add_point(1.0, 0.0)
+    last = controller.add_point(2.0, 0.0)
+    first_line = controller.add_line(first.id, shared.id)
+    second_line = controller.add_line(shared.id, last.id)
+    controller.select_point(shared.id)
+    panel = SketchEditorPanel(controller)
+    prompts: list[str] = []
+
+    def confirm(_parent, _title, message, *_args):
+        prompts.append(message)
+        return sketch_editor_panel_module.QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr(
+        sketch_editor_panel_module.QMessageBox,
+        "question",
+        confirm,
+    )
+    panel.delete_selected()
+
+    assert first_line.id in prompts[0]
+    assert second_line.id in prompts[0]
+    assert shared.id not in {point.id for point in controller.snapshot().points}
+    assert controller.snapshot().curves == ()
+    controller.undo()
+    assert {point.id for point in controller.snapshot().points} >= {shared.id}
+    assert {curve.id for curve in controller.snapshot().curves} >= {
+        first_line.id,
+        second_line.id,
+    }
 
 
 def test_main_window_commits_strict_sketch_only_on_finish(monkeypatch) -> None:
