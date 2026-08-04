@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from fem import abaqus
+from fem.io import inp as abaqus
 from fem.core.model import FEMModel
 from tests.helpers.file_builders import write_inp
 
@@ -18,6 +18,7 @@ STANDARD = (
     / "abaqus_standard"
 )
 B31_NOTICE = "abaqus.b31.euler_bernoulli_approximation"
+FRAME_NOTICE = "abaqus.b31.nodal_normal_generation_approximation"
 
 
 @pytest.mark.parametrize(
@@ -35,13 +36,16 @@ def test_each_successful_b31_read_reports_exactly_one_formulation_notice(
     source = STANDARD / fixture_name
     result = abaqus.read_with_report(source)
 
-    assert isinstance(result, abaqus.AbaqusBuildResult)
+    assert isinstance(result, abaqus.InpImportResult)
     assert isinstance(result.model, FEMModel)
     assert isinstance(result.notices, tuple)
-    assert len(result.notices) == 1
+    formulation_notices = [
+        notice for notice in result.notices if notice.code == B31_NOTICE
+    ]
+    assert len(formulation_notices) == 1
 
-    notice = result.notices[0]
-    assert isinstance(notice, abaqus.AbaqusImportNotice)
+    notice = formulation_notices[0]
+    assert isinstance(notice, abaqus.InpImportNotice)
     assert notice.code == B31_NOTICE
     assert notice.locations
     assert all(Path(location.path) == source for location in notice.locations)
@@ -68,9 +72,9 @@ def test_multiple_b31_elements_do_not_duplicate_formulation_notice():
     )
 
     assert len(result.model.mesh.elements) == 2
-    assert tuple(notice.code for notice in result.notices) == (
-        B31_NOTICE,
-    )
+    codes = tuple(notice.code for notice in result.notices)
+    assert codes.count(B31_NOTICE) == 1
+    assert set(codes) <= {B31_NOTICE, FRAME_NOTICE}
 
 
 @pytest.mark.parametrize(
@@ -85,14 +89,13 @@ def test_t3d2_only_deck_has_no_b31_formulation_notice(
     assert result.notices == ()
 
 
-def test_build_model_with_report_matches_read_with_report_contract():
+def test_repeated_public_reads_are_detached_and_keep_report_contract():
     source = STANDARD / "b31_circ.inp"
-    deck = abaqus.parse_file(source)
-
-    built = abaqus.build_model_with_report(deck)
+    built = abaqus.read_with_report(source)
     read = abaqus.read_with_report(source)
 
-    assert isinstance(built, abaqus.AbaqusBuildResult)
+    assert isinstance(built, abaqus.InpImportResult)
+    assert built.model is not read.model
     assert built.model.name == read.model.name
     assert built.model.mesh.num_nodes == read.model.mesh.num_nodes
     assert [
@@ -102,14 +105,12 @@ def test_build_model_with_report_matches_read_with_report_contract():
         (section.section_type, dict(section.properties))
         for section in read.model.sections
     ]
-    assert tuple(notice.code for notice in built.notices) == (
-        B31_NOTICE,
-    )
+    assert tuple(notice.code for notice in built.notices).count(B31_NOTICE) == 1
 
 
 @pytest.mark.parametrize(
     "function",
-    (abaqus.build_model, abaqus.read),
+    (abaqus.read,),
 )
 def test_model_only_compatibility_wrappers_document_notice_discard(
     function,
@@ -127,7 +128,7 @@ def test_model_only_compatibility_wrapper_still_returns_plain_model():
     model = abaqus.read(STANDARD / "b31_circ.inp")
 
     assert isinstance(model, FEMModel)
-    assert not isinstance(model, abaqus.AbaqusBuildResult)
+    assert not isinstance(model, abaqus.InpImportResult)
 
 
 def test_b31_notice_is_immutable_and_owns_immutable_locations():
@@ -195,10 +196,8 @@ def test_short_thick_b31_is_reported_without_mesh_slenderness_block(
 
 
 def test_report_and_model_only_build_paths_share_the_same_model_contract():
-    deck = abaqus.parse_file(STANDARD / "t3d2_tension.inp")
-
-    reported = abaqus.build_model_with_report(deck)
-    compatible = abaqus.build_model(deck)
+    reported = abaqus.read_with_report(STANDARD / "t3d2_tension.inp")
+    compatible = abaqus.read(STANDARD / "t3d2_tension.inp")
 
     assert reported.notices == ()
     assert reported.model.mesh.num_dofs == compatible.mesh.num_dofs

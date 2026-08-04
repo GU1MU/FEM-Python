@@ -33,7 +33,7 @@ from typing import Any, Literal
 
 import numpy as np
 
-from ..elements import (
+from ...elements import (
     BEAM_DEFAULT_LOCAL_Y_REFERENCE,
     BEAM_ORIENTATION_PARALLEL_TOLERANCE,
 )

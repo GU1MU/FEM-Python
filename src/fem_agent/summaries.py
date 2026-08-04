@@ -41,18 +41,17 @@ def build_analysis_summary(
     max_items = int(max_collection_items)
     diagnostics = list(import_result.diagnostics)
     model = import_result.model
-    deck = import_result.deck
     truncated = import_result.collections_truncated
 
     if model is None:
-        model_name = _bounded_text(
-            getattr(deck, "name", None) or "unavailable_model"
+        model_name = "unavailable_model"
+        node_count = int(import_result.keyword_inspection.node_record_count)
+        element_count = int(import_result.keyword_inspection.element_record_count)
+        total_dofs = int(import_result.keyword_inspection.estimated_dofs)
+        dofs_per_node = (
+            total_dofs // node_count if node_count else 0
         )
-        node_count = len(deck.nodes) if deck is not None else 0
-        element_count = len(deck.elements) if deck is not None else 0
-        dofs_per_node = 0
-        total_dofs = 0
-        element_types = _deck_element_type_counts(deck)
+        element_types = {}
         node_sets: tuple[dict[str, Any], ...] = ()
         element_sets: tuple[dict[str, Any], ...] = ()
         edges: tuple[dict[str, Any], ...] = ()
@@ -180,19 +179,6 @@ def build_analysis_summary(
         diagnostics=_deduplicate_diagnostics(diagnostics),
         resource_class=resource_class,
         collections_truncated=bool(truncated),
-    )
-
-
-def _deck_element_type_counts(deck: Any | None) -> dict[str, int]:
-    if deck is None:
-        return {}
-    return dict(
-        sorted(
-            Counter(
-                _bounded_text(getattr(element, "type", "unknown"))
-                for element in deck.elements
-            ).items()
-        )
     )
 
 

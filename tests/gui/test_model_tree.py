@@ -9,7 +9,7 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QApplication
 
 import fem_gui.widgets.model_tree as model_tree_module
-from fem.abaqus import read
+from fem.io.inp import read
 from fem.application import RegionAssignment, SectionDefinition
 from fem.core.model import GravityLoad
 from fem.elements import BeamOrientation

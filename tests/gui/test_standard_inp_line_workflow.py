@@ -43,6 +43,10 @@ STANDARD_FIXTURES = (
     / "inp"
     / "abaqus_standard"
 )
+B31_NOTICE_CODES = (
+    "abaqus.b31.euler_bernoulli_approximation",
+    "abaqus.b31.nodal_normal_generation_approximation",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,10 +266,7 @@ def test_literal_standard_b31_main_window_open_check_solve_result(
         assert assignment.beam_orientation == BeamOrientation(
             (0.0, 1.0, 0.0)
         )
-        assert len(window.import_notices) == 1
-        assert window.import_notices[0].code == (
-            "abaqus.b31.euler_bernoulli_approximation"
-        )
+        assert tuple(notice.code for notice in window.import_notices) == B31_NOTICE_CODES
 
         step = next(
             item

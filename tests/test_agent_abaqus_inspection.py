@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from fem import abaqus
+from fem.io import inp as abaqus
 from fem_agent.schemas import DiagnosticSeverity, ResourceLimits
 from fem_agent.tools import inspect_abaqus, inspect_abaqus_keywords
 from fem_agent.tools import inspection as inspection_module
@@ -403,7 +403,7 @@ def test_duplicate_mesh_identifiers_are_blocked_before_parser_overwrite(
         parser_calls.append((args, kwargs))
         raise AssertionError("duplicate IDs must be blocked during preflight")
 
-    monkeypatch.setattr(abaqus, "parse_file", record_unexpected_parse)
+    monkeypatch.setattr(abaqus, "read_with_report", record_unexpected_parse)
 
     result = inspect_abaqus(path)
 
@@ -733,7 +733,7 @@ def test_node_and_dof_preflight_blocks_model_construction(
     def fail_if_parsed(*args, **kwargs):
         raise AssertionError("resource-limited input must not be parsed")
 
-    monkeypatch.setattr(abaqus, "parse_file", fail_if_parsed)
+    monkeypatch.setattr(abaqus, "read_with_report", fail_if_parsed)
     result = inspect_abaqus(
         path,
         resource_limits=ResourceLimits(
@@ -748,3 +748,37 @@ def test_node_and_dof_preflight_blocks_model_construction(
     assert result.keyword_inspection.element_record_count == 1
     assert result.keyword_inspection.estimated_dofs == 12
     assert "RESOURCE_LIMIT" in _codes(result)
+
+
+def test_malformed_public_import_returns_diagnostic_without_model_or_summary(
+    tmp_path,
+):
+    path = write_inp(
+        tmp_path,
+        "malformed_b31.inp",
+        [
+            "*Heading",
+            "Agent malformed import",
+            "*Node",
+            "1, 0., 0., 0.",
+            "2, 1., 0., 0.",
+            "*Element, type=B31, elset=BEAM",
+            "1, 1, 2",
+            "*Material, name=STEEL",
+            "*Elastic",
+            "210000., 0.3",
+            "*Beam Section, elset=BEAM, material=STEEL, section=RECT",
+            "0.2, 0.1",
+            "1., 0., 0.",
+            "*Step, name=LOAD",
+            "*Static",
+            "*End Step",
+        ],
+    )
+
+    result = inspect_abaqus(path)
+
+    assert not result.ok
+    assert result.model is None
+    assert result.source_summary is None
+    assert "IMPORT_FAILED" in _codes(result)

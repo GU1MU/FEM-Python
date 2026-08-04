@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QApplication
 import fem.application.definitions as definitions_module
 import fem.application.session as session_module
 import fem_gui.main_window as main_window_module
-from fem.abaqus import read
+from fem.io.inp import read
 from fem.application import RegionAssignment, describe_session_authoring
 from fem.application.results import (
     FieldPosition,

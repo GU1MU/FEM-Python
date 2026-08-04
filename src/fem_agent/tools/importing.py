@@ -7,9 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from fem import abaqus
-from fem.abaqus.deck import AbaqusDeck
 from fem.core.model import AnalysisStep, FEMModel
+from fem.io import inp
 
 from ..diagnostics import DiagnosticCode, has_errors, make_diagnostic
 from ..schemas import Diagnostic, ResourceLimits
@@ -20,14 +19,14 @@ from .inspection import AbaqusKeywordInspection, inspect_abaqus_keywords
 class AbaqusImportResult:
     """Local import result with an explicitly bounded provider projection.
 
-    ``deck`` and ``model`` are worker-local objects and must never be serialized
-    into provider messages or persisted as revision truth.
+    The model and source summary are worker-local objects and must never be
+    serialized into provider messages or persisted as revision truth.
     """
 
     keyword_inspection: AbaqusKeywordInspection
     diagnostics: tuple[Diagnostic, ...]
     input_size_bytes: int | None = None
-    deck: AbaqusDeck | None = None
+    source_summary: inp.InpSourceSummary | None = None
     model: FEMModel | None = None
     runnable_step: AnalysisStep | None = None
 
@@ -48,16 +47,14 @@ class AbaqusImportResult:
 
         if self.model is None:
             model_data = {
-                "model_name": _model_name(self.deck, None),
-                "node_count": len(self.deck.nodes) if self.deck is not None else 0,
-                "element_count": (
-                    len(self.deck.elements) if self.deck is not None else 0
-                ),
+                "model_name": "abaqus_model",
+                "node_count": self.keyword_inspection.node_record_count,
+                "element_count": self.keyword_inspection.element_record_count,
                 "runnable_step": None,
             }
         else:
             model_data = {
-                "model_name": _model_name(self.deck, self.model),
+                "model_name": _model_name(self.model),
                 "node_count": int(self.model.mesh.num_nodes),
                 "element_count": int(self.model.mesh.num_elements),
                 "runnable_step": (
@@ -91,8 +88,8 @@ def inspect_abaqus(
         resource_limits=resource_limits,
     )
     diagnostics = list(keyword_inspection.diagnostics)
-    deck: AbaqusDeck | None = None
     model: FEMModel | None = None
+    source_summary: inp.InpSourceSummary | None = None
     try:
         input_size_bytes = Path(path).stat().st_size
     except OSError:
@@ -106,8 +103,9 @@ def inspect_abaqus(
         )
 
     try:
-        deck = abaqus.parse_file(path)
-        model = abaqus.build_model(deck)
+        imported = inp.read_with_report(path)
+        source_summary = imported.source_summary
+        model = imported.model
     except Exception:
         diagnostics.append(
             make_diagnostic(
@@ -146,7 +144,7 @@ def inspect_abaqus(
         keyword_inspection=keyword_inspection,
         diagnostics=normalized,
         input_size_bytes=input_size_bytes,
-        deck=deck,
+        source_summary=source_summary,
         model=model,
         runnable_step=runnable[0] if len(runnable) == 1 else None,
     )
@@ -176,12 +174,8 @@ def _deduplicate_diagnostics(
     return tuple(result)
 
 
-def _model_name(deck: AbaqusDeck | None, model: FEMModel | None) -> str:
-    value = (
-        getattr(model, "name", None)
-        if model is not None
-        else getattr(deck, "name", None)
-    )
+def _model_name(model: FEMModel | None) -> str:
+    value = getattr(model, "name", None)
     return _bounded_text(value or "abaqus_model")
 
 

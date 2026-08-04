@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 import fem.application.preflight as preflight_module
-from fem.abaqus import read
+from fem.io.inp import read
 from fem.application import (
     PreflightDiagnostic,
     PreflightFacts,

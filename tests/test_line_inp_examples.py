@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from fem.abaqus import read
+from fem.io.inp import read
 from fem.elements import get_element_kernel
 from fem.post.stress import beam
 from fem.solvers.static_linear import solve

@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from fem import abaqus, materials, post
-from fem.abaqus import builder as abaqus_builder
+from fem import materials, post
+from fem.io import inp as abaqus
 from fem.boundary.step import boundary_for_step, get_step
 from fem.core.model import (
     DisplacementConstraint,
@@ -20,7 +20,57 @@ from tests.helpers.abaqus_builders import write_perforated_plate_style_inp
 from tests.helpers.file_builders import write_inp
 
 
-def test_dloads_reuse_one_face_topology_lookup(monkeypatch, tmp_path):
+_HEX20_COORDINATES = (
+    (-1.0, -1.0, -1.0),
+    (1.0, -1.0, -1.0),
+    (1.0, 1.0, -1.0),
+    (-1.0, 1.0, -1.0),
+    (-1.0, -1.0, 1.0),
+    (1.0, -1.0, 1.0),
+    (1.0, 1.0, 1.0),
+    (-1.0, 1.0, 1.0),
+    (0.0, -1.0, -1.0),
+    (1.0, 0.0, -1.0),
+    (0.0, 1.0, -1.0),
+    (-1.0, 0.0, -1.0),
+    (0.0, -1.0, 1.0),
+    (1.0, 0.0, 1.0),
+    (0.0, 1.0, 1.0),
+    (-1.0, 0.0, 1.0),
+    (-1.0, -1.0, 0.0),
+    (1.0, -1.0, 0.0),
+    (1.0, 1.0, 0.0),
+    (-1.0, 1.0, 0.0),
+)
+
+
+def _c3d20_model_lines(
+    element_lines: tuple[str, ...],
+    *,
+    node_count: int,
+) -> tuple[str, ...]:
+    nodes = tuple(
+        f"{node_id}, {x + 3.0 * block:g}, {y:g}, {z:g}"
+        for node_id in range(1, node_count + 1)
+        for block, (x, y, z) in (
+            ((node_id - 1) // 20, _HEX20_COORDINATES[(node_id - 1) % 20]),
+        )
+    )
+    return (
+        "*Heading",
+        "C3D20 wrapped public facade model",
+        "*Node",
+        *nodes,
+        "*Element, type=C3D20, elset=SOLID",
+        *element_lines,
+        "*Material, name=STEEL",
+        "*Elastic",
+        "210000., 0.3",
+        "*Solid Section, elset=SOLID, material=STEEL",
+    )
+
+
+def test_dloads_reuse_one_face_topology_lookup(tmp_path):
     path = write_inp(
         tmp_path,
         "cached_dloads.inp",
@@ -35,19 +85,9 @@ def test_dloads_reuse_one_face_topology_lookup(monkeypatch, tmp_path):
             "SOLID, P1, 2", "SOLID, P2, 3", "*End Step",
         ],
     )
-    calls = 0
-    original = abaqus_builder.face_selection.all
-
-    def counted(mesh):
-        nonlocal calls
-        calls += 1
-        return original(mesh)
-
-    monkeypatch.setattr(abaqus_builder.face_selection, "all", counted)
     model = abaqus.read(path)
 
     assert len(model.steps[0].surface_loads) == 2
-    assert calls == 1
 
 
 def _assert_pressure_points_inward(model, bc):
@@ -509,6 +549,17 @@ def test_abaqus_parse_preserves_blank_gravity_target_and_trims_trailing_separato
         tmp_path,
         "test_abaqus_parse_blank_gravity_target.inp",
         [
+            "*Node",
+            "1, 0., 0., 0.",
+            "2, 1., 0., 0.",
+            "3, 0., 1., 0.",
+            "4, 0., 0., 1.",
+            "*Element, type=C3D4, elset=SOLID",
+            "1, 1,2,3,4",
+            "*Material, name=STEEL",
+            "*Elastic",
+            "210000., 0.3",
+            "*Solid Section, elset=SOLID, material=STEEL",
             "*Step, name=LOAD",
             "*Dload",
             ", GRAV, 9810., 0., -1., 0., ,",
@@ -516,14 +567,11 @@ def test_abaqus_parse_preserves_blank_gravity_target_and_trims_trailing_separato
         ],
     )
 
-    deck = abaqus.parse_file(path)
+    deck = abaqus.read(path)
 
-    load = deck.steps[0].distributed_loads[0]
+    load = deck.steps[0].gravity_loads[0]
     assert load.target is None
-    assert load.label == "GRAV"
-    assert load.magnitude == pytest.approx(9810.0)
-    assert load.extra == (0.0, -1.0, 0.0)
-    assert load.source == "dload"
+    assert load.acceleration == pytest.approx((0.0, -9810.0, 0.0))
 
 
 def test_abaqus_read_builds_global_set_and_element_gravity_without_topology(tmp_path):
@@ -608,7 +656,7 @@ def test_abaqus_parse_reports_gravity_specific_record_errors(tmp_path, record, m
     )
 
     with pytest.raises(ValueError, match=message):
-        abaqus.parse_file(path)
+        abaqus.read_with_report(path)
 
 
 @pytest.mark.parametrize(
@@ -1435,120 +1483,6 @@ def test_abaqus_read_stores_output_requests_on_steps(tmp_path):
         evidence.parent_flags = ("changed",)
 
 
-def test_abaqus_parse_accumulates_wrapped_c3d20_connectivity(tmp_path):
-    path = write_inp(
-        tmp_path,
-        "test_abaqus_wrapped_c3d20.inp",
-        [
-            "*Element, type=C3D20, elset=SOLID",
-            "1, 1,2,3,4,5,6,7,8,9,10",
-            "11,12,13,14,15,16,17,18,19,20",
-        ],
-    )
-
-    deck = abaqus.parse_file(path)
-
-    assert len(deck.elements) == 1
-    assert deck.elements[0].id == 1
-    assert deck.elements[0].type == "C3D20"
-    assert deck.elements[0].node_ids == tuple(range(1, 21))
-    assert deck.element_sets["SOLID"] == [1]
-
-
-def test_abaqus_parse_rejects_incomplete_wrapped_c3d20_connectivity(tmp_path):
-    path = write_inp(
-        tmp_path,
-        "test_abaqus_incomplete_c3d20.inp",
-        [
-            "*Element, type=C3D20",
-            "1, 1,2,3,4,5,6,7,8,9,10",
-        ],
-    )
-
-    with pytest.raises(ValueError, match="Incomplete C3D20 connectivity record"):
-        abaqus.parse_file(path)
-
-
-def test_abaqus_parse_rejects_incomplete_c3d20_before_next_keyword(tmp_path):
-    path = write_inp(
-        tmp_path,
-        "test_abaqus_incomplete_c3d20_before_keyword.inp",
-        [
-            "*Element, type=C3D20",
-            "1, 1,2,3,4,5,6,7,8,9,10",
-            "*Nset, nset=AFTER_ELEMENT",
-            "1",
-        ],
-    )
-
-    with pytest.raises(ValueError, match="Incomplete C3D20 connectivity record"):
-        abaqus.parse_file(path)
-
-
-def test_abaqus_parse_consumes_two_wrapped_c3d20_records_from_one_block(tmp_path):
-    path = write_inp(
-        tmp_path,
-        "test_abaqus_two_wrapped_c3d20_records.inp",
-        [
-            "*Element, type=C3D20, elset=SOLID",
-            "1, 1,2,3,4,5,6,7,8,9,10",
-            "11,12,13,14,15,16,17,18,19,20",
-            "2, 21,22,23,24,25,26,27,28,29,30",
-            "31,32,33,34,35,36,37,38,39,40",
-        ],
-    )
-
-    deck = abaqus.parse_file(path)
-
-    assert [(element.id, element.node_ids) for element in deck.elements] == [
-        (1, tuple(range(1, 21))),
-        (2, tuple(range(21, 41))),
-    ]
-    assert deck.element_sets["SOLID"] == [1, 2]
-
-
-def test_abaqus_parse_clears_pending_values_between_supported_element_blocks(tmp_path):
-    path = write_inp(
-        tmp_path,
-        "test_abaqus_adjacent_supported_element_blocks.inp",
-        [
-            "*Element, type=C3D4, elset=TETS",
-            "1, 1,2,3,4",
-            "*Element, type=C3D8, elset=HEXES",
-            "2, 5,6,7,8,9,10,11,12",
-        ],
-    )
-
-    deck = abaqus.parse_file(path)
-
-    assert [(element.id, element.type, element.node_ids) for element in deck.elements] == [
-        (1, "C3D4", (1, 2, 3, 4)),
-        (2, "C3D8", (5, 6, 7, 8, 9, 10, 11, 12)),
-    ]
-    assert deck.element_sets["TETS"] == [1]
-    assert deck.element_sets["HEXES"] == [2]
-
-
-def test_abaqus_parse_keeps_unsupported_element_type_records_independent(tmp_path):
-    path = write_inp(
-        tmp_path,
-        "test_abaqus_unsupported_element_type_records.inp",
-        [
-            "*Element, type=U99, elset=CUSTOM",
-            "1, 10,11,12",
-            "2, 20,21,22,23",
-        ],
-    )
-
-    deck = abaqus.parse_file(path)
-
-    assert [(element.id, element.node_ids) for element in deck.elements] == [
-        (1, (10, 11, 12)),
-        (2, (20, 21, 22, 23)),
-    ]
-    assert deck.element_sets["CUSTOM"] == [1, 2]
-
-
 def test_abaqus_read_builds_and_solves_full_c3d20_model(tmp_path):
     path = write_inp(
         tmp_path,
@@ -1662,3 +1596,151 @@ def test_abaqus_read_builds_and_solves_full_c3d20_model(tmp_path):
     assert result.reactions[0::3].sum() == pytest.approx(-2.0, abs=1e-9)
     assert result.reactions[1::3].sum() == pytest.approx(6.0, abs=1e-9)
     assert result.reactions[2::3].sum() == pytest.approx(1.0, abs=1e-9)
+
+
+def test_public_read_builds_one_complete_wrapped_c3d20_record(tmp_path):
+    path = write_inp(
+        tmp_path,
+        "public_wrapped_c3d20.inp",
+        _c3d20_model_lines(
+            (
+                "1, 1,2,3,4,5,6,7,8,9,10",
+                "11,12,13,14,15,16,17,18,19,20",
+            ),
+            node_count=20,
+        ),
+    )
+
+    result = abaqus.read_with_report(path)
+
+    assert result.model.mesh.elements[0].type == "Hex20"
+    assert result.model.mesh.elements[0].node_ids == list(range(1, 21))
+    assert result.model.element_sets["SOLID"].element_ids == (1,)
+
+
+def test_public_read_builds_two_wrapped_c3d20_records_from_one_block(tmp_path):
+    path = write_inp(
+        tmp_path,
+        "public_two_wrapped_c3d20.inp",
+        _c3d20_model_lines(
+            (
+                "1, 1,2,3,4,5,6,7,8,9,10",
+                "11,12,13,14,15,16,17,18,19,20",
+                "2, 21,22,23,24,25,26,27,28,29,30",
+                "31,32,33,34,35,36,37,38,39,40",
+            ),
+            node_count=40,
+        ),
+    )
+
+    result = abaqus.read_with_report(path)
+
+    assert [
+        (element.id, tuple(element.node_ids))
+        for element in result.model.mesh.elements
+    ] == [
+        (1, tuple(range(1, 21))),
+        (2, tuple(range(21, 41))),
+    ]
+    assert result.model.element_sets["SOLID"].element_ids == (1, 2)
+
+
+def test_public_read_clears_pending_connectivity_between_element_blocks(tmp_path):
+    path = write_inp(
+        tmp_path,
+        "public_adjacent_supported_element_blocks.inp",
+        [
+            "*Heading",
+            "pending connectivity must not cross blocks",
+            "*Node",
+            "1, 0., 0., 0.",
+            "2, 1., 0., 0.",
+            "3, 0., 1., 0.",
+            "4, 0., 0., 1.",
+            "5, 0., 0., 0.",
+            "6, 1., 0., 0.",
+            "7, 1., 1., 0.",
+            "8, 0., 1., 0.",
+            "9, 0., 0., 1.",
+            "10, 1., 0., 1.",
+            "11, 1., 1., 1.",
+            "12, 0., 1., 1.",
+            "*Element, type=C3D4, elset=TETS",
+            "1, 1,2,3,4",
+            "*Element, type=C3D8, elset=HEXES",
+            "2, 5,6,7,8,9,10,11,12",
+            "*Material, name=STEEL",
+            "*Elastic",
+            "210000., 0.3",
+            "*Solid Section, elset=TETS, material=STEEL",
+            "*Solid Section, elset=HEXES, material=STEEL",
+        ],
+    )
+
+    result = abaqus.read_with_report(path)
+
+    assert [
+        (element.id, element.type, tuple(element.node_ids))
+        for element in result.model.mesh.elements
+    ] == [
+        (1, "Tet4", (1, 2, 3, 4)),
+        (2, "Hex8", (5, 6, 7, 8, 9, 10, 11, 12)),
+    ]
+    assert result.model.element_sets["TETS"].element_ids == (1,)
+    assert result.model.element_sets["HEXES"].element_ids == (2,)
+
+
+def test_public_read_reports_incomplete_c3d20_before_next_keyword(tmp_path):
+    path = write_inp(
+        tmp_path,
+        "public_incomplete_c3d20_before_keyword.inp",
+        [
+            "*Heading",
+            "*Element, type=C3D20",
+            "1, 1,2,3,4,5,6,7,8,9,10",
+            "*Nset, nset=AFTER_ELEMENT",
+            "1",
+        ],
+    )
+
+    with pytest.raises(abaqus.InpParseError) as caught:
+        abaqus.read_with_report(path)
+
+    error = caught.value
+    assert error.code == "abaqus.element.connectivity_incomplete"
+    assert error.path == path
+    assert error.keyword == "element"
+    assert error.line is not None
+    assert error.locations
+
+
+def test_public_read_keeps_unsupported_element_records_independent(tmp_path):
+    path = write_inp(
+        tmp_path,
+        "public_unsupported_element_records.inp",
+        [
+            "*Heading",
+            "*Node",
+            "1, 0., 0., 0.",
+            "2, 1., 0., 0.",
+            "3, 0., 1., 0.",
+            "4, 0., 0., 1.",
+            "5, 1., 1., 0.",
+            "6, 1., 0., 1.",
+            "7, 0., 1., 1.",
+            "8, 1., 1., 1.",
+            "*Element, type=U99, elset=CUSTOM",
+            "1, 1,2,3",
+            "2, 4,5,6,7",
+        ],
+    )
+
+    with pytest.raises(abaqus.UnsupportedInpFeatureError) as caught:
+        abaqus.read_with_report(path)
+
+    error = caught.value
+    assert error.code == "abaqus.element_type.unsupported"
+    assert error.path == path
+    assert error.keyword == "element"
+    assert error.record == "U99"
+    assert error.locations

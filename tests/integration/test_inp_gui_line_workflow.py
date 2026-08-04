@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from fem.abaqus import read
+from fem.io.inp import read
 from fem.application import (
     BeamOrientation,
     ModelSession,

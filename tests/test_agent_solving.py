@@ -1,4 +1,4 @@
-from fem import abaqus
+from fem.io import inp as abaqus
 
 from fem_agent.schemas import DiagnosticSeverity
 from fem_agent.tools.solving import solve_analysis

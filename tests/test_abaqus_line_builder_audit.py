@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from copy import deepcopy
-
 import pytest
 
-from fem import abaqus
+from fem.io import inp as abaqus
 from tests.helpers.file_builders import write_inp
 
 
@@ -41,7 +39,7 @@ def test_mixed_line_section_target_fails_before_mesh_build(tmp_path) -> None:
     ]
     path = write_inp(tmp_path, "mixed_section.inp", lines)
 
-    with pytest.raises(abaqus.AbaqusBuildError) as caught:
+    with pytest.raises(abaqus.InpBuildError) as caught:
         abaqus.read(path)
 
     error = caught.value
@@ -63,7 +61,7 @@ def test_mixed_line_dload_target_fails_before_mesh_build(tmp_path) -> None:
     ]
     path = write_inp(tmp_path, "mixed_dload.inp", lines)
 
-    with pytest.raises(abaqus.AbaqusBuildError) as caught:
+    with pytest.raises(abaqus.InpBuildError) as caught:
         abaqus.read(path)
 
     error = caught.value
@@ -83,7 +81,7 @@ def test_whole_mixed_model_fails_with_typed_mesh_capability(tmp_path) -> None:
     ]
     path = write_inp(tmp_path, "mixed_model.inp", lines)
 
-    with pytest.raises(abaqus.UnsupportedAbaqusFeatureError) as caught:
+    with pytest.raises(abaqus.UnsupportedInpFeatureError) as caught:
         abaqus.read(path)
 
     assert caught.value.code == "abaqus.mesh.element_family_mixed"
@@ -121,7 +119,7 @@ def test_explicit_line_step_requires_exactly_one_static(
     ]
     path = write_inp(tmp_path, "step_procedure.inp", lines)
 
-    with pytest.raises(abaqus.AbaqusBuildError) as caught:
+    with pytest.raises(abaqus.InpBuildError) as caught:
         abaqus.read(path)
 
     error = caught.value
@@ -150,7 +148,7 @@ def test_static_outside_explicit_step_is_rejected(tmp_path) -> None:
     ]
     path = write_inp(tmp_path, "static_outside_step.inp", lines)
 
-    with pytest.raises(abaqus.AbaqusBuildError) as caught:
+    with pytest.raises(abaqus.InpBuildError) as caught:
         abaqus.read(path)
 
     error = caught.value
@@ -229,7 +227,7 @@ def test_line_material_must_be_one_constant_record(
     ]
     path = write_inp(tmp_path, "material_table.inp", lines)
 
-    with pytest.raises(abaqus.AbaqusBuildError) as caught:
+    with pytest.raises(abaqus.InpBuildError) as caught:
         abaqus.read(path)
 
     error = caught.value
@@ -269,7 +267,7 @@ def test_continuum_declared_sections_use_canonical_material_validation(
     ]
     path = write_inp(tmp_path, "continuum_material.inp", lines)
 
-    with pytest.raises(abaqus.AbaqusBuildError) as caught:
+    with pytest.raises(abaqus.InpBuildError) as caught:
         abaqus.read(path)
 
     error = caught.value
@@ -293,7 +291,7 @@ def test_definition_time_empty_set_does_not_fall_through(tmp_path) -> None:
     ]
     path = write_inp(tmp_path, "empty_then_redefined.inp", lines)
 
-    with pytest.raises(abaqus.AbaqusBuildError) as caught:
+    with pytest.raises(abaqus.InpBuildError) as caught:
         abaqus.read(path)
 
     error = caught.value
@@ -339,21 +337,16 @@ def test_parallel_orientation_locations_cover_all_source_evidence(
         "1., 0., 0.",
     ]
     path = write_inp(tmp_path, "parallel_orientation.inp", lines)
-    deck = abaqus.parse_file(path)
-    snapshot = deepcopy(deck)
-
-    with pytest.raises(abaqus.AbaqusBuildError) as caught:
-        abaqus.build_model(deck)
+    with pytest.raises(abaqus.InpBuildError) as caught:
+        abaqus.read(path)
 
     error = caught.value
     assert error.code == "beam.orientation.parallel"
     assert [location.line for location in error.locations] == [
-        lines.index("1., 0., 0.") + 1,
+        lines.index("*Element, type=B31, elset=BEAM") + 1,
         lines.index("1, 1, 2") + 1,
-        lines.index("1, 0., 0., 0.") + 1,
-        lines.index("2, 1., 0., 0.") + 1,
+        lines.index("1., 0., 0.") + 1,
     ]
-    assert deck == snapshot
 
 
 def test_kinked_frame_notice_is_structured_and_does_not_recommend_disconnect(
@@ -384,5 +377,6 @@ def test_kinked_frame_notice_is_structured_and_does_not_recommend_disconnect(
     )
     notice = result.notices[1]
     assert notice.locations
-    assert "shared nodes" in notice.message.casefold()
+    assert "element-end normals" in notice.message.casefold()
+    assert "connectivity" in notice.message.casefold()
     assert "disconnect" not in notice.message.casefold()

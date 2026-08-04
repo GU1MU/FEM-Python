@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from fem.abaqus import read
+from fem.io.inp import read
 from fem.application import MeshEntityRef, NamedRegion, NamedRegionEditBatch
 from fem.core.mesh import Mesh3D, Node3D
 from fem.core.model import FEMModel

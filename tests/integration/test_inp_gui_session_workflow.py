@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import replace
 import os
 from pathlib import Path
+from time import monotonic
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication
 
 from fem.application import (
@@ -23,11 +25,13 @@ from fem.application.results import OutputExecutionStatus, ResultVariable
 from fem.core.model import LineLoad
 from fem_gui.commands import CloseSessionCommand
 from fem_gui.main_window import FEMMainWindow
+from fem_gui.task_controller import BackgroundTaskState
 from tests.helpers.gui_command_receipts import (
     await_succeeded,
     require_accepted,
     require_rejected,
 )
+from tests.helpers.file_builders import write_inp
 
 
 FIXTURES = (
@@ -37,6 +41,7 @@ FIXTURES = (
     / "abaqus_standard"
 )
 B31_NOTICE = "abaqus.b31.euler_bernoulli_approximation"
+B31_NORMAL_NOTICE = "abaqus.b31.nodal_normal_generation_approximation"
 
 PUBLIC_GUI_WORKFLOW_ENTRYPOINTS = (
     "open_inp_path",
@@ -74,6 +79,42 @@ def _open_fixture(window: FEMMainWindow, name: str) -> Path:
     assert not window.actions["save_project"].isEnabled()
     assert window.actions["reload"].isEnabled()
     return path
+
+
+def _write_inline_beam(tmp_path: Path, name: str, *, malformed: bool) -> Path:
+    lines = [
+        "*Heading",
+        "Inline public B31 GUI workflow",
+        "*Node",
+        "1, 0., 0., 0.",
+        "2, 1., 0., 0.",
+        "*Element, type=B31, elset=BEAM",
+        "1, 1, 2",
+        "*Material, name=STEEL",
+        "*Elastic",
+        "210000., 0.3",
+        "*Beam Section, elset=BEAM, material=STEEL, section=RECT",
+        "0.2, 0.1",
+        "0., 0., 1.",
+        "*Step, name=LOAD",
+        "*Static",
+        "*Output, field, variable=PRESELECT",
+        "*Node Output",
+        "U, RF",
+        "*Boundary",
+        "1, ENCASTRE",
+        "*Cload",
+        "2, 2, -1.",
+        "*End Step",
+    ]
+    if malformed:
+        lines.extend(
+            (
+                "*Normal, type=ELEMENT",
+                "1, 1, 0., 0.",
+            )
+        )
+    return write_inp(tmp_path, name, lines)
 
 
 def _check_and_solve(
@@ -312,8 +353,10 @@ def test_imported_b31_public_edit_candidates_check_and_solve() -> None:
     window = FEMMainWindow()
     _open_fixture(window, "beam2_rectangle_uniform_load.inp")
 
-    assert len(window.import_notices) == 1
-    assert window.import_notices[0].code == B31_NOTICE
+    assert tuple(notice.code for notice in window.import_notices) == (
+        B31_NOTICE,
+        B31_NORMAL_NOTICE,
+    )
     projection = describe_session_authoring(window.document)
     assert projection.report.canonical_element_types == ("Beam2",)
     assert RegionRef("element_set", "BEAM") in {
@@ -385,7 +428,10 @@ def test_imported_b31_public_edit_candidates_check_and_solve() -> None:
         step_name="UniformLoad",
         run_name="Beam-Local",
     )
-    assert window.import_notices[0].code == B31_NOTICE
+    assert tuple(notice.code for notice in window.import_notices) == (
+        B31_NOTICE,
+        B31_NORMAL_NOTICE,
+    )
 
     require_accepted(
         window.close_session(
@@ -393,3 +439,87 @@ def test_imported_b31_public_edit_candidates_check_and_solve() -> None:
         )
     )
     window.close()
+
+
+def test_inline_inp_open_check_solve_projection_and_failed_reload_are_atomic(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _application()
+    window = FEMMainWindow()
+    valid_path = _write_inline_beam(
+        tmp_path,
+        "inline_valid.inp",
+        malformed=False,
+    )
+    malformed_path = _write_inline_beam(
+        tmp_path,
+        "inline_malformed.inp",
+        malformed=True,
+    )
+    errors: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        window,
+        "_show_error",
+        lambda title, message: errors.append((title, message)),
+    )
+
+    try:
+        receipt = window.open_inp_path(valid_path)
+        await_succeeded(receipt)
+        assert window.document.source_kind == "imported"
+        assert window.document.source_path == valid_path
+        assert window.import_notices
+
+        run_id = _check_and_solve(
+            window,
+            step_name="LOAD",
+            run_name="Inline-B31",
+        )
+        old_snapshot = window.document
+        old_artifact_id = old_snapshot.artifact.artifact_id
+        old_model = old_snapshot.model
+        old_result = window.session.current_result()
+        old_payload = window.viewport._result_render_payload
+        old_provider = window.result_provider
+        old_selection = window.result_selection
+        old_notices = window.import_notices
+        old_viewport_identity = (
+            window.viewport.artifact_id,
+            window.viewport.run_id,
+        )
+        assert old_result is not None
+        assert old_payload is not None
+        assert old_provider is not None
+        assert old_selection is not None
+
+        failed = window.open_inp_path(malformed_path)
+        assert failed.completion is not None
+        deadline = monotonic() + 30.0
+        application = QApplication.instance() or QApplication([])
+        while not failed.completion.done and monotonic() < deadline:
+            application.processEvents()
+            QThread.msleep(1)
+        application.processEvents()
+        terminal = failed.completion.result(0.0)
+        assert terminal.state is BackgroundTaskState.FAILED
+        assert not window.busy
+        assert errors
+
+        assert window.document.artifact.artifact_id == old_artifact_id
+        assert window.document.model is old_model
+        current_result = window.session.current_result()
+        assert current_result is not None
+        assert current_result.result_id == old_result.result_id
+        assert current_result.provenance == old_result.provenance
+        assert window.session.find_run(run_id) is not None
+        assert window.viewport._result_render_payload is old_payload
+        assert window.result_provider is old_provider
+        assert window.result_selection is old_selection
+        assert (
+            window.viewport.artifact_id,
+            window.viewport.run_id,
+        ) == old_viewport_identity
+        assert window.import_notices == old_notices
+    finally:
+        window.close()

@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from fem.abaqus import read
+from fem.io.inp import read
 from fem.application.results import (
     FieldPosition,
     ResultVariable,

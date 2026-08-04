@@ -13,7 +13,7 @@ from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from fem.application import RunStatus
-from fem.abaqus import read
+from fem.io.inp import read
 from fem.solvers import static_linear
 from fem_gui.main_window import FEMMainWindow
 import fem_gui.main_window as main_window_module

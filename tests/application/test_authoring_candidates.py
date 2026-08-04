@@ -4,7 +4,7 @@ from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 
-from fem.abaqus import read
+from fem.io.inp import read
 from fem.application import (
     AuthoringStatus,
     BeamOrientation,

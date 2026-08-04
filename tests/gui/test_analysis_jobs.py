@@ -16,7 +16,7 @@ from PySide6.QtCore import QThread, Qt
 from PySide6.QtWidgets import QApplication, QLabel, QToolButton
 
 from fem.application import AnalysisRun, ModelSession, RunStatus
-from fem.abaqus import read
+from fem.io.inp import read
 from fem.solvers import static_linear
 from fem_gui.analysis_dialogs import JobManagerDialog, JobSubmitDialog
 from fem_gui.main_window import FEMMainWindow

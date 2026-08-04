@@ -7,7 +7,7 @@ import pytest
 
 import fem.application.definitions as definitions_module
 import fem.application.session as session_module
-from fem.abaqus import read
+from fem.io.inp import read
 from fem.application import (
     BeamOrientation,
     ModelSession,

@@ -1,6 +1,6 @@
-from fem.abaqus.contracts import STANDARD_LINE_SUBSET
 from fem_agent.capabilities import (
     CapabilityDisposition,
+    KEYWORD_CAPABILITIES,
     SUPPORTED_ELEMENT_TYPES,
     keyword_capability,
     show_capabilities,
@@ -39,10 +39,12 @@ def test_output_keywords_publish_static_postprocess_categories():
     assert all(
         keyword_capability(name).disposition
         is CapabilityDisposition.POSTPROCESS_CANDIDATE
-        for name in STANDARD_LINE_SUBSET.postprocess_candidate_keywords
+        for name, capability in KEYWORD_CAPABILITIES.items()
+        if capability.disposition is CapabilityDisposition.POSTPROCESS_CANDIDATE
     )
     assert all(
         keyword_capability(name).disposition
         is CapabilityDisposition.PRESERVED_OUTPUT
-        for name in STANDARD_LINE_SUBSET.preserved_output_keywords
+        for name, capability in KEYWORD_CAPABILITIES.items()
+        if capability.disposition is CapabilityDisposition.PRESERVED_OUTPUT
     )

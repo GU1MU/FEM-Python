@@ -114,6 +114,23 @@ UNSUPPORTED_LINE_DLOAD_LABELS = frozenset(
 )
 
 
+def classify_keyword(name: str):
+    """Classify one keyword for private adapter consumers."""
+
+    from ..inp import InpKeywordCategory
+
+    normalized = str(name).strip().casefold().lstrip("*")
+    if normalized in STANDARD_LINE_SUBSET.executed_keywords:
+        return InpKeywordCategory.EXECUTED
+    if normalized in STANDARD_LINE_SUBSET.postprocess_candidate_keywords:
+        return InpKeywordCategory.POSTPROCESS_CANDIDATE
+    if normalized in STANDARD_LINE_SUBSET.preserved_output_keywords:
+        return InpKeywordCategory.PRESERVED
+    if normalized in STANDARD_LINE_SUBSET.harmless_ignored_keywords:
+        return InpKeywordCategory.HARMLESS_IGNORED
+    return InpKeywordCategory.UNSUPPORTED_ENGINEERING_SEMANTICS
+
+
 __all__ = [
     "ABAQUS_LINE_SUBSET",
     "AbaqusLineSubset",

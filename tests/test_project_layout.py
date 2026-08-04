@@ -13,6 +13,7 @@ GMSH_MESH_ROOT = MESH_ROOT / "gmsh"
 SELECTION_ROOT = SRC_ROOT / "fem" / "selection"
 APPLICATION_ROOT = SRC_ROOT / "fem" / "application"
 GUI_ROOT = SRC_ROOT / "fem_gui"
+INP_IMPL_ROOT = SRC_ROOT / "fem" / "io" / "_inp"
 AUTHORING_GUI_PATHS = (
     GUI_ROOT / "main_window.py",
     GUI_ROOT / "model_dialogs.py",
@@ -1529,7 +1530,7 @@ def _zero_subscript(node):
 
 
 def test_abaqus_adapter_is_headless():
-    abaqus_root = SRC_ROOT / "fem" / "abaqus"
+    abaqus_root = INP_IMPL_ROOT
     paths = sorted(abaqus_root.rglob("*.py"))
     assert paths
 
@@ -1548,7 +1549,7 @@ def test_abaqus_adapter_is_headless():
 
 
 def test_abaqus_parser_has_no_application_solver_or_gui_dependency():
-    path = SRC_ROOT / "fem" / "abaqus" / "parser.py"
+    path = INP_IMPL_ROOT / "parser.py"
     forbidden_roots = (
         "fem.application",
         "fem.solver",
@@ -1559,7 +1560,7 @@ def test_abaqus_parser_has_no_application_solver_or_gui_dependency():
         f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
         for target, lineno in _resolved_import_targets(
             path,
-            "fem.abaqus.parser",
+            "fem.io._inp.parser",
         )
         if any(
             target == root or target.startswith(f"{root}.")
@@ -1572,7 +1573,7 @@ def test_abaqus_parser_has_no_application_solver_or_gui_dependency():
 
 
 def test_abaqus_parser_does_not_compute_beam_frames_or_rotations():
-    path = SRC_ROOT / "fem" / "abaqus" / "parser.py"
+    path = INP_IMPL_ROOT / "parser.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
     forbidden_calls = {
         "beam3d_geometry",
@@ -1747,7 +1748,7 @@ def test_abaqus_formulation_notice_has_one_adapter_owner():
         )
 
     assert len(occurrences) == 1
-    assert occurrences[0][0] == Path("src/fem/abaqus/builder.py")
+    assert occurrences[0][0] == Path("src/fem/io/_inp/builder.py")
 
 
 def test_b31_source_frame_validation_has_one_adapter_implementation():
@@ -1777,7 +1778,7 @@ def test_b31_source_frame_validation_has_one_adapter_implementation():
             and node.name == "_audit_b31_topology"
         )
 
-    expected_path = Path("src/fem/abaqus/builder.py")
+    expected_path = Path("src/fem/io/_inp/builder.py")
     assert len(definitions) == 1
     assert definitions[0][0] == expected_path
     assert len(code_occurrences) == 1
@@ -1821,7 +1822,7 @@ def test_production_has_no_beam_slenderness_gate():
 
 
 def test_abaqus_builder_does_not_dispatch_from_first_mesh_element():
-    abaqus_root = SRC_ROOT / "fem" / "abaqus"
+    abaqus_root = INP_IMPL_ROOT
     offenders = []
 
     for path in sorted(abaqus_root.rglob("*.py")):
@@ -1839,56 +1840,57 @@ def test_abaqus_builder_does_not_dispatch_from_first_mesh_element():
     assert offenders == []
 
 
-def test_standard_line_subset_excludes_retired_wire_dialect():
-    from fem.abaqus.contracts import (
-        RETIRED_DLOAD_LABELS,
-        RETIRED_ELEMENT_TYPES,
-        STANDARD_LINE_SUBSET,
+def test_standard_line_subset_excludes_retired_wire_dialect(tmp_path):
+    from fem.io import inp
+
+    path = tmp_path / "public_keyword_categories.inp"
+    path.write_text(
+        "\n".join(
+            (
+                "*Heading",
+                "public keyword categories",
+                "*Preprint, echo=NO",
+                "*Node",
+                "1, 0., 0., 0.",
+                "2, 1., 0., 0.",
+                "*Element, type=B31, elset=BEAM",
+                "1, 1, 2",
+                "*Material, name=STEEL",
+                "*Elastic",
+                "210000., 0.3",
+                "*Beam Section, elset=BEAM, material=STEEL, section=RECT",
+                "0.2, 0.1",
+                "0., 0., 1.",
+                "*Step, name=STATIC",
+                "*Static",
+                "*Field Output",
+                "*Node Output",
+                "U",
+                "*History Output",
+                "*End Step",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
     )
 
-    assert STANDARD_LINE_SUBSET.element_types == frozenset({"B31", "T3D2"})
-    assert STANDARD_LINE_SUBSET.section_profiles == frozenset(
-        {"RECT", "CIRC", "THICK PIPE"}
-    )
-    assert STANDARD_LINE_SUBSET.distributed_load_labels == frozenset(
-        {"PX", "PY", "PZ", "P1", "P2", "GRAV"}
-    )
-    assert RETIRED_ELEMENT_TYPES.isdisjoint(
-        STANDARD_LINE_SUBSET.element_types
-    )
-    assert RETIRED_DLOAD_LABELS.isdisjoint(
-        STANDARD_LINE_SUBSET.distributed_load_labels
-    )
-    assert "truss section" not in STANDARD_LINE_SUBSET.executed_keywords
-    output_keywords = {
-        "output",
-        "field output",
-        "history output",
-        "node output",
-        "element output",
+    result = inp.read_with_report(path)
+    categories = {
+        occurrence.name: occurrence.category
+        for occurrence in result.source_summary.occurrences
     }
-    assert output_keywords.isdisjoint(
-        STANDARD_LINE_SUBSET.solver_executed_keywords
-    )
-    assert STANDARD_LINE_SUBSET.postprocess_candidate_keywords == frozenset(
-        {
-            "output",
-            "field output",
-            "node output",
-            "element output",
-        }
-    )
-    assert STANDARD_LINE_SUBSET.preserved_output_keywords == frozenset(
-        {"history output"}
-    )
-    assert output_keywords <= STANDARD_LINE_SUBSET.accepted_keywords
+    assert categories["heading"] is inp.InpKeywordCategory.HARMLESS_IGNORED
+    assert categories["preprint"] is inp.InpKeywordCategory.HARMLESS_IGNORED
+    assert categories["node"] is inp.InpKeywordCategory.EXECUTED
+    assert categories["field output"] is inp.InpKeywordCategory.POSTPROCESS_CANDIDATE
+    assert categories["history output"] is inp.InpKeywordCategory.PRESERVED
 
 
 def test_retired_element_aliases_are_not_adapter_mapping_keys():
     retired_aliases = {"BEAM2", "TRUSS2"}
     offenders = []
 
-    for path in sorted((SRC_ROOT / "fem" / "abaqus").rglob("*.py")):
+    for path in sorted(INP_IMPL_ROOT.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Dict):
@@ -1907,7 +1909,7 @@ def test_retired_element_aliases_are_not_adapter_mapping_keys():
 
 
 def test_abaqus_pipe_profile_is_never_mapped_to_hollow_circle():
-    path = SRC_ROOT / "fem" / "abaqus" / "builder.py"
+    path = INP_IMPL_ROOT / "builder.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
     offenders = []
 

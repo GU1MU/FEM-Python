@@ -5,7 +5,7 @@ from copy import deepcopy
 import numpy as np
 import pytest
 
-from fem import abaqus
+from fem.io import inp as abaqus
 from fem.application import RegionRef, resolve_effective_beam_frames
 from fem.assemble import assemble_global_stiffness
 from fem.boundary.loads import build_load_vector
@@ -445,7 +445,7 @@ def test_invalid_b31_n1_remains_a_typed_build_error(
         ),
     )
 
-    with pytest.raises(abaqus.AbaqusInputError) as caught:
+    with pytest.raises(abaqus.InpInputError) as caught:
         abaqus.read(path)
 
     assert caught.value.code == expected_code
@@ -465,7 +465,7 @@ def test_nonfinite_b31_n1_remains_a_typed_parse_error(tmp_path) -> None:
         ),
     )
 
-    with pytest.raises(abaqus.AbaqusInputError) as caught:
+    with pytest.raises(abaqus.InpInputError) as caught:
         abaqus.read(path)
 
     assert caught.value.code == "abaqus.real.nonfinite"

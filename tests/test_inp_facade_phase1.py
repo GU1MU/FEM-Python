@@ -63,7 +63,7 @@ def test_complete_inp_facade_is_model_equivalent_with_harmless_keywords(
     assert plain.mesh.nodes == reported.model.mesh.nodes
     assert plain.mesh.elements == reported.model.mesh.elements
 
-    occurrences = reported.source_summary.keyword_occurrences
+    occurrences = reported.source_summary.occurrences
     assert tuple(occurrence.name for occurrence in occurrences[:2]) == (
         "heading",
         "preprint",
@@ -86,7 +86,8 @@ def test_facade_errors_are_public_typed_and_source_located(tmp_path: Path) -> No
     path = tmp_path / "unsupported.inp"
     _write_b31(path, include_preprint=True)
     path.write_text(
-        path.read_text(encoding="utf-8") + "*Normal\n1, 0.0, 1.0, 0.0\n",
+        path.read_text(encoding="utf-8")
+        + "*Include, input=unsupported.inp\n",
         encoding="utf-8",
     )
 
@@ -97,7 +98,7 @@ def test_facade_errors_are_public_typed_and_source_located(tmp_path: Path) -> No
     assert error.code == "abaqus.line.keyword_unsupported"
     assert error.path == path
     assert error.line > 0
-    assert error.keyword == "normal"
+    assert error.keyword == "include"
     assert error.locations
     assert error.remediation
     assert str(error)

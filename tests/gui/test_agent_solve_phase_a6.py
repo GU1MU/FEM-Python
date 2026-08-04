@@ -11,7 +11,7 @@ import pytest
 from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication
 
-from fem.abaqus import read
+from fem.io.inp import read
 from fem.application import (
     ModelSession,
     PreflightDiagnostic,

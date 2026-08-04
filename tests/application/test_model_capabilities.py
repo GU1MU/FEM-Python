@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 import fem.application.capabilities as capabilities_module
-from fem.abaqus import read
+from fem.io.inp import read
 from fem.application import (
     AuthoringStatus,
     RegionRef,

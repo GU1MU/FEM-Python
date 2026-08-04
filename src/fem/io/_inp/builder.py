@@ -4,8 +4,8 @@ import math
 from collections import defaultdict
 from typing import Any
 
-from ..core.mesh import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
-from ..core.model import (
+from ...core.mesh import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
+from ...core.model import (
     AnalysisStep,
     DisplacementConstraint,
     Edge,
@@ -25,7 +25,7 @@ from ..core.model import (
     Surface,
     SurfaceLoad,
 )
-from ..elements import (
+from ...elements import (
     BEAM_DEFAULT_LOCAL_Y_REFERENCE,
     BEAM_DEFAULT_LOCAL_Y_REFERENCE_KEY,
     BEAM_FRAME_FIELD_KEY,
@@ -37,17 +37,16 @@ from ..elements import (
     resolve_beam_frame_field,
     validate_beam_frame_field,
 )
-from ..elements.line import line3d_geometry
-from ..materials import resolve_sections
-from ..selection import edges as edge_selection
-from ..selection import faces as face_selection
-from ..io.inp import (
+from ...elements.line import line3d_geometry
+from ...materials import resolve_sections
+from ...selection import edges as edge_selection
+from ...selection import faces as face_selection
+from ..inp import (
     InpImportNotice,
     InpImportResult,
     InpKeywordCategory,
-    classify_keyword,
 )
-from .contracts import STANDARD_LINE_SUBSET
+from .contracts import STANDARD_LINE_SUBSET, classify_keyword
 from .deck import (
     AbaqusBeamSectionData,
     AbaqusBoundary,

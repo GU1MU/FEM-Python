@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from fem import abaqus
+from fem.io import inp as abaqus
 from fem.application import (
     RegionRef,
     compile_model_definitions,
@@ -184,13 +184,13 @@ def test_standard_line_fixtures_are_literal_utf8_official_shapes(
 
 def test_public_line_import_error_hierarchy_remains_value_error_compatible():
     for name in (
-        "AbaqusInputError",
-        "AbaqusParseError",
-        "AbaqusBuildError",
-        "UnsupportedAbaqusFeatureError",
+        "InpInputError",
+        "InpParseError",
+        "InpBuildError",
+        "UnsupportedInpFeatureError",
     ):
         error_type = getattr(abaqus, name)
-        assert issubclass(error_type, abaqus.AbaqusInputError)
+        assert issubclass(error_type, abaqus.InpInputError)
         assert issubclass(error_type, ValueError)
 
 
@@ -375,7 +375,7 @@ def test_retired_line_dialects_fail_closed_with_migration_guidance(
     filename: str,
     diagnostic_tokens: tuple[str, str],
 ) -> None:
-    with pytest.raises(abaqus.AbaqusInputError) as caught:
+    with pytest.raises(abaqus.InpInputError) as caught:
         abaqus.read(RETIRED / filename)
 
     diagnostic = f"{caught.value} {caught.value.remediation}"
@@ -398,7 +398,7 @@ def test_t3d2_invalid_area_records_fail_before_model_construction(
         _minimal_t3d2(section_data=(area_record,)),
     )
 
-    with pytest.raises(abaqus.AbaqusInputError):
+    with pytest.raises(abaqus.InpInputError):
         abaqus.read(path)
 
 
@@ -411,7 +411,7 @@ def test_t3d2_missing_entire_area_record_is_not_treated_as_default(
         _minimal_t3d2(section_data=()),
     )
 
-    with pytest.raises(abaqus.AbaqusBuildError, match="area"):
+    with pytest.raises(abaqus.InpBuildError, match="area"):
         abaqus.read(path)
 
 
@@ -444,7 +444,7 @@ def test_b31_invalid_profile_geometry_fails_closed(
         ),
     )
 
-    with pytest.raises(abaqus.AbaqusInputError):
+    with pytest.raises(abaqus.InpInputError):
         abaqus.read(path)
 
 
@@ -464,7 +464,7 @@ def test_b31_pipe_is_not_silently_mapped_to_hollow_circle(
     )
 
     with pytest.raises(
-        abaqus.UnsupportedAbaqusFeatureError,
+        abaqus.UnsupportedInpFeatureError,
     ) as caught:
         abaqus.read(path)
 
@@ -492,7 +492,7 @@ def test_unsupported_or_malformed_b31_dloads_fail_closed(
         _minimal_b31(load_records=(load_record,)),
     )
 
-    with pytest.raises(abaqus.AbaqusInputError):
+    with pytest.raises(abaqus.InpInputError):
         abaqus.read(path)
 
 
@@ -509,7 +509,7 @@ def test_t3d2_target_rejects_line_dload_labels(tmp_path) -> None:
     path = write_inp(tmp_path, "truss_line_load.inp", lines)
 
     with pytest.raises(
-        abaqus.UnsupportedAbaqusFeatureError,
+        abaqus.UnsupportedInpFeatureError,
     ) as caught:
         abaqus.read(path)
 
@@ -529,7 +529,7 @@ def test_b31_rejects_dsload_even_when_target_name_is_valid(tmp_path) -> None:
     )
 
     with pytest.raises(
-        abaqus.UnsupportedAbaqusFeatureError,
+        abaqus.UnsupportedInpFeatureError,
     ) as caught:
         abaqus.read(path)
 
@@ -569,8 +569,8 @@ def test_invalid_utf8_raises_typed_parse_error_without_dropping_cause(
     path = tmp_path / "invalid_utf8.inp"
     path.write_bytes(b"*Heading\n** invalid byte: \xff\n")
 
-    with pytest.raises(abaqus.AbaqusParseError) as caught:
-        abaqus.parse_file(path)
+    with pytest.raises(abaqus.InpParseError) as caught:
+        abaqus.read_with_report(path)
 
     assert Path(caught.value.path) == path
     assert isinstance(caught.value.__cause__, UnicodeDecodeError)
@@ -601,8 +601,8 @@ def test_duplicate_parameter_across_keyword_continuation_is_rejected(
     )
     path = write_inp(tmp_path, "duplicate_continued_parameter.inp", lines)
 
-    with pytest.raises(abaqus.AbaqusParseError, match="type") as caught:
-        abaqus.parse_file(path)
+    with pytest.raises(abaqus.InpParseError, match="type") as caught:
+        abaqus.read_with_report(path)
 
     assert caught.value.line == 6
     assert "element" in caught.value.keyword.casefold()
@@ -622,8 +622,8 @@ def test_unknown_line_keyword_parameter_is_rejected_with_source_context(
         ),
     )
 
-    with pytest.raises(abaqus.AbaqusParseError) as caught:
-        abaqus.parse_file(path)
+    with pytest.raises(abaqus.InpParseError) as caught:
+        abaqus.read_with_report(path)
 
     assert Path(caught.value.path) == path
     assert caught.value.line == 5
@@ -646,7 +646,7 @@ def test_exact_section_dispatch_rejects_beam_general_section(
     )
 
     with pytest.raises(
-        abaqus.UnsupportedAbaqusFeatureError,
+        abaqus.UnsupportedInpFeatureError,
     ) as caught:
         abaqus.read(path)
 
@@ -669,7 +669,7 @@ def test_line_deck_unknown_engineering_keyword_is_default_denied(
         ),
     )
 
-    with pytest.raises(abaqus.UnsupportedAbaqusFeatureError) as caught:
+    with pytest.raises(abaqus.UnsupportedInpFeatureError) as caught:
         abaqus.read(path)
 
     assert "ORIENTATION" in str(caught.value).upper()

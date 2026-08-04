@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from fem import abaqus
+from fem.io import inp as abaqus
 from fem.solvers import static_linear
 from fem_agent.artifacts import ArtifactStore
 from fem_agent.engine import AgentSessionEngine, EngineEventType

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from fem import abaqus
+from fem.io import inp as abaqus
 from fem.application import RegionRef, resolve_effective_beam_frames
 from fem.elements.beam_section import parse_beam2_section
 from fem.solvers.static_linear import solve

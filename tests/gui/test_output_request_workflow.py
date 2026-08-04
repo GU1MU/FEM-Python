@@ -12,7 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication, QDialog
 
-from fem.abaqus import read
+from fem.io.inp import read
 from fem.application import (
     AuthoringCapability,
     AuthoringStatus,

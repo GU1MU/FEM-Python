@@ -20,7 +20,7 @@ from fem.application import (
     generate_fem_model,
 )
 from fem.application.results import build_solve_result_bundle
-from fem.abaqus import read
+from fem.io.inp import read
 from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,

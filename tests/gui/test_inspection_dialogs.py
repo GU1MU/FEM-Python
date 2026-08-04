@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QAbstractTableModel, Qt
 from PySide6.QtWidgets import QApplication, QFileDialog, QHeaderView, QLineEdit
 
-from fem.abaqus import read
+from fem.io.inp import read
 from fem_gui.inspection_dialogs import EntityInfoDialog, InspectionTableModel
 from fem_gui.inspection_service import InspectionService
 from fem_gui.mesh_browser import MeshBrowserDialog, NodeTableModel

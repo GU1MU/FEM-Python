@@ -2,7 +2,8 @@
 
 from pathlib import Path
 
-from fem import abaqus, post
+from fem import post
+from fem.io import inp
 from fem.selection import nodes
 from fem.solvers import static_linear
 
@@ -12,7 +13,7 @@ DATA_DIR = Path(__file__).resolve().parent / "examples_data"
 
 
 # Import mesh, material, constraints, surface traction, and gravity
-model = abaqus.read(DATA_DIR / f"{MODEL_NAME}.inp")
+model = inp.read(DATA_DIR / f"{MODEL_NAME}.inp")
 result = static_linear.solve(model)
 
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..io.inp import (
+from ..inp import (
     InpBuildError,
     InpInputError,
     InpParseError,

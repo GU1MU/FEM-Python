@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from fem.abaqus import read
+from fem.io.inp import read
 from fem.application.results import (
     OutputExecutionStatus,
     ResultCapabilityCatalog,

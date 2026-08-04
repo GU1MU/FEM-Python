@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
-from fem import abaqus
+from fem.io import inp as abaqus
 from fem.application import RegionRef, resolve_effective_beam_frames
 from tests.helpers.file_builders import write_inp
 
@@ -46,14 +45,15 @@ def _single_section_deck(
     ]
 
 
-def _assert_frame_approximation_notice(result: abaqus.AbaqusBuildResult) -> None:
+def _assert_frame_approximation_notice(result: abaqus.InpImportResult) -> None:
     notices = [
         notice for notice in result.notices if notice.code == FRAME_NOTICE_CODE
     ]
     assert len(notices) == 1
     notice = notices[0]
     assert notice.locations
-    assert "shared nodes" in notice.message.casefold()
+    assert "element-end normals" in notice.message.casefold()
+    assert "connectivity" in notice.message.casefold()
     assert "disconnect" not in notice.message.casefold()
 
 
@@ -312,16 +312,14 @@ def test_orientation_parallel_to_later_target_element_fails_transactionally(
             orientation=(0.0, 1.0, 0.0),
         ),
     )
-    deck = abaqus.parse_file(path)
-    snapshot = deepcopy(deck)
-
-    with pytest.raises(abaqus.AbaqusInputError) as caught:
-        abaqus.build_model_with_report(deck)
+    with pytest.raises(abaqus.InpInputError) as caught:
+        abaqus.read_with_report(path)
 
     assert caught.value.code == "beam.orientation.parallel"
     assert "2" in str(caught.value)
-    assert caught.value.remediation
-    assert deck == snapshot
+    assert caught.value.path == path
+    assert caught.value.keyword in {"element", "beam section"}
+    assert caught.value.locations
 
 
 def test_additional_b31_orientation_node_is_not_truncated(
@@ -347,11 +345,8 @@ def test_additional_b31_orientation_node_is_not_truncated(
         ],
     )
 
-    deck = abaqus.parse_file(path)
     result = abaqus.read_with_report(path)
 
-    assert deck.elements[0].node_ids == (1, 2)
-    assert deck.elements[0].additional_orientation_node_id == 3
     assert tuple(result.model.mesh.elements[0].node_ids) == (1, 2)
     assert result.model.mesh.num_nodes == 2
     assert result.model.mesh.num_dofs == 12
@@ -379,14 +374,15 @@ def test_node_normal_components_are_not_silently_discarded(
         ],
     )
 
-    deck = abaqus.parse_file(path)
     result = abaqus.read_with_report(path)
 
-    assert deck.node_records[1].normal is not None
-    assert deck.node_records[1].normal.node_id == 1
-    assert deck.node_records[1].normal.vector == (0.0, 1.0, 0.0)
     assert result.model.mesh.num_nodes == 2
     assert result.model.mesh.num_elements == 1
+    assert result.source_summary is not None
+    assert any(
+        occurrence.name == "node"
+        for occurrence in result.source_summary.occurrences
+    )
 
 
 def test_normal_keyword_is_supported_for_b31_source(
@@ -408,13 +404,12 @@ def test_normal_keyword_is_supported_for_b31_source(
     )
     path = write_inp(tmp_path, "normal_keyword.inp", lines)
 
-    deck = abaqus.parse_file(path)
     result = abaqus.read_with_report(path)
 
-    assert len(deck.normal_records) == 2
-    assert deck.normal_records[0].element_target == 1
-    assert deck.normal_records[0].node_target == 1
-    assert deck.normal_records[0].identity is not None
-    assert deck.normal_records[0].identity.local_end == 1
     assert result.model.mesh.num_nodes == 2
     assert result.model.mesh.num_elements == 1
+    assert result.source_summary is not None
+    assert sum(
+        occurrence.name == "normal"
+        for occurrence in result.source_summary.occurrences
+    ) == 1

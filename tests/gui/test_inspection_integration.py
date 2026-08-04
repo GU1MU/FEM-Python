@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from fem.abaqus import read
+from fem.io.inp import read
 from fem.application import NativePart
 from fem.application.results import build_solve_result_bundle
 from fem.core.model import (

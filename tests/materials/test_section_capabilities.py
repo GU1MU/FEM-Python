@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from fem.abaqus import read
+from fem.io.inp import read
 from fem import materials
 from fem.core.model import (
     ElementSet,

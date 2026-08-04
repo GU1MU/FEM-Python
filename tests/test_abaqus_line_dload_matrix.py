@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from copy import deepcopy
-
 import pytest
 
-from fem import abaqus
+from fem.io import inp as abaqus
 from tests.helpers.file_builders import write_inp
 
 
@@ -125,7 +123,7 @@ def test_b31_dload_rejects_undefined_or_empty_targets(
         )
     path = write_inp(tmp_path, f"{target.casefold()}_target.inp", lines)
 
-    with pytest.raises(abaqus.AbaqusBuildError) as caught:
+    with pytest.raises(abaqus.InpBuildError) as caught:
         abaqus.read(path)
 
     assert caught.value.code == expected_code
@@ -167,7 +165,7 @@ def test_mixed_b31_t3d2_dload_target_is_rejected_by_target_family(
         ],
     )
 
-    with pytest.raises(abaqus.AbaqusBuildError) as caught:
+    with pytest.raises(abaqus.InpBuildError) as caught:
         abaqus.read(path)
 
     assert caught.value.code == "abaqus.target.family_mixed"
@@ -182,7 +180,7 @@ def test_t3d2_rejects_non_gravity_distributed_load(tmp_path) -> None:
     )
 
     with pytest.raises(
-        abaqus.UnsupportedAbaqusFeatureError,
+        abaqus.UnsupportedInpFeatureError,
     ) as caught:
         abaqus.read(path)
 
@@ -203,11 +201,11 @@ def test_b31_rejects_dsload_and_dload_options(tmp_path) -> None:
     )
 
     with pytest.raises(
-        abaqus.UnsupportedAbaqusFeatureError,
+        abaqus.UnsupportedInpFeatureError,
     ) as dsload_error:
         abaqus.read(dsload)
     with pytest.raises(
-        abaqus.UnsupportedAbaqusFeatureError,
+        abaqus.UnsupportedInpFeatureError,
     ) as follower_error:
         abaqus.read(follower)
 
@@ -236,7 +234,7 @@ def test_b31_rejects_retired_nonuniform_or_malformed_records(
         _b31_lines(record),
     )
 
-    with pytest.raises(abaqus.AbaqusInputError):
+    with pytest.raises(abaqus.InpInputError):
         abaqus.read(path)
 
 
@@ -292,10 +290,5 @@ def test_failed_dload_build_does_not_mutate_the_parsed_deck(
         "transactional_failure.inp",
         _b31_lines("MISSING, P1, 1.0"),
     )
-    deck = abaqus.parse_file(path)
-    before = deepcopy(deck)
-
-    with pytest.raises(abaqus.AbaqusInputError):
-        abaqus.build_model_with_report(deck)
-
-    assert deck == before
+    with pytest.raises(abaqus.InpInputError):
+        abaqus.read(path)

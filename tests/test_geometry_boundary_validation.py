@@ -18,7 +18,6 @@ from fem.core.model import (
     SurfaceLoad,
 )
 from fem.elements import get_element_kernel
-from fem.io import inp
 from fem.solvers import static_linear
 from tests.helpers.mesh_builders import (
     make_beam_stiffness_mesh,
@@ -140,79 +139,6 @@ def test_registry_does_not_dispatch_arbitrary_substring_matches():
         match=r"Unsupported element type: wrapped-Quad4-variant",
     ):
         get_element_kernel("wrapped-Quad4-variant")
-
-
-@pytest.mark.parametrize(
-    ("element_type", "reader"),
-    [
-        ("CPS4R", inp.read_quad4),
-        ("CPS8R", inp.read_quad8),
-        ("C3D8R", inp.read_hex8),
-        ("C3D20R", inp.read_hex20),
-    ],
-)
-def test_specialized_inp_readers_reject_reduced_integration(
-    tmp_path,
-    element_type,
-    reader,
-):
-    path = tmp_path / f"{element_type.lower()}.inp"
-    path.write_text(
-        "*Node\n1, 0, 0, 0\n"
-        f"*Element, type={element_type}\n"
-        "1, 1\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(
-        NotImplementedError,
-        match=rf"Unsupported element type: {element_type}; reduced integration is not implemented",
-    ):
-        reader(path)
-
-
-def test_mixed2d_inp_reader_rejects_reduced_integration(tmp_path):
-    element_type = "CPE8R"
-    path = tmp_path / f"mixed_{element_type.lower()}.inp"
-    path.write_text(
-        "*Node\n1, 0, 0\n"
-        f"*Element, type={element_type}\n"
-        "1, 1\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(
-        NotImplementedError,
-        match=rf"Unsupported element type: {element_type}; reduced integration is not implemented",
-    ):
-        inp.read_mixed2d(path)
-
-
-@pytest.mark.parametrize(
-    ("element_type", "reader"),
-    (("C3D4T", inp.read_tet4), ("C3D10T", inp.read_tet10)),
-)
-def test_tet_inp_reader_rejects_coupled_temperature_element(
-    tmp_path,
-    element_type,
-    reader,
-):
-    path = tmp_path / f"{element_type.lower()}.inp"
-    path.write_text(
-        "*Node\n1, 0, 0, 0\n"
-        f"*Element, type={element_type}\n"
-        "1, 1\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(
-        NotImplementedError,
-        match=(
-            rf"Unsupported element type: {element_type}; "
-            r"coupled temperature-displacement elements are not implemented"
-        ),
-    ):
-        reader(path)
 
 
 @pytest.mark.parametrize(

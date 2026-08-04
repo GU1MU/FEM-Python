@@ -1,6 +1,6 @@
 import pytest
 
-from fem import abaqus
+from fem.io import inp as abaqus
 from fem_agent.artifacts import (
     ArtifactStore,
     InputRejectedError,
@@ -76,7 +76,7 @@ def test_engine_import_is_process_isolated_and_ignores_workspace_modules(
     def fail_in_parent(*args, **kwargs):
         raise AssertionError("the parent process must not parse the Abaqus input")
 
-    monkeypatch.setattr(abaqus, "parse_file", fail_in_parent)
+    monkeypatch.setattr(abaqus, "read_with_report", fail_in_parent)
     engine = AgentSessionEngine(workspace, FakeProvider())
     artifact = ArtifactStore(workspace).copy_input(engine.session_id, source)
 

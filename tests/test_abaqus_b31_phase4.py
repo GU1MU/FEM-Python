@@ -1,529 +1,433 @@
+"""Public-facade coverage for deterministic B31 normal resolution."""
+
 from __future__ import annotations
 
+from copy import deepcopy
 from math import cos, radians, sin
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from fem import abaqus
 from fem.assemble import assemble_global_stiffness
 from fem.boundary.loads import build_load_vector
 from fem.boundary.step import boundary_for_step
-from fem.abaqus.deck import (
-    AbaqusBeamSectionData,
-    AbaqusDataRecordEvidence,
-    AbaqusDeck,
-    AbaqusElement,
-    AbaqusNodeNormalRecord,
-    AbaqusNodeRecord,
-    AbaqusNormalRecord,
-    AbaqusSection,
-    AbaqusSourceSpan,
-)
-from fem.abaqus.errors import AbaqusSourceLocation
-from fem.abaqus.orientation import (
-    AbaqusOrientationPolicy,
-    resolve_b31_orientations,
-)
-from fem.core.mesh import Element3D, Mesh3D, Node3D
-from fem.core.model import AnalysisStep, FEMModel, LineLoad
-from fem.elements import (
-    BEAM_LOCAL_Y_REFERENCE_KEY,
-    get_element_kernel,
-    resolve_beam_frame,
-)
-from tests.helpers.file_builders import write_inp
+from fem.application import RegionRef, resolve_effective_beam_frames
+from fem.elements import resolve_beam_frame
+from fem.io import inp
+from fem.materials import apply_sections
 
 
-def _span(line: int, keyword: str) -> AbaqusSourceSpan:
-    location = AbaqusSourceLocation(None, line, keyword)
-    return AbaqusSourceSpan(location, location, (location,))
+def _write(tmp_path: Path, name: str, lines: tuple[str, ...]) -> Path:
+    path = tmp_path / name
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
 
 
 def _deck(
-    nodes: dict[int, tuple[float, float, float]],
-    elements: list[AbaqusElement],
+    nodes: tuple[str, ...],
+    elements: tuple[str, ...],
     *,
-    node_records: dict[int, AbaqusNodeRecord] | None = None,
-    normal_records: list[AbaqusNormalRecord] | None = None,
-    element_sets: dict[str, list[int]] | None = None,
-    node_sets: dict[str, list[int]] | None = None,
-    sections: list[AbaqusSection] | None = None,
-) -> AbaqusDeck:
-    return AbaqusDeck(
-        name="phase4",
-        nodes=nodes,
-        node_records={} if node_records is None else node_records,
-        elements=elements,
-        element_sets={} if element_sets is None else element_sets,
-        node_sets={} if node_sets is None else node_sets,
-        sections=[] if sections is None else sections,
-        normal_records=[] if normal_records is None else normal_records,
+    n1: str = "0., 0., 1.",
+    extra: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    return (
+        "*Heading",
+        "Phase 4 public facade",
+        "*Node",
+        *nodes,
+        "*Element, type=B31, elset=BEAMS",
+        *elements,
+        "*Material, name=STEEL",
+        "*Elastic",
+        "210000., 0.3",
+        "*Beam Section, elset=BEAMS, material=STEEL, section=RECT",
+        "0.2, 0.1",
+        n1,
+        *extra,
     )
 
 
-def _star(angles: tuple[float, ...]) -> AbaqusDeck:
-    nodes = {0: (0.0, 0.0, 0.0)}
-    elements = []
-    for index, angle in enumerate(angles, start=1):
-        node_id = index
-        nodes[node_id] = (cos(radians(angle)), sin(radians(angle)), 0.0)
-        elements.append(AbaqusElement(index, (0, node_id), "B31"))
-    return _deck(
-        nodes,
-        elements,
-        element_sets={"BEAMS": [element.id for element in elements]},
-        node_sets={"CENTER": [0]},
+def _frame_report(model):
+    report = resolve_effective_beam_frames(
+        model,
+        RegionRef("element_set", "BEAMS"),
     )
+    assert report.passed
+    return report
 
 
-def _field_signature(result) -> tuple[tuple[object, ...], ...]:
-    return tuple(
-        (
-            entry.identity,
-            entry.tangent,
-            entry.n1,
-            entry.normal,
-            entry.resolution_kind,
-            entry.normal_group,
-        )
-        for entry in result.field.entries
-    )
-
-
-def _beam2_mesh(*, reversed_connectivity: bool = False) -> Mesh3D:
-    return Mesh3D(
-        nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 2.0, 3.0, 6.0)],
-        elements=[
-            Element3D(
-                10,
-                [2, 1] if reversed_connectivity else [1, 2],
-                "Beam2",
-                {
-                    "E": 210.0,
-                    "nu": 0.25,
-                    "section_type": "rectangle",
-                    "height": 3.0,
-                    "width": 2.0,
-                    BEAM_LOCAL_Y_REFERENCE_KEY: (0.0, 1.0, 0.0),
-                },
+def _star_deck(angles: tuple[float, ...]) -> tuple[str, ...]:
+    nodes = tuple(
+        ["0, 0., 0., 0."]
+        + [
+            (
+                f"{index}, {cos(radians(angle))}, {sin(radians(angle))}, "
+                f"{0.1 * angle:g}"
             )
-        ],
-        dofs_per_node=6,
+            for index, angle in enumerate(angles, start=1)
+        ]
     )
-
-
-def _line_load_vector(
-    mesh: Mesh3D,
-    vector: tuple[float, float, float],
-    coordinate_system: str,
-) -> np.ndarray:
-    model = FEMModel(
-        mesh=mesh,
-        steps=[
-            AnalysisStep(
-                "LOAD",
-                line_loads=(LineLoad(10, vector, coordinate_system),),
-            )
-        ],
+    elements = tuple(
+        f"{index}, 0, {index}" for index in range(1, len(angles) + 1)
     )
-    return build_load_vector(mesh, boundary_for_step(model, "LOAD"))
+    return _deck(nodes, elements)
 
 
-def test_isolated_default_field_is_unit_right_handed_and_stably_sorted() -> None:
-    result = resolve_b31_orientations(
-        _deck(
-            {2: (1.0, 0.0, 0.0), 1: (0.0, 0.0, 0.0)},
-            [AbaqusElement(20, (1, 2), "B31")],
+def _center_local_z(model) -> dict[int, np.ndarray]:
+    return {
+        int(element.id): np.asarray(
+            element.props["beam_frame_field"].start.local_z,
+            dtype=float,
         )
-    )
-
-    assert result.report.ok
-    assert tuple(entry.identity.local_end for entry in result.field.entries) == (1, 2)
-    assert {entry.resolution_kind for entry in result.field.entries} == {
-        "default-generated"
-    }
-    for entry in result.field.entries:
-        np.testing.assert_allclose(np.linalg.norm(entry.tangent), 1.0)
-        np.testing.assert_allclose(np.linalg.norm(entry.n1), 1.0)
-        np.testing.assert_allclose(np.linalg.norm(entry.normal), 1.0)
-        np.testing.assert_allclose(np.cross(entry.tangent, entry.n1), entry.normal)
-
-
-def test_explicit_normal_precedes_node_normal_and_orientation_node_precedes_section_n1() -> None:
-    section = AbaqusSection(
-        "BEAMS",
-        "STEEL",
-        "beam",
-        element_ids=(1,),
-        data=AbaqusBeamSectionData(
-            "RECT",
-            (0.2, 0.1),
-            (0.0, 1.0, 0.0),
-            AbaqusDataRecordEvidence.missing(),
-            AbaqusDataRecordEvidence.missing(),
-        ),
-    )
-    node_records = {
-        node_id: AbaqusNodeRecord(
-            node_id,
-            coordinates,
-            normal=AbaqusNodeNormalRecord((0.0, 0.0, 1.0), node_id),
-        )
-        for node_id, coordinates in {
-            1: (0.0, 0.0, 0.0),
-            2: (1.0, 0.0, 0.0),
-        }.items()
-    }
-    result = resolve_b31_orientations(
-        _deck(
-            {
-                1: (0.0, 0.0, 0.0),
-                2: (1.0, 0.0, 0.0),
-                3: (0.0, 0.0, 1.0),
-            },
-            [AbaqusElement(1, (1, 2), "B31", orientation_node_id=3)],
-            node_records=node_records,
-            normal_records=[
-                AbaqusNormalRecord(
-                    1,
-                    1,
-                    (0.0, 0.0, 1.0),
-                    _span(40, "normal"),
-                )
-            ],
-            element_sets={"BEAMS": [1]},
-            sections=[section],
-        )
-    )
-
-    assert result.report.ok
-    first, second = result.field.entries
-    assert first.normal_source == "element-normal"
-    assert second.normal_source == "node-normal"
-    assert first.reference_source == second.reference_source == "orientation-node"
-    assert first.n1 == pytest.approx((0.0, 1.0, 0.0))
-    assert second.n1 == pytest.approx((0.0, 1.0, 0.0))
-    assert len(result.report.explicit) == 2
-
-
-def test_continuous_group_uses_official_pairwise_20_degree_average() -> None:
-    result = resolve_b31_orientations(_star((0.0, 10.0, 15.0)))
-
-    center_entries = [entry for entry in result.field.entries if entry.node_id == 0]
-    assert len(center_entries) == 3
-    assert {entry.resolution_kind for entry in center_entries} == {"averaged"}
-    assert len({entry.normal_group for entry in center_entries}) == 1
-    assert len(result.report.averaged) == 1
-    assert result.report.averaged[0].identities == tuple(
-        entry.identity for entry in center_entries
-    )
-    assert result.report.groups[0].averaged
-
-
-def test_official_disjoint_groups_average_two_and_keep_one_independent() -> None:
-    result = resolve_b31_orientations(_star((0.0, 10.0, 40.0)))
-
-    center = [entry for entry in result.field.entries if entry.node_id == 0]
-    assert [entry.resolution_kind for entry in center] == [
-        "averaged",
-        "averaged",
-        "split-group",
-    ]
-    assert len(result.report.averaged) == 1
-    assert result.report.averaged[0].identities == tuple(
-        entry.identity for entry in center[:2]
-    )
-    groups = [group for group in result.report.groups if group.node_id == 0]
-    assert [len(group.identities) for group in groups] == [2, 1]
-    assert groups[0].averaged
-    assert not groups[1].averaged
-    assert groups[1].split_reason == "disjoint-continuity-group"
-    assert result.report.split_groups
-
-
-def test_non_clique_continuity_group_is_split_without_element_order_dependence() -> None:
-    forward = resolve_b31_orientations(_star((0.0, 10.0, 30.0)))
-    reversed_input = _star((0.0, 10.0, 30.0))
-    reversed_input.elements.reverse()
-    permuted = resolve_b31_orientations(reversed_input)
-
-    center = [entry for entry in forward.field.entries if entry.node_id == 0]
-    assert {entry.resolution_kind for entry in center} == {"split-group"}
-    assert len({entry.normal_group for entry in center}) == 3
-    assert forward.report.split_groups
-    assert _field_signature(forward) == _field_signature(permuted)
-
-
-def test_kink_keeps_independent_element_end_normal_groups() -> None:
-    result = resolve_b31_orientations(
-        _deck(
-            {
-                1: (0.0, 0.0, 0.0),
-                2: (1.0, 0.0, 0.0),
-                3: (1.0, 1.0, 0.0),
-            },
-            [AbaqusElement(1, (1, 2), "B31"), AbaqusElement(2, (2, 3), "B31")],
-        )
-    )
-
-    center = [entry for entry in result.field.entries if entry.node_id == 2]
-    assert len(center) == 2
-    assert {entry.resolution_kind for entry in center} == {"split-group"}
-    assert len({entry.normal_group for entry in center}) == 2
-    assert result.report.split_groups
-
-
-def test_t_junction_keeps_shared_node_element_end_identity() -> None:
-    result = resolve_b31_orientations(
-        _deck(
-            {
-                1: (0.0, 0.0, 0.0),
-                2: (1.0, 0.0, 0.0),
-                3: (2.0, 0.0, 0.0),
-                4: (1.0, 1.0, 0.0),
-            },
-            [
-                AbaqusElement(1, (1, 2), "B31"),
-                AbaqusElement(2, (2, 3), "B31"),
-                AbaqusElement(3, (2, 4), "B31"),
-            ],
-        )
-    )
-
-    center = [entry for entry in result.field.entries if entry.node_id == 2]
-    assert len(center) == 3
-    assert len({entry.identity for entry in center}) == 3
-    assert len({entry.normal_group for entry in center}) == 2
-    assert {entry.resolution_kind for entry in center} == {
-        "averaged",
-        "split-group",
+        for element in model.mesh.elements
     }
 
 
-def test_more_than_thirty_remaining_elements_are_kept_as_separate_groups() -> None:
-    result = resolve_b31_orientations(
-        _star(tuple(0.0 for _ in range(31)))
+def _generated_normal(angle: float) -> np.ndarray:
+    tangent = _star_tangent(angle)
+    normal = np.cross(tangent, np.asarray((0.0, 0.0, 1.0)))
+    return normal / np.linalg.norm(normal)
+
+
+def _star_tangent(angle: float) -> np.ndarray:
+    tangent = np.asarray(
+        (cos(radians(angle)), sin(radians(angle)), 0.1 * angle),
+        dtype=float,
     )
-
-    center = [entry for entry in result.field.entries if entry.node_id == 0]
-    assert len(center) == 31
-    assert {entry.resolution_kind for entry in center} == {"split-group"}
-    assert result.report.split_groups[0].record["reason"] == (
-        "more-than-30-remaining-elements"
-    )
+    return tangent / np.linalg.norm(tangent)
 
 
-def test_loop_and_multibranch_topology_are_element_end_owned() -> None:
-    nodes = {
-        1: (0.0, 0.0, 0.0),
-        2: (1.0, 0.0, 0.0),
-        3: (1.0, 1.0, 0.0),
-        4: (0.0, 1.0, 0.0),
-        5: (2.0, 0.0, 0.0),
-    }
-    elements = [
-        AbaqusElement(10, (1, 2), "B31"),
-        AbaqusElement(20, (2, 3), "B31"),
-        AbaqusElement(30, (3, 4), "B31"),
-        AbaqusElement(40, (4, 1), "B31"),
-        AbaqusElement(50, (2, 5), "B31"),
-    ]
-    result = resolve_b31_orientations(_deck(nodes, elements))
-
-    assert result.report.ok
-    identities = tuple(entry.identity for entry in result.field.entries)
-    assert len(identities) == 10
-    assert len(set(identity.node_id for identity in identities)) == 5
-    assert any(
-        len({entry.normal_group for entry in result.field.for_element(element.id)})
-        >= 1
-        for element in elements
-    )
+def _effective_normal(normal: np.ndarray, angle: float) -> np.ndarray:
+    tangent = _star_tangent(angle)
+    projected = normal - float(normal @ tangent) * tangent
+    return projected / np.linalg.norm(projected)
 
 
-def test_input_permutation_and_connectivity_reversal_are_covariant() -> None:
-    original = resolve_b31_orientations(
-        _deck(
-            {1: (0.0, 0.0, 0.0), 2: (1.0, 0.0, 0.0)},
-            [AbaqusElement(7, (1, 2), "B31")],
-        )
-    )
-    reversed_result = resolve_b31_orientations(
-        _deck(
-            {2: (1.0, 0.0, 0.0), 1: (0.0, 0.0, 0.0)},
-            [AbaqusElement(7, (2, 1), "B31")],
-        )
-    )
-
-    first = original.field.entries[0]
-    second = reversed_result.field.entries[0]
-    assert second.identity.node_id == 2
-    assert second.n1 == pytest.approx(first.n1)
-    assert second.tangent == pytest.approx(tuple(-value for value in first.tangent))
-    assert second.normal == pytest.approx(tuple(-value for value in first.normal))
+def _averaged_normal(angles: tuple[float, ...]) -> np.ndarray:
+    value = sum((_generated_normal(angle) for angle in angles), np.zeros(3))
+    return value / np.linalg.norm(value)
 
 
-def test_connectivity_reversal_covaries_global_stiffness_and_local_global_loads() -> None:
-    forward = _beam2_mesh()
-    reversed_mesh = _beam2_mesh(reversed_connectivity=True)
-    permutation = np.eye(12)[[6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5]]
-
-    forward_stiffness = assemble_global_stiffness(forward)
-    reversed_stiffness = assemble_global_stiffness(reversed_mesh)
-    kernel = get_element_kernel("Beam2")
-    forward_element_stiffness = kernel.stiffness(forward, forward.elements[0])
-    reversed_element_stiffness = kernel.stiffness(
-        reversed_mesh,
-        reversed_mesh.elements[0],
-    )
-    np.testing.assert_allclose(
-        reversed_element_stiffness,
-        permutation @ forward_element_stiffness @ permutation.T,
-        rtol=1e-10,
-        atol=1e-10,
-    )
-    np.testing.assert_allclose(
-        reversed_stiffness,
-        forward_stiffness,
-        rtol=1e-10,
-        atol=1e-10,
-    )
-
-    global_vector = (1.5, -2.0, 0.25)
-    frame = resolve_beam_frame(forward, forward.elements[0])
-    local_vector = tuple(frame.rotation @ np.asarray(global_vector, dtype=float))
-    local_axis_reversal = np.diag((-1.0, 1.0, -1.0))
-
-    forward_global = _line_load_vector(forward, global_vector, "global")
-    forward_local = _line_load_vector(forward, local_vector, "local")
-    reversed_global = _line_load_vector(reversed_mesh, global_vector, "global")
-    reversed_local = _line_load_vector(
-        reversed_mesh,
-        tuple(local_axis_reversal @ np.asarray(local_vector)),
-        "local",
-    )
-    np.testing.assert_allclose(forward_global, forward_local, atol=1e-12)
-    np.testing.assert_allclose(reversed_global, forward_global, atol=1e-12)
-    np.testing.assert_allclose(reversed_local, forward_local, atol=1e-12)
-
-
-def test_custom_frame_tolerance_is_carried_into_resolved_entries() -> None:
-    policy = AbaqusOrientationPolicy(frame_tolerance=1.0e-5)
-    result = resolve_b31_orientations(
-        _deck(
-            {1: (0.0, 0.0, 0.0), 2: (1.0, 0.0, 0.0)},
-            [AbaqusElement(1, (1, 2), "B31")],
-        ),
-        policy=policy,
-    )
-
-    assert {entry.frame_tolerance for entry in result.field.entries} == {1.0e-5}
-
-
-def test_set_and_mapping_order_permutation_is_stable() -> None:
-    normal = AbaqusNormalRecord(
-        "BEAMS",
-        "CENTER",
-        (0.0, 0.0, 1.0),
-        _span(22, "normal"),
-    )
-    forward = resolve_b31_orientations(
-        _deck(
-            {
-                0: (0.0, 0.0, 0.0),
-                1: (1.0, 0.0, 0.0),
-                2: (0.0, 1.0, 0.0),
-            },
-            [AbaqusElement(2, (0, 2), "B31"), AbaqusElement(1, (0, 1), "B31")],
-            normal_records=[normal],
-            element_sets={"BEAMS": [2, 1], "UNUSED": [99]},
-            node_sets={"CENTER": [0], "UNUSED_NODES": [99]},
-        )
-    )
-    permuted = resolve_b31_orientations(
-        _deck(
-            {
-                2: (0.0, 1.0, 0.0),
-                1: (1.0, 0.0, 0.0),
-                0: (0.0, 0.0, 0.0),
-            },
-            [AbaqusElement(1, (0, 1), "B31"), AbaqusElement(2, (0, 2), "B31")],
-            normal_records=[normal],
-            element_sets={"UNUSED": [99], "BEAMS": [1, 2]},
-            node_sets={"UNUSED_NODES": [99], "CENTER": [0]},
-        )
-    )
-
-    assert _field_signature(forward) == _field_signature(permuted)
-    assert tuple(
-        (item.kind, item.code, item.identities, item.normal_group)
-        for item in forward.report.events
-    ) == tuple(
-        (item.kind, item.code, item.identities, item.normal_group)
-        for item in permuted.report.events
+def _covariance_lines(
+    connectivity: str,
+    dloads: tuple[str, ...],
+) -> tuple[str, ...]:
+    return (
+        "*Heading",
+        "Phase 4 covariance",
+        "*Node",
+        "1, 0., 0., 0.",
+        "2, 2., 0., 0.",
+        "*Element, type=B31, elset=BEAM",
+        connectivity,
+        "*Material, name=STEEL",
+        "*Elastic",
+        "210000., 0.3",
+        "*Beam Section, elset=BEAM, material=STEEL, section=RECT",
+        "0.2, 0.1",
+        "0., 0., 1.",
+        "*Step, name=LOAD",
+        "*Static",
+        "*Dload",
+        *dloads,
+        "*End Step",
     )
 
 
-def test_conflict_is_reported_and_phase5_variation_is_legal() -> None:
-    conflict = resolve_b31_orientations(
-        _deck(
-            {1: (0.0, 0.0, 0.0), 2: (1.0, 0.0, 0.0)},
-            [AbaqusElement(1, (1, 2), "B31")],
-            normal_records=[
-                AbaqusNormalRecord(1, 1, (0.0, 0.0, 1.0), _span(8, "normal")),
-                AbaqusNormalRecord(1, 1, (0.0, 1.0, 0.0), _span(9, "normal")),
-            ],
-        )
-    )
-    assert conflict.report.conflicts
-    assert {location.line for location in conflict.report.conflicts[0].locations} == {
-        8,
-        9,
-    }
-    with pytest.raises(abaqus.AbaqusBuildError) as caught:
-        conflict.raise_if_invalid()
-    assert caught.value.code == "abaqus.b31.normal.conflict"
-
-    varying = resolve_b31_orientations(
-        _deck(
-            {1: (0.0, 0.0, 0.0), 2: (1.0, 0.0, 0.0)},
-            [AbaqusElement(1, (1, 2), "B31")],
-            normal_records=[
-                AbaqusNormalRecord(1, 1, (0.0, 0.0, 1.0), _span(12, "normal")),
-                AbaqusNormalRecord(1, 2, (0.0, 1.0, 0.0), _span(13, "normal")),
-            ],
-        )
-    )
-    assert varying.report.ok
-    assert not varying.report.unsupported_variations
-    assert varying.field.varies_by_element()
-
-
-def test_builder_consumes_orientation_node_field(tmp_path: Path) -> None:
-    path = write_inp(
+def test_isolated_default_frame_is_valid_and_right_handed(tmp_path: Path) -> None:
+    path = _write(
         tmp_path,
-        "phase4_orientation_node.inp",
-        [
-            "*Heading",
-            "*Node",
-            "1, 0., 0., 0.",
-            "2, 1., 0., 0.",
-            "3, 0., 0., 1.",
-            "*Element, type=B31, elset=BEAM",
-            "1, 1, 2, 3",
-            "*Material, name=STEEL",
-            "*Elastic",
-            "210000., 0.3",
-            "*Beam Section, elset=BEAM, material=STEEL, section=RECT",
-            "0.2, 0.1",
-            "0., 1., 0.",
-        ],
+        "isolated.inp",
+        _deck(("1, 0., 0., 0.", "2, 1., 0., 0."), ("1, 1, 2",)),
     )
 
-    result = abaqus.read_with_report(path)
-    element = result.model.mesh.elements[0]
-    assert element.props["beam_element_local_y_reference"] == pytest.approx(
-        (0.0, 0.0, 1.0)
+    result = inp.read_with_report(path)
+    frame = _frame_report(result.model).frames[0]
+    assert frame.local_x == pytest.approx((1.0, 0.0, 0.0))
+    assert frame.local_y == pytest.approx((0.0, 0.0, 1.0))
+    assert frame.local_z == pytest.approx((0.0, -1.0, 0.0))
+    assert result.notices[0].code == "abaqus.b31.euler_bernoulli_approximation"
+
+
+def test_kink_and_branch_keep_shared_nodes_and_report_generated_groups(
+    tmp_path: Path,
+) -> None:
+    path = _write(
+        tmp_path,
+        "branch.inp",
+        _deck(
+            (
+                "1, 0., 0., 0.",
+                "2, 1., 0., 0.",
+                "3, 2., 0., 0.",
+                "4, 1., 1., 0.",
+                "5, 1., 0., 1.",
+            ),
+            ("1, 1, 2", "2, 2, 3", "3, 2, 4", "4, 2, 5"),
+            n1="0., 1., 1.",
+        ),
     )
+
+    result = inp.read_with_report(path)
+
+    assert result.model.mesh.num_nodes == 5
+    assert result.model.mesh.num_elements == 4
+    assert tuple(notice.code for notice in result.notices) == (
+        "abaqus.b31.euler_bernoulli_approximation",
+        "abaqus.b31.nodal_normal_generation_approximation",
+    )
+    report = _frame_report(result.model)
+    assert len(report.frames) == 4
+    assert len(report.frame_fields) == 4
+
+
+def test_closed_loop_and_reversed_connectivity_are_publicly_accepted(
+    tmp_path: Path,
+) -> None:
+    path = _write(
+        tmp_path,
+        "loop.inp",
+        _deck(
+            (
+                "1, 0., 0., 0.",
+                "2, 1., 0., 0.",
+                "3, 1., 1., 0.",
+                "4, 0., 1., 0.",
+            ),
+            ("1, 1, 2", "2, 3, 2", "3, 3, 4", "4, 1, 4"),
+        ),
+    )
+
+    result = inp.read_with_report(path)
+
+    assert tuple(
+        tuple(element.node_ids) for element in result.model.mesh.elements
+    ) == ((1, 2), (3, 2), (3, 4), (1, 4))
+    assert len(_frame_report(result.model).frames) == 4
+
+
+def test_explicit_normals_win_over_generated_grouping(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path,
+        "explicit.inp",
+        _deck(
+            ("1, 0., 0., 0.", "2, 1., 0., 0."),
+            ("1, 1, 2",),
+            n1="0., 1., 0.",
+            extra=(
+                "*Normal, type=ELEMENT",
+                "1, 1, 0., 0., 1.",
+                "1, 2, 0., 0., 1.",
+            ),
+        ),
+    )
+
+    result = inp.read_with_report(path)
+    frame = _frame_report(result.model).frames[0]
+    assert frame.local_y == pytest.approx((0.0, 1.0, 0.0))
+    assert result.source_summary is not None
+    assert sum(
+        occurrence.name == "normal"
+        for occurrence in result.source_summary.occurrences
+    ) == 1
+
+
+def test_conflicting_element_normal_is_reported_without_installing_a_model(
+    tmp_path: Path,
+) -> None:
+    path = _write(
+        tmp_path,
+        "conflict.inp",
+        _deck(
+            ("1, 0., 0., 0.", "2, 1., 0., 0."),
+            ("1, 1, 2",),
+            extra=(
+                "*Normal, type=ELEMENT",
+                "1, 1, 0., 0., 1.",
+                "1, 1, 0., 1., 0.",
+            ),
+        ),
+    )
+
+    with pytest.raises(inp.InpBuildError) as caught:
+        inp.read_with_report(path)
+
+    assert caught.value.code == "abaqus.b31.normal.conflict"
+    assert caught.value.path == path
+    assert caught.value.locations
+
+
+def test_official_pairwise_twenty_degree_group_is_averaged_publicly(
+    tmp_path: Path,
+) -> None:
+    path = _write(tmp_path, "pairwise_group.inp", _star_deck((0.0, 10.0, 15.0)))
+
+    result = inp.read_with_report(path)
+    local_z = _center_local_z(result.model)
+    averaged = _averaged_normal((0.0, 10.0, 15.0))
+
+    for index, angle in enumerate((0.0, 10.0, 15.0), start=1):
+        np.testing.assert_allclose(
+            local_z[index],
+            _effective_normal(averaged, angle),
+            atol=1e-12,
+        )
+    assert not np.allclose(local_z[2], _generated_normal(10.0))
+    assert any(
+        notice.code == "abaqus.b31.nodal_normal_generation_approximation"
+        for notice in result.notices
+    )
+    effective = _frame_report(result.model)
+    assert all(
+        np.allclose(effective.frames[index].local_z, local_z[index + 1])
+        for index in range(3)
+    )
+
+
+def test_official_zero_ten_forty_boundary_is_two_plus_one_publicly(
+    tmp_path: Path,
+) -> None:
+    path = _write(tmp_path, "two_plus_one.inp", _star_deck((0.0, 10.0, 40.0)))
+
+    local_z = _center_local_z(inp.read_with_report(path).model)
+    averaged = _averaged_normal((0.0, 10.0))
+
+    np.testing.assert_allclose(
+        local_z[1], _effective_normal(averaged, 0.0), atol=1e-12
+    )
+    np.testing.assert_allclose(
+        local_z[2], _effective_normal(averaged, 10.0), atol=1e-12
+    )
+    np.testing.assert_allclose(local_z[3], _generated_normal(40.0), atol=1e-12)
+    assert not np.allclose(local_z[2], _generated_normal(10.0))
+
+
+def test_official_non_clique_group_is_fully_split_and_order_stable(
+    tmp_path: Path,
+) -> None:
+    angles = (0.0, 10.0, 30.0)
+    forward = _write(tmp_path, "non_clique_forward.inp", _star_deck(angles))
+    reversed_lines = list(_star_deck(angles))
+    element_start = reversed_lines.index("*Element, type=B31, elset=BEAMS") + 1
+    reversed_lines[element_start:] = [
+        reversed_lines[element_start + 2],
+        reversed_lines[element_start + 1],
+        reversed_lines[element_start],
+        *reversed_lines[element_start + 3 :],
+    ]
+    permuted = _write(
+        tmp_path,
+        "non_clique_permuted.inp",
+        tuple(reversed_lines),
+    )
+
+    forward_z = _center_local_z(inp.read_with_report(forward).model)
+    permuted_z = _center_local_z(inp.read_with_report(permuted).model)
+
+    assert not np.allclose(forward_z[1], forward_z[2])
+    assert not np.allclose(forward_z[2], forward_z[3])
+    assert not np.allclose(forward_z[1], forward_z[3])
+    assert all(np.allclose(forward_z[index], permuted_z[index]) for index in (1, 2, 3))
+
+
+def test_more_than_thirty_remaining_shared_elements_are_split_publicly(
+    tmp_path: Path,
+) -> None:
+    angles = tuple(index * 0.5 for index in range(31))
+    path = _write(tmp_path, "more_than_thirty.inp", _star_deck(angles))
+
+    local_z = _center_local_z(inp.read_with_report(path).model)
+
+    assert len(local_z) == 31
+    for index, angle in enumerate(angles, start=1):
+        np.testing.assert_allclose(
+            local_z[index], _generated_normal(angle), atol=1e-12
+        )
+    quantized = {tuple(np.round(value, 8)) for value in local_z.values()}
+    assert len(quantized) == 31
+
+
+def test_public_inp_connectivity_reversal_covaries_stiffness_and_line_loads(
+    tmp_path: Path,
+) -> None:
+    global_dloads = ("BEAM, PY, 2.0", "BEAM, PZ, 1.5")
+    forward_global_path = _write(
+        tmp_path,
+        "forward_global.inp",
+        _covariance_lines("1, 1, 2", global_dloads),
+    )
+    reversed_global_path = _write(
+        tmp_path,
+        "reversed_global.inp",
+        _covariance_lines("1, 2, 1", global_dloads),
+    )
+    forward_global = inp.read(forward_global_path)
+    reversed_global = inp.read(reversed_global_path)
+    forward_global_materialized = deepcopy(forward_global)
+    reversed_global_materialized = deepcopy(reversed_global)
+    apply_sections(forward_global_materialized)
+    apply_sections(reversed_global_materialized)
+
+    np.testing.assert_allclose(
+        assemble_global_stiffness(forward_global_materialized.mesh),
+        assemble_global_stiffness(reversed_global_materialized.mesh),
+        rtol=1e-10,
+        atol=1e-10,
+    )
+    forward_global_load = build_load_vector(
+        forward_global_materialized.mesh,
+        boundary_for_step(forward_global_materialized, "LOAD"),
+    )
+    reversed_global_load = build_load_vector(
+        reversed_global_materialized.mesh,
+        boundary_for_step(reversed_global_materialized, "LOAD"),
+    )
+    np.testing.assert_allclose(forward_global_load, reversed_global_load, atol=1e-12)
+
+    global_vector = np.asarray((0.0, 2.0, 1.5))
+    forward_local = resolve_beam_frame(
+        forward_global.mesh,
+        forward_global.mesh.elements[0],
+    ).rotation @ global_vector
+    reversed_local = resolve_beam_frame(
+        reversed_global.mesh,
+        reversed_global.mesh.elements[0],
+    ).rotation @ global_vector
+    assert forward_local[0] == pytest.approx(0.0)
+    assert reversed_local[0] == pytest.approx(0.0)
+
+    forward_local_model = inp.read(
+        _write(
+            tmp_path,
+            "forward_local.inp",
+            _covariance_lines(
+                "1, 1, 2",
+                (f"BEAM, P1, {forward_local[1]}", f"BEAM, P2, {forward_local[2]}"),
+            ),
+        )
+    )
+    reversed_local_model = inp.read(
+        _write(
+            tmp_path,
+            "reversed_local.inp",
+            _covariance_lines(
+                "1, 2, 1",
+                (f"BEAM, P1, {reversed_local[1]}", f"BEAM, P2, {reversed_local[2]}"),
+            ),
+        )
+    )
+    forward_local_materialized = deepcopy(forward_local_model)
+    reversed_local_materialized = deepcopy(reversed_local_model)
+    apply_sections(forward_local_materialized)
+    apply_sections(reversed_local_materialized)
+    forward_local_load = build_load_vector(
+        forward_local_materialized.mesh,
+        boundary_for_step(forward_local_materialized, "LOAD"),
+    )
+    reversed_local_load = build_load_vector(
+        reversed_local_materialized.mesh,
+        boundary_for_step(reversed_local_materialized, "LOAD"),
+    )
+    np.testing.assert_allclose(forward_local_load, forward_global_load, atol=1e-12)
+    np.testing.assert_allclose(reversed_local_load, forward_global_load, atol=1e-12)

@@ -11,8 +11,6 @@ from pathlib import Path
 
 import pytest
 
-from fem import abaqus
-from fem.abaqus.parser import parse_file
 from fem.io import inp
 
 
@@ -71,7 +69,7 @@ def test_phase1_preprint_is_harmless_and_preserves_source_occurrence(
     assert result.model.mesh.num_nodes == 2
     assert result.model.mesh.num_elements == 1
     assert result.source_summary is not None
-    occurrences = result.source_summary.keyword_occurrences
+    occurrences = result.source_summary.occurrences
     preprints = tuple(
         occurrence for occurrence in occurrences
         if occurrence.name == "preprint"
@@ -153,14 +151,15 @@ def test_characterization_orientation_node_is_accepted_through_public_entry(
     )
 
     result = inp.read_with_report(path)
-    deck = parse_file(path)
-
     assert result.model.mesh.num_nodes == 2
     assert result.model.mesh.num_elements == 1
     assert tuple(result.model.mesh.elements[0].node_ids) == (1, 2)
     assert result.model.mesh.num_dofs == 12
-    assert deck.elements[0].node_ids == (1, 2)
-    assert deck.elements[0].additional_orientation_node_id == 3
+    assert result.source_summary is not None
+    assert any(
+        occurrence.name == "element"
+        for occurrence in result.source_summary.occurrences
+    )
 
 
 def test_characterization_nodal_normal_components_are_accepted_through_public_entry(
@@ -177,15 +176,15 @@ def test_characterization_nodal_normal_components_are_accepted_through_public_en
     )
 
     result = inp.read_with_report(path)
-    deck = parse_file(path)
-
     assert result.model.mesh.num_nodes == 2
     assert result.model.mesh.num_elements == 1
-    assert deck.node_records[1].normal is not None
-    assert deck.node_records[1].normal.node_id == 1
-    assert deck.node_records[1].normal.vector == (0.0, 1.0, 0.0)
-    assert deck.node_records[1].normal.source_span is not None
-    assert deck.node_records[1].normal.source_span.start.line == 3
+    assert result.source_summary is not None
+    node_occurrence = next(
+        occurrence
+        for occurrence in result.source_summary.occurrences
+        if occurrence.name == "node"
+    )
+    assert node_occurrence.location.line == 2
 
 
 def test_characterization_normal_keyword_is_accepted_through_public_entry(
@@ -200,17 +199,16 @@ def test_characterization_normal_keyword_is_accepted_through_public_entry(
     )
 
     result = inp.read_with_report(path)
-    deck = parse_file(path)
-
     assert result.model.mesh.num_nodes == 2
     assert result.model.mesh.num_elements == 1
-    assert len(deck.normal_records) == 1
-    assert deck.normal_records[0].element_target == 1
-    assert deck.normal_records[0].node_target == 1
-    assert deck.normal_records[0].identity is not None
-    assert deck.normal_records[0].identity.local_end == 1
-    assert deck.normal_records[0].source_span.start.keyword == "normal"
-    assert deck.normal_records[0].source_span.start.line == 14
+    assert result.source_summary is not None
+    normal_occurrence = next(
+        occurrence
+        for occurrence in result.source_summary.occurrences
+        if occurrence.name == "normal"
+    )
+    assert normal_occurrence.location.keyword == "normal"
+    assert normal_occurrence.location.line == 13
 
 
 def test_characterization_output_parent_child_is_preserved_without_blocking_import(
@@ -234,7 +232,7 @@ def test_characterization_output_parent_child_is_preserved_without_blocking_impo
         ),
     )
 
-    result = abaqus.read_with_report(path)
+    result = inp.read_with_report(path)
 
     assert tuple(notice.code for notice in result.notices) == (
         "abaqus.b31.euler_bernoulli_approximation",

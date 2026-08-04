@@ -1,7 +1,7 @@
 from pathlib import Path
 from dataclasses import replace
 
-from fem.abaqus import read
+from fem.io.inp import read
 from fem.application import (
     AnalysisRun,
     AuthoringStatus,

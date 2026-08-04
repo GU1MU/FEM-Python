@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication, QDialog
 
-from fem.abaqus import AbaqusParseError, parse_file, read
+from fem.io import inp
 from fem.application import (
     AuthoringStatus,
     PreflightSeverity,
@@ -34,13 +34,26 @@ def _output_deck(tmp_path: Path, *output_lines: str):
         tmp_path,
         "phase8_output_characterization.inp",
         [
+            "*Heading",
+            "Phase 8 output characterization",
+            "*Node",
+            "1, 0.0, 0.0, 0.0",
+            "2, 1.0, 0.0, 0.0",
+            "*Element, type=B31, elset=BEAMS",
+            "1, 1, 2",
+            "*Material, name=STEEL",
+            "*Elastic",
+            "210000., 0.3",
+            "*Beam Section, elset=BEAMS, material=STEEL, section=RECT",
+            "0.2, 0.1",
+            "0.0, 0.0, 1.0",
             "*Step, name=Output-Step",
             "*Static",
             *output_lines,
             "*End Step",
         ],
     )
-    return parse_file(path)
+    return inp.read_with_report(path)
 
 
 def _application() -> QApplication:
@@ -98,7 +111,7 @@ def test_programmatic_metadata_is_deeply_owned_and_immutable() -> None:
 
 
 def test_installed_capability_publishes_intrinsic_create_and_catalog() -> None:
-    model = read(_STANDARD_INP_FIXTURES / "truss2_tension.inp")
+    model = inp.read(_STANDARD_INP_FIXTURES / "truss2_tension.inp")
     report = describe_model_capabilities(model)
     output_operations = tuple(
         capability
@@ -118,7 +131,7 @@ def test_installed_capability_publishes_intrinsic_create_and_catalog() -> None:
 
 
 def test_preflight_reports_each_unsupported_output_request() -> None:
-    model = read(_STANDARD_INP_FIXTURES / "truss2_tension.inp")
+    model = inp.read(_STANDARD_INP_FIXTURES / "truss2_tension.inp")
     step = next(step for step in model.steps if step.name == "Tension")
     step.outputs = (
         OutputRequest("field", "node", ("U",)),
@@ -169,10 +182,10 @@ def test_abaqus_parent_output_context_is_inherited_with_source_evidence(
         "U",
     )
 
-    request = deck.steps[0].output_requests[0]
+    request = deck.model.steps[0].outputs[0]
     parent = next(
         occurrence
-        for occurrence in deck.keyword_occurrences
+        for occurrence in deck.source_summary.occurrences
         if occurrence.name == "output"
     )
 
@@ -187,10 +200,11 @@ def test_abaqus_parent_output_context_is_inherited_with_source_evidence(
         "frequency": "1",
         "parentoption": "kept-only-in-source",
     }
-    assert request.parent_parameters == parent.params
-    assert request.parent_flags == parent.flags
-    assert request.child_parameters == ()
-    assert request.child_flags == ()
+    assert request.source_evidence is not None
+    assert request.source_evidence.parent_parameters == parent.params
+    assert request.source_evidence.parent_flags == parent.flags
+    assert request.source_evidence.child_parameters == ()
+    assert request.source_evidence.child_flags == ()
 
 
 def test_abaqus_child_options_override_parent_and_preserve_variables_and_flags(
@@ -206,10 +220,10 @@ def test_abaqus_child_options_override_parent_and_preserve_variables_and_flags(
         "u, Rf, u, customVariable",
     )
 
-    request = deck.steps[0].output_requests[0]
+    request = deck.model.steps[0].outputs[0]
     child = next(
         occurrence
-        for occurrence in deck.keyword_occurrences
+        for occurrence in deck.source_summary.occurrences
         if occurrence.name == "node output"
     )
 
@@ -225,10 +239,11 @@ def test_abaqus_child_options_override_parent_and_preserve_variables_and_flags(
         "nset": "Tip",
         "futureoption": "ChildValue",
     }
-    assert request.parent_parameters == (("frequency", "1"),)
-    assert request.parent_flags == ("field", "parentflag")
-    assert request.child_parameters == child.params
-    assert request.child_flags == ("childflag",)
+    assert request.source_evidence is not None
+    assert request.source_evidence.parent_parameters == (("frequency", "1"),)
+    assert request.source_evidence.parent_flags == ("field", "parentflag")
+    assert request.source_evidence.child_parameters == child.params
+    assert request.source_evidence.child_flags == ("childflag",)
     assert "parentflag" not in request.metadata
     assert "childflag" not in request.metadata
 
@@ -247,13 +262,15 @@ def test_abaqus_output_parent_context_ends_at_unrelated_keyword(
         "S",
     )
 
-    inherited, standalone = deck.steps[0].output_requests
+    inherited, standalone = deck.model.steps[0].outputs
 
     assert inherited.metadata == {"frequency": "1"}
-    assert inherited.parent_parameters == (("frequency", "1"),)
+    assert inherited.source_evidence is not None
+    assert inherited.source_evidence.parent_parameters == (("frequency", "1"),)
     assert standalone.metadata == {}
-    assert standalone.parent_parameters == ()
-    assert standalone.parent_flags == ()
+    assert standalone.source_evidence is not None
+    assert standalone.source_evidence.parent_parameters == ()
+    assert standalone.source_evidence.parent_flags == ()
 
 
 @pytest.mark.parametrize(
@@ -273,7 +290,7 @@ def test_abaqus_same_layer_parameter_collision_fails_closed_case_insensitively(
         else ("*Output, FIELD", keyword, "U")
     )
 
-    with pytest.raises(AbaqusParseError) as caught:
+    with pytest.raises(inp.InpParseError) as caught:
         _output_deck(tmp_path, *lines)
 
     assert caught.value.code == "abaqus.keyword.parameter_duplicate"
