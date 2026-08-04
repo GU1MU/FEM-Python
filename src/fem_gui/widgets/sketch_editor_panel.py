@@ -28,17 +28,24 @@ from PySide6.QtWidgets import (
 
 from fem.geometry import (
     SketchArc,
+    SketchAngleDimension,
     SketchCircle,
     SketchCoincidentConstraint,
+    SketchConcentricConstraint,
     SketchDistanceDimension,
+    SketchEqualLengthConstraint,
+    SketchEqualRadiusConstraint,
     SketchFixedConstraint,
     SketchGeometry,
     SketchHorizontalConstraint,
     SketchLine,
+    SketchParallelConstraint,
     SketchPlane,
     SketchPointOnCurveConstraint,
+    SketchPerpendicularConstraint,
     SketchRadiusDimension,
     SketchReferencePoint,
+    SketchTangentConstraint,
     SketchVerticalConstraint,
 )
 from fem.geometry.recipes import sketch_constraint_entity_ids
@@ -71,6 +78,44 @@ def _stable_id_key(value: str) -> tuple[tuple[int, object], ...]:
         for part in re.split(r"(\d+)", str(value))
         if part
     )
+
+
+def _tangent_branch_hint(first, second, points: dict[str, object]) -> int:
+    if isinstance(first, SketchLine) or isinstance(second, SketchLine):
+        line = first if isinstance(first, SketchLine) else second
+        round_curve = second if isinstance(first, SketchLine) else first
+        start = points[line.start_point_id]
+        end = points[line.end_point_id]
+        center = points[round_curve.center_point_id]
+        cross = (
+            (end.u - start.u) * (center.v - start.v)
+            - (end.v - start.v) * (center.u - start.u)
+        )
+        return 0 if cross >= 0.0 else 1
+    first_center = points[first.center_point_id]
+    second_center = points[second.center_point_id]
+    distance = math.hypot(
+        second_center.u - first_center.u, second_center.v - first_center.v
+    )
+    first_radius = (
+        first.radius
+        if isinstance(first, SketchCircle)
+        else math.hypot(
+            points[first.start_point_id].u - first_center.u,
+            points[first.start_point_id].v - first_center.v,
+        )
+    )
+    second_radius = (
+        second.radius
+        if isinstance(second, SketchCircle)
+        else math.hypot(
+            points[second.start_point_id].u - second_center.u,
+            points[second.start_point_id].v - second_center.v,
+        )
+    )
+    return -1 if abs(distance - abs(first_radius - second_radius)) < abs(
+        distance - first_radius - second_radius
+    ) else 0
 
 
 class _PointTableItem(QTableWidgetItem):
@@ -413,7 +458,11 @@ class SketchEditorPanel(QWidget):
         for text, value in (
             ("重合", "coincident"), ("点在曲线上", "point_on_curve"),
             ("水平", "horizontal"), ("垂直", "vertical"), ("固定", "fixed"),
+            ("平行", "parallel"), ("互相垂直", "perpendicular"),
+            ("相切", "tangent"), ("等长", "equal_length"),
+            ("等半径", "equal_radius"), ("同心", "concentric"),
             ("两点距离 / 直线长度", "distance"), ("圆 / 圆弧半径", "radius"),
+            ("两直线角度", "angle"),
         ):
             self.constraint_type_combo.addItem(text, value)
         self.constraint_targets_edit = QLineEdit(self)
@@ -1245,6 +1294,63 @@ class SketchEditorPanel(QWidget):
             if len(targets) != 1 or not isinstance(curve_map.get(targets[0]), SketchLine):
                 raise ValueError("约束目标无效：垂直约束需要一条直线")
             constraint = SketchVerticalConstraint(constraint_id, targets[0])
+        elif normalized in {"parallel", "perpendicular", "equal_length", "angle"}:
+            if len(targets) != 2 or any(
+                not isinstance(curve_map.get(item), SketchLine) for item in targets
+            ):
+                raise ValueError("约束目标无效：该约束需要两条直线")
+            relation_types = {
+                "parallel": SketchParallelConstraint,
+                "perpendicular": SketchPerpendicularConstraint,
+                "equal_length": SketchEqualLengthConstraint,
+            }
+            if normalized == "angle":
+                first = curve_map[targets[0]]
+                second = curve_map[targets[1]]
+                first_start = point_map[first.start_point_id]
+                first_end = point_map[first.end_point_id]
+                second_start = point_map[second.start_point_id]
+                second_end = point_map[second.end_point_id]
+                first_vector = (
+                    first_end.u - first_start.u, first_end.v - first_start.v
+                )
+                second_vector = (
+                    second_end.u - second_start.u, second_end.v - second_start.v
+                )
+                measured = math.atan2(
+                    first_vector[0] * second_vector[1]
+                    - first_vector[1] * second_vector[0],
+                    first_vector[0] * second_vector[0]
+                    + first_vector[1] * second_vector[1],
+                )
+                constraint = SketchAngleDimension(
+                    constraint_id,
+                    *targets,
+                    measured if value is None or not driving else value,
+                    driving=driving,
+                )
+            else:
+                constraint = relation_types[normalized](constraint_id, *targets)
+        elif normalized in {"tangent", "equal_radius", "concentric"}:
+            if len(targets) != 2 or any(item not in curve_map for item in targets):
+                raise ValueError("约束目标无效：该约束需要两条曲线")
+            first, second = (curve_map[item] for item in targets)
+            if normalized == "tangent":
+                if isinstance(first, SketchLine) and isinstance(second, SketchLine):
+                    raise ValueError("约束目标无效：两条直线不能创建相切约束")
+                branch_hint = _tangent_branch_hint(first, second, point_map)
+                constraint = SketchTangentConstraint(
+                    constraint_id, *targets, branch_hint=branch_hint
+                )
+            else:
+                if not all(isinstance(item, (SketchCircle, SketchArc)) for item in (first, second)):
+                    raise ValueError("约束目标无效：该约束需要两个圆或圆弧")
+                relation_type = (
+                    SketchEqualRadiusConstraint
+                    if normalized == "equal_radius"
+                    else SketchConcentricConstraint
+                )
+                constraint = relation_type(constraint_id, *targets)
         elif normalized == "fixed":
             if len(targets) != 1 or targets[0] not in point_map:
                 raise ValueError("约束目标无效：固定约束需要一个草图点")
@@ -1300,7 +1406,10 @@ class SketchEditorPanel(QWidget):
         constraint = next(
             item for item in controller.constraints if item.id == constraint_id
         )
-        if not isinstance(constraint, (SketchDistanceDimension, SketchRadiusDimension)):
+        if not isinstance(
+            constraint,
+            (SketchDistanceDimension, SketchRadiusDimension, SketchAngleDimension),
+        ):
             raise ValueError("所选约束不是尺寸")
         snapshot = controller.snapshot()
         measured = measured_dimension_value(
@@ -1392,7 +1501,10 @@ class SketchEditorPanel(QWidget):
             value for value in self._require_controller().constraints
             if value.id == item.text()
         )
-        if not isinstance(constraint, (SketchDistanceDimension, SketchRadiusDimension)):
+        if not isinstance(
+            constraint,
+            (SketchDistanceDimension, SketchRadiusDimension, SketchAngleDimension),
+        ):
             self._set_status("几何约束可通过 API 更换引用；当前控件用于编辑尺寸")
             return
         try:
@@ -2085,7 +2197,10 @@ class SketchEditorPanel(QWidget):
         curve_map = {curve.id: curve for curve in snapshot.curves}
         for row, constraint in enumerate(related):
             text = constraint_text(constraint)
-            if isinstance(constraint, (SketchDistanceDimension, SketchRadiusDimension)) and not constraint.driving:
+            if isinstance(
+                constraint,
+                (SketchDistanceDimension, SketchRadiusDimension, SketchAngleDimension),
+            ) and not constraint.driving:
                 measured = measured_dimension_value(constraint, point_map, curve_map)
                 if measured is not None:
                     text = text.replace(f"{constraint.value:g}", f"{measured:g}")

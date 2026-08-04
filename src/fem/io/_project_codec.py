@@ -57,10 +57,14 @@ from fem.geometry.recipes import (
     RevolvedGeometry,
     RotatedGeometry,
     SketchArc,
+    SketchAngleDimension,
     SketchCircle,
     SketchCoincidentConstraint,
+    SketchConcentricConstraint,
     SketchConstraint,
     SketchDistanceDimension,
+    SketchEqualLengthConstraint,
+    SketchEqualRadiusConstraint,
     SketchExternalCoincidence,
     SketchExternalReference,
     SketchExternalReferenceType,
@@ -68,11 +72,14 @@ from fem.geometry.recipes import (
     SketchFixedConstraint,
     SketchHorizontalConstraint,
     SketchLine,
+    SketchParallelConstraint,
     SketchPlane,
     SketchPoint,
     SketchPointOnCurveConstraint,
+    SketchPerpendicularConstraint,
     SketchRadiusDimension,
     SketchRectangle,
+    SketchTangentConstraint,
     SketchVerticalConstraint,
     SolidBody,
     WireGeometry,
@@ -2020,6 +2027,32 @@ _SKETCH_CONSTRAINT_WIRE_TYPES = {
     "point_on_curve": (SketchPointOnCurveConstraint, ("point_id", "curve_id"), ()),
     "horizontal": (SketchHorizontalConstraint, ("line_id",), ()),
     "vertical": (SketchVerticalConstraint, ("line_id",), ()),
+    "parallel": (SketchParallelConstraint, ("first_line_id", "second_line_id"), ()),
+    "perpendicular": (
+        SketchPerpendicularConstraint,
+        ("first_line_id", "second_line_id"),
+        (),
+    ),
+    "tangent": (
+        SketchTangentConstraint,
+        ("first_curve_id", "second_curve_id"),
+        (),
+    ),
+    "equal_length": (
+        SketchEqualLengthConstraint,
+        ("first_line_id", "second_line_id"),
+        (),
+    ),
+    "equal_radius": (
+        SketchEqualRadiusConstraint,
+        ("first_curve_id", "second_curve_id"),
+        (),
+    ),
+    "concentric": (
+        SketchConcentricConstraint,
+        ("first_curve_id", "second_curve_id"),
+        (),
+    ),
     "fixed": (SketchFixedConstraint, ("point_id",), ("u", "v")),
     "distance": (
         SketchDistanceDimension,
@@ -2027,6 +2060,11 @@ _SKETCH_CONSTRAINT_WIRE_TYPES = {
         ("value",),
     ),
     "radius": (SketchRadiusDimension, ("curve_id",), ("value",)),
+    "angle": (
+        SketchAngleDimension,
+        ("first_line_id", "second_line_id"),
+        ("value",),
+    ),
 }
 _SKETCH_CONSTRAINT_TYPE_NAMES = {
     value[0]: key for key, value in _SKETCH_CONSTRAINT_WIRE_TYPES.items()
@@ -2051,10 +2089,14 @@ def _decode_sketch_constraint_field(
     if contract is None:
         raise policy.decode_error(f"{path}.type 包含未知草图约束类型：{kind!r}")
     constraint_type, string_fields, number_fields = contract
-    dimensions = constraint_type in {SketchDistanceDimension, SketchRadiusDimension}
+    dimensions = constraint_type in {
+        SketchDistanceDimension, SketchRadiusDimension, SketchAngleDimension
+    }
     required = {"type", "id", "source", "enabled", *string_fields, *number_fields}
     if dimensions:
         required.add("driving")
+    if constraint_type is SketchTangentConstraint:
+        required.add("branch_hint")
     _field_keys(
         data,
         path,
@@ -2086,6 +2128,11 @@ def _decode_sketch_constraint_field(
         arguments["driving"] = _field_strict_bool(
             data["driving"], f"{path}.driving", policy
         )
+    if constraint_type is SketchTangentConstraint:
+        arguments["branch_hint"] = _field_integer(
+            data["branch_hint"], f"{path}.branch_hint", policy.decode_error,
+            policy=policy,
+        )
     return _field_construct(constraint_type, path, policy, **arguments)
 
 
@@ -2099,10 +2146,14 @@ def _encode_sketch_constraint_field(
     if kind is None:
         raise policy.encode_error(f"{path} 包含不支持的草图约束类型")
     constraint_type, string_fields, number_fields = _SKETCH_CONSTRAINT_WIRE_TYPES[kind]
-    dimensions = constraint_type in {SketchDistanceDimension, SketchRadiusDimension}
+    dimensions = constraint_type in {
+        SketchDistanceDimension, SketchRadiusDimension, SketchAngleDimension
+    }
     expected_fields = {"id", "source", "enabled", *string_fields, *number_fields}
     if dimensions:
         expected_fields.add("driving")
+    if constraint_type is SketchTangentConstraint:
+        expected_fields.add("branch_hint")
     _field_exact_dataclass(
         constraint, constraint_type, expected_fields, path, policy
     )
@@ -2131,6 +2182,12 @@ def _encode_sketch_constraint_field(
         if type(constraint.driving) is not bool:
             raise policy.encode_error(f"{path}.driving 必须是 bool")
         result["driving"] = constraint.driving
+    if constraint_type is SketchTangentConstraint:
+        if isinstance(constraint.branch_hint, bool) or not isinstance(
+            constraint.branch_hint, int
+        ):
+            raise policy.encode_error(f"{path}.branch_hint 必须是整数")
+        result["branch_hint"] = constraint.branch_hint
     return result
 
 

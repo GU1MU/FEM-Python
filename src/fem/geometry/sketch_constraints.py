@@ -13,17 +13,24 @@ from typing import Mapping
 
 from .recipes import (
     SketchArc,
+    SketchAngleDimension,
     SketchCircle,
     SketchCoincidentConstraint,
+    SketchConcentricConstraint,
     SketchConstraint,
     SketchCurve,
     SketchDistanceDimension,
+    SketchEqualLengthConstraint,
+    SketchEqualRadiusConstraint,
     SketchFixedConstraint,
     SketchHorizontalConstraint,
     SketchLine,
+    SketchParallelConstraint,
+    SketchPerpendicularConstraint,
     SketchPoint,
     SketchPointOnCurveConstraint,
     SketchRadiusDimension,
+    SketchTangentConstraint,
     SketchVerticalConstraint,
 )
 
@@ -83,6 +90,26 @@ def constraint_signature(constraint: SketchConstraint) -> tuple[object, ...] | N
         return (type(constraint), constraint.point_id, constraint.curve_id)
     if isinstance(constraint, (SketchHorizontalConstraint, SketchVerticalConstraint)):
         return (type(constraint), constraint.line_id)
+    if isinstance(
+        constraint,
+        (SketchParallelConstraint, SketchPerpendicularConstraint,
+         SketchEqualLengthConstraint),
+    ):
+        return (type(constraint), *sorted((constraint.first_line_id, constraint.second_line_id)))
+    if isinstance(
+        constraint,
+        (SketchEqualRadiusConstraint, SketchConcentricConstraint),
+    ):
+        return (
+            type(constraint),
+            *sorted((constraint.first_curve_id, constraint.second_curve_id)),
+        )
+    if isinstance(constraint, SketchTangentConstraint):
+        return (
+            type(constraint),
+            *sorted((constraint.first_curve_id, constraint.second_curve_id)),
+            constraint.branch_hint,
+        )
     if isinstance(constraint, SketchFixedConstraint):
         return (type(constraint), constraint.point_id, constraint.u, constraint.v)
     if isinstance(constraint, SketchDistanceDimension):
@@ -97,6 +124,15 @@ def constraint_signature(constraint: SketchConstraint) -> tuple[object, ...] | N
         if not constraint.driving:
             return None
         return (type(constraint), constraint.curve_id, constraint.value)
+    if isinstance(constraint, SketchAngleDimension):
+        if not constraint.driving:
+            return None
+        return (
+            type(constraint),
+            constraint.first_line_id,
+            constraint.second_line_id,
+            constraint.value,
+        )
     raise TypeError("unsupported sketch constraint")
 
 
@@ -174,6 +210,40 @@ def evaluate_sketch_residuals(
             values = (
                 (points[line.end_point_id].u - points[line.start_point_id].u) / scale,
             )
+        elif isinstance(constraint, SketchParallelConstraint):
+            first = curve_map[constraint.first_line_id]
+            second = curve_map[constraint.second_line_id]
+            assert isinstance(first, SketchLine) and isinstance(second, SketchLine)
+            values = (_line_direction_relation(first, second, points, perpendicular=False),)
+        elif isinstance(constraint, SketchPerpendicularConstraint):
+            first = curve_map[constraint.first_line_id]
+            second = curve_map[constraint.second_line_id]
+            assert isinstance(first, SketchLine) and isinstance(second, SketchLine)
+            values = (_line_direction_relation(first, second, points, perpendicular=True),)
+        elif isinstance(constraint, SketchEqualLengthConstraint):
+            first = curve_map[constraint.first_line_id]
+            second = curve_map[constraint.second_line_id]
+            assert isinstance(first, SketchLine) and isinstance(second, SketchLine)
+            values = ((_line_length(first, points) - _line_length(second, points)) / scale,)
+        elif isinstance(constraint, SketchEqualRadiusConstraint):
+            first = curve_map[constraint.first_curve_id]
+            second = curve_map[constraint.second_curve_id]
+            values = ((_curve_radius(first, points) - _curve_radius(second, points)) / scale,)
+        elif isinstance(constraint, SketchConcentricConstraint):
+            first = curve_map[constraint.first_curve_id]
+            second = curve_map[constraint.second_curve_id]
+            first_center = points[first.center_point_id]
+            second_center = points[second.center_point_id]
+            values = (
+                (first_center.u - second_center.u) / scale,
+                (first_center.v - second_center.v) / scale,
+            )
+        elif isinstance(constraint, SketchTangentConstraint):
+            first = curve_map[constraint.first_curve_id]
+            second = curve_map[constraint.second_curve_id]
+            values = _tangent_residuals(
+                first, second, points, scale, constraint.branch_hint
+            )
         elif isinstance(constraint, SketchFixedConstraint):
             point = points[constraint.point_id]
             values = ((point.u - constraint.u) / scale, (point.v - constraint.v) / scale)
@@ -196,6 +266,14 @@ def evaluate_sketch_residuals(
             curve = curve_map[constraint.curve_id]
             radius = _curve_radius(curve, points)
             values = ((radius - constraint.value) / scale,)
+        elif isinstance(constraint, SketchAngleDimension):
+            if not constraint.driving:
+                continue
+            first = curve_map[constraint.first_line_id]
+            second = curve_map[constraint.second_line_id]
+            assert isinstance(first, SketchLine) and isinstance(second, SketchLine)
+            actual = _directed_line_angle(first, second, points)
+            values = (_wrap_angle(actual - constraint.value) / math.pi,)
         else:
             raise TypeError("unsupported sketch constraint")
         blocks.append(SketchResidualBlock(constraint.id, values))
@@ -251,6 +329,154 @@ def _curve_radius(
     if isinstance(curve, SketchArc):
         return _distance(points[curve.start_point_id], points[curve.center_point_id])
     raise TypeError("line curves do not have a radius")
+
+
+def _line_vector(
+    line: SketchLine, points: Mapping[str, SketchPoint]
+) -> tuple[float, float]:
+    start = points[line.start_point_id]
+    end = points[line.end_point_id]
+    return end.u - start.u, end.v - start.v
+
+
+def _line_length(line: SketchLine, points: Mapping[str, SketchPoint]) -> float:
+    return math.hypot(*_line_vector(line, points))
+
+
+def _line_direction_relation(
+    first: SketchLine,
+    second: SketchLine,
+    points: Mapping[str, SketchPoint],
+    *,
+    perpendicular: bool,
+) -> float:
+    first_vector = _line_vector(first, points)
+    second_vector = _line_vector(second, points)
+    denominator = math.hypot(*first_vector) * math.hypot(*second_vector)
+    if denominator <= 1.0e-15:
+        return 1.0
+    if perpendicular:
+        return (
+            first_vector[0] * second_vector[0]
+            + first_vector[1] * second_vector[1]
+        ) / denominator
+    return (
+        first_vector[0] * second_vector[1]
+        - first_vector[1] * second_vector[0]
+    ) / denominator
+
+
+def _directed_line_angle(
+    first: SketchLine,
+    second: SketchLine,
+    points: Mapping[str, SketchPoint],
+) -> float:
+    first_vector = _line_vector(first, points)
+    second_vector = _line_vector(second, points)
+    return math.atan2(
+        first_vector[0] * second_vector[1]
+        - first_vector[1] * second_vector[0],
+        first_vector[0] * second_vector[0]
+        + first_vector[1] * second_vector[1],
+    )
+
+
+def _wrap_angle(value: float) -> float:
+    wrapped = (value + math.pi) % math.tau - math.pi
+    return math.pi if wrapped == -math.pi and value > 0.0 else wrapped
+
+
+def _tangent_residuals(
+    first: SketchCurve,
+    second: SketchCurve,
+    points: Mapping[str, SketchPoint],
+    scale: float,
+    branch_hint: int,
+) -> tuple[float, ...]:
+    if isinstance(first, SketchLine) or isinstance(second, SketchLine):
+        line = first if isinstance(first, SketchLine) else second
+        round_curve = second if isinstance(first, SketchLine) else first
+        assert isinstance(line, SketchLine)
+        center = points[round_curve.center_point_id]
+        start = points[line.start_point_id]
+        du, dv = _line_vector(line, points)
+        length = math.hypot(du, dv)
+        if length <= 1.0e-15 * scale:
+            return (1.0, 1.0)
+        signed_distance = (du * (center.v - start.v) - dv * (center.u - start.u)) / length
+        side = -1.0 if branch_hint % 2 else 1.0
+        line_parameter = (
+            (center.u - start.u) * du + (center.v - start.v) * dv
+        ) / (length * length)
+        contact = SketchPoint(
+            "__tangent_contact__",
+            start.u + line_parameter * du,
+            start.v + line_parameter * dv,
+        )
+        return (
+            (signed_distance - side * _curve_radius(round_curve, points)) / scale,
+            _finite_curve_contact_residual(line, contact, points, scale),
+            _finite_curve_contact_residual(round_curve, contact, points, scale),
+        )
+    first_center = points[first.center_point_id]
+    second_center = points[second.center_point_id]
+    center_distance = _distance(first_center, second_center)
+    first_radius = _curve_radius(first, points)
+    second_radius = _curve_radius(second, points)
+    target = (
+        abs(first_radius - second_radius)
+        if branch_hint < 0
+        else first_radius + second_radius
+    )
+    if center_distance <= 1.0e-15 * scale:
+        return ((center_distance - target) / scale, 1.0, 1.0)
+    unit_u = (second_center.u - first_center.u) / center_distance
+    unit_v = (second_center.v - first_center.v) / center_distance
+    direction = 1.0
+    if branch_hint < 0 and first_radius < second_radius:
+        direction = -1.0
+    contact = SketchPoint(
+        "__tangent_contact__",
+        first_center.u + direction * first_radius * unit_u,
+        first_center.v + direction * first_radius * unit_v,
+    )
+    return (
+        (center_distance - target) / scale,
+        _finite_curve_contact_residual(first, contact, points, scale),
+        _finite_curve_contact_residual(second, contact, points, scale),
+    )
+
+
+def _finite_curve_contact_residual(
+    curve: SketchCurve,
+    contact: SketchPoint,
+    points: Mapping[str, SketchPoint],
+    scale: float,
+) -> float:
+    if isinstance(curve, SketchCircle):
+        return 0.0
+    if isinstance(curve, SketchLine):
+        start = points[curve.start_point_id]
+        du, dv = _line_vector(curve, points)
+        length_squared = du * du + dv * dv
+        parameter = (
+            (contact.u - start.u) * du + (contact.v - start.v) * dv
+        ) / length_squared
+        if 0.0 <= parameter <= 1.0:
+            return 0.0
+        endpoint = (
+            points[curve.start_point_id]
+            if parameter < 0.0
+            else points[curve.end_point_id]
+        )
+        return _distance(contact, endpoint) / scale
+    assert isinstance(curve, SketchArc)
+    if _point_angle_on_arc(contact, curve, points):
+        return 0.0
+    return min(
+        _distance(contact, points[curve.start_point_id]),
+        _distance(contact, points[curve.end_point_id]),
+    ) / scale
 
 
 def _distance(first: SketchPoint, second: SketchPoint) -> float:

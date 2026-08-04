@@ -8,6 +8,7 @@ from fem.application.definitions import NativePart
 from fem.application.feature_history import derive_feature_history
 from fem.application.session import ProjectSnapshot
 from fem.geometry import (
+    SketchAngleDimension,
     BoxGeometry,
     BooleanLineageEntity,
     BooleanLineageMapping,
@@ -17,16 +18,22 @@ from fem.geometry import (
     FaceSketchBooleanStepProof,
     FaceSketchWorkplaneStrategy,
     SketchCoincidentConstraint,
+    SketchConcentricConstraint,
     SketchCircle,
     SketchDistanceDimension,
+    SketchEqualLengthConstraint,
+    SketchEqualRadiusConstraint,
     SketchFixedConstraint,
     SketchGeometry,
     SketchHorizontalConstraint,
     SketchLine,
+    SketchParallelConstraint,
     SketchPlane,
     SketchPoint,
     SketchPointOnCurveConstraint,
+    SketchPerpendicularConstraint,
     SketchRadiusDimension,
+    SketchTangentConstraint,
     SketchVerticalConstraint,
 )
 from fem.io.project import decode_project
@@ -113,6 +120,50 @@ def test_v13_round_trips_every_constraint_field() -> None:
         "source": "inferred",
         "enabled": False,
     }
+
+
+def test_v13_round_trips_every_advanced_constraint_wire_type() -> None:
+    source = _constrained_snapshot()
+    old_sketch = source.parts[0].geometry_recipe
+    points = (*old_sketch.points, SketchPoint("P6", 2.0, 0.5))
+    curves = (
+        *old_sketch.curves,
+        SketchCircle("C2", "P6", 0.25),
+    )
+    advanced = (
+        SketchParallelConstraint("A1", "L1", "L3", enabled=False),
+        SketchPerpendicularConstraint("A2", "L1", "L2", source="inferred"),
+        SketchTangentConstraint("A3", "L1", "C1", 7),
+        SketchEqualLengthConstraint("A4", "L1", "L3"),
+        SketchEqualRadiusConstraint("A5", "C1", "C2"),
+        SketchConcentricConstraint("A6", "C1", "C2"),
+        SketchAngleDimension("A7", "L1", "L2", 1.25, False),
+    )
+    sketch = SketchGeometry(
+        old_sketch.name,
+        old_sketch.plane,
+        points,
+        curves,
+        (*old_sketch.constraints, *advanced),
+    )
+    part = replace(source.parts[0], geometry_recipe=sketch)
+    snapshot = replace(
+        source,
+        parts=(part,),
+        feature_history=derive_feature_history(sketch),
+    )
+
+    payload = encode_project_v13(snapshot)
+    reopened = decode_project_v13(payload)
+    encoded = _geometry_payload(payload)["constraints"][-7:]
+
+    assert reopened.parts[0].geometry_recipe.constraints[-7:] == advanced
+    assert [item["type"] for item in encoded] == [
+        "parallel", "perpendicular", "tangent", "equal_length",
+        "equal_radius", "concentric", "angle",
+    ]
+    assert encoded[2]["branch_hint"] == 7
+    assert encoded[-1]["driving"] is False
 
 
 @pytest.mark.parametrize("mutation", ["unknown", "dangling", "illegal"])

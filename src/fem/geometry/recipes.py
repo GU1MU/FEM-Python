@@ -806,6 +806,159 @@ class SketchVerticalConstraint:
 
 
 @dataclass(frozen=True, slots=True)
+class SketchParallelConstraint:
+    """Require two lines to have parallel directions."""
+
+    id: str
+    first_line_id: str
+    second_line_id: str
+    source: SketchConstraintSource = "manual"
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        constraint_id, source, enabled = _normalize_constraint_common(
+            self.id, self.source, self.enabled
+        )
+        first = _normalize_sketch_id(self.first_line_id, "first_line_id")
+        second = _normalize_sketch_id(self.second_line_id, "second_line_id")
+        if first == second:
+            raise ValueError("parallel constraint requires two different lines")
+        object.__setattr__(self, "id", constraint_id)
+        object.__setattr__(self, "first_line_id", first)
+        object.__setattr__(self, "second_line_id", second)
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "enabled", enabled)
+
+
+@dataclass(frozen=True, slots=True)
+class SketchPerpendicularConstraint:
+    """Require two lines to meet at a right angle."""
+
+    id: str
+    first_line_id: str
+    second_line_id: str
+    source: SketchConstraintSource = "manual"
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        constraint_id, source, enabled = _normalize_constraint_common(
+            self.id, self.source, self.enabled
+        )
+        first = _normalize_sketch_id(self.first_line_id, "first_line_id")
+        second = _normalize_sketch_id(self.second_line_id, "second_line_id")
+        if first == second:
+            raise ValueError("perpendicular constraint requires two different lines")
+        object.__setattr__(self, "id", constraint_id)
+        object.__setattr__(self, "first_line_id", first)
+        object.__setattr__(self, "second_line_id", second)
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "enabled", enabled)
+
+
+@dataclass(frozen=True, slots=True)
+class SketchTangentConstraint:
+    """Require two supported curves to be tangent on one stable branch."""
+
+    id: str
+    first_curve_id: str
+    second_curve_id: str
+    branch_hint: int = 0
+    source: SketchConstraintSource = "manual"
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        constraint_id, source, enabled = _normalize_constraint_common(
+            self.id, self.source, self.enabled
+        )
+        first = _normalize_sketch_id(self.first_curve_id, "first_curve_id")
+        second = _normalize_sketch_id(self.second_curve_id, "second_curve_id")
+        if first == second:
+            raise ValueError("tangent constraint requires two different curves")
+        if isinstance(self.branch_hint, bool) or not isinstance(self.branch_hint, int):
+            raise TypeError("tangent branch_hint must be an integer")
+        object.__setattr__(self, "id", constraint_id)
+        object.__setattr__(self, "first_curve_id", first)
+        object.__setattr__(self, "second_curve_id", second)
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "enabled", enabled)
+
+
+@dataclass(frozen=True, slots=True)
+class SketchEqualLengthConstraint:
+    """Require two line segments to have equal length."""
+
+    id: str
+    first_line_id: str
+    second_line_id: str
+    source: SketchConstraintSource = "manual"
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        constraint_id, source, enabled = _normalize_constraint_common(
+            self.id, self.source, self.enabled
+        )
+        first = _normalize_sketch_id(self.first_line_id, "first_line_id")
+        second = _normalize_sketch_id(self.second_line_id, "second_line_id")
+        if first == second:
+            raise ValueError("equal-length constraint requires two different lines")
+        object.__setattr__(self, "id", constraint_id)
+        object.__setattr__(self, "first_line_id", first)
+        object.__setattr__(self, "second_line_id", second)
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "enabled", enabled)
+
+
+@dataclass(frozen=True, slots=True)
+class SketchEqualRadiusConstraint:
+    """Require two circles or arcs to have equal radii."""
+
+    id: str
+    first_curve_id: str
+    second_curve_id: str
+    source: SketchConstraintSource = "manual"
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        constraint_id, source, enabled = _normalize_constraint_common(
+            self.id, self.source, self.enabled
+        )
+        first = _normalize_sketch_id(self.first_curve_id, "first_curve_id")
+        second = _normalize_sketch_id(self.second_curve_id, "second_curve_id")
+        if first == second:
+            raise ValueError("equal-radius constraint requires two different curves")
+        object.__setattr__(self, "id", constraint_id)
+        object.__setattr__(self, "first_curve_id", first)
+        object.__setattr__(self, "second_curve_id", second)
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "enabled", enabled)
+
+
+@dataclass(frozen=True, slots=True)
+class SketchConcentricConstraint:
+    """Require two circles or arcs to share a center."""
+
+    id: str
+    first_curve_id: str
+    second_curve_id: str
+    source: SketchConstraintSource = "manual"
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        constraint_id, source, enabled = _normalize_constraint_common(
+            self.id, self.source, self.enabled
+        )
+        first = _normalize_sketch_id(self.first_curve_id, "first_curve_id")
+        second = _normalize_sketch_id(self.second_curve_id, "second_curve_id")
+        if first == second:
+            raise ValueError("concentric constraint requires two different curves")
+        object.__setattr__(self, "id", constraint_id)
+        object.__setattr__(self, "first_curve_id", first)
+        object.__setattr__(self, "second_curve_id", second)
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "enabled", enabled)
+
+
+@dataclass(frozen=True, slots=True)
 class SketchFixedConstraint:
     id: str
     point_id: str
@@ -882,23 +1035,71 @@ class SketchRadiusDimension:
         object.__setattr__(self, "enabled", enabled)
 
 
+@dataclass(frozen=True, slots=True)
+class SketchAngleDimension:
+    """Directed angle from the first line to the second, in radians."""
+
+    id: str
+    first_line_id: str
+    second_line_id: str
+    value: float
+    driving: bool = True
+    source: SketchConstraintSource = "manual"
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        constraint_id, source, enabled = _normalize_constraint_common(
+            self.id, self.source, self.enabled
+        )
+        first = _normalize_sketch_id(self.first_line_id, "first_line_id")
+        second = _normalize_sketch_id(self.second_line_id, "second_line_id")
+        if first == second:
+            raise ValueError("angle dimension requires two different lines")
+        value = _normalize_sketch_scalar(self.value, "angle value")
+        if value < -math.pi or value > math.pi:
+            raise ValueError("angle value must be within [-pi, pi]")
+        if type(self.driving) is not bool:
+            raise TypeError("dimension driving must be a bool")
+        object.__setattr__(self, "id", constraint_id)
+        object.__setattr__(self, "first_line_id", first)
+        object.__setattr__(self, "second_line_id", second)
+        object.__setattr__(self, "value", value)
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "enabled", enabled)
+
+
 SketchGeometricConstraint = (
     SketchCoincidentConstraint
     | SketchPointOnCurveConstraint
     | SketchHorizontalConstraint
     | SketchVerticalConstraint
+    | SketchParallelConstraint
+    | SketchPerpendicularConstraint
+    | SketchTangentConstraint
+    | SketchEqualLengthConstraint
+    | SketchEqualRadiusConstraint
+    | SketchConcentricConstraint
     | SketchFixedConstraint
 )
-SketchDimensionalConstraint = SketchDistanceDimension | SketchRadiusDimension
+SketchDimensionalConstraint = (
+    SketchDistanceDimension | SketchRadiusDimension | SketchAngleDimension
+)
 SketchConstraint = SketchGeometricConstraint | SketchDimensionalConstraint
 SKETCH_CONSTRAINT_TYPES = (
     SketchCoincidentConstraint,
     SketchPointOnCurveConstraint,
     SketchHorizontalConstraint,
     SketchVerticalConstraint,
+    SketchParallelConstraint,
+    SketchPerpendicularConstraint,
+    SketchTangentConstraint,
+    SketchEqualLengthConstraint,
+    SketchEqualRadiusConstraint,
+    SketchConcentricConstraint,
     SketchFixedConstraint,
     SketchDistanceDimension,
     SketchRadiusDimension,
+    SketchAngleDimension,
 )
 
 
@@ -1132,6 +1333,17 @@ def sketch_constraint_entity_ids(constraint: SketchConstraint) -> tuple[str, ...
         return constraint.point_id, constraint.curve_id
     if isinstance(constraint, (SketchHorizontalConstraint, SketchVerticalConstraint)):
         return (constraint.line_id,)
+    if isinstance(
+        constraint,
+        (SketchParallelConstraint, SketchPerpendicularConstraint,
+         SketchEqualLengthConstraint, SketchAngleDimension),
+    ):
+        return constraint.first_line_id, constraint.second_line_id
+    if isinstance(
+        constraint,
+        (SketchTangentConstraint, SketchEqualRadiusConstraint, SketchConcentricConstraint),
+    ):
+        return constraint.first_curve_id, constraint.second_curve_id
     if isinstance(constraint, SketchFixedConstraint):
         return (constraint.point_id,)
     if isinstance(constraint, SketchRadiusDimension):
@@ -1192,6 +1404,28 @@ def copy_sketch_constraints(
             copied.append(replace(
                 constraint, id=new_id, line_id=mapped[constraint.line_id]
             ))
+        elif isinstance(
+            constraint,
+            (SketchParallelConstraint, SketchPerpendicularConstraint,
+             SketchEqualLengthConstraint, SketchAngleDimension),
+        ):
+            copied.append(replace(
+                constraint,
+                id=new_id,
+                first_line_id=mapped[constraint.first_line_id],
+                second_line_id=mapped[constraint.second_line_id],
+            ))
+        elif isinstance(
+            constraint,
+            (SketchTangentConstraint, SketchEqualRadiusConstraint,
+             SketchConcentricConstraint),
+        ):
+            copied.append(replace(
+                constraint,
+                id=new_id,
+                first_curve_id=mapped[constraint.first_curve_id],
+                second_curve_id=mapped[constraint.second_curve_id],
+            ))
         elif isinstance(constraint, SketchFixedConstraint):
             copied.append(replace(
                 constraint, id=new_id, point_id=mapped[constraint.point_id]
@@ -1250,6 +1484,54 @@ def validate_sketch_constraints(
         elif isinstance(constraint, (SketchHorizontalConstraint, SketchVerticalConstraint)):
             curve_id = constraint.line_id
             expected = (SketchLine,)
+        elif isinstance(
+            constraint,
+            (SketchParallelConstraint, SketchPerpendicularConstraint,
+             SketchEqualLengthConstraint, SketchAngleDimension),
+        ):
+            for curve_id in (constraint.first_line_id, constraint.second_line_id):
+                curve = curve_map.get(curve_id)
+                if curve is None:
+                    raise ValueError(
+                        f"sketch constraint {constraint.id!r} references unknown curve "
+                        f"{curve_id!r}"
+                    )
+                if not isinstance(curve, SketchLine):
+                    raise ValueError(
+                        f"sketch constraint {constraint.id!r} references the wrong curve type"
+                    )
+            continue
+        elif isinstance(
+            constraint,
+            (SketchEqualRadiusConstraint, SketchConcentricConstraint),
+        ):
+            for curve_id in (constraint.first_curve_id, constraint.second_curve_id):
+                curve = curve_map.get(curve_id)
+                if curve is None:
+                    raise ValueError(
+                        f"sketch constraint {constraint.id!r} references unknown curve "
+                        f"{curve_id!r}"
+                    )
+                if not isinstance(curve, (SketchCircle, SketchArc)):
+                    raise ValueError(
+                        f"sketch constraint {constraint.id!r} references the wrong curve type"
+                    )
+            continue
+        elif isinstance(constraint, SketchTangentConstraint):
+            first = curve_map.get(constraint.first_curve_id)
+            second = curve_map.get(constraint.second_curve_id)
+            if first is None or second is None:
+                missing = (
+                    constraint.first_curve_id if first is None else constraint.second_curve_id
+                )
+                raise ValueError(
+                    f"sketch constraint {constraint.id!r} references unknown curve {missing!r}"
+                )
+            if isinstance(first, SketchLine) and isinstance(second, SketchLine):
+                raise ValueError(
+                    f"sketch constraint {constraint.id!r} references the wrong curve type"
+                )
+            continue
         elif isinstance(constraint, SketchRadiusDimension):
             curve_id = constraint.curve_id
             expected = (SketchCircle, SketchArc)
@@ -2633,23 +2915,44 @@ __all__ = [
     "RotatedGeometry",
     "SKETCH_CONTOUR_TYPES",
     "STRICT_SKETCH_CURVE_TYPES",
+    "SKETCH_CONSTRAINT_TYPES",
     "SketchArc",
+    "SketchAngleDimension",
     "SketchCircle",
+    "SketchCoincidentConstraint",
+    "SketchConcentricConstraint",
+    "SketchConstraint",
     "SketchContour",
     "SketchCurve",
+    "SketchDistanceDimension",
+    "SketchEqualLengthConstraint",
+    "SketchEqualRadiusConstraint",
+    "SketchFixedConstraint",
     "SketchGeometry",
+    "SketchHorizontalConstraint",
     "SketchExternalCoincidence",
     "SketchExternalReference",
     "SketchExternalReferenceType",
     "SketchLine",
+    "SketchParallelConstraint",
     "SketchPlane",
     "SketchPoint",
+    "SketchPerpendicularConstraint",
+    "SketchPointOnCurveConstraint",
+    "SketchRadiusDimension",
     "SketchRectangle",
+    "SketchTangentConstraint",
+    "SketchVerticalConstraint",
     "SolidBody",
     "WireGeometry",
     "WireMember",
     "WirePoint",
     "geometry_dimension",
+    "constraints_after_curve_split",
+    "constraints_without_entities",
+    "copy_sketch_constraints",
     "is_single_solid_recipe",
     "planar_geometry_normal",
+    "sketch_constraint_entity_ids",
+    "validate_sketch_constraints",
 ]

@@ -39,6 +39,10 @@ from fem.geometry.recipes import (
 from fem.geometry.sketch_support import SketchReferencePoint
 from fem.geometry.sketch_intersections import intersect_sketch_curves
 from fem.geometry.sketch_solver import SketchSolveResult, solve_sketch_draft
+from fem.geometry.sketch_topology import (
+    SketchCurveSplitResult,
+    split_curve_at as split_domain_curve_at,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +96,8 @@ class _SketchGeometryState:
     external_coincidences: tuple[SketchExternalCoincidence, ...]
     unresolved_reference_ids: tuple[str, ...]
     constraints: tuple[SketchConstraint, ...]
+    selected_ids: tuple[str, ...] | None
+    selected_kind: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1400,6 +1406,162 @@ class SketchDraftController:
     trim = trim_curve
     trim_segment = trim_curve
 
+    def split_curve_at(
+        self,
+        curve_id: str,
+        parameter,
+    ) -> SketchCurveSplitResult:
+        """Split one curve exactly and commit geometry/migrations atomically."""
+
+        result = split_domain_curve_at(self._to_strict_unchecked(), curve_id, parameter)
+
+        def apply() -> None:
+            self._install_split_result(result)
+
+        self._mutate(apply, include_interaction=True)
+        return result
+
+    split_at = split_curve_at
+
+    def split_at_intersection(
+        self,
+        first_curve_id: str,
+        second_curve_id: str,
+        *,
+        branch_hint: int = 0,
+    ) -> tuple[SketchCurveSplitResult, SketchCurveSplitResult]:
+        """Split both curves at one selected analytic intersection in one undo step."""
+
+        first = self._require_curve(first_curve_id)
+        second = self._require_curve(second_curve_id)
+        intersections = intersect_sketch_curves(
+            first, second, self._points, tolerance=_TRIM_TOLERANCE
+        ).intersections
+        if not intersections:
+            raise ValueError("两条曲线没有可分割的解析交点")
+        selected = next(
+            (item for item in intersections if item.branch_hint == branch_hint), None
+        )
+        if selected is None:
+            raise ValueError("解析交点分支不存在")
+        first_parameters = _intersection_split_parameters(
+            first, intersections, left=True
+        )
+        second_parameters = _intersection_split_parameters(
+            second, intersections, left=False
+        )
+        first_result = split_domain_curve_at(
+            self._to_strict_unchecked(), first_curve_id, first_parameters
+        )
+        second_result = split_domain_curve_at(
+            first_result.sketch, second_curve_id, second_parameters
+        )
+
+        def apply() -> None:
+            self._install_split_result(first_result)
+            self._install_split_result(second_result)
+
+        self._mutate(apply, include_interaction=True)
+        return first_result, second_result
+
+    connect_at_intersection = split_at_intersection
+
+    def trim_at_intersection(
+        self,
+        curve_id: str,
+        other_curve_id: str,
+        point: object | None = None,
+        *,
+        branch_hint: int = 0,
+    ) -> tuple[SketchCurve, ...]:
+        """Split both incident curves and remove one target fragment atomically."""
+
+        target = self._require_curve(curve_id)
+        other = self._require_curve(other_curve_id)
+        intersections = intersect_sketch_curves(
+            target, other, self._points, tolerance=_TRIM_TOLERANCE
+        ).intersections
+        selected = next(
+            (item for item in intersections if item.branch_hint == branch_hint), None
+        )
+        if selected is None:
+            raise ValueError("解析交点分支不存在")
+        first_parameters = _intersection_split_parameters(
+            target, intersections, left=True
+        )
+        second_parameters = _intersection_split_parameters(
+            other, intersections, left=False
+        )
+        first_result = split_domain_curve_at(
+            self._to_strict_unchecked(), curve_id, first_parameters
+        )
+        second_result = split_domain_curve_at(
+            first_result.sketch, other_curve_id, second_parameters
+        )
+        point_map = {item.id: item for item in second_result.sketch.points}
+        target_fragments = tuple(
+            item
+            for item in second_result.sketch.curves
+            if item.id in set(first_result.derived_curve_ids)
+        )
+        if point is None:
+            removed_fragment = target_fragments[0]
+        else:
+            clicked = _coordinate_pair(point, "trim point")
+            removed_fragment = min(
+                target_fragments,
+                key=lambda item: math.hypot(
+                    _curve_midpoint(item, point_map)[0] - clicked[0],
+                    _curve_midpoint(item, point_map)[1] - clicked[1],
+                ),
+            )
+        curves = tuple(
+            item
+            for item in second_result.sketch.curves
+            if item.id != removed_fragment.id
+        )
+        used_points = {
+            point_id for item in curves for point_id in _curve_point_ids(item)
+        }
+        orphan_point_ids = {
+            item.id for item in second_result.sketch.points
+            if item.id not in used_points
+        }
+        points = tuple(
+            item for item in second_result.sketch.points if item.id in used_points
+        )
+        constraints = constraints_without_entities(
+            second_result.sketch.constraints,
+            {removed_fragment.id, *orphan_point_ids},
+        )
+        final_sketch = SketchGeometry(
+            second_result.sketch.name,
+            second_result.sketch.plane,
+            points,
+            curves,
+            constraints,
+        )
+
+        def apply() -> None:
+            self._install_split_result(first_result)
+            self._install_split_result(second_result)
+            for point_id in orphan_point_ids:
+                self._remove_point_association(point_id)
+            self._points = {item.id: item for item in final_sketch.points}
+            self._curves = {item.id: item for item in final_sketch.curves}
+            self._constraints = {item.id: item for item in final_sketch.constraints}
+            self._selected_ids = tuple(
+                item for item in self._selected_ids
+                if item in self._points or item in self._curves
+            )
+            if not self._selected_ids:
+                self._selected_kind = None
+
+        self._mutate(apply, include_interaction=True)
+        return tuple(
+            item for item in target_fragments if item.id != removed_fragment.id
+        )
+
     def select(self, entity_id: str, *, kind: str | None = None) -> tuple[str, ...]:
         normalized_kind = kind or self._kind_for_id(entity_id)
         if normalized_kind == "point":
@@ -1469,8 +1631,10 @@ class SketchDraftController:
     def undo(self) -> SketchDraftSnapshot:
         if not self._undo:
             return self.snapshot()
-        current = self._geometry_state()
         previous = self._undo.pop()
+        current = self._geometry_state(
+            include_interaction=previous.selected_ids is not None
+        )
         self._redo.append(current)
         self._restore_geometry_state(previous)
         self._prune_selection()
@@ -1479,8 +1643,10 @@ class SketchDraftController:
     def redo(self) -> SketchDraftSnapshot:
         if not self._redo:
             return self.snapshot()
-        current = self._geometry_state()
         following = self._redo.pop()
+        current = self._geometry_state(
+            include_interaction=following.selected_ids is not None
+        )
         self._undo.append(current)
         self._restore_geometry_state(following)
         self._prune_selection()
@@ -1589,8 +1755,8 @@ class SketchDraftController:
             tuple(self._constraints.values()),
         )
 
-    def _mutate(self, operation):
-        before = self._geometry_state()
+    def _mutate(self, operation, *, include_interaction: bool = False):
+        before = self._geometry_state(include_interaction=include_interaction)
         interaction = self._interaction_state()
         try:
             result = operation()
@@ -1598,7 +1764,7 @@ class SketchDraftController:
             self._restore_geometry_state(before)
             self._restore_interaction_state(interaction)
             raise
-        after = self._geometry_state()
+        after = self._geometry_state(include_interaction=include_interaction)
         if after == before:
             return result
         self._known_profile_ids.clear()
@@ -1609,7 +1775,9 @@ class SketchDraftController:
         self._revision += 1
         return result
 
-    def _geometry_state(self) -> _SketchGeometryState:
+    def _geometry_state(
+        self, *, include_interaction: bool = False
+    ) -> _SketchGeometryState:
         return _SketchGeometryState(
             self._name,
             self._plane,
@@ -1620,6 +1788,8 @@ class SketchDraftController:
             tuple(self._external_coincidences.values()),
             tuple(sorted(self._unresolved_reference_ids)),
             tuple(self._constraints.values()),
+            self._selected_ids if include_interaction else None,
+            self._selected_kind if include_interaction else None,
         )
 
     def _interaction_state(self) -> _SketchInteractionState:
@@ -1637,6 +1807,9 @@ class SketchDraftController:
         self._constraints = {
             constraint.id: constraint for constraint in state.constraints
         }
+        if state.selected_ids is not None:
+            self._selected_ids = state.selected_ids
+            self._selected_kind = state.selected_kind
         self._revision = state.revision
         self._external_references = {
             reference.id: reference for reference in state.external_references
@@ -1649,6 +1822,26 @@ class SketchDraftController:
         self._known_profile_ids.clear()
         self._validate_associations()
         self._validate_constraints()
+
+    def _install_split_result(self, result: SketchCurveSplitResult) -> None:
+        previous_id = result.original_curve_id
+        self._points = {point.id: point for point in result.sketch.points}
+        self._curves = {curve.id: curve for curve in result.sketch.curves}
+        self._constraints = {
+            constraint.id: constraint for constraint in result.sketch.constraints
+        }
+        selected: list[str] = []
+        for entity_id in self._selected_ids:
+            if entity_id == previous_id:
+                selected.extend(result.derived_curve_ids)
+            elif entity_id in self._points or entity_id in self._curves:
+                selected.append(entity_id)
+        self._selected_ids = tuple(dict.fromkeys(selected))
+        if not self._selected_ids:
+            self._selected_kind = None
+        elif all(entity_id in self._curves for entity_id in self._selected_ids):
+            self._selected_kind = "edge"
+        self._known_profile_ids.clear()
 
     def _restore_interaction_state(self, state: _SketchInteractionState) -> None:
         self._selected_ids = state.selected_ids
@@ -1852,6 +2045,52 @@ def _curve_point_ids(curve: SketchCurve) -> tuple[str, ...]:
     if isinstance(curve, SketchArc):
         return curve.start_point_id, curve.center_point_id, curve.end_point_id
     return (curve.center_point_id,)
+
+
+def _curve_midpoint(
+    curve: SketchCurve,
+    points: dict[str, SketchPoint],
+) -> tuple[float, float]:
+    if isinstance(curve, SketchLine):
+        start = points[curve.start_point_id]
+        end = points[curve.end_point_id]
+        return 0.5 * (start.u + end.u), 0.5 * (start.v + end.v)
+    center = points[curve.center_point_id]
+    if isinstance(curve, SketchCircle):
+        return center.u + curve.radius, center.v
+    start = points[curve.start_point_id]
+    end = points[curve.end_point_id]
+    start_angle = math.atan2(start.v - center.v, start.u - center.u)
+    end_angle = math.atan2(end.v - center.v, end.u - center.u)
+    sweep = (
+        (end_angle - start_angle) % math.tau
+        if curve.orientation == "ccw"
+        else -((start_angle - end_angle) % math.tau)
+    )
+    radius = math.hypot(start.u - center.u, start.v - center.v)
+    angle = start_angle + 0.5 * sweep
+    return center.u + radius * math.cos(angle), center.v + radius * math.sin(angle)
+
+
+def _intersection_split_parameters(
+    curve: SketchCurve,
+    intersections,
+    *,
+    left: bool,
+) -> tuple[float, ...]:
+    values = tuple(
+        item.left_parameter if left else item.right_parameter
+        for item in intersections
+    )
+    if isinstance(curve, SketchCircle):
+        return values
+    internal = tuple(
+        value for value in values
+        if _TRIM_TOLERANCE < value < 1.0 - _TRIM_TOLERANCE
+    )
+    if not internal:
+        raise ValueError(f"曲线 {curve.id} 的交点位于端点，无需分割")
+    return internal
 
 
 def _line_parameter(

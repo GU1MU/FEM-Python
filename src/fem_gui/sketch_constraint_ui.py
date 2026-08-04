@@ -7,17 +7,24 @@ import math
 
 from fem.geometry.recipes import (
     SketchArc,
+    SketchAngleDimension,
     SketchCircle,
     SketchCoincidentConstraint,
+    SketchConcentricConstraint,
     SketchConstraint,
     SketchDistanceDimension,
+    SketchEqualLengthConstraint,
+    SketchEqualRadiusConstraint,
     SketchFixedConstraint,
     SketchHorizontalConstraint,
     SketchLine,
+    SketchParallelConstraint,
     SketchPlane,
     SketchPoint,
     SketchPointOnCurveConstraint,
+    SketchPerpendicularConstraint,
     SketchRadiusDimension,
+    SketchTangentConstraint,
     SketchVerticalConstraint,
     sketch_constraint_entity_ids,
 )
@@ -50,16 +57,26 @@ _KIND_TEXT = {
     SketchPointOnCurveConstraint: ("point_on_curve", "点在曲线上"),
     SketchHorizontalConstraint: ("horizontal", "水平"),
     SketchVerticalConstraint: ("vertical", "垂直"),
+    SketchParallelConstraint: ("parallel", "平行"),
+    SketchPerpendicularConstraint: ("perpendicular", "互相垂直"),
+    SketchTangentConstraint: ("tangent", "相切"),
+    SketchEqualLengthConstraint: ("equal_length", "等长"),
+    SketchEqualRadiusConstraint: ("equal_radius", "等半径"),
+    SketchConcentricConstraint: ("concentric", "同心"),
     SketchFixedConstraint: ("fixed", "固定"),
     SketchDistanceDimension: ("distance", "距离"),
     SketchRadiusDimension: ("radius", "半径"),
+    SketchAngleDimension: ("angle", "角度"),
 }
 
 
 def constraint_text(constraint: SketchConstraint) -> str:
     kind, label = _KIND_TEXT[type(constraint)]
     del kind
-    if isinstance(constraint, (SketchDistanceDimension, SketchRadiusDimension)):
+    if isinstance(
+        constraint,
+        (SketchDistanceDimension, SketchRadiusDimension, SketchAngleDimension),
+    ):
         mode = "驱动" if constraint.driving else "参考"
         return f"{label} {constraint.value:g}（{mode}）"
     return label
@@ -94,6 +111,26 @@ def measured_dimension_value(
             center = points[curve.center_point_id]
             start = points[curve.start_point_id]
             return math.hypot(start.u - center.u, start.v - center.v)
+    if isinstance(constraint, SketchAngleDimension):
+        first = curves[constraint.first_line_id]
+        second = curves[constraint.second_line_id]
+        if isinstance(first, SketchLine) and isinstance(second, SketchLine):
+            first_start = points[first.start_point_id]
+            first_end = points[first.end_point_id]
+            second_start = points[second.start_point_id]
+            second_end = points[second.end_point_id]
+            first_vector = (
+                first_end.u - first_start.u, first_end.v - first_start.v
+            )
+            second_vector = (
+                second_end.u - second_start.u, second_end.v - second_start.v
+            )
+            return math.atan2(
+                first_vector[0] * second_vector[1]
+                - first_vector[1] * second_vector[0],
+                first_vector[0] * second_vector[0]
+                + first_vector[1] * second_vector[1],
+            )
     return None
 
 
