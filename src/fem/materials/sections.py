@@ -9,6 +9,7 @@ from math import isfinite
 from typing import Any
 
 from ..elements.beam_frame import (
+    BEAM_ELEMENT_LOCAL_Y_REFERENCE_KEY,
     BEAM_LOCAL_Y_REFERENCE_KEY,
     BeamOrientationInvalidError,
     parse_beam_orientation,
@@ -251,10 +252,14 @@ def resolve_section_properties(
         material_properties,
     )
     orientation_in_baseline = BEAM_LOCAL_Y_REFERENCE_KEY in baseline
+    element_orientation_in_baseline = (
+        BEAM_ELEMENT_LOCAL_Y_REFERENCE_KEY in baseline
+    )
     orientation_in_material = BEAM_LOCAL_Y_REFERENCE_KEY in material_data
     orientation_in_section = BEAM_LOCAL_Y_REFERENCE_KEY in section_data
     if element_family != "beam" and (
         orientation_in_baseline
+        or element_orientation_in_baseline
         or orientation_in_material
         or orientation_in_section
     ):
@@ -302,6 +307,18 @@ def resolve_section_properties(
     applied["section_type"] = concrete_type
     effective = dict(baseline)
     effective.update(applied)
+    if element_family == "beam" and element_orientation_in_baseline:
+        try:
+            element_orientation = parse_beam_orientation(
+                baseline[BEAM_ELEMENT_LOCAL_Y_REFERENCE_KEY]
+            )
+        except BeamOrientationInvalidError as exc:
+            raise BeamOrientationPropertyError(str(exc)) from exc
+        # An adapter-resolved element-end source is more specific than an
+        # assignment-scoped section n1, while remaining a core Beam2 property.
+        effective[BEAM_LOCAL_Y_REFERENCE_KEY] = (
+            element_orientation.local_y_reference
+        )
 
     if element_family == "plane_continuum":
         _reject_known_geometry_fields(

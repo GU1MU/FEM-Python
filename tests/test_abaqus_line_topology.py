@@ -347,14 +347,14 @@ def test_additional_b31_orientation_node_is_not_truncated(
         ],
     )
 
-    with pytest.raises(
-        abaqus.UnsupportedAbaqusFeatureError
-    ) as caught:
-        abaqus.read_with_report(path)
+    deck = abaqus.parse_file(path)
+    result = abaqus.read_with_report(path)
 
-    assert "additional orientation node" in str(caught.value).casefold()
-    assert "n1" in caught.value.remediation.casefold()
-    assert caught.value.record
+    assert deck.elements[0].node_ids == (1, 2)
+    assert deck.elements[0].additional_orientation_node_id == 3
+    assert tuple(result.model.mesh.elements[0].node_ids) == (1, 2)
+    assert result.model.mesh.num_nodes == 2
+    assert result.model.mesh.num_dofs == 12
 
 
 def test_node_normal_components_are_not_silently_discarded(
@@ -379,17 +379,17 @@ def test_node_normal_components_are_not_silently_discarded(
         ],
     )
 
-    with pytest.raises(
-        abaqus.UnsupportedAbaqusFeatureError
-    ) as caught:
-        abaqus.read_with_report(path)
+    deck = abaqus.parse_file(path)
+    result = abaqus.read_with_report(path)
 
-    assert "normal" in str(caught.value).casefold()
-    assert caught.value.line == 3
-    assert caught.value.remediation
+    assert deck.node_records[1].normal is not None
+    assert deck.node_records[1].normal.node_id == 1
+    assert deck.node_records[1].normal.vector == (0.0, 1.0, 0.0)
+    assert result.model.mesh.num_nodes == 2
+    assert result.model.mesh.num_elements == 1
 
 
-def test_normal_keyword_is_explicitly_rejected_for_b31_source(
+def test_normal_keyword_is_supported_for_b31_source(
     tmp_path,
 ) -> None:
     lines = _single_section_deck(
@@ -399,13 +399,22 @@ def test_normal_keyword_is_explicitly_rejected_for_b31_source(
         ),
         ((1, 1, 2),),
     )
-    lines.extend(("*Normal", "1, 1, 0.0, 1.0, 0.0"))
+    lines.extend(
+        (
+            "*Normal",
+            "1, 1, 0.0, 1.0, 0.0",
+            "1, 2, 0.0, 1.0, 0.0",
+        )
+    )
     path = write_inp(tmp_path, "normal_keyword.inp", lines)
 
-    with pytest.raises(
-        abaqus.UnsupportedAbaqusFeatureError
-    ) as caught:
-        abaqus.read_with_report(path)
+    deck = abaqus.parse_file(path)
+    result = abaqus.read_with_report(path)
 
-    assert "NORMAL" in str(caught.value).upper()
-    assert caught.value.remediation
+    assert len(deck.normal_records) == 2
+    assert deck.normal_records[0].element_target == 1
+    assert deck.normal_records[0].node_target == 1
+    assert deck.normal_records[0].identity is not None
+    assert deck.normal_records[0].identity.local_end == 1
+    assert result.model.mesh.num_nodes == 2
+    assert result.model.mesh.num_elements == 1

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
@@ -30,6 +31,7 @@ from ..core.model import (
 from ..elements import (
     BEAM_DEFAULT_LOCAL_Y_REFERENCE,
     BEAM_DEFAULT_LOCAL_Y_REFERENCE_KEY,
+    BEAM_ELEMENT_LOCAL_Y_REFERENCE_KEY,
     BEAM_LOCAL_Y_REFERENCE_KEY,
     canonical_element_type,
     get_element_capabilities,
@@ -50,7 +52,9 @@ from .deck import (
     AbaqusBoundary,
     AbaqusDeck,
     AbaqusDistributedLoad,
+    AbaqusElementEndIdentity,
     AbaqusElement,
+    AbaqusNormalRecord,
     AbaqusSection,
     AbaqusSolidSectionData,
     AbaqusStep,
@@ -81,6 +85,10 @@ def build_model(deck: AbaqusDeck) -> FEMModel:
 def build_model_with_report(deck: AbaqusDeck) -> AbaqusBuildResult:
     """Build a detached model and retain non-authoritative source notices."""
 
+    # Background import callers may retain or reuse the parser result.  Work on
+    # an owned snapshot so source validation and set expansion cannot share
+    # mutable parser state with the accepted task.
+    deck = deck.snapshot()
     # Resolve source targets before constructing a canonical mesh.  This keeps
     # mixed-family and stale-set diagnostics at the Abaqus boundary instead of
     # letting a generic Mesh constructor error hide the responsible record.
@@ -88,6 +96,7 @@ def build_model_with_report(deck: AbaqusDeck) -> AbaqusBuildResult:
     has_line_elements = _audit_line_subset(deck)
     _audit_source_mesh_capability(deck)
     model = _build_model(deck)
+    _install_b31_source_orientations(model, deck)
     section_resolution = _validate_declared_sections(model, deck)
     frame_validation: dict[int, Any] | None = None
     if has_line_elements:
@@ -99,8 +108,16 @@ def build_model_with_report(deck: AbaqusDeck) -> AbaqusBuildResult:
 def _build_model(deck: AbaqusDeck) -> FEMModel:
     """Build a FEMModel from a parsed Abaqus input deck."""
     mesh = _build_mesh(deck)
+    orientation_only_nodes = _orientation_only_node_ids(deck)
     node_sets = {
-        name: NodeSet(name, _unique_ids(ids))
+        name: NodeSet(
+            name,
+            tuple(
+                node_id
+                for node_id in _unique_ids(ids)
+                if node_id not in orientation_only_nodes
+            ),
+        )
         for name, ids in deck.node_sets.items()
         if deck.node_set_scopes.get(name, "model") != "part"
     }
@@ -154,6 +171,282 @@ def _build_model(deck: AbaqusDeck) -> FEMModel:
     return model
 
 
+def _install_b31_source_orientations(model: FEMModel, deck: AbaqusDeck) -> None:
+    """Project constant source-defined B31 frames into Beam2 properties.
+
+    This is intentionally a per-element source projection, not a nodal-normal
+    generator. A source normal is accepted only when both local ends reduce to
+    the same effective n1/n2 frame. Otherwise the adapter returns a typed
+    capability error reserved for the later element-end-frame kernel.
+    """
+
+    raw_elements = {
+        int(element.id): element
+        for element in deck.elements
+        if str(element.type).upper() == "B31"
+    }
+    if not raw_elements:
+        return
+    mesh_elements = {
+        int(element.id): element
+        for element in model.mesh.elements
+        if str(element.type) == "Beam2"
+    }
+    explicit_normals: dict[AbaqusElementEndIdentity, AbaqusNormalRecord] = {}
+    for record in deck.normal_records:
+        for identity in record.identities:
+            explicit_normals[identity] = record
+
+    node_normal_by_id = {
+        int(record.id): record.normal.vector
+        for record in deck.node_records.values()
+        if record.normal is not None
+    }
+
+    for element_id in sorted(raw_elements):
+        raw_element = raw_elements[element_id]
+        mesh_element = mesh_elements[element_id]
+        has_element_source = raw_element.additional_orientation_node_id is not None
+        has_node_source = any(
+            int(node_id) in node_normal_by_id
+            for node_id in raw_element.structural_node_ids
+        )
+        has_explicit_source = any(
+            identity.element_id == element_id
+            for identity in explicit_normals
+        )
+        if not (has_element_source or has_node_source or has_explicit_source):
+            continue
+        base_n1 = _b31_base_n1(deck, raw_element)
+        endpoint_references: list[tuple[float, float, float]] = []
+        endpoint_identities: list[AbaqusElementEndIdentity] = []
+
+        for local_end, node_id in enumerate(raw_element.structural_node_ids, start=1):
+            identity = AbaqusElementEndIdentity(element_id, local_end, int(node_id))
+            explicit_record = explicit_normals.get(identity)
+            normal = (
+                explicit_record.normal
+                if explicit_record is not None
+                else node_normal_by_id.get(int(node_id))
+            )
+            endpoint_references.append(
+                _b31_endpoint_n1(deck, raw_element, base_n1, normal)
+            )
+            endpoint_identities.append(identity)
+
+        if not _same_b31_reference(endpoint_references):
+            locations = _b31_source_locations(
+                deck,
+                raw_element,
+                tuple(endpoint_identities),
+                explicit_normals,
+            )
+            raise UnsupportedAbaqusFeatureError(
+                (
+                    f"B31 element {element_id} has different effective frames "
+                    "at its two local ends"
+                ),
+                code="abaqus.b31.element_end_frame_variation_unsupported",
+                location=locations[0] if locations else None,
+                locations=locations,
+                record={
+                    "element": element_id,
+                    "ends": tuple(
+                        {
+                            "identity": identity,
+                            "local_y_reference": reference,
+                        }
+                        for identity, reference in zip(
+                            endpoint_identities,
+                            endpoint_references,
+                            strict=True,
+                        )
+                    ),
+                    "capability": "constant_element_frame_only",
+                },
+                remediation=(
+                    "Use the Phase 5 element-end frame capability or provide "
+                    "source normals that reduce to one constant frame."
+                ),
+            )
+        mesh_element.props[BEAM_ELEMENT_LOCAL_Y_REFERENCE_KEY] = tuple(
+            endpoint_references[0]
+        )
+
+
+def _b31_base_n1(
+    deck: AbaqusDeck,
+    element: AbaqusElement,
+) -> tuple[float, float, float]:
+    orientation_node_id = element.additional_orientation_node_id
+    if orientation_node_id is not None:
+        first_node_id = element.structural_node_ids[0]
+        origin = np.asarray(deck.nodes[int(first_node_id)], dtype=float)
+        orientation = np.asarray(deck.nodes[int(orientation_node_id)], dtype=float)
+        # The additional node is the official approximate n1 source and wins
+        # over any assignment-scoped section n1.
+        return tuple(float(value) for value in orientation - origin)
+
+    element_id = int(element.id)
+    for section in reversed(deck.sections):
+        if element_id not in _source_section_element_ids(deck, section):
+            continue
+        data = section.data
+        if isinstance(data, AbaqusBeamSectionData) and data.approximate_n1 is not None:
+            return tuple(float(value) for value in data.approximate_n1)
+    return tuple(float(value) for value in BEAM_DEFAULT_LOCAL_Y_REFERENCE)
+
+
+def _source_section_element_ids(
+    deck: AbaqusDeck,
+    section: AbaqusSection,
+) -> tuple[int, ...]:
+    captured = _unique_ids(section.element_ids)
+    if getattr(section, "target_was_defined", None) is True:
+        return captured
+    return captured or _unique_ids(deck.element_sets.get(section.element_set, ()))
+
+
+def _b31_endpoint_n1(
+    deck: AbaqusDeck,
+    element: AbaqusElement,
+    base_n1: tuple[float, float, float],
+    normal: tuple[float, float, float] | None,
+) -> tuple[float, float, float]:
+    first_node, second_node = element.structural_node_ids
+    first = np.asarray(deck.nodes[int(first_node)], dtype=float)
+    second = np.asarray(deck.nodes[int(second_node)], dtype=float)
+    tangent = second - first
+    tangent_norm = float(np.linalg.norm(tangent))
+    if not math.isfinite(tangent_norm) or tangent_norm <= 0.0:
+        raise AbaqusBuildError(
+            f"B31 element {element.id} has invalid structural geometry",
+            code="abaqus.b31.geometry_invalid",
+            location=element.data_location or element.keyword_location,
+            record=tuple(element.structural_node_ids),
+        )
+    tangent /= tangent_norm
+
+    base = np.asarray(base_n1, dtype=float)
+    base_norm = float(np.linalg.norm(base))
+    if (
+        base.shape != (3,)
+        or not np.all(np.isfinite(base))
+        or not math.isfinite(base_norm)
+        or base_norm <= 0.0
+    ):
+        raise AbaqusBuildError(
+            f"B31 element {element.id} n1 reference must be finite and nonzero",
+            code="abaqus.b31.orientation_invalid",
+            location=element.data_location or element.keyword_location,
+            record=tuple(float(value) for value in base),
+        )
+    base_projection = base - float(base @ tangent) * tangent
+    projection_norm = float(np.linalg.norm(base_projection))
+    if projection_norm <= 1e-8:
+        raise AbaqusBuildError(
+            f"B31 element {element.id} n1 reference is parallel to its tangent",
+            code="beam.orientation.parallel",
+            location=element.data_location or element.keyword_location,
+            record={
+                "element": int(element.id),
+                "reference": tuple(float(value) for value in base),
+                "tangent": tuple(float(value) for value in tangent),
+            },
+        )
+    base_n1_unit = base_projection / projection_norm
+    if normal is None:
+        return tuple(float(value) for value in base_n1_unit)
+
+    n2 = np.asarray(
+        _require_source_normal(
+            normal,
+            location=element.data_location or element.keyword_location,
+            code="abaqus.b31.normal_zero",
+            label=f"B31 element {element.id} normal",
+            record=normal,
+        ),
+        dtype=float,
+    )
+    n2_projection = n2 - float(n2 @ tangent) * tangent
+    n2_projection_norm = float(np.linalg.norm(n2_projection))
+    if n2_projection_norm <= 1e-8:
+        raise AbaqusBuildError(
+            f"B31 element {element.id} normal is parallel to its tangent",
+            code="abaqus.b31.normal_parallel",
+            location=element.data_location or element.keyword_location,
+            record={
+                "element": int(element.id),
+                "normal": tuple(float(value) for value in n2),
+                "tangent": tuple(float(value) for value in tangent),
+            },
+        )
+    # Abaqus reverses a supplied n2 when it points opposite t x n1. The
+    # actual section n1 then follows from n2 x t.
+    expected_n2 = np.cross(tangent, base_n1_unit)
+    if float(n2 @ expected_n2) < 0.0:
+        n2 = -n2
+    actual_n1 = np.cross(n2, tangent)
+    actual_norm = float(np.linalg.norm(actual_n1))
+    if actual_norm <= 1e-8:
+        raise AbaqusBuildError(
+            f"B31 element {element.id} normal cannot define an n1 direction",
+            code="abaqus.b31.normal_parallel",
+            location=element.data_location or element.keyword_location,
+            record=tuple(float(value) for value in n2),
+        )
+    actual_n1 /= actual_norm
+    return tuple(float(value) for value in actual_n1)
+
+
+def _same_b31_reference(
+    references: list[tuple[float, float, float]],
+) -> bool:
+    if not references:
+        return True
+    first = np.asarray(references[0], dtype=float)
+    return all(
+        np.allclose(first, np.asarray(reference, dtype=float), rtol=1e-9, atol=1e-10)
+        for reference in references[1:]
+    )
+
+
+def _b31_source_locations(
+    deck: AbaqusDeck,
+    element: AbaqusElement,
+    identities: tuple[AbaqusElementEndIdentity, ...],
+    explicit_normals: dict[AbaqusElementEndIdentity, AbaqusNormalRecord],
+) -> tuple[AbaqusSourceLocation, ...]:
+    candidates: list[AbaqusSourceLocation | None] = [
+        element.data_location or element.keyword_location,
+    ]
+    orientation_node_id = element.additional_orientation_node_id
+    if orientation_node_id is not None:
+        candidates.append(_node_location(deck, orientation_node_id))
+    for section in deck.sections:
+        if int(element.id) not in _source_section_element_ids(deck, section):
+            continue
+        data = section.data
+        if isinstance(data, AbaqusBeamSectionData):
+            candidates.append(
+                data.orientation.location
+                if data.orientation.present
+                else section.keyword_location
+            )
+    for identity in identities:
+        node_record = deck.node_records.get(identity.node_id)
+        if node_record is not None:
+            candidates.append(
+                node_record.normal.location
+                if node_record.normal is not None
+                else node_record.location
+            )
+        explicit = explicit_normals.get(identity)
+        if explicit is not None:
+            candidates.append(explicit.location)
+    return _unique_source_locations(candidates)
+
+
 _LINE_KEYWORD_PARAMETERS: dict[str, frozenset[str]] = {
     "heading": frozenset(),
     "preprint": frozenset({"echo", "history", "model", "contact"}),
@@ -177,6 +470,7 @@ _LINE_KEYWORD_PARAMETERS: dict[str, frozenset[str]] = {
     "boundary": frozenset(),
     "cload": frozenset(),
     "dload": frozenset(),
+    "normal": frozenset({"type"}),
     "output": frozenset({"variable"}),
     "field output": frozenset({"name", "variable"}),
     "history output": frozenset({"name", "variable"}),
@@ -205,6 +499,7 @@ _LINE_KEYWORD_REQUIRED: dict[str, frozenset[str]] = {
 def _audit_raw_targets(deck: AbaqusDeck) -> None:
     """Validate section and DLOAD targets against raw source elements."""
 
+    _audit_b31_orientation_sources(deck)
     element_lookup = {
         int(element.id): element
         for element in deck.elements
@@ -232,6 +527,287 @@ def _audit_raw_targets(deck: AbaqusDeck) -> None:
                 location=load.location,
                 subject=f"*DLOAD target {load.target!r}",
             )
+
+
+def _audit_b31_orientation_sources(deck: AbaqusDeck) -> None:
+    """Validate and resolve B31 source identities without averaging normals.
+
+    The precedence frozen here follows the Abaqus Elements Guide:
+
+    * an additional connectivity node takes precedence over section n1;
+    * a ``*NODE`` normal applies to attached structural elements; and
+    * ``*NORMAL, TYPE=ELEMENT`` takes precedence over that node normal.
+
+    See the primary references at
+    https://docs.software.vt.edu/abaqusv2025/English/SIMACAEELMRefMap/
+    simaelm-c-beamcrosssection.htm and
+    https://docs.software.vt.edu/abaqusv2024/English/SIMACAEMODRefMap/
+    simamod-c-nodalnormals.htm.  This pass only validates source records and
+    expands exact element-end identities; Abaqus-generated averaging remains a
+    later resolver phase.
+    """
+
+    b31_elements = tuple(
+        element
+        for element in deck.elements
+        if str(element.type).upper() == "B31"
+    )
+    if not b31_elements:
+        if any(record.extra_fields for record in deck.node_records.values()):
+            record = next(
+                record
+                for record in deck.node_records.values()
+                if record.extra_fields
+            )
+            raise UnsupportedAbaqusFeatureError(
+                "nodal normal components require a B31 structural element",
+                code="abaqus.line.nodal_normals_unsupported",
+                location=record.location,
+                record=record.extra_fields,
+                remediation="Use nodal normals only with supported B31 elements.",
+            )
+        if deck.normal_records:
+            record = deck.normal_records[0]
+            raise UnsupportedAbaqusFeatureError(
+                "*NORMAL, TYPE=ELEMENT is supported here only for B31 beams",
+                code="abaqus.normal.element_type_unsupported",
+                location=record.location,
+                record=record.raw_fields,
+                remediation="Target a B31 element or remove the *NORMAL block.",
+            )
+        return
+
+    element_lookup = {int(element.id): element for element in deck.elements}
+    for element in b31_elements:
+        structural_node_ids = element.structural_node_ids
+        if len(structural_node_ids) != 2:
+            raise AbaqusBuildError(
+                "B31 connectivity must contain exactly two structural nodes",
+                code="abaqus.line.connectivity_shape",
+                location=element.data_location or element.keyword_location,
+                record=element.raw_fields or element.node_ids,
+            )
+        for node_id in structural_node_ids:
+            if int(node_id) not in deck.nodes:
+                raise AbaqusBuildError(
+                    f"B31 element {element.id} references missing node {node_id}",
+                    code="abaqus.b31.node_missing",
+                    location=element.data_location or element.keyword_location,
+                    record={"element": int(element.id), "node": int(node_id)},
+                    remediation="Define both structural B31 nodes before the element.",
+                )
+        orientation_node_id = element.additional_orientation_node_id
+        if orientation_node_id is None:
+            continue
+        if orientation_node_id not in deck.nodes:
+            raise AbaqusBuildError(
+                f"B31 element {element.id} references missing orientation node "
+                f"{orientation_node_id}",
+                code="abaqus.b31.orientation_node_missing",
+                location=element.data_location or element.keyword_location,
+                record={
+                    "element": int(element.id),
+                    "orientation_node": int(orientation_node_id),
+                },
+                locations=_unique_source_locations(
+                    (
+                        element.data_location or element.keyword_location,
+                        _node_location(deck, orientation_node_id),
+                    )
+                ),
+                remediation="Define the orientation node with a finite coordinate record.",
+            )
+        coordinates = tuple(float(value) for value in deck.nodes[orientation_node_id])
+        if len(coordinates) != 3 or not all(math.isfinite(value) for value in coordinates):
+            raise AbaqusBuildError(
+                f"B31 orientation node {orientation_node_id} has invalid coordinates",
+                code="abaqus.b31.orientation_node_invalid",
+                location=_node_location(deck, orientation_node_id),
+                record=coordinates,
+                remediation="Provide three finite coordinates for the orientation node.",
+            )
+
+    for record in deck.node_records.values():
+        extras = tuple(record.extra_fields)
+        if not extras:
+            continue
+        if record.normal is not None:
+            if len(extras) != 3:
+                raise AbaqusBuildError(
+                    "*NODE normal data must contain exactly three components",
+                    code="abaqus.b31.node_normal_shape",
+                    location=record.location,
+                    record=extras,
+                )
+            _require_source_normal(
+                record.normal.vector,
+                location=record.normal.location or record.location,
+                code="abaqus.b31.node_normal_zero",
+                label=f"node {record.id} normal",
+                record=record.normal.vector,
+            )
+            continue
+        code = (
+            "abaqus.b31.node_normal_empty"
+            if len(extras) == 3
+            else "abaqus.b31.node_normal_shape"
+        )
+        raise AbaqusBuildError(
+            "*NODE normal data contains an empty or incomplete component",
+            code=code,
+            location=record.location,
+            record=extras,
+            remediation="Provide all three finite nodal normal components.",
+        )
+
+    identities_by_record: list[AbaqusNormalRecord] = []
+    normal_by_identity: dict[AbaqusElementEndIdentity, AbaqusNormalRecord] = {}
+    for record in deck.normal_records:
+        _require_source_normal(
+            record.normal,
+            location=record.location,
+            code="abaqus.b31.normal_zero",
+            label="*NORMAL vector",
+            record=record.raw_fields,
+        )
+        element_ids = _normal_target_ids(
+            record.element,
+            deck.element_sets,
+            kind="element",
+            record=record,
+        )
+        node_ids = _normal_target_ids(
+            record.node,
+            deck.node_sets,
+            kind="node",
+            record=record,
+        )
+        identities: list[AbaqusElementEndIdentity] = []
+        for element_id in sorted(element_ids):
+            element = element_lookup.get(int(element_id))
+            if element is None:
+                raise AbaqusBuildError(
+                    f"*NORMAL references undefined element {element_id}",
+                    code="abaqus.b31.normal.element_missing",
+                    location=record.location,
+                    record=record.raw_fields,
+                    remediation="Define the referenced B31 element before *NORMAL.",
+                )
+            if str(element.type).upper() != "B31":
+                raise UnsupportedAbaqusFeatureError(
+                    "*NORMAL, TYPE=ELEMENT currently supports B31 targets only",
+                    code="abaqus.normal.element_type_unsupported",
+                    location=record.location,
+                    record=record.raw_fields,
+                    remediation="Target a B31 element or remove the *NORMAL record.",
+                )
+            for node_id in sorted(node_ids):
+                try:
+                    local_end = next(
+                        index
+                        for index, structural_node_id in enumerate(
+                            element.structural_node_ids,
+                            start=1,
+                        )
+                        if int(structural_node_id) == int(node_id)
+                    )
+                except StopIteration as exc:
+                    raise AbaqusBuildError(
+                        (
+                            f"*NORMAL node {node_id} is not a local end of "
+                            f"element {element_id}"
+                        ),
+                        code="abaqus.b31.normal.local_end_invalid",
+                        location=record.location,
+                        record={
+                            "element": int(element_id),
+                            "node": int(node_id),
+                        },
+                        remediation="Use one of the two structural B31 nodes for the record.",
+                    ) from exc
+                identity = AbaqusElementEndIdentity(
+                    int(element_id),
+                    local_end,
+                    int(node_id),
+                )
+                previous = normal_by_identity.get(identity)
+                if previous is not None and previous.normal != record.normal:
+                    raise AbaqusBuildError(
+                        "conflicting *NORMAL vectors share one exact element-end identity",
+                        code="abaqus.b31.normal.conflict",
+                        location=previous.location,
+                        locations=(previous.location, record.location),
+                        record={
+                            "identity": identity,
+                            "first": previous.normal,
+                            "second": record.normal,
+                        },
+                        remediation="Define one vector for each element and local end.",
+                    )
+                normal_by_identity[identity] = record
+                identities.append(identity)
+        identities_by_record.append(replace(record, identities=tuple(identities)))
+
+    deck.normal_records[:] = identities_by_record
+
+
+def _normal_target_ids(
+    target: int | str,
+    collections: dict[str, list[int]],
+    *,
+    kind: str,
+    record: AbaqusNormalRecord,
+) -> tuple[int, ...]:
+    if isinstance(target, int):
+        return (int(target),)
+    if target not in collections:
+        code = (
+            "abaqus.b31.normal.element_set_missing"
+            if kind == "element"
+            else "abaqus.b31.normal.node_set_missing"
+        )
+        raise AbaqusBuildError(
+            f"*NORMAL {kind} set {target!r} is not defined",
+            code=code,
+            location=record.location,
+            record=record.raw_fields,
+            remediation=f"Define the referenced {kind} set before *NORMAL.",
+        )
+    return _unique_ids(collections[target])
+
+
+def _require_source_normal(
+    vector: Any,
+    *,
+    location: AbaqusSourceLocation | None,
+    code: str,
+    label: str,
+    record: Any,
+) -> tuple[float, float, float]:
+    try:
+        values = tuple(float(value) for value in vector)
+    except (TypeError, ValueError) as exc:
+        raise AbaqusBuildError(
+            f"{label} must contain three finite components",
+            code="abaqus.b31.normal_invalid",
+            location=location,
+            record=record,
+        ) from exc
+    if len(values) != 3 or not all(math.isfinite(value) for value in values):
+        raise AbaqusBuildError(
+            f"{label} must contain three finite components",
+            code="abaqus.b31.normal_invalid",
+            location=location,
+            record=record,
+        )
+    if max(abs(value) for value in values) == 0.0:
+        raise AbaqusBuildError(
+            f"{label} must be nonzero",
+            code=code,
+            location=location,
+            record=record,
+        )
+    return values
 
 
 def _raw_section_target(
@@ -543,25 +1119,6 @@ def _audit_line_subset(deck: AbaqusDeck) -> bool:
                 remediation="Use NLGEOM=NO or remove the NLGEOM option.",
             )
 
-    for record in deck.node_records.values():
-        extras = tuple(
-            getattr(
-                record,
-                "extra_fields",
-                getattr(record, "normal_components", ()),
-            )
-        )
-        if extras:
-            raise UnsupportedAbaqusFeatureError(
-                "Abaqus nodal normal components are not supported for B31",
-                code="abaqus.b31.nodal_normals_unsupported",
-                location=record.location,
-                record=extras,
-                remediation=(
-                    "Remove nodal normals and provide the approximate n1 on "
-                    "the *BEAM SECTION data record."
-                ),
-            )
     _audit_line_steps(deck)
     _audit_line_materials(deck)
     return True
@@ -570,8 +1127,8 @@ def _audit_line_subset(deck: AbaqusDeck) -> bool:
 def _unsupported_keyword_remediation(name: str) -> str:
     if name == "normal":
         return (
-            "Remove *NORMAL and provide an assignment-scoped approximate n1 "
-            "through the *BEAM SECTION orientation record."
+            "Use *NORMAL, TYPE=ELEMENT with a B31 target, or remove the "
+            "unsupported normal definition."
         )
     if name == "amplitude":
         return "Replace amplitude-dependent loading with constant step data."
@@ -1135,16 +1692,22 @@ def _build_mesh(deck: AbaqusDeck) -> Any:
     if not deck.elements:
         raise ValueError("Abaqus deck has no elements")
 
+    orientation_only_nodes = _orientation_only_node_ids(deck)
+    mesh_nodes = {
+        node_id: coordinates
+        for node_id, coordinates in deck.nodes.items()
+        if node_id not in orientation_only_nodes
+    }
     dimension = _mesh_dimension(deck.elements)
     if dimension == 2:
         nodes2d = [
             Node2D(node_id, coords[0], coords[1])
-            for node_id, coords in sorted(deck.nodes.items())
+            for node_id, coords in sorted(mesh_nodes.items())
         ]
         elements2d = [
             Element2D(
                 element.id,
-                list(element.node_ids),
+                list(element.structural_node_ids),
                 _element_type(element),
                 _element_props(element),
             )
@@ -1154,12 +1717,12 @@ def _build_mesh(deck: AbaqusDeck) -> Any:
 
     nodes3d = [
         Node3D(node_id, coords[0], coords[1], coords[2])
-        for node_id, coords in sorted(deck.nodes.items())
+        for node_id, coords in sorted(mesh_nodes.items())
     ]
     elements3d = [
         Element3D(
             element.id,
-            list(element.node_ids),
+            list(element.structural_node_ids),
             _element_type(element),
             _element_props(element),
         )
@@ -1175,6 +1738,23 @@ def _build_mesh(deck: AbaqusDeck) -> Any:
     else:
         dofs_per_node = 3
     return Mesh3D(nodes3d, elements3d, dofs_per_node=dofs_per_node)
+
+
+def _orientation_only_node_ids(deck: AbaqusDeck) -> set[int]:
+    """Return additional-node IDs that are not structural connectivity IDs."""
+
+    orientation_ids = {
+        int(element.additional_orientation_node_id)
+        for element in deck.elements
+        if str(element.type).upper() == "B31"
+        and element.additional_orientation_node_id is not None
+    }
+    structural_ids = {
+        int(node_id)
+        for element in deck.elements
+        for node_id in element.structural_node_ids
+    }
+    return orientation_ids - structural_ids
 
 
 def _build_sections(

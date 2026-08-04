@@ -13,11 +13,14 @@ from .deck import (
     AbaqusCload,
     AbaqusDataRecordEvidence,
     AbaqusDeck,
+    AbaqusElementEndIdentity,
     AbaqusDistributedLoad,
     AbaqusElement,
     AbaqusKeywordOccurrence,
     AbaqusMaterial,
+    AbaqusNodeNormalRecord,
     AbaqusNodeRecord,
+    AbaqusNormalRecord,
     AbaqusOutputRequest,
     AbaqusSection,
     AbaqusSolidSectionData,
@@ -278,6 +281,10 @@ class _ParserState:
             self.mode = "element"
             return
 
+        if keyword.name == "normal":
+            self._start_normal(keyword)
+            return
+
         if keyword.name == "nset":
             self._start_set("nset")
             return
@@ -436,6 +443,8 @@ class _ParserState:
             ):
                 self.handle_data([""], location, raw)
             return
+        if self.mode == "normal":
+            self._add_normal([], location, raw)
 
     def handle_data(
         self,
@@ -444,13 +453,19 @@ class _ParserState:
         raw: str,
     ) -> None:
         """Handle one data line in the current mode."""
-        if not values and self.mode not in {"solid_section", "beam_section"}:
+        if not values and self.mode not in {
+            "solid_section",
+            "beam_section",
+            "normal",
+        }:
             return
 
         if self.mode == "node":
-            self._add_node(values, location)
+            self._add_node(values, location, raw)
         elif self.mode == "element":
             self._consume_element_values(values, location)
+        elif self.mode == "normal":
+            self._add_normal(values, location, raw)
         elif self.mode == "nset":
             self._extend_set(
                 self.deck.node_sets,
@@ -506,6 +521,96 @@ class _ParserState:
         )
         self.mode = mode
 
+    def _start_normal(self, keyword: Keyword) -> None:
+        """Start the element-normal source block used by B31 beams."""
+
+        _validate_keyword_parameters(
+            keyword,
+            allowed=frozenset({"type"}),
+            required=frozenset(),
+        )
+        normal_type = keyword.params.get("type", "element").strip().casefold()
+        if normal_type != "element":
+            raise UnsupportedAbaqusFeatureError(
+                "only *NORMAL, TYPE=ELEMENT is supported for line elements",
+                code="abaqus.normal.type_unsupported",
+                location=keyword.location,
+                record=normal_type,
+                remediation="Use *NORMAL, TYPE=ELEMENT for B31 nodal normals.",
+            )
+        self.mode = "normal"
+
+    def _add_normal(
+        self,
+        values: list[str],
+        location: AbaqusSourceLocation,
+        raw: str,
+    ) -> None:
+        if len(values) != 5:
+            raise AbaqusParseError(
+                "*NORMAL, TYPE=ELEMENT requires element, node, and three "
+                "normal components",
+                code="abaqus.b31.normal.record_shape",
+                location=location,
+                record=tuple(values),
+            )
+        normal = tuple(
+            parse_abaqus_real(
+                value,
+                location=location,
+                field=f"*NORMAL component {index}",
+            )
+            for index, value in enumerate(values[2:], start=1)
+        )
+        self.deck.normal_records.append(
+            AbaqusNormalRecord(
+                element=_parse_target(values[0]),
+                node=_parse_target(values[1]),
+                normal=normal,
+                span=_single_line_span(location),
+                raw_fields=tuple(values),
+                raw=raw,
+                keyword_location=(
+                    self.keyword.location
+                    if self.keyword is not None
+                    else None
+                ),
+                identities=self._known_normal_identities(
+                    _parse_target(values[0]),
+                    _parse_target(values[1]),
+                ),
+            )
+        )
+
+    def _known_normal_identities(
+        self,
+        element_target: int | str,
+        node_target: int | str,
+    ) -> tuple[AbaqusElementEndIdentity, ...]:
+        """Resolve scalar identities already known at parser time.
+
+        Set targets and forward references are completed by the adapter after
+        parsing; retaining this early result makes the common scalar form
+        inspectable without sacrificing either source target.
+        """
+
+        if not isinstance(element_target, int) or not isinstance(node_target, int):
+            return ()
+        identities: list[AbaqusElementEndIdentity] = []
+        for element in self.deck.elements:
+            if int(element.id) != element_target:
+                continue
+            for local_end, node_id in enumerate(element.structural_node_ids, start=1):
+                if int(node_id) == node_target:
+                    identities.append(
+                        AbaqusElementEndIdentity(
+                            element_target,
+                            local_end,
+                            node_target,
+                        )
+                    )
+        return tuple(identities)
+
     def _extend_set(
         self,
         target: dict[str, list[int]],
@@ -527,6 +632,7 @@ class _ParserState:
         self,
         values: list[str],
         location: AbaqusSourceLocation,
+        raw: str,
     ) -> None:
         if len(values) < 3:
             raise AbaqusParseError(
@@ -545,6 +651,24 @@ class _ParserState:
         )
         coordinates = (x, y, z)
         self.deck.nodes[node_id] = coordinates
+        normal = None
+        normal_fields = tuple(values[4:7]) if len(values) >= 7 else ()
+        if len(normal_fields) == 3 and all(normal_fields):
+            normal_values = tuple(
+                parse_abaqus_real(
+                    value,
+                    location=location,
+                    field=f"node normal component {index}",
+                )
+                for index, value in enumerate(normal_fields, start=1)
+            )
+            normal = AbaqusNodeNormalRecord(
+                normal_values,
+                node_id,
+                _single_line_span(location),
+                normal_fields,
+                raw,
+            )
         self.deck.node_records[node_id] = AbaqusNodeRecord(
             node_id,
             coordinates,
@@ -552,6 +676,7 @@ class _ParserState:
             self.keyword.location if self.keyword is not None else None,
             location,
             tuple(values),
+            normal,
         )
 
     def _add_element(
@@ -561,17 +686,24 @@ class _ParserState:
     ) -> None:
         element_type = _required_param(self.keyword, "type")
         element_set = self.keyword.params.get("elset") if self.keyword else None
+        raw_node_ids = tuple(
+            _parse_int(value, location, "element connectivity")
+            for value in values[1:]
+        )
+        orientation_node_id = None
+        node_ids = raw_node_ids
+        if element_type.upper() == "B31" and len(raw_node_ids) == 3:
+            node_ids = raw_node_ids[:2]
+            orientation_node_id = raw_node_ids[2]
         element = AbaqusElement(
             _parse_int(values[0], location, "element ID"),
-            tuple(
-                _parse_int(value, location, "element connectivity")
-                for value in values[1:]
-            ),
+            node_ids,
             element_type,
             element_set,
             self.keyword.location if self.keyword is not None else None,
             location,
             tuple(values),
+            orientation_node_id,
         )
         self.deck.elements.append(element)
         if element_set is not None:
@@ -591,25 +723,18 @@ class _ParserState:
     ) -> None:
         element_type = _required_param(self.keyword, "type").upper()
         if element_type in {"B31", "T3D2"}:
-            if element_type == "B31" and len(values) == 4:
-                raise UnsupportedAbaqusFeatureError(
-                    (
-                        "B31 additional orientation nodes are outside the "
-                        "assignment-scoped orientation subset"
-                    ),
-                    code="abaqus.b31.orientation_node_unsupported",
-                    location=location,
-                    record=tuple(values),
-                    remediation=(
-                        "Remove the third connectivity node and provide "
-                        "approximate n1 on the *BEAM SECTION data record."
-                    ),
+            valid_lengths = {3, 4} if element_type == "B31" else {3}
+            if len(values) not in valid_lengths:
+                shape = (
+                    "element ID, two structural node IDs, and an optional "
+                    "orientation node"
+                    if element_type == "B31"
+                    else "element ID and two node IDs"
                 )
-            if len(values) != 3:
                 raise AbaqusParseError(
                     (
                         f"{element_type} connectivity must be one physical "
-                        "record containing element ID and two node IDs"
+                        f"record containing {shape}"
                     ),
                     code="abaqus.line.connectivity_shape",
                     location=location,
@@ -1475,6 +1600,12 @@ def _normalized_positional_fields(values: list[str]) -> tuple[str, ...]:
 
     fields = tuple(values)
     return fields if fields else ("",)
+
+
+def _single_line_span(location: AbaqusSourceLocation) -> AbaqusSourceSpan:
+    """Represent one physical data line as a logical source span."""
+
+    return AbaqusSourceSpan(location, location, (location,))
 
 
 def _parse_int(

@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from fem import abaqus
+from fem.abaqus.parser import parse_file
 from fem.io import inp
 
 
@@ -54,24 +55,6 @@ def _write_deck(
     return path
 
 
-def _assert_current_topology_rejection(
-    path: Path,
-    *,
-    reason: str,
-) -> None:
-    with pytest.raises(abaqus.UnsupportedAbaqusFeatureError) as caught:
-        abaqus.read_with_report(path)
-
-    error = caught.value
-    assert error.code == "abaqus.b31.nodal_normal_averaging_unsupported"
-    assert error.path == path
-    assert error.line > 0
-    assert error.keyword == "element"
-    assert error.locations
-    assert reason in str(error).casefold()
-    assert error.remediation
-
-
 def test_phase1_preprint_is_harmless_and_preserves_source_occurrence(
     tmp_path: Path,
 ) -> None:
@@ -106,13 +89,12 @@ def test_phase1_preprint_is_harmless_and_preserves_source_occurrence(
 
 
 @pytest.mark.parametrize(
-    ("filename", "nodes", "elements", "reason"),
+    ("filename", "nodes", "elements"),
     (
         (
             "kink.inp",
             ("1, 0.0, 0.0, 0.0", "2, 1.0, 0.0, 0.0", "3, 1.0, 1.0, 0.0"),
             ("1, 1, 2", "2, 2, 3"),
-            "kink",
         ),
         (
             "t_junction.inp",
@@ -123,22 +105,19 @@ def test_phase1_preprint_is_harmless_and_preserves_source_occurrence(
                 "4, 1.0, 1.0, 0.0",
             ),
             ("1, 1, 2", "2, 2, 3", "3, 2, 4"),
-            "branch or junction",
         ),
         (
             "closed_loop.inp",
             ("1, 0.0, 0.0, 0.0", "2, 1.0, 0.0, 0.0", "3, 0.5, 1.0, 0.0"),
             ("1, 1, 2", "2, 2, 3", "3, 3, 1"),
-            "closed loop",
         ),
     ),
 )
-def test_characterization_topology_gate_rejects_currently(
+def test_characterization_topology_is_accepted_through_public_entry(
     tmp_path: Path,
     filename: str,
     nodes: tuple[str, ...],
     elements: tuple[str, ...],
-    reason: str,
 ) -> None:
     path = _write_deck(
         tmp_path,
@@ -147,10 +126,19 @@ def test_characterization_topology_gate_rejects_currently(
         elements=elements,
     )
 
-    _assert_current_topology_rejection(path, reason=reason)
+    result = inp.read_with_report(path)
+
+    assert result.model.mesh.num_nodes == len(nodes)
+    assert result.model.mesh.num_elements == len(elements)
+    assert tuple(
+        tuple(element.node_ids) for element in result.model.mesh.elements
+    ) == tuple(
+        tuple(int(value.strip()) for value in element.split(",")[1:])
+        for element in elements
+    )
 
 
-def test_characterization_orientation_node_is_currently_rejected_during_parse(
+def test_characterization_orientation_node_is_accepted_through_public_entry(
     tmp_path: Path,
 ) -> None:
     path = _write_deck(
@@ -164,18 +152,18 @@ def test_characterization_orientation_node_is_currently_rejected_during_parse(
         elements=("1, 1, 2, 3",),
     )
 
-    with pytest.raises(abaqus.UnsupportedAbaqusFeatureError) as caught:
-        abaqus.read_with_report(path)
+    result = inp.read_with_report(path)
+    deck = parse_file(path)
 
-    error = caught.value
-    assert error.code == "abaqus.b31.orientation_node_unsupported"
-    assert error.path == path
-    assert error.keyword == "element"
-    assert error.record == ("1", "1", "2", "3")
-    assert "orientation node" in str(error).casefold()
+    assert result.model.mesh.num_nodes == 2
+    assert result.model.mesh.num_elements == 1
+    assert tuple(result.model.mesh.elements[0].node_ids) == (1, 2)
+    assert result.model.mesh.num_dofs == 12
+    assert deck.elements[0].node_ids == (1, 2)
+    assert deck.elements[0].additional_orientation_node_id == 3
 
 
-def test_characterization_nodal_normal_components_are_currently_rejected(
+def test_characterization_nodal_normal_components_are_accepted_through_public_entry(
     tmp_path: Path,
 ) -> None:
     path = _write_deck(
@@ -188,19 +176,19 @@ def test_characterization_nodal_normal_components_are_currently_rejected(
         elements=("1, 1, 2",),
     )
 
-    with pytest.raises(abaqus.UnsupportedAbaqusFeatureError) as caught:
-        abaqus.read_with_report(path)
+    result = inp.read_with_report(path)
+    deck = parse_file(path)
 
-    error = caught.value
-    assert error.code == "abaqus.b31.nodal_normals_unsupported"
-    assert error.path == path
-    assert error.keyword == "node"
-    assert error.line == 3
-    assert error.record == ("0.0", "1.0", "0.0")
-    assert error.remediation
+    assert result.model.mesh.num_nodes == 2
+    assert result.model.mesh.num_elements == 1
+    assert deck.node_records[1].normal is not None
+    assert deck.node_records[1].normal.node_id == 1
+    assert deck.node_records[1].normal.vector == (0.0, 1.0, 0.0)
+    assert deck.node_records[1].normal.source_span is not None
+    assert deck.node_records[1].normal.source_span.start.line == 3
 
 
-def test_characterization_normal_keyword_is_currently_outside_line_subset(
+def test_characterization_normal_keyword_is_accepted_through_public_entry(
     tmp_path: Path,
 ) -> None:
     path = _write_deck(
@@ -211,13 +199,18 @@ def test_characterization_normal_keyword_is_currently_outside_line_subset(
         tail=("*Normal", "1, 1, 0.0, 1.0, 0.0"),
     )
 
-    with pytest.raises(abaqus.UnsupportedAbaqusFeatureError) as caught:
-        abaqus.read_with_report(path)
+    result = inp.read_with_report(path)
+    deck = parse_file(path)
 
-    error = caught.value
-    assert error.code == "abaqus.line.keyword_unsupported"
-    assert error.path == path
-    assert error.keyword == "normal"
+    assert result.model.mesh.num_nodes == 2
+    assert result.model.mesh.num_elements == 1
+    assert len(deck.normal_records) == 1
+    assert deck.normal_records[0].element_target == 1
+    assert deck.normal_records[0].node_target == 1
+    assert deck.normal_records[0].identity is not None
+    assert deck.normal_records[0].identity.local_end == 1
+    assert deck.normal_records[0].source_span.start.keyword == "normal"
+    assert deck.normal_records[0].source_span.start.line == 14
 
 
 def test_characterization_output_parent_child_is_preserved_without_blocking_import(

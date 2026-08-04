@@ -66,6 +66,7 @@ STANDARD_LINE_SUBSET = AbaqusLineSubset(
             "boundary",
             "cload",
             "dload",
+            "normal",
             "end step",
         }
     ),

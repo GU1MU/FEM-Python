@@ -12,6 +12,7 @@ import numpy as np
 
 
 BEAM_LOCAL_Y_REFERENCE_KEY = "beam_local_y_reference"
+BEAM_ELEMENT_LOCAL_Y_REFERENCE_KEY = "beam_element_local_y_reference"
 BEAM_DEFAULT_LOCAL_Y_REFERENCE_KEY = "beam_default_local_y_reference"
 BEAM_DEFAULT_LOCAL_Y_REFERENCE = (0.0, 0.0, -1.0)
 BEAM_ORIENTATION_PARALLEL_TOLERANCE = 1e-8
@@ -207,7 +208,13 @@ def resolve_beam_frame(
     )
     if not isinstance(source_properties, Mapping):
         raise TypeError("Beam2 frame properties must be a mapping")
-    if BEAM_LOCAL_Y_REFERENCE_KEY not in source_properties:
+    element_reference = source_properties.get(
+        BEAM_ELEMENT_LOCAL_Y_REFERENCE_KEY,
+        None,
+    )
+    if element_reference is not None:
+        raw_reference = element_reference
+    elif BEAM_LOCAL_Y_REFERENCE_KEY not in source_properties:
         missing = object()
         raw_default: object = source_properties.get(
             BEAM_DEFAULT_LOCAL_Y_REFERENCE_KEY,
@@ -231,7 +238,8 @@ def resolve_beam_frame(
             )
         return _automatic_frame(length, local_x)
 
-    raw_reference = source_properties[BEAM_LOCAL_Y_REFERENCE_KEY]
+    if element_reference is None:
+        raw_reference = source_properties[BEAM_LOCAL_Y_REFERENCE_KEY]
     try:
         orientation = parse_beam_orientation(raw_reference)
     except BeamOrientationInvalidError as error:
@@ -376,6 +384,7 @@ def _element_id(elem: Any) -> int | None:
 __all__ = [
     "BEAM_DEFAULT_LOCAL_Y_REFERENCE",
     "BEAM_DEFAULT_LOCAL_Y_REFERENCE_KEY",
+    "BEAM_ELEMENT_LOCAL_Y_REFERENCE_KEY",
     "BEAM_LOCAL_Y_REFERENCE_KEY",
     "BEAM_ORIENTATION_PARALLEL_TOLERANCE",
     "BeamFrame",
