@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from copy import deepcopy
+from copy import copy, deepcopy
 from typing import Any
 
 from fem.core.model import (
@@ -62,8 +62,12 @@ def materialize_native_scopes(
     *,
     previous_names: Iterable[str],
     regions: Iterable[Any],
+    reuse_mesh: bool = False,
 ) -> Any:
-    """Return a detached model with user scopes rebuilt from its mesh catalog."""
+    """Return a model with scopes rebuilt, fully detached by default."""
+
+    if type(reuse_mesh) is not bool:
+        raise TypeError("reuse_mesh must be a bool")
 
     metadata = getattr(model, "metadata", None)
     catalog = (
@@ -74,7 +78,12 @@ def materialize_native_scopes(
     if not isinstance(catalog, Mapping):
         catalog = {}
 
-    updated = deepcopy(model)
+    region_values = tuple(regions)
+    updated = (
+        _copy_model_reusing_mesh(model)
+        if reuse_mesh
+        else deepcopy(model)
+    )
     collections = (
         updated.node_sets,
         updated.element_sets,
@@ -86,7 +95,54 @@ def materialize_native_scopes(
         for collection in collections:
             collection.pop(normalized_name, None)
 
-    for region in regions:
+    mesh_kinds = {
+        reference.kind
+        for region in region_values
+        for reference in tuple(getattr(region, "references", ()))
+        if type(reference) is MeshEntityRef
+    }
+    node_ids = (
+        {int(node.id) for node in updated.mesh.nodes}
+        if "node" in mesh_kinds
+        else set()
+    )
+    element_ids = (
+        {int(element.id) for element in updated.mesh.elements}
+        if mesh_kinds - {"node"}
+        else set()
+    )
+    edge_lookup = (
+        {
+            (int(element_id), int(local_index)): tuple(
+                int(value) for value in ids
+            )
+            for element_id, local_index, ids in mesh_edges.all(updated.mesh)
+        }
+        if "edge" in mesh_kinds
+        else {}
+    )
+    face_lookup = (
+        {
+            (int(element_id), int(local_index)): tuple(
+                int(value) for value in ids
+            )
+            for element_id, local_index, ids in mesh_faces.boundary(updated.mesh)
+        }
+        if "face" in mesh_kinds
+        else {}
+    )
+    ownership_ids = (
+        _mesh_ownership_ids(updated)
+        if any(
+            reference.part_id is not None
+            for region in region_values
+            for reference in tuple(getattr(region, "references", ()))
+            if type(reference) is MeshEntityRef
+        )
+        else None
+    )
+
+    for region in region_values:
         name = getattr(region, "name", None)
         references = tuple(getattr(region, "references", ()))
         if type(name) is not str or not name.strip():
@@ -99,7 +155,16 @@ def materialize_native_scopes(
                 "native scopes require non-empty mesh references"
             )
         if all(type(reference) is MeshEntityRef for reference in references):
-            _materialize_mesh_scope(updated, name.strip(), references)
+            _materialize_mesh_scope(
+                updated,
+                name.strip(),
+                references,
+                node_ids=node_ids,
+                element_ids=element_ids,
+                edge_lookup=edge_lookup,
+                face_lookup=face_lookup,
+                ownership_ids=ownership_ids,
+            )
         elif all(type(reference) is LogicalEntityRef for reference in references):
             _materialize_legacy_scope(
                 updated,
@@ -116,13 +181,17 @@ def _materialize_mesh_scope(
     model: Any,
     name: str,
     references: tuple[MeshEntityRef, ...],
+    *,
+    node_ids: set[int],
+    element_ids: set[int],
+    edge_lookup: Mapping[tuple[int, int], tuple[int, ...]],
+    face_lookup: Mapping[tuple[int, int], tuple[int, ...]],
+    ownership_ids: Mapping[str, Mapping[str, frozenset[int]]] | None,
 ) -> None:
-    _validate_mesh_reference_owners(model, references)
+    _validate_mesh_reference_owners(references, ownership_ids)
     kind = references[0].kind
     if any(reference.kind != kind for reference in references):
         raise ValueError("one mesh scope cannot mix entity kinds")
-    node_ids = {int(node.id) for node in model.mesh.nodes}
-    element_ids = {int(element.id) for element in model.mesh.elements}
     if kind == "node":
         selected = tuple(int(reference.node_id) for reference in references)
         _require_ids(selected, node_ids, label="node")
@@ -134,34 +203,34 @@ def _materialize_mesh_scope(
         model.element_sets[name] = ElementSet(name, selected)
         return
     if kind == "edge":
-        lookup = {
-            (int(element_id), int(local_index)): tuple(int(value) for value in ids)
-            for element_id, local_index, ids in mesh_edges.all(model.mesh)
-        }
         model.edges[name] = Edge(
             name,
             tuple(
                 ElementEdge(
                     int(reference.element_id),
                     int(reference.local_index),
-                    _validated_boundary_nodes(reference, lookup, label="edge"),
+                    _validated_boundary_nodes(
+                        reference,
+                        edge_lookup,
+                        label="edge",
+                    ),
                 )
                 for reference in references
             ),
         )
         return
     if kind == "face":
-        lookup = {
-            (int(element_id), int(local_index)): tuple(int(value) for value in ids)
-            for element_id, local_index, ids in mesh_faces.boundary(model.mesh)
-        }
         model.surfaces[name] = Surface(
             name,
             tuple(
                 ElementFace(
                     int(reference.element_id),
                     int(reference.local_index),
-                    _validated_boundary_nodes(reference, lookup, label="face"),
+                    _validated_boundary_nodes(
+                        reference,
+                        face_lookup,
+                        label="face",
+                    ),
                 )
                 for reference in references
             ),
@@ -266,12 +335,34 @@ def _validated_boundary_nodes(
 
 
 def _validate_mesh_reference_owners(
-    model: Any,
     references: tuple[MeshEntityRef, ...],
+    ownership_ids: Mapping[str, Mapping[str, frozenset[int]]] | None,
 ) -> None:
     owned = tuple(reference for reference in references if reference.part_id)
     if not owned:
         return
+    if ownership_ids is None:
+        raise ValueError("mesh reference declares a Part owner without ownership data")
+    for reference in owned:
+        row = ownership_ids.get(reference.part_id)
+        if not isinstance(row, Mapping):
+            raise ValueError(
+                f"mesh reference owner {reference.part_id!r} is absent"
+            )
+        if reference.kind == "node":
+            valid = int(reference.node_id) in row["node"]
+        else:
+            valid = int(reference.element_id) in row["element"]
+        if not valid:
+            raise ValueError(
+                "mesh reference identity does not belong to declared Part "
+                f"{reference.part_id}"
+            )
+
+
+def _mesh_ownership_ids(
+    model: Any,
+) -> dict[str, dict[str, frozenset[int]]] | None:
     metadata = getattr(model, "metadata", None)
     ownership = (
         metadata.get(NATIVE_PART_OWNERSHIP_KEY)
@@ -279,26 +370,29 @@ def _validate_mesh_reference_owners(
         else None
     )
     if not isinstance(ownership, Mapping):
-        raise ValueError("mesh reference declares a Part owner without ownership data")
-    for reference in owned:
-        row = ownership.get(reference.part_id)
-        if not isinstance(row, Mapping):
-            raise ValueError(
-                f"mesh reference owner {reference.part_id!r} is absent"
-            )
-        if reference.kind == "node":
-            valid = int(reference.node_id) in {
-                int(value) for value in row.get("node_ids", ())
-            }
-        else:
-            valid = int(reference.element_id) in {
+        return None
+    return {
+        str(part_id): {
+            "node": frozenset(int(value) for value in row.get("node_ids", ())),
+            "element": frozenset(
                 int(value) for value in row.get("element_ids", ())
-            }
-        if not valid:
-            raise ValueError(
-                "mesh reference identity does not belong to declared Part "
-                f"{reference.part_id}"
-            )
+            ),
+        }
+        for part_id, row in ownership.items()
+        if isinstance(row, Mapping)
+    }
+
+
+def _copy_model_reusing_mesh(model: Any) -> Any:
+    """Detach edited containers while retaining Session-owned mesh topology."""
+
+    updated = copy(model)
+    for name in ("node_sets", "element_sets", "edges", "surfaces", "materials"):
+        setattr(updated, name, dict(getattr(model, name, {})))
+    updated.sections = list(getattr(model, "sections", ()))
+    updated.steps = list(getattr(model, "steps", ()))
+    updated.metadata = dict(getattr(model, "metadata", {}))
+    return updated
 
 
 def _require_ids(

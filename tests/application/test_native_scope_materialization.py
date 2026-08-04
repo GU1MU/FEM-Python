@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from fem.application import (
+    DeleteIntent,
     MeshEntityRef,
     ModelSession,
     NamedRegion,
@@ -15,6 +16,7 @@ from fem.application.native_scope_materialization import (
     materialize_native_scopes,
     mesh_references_for_logical_entities,
 )
+from fem.application import native_scope_materialization as scope_materialization
 from fem.application.preprocessing import generate_fem_model
 from fem.core.model import (
     AnalysisStep,
@@ -60,6 +62,39 @@ def test_rectangle_scope_materializes_on_the_existing_mesh() -> None:
     assert "Boundary" not in model.edges
     assert not updated.node_sets
     assert not updated.element_sets
+
+
+@pytest.mark.gmsh
+def test_scope_edit_reuses_mesh_and_builds_edge_lookup_once(monkeypatch) -> None:
+    model = generate_fem_model(
+        RectangleGeometry("ScopeLookupRectangle", 2.0, 1.0),
+        MeshSettings(0.25),
+    )
+    rows = tuple(mesh_edges.boundary(model.mesh)[:2])
+    calls = 0
+    original = scope_materialization.mesh_edges.all
+
+    def counted_all(mesh):
+        nonlocal calls
+        calls += 1
+        return original(mesh)
+
+    monkeypatch.setattr(scope_materialization.mesh_edges, "all", counted_all)
+    updated = materialize_native_scopes(
+        model,
+        previous_names=(),
+        regions=tuple(
+            NamedRegion(name, (MeshEntityRef.edge(*row),))
+            for name, row in zip(("First", "Second"), rows, strict=True)
+        ),
+        reuse_mesh=True,
+    )
+
+    assert updated is not model
+    assert updated.mesh is model.mesh
+    assert updated.edges is not model.edges
+    assert tuple(updated.edges) == ("First", "Second")
+    assert calls == 1
 
 
 @pytest.mark.gmsh
@@ -116,6 +151,20 @@ def test_imported_mesh_can_add_a_mesh_scope_without_remeshing(
         before.model.mesh.elements
     )
     assert "ImportedEdge" in after.model.edges
+
+    scoped = session.projection_snapshot()
+    session.apply_named_region_edit(
+        NamedRegionEditBatch(
+            scoped.session_revision,
+            (),
+            deletes=(DeleteIntent("ImportedEdge"),),
+        )
+    )
+    deleted = session.projection_snapshot()
+
+    assert deleted.mesh_input_revision == scoped.mesh_input_revision
+    assert deleted.model.mesh is scoped.model.mesh
+    assert "ImportedEdge" not in deleted.model.edges
 
 
 @pytest.mark.gmsh

@@ -401,6 +401,12 @@ class BackgroundTaskController(QObject):
             return
         active.callback_active = True
         try:
+            if active.cancel_requested:
+                self._publish_simple_terminal(
+                    active,
+                    BackgroundTaskState.CANCELLED,
+                )
+                return
             self._publish_simple_terminal(
                 active,
                 BackgroundTaskState.FAILED,

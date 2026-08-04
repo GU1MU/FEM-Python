@@ -40,6 +40,8 @@ from fem.application import (
     MeshEntityRef,
     NamedRegion,
     NamedRegionEditBatch,
+    NamedRegionEditTaskSnapshot,
+    PreparedNamedRegionEdit,
     PreflightDiagnostic,
     PreparedPreflight,
     PreflightReport,
@@ -66,6 +68,7 @@ from fem.application import (
     resolve_effective_beam_frames,
     safe_static_preflight,
     safe_prepare_static_preflight,
+    compile_named_region_edit,
     prepare_part_boolean,
     prepare_strict_part_recipe_preview,
     prepare_strict_body_recipe_preview,
@@ -318,6 +321,7 @@ _RESULT_FIELD_STATE_LABELS = {
 }
 _NUMERICAL_MODEL_CHECK_DOF_LIMIT = 50_000
 _NUMERICAL_MODEL_CHECK_ELEMENT_LIMIT = 100_000
+_DEFAULT_SCOPE_BACKGROUND_REFERENCE_THRESHOLD = 10_000
 
 
 def _is_displacement_output_request(request: OutputRequest) -> bool:
@@ -625,6 +629,12 @@ class FEMMainWindow(QMainWindow):
         self.selection = SelectionState()
         self.actions: dict[str, QAction] = {}
         self.task_controller = BackgroundTaskController(self)
+        self.scope_background_reference_threshold = (
+            _DEFAULT_SCOPE_BACKGROUND_REFERENCE_THRESHOLD
+        )
+        self._queued_named_region_edit: (
+            tuple[int, NamedRegionEditTaskSnapshot, GuiCommandCompletion] | None
+        ) = None
         self._command_counter = 0
         self._job_manager: JobManagerDialog | None = None
         self._viewport_fit_pending = False
@@ -733,6 +743,26 @@ class FEMMainWindow(QMainWindow):
             if delta.accepted and not applied:
                 rebuild_required = True
         if rebuild_required:
+            try:
+                self._rebuild_full_projection()
+            except Exception as error:
+                logging.exception("synchronous full GUI projection rebuild failed")
+                self._task_projection_failed(
+                    str(error).strip() or type(error).__name__
+                )
+        return GuiCommandReceipt.accepted(command_id, delta)
+
+    def _accepted_definition_only_command(
+        self,
+        command_id: int,
+        delta: SessionDelta,
+    ) -> GuiCommandReceipt:
+        """Project a definition-only artifact without rebuilding mesh actors."""
+
+        try:
+            self._apply_definition_only_delta(delta)
+        except Exception:
+            logging.exception("definition-only GUI command projection failed")
             try:
                 self._rebuild_full_projection()
             except Exception as error:
@@ -1098,15 +1128,174 @@ class FEMMainWindow(QMainWindow):
         batch: NamedRegionEditBatch,
     ) -> GuiCommandReceipt:
         command_id = self._next_command_id()
+        if type(batch) is not NamedRegionEditBatch:
+            return self._rejected_command(
+                command_id,
+                "command.type.invalid",
+                "batch must be a NamedRegionEditBatch",
+            )
+        reference_count = sum(
+            len(region.references) for region in batch.regions
+        )
+        if reference_count > self.scope_background_reference_threshold:
+            return self._apply_named_region_edit_in_background(
+                command_id,
+                batch,
+            )
         try:
             delta = self.session.apply_named_region_edit(batch)
-            return self._accepted_command(command_id, delta)
+            return self._accepted_definition_only_command(command_id, delta)
         except (RevisionConflictError, RuntimeError, TypeError, ValueError) as error:
             return self._rejected_command(
                 command_id,
                 "named_region.edit.rejected",
                 error,
             )
+
+    def _apply_named_region_edit_in_background(
+        self,
+        command_id: int,
+        batch: NamedRegionEditBatch,
+    ) -> GuiCommandReceipt:
+        """Start one revision-bound large scope materialization task."""
+
+        if self.busy:
+            if (
+                self.task_controller.current_task_name != "提交作用域"
+                or self._queued_named_region_edit is not None
+            ):
+                return self._rejected_command(
+                    command_id,
+                    "task.busy",
+                    "a background task is already running",
+                )
+            try:
+                task = self.session.prepare_named_region_edit(batch)
+                completion = GuiCommandCompletion(command_id)
+            except (
+                RevisionConflictError,
+                RuntimeError,
+                TypeError,
+                ValueError,
+            ) as error:
+                return self._rejected_command(
+                    command_id,
+                    "named_region.edit.rejected",
+                    error,
+                )
+            self._queued_named_region_edit = (
+                command_id,
+                task,
+                completion,
+            )
+            self.task_controller.request_cancel(
+                after_cleanup=self._launch_queued_named_region_edit
+            )
+            return GuiCommandReceipt.pending(command_id, completion)
+        try:
+            task = self.session.prepare_named_region_edit(batch)
+            completion = GuiCommandCompletion(command_id)
+            started = self._start_named_region_edit_task(
+                command_id,
+                task,
+                completion,
+            )
+        except (RevisionConflictError, RuntimeError, TypeError, ValueError) as error:
+            return self._rejected_command(
+                command_id,
+                "named_region.edit.rejected",
+                error,
+            )
+        if not started:
+            self.session.terminate_named_region_edit(
+                task,
+                "named-region task start rejected",
+            )
+            return self._rejected_command(
+                command_id,
+                "task.start.rejected",
+                "the scope task could not be started",
+            )
+        return GuiCommandReceipt.pending(command_id, completion)
+
+    def _launch_queued_named_region_edit(self) -> None:
+        queued = self._queued_named_region_edit
+        self._queued_named_region_edit = None
+        if queued is None:
+            return
+        command_id, task, completion = queued
+        if not self._start_named_region_edit_task(
+            command_id,
+            task,
+            completion,
+        ):
+            self.session.terminate_named_region_edit(
+                task,
+                "queued named-region task start rejected",
+            )
+            self.status_panel.set_state(
+                "后续作用域提交未能启动",
+                5000,
+            )
+
+    def _start_named_region_edit_task(
+        self,
+        command_id: int,
+        task: NamedRegionEditTaskSnapshot,
+        completion: GuiCommandCompletion,
+    ) -> bool:
+        """Launch one already-prepared scope snapshot on the shared worker."""
+
+        def workload(context: TaskContext) -> object:
+            context.report("正在后台提交作用域……")
+            prepared = compile_named_region_edit(task)
+            context.checkpoint()
+            return prepared
+
+        def apply_result(payload: object) -> TaskApplyOutcome:
+            if type(payload) is not PreparedNamedRegionEdit:
+                raise TypeError(
+                    "scope worker must return PreparedNamedRegionEdit"
+                )
+            delta = self.session.accept_named_region_edit(task, payload)
+            if not delta.accepted:
+                return TaskApplyOutcome.stale(
+                    "作用域提交结果已过期，未应用"
+                )
+            return TaskApplyOutcome.accepted(delta)
+
+        def on_success(value: object) -> None:
+            if type(value) is not SessionDelta:
+                raise TypeError(
+                    "accepted scope edit must carry a SessionDelta"
+                )
+            self._accepted_definition_only_command(command_id, value)
+            self.status_panel.set_state("作用域已更新", 5000)
+
+        def on_failure(message: str) -> None:
+            terminated = self.session.terminate_named_region_edit(
+                task,
+                message,
+            )
+            if terminated.accepted:
+                self._show_error("提交作用域失败", message)
+
+        def on_cancelled() -> None:
+            self.session.terminate_named_region_edit(
+                task,
+                "named-region edit cancelled",
+            )
+
+        return self._start_task(
+            workload,
+            on_success,
+            "提交作用域失败",
+            on_failure,
+            task_name="提交作用域",
+            on_cancelled=on_cancelled,
+            apply_result=apply_result,
+            completion=completion,
+        )
 
     def apply_definition_edit(
         self,
@@ -6481,8 +6670,14 @@ class FEMMainWindow(QMainWindow):
         self,
         *,
         requested_name: str | None = None,
+        references: tuple[MeshEntityRef, ...] | None = None,
+        on_committed: Callable[[str], None] | None = None,
     ) -> str | None:
-        references = self._canonical_mesh_scope_selection()
+        references = (
+            self._canonical_mesh_scope_selection()
+            if references is None
+            else references
+        )
         if not references:
             return None
         kind = references[0].kind
@@ -6524,6 +6719,20 @@ class FEMMainWindow(QMainWindow):
         receipt = self.apply_named_region_edit(batch)
         if receipt.diagnostic is not None:
             self._show_command_rejection("创建作用域", receipt)
+            return None
+        if receipt.status is GuiCommandStatus.PENDING:
+            if on_committed is not None:
+                completion = receipt.completion
+                if completion is None:
+                    raise RuntimeError(
+                        "pending scope command requires a completion handle"
+                    )
+
+                def resume_after_commit(record: TaskCompletion) -> None:
+                    if record.state is BackgroundTaskState.SUCCEEDED:
+                        QTimer.singleShot(0, lambda: on_committed(name))
+
+                completion.observe(resume_after_commit)
             return None
         self.status_panel.set_state(
             f"已创建作用域 {name}",
@@ -6802,16 +7011,27 @@ class FEMMainWindow(QMainWindow):
     def _complete_scope_creation_from_bar(self) -> None:
         if self._pending_analysis_selection is None:
             return
-        if not self._canonical_mesh_scope_selection():
+        references = self._canonical_mesh_scope_selection()
+        if not references:
             self.status_panel.set_state("请先选择至少一个对象", 3000)
             return
         bar = self.viewport_panel.scope_creation_bar
         name = self._create_region_from_current_mesh_selection(
             requested_name=bar.scope_name(),
+            references=references,
+            on_committed=self._finish_scope_creation_from_bar,
         )
         if name is None:
             return
+        self._finish_scope_creation_from_bar(name)
+
+    def _finish_scope_creation_from_bar(self, name: str) -> None:
+        """Finish a guided workflow only after its scope commit succeeds."""
+
         operation = self._pending_analysis_selection
+        if operation is None:
+            return
+        bar = self.viewport_panel.scope_creation_bar
         resumed_edit = self._pending_analysis_edit
         selected_scope_kind = (
             resumed_edit[1] if resumed_edit is not None else None
@@ -8085,13 +8305,20 @@ class FEMMainWindow(QMainWindow):
             section_deletes=dialog.delete_intents(),
         )
 
-    def assign_section_to_region(self) -> None:
+    def assign_section_to_region(
+        self,
+        selected_region_name: str | None = None,
+    ) -> None:
         if not self.document.sections:
             return
-        selected_region_name = None
-        if self._mesh_scope_selection_kind() == "element":
+        if (
+            selected_region_name is None
+            and self._mesh_scope_selection_kind() == "element"
+        ):
             selected_region_name = (
-                self._create_region_from_current_mesh_selection()
+                self._create_region_from_current_mesh_selection(
+                    on_committed=self.assign_section_to_region,
+                )
             )
             if selected_region_name is None:
                 return
@@ -8331,24 +8558,34 @@ class FEMMainWindow(QMainWindow):
             definitions,
         )
 
-    def create_displacement_boundary(self) -> None:
+    def create_displacement_boundary(
+        self,
+        selected_region: RegionRef | None = None,
+    ) -> None:
         model = self.document.model
         if not self.session.runnable_step_names():
             return
         if self.document.source_kind == "native" and model is None:
             return
-        selected_region = None
         selected_mesh_kind = self._mesh_scope_selection_kind()
-        if selected_mesh_kind in {"node", "edge", "face"}:
-            selected_name = self._create_region_from_current_mesh_selection()
+        if (
+            selected_region is None
+            and selected_mesh_kind in {"node", "edge", "face"}
+        ):
+            selected_region_kind = {
+                "node": "node_set",
+                "edge": "edge",
+                "face": "surface",
+            }[selected_mesh_kind]
+            selected_name = self._create_region_from_current_mesh_selection(
+                on_committed=lambda name: self.create_displacement_boundary(
+                    RegionRef(selected_region_kind, name)
+                ),
+            )
             if selected_name is None:
                 return
             selected_region = RegionRef(
-                {
-                    "node": "node_set",
-                    "edge": "edge",
-                    "face": "surface",
-                }[selected_mesh_kind],
+                selected_region_kind,
                 selected_name,
             )
         boundary_regions = self._supported_boundary_regions()
@@ -8423,20 +8660,23 @@ class FEMMainWindow(QMainWindow):
             definitions,
         )
 
-    def create_load(self) -> None:
+    def create_load(
+        self,
+        selected_region: RegionRef | None = None,
+    ) -> None:
         model = self.document.model
         if not self.session.runnable_step_names():
             return
         if self.document.source_kind == "native" and model is None:
             return
-        selected_region = None
         preferred_kind = None
         capability_report = self._model_capability_report()
         if capability_report is None:
             return
         selected_mesh_kind = self._mesh_scope_selection_kind()
         if (
-            selected_mesh_kind in {"node", "edge", "face", "element"}
+            selected_region is None
+            and selected_mesh_kind in {"node", "edge", "face", "element"}
         ):
             preferred_kind = {
                 "node": "node",
@@ -8456,17 +8696,22 @@ class FEMMainWindow(QMainWindow):
                     "所选区域不支持当前模型的分布载荷契约。",
                 )
                 return
-            selected_name = self._create_region_from_current_mesh_selection()
+            selected_region_kind = {
+                "node": "node_set",
+                "edge": "edge",
+                "surface": "surface",
+                "line": "element_set",
+                "body": "element_set",
+            }[preferred_kind]
+            selected_name = self._create_region_from_current_mesh_selection(
+                on_committed=lambda name: self.create_load(
+                    RegionRef(selected_region_kind, name)
+                ),
+            )
             if selected_name is None:
                 return
             selected_region = RegionRef(
-                {
-                    "node": "node_set",
-                    "edge": "edge",
-                    "surface": "surface",
-                    "line": "element_set",
-                    "body": "element_set",
-                }[preferred_kind],
+                selected_region_kind,
                 selected_name,
             )
         (
@@ -9898,6 +10143,11 @@ class FEMMainWindow(QMainWindow):
     def _apply_agent_definition_delta(self, delta: SessionDelta) -> None:
         """Project A4 scopes/definitions without rebuilding mesh actors."""
 
+        self._apply_definition_only_delta(delta)
+
+    def _apply_definition_only_delta(self, delta: SessionDelta) -> None:
+        """Project changed scopes/definitions while retaining mesh topology caches."""
+
         if not delta.accepted:
             return
         revision = int(delta.session_revision)
@@ -9913,6 +10163,17 @@ class FEMMainWindow(QMainWindow):
         if artifact is None:
             raise RuntimeError("Agent definitions require a current model artifact")
 
+        previous_artifact = self.document.artifact
+        geometry = self.geometry
+        if (
+            previous_artifact is None
+            or geometry is None
+            or self.viewport.artifact_id != previous_artifact.artifact_id
+        ):
+            raise RuntimeError(
+                "definition-only projection requires the current mesh viewport"
+            )
+
         self.document = snapshot
         stale_agent_proposals = self.agent_authoring_bridge.bind_snapshot(snapshot)
         current_authoring_context = self.agent_authoring_bridge.context
@@ -9923,13 +10184,19 @@ class FEMMainWindow(QMainWindow):
             )
         if hasattr(self, "viewport_panel"):
             self.viewport_panel.agent_chat_drawer.refresh_authoring_binding()
-        self._scope_selection_topology_cache = None
         self._close_inspection_windows()
 
         model = artifact.model
 
         def frame_query(target: RegionRef | int) -> BeamFrameReport:
             return resolve_effective_beam_frames(model, target)
+
+        self.geometry = replace(geometry, artifact_id=artifact.artifact_id)
+        self.viewport.rebind_model_artifact(
+            model,
+            self.geometry,
+            effective_frame_query=frame_query,
+        )
 
         self.inspection_service = InspectionService(
             model,
@@ -10429,7 +10696,6 @@ class FEMMainWindow(QMainWindow):
             else "—"
         )
         self.actions["selected_info"].setEnabled(False)
-        self._update_action_states()
 
     def _on_viewport_pick_missed(self, kind: str) -> None:
         """Clear a replace-selection click without cancelling guided selection."""

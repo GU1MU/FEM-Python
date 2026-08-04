@@ -942,6 +942,15 @@ def test_former_builtin_region_name_can_be_created_as_a_mesh_scope(
         part_id=window.document.active_part_id,
     )
     window._selected_mesh_scope_refs = {selected}
+    topology = window._scope_selection_topology()
+    mesh = window.document.model.mesh
+    assert mesh is window.session.projection_snapshot().model.mesh
+    install_calls: list[object] = []
+    monkeypatch.setattr(
+        window,
+        "_install_model",
+        lambda *args, **kwargs: install_calls.append((args, kwargs)),
+    )
 
     class FormerBuiltinRegionDialog:
         def __init__(self, *_args, **_kwargs):
@@ -966,6 +975,11 @@ def test_former_builtin_region_name_can_be_created_as_a_mesh_scope(
     assert window.document.model.node_sets["bottom"].node_ids == (
         selected.node_id,
     )
+    assert window.document.model.mesh is mesh
+    assert window._scope_selection_topology_cache is topology
+    assert window.geometry.artifact_id == window.document.artifact.artifact_id
+    assert window.viewport.artifact_id == window.document.artifact.artifact_id
+    assert install_calls == []
     window.close()
 
 

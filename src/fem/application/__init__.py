@@ -117,6 +117,7 @@ from .revisions import (
     ImportTaskSnapshot,
     MeshTaskSnapshot,
     ModelArtifact,
+    NamedRegionEditTaskSnapshot,
     ResultMaterializationTaskSnapshot,
     ResultTaskSnapshot,
     SolveTaskSnapshot,
@@ -162,6 +163,7 @@ from .planar_boolean import (
 from .session import (
     BooleanReferenceUndoRecord,
     ModelSession,
+    PreparedNamedRegionEdit,
     PartBooleanUndoRecord,
     PartRevisionConflictError,
     ProjectSaveSnapshot,
@@ -169,6 +171,7 @@ from .session import (
     RevisionConflictError,
     SessionSnapshot,
     SessionStateError,
+    compile_named_region_edit,
 )
 from .units import UnitContext
 from .validation import ValidationRecord, ValidationStamp
@@ -204,6 +207,7 @@ __all__ = [
     "ModelSession",
     "NamedRegion",
     "NamedRegionEditBatch",
+    "NamedRegionEditTaskSnapshot",
     "NativePart",
     "PartBooleanProvenance",
     "PartBooleanUndoRecord",
@@ -223,6 +227,7 @@ __all__ = [
     "PreflightSeverity",
     "PreflightStage",
     "PreparedPreflight",
+    "PreparedNamedRegionEdit",
     "RegionAssignment",
     "RegionCapability",
     "RegionRef",
@@ -263,6 +268,7 @@ __all__ = [
     "analysis_object_namespace",
     "compatibility_analysis_name",
     "compile_model_definitions",
+    "compile_named_region_edit",
     "compiled_model_snapshot",
     "describe_model_capabilities",
     "describe_native_mesh_contract",

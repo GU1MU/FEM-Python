@@ -1531,6 +1531,27 @@ class FEMViewport(QWidget):
         elif render:
             self._render()
 
+    def rebind_model_artifact(
+        self,
+        model: Any,
+        geometry: ModelGeometry,
+        *,
+        effective_frame_query: (
+            Callable[[RegionRef | int], Any] | None
+        ) = None,
+    ) -> None:
+        """Rebind unchanged mesh actors to a definition-only model artifact."""
+
+        if self._geometry is None:
+            raise RuntimeError("cannot rebind a viewport without a model")
+        self._model = model
+        self._geometry = geometry
+        self._artifact_id = geometry.artifact_id
+        self._run_id = None
+        self._effective_frame_query = effective_frame_query
+        self._boundary_cache.clear()
+        self._beam_frame_cache.clear()
+
     def clear_model(self) -> None:
         if self._sketch_authoring_active:
             self.stop_sketch_authoring(render=False)
@@ -4072,7 +4093,7 @@ class FEMViewport(QWidget):
         """Highlight a homogeneous collection of generated-mesh entities."""
 
         self._remove_actor("mesh_scope_selection")
-        canonical = tuple(sorted(set(references), key=lambda item: item.identity))
+        canonical = tuple(references)
         if self._plotter is None or _pyvista is None or not canonical:
             self._render()
             return

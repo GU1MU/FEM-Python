@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from copy import deepcopy
+from copy import copy, deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -108,6 +108,7 @@ from .revisions import (
     ImportTaskSnapshot,
     MeshTaskSnapshot,
     ModelArtifact,
+    NamedRegionEditTaskSnapshot,
     ResultMaterializationTaskSnapshot,
     ResultTaskSnapshot,
     SolveTaskSnapshot,
@@ -257,6 +258,53 @@ class _PreparedImportedModel:
         self.definitions = None
         self.consumed = True
         return model, definitions
+
+
+@dataclass(slots=True)
+class PreparedNamedRegionEdit:
+    """Worker-owned compiled scope edit transferred exactly once."""
+
+    token: TaskToken
+    request_sequence: int
+    regions: dict[str, NamedRegion] | None
+    assignments: tuple[RegionAssignment, ...] | None
+    steps: tuple[Any, ...] | None
+    compiled_model: Any | None
+    consumed: bool = False
+
+    def take(
+        self,
+    ) -> tuple[
+        dict[str, NamedRegion],
+        tuple[RegionAssignment, ...],
+        tuple[Any, ...],
+        Any,
+    ]:
+        if self.consumed:
+            raise SessionStateError(
+                "prepared named-region edit has already been consumed"
+            )
+        if (
+            self.regions is None
+            or self.assignments is None
+            or self.steps is None
+            or self.compiled_model is None
+        ):
+            raise SessionStateError(
+                "prepared named-region edit has no transferable payload"
+            )
+        payload = (
+            self.regions,
+            self.assignments,
+            self.steps,
+            self.compiled_model,
+        )
+        self.regions = None
+        self.assignments = None
+        self.steps = None
+        self.compiled_model = None
+        self.consumed = True
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -857,6 +905,113 @@ class SessionSnapshot:
 @dataclass(frozen=True, slots=True)
 class _GuiSessionSnapshot(SessionSnapshot):
     """Trusted shallow GUI projection; nested values remain Session-owned."""
+
+
+def compile_named_region_edit(
+    task: NamedRegionEditTaskSnapshot,
+) -> PreparedNamedRegionEdit:
+    """Materialize and compile a scope snapshot without accessing Session state."""
+
+    if type(task) is not NamedRegionEditTaskSnapshot:
+        raise TypeError("task must be a NamedRegionEditTaskSnapshot")
+    batch = task.batch
+    if type(batch) is not NamedRegionEditBatch:
+        raise TypeError("task batch must be a NamedRegionEditBatch")
+
+    # This is intentionally the first expensive operation.  ``prepare`` only
+    # captures a detached shell so a 100k-reference submit returns to Qt fast.
+    base_model = deepcopy(task.base_model)
+    owned = _regions_by_name(batch.regions)
+    canonical_part_state = bool(task.parts) and all(
+        part.geometry_recipe is not None for part in task.parts
+    )
+    if canonical_part_state:
+        owned = _regions_by_name(
+            _attach_mesh_reference_owners(
+                tuple(owned.values()),
+                task.parts,
+                base_model,
+            )
+        )
+    rename_map = _validate_edit_ledger(
+        task.previous_regions,
+        tuple(owned.values()),
+        batch.renames,
+        batch.deletes,
+        label="named region",
+    )
+    delete_names = {intent.name for intent in batch.deletes}
+    referenced_deletes = sorted(
+        delete_names & _region_references(task.assignments, task.steps)
+    )
+    if referenced_deletes:
+        raise ValueError(
+            "cannot delete referenced named regions: "
+            + ", ".join(referenced_deletes)
+        )
+
+    assignments = tuple(
+        replace(
+            assignment,
+            region_name=rename_map.get(
+                str(assignment.region_name),
+                str(assignment.region_name),
+            ),
+        )
+        for assignment in task.assignments
+    )
+    steps = _rename_step_region_references(task.steps, rename_map)
+    if task.geometry_recipe is None:
+        if owned and (
+            task.source_kind != "imported"
+            or not _regions_use_mesh_entities(owned.values())
+        ):
+            raise ValueError(
+                "named regions require a geometry recipe or imported mesh"
+            )
+    elif not _regions_use_mesh_entities(owned.values()):
+        if canonical_part_state:
+            _validate_part_namespaced_references(
+                task.parts,
+                tuple(owned.values()),
+            )
+        else:
+            validate_native_project_inputs(
+                task.geometry_recipe,
+                task.mesh_settings,
+                tuple(owned.values()),
+                task.materials,
+                task.sections,
+                assignments,
+                steps,
+            )
+
+    if not can_materialize_native_scopes(base_model, owned.values()):
+        raise ValueError("scope snapshot cannot be materialized on its mesh")
+    scoped_model = materialize_native_scopes(
+        base_model,
+        previous_names=tuple(region.name for region in task.previous_regions),
+        regions=tuple(owned.values()),
+        reuse_mesh=True,
+    )
+    compiled_model = compile_model_definitions(
+        scoped_model,
+        ModelDefinitions(
+            task.materials,
+            task.sections,
+            assignments,
+            steps,
+        ),
+        detach_model=False,
+    ).require_model(detach=False)
+    return PreparedNamedRegionEdit(
+        token=task.token,
+        request_sequence=task.request_sequence,
+        regions=owned,
+        assignments=assignments,
+        steps=steps,
+        compiled_model=compiled_model,
+    )
 
 
 class ModelSession:
@@ -3478,6 +3633,150 @@ class ModelSession:
             "named region edit applied",
         )
 
+    def prepare_named_region_edit(
+        self,
+        batch: NamedRegionEditBatch,
+    ) -> NamedRegionEditTaskSnapshot:
+        """Capture one large scope edit without doing topology work.
+
+        The returned value contains no Session reference.  Its model shell is
+        detached immediately, while the expensive mesh ownership copy is
+        deliberately deferred to :func:`compile_named_region_edit`.
+        """
+
+        if type(batch) is not NamedRegionEditBatch:
+            raise TypeError("batch must be a NamedRegionEditBatch")
+        self._check_expected(batch.base_session_revision)
+        self._require_open()
+        artifact = self._require_current_artifact()
+        self._named_region_request_sequence += 1
+        request_sequence = self._named_region_request_sequence
+        token = self._issue_token(
+            "named_region_edit",
+            (
+                ("session_revision", self._session_revision),
+                ("mesh_input_revision", self._mesh_input_revision),
+                ("model_revision", self._model_revision),
+            ),
+            artifact_id=artifact.artifact_id,
+        )
+        self._active_named_region_task_id = token.task_id
+        self._task_data[token.task_id] = request_sequence
+        model_shell = _copy_scope_task_model_shell(artifact.model)
+        if self._scope_mesh_snapshot is None:
+            raise SessionStateError("scope task mesh snapshot is unavailable")
+        model_shell.mesh = self._scope_mesh_snapshot
+        return NamedRegionEditTaskSnapshot(
+            token=token,
+            request_sequence=request_sequence,
+            batch=batch,
+            base_model=model_shell,
+            previous_regions=tuple(self._named_regions.values()),
+            materials=tuple(self._materials),
+            sections=tuple(self._sections),
+            assignments=tuple(self._assignments),
+            steps=deepcopy(tuple(self._steps)),
+            parts=deepcopy(tuple(self._parts)),
+            geometry_recipe=deepcopy(self._geometry_recipe),
+            mesh_settings=deepcopy(self._mesh_settings),
+            source_kind=self._source_kind,
+        )
+
+    def accept_named_region_edit(
+        self,
+        task: NamedRegionEditTaskSnapshot,
+        prepared: PreparedNamedRegionEdit,
+    ) -> SessionDelta:
+        """Atomically install a current worker-compiled scope edit."""
+
+        if type(task) is not NamedRegionEditTaskSnapshot:
+            raise TypeError("task must be a NamedRegionEditTaskSnapshot")
+        if type(prepared) is not PreparedNamedRegionEdit:
+            raise TypeError("prepared must be a PreparedNamedRegionEdit")
+        token = task.token
+        status = self._named_region_task_status(task)
+        if status is not TokenStatus.CURRENT:
+            if (
+                self._issued_tokens.get(token.task_id) == token
+                and token.task_id not in self._completed_task_ids
+            ):
+                self._complete_token(token)
+            if self._active_named_region_task_id == token.task_id:
+                self._active_named_region_task_id = None
+            return self._rejected(status, "stale named-region edit")
+        if (
+            prepared.token != token
+            or prepared.request_sequence != task.request_sequence
+        ):
+            raise ValueError("prepared named-region edit provenance mismatch")
+        current_artifact = self._require_current_artifact()
+        owned, assignments, steps, worker_model = prepared.take()
+        compiled_model = _rebind_scope_result_mesh(
+            worker_model,
+            current_artifact.model,
+        )
+        self._complete_token(token)
+        self._active_named_region_task_id = None
+        return self._install_named_region_state(
+            owned,
+            assignments,
+            steps,
+            compiled_model,
+            "named region edit applied",
+        )
+
+    def terminate_named_region_edit(
+        self,
+        task: NamedRegionEditTaskSnapshot,
+        reason: str,
+    ) -> SessionDelta:
+        """Consume a completed, cancelled, failed, or superseded scope task."""
+
+        if type(task) is not NamedRegionEditTaskSnapshot:
+            return self._rejected(
+                TokenStatus.UNKNOWN_TASK,
+                "unknown named-region edit task",
+            )
+        token = task.token
+        issued = self._issued_tokens.get(token.task_id)
+        if issued != token:
+            return self._rejected(
+                TokenStatus.UNKNOWN_TASK,
+                "unknown named-region edit task",
+            )
+        if token.task_kind != "named_region_edit":
+            return self._rejected(
+                TokenStatus.WRONG_KIND,
+                "task is not a named-region edit task",
+            )
+        status = self._named_region_task_status(task)
+        if token.task_id not in self._completed_task_ids:
+            self._complete_token(token)
+        if self._active_named_region_task_id == token.task_id:
+            self._active_named_region_task_id = None
+        return SessionDelta(
+            session_revision=self._session_revision,
+            reason=str(reason).strip() or "named-region edit terminated",
+            accepted=status is TokenStatus.CURRENT,
+            token_status=status,
+        )
+
+    def _named_region_task_status(
+        self,
+        task: NamedRegionEditTaskSnapshot,
+    ) -> TokenStatus:
+        status = self._token_status_for(task.token, "named_region_edit")
+        if status is not TokenStatus.CURRENT:
+            return status
+        if (
+            self._active_named_region_task_id != task.token.task_id
+            or self._task_data.get(task.token.task_id)
+            != task.request_sequence
+            or task.request_sequence != self._named_region_request_sequence
+        ):
+            return TokenStatus.STALE_REVISION
+        return TokenStatus.CURRENT
+
     def _commit_named_region_state(
         self,
         owned: dict[str, NamedRegion],
@@ -3500,6 +3799,7 @@ class ModelSession:
                 previous_artifact.model,
                 previous_names=tuple(self._named_regions),
                 regions=tuple(owned.values()),
+                reuse_mesh=True,
             )
             compiled_model = compile_model_definitions(
                 scoped_model,
@@ -3509,8 +3809,29 @@ class ModelSession:
                     assignments,
                     steps,
                 ),
-            ).require_model()
+                detach_model=False,
+            ).require_model(detach=False)
 
+        return self._install_named_region_state(
+            owned,
+            assignments,
+            steps,
+            compiled_model,
+            reason,
+        )
+
+    def _install_named_region_state(
+        self,
+        owned: dict[str, NamedRegion],
+        assignments: tuple[RegionAssignment, ...],
+        steps: tuple[Any, ...],
+        compiled_model: Any | None,
+        reason: str,
+    ) -> SessionDelta:
+        """Install one already-validated scope post-state as one revision."""
+
+        previous_artifact = self._artifact
+        previous_regions = tuple(self._named_regions.values())
         self._named_regions = owned
         self._assignments = assignments
         self._steps = steps
@@ -3519,7 +3840,7 @@ class ModelSession:
         else:
             self._drop_computations()
         edits_mesh_scopes = (
-            _regions_use_mesh_entities(self._named_regions.values())
+            _regions_use_mesh_entities(previous_regions)
             or _regions_use_mesh_entities(owned.values())
         )
         self._increment_domain_revisions(
@@ -3729,14 +4050,19 @@ class ModelSession:
             self._artifact.model,
             previous_names=tuple(self._named_regions),
             regions=tuple(regions.values()),
+            reuse_mesh=True,
         )
         compiled_model = compile_model_definitions(
             scoped_model,
             definitions,
-        ).require_model()
+            detach_model=False,
+        ).require_model(detach=False)
 
         previous_artifact = self._artifact
-        edits_mesh_scopes = _regions_use_mesh_entities(regions.values())
+        edits_mesh_scopes = (
+            _regions_use_mesh_entities(self._named_regions.values())
+            or _regions_use_mesh_entities(regions.values())
+        )
         self._named_regions = regions
         self._materials = definitions.materials
         self._sections = definitions.sections
@@ -5629,6 +5955,10 @@ class ModelSession:
         self._issued_tokens: dict[str, TaskToken] = {}
         self._completed_task_ids: set[str] = set()
         self._task_data: dict[str, Any] = {}
+        self._named_region_request_sequence = 0
+        self._active_named_region_task_id: str | None = None
+        self._scope_mesh_snapshot: Any | None = None
+        self._scope_mesh_snapshot_revision: int | None = None
 
     def _check_expected(self, expected: int | None) -> None:
         if expected is None:
@@ -5707,6 +6037,12 @@ class ModelSession:
         self._drop_computations()
 
     def _new_artifact(self, model: Any, source_kind: str) -> ModelArtifact:
+        if (
+            self._scope_mesh_snapshot is None
+            or self._scope_mesh_snapshot_revision != self._mesh_input_revision
+        ):
+            self._scope_mesh_snapshot = deepcopy(model.mesh)
+            self._scope_mesh_snapshot_revision = self._mesh_input_revision
         return ModelArtifact(
             session_id=self._session_id,
             artifact_id=new_identity("artifact"),
@@ -5917,6 +6253,36 @@ def _canonical_source_kind(value: Any) -> str:
     if normalized not in {"native", "imported"}:
         raise ValueError(f"unsupported project source kind: {value!r}")
     return normalized
+
+
+def _copy_scope_task_model_shell(model: Any) -> Any:
+    """Detach mutable model containers while deferring the large mesh copy."""
+
+    shell = copy(model)
+    for name in (
+        "node_sets",
+        "element_sets",
+        "edges",
+        "surfaces",
+        "materials",
+    ):
+        setattr(shell, name, dict(getattr(model, name, {})))
+    shell.sections = list(getattr(model, "sections", ()))
+    shell.steps = list(getattr(model, "steps", ()))
+    shell.metadata = dict(getattr(model, "metadata", {}))
+    return shell
+
+
+def _rebind_scope_result_mesh(worker_model: Any, current_model: Any) -> Any:
+    """Transfer compiled definitions while retaining the authoritative mesh."""
+
+    rebound = copy(worker_model)
+    rebound.mesh = current_model.mesh
+    # Section-property tracking contains element object identities.  The
+    # current mesh already has the equivalent compiled properties, so retain
+    # its matching metadata while transferring all scope containers.
+    rebound.metadata = dict(getattr(current_model, "metadata", {}))
+    return rebound
 
 
 def _regions_by_name(
@@ -6628,6 +6994,7 @@ def _attach_mesh_reference_owners(
             raise ValueError("generated multi-Part mesh lacks ownership metadata")
         return regions
     known_ids = {part.id for part in parts}
+    ownership_ids: dict[str, dict[str, frozenset[int]]] | None = None
     result: list[NamedRegion] = []
     for region in regions:
         references: list[LogicalEntityRef | MeshEntityRef] = []
@@ -6648,13 +7015,23 @@ def _attach_mesh_reference_owners(
                 else int(reference.element_id)
             )
             field = "node_ids" if reference.kind == "node" else "element_ids"
+            if ownership_ids is None:
+                ownership_ids = {
+                    part_id: {
+                        "node_ids": frozenset(
+                            int(value) for value in row.get("node_ids", ())
+                        ),
+                        "element_ids": frozenset(
+                            int(value) for value in row.get("element_ids", ())
+                        ),
+                    }
+                    for part_id, row in ownership.items()
+                    if part_id in known_ids and isinstance(row, Mapping)
+                }
             candidates = tuple(
                 part_id
-                for part_id, row in ownership.items()
-                if part_id in known_ids
-                and isinstance(row, Mapping)
-                and identity
-                in {int(value) for value in row.get(field, ())}
+                for part_id, row in ownership_ids.items()
+                if identity in row[field]
             )
             if len(candidates) != 1:
                 raise ValueError(

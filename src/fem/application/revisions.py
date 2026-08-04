@@ -115,6 +115,30 @@ class MeshTaskSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class NamedRegionEditTaskSnapshot:
+    """Immutable, revision-bound input for one scope materialization task.
+
+    ``base_model`` is a detached model shell captured by the Session.  Its
+    mesh is treated as read-only task input; the worker makes the expensive
+    ownership copy before compiling and never calls back into ``ModelSession``.
+    """
+
+    token: TaskToken
+    request_sequence: int
+    batch: Any
+    base_model: Any
+    previous_regions: tuple[Any, ...]
+    materials: tuple[Any, ...]
+    sections: tuple[Any, ...]
+    assignments: tuple[Any, ...]
+    steps: tuple[Any, ...]
+    parts: tuple[Any, ...]
+    geometry_recipe: Any | None
+    mesh_settings: Any | None
+    source_kind: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class ValidationTaskSnapshot:
     token: TaskToken
     model: Any

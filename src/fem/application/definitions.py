@@ -226,6 +226,12 @@ class NamedRegion:
             tuple(sorted(references, key=sort_key)),
         )
 
+    def __deepcopy__(self, memo: dict[int, Any]) -> NamedRegion:
+        """Reuse this immutable value when command and snapshot state is copied."""
+
+        del memo
+        return self
+
     @property
     def entity_kind(self) -> str:
         """Return the single kind derived from the canonical references."""
@@ -304,12 +310,14 @@ class DefinitionCompileResult:
             diagnostic.blocking for diagnostic in self.diagnostics
         )
 
-    def require_model(self) -> Any:
-        """Return a detached compiled model or raise a typed rejection."""
+    def require_model(self, *, detach: bool = True) -> Any:
+        """Return the compiled model, detached by default, or reject it."""
 
+        if type(detach) is not bool:
+            raise TypeError("detach must be a bool")
         if not self.passed:
             raise DefinitionRejected(self.diagnostics)
-        return deepcopy(self.model)
+        return deepcopy(self.model) if detach else self.model
 
 
 class DefinitionRejected(ValueError):
@@ -583,17 +591,21 @@ def compile_model_definitions(
     sections: Iterable[SectionDefinition] | None = None,
     assignments: Iterable[RegionAssignment] | None = None,
     steps: Iterable[Any] | None = None,
+    *,
+    detach_model: bool = True,
 ) -> DefinitionCompileResult:
-    """Compile definitions into a detached model, reporting user errors."""
+    """Compile definitions, detaching the model by default, and report errors."""
 
     try:
+        if type(detach_model) is not bool:
+            raise TypeError("detach_model must be a bool")
         normalized = normalize_model_definitions(
             definitions,
             sections,
             assignments,
             steps,
         )
-        compiled = deepcopy(base_model)
+        compiled = deepcopy(base_model) if detach_model else base_model
         material_map = {
             material.name: MaterialDefinition(
                 material.name,
