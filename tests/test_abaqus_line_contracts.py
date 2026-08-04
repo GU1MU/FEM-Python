@@ -12,7 +12,12 @@ from fem.application import (
     definitions_from_model,
     resolve_effective_beam_frames,
 )
-from fem.elements import BEAM_LOCAL_Y_REFERENCE_KEY, get_element_kernel
+from fem.elements import (
+    BEAM_DEFAULT_LOCAL_Y_REFERENCE,
+    BEAM_DEFAULT_LOCAL_Y_REFERENCE_KEY,
+    BEAM_LOCAL_Y_REFERENCE_KEY,
+    get_element_kernel,
+)
 from fem.solvers.static_linear import solve
 from tests.helpers.file_builders import write_inp
 
@@ -263,12 +268,12 @@ def test_standard_b31_profiles_map_to_canonical_section_schema(
     ("filename", "expected_reference"),
     (
         ("b31_rect_explicit_n1_loads.inp", (0.0, 1.0, 0.0)),
-        ("b31_rect_default_n1.inp", (0.0, 0.0, -1.0)),
+        ("b31_rect_default_n1.inp", None),
     ),
 )
 def test_b31_n1_is_assignment_owned_and_not_a_section_definition_property(
     filename: str,
-    expected_reference: tuple[float, float, float],
+    expected_reference: tuple[float, float, float] | None,
 ) -> None:
     model = abaqus.read(STANDARD / filename)
     element = model.mesh.elements[0]
@@ -276,17 +281,26 @@ def test_b31_n1_is_assignment_owned_and_not_a_section_definition_property(
 
     assert BEAM_LOCAL_Y_REFERENCE_KEY not in element.props
     assert BEAM_LOCAL_Y_REFERENCE_KEY not in definitions.sections[0].properties
-    assert definitions.assignments[0].beam_orientation is not None
-    assert (
-        definitions.assignments[0]
-        .beam_orientation.local_y_reference
-        == pytest.approx(expected_reference)
-    )
+    if expected_reference is None:
+        assert element.props[BEAM_DEFAULT_LOCAL_Y_REFERENCE_KEY] == pytest.approx(
+            BEAM_DEFAULT_LOCAL_Y_REFERENCE
+        )
+        assert definitions.assignments[0].beam_orientation is None
+    else:
+        assert definitions.assignments[0].beam_orientation is not None
+        assert (
+            definitions.assignments[0]
+            .beam_orientation.local_y_reference
+            == pytest.approx(expected_reference)
+        )
 
     compiled = compile_model_definitions(model, definitions).require_model()
-    assert compiled.sections[0].properties[
-        BEAM_LOCAL_Y_REFERENCE_KEY
-    ] == pytest.approx(expected_reference)
+    if expected_reference is None:
+        assert BEAM_LOCAL_Y_REFERENCE_KEY not in compiled.sections[0].properties
+    else:
+        assert compiled.sections[0].properties[
+            BEAM_LOCAL_Y_REFERENCE_KEY
+        ] == pytest.approx(expected_reference)
 
 
 def test_explicit_b31_n1_resolves_t_n1_n2_as_right_handed_xyz_frame():
@@ -308,7 +322,7 @@ def test_explicit_b31_n1_resolves_t_n1_n2_as_right_handed_xyz_frame():
         assert np.linalg.det(frame.rotation) == pytest.approx(1.0)
 
 
-def test_missing_b31_n1_installs_explicit_abaqus_default_frame():
+def test_missing_b31_n1_keeps_default_frame_provenance():
     model = abaqus.read(STANDARD / "b31_rect_default_n1.inp")
     report = resolve_effective_beam_frames(
         model,
@@ -318,11 +332,8 @@ def test_missing_b31_n1_installs_explicit_abaqus_default_frame():
 
     assert report.passed
     frame = report.frames[0]
-    assert frame.source == "explicit"
-    assert frame.orientation is not None
-    assert frame.orientation.local_y_reference == pytest.approx(
-        (0.0, 0.0, -1.0)
-    )
+    assert frame.source == "default"
+    assert frame.orientation is None
     assert frame.local_x == pytest.approx(tangent)
     assert frame.local_y == pytest.approx((0.0, 0.0, -1.0))
     assert frame.local_z == pytest.approx(

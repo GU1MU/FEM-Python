@@ -1750,10 +1750,11 @@ def test_abaqus_formulation_notice_has_one_adapter_owner():
     assert occurrences[0][0] == Path("src/fem/abaqus/builder.py")
 
 
-def test_b31_source_topology_audit_has_one_adapter_implementation():
-    topology_code = "abaqus.b31.nodal_normal_averaging_unsupported"
+def test_b31_source_frame_validation_has_one_adapter_implementation():
+    frame_notice_code = "abaqus.b31.nodal_normal_generation_approximation"
     definitions = []
     code_occurrences = []
+    legacy_definitions = []
 
     for path in sorted(SRC_ROOT.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -1761,13 +1762,19 @@ def test_b31_source_topology_audit_has_one_adapter_implementation():
             (path.relative_to(PROJECT_ROOT), node.lineno)
             for node in ast.walk(tree)
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == "_audit_b31_topology"
+            and node.name == "_validate_b31_frames"
         )
         code_occurrences.extend(
             (path.relative_to(PROJECT_ROOT), node.lineno)
             for node in ast.walk(tree)
             if isinstance(node, ast.Constant)
-            and node.value == topology_code
+            and node.value == frame_notice_code
+        )
+        legacy_definitions.extend(
+            (path.relative_to(PROJECT_ROOT), node.lineno)
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "_audit_b31_topology"
         )
 
     expected_path = Path("src/fem/abaqus/builder.py")
@@ -1775,6 +1782,7 @@ def test_b31_source_topology_audit_has_one_adapter_implementation():
     assert definitions[0][0] == expected_path
     assert len(code_occurrences) == 1
     assert code_occurrences[0][0] == expected_path
+    assert legacy_definitions == []
 
 
 def test_production_has_no_beam_slenderness_gate():

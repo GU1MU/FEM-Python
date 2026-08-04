@@ -12,6 +12,8 @@ import numpy as np
 
 
 BEAM_LOCAL_Y_REFERENCE_KEY = "beam_local_y_reference"
+BEAM_DEFAULT_LOCAL_Y_REFERENCE_KEY = "beam_default_local_y_reference"
+BEAM_DEFAULT_LOCAL_Y_REFERENCE = (0.0, 0.0, -1.0)
 BEAM_ORIENTATION_PARALLEL_TOLERANCE = 1e-8
 _AUTOMATIC_FALLBACK_TOLERANCE = 1e-12
 
@@ -73,7 +75,7 @@ class BeamFrame:
 
     length: float
     rotation: np.ndarray
-    source: Literal["explicit", "automatic"]
+    source: Literal["explicit", "default", "automatic"]
     orientation: BeamOrientation | None
 
     def __post_init__(self) -> None:
@@ -109,14 +111,14 @@ class BeamFrame:
                 raise ValueError(
                     "an explicit Beam2 frame requires a BeamOrientation"
                 )
-        elif self.source == "automatic":
+        elif self.source in {"default", "automatic"}:
             if self.orientation is not None:
                 raise ValueError(
-                    "an automatic Beam2 frame cannot carry a BeamOrientation"
+                    f"a {self.source} Beam2 frame cannot carry a BeamOrientation"
                 )
         else:
             raise ValueError(
-                "Beam2 frame source must be 'explicit' or 'automatic', "
+                "Beam2 frame source must be 'explicit', 'default', or 'automatic', "
                 f"got {self.source!r}"
             )
 
@@ -206,6 +208,27 @@ def resolve_beam_frame(
     if not isinstance(source_properties, Mapping):
         raise TypeError("Beam2 frame properties must be a mapping")
     if BEAM_LOCAL_Y_REFERENCE_KEY not in source_properties:
+        missing = object()
+        raw_default: object = source_properties.get(
+            BEAM_DEFAULT_LOCAL_Y_REFERENCE_KEY,
+            missing,
+        )
+        if raw_default is not missing:
+            try:
+                default_orientation = parse_beam_orientation(raw_default)
+            except BeamOrientationInvalidError as error:
+                raise BeamOrientationInvalidError(
+                    str(error),
+                    element_id=_element_id(elem),
+                    reference=error.reference,
+                ) from error
+            return _reference_frame(
+                length,
+                local_x,
+                default_orientation,
+                elem,
+                source="default",
+            )
         return _automatic_frame(length, local_x)
 
     raw_reference = source_properties[BEAM_LOCAL_Y_REFERENCE_KEY]
@@ -217,7 +240,13 @@ def resolve_beam_frame(
             element_id=_element_id(elem),
             reference=error.reference,
         ) from error
-    return _explicit_frame(length, local_x, orientation, elem)
+    return _reference_frame(
+        length,
+        local_x,
+        orientation,
+        elem,
+        source="explicit",
+    )
 
 
 def _automatic_frame(length: float, local_x: np.ndarray) -> BeamFrame:
@@ -241,11 +270,13 @@ def _automatic_frame(length: float, local_x: np.ndarray) -> BeamFrame:
     )
 
 
-def _explicit_frame(
+def _reference_frame(
     length: float,
     local_x: np.ndarray,
     orientation: BeamOrientation,
     elem: Any,
+    *,
+    source: Literal["explicit", "default"],
 ) -> BeamFrame:
     reference = np.asarray(
         _normalized_reference(orientation.local_y_reference),
@@ -273,8 +304,8 @@ def _explicit_frame(
     return BeamFrame(
         length,
         np.vstack([local_x, local_y, local_z]),
-        "explicit",
-        orientation,
+        source,
+        orientation if source == "explicit" else None,
     )
 
 
@@ -343,6 +374,8 @@ def _element_id(elem: Any) -> int | None:
 
 
 __all__ = [
+    "BEAM_DEFAULT_LOCAL_Y_REFERENCE",
+    "BEAM_DEFAULT_LOCAL_Y_REFERENCE_KEY",
     "BEAM_LOCAL_Y_REFERENCE_KEY",
     "BEAM_ORIENTATION_PARALLEL_TOLERANCE",
     "BeamFrame",

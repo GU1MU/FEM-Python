@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from collections import defaultdict, deque
+from collections import defaultdict
 from typing import Any
 
 import numpy as np
@@ -28,6 +28,8 @@ from ..core.model import (
     SurfaceLoad,
 )
 from ..elements import (
+    BEAM_DEFAULT_LOCAL_Y_REFERENCE,
+    BEAM_DEFAULT_LOCAL_Y_REFERENCE_KEY,
     BEAM_LOCAL_Y_REFERENCE_KEY,
     canonical_element_type,
     get_element_capabilities,
@@ -87,9 +89,10 @@ def build_model_with_report(deck: AbaqusDeck) -> AbaqusBuildResult:
     _audit_source_mesh_capability(deck)
     model = _build_model(deck)
     section_resolution = _validate_declared_sections(model, deck)
+    frame_validation: dict[int, Any] | None = None
     if has_line_elements:
-        _validate_line_model(model, deck, section_resolution)
-    notices = _build_import_notices(deck)
+        frame_validation = _validate_line_model(model, deck, section_resolution)
+    notices = _build_import_notices(deck, frame_validation)
     return AbaqusBuildResult(model=model, notices=notices)
 
 
@@ -812,16 +815,44 @@ def _validate_declared_sections(model: FEMModel, deck: AbaqusDeck) -> Any:
         return resolution
     issue = resolution.issues[0]
     location = _section_location(deck, issue.assignment_index)
+    locations: tuple[AbaqusSourceLocation, ...] = ()
+    record: Any = (
+        issue.element_set,
+        issue.material,
+        issue.section_type,
+        issue.element_id,
+    )
+    if (
+        str(issue.code).startswith("beam.orientation.")
+        and issue.element_id is not None
+    ):
+        element = next(
+            (
+                candidate
+                for candidate in model.mesh.elements
+                if int(candidate.id) == int(issue.element_id)
+            ),
+            None,
+        )
+        if element is not None:
+            locations = _beam_orientation_locations(
+                deck,
+                element,
+                issue.assignment_index,
+            )
+            if locations:
+                location = locations[0]
+            record = {
+                "element": int(issue.element_id),
+                "nodes": tuple(int(value) for value in element.node_ids),
+                "reference_source": "explicit",
+            }
     raise AbaqusBuildError(
         issue.message,
         code=issue.code,
         location=location,
-        record=(
-            issue.element_set,
-            issue.material,
-            issue.section_type,
-            issue.element_id,
-        ),
+        record=record,
+        locations=locations,
         remediation="Correct the referenced material and section data.",
     )
 
@@ -830,8 +861,8 @@ def _validate_line_model(
     model: FEMModel,
     deck: AbaqusDeck,
     resolution: Any,
-) -> None:
-    """Validate canonical line sections, frames, and source topology detached."""
+) -> dict[int, Any] | None:
+    """Validate canonical line sections and each source-defined B31 frame."""
 
     line_ids = {
         int(element.id)
@@ -870,7 +901,23 @@ def _validate_line_model(
         if get_element_capabilities(element.type).family == "beam"
     ]
     if not beam_elements:
-        return
+        return None
+    return _validate_b31_frames(model, deck, beam_elements, effective)
+
+
+def _validate_b31_frames(
+    model: FEMModel,
+    deck: AbaqusDeck,
+    beam_elements: list[Any],
+    effective: dict[int, Any],
+) -> dict[int, Any]:
+    """Validate one tangent/reference frame for every B31 element.
+
+    Frame validity is local to the element and its resolved section
+    assignment.  Shared nodes therefore retain one global DOF identity while
+    adjacent members may resolve different effective frames.
+    """
+
     frames: dict[int, Any] = {}
     for element in beam_elements:
         element_id = int(element.id)
@@ -895,8 +942,18 @@ def _validate_line_model(
                 record={
                     "element": element_id,
                     "nodes": tuple(int(value) for value in element.node_ids),
-                    "reference": assignment.effective_properties.get(
-                        BEAM_LOCAL_Y_REFERENCE_KEY
+                    "reference": getattr(
+                        exc,
+                        "reference",
+                        assignment.effective_properties.get(
+                            BEAM_LOCAL_Y_REFERENCE_KEY
+                        ),
+                    ),
+                    "reference_source": (
+                        "explicit"
+                        if BEAM_LOCAL_Y_REFERENCE_KEY
+                        in assignment.effective_properties
+                        else "default"
                     ),
                 },
                 remediation=(
@@ -904,162 +961,12 @@ def _validate_line_model(
                     "B31 element tangent in the target ELSET."
                 ),
             ) from exc
-    _audit_b31_topology(
-        model,
-        deck,
-        beam_elements,
-        frames,
-        effective,
-    )
-
-
-def _audit_b31_topology(
-    model: FEMModel,
-    deck: AbaqusDeck,
-    beam_elements: list[Any],
-    frames: dict[int, Any],
-    effective: dict[int, Any],
-) -> None:
-    """Accept only straight, directed, nonbranching B31 source components."""
-
-    element_by_id = {int(element.id): element for element in beam_elements}
-    node_to_elements: dict[int, list[int]] = defaultdict(list)
-    for element in beam_elements:
-        element_id = int(element.id)
-        for node_id in element.node_ids:
-            node_to_elements[int(node_id)].append(element_id)
-
-    remaining = set(element_by_id)
-    while remaining:
-        start = next(iter(remaining))
-        queue: deque[int] = deque((start,))
-        component_ids: list[int] = []
-        component_nodes: set[int] = set()
-        while queue:
-            element_id = queue.popleft()
-            if element_id not in remaining:
-                continue
-            remaining.remove(element_id)
-            component_ids.append(element_id)
-            element = element_by_id[element_id]
-            for node_id in element.node_ids:
-                node_id = int(node_id)
-                component_nodes.add(node_id)
-                queue.extend(node_to_elements[node_id])
-
-        branches = tuple(
-            node_id
-            for node_id in sorted(component_nodes)
-            if len(node_to_elements[node_id]) > 2
-        )
-        if branches:
-            _raise_topology_error(
-                component_ids,
-                branches,
-                "branch or junction",
-                deck,
-                effective,
-            )
-        if len(component_ids) > 1 and all(
-            len(node_to_elements[node_id]) == 2
-            for node_id in component_nodes
-        ):
-            _raise_topology_error(
-                component_ids,
-                tuple(sorted(component_nodes)),
-                "closed loop",
-                deck,
-                effective,
-            )
-
-        for node_id in sorted(component_nodes):
-            connected = node_to_elements[node_id]
-            if len(connected) != 2:
-                continue
-            first = element_by_id[connected[0]]
-            second = element_by_id[connected[1]]
-            first_starts = int(first.node_ids[0]) == node_id
-            first_ends = int(first.node_ids[-1]) == node_id
-            second_starts = int(second.node_ids[0]) == node_id
-            second_ends = int(second.node_ids[-1]) == node_id
-            directed = (
-                (first_ends and second_starts)
-                or (second_ends and first_starts)
-            )
-            if not directed:
-                _raise_topology_error(
-                    component_ids,
-                    (node_id,),
-                    "reversed or discontinuous element connectivity",
-                    deck,
-                    effective,
-                )
-            first_frame = frames[int(first.id)]
-            second_frame = frames[int(second.id)]
-            if not (
-                np.allclose(
-                    first_frame.local_x,
-                    second_frame.local_x,
-                    rtol=1e-9,
-                    atol=1e-10,
-                )
-                and np.allclose(
-                    first_frame.local_y,
-                    second_frame.local_y,
-                    rtol=1e-9,
-                    atol=1e-10,
-                )
-                and np.allclose(
-                    first_frame.local_z,
-                    second_frame.local_z,
-                    rtol=1e-9,
-                    atol=1e-10,
-                )
-            ):
-                _raise_topology_error(
-                    component_ids,
-                    (node_id,),
-                    "kink, twist, or incompatible shared-node frame",
-                    deck,
-                    effective,
-                )
-
-
-def _raise_topology_error(
-    component_ids: list[int],
-    node_ids: tuple[int, ...],
-    reason: str,
-    deck: AbaqusDeck,
-    effective: dict[int, Any],
-) -> None:
-    locations = _topology_locations(
-        deck,
-        component_ids,
-        node_ids,
-        effective,
-    )
-    raise UnsupportedAbaqusFeatureError(
-        (
-            "B31 source topology requires Abaqus nodal-normal averaging: "
-            f"{reason}; component elements {tuple(component_ids)}, "
-            f"nodes {node_ids}"
-        ),
-        code="abaqus.b31.nodal_normal_averaging_unsupported",
-        location=locations[0] if locations else None,
-        locations=locations,
-        record={
-            "component": tuple(component_ids),
-            "nodes": node_ids,
-        },
-        remediation=(
-            "Split the source into disconnected straight members with "
-            "compatible directions, or wait for nodal-normal support."
-        ),
-    )
+    return frames
 
 
 def _build_import_notices(
     deck: AbaqusDeck,
+    frames: dict[int, Any] | None = None,
 ) -> tuple[AbaqusImportNotice, ...]:
     locations: list[AbaqusSourceLocation] = []
     seen: set[tuple[object, ...]] = set()
@@ -1076,7 +983,7 @@ def _build_import_notices(
         locations.append(location)
     if not any(str(element.type).upper() == "B31" for element in deck.elements):
         return ()
-    return (
+    notices: list[AbaqusImportNotice] = [
         AbaqusImportNotice(
             code="abaqus.b31.euler_bernoulli_approximation",
             message=(
@@ -1089,7 +996,55 @@ def _build_import_notices(
             ),
             locations=tuple(locations),
         ),
-    )
+    ]
+    if frames and _b31_has_frame_variation(deck, frames):
+        notices.append(
+            AbaqusImportNotice(
+                code="abaqus.b31.nodal_normal_generation_approximation",
+                message=(
+                    "The source does not provide nodal-normal records. Each "
+                    "B31 element is validated with its own tangent and its "
+                    "assignment-scoped section n1 or Abaqus default n1. "
+                    "Shared nodes and source connectivity are preserved, but "
+                    "this per-element frame result does not claim numerical "
+                    "equivalence to Abaqus nodal-normal generation or "
+                    "averaging."
+                ),
+                locations=tuple(locations),
+            )
+        )
+    return tuple(notices)
+
+
+def _b31_has_frame_variation(
+    deck: AbaqusDeck,
+    frames: dict[int, Any],
+) -> bool:
+    """Return whether shared B31 topology needs independent effective frames."""
+
+    node_to_element_ids: dict[int, list[int]] = defaultdict(list)
+    for element in deck.elements:
+        if str(element.type).upper() != "B31":
+            continue
+        element_id = int(element.id)
+        for node_id in element.node_ids:
+            node_to_element_ids[int(node_id)].append(element_id)
+
+    for element_ids in node_to_element_ids.values():
+        if len(element_ids) < 2:
+            continue
+        first = frames[element_ids[0]]
+        if any(
+            not np.allclose(
+                first.rotation,
+                frames[element_id].rotation,
+                rtol=1e-9,
+                atol=1e-10,
+            )
+            for element_id in element_ids[1:]
+        ):
+            return True
+    return False
 
 
 def _section_location(
@@ -1152,34 +1107,6 @@ def _beam_orientation_locations(
         *(
             _node_location(deck, int(node_id))
             for node_id in element.node_ids
-        ),
-    ]
-    return _unique_source_locations(candidates)
-
-
-def _topology_locations(
-    deck: AbaqusDeck,
-    component_ids: list[int],
-    node_ids: tuple[int, ...],
-    effective: dict[int, Any],
-) -> tuple[AbaqusSourceLocation, ...]:
-    """Collect component, offending-node, and effective-n1 source evidence."""
-
-    candidates: list[AbaqusSourceLocation | None] = [
-        *(
-            _element_location(deck, element_id)
-            for element_id in component_ids
-        ),
-        *(
-            _node_location(deck, node_id)
-            for node_id in node_ids
-        ),
-        *(
-            _section_orientation_location(
-                deck,
-                getattr(effective.get(element_id), "assignment_index", None),
-            )
-            for element_id in component_ids
         ),
     ]
     return _unique_source_locations(candidates)
@@ -1590,12 +1517,10 @@ def _map_beam_section(
             location=geometry_location,
             code="abaqus.b31.section.dimension_invalid",
         )
-    reference = (
-        (0.0, 0.0, -1.0)
-        if data.approximate_n1 is None
-        else tuple(float(value) for value in data.approximate_n1)
-    )
-    properties[BEAM_LOCAL_Y_REFERENCE_KEY] = reference
+    if data.approximate_n1 is not None:
+        properties[BEAM_LOCAL_Y_REFERENCE_KEY] = tuple(
+            float(value) for value in data.approximate_n1
+        )
     return section_type, properties
 
 
@@ -2188,6 +2113,10 @@ def _element_type(element: AbaqusElement) -> str:
 def _element_props(element: AbaqusElement) -> dict[str, Any]:
     """Return base properties for one mesh element."""
     props: dict[str, Any] = {"abaqus_type": element.type}
+    if str(element.type).upper() == "B31":
+        props[BEAM_DEFAULT_LOCAL_Y_REFERENCE_KEY] = (
+            *BEAM_DEFAULT_LOCAL_Y_REFERENCE,
+        )
     if element.element_set is not None:
         props["element_set"] = element.element_set
     if element.type.upper().startswith("CPS"):

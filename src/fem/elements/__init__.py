@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from .base import ElementKernel
 from .beam_frame import (
+    BEAM_DEFAULT_LOCAL_Y_REFERENCE,
+    BEAM_DEFAULT_LOCAL_Y_REFERENCE_KEY,
     BEAM_LOCAL_Y_REFERENCE_KEY,
     BEAM_ORIENTATION_PARALLEL_TOLERANCE,
     BeamFrame,
@@ -28,6 +30,8 @@ from .registry import (
 )
 
 __all__ = [
+    "BEAM_DEFAULT_LOCAL_Y_REFERENCE",
+    "BEAM_DEFAULT_LOCAL_Y_REFERENCE_KEY",
     "BEAM_LOCAL_Y_REFERENCE_KEY",
     "BEAM_ORIENTATION_PARALLEL_TOLERANCE",
     "BeamFrame",

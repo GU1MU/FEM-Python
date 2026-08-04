@@ -356,7 +356,7 @@ def test_parallel_orientation_locations_cover_all_source_evidence(
     assert deck == snapshot
 
 
-def test_topology_locations_include_node_and_effective_orientation(
+def test_kinked_frame_notice_is_structured_and_does_not_recommend_disconnect(
     tmp_path,
 ) -> None:
     lines = [
@@ -374,13 +374,15 @@ def test_topology_locations_include_node_and_effective_orientation(
     ]
     path = write_inp(tmp_path, "kink_locations.inp", lines)
 
-    with pytest.raises(abaqus.UnsupportedAbaqusFeatureError) as caught:
-        abaqus.read(path)
+    result = abaqus.read_with_report(path)
 
-    error = caught.value
-    assert error.code == "abaqus.b31.nodal_normal_averaging_unsupported"
-    location_lines = [location.line for location in error.locations]
-    assert lines.index("2, 2, 3") + 1 in location_lines
-    assert lines.index("2, 1., 0., 0.") + 1 in location_lines
-    assert lines.index("0., 0., 1.") + 1 in location_lines
-    assert len(location_lines) == len(set(location_lines))
+    assert tuple(
+        notice.code for notice in result.notices
+    ) == (
+        "abaqus.b31.euler_bernoulli_approximation",
+        "abaqus.b31.nodal_normal_generation_approximation",
+    )
+    notice = result.notices[1]
+    assert notice.locations
+    assert "shared nodes" in notice.message.casefold()
+    assert "disconnect" not in notice.message.casefold()

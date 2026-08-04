@@ -16,7 +16,7 @@ STANDARD = (
     / "inp"
     / "abaqus_standard"
 )
-TOPOLOGY_CODE = "abaqus.b31.nodal_normal_averaging_unsupported"
+FRAME_NOTICE_CODE = "abaqus.b31.nodal_normal_generation_approximation"
 
 
 def _single_section_deck(
@@ -46,39 +46,15 @@ def _single_section_deck(
     ]
 
 
-def _assert_topology_rejection(
-    path: Path,
-    *,
-    element_ids: tuple[int, ...],
-    node_ids: tuple[int, ...],
-) -> None:
-    with pytest.raises(abaqus.UnsupportedAbaqusFeatureError) as caught:
-        abaqus.read_with_report(path)
-
-    error = caught.value
-    assert error.code == TOPOLOGY_CODE
-    assert Path(error.path) == path
-    assert error.line > 0
-    assert error.keyword
-    assert error.remediation
-    assert (
-        "straight" in error.remediation.casefold()
-        or "直" in error.remediation
-    )
-    assert error.locations
-    assert all(Path(location.path) == path for location in error.locations)
-
-    diagnostic = repr(
-        (
-            str(error),
-            error.record,
-            getattr(error, "details", None),
-        )
-    )
-    for element_id in element_ids:
-        assert str(element_id) in diagnostic
-    for node_id in node_ids:
-        assert str(node_id) in diagnostic
+def _assert_frame_approximation_notice(result: abaqus.AbaqusBuildResult) -> None:
+    notices = [
+        notice for notice in result.notices if notice.code == FRAME_NOTICE_CODE
+    ]
+    assert len(notices) == 1
+    notice = notices[0]
+    assert notice.locations
+    assert "shared nodes" in notice.message.casefold()
+    assert "disconnect" not in notice.message.casefold()
 
 
 @pytest.mark.parametrize(
@@ -149,7 +125,7 @@ def test_collinear_directed_open_chain_is_accepted(tmp_path) -> None:
     ) == ((1, 2), (2, 3), (3, 4))
 
 
-def test_kinked_shared_node_requires_unsupported_normal_averaging(
+def test_kinked_shared_node_uses_independent_element_frames(
     tmp_path,
 ) -> None:
     path = write_inp(
@@ -166,14 +142,22 @@ def test_kinked_shared_node_requires_unsupported_normal_averaging(
         ),
     )
 
-    _assert_topology_rejection(
-        path,
-        element_ids=(1, 2),
-        node_ids=(2,),
+    result = abaqus.read_with_report(path)
+    frames = resolve_effective_beam_frames(
+        result.model,
+        RegionRef("element_set", "BEAM"),
     )
 
+    assert tuple(
+        tuple(element.node_ids) for element in result.model.mesh.elements
+    ) == ((1, 2), (2, 3))
+    assert frames.passed
+    assert frames.frames[0].local_x == pytest.approx((1.0, 0.0, 0.0))
+    assert frames.frames[1].local_x == pytest.approx((0.0, 1.0, 0.0))
+    _assert_frame_approximation_notice(result)
 
-def test_branching_shared_node_requires_unsupported_normal_averaging(
+
+def test_branching_shared_node_preserves_one_shared_global_dof_identity(
     tmp_path,
 ) -> None:
     path = write_inp(
@@ -191,14 +175,24 @@ def test_branching_shared_node_requires_unsupported_normal_averaging(
         ),
     )
 
-    _assert_topology_rejection(
-        path,
-        element_ids=(1, 2, 3),
-        node_ids=(2,),
+    result = abaqus.read_with_report(path)
+    frames = resolve_effective_beam_frames(
+        result.model,
+        RegionRef("element_set", "BEAM"),
     )
 
+    assert result.model.mesh.num_nodes == 4
+    assert tuple(
+        tuple(element.node_ids) for element in result.model.mesh.elements
+    ) == ((1, 2), (2, 3), (2, 4))
+    assert frames.passed
+    assert frames.element_ids == (1, 2, 3)
+    assert frames.frames[0].local_x == pytest.approx((1.0, 0.0, 0.0))
+    assert frames.frames[2].local_x == pytest.approx((0.0, 1.0, 0.0))
+    _assert_frame_approximation_notice(result)
 
-def test_closed_b31_loop_requires_unsupported_normal_averaging(
+
+def test_closed_b31_loop_preserves_connectivity_and_builds(
     tmp_path,
 ) -> None:
     path = write_inp(
@@ -215,14 +209,16 @@ def test_closed_b31_loop_requires_unsupported_normal_averaging(
         ),
     )
 
-    _assert_topology_rejection(
-        path,
-        element_ids=(1, 2, 3),
-        node_ids=(1, 2, 3),
-    )
+    result = abaqus.read_with_report(path)
+
+    assert result.model.mesh.num_nodes == 3
+    assert tuple(
+        tuple(element.node_ids) for element in result.model.mesh.elements
+    ) == ((1, 2), (2, 3), (3, 1))
+    _assert_frame_approximation_notice(result)
 
 
-def test_reversed_element_connectivity_rejects_discontinuous_frames(
+def test_reversed_element_connectivity_preserves_source_order_and_frame_direction(
     tmp_path,
 ) -> None:
     path = write_inp(
@@ -238,14 +234,22 @@ def test_reversed_element_connectivity_rejects_discontinuous_frames(
         ),
     )
 
-    _assert_topology_rejection(
-        path,
-        element_ids=(1, 2),
-        node_ids=(2,),
+    result = abaqus.read_with_report(path)
+    frames = resolve_effective_beam_frames(
+        result.model,
+        RegionRef("element_set", "BEAM"),
     )
 
+    assert tuple(
+        tuple(element.node_ids) for element in result.model.mesh.elements
+    ) == ((1, 2), (3, 2))
+    assert frames.passed
+    assert frames.frames[0].local_x == pytest.approx((1.0, 0.0, 0.0))
+    assert frames.frames[1].local_x == pytest.approx((-1.0, 0.0, 0.0))
+    _assert_frame_approximation_notice(result)
 
-def test_shared_node_rejects_incompatible_section_orientations(
+
+def test_shared_node_allows_assignment_scoped_section_orientations(
     tmp_path,
 ) -> None:
     path = write_inp(
@@ -273,11 +277,23 @@ def test_shared_node_rejects_incompatible_section_orientations(
         ],
     )
 
-    _assert_topology_rejection(
-        path,
-        element_ids=(1, 2),
-        node_ids=(2,),
+    result = abaqus.read_with_report(path)
+    left_frames = resolve_effective_beam_frames(
+        result.model,
+        RegionRef("element_set", "LEFT"),
     )
+    right_frames = resolve_effective_beam_frames(
+        result.model,
+        RegionRef("element_set", "RIGHT"),
+    )
+
+    assert left_frames.passed
+    assert right_frames.passed
+    assert left_frames.frames[0].source == "explicit"
+    assert right_frames.frames[0].source == "explicit"
+    assert left_frames.frames[0].local_y == pytest.approx((0.0, 1.0, 0.0))
+    assert right_frames.frames[0].local_y == pytest.approx((0.0, 0.0, 1.0))
+    _assert_frame_approximation_notice(result)
 
 
 def test_orientation_parallel_to_later_target_element_fails_transactionally(
