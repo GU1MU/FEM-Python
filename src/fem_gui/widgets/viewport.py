@@ -5336,11 +5336,34 @@ class FEMViewport(QWidget):
         elif refresh and self._symbols_visible:
             self.show_boundary_and_loads(self._symbol_settings.step_name, render=render)
 
-    def save_screenshot(self, path: str) -> None:
+    def screenshot_size(self) -> tuple[int, int]:
+        """返回截图使用的当前 VTK 视口像素尺寸。"""
+        if self._plotter is not None:
+            window_size = getattr(self._plotter, "window_size", None)
+            if window_size is not None and len(window_size) >= 2:
+                width, height = int(window_size[0]), int(window_size[1])
+                if width > 0 and height > 0:
+                    return width, height
+        return max(1, self.width()), max(1, self.height())
+
+    def save_screenshot(
+        self,
+        path: str,
+        *,
+        scale: int = 1,
+        window_size: tuple[int, int] | None = None,
+        transparent_background: bool = False,
+    ) -> None:
         """通过 VTK 帧缓冲保存当前视口。"""
         if self._plotter is None:
             raise RuntimeError("三维视口尚未初始化")
-        self._plotter.screenshot(path)
+        self._plotter.screenshot(
+            path,
+            scale=scale,
+            window_size=window_size,
+            transparent_background=transparent_background,
+            return_img=False,
+        )
 
     def set_background_settings(self, settings: ViewportBackgroundSettings) -> None:
         """更新视口背景和依赖背景对比度的显示层。"""

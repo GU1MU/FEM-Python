@@ -267,6 +267,7 @@ from .viewport_background import (
     save_background_settings,
 )
 from .viewport_background_dialog import ViewportBackgroundDialog
+from .viewport_image_export_dialog import ViewportImageExportDialog
 from .sketch_editor import SketchDraftController, SketchDraftValidationError
 from .wire_editor import WireDraftController, WireDraftValidationError
 from .visualization.colormaps import ABAQUS_RAINBOW
@@ -11972,8 +11973,21 @@ class FEMMainWindow(QMainWindow):
         target = Path(path)
         if target.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
             target = target.with_suffix(".png")
+        dialog = ViewportImageExportDialog(
+            self.viewport.screenshot_size(),
+            target.suffix.lower() == ".png",
+            self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        options = dialog.options
         try:
-            self.viewport.save_screenshot(str(target))
+            self.viewport.save_screenshot(
+                str(target),
+                scale=options.scale,
+                window_size=options.window_size,
+                transparent_background=options.transparent_background,
+            )
         except Exception as error:
             self._show_error("导出视口图片失败", str(error))
             return
