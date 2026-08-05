@@ -55,6 +55,14 @@ from .errors import (
 )
 
 
+B31_EULER_BERNOULLI_NOTICE_CODE = (
+    "abaqus.b31.euler_bernoulli_approximation"
+)
+B31_SHARED_NODE_FRAME_NOTICE_CODE = (
+    "abaqus.b31.shared_node_frame_approximation"
+)
+
+
 @dataclass(frozen=True, slots=True)
 class AbaqusImportNotice:
     """One non-authoritative limitation reported by the Abaqus adapter."""
@@ -93,9 +101,10 @@ def build_model_with_report(deck: AbaqusDeck) -> AbaqusBuildResult:
     _audit_source_mesh_capability(deck)
     model = _build_model(deck)
     section_resolution = _validate_declared_sections(model, deck)
+    line_notices: tuple[AbaqusImportNotice, ...] = ()
     if has_line_elements:
-        _validate_line_model(model, deck, section_resolution)
-    notices = _build_import_notices(deck)
+        line_notices = _validate_line_model(model, deck, section_resolution)
+    notices = (*_build_import_notices(deck), *line_notices)
     return AbaqusBuildResult(model=model, notices=notices)
 
 
@@ -493,8 +502,6 @@ def _audit_line_subset(deck: AbaqusDeck) -> bool:
                 record=name,
                 remediation=remediation,
             )
-        if name in harmless:
-            continue
         if name in output_keywords:
             # Output options are preserved authoring evidence.  Concrete
             # postprocessing support is classified after solve.
@@ -536,6 +543,8 @@ def _audit_line_subset(deck: AbaqusDeck) -> bool:
                     "B31/T3D2 subset."
                 ),
             )
+        if name in harmless:
+            continue
         if name == "step" and str(params.get("nlgeom", "no")).strip().casefold() not in {
             "no",
             "false",
@@ -838,7 +847,7 @@ def _validate_line_model(
     model: FEMModel,
     deck: AbaqusDeck,
     resolution: Any,
-) -> None:
+) -> tuple[AbaqusImportNotice, ...]:
     """Validate canonical line sections, frames, and source topology detached."""
 
     line_ids = {
@@ -878,7 +887,7 @@ def _validate_line_model(
         if get_element_capabilities(element.type).family == "beam"
     ]
     if not beam_elements:
-        return
+        return ()
     frames: dict[int, Any] = {}
     for element in beam_elements:
         element_id = int(element.id)
@@ -912,8 +921,7 @@ def _validate_line_model(
                     "B31 element tangent in the target ELSET."
                 ),
             ) from exc
-    _audit_b31_topology(
-        model,
+    return _audit_b31_topology(
         deck,
         beam_elements,
         frames,
@@ -922,13 +930,12 @@ def _validate_line_model(
 
 
 def _audit_b31_topology(
-    model: FEMModel,
     deck: AbaqusDeck,
     beam_elements: list[Any],
     frames: dict[int, Any],
     effective: dict[int, Any],
-) -> None:
-    """Accept only straight, directed, nonbranching B31 source components."""
+) -> tuple[AbaqusImportNotice, ...]:
+    """Report shared-node B31 frames that differ from Abaqus averaging."""
 
     element_by_id = {int(element.id): element for element in beam_elements}
     node_to_elements: dict[int, list[int]] = defaultdict(list)
@@ -937,9 +944,12 @@ def _audit_b31_topology(
         for node_id in element.node_ids:
             node_to_elements[int(node_id)].append(element_id)
 
+    reasons: set[str] = set()
+    affected_element_ids: set[int] = set()
+    affected_node_ids: set[int] = set()
     remaining = set(element_by_id)
     while remaining:
-        start = next(iter(remaining))
+        start = min(remaining)
         queue: deque[int] = deque((start,))
         component_ids: list[int] = []
         component_nodes: set[int] = set()
@@ -961,24 +971,16 @@ def _audit_b31_topology(
             if len(node_to_elements[node_id]) > 2
         )
         if branches:
-            _raise_topology_error(
-                component_ids,
-                branches,
-                "branch or junction",
-                deck,
-                effective,
-            )
+            reasons.add("branch or junction")
+            affected_element_ids.update(component_ids)
+            affected_node_ids.update(branches)
         if len(component_ids) > 1 and all(
             len(node_to_elements[node_id]) == 2
             for node_id in component_nodes
         ):
-            _raise_topology_error(
-                component_ids,
-                tuple(sorted(component_nodes)),
-                "closed loop",
-                deck,
-                effective,
-            )
+            reasons.add("closed loop")
+            affected_element_ids.update(component_ids)
+            affected_node_ids.update(component_nodes)
 
         for node_id in sorted(component_nodes):
             connected = node_to_elements[node_id]
@@ -995,13 +997,9 @@ def _audit_b31_topology(
                 or (second_ends and first_starts)
             )
             if not directed:
-                _raise_topology_error(
-                    component_ids,
-                    (node_id,),
-                    "reversed or discontinuous element connectivity",
-                    deck,
-                    effective,
-                )
+                reasons.add("reversed or discontinuous element connectivity")
+                affected_element_ids.update(connected)
+                affected_node_ids.add(node_id)
             first_frame = frames[int(first.id)]
             second_frame = frames[int(second.id)]
             if not (
@@ -1024,44 +1022,31 @@ def _audit_b31_topology(
                     atol=1e-10,
                 )
             ):
-                _raise_topology_error(
-                    component_ids,
-                    (node_id,),
-                    "kink, twist, or incompatible shared-node frame",
-                    deck,
-                    effective,
-                )
+                reasons.add("kink, twist, or incompatible shared-node frame")
+                affected_element_ids.update(connected)
+                affected_node_ids.add(node_id)
 
-
-def _raise_topology_error(
-    component_ids: list[int],
-    node_ids: tuple[int, ...],
-    reason: str,
-    deck: AbaqusDeck,
-    effective: dict[int, Any],
-) -> None:
+    if not reasons:
+        return ()
     locations = _topology_locations(
         deck,
-        component_ids,
-        node_ids,
+        sorted(affected_element_ids),
+        tuple(sorted(affected_node_ids)),
         effective,
     )
-    raise UnsupportedAbaqusFeatureError(
-        (
-            "B31 source topology requires Abaqus nodal-normal averaging: "
-            f"{reason}; component elements {tuple(component_ids)}, "
-            f"nodes {node_ids}"
-        ),
-        code="abaqus.b31.nodal_normal_averaging_unsupported",
-        location=locations[0] if locations else None,
-        locations=locations,
-        record={
-            "component": tuple(component_ids),
-            "nodes": node_ids,
-        },
-        remediation=(
-            "Split the source into disconnected straight members with "
-            "compatible directions, or wait for nodal-normal support."
+    reason_text = ", ".join(sorted(reasons))
+    return (
+        AbaqusImportNotice(
+            code=B31_SHARED_NODE_FRAME_NOTICE_CODE,
+            message=(
+                "The source B31 topology uses shared-node configurations "
+                "that Abaqus resolves with nodal-normal averaging "
+                f"({reason_text}). The current FEM solver keeps one local "
+                "frame per Beam2 element and couples members through shared "
+                "nodal degrees of freedom. Results can differ from Abaqus "
+                f"around {len(affected_node_ids)} affected nodes."
+            ),
+            locations=locations,
         ),
     )
 
@@ -1086,7 +1071,7 @@ def _build_import_notices(
         return ()
     return (
         AbaqusImportNotice(
-            code="abaqus.b31.euler_bernoulli_approximation",
+            code=B31_EULER_BERNOULLI_NOTICE_CODE,
             message=(
                 "The source uses Abaqus B31, a shear-flexible Timoshenko "
                 "family. The current solver maps the supported input subset "

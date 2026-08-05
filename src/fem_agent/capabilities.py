@@ -50,7 +50,20 @@ SUPPORTED_SECTION_TYPES = frozenset({"beam", "solid", "truss"})
 SUPPORTED_PROCEDURES = frozenset({"static"})
 SUPPORTED_BOUNDARY_LABELS = frozenset({"ENCASTRE", "XSYMM", "YSYMM", "ZSYMM"})
 SUPPORTED_DLOAD_LABELS = frozenset(
-    {"GRAV", "P1", "P2", "P3", "P4", "P5", "P6", "QGLOBAL", "QLOCAL"}
+    {
+        "GRAV",
+        "P1",
+        "P2",
+        "P3",
+        "P4",
+        "P5",
+        "P6",
+        "PX",
+        "PY",
+        "PZ",
+        "QGLOBAL",
+        "QLOCAL",
+    }
 )
 SUPPORTED_DSLOAD_LABELS = frozenset(
     {"P", "P1", "P2", "P3", "P4", "P5", "P6", "TRVEC", "TRSHR"}
