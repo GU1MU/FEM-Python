@@ -5,9 +5,11 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog
 
 from fem.application.results import (
+    FieldState,
+    ScalarFieldSelection,
     build_solve_result_bundle,
     restore_result_provider,
 )
@@ -20,6 +22,8 @@ from fem_gui.commands import (
 )
 from fem_gui import main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
+from fem_gui.result_csv_export_dialog import ResultCsvExportDialog
+from fem_gui.result_presentation import visible_result_fields
 from fem_gui.visualization.model_adapter import build_model_geometry
 from tests.helpers.gui_command_receipts import (
     await_succeeded,
@@ -186,4 +190,64 @@ def test_result_export_commands_reject_untyped_stale_and_wrong_suffix(
     assert not (tmp_path / "result.txt").exists()
     assert not (tmp_path / "result.vtu").exists()
     assert not (tmp_path / "stale.csv").exists()
+    window.close()
+
+
+def test_csv_action_exports_dialog_selection_without_changing_viewport_field(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    window = _solved_window()
+    record = window.session.current_result()
+    assert record is not None
+    provider = restore_result_provider(
+        record.result,
+        record.materialization,
+    )
+    window.result_provider = provider
+    window.result_selection = provider.catalog().default_selection
+    displayed = window.result_selection
+    assert displayed is not None
+    selections = tuple(
+        ScalarFieldSelection(availability.key, component)
+        for availability in visible_result_fields(provider.catalog().fields)
+        if availability.state is FieldState.READY
+        for component in availability.descriptor.columns
+        if ScalarFieldSelection(availability.key, component) != displayed
+    )
+    selected = selections[0]
+    captured = {}
+
+    def execute_dialog(dialog) -> int:
+        assert type(dialog) is ResultCsvExportDialog
+        field_id = selected.field_key.request.field_id
+        dialog.variable_combo.setCurrentIndex(
+            dialog.variable_combo.findData(field_id.variable)
+        )
+        dialog.position_combo.setCurrentIndex(
+            dialog.position_combo.findData(field_id.position)
+        )
+        dialog.component_combo.setCurrentIndex(
+            dialog.component_combo.findData(selected)
+        )
+        dialog.path_edit.setText(str(tmp_path / "selected-field.txt"))
+        return QDialog.DialogCode.Accepted
+
+    def capture_export(path, spec):
+        captured["path"] = path
+        captured["spec"] = spec
+        return type("Receipt", (), {"diagnostic": None})()
+
+    monkeypatch.setattr(window, "_exec_dialog", execute_dialog)
+    monkeypatch.setattr(window, "export_result_csv", capture_export)
+
+    window.export_csv()
+
+    assert captured["path"] == tmp_path / "selected-field.csv"
+    assert captured["spec"].selection == selected
+    assert captured["spec"].source == provider.source
+    assert captured["spec"].materialization_generation == (
+        provider.snapshot.generation
+    )
+    assert window.result_selection == displayed
     window.close()

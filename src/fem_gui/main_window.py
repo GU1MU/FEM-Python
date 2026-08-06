@@ -233,8 +233,10 @@ from .postprocessing_dialogs import (
 )
 from .result_presentation import (
     result_position_label,
+    result_variable_label,
     visible_result_fields,
 )
+from .result_csv_export_dialog import ResultCsvExportDialog
 from .preprocessing_dialogs import (
     BasicSolidCreationDialog,
     BoxGeometryDialog,
@@ -301,18 +303,6 @@ _IMPORTED_OUTPUT_REQUEST_WARNING = (
     "重新加载原 INP 后会恢复源文件中的输出请求。"
 )
 
-_RESULT_VARIABLE_LABELS = {
-    ResultVariable.U: "位移 U",
-    ResultVariable.UR: "转角 UR",
-    ResultVariable.RF: "反力 RF",
-    ResultVariable.RM: "反力矩 RM",
-    ResultVariable.LE: "对数应变 LE",
-    ResultVariable.S: "应力 S",
-}
-_RESULT_POSITION_LABELS = {
-    FieldPosition.NODE: "节点",
-    FieldPosition.ELEMENT_NODAL: "节点",
-}
 _RESULT_FIELD_STATE_LABELS = {
     FieldState.LAZY: "按需加载",
     FieldState.UNAVAILABLE: "不可用",
@@ -3331,10 +3321,7 @@ class FEMMainWindow(QMainWindow):
             if variable not in variables:
                 variables.append(variable)
                 self.result_variable_combo.addItem(
-                    _RESULT_VARIABLE_LABELS.get(
-                        variable,
-                        variable.value,
-                    ),
+                    result_variable_label(variable),
                     variable,
                 )
         preferred_variable = (
@@ -3401,10 +3388,7 @@ class FEMMainWindow(QMainWindow):
             ):
                 positions.append(field_id.position)
                 self.result_position_combo.addItem(
-                    _RESULT_POSITION_LABELS.get(
-                        field_id.position,
-                        field_id.position.value,
-                    ),
+                    result_position_label(field_id.position),
                     field_id.position,
                 )
         preferred_position = None
@@ -11856,26 +11840,52 @@ class FEMMainWindow(QMainWindow):
                 pass
 
     def export_csv(self) -> None:
-        export_identity = self._current_result_export_identity("导出 CSV 失败")
-        if export_identity is None:
+        provider = self._current_result_provider()
+        selection = self.result_selection
+        if (
+            provider is None
+            or type(selection) is not ScalarFieldSelection
+        ):
             return
-        source, generation, selection, field_key = export_identity
         stem = self.document.path.stem if self.document.path else "result"
-        safe_field = field_key.replace(":", "_")
-        default = f"{stem}_{safe_field}.csv"
-        path, _filter = QFileDialog.getSaveFileName(
-            self, "导出当前结果字段", default, "CSV 文件 (*.csv)"
+        default_directory = (
+            self.document.path.parent
+            if self.document.path is not None
+            else Path.cwd()
         )
-        if not path:
+        try:
+            dialog = ResultCsvExportDialog(
+                provider.catalog(),
+                current_selection=selection,
+                default_directory=default_directory,
+                filename_stem=stem,
+                parent=self,
+            )
+        except (TypeError, ValueError) as error:
+            self._show_error("导出 CSV 失败", str(error))
             return
-        target = Path(path).with_suffix(".csv")
+        if self._exec_dialog(dialog) != QDialog.DialogCode.Accepted:
+            return
+        export_selection = dialog.current_selection()
+        target = dialog.target_path()
+        try:
+            availability = self._catalog_availability_for_selection(
+                provider,
+                export_selection,
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            self._show_error("导出 CSV 失败", str(error))
+            return
+        if availability.state is not FieldState.READY:
+            self._show_error("导出 CSV 失败", "所选结果字段尚未就绪")
+            return
         self.status_panel.set_state("正在导出 CSV……")
         receipt = self.export_result_csv(
             target,
             ResultCsvExportSpec(
-                source,
-                generation,
-                selection,
+                provider.source,
+                provider.snapshot.generation,
+                export_selection,
             ),
         )
         if receipt.diagnostic is not None:

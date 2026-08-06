@@ -179,14 +179,20 @@ def test_result_action_descriptors_use_canonical_export_keys_and_handlers() -> N
 
 
 @pytest.mark.parametrize(
-    ("changes", "field_enabled", "query_enabled", "export_enabled"),
     (
-        ({}, True, True, True),
-        ({"result_source_current": False}, False, False, False),
-        ({"catalog_available": False}, False, False, False),
-        ({"busy": True}, False, False, False),
-        ({"materialization_pending": True}, False, False, False),
-        ({"result_task_busy": True}, False, False, False),
+        "changes",
+        "field_enabled",
+        "query_enabled",
+        "csv_enabled",
+        "vtk_enabled",
+    ),
+    (
+        ({}, True, True, True, True),
+        ({"result_source_current": False}, False, False, False, False),
+        ({"catalog_available": False}, False, False, False, False),
+        ({"busy": True}, False, False, False, False),
+        ({"materialization_pending": True}, False, False, False, False),
+        ({"result_task_busy": True}, False, False, False, False),
         (
             {
                 "selected_field_exists": False,
@@ -194,23 +200,32 @@ def test_result_action_descriptors_use_canonical_export_keys_and_handlers() -> N
             },
             True,
             True,
+            True,
             False,
         ),
-        ({"selected_field_state": FieldState.LAZY}, True, True, False),
+        (
+            {"selected_field_state": FieldState.LAZY},
+            True,
+            True,
+            True,
+            False,
+        ),
         (
             {"selected_field_state": FieldState.UNAVAILABLE},
             True,
             True,
+            True,
             False,
         ),
-        ({"selected_field_state": None}, True, True, False),
+        ({"selected_field_state": None}, True, True, True, False),
     ),
 )
 def test_result_action_readiness_is_a_typed_fact_truth_table(
     changes: dict[str, object],
     field_enabled: bool,
     query_enabled: bool,
-    export_enabled: bool,
+    csv_enabled: bool,
+    vtk_enabled: bool,
 ) -> None:
     context = replace(GuiActionContext(), **changes)
 
@@ -218,8 +233,8 @@ def test_result_action_readiness_is_a_typed_fact_truth_table(
 
     assert states[GuiActionKey.FIELD].enabled is field_enabled
     assert states[GuiActionKey.QUERY].enabled is query_enabled
-    assert states[GuiActionKey.EXPORT_CSV].enabled is export_enabled
-    assert states[GuiActionKey.EXPORT_VTK].enabled is export_enabled
+    assert states[GuiActionKey.EXPORT_CSV].enabled is csv_enabled
+    assert states[GuiActionKey.EXPORT_VTK].enabled is vtk_enabled
     for key in (
         GuiActionKey.FIELD,
         GuiActionKey.QUERY,
@@ -241,7 +256,7 @@ def test_query_can_submit_a_lazy_field_for_materialization() -> None:
 
     assert states[GuiActionKey.FIELD].enabled
     assert states[GuiActionKey.QUERY].enabled
-    assert not states[GuiActionKey.EXPORT_CSV].enabled
+    assert states[GuiActionKey.EXPORT_CSV].enabled
     assert not states[GuiActionKey.EXPORT_VTK].enabled
 
 

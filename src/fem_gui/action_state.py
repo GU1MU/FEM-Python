@@ -830,18 +830,23 @@ def derive_action_availability(
         has_result_catalog and result_actions_idle,
         "当前结果目录不可用，或结果任务正在运行",
     )
-    result_export_enabled = (
+    csv_export_enabled = has_result_catalog and result_actions_idle
+    vtk_export_enabled = (
         has_result_catalog
         and context.selected_field_exists
         and context.selected_field_state is FieldState.READY
         and result_actions_idle
     )
-    for key in (GuiActionKey.EXPORT_CSV, GuiActionKey.EXPORT_VTK):
-        set_state(
-            key,
-            result_export_enabled,
-            "请选择已就绪的当前结果字段，并等待结果任务完成",
-        )
+    set_state(
+        GuiActionKey.EXPORT_CSV,
+        csv_export_enabled,
+        "当前结果目录不可用，或结果任务正在运行",
+    )
+    set_state(
+        GuiActionKey.EXPORT_VTK,
+        vtk_export_enabled,
+        "请选择已就绪的当前结果字段，并等待结果任务完成",
+    )
     set_state(
         GuiActionKey.SCREENSHOT,
         context.viewport_scene_available

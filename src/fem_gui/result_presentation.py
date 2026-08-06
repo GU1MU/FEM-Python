@@ -15,6 +15,14 @@ _POSITION_LABELS = {
     FieldPosition.NODE: "节点",
     FieldPosition.ELEMENT_NODAL: "节点",
 }
+_VARIABLE_LABELS = {
+    ResultVariable.U: "位移 U",
+    ResultVariable.UR: "转角 UR",
+    ResultVariable.RF: "反力 RF",
+    ResultVariable.RM: "反力矩 RM",
+    ResultVariable.LE: "对数应变 LE",
+    ResultVariable.S: "应力 S",
+}
 
 
 def result_field_is_visible(availability: FieldAvailability) -> bool:
@@ -47,3 +55,11 @@ def result_position_label(position: FieldPosition) -> str:
     if type(position) is not FieldPosition:
         raise TypeError("position must be FieldPosition")
     return _POSITION_LABELS.get(position, position.value)
+
+
+def result_variable_label(variable: ResultVariable) -> str:
+    """Return the user-facing name for one result variable."""
+
+    if type(variable) is not ResultVariable:
+        raise TypeError("variable must be ResultVariable")
+    return _VARIABLE_LABELS.get(variable, variable.value)
