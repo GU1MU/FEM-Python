@@ -280,9 +280,23 @@ def test_phase0_capture_reproduces_minimal_no_tool_call_failure(tmp_path) -> Non
     assert "active_part_id" not in system_context
     assert "recipe_kind" not in system_context
     assert not any(item.event is EngineEventType.TOOL_STARTED for item in events)
-    assert any(
+    # Phase 0 keeps the no-tool-call evidence, while Phase 2 prevents the
+    # unsupported/mesh-first text from reaching the user and performs one
+    # bounded correction retry in the same turn.
+    assert len(provider.requests) == 2
+    assert not any(
         item.event is EngineEventType.MESSAGE_DELTA
         and item.data.get("text") == failure_evidence["final_capability_statement"]
+        for item in events
+    )
+    assert "route_hint" in system_context
+    assert any(
+        "Local geometry route correction" in item
+        for item in provider.requests[1].system_context
+    )
+    assert any(
+        item.event is EngineEventType.MESSAGE_DELTA
+        and item.data.get("text") == "当前几何能力检查未完成，请重试。"
         for item in events
     )
     assert "<session-redacted>" in system_context

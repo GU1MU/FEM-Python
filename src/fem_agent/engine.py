@@ -46,6 +46,7 @@ from .schemas import (
     SessionPhase,
     ToolResult,
 )
+from .routing import GeometryRouteHint, geometry_route_hint
 from .state import RevisionRecord, RevisionStore, hash_revision_spec
 from .tools.registry import (
     AgentToolRegistry,
@@ -191,6 +192,19 @@ After that edit succeeds, return attention to mesh because the previous mesh is
 stale. Do not collect material, section, boundary-condition, load, analysis, or
 result settings in advance, and never present a full-project questionnaire or
 roadmap.
+
+Geometry transforms happen before mesh generation. A mesh is never a
+prerequisite for profile extrusion, profile revolution, or path sweep, and a
+successful geometry transform makes the previous mesh stale. Treat the local
+route hint, published tool schema, and typed authoring context as the only
+capability facts. For an explicit transform route, first read the current
+transform context, then prepare the matching proposal; never invent a Profile
+ID or recommend meshing first. If the hint lists a missing height, path, axis,
+or other decisive field, ask only for that field. A user statement that the
+size may be arbitrary authorizes a clearly labelled provisional proposal value,
+not an unlabelled user fact. A bare "sweep" is ambiguous: ask whether it is a
+rotation, path transform, or mesh request. A swept-mesh request remains a
+meshing intent and must not be routed to profile geometry tools.
 
 Use only the requirement fields exposed by the current tool schema. Record only
 values explicitly supplied by the user, except for locally declared defaults
@@ -722,6 +736,44 @@ class AgentSessionEngine:
         initial = self.revisions.latest(self.session_id)
         turn_revision = 0 if initial is None else initial.revision
         turn_nonce = uuid.uuid4().hex
+        refusal_retry_used = False
+        route_probe_called = False
+        route_correction: str | None = None
+
+        def local_geometry_recovery() -> tuple[EngineEvent, ...]:
+            recovery = _geometry_route_recovery(self._latest_user_request())
+            try:
+                self._append_message(AssistantMessage("assistant", recovery))
+            except _ConversationStorageLimit:
+                diagnostic = make_diagnostic(
+                    DiagnosticCode.RESOURCE_LIMIT,
+                    (
+                        "The local geometry recovery message could not fit "
+                        "in the bounded conversation store."
+                    ),
+                    source="agent.engine",
+                )
+                events.append(self._diagnostic_event(diagnostic))
+                events.append(
+                    self._event(
+                        EngineEventType.ERROR,
+                        {"diagnostic": diagnostic.to_dict()},
+                    )
+                )
+                return tuple(events)
+            events.append(
+                self._event(
+                    EngineEventType.MESSAGE_STARTED,
+                    {"role": "assistant"},
+                )
+            )
+            events.append(
+                self._event(
+                    EngineEventType.MESSAGE_DELTA,
+                    {"text": recovery},
+                )
+            )
+            return tuple(events)
 
         for _ in range(self.config.max_cloud_turns):
             if self._cancel_event.is_set():
@@ -735,7 +787,13 @@ class AgentSessionEngine:
             try:
                 self._provider_active = True
                 try:
+                    route_hint = self._route_hint_for_current_turn()
+                    correction_for_round = route_correction
+                    route_correction = None
                     streamed_text_parts: list[str] = []
+                    streamed_events: list[
+                        tuple[EngineEventType, Mapping[str, Any]]
+                    ] = []
                     stream_started = False
 
                     def receive_text_delta(delta: str) -> None:
@@ -745,20 +803,33 @@ class AgentSessionEngine:
                                 "provider stream emitted an invalid text delta"
                             )
                         if not stream_started:
-                            events.append(
-                                self._event(
-                                    EngineEventType.MESSAGE_STARTED,
-                                    {"role": "assistant"},
+                            if route_hint is not None and route_hint.is_transform:
+                                streamed_events.append(
+                                    (
+                                        EngineEventType.MESSAGE_STARTED,
+                                        {"role": "assistant"},
+                                    )
                                 )
-                            )
+                            else:
+                                events.append(
+                                    self._event(
+                                        EngineEventType.MESSAGE_STARTED,
+                                        {"role": "assistant"},
+                                    )
+                                )
                             stream_started = True
                         streamed_text_parts.append(delta)
-                        events.append(
-                            self._event(
-                                EngineEventType.MESSAGE_DELTA,
-                                {"text": delta},
+                        if route_hint is not None and route_hint.is_transform:
+                            streamed_events.append(
+                                (EngineEventType.MESSAGE_DELTA, {"text": delta})
                             )
-                        )
+                        else:
+                            events.append(
+                                self._event(
+                                    EngineEventType.MESSAGE_DELTA,
+                                    {"text": delta},
+                                )
+                            )
 
                     stream_completion = getattr(
                         self.provider,
@@ -769,6 +840,8 @@ class AgentSessionEngine:
                         response = stream_completion(
                             self._provider_messages(
                                 request_context=request_context,
+                                route_hint=route_hint,
+                                route_correction=correction_for_round,
                             ),
                             available_tools,
                             receive_text_delta,
@@ -777,6 +850,8 @@ class AgentSessionEngine:
                         response = self.provider.complete(
                             self._provider_messages(
                                 request_context=request_context,
+                                route_hint=route_hint,
+                                route_correction=correction_for_round,
                             ),
                             available_tools,
                         )
@@ -851,6 +926,42 @@ class AgentSessionEngine:
                 response.message.tool_calls,
             )
 
+            if (
+                refusal_retry_used
+                and not route_probe_called
+                and route_hint is not None
+                and route_hint.is_transform
+                and route_hint.required_probe_tool is not None
+                and not any(
+                    call.name == route_hint.required_probe_tool
+                    for call in response.message.tool_calls
+                )
+            ):
+                # Once the bounded correction has been issued, only the
+                # required typed-context probe is a valid continuation.  A
+                # second text response or a prepare call that skips the probe
+                # terminates locally instead of trusting another ungrounded
+                # capability claim.
+                return local_geometry_recovery()
+
+            if _should_guard_geometry_refusal(
+                route_hint,
+                available_tools,
+                response.message,
+                self.registry.provider_snapshot,
+                route_probe_called,
+            ):
+                # Refusal text is held back from the UI until the local guard
+                # has decided that it is safe to expose.  The first refusal
+                # receives one bounded, tool-directed correction; no provider
+                # loop can consume more than that retry.
+                if not refusal_retry_used:
+                    refusal_retry_used = True
+                    route_correction = _geometry_route_correction(route_hint)
+                    continue
+
+                return local_geometry_recovery()
+
             try:
                 self._append_message(response.message)
             except _ConversationStorageLimit:
@@ -870,6 +981,11 @@ class AgentSessionEngine:
                     )
                 )
                 return tuple(events)
+            if streamed_events:
+                events.extend(
+                    self._event(event, data)
+                    for event, data in streamed_events
+                )
             if not stream_started:
                 events.append(
                     self._event(
@@ -908,6 +1024,11 @@ class AgentSessionEngine:
                     )
                     events.append(self._diagnostic_event(diagnostic))
                     return tuple(events)
+                if (
+                    route_hint is not None
+                    and call.name == route_hint.required_probe_tool
+                ):
+                    route_probe_called = True
                 current = self.revisions.latest(self.session_id)
                 active_run = self._matching_active_run(current)
                 context = ToolExecutionContext(
@@ -1475,6 +1596,8 @@ class AgentSessionEngine:
         self,
         *,
         request_context: str | None = None,
+        route_hint: GeometryRouteHint | None = None,
+        route_correction: str | None = None,
     ) -> tuple[AssistantMessage, ...]:
         state = self.get_snapshot()
         context = {
@@ -1499,6 +1622,10 @@ class AgentSessionEngine:
                 }
             else:
                 context["authoring_turn_snapshot"] = projected
+        if route_hint is None:
+            route_hint = self._route_hint_for_current_turn()
+        if route_hint is not None:
+            context["route_hint"] = route_hint.to_provider_dict()
         complete = _complete_provider_history(self._history)
         retained = complete[-self.config.max_conversation_messages :]
         while retained and retained[0].role != "user":
@@ -1513,7 +1640,7 @@ class AgentSessionEngine:
                 current_user_index,
                 AssistantMessage("user", request_context),
             )
-        return (
+        messages = (
             AssistantMessage("system", self._system_prompt),
             AssistantMessage(
                 "system",
@@ -1521,6 +1648,31 @@ class AgentSessionEngine:
                 + json.dumps(context, ensure_ascii=False, sort_keys=True),
             ),
             *retained,
+        )
+        if route_correction is None:
+            return messages
+        return (*messages, AssistantMessage("system", route_correction))
+
+    def _route_hint_for_current_turn(self) -> GeometryRouteHint | None:
+        """Classify the latest user request when native tools are in scope."""
+
+        # Imported-analysis engines have no dynamic authoring registry.  Do
+        # not add a geometry hint to those ordinary chat/result/.inp turns.
+        if getattr(self.registry, "_dynamic_tools", None) is None:
+            return None
+        user_text = self._latest_user_request()
+        if user_text is None:
+            return None
+        return geometry_route_hint(user_text)
+
+    def _latest_user_request(self) -> str | None:
+        return next(
+            (
+                message.content
+                for message in reversed(self._history)
+                if message.role == "user" and isinstance(message.content, str)
+            ),
+            None,
         )
 
     def _phase(
@@ -1866,13 +2018,16 @@ class AgentSessionEngine:
                 }
             )
         )
+        route_hint = self._route_hint_for_current_turn()
         entry = {
             "session_id": self.session_id,
             "workflow_stage": stage,
             "revision": revision,
             "published_tool_names": list(tool_names),
             "schema_hashes": schema_hashes,
-            "route_hint": snapshot_dict.get("route_hint"),
+            "route_hint": (
+                None if route_hint is None else route_hint.to_provider_dict()
+            ),
             "tool_call_flags": {
                 "provider_called": bool(tool_calls),
                 "called_tool_names": list(called_names),
@@ -2158,6 +2313,146 @@ def _provider_snapshot_dict(value: object) -> dict[str, Any] | None:
     except Exception:
         return None
     return dict(projected) if isinstance(projected, Mapping) else None
+
+
+_GEOMETRY_REFUSAL_MARKERS = (
+    "不支持",
+    "不受支持",
+    "无法",
+    "不能",
+    "不可用",
+    "不具备",
+    "不提供",
+    "暂不支持",
+    "unsupported",
+    "not supported",
+    "cannot",
+    "can't",
+    "unable to",
+    "not available",
+)
+_MESH_PREREQUISITE_MARKERS = (
+    "先生成网格",
+    "先网格",
+    "必须先网格",
+    "需要先网格",
+    "先划分网格",
+    "先进行网格",
+    "网格后才能",
+    "mesh first",
+    "must mesh",
+    "must generate a mesh",
+    "generate a mesh first",
+    "requires meshing first",
+)
+_TYPED_DIAGNOSTIC_MARKERS = (
+    "diagnostic",
+    "error code",
+    "tool result",
+    "工具结果",
+    "诊断",
+    "错误码",
+    "profile-transform.",
+    "profile_transform.",
+)
+
+
+def _should_guard_geometry_refusal(
+    route_hint: GeometryRouteHint | None,
+    available_tools: Sequence[object],
+    message: AssistantMessage,
+    snapshot: object | None,
+    route_probe_called: bool = False,
+) -> bool:
+    """Return true only for an unsupported/mesh-first text misroute.
+
+    The guard intentionally ignores tool-bearing responses, ordinary missing
+    parameter questions, typed diagnostics, cancellation, and contexts whose
+    typed Part state proves that a planar transform cannot apply.
+    """
+
+    if route_hint is None or not route_hint.is_transform:
+        return False
+    if route_hint.required_probe_tool is None:
+        return False
+    if route_probe_called:
+        return False
+    published = {
+        str(getattr(item, "name", ""))
+        for item in available_tools
+        if isinstance(getattr(item, "name", None), str)
+    }
+    if route_hint.required_probe_tool not in published:
+        return False
+    if (
+        route_hint.required_prepare_tool is not None
+        and route_hint.required_prepare_tool not in published
+    ):
+        return False
+    if message.tool_calls or not isinstance(message.content, str):
+        return False
+    content = message.content.casefold()
+    if any(marker in content for marker in ("取消", "cancel", "stop")):
+        return False
+    if any(marker in content for marker in _TYPED_DIAGNOSTIC_MARKERS):
+        return False
+    if not any(
+        marker in content
+        for marker in _GEOMETRY_REFUSAL_MARKERS + _MESH_PREREQUISITE_MARKERS
+    ):
+        return False
+    return not _snapshot_proves_transform_unsupported(snapshot)
+
+
+def _snapshot_proves_transform_unsupported(snapshot: object | None) -> bool:
+    projected = _provider_snapshot_dict(snapshot)
+    if not projected or not projected.get("available", False):
+        return False
+    if projected.get("source_kind") not in {None, "native"}:
+        return True
+    dimension = projected.get("active_part_dimension")
+    if isinstance(dimension, int) and not isinstance(dimension, bool) and dimension != 2:
+        return True
+    if projected.get("active_part_suppressed") is True:
+        return True
+    capabilities = projected.get("enabled_capabilities")
+    if isinstance(capabilities, (list, tuple, set)) and capabilities:
+        capability_names = {str(item) for item in capabilities}
+        if not capability_names.intersection(
+            {"edit_native_geometry", "prepare_geometry_edit"}
+        ):
+            return True
+    return False
+
+
+def _geometry_route_correction(route_hint: GeometryRouteHint) -> str:
+    hint = json.dumps(
+        route_hint.to_provider_dict(),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return (
+        "Local geometry route correction (bounded, non-authorizing): the "
+        "explicit user request matches this transform hint: "
+        + hint
+        + ". Do not claim that the operation is unsupported or that a mesh is "
+        "required. First call the required probe tool to read typed transform "
+        "context; only then call the matching prepare tool with IDs returned "
+        "by that read. If the read result contains a typed unsupported "
+        "diagnostic, report that diagnostic; otherwise do not invent IDs or "
+        "geometry facts."
+    )
+
+
+def _geometry_route_recovery(user_request: str | None) -> str:
+    """Return a deterministic recovery in the user's language."""
+
+    if isinstance(user_request, str) and any(
+        "\u4e00" <= character <= "\u9fff" for character in user_request
+    ):
+        return "当前几何能力检查未完成，请重试。"
+    return "The current geometry capability check was not completed; please retry."
 
 
 def _payload_limit_result(context: ToolExecutionContext) -> ToolResult:
