@@ -81,6 +81,10 @@ from fem_agent.definition_action_authoring import (
     create_definition_change,
     require_strict_definition_batch,
 )
+from fem_agent.diagnostics import (
+    PROFILE_TRANSFORM_DIAGNOSTIC_CODES,
+    profile_transform_diagnostic,
+)
 from fem_agent.deletion_authoring import (
     apply_delete_operation,
     create_delete_proposal,
@@ -185,6 +189,28 @@ class _SessionSnapshot(Protocol):
     unit_context: object | None
 
 
+def _normalize_profile_preflight_error(error: BaseException) -> AuthoringContractError:
+    message = str(error).strip()
+    prefix = message.split(":", 1)[0].strip()
+    if (
+        isinstance(error, AuthoringContractError)
+        and prefix in PROFILE_TRANSFORM_DIAGNOSTIC_CODES
+    ):
+        return error
+    return AuthoringContractError(
+        "profile-transform.preflight-failed: native geometry preflight failed"
+    )
+
+
+def _run_profile_transform_preflight(callback: Callable[..., None], *args: object) -> None:
+    """Normalize backend failures at the detached preflight boundary."""
+
+    try:
+        callback(*args)
+    except Exception as error:
+        raise _normalize_profile_preflight_error(error) from error
+
+
 def _preflight_profile_extrusions(
     recipes: tuple[ExtrudedGeometry, ...],
 ) -> None:
@@ -198,11 +224,14 @@ def _preflight_profile_extrusions(
             ) as cad:
                 compile_recipe(cad, recipe)
 
-    with ThreadPoolExecutor(
-        max_workers=1,
-        thread_name_prefix="agent-extrusion-preflight",
-    ) as executor:
-        executor.submit(compile_all).result()
+    try:
+        with ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="agent-extrusion-preflight",
+        ) as executor:
+            executor.submit(compile_all).result()
+    except Exception as error:
+        raise _normalize_profile_preflight_error(error) from error
 
 
 def _preflight_derived_geometry(
@@ -221,11 +250,14 @@ def _preflight_derived_geometry(
                     "derived Profile preflight did not prove one positive volume"
                 )
 
-    with ThreadPoolExecutor(
-        max_workers=1,
-        thread_name_prefix="agent-derived-preflight",
-    ) as executor:
-        executor.submit(compile_one).result()
+    try:
+        with ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="agent-derived-preflight",
+        ) as executor:
+            executor.submit(compile_one).result()
+    except Exception as error:
+        raise _normalize_profile_preflight_error(error) from error
 
 
 def _preflight_composite_geometry(
@@ -233,41 +265,44 @@ def _preflight_composite_geometry(
 ) -> None:
     """Prove one exact, positive-volume Body before a blank proposal is shown."""
 
-    topology = describe_recipe_topology(recipe)
-    if not topology.exact:
-        raise AuthoringContractError(
-            "profile-transform.topology-unproven: composite recipe topology "
-            "could not be proven exactly"
-        )
-    expected_bodies = len(topology.entities_of("body", selectable_only=True))
-    if expected_bodies != 1:
-        raise AuthoringContractError(
-            "profile-transform.unexpected-body-count: composite recipe must "
-            "describe exactly one selectable Body"
-        )
+    try:
+        topology = describe_recipe_topology(recipe)
+        if not topology.exact:
+            raise AuthoringContractError(
+                "profile-transform.topology-unproven: composite recipe topology "
+                "could not be proven exactly"
+            )
+        expected_bodies = len(topology.entities_of("body", selectable_only=True))
+        if expected_bodies != 1:
+            raise AuthoringContractError(
+                "profile-transform.unexpected-body-count: composite recipe must "
+                "describe exactly one selectable Body"
+            )
 
-    def compile_one() -> None:
-        with geometry_runtime.model(
-            f"agent-composite-{type(recipe).__name__}-preflight",
-            dimension=3,
-        ) as cad:
-            compiled = compile_recipe(cad, recipe)
-            if len(compiled.domain) != 1:
-                raise AuthoringContractError(
-                    "profile-transform.unexpected-body-count: composite "
-                    "preflight did not prove one solid domain"
-                )
-            if cad.volume(compiled.domain[0]) <= 0.0:
-                raise AuthoringContractError(
-                    "profile-transform.topology-unproven: composite preflight "
-                    "did not prove a positive volume"
-                )
+        def compile_one() -> None:
+            with geometry_runtime.model(
+                f"agent-composite-{type(recipe).__name__}-preflight",
+                dimension=3,
+            ) as cad:
+                compiled = compile_recipe(cad, recipe)
+                if len(compiled.domain) != 1:
+                    raise AuthoringContractError(
+                        "profile-transform.unexpected-body-count: composite "
+                        "preflight did not prove one solid domain"
+                    )
+                if cad.volume(compiled.domain[0]) <= 0.0:
+                    raise AuthoringContractError(
+                        "profile-transform.topology-unproven: composite preflight "
+                        "did not prove a positive volume"
+                    )
 
-    with ThreadPoolExecutor(
-        max_workers=1,
-        thread_name_prefix="agent-composite-preflight",
-    ) as executor:
-        executor.submit(compile_one).result()
+        with ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="agent-composite-preflight",
+        ) as executor:
+            executor.submit(compile_one).result()
+    except Exception as error:
+        raise _normalize_profile_preflight_error(error) from error
 
 
 def _canonical_profile_source_recipe(recipe: object) -> object:
@@ -3185,7 +3220,10 @@ def create_session_authoring_workflow_controller(
                     height,
                     tuple(source_face_ids),
                 )
-                _preflight_composite_geometry(recipe)
+                _run_profile_transform_preflight(
+                    _preflight_composite_geometry,
+                    recipe,
+                )
                 draft = geometry_draft(recipe)
                 transform_summary = (
                     f"拉伸高={_display_number(height)} {length_unit}，"
@@ -3207,7 +3245,10 @@ def create_session_authoring_workflow_controller(
                     tuple(source_face_ids),
                     frame_strategy,
                 )
-                _preflight_composite_geometry(recipe)
+                _run_profile_transform_preflight(
+                    _preflight_composite_geometry,
+                    recipe,
+                )
                 draft = geometry_draft(recipe)
                 transform_summary = (
                     f"路径扫掠段数={len(path.members)}，"
@@ -3587,73 +3628,166 @@ def create_session_authoring_workflow_controller(
             )
         return requested
 
-    def _profile_transform_error(error: BaseException) -> AuthoringToolOutcome:
-        message = str(error).strip() or type(error).__name__
-        code = "profile-transform.invalid-input"
-        if message.startswith("profile-transform."):
-            code = message.split(":", 1)[0].strip()
+    def _profile_transform_error(
+        error: BaseException,
+        *,
+        operation: str = "Profile transform",
+        required_fields: tuple[str, ...] | None = None,
+        first_failed_member: str | None = None,
+    ) -> AuthoringToolOutcome:
+        """Normalize one transform failure without changing the Session."""
+
+        raw_message = str(error).strip() or type(error).__name__
+        code = "profile-transform.preflight-failed"
+        detail = raw_message
+        if raw_message.startswith("profile-transform."):
+            prefix, separator, remainder = raw_message.partition(":")
+            if prefix in {
+                "profile-transform.part-not-found",
+                "profile-transform.source-not-planar",
+                "profile-transform.source-not-strict",
+                "profile-transform.no-material-profile",
+                "profile-transform.ambiguous-material-profiles",
+                "profile-transform.invalid-source-id",
+                "profile-transform.nonpositive-height",
+                "profile-transform.invalid-path",
+                "profile-transform.unsupported-frame",
+                "profile-transform.topology-unproven",
+                "profile-transform.unexpected-body-count",
+                "profile-transform.stale-context",
+                "profile-transform.preflight-failed",
+            }:
+                code = prefix
+                detail = remainder.strip() if separator else prefix
         else:
-            lowered = message.casefold()
-            if any(
-                marker in lowered
-                for marker in ("path", "路径", "branch", "self-intersect", "open")
-            ):
-                code = "profile-transform.invalid-path"
+            lowered = raw_message.casefold()
+            if "preflight" in lowered or "occ" in lowered or "gmsh" in lowered:
+                code = "profile-transform.preflight-failed"
             elif "frame_strategy" in lowered or "frame" in lowered:
                 code = "profile-transform.unsupported-frame"
+            elif any(
+                marker in lowered
+                for marker in (
+                    "path",
+                    "路径",
+                    "branch",
+                    "self-intersect",
+                    "open",
+                    "wire",
+                    "member",
+                )
+            ):
+                code = "profile-transform.invalid-path"
             elif "height" in lowered or "高度" in lowered:
                 code = "profile-transform.nonpositive-height"
+            elif "body" in lowered or "volume" in lowered:
+                code = "profile-transform.unexpected-body-count"
+            elif "topolog" in lowered or "strict" in lowered:
+                code = "profile-transform.topology-unproven"
             elif "source" in lowered or "profile" in lowered:
                 code = "profile-transform.invalid-source-id"
-        return AuthoringToolOutcome(
-            message[:512],
-            {
-                "diagnostic": {
-                    "code": code,
-                    "message": message[:512],
-                    "retryable": code
-                    in {
-                        "profile-transform.stale-context",
-                        "profile-transform.preflight-failed",
-                    },
-                    "required_fields": [],
-                },
-            },
-            ok=False,
+
+        candidates: tuple[str, ...] = ()
+        marker = "candidates="
+        if marker in detail:
+            candidate_text = detail.split(marker, 1)[1].split(";", 1)[0]
+            candidates = tuple(
+                item.strip().strip("()[]{}'\"")[:192]
+                for item in candidate_text.split(",")
+                if item.strip().strip("()[]{}'\"")
+                and item.strip().strip("()[]{}'\"") != "none"
+            )[:32]
+        if first_failed_member is None:
+            member_marker = "member "
+            if member_marker in detail.casefold():
+                fragment = detail.casefold().split(member_marker, 1)[1]
+                first_failed_member = fragment.split()[0].strip("'\"`()[]{}:,")
+        diagnostic = profile_transform_diagnostic(
+            code,
+            operation=operation,
+            detail=detail,
+            required_fields=required_fields,
+            candidates=candidates,
+            first_failed_member=first_failed_member,
         )
+        payload = {"diagnostic": diagnostic.to_dict()}
+        return AuthoringToolOutcome(diagnostic.message, payload, ok=False)
+
+    def _first_failed_path_member(value: object) -> str | None:
+        """Return the first member that breaks the caller-provided order."""
+
+        if not isinstance(value, Mapping):
+            return None
+        raw_members = value.get("members")
+        if not isinstance(raw_members, list):
+            return None
+        members = [item for item in raw_members if isinstance(item, Mapping)]
+        for previous, current in zip(members, members[1:]):
+            if previous.get("end") != current.get("start"):
+                name = current.get("name")
+                return str(name) if name is not None else None
+        return None
 
     def read_profile_transform_context(
         arguments: Mapping[str, object],
         _controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
-        if set(arguments) != {"part_id"}:
-            raise ValueError("read_profile_transform_context fields do not match")
-        snapshot, part = _profile_transform_part(arguments["part_id"])
-        data = profile_transform_context(
-            part.geometry_recipe,
-            part_id=str(part.id),
-            session_revision=snapshot.session_revision,
-        )
-        data["part_name"] = str(part.name)
-        data["active"] = str(part.id) == str(snapshot.active_part_id)
-        provider_safe_authoring_payload(data)
-        return AuthoringToolOutcome(
-            "Profile transform context read locally.",
-            data,
-        )
+        try:
+            if set(arguments) != {"part_id"}:
+                raise ValueError(
+                    "read_profile_transform_context fields do not match"
+                )
+            snapshot, part = _profile_transform_part(arguments["part_id"])
+            data = profile_transform_context(
+                part.geometry_recipe,
+                part_id=str(part.id),
+                session_revision=snapshot.session_revision,
+            )
+            data["part_name"] = str(part.name)
+            data["active"] = str(part.id) == str(snapshot.active_part_id)
+            provider_safe_authoring_payload(data)
+            return AuthoringToolOutcome(
+                "Profile transform context read locally.",
+                data,
+            )
+        except (AuthoringContractError, TypeError, ValueError) as error:
+            return _profile_transform_error(
+                error,
+                operation="读取 Profile 变换上下文",
+                required_fields=("part_id",),
+            )
 
     def prepare_profile_extrusion(
         arguments: Mapping[str, object],
         controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
-        required = {"part_id", "profile_selection", "height"}
-        if "source_face_ids" in arguments and "profile_selection" not in arguments:
-            required = {"part_id", "source_face_ids", "height"}
-        if not required.issubset(arguments) or set(arguments) - required - {
-            "context_revision"
-        }:
-            raise ValueError("prepare_profile_extrusion fields do not match")
         try:
+            required = {"part_id", "profile_selection", "height"}
+            if "source_face_ids" in arguments and "profile_selection" not in arguments:
+                required = {"part_id", "source_face_ids", "height"}
+            missing = required - set(arguments)
+            extra = set(arguments) - required - {"context_revision"}
+            if missing:
+                missing = tuple(
+                    field
+                    for field in ("part_id", "profile_selection", "height")
+                    if field not in arguments
+                )
+                missing_code = (
+                    "profile-transform.nonpositive-height"
+                    if "height" in missing
+                    else (
+                        "profile-transform.part-not-found"
+                        if "part_id" in missing
+                        else "profile-transform.ambiguous-material-profiles"
+                    )
+                )
+                raise AuthoringContractError(
+                    missing_code + ": "
+                    + ("missing height" if "height" in missing else "missing required fields")
+                )
+            if extra:
+                raise ValueError("prepare_profile_extrusion fields do not match")
             snapshot, part = _profile_transform_part(arguments["part_id"])
             selected = _profile_selection(arguments, snapshot=snapshot, part=part)
             height = arguments["height"]
@@ -3671,20 +3805,25 @@ def create_session_authoring_workflow_controller(
                 controller,
             )
         except (AuthoringContractError, TypeError, ValueError) as error:
-            return _profile_transform_error(error)
+            return _profile_transform_error(
+                error,
+                operation="Profile 拉伸",
+            )
 
     def prepare_profile_revolution(
         arguments: Mapping[str, object],
         controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
-        required = {"part_id", "profile_selection", "axis", "angle_degrees"}
-        if "source_face_ids" in arguments and "profile_selection" not in arguments:
-            required = {"part_id", "source_face_ids", "axis", "angle_degrees"}
-        if not required.issubset(arguments) or set(arguments) - required - {
-            "context_revision"
-        }:
-            raise ValueError("prepare_profile_revolution fields do not match")
         try:
+            required = {"part_id", "profile_selection", "axis", "angle_degrees"}
+            if "source_face_ids" in arguments and "profile_selection" not in arguments:
+                required = {"part_id", "source_face_ids", "axis", "angle_degrees"}
+            missing = required - set(arguments)
+            extra = set(arguments) - required - {"context_revision"}
+            if missing or extra:
+                raise AuthoringContractError(
+                    "profile-transform.preflight-failed: missing required fields"
+                )
             snapshot, part = _profile_transform_part(arguments["part_id"])
             selected = _profile_selection(arguments, snapshot=snapshot, part=part)
             if len(selected) != 1:
@@ -3707,25 +3846,33 @@ def create_session_authoring_workflow_controller(
                 controller,
             )
         except (AuthoringContractError, TypeError, ValueError) as error:
-            return _profile_transform_error(error)
+            return _profile_transform_error(error, operation="Profile 旋转扫掠")
 
     def prepare_profile_path_sweep(
         arguments: Mapping[str, object],
         controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
-        required = {
-            "part_id",
-            "profile_selection",
-            "path",
-            "frame_strategy",
-        }
-        if "source_face_ids" in arguments and "profile_selection" not in arguments:
-            required = {"part_id", "source_face_ids", "path", "frame_strategy"}
-        if not required.issubset(arguments) or set(arguments) - required - {
-            "context_revision"
-        }:
-            raise ValueError("prepare_profile_path_sweep fields do not match")
         try:
+            required = {
+                "part_id",
+                "profile_selection",
+                "path",
+                "frame_strategy",
+            }
+            if "source_face_ids" in arguments and "profile_selection" not in arguments:
+                required = {"part_id", "source_face_ids", "path", "frame_strategy"}
+            missing = required - set(arguments)
+            extra = set(arguments) - required - {"context_revision"}
+            if missing:
+                if "frame_strategy" in missing:
+                    raise AuthoringContractError(
+                        "profile-transform.unsupported-frame: missing frame_strategy"
+                    )
+                raise AuthoringContractError(
+                    "profile-transform.invalid-path: missing path"
+                )
+            if extra:
+                raise ValueError("prepare_profile_path_sweep fields do not match")
             snapshot, part = _profile_transform_part(arguments["part_id"])
             selected = _profile_selection(arguments, snapshot=snapshot, part=part)
             if len(selected) != 1:
@@ -3748,7 +3895,11 @@ def create_session_authoring_workflow_controller(
                 controller,
             )
         except (AuthoringContractError, TypeError, ValueError) as error:
-            return _profile_transform_error(error)
+            return _profile_transform_error(
+                error,
+                operation="Profile 路径扫掠",
+                first_failed_member=_first_failed_path_member(arguments.get("path")),
+            )
 
     def prepare_geometry_edit(
         arguments: Mapping[str, object],
@@ -3977,7 +4128,10 @@ def create_session_authoring_workflow_controller(
                 ExtrudedGeometry(base_recipe, height, (face_id,))
                 for face_id in selection.face_ids
             )
-            _preflight_profile_extrusions(recipes)
+            _run_profile_transform_preflight(
+                _preflight_profile_extrusions,
+                recipes,
+            )
             summary = (
                 f"选择式拉伸部件 {part.name} 的 {len(selection.face_ids)} 个 "
                 f"Profile：高度 {_display_number(height)}，沿草图正法向，"
@@ -4031,7 +4185,10 @@ def create_session_authoring_workflow_controller(
                 edit["angle_degrees"],
                 (source_face_id,),
             )
-            _preflight_derived_geometry(recipe)
+            _run_profile_transform_preflight(
+                _preflight_derived_geometry,
+                recipe,
+            )
             summary = (
                 f"绕 {recipe.axis.upper()} 轴旋转扫掠部件 {part.name} 的 "
                 f"Profile {source_face_id}：角度 {recipe.angle_degrees:g}°，"
@@ -4116,7 +4273,10 @@ def create_session_authoring_workflow_controller(
                 (source_face_id,),
                 str(edit["frame_strategy"]),
             )
-            _preflight_derived_geometry(recipe)
+            _run_profile_transform_preflight(
+                _preflight_derived_geometry,
+                recipe,
+            )
             summary = (
                 f"沿 {len(path.members)} 段显式开放折线路径扫掠部件 "
                 f"{part.name} 的 Profile {source_face_id}；"
@@ -4230,6 +4390,33 @@ def create_session_authoring_workflow_controller(
             impact="确认后原位更新该部件，并使旧网格与结果失效",
             confirm_label="应用修改",
         )
+
+    def prepare_geometry_with_diagnostics(
+        arguments: Mapping[str, object],
+        controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        """Keep composite Profile failures on the same typed boundary."""
+
+        geometry = arguments.get("geometry")
+        kind = (
+            str(geometry.get("kind", ""))
+            if isinstance(geometry, Mapping)
+            else ""
+        )
+        try:
+            return prepare_geometry(arguments, controller)
+        except (AuthoringContractError, TypeError, ValueError) as error:
+            if kind == "extruded_profiles":
+                return _profile_transform_error(error, operation="复合 Profile 拉伸")
+            if kind == "path_swept_profile":
+                return _profile_transform_error(
+                    error,
+                    operation="复合路径扫掠",
+                    first_failed_member=_first_failed_path_member(
+                        geometry.get("path") if isinstance(geometry, Mapping) else None
+                    ),
+                )
+            raise
 
     def mesh_refinement_entities():
         snapshot = session.snapshot()
@@ -4874,7 +5061,7 @@ def create_session_authoring_workflow_controller(
     controller = AuthoringWorkflowController(
         current_context,
         {
-            "prepare_geometry_proposal": prepare_geometry,
+            "prepare_geometry_proposal": prepare_geometry_with_diagnostics,
             "read_profile_transform_context": read_profile_transform_context,
             "prepare_profile_extrusion": prepare_profile_extrusion,
             "prepare_profile_revolution": prepare_profile_revolution,

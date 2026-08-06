@@ -23,6 +23,11 @@ from .authoring_runtime import (
     ProjectSaveProposalRecord,
     provider_safe_authoring_payload,
 )
+from .diagnostics import (
+    PROFILE_TRANSFORM_DIAGNOSTIC_CODES,
+    ProfileTransformDiagnostic,
+    profile_transform_diagnostic,
+)
 from .analysis_authoring import (
     AnalysisAuthoringError,
     ConfirmedDisplacement,
@@ -145,6 +150,8 @@ __all__ = [
     "AuthoringToolOutcome",
     "AuthoringWorkflowController",
     "AuthoringWorkflowStage",
+    "PROFILE_TRANSFORM_DIAGNOSTIC_CODES",
+    "ProfileTransformDiagnostic",
     "ProjectSaveProposalRecord",
     "ConfirmedDisplacement",
     "ConfirmedLoad",
@@ -210,6 +217,7 @@ __all__ = [
     "planar_polygon_geometry",
     "planar_sketch_geometry",
     "provider_safe_authoring_payload",
+    "profile_transform_diagnostic",
     "rectangle_geometry",
     "result_catalog_tool_schema",
     "result_query_tool_schema",
