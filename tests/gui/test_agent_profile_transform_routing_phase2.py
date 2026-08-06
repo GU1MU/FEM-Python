@@ -17,7 +17,7 @@ from fem_agent.schemas import ToolResult
 
 _TOOLS = (
     ToolDefinition(
-        "read_geometry_edit_context",
+        "read_profile_transform_context",
         "Read bounded native geometry transform context.",
         {
             "type": "object",
@@ -27,7 +27,7 @@ _TOOLS = (
         },
     ),
     ToolDefinition(
-        "prepare_geometry_edit",
+        "prepare_profile_extrusion",
         "Prepare a native geometry edit proposal.",
         {
             "type": "object",
@@ -86,12 +86,14 @@ def test_phase2_route_hint_distinguishes_transform_and_mesh_intents() -> None:
     assert extrusion.requested_operation == "extrude_profiles"
     assert extrusion.missing_fields == ()
     assert extrusion.mesh_prerequisite is False
-    assert extrusion.required_probe_tool == "read_geometry_edit_context"
+    assert extrusion.required_probe_tool == "read_profile_transform_context"
+    assert extrusion.required_prepare_tool == "prepare_profile_extrusion"
 
     missing_path = geometry_route_hint("沿路径扫掠")
     assert missing_path is not None
     assert missing_path.requested_operation == "path_sweep_profile"
     assert missing_path.missing_fields == ("path",)
+    assert missing_path.required_prepare_tool == "prepare_profile_path_sweep"
 
     mesh = geometry_route_hint("做扫掠六面体网格")
     assert mesh is not None
@@ -117,6 +119,7 @@ def test_phase2_route_hint_covers_bilingual_transform_fields_and_arbitrary_size(
     assert english_revolve is not None
     assert english_revolve.requested_operation == "revolve_profile"
     assert english_revolve.missing_fields == ()
+    assert english_revolve.required_prepare_tool == "prepare_profile_revolution"
 
     english_path = geometry_route_hint("path sweep A-B-C")
     assert english_path is not None
@@ -230,7 +233,7 @@ def test_phase2_guard_retry_continues_after_the_required_probe(tmp_path) -> None
                     tool_calls=(
                         ToolCall(
                             "corrected-probe",
-                            "read_geometry_edit_context",
+                            "read_profile_transform_context",
                             {"part_id": "P1"},
                         ),
                     ),
@@ -254,7 +257,7 @@ def test_phase2_guard_retry_continues_after_the_required_probe(tmp_path) -> None
     assert len(provider.requests) == 3
     assert any(
         item.event is EngineEventType.TOOL_STARTED
-        and item.data.get("tool") == "read_geometry_edit_context"
+        and item.data.get("tool") == "read_profile_transform_context"
         for item in events
     )
     assert [
@@ -365,7 +368,7 @@ def test_phase2_guard_does_not_repeat_after_probe_call(tmp_path) -> None:
                     tool_calls=(
                         ToolCall(
                             "probe-1",
-                            "read_geometry_edit_context",
+                            "read_profile_transform_context",
                             {"part_id": "P1"},
                         ),
                     ),

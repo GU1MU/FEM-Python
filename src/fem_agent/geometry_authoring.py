@@ -40,6 +40,7 @@ from fem.geometry import (
     WireMember,
     WirePoint,
     geometry_dimension,
+    analyze_sketch_profiles,
     legacy_sketch_to_strict,
     planar_geometry_normal,
 )
@@ -69,6 +70,9 @@ _MAX_RECIPE_NODES = 128
 _MAX_BOOLEAN_RECIPE_PAYLOAD_NODES = 512
 _MAX_RECIPE_DEPTH = 16
 GEOMETRY_FEATURE_CATALOG_TOOL_NAME = "read_geometry_feature_catalog"
+PROFILE_TRANSFORM_CONTEXT_SCHEMA_VERSION = 1
+PROFILE_TRANSFORM_MAX_PROFILES = 32
+PROFILE_TRANSFORM_MAX_BYTES = 24_576
 
 
 @dataclass(frozen=True, slots=True)
@@ -1316,6 +1320,240 @@ def planar_geometry_catalog(recipe: object) -> dict[str, object]:
         ],
         "curves": curves,
     }
+
+
+def profile_transform_context(
+    recipe: object,
+    *,
+    part_id: str | None = None,
+    session_revision: int | None = None,
+) -> dict[str, object]:
+    """Return a bounded, canonical Profile-transform read projection.
+
+    The projection is deliberately derived from the native recipe and the
+    exact topology/profile analyser.  It contains no OCC/Gmsh tags and never
+    exposes the complete sketch payload.  Dedicated GUI tools use this helper
+    before dispatching any transform proposal.
+    """
+
+    if not isinstance(recipe, NATIVE_GEOMETRY_TYPES):
+        raise TypeError("recipe must be native geometry")
+    if session_revision is not None and (
+        type(session_revision) is not int or session_revision < 0
+    ):
+        raise ValueError("session_revision must be a non-negative integer")
+
+    dimension = geometry_dimension(recipe)
+    native_recipe_kind = type(recipe).__name__
+    recipe_kind = {
+        "SketchGeometry": "planar_sketch",
+        "PlateWithHoleGeometry": "planar_sketch",
+        "RectangleGeometry": "planar_profile",
+        "DiskGeometry": "planar_profile",
+        "WireGeometry": "wire",
+        "BoxGeometry": "solid_primitive",
+        "CylinderGeometry": "solid_primitive",
+        "MovedGeometry": "transformed_geometry",
+        "RotatedGeometry": "transformed_geometry",
+    }.get(native_recipe_kind, "native_geometry")
+    # Legacy primitive recipes are still persisted in existing projects.  The
+    # Profile-transform contract is defined over the strict sketch graph, so
+    # canonicalize those bounded planar primitives before deriving topology or
+    # Profile IDs.  Keep the original/native kind in the read payload so the
+    # caller can distinguish a legacy source from an already strict sketch.
+    analysis_recipe = recipe
+    if type(recipe) in {
+        RectangleGeometry,
+        DiskGeometry,
+        PlateWithHoleGeometry,
+    }:
+        analysis_recipe = _as_strict_planar_sketch(recipe)
+
+    topology_exact = False
+    topology_diagnostics: list[dict[str, object]] = []
+    material_profiles: list[dict[str, object]] = []
+    material_profile_total = 0
+    hole_count = 0
+    strict_planar = (
+        type(analysis_recipe) is SketchGeometry and analysis_recipe.is_strict
+    )
+
+    try:
+        topology = describe_recipe_topology(analysis_recipe)
+    except (TypeError, ValueError):
+        topology = None
+    if topology is not None:
+        topology_exact = bool(topology.exact)
+        topology_diagnostics.extend(
+            {
+                "code": item.code,
+                "message": str(item.message).strip()[:512],
+                "affected_logical_ids": list(item.affected_logical_ids)[:16],
+            }
+            for item in topology.diagnostics[:16]
+        )
+
+    analysis = None
+    if strict_planar:
+        try:
+            analysis = analyze_sketch_profiles(analysis_recipe)
+        except (TypeError, ValueError):
+            analysis = None
+        if analysis is not None:
+            hole_count = sum(
+                1 for profile in analysis.profiles if profile.role == "hole"
+            )
+            if not any(
+                diagnostic.blocking for diagnostic in analysis.diagnostics
+            ):
+                material = tuple(
+                    profile
+                    for profile in analysis.profiles
+                    if profile.role == "outer"
+                )
+                material_profile_total = len(material)
+                for profile in material[:PROFILE_TRANSFORM_MAX_PROFILES]:
+                    direct_holes = sum(
+                        1
+                        for candidate in analysis.profiles
+                        if candidate.role == "hole"
+                        and candidate.parent_profile_id == profile.id
+                    )
+                    material_profiles.append(
+                        {
+                            "face_id": f"face:{profile.id}",
+                            "canonical_face_id": f"face:{profile.id}",
+                            "profile_id": profile.id,
+                            "semantic_role": "sketch.profile",
+                            "semantic_summary": (
+                                f"material Profile {profile.id}; "
+                                f"holes={direct_holes}"
+                            ),
+                            "curve_count": len(profile.curve_ids),
+                            "hole_count": direct_holes,
+                            "nesting_depth": profile.nesting_depth,
+                            "area": abs(float(profile.signed_area)),
+                            "bounding_box": list(profile.bounding_box),
+                        }
+                    )
+
+    blocking_reason: str | None = None
+    blocking_code: str | None = None
+    if dimension != 2:
+        blocking_code = "profile-transform.source-not-planar"
+        blocking_reason = "Profile transform requires a two-dimensional Part"
+    elif not strict_planar:
+        blocking_code = "profile-transform.source-not-strict"
+        blocking_reason = "Profile transform requires a strict planar sketch"
+    elif analysis is None or any(
+        diagnostic.blocking for diagnostic in analysis.diagnostics
+    ):
+        blocking_code = "profile-transform.topology-unproven"
+        if analysis is not None and analysis.blocking_diagnostics:
+            blocking_reason = str(
+                analysis.blocking_diagnostics[0].message
+            ).strip()[:512]
+        else:
+            blocking_reason = "Planar Profile topology could not be proven"
+    elif not topology_exact:
+        blocking_code = "profile-transform.topology-unproven"
+        blocking_reason = "Planar Profile topology is not exact"
+    elif not material_profiles:
+        blocking_code = "profile-transform.no-material-profile"
+        blocking_reason = "The Part has no material Profile"
+
+    available = blocking_reason is None
+    operation_defaults: dict[str, object] = {
+        "axis": "z",
+        "angle_degrees": 360.0,
+        "frame_strategy": "transport",
+        "allowed_frame_strategies": ["fixed", "transport"],
+    }
+    operations = {
+        "extrusion": {
+            "available": available,
+            "blocking_reason": blocking_reason,
+            "blocking_code": blocking_code,
+            "requires_unique_or_explicit_profile": True,
+        },
+        "revolution": {
+            "available": available,
+            "blocking_reason": blocking_reason,
+            "blocking_code": blocking_code,
+            "defaults": {
+                "axis": operation_defaults["axis"],
+                "angle_degrees": operation_defaults["angle_degrees"],
+            },
+        },
+        "path_sweep": {
+            "available": available,
+            "blocking_reason": blocking_reason,
+            "blocking_code": blocking_code,
+            "defaults": {
+                "frame_strategy": operation_defaults["frame_strategy"],
+                "allowed_frame_strategies": operation_defaults[
+                    "allowed_frame_strategies"
+                ],
+            },
+        },
+    }
+    diagnostics = list(topology_diagnostics)
+    if blocking_reason is not None and not diagnostics:
+        diagnostics.append(
+            {
+                "code": blocking_code,
+                "message": blocking_reason,
+                "affected_logical_ids": [],
+            }
+        )
+    profile_count = material_profile_total
+    data: dict[str, object] = {
+        "kind": "profile_transform_context",
+        "schema_version": PROFILE_TRANSFORM_CONTEXT_SCHEMA_VERSION,
+        "part_id": part_id,
+        "dimension": dimension,
+        "recipe_kind": recipe_kind,
+        "native_recipe_kind": native_recipe_kind,
+        "session_revision": session_revision,
+        "revision": session_revision,
+        "topology_exact": topology_exact,
+        "material_profile_count": profile_count,
+        "profiles": material_profiles,
+        "material_profiles": material_profiles,
+        "hole_count": hole_count,
+        "operations": operations,
+        "extrusion": operations["extrusion"],
+        "revolution": operations["revolution"],
+        "path_sweep": operations["path_sweep"],
+        "diagnostics": diagnostics[:16],
+        "truncated": False,
+    }
+    # Keep read results comfortably below the common provider payload budget.
+    # Profiles are the only potentially unbounded collection and are trimmed
+    # deterministically while preserving count and a truncation marker.
+    encoded = json.dumps(
+        data,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    omitted = max(0, material_profile_total - len(material_profiles))
+    while len(encoded) > PROFILE_TRANSFORM_MAX_BYTES and data["profiles"]:
+        profiles = list(data["profiles"])
+        profiles.pop()
+        data["profiles"] = profiles
+        data["material_profiles"] = profiles
+        omitted += 1
+        encoded = json.dumps(
+            data,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    if omitted:
+        data["truncated"] = True
+        data["omitted_profile_count"] = omitted
+    return data
 
 
 def feature_topology_catalog(
@@ -2601,6 +2839,7 @@ __all__ = [
     "geometry_draft",
     "geometry_contract_proof",
     "geometry_feature_catalog_tool_schema",
+    "profile_transform_context",
     "feature_topology_catalog",
     "planar_geometry_catalog",
     "planar_polygon_geometry",

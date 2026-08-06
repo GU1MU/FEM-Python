@@ -197,9 +197,11 @@ Geometry transforms happen before mesh generation. A mesh is never a
 prerequisite for profile extrusion, profile revolution, or path sweep, and a
 successful geometry transform makes the previous mesh stale. Treat the local
 route hint, published tool schema, and typed authoring context as the only
-capability facts. For an explicit transform route, first read the current
-transform context, then prepare the matching proposal; never invent a Profile
-ID or recommend meshing first. If the hint lists a missing height, path, axis,
+capability facts. For an explicit transform route, first call
+read_profile_transform_context and then call the operation-specific
+prepare_profile_extrusion, prepare_profile_revolution, or
+prepare_profile_path_sweep tool; never invent a Profile ID or recommend
+meshing first. If the hint lists a missing height, path, axis,
 or other decisive field, ask only for that field. A user statement that the
 size may be arbitrary authorizes a clearly labelled provisional proposal value,
 not an unlabelled user fact. A bare "sweep" is ambiguous: ask whether it is a
@@ -2419,7 +2421,14 @@ def _snapshot_proves_transform_unsupported(snapshot: object | None) -> bool:
     if isinstance(capabilities, (list, tuple, set)) and capabilities:
         capability_names = {str(item) for item in capabilities}
         if not capability_names.intersection(
-            {"edit_native_geometry", "prepare_geometry_edit"}
+            {
+                "edit_native_geometry",
+                "prepare_geometry_edit",
+                "read_profile_transform_context",
+                "prepare_profile_extrusion",
+                "prepare_profile_revolution",
+                "prepare_profile_path_sweep",
+            }
         ):
             return True
     return False

@@ -14,8 +14,12 @@ import re
 from typing import Any
 
 
-_PROBE_TOOL = "read_geometry_edit_context"
-_PREPARE_TOOL = "prepare_geometry_edit"
+_PROBE_TOOL = "read_profile_transform_context"
+_PREPARE_TOOLS = {
+    "extrude_profiles": "prepare_profile_extrusion",
+    "revolve_profile": "prepare_profile_revolution",
+    "path_sweep_profile": "prepare_profile_path_sweep",
+}
 _TRANSFORM_DIMENSION = 2
 
 _PATH_MARKERS = (
@@ -107,7 +111,7 @@ class GeometryRouteHint:
     requested_operation: str
     target_part_dimension: int | None = _TRANSFORM_DIMENSION
     required_probe_tool: str | None = _PROBE_TOOL
-    required_prepare_tool: str | None = _PREPARE_TOOL
+    required_prepare_tool: str | None = None
     mesh_prerequisite: bool = False
     missing_fields: tuple[str, ...] = ()
     allow_arbitrary_size: bool = False
@@ -223,6 +227,7 @@ def geometry_route_hint(text: str) -> GeometryRouteHint | None:
         missing = () if explicit_path else ("path",)
         return GeometryRouteHint(
             "path_sweep_profile",
+            required_prepare_tool=_PREPARE_TOOLS["path_sweep_profile"],
             missing_fields=missing,
             allow_arbitrary_size=arbitrary,
         )
@@ -235,6 +240,7 @@ def geometry_route_hint(text: str) -> GeometryRouteHint | None:
             missing.append("angle_degrees")
         return GeometryRouteHint(
             "revolve_profile",
+            required_prepare_tool=_PREPARE_TOOLS["revolve_profile"],
             missing_fields=tuple(missing),
             allow_arbitrary_size=arbitrary,
         )
@@ -247,6 +253,7 @@ def geometry_route_hint(text: str) -> GeometryRouteHint | None:
         )
         return GeometryRouteHint(
             "extrude_profiles",
+            required_prepare_tool=_PREPARE_TOOLS["extrude_profiles"],
             missing_fields=() if has_height or arbitrary else ("height",),
             allow_arbitrary_size=arbitrary,
         )

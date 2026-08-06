@@ -95,6 +95,7 @@ from fem_agent.geometry_authoring import (
     add_planar_circle,
     add_planar_polygon,
     add_planar_rectangle,
+    _as_strict_planar_sketch,
     box_geometry,
     create_geometry_edit_proposal,
     create_geometry_proposal,
@@ -108,6 +109,7 @@ from fem_agent.geometry_authoring import (
     planar_geometry_catalog,
     planar_polygon_geometry,
     planar_sketch_geometry,
+    profile_transform_context,
     rotate_geometry,
     translate_geometry,
     update_planar_circle,
@@ -224,6 +226,15 @@ def _preflight_derived_geometry(
         thread_name_prefix="agent-derived-preflight",
     ) as executor:
         executor.submit(compile_one).result()
+
+
+def _canonical_profile_source_recipe(recipe: object) -> object:
+    """Canonicalize legacy planar primitives for proposal replay checks."""
+
+    try:
+        return _as_strict_planar_sketch(recipe)
+    except (TypeError, ValueError):
+        return recipe
 
 
 def _preflight_part_boolean(
@@ -1492,7 +1503,14 @@ class SessionGeometryAuthoringPort:
                 ),
                 None,
             )
-            if source_part is None or source_part.geometry_recipe != base_recipe:
+            if source_part is None:
+                raise AuthoringContractError(
+                    "Profile extrusion source Part no longer matches its proposal"
+                )
+            source_recipe = _canonical_profile_source_recipe(
+                source_part.geometry_recipe
+            )
+            if source_recipe != base_recipe:
                 raise AuthoringContractError(
                     "Profile extrusion source Part no longer matches its proposal"
                 )
@@ -1536,7 +1554,14 @@ class SessionGeometryAuthoringPort:
                 ),
                 None,
             )
-            if source_part is None or source_part.geometry_recipe != base_recipe:
+            if source_part is None:
+                raise AuthoringContractError(
+                    "derived Profile source Part no longer matches its proposal"
+                )
+            source_recipe = _canonical_profile_source_recipe(
+                source_part.geometry_recipe
+            )
+            if source_recipe != base_recipe:
                 raise AuthoringContractError(
                     "derived Profile source Part no longer matches its proposal"
                 )
@@ -3086,6 +3111,316 @@ def create_session_authoring_workflow_controller(
             },
         )
 
+    def _profile_transform_part(part_id: object):
+        normalized_part_id = str(part_id).strip()
+        snapshot = session.snapshot()
+        if snapshot.source_kind != "native":
+            raise AuthoringContractError(
+                "profile-transform.part-not-found: current document is not a "
+                "native authoring Session"
+            )
+        part = next(
+            (
+                candidate
+                for candidate in snapshot.parts
+                if str(candidate.id) == normalized_part_id
+                and not candidate.suppressed
+            ),
+            None,
+        )
+        if part is None or part.geometry_recipe is None:
+            raise AuthoringContractError(
+                "profile-transform.part-not-found: part_id does not identify "
+                "one active native Part"
+            )
+        return snapshot, part
+
+    def _strict_profile_recipe(part):
+        try:
+            return _as_strict_planar_sketch(part.geometry_recipe)
+        except (TypeError, ValueError) as error:
+            raise AuthoringContractError(
+                "profile-transform.source-not-planar: Profile transforms "
+                "require a canonical planar sketch source"
+            ) from error
+
+    def _profile_selection(
+        arguments: Mapping[str, object],
+        *,
+        snapshot,
+        part,
+    ) -> tuple[str, ...]:
+        if "profile_selection" not in arguments and "source_face_ids" in arguments:
+            raw_selection = arguments["source_face_ids"]
+        else:
+            raw_selection = arguments.get("profile_selection")
+        unique_selection = raw_selection == "unique_material_profile" or (
+            isinstance(raw_selection, Mapping)
+            and set(raw_selection) == {"mode"}
+            and raw_selection.get("mode") == "unique_material_profile"
+        ) or (
+            isinstance(raw_selection, Mapping)
+            and set(raw_selection) == {"kind"}
+            and raw_selection.get("kind") == "unique_material_profile"
+        )
+        if not unique_selection and "context_revision" not in arguments:
+            raise AuthoringContractError(
+                "profile-transform.stale-context: explicit source_face_ids "
+                "require context_revision from read_profile_transform_context"
+            )
+        if "context_revision" in arguments:
+            revision = arguments["context_revision"]
+            if type(revision) is not int or revision != snapshot.session_revision:
+                raise AuthoringContractError(
+                    "profile-transform.stale-context: transform context revision "
+                    "does not match the current Session"
+                )
+        context = profile_transform_context(
+            part.geometry_recipe,
+            part_id=str(part.id),
+            session_revision=snapshot.session_revision,
+        )
+        operation_context = context.get("extrusion")
+        if not isinstance(operation_context, Mapping) or not operation_context.get(
+            "available", False
+        ):
+            blocking_code = (
+                str(operation_context.get("blocking_code"))
+                if isinstance(operation_context, Mapping)
+                and operation_context.get("blocking_code")
+                else "profile-transform.topology-unproven"
+            )
+            blocking_reason = (
+                str(operation_context.get("blocking_reason"))
+                if isinstance(operation_context, Mapping)
+                and operation_context.get("blocking_reason")
+                else "Profile topology is not available"
+            )
+            raise AuthoringContractError(
+                f"{blocking_code}: {blocking_reason}"
+            )
+        if not context["topology_exact"]:
+            reason = str(
+                context.get("extrusion", {}).get(
+                    "blocking_reason",
+                    "Profile topology is not exact",
+                )
+            )
+            raise AuthoringContractError(
+                f"profile-transform.topology-unproven: {reason}"
+            )
+        profiles = context.get("profiles")
+        if not isinstance(profiles, list):
+            raise AuthoringContractError(
+                "profile-transform.no-material-profile: no canonical Profiles"
+            )
+        canonical = tuple(
+            str(item["face_id"])
+            for item in profiles
+            if isinstance(item, Mapping) and isinstance(item.get("face_id"), str)
+        )
+        if unique_selection:
+            if len(canonical) != 1 or int(context["material_profile_count"]) != 1:
+                candidates = ", ".join(canonical[:32]) or "none"
+                raise AuthoringContractError(
+                    "profile-transform.ambiguous-material-profiles: "
+                    "unique_material_profile requires exactly one material "
+                    f"Profile; candidates={candidates}"
+                )
+            return canonical
+        if isinstance(raw_selection, Mapping):
+            if set(raw_selection) != {"source_face_ids"}:
+                raise ValueError("profile_selection fields do not match")
+            raw_selection = raw_selection["source_face_ids"]
+        if not isinstance(raw_selection, list) or not raw_selection:
+            raise ValueError(
+                "profile_selection must be unique_material_profile or an "
+                "explicit source_face_ids array"
+            )
+        if any(not isinstance(item, str) for item in raw_selection):
+            raise TypeError("source_face_ids must contain strings")
+        requested = tuple(raw_selection)
+        if len(requested) != len(set(requested)):
+            raise AuthoringContractError(
+                "profile-transform.invalid-source-id: source_face_ids must be unique"
+            )
+        unknown_ids = tuple(item for item in requested if item not in canonical)
+        if unknown_ids or int(context["material_profile_count"]) > len(canonical):
+            if unknown_ids:
+                raise AuthoringContractError(
+                    "profile-transform.invalid-source-id: explicit IDs must be "
+                    "canonical material Profile IDs from the current context; "
+                    f"invalid={unknown_ids[0]}"
+                )
+            raise AuthoringContractError(
+                "profile-transform.topology-unproven: Profile context was truncated; "
+                "reread the transform context before selecting IDs"
+            )
+        return requested
+
+    def _profile_transform_error(error: BaseException) -> AuthoringToolOutcome:
+        message = str(error).strip() or type(error).__name__
+        code = "profile-transform.invalid-input"
+        if message.startswith("profile-transform."):
+            code = message.split(":", 1)[0].strip()
+        else:
+            lowered = message.casefold()
+            if any(
+                marker in lowered
+                for marker in ("path", "路径", "branch", "self-intersect", "open")
+            ):
+                code = "profile-transform.invalid-path"
+            elif "frame_strategy" in lowered or "frame" in lowered:
+                code = "profile-transform.unsupported-frame"
+            elif "height" in lowered or "高度" in lowered:
+                code = "profile-transform.nonpositive-height"
+            elif "source" in lowered or "profile" in lowered:
+                code = "profile-transform.invalid-source-id"
+        return AuthoringToolOutcome(
+            message[:512],
+            {
+                "diagnostic": {
+                    "code": code,
+                    "message": message[:512],
+                    "retryable": code
+                    in {
+                        "profile-transform.stale-context",
+                        "profile-transform.preflight-failed",
+                    },
+                    "required_fields": [],
+                },
+            },
+            ok=False,
+        )
+
+    def read_profile_transform_context(
+        arguments: Mapping[str, object],
+        _controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        if set(arguments) != {"part_id"}:
+            raise ValueError("read_profile_transform_context fields do not match")
+        snapshot, part = _profile_transform_part(arguments["part_id"])
+        data = profile_transform_context(
+            part.geometry_recipe,
+            part_id=str(part.id),
+            session_revision=snapshot.session_revision,
+        )
+        data["part_name"] = str(part.name)
+        data["active"] = str(part.id) == str(snapshot.active_part_id)
+        provider_safe_authoring_payload(data)
+        return AuthoringToolOutcome(
+            "Profile transform context read locally.",
+            data,
+        )
+
+    def prepare_profile_extrusion(
+        arguments: Mapping[str, object],
+        controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        required = {"part_id", "profile_selection", "height"}
+        if "source_face_ids" in arguments and "profile_selection" not in arguments:
+            required = {"part_id", "source_face_ids", "height"}
+        if not required.issubset(arguments) or set(arguments) - required - {
+            "context_revision"
+        }:
+            raise ValueError("prepare_profile_extrusion fields do not match")
+        try:
+            snapshot, part = _profile_transform_part(arguments["part_id"])
+            selected = _profile_selection(arguments, snapshot=snapshot, part=part)
+            height = arguments["height"]
+            base_recipe = _strict_profile_recipe(part)
+            return prepare_geometry_edit(
+                {
+                    "part_id": str(part.id),
+                    "_canonical_base_recipe": base_recipe,
+                    "edit": {
+                        "operation": "extrude_profiles",
+                        "source_face_ids": list(selected),
+                        "height": height,
+                    },
+                },
+                controller,
+            )
+        except (AuthoringContractError, TypeError, ValueError) as error:
+            return _profile_transform_error(error)
+
+    def prepare_profile_revolution(
+        arguments: Mapping[str, object],
+        controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        required = {"part_id", "profile_selection", "axis", "angle_degrees"}
+        if "source_face_ids" in arguments and "profile_selection" not in arguments:
+            required = {"part_id", "source_face_ids", "axis", "angle_degrees"}
+        if not required.issubset(arguments) or set(arguments) - required - {
+            "context_revision"
+        }:
+            raise ValueError("prepare_profile_revolution fields do not match")
+        try:
+            snapshot, part = _profile_transform_part(arguments["part_id"])
+            selected = _profile_selection(arguments, snapshot=snapshot, part=part)
+            if len(selected) != 1:
+                raise AuthoringContractError(
+                    "profile-transform.ambiguous-material-profiles: revolution "
+                    "requires exactly one canonical material Profile"
+                )
+            base_recipe = _strict_profile_recipe(part)
+            return prepare_geometry_edit(
+                {
+                    "part_id": str(part.id),
+                    "_canonical_base_recipe": base_recipe,
+                    "edit": {
+                        "operation": "revolve_profile",
+                        "source_face_id": selected[0],
+                        "axis": arguments["axis"],
+                        "angle_degrees": arguments["angle_degrees"],
+                    },
+                },
+                controller,
+            )
+        except (AuthoringContractError, TypeError, ValueError) as error:
+            return _profile_transform_error(error)
+
+    def prepare_profile_path_sweep(
+        arguments: Mapping[str, object],
+        controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        required = {
+            "part_id",
+            "profile_selection",
+            "path",
+            "frame_strategy",
+        }
+        if "source_face_ids" in arguments and "profile_selection" not in arguments:
+            required = {"part_id", "source_face_ids", "path", "frame_strategy"}
+        if not required.issubset(arguments) or set(arguments) - required - {
+            "context_revision"
+        }:
+            raise ValueError("prepare_profile_path_sweep fields do not match")
+        try:
+            snapshot, part = _profile_transform_part(arguments["part_id"])
+            selected = _profile_selection(arguments, snapshot=snapshot, part=part)
+            if len(selected) != 1:
+                raise AuthoringContractError(
+                    "profile-transform.ambiguous-material-profiles: path sweep "
+                    "requires exactly one canonical material Profile"
+                )
+            base_recipe = _strict_profile_recipe(part)
+            return prepare_geometry_edit(
+                {
+                    "part_id": str(part.id),
+                    "_canonical_base_recipe": base_recipe,
+                    "edit": {
+                        "operation": "path_sweep_profile",
+                        "source_face_id": selected[0],
+                        "path": arguments["path"],
+                        "frame_strategy": arguments["frame_strategy"],
+                    },
+                },
+                controller,
+            )
+        except (AuthoringContractError, TypeError, ValueError) as error:
+            return _profile_transform_error(error)
+
     def prepare_geometry_edit(
         arguments: Mapping[str, object],
         controller: AuthoringWorkflowController,
@@ -3108,6 +3443,15 @@ def create_session_authoring_workflow_controller(
         if part is None or part.geometry_recipe is None:
             raise AuthoringContractError(
                 "part_id does not identify one editable native Part"
+            )
+        base_recipe_override = arguments.get("_canonical_base_recipe")
+        if base_recipe_override is not None and (
+            type(base_recipe_override) is not SketchGeometry
+            or not base_recipe_override.is_strict
+        ):
+            raise AuthoringContractError(
+                "profile-transform.source-not-strict: canonical base recipe "
+                "must be a strict planar sketch"
             )
         if operation == "part_boolean":
             if set(edit) != {
@@ -3277,7 +3621,11 @@ def create_session_authoring_workflow_controller(
         if operation == "extrude_profiles":
             if set(edit) != {"source_face_ids", "height"}:
                 raise ValueError("extrude_profiles fields do not match")
-            base_recipe = part.geometry_recipe
+            base_recipe = (
+                base_recipe_override
+                if base_recipe_override is not None
+                else part.geometry_recipe
+            )
             if type(base_recipe) is not SketchGeometry or not base_recipe.is_strict:
                 raise AuthoringContractError(
                     "Agent Profile extrusion requires a strict planar sketch Part"
@@ -3330,7 +3678,11 @@ def create_session_authoring_workflow_controller(
         if operation == "revolve_profile":
             if set(edit) != {"source_face_id", "axis", "angle_degrees"}:
                 raise ValueError("revolve_profile fields do not match")
-            base_recipe = part.geometry_recipe
+            base_recipe = (
+                base_recipe_override
+                if base_recipe_override is not None
+                else part.geometry_recipe
+            )
             if type(base_recipe) is not SketchGeometry or not base_recipe.is_strict:
                 raise AuthoringContractError(
                     "Agent Profile revolution requires a strict planar sketch Part"
@@ -3381,7 +3733,11 @@ def create_session_authoring_workflow_controller(
         if operation == "path_sweep_profile":
             if set(edit) != {"source_face_id", "path", "frame_strategy"}:
                 raise ValueError("path_sweep_profile fields do not match")
-            base_recipe = part.geometry_recipe
+            base_recipe = (
+                base_recipe_override
+                if base_recipe_override is not None
+                else part.geometry_recipe
+            )
             if type(base_recipe) is not SketchGeometry or not base_recipe.is_strict:
                 raise AuthoringContractError(
                     "Agent path sweep requires a strict planar sketch Part"
@@ -4190,6 +4546,10 @@ def create_session_authoring_workflow_controller(
         current_context,
         {
             "prepare_geometry_proposal": prepare_geometry,
+            "read_profile_transform_context": read_profile_transform_context,
+            "prepare_profile_extrusion": prepare_profile_extrusion,
+            "prepare_profile_revolution": prepare_profile_revolution,
+            "prepare_profile_path_sweep": prepare_profile_path_sweep,
             "read_geometry_edit_context": read_geometry_edit_context,
             "prepare_geometry_edit": prepare_geometry_edit,
             "read_mesh_refinement_context": read_mesh_refinement_context,

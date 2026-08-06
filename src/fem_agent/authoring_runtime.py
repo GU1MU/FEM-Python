@@ -1207,6 +1207,37 @@ _PREPARE_GEOMETRY_EDIT = _tool(
         "additionalProperties": False,
     },
 )
+# Profile transforms retain a compatibility dispatcher in the GUI bridge, but
+# the provider-facing general edit schema no longer advertises those three
+# large union branches.  Dedicated tools above are the sole discovery seam.
+_legacy_geometry_edit_parameters = dict(_PREPARE_GEOMETRY_EDIT.parameters)
+_legacy_edit = dict(_legacy_geometry_edit_parameters["properties"]["edit"])
+_PROFILE_TRANSFORM_OPERATION_CONSTS = frozenset(
+    {"extrude_profiles", "revolve_profile", "path_sweep_profile"}
+)
+_legacy_edit["oneOf"] = [
+    branch
+    for branch in _legacy_edit["oneOf"]
+    if branch.get("properties", {})
+    .get("operation", {})
+    .get("const")
+    not in _PROFILE_TRANSFORM_OPERATION_CONSTS
+]
+_legacy_geometry_edit_parameters["properties"] = {
+    **dict(_legacy_geometry_edit_parameters["properties"]),
+    "edit": _legacy_edit,
+}
+_PREPARE_GEOMETRY_EDIT = ToolDefinition(
+    _PREPARE_GEOMETRY_EDIT.name,
+    (
+        "Prepare a revision-bound edit of an existing native Part. Profile "
+        "transforms use the dedicated prepare_profile_* tools; this compatibility "
+        "tool retains sketch, rigid, and exact Boolean edits."
+    ),
+    _legacy_geometry_edit_parameters,
+)
+
+
 _READ_MESH_REFINEMENT_CONTEXT = _tool(
     "read_mesh_refinement_context",
     (
@@ -2014,6 +2045,254 @@ _GEOMETRY_FEATURE_CATALOG = _result_tool_definition(
 )
 
 
+_PROFILE_FACE_ID_SCHEMA = {
+    "type": "string",
+    "pattern": r"^face:[^\s]+$",
+    "minLength": 6,
+    "maxLength": 192,
+}
+_PROFILE_UNIQUE_SELECTION_SCHEMA = {
+    "oneOf": [
+        {
+            "type": "string",
+            "const": "unique_material_profile",
+        },
+        {
+            "type": "object",
+            "properties": {
+                "mode": {"const": "unique_material_profile"},
+            },
+            "required": ["mode"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "kind": {"const": "unique_material_profile"},
+            },
+            "required": ["kind"],
+            "additionalProperties": False,
+        },
+    ]
+}
+_PROFILE_EXPLICIT_SELECTION_SCHEMA = {
+    "oneOf": [
+        {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 32,
+            "uniqueItems": True,
+            "items": _PROFILE_FACE_ID_SCHEMA,
+            "description": (
+                "Explicit canonical material Profile IDs returned by "
+                "read_profile_transform_context."
+            ),
+        },
+        {
+            "type": "object",
+            "properties": {
+                "source_face_ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 32,
+                    "uniqueItems": True,
+                    "items": _PROFILE_FACE_ID_SCHEMA,
+                },
+            },
+            "required": ["source_face_ids"],
+            "additionalProperties": False,
+        },
+    ]
+}
+_PROFILE_SELECTION_SCHEMA = {
+    "oneOf": [
+        _PROFILE_UNIQUE_SELECTION_SCHEMA["oneOf"][0],
+        _PROFILE_EXPLICIT_SELECTION_SCHEMA["oneOf"][0],
+        {
+            "type": "object",
+            "oneOf": [
+                *_PROFILE_UNIQUE_SELECTION_SCHEMA["oneOf"][1:],
+                _PROFILE_EXPLICIT_SELECTION_SCHEMA["oneOf"][1],
+            ],
+        },
+    ]
+}
+
+
+_READ_PROFILE_TRANSFORM_CONTEXT = _tool(
+    "read_profile_transform_context",
+    (
+        "Read the bounded canonical material Profile and transform capability "
+        "context for one existing native Part. This read is required before a "
+        "dedicated Profile extrusion, revolution, or path-sweep proposal."
+    ),
+    {
+        "type": "object",
+        "properties": {
+            "part_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+            },
+        },
+        "required": ["part_id"],
+        "additionalProperties": False,
+    },
+)
+
+
+def _profile_transform_prepare_schema(
+    *,
+    operation: str,
+    extra_properties: Mapping[str, object],
+    required_extra: tuple[str, ...],
+    description: str,
+) -> ToolDefinition:
+    properties = {
+        "part_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+        },
+        "context_revision": {
+            "type": "integer",
+            "minimum": 0,
+            "description": (
+                "Revision returned by read_profile_transform_context. It is "
+                "required for explicit source_face_ids; unique_material_profile "
+                "may omit it. A mismatch is rejected as stale."
+            ),
+        },
+        "profile_selection": _PROFILE_SELECTION_SCHEMA,
+        **dict(extra_properties),
+    }
+    return _tool(
+        operation,
+        description,
+        {
+            "type": "object",
+            "properties": properties,
+            "required": ["part_id", "profile_selection", *required_extra],
+            "oneOf": [
+                {
+                    "properties": {
+                        "profile_selection": _PROFILE_UNIQUE_SELECTION_SCHEMA,
+                    },
+                },
+                {
+                    "properties": {
+                        "profile_selection": _PROFILE_EXPLICIT_SELECTION_SCHEMA,
+                    },
+                    "required": ["context_revision"],
+                },
+            ],
+            "additionalProperties": False,
+        },
+    )
+
+
+_PREPARE_PROFILE_EXTRUSION = _profile_transform_prepare_schema(
+    operation="prepare_profile_extrusion",
+    extra_properties={
+        "height": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+        },
+    },
+    required_extra=("height",),
+    description=(
+        "Prepare a revision-bound positive extrusion proposal from a canonical "
+        "material Profile. unique_material_profile is accepted only when the "
+        "local read proves exactly one material Profile; explicit IDs may select "
+        "multiple independent Profiles."
+    ),
+)
+_PREPARE_PROFILE_REVOLUTION = _profile_transform_prepare_schema(
+    operation="prepare_profile_revolution",
+    extra_properties={
+        "axis": {"type": "string", "enum": ["x", "y", "z"]},
+        "angle_degrees": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 360,
+        },
+    },
+    required_extra=("axis", "angle_degrees"),
+    description=(
+        "Prepare a revision-bound revolution proposal from exactly one canonical "
+        "material Profile."
+    ),
+)
+_PREPARE_PROFILE_PATH_SWEEP = _profile_transform_prepare_schema(
+    operation="prepare_profile_path_sweep",
+    extra_properties={
+        "path": {
+            "type": "object",
+            "properties": {
+                "points": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 64,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 64,
+                            },
+                            "x": {"type": "number"},
+                            "y": {"type": "number"},
+                            "z": {"type": "number"},
+                        },
+                        "required": ["name", "x", "y", "z"],
+                        "additionalProperties": False,
+                    },
+                },
+                "members": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 63,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 64,
+                            },
+                            "start": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 64,
+                            },
+                            "end": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 64,
+                            },
+                        },
+                        "required": ["name", "start", "end"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["points", "members"],
+            "additionalProperties": False,
+        },
+        "frame_strategy": {
+            "type": "string",
+            "enum": ["fixed", "transport"],
+        },
+    },
+    required_extra=("path", "frame_strategy"),
+    description=(
+        "Prepare a revision-bound path-sweep proposal from exactly one canonical "
+        "material Profile and an explicitly ordered open polyline."
+    ),
+)
+
+
 _PROJECT_SAVE_READY_STAGES = frozenset(
     {
         AuthoringWorkflowStage.REQUIREMENTS,
@@ -2040,6 +2319,14 @@ _GEOMETRY_EDIT_TOOLS = frozenset(
     }
 )
 _GEOMETRY_CATALOG_TOOLS = frozenset({_GEOMETRY_FEATURE_CATALOG.name})
+_PROFILE_TRANSFORM_TOOLS = frozenset(
+    {
+        _READ_PROFILE_TRANSFORM_CONTEXT.name,
+        _PREPARE_PROFILE_EXTRUSION.name,
+        _PREPARE_PROFILE_REVOLUTION.name,
+        _PREPARE_PROFILE_PATH_SWEEP.name,
+    }
+)
 
 
 _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
@@ -2182,6 +2469,25 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
     AuthoringWorkflowStage.STALE: (_READ_CONTEXT,),
     AuthoringWorkflowStage.CANCELLED: (_READ_CONTEXT,),
 }
+
+# Keep the dedicated tools adjacent to the feature catalog in every ready
+# native-authoring stage.  Pending/terminal stages intentionally publish only
+# their read context and cannot create a proposal.
+_PROFILE_TRANSFORM_STAGE_TOOLS = (
+    _READ_PROFILE_TRANSFORM_CONTEXT,
+    _PREPARE_PROFILE_EXTRUSION,
+    _PREPARE_PROFILE_REVOLUTION,
+    _PREPARE_PROFILE_PATH_SWEEP,
+)
+for _stage, _definitions in tuple(_STAGE_TOOLS.items()):
+    if _stage not in _PROJECT_SAVE_READY_STAGES:
+        continue
+    expanded: list[ToolDefinition] = []
+    for _definition in _definitions:
+        expanded.append(_definition)
+        if _definition.name == _GEOMETRY_FEATURE_CATALOG.name:
+            expanded.extend(_PROFILE_TRANSFORM_STAGE_TOOLS)
+    _STAGE_TOOLS[_stage] = tuple(expanded)
 
 
 def _stage_requirement_tool(
@@ -2464,6 +2770,10 @@ class AuthoringWorkflowController:
                         item.name not in _GEOMETRY_CATALOG_TOOLS
                         or self._geometry_catalog_available()
                     )
+                    and (
+                        item.name not in _PROFILE_TRANSFORM_TOOLS
+                        or self._profile_transform_available()
+                    )
                 )
             )
 
@@ -2497,6 +2807,7 @@ class AuthoringWorkflowController:
                         _PREPARE_GEOMETRY.name,
                         _READ_GEOMETRY_EDIT_CONTEXT.name,
                         _PREPARE_GEOMETRY_EDIT.name,
+                        *_PROFILE_TRANSFORM_TOOLS,
                         _PREPARE_MESH.name,
                         _EDIT_MODEL_OBJECT.name,
                         _APPLY_DEFINITION.name,
@@ -3508,6 +3819,14 @@ class AuthoringWorkflowController:
             self._geometry_resume_stage = self._stage
             self._stage = AuthoringWorkflowStage.GEOMETRY_PENDING
             self._pending_operation = "geometry"
+        elif name in {
+            _PREPARE_PROFILE_EXTRUSION.name,
+            _PREPARE_PROFILE_REVOLUTION.name,
+            _PREPARE_PROFILE_PATH_SWEEP.name,
+        }:
+            self._geometry_resume_stage = self._stage
+            self._stage = AuthoringWorkflowStage.GEOMETRY_PENDING
+            self._pending_operation = "geometry"
         elif name == _PREPARE_MESH.name:
             self._mesh_resume_stage = self._stage
             self._stage = AuthoringWorkflowStage.MESH_PENDING
@@ -3717,6 +4036,31 @@ class AuthoringWorkflowController:
             and binding.source_kind == "native"
             and any(not part.suppressed for part in context.parts)
             and _capability_enabled(context, "read_geometry_feature_catalog")
+        )
+
+    def _profile_transform_available(
+        self,
+        context: AuthoringContext | None = None,
+    ) -> bool:
+        if (
+            self._stage not in _PROJECT_SAVE_READY_STAGES
+            or not _PROFILE_TRANSFORM_TOOLS.issubset(self._handlers)
+        ):
+            return False
+        if context is None:
+            try:
+                raw = self._context_reader()
+            except Exception:
+                return False
+            if type(raw) is not AuthoringContext:
+                return False
+            context = raw
+        binding = context.binding
+        return bool(
+            binding.supported
+            and binding.source_kind == "native"
+            and any(not part.suppressed for part in context.parts)
+            and _capability_enabled(context, "edit_native_geometry")
         )
 
     def _current_mesh_available(self) -> bool:

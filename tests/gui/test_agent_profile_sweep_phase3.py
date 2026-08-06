@@ -25,6 +25,7 @@ from fem_agent.authoring import ProposalState
 from fem_agent.geometry_authoring import planar_sketch_geometry
 from fem_agent.result_authoring import AgentResultQueryBridge
 from fem_agent.tools.registry import ToolExecutionContext
+from fem_gui import agent_authoring
 from fem_gui.agent_authoring import (
     AgentAuthoringBridge,
     SessionGeometryAuthoringPort,
@@ -222,23 +223,65 @@ def test_phase3_path_rejects_disconnected_branch_self_intersection_and_zero_segm
 def test_phase3_runtime_schema_is_strict_for_revolve_and_ordered_path() -> None:
     session, _source = _strict_session()
     _bridge, controller = _controller(session)
-    definition = next(
+    revolution = next(
+        item
+        for item in controller.definitions
+        if item.name == "prepare_profile_revolution"
+    )
+    assert revolution.parameters["required"] == [
+        "part_id", "profile_selection", "axis", "angle_degrees"
+    ]
+    path_tool = next(
+        item
+        for item in controller.definitions
+        if item.name == "prepare_profile_path_sweep"
+    )
+    assert path_tool.parameters["required"] == [
+        "part_id", "profile_selection", "path", "frame_strategy"
+    ]
+    assert path_tool.parameters["properties"]["frame_strategy"]["enum"] == [
+        "fixed", "transport"
+    ]
+    assert path_tool.parameters["additionalProperties"] is False
+    generic = next(
         item for item in controller.definitions if item.name == "prepare_geometry_edit"
     )
-    variants = definition.parameters["properties"]["edit"]["oneOf"]
-    by_operation = {
-        item["properties"]["operation"]["const"]: item for item in variants
-    }
+    assert all(
+        variant["properties"]["operation"].get("const")
+        not in {"extrude_profiles", "revolve_profile", "path_sweep_profile"}
+        for variant in generic.parameters["properties"]["edit"]["oneOf"]
+    )
 
-    assert by_operation["revolve_profile"]["required"] == [
-        "operation", "source_face_id", "axis", "angle_degrees"
-    ]
-    path = by_operation["path_sweep_profile"]
-    assert path["required"] == [
-        "operation", "source_face_id", "path", "frame_strategy"
-    ]
-    assert path["properties"]["frame_strategy"]["enum"] == ["fixed", "transport"]
-    assert path["additionalProperties"] is False
+
+def test_phase3_dedicated_path_prepare_preserves_atomic_proposal(monkeypatch) -> None:
+    session, source = _strict_session()
+    bridge, controller = _controller(session)
+    monkeypatch.setattr(agent_authoring, "_preflight_derived_geometry", lambda _recipe: None)
+    before = session.snapshot()
+    prepared = controller.dispatch(
+        "prepare_profile_path_sweep",
+        {
+            "part_id": "P1",
+            "profile_selection": [source],
+            "context_revision": before.session_revision,
+            "path": {
+                "points": [
+                    {"name": "A", "x": 0.0, "y": 0.0, "z": 0.0},
+                    {"name": "B", "x": 0.0, "y": 0.0, "z": 2.0},
+                ],
+                "members": [
+                    {"name": "AB", "start": "A", "end": "B"},
+                ],
+            },
+            "frame_strategy": "fixed",
+        },
+        ToolExecutionContext("phase3-dedicated", before.session_revision, "path"),
+    )
+    assert prepared.ok, prepared.summary
+    assert session.snapshot() == before
+    proposal_id = prepared.data["proposal_id"]
+    assert bridge.accept_from_gui_control(proposal_id).state is ProposalState.SUCCEEDED
+    assert isinstance(session.snapshot().parts[0].geometry_recipe, PathSweptGeometry)
 
 
 @pytest.mark.gmsh

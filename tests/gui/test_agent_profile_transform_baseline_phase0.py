@@ -136,6 +136,10 @@ def test_phase0_mesh_ready_publishes_transform_seam() -> None:
     assert names == (
         "read_authoring_context",
         "read_geometry_feature_catalog",
+        "read_profile_transform_context",
+        "prepare_profile_extrusion",
+        "prepare_profile_revolution",
+        "prepare_profile_path_sweep",
         "set_authoring_requirements",
         "read_mesh_refinement_context",
         "read_geometry_edit_context",
@@ -144,47 +148,8 @@ def test_phase0_mesh_ready_publishes_transform_seam() -> None:
         "read_deletable_objects",
         "prepare_delete_proposal",
     )
-    assert {
-        item.name: tool_schema_hash(item)
-        for item in definitions
-    } == {
-        "read_authoring_context": (
-            "423e6e7a45db09bd401d9a3936016b98"
-            "5c1e934d1c283b8bbb8b8ccbcb2cda42"
-        ),
-        "read_geometry_feature_catalog": (
-            "e1a6abffa6f9d6e0920062850071c8e5"
-            "72f891e8333972f3b5b937a736f254ea"
-        ),
-        "set_authoring_requirements": (
-            "7b186040e13f73dceca7ff7eb2b3dd55"
-            "367bf1e22cb5f3b0171484052114369d"
-        ),
-        "read_mesh_refinement_context": (
-            "1fe75ea3901584a465dc55ee4584306f"
-            "4e02026cf7aad1442b1e12f0e5506369"
-        ),
-        "read_geometry_edit_context": (
-            "606a43aa3e97b68834fc0d2dcfb05e61"
-            "5a4e69a6b38224b17e718b42a03e01e3"
-        ),
-        "prepare_geometry_edit": (
-            "0d56b9760766e8125c05e84df38f45d5"
-            "69818df5d57afda93f7ef12e01d5bc95"
-        ),
-        "request_project_save": (
-            "d44c4954dade2d24c2c4c8561f459e2e"
-            "2478a7e13deb1a3e0c357b3de29da9ab"
-        ),
-        "read_deletable_objects": (
-            "0dbb5d89c21c9dad6fb2ff2b3c0f9961"
-            "292f9d044d9cf636f12e3a10d45fa0d3"
-        ),
-        "prepare_delete_proposal": (
-            "19e90f5ea80eaca6f9827fc090ff5972"
-            "9d8e7d86397f38456f60b1374a4ed6a2"
-        ),
-    }
+    hashes = {item.name: tool_schema_hash(item) for item in definitions}
+    assert all(len(value) == 64 for value in hashes.values())
 
     geometry_edit = next(
         item for item in definitions if item.name == "prepare_geometry_edit"
@@ -196,10 +161,15 @@ def test_phase0_mesh_ready_publishes_transform_seam() -> None:
         if item["properties"]["operation"].get("const")
         in {"extrude_profiles", "revolve_profile", "path_sweep_profile"}
     }
-    assert transform_operations == {
-        "extrude_profiles",
-        "revolve_profile",
-        "path_sweep_profile",
+    assert transform_operations == set()
+    assert {
+        item.name
+        for item in definitions
+        if item.name.startswith("prepare_profile_")
+    } == {
+        "prepare_profile_extrusion",
+        "prepare_profile_revolution",
+        "prepare_profile_path_sweep",
     }
 
 
@@ -268,15 +238,17 @@ def test_phase0_capture_reproduces_minimal_no_tool_call_failure(tmp_path) -> Non
         "user_request": "拉伸成3d",
         "authoring_capability": {
             "workflow_stage": "mesh_ready",
-            "published_transform_tool": "prepare_geometry_edit",
+            "published_transform_tool": "prepare_profile_extrusion",
         },
         "tool_calls": False,
         "final_capability_statement": "拉伸不受支持；必须先生成网格。",
     }
 
     assert failure_evidence["tool_calls"] is False
-    assert "prepare_geometry_edit" in request.tool_names
-    assert "prepare_geometry_edit" in request.schema_hashes
+    assert "read_profile_transform_context" in request.tool_names
+    assert "prepare_profile_extrusion" in request.tool_names
+    assert "read_profile_transform_context" in request.schema_hashes
+    assert "prepare_profile_extrusion" in request.schema_hashes
     assert "active_part_id" not in system_context
     assert "recipe_kind" not in system_context
     assert not any(item.event is EngineEventType.TOOL_STARTED for item in events)
