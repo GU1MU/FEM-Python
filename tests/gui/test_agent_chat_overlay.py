@@ -111,6 +111,7 @@ def test_drawer_removes_phase_copy_and_uses_compact_composer_controls():
     host.resize(720, 520)
     host.show()
     application.processEvents()
+    application.processEvents()
 
     drawer = host.agent_chat_drawer
     labels = drawer.findChildren(QLabel)
@@ -155,6 +156,12 @@ def test_drawer_removes_phase_copy_and_uses_compact_composer_controls():
     assert drawer.close_button.width() <= 30
     assert drawer.close_button.height() <= 30
     assert drawer.send_state.size() == QSize(30, 30)
+    assert drawer.composer_stack.sizeHint().height() == (
+        drawer.composer_surface.sizeHint().height()
+    )
+    assert drawer.composer_surface.height() == (
+        drawer.composer_surface.sizeHint().height()
+    )
     host.close()
 
 
@@ -270,7 +277,8 @@ def test_composer_projects_one_proposal_through_local_and_continuation_states():
     assert drawer.composer_stack.currentWidget() is drawer.composer_task_surface
     assert drawer.composer_task_title.text() == "网格提案 2"
     assert "生成第 2 版网格" in drawer.composer_task_summary.text()
-    assert "将替换当前网格" in drawer.composer_task_impact.text()
+    assert drawer.composer_task_impact.isHidden()
+    assert drawer.composer_task_status.text() == "等待确认"
     visible_accepts = [
         button
         for button in drawer.findChildren(

@@ -652,6 +652,11 @@ class QtAgentRuntime(QObject):
                 lifecycle.state = ProposalState.RUNNING
 
             text = str(message).strip()
+            terminal_text = text or (
+                "已完成"
+                if normalized is ProposalState.SUCCEEDED
+                else normalized.value
+            )
             if normalized is ProposalState.RUNNING:
                 if progress is not None:
                     lifecycle.progress = float(progress)
@@ -667,7 +672,7 @@ class QtAgentRuntime(QObject):
             elif normalized is ProposalState.SUCCEEDED:
                 append(
                     EventType.PROPOSAL_SUCCEEDED,
-                    {**identity, "summary": text or "提案执行完成"},
+                    {**identity, "summary": terminal_text},
                 )
                 lifecycle.state = normalized
                 lifecycle.progress = 1.0
@@ -685,7 +690,7 @@ class QtAgentRuntime(QObject):
                 }[normalized]
                 append(
                     event_type,
-                    {**identity, "reason": text or normalized.value},
+                    {**identity, "reason": terminal_text},
                 )
                 lifecycle.state = normalized
             if normalized in {
@@ -716,7 +721,7 @@ class QtAgentRuntime(QObject):
                         model_revision=lifecycle.model_revision,
                         status=normalized.value,
                         summary=self._provider_safe_text(
-                            text or normalized.value,
+                            terminal_text,
                             (),
                             workspace_root=None,
                         ),

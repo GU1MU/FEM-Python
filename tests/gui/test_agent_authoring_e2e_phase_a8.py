@@ -533,6 +533,8 @@ def test_a8_production_geometry_waits_for_one_gui_acceptance() -> None:
 
     draft_state = window.session.snapshot()
     assert prepared.ok
+    assert prepared.data["proposal_view"]["title"] == "加入部件"
+    assert prepared.data["proposal_view"]["confirm_label"] == "加入部件"
     assert prepared.data["proposal_view"]["summary"] == (
         "设计提案：2D 平面轮廓："
         "矩形1(x=0, y=0, 宽=120, 高=60)；"

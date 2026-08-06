@@ -550,7 +550,7 @@ def test_minimal_gui_card_binds_and_only_buttons_authorize() -> None:
 
     assert accept is not None and accept.isEnabled()
     assert reject is not None and reject.isEnabled()
-    assert accept.text() == "确认"
+    assert accept.text() == "加入模型"
     assert reject.text() == "拒绝"
     assert accept.palette().color(accept.foregroundRole()).name() == "#ffffff"
     assert drawer.findChild(QLabel, "agentChatProposalImpact") is None
@@ -605,7 +605,7 @@ def test_runtime_emits_ordered_unique_lifecycle_and_stales_bad_identity(
         "agent-session-1",
         "turn-1",
         ProposalState.SUCCEEDED,
-        "完成",
+        "",
     )
     application.processEvents()
     assert [event.event_type for event in collector] == [
@@ -613,6 +613,7 @@ def test_runtime_emits_ordered_unique_lifecycle_and_stales_bad_identity(
         EventType.PROPOSAL_STARTED,
         EventType.PROPOSAL_SUCCEEDED,
     ]
+    assert collector[-1].payload["summary"] == "已完成"
     assert not runtime.record_proposal_lifecycle_from_gui(
         "proposal-success",
         proposal_hash,
@@ -661,7 +662,7 @@ def test_runtime_emits_ordered_unique_lifecycle_and_stales_bad_identity(
     runtime.shutdown()
 
 
-def test_proposal_card_is_rendered_after_the_turn_messages() -> None:
+def test_pending_proposal_is_only_rendered_in_the_composer() -> None:
     _application()
     events = _Events()
     proposal_hash = "b" * 64
@@ -718,9 +719,84 @@ def test_proposal_card_is_rendered_after_the_turn_messages() -> None:
     drawer = AgentChatDrawer()
     drawer.replay_agent_events(log)
 
-    last_item = drawer.event_feed_layout.itemAt(
-        drawer.event_feed_layout.count() - 1
+    assert drawer.findChild(QLabel, "agentChatProposalStatus") is None
+    assert drawer.composer_stack.currentWidget() is drawer.composer_task_surface
+    assert drawer.composer_task_title.text() == "加入偏心孔板"
+    assert drawer.composer_task_impact.isHidden()
+    assert drawer.composer_task_status.text() == "等待确认"
+    drawer.close()
+
+
+def test_succeeded_proposal_hides_terminal_detail_and_empty_continuation_user(
+) -> None:
+    _application()
+    events = _Events()
+    proposal_hash = "f" * 64
+    proposal_id = "proposal-completed"
+    identity = {
+        "proposal_id": proposal_id,
+        "proposal_hash": proposal_hash,
+    }
+    log = (
+        events.make(
+            EventType.TURN_STARTED,
+            {"user_message": "建立偏心孔板"},
+        ),
+        events.make(
+            EventType.PROPOSAL_REQUESTED,
+            _proposal_payload(proposal_id, proposal_hash),
+        ),
+        events.make(EventType.TURN_COMPLETE, {}),
+        events.make(EventType.PROPOSAL_ACCEPTED, identity),
+        events.make(EventType.PROPOSAL_STARTED, identity),
+        events.make(
+            EventType.PROPOSAL_SUCCEEDED,
+            {**identity, "summary": "提案执行完成"},
+        ),
+        events.make(
+            EventType.CONTINUATION_STARTED,
+            {
+                **identity,
+                "source_turn_id": "turn-1",
+                "status": "succeeded",
+            },
+            turn_id="continuation-turn",
+        ),
+        events.make(
+            EventType.MESSAGE_START,
+            {
+                "message_id": "completion-message",
+                "role": "assistant",
+                "format": "restricted_markdown",
+            },
+            turn_id="continuation-turn",
+        ),
+        events.make(
+            EventType.MESSAGE_DELTA,
+            {
+                "message_id": "completion-message",
+                "delta": "几何已加入模型。",
+            },
+            turn_id="continuation-turn",
+        ),
+        events.make(
+            EventType.MESSAGE_COMPLETE,
+            {"message_id": "completion-message"},
+            turn_id="continuation-turn",
+        ),
+        events.make(
+            EventType.TURN_COMPLETE,
+            {},
+            turn_id="continuation-turn",
+        ),
     )
-    assert last_item.widget() is not None
-    assert last_item.widget().objectName() == "agentChatProposal"
+
+    drawer = AgentChatDrawer()
+    drawer.replay_agent_events(log)
+
+    user_labels = drawer.findChildren(QLabel, "agentChatUserLabel")
+    proposal_status = drawer.findChild(QLabel, "agentChatProposalStatus")
+    assert [label.text() for label in user_labels] == ["建立偏心孔板"]
+    assert proposal_status is not None
+    assert proposal_status.text() == "已完成"
     drawer.close()

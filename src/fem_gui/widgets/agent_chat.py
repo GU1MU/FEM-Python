@@ -657,6 +657,28 @@ class _BoundaryListWidget(_EventBoundaryMixin, QListWidget):
     pass
 
 
+class _CurrentPageStack(QStackedWidget):
+    """只用当前页面计算堆叠区的布局尺寸。"""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.currentChanged.connect(self._current_page_changed)
+
+    def sizeHint(self) -> QSize:
+        current = self.currentWidget()
+        return (
+            current.sizeHint()
+            if current is not None
+            else super().sizeHint()
+        )
+
+    def minimumSizeHint(self) -> QSize:
+        return self.sizeHint()
+
+    def _current_page_changed(self, _index: int) -> None:
+        self.updateGeometry()
+
+
 class _ChatInput(QPlainTextEdit):
     """在输入框内路由发送与候选键盘操作。"""
 
@@ -1647,7 +1669,8 @@ class AgentChatDrawer(_BoundaryFrame):
         )
         self._rendering_event_presentation = True
         for turn in self.event_projector.presentation_view.turns:
-            self._add_user_message(turn.user_message, turn.turn_id)
+            if turn.user_message:
+                self._add_user_message(turn.user_message, turn.turn_id)
             speaker = QLabel("FEM Agent", self.event_feed)
             speaker.setObjectName("agentChatSpeaker")
             self.event_feed_layout.addWidget(speaker)
@@ -2049,6 +2072,12 @@ class AgentChatDrawer(_BoundaryFrame):
         proposal: ProposalView,
         turn_id: str,
     ) -> None:
+        if not self._rendering_event_presentation:
+            self._manual_composer_proposal = (proposal, turn_id)
+            self._sync_composer_state()
+        if proposal.status is ProposalViewStatus.PENDING_CONFIRMATION:
+            return
+
         card = _BoundaryFrame(self.event_feed)
         card.setObjectName("agentChatProposal")
         card.setProperty("proposalId", proposal.proposal_id)
@@ -2075,17 +2104,13 @@ class AgentChatDrawer(_BoundaryFrame):
             ProposalViewStatus.FAILED: "执行失败",
             ProposalViewStatus.CANCELLED: "已取消",
         }
-        state_label = _plain_label(
-            (
-                status_labels[status]
-                + (
-                    f" · {proposal.status_message}"
-                    if proposal.status_message
-                    else ""
-                )
-            ),
-            card,
-        )
+        status_text = status_labels[status]
+        if (
+            status is not ProposalViewStatus.SUCCEEDED
+            and proposal.status_message
+        ):
+            status_text += f" · {proposal.status_message}"
+        state_label = _plain_label(status_text, card)
         state_label.setObjectName("agentChatProposalStatus")
         layout.addWidget(state_label)
 
@@ -2139,9 +2164,6 @@ class AgentChatDrawer(_BoundaryFrame):
         layout.addWidget(actions)
         actions.hide()
         self.event_feed_layout.addWidget(card)
-        if not self._rendering_event_presentation:
-            self._manual_composer_proposal = (proposal, turn_id)
-            self._sync_composer_state()
 
     def _build_composer(self, parent: QWidget) -> QWidget:
         composer = _BoundaryFrame(parent)
@@ -2262,7 +2284,7 @@ class AgentChatDrawer(_BoundaryFrame):
         self.send_state.setCurrentWidget(self.send_button)
         footer.addWidget(self.send_state)
         surface_layout.addLayout(footer)
-        self.composer_stack = QStackedWidget(composer)
+        self.composer_stack = _CurrentPageStack(composer)
         self.composer_stack.setObjectName("agentChatComposerStack")
         self.composer_stack.addWidget(self.composer_surface)
         self.composer_task_surface = _BoundaryFrame(self.composer_stack)
@@ -2415,14 +2437,14 @@ class AgentChatDrawer(_BoundaryFrame):
             (local or continuing) and self._runtime_busy
         )
         self.composer_progress.setVisible(local or continuing)
-        self.composer_task_impact.setVisible(pending)
+        self.composer_task_impact.hide()
 
         if pending and proposal is not None and turn_id is not None:
             self.composer_task_title.setText(proposal.title)
             self.composer_task_summary.setText("摘要 · " + proposal.summary)
-            self.composer_task_impact.setText("影响 · " + proposal.impact)
-            self.composer_task_status.setText("等待确认后执行本地操作")
-            self.composer_accept_button.setText("确认")
+            self.composer_task_impact.clear()
+            self.composer_task_status.setText("等待确认")
+            self.composer_accept_button.setText(proposal.confirm_label)
             self.composer_accept_button.setToolTip(proposal.confirm_label)
             self._set_composer_proposal_properties(proposal)
             enabled = (

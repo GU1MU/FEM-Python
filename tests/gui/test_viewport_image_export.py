@@ -8,9 +8,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pyvista as pv
 import pytest
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QLabel
 
 from fem_gui import main_window as main_window_module
+from fem_gui import viewport_image_export_dialog as export_dialog_module
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.viewport_image_export_dialog import (
     MAX_IMAGE_DIMENSION,
@@ -28,10 +29,10 @@ def _application() -> QApplication:
 def _dialog(
     size: tuple[int, int] = (800, 600),
     *,
-    supports_transparency: bool = True,
+    default_path: str = "viewport.png",
 ) -> ViewportImageExportDialog:
     _application()
-    return ViewportImageExportDialog(size, supports_transparency)
+    return ViewportImageExportDialog(size, default_path)
 
 
 def test_export_dialog_defaults_to_two_times_current_viewport() -> None:
@@ -39,10 +40,19 @@ def test_export_dialog_defaults_to_two_times_current_viewport() -> None:
 
     assert dialog.quality_combo.currentData() == 2
     assert dialog.output_size == (1600, 1200)
-    assert dialog.output_size_label.text() == "1600 × 1200 px"
+    assert dialog.width_spin.value() == 1600
+    assert dialog.height_spin.value() == 1200
     assert dialog.options == ViewportImageExportOptions(2, None, False)
-    assert not dialog.custom_width_spin.isEnabled()
-    assert not dialog.custom_height_spin.isEnabled()
+    assert not dialog.width_spin.isEnabled()
+    assert not dialog.height_spin.isEnabled()
+
+    labels = {label.text() for label in dialog.findChildren(QLabel)}
+    assert "宽度：" in labels
+    assert "高度：" in labels
+    assert "当前视口：" not in labels
+    assert "自定义宽度：" not in labels
+    assert "自定义高度：" not in labels
+    assert "输出尺寸：" not in labels
 
 
 @pytest.mark.parametrize(
@@ -59,10 +69,12 @@ def test_export_dialog_fixed_quality_updates_scale_and_preview(
     dialog.quality_combo.setCurrentIndex(dialog.quality_combo.findData(quality))
 
     assert dialog.output_size == expected_size
+    assert dialog.width_spin.value() == expected_size[0]
+    assert dialog.height_spin.value() == expected_size[1]
     assert dialog.options.scale == expected_scale
     assert dialog.options.window_size is None
-    assert not dialog.custom_width_spin.isEnabled()
-    assert not dialog.custom_height_spin.isEnabled()
+    assert not dialog.width_spin.isEnabled()
+    assert not dialog.height_spin.isEnabled()
 
 
 def test_export_dialog_custom_quality_returns_exact_window_size() -> None:
@@ -70,13 +82,12 @@ def test_export_dialog_custom_quality_returns_exact_window_size() -> None:
     custom_index = dialog.quality_combo.findData("custom")
 
     dialog.quality_combo.setCurrentIndex(custom_index)
-    dialog.custom_width_spin.setValue(1234)
-    dialog.custom_height_spin.setValue(987)
+    dialog.width_spin.setValue(1234)
+    dialog.height_spin.setValue(987)
 
-    assert dialog.custom_width_spin.isEnabled()
-    assert dialog.custom_height_spin.isEnabled()
+    assert dialog.width_spin.isEnabled()
+    assert dialog.height_spin.isEnabled()
     assert dialog.output_size == (1234, 987)
-    assert dialog.output_size_label.text() == "1234 × 987 px"
     assert dialog.options == ViewportImageExportOptions(
         1,
         (1234, 987),
@@ -84,8 +95,8 @@ def test_export_dialog_custom_quality_returns_exact_window_size() -> None:
     )
 
     dialog.quality_combo.setCurrentIndex(dialog.quality_combo.findData(2))
-    assert not dialog.custom_width_spin.isEnabled()
-    assert not dialog.custom_height_spin.isEnabled()
+    assert not dialog.width_spin.isEnabled()
+    assert not dialog.height_spin.isEnabled()
     assert dialog.output_size == (1600, 1200)
 
 
@@ -107,16 +118,56 @@ def test_export_dialog_clamps_initial_custom_dimensions(
     assert dialog.output_size == expected_custom_size
 
 
-def test_export_dialog_transparency_is_available_only_for_png() -> None:
-    png_dialog = _dialog(supports_transparency=True)
-    png_dialog.transparent_background_check.setChecked(True)
-    assert png_dialog.transparent_background_check.isEnabled()
-    assert png_dialog.options.transparent_background
+def test_export_dialog_selects_path_and_updates_format_controls(monkeypatch) -> None:
+    dialog = _dialog(default_path="analysis.png")
+    ok_button = dialog.buttons.button(QDialogButtonBox.StandardButton.Ok)
 
-    jpeg_dialog = _dialog(supports_transparency=False)
-    jpeg_dialog.transparent_background_check.setChecked(True)
-    assert not jpeg_dialog.transparent_background_check.isEnabled()
-    assert not jpeg_dialog.options.transparent_background
+    assert dialog.target_path == ""
+    assert not ok_button.isEnabled()
+    assert not dialog.transparent_background_check.isEnabled()
+
+    png_path = Path("exports") / "result"
+    monkeypatch.setattr(
+        export_dialog_module.QFileDialog,
+        "getSaveFileName",
+        lambda *_args, **_kwargs: (str(png_path), ""),
+    )
+    dialog.browse_button.click()
+
+    assert dialog.target_path == str(png_path.with_suffix(".png"))
+    assert ok_button.isEnabled()
+    assert dialog.transparent_background_check.isEnabled()
+    dialog.transparent_background_check.setChecked(True)
+    assert dialog.options.transparent_background
+
+    jpeg_path = Path("exports") / "result.jpg"
+    monkeypatch.setattr(
+        export_dialog_module.QFileDialog,
+        "getSaveFileName",
+        lambda *_args, **_kwargs: (str(jpeg_path), ""),
+    )
+    dialog.browse_button.click()
+
+    assert dialog.target_path == str(jpeg_path)
+    assert not dialog.transparent_background_check.isEnabled()
+    assert not dialog.transparent_background_check.isChecked()
+    assert not dialog.options.transparent_background
+
+
+def test_export_dialog_keeps_path_when_browse_is_cancelled(monkeypatch) -> None:
+    dialog = _dialog()
+    existing = Path("exports") / "existing.png"
+    dialog.path_edit.setText(str(existing))
+    dialog._update_target_format()
+    monkeypatch.setattr(
+        export_dialog_module.QFileDialog,
+        "getSaveFileName",
+        lambda *_args, **_kwargs: ("", ""),
+    )
+
+    dialog.browse_button.click()
+
+    assert dialog.target_path == str(existing)
 
 
 def test_viewport_screenshot_forwards_all_export_parameters() -> None:
@@ -188,26 +239,9 @@ class _ExportHarness:
         self.errors.append((title, message))
 
 
-def test_export_flow_cancels_before_or_after_settings_without_screenshot(
-    monkeypatch,
-) -> None:
+def test_export_flow_cancels_combined_dialog_without_screenshot(monkeypatch) -> None:
     harness = _ExportHarness()
     dialog_calls = []
-    monkeypatch.setattr(
-        main_window_module.QFileDialog,
-        "getSaveFileName",
-        lambda *_args, **_kwargs: ("", ""),
-    )
-    monkeypatch.setattr(
-        main_window_module,
-        "ViewportImageExportDialog",
-        lambda *_args, **_kwargs: dialog_calls.append((_args, _kwargs)),
-    )
-
-    FEMMainWindow.export_viewport_image(harness)
-
-    assert dialog_calls == []
-    assert harness.screenshot_calls == []
 
     class RejectedDialog:
         def __init__(self, *args, **kwargs) -> None:
@@ -217,11 +251,6 @@ def test_export_flow_cancels_before_or_after_settings_without_screenshot(
             return QDialog.DialogCode.Rejected
 
     monkeypatch.setattr(
-        main_window_module.QFileDialog,
-        "getSaveFileName",
-        lambda *_args, **_kwargs: ("viewport.png", ""),
-    )
-    monkeypatch.setattr(
         main_window_module,
         "ViewportImageExportDialog",
         RejectedDialog,
@@ -230,6 +259,7 @@ def test_export_flow_cancels_before_or_after_settings_without_screenshot(
     FEMMainWindow.export_viewport_image(harness)
 
     assert len(dialog_calls) == 1
+    assert dialog_calls[0][0][:2] == ((900, 500), "viewport.png")
     assert harness.screenshot_calls == []
 
 
@@ -240,6 +270,7 @@ def test_export_flow_passes_options_and_keeps_success_feedback(monkeypatch) -> N
 
     class AcceptedDialog:
         options = selected
+        target_path = "viewport.jpg"
 
         def __init__(self, *args, **kwargs) -> None:
             created_with.append((args, kwargs))
@@ -248,11 +279,6 @@ def test_export_flow_passes_options_and_keeps_success_feedback(monkeypatch) -> N
             return QDialog.DialogCode.Accepted
 
     monkeypatch.setattr(
-        main_window_module.QFileDialog,
-        "getSaveFileName",
-        lambda *_args, **_kwargs: ("viewport.jpg", ""),
-    )
-    monkeypatch.setattr(
         main_window_module,
         "ViewportImageExportDialog",
         AcceptedDialog,
@@ -260,7 +286,7 @@ def test_export_flow_passes_options_and_keeps_success_feedback(monkeypatch) -> N
 
     FEMMainWindow.export_viewport_image(harness)
 
-    assert created_with[0][0][:2] == ((900, 500), False)
+    assert created_with[0][0][:2] == ((900, 500), "viewport.png")
     assert harness.screenshot_calls == [
         (
             ("viewport.jpg",),
@@ -283,6 +309,7 @@ def test_export_flow_keeps_existing_error_feedback(monkeypatch) -> None:
 
     class AcceptedDialog:
         options = ViewportImageExportOptions(1, (1024, 768), True)
+        target_path = "viewport.png"
 
         def __init__(self, *args, **kwargs) -> None:
             pass
@@ -290,11 +317,6 @@ def test_export_flow_keeps_existing_error_feedback(monkeypatch) -> None:
         def exec(self) -> QDialog.DialogCode:
             return QDialog.DialogCode.Accepted
 
-    monkeypatch.setattr(
-        main_window_module.QFileDialog,
-        "getSaveFileName",
-        lambda *_args, **_kwargs: ("viewport", ""),
-    )
     monkeypatch.setattr(
         main_window_module,
         "ViewportImageExportDialog",

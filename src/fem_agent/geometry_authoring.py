@@ -540,7 +540,7 @@ def create_geometry_proposal(
                 "unit_context": units,
             },
         )
-        operation_label = "创建 native 项目并加入首部件"
+        operation_label = "加入部件"
         target_model = project_name
     else:
         if context.model_name is None:
@@ -553,7 +553,7 @@ def create_geometry_proposal(
                 "unit_context": units,
             },
         )
-        operation_label = "向 native 项目增加部件"
+        operation_label = "加入部件"
         target_model = context.model_name
     proposal_summary = (
         operation_label

@@ -2986,7 +2986,7 @@ def create_session_authoring_workflow_controller(
             proposal,
             summary=proposal_summary,
             impact="确认后创建该几何并刷新 GUI",
-            confirm_label="加入模型",
+            confirm_label="加入部件",
         )
 
     def read_geometry_edit_context(

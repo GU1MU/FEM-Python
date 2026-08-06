@@ -142,6 +142,7 @@ def test_authoring_prompt_uses_proposal_first_geometry_and_local_unit_defaults(
     assert "propose a basic planar rectangular Part" in system_prompt
     assert "local defaults length=mm, force=N, and" in system_prompt
     assert "never create a separate unit-selection" in system_prompt
+    assert "do not add a natural-language instruction asking" in system_prompt
 
 
 def _register_test_continuation(engine, *, revision=4):
@@ -194,6 +195,9 @@ def test_proposal_continuation_uses_system_envelope_and_consumes_once(tmp_path):
     continuation_request = provider.requests[1]
     assert continuation_request.messages[-1].role == "system"
     assert "proposal_terminal" in continuation_request.messages[-1].content
+    assert "Treat this terminal status as authoritative" in (
+        continuation_request.messages[-1].content
+    )
     assert sum(
         message.role == "user" for message in continuation_request.messages
     ) == 1

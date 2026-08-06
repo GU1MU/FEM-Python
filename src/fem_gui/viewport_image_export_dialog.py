@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
-    QLabel,
+    QHBoxLayout,
+    QLineEdit,
+    QPushButton,
     QSpinBox,
     QVBoxLayout,
 )
@@ -20,6 +24,7 @@ from .dialogs import configure_form_layout
 
 MIN_IMAGE_DIMENSION = 64
 MAX_IMAGE_DIMENSION = 16384
+IMAGE_FILE_FILTER = "PNG 图片 (*.png);;JPEG 图片 (*.jpg *.jpeg)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,22 +42,31 @@ class ViewportImageExportDialog(QDialog):
     def __init__(
         self,
         current_size: tuple[int, int],
-        supports_transparent_background: bool,
+        default_path: str,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("viewportImageExportDialog")
         self.setWindowTitle("视口图片导出设置")
-        self.setMinimumWidth(390)
+        self.setMinimumWidth(520)
         self._current_size = (int(current_size[0]), int(current_size[1]))
-        self._supports_transparent_background = bool(supports_transparent_background)
+        self._default_path = str(default_path)
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
         configure_form_layout(form)
 
-        self.current_size_label = QLabel(self._format_size(self._current_size), self)
-        self.current_size_label.setObjectName("viewportCurrentSize")
+        self.path_edit = QLineEdit(self)
+        self.path_edit.setObjectName("viewportExportPath")
+        self.path_edit.setReadOnly(True)
+        self.path_edit.setPlaceholderText("请选择图片保存路径")
+        self.browse_button = QPushButton("浏览…", self)
+        self.browse_button.setObjectName("viewportExportBrowse")
+        path_layout = QHBoxLayout()
+        path_layout.setContentsMargins(0, 0, 0, 0)
+        path_layout.addWidget(self.path_edit, 1)
+        path_layout.addWidget(self.browse_button)
+
         self.quality_combo = QComboBox(self)
         self.quality_combo.setObjectName("viewportExportQuality")
         self.quality_combo.addItem("当前分辨率", 1)
@@ -63,26 +77,21 @@ class ViewportImageExportDialog(QDialog):
 
         initial_width = self._clamp_dimension(self._current_size[0] * 2)
         initial_height = self._clamp_dimension(self._current_size[1] * 2)
-        self.custom_width_spin = self._dimension_spin_box(initial_width)
-        self.custom_width_spin.setObjectName("viewportExportWidth")
-        self.custom_height_spin = self._dimension_spin_box(initial_height)
-        self.custom_height_spin.setObjectName("viewportExportHeight")
-        self.output_size_label = QLabel(self)
-        self.output_size_label.setObjectName("viewportExportOutputSize")
+        self.width_spin = self._dimension_spin_box(initial_width)
+        self.width_spin.setObjectName("viewportExportWidth")
+        self.height_spin = self._dimension_spin_box(initial_height)
+        self.height_spin.setObjectName("viewportExportHeight")
         self.transparent_background_check = QCheckBox("透明背景", self)
         self.transparent_background_check.setObjectName(
             "viewportExportTransparentBackground"
         )
         self.transparent_background_check.setChecked(False)
-        self.transparent_background_check.setEnabled(
-            self._supports_transparent_background
-        )
+        self.transparent_background_check.setEnabled(False)
 
-        form.addRow("当前视口：", self.current_size_label)
+        form.addRow("保存路径：", path_layout)
         form.addRow("导出质量：", self.quality_combo)
-        form.addRow("自定义宽度：", self.custom_width_spin)
-        form.addRow("自定义高度：", self.custom_height_spin)
-        form.addRow("输出尺寸：", self.output_size_label)
+        form.addRow("宽度：", self.width_spin)
+        form.addRow("高度：", self.height_spin)
         form.addRow("背景：", self.transparent_background_check)
         layout.addLayout(form)
 
@@ -96,10 +105,15 @@ class ViewportImageExportDialog(QDialog):
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
 
+        self.browse_button.clicked.connect(self._choose_target_path)
         self.quality_combo.currentIndexChanged.connect(self._update_controls)
-        self.custom_width_spin.valueChanged.connect(self._update_output_size)
-        self.custom_height_spin.valueChanged.connect(self._update_output_size)
         self._update_controls()
+        self._update_target_format()
+
+    @property
+    def target_path(self) -> str:
+        """返回用户选定并完成扩展名规范化的保存路径。"""
+        return self.path_edit.text().strip()
 
     @property
     def options(self) -> ViewportImageExportOptions:
@@ -108,8 +122,8 @@ class ViewportImageExportDialog(QDialog):
         if quality == "custom":
             scale = 1
             window_size = (
-                self.custom_width_spin.value(),
-                self.custom_height_spin.value(),
+                self.width_spin.value(),
+                self.height_spin.value(),
             )
         else:
             scale = int(quality)
@@ -118,7 +132,7 @@ class ViewportImageExportDialog(QDialog):
             scale=scale,
             window_size=window_size,
             transparent_background=(
-                self._supports_transparent_background
+                Path(self.target_path).suffix.lower() == ".png"
                 and self.transparent_background_check.isChecked()
             ),
         )
@@ -126,16 +140,9 @@ class ViewportImageExportDialog(QDialog):
     @property
     def output_size(self) -> tuple[int, int]:
         """返回当前选择会生成的图片像素尺寸。"""
-        quality = self.quality_combo.currentData()
-        if quality == "custom":
-            return (
-                self.custom_width_spin.value(),
-                self.custom_height_spin.value(),
-            )
-        scale = int(quality)
         return (
-            self._current_size[0] * scale,
-            self._current_size[1] * scale,
+            self.width_spin.value(),
+            self.height_spin.value(),
         )
 
     def _dimension_spin_box(self, value: int) -> QSpinBox:
@@ -146,17 +153,49 @@ class ViewportImageExportDialog(QDialog):
         return spin
 
     def _update_controls(self, *_args) -> None:
-        custom = self.quality_combo.currentData() == "custom"
-        self.custom_width_spin.setEnabled(custom)
-        self.custom_height_spin.setEnabled(custom)
-        self._update_output_size()
+        quality = self.quality_combo.currentData()
+        custom = quality == "custom"
+        if custom:
+            self.width_spin.setMinimum(MIN_IMAGE_DIMENSION)
+            self.height_spin.setMinimum(MIN_IMAGE_DIMENSION)
+            self.width_spin.setMaximum(MAX_IMAGE_DIMENSION)
+            self.height_spin.setMaximum(MAX_IMAGE_DIMENSION)
+        else:
+            scale = int(quality)
+            self._set_fixed_dimension(self.width_spin, self._current_size[0] * scale)
+            self._set_fixed_dimension(self.height_spin, self._current_size[1] * scale)
+        self.width_spin.setEnabled(custom)
+        self.height_spin.setEnabled(custom)
 
-    def _update_output_size(self, *_args) -> None:
-        self.output_size_label.setText(self._format_size(self.output_size))
+    def _choose_target_path(self) -> None:
+        path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "选择视口图片保存位置",
+            self.target_path or self._default_path,
+            IMAGE_FILE_FILTER,
+        )
+        if not path:
+            return
+        target = Path(path)
+        if target.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
+            target = target.with_suffix(".png")
+        self.path_edit.setText(str(target))
+        self._update_target_format()
+
+    def _update_target_format(self) -> None:
+        supports_transparency = Path(self.target_path).suffix.lower() == ".png"
+        self.transparent_background_check.setEnabled(supports_transparency)
+        if not supports_transparency:
+            self.transparent_background_check.setChecked(False)
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(
+            bool(self.target_path)
+        )
 
     @staticmethod
-    def _format_size(size: tuple[int, int]) -> str:
-        return f"{size[0]} × {size[1]} px"
+    def _set_fixed_dimension(spin: QSpinBox, value: int) -> None:
+        spin.setMinimum(1)
+        spin.setMaximum(max(MAX_IMAGE_DIMENSION, int(value)))
+        spin.setValue(int(value))
 
     @staticmethod
     def _clamp_dimension(value: int) -> int:

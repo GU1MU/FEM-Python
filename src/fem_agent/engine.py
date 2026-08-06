@@ -196,6 +196,9 @@ returned by the authoring context. Never present a default or proposed value as
 if the user supplied it. Once geometry or mesh values are complete, present the
 corresponding operation proposal; that single operation card is the explicit
 authorization. Do not request a separate RequirementReview.
+The operation card and its button are self-explanatory. After presenting a
+proposal, do not add a natural-language instruction asking the user to click,
+confirm, accept, or operate that card.
 
 Use a proposal-first policy for native geometry. When the user asks to create a
 model but omits shape details or dimensions, choose the simplest supported,
@@ -1035,7 +1038,13 @@ class AgentSessionEngine:
                         ensure_ascii=False,
                         sort_keys=True,
                         separators=(",", ":"),
-                    ),
+                    )
+                    + ". Treat this terminal status as authoritative. Do not "
+                    "repeat an earlier pending-confirmation instruction or "
+                    "ask the user to click, confirm, or accept this proposal "
+                    "again. For a succeeded proposal, acknowledge completion "
+                    "briefly before continuing only with the next requested "
+                    "stage.",
                 )
             )
             if normalized_status == "cancelled":

@@ -11962,20 +11962,9 @@ class FEMMainWindow(QMainWindow):
         if self._current_result_provider() is None:
             return
         default = (self.document.path.stem if self.document.path else "viewport") + ".png"
-        path, _filter = QFileDialog.getSaveFileName(
-            self,
-            "导出视口图片",
-            default,
-            "PNG 图片 (*.png);;JPEG 图片 (*.jpg *.jpeg)",
-        )
-        if not path:
-            return
-        target = Path(path)
-        if target.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
-            target = target.with_suffix(".png")
         dialog = ViewportImageExportDialog(
             self.viewport.screenshot_size(),
-            target.suffix.lower() == ".png",
+            default,
             self,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -11983,7 +11972,7 @@ class FEMMainWindow(QMainWindow):
         options = dialog.options
         try:
             self.viewport.save_screenshot(
-                str(target),
+                dialog.target_path,
                 scale=options.scale,
                 window_size=options.window_size,
                 transparent_background=options.transparent_background,
