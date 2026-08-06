@@ -16,6 +16,7 @@ from .authoring import (
 )
 from .authoring_runtime import (
     AuthoringTerminalRecord,
+    AuthoringTurnSnapshot,
     AuthoringToolOutcome,
     AuthoringWorkflowController,
     AuthoringWorkflowStage,
@@ -139,6 +140,7 @@ __all__ = [
     "AgentResultVariable",
     "AuthoringContext",
     "AuthoringTerminalRecord",
+    "AuthoringTurnSnapshot",
     "AuthoringToolOutcome",
     "AuthoringWorkflowController",
     "AuthoringWorkflowStage",

@@ -20,7 +20,10 @@ from PySide6.QtCore import QObject, Qt, Signal
 
 from fem_agent.artifacts import ArtifactStore, InputRejectedError
 from fem_agent.authoring import ProposalState, RequirementReview
-from fem_agent.authoring_runtime import AuthoringWorkflowController
+from fem_agent.authoring_runtime import (
+    AuthoringTurnSnapshot,
+    AuthoringWorkflowController,
+)
 from fem_agent.config import (
     ConfigError,
     LocalAgentConfig,
@@ -32,7 +35,7 @@ from fem_agent.engine import (
     EngineEvent,
     EngineEventType,
 )
-from fem_agent.providers.base import CloudModelProvider
+from fem_agent.providers.base import CloudModelProvider, ToolDefinition
 from fem_agent.providers.deepseek import DeepSeekProvider
 from fem_agent.providers.fake import FakeProvider
 from fem_agent.schemas import ToolResult
@@ -100,6 +103,8 @@ class AgentEnginePort(Protocol):
     def cancel_active_operation(self) -> tuple[EngineEvent, ...]: ...
 
     def close_session(self) -> tuple[EngineEvent, ...]: ...
+
+    def flush_round_audit(self) -> None: ...
 
     def get_snapshot(self) -> Any: ...
 
@@ -258,7 +263,21 @@ class _QtAuthoringToolProxy(DynamicToolRegistry):
 
     @property
     def definitions(self):
-        return self._controller.definitions
+        # The provider worker only reads this immutable owner-thread cache.
+        # Calling ``controller.definitions`` here would cross the Qt boundary
+        # on every provider request.
+        return self._runtime._authoring_tool_definitions()
+
+    @property
+    def provider_snapshot(self) -> AuthoringTurnSnapshot:
+        return self._runtime.authoring_turn_snapshot
+
+    def refresh_turn_snapshot(
+        self,
+        published_tool_names: tuple[str, ...] = (),
+    ) -> AuthoringTurnSnapshot:
+        del published_tool_names
+        return self.provider_snapshot
 
     def dispatch(
         self,
@@ -317,6 +336,7 @@ def _default_engine_factory(
         root,
         provider,
         event_sink=event_sink,
+        defer_audit_persistence=True,
     )
 
 
@@ -365,6 +385,7 @@ class QtAgentRuntime(QObject):
                     provider,
                     event_sink=event_sink,
                     dynamic_tools=dynamic_tools,
+                    defer_audit_persistence=True,
                 )
 
             self._engine_factory = default_factory
@@ -395,6 +416,9 @@ class QtAgentRuntime(QObject):
         self._cancel_requested = False
         self._shutdown = False
         self._authoring_invocations: dict[int, _AuthoringToolInvocation] = {}
+        self._authoring_snapshot = AuthoringTurnSnapshot.unavailable()
+        self._authoring_definitions: tuple[ToolDefinition, ...] = ()
+        self._authoring_snapshot_blocked = False
         self._proposal_lifecycles: dict[str, _ProposalLifecycle] = {}
         self._pending_continuation: _ProposalContinuation | None = None
         self._attached_input_key: tuple[str, str, str] | None = None
@@ -427,6 +451,133 @@ class QtAgentRuntime(QObject):
             return self._gui_session_id
 
     @property
+    def authoring_turn_snapshot(self) -> AuthoringTurnSnapshot:
+        """Return the immutable owner-thread projection used by the provider."""
+
+        with self._lock:
+            return self._authoring_snapshot
+
+    def _authoring_tool_definitions(self) -> tuple[ToolDefinition, ...]:
+        with self._lock:
+            return self._authoring_definitions
+
+    def _invalidate_authoring_tool_cache_owner_thread(
+        self,
+        *,
+        invalidate_controller: bool = True,
+    ) -> AuthoringTurnSnapshot:
+        """Atomically drop an invalid owner-thread projection."""
+
+        self._require_owner_thread()
+        previous = self.authoring_turn_snapshot
+        controller = self._authoring_controller
+        snapshot: AuthoringTurnSnapshot | None = None
+        if controller is not None:
+            if invalidate_controller:
+                invalidate = getattr(controller, "invalidate_turn_snapshot", None)
+                if callable(invalidate):
+                    try:
+                        candidate = invalidate()
+                    except Exception:
+                        candidate = None
+                    if isinstance(candidate, AuthoringTurnSnapshot):
+                        snapshot = candidate
+            if snapshot is None:
+                candidate = getattr(controller, "turn_snapshot", None)
+                if isinstance(candidate, AuthoringTurnSnapshot):
+                    snapshot = candidate
+        generation = previous.snapshot_generation + 1
+        if snapshot is None or snapshot.snapshot_generation < generation:
+            snapshot = AuthoringTurnSnapshot.unavailable(generation=generation)
+        with self._lock:
+            self._authoring_snapshot = snapshot
+            self._authoring_definitions = ()
+            self._authoring_snapshot_blocked = True
+        return snapshot
+
+    def refresh_authoring_turn_snapshot_from_gui(self) -> AuthoringTurnSnapshot:
+        """Observe GUI authoring state and publish a new immutable cache.
+
+        This method is owner-thread-only.  It is intentionally public so the
+        main window can refresh the cache after a document transition without
+        exposing a Session object to the provider worker.
+        """
+
+        self._require_owner_thread()
+        controller = self._authoring_controller
+        try:
+            if controller is None:
+                snapshot = AuthoringTurnSnapshot.unavailable()
+                definitions: tuple[ToolDefinition, ...] = ()
+            else:
+                # ``create_session_authoring_workflow_controller`` and every
+                # GUI document transition already observe the typed context on
+                # this owner thread.  Reuse that observation for the normal
+                # turn path; only an as-yet-unobserved controller needs a
+                # context-reader call.
+                if not controller.turn_snapshot.available:
+                    controller.refresh_turn_snapshot()
+                definitions = tuple(controller.definitions)
+                snapshot = controller.set_published_tool_names(
+                    tuple(item.name for item in definitions)
+                )
+        except Exception:
+            self._invalidate_authoring_tool_cache_owner_thread()
+            raise
+        with self._lock:
+            self._authoring_snapshot = snapshot
+            self._authoring_definitions = definitions
+            if snapshot.available:
+                self._authoring_snapshot_blocked = False
+        return snapshot
+
+    def _try_refresh_authoring_turn_snapshot_from_gui(self) -> None:
+        try:
+            self.refresh_authoring_turn_snapshot_from_gui()
+        except Exception:
+            if self.authoring_turn_snapshot.available:
+                self._invalidate_authoring_tool_cache_owner_thread()
+
+    def _publish_authoring_tool_cache_owner_thread(self) -> None:
+        """Refresh only stage/tool metadata after an already-observed call."""
+
+        self._require_owner_thread()
+        controller = self._authoring_controller
+        if controller is None:
+            return
+        controller_snapshot = controller.turn_snapshot
+        with self._lock:
+            blocked = self._authoring_snapshot_blocked
+        if blocked and not controller_snapshot.available:
+            # Binding invalidation (or a failed owner-thread projection) must
+            # not republish definitions derived from the old document.  A
+            # later owner-thread refresh/observe call clears this block.
+            with self._lock:
+                self._authoring_snapshot = controller_snapshot
+                self._authoring_definitions = ()
+            return
+        try:
+            definitions = tuple(controller.definitions)
+            snapshot = controller.set_published_tool_names(
+                tuple(item.name for item in definitions)
+            )
+        except Exception:
+            self._invalidate_authoring_tool_cache_owner_thread()
+            raise
+        with self._lock:
+            self._authoring_snapshot = snapshot
+            self._authoring_definitions = definitions
+            if snapshot.available:
+                self._authoring_snapshot_blocked = False
+
+    def _try_publish_authoring_tool_cache_owner_thread(self) -> None:
+        try:
+            self._publish_authoring_tool_cache_owner_thread()
+        except Exception:
+            if self.authoring_turn_snapshot.available:
+                self._invalidate_authoring_tool_cache_owner_thread()
+
+    @property
     def stream_backlog_metrics(self) -> dict[str, int | float]:
         """Return bounded coalescer backlog metrics for the active/last turn."""
 
@@ -451,6 +602,10 @@ class QtAgentRuntime(QObject):
             references,
             workspace_root=workspace_root,
         )
+        # ``send_message`` is called by the Qt UI thread.  Refresh the
+        # owner-thread projection before queuing the worker so the provider
+        # never has to synchronously inspect GUI/Session state.
+        self._publish_authoring_tool_cache_owner_thread()
         reference_snapshot = tuple(references)
         with self._lock:
             if self._shutdown:
@@ -551,6 +706,7 @@ class QtAgentRuntime(QObject):
         controller = self._authoring_controller
         if controller is not None:
             controller.cancel_turn()
+            self._try_publish_authoring_tool_cache_owner_thread()
         return True
 
     def resolve_requirement_review_from_gui(
@@ -562,6 +718,7 @@ class QtAgentRuntime(QObject):
         if controller is None:
             raise RuntimeError("authoring controller is not configured")
         controller.resolve_requirement_review(review)
+        self._try_publish_authoring_tool_cache_owner_thread()
 
     def record_authoring_proposal_state_from_gui(
         self,
@@ -574,6 +731,7 @@ class QtAgentRuntime(QObject):
         if controller is None:
             raise RuntimeError("authoring controller is not configured")
         controller.record_proposal_state(operation, state, message)
+        self._try_publish_authoring_tool_cache_owner_thread()
 
     def record_proposal_lifecycle_from_gui(
         self,
@@ -727,6 +885,7 @@ class QtAgentRuntime(QObject):
                         ),
                     )
         self._emit_events(emitted)
+        self._try_publish_authoring_tool_cache_owner_thread()
         if discard_checkpoint:
             self._discard_proposal_continuation(str(proposal_id))
         elif continuation is not None:
@@ -803,6 +962,12 @@ class QtAgentRuntime(QObject):
         controller = self._authoring_controller
         if controller is not None:
             controller.invalidate_binding(reason)
+            # ``invalidate_binding`` has already advanced the controller
+            # generation.  Drop the runtime cache without immediately
+            # rebuilding it from the now-invalid observed context.
+            self._invalidate_authoring_tool_cache_owner_thread(
+                invalidate_controller=False,
+            )
 
     def record_authoring_preflight_state_from_gui(
         self,
@@ -814,6 +979,7 @@ class QtAgentRuntime(QObject):
         if controller is None:
             raise RuntimeError("authoring controller is not configured")
         controller.record_preflight_state(state, message)
+        self._try_publish_authoring_tool_cache_owner_thread()
 
     def shutdown(self, *, wait: bool = True) -> None:
         """Cancel, close the engine off-thread, and join owned executors."""
@@ -938,7 +1104,13 @@ class QtAgentRuntime(QObject):
             with self._lock:
                 if self._shutdown:
                     raise RuntimeError("Agent runtime is closed")
-            return controller.dispatch(name, arguments, context)
+            result = controller.dispatch(name, arguments, context)
+            try:
+                self._publish_authoring_tool_cache_owner_thread()
+            except Exception:
+                if self.authoring_turn_snapshot.available:
+                    self._invalidate_authoring_tool_cache_owner_thread()
+            return result
         invocation = _AuthoringToolInvocation(
             name,
             dict(arguments),
@@ -1010,6 +1182,13 @@ class QtAgentRuntime(QObject):
         except BaseException as error:
             invocation.finish(error=error)
         else:
+            try:
+                self._publish_authoring_tool_cache_owner_thread()
+            except Exception:
+                # The tool result remains authoritative, but a failed
+                # projection must never leave a previous document cache live.
+                if self.authoring_turn_snapshot.available:
+                    self._invalidate_authoring_tool_cache_owner_thread()
             invocation.finish(result=result)
         finally:
             with self._lock:
@@ -1025,6 +1204,7 @@ class QtAgentRuntime(QObject):
             return
         controller.invalidate_binding("Agent session changed")
         controller.reset_for_binding()
+        self._try_publish_authoring_tool_cache_owner_thread()
 
     def _require_owner_thread(self) -> None:
         if threading.get_ident() != self._owner_thread_id:
@@ -1039,6 +1219,7 @@ class QtAgentRuntime(QObject):
         references: tuple[WorkspaceFileReference, ...],
     ) -> None:
         context: _TurnContext | None = None
+        engine: AgentEnginePort | None = None
         try:
             prepared = prepare_workspace_context(references)
             if self._cancellation_requested(generation):
@@ -1127,7 +1308,23 @@ class QtAgentRuntime(QObject):
                     code="GUI-RUNTIME-ERROR",
                 )
         finally:
+            self._flush_engine_round_audit(engine)
             self._finish_operation(generation)
+
+    @staticmethod
+    def _flush_engine_round_audit(engine: AgentEnginePort | None) -> None:
+        if engine is None:
+            return
+        flush = getattr(engine, "flush_round_audit", None)
+        if not callable(flush):
+            return
+        try:
+            flush()
+        except Exception:
+            # The terminal UI event has already been emitted.  Keep the GUI
+            # lifecycle responsive; close_session() retries the deferred batch
+            # before releasing the engine when the runtime shuts down.
+            return
 
     def _run_confirm(
         self,
@@ -1354,6 +1551,7 @@ class QtAgentRuntime(QObject):
         continuation: _ProposalContinuation,
     ) -> None:
         context: _TurnContext | None = None
+        engine: AgentEnginePort | None = None
         try:
             with self._lock:
                 engine = self._engine
@@ -1413,6 +1611,7 @@ class QtAgentRuntime(QObject):
                     code="GUI-CONTINUATION-ERROR",
                 )
         finally:
+            self._flush_engine_round_audit(engine)
             self._finish_operation(generation)
 
     def _run_cancel(self, generation: int) -> None:
@@ -2304,6 +2503,7 @@ class QtAgentRuntime(QObject):
 __all__ = [
     "AgentEnginePort",
     "AgentRuntimeConfigurationError",
+    "AuthoringTurnSnapshot",
     "EngineFactory",
     "ProviderFactory",
     "QtAgentRuntime",

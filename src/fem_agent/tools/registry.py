@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
 from pathlib import Path
 import threading
 from typing import TYPE_CHECKING, Any, Mapping, Protocol
@@ -48,6 +50,14 @@ class DynamicToolRegistry(Protocol):
         context: "ToolExecutionContext",
     ) -> ToolResult: ...
 
+    @property
+    def provider_snapshot(self) -> object | None: ...
+
+    def refresh_turn_snapshot(
+        self,
+        published_tool_names: tuple[str, ...] = (),
+    ) -> object | None: ...
+
 
 @dataclass(frozen=True)
 class ToolExecutionContext:
@@ -62,6 +72,23 @@ class RegisteredTool:
     definition: ToolDefinition
     mutates_revision: bool = False
     requires_confirmation: bool = False
+
+
+def tool_schema_hash(tool: ToolDefinition) -> str:
+    """Return the stable hash used by local provider-call audit records."""
+
+    payload = {
+        "description": tool.description,
+        "name": tool.name,
+        "parameters": tool.parameters,
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 class AgentToolRegistry:
@@ -107,6 +134,27 @@ class AgentToolRegistry:
                 + ", ".join(sorted(duplicates))
             )
         return static + dynamic
+
+    @property
+    def provider_snapshot(self) -> object | None:
+        """Return an immutable authoring snapshot without touching GUI state."""
+
+        dynamic = self._dynamic_tools
+        if dynamic is None:
+            return None
+        return getattr(dynamic, "provider_snapshot", None)
+
+    def refresh_turn_snapshot(
+        self,
+        published_tool_names: tuple[str, ...] = (),
+    ) -> object | None:
+        dynamic = self._dynamic_tools
+        if dynamic is None:
+            return None
+        refresh = getattr(dynamic, "refresh_turn_snapshot", None)
+        if not callable(refresh):
+            return self.provider_snapshot
+        return refresh(tuple(published_tool_names))
 
     def available_definitions(
         self,
@@ -794,4 +842,5 @@ __all__ = [
     "DynamicToolRegistry",
     "RegisteredTool",
     "ToolExecutionContext",
+    "tool_schema_hash",
 ]

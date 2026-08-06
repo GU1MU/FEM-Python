@@ -51,6 +51,7 @@ from .tools.registry import (
     AgentToolRegistry,
     DynamicToolRegistry,
     ToolExecutionContext,
+    tool_schema_hash,
 )
 from .worker import (
     IsolatedFEMWorker,
@@ -62,6 +63,7 @@ from .worker import (
 
 
 _CONVERSATION_SCHEMA_VERSION = 1
+_TOOL_AUDIT_SCHEMA_VERSION = 2
 _CREDENTIAL_ASSIGNMENT_PATTERN = re.compile(
     r"""(?ix)
     (?:^|[\s"'`])
@@ -368,6 +370,7 @@ class AgentSessionEngine:
         config: EngineConfig | None = None,
         event_sink: Callable[[EngineEvent], None] | None = None,
         dynamic_tools: DynamicToolRegistry | None = None,
+        defer_audit_persistence: bool = False,
     ):
         self.config = config or EngineConfig()
         self.provider = provider
@@ -402,6 +405,12 @@ class AgentSessionEngine:
         self._summary_shown_revision: tuple[int, str] | None = None
         self._tool_result_cache: dict[str, ToolResult] = {}
         self._continuations: dict[str, ContinuationCheckpoint] = {}
+        self._pending_round_audit: list[dict[str, Any]] | None = None
+        self._defer_audit_persistence = bool(defer_audit_persistence)
+        self._deferred_round_audit_batches: list[
+            tuple[dict[str, Any], ...]
+        ] = []
+        self._audit_write_lock = threading.Lock()
         self.session_id = self.artifacts.create_session(session_id)
         self.revisions.create_session(self.session_id)
         self._history = self._load_conversation()
@@ -675,6 +684,33 @@ class AgentSessionEngine:
         request_context: str | None,
         allow_tools: bool,
     ) -> tuple[EngineEvent, ...]:
+        """Run one provider user-turn and flush its round audit once."""
+
+        batch: list[dict[str, Any]] = []
+        with self._state_lock:
+            if self._pending_round_audit is not None:
+                raise RuntimeError("nested provider turns are not supported")
+            self._pending_round_audit = batch
+        try:
+            return self._run_provider_loop_body(
+                request_context=request_context,
+                allow_tools=allow_tools,
+            )
+        finally:
+            with self._state_lock:
+                if self._pending_round_audit is batch:
+                    self._pending_round_audit = None
+            if self._defer_audit_persistence:
+                self._queue_round_audit_batch(batch)
+            else:
+                self._persist_round_audit_entries(batch)
+
+    def _run_provider_loop_body(
+        self,
+        *,
+        request_context: str | None,
+        allow_tools: bool,
+    ) -> tuple[EngineEvent, ...]:
         self._reset_provider_cancellation()
         events: list[EngineEvent] = []
         tool_calls_used = 0
@@ -806,6 +842,15 @@ class AgentSessionEngine:
                 )
                 return tuple(events)
 
+            # Keep one privacy-safe record per provider round.  This is
+            # intentionally written before dispatching any local tool so an
+            # empty tool-call response remains auditable as "published but not
+            # called".
+            self._append_round_audit(
+                available_tools,
+                response.message.tool_calls,
+            )
+
             try:
                 self._append_message(response.message)
             except _ConversationStorageLimit:
@@ -894,7 +939,6 @@ class AgentSessionEngine:
                     )
                     self._tool_result_cache[context.idempotency_key] = result
                 self._register_continuation_from_result(result)
-                self._append_audit(call, context, result)
                 events.append(
                     self._event(
                         EngineEventType.TOOL_COMPLETED,
@@ -1424,6 +1468,7 @@ class AgentSessionEngine:
             self._closed = True
             with self._state_lock:
                 self._continuations.clear()
+            self.flush_round_audit()
             return (self._state_event(),)
 
     def _provider_messages(
@@ -1439,6 +1484,21 @@ class AgentSessionEngine:
             "confirmed": state.confirmed,
             "active_run_id": state.active_run_id,
         }
+        authoring_snapshot = self.registry.provider_snapshot
+        projected = _provider_snapshot_dict(authoring_snapshot)
+        if projected is not None:
+            if not projected.get("available", False):
+                # Keep the unavailable marker explicit without implying that
+                # null document fields were observed.
+                context["authoring_turn_snapshot"] = {
+                    "available": False,
+                    "snapshot_generation": projected.get(
+                        "snapshot_generation",
+                        0,
+                    ),
+                }
+            else:
+                context["authoring_turn_snapshot"] = projected
         complete = _complete_provider_history(self._history)
         retained = complete[-self.config.max_conversation_messages :]
         while retained and retained[0].role != "user":
@@ -1767,12 +1827,128 @@ class AgentSessionEngine:
                 )
         return None
 
-    def _append_audit(
+    def _append_round_audit(
         self,
-        call: ToolCall,
-        context: ToolExecutionContext,
-        result: ToolResult,
+        available_tools: Sequence[object],
+        tool_calls: Sequence[ToolCall],
     ) -> None:
+        """Collect one bounded, privacy-safe record for a provider round."""
+
+        snapshot_dict = _provider_snapshot_dict(
+            self.registry.provider_snapshot
+        ) or {}
+        stage = snapshot_dict.get("workflow_stage")
+        revision = snapshot_dict.get("session_revision")
+        if type(revision) is not int:
+            current = self.revisions.latest(self.session_id)
+            revision = 0 if current is None else current.revision
+        tool_names = tuple(
+            sorted(
+                {
+                    str(getattr(item, "name", ""))
+                    for item in available_tools
+                    if isinstance(getattr(item, "name", None), str)
+                }
+            )
+        )
+        schema_hashes = {
+            name: tool_schema_hash(item)
+            for item in available_tools
+            if isinstance(getattr(item, "name", None), str)
+            for name in (str(item.name),)
+        }
+        called_names = tuple(
+            sorted(
+                {
+                    str(item.name)
+                    for item in tool_calls
+                    if isinstance(item, ToolCall)
+                }
+            )
+        )
+        entry = {
+            "session_id": self.session_id,
+            "workflow_stage": stage,
+            "revision": revision,
+            "published_tool_names": list(tool_names),
+            "schema_hashes": schema_hashes,
+            "route_hint": snapshot_dict.get("route_hint"),
+            "tool_call_flags": {
+                "provider_called": bool(tool_calls),
+                "called_tool_names": list(called_names),
+                "read_tool_called": any(
+                    name.startswith("read_") for name in called_names
+                ),
+                "prepare_tool_called": any(
+                    name.startswith("prepare_") for name in called_names
+                ),
+            },
+        }
+        with self._state_lock:
+            pending = self._pending_round_audit
+            if pending is not None:
+                pending.append(entry)
+                return
+        # Keep direct/internal callers durable too; provider turns install a
+        # batch above so normal rounds never take this synchronous path.
+        self._persist_round_audit_entries((entry,))
+
+    def _queue_round_audit_batch(
+        self,
+        entries: Sequence[Mapping[str, Any]],
+    ) -> None:
+        if not entries:
+            return
+        batch = tuple(dict(item) for item in entries)
+        with self._state_lock:
+            self._deferred_round_audit_batches.append(batch)
+
+    def flush_round_audit(self) -> None:
+        """Persist deferred round audits as one atomic user-turn write.
+
+        GUI runtimes use deferred mode so the engine can deliver its terminal
+        and final message-delta events before filesystem I/O.  Direct engine
+        instances keep the default synchronous mode and therefore already
+        have readable audit storage when ``send_message`` returns.
+        """
+
+        # Hold the write lock while claiming the queued batches.  A concurrent
+        # close then waits for this attempt and can retry any batch requeued
+        # after a failed write instead of observing a transiently empty queue.
+        with self._audit_write_lock:
+            with self._state_lock:
+                batches = tuple(self._deferred_round_audit_batches)
+                self._deferred_round_audit_batches.clear()
+            if not batches:
+                return
+            entries = tuple(item for batch in batches for item in batch)
+            try:
+                self._persist_round_audit_entries_locked(entries)
+            except Exception:
+                with self._state_lock:
+                    self._deferred_round_audit_batches = [
+                        *batches,
+                        *self._deferred_round_audit_batches,
+                    ]
+                raise
+
+    def _persist_round_audit_entries(
+        self,
+        new_entries: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """Atomically persist all collected entries for one provider turn."""
+
+        with self._audit_write_lock:
+            self._persist_round_audit_entries_locked(new_entries)
+
+    def _persist_round_audit_entries_locked(
+        self,
+        new_entries: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """Write one audit batch while the audit lock is held."""
+
+        if not new_entries:
+            return
         path = self._audit_path()
         entries: list[dict[str, Any]] = []
         if path.exists():
@@ -1781,37 +1957,21 @@ class AgentSessionEngine:
                 max_bytes=self.config.max_tool_audit_storage_bytes,
             )
             if (
-                payload.get("schema_version") != _CONVERSATION_SCHEMA_VERSION
+                payload.get("schema_version")
+                not in {_CONVERSATION_SCHEMA_VERSION, _TOOL_AUDIT_SCHEMA_VERSION}
                 or not isinstance(payload.get("entries"), list)
             ):
                 raise ValueError("tool audit storage is invalid")
-            entries = list(payload["entries"])
-        entries.append(
-            {
-                "timestamp": _utc_now(),
-                "tool": call.name,
-                "call_id": call.call_id,
-                "session_id": context.session_id,
-                "expected_revision": context.expected_revision,
-                "idempotency_key": context.idempotency_key,
-                "argument_sha256": hashlib.sha256(
-                    json.dumps(
-                        call.arguments,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ).encode("utf-8")
-                ).hexdigest(),
-                "ok": result.ok,
-                "output_revision": result.output_revision,
-                "diagnostic_codes": [
-                    item.code for item in result.diagnostics
-                ],
-            }
-        )
+            if payload.get("schema_version") == _TOOL_AUDIT_SCHEMA_VERSION:
+                entries = [
+                    dict(item)
+                    for item in payload["entries"]
+                    if isinstance(item, Mapping)
+                ]
+        entries.extend(dict(item) for item in new_entries)
         entries = entries[-512:]
         payload = {
-            "schema_version": _CONVERSATION_SCHEMA_VERSION,
+            "schema_version": _TOOL_AUDIT_SCHEMA_VERSION,
             "entries": entries,
         }
         while (
@@ -1821,16 +1981,27 @@ class AgentSessionEngine:
         ):
             entries.pop(0)
             payload = {
-                "schema_version": _CONVERSATION_SCHEMA_VERSION,
+                "schema_version": _TOOL_AUDIT_SCHEMA_VERSION,
                 "entries": entries,
             }
         if _json_size_bytes(payload) > self.config.max_tool_audit_storage_bytes:
-            entries[0]["diagnostic_codes"] = entries[0][
-                "diagnostic_codes"
-            ][:8]
-            entries[0]["diagnostic_codes_truncated"] = True
+            # Keep the round identity and call flags while deterministically
+            # clipping the published schema catalog.  No arguments/results are
+            # ever retained in this file.
+            entry = entries[-1]
+            names = list(entry.get("published_tool_names", ()))
+            hashes = dict(entry.get("schema_hashes", {}))
+            while (
+                names
+                and _json_size_bytes(payload)
+                > self.config.max_tool_audit_storage_bytes
+            ):
+                removed = names.pop()
+                hashes.pop(removed, None)
+                entry["published_tool_names"] = names
+                entry["schema_hashes"] = hashes
             payload = {
-                "schema_version": _CONVERSATION_SCHEMA_VERSION,
+                "schema_version": _TOOL_AUDIT_SCHEMA_VERSION,
                 "entries": entries,
             }
         if _json_size_bytes(payload) > self.config.max_tool_audit_storage_bytes:
@@ -1967,6 +2138,26 @@ def _json_size_bytes(payload: Mapping[str, Any]) -> int:
         )
         + 1
     )
+
+
+def _provider_snapshot_dict(value: object) -> dict[str, Any] | None:
+    """Detach a provider-safe snapshot without invoking GUI state."""
+
+    if callable(value):
+        try:
+            value = value()
+        except Exception:
+            return None
+    if isinstance(value, Mapping):
+        return dict(value)
+    to_dict = getattr(value, "to_provider_dict", None)
+    if not callable(to_dict):
+        return None
+    try:
+        projected = to_dict()
+    except Exception:
+        return None
+    return dict(projected) if isinstance(projected, Mapping) else None
 
 
 def _payload_limit_result(context: ToolExecutionContext) -> ToolResult:
