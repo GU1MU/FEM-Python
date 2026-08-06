@@ -35,6 +35,7 @@ from fem.geometry.part_boolean import (
 from fem.geometry.recipe_topology import (
     LogicalEntity,
     RecipeTopology,
+    _extrusion_hole_edges_by_face,
     describe_recipe_topology,
 )
 from fem.geometry.references import LogicalEntityRef
@@ -1838,14 +1839,21 @@ def _compile_path_sweep(cad: Any, recipe: PathSweptGeometry) -> _CompiledDraft:
     hole_edges = {
         edge_id
         for edge_id in edge_ids
-        if "hole" in base_catalog.entity(edge_id).semantic_role
+        if edge_id
+        in _extrusion_hole_edges_by_face(recipe.base, (source_face_id,)).get(
+            source_face_id,
+            (),
+        )
+        or "hole" in base_catalog.entity(edge_id).semantic_role
     }
     outer_sides: list[Any] = []
     hole_sides: list[Any] = []
     claimed: set[Any] = set()
     edge_seed_indexes: dict[str, int] = {}
+    source_curve_counts: dict[str, int] = {}
     for edge_id in edge_ids:
         source_curves = set(base.logical_entities.get(edge_id, ()))
+        source_curve_counts[edge_id] = len(source_curves)
         copied_curves: set[Any] = set()
         for source_curve in source_curves:
             source_curve_center = tuple(cad.center_of_mass(source_curve))
@@ -1881,12 +1889,34 @@ def _compile_path_sweep(cad: Any, recipe: PathSweptGeometry) -> _CompiledDraft:
             for index, side in enumerate(sides)
             if side_boundaries[side] & copied_curves
         )
-        if len(seed_indexes) != 1:
+        if not seed_indexes:
             raise TopologyResolutionError(
-                "path-sweep.compile.side-seed-not-unique: "
-                f"源边 {edge_id} 没有唯一起始侧面"
+                "path-sweep.compile.side-seed-missing: "
+                f"source edge {edge_id} has no traceable seed side"
             )
+        # One semantic SketchCircle may be represented by several OCC arcs.
+        # Keep the first side as the seed and let the next semantic edge (or
+        # the terminal side) delimit the complete contiguous side chain.
         edge_seed_indexes[edge_id] = seed_indexes[0]
+    # OCC orders each closed boundary by its generated side chain.  A hole loop
+    # can therefore run in the reverse direction of the sketch analyser's
+    # canonical curve order.  Reorder semantic IDs by their discovered seeds
+    # while keeping outer boundaries before hole boundaries; this preserves
+    # deterministic logical IDs without treating reversed hole orientation as
+    # an ambiguity.
+    outer_ids = tuple(
+        sorted(
+            (edge_id for edge_id in edge_ids if edge_id not in hole_edges),
+            key=lambda edge_id: edge_seed_indexes[edge_id],
+        )
+    )
+    hole_ids = tuple(
+        sorted(
+            (edge_id for edge_id in edge_ids if edge_id in hole_edges),
+            key=lambda edge_id: edge_seed_indexes[edge_id],
+        )
+    )
+    edge_ids = (*outer_ids, *hole_ids)
     ordered_seeds = tuple(edge_seed_indexes[edge_id] for edge_id in edge_ids)
     if tuple(sorted(ordered_seeds)) != ordered_seeds:
         raise TopologyResolutionError(
@@ -1906,10 +1936,36 @@ def _compile_path_sweep(cad: Any, recipe: PathSweptGeometry) -> _CompiledDraft:
                 "path-sweep.compile.side-lineage-missing: "
                 f"无法追踪源边 {edge_id} 的侧面"
             )
-        if any(
-            not (side_boundaries[first] & side_boundaries[second])
-            for first, second in zip(matched, matched[1:])
-        ) or not (side_boundaries[matched[-1]] & terminal_curves):
+        # Semantic circles may contain multiple OCC curves; validate those
+        # side faces as an unordered boundary graph below.
+        if source_curve_counts[edge_id] > 1:
+            # A semantic SketchCircle may be represented by several OCC arcs,
+            # whose enumeration is not a stable order. Prove its matched faces
+            # as one boundary-connected component and require a terminal cap.
+            remaining = set(matched[1:])
+            connected = {matched[0]}
+            frontier = [matched[0]]
+            while frontier:
+                current = frontier.pop()
+                for candidate in tuple(remaining):
+                    if side_boundaries[current] & side_boundaries[candidate]:
+                        remaining.remove(candidate)
+                        connected.add(candidate)
+                        frontier.append(candidate)
+            reaches_terminal = any(
+                side_boundaries[side] & terminal_curves for side in matched
+            )
+            if len(connected) != len(matched) or not reaches_terminal:
+                raise TopologyResolutionError(
+                    "path-sweep.compile.side-lineage-disconnected: "
+                    "matched side graph is disconnected or misses terminal cap"
+                )
+        elif (
+            any(
+                not (side_boundaries[first] & side_boundaries[second])
+                for first, second in zip(matched, matched[1:])
+            ) or not (side_boundaries[matched[-1]] & terminal_curves)
+        ):
             raise TopologyResolutionError(
                 "path-sweep.compile.side-lineage-disconnected: "
                 f"源边 {edge_id} 的侧面链未连续达到终端面"

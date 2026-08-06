@@ -658,6 +658,119 @@ _REQUEST_REVIEW = _tool(
     ),
     _NO_ARGUMENTS,
 )
+
+# Blank-project composite geometry uses the same bounded profile vocabulary as
+# the existing planar proposal, then wraps that strict XY sketch in one native
+# 3D recipe.  ``role``/``operation`` are optional annotations: topology
+# containment remains the authority for deciding whether a contour is a hole.
+_COMPOSITE_PROFILE_ITEM_SCHEMA = {
+    "oneOf": [
+        {
+            "type": "object",
+            "properties": {
+                "kind": {"const": "rectangle"},
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+                "width": {"type": "number", "exclusiveMinimum": 0},
+                "height": {"type": "number", "exclusiveMinimum": 0},
+                "role": {"type": "string", "enum": ["material", "hole"]},
+                "operation": {
+                    "type": "string",
+                    "enum": ["material", "cut"],
+                },
+            },
+            "required": ["kind", "x", "y", "width", "height"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "kind": {"const": "circle"},
+                "center_x": {"type": "number"},
+                "center_y": {"type": "number"},
+                "radius": {"type": "number", "exclusiveMinimum": 0},
+                "role": {"type": "string", "enum": ["material", "hole"]},
+                "operation": {
+                    "type": "string",
+                    "enum": ["material", "cut"],
+                },
+            },
+            "required": ["kind", "center_x", "center_y", "radius"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "kind": {"const": "polygon"},
+                "vertices": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 64,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "x": {"type": "number"},
+                            "y": {"type": "number"},
+                        },
+                        "required": ["x", "y"],
+                        "additionalProperties": False,
+                    },
+                },
+                "role": {"type": "string", "enum": ["material", "hole"]},
+                "operation": {
+                    "type": "string",
+                    "enum": ["material", "cut"],
+                },
+            },
+            "required": ["kind", "vertices"],
+            "additionalProperties": False,
+        },
+    ]
+}
+_COMPOSITE_PROFILE_ARRAY_SCHEMA = {
+    "type": "array",
+    "minItems": 1,
+    "maxItems": 32,
+    "items": _COMPOSITE_PROFILE_ITEM_SCHEMA,
+}
+_COMPOSITE_PATH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "points": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 64,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "minLength": 1, "maxLength": 64},
+                    "x": {"type": "number"},
+                    "y": {"type": "number"},
+                    "z": {"type": "number"},
+                },
+                "required": ["name", "x", "y", "z"],
+                "additionalProperties": False,
+            },
+        },
+        "members": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 63,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "minLength": 1, "maxLength": 64},
+                    "start": {"type": "string", "minLength": 1, "maxLength": 64},
+                    "end": {"type": "string", "minLength": 1, "maxLength": 64},
+                },
+                "required": ["name", "start", "end"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["points", "members"],
+    "additionalProperties": False,
+}
 _PREPARE_GEOMETRY = _tool(
     "prepare_geometry_proposal",
     (
@@ -854,6 +967,40 @@ _PREPARE_GEOMETRY = _tool(
                             },
                         },
                         "required": ["kind", "radius", "height"],
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"const": "extruded_profiles"},
+                            "profiles": _COMPOSITE_PROFILE_ARRAY_SCHEMA,
+                            "height": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                            },
+                            "provisional": {"type": "boolean"},
+                        },
+                        "required": ["kind", "profiles", "height"],
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"const": "path_swept_profile"},
+                            "profiles": _COMPOSITE_PROFILE_ARRAY_SCHEMA,
+                            "path": _COMPOSITE_PATH_SCHEMA,
+                            "frame_strategy": {
+                                "type": "string",
+                                "enum": ["fixed", "transport"],
+                            },
+                            "provisional": {"type": "boolean"},
+                        },
+                        "required": [
+                            "kind",
+                            "profiles",
+                            "path",
+                            "frame_strategy",
+                        ],
                         "additionalProperties": False,
                     },
                 ]

@@ -228,6 +228,48 @@ def _preflight_derived_geometry(
         executor.submit(compile_one).result()
 
 
+def _preflight_composite_geometry(
+    recipe: ExtrudedGeometry | PathSweptGeometry,
+) -> None:
+    """Prove one exact, positive-volume Body before a blank proposal is shown."""
+
+    topology = describe_recipe_topology(recipe)
+    if not topology.exact:
+        raise AuthoringContractError(
+            "profile-transform.topology-unproven: composite recipe topology "
+            "could not be proven exactly"
+        )
+    expected_bodies = len(topology.entities_of("body", selectable_only=True))
+    if expected_bodies != 1:
+        raise AuthoringContractError(
+            "profile-transform.unexpected-body-count: composite recipe must "
+            "describe exactly one selectable Body"
+        )
+
+    def compile_one() -> None:
+        with geometry_runtime.model(
+            f"agent-composite-{type(recipe).__name__}-preflight",
+            dimension=3,
+        ) as cad:
+            compiled = compile_recipe(cad, recipe)
+            if len(compiled.domain) != 1:
+                raise AuthoringContractError(
+                    "profile-transform.unexpected-body-count: composite "
+                    "preflight did not prove one solid domain"
+                )
+            if cad.volume(compiled.domain[0]) <= 0.0:
+                raise AuthoringContractError(
+                    "profile-transform.topology-unproven: composite preflight "
+                    "did not prove a positive volume"
+                )
+
+    with ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix="agent-composite-preflight",
+    ) as executor:
+        executor.submit(compile_one).result()
+
+
 def _canonical_profile_source_recipe(recipe: object) -> object:
     """Canonicalize legacy planar primitives for proposal replay checks."""
 
@@ -441,6 +483,199 @@ def _profile_vertices(value: object) -> tuple[tuple[object, object], ...]:
     ):
         raise ValueError("polygon vertices must contain 3 to 64 x/y objects")
     return tuple((item["x"], item["y"]) for item in value)
+
+
+def _composite_profile_order_key(value: object) -> tuple[str, str]:
+    """Return a geometry-only key so contour order cannot alter identity."""
+
+    if not isinstance(value, Mapping):
+        return ("", repr(value))
+    kind = str(value.get("kind", ""))
+    if kind == "rectangle":
+        fields = ("x", "y", "width", "height")
+    elif kind == "circle":
+        fields = ("center_x", "center_y", "radius")
+    elif kind == "polygon":
+        vertices = value.get("vertices")
+        if isinstance(vertices, list):
+            return (
+                kind,
+                repr(tuple(
+                    (item.get("x"), item.get("y"))
+                    for item in vertices
+                    if isinstance(item, Mapping)
+                )),
+            )
+        return (kind, repr(vertices))
+    else:
+        return (kind, repr(sorted(value.items(), key=lambda item: str(item[0]))))
+    return (kind, repr(tuple(value.get(field) for field in fields)))
+
+
+def _composite_profile_contours(
+    value: object,
+    *,
+    recipe_name: str,
+) -> tuple[object, dict[str, object], tuple[str, ...]]:
+    """Build one strict XY sketch and prove one material Profile locally."""
+
+    if not isinstance(value, list) or not value:
+        raise ValueError("composite profiles must be a non-empty array")
+    draft = None
+    summaries: list[str] = []
+    for index, raw in enumerate(
+        sorted(value, key=_composite_profile_order_key),
+        start=1,
+    ):
+        if not isinstance(raw, Mapping):
+            raise TypeError("each composite profile must be an object")
+        item = dict(raw)
+        kind = str(item.pop("kind", ""))
+        role_value = item.pop("role", None)
+        operation_value = item.pop("operation", None)
+        if role_value is not None and role_value not in {"material", "hole"}:
+            raise ValueError("composite profile role must be material or hole")
+        if operation_value is not None and operation_value not in {
+            "material",
+            "cut",
+        }:
+            raise ValueError("composite profile operation must be material or cut")
+        # ``role``/``operation`` are annotations only.  The strict sketch
+        # analyser below determines material versus hole from containment, so
+        # contour order cannot change the selected Profile.
+        role = str(role_value) if role_value is not None else None
+        if operation_value is not None and role_value is not None:
+            expected = "material" if operation_value == "material" else "hole"
+            if role != expected:
+                raise ValueError("composite profile role and operation disagree")
+        try:
+            if kind == "rectangle":
+                if set(item) != {"x", "y", "width", "height"}:
+                    raise ValueError("rectangle profile fields do not match")
+                shape = SketchRectangle(
+                    "material",
+                    item["x"],
+                    item["y"],
+                    item["width"],
+                    item["height"],
+                )
+                summaries.append(
+                    _planar_profile_design_summary(kind, item, index)
+                )
+                if draft is None:
+                    draft = planar_sketch_geometry(
+                        recipe_name,
+                        contours=(shape,),
+                    )
+                else:
+                    draft = add_planar_rectangle(
+                        draft.recipe,
+                        x=item["x"],
+                        y=item["y"],
+                        width=item["width"],
+                        height=item["height"],
+                    )
+            elif kind == "circle":
+                if set(item) != {"center_x", "center_y", "radius"}:
+                    raise ValueError("circle profile fields do not match")
+                shape = SketchCircle(
+                    "material",
+                    item["center_x"],
+                    item["center_y"],
+                    item["radius"],
+                )
+                summaries.append(
+                    _planar_profile_design_summary(kind, item, index)
+                )
+                if draft is None:
+                    draft = planar_sketch_geometry(
+                        recipe_name,
+                        contours=(shape,),
+                    )
+                else:
+                    draft = add_planar_circle(
+                        draft.recipe,
+                        center_x=item["center_x"],
+                        center_y=item["center_y"],
+                        radius=item["radius"],
+                    )
+            elif kind == "polygon":
+                if set(item) != {"vertices"}:
+                    raise ValueError("polygon profile fields do not match")
+                vertices = _profile_vertices(item["vertices"])
+                summaries.append(
+                    _planar_profile_design_summary(
+                        kind,
+                        {"vertices": vertices},
+                        index,
+                    )
+                )
+                if draft is None:
+                    draft = planar_polygon_geometry(
+                        recipe_name,
+                        vertices=vertices,
+                    )
+                else:
+                    draft = add_planar_polygon(
+                        draft.recipe,
+                        vertices=vertices,
+                    )
+            else:
+                raise ValueError("unsupported composite profile kind")
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"composite profile {index} is invalid: {error}") from error
+    if draft is None:  # pragma: no cover - guarded by the non-empty input check
+        raise ValueError("composite profiles did not produce a sketch")
+    sketch = draft.recipe
+    context = profile_transform_context(sketch)
+    if not context.get("topology_exact"):
+        raise AuthoringContractError(
+            "profile-transform.topology-unproven: composite sketch topology "
+            "could not be proven"
+        )
+    if int(context.get("material_profile_count", 0)) != 1:
+        raise AuthoringContractError(
+            "profile-transform.unexpected-body-count: composite geometry "
+            "requires exactly one material Profile"
+        )
+    selection = resolve_extrusion_source_faces(sketch)
+    if len(selection.face_ids) != 1:
+        raise AuthoringContractError(
+            "profile-transform.unexpected-body-count: composite geometry "
+            "requires exactly one canonical source face"
+        )
+    context["design_summaries"] = list(summaries)
+    return sketch, context, selection.face_ids
+
+
+def _composite_path(value: object, *, name: str) -> WireGeometry:
+    if not isinstance(value, Mapping) or set(value) != {"points", "members"}:
+        raise ValueError("composite path fields do not match")
+    raw_points = value["points"]
+    raw_members = value["members"]
+    if not isinstance(raw_points, list) or not isinstance(raw_members, list):
+        raise TypeError("composite path points and members must be arrays")
+    if any(
+        not isinstance(item, Mapping) or set(item) != {"name", "x", "y", "z"}
+        for item in raw_points
+    ):
+        raise ValueError("composite path point fields do not match")
+    if any(
+        not isinstance(item, Mapping) or set(item) != {"name", "start", "end"}
+        for item in raw_members
+    ):
+        raise ValueError("composite path member fields do not match")
+    return WireGeometry(
+        name,
+        tuple(
+            WirePoint(item["name"], item["x"], item["y"], item["z"])
+            for item in raw_points
+        ),
+        tuple(
+            WireMember(item["name"], item["start"], item["end"])
+            for item in raw_members
+        ),
+    )
 
 
 def authoring_context_from_snapshot(
@@ -2900,6 +3135,100 @@ def create_session_authoring_workflow_controller(
             geometry_summary = _bounded_geometry_design_summary(
                 "2D 平面轮廓",
                 profile_summaries,
+            )
+        elif kind in {"extruded_profiles", "path_swept_profile"}:
+            allowed = {
+                "kind",
+                "profiles",
+                "height",
+                "path",
+                "frame_strategy",
+                "provisional",
+            }
+            if set(geometry) - allowed:
+                raise ValueError("composite geometry fields do not match")
+            if "profiles" not in geometry:
+                raise ValueError("composite geometry requires profiles")
+            if "provisional" in geometry and type(geometry["provisional"]) is not bool:
+                raise TypeError("composite provisional must be a boolean")
+            if kind == "extruded_profiles" and (
+                "height" not in geometry
+                or "path" in geometry
+                or "frame_strategy" in geometry
+            ):
+                raise ValueError("extruded_profiles requires profiles and height")
+            if kind == "path_swept_profile" and (
+                "path" not in geometry
+                or "frame_strategy" not in geometry
+                or "height" in geometry
+            ):
+                raise ValueError(
+                    "path_swept_profile requires profiles, path, and frame_strategy"
+                )
+            raw_profiles = geometry["profiles"]
+            sketch, profile_context, source_face_ids = _composite_profile_contours(
+                raw_profiles,
+                recipe_name=recipe_name,
+            )
+            length_unit = str(
+                controller.collected_requirements("geometry").get(
+                    "length_unit",
+                    "mm",
+                )
+            )
+            if kind == "extruded_profiles":
+                height = float(geometry["height"])
+                if not math.isfinite(height) or height <= 0.0:
+                    raise ValueError("composite extrusion height must be positive")
+                recipe = ExtrudedGeometry(
+                    sketch,
+                    height,
+                    tuple(source_face_ids),
+                )
+                _preflight_composite_geometry(recipe)
+                draft = geometry_draft(recipe)
+                transform_summary = (
+                    f"拉伸高={_display_number(height)} {length_unit}，"
+                    "方向=XY 正法向"
+                )
+            else:
+                path = _composite_path(
+                    geometry["path"],
+                    name=f"扫掠路径-{part_function}",
+                )
+                frame_strategy = str(geometry["frame_strategy"])
+                if frame_strategy not in {"fixed", "transport"}:
+                    raise ValueError(
+                        "path_swept_profile frame_strategy must be fixed or transport"
+                    )
+                recipe = PathSweptGeometry(
+                    sketch,
+                    path,
+                    tuple(source_face_ids),
+                    frame_strategy,
+                )
+                _preflight_composite_geometry(recipe)
+                draft = geometry_draft(recipe)
+                transform_summary = (
+                    f"路径扫掠段数={len(path.members)}，"
+                    f"frame={frame_strategy}"
+                )
+            profile_summary = _bounded_geometry_design_summary(
+                "2D Profile",
+                [
+                    *(
+                        str(item)
+                        for item in profile_context.get("design_summaries", [])
+                    ),
+                    f"material={len(profile_context.get('profiles', []))}",
+                    f"holes={profile_context.get('hole_count', 0)}",
+                ],
+            )
+            provisional = bool(geometry.get("provisional", False))
+            provisional_summary = "；尺寸标记为 provisional 提案值" if provisional else ""
+            geometry_summary = (
+                f"{profile_summary}；3D {kind}：{transform_summary}"
+                f"{provisional_summary}"
             )
         elif kind == "wire":
             if set(geometry) != {"kind", "points", "members"}:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
@@ -21,6 +22,8 @@ _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _WINDOWS_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")
 _POSIX_PATH = re.compile(r"^/")
+_MAX_NATIVE_WIRE_ITEMS = 128
+_MAX_NATIVE_WIRE_NAME = 128
 _EXECUTABLE_KEYS = frozenset(
     {
         "callback",
@@ -75,11 +78,68 @@ def _require_key(value: object) -> str:
     return _require_identifier(value, "requirement key")
 
 
+def _valid_native_wire_name(value: object) -> bool:
+    return (
+        type(value) is str
+        and bool(value.strip())
+        and len(value.strip()) <= _MAX_NATIVE_WIRE_NAME
+    )
+
+
+def _valid_native_wire_recipe(value: object) -> bool:
+    if type(value) is not dict or set(value) != {
+        "kind",
+        "name",
+        "points",
+        "members",
+    }:
+        return False
+    if value["kind"] != "wire" or not _valid_native_wire_name(value["name"]):
+        return False
+    points = value["points"]
+    members = value["members"]
+    if (
+        type(points) is not list
+        or type(members) is not list
+        or not 2 <= len(points) <= _MAX_NATIVE_WIRE_ITEMS
+        or not 1 <= len(members) <= _MAX_NATIVE_WIRE_ITEMS
+    ):
+        return False
+    if any(
+        type(point) is not dict
+        or set(point) != {"name", "x", "y", "z"}
+        or not _valid_native_wire_name(point["name"])
+        or any(
+            isinstance(point[axis], bool)
+            or not isinstance(point[axis], (int, float))
+            or not math.isfinite(float(point[axis]))
+            for axis in ("x", "y", "z")
+        )
+        for point in points
+    ):
+        return False
+    return not any(
+        type(member) is not dict
+        or set(member) != {"name", "start", "end"}
+        or not _valid_native_wire_name(member["name"])
+        or not _valid_native_wire_name(member["start"])
+        or not _valid_native_wire_name(member["end"])
+        for member in members
+    )
+
+
 def _reject_local_or_executable_data(value: object, *, key: str = "") -> None:
     normalized_key = key.casefold()
     if normalized_key in _EXECUTABLE_KEYS:
         raise AuthoringContractError(f"{key} is not allowed in authoring DTOs")
-    if normalized_key.endswith("_path") or normalized_key == "path":
+    # A serialized native PathSweptGeometry contains a bounded recipe object
+    # under ``path``.  It is not a filesystem path and must remain usable by
+    # the existing generic geometry proposal seam.  Plain strings and other
+    # path-shaped values continue to be rejected.
+    native_wire_recipe = normalized_key == "path" and _valid_native_wire_recipe(value)
+    if normalized_key.endswith("_path") or (
+        normalized_key == "path" and not native_wire_recipe
+    ):
         raise AuthoringContractError(
             "filesystem paths are not allowed in authoring DTOs"
         )
