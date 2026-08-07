@@ -493,11 +493,18 @@ def test_typed_payload_renders_owned_dataset_without_reprojection(
     assert options["n_colors"] == 12
     assert not options["interpolate_before_map"]
     assert options["scalar_bar_args"]["vertical"]
-    assert options["scalar_bar_args"]["n_labels"] == 13
+    assert options["scalar_bar_args"]["n_labels"] == 7
     assert options["scalar_bar_args"]["title"] == (
         f"S, {payload.topology.selection.component}"
     )
-    assert options["scalar_bar_args"]["outline"]
+    assert not options["scalar_bar_args"]["outline"]
+    assert options["scalar_bar_args"]["width"] == 0.05
+    assert options["scalar_bar_args"]["height"] == 0.65
+    assert options["scalar_bar_args"]["position_x"] == 0.82
+    assert options["scalar_bar_args"]["position_y"] == 0.17
+    assert options["scalar_bar_args"]["title_font_size"] == 18
+    assert options["scalar_bar_args"]["label_font_size"] == 14
+    assert options["scalar_bar_args"]["unconstrained_font_size"]
     assert options["lighting"]
     assert options["smooth_shading"]
     assert options["ambient"] == 0.35

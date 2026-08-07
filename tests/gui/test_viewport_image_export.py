@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,7 +43,7 @@ def test_export_dialog_defaults_to_two_times_current_viewport() -> None:
     assert dialog.output_size == (1600, 1200)
     assert dialog.width_spin.value() == 1600
     assert dialog.height_spin.value() == 1200
-    assert dialog.options == ViewportImageExportOptions(2, None, False)
+    assert dialog.options == ViewportImageExportOptions(1, (1600, 1200), False)
     assert not dialog.width_spin.isEnabled()
     assert not dialog.height_spin.isEnabled()
 
@@ -56,13 +57,16 @@ def test_export_dialog_defaults_to_two_times_current_viewport() -> None:
 
 
 @pytest.mark.parametrize(
-    ("quality", "expected_scale", "expected_size"),
-    ((1, 1, (800, 600)), (4, 4, (3200, 2400))),
+    ("quality", "expected_size", "expected_window_size"),
+    (
+        (1, (800, 600), None),
+        (4, (3200, 2400), (3200, 2400)),
+    ),
 )
 def test_export_dialog_fixed_quality_updates_scale_and_preview(
     quality: int,
-    expected_scale: int,
     expected_size: tuple[int, int],
+    expected_window_size: tuple[int, int] | None,
 ) -> None:
     dialog = _dialog()
 
@@ -71,8 +75,8 @@ def test_export_dialog_fixed_quality_updates_scale_and_preview(
     assert dialog.output_size == expected_size
     assert dialog.width_spin.value() == expected_size[0]
     assert dialog.height_spin.value() == expected_size[1]
-    assert dialog.options.scale == expected_scale
-    assert dialog.options.window_size is None
+    assert dialog.options.scale == 1
+    assert dialog.options.window_size == expected_window_size
     assert not dialog.width_spin.isEnabled()
     assert not dialog.height_spin.isEnabled()
 
@@ -124,7 +128,8 @@ def test_export_dialog_selects_path_and_updates_format_controls(monkeypatch) -> 
 
     assert dialog.target_path == ""
     assert not ok_button.isEnabled()
-    assert not dialog.transparent_background_check.isEnabled()
+    assert dialog.transparent_background_check.isEnabled()
+    dialog.transparent_background_check.setChecked(True)
 
     png_path = Path("exports") / "result"
     monkeypatch.setattr(
@@ -137,7 +142,6 @@ def test_export_dialog_selects_path_and_updates_format_controls(monkeypatch) -> 
     assert dialog.target_path == str(png_path.with_suffix(".png"))
     assert ok_button.isEnabled()
     assert dialog.transparent_background_check.isEnabled()
-    dialog.transparent_background_check.setChecked(True)
     assert dialog.options.transparent_background
 
     jpeg_path = Path("exports") / "result.jpg"
@@ -174,10 +178,27 @@ def test_viewport_screenshot_forwards_all_export_parameters() -> None:
     _application()
     viewport = FEMViewport()
     calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
-    viewport._plotter = SimpleNamespace(
+    render_calls = []
+    saved_camera = object()
+    plotter = SimpleNamespace(
         window_size=(720, 480),
         screenshot=lambda *args, **kwargs: calls.append((args, kwargs)),
+        camera=SimpleNamespace(copy=lambda: saved_camera),
+        renderer=SimpleNamespace(
+            GetGradientBackground=lambda: True,
+            GetBackground=lambda: (1.0, 1.0, 1.0),
+            GetBackground2=lambda: (0.9, 0.9, 0.9),
+            GetBackgroundAlpha=lambda: 0.0,
+            GradientBackgroundOff=lambda: None,
+            SetBackgroundAlpha=lambda _alpha: None,
+            SetBackground=lambda *_color: None,
+            SetBackground2=lambda *_color: None,
+            SetGradientBackground=lambda _gradient: None,
+        ),
+        render=lambda: render_calls.append(True),
+        window_size_context=lambda _size: nullcontext(),
     )
+    viewport._plotter = plotter
 
     assert viewport.screenshot_size() == (720, 480)
     viewport.save_screenshot(
@@ -192,12 +213,14 @@ def test_viewport_screenshot_forwards_all_export_parameters() -> None:
             ("viewport.png",),
             {
                 "scale": 1,
-                "window_size": (1400, 900),
+                "window_size": None,
                 "transparent_background": True,
                 "return_img": False,
             },
         )
     ]
+    assert plotter.camera is saved_camera
+    assert render_calls == [True, True]
     viewport._plotter = None
     viewport.close()
 
@@ -266,7 +289,7 @@ def test_export_flow_cancels_combined_dialog_without_screenshot(monkeypatch) -> 
 def test_export_flow_passes_options_and_keeps_success_feedback(monkeypatch) -> None:
     harness = _ExportHarness()
     created_with = []
-    selected = ViewportImageExportOptions(4, None, False)
+    selected = ViewportImageExportOptions(1, (3600, 2000), False)
 
     class AcceptedDialog:
         options = selected
@@ -291,8 +314,8 @@ def test_export_flow_passes_options_and_keeps_success_feedback(monkeypatch) -> N
         (
             ("viewport.jpg",),
             {
-                "scale": 4,
-                "window_size": None,
+                "scale": 1,
+                "window_size": (3600, 2000),
                 "transparent_background": False,
             },
         )
@@ -360,6 +383,105 @@ def test_custom_screenshot_restores_pyvista_size_and_camera(tmp_path: Path) -> N
     assert image.dimensions[:2] == (640, 360)
     assert tuple(plotter.window_size) == before_size
     assert after_camera == before_camera
+
+    plotter.close()
+    viewport._plotter = None
+    viewport.close()
+
+
+def test_scaled_screenshot_restores_pyvista_size_and_camera(tmp_path: Path) -> None:
+    _application()
+    viewport = FEMViewport()
+    plotter = pv.Plotter(off_screen=True, window_size=(320, 240))
+    plotter.add_mesh(pv.Sphere())
+    plotter.camera_position = [(3.0, 2.0, 1.0), (0.0, 0.0, 0.0), (0.0, 0.0, 1.0)]
+    viewport._plotter = plotter
+    before_size = tuple(plotter.window_size)
+    before_camera = (
+        tuple(plotter.camera.position),
+        tuple(plotter.camera.focal_point),
+        tuple(plotter.camera.up),
+        plotter.camera.parallel_scale,
+        tuple(plotter.camera.clipping_range),
+        plotter.camera.view_angle,
+    )
+    output = tmp_path / "scaled.png"
+
+    viewport.save_screenshot(str(output), scale=4)
+
+    image = pv.read(output)
+    after_camera = (
+        tuple(plotter.camera.position),
+        tuple(plotter.camera.focal_point),
+        tuple(plotter.camera.up),
+        plotter.camera.parallel_scale,
+        tuple(plotter.camera.clipping_range),
+        plotter.camera.view_angle,
+    )
+    assert image.dimensions[:2] == (1280, 960)
+    assert tuple(plotter.window_size) == before_size
+    assert after_camera == before_camera
+
+    plotter.close()
+    viewport._plotter = None
+    viewport.close()
+
+
+def test_transparent_screenshot_handles_gradient_background(tmp_path: Path) -> None:
+    _application()
+    viewport = FEMViewport()
+    plotter = pv.Plotter(off_screen=True, window_size=(320, 240))
+    plotter.set_background("#eef7fb", top="#ffffff")
+    mesh = pv.Sphere()
+    mesh["height"] = mesh.points[:, 2]
+    plotter.add_mesh(
+        mesh,
+        scalars="height",
+        scalar_bar_args={
+            "title_font_size": 18,
+            "label_font_size": 14,
+            "unconstrained_font_size": True,
+        },
+    )
+    plotter.add_axes()
+    viewport._plotter = plotter
+    renderer = plotter.renderer
+    scalar_bar = next(iter(plotter.scalar_bars.values()))
+    before_font_sizes = (
+        scalar_bar.GetTitleTextProperty().GetFontSize(),
+        scalar_bar.GetLabelTextProperty().GetFontSize(),
+    )
+    before_background = (
+        renderer.GetGradientBackground(),
+        renderer.GetBackground(),
+        renderer.GetBackground2(),
+        renderer.GetBackgroundAlpha(),
+    )
+    output = tmp_path / "transparent.png"
+
+    viewport.save_screenshot(
+        str(output),
+        window_size=(640, 480),
+        transparent_background=True,
+    )
+
+    image = pv.read(output)
+    pixels = image.point_data["PNGImage"]
+    after_background = (
+        renderer.GetGradientBackground(),
+        renderer.GetBackground(),
+        renderer.GetBackground2(),
+        renderer.GetBackgroundAlpha(),
+    )
+    after_font_sizes = (
+        scalar_bar.GetTitleTextProperty().GetFontSize(),
+        scalar_bar.GetLabelTextProperty().GetFontSize(),
+    )
+    assert pixels.shape[1] == 4
+    assert pixels[:, 3].min() == 0
+    assert pixels[:, 3].max() == 255
+    assert after_background == before_background
+    assert after_font_sizes == before_font_sizes
 
     plotter.close()
     viewport._plotter = None

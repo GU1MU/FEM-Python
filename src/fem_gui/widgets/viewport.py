@@ -5357,13 +5357,88 @@ class FEMViewport(QWidget):
         """通过 VTK 帧缓冲保存当前视口。"""
         if self._plotter is None:
             raise RuntimeError("三维视口尚未初始化")
-        self._plotter.screenshot(
-            path,
-            scale=scale,
-            window_size=window_size,
-            transparent_background=transparent_background,
-            return_img=False,
+        plotter = self._plotter
+        current_size = self.screenshot_size()
+        if window_size is None and scale > 1:
+            window_size = (
+                current_size[0] * scale,
+                current_size[1] * scale,
+            )
+            scale = 1
+        text_scale = (
+            1.0
+            if window_size is None
+            else max(
+                1.0,
+                min(
+                    window_size[0] / current_size[0],
+                    window_size[1] / current_size[1],
+                ),
+            )
         )
+        camera = plotter.camera.copy()
+        renderer = plotter.renderer
+        try:
+            with plotter.window_size_context(window_size):
+                scalar_bar_fonts = self._scale_scalar_bar_fonts(text_scale)
+                background_state = None
+                try:
+                    if transparent_background:
+                        background_state = (
+                            renderer.GetGradientBackground(),
+                            renderer.GetBackground(),
+                            renderer.GetBackground2(),
+                            renderer.GetBackgroundAlpha(),
+                        )
+                        renderer.GradientBackgroundOff()
+                        renderer.SetBackgroundAlpha(0.0)
+                    plotter.render()
+                    plotter.screenshot(
+                        path,
+                        scale=scale,
+                        window_size=None,
+                        transparent_background=transparent_background,
+                        return_img=False,
+                    )
+                finally:
+                    if background_state is not None:
+                        gradient, background, background2, background_alpha = (
+                            background_state
+                        )
+                        renderer.SetBackground(*background)
+                        renderer.SetBackground2(*background2)
+                        renderer.SetBackgroundAlpha(background_alpha)
+                        renderer.SetGradientBackground(gradient)
+                    self._restore_scalar_bar_fonts(scalar_bar_fonts)
+        finally:
+            plotter.camera = camera
+            self._render()
+
+    def _scale_scalar_bar_fonts(
+        self,
+        factor: float,
+    ) -> list[tuple[Any, Any, int, int]]:
+        scalar_bars = getattr(self._plotter, "scalar_bars", None)
+        if scalar_bars is None or factor <= 1.0:
+            return []
+        states: list[tuple[Any, Any, int, int]] = []
+        for scalar_bar in scalar_bars.values():
+            title = scalar_bar.GetTitleTextProperty()
+            labels = scalar_bar.GetLabelTextProperty()
+            title_size = title.GetFontSize()
+            label_size = labels.GetFontSize()
+            states.append((title, labels, title_size, label_size))
+            title.SetFontSize(round(title_size * factor))
+            labels.SetFontSize(round(label_size * factor))
+        return states
+
+    @staticmethod
+    def _restore_scalar_bar_fonts(
+        states: list[tuple[Any, Any, int, int]],
+    ) -> None:
+        for title, labels, title_size, label_size in states:
+            title.SetFontSize(title_size)
+            labels.SetFontSize(label_size)
 
     def set_background_settings(self, settings: ViewportBackgroundSettings) -> None:
         """更新视口背景和依赖背景对比度的显示层。"""
@@ -6380,8 +6455,6 @@ class FEMViewport(QWidget):
                 if self._contour.get("style") == "continuous"
                 else int(self._contour["levels"])
             )
-            selection = checked.topology.selection
-            variable = selection.field_key.request.field_id.variable.value
             kwargs.update(
                 scalars=checked.scalar_name,
                 cmap=resolve_contour_colormap(
@@ -6392,14 +6465,7 @@ class FEMViewport(QWidget):
                 interpolate_before_map=self._contour.get("style")
                 == "continuous",
                 show_scalar_bar=self._contour["legend"],
-                scalar_bar_args={
-                    "title": f"{variable}, {selection.component}",
-                    "vertical": self._contour["orientation"] == "vertical",
-                    "n_labels": int(self._contour["levels"]) + 1,
-                    "fmt": self._scalar_format(),
-                    "color": self._background_settings.foreground_color,
-                    "outline": True,
-                },
+                scalar_bar_args=self._contour_bar_args(checked),
             )
             if self._contour["manual"]:
                 kwargs["clim"] = (
@@ -6494,14 +6560,33 @@ class FEMViewport(QWidget):
     ) -> dict[str, Any]:
         selection = payload.topology.selection
         variable = selection.field_key.request.field_id.variable.value
-        return {
+        vertical = self._contour["orientation"] == "vertical"
+        options: dict[str, Any] = {
             "title": f"{variable}, {selection.component}",
-            "vertical": self._contour["orientation"] == "vertical",
-            "n_labels": int(self._contour["levels"]) + 1,
+            "vertical": vertical,
+            "n_labels": min(int(self._contour["levels"]) + 1, 7),
             "fmt": self._scalar_format(),
             "color": self._background_settings.foreground_color,
-            "outline": True,
+            "outline": False,
+            "title_font_size": 18,
+            "label_font_size": 14,
+            "unconstrained_font_size": True,
         }
+        if vertical:
+            options.update(
+                width=0.05,
+                height=0.65,
+                position_x=0.82,
+                position_y=0.17,
+            )
+        else:
+            options.update(
+                width=0.46,
+                height=0.065,
+                position_x=0.27,
+                position_y=0.08,
+            )
+        return options
 
     def _add_result_edges_layer(self, dataset: Any) -> Any | None:
         edge_mode = str(self._contour["edge_mode"])

@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from .dialogs import configure_form_layout
+from .theme import COLORS
 
 
 MIN_IMAGE_DIMENSION = 64
@@ -81,6 +82,16 @@ class ViewportImageExportDialog(QDialog):
         self.width_spin.setObjectName("viewportExportWidth")
         self.height_spin = self._dimension_spin_box(initial_height)
         self.height_spin.setObjectName("viewportExportHeight")
+        self.setStyleSheet(
+            f"""
+            QSpinBox#viewportExportWidth:disabled,
+            QSpinBox#viewportExportHeight:disabled {{
+                background: {COLORS['background']};
+                color: {COLORS['disabled']};
+                border-color: {COLORS['soft_border']};
+            }}
+            """
+        )
         self.transparent_background_check = QCheckBox("透明背景", self)
         self.transparent_background_check.setObjectName(
             "viewportExportTransparentBackground"
@@ -126,8 +137,8 @@ class ViewportImageExportDialog(QDialog):
                 self.height_spin.value(),
             )
         else:
-            scale = int(quality)
-            window_size = None
+            scale = 1
+            window_size = None if int(quality) == 1 else self.output_size
         return ViewportImageExportOptions(
             scale=scale,
             window_size=window_size,
@@ -183,7 +194,8 @@ class ViewportImageExportDialog(QDialog):
         self._update_target_format()
 
     def _update_target_format(self) -> None:
-        supports_transparency = Path(self.target_path).suffix.lower() == ".png"
+        format_path = self.target_path or self._default_path
+        supports_transparency = Path(format_path).suffix.lower() == ".png"
         self.transparent_background_check.setEnabled(supports_transparency)
         if not supports_transparency:
             self.transparent_background_check.setChecked(False)
