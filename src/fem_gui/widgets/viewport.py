@@ -1327,7 +1327,7 @@ class FEMViewport(QWidget):
             "legend": True, "edges": False,
             "render_mode": CONTOUR_RENDER_SHADED,
             "edge_mode": CONTOUR_EDGE_NONE,
-            "number_format": "general", "decimals": 5,
+            "number_format": "scientific", "decimals": 2,
             "orientation": "vertical", "show_minimum": False,
             "show_maximum": False, "show_ids": False,
             "show_coordinate_system": True,
@@ -5417,28 +5417,71 @@ class FEMViewport(QWidget):
     def _scale_scalar_bar_fonts(
         self,
         factor: float,
-    ) -> list[tuple[Any, Any, int, int]]:
+    ) -> list[tuple[Any, Any, Any, Any, int, int, int, int, float, int]]:
         scalar_bars = getattr(self._plotter, "scalar_bars", None)
         if scalar_bars is None or factor <= 1.0:
             return []
-        states: list[tuple[Any, Any, int, int]] = []
+        states: list[
+            tuple[Any, Any, Any, Any, int, int, int, int, float, int]
+        ] = []
         for scalar_bar in scalar_bars.values():
             title = scalar_bar.GetTitleTextProperty()
             labels = scalar_bar.GetLabelTextProperty()
+            annotation_text = scalar_bar.GetAnnotationTextProperty()
             title_size = title.GetFontSize()
             label_size = labels.GetFontSize()
-            states.append((title, labels, title_size, label_size))
+            annotation_size = annotation_text.GetFontSize()
+            text_pad = scalar_bar.GetTextPad()
+            annotation_pad = scalar_bar.GetAnnotationLeaderPadding()
+            title_separation = scalar_bar.GetVerticalTitleSeparation()
+            states.append(
+                (
+                    scalar_bar,
+                    title,
+                    labels,
+                    annotation_text,
+                    title_size,
+                    label_size,
+                    annotation_size,
+                    text_pad,
+                    annotation_pad,
+                    title_separation,
+                )
+            )
             title.SetFontSize(round(title_size * factor))
             labels.SetFontSize(round(label_size * factor))
+            annotation_text.SetFontSize(round(annotation_size * factor))
+            scalar_bar.SetTextPad(round(text_pad * factor))
+            scalar_bar.SetAnnotationLeaderPadding(annotation_pad * factor)
+            scalar_bar.SetVerticalTitleSeparation(
+                round(title_separation * factor)
+            )
         return states
 
     @staticmethod
     def _restore_scalar_bar_fonts(
-        states: list[tuple[Any, Any, int, int]],
+        states: list[
+            tuple[Any, Any, Any, Any, int, int, int, int, float, int]
+        ],
     ) -> None:
-        for title, labels, title_size, label_size in states:
+        for (
+            scalar_bar,
+            title,
+            labels,
+            annotation_text,
+            title_size,
+            label_size,
+            annotation_size,
+            text_pad,
+            annotation_pad,
+            title_separation,
+        ) in states:
             title.SetFontSize(title_size)
             labels.SetFontSize(label_size)
+            annotation_text.SetFontSize(annotation_size)
+            scalar_bar.SetTextPad(text_pad)
+            scalar_bar.SetAnnotationLeaderPadding(annotation_pad)
+            scalar_bar.SetVerticalTitleSeparation(title_separation)
 
     def set_background_settings(self, settings: ViewportBackgroundSettings) -> None:
         """更新视口背景和依赖背景对比度的显示层。"""
@@ -6475,6 +6518,11 @@ class FEMViewport(QWidget):
         else:
             kwargs["color"] = self._visual_palette()["result"]
         self._actors["result"] = self._plotter.add_mesh(dataset, **kwargs)
+        if self._display.contour_enabled and self._contour["legend"]:
+            self._configure_contour_bar(
+                checked,
+                getattr(self._actors["result"], "mapper", None),
+            )
         if (
             self._display.contour_enabled
             and self._show_edges
@@ -6515,9 +6563,14 @@ class FEMViewport(QWidget):
         mapper.Update()
         self._remove_scalar_bars()
         if self._contour["legend"]:
-            self._plotter.add_scalar_bar(
+            scalar_bar = self._plotter.add_scalar_bar(
                 mapper=mapper,
                 **self._contour_bar_args(checked),
+            )
+            self._configure_contour_bar(
+                checked,
+                mapper,
+                scalar_bar=scalar_bar,
             )
         self._remove_actor("extrema")
         if (
@@ -6574,10 +6627,10 @@ class FEMViewport(QWidget):
         }
         if vertical:
             options.update(
-                width=0.05,
-                height=0.65,
-                position_x=0.82,
-                position_y=0.17,
+                width=0.045,
+                height=0.62,
+                position_x=0.78,
+                position_y=0.19,
             )
         else:
             options.update(
@@ -6587,6 +6640,46 @@ class FEMViewport(QWidget):
                 position_y=0.08,
             )
         return options
+
+    def _configure_contour_bar(
+        self,
+        payload: ResultRenderPayload,
+        mapper: Any | None,
+        *,
+        scalar_bar: Any | None = None,
+    ) -> None:
+        if self._plotter is None or mapper is None:
+            return
+        if scalar_bar is None:
+            scalar_bars = getattr(self._plotter, "scalar_bars", None)
+            title = self._contour_bar_args(payload)["title"]
+            if scalar_bars is None or title not in scalar_bars:
+                return
+            scalar_bar = scalar_bars[title]
+
+        minimum, maximum = self._contour_data_range(payload)
+        label_count = min(int(self._contour["levels"]) + 1, 7)
+        values = (
+            np.asarray((minimum,), dtype=float)
+            if minimum == maximum
+            else np.linspace(minimum, maximum, label_count)
+        )
+        mapper.lookup_table.annotations = {
+            float(value): self._format_scalar(float(value))
+            for value in values
+        }
+
+        scalar_bar.DrawTickLabelsOff()
+        scalar_bar.DrawAnnotationsOn()
+        scalar_bar.AnnotationTextScalingOff()
+        scalar_bar.SetTextPositionToPrecedeScalarBar()
+        scalar_bar.SetTextPad(12)
+        scalar_bar.SetAnnotationLeaderPadding(18.0)
+        scalar_bar.SetVerticalTitleSeparation(18)
+        annotation_text = scalar_bar.GetAnnotationTextProperty()
+        label_text = scalar_bar.GetLabelTextProperty()
+        annotation_text.SetColor(*label_text.GetColor())
+        annotation_text.SetFontSize(label_text.GetFontSize())
 
     def _add_result_edges_layer(self, dataset: Any) -> Any | None:
         edge_mode = str(self._contour["edge_mode"])
@@ -6732,7 +6825,7 @@ class FEMViewport(QWidget):
         if mode == "fixed":
             return f"%.{decimals}f"
         if mode == "scientific":
-            return f"%.{decimals}e"
+            return f"%.{decimals}E"
         return f"%.{decimals}g"
 
     def _format_scalar(self, value: float) -> str:
@@ -6741,7 +6834,10 @@ class FEMViewport(QWidget):
         if mode == "fixed":
             return f"{value:.{decimals}f}"
         if mode == "scientific":
-            return f"{value:.{decimals}e}"
+            if value == 0.0:
+                return "0"
+            mantissa, exponent = f"{value:.{decimals}E}".split("E")
+            return f"{mantissa}E{int(exponent):+d}"
         return f"{value:.{decimals}g}"
 
     def _refresh_node_layer(self, *, render: bool = True) -> None:
@@ -7923,6 +8019,7 @@ class FEMViewport(QWidget):
             for scalar_bar in self._plotter.scalar_bars.values():
                 scalar_bar.GetTitleTextProperty().SetColor(*rgb)
                 scalar_bar.GetLabelTextProperty().SetColor(*rgb)
+                scalar_bar.GetAnnotationTextProperty().SetColor(*rgb)
         except Exception:
             pass
 

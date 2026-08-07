@@ -118,6 +118,21 @@ def test_component_switch_reuses_grid_and_actor() -> None:
     assert installed.topology.selection.component == "S22"
     assert rendered_actor.mapper.array_name == installed.scalar_name
     assert tuple(viewport._plotter.scalar_bars.keys()) == ("S, S22",)
+    scalar_bar = viewport._plotter.scalar_bars["S, S22"]
+    assert not scalar_bar.GetDrawTickLabels()
+    assert scalar_bar.GetDrawAnnotations()
+    assert scalar_bar.GetTextPad() == 12
+    assert scalar_bar.GetAnnotationLeaderPadding() == 18.0
+    assert scalar_bar.GetVerticalTitleSeparation() == 18
+    assert set(rendered_actor.mapper.lookup_table.annotations.values()) == {
+        "4.00E+0",
+        "4.33E+0",
+        "4.67E+0",
+        "5.00E+0",
+        "5.33E+0",
+        "5.67E+0",
+        "6.00E+0",
+    }
     np.testing.assert_array_equal(
         installed.dataset.point_data[installed.scalar_name],
         (4.0, 5.0, 6.0),
@@ -240,9 +255,66 @@ class _CountingMapper:
         self.scalar_visibility = True
         self.scalar_range = (0.0, 1.0)
         self.update_count = 0
+        self.lookup_table = _CountingLookupTable()
 
     def Update(self) -> None:
         self.update_count += 1
+
+
+class _CountingLookupTable:
+    def __init__(self) -> None:
+        self.annotations: dict[float, str] = {}
+
+
+class _CountingTextProperty:
+    def __init__(self) -> None:
+        self.color = (0.0, 0.0, 0.0)
+        self.font_size = 14
+
+    def GetColor(self) -> tuple[float, float, float]:
+        return self.color
+
+    def SetColor(self, *color: float) -> None:
+        self.color = tuple(color)
+
+    def GetFontSize(self) -> int:
+        return self.font_size
+
+    def SetFontSize(self, font_size: int) -> None:
+        self.font_size = font_size
+
+
+class _CountingScalarBar:
+    def __init__(self) -> None:
+        self.annotation_text = _CountingTextProperty()
+        self.label_text = _CountingTextProperty()
+
+    def DrawTickLabelsOff(self) -> None:
+        pass
+
+    def DrawAnnotationsOn(self) -> None:
+        pass
+
+    def AnnotationTextScalingOff(self) -> None:
+        pass
+
+    def SetTextPositionToPrecedeScalarBar(self) -> None:
+        pass
+
+    def SetTextPad(self, _padding: int) -> None:
+        pass
+
+    def SetAnnotationLeaderPadding(self, _padding: float) -> None:
+        pass
+
+    def SetVerticalTitleSeparation(self, _separation: int) -> None:
+        pass
+
+    def GetAnnotationTextProperty(self) -> _CountingTextProperty:
+        return self.annotation_text
+
+    def GetLabelTextProperty(self) -> _CountingTextProperty:
+        return self.label_text
 
 
 class _CountingActor:
@@ -271,8 +343,10 @@ class _CountingPlotter:
     def remove_scalar_bar(self, title: str, **_options: object) -> None:
         self.scalar_bars.pop(title, None)
 
-    def add_scalar_bar(self, *, title: str, **_options: object) -> None:
-        self.scalar_bars[title] = object()
+    def add_scalar_bar(self, *, title: str, **_options: object) -> _CountingScalarBar:
+        scalar_bar = _CountingScalarBar()
+        self.scalar_bars[title] = scalar_bar
+        return scalar_bar
 
     def render(self) -> None:
         self.render_count += 1

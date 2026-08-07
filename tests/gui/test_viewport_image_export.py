@@ -450,6 +450,10 @@ def test_transparent_screenshot_handles_gradient_background(tmp_path: Path) -> N
     before_font_sizes = (
         scalar_bar.GetTitleTextProperty().GetFontSize(),
         scalar_bar.GetLabelTextProperty().GetFontSize(),
+        scalar_bar.GetAnnotationTextProperty().GetFontSize(),
+        scalar_bar.GetTextPad(),
+        scalar_bar.GetAnnotationLeaderPadding(),
+        scalar_bar.GetVerticalTitleSeparation(),
     )
     before_background = (
         renderer.GetGradientBackground(),
@@ -476,6 +480,10 @@ def test_transparent_screenshot_handles_gradient_background(tmp_path: Path) -> N
     after_font_sizes = (
         scalar_bar.GetTitleTextProperty().GetFontSize(),
         scalar_bar.GetLabelTextProperty().GetFontSize(),
+        scalar_bar.GetAnnotationTextProperty().GetFontSize(),
+        scalar_bar.GetTextPad(),
+        scalar_bar.GetAnnotationLeaderPadding(),
+        scalar_bar.GetVerticalTitleSeparation(),
     )
     assert pixels.shape[1] == 4
     assert pixels[:, 3].min() == 0

@@ -129,7 +129,8 @@ def test_analysis_uses_clean_deformed_displacement_contour_defaults(gui_inp_path
     assert window._contour_options["colormap"] == "abaqus_rainbow"
     assert window._contour_options["render_mode"] == "shaded"
     assert window._contour_options["edge_mode"] == "none"
-    assert window._contour_options["decimals"] == 5
+    assert window._contour_options["number_format"] == "scientific"
+    assert window._contour_options["decimals"] == 2
     assert not window._contour_options["show_minimum"]
     assert not window._contour_options["show_maximum"]
     assert window._contour_options["show_coordinate_system"]

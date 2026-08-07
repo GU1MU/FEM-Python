@@ -498,10 +498,10 @@ def test_typed_payload_renders_owned_dataset_without_reprojection(
         f"S, {payload.topology.selection.component}"
     )
     assert not options["scalar_bar_args"]["outline"]
-    assert options["scalar_bar_args"]["width"] == 0.05
-    assert options["scalar_bar_args"]["height"] == 0.65
-    assert options["scalar_bar_args"]["position_x"] == 0.82
-    assert options["scalar_bar_args"]["position_y"] == 0.17
+    assert options["scalar_bar_args"]["width"] == 0.045
+    assert options["scalar_bar_args"]["height"] == 0.62
+    assert options["scalar_bar_args"]["position_x"] == 0.78
+    assert options["scalar_bar_args"]["position_y"] == 0.19
     assert options["scalar_bar_args"]["title_font_size"] == 18
     assert options["scalar_bar_args"]["label_font_size"] == 14
     assert options["scalar_bar_args"]["unconstrained_font_size"]
@@ -514,6 +514,19 @@ def test_typed_payload_renders_owned_dataset_without_reprojection(
     np.testing.assert_array_equal(payload.dataset.points, original_points)
     assert viewport.artifact_id == "artifact-1"
     assert viewport.run_id == "run-1"
+    viewport.close()
+
+
+def test_scientific_scalar_format_uses_compact_uppercase_exponent() -> None:
+    _application()
+    viewport = FEMViewport()
+
+    assert viewport._contour["number_format"] == "scientific"
+    assert viewport._contour["decimals"] == 2
+    assert viewport._format_scalar(1.89e-4) == "1.89E-4"
+    assert viewport._format_scalar(-2.5e3) == "-2.50E+3"
+    assert viewport._format_scalar(0.0) == "0"
+
     viewport.close()
 
 

@@ -643,7 +643,7 @@ class FEMMainWindow(QMainWindow):
             "style": "segmented", "legend": True,
             "render_mode": CONTOUR_RENDER_SHADED,
             "edge_mode": CONTOUR_EDGE_NONE,
-            "number_format": "general", "decimals": 5,
+            "number_format": "scientific", "decimals": 2,
             "orientation": "vertical", "show_minimum": False,
             "show_maximum": False, "show_ids": False,
             "show_coordinate_system": True,

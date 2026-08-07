@@ -472,10 +472,10 @@ class ContourSettingsDialog(QDialog):
         self.number_format = QComboBox(self)
         for label, key in (("自动", "general"), ("定点小数", "fixed"), ("科学计数法", "scientific")):
             self.number_format.addItem(label, key)
-        self.number_format.setCurrentIndex(max(0, self.number_format.findData(options.get("number_format", "general"))))
+        self.number_format.setCurrentIndex(max(0, self.number_format.findData(options.get("number_format", "scientific"))))
         self.decimals = QSpinBox(self)
         self.decimals.setRange(0, 12)
-        self.decimals.setValue(int(options.get("decimals", 5)))
+        self.decimals.setValue(int(options.get("decimals", 2)))
         self.orientation = QComboBox(self)
         self.orientation.addItem("横向", "horizontal")
         self.orientation.addItem("纵向", "vertical")
