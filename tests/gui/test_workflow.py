@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
 from PySide6.QtCore import QThread
-from PySide6.QtWidgets import QApplication, QFileDialog
+from PySide6.QtWidgets import QApplication, QDialog, QFileDialog
 
 from fem.application.results import (
     FieldPosition,
@@ -19,6 +19,7 @@ from fem.io.result_csv import read_result_csv
 from fem.io.result_vtk import read_result_vtk
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.postprocessing_dialogs import TypedResultDisplaySettings
+from fem_gui.result_csv_export_dialog import ResultCsvExportDialog
 from fem_gui.task_controller import (
     BackgroundTaskState,
     TaskApplyStatus,
@@ -178,16 +179,29 @@ def test_gui_exports_the_current_result_field_as_csv_and_vtk(
     assert window.result_selection == selection
     csv_target = tmp_path / "gui_result_test.csv"
     vtk_target = tmp_path / "gui_result_test.vtk"
-    targets = iter(
-        (
-            (str(csv_target), "CSV 文件 (*.csv)"),
-            (str(vtk_target), "VTK 文件 (*.vtk)"),
-        )
+    successes = []
+
+    def execute_csv_dialog(dialog: QDialog) -> int:
+        assert type(dialog) is ResultCsvExportDialog
+        assert dialog.path_edit.text() == ""
+        dialog.path_edit.setText(str(csv_target))
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(window, "_exec_dialog", execute_csv_dialog)
+    monkeypatch.setattr(
+        window,
+        "_show_save_success",
+        lambda content_name, path: successes.append((content_name, path)),
     )
     monkeypatch.setattr(
         QFileDialog,
         "getSaveFileName",
-        staticmethod(lambda *_args, **_kwargs: next(targets)),
+        staticmethod(
+            lambda *_args, **_kwargs: (
+                str(vtk_target),
+                "VTK 文件 (*.vtk)",
+            )
+        ),
     )
 
     assert window.actions["export_csv"].isEnabled()
@@ -201,6 +215,7 @@ def test_gui_exports_the_current_result_field_as_csv_and_vtk(
         == provider.snapshot.generation
     )
     assert csv_readback.selection == selection
+    assert successes == [("CSV 文件", csv_target)]
 
     window.actions["export_vtk"].trigger()
     _wait_for_task(window)

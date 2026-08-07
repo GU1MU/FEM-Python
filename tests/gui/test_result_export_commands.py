@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -24,6 +25,7 @@ from fem_gui import main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.result_csv_export_dialog import ResultCsvExportDialog
 from fem_gui.result_presentation import visible_result_fields
+from fem_gui.task_controller import BackgroundTaskState
 from fem_gui.visualization.model_adapter import build_model_geometry
 from tests.helpers.gui_command_receipts import (
     await_succeeded,
@@ -217,6 +219,15 @@ def test_csv_action_exports_dialog_selection_without_changing_viewport_field(
     )
     selected = selections[0]
     captured = {}
+    successes = []
+
+    class Completion:
+        callback = None
+
+        def observe(self, callback) -> None:
+            self.callback = callback
+
+    completion = Completion()
 
     def execute_dialog(dialog) -> int:
         assert type(dialog) is ResultCsvExportDialog
@@ -236,12 +247,25 @@ def test_csv_action_exports_dialog_selection_without_changing_viewport_field(
     def capture_export(path, spec):
         captured["path"] = path
         captured["spec"] = spec
-        return type("Receipt", (), {"diagnostic": None})()
+        return SimpleNamespace(diagnostic=None, completion=completion)
 
     monkeypatch.setattr(window, "_exec_dialog", execute_dialog)
     monkeypatch.setattr(window, "export_result_csv", capture_export)
+    monkeypatch.setattr(
+        window,
+        "_show_save_success",
+        lambda content_name, path: successes.append((content_name, path)),
+    )
 
     window.export_csv()
+
+    assert completion.callback is not None
+    completion.callback(
+        SimpleNamespace(
+            state=BackgroundTaskState.SUCCEEDED,
+            projection_error=None,
+        )
+    )
 
     assert captured["path"] == tmp_path / "selected-field.csv"
     assert captured["spec"].selection == selected
@@ -250,4 +274,5 @@ def test_csv_action_exports_dialog_selection_without_changing_viewport_field(
         provider.snapshot.generation
     )
     assert window.result_selection == displayed
+    assert successes == [("CSV 文件", tmp_path / "selected-field.csv")]
     window.close()

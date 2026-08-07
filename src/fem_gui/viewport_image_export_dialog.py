@@ -43,7 +43,6 @@ class ViewportImageExportDialog(QDialog):
     def __init__(
         self,
         current_size: tuple[int, int],
-        default_path: str,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -51,7 +50,6 @@ class ViewportImageExportDialog(QDialog):
         self.setWindowTitle("视口图片导出设置")
         self.setMinimumWidth(520)
         self._current_size = (int(current_size[0]), int(current_size[1]))
-        self._default_path = str(default_path)
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -182,7 +180,7 @@ class ViewportImageExportDialog(QDialog):
         path, _selected_filter = QFileDialog.getSaveFileName(
             self,
             "选择视口图片保存位置",
-            self.target_path or self._default_path,
+            self.target_path,
             IMAGE_FILE_FILTER,
         )
         if not path:
@@ -194,8 +192,8 @@ class ViewportImageExportDialog(QDialog):
         self._update_target_format()
 
     def _update_target_format(self) -> None:
-        format_path = self.target_path or self._default_path
-        supports_transparency = Path(format_path).suffix.lower() == ".png"
+        suffix = Path(self.target_path).suffix.lower()
+        supports_transparency = not suffix or suffix == ".png"
         self.transparent_background_check.setEnabled(supports_transparency)
         if not supports_transparency:
             self.transparent_background_check.setChecked(False)

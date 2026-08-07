@@ -29,11 +29,9 @@ def _application() -> QApplication:
 
 def _dialog(
     size: tuple[int, int] = (800, 600),
-    *,
-    default_path: str = "viewport.png",
 ) -> ViewportImageExportDialog:
     _application()
-    return ViewportImageExportDialog(size, default_path)
+    return ViewportImageExportDialog(size)
 
 
 def test_export_dialog_defaults_to_two_times_current_viewport() -> None:
@@ -123,8 +121,9 @@ def test_export_dialog_clamps_initial_custom_dimensions(
 
 
 def test_export_dialog_selects_path_and_updates_format_controls(monkeypatch) -> None:
-    dialog = _dialog(default_path="analysis.png")
+    dialog = _dialog()
     ok_button = dialog.buttons.button(QDialogButtonBox.StandardButton.Ok)
+    browse_calls = []
 
     assert dialog.target_path == ""
     assert not ok_button.isEnabled()
@@ -135,10 +134,13 @@ def test_export_dialog_selects_path_and_updates_format_controls(monkeypatch) -> 
     monkeypatch.setattr(
         export_dialog_module.QFileDialog,
         "getSaveFileName",
-        lambda *_args, **_kwargs: (str(png_path), ""),
+        lambda *args, **_kwargs: (
+            browse_calls.append(args) or (str(png_path), "")
+        ),
     )
     dialog.browse_button.click()
 
+    assert browse_calls[0][2] == ""
     assert dialog.target_path == str(png_path.with_suffix(".png"))
     assert ok_button.isEnabled()
     assert dialog.transparent_background_check.isEnabled()
@@ -248,6 +250,7 @@ class _ExportHarness:
         self.status_panel = SimpleNamespace(set_state=self._set_state)
         self.screenshot_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
         self.errors: list[tuple[str, str]] = []
+        self.successes: list[tuple[str, object]] = []
 
     def _current_result_provider(self) -> object:
         return object()
@@ -260,6 +263,33 @@ class _ExportHarness:
 
     def _show_error(self, title: str, message: str) -> None:
         self.errors.append((title, message))
+
+    def _show_save_success(self, content_name: str, path: object) -> None:
+        self.successes.append((content_name, path))
+
+
+def test_save_success_dialog_reports_selected_path(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        main_window_module.QMessageBox,
+        "information",
+        lambda *args: calls.append(args),
+    )
+    owner = object()
+
+    FEMMainWindow._show_save_success(
+        owner,
+        "CSV 文件",
+        Path("exports") / "selected.csv",
+    )
+
+    assert calls == [
+        (
+            owner,
+            "保存成功",
+            f"CSV 文件已保存成功。\n\n{Path('exports') / 'selected.csv'}",
+        )
+    ]
 
 
 def test_export_flow_cancels_combined_dialog_without_screenshot(monkeypatch) -> None:
@@ -282,8 +312,9 @@ def test_export_flow_cancels_combined_dialog_without_screenshot(monkeypatch) -> 
     FEMMainWindow.export_viewport_image(harness)
 
     assert len(dialog_calls) == 1
-    assert dialog_calls[0][0][:2] == ((900, 500), "viewport.png")
+    assert dialog_calls[0][0] == ((900, 500), harness)
     assert harness.screenshot_calls == []
+    assert harness.successes == []
 
 
 def test_export_flow_passes_options_and_keeps_success_feedback(monkeypatch) -> None:
@@ -309,7 +340,7 @@ def test_export_flow_passes_options_and_keeps_success_feedback(monkeypatch) -> N
 
     FEMMainWindow.export_viewport_image(harness)
 
-    assert created_with[0][0][:2] == ((900, 500), "viewport.png")
+    assert created_with[0][0] == ((900, 500), harness)
     assert harness.screenshot_calls == [
         (
             ("viewport.jpg",),
@@ -322,6 +353,7 @@ def test_export_flow_passes_options_and_keeps_success_feedback(monkeypatch) -> N
     ]
     assert harness.status_calls == [("视口图片保存完成", 5000)]
     assert harness.errors == []
+    assert harness.successes == [("视口图片", "viewport.jpg")]
 
 
 def test_export_flow_keeps_existing_error_feedback(monkeypatch) -> None:
@@ -350,6 +382,7 @@ def test_export_flow_keeps_existing_error_feedback(monkeypatch) -> None:
 
     assert harness.errors == [("导出视口图片失败", "capture failed")]
     assert harness.status_calls == []
+    assert harness.successes == []
 
 
 def test_custom_screenshot_restores_pyvista_size_and_camera(tmp_path: Path) -> None:

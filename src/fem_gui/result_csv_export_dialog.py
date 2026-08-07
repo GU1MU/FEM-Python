@@ -94,8 +94,6 @@ class ResultCsvExportDialog(QDialog):
         catalog: ResultCatalog,
         *,
         current_selection: ScalarFieldSelection,
-        default_directory: str | Path,
-        filename_stem: str,
         parent=None,
     ) -> None:
         if type(catalog) is not ResultCatalog:
@@ -104,9 +102,6 @@ class ResultCsvExportDialog(QDialog):
             raise TypeError(
                 "current_selection must be ScalarFieldSelection"
             )
-        if type(filename_stem) is not str or not filename_stem.strip():
-            raise ValueError("filename_stem must not be blank")
-
         fields = tuple(
             availability
             for availability in visible_result_fields(catalog.fields)
@@ -120,9 +115,6 @@ class ResultCsvExportDialog(QDialog):
         self.setMinimumWidth(520)
         self._catalog = catalog
         self._fields = fields
-        self._default_directory = Path(default_directory)
-        self._filename_stem = filename_stem.strip()
-        self._path_customized = False
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -131,6 +123,7 @@ class ResultCsvExportDialog(QDialog):
         self.position_combo = _ExactDataComboBox(self)
         self.component_combo = _ExactDataComboBox(self)
         self.path_edit = QLineEdit(self)
+        self.path_edit.setPlaceholderText("请选择 CSV 保存路径")
         self.browse_button = QPushButton("浏览…", self)
 
         path_host = QWidget(self)
@@ -163,7 +156,6 @@ class ResultCsvExportDialog(QDialog):
         self._populate_variables(initial)
         self._populate_positions(initial)
         self._populate_components(initial)
-        self._set_suggested_path()
 
         self.variable_combo.currentIndexChanged.connect(
             self._variable_changed
@@ -171,11 +163,7 @@ class ResultCsvExportDialog(QDialog):
         self.position_combo.currentIndexChanged.connect(
             self._position_changed
         )
-        self.component_combo.currentIndexChanged.connect(
-            self._selection_changed
-        )
         self.path_edit.textChanged.connect(self._refresh_export_enabled)
-        self.path_edit.textEdited.connect(self._path_edited)
         self.browse_button.clicked.connect(self._browse)
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
@@ -319,36 +307,9 @@ class ResultCsvExportDialog(QDialog):
     def _variable_changed(self, _index: int) -> None:
         self._populate_positions()
         self._populate_components()
-        self._selection_changed()
 
     def _position_changed(self, _index: int) -> None:
         self._populate_components()
-        self._selection_changed()
-
-    def _selection_changed(self, *_args: object) -> None:
-        if not self._path_customized:
-            self._set_suggested_path()
-
-    def _suggested_path(self) -> Path:
-        selection = self.current_selection()
-        field_id = selection.field_key.request.field_id
-        position = (
-            "node"
-            if field_id.position is FieldPosition.ELEMENT_NODAL
-            else field_id.position.value
-        )
-        field_name = "_".join(
-            (field_id.variable.value, position, selection.component)
-        ).replace(":", "_")
-        return self._default_directory / (
-            f"{self._filename_stem}_{field_name}.csv"
-        )
-
-    def _set_suggested_path(self) -> None:
-        self.path_edit.setText(str(self._suggested_path()))
-
-    def _path_edited(self, _text: str) -> None:
-        self._path_customized = True
 
     def _browse(self) -> None:
         path, _filter = QFileDialog.getSaveFileName(
@@ -359,7 +320,6 @@ class ResultCsvExportDialog(QDialog):
         )
         if not path:
             return
-        self._path_customized = True
         self.path_edit.setText(str(Path(path).with_suffix(".csv")))
 
     def _refresh_export_enabled(self, *_args: object) -> None:

@@ -10264,6 +10264,13 @@ class FEMMainWindow(QMainWindow):
         show_information(self, title, rows)
         self._schedule_viewport_fit()
 
+    def _show_save_success(self, content_name: str, path: str | Path) -> None:
+        QMessageBox.information(
+            self,
+            "保存成功",
+            f"{content_name}已保存成功。\n\n{path}",
+        )
+
     def _fit_viewport_when_dialog_finishes(self, dialog: QDialog) -> None:
         """Restore full-model framing after a view-affecting dialog closes."""
 
@@ -11847,18 +11854,10 @@ class FEMMainWindow(QMainWindow):
             or type(selection) is not ScalarFieldSelection
         ):
             return
-        stem = self.document.path.stem if self.document.path else "result"
-        default_directory = (
-            self.document.path.parent
-            if self.document.path is not None
-            else Path.cwd()
-        )
         try:
             dialog = ResultCsvExportDialog(
                 provider.catalog(),
                 current_selection=selection,
-                default_directory=default_directory,
-                filename_stem=stem,
                 parent=self,
             )
         except (TypeError, ValueError) as error:
@@ -11890,6 +11889,16 @@ class FEMMainWindow(QMainWindow):
         )
         if receipt.diagnostic is not None:
             self._show_command_rejection("导出 CSV 失败", receipt)
+            return
+        if receipt.completion is not None:
+            def export_finished(terminal: TaskCompletion) -> None:
+                if (
+                    terminal.state is BackgroundTaskState.SUCCEEDED
+                    and terminal.projection_error is None
+                ):
+                    self._show_save_success("CSV 文件", target)
+
+            receipt.completion.observe(export_finished)
 
     def export_vtk(self) -> None:
         export_identity = self._current_result_export_identity("导出 VTK 失败")
@@ -11971,10 +11980,8 @@ class FEMMainWindow(QMainWindow):
     def export_viewport_image(self) -> None:
         if self._current_result_provider() is None:
             return
-        default = (self.document.path.stem if self.document.path else "viewport") + ".png"
         dialog = ViewportImageExportDialog(
             self.viewport.screenshot_size(),
-            default,
             self,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -11991,6 +11998,7 @@ class FEMMainWindow(QMainWindow):
             self._show_error("导出视口图片失败", str(error))
             return
         self.status_panel.set_state("视口图片保存完成", 5000)
+        self._show_save_success("视口图片", dialog.target_path)
 
     def show_model_information(self) -> None:
         if (

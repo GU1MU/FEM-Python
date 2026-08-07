@@ -48,16 +48,12 @@ def _find_data(combo, value: object) -> int:
     return -1
 
 
-def test_dialog_selects_ready_fields_without_showing_field_status(
-    tmp_path: Path,
-) -> None:
+def test_dialog_selects_ready_fields_without_showing_field_status() -> None:
     _application()
     catalog = _catalog()
     dialog = ResultCsvExportDialog(
         catalog,
         current_selection=catalog.default_selection,
-        default_directory=tmp_path,
-        filename_stem="pull",
     )
 
     ready_fields = tuple(
@@ -67,8 +63,9 @@ def test_dialog_selects_ready_fields_without_showing_field_status(
     )
     assert ready_fields
     assert dialog.current_selection() == catalog.default_selection
-    assert dialog.target_path().parent == tmp_path
-    assert dialog.target_path().suffix == ".csv"
+    assert dialog.path_edit.text() == ""
+    assert dialog.path_edit.placeholderText() == "请选择 CSV 保存路径"
+    assert not dialog.export_button.isEnabled()
     assert all(
         dialog.component_combo.itemData(index).field_key
         in {availability.key for availability in ready_fields}
@@ -86,7 +83,7 @@ def test_dialog_selects_ready_fields_without_showing_field_status(
     dialog.close()
 
 
-def test_field_selection_updates_suggested_name_and_preserves_custom_path(
+def test_field_selection_keeps_path_empty_and_preserves_user_path(
     tmp_path: Path,
 ) -> None:
     _application()
@@ -94,8 +91,6 @@ def test_field_selection_updates_suggested_name_and_preserves_custom_path(
     dialog = ResultCsvExportDialog(
         catalog,
         current_selection=catalog.default_selection,
-        default_directory=tmp_path,
-        filename_stem="pull",
     )
     selections = tuple(
         selection
@@ -121,11 +116,11 @@ def test_field_selection_updates_suggested_name_and_preserves_custom_path(
     )
 
     assert dialog.current_selection() == selected
-    assert selected.component in dialog.target_path().stem
+    assert dialog.path_edit.text() == ""
+    assert not dialog.export_button.isEnabled()
 
     custom = tmp_path / "custom-name.csv"
     dialog.path_edit.setText(str(custom))
-    dialog.path_edit.textEdited.emit(str(custom))
     alternative_index = (
         1 if dialog.component_combo.count() > 1 else 0
     )
@@ -143,17 +138,18 @@ def test_browse_normalizes_csv_suffix_and_cancel_keeps_path(
     dialog = ResultCsvExportDialog(
         catalog,
         current_selection=catalog.default_selection,
-        default_directory=tmp_path,
-        filename_stem="pull",
     )
-    original = dialog.target_path()
+    browse_calls = []
     monkeypatch.setattr(
         dialog_module.QFileDialog,
         "getSaveFileName",
-        lambda *_args, **_kwargs: ("", ""),
+        lambda *args, **_kwargs: (
+            browse_calls.append(args) or ("", "")
+        ),
     )
     dialog.browse_button.click()
-    assert dialog.target_path() == original
+    assert browse_calls[0][2] == ""
+    assert dialog.path_edit.text() == ""
 
     picked = tmp_path / "picked.txt"
     monkeypatch.setattr(
