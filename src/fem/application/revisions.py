@@ -11,6 +11,7 @@ from uuid import uuid4
 if TYPE_CHECKING:
     from .results.data import ResultMaterializationSnapshot
     from .results.fields import FieldMaterializationKey
+    from .results.fields import ResultSourceKey
     from .runs import ResultRecord
 
 
@@ -77,6 +78,31 @@ class TaskToken:
             object.__setattr__(self, "run_id", str(self.run_id))
         if self.result_id is not None:
             object.__setattr__(self, "result_id", str(self.result_id))
+
+    @property
+    def result_source(self) -> ResultSourceKey | None:
+        """Reconstruct the bound result source when this token carries one."""
+
+        if (
+            self.artifact_id is None
+            or self.step_name is None
+            or self.run_id is None
+            or self.result_id is None
+        ):
+            return None
+        model_revision = dict(self.dependency_revisions).get("model_revision")
+        if model_revision is None:
+            return None
+        from .results.fields import ResultSourceKey
+
+        return ResultSourceKey(
+            result_id=self.result_id,
+            session_id=self.session_id,
+            artifact_id=self.artifact_id,
+            model_revision=model_revision,
+            step_name=self.step_name,
+            run_id=self.run_id,
+        )
 
 
 @dataclass(frozen=True, slots=True)

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from copy import copy, deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+import math
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -47,8 +48,11 @@ from fem.elements import validate_beam_frame_fields
 
 from .results import (
     FieldMaterializationKey,
+    ResultArchiveRun,
+    ResultArchiveSaveSnapshot,
     ResultMaterializationPatch,
     ResultProvider,
+    ResultFileState,
     ResultSourceKey,
     SolveResultBundle,
     field_materialization_sort_key,
@@ -129,6 +133,10 @@ from .runs import (
     result_record_provider,
     utc_now,
 )
+from .results.archive import (
+    build_result_archive_snapshot,
+    result_model_fingerprint,
+)
 from .validation import ValidationRecord, ValidationStamp
 from .units import UnitContext
 
@@ -160,6 +168,47 @@ _COMPUTATION_INVALIDATIONS = frozenset(
         ArtifactKind.DISPLAYED_RESULT,
     }
 )
+
+
+def _archive_safe_text(value: object) -> str | None:
+    """Return a bounded JSON text scalar, excluding path-like values."""
+
+    if type(value) is not str:
+        return None
+    text = value.strip()
+    if not text or any(separator in text for separator in ("/", "\\", ":")):
+        return None
+    return text
+
+
+def _archive_json_scalar(value: object) -> tuple[object, bool]:
+    """Keep only deterministic, finite JSON scalar values."""
+
+    if value is None or type(value) in {bool, int}:
+        return value, True
+    if type(value) is float:
+        return (value, True) if math.isfinite(value) else (None, False)
+    if type(value) is str:
+        text = _archive_safe_text(value)
+        return (text, True) if text is not None else (None, False)
+    return None, False
+
+
+def _archive_scalar_mapping(value: object) -> dict[str, object]:
+    """Project a mapping to sorted, scalar-only JSON values."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, object] = {}
+    for key in sorted(
+        (candidate for candidate in value if type(candidate) is str)
+    ):
+        if _archive_safe_text(key) is None:
+            continue
+        scalar, accepted = _archive_json_scalar(value[key])
+        if accepted:
+            result[key] = scalar
+    return result
 
 
 class RevisionConflictError(RuntimeError):
@@ -762,6 +811,10 @@ class SessionSnapshot:
     dirty: bool
     can_save: bool
     unit_context: UnitContext | None = None
+    result_file_states: Mapping[str, ResultFileState] = field(
+        default_factory=dict
+    )
+    result_generations: Mapping[str, int] = field(default_factory=dict)
 
     @property
     def path(self) -> Path | None:
@@ -780,6 +833,66 @@ class SessionSnapshot:
     @property
     def has_result(self) -> bool:
         return self.displayed_result is not None
+
+    @property
+    def result_file_state(self) -> ResultFileState | None:
+        """Saved-file state for the currently displayed result, if any."""
+
+        if self.displayed_result_run_id is None:
+            return None
+        return self.result_file_states.get(self.displayed_result_run_id)
+
+    @property
+    def displayed_result_file_state(self) -> ResultFileState | None:
+        return self.result_file_state
+
+    @property
+    def result_path(self) -> Path | None:
+        state = self.result_file_state
+        return None if state is None else state.path
+
+    @property
+    def saved_result_generation(self) -> int | None:
+        state = self.result_file_state
+        return None if state is None else state.saved_generation
+
+    @property
+    def has_unsaved_results(self) -> bool:
+        return bool(self.unsaved_result_run_ids)
+
+    @property
+    def unsaved_result_run_ids(self) -> tuple[str, ...]:
+        return tuple(
+            run.run_id
+            for run in self.runs
+            if run.status is RunStatus.SUCCEEDED
+            and (
+                (generation := self.result_generations.get(run.run_id)) is not None
+                and (
+                    (state := self.result_file_states.get(run.run_id)) is None
+                    or state.saved_generation != generation
+                )
+            )
+        )
+
+    @property
+    def unsaved_result_count(self) -> int:
+        return len(self.unsaved_result_run_ids)
+
+    @property
+    def result_dirty(self) -> bool:
+        return self.has_unsaved_results
+
+    def result_file_state_for(self, run_id: str) -> ResultFileState | None:
+        return self.result_file_states.get(str(run_id))
+
+    def result_path_for(self, run_id: str) -> Path | None:
+        state = self.result_file_state_for(run_id)
+        return None if state is None else state.path
+
+    def saved_result_generation_for(self, run_id: str) -> int | None:
+        state = self.result_file_state_for(run_id)
+        return None if state is None else state.saved_generation
 
     @property
     def has_native_geometry(self) -> bool:
@@ -1072,6 +1185,54 @@ class ModelSession:
             self._is_open
             and self._source_kind == "native"
         )
+
+    @property
+    def has_unsaved_results(self) -> bool:
+        """Whether any accepted successful run is newer than its last save."""
+
+        return bool(self.unsaved_result_run_ids)
+
+    @property
+    def unsaved_result_run_ids(self) -> tuple[str, ...]:
+        return tuple(
+            run_id
+            for run_id, run in self._runs.items()
+            if run.status is RunStatus.SUCCEEDED
+            and (
+                (record := self._results.get(run_id)) is not None
+                and (
+                    (state := self._result_file_states.get(run_id)) is None
+                    or state.saved_generation != record.materialization.generation
+                )
+            )
+        )
+
+    @property
+    def unsaved_result_count(self) -> int:
+        return len(self.unsaved_result_run_ids)
+
+    @property
+    def result_dirty(self) -> bool:
+        return self.has_unsaved_results
+
+    def result_file_state_for(self, run_id: str) -> ResultFileState | None:
+        """Return the last accepted file state for one current run."""
+
+        normalized = str(run_id)
+        state = self._result_file_states.get(normalized)
+        return None if state is None else state
+
+    @property
+    def result_file_states(self) -> Mapping[str, ResultFileState]:
+        return MappingProxyType(dict(self._result_file_states))
+
+    def result_path_for(self, run_id: str) -> Path | None:
+        state = self.result_file_state_for(run_id)
+        return None if state is None else state.path
+
+    def saved_result_generation_for(self, run_id: str) -> int | None:
+        state = self.result_file_state_for(run_id)
+        return None if state is None else state.saved_generation
 
     @property
     def active_part_id(self) -> str | None:
@@ -5122,6 +5283,13 @@ class ModelSession:
             _provider=provider,
         )
         self._results[run.run_id] = record
+        accepted_provider = result_record_provider(record)
+        self._result_model_fingerprints[run.run_id] = result_model_fingerprint(
+            record.materialization.topology,
+            accepted_provider.profile,
+            step_name=expected_source.step_name,
+            unit_context=self._unit_context,
+        )
         if provider is not None:
             object.__setattr__(bundle, "_provider", None)
         self._runs[run.run_id] = replace(
@@ -5239,6 +5407,187 @@ class ModelSession:
 
         record = self._current_result_record(str(run_id))
         return None if record is None else deepcopy(record.provenance)
+
+    def prepare_result_archive_save(
+        self,
+        run_id: str,
+        generation: int | None = None,
+        *,
+        expected_generation: int | None = None,
+    ) -> ResultArchiveSaveSnapshot:
+        """Capture one accepted result generation for a background archive save.
+
+        The returned payload is detached from Session ownership at the object
+        graph level while retaining the immutable numeric arrays already owned
+        by the accepted provider.  ``generation`` is optional for callers that
+        simply want the current generation; when supplied it is an exact CAS
+        expectation and a mismatch is rejected before a token is issued.
+        """
+
+        for supplied_generation, label in (
+            (generation, "generation"),
+            (expected_generation, "expected_generation"),
+        ):
+            if supplied_generation is not None and type(supplied_generation) is not int:
+                raise TypeError(f"{label} must be an integer or None")
+        if (
+            generation is not None
+            and expected_generation is not None
+            and generation != expected_generation
+        ):
+            raise ValueError("generation and expected_generation must agree")
+        requested_generation = (
+            expected_generation
+            if expected_generation is not None
+            else generation
+        )
+        normalized_run_id = str(run_id)
+        record = self._current_result_record(normalized_run_id)
+        if record is None:
+            raise SessionStateError(
+                f"run {run_id!r} has no current successful result"
+            )
+        current_generation = record.materialization.generation
+        if (
+            requested_generation is not None
+            and requested_generation != current_generation
+        ):
+            raise SessionStateError(
+                "result archive save generation is no longer current"
+            )
+        run = self._runs.get(normalized_run_id)
+        if run is None or run.status is not RunStatus.SUCCEEDED:
+            raise SessionStateError(
+                f"run {run_id!r} is not a successful result run"
+            )
+        source = record.materialization.source
+        try:
+            model_fingerprint = self._result_model_fingerprints[normalized_run_id]
+        except KeyError as error:
+            raise SessionStateError(
+                "result archive save has no accepted model fingerprint"
+            ) from error
+        provider = result_record_provider(record)
+        archive_run = ResultArchiveRun(
+            name=run.name,
+            step_name=run.step_name,
+            created_at=run.created_at,
+            started_at=run.started_at,
+            finished_at=run.finished_at,
+            timings=dict(run.timings),
+            messages=tuple(run.messages),
+            output_report=record.output_report,
+        )
+        archive = build_result_archive_snapshot(
+            record,
+            model_name=self._model_name or "Model-1",
+            source_basename=self._result_source_basename(),
+            unit_context=self._unit_context,
+            model_fingerprint=model_fingerprint,
+            run=archive_run,
+            summaries=self._result_archive_summaries(
+                record.materialization.topology,
+                provider.profile,
+            ),
+            **self._result_archive_region_kwargs(record.materialization.topology),
+        )
+        token = self._issue_token(
+            "result_archive_save",
+            (
+                ("materialization_generation", current_generation),
+                ("model_revision", self._model_revision),
+            ),
+            artifact_id=source.artifact_id,
+            step_name=source.step_name,
+            run_id=source.run_id,
+            result_id=source.result_id,
+        )
+        # At most one save callback per run may remain current.  Issuing a new
+        # save supersedes an older callback before it can race the path CAS.
+        previous_task_id = self._active_result_save_tasks.get(normalized_run_id)
+        if previous_task_id is not None:
+            self._task_data.pop(previous_task_id, None)
+        self._active_result_save_tasks[normalized_run_id] = token.task_id
+        snapshot = ResultArchiveSaveSnapshot(
+            token=token,
+            archive=archive,
+            source=source,
+            materialization_generation=current_generation,
+            run_id=normalized_run_id,
+            result_id=source.result_id,
+        )
+        self._task_data[token.task_id] = snapshot
+        return snapshot
+
+    def accept_result_archive_saved(
+        self,
+        token: Any,
+        path: str | Path,
+    ) -> SessionDelta:
+        """Commit a successful worker save through the exact token/CAS gate."""
+
+        status = self._token_status_for(token, "result_archive_save")
+        if status is not TokenStatus.CURRENT:
+            return self._rejected(status, "stale result archive save")
+        payload = self._task_data.get(getattr(token, "task_id", None))
+        if type(payload) is not ResultArchiveSaveSnapshot:
+            raise SessionStateError(
+                "result archive save task has no current issued payload"
+            )
+        record = self._current_result_record(token.run_id)
+        if record is None:
+            return self._rejected(
+                TokenStatus.STALE_RESULT,
+                "result archive save result is no longer current",
+            )
+        if (
+            payload.source != record.materialization.source
+            or payload.materialization_generation
+            != record.materialization.generation
+        ):
+            return self._rejected(
+                TokenStatus.STALE_REVISION,
+                "stale result archive generation",
+            )
+        if isinstance(path, str) and not path.strip():
+            raise ValueError("result archive path must not be empty")
+        try:
+            target = Path(path)
+        except (TypeError, ValueError) as error:
+            raise TypeError("result archive path must be path-like") from error
+        if not str(target):
+            raise ValueError("result archive path must not be empty")
+        self._result_file_states[payload.run_id] = ResultFileState(
+            path=target,
+            saved_generation=payload.materialization_generation,
+            run_id=payload.run_id,
+            result_id=payload.result_id,
+        )
+        self._complete_token(token)
+        if self._active_result_save_tasks.get(payload.run_id) == token.task_id:
+            self._active_result_save_tasks.pop(payload.run_id, None)
+        return self._emit(
+            {ChangeKind.SAVED_STATE},
+            frozenset(),
+            "result archive saved",
+        )
+
+    def accept_result_archive_save_failed(
+        self,
+        token: Any,
+        error: Any,
+    ) -> SessionDelta:
+        """Consume a current worker failure without changing result state."""
+
+        return self.accept_task_failed(token, error)
+
+    def accept_result_archive_save_cancelled(
+        self,
+        token: Any,
+    ) -> SessionDelta:
+        """Consume a current worker cancellation without changing result state."""
+
+        return self.accept_task_cancelled(token)
 
     def prepare_result_projection(self, run_id: str) -> ResultTaskSnapshot:
         record = self._current_result_record(str(run_id))
@@ -5392,6 +5741,13 @@ class ModelSession:
                 and issued.run_id == token.run_id
             ):
                 self._task_data.pop(task_id, None)
+        if token.run_id is not None:
+            save_task_id = self._active_result_save_tasks.pop(
+                token.run_id,
+                None,
+            )
+            if save_task_id is not None:
+                self._task_data.pop(save_task_id, None)
         self._complete_token(token)
         return self._emit(
             {ChangeKind.RESULTS},
@@ -5425,7 +5781,11 @@ class ModelSession:
         if token.task_kind in {
             "result_materialization",
             "result_projection",
+            "result_archive_save",
         }:
+            if token.task_kind == "result_archive_save" and token.run_id is not None:
+                if self._active_result_save_tasks.get(token.run_id) == token.task_id:
+                    self._active_result_save_tasks.pop(token.run_id, None)
             return SessionDelta(
                 session_revision=self._session_revision,
                 reason=f"{token.task_kind} task failed",
@@ -5448,7 +5808,11 @@ class ModelSession:
         if token.task_kind in {
             "result_materialization",
             "result_projection",
+            "result_archive_save",
         }:
+            if token.task_kind == "result_archive_save" and token.run_id is not None:
+                if self._active_result_save_tasks.get(token.run_id) == token.task_id:
+                    self._active_result_save_tasks.pop(token.run_id, None)
             return SessionDelta(
                 session_revision=self._session_revision,
                 reason=f"{token.task_kind} task cancelled",
@@ -5591,6 +5955,15 @@ class ModelSession:
             dirty=self.dirty,
             can_save=self.can_save,
             unit_context=deepcopy(self._unit_context),
+            result_file_states=MappingProxyType(
+                dict(self._result_file_states)
+            ),
+            result_generations=MappingProxyType(
+                {
+                    run_id: record.materialization.generation
+                    for run_id, record in self._results.items()
+                }
+            ),
         )
 
     def projection_snapshot(
@@ -5651,6 +6024,15 @@ class ModelSession:
                 "model_name": self._model_name,
                 "dirty": self.dirty,
                 "can_save": self.can_save,
+                "result_file_states": MappingProxyType(
+                    dict(self._result_file_states)
+                ),
+                "result_generations": MappingProxyType(
+                    {
+                        run_id: record.materialization.generation
+                        for run_id, record in self._results.items()
+                    }
+                ),
             }
             if ChangeKind.VALIDATIONS in changed_set:
                 updates["validations"] = MappingProxyType(
@@ -5702,6 +6084,15 @@ class ModelSession:
             dirty=self.dirty,
             can_save=self.can_save,
             unit_context=self._unit_context,
+            result_file_states=MappingProxyType(
+                dict(self._result_file_states)
+            ),
+            result_generations=MappingProxyType(
+                {
+                    run_id: record.materialization.generation
+                    for run_id, record in self._results.items()
+                }
+            ),
         )
 
     def can_check(self, step_name: str | None = None) -> bool:
@@ -5824,6 +6215,9 @@ class ModelSession:
             return TokenStatus.UNKNOWN_TASK
         if token.task_id in self._completed_task_ids:
             return TokenStatus.ALREADY_COMPLETED
+        if token.task_kind == "result_archive_save" and token.run_id is not None:
+            if self._active_result_save_tasks.get(token.run_id) != token.task_id:
+                return TokenStatus.STALE_REVISION
         for name, revision in token.dependency_revisions:
             if name == "materialization_generation":
                 record = self._current_result_record(token.run_id)
@@ -5991,6 +6385,9 @@ class ModelSession:
         self._validations: dict[str, ValidationRecord] = {}
         self._runs: dict[str, AnalysisRun] = {}
         self._results: dict[str, ResultRecord] = {}
+        self._result_model_fingerprints: dict[str, str] = {}
+        self._result_file_states: dict[str, ResultFileState] = {}
+        self._active_result_save_tasks: dict[str, str] = {}
         self._selected_run_id: str | None = None
         self._displayed_result_run_id: str | None = None
         self._issued_tokens: dict[str, TaskToken] = {}
@@ -6064,12 +6461,16 @@ class ModelSession:
             if token.task_kind in {
                 "result_materialization",
                 "solve",
+                "result_archive_save",
             }:
                 self._task_data.pop(task_id, None)
         self._validations.clear()
         self._prepared_system = None
         self._runs.clear()
         self._results.clear()
+        self._result_model_fingerprints.clear()
+        self._result_file_states.clear()
+        self._active_result_save_tasks.clear()
         self._selected_run_id = None
         self._displayed_result_run_id = None
 
@@ -6199,6 +6600,259 @@ class ModelSession:
         ):
             return None
         return record
+
+    def _result_source_basename(self) -> str | None:
+        source_path = self._project_path or self._source_path
+        if source_path is None:
+            return None
+        return Path(source_path).name or None
+
+    def _result_archive_region_kwargs(
+        self,
+        topology: Any | None = None,
+    ) -> dict[str, Mapping[str, tuple[int, ...]]]:
+        """Project only small named-region ID metadata into an archive DTO."""
+
+        model = None if self._artifact is None else self._artifact.model
+        allowed_nodes = (
+            frozenset(getattr(topology, "node_ids", ()))
+            if topology is not None
+            else None
+        )
+        allowed_elements = (
+            frozenset(getattr(topology, "element_ids", ()))
+            if topology is not None
+            else None
+        )
+        node_ids: dict[str, tuple[int, ...]] = {}
+        element_ids: dict[str, tuple[int, ...]] = {}
+        for name, region in getattr(model, "node_sets", {}).items():
+            values = tuple(
+                int(value)
+                for value in getattr(region, "node_ids", ())
+                if allowed_nodes is None or int(value) in allowed_nodes
+            )
+            if values:
+                node_ids[str(name)] = values
+        for name, region in getattr(model, "element_sets", {}).items():
+            values = tuple(
+                int(value)
+                for value in getattr(region, "element_ids", ())
+                if allowed_elements is None or int(value) in allowed_elements
+            )
+            if values:
+                element_ids[str(name)] = values
+        return {
+            "named_region_node_ids": node_ids,
+            "named_region_element_ids": element_ids,
+        }
+
+    def _result_archive_summaries(
+        self,
+        topology: Any,
+        profile: Any,
+    ) -> dict[str, object]:
+        """Project deterministic, bounded model inspection summaries.
+
+        These summaries intentionally contain names, counts, and scalar
+        definition attributes only.  They never retain model objects,
+        ``repr`` output, source paths, or large topology/field arrays.
+        """
+
+        model = None if self._artifact is None else self._artifact.model
+        model_name = _archive_safe_text(self._model_name)
+        if model_name is None:
+            model_name = _archive_safe_text(getattr(model, "name", None))
+        if model_name is None:
+            model_name = "Model-1"
+
+        parts: list[dict[str, object]] = []
+        for part in sorted(self._parts, key=lambda item: str(getattr(item, "id", ""))):
+            part_id = _archive_safe_text(getattr(part, "id", None))
+            part_name = _archive_safe_text(getattr(part, "name", None))
+            if part_id is None:
+                continue
+            settings = getattr(part, "mesh_settings", None)
+            settings_summary: dict[str, object] = {}
+            if settings is not None:
+                settings_summary = {
+                    key: value
+                    for key, value in (
+                        ("size", getattr(settings, "size", None)),
+                        ("order", getattr(settings, "order", None)),
+                        ("cell_shape", getattr(settings, "cell_shape", None)),
+                        ("line_element_type", getattr(settings, "line_element_type", None)),
+                        ("auto_level", getattr(settings, "auto_level", None)),
+                        ("strict_cell_shape", getattr(settings, "strict_cell_shape", None)),
+                        (
+                            "local_controls_count",
+                            len(getattr(settings, "local_controls", ())),
+                        ),
+                    )
+                    if _archive_json_scalar(value)[1]
+                }
+            provenance = getattr(part, "provenance", None)
+            provenance_summary: dict[str, object] = {}
+            if provenance is not None:
+                for key in ("feature_id", "target_part_id", "tool_part_id", "operation"):
+                    scalar, accepted = _archive_json_scalar(
+                        getattr(provenance, key, None)
+                    )
+                    if accepted:
+                        provenance_summary[key] = scalar
+            parts.append(
+                {
+                    "id": part_id,
+                    "name": part_name,
+                    "suppressed": bool(getattr(part, "suppressed", False)),
+                    "has_geometry": getattr(part, "geometry_recipe", None) is not None,
+                    "dimension": getattr(part, "dimension", None),
+                    "mesh": settings_summary,
+                    "provenance": provenance_summary,
+                }
+            )
+
+        materials: list[dict[str, object]] = []
+        for material in sorted(
+            self._materials,
+            key=lambda item: str(getattr(item, "name", "")),
+        ):
+            name = _archive_safe_text(getattr(material, "name", None))
+            if name is None:
+                continue
+            materials.append(
+                {
+                    "name": name,
+                    "properties": _archive_scalar_mapping(
+                        getattr(material, "properties", {})
+                    ),
+                }
+            )
+
+        sections: list[dict[str, object]] = []
+        for section in sorted(
+            self._sections,
+            key=lambda item: str(getattr(item, "name", "")),
+        ):
+            name = _archive_safe_text(getattr(section, "name", None))
+            if name is None:
+                continue
+            material = _archive_safe_text(getattr(section, "material", None))
+            section_type = _archive_safe_text(
+                getattr(section, "section_type", None)
+            )
+            sections.append(
+                {
+                    "name": name,
+                    "material": material,
+                    "section_type": section_type,
+                    "properties": _archive_scalar_mapping(
+                        getattr(section, "properties", {})
+                    ),
+                }
+            )
+
+        assignments: list[dict[str, object]] = []
+        for assignment in sorted(
+            self._assignments,
+            key=lambda item: (
+                str(getattr(item, "section_name", "")),
+                str(getattr(item, "region_name", "")),
+            ),
+        ):
+            section_name = _archive_safe_text(
+                getattr(assignment, "section_name", None)
+            )
+            region_name = _archive_safe_text(
+                getattr(assignment, "region_name", None)
+            )
+            if section_name is None or region_name is None:
+                continue
+            orientation = getattr(assignment, "beam_orientation", None)
+            orientation_value = None
+            if orientation is not None:
+                raw_reference = getattr(orientation, "local_y_reference", None)
+                if (
+                    type(raw_reference) is tuple
+                    and len(raw_reference) == 3
+                    and all(type(item) is float and math.isfinite(item) for item in raw_reference)
+                ):
+                    orientation_value = raw_reference
+            assignments.append(
+                {
+                    "section_name": section_name,
+                    "region_name": region_name,
+                    "beam_local_y_reference": orientation_value,
+                }
+            )
+
+        named_regions: list[dict[str, object]] = []
+        for name, region in sorted(self._named_regions.items()):
+            safe_name = _archive_safe_text(name)
+            if safe_name is None:
+                continue
+            references = getattr(region, "references", ())
+            try:
+                reference_count = len(references)
+            except TypeError:
+                reference_count = 0
+            named_regions.append(
+                {
+                    "name": safe_name,
+                    "entity_kind": _archive_safe_text(
+                        getattr(region, "entity_kind", None)
+                    ),
+                    "reference_count": reference_count,
+                }
+            )
+
+        steps: list[dict[str, object]] = []
+        for step in sorted(
+            self._effective_steps(),
+            key=lambda item: str(getattr(item, "name", "")),
+        ):
+            name = _archive_safe_text(getattr(step, "name", None))
+            if name is None:
+                continue
+            steps.append(
+                {
+                    "name": name,
+                    "procedure": _archive_safe_text(
+                        getattr(step, "procedure", None)
+                    ),
+                    "boundary_count": len(getattr(step, "boundaries", ())),
+                    "load_count": len(getattr(step, "cloads", ())),
+                    "surface_load_count": len(
+                        getattr(step, "surface_loads", ())
+                    ),
+                    "output_count": len(getattr(step, "outputs", ())),
+                }
+            )
+
+        return {
+            "model": {
+                "name": model_name,
+                "source_kind": _archive_safe_text(self._source_kind),
+                "part_count": len(parts),
+                "material_count": len(materials),
+                "section_count": len(sections),
+                "assignment_count": len(assignments),
+                "named_region_count": len(named_regions),
+                "step_count": len(steps),
+            },
+            "mesh": {
+                "node_count": len(topology.node_ids),
+                "element_count": len(topology.element_ids),
+                "element_types": tuple(sorted(set(topology.element_types))),
+                "dofs_per_node": getattr(profile, "dofs_per_node", None),
+            },
+            "parts": tuple(parts),
+            "materials": tuple(materials),
+            "sections": tuple(sections),
+            "assignments": tuple(assignments),
+            "named_regions": tuple(named_regions),
+            "steps": tuple(steps),
+        }
 
     def _find_run_by_name(self, name: str) -> AnalysisRun | None:
         normalized = str(name).strip().casefold()

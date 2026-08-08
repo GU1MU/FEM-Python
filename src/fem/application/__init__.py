@@ -133,6 +133,7 @@ from .runs import (
     ResultRecord,
     RunStatus,
 )
+from .results.archive import ResultArchiveSaveSnapshot, ResultFileState
 from .preprocessing import (
     LogicalRecipeTopologyResolver,
     TopologyResolutionError,
@@ -239,6 +240,8 @@ __all__ = [
     "RecipeRegionSource",
     "RenameIntent",
     "ResultMaterializationTaskSnapshot",
+    "ResultArchiveSaveSnapshot",
+    "ResultFileState",
     "ResultProvenance",
     "ResultRecord",
     "ResultTaskSnapshot",

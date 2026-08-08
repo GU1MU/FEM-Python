@@ -20,12 +20,15 @@ from .data import (
 )
 from .archive import (
     LoadedResultArchive,
+    ResultArchiveSaveSnapshot,
     ResultArchiveModelProjection,
     ResultArchiveOrigin,
     ResultArchiveRun,
     ResultArchiveSnapshot,
+    ResultFileState,
     archive_region_dictionary,
     build_result_archive_snapshot,
+    result_model_fingerprint,
 )
 from .fields import (
     FieldAssociation,
@@ -133,7 +136,9 @@ __all__ = [
     "ResultArchiveModelProjection",
     "ResultArchiveOrigin",
     "ResultArchiveRun",
+    "ResultArchiveSaveSnapshot",
     "ResultArchiveSnapshot",
+    "ResultFileState",
     "ResultCapabilityCatalog",
     "ResultCellKind",
     "ResultDiagnostic",
@@ -162,6 +167,7 @@ __all__ = [
     "advance_materialization",
     "archive_region_dictionary",
     "build_result_archive_snapshot",
+    "result_model_fingerprint",
     "build_result_provider",
     "build_result_field_topology_template",
     "build_solve_result_bundle",
