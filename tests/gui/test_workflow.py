@@ -141,13 +141,15 @@ def test_reload_clears_selection_and_old_result(gui_inp_path):
     _wait_for_task(window)
     assert window.document.has_result
 
-    window.reload_model()
+    receipt = window.reload_imported_source()
+    assert receipt.diagnostic is None
     _wait_for_task(window)
 
     assert window.selection.node_id is None
     assert window.selection.element_id is None
     assert not window.document.has_result
     assert not window.actions["query"].isEnabled()
+    window.close_model(confirm=False)
     window.close()
 
 
@@ -227,4 +229,5 @@ def test_gui_exports_the_current_result_field_as_csv_and_vtk(
     )
     assert vtk_readback.selection == selection
     assert vtk_readback.deformation_scale == 2.5
+    window.close_model(confirm=False)
     window.close()

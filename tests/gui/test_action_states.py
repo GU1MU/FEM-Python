@@ -167,7 +167,7 @@ def test_actions_follow_document_and_result_context(gui_inp_path):
     assert window.result_variable_combo.isEnabled()
     assert window.result_component_combo.isEnabled()
 
-    window.close_model()
+    window.close_model(confirm=False)
     assert "尚无分析结果" == window.result_tree.topLevelItem(0).text(0)
     assert window.status_panel.object_label.text() == "对象：—"
     assert window.status_panel.step_label.text() == "Step：—"

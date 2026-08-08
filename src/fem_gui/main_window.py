@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import logging
 from pathlib import Path
 from time import perf_counter
@@ -157,6 +157,12 @@ from fem.io.project import (
 )
 from fem.io.result_csv import write_result_table_csv
 from fem.io.result_vtk import write_result_vtk
+from fem.io.result_archive import (
+    LoadedResultArchive,
+    RESULT_FILE_SUFFIX,
+    load_result_archive,
+    save_result_archive,
+)
 from fem.mesh.quality import analyze_mesh
 from fem.mesh.settings import MeshSettings
 from fem.solvers import static_linear
@@ -196,6 +202,8 @@ from .commands import (
     NativeGeometryEdit,
     NewNativeProjectCommand,
     ResultCsvExportSpec,
+    ResultArchiveOpenSpec,
+    ResultArchiveSaveSpec,
     ResultVtkExportSpec,
 )
 from .dialogs import CompactDoubleSpinBox, show_information
@@ -285,7 +293,13 @@ from .visualization.contour_rendering import (
     CONTOUR_EDGE_NONE,
     CONTOUR_RENDER_SHADED,
 )
-from .visualization.model_adapter import ModelGeometry, build_model_geometry
+from .visualization.model_adapter import (
+    ModelGeometry,
+    build_model_geometry,
+    build_result_archive_geometry,
+    build_result_archive_model_view,
+    ArchiveModelView,
+)
 from .visualization.result_renderer import (
     ResultRenderPayload,
     build_result_render_payload,
@@ -536,6 +550,16 @@ class _PreferredWidthHost(QWidget):
         return hint
 
 
+@dataclass(frozen=True, slots=True)
+class _ResultArchiveDisplayPayload:
+    """Worker-owned decoded archive plus display-only structural adapters."""
+
+    loaded: LoadedResultArchive
+    geometry: ModelGeometry
+    model_view: ArchiveModelView
+    timings: dict[str, float]
+
+
 class FEMMainWindow(QMainWindow):
     """只暴露当前内核已经实现的有限元工作流。"""
 
@@ -577,6 +601,8 @@ class FEMMainWindow(QMainWindow):
         self._legacy_project_extension = False
         self._current_step_name: str | None = None
         self.geometry: ModelGeometry | None = None
+        self._result_archive_geometry: ModelGeometry | None = None
+        self._result_archive_model_view: ArchiveModelView | None = None
         self.result_provider: ResultProvider | None = None
         self.result_selection: ScalarFieldSelection | None = None
         self._pending_result_selection: ScalarFieldSelection | None = None
@@ -1097,6 +1123,206 @@ class FEMMainWindow(QMainWindow):
             )
         return GuiCommandReceipt.pending(command_id, completion)
 
+    def save_result_path(self, path: str | Path) -> GuiCommandReceipt:
+        """Save the displayed successful result through the shared worker."""
+
+        command_id = self._next_command_id()
+        if self.busy:
+            return self._rejected_command(
+                command_id,
+                "task.busy",
+                "a background task is already running",
+            )
+        save_snapshot = None
+        started = False
+        try:
+            spec = ResultArchiveSaveSpec(Path(path))
+            run_id = self.document.displayed_result_run_id
+            if run_id is None:
+                raise RuntimeError("当前没有可保存的成功结果")
+            snapshot = self.session.prepare_result_archive_save(run_id)
+            save_snapshot = snapshot
+            completion = GuiCommandCompletion(command_id)
+
+            def workload(context: TaskContext) -> Path:
+                context.report("正在编码并保存分析结果……")
+                return save_result_archive(
+                    spec.path,
+                    snapshot.archive,
+                    checkpoint=context.checkpoint,
+                )
+
+            def apply_result(payload: object) -> TaskApplyOutcome:
+                if not isinstance(payload, Path):
+                    raise TypeError("result save worker must return pathlib.Path")
+                return self._session_task_outcome(
+                    self.session.accept_result_archive_saved(
+                        snapshot.token,
+                        payload,
+                    ),
+                    payload,
+                )
+
+            def on_success(value: object) -> None:
+                if (
+                    type(value) is not tuple
+                    or len(value) != 2
+                    or type(value[0]) is not SessionDelta
+                    or not isinstance(value[1], Path)
+                ):
+                    raise TypeError(
+                        "accepted result save must carry SessionDelta and Path"
+                    )
+                delta, saved_path = value
+                self._accepted_command(command_id, delta)
+                self.status_panel.set_state(
+                    f"分析结果已保存：{saved_path.name}",
+                    5000,
+                )
+
+            started = self._start_task(
+                workload,
+                on_success,
+                "保存分析结果失败",
+                lambda message: self._session_task_failed(
+                    snapshot.token,
+                    "保存分析结果失败",
+                    message,
+                ),
+                task_name="保存分析结果",
+                on_cancelled=lambda: self._session_task_cancelled(snapshot.token),
+                apply_result=apply_result,
+                completion=completion,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            if save_snapshot is not None:
+                self.session.accept_result_archive_save_cancelled(
+                    save_snapshot.token
+                )
+            return self._rejected_command(
+                command_id,
+                "result.save.rejected",
+                error,
+            )
+        if not started:
+            if save_snapshot is not None:
+                self.session.accept_result_archive_save_cancelled(
+                    save_snapshot.token
+                )
+            return self._rejected_command(
+                command_id,
+                "task.start.rejected",
+                "the result save task could not be started",
+            )
+        return GuiCommandReceipt.pending(command_id, completion)
+
+    def open_result_path(self, path: str | Path) -> GuiCommandReceipt:
+        """Strictly decode and atomically install a result-only document."""
+
+        command_id = self._next_command_id()
+        if self.busy:
+            return self._rejected_command(
+                command_id,
+                "task.busy",
+                "a background task is already running",
+            )
+        if self._active_editor():
+            return self._rejected_command(
+                command_id,
+                "editor.active",
+                "请先完成或取消当前编辑",
+            )
+        try:
+            spec = ResultArchiveOpenSpec(Path(path))
+            base_session_id = self.session.session_id
+            base_session_revision = self.session.session_revision
+            completion = GuiCommandCompletion(command_id)
+
+            def workload(context: TaskContext):
+                context.report("正在读取并验证分析结果……")
+                context.checkpoint()
+                loaded = load_result_archive(spec.path)
+                context.checkpoint()
+                started = perf_counter()
+                model_view = build_result_archive_model_view(
+                    loaded.snapshot.model_projection,
+                    name=str(loaded.snapshot.origin.model_name or "结果"),
+                )
+                geometry = build_result_archive_geometry(
+                    loaded.snapshot.model_projection,
+                )
+                timings = {
+                    "结果显示适配器构建": perf_counter() - started,
+                }
+                context.checkpoint()
+                return _ResultArchiveDisplayPayload(
+                    loaded=loaded,
+                    geometry=geometry,
+                    model_view=model_view,
+                    timings=timings,
+                )
+
+            def apply_result(payload: object) -> TaskApplyOutcome:
+                if type(payload) is not _ResultArchiveDisplayPayload:
+                    raise TypeError(
+                        "result open worker must return display payload"
+                    )
+                if self.session.session_id != base_session_id:
+                    return TaskApplyOutcome.stale("结果打开目标会话已变化，未应用")
+                if self.session.session_revision != base_session_revision:
+                    return TaskApplyOutcome.stale("结果打开目标文档已变化，未应用")
+                delta = self.session.replace_from_result_archive(
+                    payload.loaded,
+                    expected_session_revision=base_session_revision,
+                )
+                return self._session_task_outcome(delta, payload)
+
+            def on_success(value: object) -> None:
+                if (
+                    type(value) is not tuple
+                    or len(value) != 2
+                    or type(value[0]) is not SessionDelta
+                ):
+                    raise TypeError("accepted result open must carry SessionDelta")
+                delta, payload = value
+                if type(payload) is not _ResultArchiveDisplayPayload:
+                    raise TypeError("accepted result open has invalid payload")
+                self._accepted_command(
+                    command_id,
+                    delta,
+                    model_geometry=payload.geometry,
+                    result_model_view=payload.model_view,
+                    timings=payload.timings,
+                    source_label=spec.path.name,
+                )
+                self.ribbon.set_current("结果")
+                self.status_panel.set_state(
+                    f"结果文件已打开：{spec.path.name}",
+                    6000,
+                )
+
+            started = self._start_task(
+                workload,
+                on_success,
+                "打开分析结果失败",
+                task_name="打开分析结果",
+                apply_result=apply_result,
+                completion=completion,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            return self._rejected_command(
+                command_id,
+                "result.open.rejected",
+                error,
+            )
+        if not started:
+            return self._rejected_command(
+                command_id,
+                "task.start.rejected",
+                "the result open task could not be started",
+            )
+        return GuiCommandReceipt.pending(command_id, completion)
+
     def apply_native_geometry_edit(
         self,
         edit: NativeGeometryEdit,
@@ -1107,6 +1333,12 @@ class FEMMainWindow(QMainWindow):
                 command_id,
                 "command.type.invalid",
                 "edit must be NativeGeometryEdit",
+            )
+        if not self._confirm_result_invalidation():
+            return self._rejected_command(
+                command_id,
+                "document.transition.cancelled",
+                "用户取消了未保存结果确认",
             )
         try:
             delta = self.session.replace_native_geometry_inputs(
@@ -1134,6 +1366,12 @@ class FEMMainWindow(QMainWindow):
                 "command.type.invalid",
                 "edit must be MeshInputEdit",
             )
+        if not self._confirm_result_invalidation():
+            return self._rejected_command(
+                command_id,
+                "document.transition.cancelled",
+                "用户取消了未保存结果确认",
+            )
         try:
             delta = self.session.replace_mesh_settings(
                 edit.settings,
@@ -1157,6 +1395,12 @@ class FEMMainWindow(QMainWindow):
                 command_id,
                 "command.type.invalid",
                 "batch must be a NamedRegionEditBatch",
+            )
+        if not self._confirm_result_invalidation():
+            return self._rejected_command(
+                command_id,
+                "document.transition.cancelled",
+                "用户取消了未保存结果确认",
             )
         reference_count = sum(
             len(region.references) for region in batch.regions
@@ -1326,6 +1570,12 @@ class FEMMainWindow(QMainWindow):
         batch: DefinitionEditBatch,
     ) -> GuiCommandReceipt:
         command_id = self._next_command_id()
+        if not self._confirm_result_invalidation():
+            return self._rejected_command(
+                command_id,
+                "document.transition.cancelled",
+                "用户取消了未保存结果确认",
+            )
         try:
             delta = self.session.apply_definition_edit(batch)
             return self._accepted_command(command_id, delta)
@@ -1347,6 +1597,12 @@ class FEMMainWindow(QMainWindow):
         base_session_revision: int,
     ) -> GuiCommandReceipt:
         command_id = self._next_command_id()
+        if not self._confirm_result_invalidation():
+            return self._rejected_command(
+                command_id,
+                "document.transition.cancelled",
+                "用户取消了未保存结果确认",
+            )
         try:
             delta = self.session.clear_generated_model(
                 expected_session_revision=base_session_revision
@@ -2311,6 +2567,7 @@ class FEMMainWindow(QMainWindow):
         delta: object,
         *,
         model_geometry: ModelGeometry | None = None,
+        result_model_view: ArchiveModelView | None = None,
         timings: dict[str, float] | None = None,
         source_label: str | None = None,
     ) -> bool:
@@ -2341,10 +2598,19 @@ class FEMMainWindow(QMainWindow):
             and snapshot.project_path.suffix.casefold()
             in LEGACY_MODEL_FILE_SUFFIXES
         )
-        stale_agent_proposals = self.agent_authoring_bridge.bind_snapshot(
-            snapshot
-        )
-        current_authoring_context = self.agent_authoring_bridge.context
+        if snapshot.source_kind == "result":
+            stale_agent_proposals = self.agent_authoring_bridge.unbind_context(
+                "结果只读文档不支持 Agent 建模操作"
+            )
+            self.agent_authoring_controller.invalidate_binding(
+                "结果只读文档不支持 Agent 建模操作"
+            )
+            current_authoring_context = None
+        else:
+            stale_agent_proposals = self.agent_authoring_bridge.bind_snapshot(
+                snapshot
+            )
+            current_authoring_context = self.agent_authoring_bridge.context
         if current_authoring_context is not None:
             self.agent_authoring_controller.observe_binding(
                 current_authoring_context,
@@ -2517,10 +2783,30 @@ class FEMMainWindow(QMainWindow):
             or self.geometry.artifact_id != artifact.artifact_id
             or self.viewport.artifact_id != artifact.artifact_id
         ):
-            geometry = model_geometry or build_model_geometry(artifact.model)
+            if snapshot.source_kind == "result":
+                if result_model_view is not None:
+                    self._result_archive_model_view = result_model_view
+                if model_geometry is not None:
+                    self._result_archive_geometry = model_geometry
+                geometry = (
+                    model_geometry
+                    or self._result_archive_geometry
+                )
+                model_for_view = (
+                    result_model_view
+                    or self._result_archive_model_view
+                )
+                if geometry is None or model_for_view is None:
+                    raise RuntimeError(
+                        "result-only projection requires worker display payload"
+                    )
+            else:
+                geometry = model_geometry or build_model_geometry(artifact.model)
             geometry = replace(geometry, artifact_id=artifact.artifact_id)
+            if snapshot.source_kind != "result":
+                model_for_view = artifact.model
             self._install_model(
-                artifact.model,
+                model_for_view,
                 geometry,
                 dict(timings or {}),
                 source_label=source_label or self._session_source_label(),
@@ -2647,6 +2933,8 @@ class FEMMainWindow(QMainWindow):
         self.viewport_panel.scope_creation_bar.finish()
         self.inspection_service = None
         self.geometry = None
+        self._result_archive_geometry = None
+        self._result_archive_model_view = None
         self.result_provider = None
         self.result_selection = None
         self._result_visualization_provider_cache = None
@@ -2674,6 +2962,9 @@ class FEMMainWindow(QMainWindow):
         self.navigation.show_model()
         self.status_panel.set_result()
         if not had_projection:
+            return
+        if self.document.source_kind == "result":
+            self.viewport.clear_model()
             return
         if self.document.artifact is not None and self.geometry is not None:
             self.viewport.set_model(
@@ -2836,7 +3127,7 @@ class FEMMainWindow(QMainWindow):
     def _build_menus(self) -> None:
         file_menu = self.menuBar().addMenu("文件")
         file_menu.setObjectName("menuFile")
-        file_menu.addActions([self.actions[name] for name in ("new_native", "open_project", "save_project", "open", "reload", "close")])
+        file_menu.addActions([self.actions[name] for name in ("new_native", "open_project", "save_project", "open", "save_result", "open_result")])
         file_menu.addSeparator()
         file_menu.addAction(self.actions["exit"])
         edit_menu = self.menuBar().addMenu("编辑")
@@ -2896,7 +3187,7 @@ class FEMMainWindow(QMainWindow):
             (),
         )
         self._add_ribbon_page("项目", (
-            ("文件", ("new_native", "open_project", "save_project", "open", "reload", "close"), ("new_native", "open")),
+            ("文件", ("new_native", "open_project", "save_project", "open", "save_result", "open_result"), ("new_native", "open")),
             ("信息", ("model_info",), ()),
             ("分析", ("submit_job",), ("submit_job",)),
             ("输出", ("export_csv", "export_vtk"), ()),
@@ -3804,6 +4095,14 @@ class FEMMainWindow(QMainWindow):
                 else str(getattr(self.document.model, "name", "") or "模型")
             )
             source_label = "INP"
+        elif source_kind == "result":
+            name = (
+                self.document.source_path.name
+                if self.document.source_path is not None
+                else "结果"
+            )
+            self.setWindowTitle(f"有限元分析 — {name} [结果只读]")
+            return
         else:
             recipe_name = str(
                 getattr(self.document.geometry_recipe, "name", "") or ""
@@ -3917,6 +4216,8 @@ class FEMMainWindow(QMainWindow):
             if original is not None
             else root
         )
+        if not self._confirm_result_invalidation(preserve_editor=True):
+            return
         try:
             if original is None:
                 delta = self.session.add_native_part(
@@ -4448,6 +4749,8 @@ class FEMMainWindow(QMainWindow):
                 6000,
             )
             return
+        if not self._confirm_result_invalidation(preserve_editor=True):
+            return
         try:
             delta = self.session.commit_face_sketch_boolean(
                 launch.part_id,
@@ -4677,6 +4980,8 @@ class FEMMainWindow(QMainWindow):
                 "或取消编辑后重新创建拉伸"
             )
             return
+        if not self._confirm_result_invalidation(preserve_editor=True):
+            return
         try:
             if original is None:
                 delta = self.session.add_native_part(
@@ -4801,6 +5106,8 @@ class FEMMainWindow(QMainWindow):
             raise ValueError("不支持的基本实体类型")
         base_revision = self.document.session_revision
         if not self._exec_dialog(dialog):
+            return
+        if not self._confirm_result_invalidation():
             return
         try:
             delta = self.session.add_native_part(
@@ -4997,6 +5304,8 @@ class FEMMainWindow(QMainWindow):
                 if active_id is None:
                     self._show_error("拉伸几何", "没有当前部件")
                     return
+                if not self._confirm_result_invalidation():
+                    return
                 try:
                     delta = self.session.replace_part_with_extruded_siblings(
                         active_id,
@@ -5106,6 +5415,8 @@ class FEMMainWindow(QMainWindow):
             else:
                 if active_id is None:
                     self._show_error("扫掠几何", "没有当前部件")
+                    return
+                if not self._confirm_result_invalidation():
                     return
                 try:
                     delta = self.session.replace_part_with_revolved_siblings(
@@ -5860,6 +6171,8 @@ class FEMMainWindow(QMainWindow):
         preview = build_strict_part_boolean_preview(result.preview)
         target_id = str(controller.target_part_id)
         tool_id = str(controller.tool_part_id)
+        if not self._confirm_result_invalidation(preserve_editor=True):
+            return
         try:
             delta = self.session.apply_part_boolean(
                 target_id,
@@ -6409,6 +6722,8 @@ class FEMMainWindow(QMainWindow):
         elif dialog.operation == "delete" and isinstance(current, BooleanGeometry):
             self._set_native_geometry(current.object_geometry, "撤销后的")
         elif dialog.operation == "clear":
+            if not self._confirm_result_invalidation():
+                return
             self._apply_session_delta(self.session.clear_geometry())
             self.status_panel.set_state("当前几何已清空", 5000)
 
@@ -6419,6 +6734,8 @@ class FEMMainWindow(QMainWindow):
             active_part_id is not None
             and self.session.can_undo_face_sketch_boolean(active_part_id)
         ):
+            if not self._confirm_result_invalidation():
+                return
             try:
                 self._apply_session_delta(
                     self.session.undo_face_sketch_boolean(
@@ -6455,6 +6772,8 @@ class FEMMainWindow(QMainWindow):
             )
         ):
             part_id = self.document.active_part_id
+            if not self._confirm_result_invalidation():
+                return
             try:
                 self._apply_session_delta(
                     self.session.undo_part_extrusion(
@@ -6487,6 +6806,8 @@ class FEMMainWindow(QMainWindow):
             and self.document.active_part_id is not None
         ):
             result_id = self.document.active_part_id
+            if not self._confirm_result_invalidation():
+                return
             try:
                 self._apply_session_delta(
                     self.session.undo_part_boolean(
@@ -6576,6 +6897,8 @@ class FEMMainWindow(QMainWindow):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
+        if not self._confirm_result_invalidation():
+            return
         try:
             delta = self.session.delete_native_part(
                 active_id,
@@ -6602,6 +6925,8 @@ class FEMMainWindow(QMainWindow):
     ) -> bool:
         if not isinstance(recipe, NATIVE_GEOMETRY_TYPES):
             raise TypeError(f"不支持的几何定义：{type(recipe).__name__}")
+        if not self._confirm_result_invalidation():
+            return False
         if isinstance(recipe, MultiBodyGeometry):
             self._show_error(
                 "编辑几何",
@@ -7630,10 +7955,57 @@ class FEMMainWindow(QMainWindow):
         path, _filter = QFileDialog.getOpenFileName(
             self, "打开 Abaqus INP", "", "Abaqus INP 文件 (*.inp);;所有文件 (*)"
         )
-        if path and self._confirm_discard_changes():
+        if path and self._confirm_document_transition():
             receipt = self.open_inp_path(Path(path))
             if receipt.diagnostic is not None:
                 self._show_command_rejection("模型加载失败", receipt)
+
+    def save_current_result(self, *, wait: bool = False) -> bool:
+        """Show the result Save As dialog on every invocation."""
+
+        if self.busy or self._current_result_provider() is None:
+            return False
+        run = self.session.find_run(self.document.displayed_result_run_id)
+        model_name = str(self.document.model_name or "模型").strip() or "模型"
+        job_name = str(getattr(run, "name", None) or "结果").strip() or "结果"
+        default_name = (
+            f"{model_name}-{job_name}{RESULT_FILE_SUFFIX}"
+        )
+        filename, _filter = QFileDialog.getSaveFileName(
+            self,
+            "保存分析结果",
+            default_name,
+            "FEM-Python 结果 (*.femres)",
+        )
+        if not filename:
+            return False
+        receipt = self.save_result_path(filename)
+        if receipt.diagnostic is not None:
+            self._show_command_rejection("保存分析结果失败", receipt)
+            return False
+        completion = receipt.completion
+        if completion is None:
+            return False
+        if not wait:
+            return True
+        return completion.result().state is BackgroundTaskState.SUCCEEDED
+
+    def open_result_file(self) -> None:
+        """Show the result archive dialog and install only after confirmation."""
+
+        if self.busy or self._active_editor():
+            return
+        path, _filter = QFileDialog.getOpenFileName(
+            self,
+            "打开分析结果",
+            "",
+            "FEM-Python 结果 (*.femres);;所有文件 (*)",
+        )
+        if not path or not self._confirm_document_transition():
+            return
+        receipt = self.open_result_path(path)
+        if receipt.diagnostic is not None:
+            self._show_command_rejection("打开分析结果失败", receipt)
 
     def new_native_model(self) -> None:
         if self.busy:
@@ -8044,8 +8416,10 @@ class FEMMainWindow(QMainWindow):
             self._symbol_settings,
             step_name=self._current_step_name,
         )
-        def frame_query(target: RegionRef | int) -> BeamFrameReport:
-            return resolve_effective_beam_frames(model, target)
+        frame_query = None
+        if self.document.source_kind != "result":
+            def frame_query(target: RegionRef | int) -> BeamFrameReport:
+                return resolve_effective_beam_frames(model, target)
         started = perf_counter()
         self.inspection_service = InspectionService(
             model,
@@ -8073,7 +8447,9 @@ class FEMMainWindow(QMainWindow):
         self.actions["element_labels"].setChecked(policy["show_labels"])
         self.actions["symbols"].setChecked(policy["show_symbols"])
         self.viewport.set_symbol_sampling_density_override(
-            "low" if policy["reduce_symbols"] else None
+            None if self.document.source_kind == "result" else (
+                "low" if policy["reduce_symbols"] else None
+            )
         )
 
         started = perf_counter()
@@ -8095,9 +8471,10 @@ class FEMMainWindow(QMainWindow):
         self.viewport.set_symbols_visible(
             self.actions["symbols"].isChecked(), refresh=False, render=False
         )
-        started = perf_counter()
-        self.viewport.show_boundary_and_loads(render=False)
-        timings["载荷约束符号创建"] = perf_counter() - started
+        if self.document.source_kind != "result":
+            started = perf_counter()
+            self.viewport.show_boundary_and_loads(render=False)
+            timings["载荷约束符号创建"] = perf_counter() - started
         started = perf_counter()
         self.viewport.render()
         timings["首次渲染"] = perf_counter() - started
@@ -8124,16 +8501,54 @@ class FEMMainWindow(QMainWindow):
         self._sync_step_combos()
         self._update_action_states()
 
+    def _active_editor(self) -> bool:
+        return any(
+            controller is not None
+            for controller in (
+                self._wire_editor_controller,
+                self._sketch_editor_controller,
+                self._body_boolean_controller,
+                self._planar_boolean_controller,
+                self._face_sketch_controller,
+            )
+        )
+
     def _confirm_discard_changes(self) -> bool:
-        wire_editor_active = self._wire_editor_controller is not None
-        sketch_editor_active = self._sketch_editor_controller is not None
-        body_boolean_active = self._body_boolean_controller is not None
-        planar_boolean_active = self._planar_boolean_controller is not None
+        """Compatibility entry point for the unified document transition gate."""
+
+        return self._confirm_document_transition()
+
+    def _confirm_result_invalidation(self, *, preserve_editor: bool = False) -> bool:
+        """Gate mutations that would invalidate an unsaved accepted result."""
+
+        if not self.document.result_dirty:
+            return True
+        return self._confirm_document_transition(preserve_editor=preserve_editor)
+
+    def _confirm_document_transition(self, *, preserve_editor: bool = False) -> bool:
+        """Confirm editor, project, and result transitions before mutation."""
+
+        wire_editor_active = (
+            not preserve_editor and self._wire_editor_controller is not None
+        )
+        sketch_editor_active = (
+            not preserve_editor and self._sketch_editor_controller is not None
+        )
+        body_boolean_active = (
+            not preserve_editor and self._body_boolean_controller is not None
+        )
+        planar_boolean_active = (
+            not preserve_editor and self._planar_boolean_controller is not None
+        )
+        face_sketch_active = (
+            not preserve_editor and self._face_sketch_controller is not None
+        )
         editor_active = (
             wire_editor_active
             or sketch_editor_active
             or body_boolean_active
             or planar_boolean_active
+            or face_sketch_active
         )
         if wire_editor_active and self._wire_editor_controller.dirty:
             if not self._confirm_wire_editor_discard():
@@ -8141,11 +8556,14 @@ class FEMMainWindow(QMainWindow):
         if sketch_editor_active and self._sketch_editor_controller.dirty:
             if not self._confirm_sketch_editor_discard():
                 return False
-        if not self.document.dirty:
+        unsaved_result_count = self.session.unsaved_result_count
+        if not self.document.dirty and not unsaved_result_count:
             if wire_editor_active:
                 self._exit_wire_editor()
             elif sketch_editor_active:
                 self._exit_sketch_editor()
+            if face_sketch_active:
+                self.cancel_face_sketch_boolean()
             if body_boolean_active:
                 self._exit_body_boolean()
             if planar_boolean_active:
@@ -8154,11 +8572,22 @@ class FEMMainWindow(QMainWindow):
                 self._rebuild_full_projection()
             return True
         box = QMessageBox(self)
-        box.setWindowTitle("未保存的修改")
+        box.setWindowTitle("未保存的文档内容")
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setText("当前模型包含尚未保存的修改。")
+        messages: list[str] = []
+        if self.document.dirty:
+            messages.append("当前模型包含尚未保存的修改。")
+        if unsaved_result_count:
+            current_run = self.session.find_run(
+                self.document.displayed_result_run_id
+            )
+            job_name = getattr(current_run, "name", None) or "当前作业"
+            messages.append(
+                f"有 {unsaved_result_count} 个未保存结果（当前作业：{job_name}）。"
+            )
+        box.setText("\n".join(messages))
         save_button = None
-        if self.document.can_save:
+        if self.document.can_save and not unsaved_result_count:
             save_button = box.addButton(
                 "保存",
                 QMessageBox.ButtonRole.AcceptRole,
@@ -8184,6 +8613,8 @@ class FEMMainWindow(QMainWindow):
         elif accepted and sketch_editor_active:
             self._exit_sketch_editor()
             self._rebuild_full_projection()
+        if accepted and face_sketch_active:
+            self.cancel_face_sketch_boolean()
         if accepted and body_boolean_active:
             self._exit_body_boolean()
             self._rebuild_full_projection()

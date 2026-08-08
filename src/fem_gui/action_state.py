@@ -33,6 +33,8 @@ class GuiActionKey(str, Enum):
     NEW_NATIVE = "new_native"
     OPEN_PROJECT = "open_project"
     SAVE_PROJECT = "save_project"
+    SAVE_RESULT = "save_result"
+    OPEN_RESULT = "open_result"
     RELOAD = "reload"
     CLOSE = "close"
     EXIT = "exit"
@@ -160,6 +162,8 @@ ACTION_DESCRIPTORS: tuple[GuiActionDescriptor, ...] = (
     _d(GuiActionKey.SAVE_PROJECT, "保存项目", "save_native_project", "save_project"),
     _d(GuiActionKey.RELOAD, "重新加载", "reload_model", "reload"),
     _d(GuiActionKey.CLOSE, "关闭模型", "close_model", "close"),
+    _d(GuiActionKey.SAVE_RESULT, "保存结果", "save_current_result", "reload"),
+    _d(GuiActionKey.OPEN_RESULT, "打开结果", "open_result_file", "close"),
     _d(GuiActionKey.EXIT, "退出", "close"),
     _d(GuiActionKey.MODEL_INFO, "模型概况", "show_model_information", "model_info"),
     _d(GuiActionKey.MATERIAL_MANAGER, "材料管理", "show_material_manager", "material"),
@@ -382,6 +386,24 @@ def derive_action_availability(
         GuiActionKey.SAVE_PROJECT,
         snapshot.can_save and not busy,
         "请先创建自主部件；INP 模型保持原文件工作流",
+    )
+    set_state(
+        GuiActionKey.SAVE_RESULT,
+        has_current_result and result_actions_idle,
+        (
+            "后台任务运行时不能保存结果"
+            if busy
+            else "当前没有可保存的成功结果"
+            if not has_current_result
+            else "当前结果任务正在运行，或结果源已过期"
+        ),
+    )
+    set_state(
+        GuiActionKey.OPEN_RESULT,
+        not busy and not editor_active,
+        "后台任务运行时不能打开结果"
+        if busy
+        else "请先完成或取消当前编辑",
     )
     set_state(
         GuiActionKey.RELOAD,
@@ -924,6 +946,44 @@ def derive_action_availability(
             GuiActionKey.PERSPECTIVE,
         ):
             set_state(key, not busy, "后台任务运行时不可操作视图")
+
+    if snapshot.source_kind == "result":
+        readonly_reason = "结果只读文档不支持建模或分析编辑"
+        for key in (
+            GuiActionKey.MATERIAL_MANAGER,
+            GuiActionKey.SECTION_MANAGER,
+            GuiActionKey.SECTION_ASSIGN,
+            GuiActionKey.GEOMETRY_CREATE,
+            GuiActionKey.GEOMETRY_SKETCH,
+            GuiActionKey.GEOMETRY_FACE_SKETCH,
+            GuiActionKey.GEOMETRY_WIRE,
+            GuiActionKey.GEOMETRY_MOVE,
+            GuiActionKey.GEOMETRY_ROTATE,
+            GuiActionKey.GEOMETRY_EXTRUDE,
+            GuiActionKey.GEOMETRY_SWEEP,
+            GuiActionKey.GEOMETRY_FUSE,
+            GuiActionKey.GEOMETRY_CUT,
+            GuiActionKey.GEOMETRY_MANAGER,
+            GuiActionKey.GEOMETRY_UNDO,
+            GuiActionKey.GEOMETRY_DELETE,
+            GuiActionKey.GEOMETRY_REGION,
+            GuiActionKey.GEOMETRY_REGIONS,
+            GuiActionKey.MESH_SETTINGS,
+            GuiActionKey.MESH_GENERATE,
+            GuiActionKey.MESH_CLEAR,
+            GuiActionKey.MESH_CONTROLS,
+            GuiActionKey.MESH_LOCAL_CONTROL,
+            GuiActionKey.STEP_CREATE,
+            GuiActionKey.BOUNDARY_CREATE,
+            GuiActionKey.LOAD_CREATE,
+            GuiActionKey.OUTPUT_CREATE,
+            GuiActionKey.ANALYSIS_MANAGER,
+            GuiActionKey.CHECK_MODEL,
+            GuiActionKey.SUBMIT_JOB,
+            GuiActionKey.RESUBMIT_JOB,
+            GuiActionKey.JOB_MANAGER,
+        ):
+            set_state(key, False, readonly_reason)
 
     for raw_key in context.open_dialog_keys:
         try:

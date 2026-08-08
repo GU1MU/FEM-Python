@@ -54,6 +54,11 @@ class RibbonGroup(QFrame):
             button.setFixedHeight(60)
             button.setMinimumWidth(54)
             self._content.addWidget(button)
+            # Keep later compact commands in a new run so a large command
+            # inserted between two compact runs remains in its declared
+            # position instead of being appended after the existing grid.
+            self._small_grid = None
+            self._small_count = 0
         else:
             button.setObjectName("ribbonSmallButton")
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)

@@ -1540,6 +1540,11 @@ class SessionGeometryAuthoringPort:
             raise AuthoringContractError("context must be AuthoringContext")
         self._context = context
 
+    def clear_context(self) -> None:
+        """Detach the port from any document that is no longer editable."""
+
+        self._context = None
+
     def present(self, proposal: AgentProposal) -> ProposalPortRecord:
         if proposal.proposal_kind not in {
             ProposalKind.GEOMETRY,
@@ -2582,6 +2587,20 @@ class AgentAuthoringBridge:
                 self._notify_lifecycle(stale)
                 stale_ids.append(proposal_id)
         return tuple(stale_ids)
+
+    def unbind_context(self, reason: str) -> tuple[str, ...]:
+        """Invalidate Agent authoring state when no editable model is bound."""
+
+        self._require_gui_thread()
+        message = str(reason).strip()
+        if not message:
+            raise ValueError("unbind reason must be non-blank")
+        stale_ids = self.stale_pending_proposals_from_gui(message)
+        clear_context = getattr(self._port, "clear_context", None)
+        if callable(clear_context):
+            clear_context()
+        self._context = None
+        return stale_ids
 
     def stale_pending_proposals_from_gui(
         self,

@@ -3106,7 +3106,8 @@ class AuthoringWorkflowController:
             prior = self._binding_identity
             if prior is None:
                 self._binding_identity = current
-                self._stage = _restored_stage_for_context(context)
+                if self._stage is not AuthoringWorkflowStage.STALE:
+                    self._stage = _restored_stage_for_context(context)
                 self._seed_default_geometry_requirements(context)
                 self._refresh_turn_snapshot_locked()
                 return True
@@ -3302,6 +3303,7 @@ class AuthoringWorkflowController:
             # provider-facing projections or dynamic definitions reuse that
             # context until the owner thread observes a fresh one.
             self._observed_context = None
+            self._binding_identity = None
             self._stage = AuthoringWorkflowStage.STALE
             self.invalidate_turn_snapshot()
 

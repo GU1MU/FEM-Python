@@ -186,6 +186,26 @@ class ResultVtkExportSpec:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ResultArchiveSaveSpec:
+    """Validated destination for one manual ``.femres`` save."""
+
+    path: Path
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "path", _result_archive_path(self.path))
+
+
+@dataclass(frozen=True, slots=True)
+class ResultArchiveOpenSpec:
+    """Validated source path for one manual result archive open."""
+
+    path: Path
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "path", _file_path(self.path, "result archive path"))
+
+
 TaskCompletionObserver = Callable[[TaskCompletion], None]
 
 
@@ -589,6 +609,26 @@ def _optional_output_path(value: Any) -> Path | None:
     return path
 
 
+def _file_path(value: Any, label: str) -> Path:
+    if not isinstance(value, (str, Path)):
+        raise TypeError(f"{label} must be path-like")
+    path = Path(value)
+    if (
+        not path.name.strip()
+        or path.name in {".", ".."}
+        or any(not character.isprintable() for character in str(path))
+    ):
+        raise ValueError(f"{label} must identify a file")
+    return path
+
+
+def _result_archive_path(value: Any) -> Path:
+    path = _file_path(value, "result archive path")
+    if path.suffix.casefold() != ".femres":
+        path = path.with_suffix(".femres")
+    return path
+
+
 def _owned_result_source(value: Any) -> ResultSourceKey:
     if type(value) is not ResultSourceKey:
         raise TypeError("source must be a ResultSourceKey")
@@ -701,5 +741,7 @@ __all__ = [
     "NativeGeometryEdit",
     "NewNativeProjectCommand",
     "ResultCsvExportSpec",
+    "ResultArchiveOpenSpec",
+    "ResultArchiveSaveSpec",
     "ResultVtkExportSpec",
 ]

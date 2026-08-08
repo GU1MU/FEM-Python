@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping
+from types import MappingProxyType
 from itertools import chain
 from typing import Any
 
 import numpy as np
 
+from fem.application.results import ResultArchiveModelProjection
+from fem.core.model import (
+    ElementSet,
+    MaterialDefinition,
+    NodeSet,
+    SectionAssignment,
+)
 from fem.post.vtk import cells as vtk_cells
 
 
@@ -32,6 +41,67 @@ class ModelGeometry:
         return bool(len(self.cell_types)) and bool(
             np.all(np.asarray(self.cell_types) == 3)
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveNodeView:
+    """Immutable node facade used by result-only GUI consumers."""
+
+    id: int
+    x: float
+    y: float
+    z: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveElementView:
+    """Immutable element facade used by result-only GUI consumers."""
+
+    id: int
+    node_ids: tuple[int, ...]
+    type: str
+    props: Mapping[str, object] = MappingProxyType({})
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveMeshView:
+    """Read-only structural mesh facade; it is never a solver input."""
+
+    nodes: tuple[ArchiveNodeView, ...]
+    elements: tuple[ArchiveElementView, ...]
+    dofs_per_node: int = 3
+
+    @property
+    def num_nodes(self) -> int:
+        return len(self.nodes)
+
+    @property
+    def num_elements(self) -> int:
+        return len(self.elements)
+
+    @property
+    def num_dofs(self) -> int:
+        return self.num_nodes * self.dofs_per_node
+
+    @property
+    def node_ids(self) -> tuple[int, ...]:
+        return tuple(node.id for node in self.nodes)
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveModelView:
+    """Read-only model tree/inspection/viewport facade for a result archive."""
+
+    mesh: ArchiveMeshView
+    name: str
+    node_sets: Mapping[str, NodeSet]
+    element_sets: Mapping[str, ElementSet]
+    surfaces: Mapping[str, object]
+    materials: Mapping[str, MaterialDefinition]
+    sections: tuple[SectionAssignment, ...]
+    steps: tuple[object, ...]
+    metadata: Mapping[str, object]
+    edges: Mapping[str, object]
 
 
 def build_model_geometry(model: Any) -> ModelGeometry:
@@ -77,3 +147,137 @@ def build_model_geometry(model: Any) -> ModelGeometry:
 def pyvista_cell_array(geometry: ModelGeometry) -> np.ndarray:
     """返回 PyVista legacy 单元数组。"""
     return geometry.cell_array
+
+
+def build_result_archive_geometry(
+    projection: ResultArchiveModelProjection,
+    *,
+    artifact_id: str | None = None,
+) -> ModelGeometry:
+    """Build display topology directly from an immutable archive projection."""
+
+    if type(projection) is not ResultArchiveModelProjection:
+        raise TypeError("projection must be ResultArchiveModelProjection")
+    topology = projection.topology
+    coordinates = topology._node_coordinates
+    node_ids = tuple(int(value) for value in topology.node_ids)
+    node_id_to_point_index = {
+        node_id: index for index, node_id in enumerate(node_ids)
+    }
+    cells: list[tuple[int, ...]] = []
+    flat: list[int] = []
+    cell_types: list[int] = []
+    element_id_to_cell_index: dict[int, int] = {}
+    for index, (element_id, element_type, connectivity) in enumerate(
+        zip(
+            topology.element_ids,
+            topology.element_types,
+            topology.connectivity,
+            strict=True,
+        )
+    ):
+        point_ids = tuple(node_id_to_point_index[int(value)] for value in connectivity)
+        cells.append(point_ids)
+        flat.extend((len(point_ids), *point_ids))
+        cell_types.append(vtk_cells.vtk_cell_type(element_type))
+        element_id_to_cell_index[int(element_id)] = index
+    return ModelGeometry(
+        points=coordinates,
+        cells=tuple(cells),
+        cell_array=np.asarray(flat, dtype=np.int64),
+        cell_types=np.asarray(cell_types, dtype=np.uint8),
+        node_id_to_point_index=node_id_to_point_index,
+        point_index_to_node_id={index: node_id for index, node_id in node_id_to_point_index.items()},
+        element_id_to_cell_index=element_id_to_cell_index,
+        cell_index_to_element_id={index: element_id for index, element_id in element_id_to_cell_index.items()},
+        artifact_id=artifact_id,
+    )
+
+
+def build_result_archive_model_view(
+    projection: ResultArchiveModelProjection,
+    *,
+    name: str = "结果",
+) -> ArchiveModelView:
+    """Create an immutable structural view consumed by GUI widgets."""
+
+    if type(projection) is not ResultArchiveModelProjection:
+        raise TypeError("projection must be ResultArchiveModelProjection")
+    topology = projection.topology
+    coordinates = topology._node_coordinates
+    nodes = tuple(
+        ArchiveNodeView(
+            int(node_id),
+            float(row[0]),
+            float(row[1]),
+            float(row[2]) if coordinates.shape[1] >= 3 else 0.0,
+        )
+        for node_id, row in zip(topology.node_ids, coordinates, strict=True)
+    )
+    elements = tuple(
+        ArchiveElementView(int(element_id), tuple(connectivity), element_type)
+        for element_id, connectivity, element_type in zip(
+            topology.element_ids,
+            topology.connectivity,
+            topology.element_types,
+            strict=True,
+        )
+    )
+    mesh = ArchiveMeshView(nodes, elements)
+    node_sets = {
+        region_name: NodeSet(region_name, values)
+        for region_name, values in projection.named_region_node_ids.items()
+    }
+    element_sets = {
+        region_name: ElementSet(region_name, values)
+        for region_name, values in projection.named_region_element_ids.items()
+    }
+    summaries = projection.summaries
+    materials = {
+        str(item["name"]): MaterialDefinition(
+            str(item["name"]),
+            dict(item.get("properties", {})),
+        )
+        for item in summaries.get("materials", ())
+        if isinstance(item, Mapping) and str(item.get("name", "")).strip()
+    }
+    assignments = tuple(
+        item
+        for item in summaries.get("assignments", ())
+        if isinstance(item, Mapping)
+    )
+    sections = []
+    for item in summaries.get("sections", ()):
+        if not isinstance(item, Mapping) or not str(item.get("name", "")).strip():
+            continue
+        assignment = next(
+            (
+                value
+                for value in assignments
+                if value.get("section_name") == item.get("name")
+            ),
+            None,
+        )
+        sections.append(
+            SectionAssignment(
+                element_set=str(
+                    (assignment or {}).get("region_name")
+                    or next(iter(element_sets), "__archive__")
+                ),
+                material=str(item.get("material") or ""),
+                section_type=str(item.get("section_type") or "solid"),
+                properties=dict(item.get("properties", {})),
+            )
+        )
+    return ArchiveModelView(
+        mesh=mesh,
+        name=str(name or "结果"),
+        node_sets=MappingProxyType(node_sets),
+        element_sets=MappingProxyType(element_sets),
+        surfaces=MappingProxyType({}),
+        materials=MappingProxyType(materials),
+        sections=tuple(sections),
+        steps=(),
+        metadata=MappingProxyType({"result_archive_summaries": projection.summaries}),
+        edges=MappingProxyType({}),
+    )

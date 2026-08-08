@@ -90,6 +90,7 @@ def test_phase1_snapshot_binds_revision_and_preserves_owner_cache() -> None:
     assert stale.session_id is None
     assert stale.session_revision is None
     assert not controller.provider_snapshot.available
+    assert controller._binding_identity is None
 
     fresh_context = _context(revision=5)
     controller.observe_binding(fresh_context)

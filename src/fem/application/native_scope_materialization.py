@@ -146,7 +146,10 @@ def materialize_native_scopes(
             (
                 any(part_id is not None for part_id, _packed in references.compact_groups())
                 if isinstance(references, CompressedMeshEntityRefs)
-                else any(reference.part_id is not None for reference in references)
+                else any(
+                    getattr(reference, "part_id", None) is not None
+                    for reference in references
+                )
             )
             for region in region_values
             for references in (getattr(region, "references", ()),)
