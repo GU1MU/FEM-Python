@@ -59,6 +59,7 @@ from ..visualization.contour_rendering import (
     CONTOUR_RENDER_SHADED,
     contour_surface_options,
     extract_contour_edges,
+    style_contour_edges,
 )
 from ..visualization.model_adapter import ModelGeometry, pyvista_cell_array
 from ..visualization.scene import DisplayState
@@ -6784,6 +6785,10 @@ class FEMViewport(QWidget):
         edges = extract_contour_edges(dataset, edge_mode)
         if edges is None or edges.n_cells == 0:
             return None
+        edges = style_contour_edges(
+            edges,
+            str(self._contour["edge_style"]),
+        )
         line_width = float(self._contour["edge_width"])
         if self._contour["edge_style"] == "bold":
             line_width = max(line_width * 2.0, 3.0)
@@ -6798,24 +6803,9 @@ class FEMViewport(QWidget):
             reset_camera=False,
             **self._line_render_options(),
         )
-        self._apply_result_edge_style(actor)
         self._offset_highlight_actor(actor)
         self._actors["result_edges"] = actor
         return actor
-
-    def _apply_result_edge_style(self, actor: Any) -> None:
-        property_getter = getattr(actor, "GetProperty", None)
-        if not callable(property_getter):
-            return
-        vtk_property = property_getter()
-        pattern, repeat = {
-            "solid": (0xFFFF, 1),
-            "dashed": (0xF0F0, 1),
-            "short_dashed": (0xAAAA, 1),
-            "bold": (0xFFFF, 1),
-        }.get(str(self._contour["edge_style"]), (0xFFFF, 1))
-        vtk_property.SetLineStipplePattern(pattern)
-        vtk_property.SetLineStippleRepeatFactor(repeat)
 
     def _add_result_render_payload_extrema_labels(
         self,
@@ -6863,14 +6853,16 @@ class FEMViewport(QWidget):
             entries.append((index, label))
         if not entries:
             return
-        palette = self._visual_palette()
         self._actors["extrema"] = self._plotter.add_point_labels(
             points[[entry[0] for entry in entries]],
             [entry[1] for entry in entries],
-            point_size=7,
-            font_size=10,
-            shape_color=palette["label_background"],
-            text_color=self._background_settings.foreground_color,
+            point_color="#d69a3a",
+            point_size=14,
+            render_points_as_spheres=True,
+            font_size=14,
+            shape=None,
+            text_color="#000000",
+            always_visible=True,
             name="extrema",
             reset_camera=False,
         )

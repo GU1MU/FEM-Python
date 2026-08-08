@@ -400,6 +400,7 @@ class _Plotter:
     def __init__(self) -> None:
         self.mesh_calls: list[tuple[object, dict[str, object]]] = []
         self.label_calls: list[tuple[object, list[str]]] = []
+        self.label_option_calls: list[dict[str, object]] = []
         self.scalar_bars: dict[str, object] = {}
         self.render_count = 0
         self.background_calls: list[tuple[str, str | None]] = []
@@ -410,8 +411,9 @@ class _Plotter:
         self.mesh_calls.append((dataset, kwargs))
         return _Actor()
 
-    def add_point_labels(self, points, labels, **_kwargs):
+    def add_point_labels(self, points, labels, **kwargs):
         self.label_calls.append((points, list(labels)))
+        self.label_option_calls.append(kwargs)
         return _Actor()
 
     def remove_actor(self, _actor, **_kwargs) -> None:
@@ -699,6 +701,14 @@ def test_typed_extrema_labels_use_point_and_cell_location_provenance() -> None:
         for label in point_labels
     )
     assert any("节点 30" in label for label in point_labels)
+    point_label_options = plotter.label_option_calls[-1]
+    assert point_label_options["point_color"] == "#d69a3a"
+    assert point_label_options["point_size"] == 14
+    assert point_label_options["render_points_as_spheres"] is True
+    assert point_label_options["font_size"] == 14
+    assert point_label_options["shape"] is None
+    assert point_label_options["text_color"] == "#000000"
+    assert point_label_options["always_visible"] is True
 
     cell_payload = _cell_payload()
     viewport._add_result_render_payload_extrema_labels(cell_payload)

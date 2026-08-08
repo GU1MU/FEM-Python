@@ -77,6 +77,31 @@ def test_fem_style_draws_a_larger_high_contrast_checkbox_indicator():
     assert light_check_pixels >= 8
 
 
+def test_fem_style_draws_a_visible_checked_radio_indicator():
+    QApplication.instance() or QApplication([])
+    style = FEMStyle()
+    option = QStyleOption()
+    option.rect = QRect(0, 0, 16, 16)
+    option.state = (
+        QStyle.StateFlag.State_Enabled
+        | QStyle.StateFlag.State_On
+    )
+    image = QImage(16, 16, QImage.Format.Format_ARGB32)
+    image.fill(QColor("white"))
+    painter = QPainter(image)
+
+    style.drawPrimitive(
+        QStyle.PrimitiveElement.PE_IndicatorRadioButton,
+        option,
+        painter,
+    )
+    painter.end()
+
+    center = image.pixelColor(8, 8)
+    assert center.blue() > center.red()
+    assert center.blue() > center.green()
+
+
 def test_combo_theme_draws_a_visible_down_arrow():
     stylesheet = build_stylesheet()
     assert "QComboBox::down-arrow" in stylesheet
@@ -121,5 +146,7 @@ def test_spin_box_theme_hides_increment_and_decrement_buttons():
 def test_disabled_result_scale_uses_a_muted_input_style():
     stylesheet = build_stylesheet()
 
+    assert "QDoubleSpinBox:disabled" in stylesheet
+    assert "background: #e9ecef; color: #a0a6ac;" in stylesheet
     assert "QDoubleSpinBox#resultScaleValue:disabled" in stylesheet
     assert "background: #f4f5f6; color: #a0a6ac;" in stylesheet

@@ -3078,7 +3078,7 @@ class FEMMainWindow(QMainWindow):
         self.result_scale_combo.activated.connect(self._result_scale_mode_changed)
         self.result_scale_value.valueChanged.connect(self._result_scale_value_changed)
 
-        display_group = page.add_group("显示设置")
+        display_group = page.add_group("设置")
         display_group.add_action(self.actions["display_settings"])
         display_group.add_action(self.actions["contour_options"])
         output_group = page.add_group("查询与导出")
@@ -3157,6 +3157,10 @@ class FEMMainWindow(QMainWindow):
         splitter.addWidget(self.sketch_editor_panel)
         splitter.addWidget(self.boolean_feature_panel)
         splitter.addWidget(self.planar_boolean_panel)
+        splitter.setOpaqueResize(False)
+        splitter.splitterMoved.connect(
+            lambda _position, _index: QTimer.singleShot(0, self.viewport.render)
+        )
         splitter.setSizes([260, 1020, 0, 0, 0, 0])
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)

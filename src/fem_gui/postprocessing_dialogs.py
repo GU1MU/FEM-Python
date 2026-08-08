@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import isfinite
+from math import floor, isfinite, log10
 import re
 from typing import Any
 
@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -61,6 +62,7 @@ from .visualization.contour_rendering import (
     CONTOUR_EDGE_EXTERIOR,
     CONTOUR_EDGE_FEATURE,
     CONTOUR_EDGE_FREE,
+    CONTOUR_EDGE_GEOMETRY,
     CONTOUR_EDGE_NONE,
     CONTOUR_RENDER_FILLED,
     CONTOUR_RENDER_SHADED,
@@ -398,6 +400,28 @@ class _ThinHorizontalSlider(QSlider):
         painter.drawEllipse(handle)
 
 
+class _SignificantDigitsDoubleSpinBox(QDoubleSpinBox):
+    """以固定有效数字显示数值，同时保留内部精度。"""
+
+    def __init__(self, significant_digits: int, parent=None) -> None:
+        super().__init__(parent)
+        self._significant_digits = int(significant_digits)
+
+    def textFromValue(self, value: float) -> str:
+        if value == 0.0:
+            return "0"
+        decimal_places = (
+            self._significant_digits
+            - floor(log10(abs(value)))
+            - 1
+        )
+        rounded = round(value, decimal_places)
+        if decimal_places <= 0:
+            return f"{rounded:.0f}"
+        displayed_places = min(decimal_places, self.decimals())
+        return f"{rounded:.{displayed_places}f}".rstrip("0").rstrip(".")
+
+
 class DisplaySettingsDialog(QDialog):
     """控制结果视口中的轮廓、图例和辅助显示。"""
 
@@ -411,8 +435,10 @@ class DisplaySettingsDialog(QDialog):
 
         self.outline_group = QGroupBox("轮廓", self)
         outline_layout = QHBoxLayout(self.outline_group)
+        outline_layout.setSpacing(12)
         self.edge_mode = QComboBox(self.outline_group)
         for label, key in (
+            ("几何边", CONTOUR_EDGE_GEOMETRY),
             ("全部边", CONTOUR_EDGE_ALL),
             ("外部边", CONTOUR_EDGE_EXTERIOR),
             ("特征边", CONTOUR_EDGE_FEATURE),
@@ -429,6 +455,7 @@ class DisplaySettingsDialog(QDialog):
         self.edge_mode.setCurrentIndex(
             max(0, self.edge_mode.findData(selected_edge_mode))
         )
+        self.edge_mode.setFixedWidth(112)
         self.edge_style = QComboBox(self.outline_group)
         for label, key in (
             ("实线", "solid"),
@@ -440,24 +467,33 @@ class DisplaySettingsDialog(QDialog):
         self.edge_style.setCurrentIndex(
             max(0, self.edge_style.findData(options.get("edge_style", "solid")))
         )
+        self.edge_style.setFixedWidth(112)
         self.edge_width = QDoubleSpinBox(self.outline_group)
         self.edge_width.setRange(0.1, 20.0)
         self.edge_width.setDecimals(1)
         self.edge_width.setSingleStep(0.5)
         self.edge_width.setValue(float(options.get("edge_width", 1.0)))
-        for label, control, stretch in (
-            ("轮廓：", self.edge_mode, 2),
-            ("样式：", self.edge_style, 2),
-            ("粗细：", self.edge_width, 1),
-        ):
-            outline_layout.addWidget(QLabel(label, self.outline_group))
-            outline_layout.addWidget(control, stretch)
+        self.edge_width.setFixedWidth(60)
+        self.edge_width_unit = QLabel("pt", self.outline_group)
+        outline_layout.addWidget(QLabel("线条", self.outline_group))
+        outline_layout.addWidget(self.edge_mode)
+        outline_layout.addSpacing(18)
+        outline_layout.addWidget(QLabel("样式", self.outline_group))
+        outline_layout.addWidget(self.edge_style)
+        outline_layout.addSpacing(18)
+        outline_layout.addWidget(QLabel("粗细", self.outline_group))
+        outline_layout.addWidget(self.edge_width)
+        outline_layout.addWidget(self.edge_width_unit)
+        outline_layout.addStretch(1)
         layout.addWidget(self.outline_group)
 
         self.legend_group = QGroupBox("图例", self)
-        legend_layout = QVBoxLayout(self.legend_group)
-        number_row = QHBoxLayout()
-        number_row.addWidget(QLabel("数值格式：", self.legend_group))
+        legend_layout = QGridLayout(self.legend_group)
+        legend_layout.setHorizontalSpacing(16)
+        legend_layout.setVerticalSpacing(14)
+        legend_layout.setColumnMinimumWidth(3, 110)
+        legend_layout.setColumnStretch(6, 1)
+        legend_layout.addWidget(QLabel("数值格式", self.legend_group), 0, 0)
         self.scientific_format = QRadioButton("科学计数", self.legend_group)
         self.engineering_format = QRadioButton("工程计数", self.legend_group)
         self.number_format_buttons = QButtonGroup(self.legend_group)
@@ -467,21 +503,33 @@ class DisplaySettingsDialog(QDialog):
             self.engineering_format.setChecked(True)
         else:
             self.scientific_format.setChecked(True)
-        number_row.addWidget(self.scientific_format)
-        number_row.addWidget(self.engineering_format)
-        number_row.addSpacing(18)
-        number_row.addWidget(QLabel("小数位：", self.legend_group))
+        self.number_format_host = QWidget(self.legend_group)
+        number_format_layout = QHBoxLayout(self.number_format_host)
+        number_format_layout.setContentsMargins(0, 0, 0, 0)
+        number_format_layout.setSpacing(18)
+        number_format_layout.addWidget(self.scientific_format)
+        number_format_layout.addWidget(self.engineering_format)
+        number_format_layout.addStretch(1)
+        self.number_format_host.setFixedWidth(175)
+        legend_layout.addWidget(self.number_format_host, 0, 1)
+        legend_layout.addWidget(QLabel("小数位", self.legend_group), 0, 2)
         self.decimals = QSpinBox(self.legend_group)
         self.decimals.setRange(0, 12)
         self.decimals.setValue(int(options.get("decimals", 2)))
-        number_row.addWidget(self.decimals)
-        number_row.addStretch(1)
-        legend_layout.addLayout(number_row)
+        self.decimals.setFixedWidth(60)
+        legend_layout.addWidget(
+            self.decimals,
+            0,
+            3,
+            alignment=Qt.AlignmentFlag.AlignLeft,
+        )
 
-        legend_row = QHBoxLayout()
-        legend_row.addWidget(QLabel("图例方向：", self.legend_group))
+        legend_layout.addWidget(QLabel("图例方向", self.legend_group), 1, 0)
         self.horizontal_orientation = QRadioButton("横向", self.legend_group)
         self.vertical_orientation = QRadioButton("纵向", self.legend_group)
+        self.horizontal_orientation.setFixedWidth(
+            self.scientific_format.sizeHint().width()
+        )
         self.orientation_buttons = QButtonGroup(self.legend_group)
         self.orientation_buttons.addButton(self.horizontal_orientation)
         self.orientation_buttons.addButton(self.vertical_orientation)
@@ -489,25 +537,42 @@ class DisplaySettingsDialog(QDialog):
             self.horizontal_orientation.setChecked(True)
         else:
             self.vertical_orientation.setChecked(True)
-        legend_row.addWidget(self.horizontal_orientation)
-        legend_row.addWidget(self.vertical_orientation)
-        legend_row.addSpacing(18)
-        legend_row.addWidget(QLabel("字体：", self.legend_group))
+        self.orientation_host = QWidget(self.legend_group)
+        orientation_layout = QHBoxLayout(self.orientation_host)
+        orientation_layout.setContentsMargins(0, 0, 0, 0)
+        orientation_layout.setSpacing(18)
+        orientation_layout.addWidget(self.horizontal_orientation)
+        orientation_layout.addWidget(self.vertical_orientation)
+        orientation_layout.addStretch(1)
+        self.orientation_host.setFixedWidth(175)
+        legend_layout.addWidget(self.orientation_host, 1, 1)
+        legend_layout.addWidget(QLabel("字体", self.legend_group), 1, 2)
         self.legend_font = QComboBox(self.legend_group)
         for font in ("Arial", "Times New Roman", "Courier New"):
             self.legend_font.addItem(font, font)
         self.legend_font.setCurrentIndex(
             max(0, self.legend_font.findData(options.get("legend_font", "Arial")))
         )
-        self.legend_font.setMinimumContentsLength(10)
-        legend_row.addWidget(self.legend_font, 2)
-        legend_row.addWidget(QLabel("大小：", self.legend_group))
+        self.legend_font.setFixedWidth(110)
+        legend_layout.addWidget(
+            self.legend_font,
+            1,
+            3,
+            alignment=Qt.AlignmentFlag.AlignLeft,
+        )
+        legend_layout.addWidget(QLabel("大小", self.legend_group), 1, 4)
         self.legend_font_size = QSpinBox(self.legend_group)
         self.legend_font_size.setRange(6, 72)
         self.legend_font_size.setValue(int(options.get("legend_font_size", 14)))
-        self.legend_font_size.setSuffix(" pt")
-        legend_row.addWidget(self.legend_font_size)
-        legend_layout.addLayout(legend_row)
+        self.legend_font_size.setFixedWidth(60)
+        self.legend_font_size_unit = QLabel("pt", self.legend_group)
+        self.legend_font_size_host = QWidget(self.legend_group)
+        font_size_layout = QHBoxLayout(self.legend_font_size_host)
+        font_size_layout.setContentsMargins(0, 0, 0, 0)
+        font_size_layout.setSpacing(6)
+        font_size_layout.addWidget(self.legend_font_size)
+        font_size_layout.addWidget(self.legend_font_size_unit)
+        legend_layout.addWidget(self.legend_font_size_host, 1, 5)
         layout.addWidget(self.legend_group)
 
         self.legend = QCheckBox("显示图例", self)
@@ -574,29 +639,52 @@ class ContourSettingsDialog(QDialog):
     def __init__(self, options: dict[str, Any], parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("云图设置")
-        self.setMinimumWidth(620)
+        self.setMinimumWidth(560)
         layout = QVBoxLayout(self)
 
         self.render_group = QGroupBox("渲染", self)
         render_layout = QVBoxLayout(self.render_group)
         render_controls_row = QHBoxLayout()
-        render_controls_row.addWidget(QLabel("样式：", self.render_group))
-        self.filled_style = QRadioButton("填充", self.render_group)
-        self.shaded_style = QRadioButton("光影", self.render_group)
-        self.render_style_buttons = QButtonGroup(self.render_group)
-        self.render_style_buttons.addButton(self.filled_style)
-        self.render_style_buttons.addButton(self.shaded_style)
+        render_controls_row.setSpacing(12)
+        render_controls_row.addWidget(QLabel("模式", self.render_group))
+        self.filled_mode = QRadioButton("填充", self.render_group)
+        self.shaded_mode = QRadioButton("光影", self.render_group)
+        self.render_mode_buttons = QButtonGroup(self.render_group)
+        self.render_mode_buttons.addButton(self.filled_mode)
+        self.render_mode_buttons.addButton(self.shaded_mode)
         if options.get("render_mode", CONTOUR_RENDER_SHADED) == CONTOUR_RENDER_FILLED:
-            self.filled_style.setChecked(True)
+            self.filled_mode.setChecked(True)
         else:
-            self.shaded_style.setChecked(True)
-        render_controls_row.addWidget(self.filled_style)
-        render_controls_row.addWidget(self.shaded_style)
-        render_controls_row.addSpacing(18)
-        render_controls_row.addWidget(QLabel("色带：", self.render_group))
+            self.shaded_mode.setChecked(True)
+        self.render_mode_host = QWidget(self.render_group)
+        render_mode_layout = QHBoxLayout(self.render_mode_host)
+        render_mode_layout.setContentsMargins(
+            _ThinHorizontalSlider._margin,
+            0,
+            0,
+            0,
+        )
+        render_mode_layout.setSpacing(18)
+        render_mode_layout.addWidget(self.filled_mode)
+        render_mode_layout.addWidget(self.shaded_mode)
+        render_mode_layout.addStretch(1)
+        self.render_mode_host.setFixedWidth(150)
+        render_controls_row.addWidget(self.render_mode_host)
+        render_controls_row.addSpacing(20)
+        render_controls_row.addWidget(QLabel("样式", self.render_group))
+        self.style = QComboBox(self.render_group)
+        self.style.addItem("分段", "segmented")
+        self.style.addItem("连续", "continuous")
+        self.style.setCurrentIndex(
+            max(0, self.style.findData(options.get("style", "segmented")))
+        )
+        self.style.setFixedWidth(90)
+        render_controls_row.addWidget(self.style)
+        render_controls_row.addSpacing(20)
+        render_controls_row.addWidget(QLabel("色带", self.render_group))
         self.colormap = QComboBox(self.render_group)
         for label, key in (
-            ("Abaqus 彩虹", ABAQUS_RAINBOW),
+            ("彩虹", ABAQUS_RAINBOW),
             ("维里迪斯", "viridis"),
             ("等离子", "plasma"),
             ("冷暖", "coolwarm"),
@@ -609,15 +697,9 @@ class ContourSettingsDialog(QDialog):
         self.colormap.setCurrentIndex(
             max(0, self.colormap.findData(selected_colormap))
         )
-        render_controls_row.addWidget(self.colormap, 2)
-        render_controls_row.addWidget(QLabel("模式：", self.render_group))
-        self.mode = QComboBox(self.render_group)
-        self.mode.addItem("分段", "segmented")
-        self.mode.addItem("连续", "continuous")
-        self.mode.setCurrentIndex(
-            max(0, self.mode.findData(options.get("style", "segmented")))
-        )
-        render_controls_row.addWidget(self.mode, 1)
+        self.colormap.setFixedWidth(120)
+        render_controls_row.addWidget(self.colormap)
+        render_controls_row.addStretch(1)
         render_layout.addLayout(render_controls_row)
 
         self.levels = QSpinBox(self.render_group)
@@ -637,12 +719,12 @@ class ContourSettingsDialog(QDialog):
         levels_layout.setSpacing(8)
         levels_layout.addWidget(self.levels_slider, 1)
         levels_layout.addWidget(self.levels)
-        self.mode.currentIndexChanged.connect(
+        self.style.currentIndexChanged.connect(
             lambda: self.levels_row.setEnabled(
-                self.mode.currentData() == "segmented"
+                self.style.currentData() == "segmented"
             )
         )
-        self.levels_row.setEnabled(self.mode.currentData() == "segmented")
+        self.levels_row.setEnabled(self.style.currentData() == "segmented")
         self.averaging_threshold = QDoubleSpinBox(self.render_group)
         self.averaging_threshold.setRange(0.0, 100.0)
         self.averaging_threshold.setDecimals(0)
@@ -688,18 +770,19 @@ class ContourSettingsDialog(QDialog):
             value_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.form = QFormLayout()
         configure_form_layout(self.form)
-        self.form.addRow("级数：", self.levels_row)
-        self.form.addRow("阈值：", self.averaging_threshold_row)
+        self.form.addRow("级数", self.levels_row)
+        self.form.addRow("阈值", self.averaging_threshold_row)
         render_layout.addLayout(self.form)
         layout.addWidget(self.render_group)
 
         self.range_group = QGroupBox("范围", self)
         range_layout = QVBoxLayout(self.range_group)
-        self.minimum = CompactDoubleSpinBox(self.range_group)
-        self.maximum = CompactDoubleSpinBox(self.range_group)
+        self.minimum = _SignificantDigitsDoubleSpinBox(5, self.range_group)
+        self.maximum = _SignificantDigitsDoubleSpinBox(5, self.range_group)
         for spin in (self.minimum, self.maximum):
             spin.setRange(-1.0e30, 1.0e30)
             spin.setDecimals(12)
+            spin.setFixedWidth(110)
         if options.get("manual"):
             minimum = float(options.get("minimum", 0.0))
             maximum = float(options.get("maximum", 1.0))
@@ -712,12 +795,24 @@ class ContourSettingsDialog(QDialog):
             )
         self.minimum.setValue(minimum)
         self.maximum.setValue(maximum)
+        self.show_minimum = QCheckBox("显示", self.range_group)
+        self.show_minimum.setChecked(
+            bool(options.get("show_minimum", False))
+        )
+        self.show_maximum = QCheckBox("显示", self.range_group)
+        self.show_maximum.setChecked(
+            bool(options.get("show_maximum", False))
+        )
         value_row = QHBoxLayout()
-        value_row.addWidget(QLabel("最小值：", self.range_group))
-        value_row.addWidget(self.minimum, 1)
-        value_row.addSpacing(18)
-        value_row.addWidget(QLabel("最大值：", self.range_group))
-        value_row.addWidget(self.maximum, 1)
+        value_row.setSpacing(8)
+        value_row.addWidget(QLabel("最小值", self.range_group))
+        value_row.addWidget(self.minimum)
+        value_row.addWidget(self.show_minimum)
+        value_row.addSpacing(20)
+        value_row.addWidget(QLabel("最大值", self.range_group))
+        value_row.addWidget(self.maximum)
+        value_row.addWidget(self.show_maximum)
+        value_row.addStretch(1)
         range_layout.addLayout(value_row)
 
         self.auto_range = QRadioButton("自动", self.range_group)
@@ -726,20 +821,11 @@ class ContourSettingsDialog(QDialog):
         self.range_buttons = QButtonGroup(self.range_group)
         self.range_buttons.addButton(self.auto_range)
         self.range_buttons.addButton(self.manual_range)
-        self.show_maximum = QCheckBox("显示最大值", self.range_group)
-        self.show_maximum.setChecked(
-            bool(options.get("show_maximum", False))
-        )
-        self.show_minimum = QCheckBox("显示最小值", self.range_group)
-        self.show_minimum.setChecked(
-            bool(options.get("show_minimum", False))
-        )
         controls_row = QHBoxLayout()
+        controls_row.setSpacing(18)
         controls_row.addWidget(self.auto_range)
         controls_row.addWidget(self.manual_range)
         controls_row.addStretch(1)
-        controls_row.addWidget(self.show_maximum)
-        controls_row.addWidget(self.show_minimum)
         range_layout.addLayout(controls_row)
         self.manual_range.toggled.connect(self._sync_range_mode)
         self._sync_range_mode()
@@ -757,10 +843,10 @@ class ContourSettingsDialog(QDialog):
             "minimum": float(self.minimum.value()),
             "maximum": float(self.maximum.value()),
             "colormap": str(self.colormap.currentData()),
-            "style": str(self.mode.currentData()),
+            "style": str(self.style.currentData()),
             "render_mode": (
                 CONTOUR_RENDER_FILLED
-                if self.filled_style.isChecked()
+                if self.filled_mode.isChecked()
                 else CONTOUR_RENDER_SHADED
             ),
             "levels": int(self.levels.value()),

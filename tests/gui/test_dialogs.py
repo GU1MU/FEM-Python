@@ -17,6 +17,7 @@ from fem_gui.viewport_background_dialog import ViewportBackgroundDialog
 from fem_gui.visualization.colormaps import ABAQUS_RAINBOW
 from fem_gui.visualization.contour_rendering import (
     CONTOUR_EDGE_FEATURE,
+    CONTOUR_EDGE_GEOMETRY,
     CONTOUR_RENDER_FILLED,
 )
 from fem_gui.visualization.symbols import SymbolSettings
@@ -60,7 +61,12 @@ def test_contour_display_and_symbol_dialogs_round_trip_settings():
     assert contour.layout().itemAt(0).widget() is contour.render_group
     assert contour.layout().itemAt(1).widget() is contour.range_group
     assert contour.render_group.title() == "渲染"
-    assert contour.mode.currentText() == "连续"
+    assert contour.style.currentText() == "连续"
+    assert contour.render_group.layout().itemAt(0).layout().itemAt(0).widget().text() == "模式"
+    assert contour.render_group.layout().itemAt(0).layout().itemAt(3).widget().text() == "样式"
+    assert contour.render_group.layout().itemAt(0).layout().itemAt(6).widget().text() == "色带"
+    assert contour.style.width() == 90
+    assert contour.colormap.width() == 120
     assert not contour.levels_row.isEnabled()
     assert contour.minimum.value() == -2.5
     assert contour.maximum.value() == 8.75
@@ -68,6 +74,12 @@ def test_contour_display_and_symbol_dialogs_round_trip_settings():
     assert not contour.maximum.isEnabled()
     assert contour.show_minimum.parent() is contour.range_group
     assert contour.show_maximum.parent() is contour.range_group
+    assert contour.show_minimum.text() == "显示"
+    assert contour.show_maximum.text() == "显示"
+    assert contour.minimum.width() == 110
+    assert contour.maximum.width() == 110
+    contour.maximum.setValue(0.001139735919)
+    assert contour.maximum.text() == "0.0011397"
 
     display = DisplaySettingsDialog(
         {
@@ -96,15 +108,48 @@ def test_contour_display_and_symbol_dialogs_round_trip_settings():
     assert display_settings["legend_font_size"] == 16
     assert display_settings["show_ids"]
     assert not display_settings["show_coordinate_system"]
+    display_labels = {
+        label.text() for label in display.findChildren(QLabel)
+    }
+    assert all("：" not in text and ":" not in text for text in display_labels)
+    assert "线条" in display_labels
+    assert "轮廓" not in display_labels
+    assert display.edge_mode.width() == 112
+    assert display.edge_style.width() == 112
+    assert display.edge_width.width() == 60
+    assert display.edge_width.suffix() == ""
+    assert display.edge_width_unit.text() == "pt"
+    assert display.decimals.width() == 60
+    assert display.legend_font.width() == 110
+    assert display.legend_font_size.width() == 60
+    assert display.legend_font_size.suffix() == ""
+    assert display.legend_font_size_unit.text() == "pt"
+    display.engineering_format.click()
+    display.vertical_orientation.click()
+    assert display.engineering_format.isChecked()
+    assert not display.scientific_format.isChecked()
+    assert display.vertical_orientation.isChecked()
+    assert not display.horizontal_orientation.isChecked()
+    display.show()
+    _application().processEvents()
+    assert (
+        display.decimals.geometry().left()
+        == display.legend_font.geometry().left()
+    )
+    assert (
+        display.vertical_orientation.geometry().left()
+        == display.engineering_format.geometry().left()
+    )
 
     labels = {
         label.text() for label in contour.findChildren(QLabel)
     }
-    assert "阈值：" in labels
-    assert "级数：" in labels
-    assert "样式：" in labels
-    assert "色带：" in labels
-    assert "模式：" in labels
+    assert all("：" not in text and ":" not in text for text in labels)
+    assert "阈值" in labels
+    assert "级数" in labels
+    assert "样式" in labels
+    assert "色带" in labels
+    assert "模式" in labels
     assert "云图样式：" not in labels
     assert "渲染模式：" not in labels
     assert "色带级数：" not in labels
@@ -131,6 +176,17 @@ def test_contour_display_and_symbol_dialogs_round_trip_settings():
         type(contour.averaging_threshold_slider).__name__
         == "_ThinHorizontalSlider"
     )
+    contour.show()
+    _application().processEvents()
+    filled_left = contour.filled_mode.mapTo(
+        contour.render_group,
+        contour.filled_mode.rect().topLeft(),
+    ).x()
+    levels_track_left = contour.levels_slider.mapTo(
+        contour.render_group,
+        contour.levels_slider.rect().topLeft(),
+    ).x() + contour.levels_slider._margin
+    assert filled_left == levels_track_left
     levels_row, _role = contour.form.getWidgetPosition(
         contour.levels_row
     )
@@ -146,8 +202,11 @@ def test_contour_display_and_symbol_dialogs_round_trip_settings():
     contour.manual_range.setChecked(True)
     assert contour.minimum.isEnabled()
     assert contour.maximum.isEnabled()
-    contour.mode.setCurrentIndex(contour.mode.findData("segmented"))
+    contour.style.setCurrentIndex(contour.style.findData("segmented"))
     assert contour.levels_row.isEnabled()
+    contour.filled_mode.click()
+    assert contour.filled_mode.isChecked()
+    assert not contour.shaded_mode.isChecked()
 
     settings = SymbolSettings(step_name="Static-1", show_values=True, scale=1.5)
     symbols = SymbolSettingsDialog(settings, ("Static-1",))
@@ -160,10 +219,10 @@ def test_contour_dialog_defaults_to_abaqus_rainbow():
     _application()
     contour = ContourSettingsDialog({})
 
-    assert contour.colormap.currentText() == "Abaqus 彩虹"
+    assert contour.colormap.currentText() == "彩虹"
     assert contour.settings()["colormap"] == ABAQUS_RAINBOW
     assert contour.auto_range.isChecked()
-    assert contour.shaded_style.isChecked()
+    assert contour.shaded_mode.isChecked()
 
 
 def test_contour_and_display_dialogs_split_render_and_edge_modes():
@@ -184,6 +243,9 @@ def test_contour_and_display_dialogs_split_render_and_edge_modes():
     assert settings["render_mode"] == CONTOUR_RENDER_FILLED
     assert "edge_mode" not in settings
     assert display.settings()["edge_mode"] == CONTOUR_EDGE_FEATURE
+    assert display.edge_mode.itemText(
+        display.edge_mode.findData(CONTOUR_EDGE_GEOMETRY)
+    ) == "几何边"
     assert display.settings()["edges"]
 
 

@@ -18,6 +18,7 @@ def test_main_window_has_modules_navigation_and_viewport_toolbar():
     _application()
     window = FEMMainWindow()
 
+    assert not window.main_splitter.opaqueResize()
     assert [window.ribbon.tab_bar.tabText(i) for i in range(window.ribbon.tab_bar.count())] == [
         "项目", "几何", "网格", "模型", "分析", "结果", "视图",
     ]
@@ -36,6 +37,13 @@ def test_main_window_has_modules_navigation_and_viewport_toolbar():
     assert window.width() == 800
     window.ribbon.set_current("结果")
     QApplication.processEvents()
+    result_group_titles = {
+        label.text()
+        for label in window.ribbon.stack.currentWidget().findChildren(QLabel)
+        if label.objectName() == "ribbonGroupTitle"
+    }
+    assert "设置" in result_group_titles
+    assert "显示设置" not in result_group_titles
     variable_y = window.result_variable_combo.mapTo(
         window.ribbon, window.result_variable_combo.rect().topLeft()
     ).y()
@@ -60,6 +68,20 @@ def test_main_window_has_modules_navigation_and_viewport_toolbar():
         window.result_component_combo.view().minimumWidth()
         >= window.result_component_combo.minimumWidth()
     )
+    window.close()
+
+
+def test_splitter_release_queues_viewport_render_after_preview_line_is_hidden():
+    application = _application()
+    window = FEMMainWindow()
+    render_calls = []
+    window.viewport.render = lambda: render_calls.append(True)
+
+    window.main_splitter.splitterMoved.emit(320, 1)
+
+    assert render_calls == []
+    application.processEvents()
+    assert render_calls == [True]
     window.close()
 
 

@@ -61,6 +61,9 @@ class FEMStyle(QProxyStyle):
         ):
             self._draw_checkbox_indicator(option, painter)
             return
+        if element == QStyle.PrimitiveElement.PE_IndicatorRadioButton:
+            self._draw_radio_indicator(option, painter)
+            return
         super().drawPrimitive(element, option, painter, widget)
 
     def _draw_checkbox_indicator(
@@ -120,6 +123,48 @@ class FEMStyle(QProxyStyle):
                 QPointF(left + 4.2, top + 8.0),
                 QPointF(left + 11.8, top + 8.0),
             )
+        painter.restore()
+
+    def _draw_radio_indicator(
+        self,
+        option: QStyleOption,
+        painter: QPainter,
+    ) -> None:
+        state = option.state
+        enabled = bool(state & QStyle.StateFlag.State_Enabled)
+        hovered = bool(state & QStyle.StateFlag.State_MouseOver)
+        focused = bool(state & QStyle.StateFlag.State_HasFocus)
+        checked = bool(state & QStyle.StateFlag.State_On)
+
+        side = min(self.CHECKBOX_SIZE, option.rect.width(), option.rect.height())
+        left = option.rect.x() + (option.rect.width() - side) / 2
+        top = option.rect.y() + (option.rect.height() - side) / 2
+        outer = QRectF(left + 1.25, top + 1.25, side - 2.5, side - 2.5)
+        border = QColor(
+            "#aeb5bb"
+            if not enabled
+            else COLORS["accent"]
+            if hovered or focused or checked
+            else "#65727d"
+        )
+
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(QPen(border, self.CHECKBOX_BORDER_WIDTH))
+        painter.setBrush(QColor("#f1f2f3" if not enabled else "#ffffff"))
+        painter.drawEllipse(outer)
+        if checked:
+            dot = QRectF(
+                outer.center().x() - 3.25,
+                outer.center().y() - 3.25,
+                6.5,
+                6.5,
+            )
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(
+                QColor("#8d969e" if not enabled else COLORS["accent"])
+            )
+            painter.drawEllipse(dot)
         painter.restore()
 
 
@@ -182,6 +227,7 @@ QCheckBox, QRadioButton {{ spacing: 7px; min-height: 22px; }}
 QCheckBox:disabled, QRadioButton:disabled {{ color: {COLORS['disabled']}; }}
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTableWidget, QTableView, QPlainTextEdit {{ background: white; border: 1px solid {COLORS['border']}; padding: 3px 5px; selection-background-color: {COLORS['selected']}; selection-color: {COLORS['text']}; }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus {{ border-color: {COLORS['accent']}; }}
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {{ background: #e9ecef; color: {COLORS['disabled']}; border-color: #c3c8cd; }}
 QDoubleSpinBox#resultScaleValue:disabled {{ background: {COLORS['background']}; color: {COLORS['disabled']}; border-color: {COLORS['soft_border']}; }}
 QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 0; height: 0; border: none; }}
 QComboBox {{ min-height: 22px; padding-right: 22px; }}
