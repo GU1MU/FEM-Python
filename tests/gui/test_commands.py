@@ -302,12 +302,28 @@ def test_result_export_specs_are_complete_detached_and_typed() -> None:
     selection = _selection()
 
     csv_spec = ResultCsvExportSpec(source, 6, selection)
+    second_selection = ScalarFieldSelection(selection.field_key, "U2")
+    multi_csv_spec = ResultCsvExportSpec(
+        source,
+        6,
+        (selection, second_selection),
+    )
     vtk_spec = ResultVtkExportSpec(source, 6, selection, 2)
 
     assert csv_spec.source == vtk_spec.source == source
     assert csv_spec.source is not source
     assert vtk_spec.source is not source
     assert csv_spec.selection == vtk_spec.selection == selection
+    assert multi_csv_spec.selections == (selection, second_selection)
+    assert multi_csv_spec.selection == selection
+    assert all(
+        owned is not original
+        for owned, original in zip(
+            multi_csv_spec.selections,
+            (selection, second_selection),
+            strict=True,
+        )
+    )
     assert csv_spec.selection is not selection
     assert vtk_spec.selection is not selection
     assert vtk_spec.deformation_scale == 2.0
@@ -384,6 +400,12 @@ def test_result_export_specs_reject_untyped_source_and_selection() -> None:
             object(),  # type: ignore[arg-type]
             1,
             _selection(),
+        )
+    with pytest.raises(TypeError, match="selection"):
+        ResultCsvExportSpec(
+            _result_source(),
+            1,
+            object(),  # type: ignore[arg-type]
         )
     with pytest.raises(TypeError, match="selection"):
         ResultVtkExportSpec(

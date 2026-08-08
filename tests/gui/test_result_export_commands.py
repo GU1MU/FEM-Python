@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QDialog
 
 from fem.application.results import (
@@ -14,7 +15,7 @@ from fem.application.results import (
     build_solve_result_bundle,
     restore_result_provider,
 )
-from fem.io.result_csv import read_result_csv
+from fem.io.result_csv import read_result_components_csv, read_result_csv
 from fem.io.result_vtk import read_result_vtk
 from fem.solvers.static_linear import solve
 from fem_gui.commands import (
@@ -123,6 +124,28 @@ def test_public_result_exports_use_canonical_snapshot_bound_writers(
     csv_readback = read_result_csv(tmp_path / "result.csv")
     assert csv_readback.source == csv_spec.source
     assert csv_readback.selection == csv_spec.selection
+
+    provider = window._current_result_provider()
+    assert provider is not None
+    field = provider.field(csv_spec.selection.field_key)
+    selections = tuple(
+        ScalarFieldSelection(csv_spec.selection.field_key, component)
+        for component in field.descriptor.columns[:2]
+    )
+    components_receipt = window.export_result_csv(
+        tmp_path / "components.csv",
+        ResultCsvExportSpec(
+            csv_spec.source,
+            csv_spec.materialization_generation,
+            selections,
+        ),
+    )
+    await_succeeded(components_receipt)
+    components_readback = read_result_components_csv(
+        tmp_path / "components.csv"
+    )
+    assert components_readback.selections == selections
+    assert len(components_readback.records) == len(field.locations)
 
     monkeypatch.setattr(
         main_window_module,
@@ -238,9 +261,22 @@ def test_csv_action_exports_dialog_selection_without_changing_viewport_field(
         dialog.position_combo.setCurrentIndex(
             dialog.position_combo.findData(field_id.position)
         )
-        dialog.component_combo.setCurrentIndex(
-            dialog.component_combo.findData(selected)
+        assert selected in dialog._component_selections
+        second = next(
+            candidate
+            for candidate in dialog._component_selections
+            if (
+                candidate != selected
+                and candidate.field_key == selected.field_key
+            )
         )
+        for index, candidate in enumerate(dialog._component_selections):
+            dialog.component_list.item(index).setCheckState(
+                Qt.CheckState.Checked
+                if candidate in {selected, second}
+                else Qt.CheckState.Unchecked
+            )
+        captured["dialog_selections"] = dialog.current_selections()
         dialog.path_edit.setText(str(tmp_path / "selected-field.txt"))
         return QDialog.DialogCode.Accepted
 
@@ -268,7 +304,9 @@ def test_csv_action_exports_dialog_selection_without_changing_viewport_field(
     )
 
     assert captured["path"] == tmp_path / "selected-field.csv"
-    assert captured["spec"].selection == selected
+    assert captured["spec"].selection == captured["dialog_selections"][0]
+    assert captured["spec"].selections == captured["dialog_selections"]
+    assert selected in captured["spec"].selections
     assert captured["spec"].source == provider.source
     assert captured["spec"].materialization_generation == (
         provider.snapshot.generation

@@ -135,8 +135,8 @@ class ViewportImageExportDialog(QDialog):
                 self.height_spin.value(),
             )
         else:
-            scale = 1
-            window_size = None if int(quality) == 1 else self.output_size
+            scale = int(quality)
+            window_size = None
         return ViewportImageExportOptions(
             scale=scale,
             window_size=window_size,

@@ -5,6 +5,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QLabel
 
 from fem.application.results import (
@@ -41,11 +42,16 @@ def _catalog():
     return provider.catalog()
 
 
-def _find_data(combo, value: object) -> int:
-    for index in range(combo.count()):
-        if combo.itemData(index) == value:
-            return index
-    return -1
+def _check_components(
+    dialog: ResultCsvExportDialog,
+    selections: tuple[ScalarFieldSelection, ...],
+) -> None:
+    for index, candidate in enumerate(dialog._component_selections):
+        dialog.component_list.item(index).setCheckState(
+            Qt.CheckState.Checked
+            if candidate in selections
+            else Qt.CheckState.Unchecked
+        )
 
 
 def test_dialog_selects_ready_fields_without_showing_field_status() -> None:
@@ -67,10 +73,11 @@ def test_dialog_selects_ready_fields_without_showing_field_status() -> None:
     assert dialog.path_edit.placeholderText() == "请选择 CSV 保存路径"
     assert not dialog.export_button.isEnabled()
     assert all(
-        dialog.component_combo.itemData(index).field_key
+        selection.field_key
         in {availability.key for availability in ready_fields}
-        for index in range(dialog.component_combo.count())
+        for selection in dialog._component_selections
     )
+    assert dialog.current_selections() == (catalog.default_selection,)
 
     visible_text = " ".join(
         label.text() for label in dialog.findChildren(QLabel)
@@ -83,7 +90,7 @@ def test_dialog_selects_ready_fields_without_showing_field_status() -> None:
     dialog.close()
 
 
-def test_field_selection_keeps_path_empty_and_preserves_user_path(
+def test_component_list_supports_multiple_checks_and_preserves_user_path(
     tmp_path: Path,
 ) -> None:
     _application()
@@ -92,40 +99,28 @@ def test_field_selection_keeps_path_empty_and_preserves_user_path(
         catalog,
         current_selection=catalog.default_selection,
     )
-    selections = tuple(
+    field_key = dialog._component_selections[0].field_key
+    selected = tuple(
         selection
-        for availability in visible_result_fields(catalog.fields)
-        if availability.state is FieldState.READY
-        for component in availability.descriptor.columns
-        for selection in (
-            ScalarFieldSelection(availability.key, component),
-        )
-        if selection != catalog.default_selection
-    )
-    selected = selections[0]
-    field_id = selected.field_key.request.field_id
+        for selection in dialog._component_selections
+        if selection.field_key == field_key
+    )[:2]
+    assert len(selected) == 2
+    _check_components(dialog, selected)
 
-    dialog.variable_combo.setCurrentIndex(
-        _find_data(dialog.variable_combo, field_id.variable)
-    )
-    dialog.position_combo.setCurrentIndex(
-        _find_data(dialog.position_combo, field_id.position)
-    )
-    dialog.component_combo.setCurrentIndex(
-        _find_data(dialog.component_combo, selected)
-    )
-
-    assert dialog.current_selection() == selected
+    assert dialog.current_selections() == selected
+    assert dialog.current_selection() == selected[0]
     assert dialog.path_edit.text() == ""
     assert not dialog.export_button.isEnabled()
 
     custom = tmp_path / "custom-name.csv"
     dialog.path_edit.setText(str(custom))
-    alternative_index = (
-        1 if dialog.component_combo.count() > 1 else 0
-    )
-    dialog.component_combo.setCurrentIndex(alternative_index)
+    assert dialog.export_button.isEnabled()
+    _check_components(dialog, ())
+    assert not dialog.export_button.isEnabled()
+    _check_components(dialog, (selected[1],))
     assert dialog.target_path() == custom
+    assert dialog.export_button.isEnabled()
     dialog.close()
 
 

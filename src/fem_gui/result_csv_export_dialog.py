@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -121,7 +123,10 @@ class ResultCsvExportDialog(QDialog):
         configure_form_layout(form)
         self.variable_combo = _ExactDataComboBox(self)
         self.position_combo = _ExactDataComboBox(self)
-        self.component_combo = _ExactDataComboBox(self)
+        self.component_list = QListWidget(self)
+        self.component_list.setMinimumHeight(120)
+        self.component_list.setAlternatingRowColors(True)
+        self._component_selections: list[ScalarFieldSelection] = []
         self.path_edit = QLineEdit(self)
         self.path_edit.setPlaceholderText("请选择 CSV 保存路径")
         self.browse_button = QPushButton("浏览…", self)
@@ -134,7 +139,7 @@ class ResultCsvExportDialog(QDialog):
 
         form.addRow("场变量：", self.variable_combo)
         form.addRow("结果位置：", self.position_combo)
-        form.addRow("分量：", self.component_combo)
+        form.addRow("分量（可多选）：", self.component_list)
         form.addRow("保存到：", path_host)
         layout.addLayout(form)
 
@@ -163,6 +168,9 @@ class ResultCsvExportDialog(QDialog):
         self.position_combo.currentIndexChanged.connect(
             self._position_changed
         )
+        self.component_list.itemChanged.connect(
+            self._component_item_changed
+        )
         self.path_edit.textChanged.connect(self._refresh_export_enabled)
         self.browse_button.clicked.connect(self._browse)
         self.button_box.accepted.connect(self.accept)
@@ -174,10 +182,18 @@ class ResultCsvExportDialog(QDialog):
         return self._catalog
 
     def current_selection(self) -> ScalarFieldSelection:
-        selection = self.component_combo.currentData()
-        if type(selection) is not ScalarFieldSelection:
+        selections = self.current_selections()
+        if not selections:
             raise RuntimeError("no scalar result component is selected")
-        return selection
+        return selections[0]
+
+    def current_selections(self) -> tuple[ScalarFieldSelection, ...]:
+        return tuple(
+            selection
+            for index, selection in enumerate(self._component_selections)
+            if self.component_list.item(index).checkState()
+            is Qt.CheckState.Checked
+        )
 
     def target_path(self) -> Path:
         text = self.path_edit.text().strip()
@@ -186,6 +202,8 @@ class ResultCsvExportDialog(QDialog):
         return Path(text).with_suffix(".csv")
 
     def accept(self) -> None:
+        if not self.current_selections():
+            return
         try:
             target = self.target_path()
         except ValueError:
@@ -261,9 +279,25 @@ class ResultCsvExportDialog(QDialog):
         self,
         preferred: ScalarFieldSelection | None = None,
     ) -> None:
-        self.component_combo.blockSignals(True)
-        self.component_combo.clear()
+        self.component_list.blockSignals(True)
+        self.component_list.clear()
+        self._component_selections.clear()
         availabilities = self._matching_fields()
+        preferred_selection = next(
+            (
+                ScalarFieldSelection(availability.key, preferred.component)
+                for availability in availabilities
+                if preferred is not None
+                and availability.key == preferred.field_key
+                and preferred.component in availability.descriptor.columns
+            ),
+            None,
+        )
+        if preferred_selection is None and availabilities:
+            preferred_selection = ScalarFieldSelection(
+                availabilities[0].key,
+                availabilities[0].descriptor.default_component,
+            )
         component_counts: dict[str, int] = {}
         for availability in availabilities:
             for component in availability.descriptor.columns:
@@ -272,25 +306,30 @@ class ResultCsvExportDialog(QDialog):
                 )
         for availability in availabilities:
             for component in availability.descriptor.columns:
+                selection = ScalarFieldSelection(
+                    availability.key,
+                    component,
+                )
+                self._component_selections.append(selection)
                 label = component
                 if component_counts[component] > 1:
                     label = (
                         f"{component} · contract "
                         f"{availability.key.recovery_contract}"
                     )
-                self.component_combo.addItem(
-                    label,
-                    ScalarFieldSelection(availability.key, component),
+                item = QListWidgetItem(label, self.component_list)
+                item.setFlags(
+                    item.flags()
+                    | Qt.ItemFlag.ItemIsUserCheckable
+                    | Qt.ItemFlag.ItemIsEnabled
                 )
-        index = self.component_combo.findData(preferred)
-        if index < 0 and availabilities:
-            default = ScalarFieldSelection(
-                availabilities[0].key,
-                availabilities[0].descriptor.default_component,
-            )
-            index = self.component_combo.findData(default)
-        self.component_combo.setCurrentIndex(index if index >= 0 else 0)
-        self.component_combo.blockSignals(False)
+                item.setCheckState(
+                    Qt.CheckState.Checked
+                    if selection == preferred_selection
+                    else Qt.CheckState.Unchecked
+                )
+        self.component_list.blockSignals(False)
+        self._refresh_export_enabled()
 
     def _matching_fields(self) -> tuple[FieldAvailability, ...]:
         variable = self.variable_combo.currentData()
@@ -311,6 +350,20 @@ class ResultCsvExportDialog(QDialog):
     def _position_changed(self, _index: int) -> None:
         self._populate_components()
 
+    def _component_item_changed(self, item: QListWidgetItem) -> None:
+        if item.checkState() is Qt.CheckState.Checked:
+            selection = self._component_selections[
+                self.component_list.row(item)
+            ]
+            self.component_list.blockSignals(True)
+            for index, candidate in enumerate(self._component_selections):
+                if candidate.field_key != selection.field_key:
+                    self.component_list.item(index).setCheckState(
+                        Qt.CheckState.Unchecked
+                    )
+            self.component_list.blockSignals(False)
+        self._refresh_export_enabled()
+
     def _browse(self) -> None:
         path, _filter = QFileDialog.getSaveFileName(
             self,
@@ -323,4 +376,7 @@ class ResultCsvExportDialog(QDialog):
         self.path_edit.setText(str(Path(path).with_suffix(".csv")))
 
     def _refresh_export_enabled(self, *_args: object) -> None:
-        self.export_button.setEnabled(bool(self.path_edit.text().strip()))
+        self.export_button.setEnabled(
+            bool(self.path_edit.text().strip())
+            and bool(self.current_selections())
+        )

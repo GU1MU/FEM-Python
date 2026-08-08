@@ -110,30 +110,48 @@ class GuiCommandOutcome:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class ResultCsvExportSpec:
-    """Exact accepted result identity for one scalar CSV export."""
+    """Exact accepted result identity for one or more CSV components."""
 
     source: ResultSourceKey
     materialization_generation: int
-    selection: ScalarFieldSelection
+    selections: tuple[ScalarFieldSelection, ...]
 
-    def __post_init__(self) -> None:
+    def __init__(
+        self,
+        source: ResultSourceKey,
+        materialization_generation: int,
+        selection: ScalarFieldSelection | tuple[ScalarFieldSelection, ...],
+    ) -> None:
+        selected = (selection,) if type(selection) is ScalarFieldSelection else selection
+        if type(selected) is not tuple or not selected:
+            raise TypeError(
+                "selection must be a ScalarFieldSelection or a non-empty tuple"
+            )
+        owned = tuple(_owned_scalar_selection(item) for item in selected)
+        field_key = owned[0].field_key
+        if any(item.field_key != field_key for item in owned[1:]):
+            raise ValueError("CSV selections must use one exact field key")
+        components = tuple(item.component for item in owned)
+        if len(set(components)) != len(components):
+            raise ValueError("CSV selection components must be unique")
         object.__setattr__(
             self,
             "source",
-            _owned_result_source(self.source),
+            _owned_result_source(source),
         )
         object.__setattr__(
             self,
             "materialization_generation",
-            _materialization_generation(self.materialization_generation),
+            _materialization_generation(materialization_generation),
         )
-        object.__setattr__(
-            self,
-            "selection",
-            _owned_scalar_selection(self.selection),
-        )
+        object.__setattr__(self, "selections", owned)
+
+    @property
+    def selection(self) -> ScalarFieldSelection:
+        """Return the first selection for single-component compatibility."""
+        return self.selections[0]
 
 
 @dataclass(frozen=True, slots=True)

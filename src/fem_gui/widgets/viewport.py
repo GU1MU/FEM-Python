@@ -5359,12 +5359,6 @@ class FEMViewport(QWidget):
             raise RuntimeError("三维视口尚未初始化")
         plotter = self._plotter
         current_size = self.screenshot_size()
-        if window_size is None and scale > 1:
-            window_size = (
-                current_size[0] * scale,
-                current_size[1] * scale,
-            )
-            scale = 1
         text_scale = (
             1.0
             if window_size is None
@@ -5376,7 +5370,8 @@ class FEMViewport(QWidget):
                 ),
             )
         )
-        camera = plotter.camera.copy()
+        camera = plotter.camera
+        camera_state = camera.copy()
         renderer = plotter.renderer
         try:
             with plotter.window_size_context(window_size):
@@ -5411,7 +5406,8 @@ class FEMViewport(QWidget):
                         renderer.SetGradientBackground(gradient)
                     self._restore_scalar_bar_fonts(scalar_bar_fonts)
         finally:
-            plotter.camera = camera
+            camera.DeepCopy(camera_state)
+            camera.Modified()
             self._render()
 
     def _scale_scalar_bar_fonts(

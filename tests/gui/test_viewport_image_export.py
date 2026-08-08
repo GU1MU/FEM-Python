@@ -41,7 +41,7 @@ def test_export_dialog_defaults_to_two_times_current_viewport() -> None:
     assert dialog.output_size == (1600, 1200)
     assert dialog.width_spin.value() == 1600
     assert dialog.height_spin.value() == 1200
-    assert dialog.options == ViewportImageExportOptions(1, (1600, 1200), False)
+    assert dialog.options == ViewportImageExportOptions(2, None, False)
     assert not dialog.width_spin.isEnabled()
     assert not dialog.height_spin.isEnabled()
 
@@ -55,16 +55,15 @@ def test_export_dialog_defaults_to_two_times_current_viewport() -> None:
 
 
 @pytest.mark.parametrize(
-    ("quality", "expected_size", "expected_window_size"),
+    ("quality", "expected_size"),
     (
-        (1, (800, 600), None),
-        (4, (3200, 2400), (3200, 2400)),
+        (1, (800, 600)),
+        (4, (3200, 2400)),
     ),
 )
 def test_export_dialog_fixed_quality_updates_scale_and_preview(
     quality: int,
     expected_size: tuple[int, int],
-    expected_window_size: tuple[int, int] | None,
 ) -> None:
     dialog = _dialog()
 
@@ -73,8 +72,8 @@ def test_export_dialog_fixed_quality_updates_scale_and_preview(
     assert dialog.output_size == expected_size
     assert dialog.width_spin.value() == expected_size[0]
     assert dialog.height_spin.value() == expected_size[1]
-    assert dialog.options.scale == 1
-    assert dialog.options.window_size == expected_window_size
+    assert dialog.options.scale == quality
+    assert dialog.options.window_size is None
     assert not dialog.width_spin.isEnabled()
     assert not dialog.height_spin.isEnabled()
 
@@ -181,11 +180,17 @@ def test_viewport_screenshot_forwards_all_export_parameters() -> None:
     viewport = FEMViewport()
     calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
     render_calls = []
-    saved_camera = object()
+    copied_camera = object()
+    camera_calls = []
+    camera = SimpleNamespace(
+        copy=lambda: copied_camera,
+        DeepCopy=lambda state: camera_calls.append(("copy", state)),
+        Modified=lambda: camera_calls.append(("modified",)),
+    )
     plotter = SimpleNamespace(
         window_size=(720, 480),
         screenshot=lambda *args, **kwargs: calls.append((args, kwargs)),
-        camera=SimpleNamespace(copy=lambda: saved_camera),
+        camera=camera,
         renderer=SimpleNamespace(
             GetGradientBackground=lambda: True,
             GetBackground=lambda: (1.0, 1.0, 1.0),
@@ -221,7 +226,8 @@ def test_viewport_screenshot_forwards_all_export_parameters() -> None:
             },
         )
     ]
-    assert plotter.camera is saved_camera
+    assert plotter.camera is camera
+    assert camera_calls == [("copy", copied_camera), ("modified",)]
     assert render_calls == [True, True]
     viewport._plotter = None
     viewport.close()
@@ -287,7 +293,7 @@ def test_save_success_dialog_reports_selected_path(monkeypatch) -> None:
         (
             owner,
             "保存成功",
-            f"CSV 文件已保存成功。\n\n{Path('exports') / 'selected.csv'}",
+            f"CSV 文件已保存成功\n\n{Path('exports') / 'selected.csv'}",
         )
     ]
 
@@ -456,6 +462,49 @@ def test_scaled_screenshot_restores_pyvista_size_and_camera(tmp_path: Path) -> N
     assert after_camera == before_camera
 
     plotter.close()
+    viewport._plotter = None
+    viewport.close()
+
+
+def test_scaled_screenshot_does_not_resize_live_render_window() -> None:
+    _application()
+    viewport = FEMViewport()
+    screenshot_calls = []
+    context_sizes = []
+    camera_state = object()
+    camera = SimpleNamespace(
+        copy=lambda: camera_state,
+        DeepCopy=lambda _state: None,
+        Modified=lambda: None,
+    )
+    plotter = SimpleNamespace(
+        window_size=(720, 480),
+        screenshot=lambda *args, **kwargs: screenshot_calls.append((args, kwargs)),
+        camera=camera,
+        renderer=SimpleNamespace(),
+        render=lambda: None,
+        window_size_context=lambda size: (
+            context_sizes.append(size) or nullcontext()
+        ),
+    )
+    viewport._plotter = plotter
+
+    viewport.save_screenshot("viewport.png", scale=4)
+
+    assert context_sizes == [None]
+    assert screenshot_calls == [
+        (
+            ("viewport.png",),
+            {
+                "scale": 4,
+                "window_size": None,
+                "transparent_background": False,
+                "return_img": False,
+            },
+        )
+    ]
+    assert plotter.window_size == (720, 480)
+    assert plotter.camera is camera
     viewport._plotter = None
     viewport.close()
 

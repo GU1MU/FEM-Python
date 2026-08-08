@@ -214,6 +214,9 @@ from .project_v13 import (
     write_project_v13,
 )
 from .result_csv import (
+    RESULT_COMPONENTS_CSV_BASE_HEADER,
+    RESULT_COMPONENTS_CSV_FORMAT_NAME,
+    RESULT_COMPONENTS_CSV_SCHEMA_VERSION,
     RESULT_CSV_FORMAT_NAME,
     RESULT_CSV_HEADER,
     RESULT_CSV_SCHEMA_VERSION,
@@ -223,8 +226,13 @@ from .result_csv import (
     ResultCsvError,
     ResultCsvReadback,
     ResultCsvRecord,
+    ResultComponentsCsvReadback,
+    ResultComponentsCsvRecord,
+    dumps_result_components_csv,
     dumps_result_csv,
+    read_result_components_csv,
     read_result_csv,
+    write_result_components_csv,
     write_result_csv,
 )
 from .result_vtk import (
@@ -431,6 +439,14 @@ __all__ = [
     "save_project_v11",
     "save_project_v12",
     "save_project_v13",
+    "RESULT_COMPONENTS_CSV_BASE_HEADER",
+    "RESULT_COMPONENTS_CSV_FORMAT_NAME",
+    "RESULT_COMPONENTS_CSV_SCHEMA_VERSION",
+    "ResultComponentsCsvReadback",
+    "ResultComponentsCsvRecord",
+    "dumps_result_components_csv",
+    "read_result_components_csv",
+    "write_result_components_csv",
     "result_csv",
     "result_vtk",
     "write_project_v1",

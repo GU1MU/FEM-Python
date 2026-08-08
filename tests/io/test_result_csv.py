@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from collections import Counter
 import csv
 from dataclasses import replace
 import io
@@ -36,8 +37,11 @@ from fem.io import (
     ResultCsvEmptySelectionError,
     ResultCsvEncodeError,
     ResultCsvError,
+    dumps_result_components_csv,
     dumps_result_csv,
+    read_result_components_csv,
     read_result_csv,
+    write_result_components_csv,
     write_result_csv,
 )
 from fem.io import result_csv as result_csv_module
@@ -232,6 +236,69 @@ def test_round_trip_covers_every_result_association(
     assert readback.selection == export.selection
     assert readback.quantity == export.field.descriptor.quantity
     assert readback.association is association
+
+
+def test_multi_component_element_nodal_export_keeps_shared_contributions(
+    tmp_path: Path,
+) -> None:
+    export, snapshot = _export(
+        ResultVariable.S,
+        FieldPosition.ELEMENT_NODAL,
+    )
+    components = tuple(export.field.descriptor.columns[:3])
+    selections = tuple(
+        ScalarFieldSelection(export.selection.field_key, component)
+        for component in components
+    )
+    snapshots = tuple(
+        prepare_result_export_snapshot(snapshot, selection)
+        for selection in selections
+    )
+
+    serialized = dumps_result_components_csv(snapshots)
+    rows = _rows(serialized)
+    assert tuple(rows[0][-len(components):]) == components
+    target = tmp_path / "element-nodal-components.csv"
+    write_result_components_csv(target, snapshots)
+    readback = read_result_components_csv(target)
+
+    assert readback.selections == selections
+    assert readback.association is FieldAssociation.ELEMENT_NODE
+    assert len(readback.records) == len(export.field.locations)
+    assert tuple(record.location for record in readback.records) == tuple(
+        result_csv_module._csv_location(location)
+        for location in export.field.locations
+    )
+    assert all(record.location.averaged is None for record in readback.records)
+
+    node_counts = Counter(
+        location.node_id for location in export.field.locations
+    )
+    shared_nodes = {
+        node_id for node_id, count in node_counts.items() if count > 1
+    }
+    assert shared_nodes
+    for node_id in shared_nodes:
+        expected = {
+            (location.element_id, location.local_node)
+            for location in export.field.locations
+            if location.node_id == node_id
+        }
+        actual = {
+            (record.location.element_id, record.location.local_node)
+            for record in readback.records
+            if record.location.node_id == node_id
+        }
+        assert actual == expected
+
+    component_indexes = tuple(
+        export.field.descriptor.columns.index(component)
+        for component in components
+    )
+    np.testing.assert_allclose(
+        np.asarray([record.values for record in readback.records]),
+        export.field.values[:, component_indexes],
+    )
     assert readback.unit_label == export.field.descriptor.unit_label
     assert tuple(record.location for record in readback.records) == tuple(
         replace(location, displacement=None)

@@ -149,7 +149,7 @@ from fem.geometry import (
 )
 from fem.geometry.gmsh_coordinator import GmshExecutionCancelled
 from fem.io.project import LoadedProject, load_project, save_project
-from fem.io.result_csv import write_result_csv
+from fem.io.result_csv import write_result_components_csv, write_result_csv
 from fem.io.result_vtk import write_result_vtk
 from fem.mesh.quality import analyze_mesh
 from fem.mesh.settings import MeshSettings
@@ -2090,7 +2090,7 @@ class FEMMainWindow(QMainWindow):
         path: str | Path,
         spec: ResultCsvExportSpec,
     ) -> GuiCommandReceipt:
-        """Export one exact ready scalar selection through canonical CSV I/O."""
+        """Export one or more components from one exact ready field."""
 
         command_id = self._next_command_id()
         if self.busy:
@@ -2111,14 +2111,23 @@ class FEMMainWindow(QMainWindow):
                 raise ValueError(
                     "canonical result CSV target must use the .csv extension"
                 )
-            export = self._prepare_result_export(spec)
+            exports = self._prepare_result_csv_exports(spec)
+            export = exports[0]
             completion = GuiCommandCompletion(command_id)
 
             def workload(context: TaskContext) -> GuiCommandOutcome:
-                installed = write_result_csv(
-                    target,
-                    export,
-                    checkpoint=context.checkpoint,
+                installed = (
+                    write_result_csv(
+                        target,
+                        export,
+                        checkpoint=context.checkpoint,
+                    )
+                    if len(exports) == 1
+                    else write_result_components_csv(
+                        target,
+                        exports,
+                        checkpoint=context.checkpoint,
+                    )
                 )
                 return GuiCommandOutcome(
                     output_path=installed,
@@ -2246,6 +2255,27 @@ class FEMMainWindow(QMainWindow):
         return prepare_result_export_snapshot(
             materialization,
             spec.selection,
+        )
+
+    def _prepare_result_csv_exports(
+        self,
+        spec: ResultCsvExportSpec,
+    ) -> tuple[ResultExportSnapshot, ...]:
+        provider = self._current_result_provider()
+        if provider is None:
+            raise RuntimeError("there is no current accepted result")
+        materialization = provider.snapshot
+        if materialization.source != spec.source:
+            raise RuntimeError(
+                "export source does not match the current accepted result"
+            )
+        if materialization.generation != spec.materialization_generation:
+            raise RuntimeError(
+                "export generation does not match the current materialization"
+            )
+        return tuple(
+            prepare_result_export_snapshot(materialization, selection)
+            for selection in spec.selections
         )
 
     def _apply_session_delta(
@@ -10268,7 +10298,7 @@ class FEMMainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "保存成功",
-            f"{content_name}已保存成功。\n\n{path}",
+            f"{content_name}已保存成功\n\n{path}",
         )
 
     def _fit_viewport_when_dialog_finishes(self, dialog: QDialog) -> None:
@@ -11865,17 +11895,23 @@ class FEMMainWindow(QMainWindow):
             return
         if self._exec_dialog(dialog) != QDialog.DialogCode.Accepted:
             return
-        export_selection = dialog.current_selection()
+        export_selections = dialog.current_selections()
         target = dialog.target_path()
         try:
-            availability = self._catalog_availability_for_selection(
-                provider,
-                export_selection,
+            availabilities = tuple(
+                self._catalog_availability_for_selection(
+                    provider,
+                    export_selection,
+                )
+                for export_selection in export_selections
             )
         except (KeyError, TypeError, ValueError) as error:
             self._show_error("导出 CSV 失败", str(error))
             return
-        if availability.state is not FieldState.READY:
+        if any(
+            availability.state is not FieldState.READY
+            for availability in availabilities
+        ):
             self._show_error("导出 CSV 失败", "所选结果字段尚未就绪")
             return
         self.status_panel.set_state("正在导出 CSV……")
@@ -11884,7 +11920,7 @@ class FEMMainWindow(QMainWindow):
             ResultCsvExportSpec(
                 provider.source,
                 provider.snapshot.generation,
-                export_selection,
+                export_selections,
             ),
         )
         if receipt.diagnostic is not None:
