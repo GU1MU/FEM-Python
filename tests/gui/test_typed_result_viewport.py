@@ -502,8 +502,9 @@ def test_typed_payload_renders_owned_dataset_without_reprojection(
     assert options["scalar_bar_args"]["height"] == 0.62
     assert options["scalar_bar_args"]["position_x"] == 0.78
     assert options["scalar_bar_args"]["position_y"] == 0.19
-    assert options["scalar_bar_args"]["title_font_size"] == 18
+    assert options["scalar_bar_args"]["title_font_size"] == 14
     assert options["scalar_bar_args"]["label_font_size"] == 14
+    assert options["scalar_bar_args"]["font_family"] == "arial"
     assert options["scalar_bar_args"]["unconstrained_font_size"]
     assert options["lighting"]
     assert options["smooth_shading"]
@@ -526,6 +527,29 @@ def test_scientific_scalar_format_uses_compact_uppercase_exponent() -> None:
     assert viewport._format_scalar(1.89e-4) == "1.89E-4"
     assert viewport._format_scalar(-2.5e3) == "-2.50E+3"
     assert viewport._format_scalar(0.0) == "0"
+
+    viewport.close()
+
+
+def test_engineering_scalar_format_and_legend_typography_are_configurable() -> None:
+    _application()
+    viewport = FEMViewport()
+    viewport.set_contour_options(
+        {
+            "number_format": "engineering",
+            "decimals": 2,
+            "legend_font": "Times New Roman",
+            "legend_font_size": 16,
+        }
+    )
+
+    assert viewport._format_scalar(12345.0) == "12.35E+3"
+    assert viewport._format_scalar(0.00125) == "1.25E-3"
+    assert viewport._format_scalar(0.0) == "0"
+    scalar_bar_args = viewport._contour_bar_args(_point_payload())
+    assert scalar_bar_args["font_family"] == "times"
+    assert scalar_bar_args["title_font_size"] == 16
+    assert scalar_bar_args["label_font_size"] == 16
 
     viewport.close()
 
@@ -558,6 +582,14 @@ def test_filled_result_and_all_edge_modes_reach_pyvista() -> None:
     assert not edge_options["lighting"]
     assert not edge_options["show_scalar_bar"]
     assert not edge_options["pickable"]
+
+    viewport.set_contour_options(
+        {
+            "edge_style": "bold",
+            "edge_width": 2.5,
+        }
+    )
+    assert plotter.mesh_calls[-1][1]["line_width"] == 5.0
 
     viewport.set_edges_visible(False, render=False)
     viewport._update_result_layer()

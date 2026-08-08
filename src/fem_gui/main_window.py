@@ -227,6 +227,7 @@ from .scope_selection import (
 )
 from .postprocessing_dialogs import (
     ContourSettingsDialog,
+    DisplaySettingsDialog,
     TypedResultDisplayDialog,
     TypedResultDisplaySettings,
     TypedResultQueryDialog,
@@ -644,9 +645,11 @@ class FEMMainWindow(QMainWindow):
             "style": "segmented", "legend": True,
             "render_mode": CONTOUR_RENDER_SHADED,
             "edge_mode": CONTOUR_EDGE_NONE,
+            "edge_style": "solid", "edge_width": 1.0,
             "number_format": "scientific", "decimals": 2,
             "orientation": "vertical", "show_minimum": False,
             "show_maximum": False, "show_ids": False,
+            "legend_font": "Arial", "legend_font_size": 14,
             "show_coordinate_system": True,
             "edges": False,
             "averaging_threshold": 75.0,
@@ -2830,7 +2833,19 @@ class FEMMainWindow(QMainWindow):
         result_menu.setObjectName("menuResult")
         result_menu.addActions([self.actions[name] for name in ("undeformed", "deformed", "contour")])
         result_menu.addSeparator()
-        result_menu.addActions([self.actions[name] for name in ("overlay", "field", "scale", "contour_options", "query", "export_csv", "export_vtk", "screenshot")])
+        result_menu.addActions([
+            self.actions[name]
+            for name in (
+                "overlay",
+                "display_settings",
+                "scale",
+                "contour_options",
+                "query",
+                "export_csv",
+                "export_vtk",
+                "screenshot",
+            )
+        ])
         help_menu = self.menuBar().addMenu("帮助")
         help_menu.setObjectName("menuHelp")
         help_menu.addAction(self.actions["about"])
@@ -3064,7 +3079,7 @@ class FEMMainWindow(QMainWindow):
         self.result_scale_value.valueChanged.connect(self._result_scale_value_changed)
 
         display_group = page.add_group("显示设置")
-        display_group.add_action(self.actions["field"])
+        display_group.add_action(self.actions["display_settings"])
         display_group.add_action(self.actions["contour_options"])
         output_group = page.add_group("查询与导出")
         output_group.add_action(self.actions["query"], large=True)
@@ -11719,7 +11734,19 @@ class FEMMainWindow(QMainWindow):
     def show_contour_dialog(self) -> None:
         if self._current_result_provider() is None:
             return
-        dialog = ContourSettingsDialog(dict(self._contour_options), self)
+        options = dict(self._contour_options)
+        automatic_range = self.viewport.current_contour_range()
+        if automatic_range is not None:
+            options["automatic_minimum"] = automatic_range[0]
+            options["automatic_maximum"] = automatic_range[1]
+        dialog = ContourSettingsDialog(options, self)
+        dialog.applyRequested.connect(self._set_contour_options)
+        self._exec_dialog(dialog)
+
+    def show_display_settings_dialog(self) -> None:
+        if self._current_result_provider() is None:
+            return
+        dialog = DisplaySettingsDialog(dict(self._contour_options), self)
         dialog.applyRequested.connect(self._set_contour_options)
         self._exec_dialog(dialog)
 

@@ -1,4 +1,4 @@
-"""结果查询、显示和云图设置弹窗。"""
+"""结果查询、结果显示、视口显示和云图设置弹窗。"""
 
 from __future__ import annotations
 
@@ -398,62 +398,203 @@ class _ThinHorizontalSlider(QSlider):
         painter.drawEllipse(handle)
 
 
+class DisplaySettingsDialog(QDialog):
+    """控制结果视口中的轮廓、图例和辅助显示。"""
+
+    applyRequested = Signal(object)
+
+    def __init__(self, options: dict[str, Any], parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("显示设置")
+        self.setMinimumWidth(620)
+        layout = QVBoxLayout(self)
+
+        self.outline_group = QGroupBox("轮廓", self)
+        outline_layout = QHBoxLayout(self.outline_group)
+        self.edge_mode = QComboBox(self.outline_group)
+        for label, key in (
+            ("全部边", CONTOUR_EDGE_ALL),
+            ("外部边", CONTOUR_EDGE_EXTERIOR),
+            ("特征边", CONTOUR_EDGE_FEATURE),
+            ("自由边", CONTOUR_EDGE_FREE),
+            ("无边", CONTOUR_EDGE_NONE),
+        ):
+            self.edge_mode.addItem(label, key)
+        selected_edge_mode = options.get(
+            "edge_mode",
+            CONTOUR_EDGE_ALL if options.get("edges", False) else CONTOUR_EDGE_NONE,
+        )
+        if not options.get("edges", False):
+            selected_edge_mode = CONTOUR_EDGE_NONE
+        self.edge_mode.setCurrentIndex(
+            max(0, self.edge_mode.findData(selected_edge_mode))
+        )
+        self.edge_style = QComboBox(self.outline_group)
+        for label, key in (
+            ("实线", "solid"),
+            ("虚线", "dashed"),
+            ("短划线", "short_dashed"),
+            ("加粗线", "bold"),
+        ):
+            self.edge_style.addItem(label, key)
+        self.edge_style.setCurrentIndex(
+            max(0, self.edge_style.findData(options.get("edge_style", "solid")))
+        )
+        self.edge_width = QDoubleSpinBox(self.outline_group)
+        self.edge_width.setRange(0.1, 20.0)
+        self.edge_width.setDecimals(1)
+        self.edge_width.setSingleStep(0.5)
+        self.edge_width.setValue(float(options.get("edge_width", 1.0)))
+        for label, control, stretch in (
+            ("轮廓：", self.edge_mode, 2),
+            ("样式：", self.edge_style, 2),
+            ("粗细：", self.edge_width, 1),
+        ):
+            outline_layout.addWidget(QLabel(label, self.outline_group))
+            outline_layout.addWidget(control, stretch)
+        layout.addWidget(self.outline_group)
+
+        self.legend_group = QGroupBox("图例", self)
+        legend_layout = QVBoxLayout(self.legend_group)
+        number_row = QHBoxLayout()
+        number_row.addWidget(QLabel("数值格式：", self.legend_group))
+        self.scientific_format = QRadioButton("科学计数", self.legend_group)
+        self.engineering_format = QRadioButton("工程计数", self.legend_group)
+        self.number_format_buttons = QButtonGroup(self.legend_group)
+        self.number_format_buttons.addButton(self.scientific_format)
+        self.number_format_buttons.addButton(self.engineering_format)
+        if options.get("number_format", "scientific") == "engineering":
+            self.engineering_format.setChecked(True)
+        else:
+            self.scientific_format.setChecked(True)
+        number_row.addWidget(self.scientific_format)
+        number_row.addWidget(self.engineering_format)
+        number_row.addSpacing(18)
+        number_row.addWidget(QLabel("小数位：", self.legend_group))
+        self.decimals = QSpinBox(self.legend_group)
+        self.decimals.setRange(0, 12)
+        self.decimals.setValue(int(options.get("decimals", 2)))
+        number_row.addWidget(self.decimals)
+        number_row.addStretch(1)
+        legend_layout.addLayout(number_row)
+
+        legend_row = QHBoxLayout()
+        legend_row.addWidget(QLabel("图例方向：", self.legend_group))
+        self.horizontal_orientation = QRadioButton("横向", self.legend_group)
+        self.vertical_orientation = QRadioButton("纵向", self.legend_group)
+        self.orientation_buttons = QButtonGroup(self.legend_group)
+        self.orientation_buttons.addButton(self.horizontal_orientation)
+        self.orientation_buttons.addButton(self.vertical_orientation)
+        if options.get("orientation", "vertical") == "horizontal":
+            self.horizontal_orientation.setChecked(True)
+        else:
+            self.vertical_orientation.setChecked(True)
+        legend_row.addWidget(self.horizontal_orientation)
+        legend_row.addWidget(self.vertical_orientation)
+        legend_row.addSpacing(18)
+        legend_row.addWidget(QLabel("字体：", self.legend_group))
+        self.legend_font = QComboBox(self.legend_group)
+        for font in ("Arial", "Times New Roman", "Courier New"):
+            self.legend_font.addItem(font, font)
+        self.legend_font.setCurrentIndex(
+            max(0, self.legend_font.findData(options.get("legend_font", "Arial")))
+        )
+        self.legend_font.setMinimumContentsLength(10)
+        legend_row.addWidget(self.legend_font, 2)
+        legend_row.addWidget(QLabel("大小：", self.legend_group))
+        self.legend_font_size = QSpinBox(self.legend_group)
+        self.legend_font_size.setRange(6, 72)
+        self.legend_font_size.setValue(int(options.get("legend_font_size", 14)))
+        self.legend_font_size.setSuffix(" pt")
+        legend_row.addWidget(self.legend_font_size)
+        legend_layout.addLayout(legend_row)
+        layout.addWidget(self.legend_group)
+
+        self.legend = QCheckBox("显示图例", self)
+        self.legend.setChecked(bool(options.get("legend", True)))
+        self.show_ids = QCheckBox("显示编号", self)
+        self.show_ids.setChecked(bool(options.get("show_ids", False)))
+        self.show_coordinate_system = QCheckBox("显示坐标系", self)
+        self.show_coordinate_system.setChecked(
+            bool(options.get("show_coordinate_system", True))
+        )
+        for checkbox in (
+            self.legend,
+            self.show_ids,
+            self.show_coordinate_system,
+        ):
+            layout.addWidget(checkbox)
+
+        self.button_box = _dialog_buttons(self)
+        self.button_box.button(
+            QDialogButtonBox.StandardButton.Apply
+        ).clicked.connect(self.apply)
+        self.button_box.accepted.connect(self.accept_with_apply)
+        self.button_box.rejected.connect(self.reject)
+        layout.addWidget(self.button_box)
+
+    def settings(self) -> dict[str, Any]:
+        edge_mode = str(self.edge_mode.currentData())
+        return {
+            "edge_mode": edge_mode,
+            "edge_style": str(self.edge_style.currentData()),
+            "edge_width": float(self.edge_width.value()),
+            "number_format": (
+                "scientific"
+                if self.scientific_format.isChecked()
+                else "engineering"
+            ),
+            "decimals": int(self.decimals.value()),
+            "orientation": (
+                "horizontal"
+                if self.horizontal_orientation.isChecked()
+                else "vertical"
+            ),
+            "legend_font": str(self.legend_font.currentData()),
+            "legend_font_size": int(self.legend_font_size.value()),
+            "legend": self.legend.isChecked(),
+            "show_ids": self.show_ids.isChecked(),
+            "show_coordinate_system": self.show_coordinate_system.isChecked(),
+            "edges": edge_mode != CONTOUR_EDGE_NONE,
+        }
+
+    def apply(self) -> None:
+        self.applyRequested.emit(self.settings())
+
+    def accept_with_apply(self) -> None:
+        self.apply()
+        self.accept()
+
+
 class ContourSettingsDialog(QDialog):
-    """控制云图范围、色带、数值格式、图例和极值。"""
+    """控制云图范围、色带、渲染方式和节点平均阈值。"""
 
     applyRequested = Signal(object)
 
     def __init__(self, options: dict[str, Any], parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("云图设置")
-        self.setMinimumWidth(450)
+        self.setMinimumWidth(620)
         layout = QVBoxLayout(self)
-        self.range_group = QGroupBox("范围", self)
-        range_layout = QVBoxLayout(self.range_group)
-        self.auto_range = QRadioButton("自动", self.range_group)
-        self.manual_range = QRadioButton("手动", self.range_group)
-        (self.manual_range if options.get("manual") else self.auto_range).setChecked(True)
-        range_buttons = QButtonGroup(self.range_group)
-        range_buttons.addButton(self.auto_range)
-        range_buttons.addButton(self.manual_range)
-        self.minimum = CompactDoubleSpinBox(self.range_group)
-        self.maximum = CompactDoubleSpinBox(self.range_group)
-        for spin in (self.minimum, self.maximum):
-            spin.setRange(-1.0e30, 1.0e30)
-            spin.setDecimals(8)
-        self.minimum.setValue(float(options.get("minimum", 0.0)))
-        self.maximum.setValue(float(options.get("maximum", 1.0)))
-        self.show_minimum = QCheckBox(
-            "显示最小值",
-            self.range_group,
-        )
-        self.show_minimum.setChecked(
-            bool(options.get("show_minimum", False))
-        )
-        self.show_maximum = QCheckBox(
-            "显示最大值",
-            self.range_group,
-        )
-        self.show_maximum.setChecked(
-            bool(options.get("show_maximum", False))
-        )
-        automatic_row = QHBoxLayout()
-        automatic_row.addWidget(self.auto_range)
-        automatic_row.addStretch(1)
-        automatic_row.addWidget(self.show_minimum)
-        automatic_row.addWidget(self.show_maximum)
-        manual_row = QHBoxLayout()
-        manual_row.addWidget(self.manual_range)
-        manual_row.addWidget(QLabel("最小值", self))
-        manual_row.addWidget(self.minimum)
-        manual_row.addWidget(QLabel("最大值", self))
-        manual_row.addWidget(self.maximum)
-        range_layout.addLayout(automatic_row)
-        range_layout.addLayout(manual_row)
-        layout.addWidget(self.range_group)
-        form = QFormLayout()
-        configure_form_layout(form)
-        self.colormap = QComboBox(self)
+
+        self.render_group = QGroupBox("渲染", self)
+        render_layout = QVBoxLayout(self.render_group)
+        render_controls_row = QHBoxLayout()
+        render_controls_row.addWidget(QLabel("样式：", self.render_group))
+        self.filled_style = QRadioButton("填充", self.render_group)
+        self.shaded_style = QRadioButton("光影", self.render_group)
+        self.render_style_buttons = QButtonGroup(self.render_group)
+        self.render_style_buttons.addButton(self.filled_style)
+        self.render_style_buttons.addButton(self.shaded_style)
+        if options.get("render_mode", CONTOUR_RENDER_SHADED) == CONTOUR_RENDER_FILLED:
+            self.filled_style.setChecked(True)
+        else:
+            self.shaded_style.setChecked(True)
+        render_controls_row.addWidget(self.filled_style)
+        render_controls_row.addWidget(self.shaded_style)
+        render_controls_row.addSpacing(18)
+        render_controls_row.addWidget(QLabel("色带：", self.render_group))
+        self.colormap = QComboBox(self.render_group)
         for label, key in (
             ("Abaqus 彩虹", ABAQUS_RAINBOW),
             ("维里迪斯", "viridis"),
@@ -468,10 +609,21 @@ class ContourSettingsDialog(QDialog):
         self.colormap.setCurrentIndex(
             max(0, self.colormap.findData(selected_colormap))
         )
-        self.levels = QSpinBox(self)
+        render_controls_row.addWidget(self.colormap, 2)
+        render_controls_row.addWidget(QLabel("模式：", self.render_group))
+        self.mode = QComboBox(self.render_group)
+        self.mode.addItem("分段", "segmented")
+        self.mode.addItem("连续", "continuous")
+        self.mode.setCurrentIndex(
+            max(0, self.mode.findData(options.get("style", "segmented")))
+        )
+        render_controls_row.addWidget(self.mode, 1)
+        render_layout.addLayout(render_controls_row)
+
+        self.levels = QSpinBox(self.render_group)
         self.levels.setRange(4, 48)
         self.levels.setValue(int(options.get("levels", 12)))
-        self.levels_slider = _ThinHorizontalSlider(self)
+        self.levels_slider = _ThinHorizontalSlider(self.render_group)
         self.levels_slider.setObjectName("contourLevelsSlider")
         self.levels_slider.setRange(4, 48)
         self.levels_slider.setSingleStep(1)
@@ -479,59 +631,19 @@ class ContourSettingsDialog(QDialog):
         self.levels_slider.setValue(self.levels.value())
         self.levels_slider.valueChanged.connect(self.levels.setValue)
         self.levels.valueChanged.connect(self.levels_slider.setValue)
-        self.levels_row = QWidget(self)
+        self.levels_row = QWidget(self.render_group)
         levels_layout = QHBoxLayout(self.levels_row)
         levels_layout.setContentsMargins(0, 0, 0, 0)
         levels_layout.setSpacing(8)
         levels_layout.addWidget(self.levels_slider, 1)
         levels_layout.addWidget(self.levels)
-        self.style = QComboBox(self)
-        self.style.addItem("分段云图", "segmented")
-        self.style.addItem("连续云图", "continuous")
-        self.style.setCurrentIndex(max(0, self.style.findData(options.get("style", "segmented"))))
-        self.style.currentIndexChanged.connect(
+        self.mode.currentIndexChanged.connect(
             lambda: self.levels_row.setEnabled(
-                self.style.currentData() == "segmented"
+                self.mode.currentData() == "segmented"
             )
         )
-        self.levels_row.setEnabled(self.style.currentData() == "segmented")
-        self.render_mode = QComboBox(self)
-        self.render_mode.addItem("光影", CONTOUR_RENDER_SHADED)
-        self.render_mode.addItem("填充", CONTOUR_RENDER_FILLED)
-        self.render_mode.setCurrentIndex(
-            max(
-                0,
-                self.render_mode.findData(
-                    options.get(
-                        "render_mode",
-                        CONTOUR_RENDER_SHADED,
-                    )
-                ),
-            )
-        )
-        self.edge_mode = QComboBox(self)
-        for label, key in (
-            ("全部边", CONTOUR_EDGE_ALL),
-            ("外部边", CONTOUR_EDGE_EXTERIOR),
-            ("特征边", CONTOUR_EDGE_FEATURE),
-            ("自由边", CONTOUR_EDGE_FREE),
-            ("无边", CONTOUR_EDGE_NONE),
-        ):
-            self.edge_mode.addItem(label, key)
-        selected_edge_mode = options.get(
-            "edge_mode",
-            (
-                CONTOUR_EDGE_ALL
-                if options.get("edges", False)
-                else CONTOUR_EDGE_NONE
-            ),
-        )
-        if not options.get("edges", False):
-            selected_edge_mode = CONTOUR_EDGE_NONE
-        self.edge_mode.setCurrentIndex(
-            max(0, self.edge_mode.findData(selected_edge_mode))
-        )
-        self.averaging_threshold = QDoubleSpinBox(self)
+        self.levels_row.setEnabled(self.mode.currentData() == "segmented")
+        self.averaging_threshold = QDoubleSpinBox(self.render_group)
         self.averaging_threshold.setRange(0.0, 100.0)
         self.averaging_threshold.setDecimals(0)
         self.averaging_threshold.setSingleStep(1.0)
@@ -540,7 +652,9 @@ class ContourSettingsDialog(QDialog):
         self.averaging_threshold.setToolTip(
             "仅用于节点平均应力；超过阈值的当前分量按单元侧分开显示"
         )
-        self.averaging_threshold_slider = _ThinHorizontalSlider(self)
+        self.averaging_threshold_slider = _ThinHorizontalSlider(
+            self.render_group
+        )
         self.averaging_threshold_slider.setObjectName(
             "contourThresholdSlider"
         )
@@ -558,7 +672,7 @@ class ContourSettingsDialog(QDialog):
                 round(value)
             )
         )
-        self.averaging_threshold_row = QWidget(self)
+        self.averaging_threshold_row = QWidget(self.render_group)
         threshold_layout = QHBoxLayout(self.averaging_threshold_row)
         threshold_layout.setContentsMargins(0, 0, 0, 0)
         threshold_layout.setSpacing(8)
@@ -572,45 +686,65 @@ class ContourSettingsDialog(QDialog):
         for value_box in (self.levels, self.averaging_threshold):
             value_box.setFixedSize(value_box_width, value_box_height)
             value_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.number_format = QComboBox(self)
-        for label, key in (("自动", "general"), ("定点小数", "fixed"), ("科学计数法", "scientific")):
-            self.number_format.addItem(label, key)
-        self.number_format.setCurrentIndex(max(0, self.number_format.findData(options.get("number_format", "scientific"))))
-        self.decimals = QSpinBox(self)
-        self.decimals.setRange(0, 12)
-        self.decimals.setValue(int(options.get("decimals", 2)))
-        self.orientation = QComboBox(self)
-        self.orientation.addItem("横向", "horizontal")
-        self.orientation.addItem("纵向", "vertical")
-        self.orientation.setCurrentIndex(max(0, self.orientation.findData(options.get("orientation", "vertical"))))
-        form.addRow("色带：", self.colormap)
-        form.addRow("云图样式：", self.style)
-        form.addRow("渲染模式：", self.render_mode)
-        form.addRow("显示轮廓：", self.edge_mode)
-        form.addRow("数值格式：", self.number_format)
-        form.addRow("小数位：", self.decimals)
-        form.addRow("图例方向：", self.orientation)
-        form.addRow("色带级数：", self.levels_row)
-        form.addRow("阈值：", self.averaging_threshold_row)
-        self.form = form
-        layout.addLayout(form)
-        self.legend = QCheckBox("显示图例", self)
-        self.legend.setChecked(bool(options.get("legend", True)))
-        self.show_ids = QCheckBox("显示对象编号", self)
-        self.show_ids.setChecked(bool(options.get("show_ids", False)))
-        self.show_coordinate_system = QCheckBox(
-            "显示坐标系",
-            self,
+        self.form = QFormLayout()
+        configure_form_layout(self.form)
+        self.form.addRow("级数：", self.levels_row)
+        self.form.addRow("阈值：", self.averaging_threshold_row)
+        render_layout.addLayout(self.form)
+        layout.addWidget(self.render_group)
+
+        self.range_group = QGroupBox("范围", self)
+        range_layout = QVBoxLayout(self.range_group)
+        self.minimum = CompactDoubleSpinBox(self.range_group)
+        self.maximum = CompactDoubleSpinBox(self.range_group)
+        for spin in (self.minimum, self.maximum):
+            spin.setRange(-1.0e30, 1.0e30)
+            spin.setDecimals(12)
+        if options.get("manual"):
+            minimum = float(options.get("minimum", 0.0))
+            maximum = float(options.get("maximum", 1.0))
+        else:
+            minimum = float(
+                options.get("automatic_minimum", options.get("minimum", 0.0))
+            )
+            maximum = float(
+                options.get("automatic_maximum", options.get("maximum", 1.0))
+            )
+        self.minimum.setValue(minimum)
+        self.maximum.setValue(maximum)
+        value_row = QHBoxLayout()
+        value_row.addWidget(QLabel("最小值：", self.range_group))
+        value_row.addWidget(self.minimum, 1)
+        value_row.addSpacing(18)
+        value_row.addWidget(QLabel("最大值：", self.range_group))
+        value_row.addWidget(self.maximum, 1)
+        range_layout.addLayout(value_row)
+
+        self.auto_range = QRadioButton("自动", self.range_group)
+        self.manual_range = QRadioButton("手动", self.range_group)
+        (self.manual_range if options.get("manual") else self.auto_range).setChecked(True)
+        self.range_buttons = QButtonGroup(self.range_group)
+        self.range_buttons.addButton(self.auto_range)
+        self.range_buttons.addButton(self.manual_range)
+        self.show_maximum = QCheckBox("显示最大值", self.range_group)
+        self.show_maximum.setChecked(
+            bool(options.get("show_maximum", False))
         )
-        self.show_coordinate_system.setChecked(
-            bool(options.get("show_coordinate_system", True))
+        self.show_minimum = QCheckBox("显示最小值", self.range_group)
+        self.show_minimum.setChecked(
+            bool(options.get("show_minimum", False))
         )
-        for checkbox in (
-            self.legend,
-            self.show_ids,
-            self.show_coordinate_system,
-        ):
-            layout.addWidget(checkbox)
+        controls_row = QHBoxLayout()
+        controls_row.addWidget(self.auto_range)
+        controls_row.addWidget(self.manual_range)
+        controls_row.addStretch(1)
+        controls_row.addWidget(self.show_maximum)
+        controls_row.addWidget(self.show_minimum)
+        range_layout.addLayout(controls_row)
+        self.manual_range.toggled.connect(self._sync_range_mode)
+        self._sync_range_mode()
+        layout.addWidget(self.range_group)
+
         buttons = _dialog_buttons(self)
         buttons.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(self.apply)
         buttons.accepted.connect(self.accept_with_apply)
@@ -618,29 +752,27 @@ class ContourSettingsDialog(QDialog):
         layout.addWidget(buttons)
 
     def settings(self) -> dict[str, Any]:
-        edge_mode = str(self.edge_mode.currentData())
         return {
             "manual": self.manual_range.isChecked(),
             "minimum": float(self.minimum.value()),
             "maximum": float(self.maximum.value()),
             "colormap": str(self.colormap.currentData()),
-            "style": str(self.style.currentData()),
-            "render_mode": str(self.render_mode.currentData()),
-            "edge_mode": edge_mode,
+            "style": str(self.mode.currentData()),
+            "render_mode": (
+                CONTOUR_RENDER_FILLED
+                if self.filled_style.isChecked()
+                else CONTOUR_RENDER_SHADED
+            ),
             "levels": int(self.levels.value()),
-            "number_format": str(self.number_format.currentData()),
-            "decimals": int(self.decimals.value()),
-            "orientation": str(self.orientation.currentData()),
-            "legend": self.legend.isChecked(),
             "show_minimum": self.show_minimum.isChecked(),
             "show_maximum": self.show_maximum.isChecked(),
-            "show_ids": self.show_ids.isChecked(),
-            "show_coordinate_system": (
-                self.show_coordinate_system.isChecked()
-            ),
-            "edges": edge_mode != CONTOUR_EDGE_NONE,
             "averaging_threshold": float(self.averaging_threshold.value()),
         }
+
+    def _sync_range_mode(self) -> None:
+        manual = self.manual_range.isChecked()
+        self.minimum.setEnabled(manual)
+        self.maximum.setEnabled(manual)
 
     def apply(self) -> None:
         if self.manual_range.isChecked() and self.minimum.value() >= self.maximum.value():

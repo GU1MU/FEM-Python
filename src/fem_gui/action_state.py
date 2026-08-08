@@ -96,6 +96,7 @@ class GuiActionKey(str, Enum):
     CONTOUR = "contour"
     OVERLAY = "overlay"
     FIELD = "field"
+    DISPLAY_SETTINGS = "display_settings"
     SCALE = "scale"
     CONTOUR_OPTIONS = "contour_options"
     QUERY = "query"
@@ -225,6 +226,7 @@ ACTION_DESCRIPTORS: tuple[GuiActionDescriptor, ...] = (
     _d(GuiActionKey.CONTOUR, "显示云图", "_toggle_contour", "contour", checkable=True),
     _d(GuiActionKey.OVERLAY, "叠加未变形轮廓", "_toggle_undeformed_overlay", "overlay", checkable=True),
     _d(GuiActionKey.FIELD, "结果变量和分量", "show_result_display_dialog", "field"),
+    _d(GuiActionKey.DISPLAY_SETTINGS, "显示设置", "show_display_settings_dialog", "settings"),
     _d(GuiActionKey.SCALE, "变形比例", "show_result_display_dialog", "scale"),
     _d(GuiActionKey.CONTOUR_OPTIONS, "云图设置", "show_contour_dialog", "settings"),
     _d(
@@ -813,6 +815,7 @@ def derive_action_availability(
         GuiActionKey.CONTOUR,
         GuiActionKey.OVERLAY,
         GuiActionKey.SCALE,
+        GuiActionKey.DISPLAY_SETTINGS,
         GuiActionKey.CONTOUR_OPTIONS,
     ):
         set_state(

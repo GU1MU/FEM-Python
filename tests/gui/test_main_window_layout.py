@@ -151,6 +151,10 @@ def test_menu_ribbon_and_viewport_toolbar_reuse_actions():
     assert window.actions["export_csv"] in result_actions
     assert window.actions["screenshot"] in result_actions
     assert window.actions["export_vtk"] not in result_actions
+    assert window.actions["display_settings"] in result_menu.actions()
+    assert window.actions["display_settings"] in result_actions
+    assert window.actions["field"] not in result_menu.actions()
+    assert window.actions["field"] not in result_actions
     window.close()
 
 

@@ -160,6 +160,11 @@ def test_result_action_descriptors_use_canonical_export_keys_and_handlers() -> N
     descriptors = {item.key: item for item in ACTION_DESCRIPTORS}
 
     assert descriptors[GuiActionKey.FIELD].handler == ("show_result_display_dialog")
+    assert descriptors[GuiActionKey.DISPLAY_SETTINGS].text == "显示设置"
+    assert (
+        descriptors[GuiActionKey.DISPLAY_SETTINGS].handler
+        == "show_display_settings_dialog"
+    )
     assert (
         descriptors[GuiActionKey.QUERY].handler
         == "show_result_query_dialog"

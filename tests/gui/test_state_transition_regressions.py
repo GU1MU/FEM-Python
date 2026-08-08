@@ -47,6 +47,7 @@ _RESULT_ACTIONS = (
     "contour",
     "overlay",
     "field",
+    "display_settings",
     "scale",
     "contour_options",
     "query",

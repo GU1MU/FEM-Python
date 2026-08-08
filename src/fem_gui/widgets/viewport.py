@@ -1327,9 +1327,11 @@ class FEMViewport(QWidget):
             "legend": True, "edges": False,
             "render_mode": CONTOUR_RENDER_SHADED,
             "edge_mode": CONTOUR_EDGE_NONE,
+            "edge_style": "solid", "edge_width": 1.0,
             "number_format": "scientific", "decimals": 2,
             "orientation": "vertical", "show_minimum": False,
             "show_maximum": False, "show_ids": False,
+            "legend_font": "Arial", "legend_font_size": 14,
             "show_coordinate_system": True,
         }
         self._message = QLabel("", self)
@@ -6669,6 +6671,20 @@ class FEMViewport(QWidget):
                 float(self._contour["minimum"]),
                 float(self._contour["maximum"]),
             )
+        return self._payload_data_range(payload)
+
+    def current_contour_range(self) -> tuple[float, float] | None:
+        """返回当前结果字段的实际数值范围。"""
+
+        payload = self._result_render_payload
+        if payload is None:
+            return None
+        return self._payload_data_range(payload)
+
+    @staticmethod
+    def _payload_data_range(
+        payload: ResultRenderPayload,
+    ) -> tuple[float, float]:
         preference = (
             "point"
             if payload.topology.value_layout is ResultValueLayout.POINT
@@ -6687,6 +6703,12 @@ class FEMViewport(QWidget):
         selection = payload.topology.selection
         variable = selection.field_key.request.field_id.variable.value
         vertical = self._contour["orientation"] == "vertical"
+        font_family = {
+            "Arial": "arial",
+            "Times New Roman": "times",
+            "Courier New": "courier",
+        }.get(str(self._contour["legend_font"]), "arial")
+        font_size = int(self._contour["legend_font_size"])
         options: dict[str, Any] = {
             "title": f"{variable}, {selection.component}",
             "vertical": vertical,
@@ -6694,8 +6716,9 @@ class FEMViewport(QWidget):
             "fmt": self._scalar_format(),
             "color": self._background_settings.foreground_color,
             "outline": False,
-            "title_font_size": 18,
-            "label_font_size": 14,
+            "title_font_size": font_size,
+            "label_font_size": font_size,
+            "font_family": font_family,
             "unconstrained_font_size": True,
         }
         if vertical:
@@ -6761,10 +6784,13 @@ class FEMViewport(QWidget):
         edges = extract_contour_edges(dataset, edge_mode)
         if edges is None or edges.n_cells == 0:
             return None
+        line_width = float(self._contour["edge_width"])
+        if self._contour["edge_style"] == "bold":
+            line_width = max(line_width * 2.0, 3.0)
         actor = self._plotter.add_mesh(
             edges,
             color=self._background_settings.foreground_color,
-            line_width=self._element_line_width(),
+            line_width=line_width,
             lighting=False,
             show_scalar_bar=False,
             pickable=False,
@@ -6772,9 +6798,24 @@ class FEMViewport(QWidget):
             reset_camera=False,
             **self._line_render_options(),
         )
+        self._apply_result_edge_style(actor)
         self._offset_highlight_actor(actor)
         self._actors["result_edges"] = actor
         return actor
+
+    def _apply_result_edge_style(self, actor: Any) -> None:
+        property_getter = getattr(actor, "GetProperty", None)
+        if not callable(property_getter):
+            return
+        vtk_property = property_getter()
+        pattern, repeat = {
+            "solid": (0xFFFF, 1),
+            "dashed": (0xF0F0, 1),
+            "short_dashed": (0xAAAA, 1),
+            "bold": (0xFFFF, 1),
+        }.get(str(self._contour["edge_style"]), (0xFFFF, 1))
+        vtk_property.SetLineStipplePattern(pattern)
+        vtk_property.SetLineStippleRepeatFactor(repeat)
 
     def _add_result_render_payload_extrema_labels(
         self,
@@ -6899,6 +6940,8 @@ class FEMViewport(QWidget):
             return f"%.{decimals}f"
         if mode == "scientific":
             return f"%.{decimals}E"
+        if mode == "engineering":
+            return f"%.{decimals}E"
         return f"%.{decimals}g"
 
     def _format_scalar(self, value: float) -> str:
@@ -6911,6 +6954,16 @@ class FEMViewport(QWidget):
                 return "0"
             mantissa, exponent = f"{value:.{decimals}E}".split("E")
             return f"{mantissa}E{int(exponent):+d}"
+        if mode == "engineering":
+            if value == 0.0:
+                return "0"
+            exponent = 3 * math.floor(math.log10(abs(value)) / 3)
+            mantissa = value / (10.0 ** exponent)
+            rounded = float(f"{mantissa:.{decimals}f}")
+            if abs(rounded) >= 1000.0:
+                exponent += 3
+                mantissa /= 1000.0
+            return f"{mantissa:.{decimals}f}E{exponent:+d}"
         return f"{value:.{decimals}g}"
 
     def _refresh_node_layer(self, *, render: bool = True) -> None:

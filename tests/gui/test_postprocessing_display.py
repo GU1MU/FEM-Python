@@ -17,6 +17,10 @@ from fem.application.results import (
 )
 from fem.solvers.static_linear import solve
 from fem_gui.main_window import FEMMainWindow
+from fem_gui.postprocessing_dialogs import (
+    ContourSettingsDialog,
+    DisplaySettingsDialog,
+)
 from fem_gui.visualization.model_adapter import build_model_geometry
 
 
@@ -224,6 +228,52 @@ def test_result_ribbon_selects_real_fields_and_deformation_scale(gui_inp_path):
     window._result_scale_mode_changed(custom_index)
     assert window.result_scale_value.isEnabled()
     assert window.result_scale_value.value() == 8.0
+    window.close()
+
+
+def test_display_settings_dialog_applies_viewport_options(gui_inp_path):
+    _application()
+    window = _solved_window(gui_inp_path)
+    opened: list[DisplaySettingsDialog] = []
+    window._exec_dialog = opened.append
+
+    window.show_display_settings_dialog()
+
+    assert len(opened) == 1
+    dialog = opened[0]
+    assert dialog.windowTitle() == "显示设置"
+    dialog.engineering_format.setChecked(True)
+    dialog.horizontal_orientation.setChecked(True)
+    dialog.edge_style.setCurrentIndex(dialog.edge_style.findData("dashed"))
+    dialog.edge_width.setValue(2.5)
+    dialog.show_ids.setChecked(True)
+    dialog.apply()
+
+    assert window.viewport._contour["number_format"] == "engineering"
+    assert window.viewport._contour["orientation"] == "horizontal"
+    assert window.viewport._contour["edge_style"] == "dashed"
+    assert window.viewport._contour["edge_width"] == 2.5
+    assert window.viewport._contour["show_ids"]
+    window.close()
+
+
+def test_contour_dialog_auto_range_uses_current_result_extrema(gui_inp_path):
+    _application()
+    window = _solved_window(gui_inp_path)
+    expected = window.viewport.current_contour_range()
+    opened: list[ContourSettingsDialog] = []
+    window._exec_dialog = opened.append
+
+    window.show_contour_dialog()
+
+    assert expected is not None
+    assert len(opened) == 1
+    dialog = opened[0]
+    assert dialog.auto_range.isChecked()
+    assert not dialog.minimum.isEnabled()
+    assert not dialog.maximum.isEnabled()
+    assert dialog.minimum.value() == pytest.approx(expected[0])
+    assert dialog.maximum.value() == pytest.approx(expected[1])
     window.close()
 
 
