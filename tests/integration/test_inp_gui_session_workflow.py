@@ -40,6 +40,11 @@ FIXTURES = (
     / "inp"
     / "abaqus_standard"
 )
+MIXED_PLATE = (
+    Path(__file__).parents[2]
+    / "data"
+    / "MixedPlateCps3Cps4_PerforatedJob.inp"
+)
 B31_NOTICE = "abaqus.b31.euler_bernoulli_approximation"
 B31_NORMAL_NOTICE = "abaqus.b31.nodal_normal_generation_approximation"
 
@@ -345,6 +350,51 @@ def test_imported_output_overlay_executes_then_reload_restores_source() -> None:
             CloseSessionCommand(window.document.session_revision)
         )
     )
+    window.close()
+
+
+def test_mixed_plate_import_and_gui_solve_publish_u_rf_and_s() -> None:
+    _application()
+    window = FEMMainWindow()
+
+    await_succeeded(window.open_inp_path(MIXED_PLATE))
+    step = next(
+        item for item in window.document.steps if item.name == "LOAD"
+    )
+    assert tuple(
+        (request.target, request.variables)
+        for request in step.outputs
+    ) == (
+        ("node", ("RF", "U")),
+        ("element", ("S",)),
+    )
+
+    _check_and_solve(
+        window,
+        step_name="LOAD",
+        run_name="Mixed-Plate-Output",
+    )
+
+    provider = window.result_provider
+    assert provider is not None
+    assert {
+        availability.descriptor.field_id.variable
+        for availability in provider.catalog().fields
+    } == {
+        ResultVariable.U,
+        ResultVariable.RF,
+        ResultVariable.S,
+    }
+    result_root = window.result_tree.topLevelItem(0)
+    result_step = result_root.child(0)
+    assert {
+        result_step.child(index).text(0)
+        for index in range(result_step.childCount())
+    } == {
+        "位移 U",
+        "反力 RF",
+        "应力 S",
+    }
     window.close()
 
 

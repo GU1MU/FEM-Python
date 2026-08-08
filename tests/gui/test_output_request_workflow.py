@@ -74,8 +74,10 @@ def _accepted_candidate_dialog(predicate):
             *,
             candidates=(),
             current=None,
+            existing_requests_by_step=None,
         ) -> None:
             assert current is None
+            assert existing_requests_by_step is not None
             self._step_name = step_names[0]
             self._candidates = tuple(candidates)
             type(self).observed_candidates = self._candidates
@@ -370,8 +372,10 @@ def test_native_create_accepts_multiple_output_variables(
             *,
             candidates=(),
             current=None,
+            existing_requests_by_step=None,
         ) -> None:
             assert current is None
+            assert existing_requests_by_step is not None
             self._step_name = step_names[0]
             self._requests = tuple(
                 deepcopy(

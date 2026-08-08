@@ -25,6 +25,11 @@ _STANDARD = (
     / "inp"
     / "abaqus_standard"
 )
+_MIXED_PLATE = (
+    Path(__file__).parents[2]
+    / "data"
+    / "MixedPlateCps3Cps4_PerforatedJob.inp"
+)
 
 
 def _source() -> ResultSourceKey:
@@ -127,3 +132,45 @@ def test_imported_abaqus_outputs_match_native_projection_and_execution() -> None
     assert eager_stress.locations == lazy_stress.locations
     np.testing.assert_allclose(eager_stress.values, lazy_stress.values)
     np.testing.assert_allclose(eager_stress.values[:, 0], (2.10e8,))
+
+
+def test_mixed_cps3_cps4_import_executes_u_rf_and_s_requests() -> None:
+    model = read(_MIXED_PLATE)
+    step = next(item for item in model.steps if item.name == "LOAD")
+
+    assert tuple(
+        (request.target, request.variables)
+        for request in step.outputs
+    ) == (
+        ("node", ("RF", "U")),
+        ("element", ("S",)),
+    )
+
+    result = static_linear.solve(model, step)
+    provider = build_result_provider(
+        ResultSourceKey(
+            result_id="mixed-plate-result",
+            session_id="mixed-plate-session",
+            artifact_id="mixed-plate-artifact",
+            model_revision=1,
+            step_name=step.name,
+            run_id="mixed-plate-run",
+        ),
+        result,
+    )
+    outcome = execute_output_requests(provider, tuple(step.outputs))
+
+    assert tuple(
+        variable.canonical_variable
+        for request in outcome.report.requests
+        for variable in request.variables
+    ) == (
+        ResultVariable.U,
+        ResultVariable.RF,
+        ResultVariable.S,
+    )
+    assert all(
+        variable.status is OutputExecutionStatus.EXECUTED
+        for request in outcome.report.requests
+        for variable in request.variables
+    )

@@ -457,11 +457,10 @@ class ModelTree(QTreeWidget):
                 ))
             output_root = self._category(step_item, "输出请求", len(step.outputs))
             for output_index, output in enumerate(step.outputs):
-                kind_label = {"field": "字段输出", "history": "历史输出"}.get(output.kind, "输出")
-                target_label = {"node": "节点", "element": "单元"}.get(output.target, output.target)
+                variables_label = "、".join(output.variables)
                 identity = getattr(output, "name", None)
                 output_root.addChild(self._item(
-                    identity or f"{kind_label}：{target_label}",
+                    identity or variables_label or "输出请求",
                     "output",
                     (step.name, identity) if identity is not None else (index, output_index),
                 ))

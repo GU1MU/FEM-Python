@@ -199,9 +199,9 @@ def test_line_elements_are_drawn_thicker_than_continuum_edges():
     assert viewport._element_line_width() == 5
     assert viewport._line_render_options() == {"render_lines_as_tubes": True}
     assert viewport._node_point_size() == 11
-    assert viewport._mesh_layer_color(viewport._visual_palette()) == "#1769aa"
-    assert viewport._element_layer_color(viewport._visual_palette()) == "#1769aa"
-    assert viewport._node_layer_color(viewport._visual_palette()) == "#b45309"
+    assert viewport._mesh_layer_color(viewport._visual_palette()) == "#3F6F8C"
+    assert viewport._element_layer_color(viewport._visual_palette()) == "#3F6F8C"
+    assert viewport._node_layer_color(viewport._visual_palette()) == "#9A6F3F"
     node_labels = viewport._label_render_options("node")
     element_labels = viewport._label_render_options("element")
     assert node_labels["always_visible"]
@@ -214,8 +214,8 @@ def test_line_elements_are_drawn_thicker_than_continuum_edges():
     assert viewport._line_render_options() == {}
     assert viewport._node_point_size() == 7
     assert viewport._mesh_layer_color(viewport._visual_palette()) == "#d8dde2"
-    assert viewport._element_layer_color(viewport._visual_palette()) == "#1769aa"
-    assert viewport._node_layer_color(viewport._visual_palette()) == "#b45309"
+    assert viewport._element_layer_color(viewport._visual_palette()) == "#3F6F8C"
+    assert viewport._node_layer_color(viewport._visual_palette()) == "#9A6F3F"
 
 
 @pytest.mark.parametrize(
@@ -230,8 +230,8 @@ def test_2d_and_3d_meshes_share_element_and_node_colors(mesh_factory):
 
     assert not viewport._is_line_mesh()
     assert viewport._mesh_layer_color(palette) == "#d8dde2"
-    assert viewport._element_layer_color(palette) == "#1769aa"
-    assert viewport._node_layer_color(palette) == "#b45309"
+    assert viewport._element_layer_color(palette) == "#3F6F8C"
+    assert viewport._node_layer_color(palette) == "#9A6F3F"
 
 
 @pytest.mark.parametrize(

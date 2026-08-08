@@ -8849,6 +8849,11 @@ class FEMMainWindow(QMainWindow):
             step_names,
             self,
             candidates=candidates,
+            existing_requests_by_step={
+                step.name: tuple(step.outputs)
+                for step in self.document.steps
+                if step.name.strip().casefold() != "initial"
+            },
         )
         if not self._exec_dialog(dialog):
             return

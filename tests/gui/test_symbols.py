@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from fem_gui.visualization.symbols import (
+    SymbolSettings,
     arc_points,
     camera_facing_offset,
     constraint_outward_direction,
@@ -169,7 +170,15 @@ def test_constraint_symbol_is_compact_and_has_a_slender_visible_width():
 
     assert length == pytest.approx(27.0)
     assert radius == pytest.approx(3.24)
-    assert load_symbol_length(20.0) == pytest.approx(66.0)
+    assert load_symbol_length(20.0) == pytest.approx(40.0)
+
+
+def test_symbol_defaults_are_sparse_and_low_saturation():
+    settings = SymbolSettings()
+
+    assert settings.sampling_density == "low"
+    assert settings.constraint_color == "#5F7F96"
+    assert settings.load_color == "#A65D54"
 
 
 def test_constraint_marker_uses_the_nearest_exterior_axis_side():

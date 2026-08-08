@@ -20,9 +20,9 @@ class SymbolSettings:
     show_values: bool = False
     scale: float = 1.0
     normalize_arrows: bool = True
-    sampling_density: str = "medium"
-    constraint_color: str = "#2F6F9F"
-    load_color: str = "#B24A3A"
+    sampling_density: str = "low"
+    constraint_color: str = "#5F7F96"
+    load_color: str = "#A65D54"
 
 
 def sample_polyline(points: np.ndarray, density: str) -> np.ndarray:
@@ -109,7 +109,7 @@ def constraint_outward_direction(
 
 def load_symbol_length(glyph_length: float) -> float:
     """Return the displayed shaft-and-head length for force vectors."""
-    return 3.3 * float(glyph_length)
+    return 2.0 * float(glyph_length)
 
 
 def load_arrow_origins(

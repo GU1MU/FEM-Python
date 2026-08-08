@@ -6190,14 +6190,14 @@ class FEMViewport(QWidget):
             )
             self._actors["load_regions"] = self._plotter.add_mesh(
                 region, color=settings.load_color, opacity=0.11, show_edges=False,
-                name="load_regions", reset_camera=False,
+                lighting=False, name="load_regions", reset_camera=False,
             )
         if edge_lines:
             region_edges = _pyvista.PolyData(self._current_points())
             region_edges.lines = np.asarray(edge_lines, dtype=np.int64)
             self._actors["load_region_edges"] = self._plotter.add_mesh(
                 region_edges, color=settings.load_color, line_width=3,
-                name="load_region_edges", reset_camera=False,
+                lighting=False, name="load_region_edges", reset_camera=False,
             )
         self._add_load_arrows(
             origins,
@@ -6255,12 +6255,13 @@ class FEMViewport(QWidget):
         poly = _pyvista.PolyData(np.asarray(points))
         poly.lines = np.asarray(lines, dtype=np.int64)
         self._actors[name] = self._plotter.add_mesh(
-            poly, color=color, line_width=3, name=name, reset_camera=False,
+            poly, color=color, line_width=2, lighting=False,
+            name=name, reset_camera=False,
         )
         head_name = f"{name[:-1]}_heads" if name.endswith("s") else f"{name}_heads"
         self._actors[head_name] = self._plotter.add_arrows(
             np.asarray(heads), np.asarray(tangents), mag=0.22 * radius,
-            color=color, name=head_name, reset_camera=False,
+            color=color, lighting=False, name=head_name, reset_camera=False,
         )
 
     def _add_rotation_constraint_symbols(
@@ -6289,7 +6290,8 @@ class FEMViewport(QWidget):
         poly = _pyvista.PolyData(np.asarray(points))
         poly.lines = np.asarray(lines, dtype=np.int64)
         self._actors[name] = self._plotter.add_mesh(
-            poly, color=color, line_width=3, name=name, reset_camera=False,
+            poly, color=color, line_width=2, lighting=False,
+            name=name, reset_camera=False,
         )
 
     def _add_load_arrows(
@@ -6329,14 +6331,15 @@ class FEMViewport(QWidget):
         arrow_points["arrow_scale"] = displayed_lengths
         arrow = _pyvista.Arrow(
             start=(0.0, 0.0, 0.0), direction=(1.0, 0.0, 0.0),
-            tip_length=0.24, tip_radius=0.11, tip_resolution=16,
-            shaft_radius=0.035, shaft_resolution=12,
+            tip_length=0.20, tip_radius=0.07, tip_resolution=8,
+            shaft_radius=0.015, shaft_resolution=8,
         )
         arrow_glyphs = arrow_points.glyph(
             orient="directions", scale="arrow_scale", factor=1.0, geom=arrow,
         )
         self._actors["loads"] = self._plotter.add_mesh(
-            arrow_glyphs, color=settings.load_color, name="loads", reset_camera=False,
+            arrow_glyphs, color=settings.load_color, lighting=False,
+            name="loads", reset_camera=False,
         )
         if settings.show_values and anchors:
             existing = self._actors.get("load_labels")
@@ -6469,6 +6472,7 @@ class FEMViewport(QWidget):
             color=self._element_layer_color(palette),
             style="wireframe",
             line_width=self._element_line_width(),
+            lighting=False,
             name="element_edges",
             reset_camera=False,
             **self._line_render_options(),
@@ -6482,7 +6486,8 @@ class FEMViewport(QWidget):
         mesh_color = self._mesh_layer_color(palette)
         self._actors["mesh_surface"] = self._plotter.add_mesh(
             self._grid, color=mesh_color, show_edges=False, name="mesh_surface",
-            line_width=self._element_line_width(), reset_camera=False,
+            line_width=self._element_line_width(), lighting=False,
+            reset_camera=False,
             **line_options,
         )
         if self._show_edges:
@@ -6924,7 +6929,8 @@ class FEMViewport(QWidget):
                 node_data,
                 color=self._node_layer_color(palette),
                 point_size=self._node_point_size(),
-                render_points_as_spheres=True, name="nodes", reset_camera=False,
+                render_points_as_spheres=True, lighting=False,
+                name="nodes", reset_camera=False,
             )
             self._update_pickable_actors()
         if render:
@@ -8044,12 +8050,12 @@ class FEMViewport(QWidget):
         dark = self._background_settings.is_dark and self._background_settings.auto_contrast
         if dark:
             return {
-                "mesh": "#718797", "element": "#58c7f3", "node": "#ffbd59",
+                "mesh": "#718797", "element": "#6FA6BC", "node": "#D0A05B",
                 "result": "#8295a5", "overlay": "#e0e6ea",
                 "label_background": "#263746",
             }
         return {
-            "mesh": "#d8dde2", "element": "#1769aa", "node": "#b45309",
+            "mesh": "#d8dde2", "element": "#3F6F8C", "node": "#9A6F3F",
             "result": "#b9c6d2", "overlay": "#7f8c8d",
             "label_background": "#ffffff",
         }

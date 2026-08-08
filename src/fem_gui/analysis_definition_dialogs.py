@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import replace
 from math import isfinite
@@ -884,6 +884,10 @@ class OutputRequestDialog(QDialog):
         *,
         candidates: Sequence[OutputRequestProjection] = (),
         current: OutputRequest | None = None,
+        existing_requests_by_step: Mapping[
+            str,
+            Sequence[OutputRequest],
+        ] | None = None,
     ) -> None:
         super().__init__(parent)
         if any(type(name) is not str or not name.strip() for name in step_names):
@@ -904,10 +908,28 @@ class OutputRequestDialog(QDialog):
             raise ValueError(
                 "read-only output request views cannot accept candidates"
             )
+        existing_values = (
+            {}
+            if existing_requests_by_step is None
+            else dict(existing_requests_by_step)
+        )
+        if any(
+            type(name) is not str
+            or type(requests) not in {tuple, list}
+            or any(type(request) is not OutputRequest for request in requests)
+            for name, requests in existing_values.items()
+        ):
+            raise TypeError(
+                "existing_requests_by_step must map step names to OutputRequest sequences"
+            )
 
         self._candidates = deepcopy(
             _visible_output_request_candidates(candidate_values)
         )
+        self._existing_requests_by_step = {
+            name: tuple(deepcopy(requests))
+            for name, requests in existing_values.items()
+        }
         self._current = (
             None
             if current is None
@@ -962,20 +984,29 @@ class OutputRequestDialog(QDialog):
         self.kind_value = QLabel("", self)
         self.variables_value = QLabel("", self)
         self.variables_value.setWordWrap(True)
+        self.existing_value = QLabel("", self)
+        self.existing_value.setWordWrap(True)
 
         form = QFormLayout()
         configure_form_layout(form)
         form.addRow("分析步", self.step_combo)
         if self._current is None:
-            form.addRow("候选输出", self.candidate_list)
+            form.addRow("当前已有输出", self.existing_value)
+            form.addRow("可新增输出", self.candidate_list)
         form.addRow("输出类型", self.kind_value)
-        form.addRow("输出变量", self.variables_value)
+        form.addRow(
+            "输出变量" if self._current is not None else "待新增变量",
+            self.variables_value,
+        )
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         if self._current is None:
             layout.addWidget(_buttons(self))
             self.candidate_list.itemChanged.connect(
                 self._refresh_request
+            )
+            self.step_combo.currentTextChanged.connect(
+                lambda _text: self._refresh_request()
             )
         else:
             self.step_combo.setEnabled(False)
@@ -1041,6 +1072,14 @@ class OutputRequestDialog(QDialog):
             )
         )
         self.variables_value.setText("、".join(variables))
+        if self._current is None:
+            existing = self._existing_requests_by_step.get(
+                self.step_combo.currentText(),
+                (),
+            )
+            self.existing_value.setText(
+                _existing_output_request_summary(existing)
+            )
 
     def _selected_candidates(self) -> tuple[OutputRequestProjection, ...]:
         if self._current is not None:
@@ -1071,7 +1110,20 @@ class OutputRequestDialog(QDialog):
 def _output_request_summary(request: OutputRequest) -> str:
     if type(request) is not OutputRequest:
         raise TypeError("request must be exactly OutputRequest")
-    return "、".join(request.variables)
+    target = {
+        "node": "节点",
+        "element": "单元",
+        "preselect": "INP 预选",
+    }.get(request.target, request.target)
+    return f"{target}：{'、'.join(request.variables)}"
+
+
+def _existing_output_request_summary(
+    requests: Sequence[OutputRequest],
+) -> str:
+    if not requests:
+        return "无"
+    return "；".join(_output_request_summary(request) for request in requests)
 
 
 def _is_required_displacement_output(request: OutputRequest) -> bool:

@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QApplication
 import fem_gui.widgets.model_tree as model_tree_module
 from fem.io.inp import read
 from fem.application import RegionAssignment, SectionDefinition
-from fem.core.model import GravityLoad
+from fem.core.model import AnalysisStep, GravityLoad, OutputRequest
 from fem.elements import BeamOrientation
 from fem_gui.widgets.model_tree import ModelTree, ROLE_KEY, ROLE_KIND
 
@@ -193,6 +193,43 @@ def test_line_load_is_a_regular_load_tree_item():
     )
     assert line_load.text(0) == "边力 1"
     assert not line_load.icon(0).isNull()
+
+
+def test_output_request_tree_items_show_only_variables():
+    _application()
+    step = AnalysisStep(
+        "Load",
+        outputs=(
+            OutputRequest("field", "preselect", ("PRESELECT",)),
+            OutputRequest("field", "node", ("RF", "U")),
+            OutputRequest("field", "element", ("S",)),
+        ),
+    )
+    model = SimpleNamespace(
+        name="Output model",
+        mesh=SimpleNamespace(nodes=[], elements=[]),
+        node_sets={},
+        element_sets={},
+        surfaces={},
+        edges={},
+        materials={},
+        sections=[],
+        steps=[step],
+    )
+    tree = ModelTree()
+
+    tree.set_model(model)
+
+    outputs = [
+        item.text(0)
+        for item in _items(tree)
+        if item.data(0, ROLE_KIND) == "output"
+    ]
+    assert set(outputs) == {
+        "PRESELECT",
+        "RF、U",
+        "S",
+    }
 
 
 def test_section_tree_uses_cae_labels_instead_of_backend_identifiers():

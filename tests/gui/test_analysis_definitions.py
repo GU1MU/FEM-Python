@@ -784,7 +784,7 @@ def test_output_request_uses_only_published_candidate_order_and_dto(
     assert tuple(
         dialog.candidate_list.item(index).text()
         for index in range(dialog.candidate_list.count())
-    ) == ("U", "RF", "S")
+    ) == ("节点：U", "节点：RF", "单元：S")
     assert all(
         "position" not in dialog.candidate_list.item(index).text()
         for index in range(dialog.candidate_list.count())
@@ -848,6 +848,26 @@ def test_output_request_discards_parsed_inp_details():
     assert not hasattr(dialog, "target_value")
     assert not hasattr(dialog, "metadata_value")
     assert not hasattr(dialog, "source_evidence_value")
+
+
+def test_output_request_dialog_shows_existing_imported_requests_by_step():
+    _application()
+    candidates = _output_candidates(ResultModelFamily.PLANE_CONTINUUM)
+    dialog = OutputRequestDialog(
+        ["Load", "Empty"],
+        candidates=candidates,
+        existing_requests_by_step={
+            "Load": (
+                OutputRequest("field", "node", ("RF", "U")),
+                OutputRequest("field", "element", ("S",)),
+            ),
+            "Empty": (),
+        },
+    )
+
+    assert dialog.existing_value.text() == "节点：RF、U；单元：S"
+    dialog.step_combo.setCurrentText("Empty")
+    assert dialog.existing_value.text() == "无"
 
 
 def test_analysis_manager_uses_readable_definition_summaries():

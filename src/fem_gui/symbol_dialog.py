@@ -17,11 +17,11 @@ from .dialogs import CompactDoubleSpinBox, configure_form_layout
 
 
 COLOR_OPTIONS = (
-    ("蓝色", "#2980b9"),
-    ("红色", "#c0392b"),
-    ("橙色", "#e67e22"),
-    ("绿色", "#278a5b"),
-    ("紫色", "#7d3c98"),
+    ("蓝灰", "#5F7F96"),
+    ("砖红", "#A65D54"),
+    ("赭橙", "#B47A4B"),
+    ("灰绿", "#638477"),
+    ("灰紫", "#80728F"),
 )
 
 
