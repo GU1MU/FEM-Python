@@ -148,7 +148,13 @@ from fem.geometry import (
     undo_solid_body_feature,
 )
 from fem.geometry.gmsh_coordinator import GmshExecutionCancelled
-from fem.io.project import LoadedProject, load_project, save_project
+from fem.io.project import (
+    LEGACY_MODEL_FILE_SUFFIXES,
+    MODEL_FILE_SUFFIX,
+    LoadedProject,
+    load_project,
+    save_project,
+)
 from fem.io.result_csv import write_result_table_csv
 from fem.io.result_vtk import write_result_vtk
 from fem.mesh.quality import analyze_mesh
@@ -314,6 +320,22 @@ _DEFAULT_SCOPE_BACKGROUND_REFERENCE_THRESHOLD = 10_000
 
 
 _VISIBLE_OUTPUT_VARIABLES = frozenset({"u", "rf", "s"})
+
+
+def _native_model_open_filter() -> str:
+    """Build the native-model chooser filter from the public suffix contract."""
+
+    suffixes = " ".join(
+        f"*{suffix}"
+        for suffix in (MODEL_FILE_SUFFIX, *LEGACY_MODEL_FILE_SUFFIXES)
+    )
+    return f"FEM 自主项目 ({suffixes});;所有文件 (*)"
+
+
+def _native_model_save_filter() -> str:
+    """Build the native-model save filter from the current suffix contract."""
+
+    return f"FEM 自主项目 (*{MODEL_FILE_SUFFIX})"
 
 
 def _with_required_displacement_output(
@@ -549,6 +571,10 @@ class FEMMainWindow(QMainWindow):
         )
         self._applied_session_revision = self.document.session_revision
         self._import_notices: tuple[object, ...] = ()
+        # Keep the extension compatibility decision explicit in the GUI.  A
+        # legacy ``.femproj`` document must be routed through Save As so the
+        # old file is never silently replaced by a new-schema writer.
+        self._legacy_project_extension = False
         self._current_step_name: str | None = None
         self.geometry: ModelGeometry | None = None
         self.result_provider: ResultProvider | None = None
@@ -688,6 +714,12 @@ class FEMMainWindow(QMainWindow):
         """Return detached, non-authoritative notices for the current import."""
 
         return deepcopy(self._import_notices)
+
+    @property
+    def legacy_project_extension(self) -> bool:
+        """Whether the current native document came from ``.femproj``."""
+
+        return self._legacy_project_extension
 
     def _next_command_id(self) -> int:
         self._command_counter += 1
@@ -994,8 +1026,8 @@ class FEMMainWindow(QMainWindow):
                 "current session cannot be saved as a native project",
             )
         target = Path(path)
-        if target.suffix.casefold() != ".femproj":
-            target = target.with_suffix(".femproj")
+        if target.suffix.casefold() != MODEL_FILE_SUFFIX:
+            target = target.with_suffix(MODEL_FILE_SUFFIX)
         try:
             save_snapshot = self.session.prepare_project_save()
 
@@ -2303,6 +2335,12 @@ class FEMMainWindow(QMainWindow):
             else None
         )
         self.document = snapshot
+        self._legacy_project_extension = bool(
+            snapshot.source_kind == "native"
+            and snapshot.project_path is not None
+            and snapshot.project_path.suffix.casefold()
+            in LEGACY_MODEL_FILE_SUFFIXES
+        )
         stale_agent_proposals = self.agent_authoring_bridge.bind_snapshot(
             snapshot
         )
@@ -7644,7 +7682,10 @@ class FEMMainWindow(QMainWindow):
         if self.busy:
             return
         path, _filter = QFileDialog.getOpenFileName(
-            self, "打开自主项目", "", "FEM 自主项目 (*.femproj);;所有文件 (*)"
+            self,
+            "打开自主项目",
+            "",
+            _native_model_open_filter(),
         )
         if not path:
             return
@@ -7685,9 +7726,22 @@ class FEMMainWindow(QMainWindow):
                 )
             return False
         path = self.document.project_path
-        if path is None:
+        save_as = (
+            path is None
+            or self._legacy_project_extension
+            or path.suffix.casefold() != MODEL_FILE_SUFFIX
+        )
+        if save_as:
+            default_name = (
+                Path(path).with_suffix(MODEL_FILE_SUFFIX).name
+                if path is not None
+                else f"{self.document.model_name or '模型-1'}{MODEL_FILE_SUFFIX}"
+            )
             filename, _filter = QFileDialog.getSaveFileName(
-                self, "保存自主项目", "模型-1.femproj", "FEM 自主项目 (*.femproj)"
+                self,
+                "保存自主项目",
+                default_name,
+                _native_model_save_filter(),
             )
             if not filename:
                 if agent_terminal is not None:
@@ -7697,8 +7751,8 @@ class FEMMainWindow(QMainWindow):
                     )
                 return False
             path = Path(filename)
-            if path.suffix.lower() != ".femproj":
-                path = path.with_suffix(".femproj")
+            if path.suffix.casefold() != MODEL_FILE_SUFFIX:
+                path = path.with_suffix(MODEL_FILE_SUFFIX)
         receipt = self.save_project_path(path)
         if receipt.diagnostic is not None:
             self._show_command_rejection("保存自主项目失败", receipt)

@@ -16,7 +16,9 @@ from fem.io._project_errors import (
 )
 from fem.io.project import (
     CURRENT_PROJECT_SCHEMA,
+    LEGACY_MODEL_FILE_SUFFIXES,
     LoadedProject,
+    MODEL_FILE_SUFFIX,
     decode_project,
     dumps_project,
     encode_project,
@@ -37,6 +39,24 @@ from fem.mesh.settings import MeshSettings
 
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "femproj" / "v1"
+
+
+def test_public_model_suffix_contract_is_unique_and_legacy_is_read_only() -> None:
+    assert MODEL_FILE_SUFFIX == ".fempy"
+    assert LEGACY_MODEL_FILE_SUFFIXES == (".femproj",)
+    assert fem_io.MODEL_FILE_SUFFIX == MODEL_FILE_SUFFIX
+    assert fem_io.LEGACY_MODEL_FILE_SUFFIXES == LEGACY_MODEL_FILE_SUFFIXES
+
+
+def test_generic_reader_uses_content_for_unknown_model_suffix(tmp_path: Path) -> None:
+    target = tmp_path / "model.unknown"
+    target.write_text(dumps_project(_snapshot()), encoding="utf-8")
+
+    loaded = load_project(target)
+
+    assert loaded.path == target
+    assert loaded.snapshot.source_path == target
+    assert loaded.source_schema == CURRENT_PROJECT_SCHEMA
 
 
 def _snapshot(*, source_path: Path | None = None) -> ProjectSnapshot:

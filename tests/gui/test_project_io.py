@@ -151,7 +151,7 @@ def test_native_project_round_trip_returns_a_detached_snapshot(tmp_path) -> None
     reopened = loaded.snapshot
 
     assert isinstance(reopened, ProjectSnapshot)
-    assert loaded.source_schema == 10
+    assert loaded.source_schema == 13
     assert loaded.notices == ()
     assert reopened.source_kind == "native"
     assert reopened.source_path == target
@@ -189,17 +189,20 @@ def test_failed_detached_decode_cannot_change_a_live_session(tmp_path) -> None:
     assert session.snapshot() == before
 
 
-def test_main_window_opens_current_v4_project(tmp_path, monkeypatch) -> None:
+def test_main_window_opens_current_fempy_project(tmp_path, monkeypatch) -> None:
     _application()
     source = save_project(
-        tmp_path / "current.femproj",
+        tmp_path / "current.fempy",
         _native_project_snapshot(),
     )
     window = FEMMainWindow()
+    open_dialog: list[tuple[object, ...]] = []
     monkeypatch.setattr(
         main_window_module.QFileDialog,
         "getOpenFileName",
-        lambda *_args, **_kwargs: (str(source), ""),
+        lambda *args, **kwargs: (
+            open_dialog.append((*args, kwargs)) or (str(source), "")
+        ),
     )
     monkeypatch.setattr(
         window,
@@ -212,6 +215,9 @@ def test_main_window_opens_current_v4_project(tmp_path, monkeypatch) -> None:
 
     assert window.document.source_kind == "native"
     assert window.document.project_path == source
+    assert not window.legacy_project_extension
+    assert open_dialog and "*.fempy" in str(open_dialog[0][3])
+    assert "*.femproj" in str(open_dialog[0][3])
     assert window.document.geometry_recipe.name == "Plate"
     assert not window.document.dirty
     assert "compatibility migration" not in (
@@ -253,7 +259,7 @@ def test_main_window_opens_wire_project_and_projects_preview(tmp_path) -> None:
     window.close()
 
 
-def test_main_window_v1_open_then_save_upgrades_the_same_path(
+def test_main_window_v1_open_then_save_migrates_to_fempy(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -274,11 +280,13 @@ def test_main_window_v1_open_then_save_upgrades_the_same_path(
         "getOpenFileName",
         lambda *_args, **_kwargs: (str(source), ""),
     )
+    target = tmp_path / "legacy-migrated.fempy"
+    save_dialog: list[tuple[object, ...]] = []
     monkeypatch.setattr(
         main_window_module.QFileDialog,
         "getSaveFileName",
-        lambda *_args, **_kwargs: pytest.fail(
-            "existing v1 project path must not trigger Save As"
+        lambda *args, **kwargs: (
+            save_dialog.append((*args, kwargs)) or (str(target), "")
         ),
     )
     monkeypatch.setattr(
@@ -291,6 +299,7 @@ def test_main_window_v1_open_then_save_upgrades_the_same_path(
     _wait_for_task(window)
 
     assert window.document.project_path == source
+    assert window.legacy_project_extension
     assert not window.document.dirty
     assert source.read_bytes() == original
     upgrade_notice = window.status_panel.state_label.text()
@@ -300,9 +309,61 @@ def test_main_window_v1_open_then_save_upgrades_the_same_path(
 
     assert window.save_native_project()
     _wait_for_task(window)
-    assert json.loads(source.read_text(encoding="utf-8"))["schema"] == 10
-    assert load_project(source).source_schema == 10
+    assert save_dialog and save_dialog[0][2] == "legacy.fempy"
+    assert source.read_bytes() == original
+    assert target.is_file()
+    assert json.loads(target.read_text(encoding="utf-8"))["schema"] == 13
+    assert load_project(target).source_schema == 13
+    assert window.document.project_path == target
+    assert not window.legacy_project_extension
     assert not window.document.dirty
+    window.close()
+
+
+def test_legacy_project_save_cancel_preserves_document_and_source(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _application()
+    fixture = (
+        Path(__file__).parents[1]
+        / "fixtures"
+        / "femproj"
+        / "v1"
+        / "minimal_rectangle.femproj"
+    )
+    source = tmp_path / "legacy-cancel.femproj"
+    source.write_bytes(fixture.read_bytes())
+    original = source.read_bytes()
+    window = FEMMainWindow()
+    monkeypatch.setattr(
+        main_window_module.QFileDialog,
+        "getOpenFileName",
+        lambda *_args, **_kwargs: (str(source), ""),
+    )
+    monkeypatch.setattr(window, "_confirm_discard_changes", lambda: True)
+
+    window.open_native_project()
+    _wait_for_task(window)
+    before_document = window.document
+    before_session_id = window.session.session_id
+    before_session_revision = window.session.session_revision
+
+    monkeypatch.setattr(
+        main_window_module.QFileDialog,
+        "getSaveFileName",
+        lambda *_args, **_kwargs: ("", ""),
+    )
+
+    assert not window.save_native_project()
+    assert not window.busy
+    assert window.document is before_document
+    assert window.session.session_id == before_session_id
+    assert window.session.session_revision == before_session_revision
+    assert window.document.project_path == source
+    assert window.legacy_project_extension
+    assert not window.document.dirty
+    assert source.read_bytes() == original
     window.close()
 
 
@@ -389,8 +450,9 @@ def test_project_save_encodes_and_authenticates_off_the_gui_thread(
     released.set()
     await_succeeded(receipt)
 
-    assert target.is_file()
-    assert window.document.project_path == target
+    output = target.with_suffix(".fempy")
+    assert output.is_file()
+    assert window.document.project_path == output
     assert not window.document.dirty
     window.close()
 
@@ -443,7 +505,7 @@ def test_stale_project_save_does_not_mark_newer_revision_saved(
     assert window.document.geometry_recipe == changed
     assert window.document.dirty
     assert window.document.project_path is None
-    assert target.is_file()
+    assert target.with_suffix(".fempy").is_file()
     window.close()
 
 
@@ -493,5 +555,6 @@ def test_main_window_save_failure_keeps_project_dirty(
     assert window.document.dirty
     assert window.document.project_path is None
     assert not target.exists()
+    assert not target.with_suffix(".fempy").exists()
     assert errors and "write failed" in errors[-1][1]
     window.close()

@@ -63,6 +63,11 @@ from .project_v13 import (
 
 CURRENT_PROJECT_SCHEMA = 13
 
+# Public model filename contracts.  ``.femproj`` remains a read-compatible
+# legacy extension; writers and GUI save flows use ``.fempy`` exclusively.
+MODEL_FILE_SUFFIX = ".fempy"
+LEGACY_MODEL_FILE_SUFFIXES = (".femproj",)
+
 
 @dataclass(frozen=True, slots=True)
 class LoadedProject:
@@ -299,7 +304,9 @@ def _canonical_writer_snapshot(
 
 __all__ = [
     "CURRENT_PROJECT_SCHEMA",
+    "LEGACY_MODEL_FILE_SUFFIXES",
     "LoadedProject",
+    "MODEL_FILE_SUFFIX",
     "ProjectDecodeError",
     "ProjectEncodeError",
     "ProjectError",

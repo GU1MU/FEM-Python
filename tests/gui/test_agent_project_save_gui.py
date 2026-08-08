@@ -188,12 +188,13 @@ def test_agent_gui_save_uses_save_as_then_reuses_existing_path(
         )
     )
 
-    assert target.is_file()
-    assert window.document.project_path == target
+    output = target.with_suffix(".fempy")
+    assert output.is_file()
+    assert window.document.project_path == output
     assert not window.document.dirty
     assert dialog_calls == ["save-as"]
     assert len(save_command_calls) == 1
-    assert "secret-draft-unit" not in target.read_text(encoding="utf-8")
+    assert "secret-draft-unit" not in output.read_text(encoding="utf-8")
     assert controller.stage is AuthoringWorkflowStage.MESH_READY
 
     _change_accepted_geometry(window, 3.0)
@@ -319,5 +320,5 @@ def test_agent_gui_save_stales_on_newer_model_and_duplicate_click_is_inert(
     assert len(worker_calls) == 1
     assert window.document.project_path is None
     assert window.document.dirty
-    assert target.is_file()
+    assert target.with_suffix(".fempy").is_file()
     window.close()

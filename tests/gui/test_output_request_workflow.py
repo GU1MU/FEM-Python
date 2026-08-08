@@ -17,6 +17,7 @@ from fem.application import (
     AuthoringCapability,
     AuthoringStatus,
     describe_session_authoring,
+    with_compatibility_analysis_names,
 )
 from fem.core.model import OutputRequest
 from fem.geometry import RectangleGeometry
@@ -328,14 +329,18 @@ def test_native_create_survives_project_save_and_reopen(
     assert all(request.source_evidence is None for request in created)
     assert warnings == []
 
-    target = tmp_path / "output-request.femproj"
+    requested = tmp_path / "output-request.femproj"
+    target = requested.with_suffix(".fempy")
     monkeypatch.setattr(
         main_window_module.QFileDialog,
         "getSaveFileName",
-        lambda *_args, **_kwargs: (str(target), ""),
+        lambda *_args, **_kwargs: (str(requested), ""),
     )
     assert window.save_native_project()
     _wait_for_task(window)
+    expected_step = with_compatibility_analysis_names(
+        (window.document.steps[0],)
+    )[0]
     window.close()
 
     reopened = FEMMainWindow()
@@ -347,7 +352,7 @@ def test_native_create_survives_project_save_and_reopen(
     reopened.open_native_project()
     _wait_for_task(reopened)
 
-    assert reopened.document.steps[0].outputs == created
+    assert reopened.document.steps[0].outputs == expected_step.outputs
     assert not reopened.document.steps[0].outputs[0].metadata
     assert reopened.document.steps[0].outputs[0].source_evidence is None
     reopened.close()

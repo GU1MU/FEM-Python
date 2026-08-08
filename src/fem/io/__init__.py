@@ -30,7 +30,9 @@ from ._project_errors import (
 )
 from .project import (
     CURRENT_PROJECT_SCHEMA,
+    LEGACY_MODEL_FILE_SUFFIXES,
     LoadedProject,
+    MODEL_FILE_SUFFIX,
     ProjectMigrationNotice,
     decode_project,
     dumps_project,
@@ -255,6 +257,8 @@ from .result_vtk import (
 
 __all__ = [
     "CURRENT_PROJECT_SCHEMA",
+    "LEGACY_MODEL_FILE_SUFFIXES",
+    "MODEL_FILE_SUFFIX",
     "FORMAT_NAME",
     "LOGICAL_TOPOLOGY_VERSION",
     "LoadedProject",
