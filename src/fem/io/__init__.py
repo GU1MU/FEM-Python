@@ -220,6 +220,7 @@ from .result_csv import (
     RESULT_CSV_FORMAT_NAME,
     RESULT_CSV_HEADER,
     RESULT_CSV_SCHEMA_VERSION,
+    RESULT_TABLE_CSV_BASE_HEADER,
     ResultCsvDecodeError,
     ResultCsvEmptySelectionError,
     ResultCsvEncodeError,
@@ -230,10 +231,12 @@ from .result_csv import (
     ResultComponentsCsvRecord,
     dumps_result_components_csv,
     dumps_result_csv,
+    dumps_result_table_csv,
     read_result_components_csv,
     read_result_csv,
     write_result_components_csv,
     write_result_csv,
+    write_result_table_csv,
 )
 from .result_vtk import (
     RESULT_VTK_FORMAT_NAME,
@@ -302,6 +305,7 @@ __all__ = [
     "RESULT_CSV_FORMAT_NAME",
     "RESULT_CSV_HEADER",
     "RESULT_CSV_SCHEMA_VERSION",
+    "RESULT_TABLE_CSV_BASE_HEADER",
     "RESULT_VTK_FORMAT_NAME",
     "RESULT_VTK_SCHEMA_VERSION",
     "RESULT_VTK_TITLE",
@@ -349,6 +353,7 @@ __all__ = [
     "dumps_project_v12",
     "dumps_project_v13",
     "dumps_result_csv",
+    "dumps_result_table_csv",
     "dumps_result_vtk",
     "encode_assignment_v2",
     "encode_project",
@@ -463,5 +468,6 @@ __all__ = [
     "write_project_v12",
     "write_project_v13",
     "write_result_csv",
+    "write_result_table_csv",
     "write_result_vtk",
 ]

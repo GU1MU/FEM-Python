@@ -14,6 +14,7 @@ from fem.application.results import (
 )
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -34,6 +35,67 @@ from .result_presentation import (
     result_variable_label,
     visible_result_fields,
 )
+
+
+_ICON_ROOT = Path(__file__).with_name("resources") / "icons"
+_SCROLL_UP_ARROW = (_ICON_ROOT / "agent_chat_scroll_up.svg").resolve().as_posix()
+_SCROLL_DOWN_ARROW = (
+    _ICON_ROOT / "agent_chat_scroll_down.svg"
+).resolve().as_posix()
+
+_COMPONENT_LIST_STYLESHEET = f"""
+QListWidget#resultCsvComponentList {{
+    background: transparent;
+    border: none;
+    outline: none;
+}}
+QListWidget#resultCsvComponentList::item {{
+    min-height: 30px;
+    padding: 2px 5px;
+    border-radius: 4px;
+}}
+QListWidget#resultCsvComponentList QScrollBar:vertical {{
+    background: transparent;
+    width: 10px;
+    margin: 12px 0 12px 0;
+}}
+QListWidget#resultCsvComponentList QScrollBar::handle:vertical {{
+    background: rgba(76, 88, 98, 92);
+    min-height: 34px;
+    border-radius: 4px;
+    margin: 1px 2px;
+}}
+QListWidget#resultCsvComponentList QScrollBar::handle:vertical:hover {{
+    background: rgba(76, 88, 98, 138);
+}}
+QListWidget#resultCsvComponentList QScrollBar::add-line:vertical,
+QListWidget#resultCsvComponentList QScrollBar::sub-line:vertical {{
+    background: transparent;
+    border: none;
+    height: 12px;
+    subcontrol-origin: margin;
+}}
+QListWidget#resultCsvComponentList QScrollBar::sub-line:vertical {{
+    subcontrol-position: top;
+}}
+QListWidget#resultCsvComponentList QScrollBar::add-line:vertical {{
+    subcontrol-position: bottom;
+}}
+QListWidget#resultCsvComponentList QScrollBar::up-arrow:vertical {{
+    image: url("{_SCROLL_UP_ARROW}");
+    width: 8px;
+    height: 6px;
+}}
+QListWidget#resultCsvComponentList QScrollBar::down-arrow:vertical {{
+    image: url("{_SCROLL_DOWN_ARROW}");
+    width: 8px;
+    height: 6px;
+}}
+QListWidget#resultCsvComponentList QScrollBar::add-page:vertical,
+QListWidget#resultCsvComponentList QScrollBar::sub-page:vertical {{
+    background: transparent;
+}}
+"""
 
 
 class _ExactDataComboBox(QComboBox):
@@ -124,8 +186,20 @@ class ResultCsvExportDialog(QDialog):
         self.variable_combo = _ExactDataComboBox(self)
         self.position_combo = _ExactDataComboBox(self)
         self.component_list = QListWidget(self)
+        self.component_list.setObjectName("resultCsvComponentList")
         self.component_list.setMinimumHeight(120)
-        self.component_list.setAlternatingRowColors(True)
+        self.component_list.setAlternatingRowColors(False)
+        self.component_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.NoSelection
+        )
+        self.component_list.setVerticalScrollMode(
+            QAbstractItemView.ScrollMode.ScrollPerPixel
+        )
+        self.component_list.verticalScrollBar().setSingleStep(12)
+        self.component_list.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.component_list.setStyleSheet(_COMPONENT_LIST_STYLESHEET)
         self._component_selections: list[ScalarFieldSelection] = []
         self.path_edit = QLineEdit(self)
         self.path_edit.setPlaceholderText("请选择 CSV 保存路径")
@@ -139,7 +213,7 @@ class ResultCsvExportDialog(QDialog):
 
         form.addRow("场变量：", self.variable_combo)
         form.addRow("结果位置：", self.position_combo)
-        form.addRow("分量（可多选）：", self.component_list)
+        form.addRow("分量：", self.component_list)
         form.addRow("保存到：", path_host)
         layout.addLayout(form)
 
@@ -152,9 +226,26 @@ class ResultCsvExportDialog(QDialog):
             QDialogButtonBox.StandardButton.Ok
         )
         self.export_button.setText("导出")
-        self.button_box.button(
+        self.cancel_button = self.button_box.button(
             QDialogButtonBox.StandardButton.Cancel
-        ).setText("取消")
+        )
+        self.cancel_button.setText("取消")
+        button_width = max(
+            self.browse_button.sizeHint().width(),
+            self.export_button.sizeHint().width(),
+            self.cancel_button.sizeHint().width(),
+        )
+        button_height = max(
+            self.browse_button.sizeHint().height(),
+            self.export_button.sizeHint().height(),
+            self.cancel_button.sizeHint().height(),
+        )
+        for button in (
+            self.browse_button,
+            self.export_button,
+            self.cancel_button,
+        ):
+            button.setFixedSize(button_width, button_height)
         layout.addWidget(self.button_box)
 
         initial = self._initial_selection(current_selection)
@@ -319,9 +410,12 @@ class ResultCsvExportDialog(QDialog):
                     )
                 item = QListWidgetItem(label, self.component_list)
                 item.setFlags(
-                    item.flags()
-                    | Qt.ItemFlag.ItemIsUserCheckable
-                    | Qt.ItemFlag.ItemIsEnabled
+                    (
+                        item.flags()
+                        | Qt.ItemFlag.ItemIsUserCheckable
+                        | Qt.ItemFlag.ItemIsEnabled
+                    )
+                    & ~Qt.ItemFlag.ItemIsSelectable
                 )
                 item.setCheckState(
                     Qt.CheckState.Checked

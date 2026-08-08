@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import csv
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,7 +16,7 @@ from fem.application.results import (
     build_solve_result_bundle,
     restore_result_provider,
 )
-from fem.io.result_csv import read_result_components_csv, read_result_csv
+from fem.io.result_csv import RESULT_TABLE_CSV_BASE_HEADER
 from fem.io.result_vtk import read_result_vtk
 from fem.solvers.static_linear import solve
 from fem_gui.commands import (
@@ -98,7 +99,7 @@ def _specs(
     )
 
 
-def test_public_result_exports_use_canonical_snapshot_bound_writers(
+def test_public_result_exports_use_compact_snapshot_bound_tables(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -121,9 +122,15 @@ def test_public_result_exports_use_canonical_snapshot_bound_writers(
         csv_spec.materialization_generation
     )
     assert csv_outcome.record_count == 2
-    csv_readback = read_result_csv(tmp_path / "result.csv")
-    assert csv_readback.source == csv_spec.source
-    assert csv_readback.selection == csv_spec.selection
+    with (tmp_path / "result.csv").open(
+        encoding="utf-8-sig",
+        newline="",
+    ) as stream:
+        csv_rows = list(csv.reader(stream))
+    assert tuple(csv_rows[0]) == (
+        *RESULT_TABLE_CSV_BASE_HEADER,
+        csv_spec.selection.component,
+    )
 
     provider = window._current_result_provider()
     assert provider is not None
@@ -141,15 +148,20 @@ def test_public_result_exports_use_canonical_snapshot_bound_writers(
         ),
     )
     await_succeeded(components_receipt)
-    components_readback = read_result_components_csv(
-        tmp_path / "components.csv"
+    with (tmp_path / "components.csv").open(
+        encoding="utf-8-sig",
+        newline="",
+    ) as stream:
+        component_rows = list(csv.reader(stream))
+    assert tuple(component_rows[0]) == (
+        *RESULT_TABLE_CSV_BASE_HEADER,
+        *(selection.component for selection in selections),
     )
-    assert components_readback.selections == selections
-    assert len(components_readback.records) == len(field.locations)
+    assert len(component_rows) == len(field.locations) + 1
 
     monkeypatch.setattr(
         main_window_module,
-        "write_result_csv",
+        "write_result_table_csv",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("VTK export must not round-trip through CSV")
         ),

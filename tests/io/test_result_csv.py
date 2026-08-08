@@ -33,16 +33,19 @@ from fem.io import (
     RESULT_CSV_FORMAT_NAME,
     RESULT_CSV_HEADER,
     RESULT_CSV_SCHEMA_VERSION,
+    RESULT_TABLE_CSV_BASE_HEADER,
     ResultCsvDecodeError,
     ResultCsvEmptySelectionError,
     ResultCsvEncodeError,
     ResultCsvError,
     dumps_result_components_csv,
     dumps_result_csv,
+    dumps_result_table_csv,
     read_result_components_csv,
     read_result_csv,
     write_result_components_csv,
     write_result_csv,
+    write_result_table_csv,
 )
 from fem.io import result_csv as result_csv_module
 from fem.post.averaging import NodalAveragingPolicy
@@ -303,6 +306,96 @@ def test_multi_component_element_nodal_export_keeps_shared_contributions(
     assert tuple(record.location for record in readback.records) == tuple(
         replace(location, displacement=None)
         for location in export.field.locations
+    )
+
+
+def test_result_table_csv_keeps_only_requested_columns_and_shared_nodes(
+    tmp_path: Path,
+) -> None:
+    export, snapshot = _export(
+        ResultVariable.S,
+        FieldPosition.ELEMENT_NODAL,
+    )
+    components = tuple(export.field.descriptor.columns[:3])
+    snapshots = tuple(
+        prepare_result_export_snapshot(
+            snapshot,
+            ScalarFieldSelection(export.selection.field_key, component),
+        )
+        for component in components
+    )
+
+    serialized = dumps_result_table_csv(snapshots)
+    rows = _rows(serialized)
+    assert tuple(rows[0]) == (*RESULT_TABLE_CSV_BASE_HEADER, *components)
+    assert len(rows) == len(export.field.locations) + 1
+    assert not {
+        "format",
+        "schema",
+        "result_id",
+        "session_id",
+        "artifact_id",
+        "quantity",
+        "association",
+        "unit",
+    } & set(rows[0])
+
+    target = tmp_path / "result-table.csv"
+    write_result_table_csv(target, snapshots)
+    assert target.read_text(encoding="utf-8-sig") == serialized.removeprefix(
+        "\ufeff"
+    )
+
+    header = rows[0]
+    projected_rows = tuple(
+        dict(zip(header, row, strict=True)) for row in rows[1:]
+    )
+    node_counts = Counter(
+        location.node_id for location in export.field.locations
+    )
+    shared_nodes = {
+        node_id for node_id, count in node_counts.items() if count > 1
+    }
+    assert shared_nodes
+    for node_id in shared_nodes:
+        expected = {
+            (str(location.element_id), str(location.local_node))
+            for location in export.field.locations
+            if location.node_id == node_id
+        }
+        actual = {
+            (row["element_id"], row["local_node"])
+            for row in projected_rows
+            if row["node_id"] == str(node_id)
+        }
+        assert actual == expected
+
+
+def test_displacement_result_table_has_only_identity_and_selected_components(
+) -> None:
+    export, snapshot = _export(ResultVariable.U, FieldPosition.NODE)
+    components = ("U1", "U2", "Magnitude")
+    assert set(components) <= set(export.field.descriptor.columns)
+    snapshots = tuple(
+        prepare_result_export_snapshot(
+            snapshot,
+            ScalarFieldSelection(export.selection.field_key, component),
+        )
+        for component in components
+    )
+
+    rows = _rows(dumps_result_table_csv(snapshots))
+
+    assert tuple(rows[0]) == (
+        "node_id",
+        "element_id",
+        "local_node",
+        "x",
+        "y",
+        "z",
+        "U1",
+        "U2",
+        "Magnitude",
     )
 
 

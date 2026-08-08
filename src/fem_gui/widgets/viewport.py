@@ -5359,14 +5359,20 @@ class FEMViewport(QWidget):
             raise RuntimeError("三维视口尚未初始化")
         plotter = self._plotter
         current_size = self.screenshot_size()
+        target_size = window_size
+        if target_size is None and scale > 1:
+            target_size = (
+                current_size[0] * scale,
+                current_size[1] * scale,
+            )
         text_scale = (
             1.0
-            if window_size is None
+            if target_size is None
             else max(
                 1.0,
                 min(
-                    window_size[0] / current_size[0],
-                    window_size[1] / current_size[1],
+                    target_size[0] / current_size[0],
+                    target_size[1] / current_size[1],
                 ),
             )
         )
@@ -5374,41 +5380,107 @@ class FEMViewport(QWidget):
         camera_state = camera.copy()
         renderer = plotter.renderer
         try:
-            with plotter.window_size_context(window_size):
-                scalar_bar_fonts = self._scale_scalar_bar_fonts(text_scale)
-                background_state = None
-                try:
-                    if transparent_background:
-                        background_state = (
-                            renderer.GetGradientBackground(),
-                            renderer.GetBackground(),
-                            renderer.GetBackground2(),
-                            renderer.GetBackgroundAlpha(),
-                        )
-                        renderer.GradientBackgroundOff()
-                        renderer.SetBackgroundAlpha(0.0)
+            scalar_bar_fonts = self._scale_scalar_bar_fonts(text_scale)
+            background_state = None
+            try:
+                if transparent_background:
+                    background_state = (
+                        renderer.GetGradientBackground(),
+                        renderer.GetBackground(),
+                        renderer.GetBackground2(),
+                        renderer.GetBackgroundAlpha(),
+                    )
+                    renderer.GradientBackgroundOff()
+                    renderer.SetBackgroundAlpha(0.0)
+                if target_size is None:
                     plotter.render()
                     plotter.screenshot(
                         path,
-                        scale=scale,
+                        scale=1,
                         window_size=None,
                         transparent_background=transparent_background,
                         return_img=False,
                     )
-                finally:
-                    if background_state is not None:
-                        gradient, background, background2, background_alpha = (
-                            background_state
-                        )
-                        renderer.SetBackground(*background)
-                        renderer.SetBackground2(*background2)
-                        renderer.SetBackgroundAlpha(background_alpha)
-                        renderer.SetGradientBackground(gradient)
-                    self._restore_scalar_bar_fonts(scalar_bar_fonts)
+                else:
+                    self._save_offscreen_screenshot(
+                        path,
+                        target_size,
+                        transparent_background=transparent_background,
+                    )
+            finally:
+                if background_state is not None:
+                    gradient, background, background2, background_alpha = (
+                        background_state
+                    )
+                    renderer.SetBackground(*background)
+                    renderer.SetBackground2(*background2)
+                    renderer.SetBackgroundAlpha(background_alpha)
+                    renderer.SetGradientBackground(gradient)
+                self._restore_scalar_bar_fonts(scalar_bar_fonts)
         finally:
             camera.DeepCopy(camera_state)
             camera.Modified()
             self._render()
+
+    def _save_offscreen_screenshot(
+        self,
+        path: str,
+        window_size: tuple[int, int],
+        *,
+        transparent_background: bool,
+    ) -> None:
+        """将现有渲染层临时放入独立窗口，不改变屏幕上的 Qt 视口。"""
+        import vtk
+
+        plotter = self._plotter
+        source_window = plotter.render_window
+        renderer_collection = source_window.GetRenderers()
+        renderer_collection.InitTraversal()
+        renderers = [
+            renderer_collection.GetNextItem()
+            for _ in range(renderer_collection.GetNumberOfItems())
+        ]
+
+        export_window = vtk.vtkRenderWindow()
+        export_window.SetOffScreenRendering(1)
+        export_window.SetSize(int(window_size[0]), int(window_size[1]))
+        export_window.SetDPI(source_window.GetDPI())
+        export_window.SetNumberOfLayers(source_window.GetNumberOfLayers())
+        export_window.SetMultiSamples(source_window.GetMultiSamples())
+        export_window.SetAlphaBitPlanes(
+            1 if transparent_background else source_window.GetAlphaBitPlanes()
+        )
+        try:
+            for renderer in renderers:
+                source_window.RemoveRenderer(renderer)
+                export_window.AddRenderer(renderer)
+            export_window.Render()
+
+            capture = vtk.vtkWindowToImageFilter()
+            capture.SetInput(export_window)
+            if transparent_background:
+                capture.SetInputBufferTypeToRGBA()
+            else:
+                capture.SetInputBufferTypeToRGB()
+            capture.ReadFrontBufferOn()
+            capture.Update()
+
+            suffix = os.path.splitext(path)[1].lower()
+            if suffix == ".png":
+                writer = vtk.vtkPNGWriter()
+            elif suffix in {".jpg", ".jpeg"}:
+                writer = vtk.vtkJPEGWriter()
+                writer.SetQuality(95)
+            else:
+                raise ValueError("仅支持导出 PNG 或 JPEG 图片")
+            writer.SetFileName(path)
+            writer.SetInputConnection(capture.GetOutputPort())
+            writer.Write()
+        finally:
+            for renderer in renderers:
+                export_window.RemoveRenderer(renderer)
+                source_window.AddRenderer(renderer)
+            export_window.Finalize()
 
     def _scale_scalar_bar_fonts(
         self,

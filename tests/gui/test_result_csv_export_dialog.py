@@ -6,7 +6,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QAbstractItemView, QApplication, QLabel
 
 from fem.application.results import (
     FieldState,
@@ -87,6 +87,27 @@ def test_dialog_selects_ready_fields_without_showing_field_status() -> None:
     assert "按需加载" not in visible_text
     assert "不可用" not in visible_text
     assert not hasattr(dialog, "availability_label")
+    assert "分量：" in visible_text
+    assert "可多选" not in visible_text
+    assert dialog.component_list.verticalScrollMode() == (
+        QAbstractItemView.ScrollMode.ScrollPerPixel
+    )
+    assert dialog.component_list.selectionMode() == (
+        QAbstractItemView.SelectionMode.NoSelection
+    )
+    assert all(
+        not dialog.component_list.item(index).flags()
+        & Qt.ItemFlag.ItemIsSelectable
+        for index in range(dialog.component_list.count())
+    )
+    assert dialog.component_list.verticalScrollBar().singleStep() == 12
+    assert dialog.component_list.horizontalScrollBarPolicy() == (
+        Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    )
+    assert "item:hover" not in dialog.component_list.styleSheet()
+    assert "rgba(76, 88, 98, 92)" in dialog.component_list.styleSheet()
+    assert dialog.browse_button.size() == dialog.cancel_button.size()
+    assert dialog.export_button.size() == dialog.cancel_button.size()
     dialog.close()
 
 

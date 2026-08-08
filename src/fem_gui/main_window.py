@@ -149,7 +149,7 @@ from fem.geometry import (
 )
 from fem.geometry.gmsh_coordinator import GmshExecutionCancelled
 from fem.io.project import LoadedProject, load_project, save_project
-from fem.io.result_csv import write_result_components_csv, write_result_csv
+from fem.io.result_csv import write_result_table_csv
 from fem.io.result_vtk import write_result_vtk
 from fem.mesh.quality import analyze_mesh
 from fem.mesh.settings import MeshSettings
@@ -2109,25 +2109,17 @@ class FEMMainWindow(QMainWindow):
             target = Path(path)
             if target.suffix.casefold() != ".csv":
                 raise ValueError(
-                    "canonical result CSV target must use the .csv extension"
+                    "result CSV target must use the .csv extension"
                 )
             exports = self._prepare_result_csv_exports(spec)
             export = exports[0]
             completion = GuiCommandCompletion(command_id)
 
             def workload(context: TaskContext) -> GuiCommandOutcome:
-                installed = (
-                    write_result_csv(
-                        target,
-                        export,
-                        checkpoint=context.checkpoint,
-                    )
-                    if len(exports) == 1
-                    else write_result_components_csv(
-                        target,
-                        exports,
-                        checkpoint=context.checkpoint,
-                    )
+                installed = write_result_table_csv(
+                    target,
+                    exports,
+                    checkpoint=context.checkpoint,
                 )
                 return GuiCommandOutcome(
                     output_path=installed,
@@ -2962,7 +2954,7 @@ class FEMMainWindow(QMainWindow):
             "resultAveragingThreshold"
         )
         self.result_averaging_threshold.setRange(0.0, 100.0)
-        self.result_averaging_threshold.setDecimals(1)
+        self.result_averaging_threshold.setDecimals(0)
         self.result_averaging_threshold.setSingleStep(1.0)
         self.result_averaging_threshold.setKeyboardTracking(False)
         self.result_averaging_threshold.setValue(

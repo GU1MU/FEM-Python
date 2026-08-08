@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QLabel
 
 from fem_gui.dialogs import CompactDoubleSpinBox
 from fem_gui.postprocessing_dialogs import ContourSettingsDialog
@@ -62,6 +63,49 @@ def test_contour_and_symbol_dialogs_round_trip_settings():
     assert not contour.settings()["show_coordinate_system"]
     assert contour.show_minimum.parent() is contour.range_group
     assert contour.show_maximum.parent() is contour.range_group
+
+    labels = {
+        label.text() for label in contour.findChildren(QLabel)
+    }
+    assert "阈值：" in labels
+    assert "节点平均阈值：" not in labels
+    assert contour.levels_slider.orientation() == Qt.Orientation.Horizontal
+    assert contour.levels.minimum() == 4
+    assert contour.levels.maximum() == 48
+    assert contour.levels_slider.minimum() == 4
+    assert contour.levels_slider.maximum() == 48
+    assert contour.averaging_threshold_slider.orientation() == (
+        Qt.Orientation.Horizontal
+    )
+    assert contour.averaging_threshold.decimals() == 0
+    assert contour.averaging_threshold_slider.minimum() == 0
+    assert contour.averaging_threshold_slider.maximum() == 100
+    assert contour.levels.size() == contour.averaging_threshold.size()
+    assert contour.levels.width() == 60
+    assert contour.levels.alignment() == Qt.AlignmentFlag.AlignCenter
+    assert contour.averaging_threshold.alignment() == (
+        Qt.AlignmentFlag.AlignCenter
+    )
+    assert type(contour.levels_slider).__name__ == "_ThinHorizontalSlider"
+    assert (
+        type(contour.averaging_threshold_slider).__name__
+        == "_ThinHorizontalSlider"
+    )
+    orientation_row, _role = contour.form.getWidgetPosition(
+        contour.orientation
+    )
+    levels_row, _role = contour.form.getWidgetPosition(
+        contour.levels_row
+    )
+    threshold_row, _role = contour.form.getWidgetPosition(
+        contour.averaging_threshold_row
+    )
+    assert orientation_row < levels_row < threshold_row
+
+    contour.levels_slider.setValue(24)
+    contour.averaging_threshold_slider.setValue(83)
+    assert contour.settings()["levels"] == 24
+    assert contour.settings()["averaging_threshold"] == 83.0
 
     settings = SymbolSettings(step_name="Static-1", show_values=True, scale=1.5)
     symbols = SymbolSettingsDialog(settings, ("Static-1",))

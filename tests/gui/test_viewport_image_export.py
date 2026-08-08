@@ -9,6 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pyvista as pv
 import pytest
+from PIL import Image, ImageChops, ImageStat
 from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QLabel
 
 from fem_gui import main_window as main_window_module
@@ -211,7 +212,6 @@ def test_viewport_screenshot_forwards_all_export_parameters() -> None:
     viewport.save_screenshot(
         "viewport.png",
         scale=1,
-        window_size=(1400, 900),
         transparent_background=True,
     )
 
@@ -470,7 +470,7 @@ def test_scaled_screenshot_does_not_resize_live_render_window() -> None:
     _application()
     viewport = FEMViewport()
     screenshot_calls = []
-    context_sizes = []
+    export_calls = []
     camera_state = object()
     camera = SimpleNamespace(
         copy=lambda: camera_state,
@@ -483,28 +483,72 @@ def test_scaled_screenshot_does_not_resize_live_render_window() -> None:
         camera=camera,
         renderer=SimpleNamespace(),
         render=lambda: None,
-        window_size_context=lambda size: (
-            context_sizes.append(size) or nullcontext()
-        ),
     )
     viewport._plotter = plotter
+    viewport._save_offscreen_screenshot = lambda *args, **kwargs: (
+        export_calls.append((args, kwargs))
+    )
 
     viewport.save_screenshot("viewport.png", scale=4)
 
-    assert context_sizes == [None]
-    assert screenshot_calls == [
+    assert screenshot_calls == []
+    assert export_calls == [
         (
-            ("viewport.png",),
+            ("viewport.png", (2880, 1920)),
             {
-                "scale": 4,
-                "window_size": None,
                 "transparent_background": False,
-                "return_img": False,
             },
         )
     ]
     assert plotter.window_size == (720, 480)
     assert plotter.camera is camera
+    viewport._plotter = None
+    viewport.close()
+
+
+def test_scaled_screenshot_preserves_overlay_layout(tmp_path: Path) -> None:
+    _application()
+    viewport = FEMViewport()
+    plotter = pv.Plotter(off_screen=True, window_size=(400, 300))
+    plotter.render_window.SetDPI(144)
+    mesh = pv.Sphere()
+    mesh["height"] = mesh.points[:, 2]
+    plotter.set_background("#eef7fb")
+    plotter.add_mesh(
+        mesh,
+        scalars="height",
+        scalar_bar_args={
+            "title": "U, Magnitude",
+            "position_x": 0.78,
+            "position_y": 0.19,
+            "width": 0.045,
+            "height": 0.62,
+            "title_font_size": 18,
+            "label_font_size": 14,
+            "unconstrained_font_size": True,
+        },
+    )
+    plotter.add_axes()
+    viewport._plotter = plotter
+    normal = tmp_path / "normal.png"
+    scaled = tmp_path / "scaled.png"
+
+    viewport.save_screenshot(str(normal))
+    viewport.save_screenshot(str(scaled), scale=2)
+
+    normal_image = Image.open(normal).convert("RGB")
+    scaled_image = Image.open(scaled).convert("RGB")
+    reduced_image = scaled_image.resize(normal_image.size, Image.Resampling.LANCZOS)
+    difference = ImageChops.difference(normal_image, reduced_image)
+    assert ImageStat.Stat(difference).mean < [8.0, 8.0, 8.0]
+    colorbar_box = (270, 0, 400, 300)
+    colorbar_difference = ImageChops.difference(
+        normal_image.crop(colorbar_box),
+        reduced_image.crop(colorbar_box),
+    )
+    assert ImageStat.Stat(colorbar_difference).mean < [8.0, 8.0, 8.0]
+
+    plotter.close()
     viewport._plotter = None
     viewport.close()
 

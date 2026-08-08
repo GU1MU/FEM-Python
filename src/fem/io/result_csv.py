@@ -78,6 +78,14 @@ RESULT_COMPONENTS_CSV_SCHEMA_VERSION = 1
 RESULT_COMPONENTS_CSV_BASE_HEADER = tuple(
     name for name in RESULT_CSV_HEADER if name not in {"component", "value"}
 )
+RESULT_TABLE_CSV_BASE_HEADER = (
+    "node_id",
+    "element_id",
+    "local_node",
+    "x",
+    "y",
+    "z",
+)
 
 _UTF8_BOM = b"\xef\xbb\xbf"
 _EXPECTED_ASSOCIATION = {
@@ -614,6 +622,50 @@ def write_result_components_csv(
     )
 
 
+def dumps_result_table_csv(
+    snapshots: tuple[ResultExportSnapshot, ...],
+    *,
+    checkpoint: Callable[[], Any] | None = None,
+) -> str:
+    """Serialize user-selected components without internal result metadata."""
+
+    _validate_checkpoint(checkpoint)
+    projected = _project_result_components_csv(
+        snapshots,
+        checkpoint=checkpoint,
+    )
+    return _serialize_result_table_csv(
+        projected,
+        checkpoint=checkpoint,
+    )
+
+
+def write_result_table_csv(
+    path: str | Path,
+    snapshots: tuple[ResultExportSnapshot, ...],
+    *,
+    checkpoint: Callable[[], Any] | None = None,
+    before_replace: Callable[[], Any] | None = None,
+) -> Path:
+    """Atomically install a compact, analysis-oriented result table."""
+
+    serialized = dumps_result_table_csv(
+        snapshots,
+        checkpoint=checkpoint,
+    )
+    return atomic_write_verified_text(
+        path,
+        serialized,
+        verifier=lambda candidate: candidate.read_bytes(),
+        semantic_encoder=lambda value: value,
+        expected_semantic=serialized.encode("utf-8"),
+        error_type=ResultCsvEncodeError,
+        mismatch_message="temporary result table CSV verification failed",
+        checkpoint=checkpoint,
+        before_replace=before_replace,
+    )
+
+
 def _project_result_components_csv(
     snapshots: tuple[ResultExportSnapshot, ...],
     *,
@@ -755,6 +807,50 @@ def _serialize_result_components_csv(
         raise ResultCsvEncodeError(
             "result components CSV text must be valid strict UTF-8"
         ) from error
+    return serialized
+
+
+def _serialize_result_table_csv(
+    projected: ResultComponentsCsvReadback,
+    *,
+    checkpoint: Callable[[], Any] | None = None,
+) -> str:
+    _invoke_checkpoint(checkpoint)
+    components = tuple(
+        selection.component for selection in projected.selections
+    )
+    if any(
+        component in RESULT_TABLE_CSV_BASE_HEADER
+        for component in components
+    ):
+        raise ResultCsvEncodeError(
+            "component names conflict with result table identity columns"
+        )
+    header = (*RESULT_TABLE_CSV_BASE_HEADER, *components)
+    output = io.StringIO(newline="")
+    output.write("\ufeff")
+    writer = csv.writer(
+        output,
+        lineterminator="\n",
+        quoting=csv.QUOTE_MINIMAL,
+    )
+    writer.writerow(header)
+    for record in projected.records:
+        _invoke_checkpoint(checkpoint)
+        location = record.location
+        writer.writerow(
+            (
+                _format_optional_int(location.node_id),
+                _format_optional_int(location.element_id),
+                _format_optional_int(location.local_node),
+                _format_float(location.coordinates[0]),
+                _format_float(location.coordinates[1]),
+                _format_float(location.coordinates[2]),
+                *(_format_float(value) for value in record.values),
+            )
+        )
+    serialized = output.getvalue()
+    _invoke_checkpoint(checkpoint)
     return serialized
 
 
@@ -1280,6 +1376,7 @@ __all__ = [
     "RESULT_CSV_FORMAT_NAME",
     "RESULT_CSV_HEADER",
     "RESULT_CSV_SCHEMA_VERSION",
+    "RESULT_TABLE_CSV_BASE_HEADER",
     "ResultCsvDecodeError",
     "ResultCsvEmptySelectionError",
     "ResultCsvEncodeError",
@@ -1290,8 +1387,10 @@ __all__ = [
     "ResultComponentsCsvRecord",
     "dumps_result_components_csv",
     "dumps_result_csv",
+    "dumps_result_table_csv",
     "read_result_components_csv",
     "read_result_csv",
     "write_result_components_csv",
     "write_result_csv",
+    "write_result_table_csv",
 ]

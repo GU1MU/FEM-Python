@@ -21,7 +21,8 @@ from fem.application.results import (
     ScalarFieldSelection,
 )
 from fem.post.fields import encode_result_region_key
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -38,7 +39,10 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QRadioButton,
+    QSlider,
     QSpinBox,
+    QStyle,
+    QStyleOptionSlider,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -50,6 +54,7 @@ from .result_presentation import (
     result_field_is_visible,
     visible_result_fields,
 )
+from .theme import COLORS
 from .visualization.colormaps import ABAQUS_RAINBOW
 from .visualization.contour_rendering import (
     CONTOUR_EDGE_ALL,
@@ -344,6 +349,55 @@ class TypedResultDisplayDialog(QDialog):
         self.overlay_checkbox.setEnabled(deformed)
 
 
+class _ThinHorizontalSlider(QSlider):
+    """使用细轨道和紧凑滑块，避免原生样式在 Windows 上被拉高。"""
+
+    _margin = 5
+    _track_height = 2
+    _handle_size = 10
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(Qt.Orientation.Horizontal, parent)
+        self.setFixedHeight(18)
+
+    def paintEvent(self, event) -> None:  # noqa: ARG002
+        option = QStyleOptionSlider()
+        self.initStyleOption(option)
+        span = max(0, self.width() - 2 * self._margin)
+        position = QStyle.sliderPositionFromValue(
+            self.minimum(),
+            self.maximum(),
+            self.sliderPosition(),
+            span,
+            option.upsideDown,
+        )
+        center_y = self.height() / 2
+        track = QRectF(
+            self._margin,
+            center_y - self._track_height / 2,
+            span,
+            self._track_height,
+        )
+        handle = QRectF(
+            self._margin + position - self._handle_size / 2,
+            center_y - self._handle_size / 2,
+            self._handle_size,
+            self._handle_size,
+        )
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#d4d9dd"))
+        painter.drawRoundedRect(track, 1, 1)
+        if self.isEnabled():
+            handle_color = "#9fa9b1" if not self.underMouse() else "#7f8b94"
+        else:
+            handle_color = COLORS["disabled"]
+        painter.setBrush(QColor(handle_color))
+        painter.drawEllipse(handle)
+
+
 class ContourSettingsDialog(QDialog):
     """控制云图范围、色带、数值格式、图例和极值。"""
 
@@ -415,16 +469,32 @@ class ContourSettingsDialog(QDialog):
             max(0, self.colormap.findData(selected_colormap))
         )
         self.levels = QSpinBox(self)
-        self.levels.setRange(2, 256)
+        self.levels.setRange(4, 48)
         self.levels.setValue(int(options.get("levels", 12)))
+        self.levels_slider = _ThinHorizontalSlider(self)
+        self.levels_slider.setObjectName("contourLevelsSlider")
+        self.levels_slider.setRange(4, 48)
+        self.levels_slider.setSingleStep(1)
+        self.levels_slider.setPageStep(4)
+        self.levels_slider.setValue(self.levels.value())
+        self.levels_slider.valueChanged.connect(self.levels.setValue)
+        self.levels.valueChanged.connect(self.levels_slider.setValue)
+        self.levels_row = QWidget(self)
+        levels_layout = QHBoxLayout(self.levels_row)
+        levels_layout.setContentsMargins(0, 0, 0, 0)
+        levels_layout.setSpacing(8)
+        levels_layout.addWidget(self.levels_slider, 1)
+        levels_layout.addWidget(self.levels)
         self.style = QComboBox(self)
         self.style.addItem("分段云图", "segmented")
         self.style.addItem("连续云图", "continuous")
         self.style.setCurrentIndex(max(0, self.style.findData(options.get("style", "segmented"))))
         self.style.currentIndexChanged.connect(
-            lambda: self.levels.setEnabled(self.style.currentData() == "segmented")
+            lambda: self.levels_row.setEnabled(
+                self.style.currentData() == "segmented"
+            )
         )
-        self.levels.setEnabled(self.style.currentData() == "segmented")
+        self.levels_row.setEnabled(self.style.currentData() == "segmented")
         self.render_mode = QComboBox(self)
         self.render_mode.addItem("光影", CONTOUR_RENDER_SHADED)
         self.render_mode.addItem("填充", CONTOUR_RENDER_FILLED)
@@ -463,12 +533,45 @@ class ContourSettingsDialog(QDialog):
         )
         self.averaging_threshold = QDoubleSpinBox(self)
         self.averaging_threshold.setRange(0.0, 100.0)
-        self.averaging_threshold.setDecimals(1)
+        self.averaging_threshold.setDecimals(0)
+        self.averaging_threshold.setSingleStep(1.0)
         self.averaging_threshold.setSuffix(" %")
         self.averaging_threshold.setValue(float(options.get("averaging_threshold", 75.0)))
         self.averaging_threshold.setToolTip(
             "仅用于节点平均应力；超过阈值的当前分量按单元侧分开显示"
         )
+        self.averaging_threshold_slider = _ThinHorizontalSlider(self)
+        self.averaging_threshold_slider.setObjectName(
+            "contourThresholdSlider"
+        )
+        self.averaging_threshold_slider.setRange(0, 100)
+        self.averaging_threshold_slider.setSingleStep(1)
+        self.averaging_threshold_slider.setPageStep(5)
+        self.averaging_threshold_slider.setValue(
+            round(self.averaging_threshold.value())
+        )
+        self.averaging_threshold_slider.valueChanged.connect(
+            self.averaging_threshold.setValue
+        )
+        self.averaging_threshold.valueChanged.connect(
+            lambda value: self.averaging_threshold_slider.setValue(
+                round(value)
+            )
+        )
+        self.averaging_threshold_row = QWidget(self)
+        threshold_layout = QHBoxLayout(self.averaging_threshold_row)
+        threshold_layout.setContentsMargins(0, 0, 0, 0)
+        threshold_layout.setSpacing(8)
+        threshold_layout.addWidget(self.averaging_threshold_slider, 1)
+        threshold_layout.addWidget(self.averaging_threshold)
+        value_box_width = 60
+        value_box_height = max(
+            self.levels.sizeHint().height(),
+            self.averaging_threshold.sizeHint().height(),
+        )
+        for value_box in (self.levels, self.averaging_threshold):
+            value_box.setFixedSize(value_box_width, value_box_height)
+            value_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.number_format = QComboBox(self)
         for label, key in (("自动", "general"), ("定点小数", "fixed"), ("科学计数法", "scientific")):
             self.number_format.addItem(label, key)
@@ -484,11 +587,12 @@ class ContourSettingsDialog(QDialog):
         form.addRow("云图样式：", self.style)
         form.addRow("渲染模式：", self.render_mode)
         form.addRow("显示轮廓：", self.edge_mode)
-        form.addRow("色带级数：", self.levels)
-        form.addRow("节点平均阈值：", self.averaging_threshold)
         form.addRow("数值格式：", self.number_format)
         form.addRow("小数位：", self.decimals)
         form.addRow("图例方向：", self.orientation)
+        form.addRow("色带级数：", self.levels_row)
+        form.addRow("阈值：", self.averaging_threshold_row)
+        self.form = form
         layout.addLayout(form)
         self.legend = QCheckBox("显示图例", self)
         self.legend.setChecked(bool(options.get("legend", True)))
