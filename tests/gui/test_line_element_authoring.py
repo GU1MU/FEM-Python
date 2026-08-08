@@ -462,9 +462,10 @@ def test_existing_displacement_output_is_read_only_and_not_deletable() -> None:
     )
 
     assert not dialog.step_combo.isEnabled()
-    assert dialog.kind_value.text() == "field"
-    assert not hasattr(dialog, "target_value")
-    assert dialog.variables_value.text() == "U、RF"
+    assert tuple(
+        dialog.candidate_list.item(index).text()
+        for index in range(dialog.candidate_list.count())
+    ) == ("U", "RF")
     assert manager.select_definition(("output", 0, 0))
     assert manager.edit_button.text() == "查看"
     assert not manager.delete_button.isEnabled()

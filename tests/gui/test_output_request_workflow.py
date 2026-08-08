@@ -135,7 +135,7 @@ def test_imported_create_uses_catalog_candidate_and_reload_restores_source(
 
     window.create_output_request()
 
-    created = _editable_step(window.document.steps).outputs[-1]
+    created = tuple(_editable_step(window.document.steps).outputs)
     published = next(
         candidate.authoring_request
         for candidate in authoring.output_request_catalog.candidates
@@ -144,7 +144,11 @@ def test_imported_create_uses_catalog_candidate_and_reload_restores_source(
     assert tuple(dialog_type.observed_candidates) == (
         authoring.output_request_catalog.candidates
     )
-    assert created == published
+    assert tuple(request.variables for request in created) == (
+        ("U",),
+        ("S",),
+    )
+    assert created[-1] == published
     assert window.document.session_revision == before_revision + 1
     assert not window.document.can_save
     assert warnings == [("输出请求", _RELOAD_LOSS_MESSAGE)]

@@ -784,17 +784,13 @@ def test_output_request_uses_only_published_candidate_order_and_dto(
     assert tuple(
         dialog.candidate_list.item(index).text()
         for index in range(dialog.candidate_list.count())
-    ) == ("节点：U", "节点：RF", "单元：S")
+    ) == ("U", "RF", "S")
     assert all(
         "position" not in dialog.candidate_list.item(index).text()
         for index in range(dialog.candidate_list.count())
     )
     displacement_item = dialog.candidate_list.item(0)
     assert displacement_item.checkState() == Qt.CheckState.Checked
-    assert not (
-        displacement_item.flags()
-        & Qt.ItemFlag.ItemIsUserCheckable
-    )
     displacement_item.setCheckState(Qt.CheckState.Unchecked)
     assert displacement_item.checkState() == Qt.CheckState.Checked
     for index in range(dialog.candidate_list.count()):
@@ -841,9 +837,18 @@ def test_output_request_discards_parsed_inp_details():
     assert not output.metadata
     assert output.source_evidence is None
     assert not dialog.step_combo.isEnabled()
-    assert dialog.kind_value.text() == "history"
-    assert dialog.variables_value.text() == (
-        "PRESELECT、PRESELECT、Future"
+    assert tuple(
+        dialog.candidate_list.item(index).text()
+        for index in range(dialog.candidate_list.count())
+    ) == (
+        "PRESELECT",
+        "PRESELECT",
+        "Future",
+    )
+    assert all(
+        dialog.candidate_list.item(index).checkState()
+        == Qt.CheckState.Checked
+        for index in range(dialog.candidate_list.count())
     )
     assert not hasattr(dialog, "target_value")
     assert not hasattr(dialog, "metadata_value")
@@ -865,9 +870,27 @@ def test_output_request_dialog_shows_existing_imported_requests_by_step():
         },
     )
 
-    assert dialog.existing_value.text() == "节点：RF、U；单元：S"
+    assert tuple(
+        dialog.candidate_list.item(index).text()
+        for index in range(dialog.candidate_list.count())
+    ) == ("U", "RF", "S")
+    assert all(
+        dialog.candidate_list.item(index).checkState()
+        == Qt.CheckState.Checked
+        for index in range(dialog.candidate_list.count())
+    )
+    assert not hasattr(dialog, "existing_value")
+    assert not hasattr(dialog, "kind_value")
+    assert not hasattr(dialog, "variables_value")
     dialog.step_combo.setCurrentText("Empty")
-    assert dialog.existing_value.text() == "无"
+    assert tuple(
+        dialog.candidate_list.item(index).checkState()
+        for index in range(dialog.candidate_list.count())
+    ) == (
+        Qt.CheckState.Checked,
+        Qt.CheckState.Unchecked,
+        Qt.CheckState.Unchecked,
+    )
 
 
 def test_analysis_manager_uses_readable_definition_summaries():

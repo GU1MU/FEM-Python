@@ -116,3 +116,10 @@ def test_spin_box_theme_hides_increment_and_decrement_buttons():
     assert "QSpinBox::down-button" in stylesheet
     assert "QDoubleSpinBox::up-button" in stylesheet
     assert "QDoubleSpinBox::down-button" in stylesheet
+
+
+def test_disabled_result_scale_uses_a_muted_input_style():
+    stylesheet = build_stylesheet()
+
+    assert "QDoubleSpinBox#resultScaleValue:disabled" in stylesheet
+    assert "background: #f4f5f6; color: #a0a6ac;" in stylesheet

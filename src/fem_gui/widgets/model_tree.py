@@ -455,15 +455,24 @@ class ModelTree(QTreeWidget):
                         else (index, load_index)
                     ),
                 ))
-            output_root = self._category(step_item, "输出请求", len(step.outputs))
+            output_count = sum(
+                max(1, len(output.variables))
+                for output in step.outputs
+            )
+            output_root = self._category(step_item, "输出请求", output_count)
             for output_index, output in enumerate(step.outputs):
-                variables_label = "、".join(output.variables)
                 identity = getattr(output, "name", None)
-                output_root.addChild(self._item(
-                    identity or variables_label or "输出请求",
-                    "output",
-                    (step.name, identity) if identity is not None else (index, output_index),
-                ))
+                labels = tuple(output.variables) or ("输出请求",)
+                for variable in labels:
+                    output_root.addChild(self._item(
+                        variable,
+                        "output",
+                        (
+                            (step.name, identity)
+                            if identity is not None
+                            else (index, output_index)
+                        ),
+                    ))
             steps.addChild(step_item)
         self.addTopLevelItem(root)
         root.setExpanded(True)

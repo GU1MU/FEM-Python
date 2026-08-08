@@ -312,64 +312,65 @@ _NUMERICAL_MODEL_CHECK_ELEMENT_LIMIT = 100_000
 _DEFAULT_SCOPE_BACKGROUND_REFERENCE_THRESHOLD = 10_000
 
 
-def _is_displacement_output_request(request: OutputRequest) -> bool:
-    return (
-        request.kind.casefold() == "field"
-        and request.target.casefold() == "node"
-        and any(
-            variable.strip().casefold() == "u"
-            for variable in request.variables
-        )
-    )
+_VISIBLE_OUTPUT_VARIABLES = frozenset({"u", "rf", "s"})
 
 
 def _with_required_displacement_output(
     requests: tuple[OutputRequest, ...],
     candidates: Sequence[object],
-    existing: tuple[OutputRequest, ...],
 ) -> tuple[OutputRequest, ...]:
-    existing_has_displacement = any(
-        _is_displacement_output_request(request)
-        for request in existing
-    )
-    if existing_has_displacement:
-        return tuple(
-            request
-            for request in requests
-            if not (
-                _is_displacement_output_request(request)
-                and len(request.variables) == 1
-            )
-        )
-
-    selected_displacement = tuple(
-        request
+    if any(
+        variable.strip().casefold() == "u"
         for request in requests
-        if _is_displacement_output_request(request)
-    )
-    if selected_displacement:
-        return (
-            *selected_displacement,
-            *(
-                request
-                for request in requests
-                if not _is_displacement_output_request(request)
-            ),
-        )
-
+        for variable in request.variables
+    ):
+        return requests
     required = next(
         (
             candidate.authoring_request
             for candidate in candidates
-            if _is_displacement_output_request(
-                candidate.authoring_request
-            )
+            if candidate.authoring_request.variables == ("U",)
         ),
         None,
     )
     if type(required) is not OutputRequest:
         raise ValueError("当前模型不支持必需的位移场 U 输出")
     return (deepcopy(required), *requests)
+
+
+def _replace_visible_output_requests(
+    requests: tuple[OutputRequest, ...],
+    existing: tuple[OutputRequest, ...],
+) -> tuple[OutputRequest, ...]:
+    selected_variables = {
+        variable.strip().casefold()
+        for request in requests
+        for variable in request.variables
+    }
+    existing_variables = {
+        variable.strip().casefold()
+        for request in existing
+        for variable in request.variables
+        if variable.strip().casefold() in _VISIBLE_OUTPUT_VARIABLES
+    }
+    if selected_variables == existing_variables:
+        return existing
+
+    preserved: list[OutputRequest] = []
+    for request in existing:
+        variables = tuple(
+            variable
+            for variable in request.variables
+            if variable.strip().casefold() not in _VISIBLE_OUTPUT_VARIABLES
+        )
+        if not variables:
+            continue
+        preserved.append(
+            request
+            if variables == tuple(request.variables)
+            else replace(request, variables=variables)
+        )
+    return (*preserved, *deepcopy(requests))
 
 
 def _resolve_analysis_object_key(
@@ -8877,6 +8878,14 @@ class FEMMainWindow(QMainWindow):
                 "输出请求候选必须生成非空的 typed OutputRequest 元组。",
             )
             return
+        try:
+            requests = _with_required_displacement_output(
+                requests,
+                candidates,
+            )
+        except ValueError as error:
+            self._show_error("输出请求", str(error))
+            return
         definitions = list(deepcopy(self.document.steps))
         target = next(
             (
@@ -8893,31 +8902,20 @@ class FEMMainWindow(QMainWindow):
                 f"分析步不存在或不可编辑：{step_name}",
             )
             return
-        try:
-            requests = _with_required_displacement_output(
-                requests,
-                candidates,
-                tuple(target.outputs),
-            )
-        except ValueError as error:
-            self._show_error("创建输出请求", str(error))
-            return
-        if not requests:
+        updated_outputs = _replace_visible_output_requests(
+            requests,
+            tuple(target.outputs),
+        )
+        if updated_outputs == tuple(target.outputs):
             self.status_panel.set_state(
-                "位移场 U 输出请求已存在",
+                "输出请求未更改",
                 5000,
             )
             return
-        target.outputs = tuple(target.outputs) + tuple(
-            deepcopy(request)
-            for request in requests
-        )
+        target.outputs = updated_outputs
         self._warn_imported_output_overlay()
         self._analysis_definitions_changed(
-            (
-                f"已创建 {len(requests)} 个输出请求，"
-                "模型需要重新检查"
-            ),
+            "输出请求已更新，模型需要重新检查",
             definitions,
         )
 

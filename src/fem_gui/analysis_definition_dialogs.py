@@ -935,9 +935,7 @@ class OutputRequestDialog(QDialog):
             if current is None
             else _compact_output_request(current)
         )
-        self.setWindowTitle(
-            "查看输出请求" if current is not None else "创建输出请求"
-        )
+        self.setWindowTitle("输出请求")
         self.step_combo = QComboBox(self)
         self.step_combo.addItems(step_names)
         self.candidate_list = QListWidget(self)
@@ -945,7 +943,7 @@ class OutputRequestDialog(QDialog):
         self.candidate_list.setSelectionMode(
             QAbstractItemView.SelectionMode.NoSelection
         )
-        self.candidate_list.setMinimumHeight(92)
+        self.candidate_list.setMinimumHeight(120)
         self._required_candidate_index = next(
             (
                 index
@@ -956,61 +954,43 @@ class OutputRequestDialog(QDialog):
             ),
             None,
         )
-        for index, candidate in enumerate(self._candidates):
-            item = QListWidgetItem(
-                _output_request_summary(candidate.authoring_request),
-                self.candidate_list,
-            )
-            item.setData(Qt.ItemDataRole.UserRole, index)
-            item.setCheckState(
-                Qt.CheckState.Checked
-                if (
-                    index == self._required_candidate_index
-                    or (
-                        self._required_candidate_index is None
-                        and index == 0
-                    )
+        if self._current is None:
+            for index, candidate in enumerate(self._candidates):
+                item = QListWidgetItem(
+                    candidate.authoring_request.variables[0],
+                    self.candidate_list,
                 )
-                else Qt.CheckState.Unchecked
-            )
-            flags = item.flags() | Qt.ItemFlag.ItemIsEnabled
-            if index == self._required_candidate_index:
-                flags &= ~Qt.ItemFlag.ItemIsUserCheckable
-            else:
-                flags |= Qt.ItemFlag.ItemIsUserCheckable
-            item.setFlags(flags)
-            if index == self._required_candidate_index:
-                item.setToolTip("位移场 U 为必需输出，无法取消")
-        self.kind_value = QLabel("", self)
-        self.variables_value = QLabel("", self)
-        self.variables_value.setWordWrap(True)
-        self.existing_value = QLabel("", self)
-        self.existing_value.setWordWrap(True)
+                item.setData(Qt.ItemDataRole.UserRole, index)
+                item.setFlags(
+                    item.flags()
+                    | Qt.ItemFlag.ItemIsEnabled
+                    | Qt.ItemFlag.ItemIsUserCheckable
+                )
+        else:
+            for variable in self._current.variables:
+                item = QListWidgetItem(variable, self.candidate_list)
+                item.setCheckState(Qt.CheckState.Checked)
+                item.setFlags(
+                    (item.flags() | Qt.ItemFlag.ItemIsEnabled)
+                    & ~Qt.ItemFlag.ItemIsUserCheckable
+                )
 
         form = QFormLayout()
         configure_form_layout(form)
         form.addRow("分析步", self.step_combo)
-        if self._current is None:
-            form.addRow("当前已有输出", self.existing_value)
-            form.addRow("可新增输出", self.candidate_list)
-        form.addRow("输出类型", self.kind_value)
-        form.addRow(
-            "输出变量" if self._current is not None else "待新增变量",
-            self.variables_value,
-        )
+        form.addRow(self.candidate_list)
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         if self._current is None:
             layout.addWidget(_buttons(self))
             self.candidate_list.itemChanged.connect(
-                self._refresh_request
+                self._keep_required_displacement_checked
             )
             self.step_combo.currentTextChanged.connect(
-                lambda _text: self._refresh_request()
+                lambda _text: self._sync_existing_selection()
             )
         else:
             self.step_combo.setEnabled(False)
-            self.candidate_list.setVisible(False)
             buttons = QDialogButtonBox(
                 QDialogButtonBox.StandardButton.Close,
                 self,
@@ -1021,7 +1001,8 @@ class OutputRequestDialog(QDialog):
             buttons.rejected.connect(self.reject)
             layout.addWidget(buttons)
         self.setMinimumWidth(330)
-        self._refresh_request()
+        if self._current is None:
+            self._sync_existing_selection()
 
     def definitions(self) -> tuple[str, tuple[OutputRequest, ...]]:
         step_name = self.step_combo.currentText().strip()
@@ -1047,39 +1028,41 @@ class OutputRequestDialog(QDialog):
             raise ValueError("当前选择包含多个输出请求，请使用 definitions()")
         return step_name, requests[0]
 
-    def _refresh_request(self, _item: QListWidgetItem | None = None) -> None:
+    def _keep_required_displacement_checked(
+        self,
+        item: QListWidgetItem,
+    ) -> None:
         if (
-            _item is not None
-            and self.candidate_list.row(_item)
+            self.candidate_list.row(item)
             == self._required_candidate_index
-            and _item.checkState() != Qt.CheckState.Checked
+            and item.checkState() != Qt.CheckState.Checked
         ):
             self.candidate_list.blockSignals(True)
-            _item.setCheckState(Qt.CheckState.Checked)
+            item.setCheckState(Qt.CheckState.Checked)
             self.candidate_list.blockSignals(False)
-        requests = self._selected_requests()
-        kinds = tuple(dict.fromkeys(request.kind for request in requests))
-        self.kind_value.setText("、".join(kinds))
-        variables = (
-            tuple(self._current.variables)
-            if self._current is not None
-            else tuple(
-                dict.fromkeys(
-                    variable
-                    for request in requests
-                    for variable in request.variables
-                )
-            )
-        )
-        self.variables_value.setText("、".join(variables))
-        if self._current is None:
-            existing = self._existing_requests_by_step.get(
+
+    def _sync_existing_selection(self) -> None:
+        existing_variables = {
+            variable.strip().casefold()
+            for request in self._existing_requests_by_step.get(
                 self.step_combo.currentText(),
                 (),
             )
-            self.existing_value.setText(
-                _existing_output_request_summary(existing)
+            for variable in request.variables
+        }
+        self.candidate_list.blockSignals(True)
+        for row, candidate in enumerate(self._candidates):
+            variable = candidate.authoring_request.variables[0]
+            checked = (
+                variable.casefold() in existing_variables
+                or row == self._required_candidate_index
             )
+            self.candidate_list.item(row).setCheckState(
+                Qt.CheckState.Checked
+                if checked
+                else Qt.CheckState.Unchecked
+            )
+        self.candidate_list.blockSignals(False)
 
     def _selected_candidates(self) -> tuple[OutputRequestProjection, ...]:
         if self._current is not None:
@@ -1105,25 +1088,6 @@ class OutputRequestDialog(QDialog):
             candidate.authoring_request
             for candidate in self._selected_candidates()
         )
-
-
-def _output_request_summary(request: OutputRequest) -> str:
-    if type(request) is not OutputRequest:
-        raise TypeError("request must be exactly OutputRequest")
-    target = {
-        "node": "节点",
-        "element": "单元",
-        "preselect": "INP 预选",
-    }.get(request.target, request.target)
-    return f"{target}：{'、'.join(request.variables)}"
-
-
-def _existing_output_request_summary(
-    requests: Sequence[OutputRequest],
-) -> str:
-    if not requests:
-        return "无"
-    return "；".join(_output_request_summary(request) for request in requests)
 
 
 def _is_required_displacement_output(request: OutputRequest) -> bool:

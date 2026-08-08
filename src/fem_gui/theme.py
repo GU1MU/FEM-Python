@@ -182,6 +182,7 @@ QCheckBox, QRadioButton {{ spacing: 7px; min-height: 22px; }}
 QCheckBox:disabled, QRadioButton:disabled {{ color: {COLORS['disabled']}; }}
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTableWidget, QTableView, QPlainTextEdit {{ background: white; border: 1px solid {COLORS['border']}; padding: 3px 5px; selection-background-color: {COLORS['selected']}; selection-color: {COLORS['text']}; }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus {{ border-color: {COLORS['accent']}; }}
+QDoubleSpinBox#resultScaleValue:disabled {{ background: {COLORS['background']}; color: {COLORS['disabled']}; border-color: {COLORS['soft_border']}; }}
 QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 0; height: 0; border: none; }}
 QComboBox {{ min-height: 22px; padding-right: 22px; }}
 QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: top right; width: 20px; border-left: 1px solid {COLORS['soft_border']}; background: {COLORS['chrome']}; }}

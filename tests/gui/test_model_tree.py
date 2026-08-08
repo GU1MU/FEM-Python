@@ -227,9 +227,16 @@ def test_output_request_tree_items_show_only_variables():
     ]
     assert set(outputs) == {
         "PRESELECT",
-        "RF、U",
+        "RF",
+        "U",
         "S",
     }
+    output_category = next(
+        item
+        for item in _items(tree)
+        if item.text(0) == "输出请求 (4)"
+    )
+    assert output_category.childCount() == 4
 
 
 def test_section_tree_uses_cae_labels_instead_of_backend_identifiers():
