@@ -18,6 +18,15 @@ from .data import (
     build_initial_materialization,
     prepare_result_export_snapshot,
 )
+from .archive import (
+    LoadedResultArchive,
+    ResultArchiveModelProjection,
+    ResultArchiveOrigin,
+    ResultArchiveRun,
+    ResultArchiveSnapshot,
+    archive_region_dictionary,
+    build_result_archive_snapshot,
+)
 from .fields import (
     FieldAssociation,
     FieldMaterializationKey,
@@ -96,6 +105,7 @@ from .workflow import (
 
 __all__ = [
     "ElementResultProfile",
+    "LoadedResultArchive",
     "ElementResultInspectionRequest",
     "ExecutableOutputRequest",
     "FieldAssociation",
@@ -120,6 +130,10 @@ __all__ = [
     "PhysicalQuantity",
     "RECOVERY_CONTRACT",
     "ResultCatalog",
+    "ResultArchiveModelProjection",
+    "ResultArchiveOrigin",
+    "ResultArchiveRun",
+    "ResultArchiveSnapshot",
     "ResultCapabilityCatalog",
     "ResultCellKind",
     "ResultDiagnostic",
@@ -146,6 +160,8 @@ __all__ = [
     "ScalarFieldSelection",
     "SolveResultBundle",
     "advance_materialization",
+    "archive_region_dictionary",
+    "build_result_archive_snapshot",
     "build_result_provider",
     "build_result_field_topology_template",
     "build_solve_result_bundle",

@@ -1,0 +1,158 @@
+"""Crash-safe installation primitive for semantically verified binaries."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from copy import deepcopy
+import os
+from pathlib import Path
+import tempfile
+from typing import Any, BinaryIO, TypeVar
+
+
+_VerifiedT = TypeVar("_VerifiedT")
+
+
+def atomic_write_verified_binary(
+    path: str | Path,
+    serialized: bytes,
+    *,
+    verifier: Callable[[Path], _VerifiedT],
+    semantic_encoder: Callable[[_VerifiedT], Any],
+    expected_semantic: Any,
+    error_type: type[Exception] = ValueError,
+    mismatch_message: str = "temporary binary semantic verification failed",
+    checkpoint: Callable[[], Any] | None = None,
+    before_replace: Callable[[], Any] | None = None,
+    replace_func: Callable[[str | Path, str | Path], Any] | None = None,
+    unlink_func: Callable[[Path], Any] | None = None,
+    _mkstemp_func: Callable[..., tuple[int, str]] | None = None,
+    _fdopen_func: Callable[..., BinaryIO] | None = None,
+    _fsync_func: Callable[[int], Any] | None = None,
+    _close_func: Callable[[int], Any] | None = None,
+) -> Path:
+    """Write, fsync, read back, semantically verify, then atomically replace.
+
+    The hooks intentionally mirror ``_atomic_text``.  They make cancellation
+    and fault-injection tests deterministic while retaining the production
+    path's same-directory temporary and cleanup guarantees.
+    """
+
+    if type(serialized) is not bytes:
+        raise TypeError("serialized must be bytes")
+    if not isinstance(error_type, type) or not issubclass(error_type, Exception):
+        raise TypeError("error_type must be an Exception type")
+    if checkpoint is not None and not callable(checkpoint):
+        raise TypeError("checkpoint must be callable or None")
+    if before_replace is not None and not callable(before_replace):
+        raise TypeError("before_replace must be callable or None")
+
+    target = Path(path)
+    expected = deepcopy(expected_semantic)
+    replace = os.replace if replace_func is None else replace_func
+    unlink = (lambda temporary: temporary.unlink()) if unlink_func is None else unlink_func
+    mkstemp = tempfile.mkstemp if _mkstemp_func is None else _mkstemp_func
+    fdopen = os.fdopen if _fdopen_func is None else _fdopen_func
+    fsync = os.fsync if _fsync_func is None else _fsync_func
+    close = os.close if _close_func is None else _close_func
+
+    descriptor = -1
+    temporary: Path | None = None
+    installed = False
+    primary_error: BaseException | None = None
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = mkstemp(
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+        )
+        temporary = Path(temporary_name)
+        stream = fdopen(descriptor, "wb")
+        descriptor = -1
+        stream_error: BaseException | None = None
+        try:
+            _invoke_checkpoint(checkpoint)
+            stream.write(serialized)
+            stream.flush()
+            fsync(stream.fileno())
+        except BaseException as error:
+            stream_error = error
+            raise
+        finally:
+            try:
+                stream.close()
+            except BaseException as cleanup_error:
+                if stream_error is None:
+                    raise
+                _add_cleanup_note(
+                    stream_error,
+                    cleanup_error,
+                    action="close temporary binary file",
+                    temporary=temporary,
+                )
+
+        _invoke_checkpoint(checkpoint)
+        verified = verifier(temporary)
+        _invoke_checkpoint(checkpoint)
+        actual_semantic = semantic_encoder(verified)
+        if actual_semantic != expected:
+            raise error_type(mismatch_message)
+        _invoke_checkpoint(checkpoint)
+        if before_replace is not None:
+            before_replace()
+        replace(temporary, target)
+        installed = True
+        return target
+    except BaseException as error:
+        primary_error = error
+        raise
+    finally:
+        if descriptor >= 0:
+            try:
+                close(descriptor)
+            except BaseException as cleanup_error:
+                if primary_error is None:
+                    raise
+                _add_cleanup_note(
+                    primary_error,
+                    cleanup_error,
+                    action="close temporary binary file descriptor",
+                    temporary=temporary,
+                )
+        if temporary is not None and not installed:
+            try:
+                unlink(temporary)
+            except FileNotFoundError:
+                pass
+            except BaseException as cleanup_error:
+                if primary_error is None:
+                    raise
+                _add_cleanup_note(
+                    primary_error,
+                    cleanup_error,
+                    action="delete temporary binary file",
+                    temporary=temporary,
+                )
+
+
+def _invoke_checkpoint(checkpoint: Callable[[], Any] | None) -> None:
+    if checkpoint is not None:
+        checkpoint()
+
+
+def _add_cleanup_note(
+    primary_error: BaseException,
+    cleanup_error: BaseException,
+    *,
+    action: str,
+    temporary: Path | None,
+) -> None:
+    location = "<not-created>" if temporary is None else str(temporary)
+    primary_error.add_note(
+        f"{action} failed; temporary path {location}; "
+        f"{type(cleanup_error).__name__}: {cleanup_error}"
+    )
+
+
+__all__ = ["atomic_write_verified_binary"]
