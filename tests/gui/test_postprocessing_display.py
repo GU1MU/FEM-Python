@@ -5,6 +5,7 @@ from time import monotonic
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest
 from PySide6.QtWidgets import QApplication
 
 from fem.io.inp import read
@@ -191,6 +192,7 @@ def test_result_ribbon_selects_real_fields_and_deformation_scale(gui_inp_path):
     custom_index = window.result_scale_combo.findData("custom")
     window.result_scale_combo.setCurrentIndex(custom_index)
     window._result_scale_mode_changed(custom_index)
+    assert window.result_scale_value.isEnabled()
     window.result_scale_value.setValue(8.0)
     assert window.result_scale_value.text() == "8.00"
     assert window._scale_mode == "custom"
@@ -206,6 +208,22 @@ def test_result_ribbon_selects_real_fields_and_deformation_scale(gui_inp_path):
         window.viewport._result_render_payload.topology.deformation_scale
         == 1.0
     )
+    assert not window.result_scale_value.isEnabled()
+    assert window.result_scale_value.value() == 1.0
+
+    auto_index = window.result_scale_combo.findData("auto")
+    window.result_scale_combo.setCurrentIndex(auto_index)
+    window._result_scale_mode_changed(auto_index)
+    automatic_scale = (
+        window.viewport._result_render_payload.topology.deformation_scale
+    )
+    assert not window.result_scale_value.isEnabled()
+    assert window.result_scale_value.value() == pytest.approx(automatic_scale)
+
+    window.result_scale_combo.setCurrentIndex(custom_index)
+    window._result_scale_mode_changed(custom_index)
+    assert window.result_scale_value.isEnabled()
+    assert window.result_scale_value.value() == 8.0
     window.close()
 
 

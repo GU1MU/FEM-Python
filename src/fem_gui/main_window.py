@@ -3554,16 +3554,29 @@ class FEMMainWindow(QMainWindow):
 
     def _result_scale_mode_changed(self, _index: int) -> None:
         self._scale_mode = str(self.result_scale_combo.currentData())
-        self.result_scale_value.setEnabled(
-            self._scale_mode == "custom"
-            and self.session.current_result_identity() is not None
-        )
+        self._sync_result_scale_control()
         self._apply_scale()
 
     def _result_scale_value_changed(self, value: float) -> None:
         self._scale_value = float(value)
         if self._scale_mode == "custom":
             self._apply_scale()
+
+    def _sync_result_scale_control(self) -> None:
+        provider = self._current_result_provider()
+        displayed_value = self._scale_value
+        if provider is not None and self._scale_mode != "custom":
+            displayed_value = self._result_deformation_scale(
+                provider,
+                shape_mode="deformed",
+                scale_mode=self._scale_mode,
+            )
+        self.result_scale_value.blockSignals(True)
+        self.result_scale_value.setValue(displayed_value)
+        self.result_scale_value.blockSignals(False)
+        self.result_scale_value.setEnabled(
+            provider is not None and self._scale_mode == "custom"
+        )
 
     def _face_sketch_selection_is_valid(self) -> bool:
         if (
@@ -3715,9 +3728,7 @@ class FEMMainWindow(QMainWindow):
         self.result_component_combo.setEnabled(has_result and not self.busy)
         self.result_position_combo.setEnabled(has_result and not self.busy)
         self.result_scale_combo.setEnabled(has_result)
-        self.result_scale_value.setEnabled(
-            has_result and self._scale_mode == "custom"
-        )
+        self._sync_result_scale_control()
         self._sync_result_averaging_threshold_control()
         self._sync_step_combos()
         self._update_window_title()
@@ -11664,10 +11675,7 @@ class FEMMainWindow(QMainWindow):
                 self.result_scale_combo.findData(settings.scale_mode),
             )
         )
-        self.result_scale_value.setValue(settings.scale_value)
-        self.result_scale_value.setEnabled(
-            settings.scale_mode == "custom"
-        )
+        self._sync_result_scale_control()
         self._refresh_result_controls()
         self.status_panel.set_result(self._result_status_text())
         self._update_action_states()
