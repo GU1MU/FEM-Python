@@ -88,7 +88,7 @@ class ResultRecord:
 
     result_id: str
     provenance: ResultProvenance
-    result: ModelResult
+    result: ModelResult | None
     output_report: ResultExecutionReport
     materialization: ResultMaterializationSnapshot
     created_at: datetime = field(default_factory=utc_now)
@@ -103,8 +103,8 @@ class ResultRecord:
             raise ValueError("result_id must be a nonblank string")
         if type(self.provenance) is not ResultProvenance:
             raise TypeError("provenance must be ResultProvenance")
-        if type(self.result) is not ModelResult:
-            raise TypeError("result must be exactly ModelResult")
+        if self.result is not None and type(self.result) is not ModelResult:
+            raise TypeError("result must be exactly ModelResult or None")
         if type(self.output_report) is not ResultExecutionReport:
             raise TypeError("output_report must be ResultExecutionReport")
         if (
@@ -157,6 +157,10 @@ class ResultRecord:
 
         provider = self._provider
         if provider is None:
+            if self.result is None:
+                raise TypeError(
+                    "result is required when no provider is supplied"
+                )
             provider = restore_result_provider(
                 self.result,
                 self.materialization,
@@ -165,7 +169,12 @@ class ResultRecord:
         else:
             if type(provider) is not ResultProvider:
                 raise TypeError("_provider must be exactly ResultProvider")
-            if provider._owned_result is not self.result:
+            if provider.is_archived:
+                if self.result is not None:
+                    raise ValueError(
+                        "archived provider records cannot carry ModelResult"
+                    )
+            elif provider._owned_result is not self.result:
                 raise ValueError(
                     "_provider must own the exact record result"
                 )
@@ -193,6 +202,18 @@ def detached_result_record(record: ResultRecord) -> ResultRecord:
     if type(record) is not ResultRecord:
         raise TypeError("record must be exactly ResultRecord")
     provider = result_record_provider(record)
+    if provider.is_archived:
+        return ResultRecord(
+            result_id=record.result_id,
+            provenance=deepcopy(record.provenance),
+            result=None,
+            output_report=record.output_report,
+            materialization=record.materialization,
+            created_at=record.created_at,
+            _provider=provider,
+        )
+    if record.result is None:
+        raise RuntimeError("live result record has no ModelResult")
     owned_result = deep_owned_result(record.result)
     owned_materialization = deep_owned_materialization(
         record.materialization

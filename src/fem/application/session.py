@@ -48,13 +48,18 @@ from fem.elements import validate_beam_frame_fields
 
 from .results import (
     FieldMaterializationKey,
+    LoadedResultArchive,
+    ResultArchiveModelProjection,
     ResultArchiveRun,
+    ResultArchiveOrigin,
+    ResultArchiveSnapshot,
     ResultArchiveSaveSnapshot,
     ResultMaterializationPatch,
     ResultProvider,
     ResultFileState,
     ResultSourceKey,
     SolveResultBundle,
+    build_archived_result_provider,
     field_materialization_sort_key,
     validate_solve_result_model_identity,
 )
@@ -135,6 +140,7 @@ from .runs import (
 )
 from .results.archive import (
     build_result_archive_snapshot,
+    rebind_result_archive_snapshot,
     result_model_fingerprint,
 )
 from .validation import ValidationRecord, ValidationStamp
@@ -818,7 +824,7 @@ class SessionSnapshot:
 
     @property
     def path(self) -> Path | None:
-        if self.source_kind == "imported":
+        if self.source_kind in {"imported", "result"}:
             return self.source_path
         return self.project_path
 
@@ -829,6 +835,40 @@ class SessionSnapshot:
     @property
     def has_model(self) -> bool:
         return self.artifact is not None
+
+    @property
+    def result_only(self) -> bool:
+        """Whether this snapshot is a read-only standalone result document."""
+
+        return self.source_kind == "result"
+
+    @property
+    def is_result_only(self) -> bool:
+        return self.result_only
+
+    @property
+    def result_origin(self) -> ResultArchiveOrigin | None:
+        """Archive provenance retained by the displayed result provider."""
+
+        if self.displayed_result is None:
+            return None
+        provider = getattr(self.displayed_result, "_provider", None)
+        origin = getattr(provider, "archive_origin", None)
+        return origin if type(origin) is ResultArchiveOrigin else None
+
+    @property
+    def result_archive_id(self) -> str | None:
+        if self.displayed_result is None:
+            return None
+        provider = getattr(self.displayed_result, "_provider", None)
+        return getattr(provider, "archive_id", None)
+
+    @property
+    def model_projection(self) -> ResultArchiveModelProjection | None:
+        if self.displayed_result is None:
+            return None
+        provider = getattr(self.displayed_result, "_provider", None)
+        return getattr(provider, "model_projection", None)
 
     @property
     def has_result(self) -> bool:
@@ -1185,6 +1225,44 @@ class ModelSession:
             self._is_open
             and self._source_kind == "native"
         )
+
+    @property
+    def result_only(self) -> bool:
+        """Whether the current document is a standalone read-only archive."""
+
+        return self._source_kind == "result"
+
+    @property
+    def is_result_only(self) -> bool:
+        return self.result_only
+
+    @property
+    def result_origin(self) -> ResultArchiveOrigin | None:
+        """Return retained archive provenance for the current result document."""
+
+        if not self.result_only:
+            return None
+        record = self._current_result_record(self._displayed_result_run_id)
+        if record is None:
+            return None
+        origin = getattr(result_record_provider(record), "archive_origin", None)
+        return origin if type(origin) is ResultArchiveOrigin else None
+
+    @property
+    def result_archive_id(self) -> str | None:
+        provider = self.current_result_provider()
+        return None if provider is None else provider.archive_id
+
+    @property
+    def result_model_projection(self) -> ResultArchiveModelProjection | None:
+        provider = self.current_result_provider()
+        return None if provider is None else provider.model_projection
+
+    @property
+    def current_result_archive(self) -> ResultArchiveSnapshot | None:
+        """Return the installed detached archive for a result-only document."""
+
+        return self._result_archive_snapshot if self.result_only else None
 
     @property
     def has_unsaved_results(self) -> bool:
@@ -1698,6 +1776,147 @@ class ModelSession:
             },
             _ALL_INVALIDATIONS,
             "project snapshot installed",
+        )
+
+    def replace_from_result_archive(
+        self,
+        archive: ResultArchiveSnapshot | LoadedResultArchive,
+        path: str | Path | None = None,
+        *,
+        expected_session_revision: int | None = None,
+    ) -> SessionDelta:
+        """Atomically install one detached archive as a result-only document.
+
+        The archive is validated and rebound completely before any current
+        session state is changed.  A fresh session/artifact/run/result identity
+        is assigned; the archive origin and original run metadata remain on the
+        immutable provider for inspection.
+        """
+
+        self._check_expected(expected_session_revision)
+        loaded_path: Path | None = None
+        if type(archive) is LoadedResultArchive:
+            snapshot = archive.snapshot
+            loaded_path = archive.path
+        elif type(archive) is ResultArchiveSnapshot:
+            snapshot = archive
+        else:
+            raise TypeError(
+                "archive must be exactly ResultArchiveSnapshot or LoadedResultArchive"
+            )
+        if path is None:
+            target_path = loaded_path
+        else:
+            if isinstance(path, str) and not path.strip():
+                raise ValueError("result archive path must not be empty")
+            try:
+                target_path = Path(path)
+            except (TypeError, ValueError) as error:
+                raise TypeError("result archive path must be path-like") from error
+        if target_path is None or not target_path.name:
+            raise ValueError(
+                "result-only installation requires the archive path"
+            )
+
+        # Prepare every candidate object up front.  Constructors validate the
+        # complete archive and provider graph while the current session is
+        # still untouched, preserving failure atomicity.
+        candidate_session_id = new_identity("session")
+        candidate_artifact_id = new_identity("artifact")
+        candidate_run_id = new_identity("run")
+        candidate_result_id = new_identity("result")
+        candidate_model_revision = self._model_revision + 1
+        candidate_source = ResultSourceKey(
+            result_id=candidate_result_id,
+            session_id=candidate_session_id,
+            artifact_id=candidate_artifact_id,
+            model_revision=candidate_model_revision,
+            step_name=snapshot.run.step_name,
+            run_id=candidate_run_id,
+        )
+        rebound = rebind_result_archive_snapshot(snapshot, candidate_source)
+        provider = build_archived_result_provider(rebound)
+        report = rebound.output_report
+        if report is None:
+            raise ValueError("result archive run has no output report")
+        provenance = ResultProvenance(
+            session_id=candidate_session_id,
+            artifact_id=candidate_artifact_id,
+            model_revision=candidate_model_revision,
+            step_name=rebound.run.step_name,
+            run_id=candidate_run_id,
+        )
+        record = ResultRecord(
+            result_id=candidate_result_id,
+            provenance=provenance,
+            result=None,
+            output_report=report,
+            materialization=rebound.materialization,
+            created_at=rebound.run.created_at,
+            _provider=provider,
+        )
+        run = AnalysisRun(
+            run_id=candidate_run_id,
+            name=rebound.run.name,
+            step_name=rebound.run.step_name,
+            artifact_id=candidate_artifact_id,
+            model_revision=candidate_model_revision,
+            status=RunStatus.SUCCEEDED,
+            created_at=rebound.run.created_at,
+            started_at=rebound.run.started_at,
+            finished_at=rebound.run.finished_at,
+            result_id=candidate_result_id,
+            messages=rebound.run.messages,
+            timings=rebound.run.timings,
+        )
+        artifact = ModelArtifact(
+            session_id=candidate_session_id,
+            artifact_id=candidate_artifact_id,
+            model_revision=candidate_model_revision,
+            mesh_input_revision=None,
+            source_kind="result",
+            model=rebound.model_projection,
+        )
+        file_state = ResultFileState(
+            path=target_path,
+            saved_generation=rebound.materialization.generation,
+            run_id=candidate_run_id,
+            result_id=candidate_result_id,
+        )
+
+        self._session_id = candidate_session_id
+        self._clear_content()
+        self._is_open = True
+        self._source_kind = "result"
+        self._source_path = target_path
+        self._project_path = None
+        self._model_name = rebound.origin.model_name
+        self._unit_context = rebound.unit_context
+        self._increment_domain_revisions(project=True, mesh=True, model=True)
+        self._artifact = artifact
+        self._result_archive_snapshot = rebound
+        self._runs[candidate_run_id] = run
+        self._results[candidate_run_id] = record
+        self._result_model_fingerprints[candidate_run_id] = (
+            rebound.origin.model_fingerprint
+        )
+        self._result_file_states[candidate_run_id] = file_state
+        self._selected_run_id = candidate_run_id
+        self._displayed_result_run_id = candidate_run_id
+        self._saved_project_revision = self._project_revision
+        return self._emit(
+            {
+                ChangeKind.SESSION,
+                ChangeKind.SOURCE,
+                ChangeKind.MODEL,
+                ChangeKind.VALIDATIONS,
+                ChangeKind.RUNS,
+                ChangeKind.RESULTS,
+                ChangeKind.DISPLAYED_RESULT,
+                ChangeKind.SAVED_STATE,
+            },
+            _ALL_INVALIDATIONS,
+            "result archive installed",
         )
 
     # ------------------------------------------------------------------
@@ -4909,6 +5128,10 @@ class ModelSession:
         """Prepare validation, optionally deferring the model copy to a worker."""
 
         self._check_expected(expected_session_revision)
+        if self.result_only:
+            raise SessionStateError(
+                "result-only documents cannot run model validation"
+            )
         if type(detach_model) is not bool:
             raise TypeError("detach_model must be bool")
         artifact = self._require_current_artifact()
@@ -5026,6 +5249,10 @@ class ModelSession:
         expected_session_revision: int | None = None,
     ) -> SolveTaskSnapshot:
         self._check_expected(expected_session_revision)
+        if self.result_only:
+            raise SessionStateError(
+                "result-only documents cannot submit analysis jobs"
+            )
         artifact = self._require_current_artifact()
         resolved_step = self._resolve_step_name(step_name)
         if not self.can_submit(resolved_step):
@@ -5468,29 +5695,44 @@ class ModelSession:
                 "result archive save has no accepted model fingerprint"
             ) from error
         provider = result_record_provider(record)
-        archive_run = ResultArchiveRun(
-            name=run.name,
-            step_name=run.step_name,
-            created_at=run.created_at,
-            started_at=run.started_at,
-            finished_at=run.finished_at,
-            timings=dict(run.timings),
-            messages=tuple(run.messages),
-            output_report=record.output_report,
-        )
-        archive = build_result_archive_snapshot(
-            record,
-            model_name=self._model_name or "Model-1",
-            source_basename=self._result_source_basename(),
-            unit_context=self._unit_context,
-            model_fingerprint=model_fingerprint,
-            run=archive_run,
-            summaries=self._result_archive_summaries(
-                record.materialization.topology,
-                provider.profile,
-            ),
-            **self._result_archive_region_kwargs(record.materialization.topology),
-        )
+        if provider.is_archived:
+            archive = self._result_archive_snapshot
+            if archive is None:
+                raise SessionStateError(
+                    "result-only session has no installed archive snapshot"
+                )
+            if (
+                archive.source != source
+                or archive.materialization is not record.materialization
+                or archive.catalog is not provider.catalog()
+            ):
+                raise SessionStateError(
+                    "installed archive snapshot is not the current provider source"
+                )
+        else:
+            archive_run = ResultArchiveRun(
+                name=run.name,
+                step_name=run.step_name,
+                created_at=run.created_at,
+                started_at=run.started_at,
+                finished_at=run.finished_at,
+                timings=dict(run.timings),
+                messages=tuple(run.messages),
+                output_report=record.output_report,
+            )
+            archive = build_result_archive_snapshot(
+                record,
+                model_name=self._model_name or "Model-1",
+                source_basename=self._result_source_basename(),
+                unit_context=self._unit_context,
+                model_fingerprint=model_fingerprint,
+                run=archive_run,
+                summaries=self._result_archive_summaries(
+                    record.materialization.topology,
+                    provider.profile,
+                ),
+                **self._result_archive_region_kwargs(record.materialization.topology),
+            )
         token = self._issue_token(
             "result_archive_save",
             (
@@ -6096,6 +6338,8 @@ class ModelSession:
         )
 
     def can_check(self, step_name: str | None = None) -> bool:
+        if self.result_only:
+            return False
         try:
             self._require_current_artifact()
             self._resolve_step_name(step_name)
@@ -6104,6 +6348,8 @@ class ModelSession:
         return True
 
     def can_submit(self, step_name: str | None = None) -> bool:
+        if self.result_only:
+            return False
         if not self.can_check(step_name):
             return False
         try:
@@ -6385,6 +6631,7 @@ class ModelSession:
         self._validations: dict[str, ValidationRecord] = {}
         self._runs: dict[str, AnalysisRun] = {}
         self._results: dict[str, ResultRecord] = {}
+        self._result_archive_snapshot: ResultArchiveSnapshot | None = None
         self._result_model_fingerprints: dict[str, str] = {}
         self._result_file_states: dict[str, ResultFileState] = {}
         self._active_result_save_tasks: dict[str, str] = {}
@@ -6544,6 +6791,9 @@ class ModelSession:
         return ()
 
     def _step_exists(self, step_name: str) -> bool:
+        if self._source_kind == "result":
+            archive = self._result_archive_snapshot
+            return archive is not None and archive.run.step_name == str(step_name)
         return any(
             str(step.name) == str(step_name) for step in self._effective_steps()
         )

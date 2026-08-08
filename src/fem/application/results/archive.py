@@ -9,7 +9,7 @@ background codec and for a result-only document in a later phase.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from ..revisions import TaskToken
 
 from .data import (
+    FieldData,
     FieldState,
     ResultCatalog,
     ResultMaterializationSnapshot,
@@ -467,6 +468,17 @@ class ResultArchiveSnapshot:
     def materialization_snapshot(self) -> ResultMaterializationSnapshot:
         return self.materialization
 
+    def rebind_source(self, source: ResultSourceKey) -> "ResultArchiveSnapshot":
+        """Return the same archive facts under a new local result identity.
+
+        Rebinding only replaces scalar/source references.  Numeric arrays and
+        field locations remain shared with the decoded immutable archive so a
+        result-only document can be installed without a second full-matrix
+        copy.
+        """
+
+        return rebind_result_archive_snapshot(self, source)
+
     @classmethod
     def from_result_record(
         cls,
@@ -738,6 +750,81 @@ def build_result_archive_snapshot(
     return ResultArchiveSnapshot.from_result_record(record, **kwargs)
 
 
+def _rebind_topology_source(
+    topology: ResultTopologyProjection,
+    source: ResultSourceKey,
+) -> ResultTopologyProjection:
+    if topology.source == source:
+        return topology
+    rebound = object.__new__(ResultTopologyProjection)
+    object.__setattr__(rebound, "source", source)
+    object.__setattr__(rebound, "node_ids", topology.node_ids)
+    object.__setattr__(rebound, "_node_coordinates", topology._node_coordinates)
+    object.__setattr__(rebound, "_nodal_displacements", topology._nodal_displacements)
+    object.__setattr__(rebound, "element_ids", topology.element_ids)
+    object.__setattr__(rebound, "element_types", topology.element_types)
+    object.__setattr__(rebound, "connectivity", topology.connectivity)
+    object.__setattr__(rebound, "element_region_keys", topology.element_region_keys)
+    return rebound
+
+
+def _rebind_field_source(
+    field_data: FieldData,
+    source: ResultSourceKey,
+) -> FieldData:
+    if field_data.source == source:
+        return field_data
+    rebound = object.__new__(FieldData)
+    object.__setattr__(rebound, "descriptor", field_data.descriptor)
+    object.__setattr__(rebound, "source", source)
+    object.__setattr__(rebound, "key", field_data.key)
+    object.__setattr__(rebound, "locations", field_data.locations)
+    object.__setattr__(rebound, "_values", field_data._values)
+    return rebound
+
+
+def rebind_result_archive_snapshot(
+    snapshot: ResultArchiveSnapshot,
+    source: ResultSourceKey,
+) -> ResultArchiveSnapshot:
+    """Rebind every archive source key without copying numeric arrays."""
+
+    if type(snapshot) is not ResultArchiveSnapshot:
+        raise TypeError("snapshot must be exactly ResultArchiveSnapshot")
+    if type(source) is not ResultSourceKey:
+        raise TypeError("source must be exactly ResultSourceKey")
+    topology = _rebind_topology_source(snapshot.topology, source)
+    materialization = replace(
+        snapshot.materialization,
+        source=source,
+        topology=topology,
+        fields=tuple(
+            _rebind_field_source(field_data, source)
+            for field_data in snapshot.materialization.fields
+        ),
+    )
+    catalog = replace(snapshot.catalog, source=source)
+    report = (
+        None
+        if snapshot.output_report is None
+        else replace(snapshot.output_report, source=source)
+    )
+    run = replace(snapshot.run, output_report=report)
+    projection = replace(snapshot.model_projection, topology=topology)
+    return ResultArchiveSnapshot(
+        archive_id=snapshot.archive_id,
+        created_at=snapshot.created_at,
+        producer_version=snapshot.producer_version,
+        origin=snapshot.origin,
+        run=run,
+        profile=snapshot.profile,
+        catalog=catalog,
+        materialization=materialization,
+        model_projection=projection,
+        unit_context=snapshot.unit_context,
+    )
+
+
 __all__ = [
     "LoadedResultArchive",
     "ResultArchiveSaveSnapshot",
@@ -748,5 +835,6 @@ __all__ = [
     "ResultFileState",
     "archive_region_dictionary",
     "build_result_archive_snapshot",
+    "rebind_result_archive_snapshot",
     "result_model_fingerprint",
 ]

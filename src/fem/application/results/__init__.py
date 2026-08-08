@@ -28,6 +28,7 @@ from .archive import (
     ResultFileState,
     archive_region_dictionary,
     build_result_archive_snapshot,
+    rebind_result_archive_snapshot,
     result_model_fingerprint,
 )
 from .fields import (
@@ -56,7 +57,9 @@ from .registry import (
     registry_entry_for,
 )
 from .provider import (
+    ResultMaterializationUnavailableError,
     ResultProvider,
+    build_archived_result_provider,
     build_result_provider,
     restore_result_provider,
 )
@@ -151,6 +154,7 @@ __all__ = [
     "ResultInspectionRequest",
     "ResultInspectionResult",
     "ResultMaterializationPatch",
+    "ResultMaterializationUnavailableError",
     "ResultMaterializationSnapshot",
     "ResultModelFamily",
     "ResultProvider",
@@ -167,8 +171,10 @@ __all__ = [
     "advance_materialization",
     "archive_region_dictionary",
     "build_result_archive_snapshot",
+    "rebind_result_archive_snapshot",
     "result_model_fingerprint",
     "build_result_provider",
+    "build_archived_result_provider",
     "build_result_field_topology_template",
     "build_solve_result_bundle",
     "build_initial_materialization",

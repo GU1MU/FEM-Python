@@ -6,9 +6,16 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 import math
 from numbers import Integral, Real
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from .archive import (
+        ResultArchiveModelProjection,
+        ResultArchiveOrigin,
+        ResultArchiveSnapshot,
+    )
 
 from fem.core.result import ModelResult
 from fem.elements import get_element_capabilities
@@ -67,16 +74,46 @@ from ._ownership import deep_owned_materialization, deep_owned_result
 
 @dataclass(frozen=True, slots=True, eq=False)
 class ResultProvider:
-    """One result-bound immutable provider without live Session dependencies."""
+    """One result-bound immutable provider without live Session dependencies.
 
-    _owned_result: ModelResult = field(repr=False, compare=False)
+    Live providers own an immutable ``ModelResult`` and can materialize lazy
+    fields through the solver-neutral recovery helpers.  Archived providers
+    intentionally own no ``ModelResult``; their immutable materialization and
+    region index are sufficient for every read/query/export consumer while
+    missing fields report an explicit recovery-unavailable error.
+    """
+
+    _owned_result: ModelResult | None = field(repr=False, compare=False)
     _profile: ElementResultProfile
     _catalog: ResultCatalog
     _snapshot: ResultMaterializationSnapshot
+    _archived_projection: "ResultArchiveModelProjection | None" = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    _archive_origin: "ResultArchiveOrigin | None" = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    _archive_id: str | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
-        if type(self._owned_result) is not ModelResult:
-            raise TypeError("_owned_result must be ModelResult")
+        if self._owned_result is not None and type(self._owned_result) is not ModelResult:
+            raise TypeError("_owned_result must be ModelResult or None")
+        if self._owned_result is None:
+            projection = self._archived_projection
+            from .archive import ResultArchiveModelProjection
+
+            if type(projection) is not ResultArchiveModelProjection:
+                raise TypeError(
+                    "archived providers require a ResultArchiveModelProjection"
+                )
         if type(self._profile) is not ElementResultProfile:
             raise TypeError("_profile must be ElementResultProfile")
         if type(self._catalog) is not ResultCatalog:
@@ -119,6 +156,40 @@ class ResultProvider:
         """Return the exact accepted-result identity."""
 
         return self._snapshot.source
+
+    @property
+    def is_archived(self) -> bool:
+        """Whether this provider is backed by a detached result archive."""
+
+        return self._owned_result is None
+
+    @property
+    def is_result_only(self) -> bool:
+        """Compatibility spelling for result-document consumers."""
+
+        return self.is_archived
+
+    @property
+    def model_result(self) -> ModelResult | None:
+        """Return the live model result, or ``None`` for archive providers."""
+
+        return self._owned_result
+
+    @property
+    def model_projection(self) -> "ResultArchiveModelProjection | None":
+        """Read-only archive model projection when this is result-only."""
+
+        return self._archived_projection
+
+    @property
+    def archive_origin(self) -> "ResultArchiveOrigin | None":
+        """Detached provenance retained by a result-only provider."""
+
+        return self._archive_origin
+
+    @property
+    def archive_id(self) -> str | None:
+        return self._archive_id
 
     @property
     def profile(self) -> ElementResultProfile:
@@ -237,6 +308,9 @@ class ResultProvider:
             _profile=self._profile,
             _catalog=catalog,
             _snapshot=self._snapshot,
+            _archived_projection=self._archived_projection,
+            _archive_origin=self._archive_origin,
+            _archive_id=self._archive_id,
         )
 
     def field(self, key: FieldMaterializationKey) -> FieldData:
@@ -265,12 +339,22 @@ class ResultProvider:
         """Resolve one exact local named region to unique nodal identities."""
 
         clean_name = _provider_region_name(name)
+        if self.is_archived:
+            try:
+                return tuple(self._archived_projection.named_region_node_ids[clean_name])
+            except KeyError:
+                return _archived_region_not_found(clean_name, entity="nodal")
         return _named_region_node_ids(self._owned_result.model, clean_name)
 
     def named_region_element_ids(self, name: str) -> tuple[int, ...]:
         """Resolve one exact local named region to element identities."""
 
         clean_name = _provider_region_name(name)
+        if self.is_archived:
+            try:
+                return tuple(self._archived_projection.named_region_element_ids[clean_name])
+            except KeyError:
+                return _archived_region_not_found(clean_name, entity="element")
         return _named_region_element_ids(self._owned_result.model, clean_name)
 
     def validate_query(self, query: ResultQuery) -> FieldAvailability:
@@ -333,6 +417,15 @@ class ResultProvider:
             raise TypeError(
                 "keys must contain only FieldMaterializationKey values"
             )
+        if self.is_archived:
+            unavailable = tuple(
+                key
+                for key in requested
+                if self.field_status(key).state is not FieldState.READY
+            )
+            if unavailable:
+                raise ResultMaterializationUnavailableError(unavailable)
+            return ResultMaterializationPatch(source=self.source, fields=())
         unique = tuple(
             sorted(
                 set(requested),
@@ -385,6 +478,10 @@ class ResultProvider:
             raise ValueError("patch source must match provider source")
         if not patch.fields:
             return self
+        if self.is_archived:
+            raise ResultMaterializationUnavailableError(
+                field_data.key for field_data in patch.fields
+            )
 
         existing_keys = {
             field_data.key for field_data in self._snapshot.fields
@@ -426,6 +523,9 @@ class ResultProvider:
             _profile=self._profile,
             _catalog=draft_catalog,
             _snapshot=draft_snapshot,
+            _archived_projection=self._archived_projection,
+            _archive_origin=self._archive_origin,
+            _archive_id=self._archive_id,
         )
 
     def advance(
@@ -434,6 +534,12 @@ class ResultProvider:
     ) -> ResultProvider:
         """Accept one non-empty patch and advance the immutable generation."""
 
+        if type(patch) is not ResultMaterializationPatch:
+            raise TypeError("patch must be ResultMaterializationPatch")
+        if self.is_archived and patch.fields:
+            raise ResultMaterializationUnavailableError(
+                field_data.key for field_data in patch.fields
+            )
         draft = self.apply(patch)
         if draft is self:
             raise ValueError("patch must add at least one field")
@@ -446,6 +552,25 @@ class ResultProvider:
             _profile=self._profile,
             _catalog=draft._catalog,
             _snapshot=accepted_snapshot,
+            _archived_projection=self._archived_projection,
+            _archive_origin=self._archive_origin,
+            _archive_id=self._archive_id,
+        )
+
+
+class ResultMaterializationUnavailableError(RuntimeError):
+    """A result-only archive cannot derive a field absent from its payload."""
+
+    code = "result.materialization.unavailable"
+
+    def __init__(self, keys: Iterable[FieldMaterializationKey]) -> None:
+        self.keys = tuple(keys)
+        super().__init__(
+            "archived result does not contain requested materialization fields: "
+            + ", ".join(
+                f"{key.request.field_id.variable.value}:{key.request.field_id.position.value}"
+                for key in self.keys
+            )
         )
 
 
@@ -541,6 +666,30 @@ def restore_result_provider(
         requested = tuple(published_keys)
         provider = provider.publish_fields(requested)
     return provider
+
+
+def build_archived_result_provider(
+    snapshot: "ResultArchiveSnapshot",
+) -> ResultProvider:
+    """Build a provider directly from a detached ``ResultArchiveSnapshot``.
+
+    The factory retains the snapshot's immutable topology, fields, catalog and
+    archive region index without constructing or copying a ``ModelResult``.
+    """
+
+    from .archive import ResultArchiveSnapshot
+
+    if type(snapshot) is not ResultArchiveSnapshot:
+        raise TypeError("snapshot must be exactly ResultArchiveSnapshot")
+    return ResultProvider(
+        _owned_result=None,
+        _profile=snapshot.profile,
+        _catalog=snapshot.catalog,
+        _snapshot=snapshot.materialization,
+        _archived_projection=snapshot.model_projection,
+        _archive_origin=snapshot.origin,
+        _archive_id=snapshot.archive_id,
+    )
 
 
 def _require_exact_topology(
@@ -1153,6 +1302,13 @@ def _named_region_element_ids(model: Any, name: str) -> tuple[int, ...]:
     return element_ids
 
 
+def _archived_region_not_found(name: str, *, entity: str) -> tuple[int, ...]:
+    raise ResultQueryValidationError(
+        "result.query.region_not_found",
+        f"named {entity} region {name!r} is not defined in the archive",
+    )
+
+
 def _unique_positive_ids(
     values: Iterable[object],
     *,
@@ -1188,7 +1344,9 @@ def _finite_number(value: Any, *, label: str) -> float:
 
 
 __all__ = [
+    "ResultMaterializationUnavailableError",
     "ResultProvider",
+    "build_archived_result_provider",
     "build_result_provider",
     "restore_result_provider",
 ]

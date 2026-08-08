@@ -1044,6 +1044,17 @@ def describe_session_authoring(snapshot: Any) -> SessionAuthoringProjection:
     mesh_settings = getattr(snapshot, "mesh_settings", None)
     named_regions = getattr(snapshot, "named_regions", ())
     native_contexts = _native_part_authoring_contexts(snapshot)
+    if getattr(snapshot, "source_kind", None) == "result":
+        # A result document exposes its detached result provider to query and
+        # rendering consumers.  Authoring/mesh/preflight/submit capabilities
+        # stay unavailable without pretending the archive is an editable model.
+        report = _empty_model_capability_report()
+        return SessionAuthoringProjection(
+            report,
+            (),
+            (),
+            _session_output_authoring_capabilities(snapshot, report),
+        )
     if native_contexts:
         active_part_id = getattr(snapshot, "active_part_id", None)
         active_part, active_regions = next(
