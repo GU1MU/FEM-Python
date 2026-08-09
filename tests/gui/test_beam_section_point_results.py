@@ -1,0 +1,311 @@
+from __future__ import annotations
+
+import os
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtWidgets import QApplication
+
+from fem.application.results import (
+    ElementResultInspectionRequest,
+    FieldPosition,
+    FieldState,
+    ResultFieldId,
+    ResultQuery,
+    ResultSourceKey,
+    ResultVariable,
+    ScalarFieldSelection,
+    build_result_provider,
+    execute_output_requests,
+    prepare_result_export_snapshot,
+    project_scalar_field_topology,
+)
+from fem.core.model import OutputRequest
+from fem_gui.inspection_service import InspectionService
+from fem_gui.main_window import FEMMainWindow
+from fem_gui.postprocessing_dialogs import TypedResultQueryDialog
+from fem_gui.result_csv_export_dialog import ResultCsvExportDialog
+from fem_gui.visualization.result_renderer import build_result_render_payload
+from fem_gui.widgets.result_tree import ResultTree
+from fem_gui.widgets.viewport import FEMViewport
+from tests.helpers.phase8_result_characterization import (
+    make_beam_field_characterization_result,
+)
+
+
+_POINT_COMPONENTS = (
+    "S11",
+    "S12",
+    "Mises",
+    "MaxPrincipal",
+    "MidPrincipal",
+    "MinPrincipal",
+)
+_SECTION_COMPONENTS = (
+    "S11Max",
+    "S11Min",
+    "S11AbsMax",
+    "S12AbsMax",
+)
+_POSITION_LABELS = (
+    "截面点 1",
+    "截面点 2",
+    "截面点 3",
+    "截面点 4",
+    "截面",
+)
+
+
+def _application() -> QApplication:
+    return QApplication.instance() or QApplication([])
+
+
+def _provider():
+    result = make_beam_field_characterization_result()
+    provider = build_result_provider(
+        ResultSourceKey(
+            "beam-gui-result",
+            "beam-gui-session",
+            "beam-gui-artifact",
+            1,
+            "Step-1",
+            "beam-gui-run",
+        ),
+        result,
+    )
+    outcome = execute_output_requests(
+        provider,
+        (OutputRequest("field", "element", ("S",)),),
+    )
+    return result, outcome.provider_draft
+
+
+def _beam_fields(provider):
+    return tuple(
+        availability
+        for availability in provider.catalog().fields
+        if availability.descriptor.field_id.variable is ResultVariable.S
+        and availability.descriptor.field_id.position
+        in (FieldPosition.SECTION_POINT, FieldPosition.SECTION_END)
+        and availability.state is not FieldState.UNAVAILABLE
+    )
+
+
+def _point_field(provider, number: int):
+    return next(
+        availability
+        for availability in _beam_fields(provider)
+        if availability.descriptor.field_id
+        == ResultFieldId(
+            ResultVariable.S,
+            FieldPosition.SECTION_POINT,
+            section_point_number=number,
+        )
+    )
+
+
+def _combo_texts(combo) -> tuple[str, ...]:
+    return tuple(combo.itemText(index) for index in range(combo.count()))
+
+
+def test_beam_result_tree_and_ribbon_publish_five_exact_locations() -> None:
+    _application()
+    _result, provider = _provider()
+    catalog = provider.catalog()
+    tree = ResultTree()
+    tree.set_catalog("Step-1", catalog)
+    step = tree.topLevelItem(0).child(0)
+    stress_items = tuple(
+        step.child(index)
+        for index in range(step.childCount())
+        if step.child(index).text(0).startswith("应力 S（截面")
+    )
+
+    assert tuple(item.text(0) for item in stress_items) == tuple(
+        f"应力 S（{label}）" for label in _POSITION_LABELS
+    )
+    assert tuple(
+        stress_items[0].child(index).text(0)
+        for index in range(stress_items[0].childCount())
+    ) == _POINT_COMPONENTS
+    assert tuple(
+        stress_items[-1].child(index).text(0)
+        for index in range(stress_items[-1].childCount())
+    ) == _SECTION_COMPONENTS
+
+    window = FEMMainWindow()
+    window._current_result_provider = lambda: provider
+    window.result_selection = ScalarFieldSelection(
+        _point_field(provider, 1).key,
+        "Mises",
+    )
+    window._refresh_result_controls()
+    stress_index = window.result_variable_combo.findData(ResultVariable.S)
+    window.result_variable_combo.setCurrentIndex(stress_index)
+    window._populate_result_positions(window.result_selection)
+
+    assert _combo_texts(window.result_position_combo) == _POSITION_LABELS
+    field_ids = tuple(
+        window.result_position_combo.itemData(index)
+        for index in range(window.result_position_combo.count())
+    )
+    assert all(type(field_id) is ResultFieldId for field_id in field_ids)
+    assert tuple(field_id.section_point_number for field_id in field_ids) == (
+        1,
+        2,
+        3,
+        4,
+        None,
+    )
+
+    for index, expected in enumerate(
+        (*(_POINT_COMPONENTS for _point in range(4)), _SECTION_COMPONENTS)
+    ):
+        window.result_position_combo.setCurrentIndex(index)
+        window._populate_result_components()
+        assert _combo_texts(window.result_component_combo) == expected
+        assert all(
+            selection.field_key.request.field_id == field_ids[index]
+            for selection in (
+                window.result_component_combo.itemData(component_index)
+                for component_index in range(
+                    window.result_component_combo.count()
+                )
+            )
+        )
+
+    forbidden = {"Tresca", "Pressure", "MisesMax"}
+    assert forbidden.isdisjoint(
+        component
+        for availability in _beam_fields(provider)
+        for component in availability.descriptor.columns
+    )
+    window.close()
+    tree.close()
+
+
+def test_csv_dialog_keeps_section_point_field_identity_and_components() -> None:
+    _application()
+    _result, provider = _provider()
+    selected_field = _point_field(provider, 3)
+    selected = ScalarFieldSelection(selected_field.key, "S11")
+    dialog = ResultCsvExportDialog(
+        provider.catalog(),
+        current_selection=selected,
+    )
+    stress_index = dialog.variable_combo.findData(ResultVariable.S)
+    dialog.variable_combo.setCurrentIndex(stress_index)
+    dialog._populate_positions(selected)
+
+    assert _combo_texts(dialog.position_combo) == _POSITION_LABELS
+    assert dialog.position_combo.currentData() == selected_field.descriptor.field_id
+    assert tuple(
+        selection.component for selection in dialog._component_selections
+    ) == _POINT_COMPONENTS
+    assert all(
+        selection.field_key == selected_field.key
+        for selection in dialog._component_selections
+    )
+
+    section_index = dialog.position_combo.count() - 1
+    dialog.position_combo.setCurrentIndex(section_index)
+    dialog._populate_components()
+    assert tuple(
+        selection.component for selection in dialog._component_selections
+    ) == _SECTION_COMPONENTS
+    dialog.close()
+
+
+def test_probe_and_inspection_expose_section_point_location_identity() -> None:
+    _application()
+    result, provider = _provider()
+    selected_field = _point_field(provider, 2)
+    dialog = TypedResultQueryDialog(provider)
+    dialog.association_combo.setCurrentIndex(1)
+    dialog._association_changed()
+    dialog.field_combo.setCurrentIndex(
+        dialog.field_combo.findData(selected_field.key)
+    )
+    dialog.component_combo.setCurrentIndex(
+        dialog.component_combo.findData("S11")
+    )
+    query = ResultQuery(selected_field.key, "S11", element_ids=(30,))
+    dialog._last_query = query
+    query_result = provider.query(query)
+    dialog.set_query_result(query_result)
+
+    assert tuple(
+        dialog.table.horizontalHeaderItem(index).text()
+        for index in range(dialog.table.columnCount())
+    )[5:8] == ("截面点", "截面局部 Y", "截面局部 Z")
+    for row, record in enumerate(query_result.records):
+        section_point = record.location.section_point
+        assert section_point is not None
+        assert dialog.record_at(row) == record
+        assert dialog.table.item(row, 5).text() == "2"
+        assert float(dialog.table.item(row, 6).text()) == section_point.local_y
+        assert float(dialog.table.item(row, 7).text()) == section_point.local_z
+
+    inspected = provider.inspect_result(
+        ElementResultInspectionRequest(30)
+    )
+    service = InspectionService(result.model, result_provider=provider)
+    report = service.inspect("element", 30)
+    result_page = next(page for page in report.pages if page.title == "结果")
+    table = next(
+        table
+        for table in result_page.tables
+        if table.title == "应力 S（截面点 2）（就绪）"
+    )
+    assert inspected.fields
+    assert table.columns[7:10] == (
+        "截面点",
+        "截面局部 Y",
+        "截面局部 Z",
+    )
+    assert {row[7] for row in table.rows} == {"2"}
+    dialog.close()
+
+
+def test_viewport_payload_and_legend_keep_selected_point_identity() -> None:
+    _application()
+    _result, provider = _provider()
+    point_two = _point_field(provider, 2)
+    point_three = _point_field(provider, 3)
+    payloads = []
+    for availability in (point_two, point_three):
+        selection = ScalarFieldSelection(availability.key, "Mises")
+        export = prepare_result_export_snapshot(provider.snapshot, selection)
+        topology = project_scalar_field_topology(export)
+        payloads.append(build_result_render_payload(topology))
+
+    assert payloads[0].topology.selection.field_key != (
+        payloads[1].topology.selection.field_key
+    )
+    assert {
+        location.section_point.number
+        for location in payloads[0].topology.point_locations
+        if location is not None and location.section_point is not None
+    } == {2}
+    assert {
+        location.section_point.number
+        for location in payloads[1].topology.point_locations
+        if location is not None and location.section_point is not None
+    } == {3}
+
+    viewport = FEMViewport()
+    assert viewport._contour_bar_args(payloads[0])["title"] == (
+        "S, Mises（截面点 2）"
+    )
+    assert viewport._contour_bar_args(payloads[1])["title"] == (
+        "S, Mises（截面点 3）"
+    )
+    location = next(
+        location
+        for location in payloads[0].topology.point_locations
+        if location is not None and location.section_point is not None
+    )
+    identity = viewport._result_location_identity(location)
+    assert "截面点 2" in identity
+    assert "截面坐标" in identity
+    viewport.close()

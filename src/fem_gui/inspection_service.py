@@ -27,8 +27,9 @@ from fem.application.results import (
 )
 from fem.post.fields import encode_result_region_key
 from .result_presentation import (
+    result_field_has_section_points,
+    result_field_position_label,
     result_field_is_visible,
-    result_position_label,
 )
 
 
@@ -66,6 +67,13 @@ _RESULT_COLUMNS = (
     "结果区域",
     "平均",
     "诊断",
+)
+_SECTION_POINT_RESULT_COLUMNS = (
+    *_RESULT_COLUMNS[:7],
+    "截面点",
+    "截面局部 Y",
+    "截面局部 Z",
+    *_RESULT_COLUMNS[7:],
 )
 
 
@@ -1074,6 +1082,14 @@ def _provider_result_table(
         )
     availability = field_entry.availability
     descriptor = availability.descriptor
+    include_section_points = result_field_has_section_points(
+        descriptor.field_id
+    )
+    columns = (
+        _SECTION_POINT_RESULT_COLUMNS
+        if include_section_points
+        else _RESULT_COLUMNS
+    )
     state_label = _RESULT_STATE_LABELS[availability.state]
     field_label = _localized_result_field(descriptor)
     if descriptor.unit_label is not None:
@@ -1086,20 +1102,14 @@ def _provider_result_table(
             (
                 state_label,
                 _localized_result_component(component, variable),
-                "—",
-                "—",
-                "—",
-                "—",
-                "—",
-                "—",
-                "—",
+                *("—" for _column in columns[2:-1]),
                 diagnostic,
             )
             for component in descriptor.columns
         )
         return InspectionTable(
             title,
-            _RESULT_COLUMNS,
+            columns,
             rows,
             tuple(None for _row in rows),
         )
@@ -1117,13 +1127,7 @@ def _provider_result_table(
                 (
                     state_label,
                     component,
-                    "—",
-                    "—",
-                    "—",
-                    "—",
-                    "—",
-                    "—",
-                    "—",
+                    *("—" for _column in columns[2:-1]),
                     diagnostic,
                 )
             )
@@ -1131,6 +1135,27 @@ def _provider_result_table(
             continue
         for record in component_result.records:
             location = record.location
+            section_values = (
+                (
+                    format_number(
+                        None
+                        if location.section_point is None
+                        else location.section_point.number
+                    ),
+                    format_number(
+                        None
+                        if location.section_point is None
+                        else location.section_point.local_y
+                    ),
+                    format_number(
+                        None
+                        if location.section_point is None
+                        else location.section_point.local_z
+                    ),
+                )
+                if include_section_points
+                else ()
+            )
             rows.append(
                 (
                     state_label,
@@ -1140,6 +1165,7 @@ def _provider_result_table(
                     format_number(location.element_id),
                     format_number(location.integration_point),
                     format_number(location.local_node),
+                    *section_values,
                     (
                         "—"
                         if location.region_key is None
@@ -1152,7 +1178,7 @@ def _provider_result_table(
             references.append(_result_location_reference(location))
     return InspectionTable(
         title,
-        _RESULT_COLUMNS,
+        columns,
         tuple(rows),
         tuple(references),
     )
@@ -1175,7 +1201,7 @@ def _localized_result_field(descriptor: Any) -> str:
     )
     if field_id.position is FieldPosition.NODE:
         return base
-    position = result_position_label(field_id.position)
+    position = result_field_position_label(field_id)
     return f"{base}（{position}）"
 
 

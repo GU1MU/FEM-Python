@@ -11,7 +11,11 @@ from fem.application.results import (
     ResultCatalog,
     ScalarFieldSelection,
 )
-from fem_gui.result_presentation import visible_result_fields
+from fem_gui.result_presentation import (
+    result_field_is_beam_section,
+    result_field_position_label,
+    visible_result_fields,
+)
 
 ROLE_SELECTION = int(Qt.ItemDataRole.UserRole)
 ROLE_MATERIALIZATION_KEY = ROLE_SELECTION + 1
@@ -96,6 +100,11 @@ class ResultTree(QTreeWidget):
             descriptor.label_key,
             descriptor.label_key,
         )
+        if result_field_is_beam_section(descriptor.field_id):
+            field_label = (
+                "应力 S（"
+                f"{result_field_position_label(descriptor.field_id)}）"
+            )
         field_item = QTreeWidgetItem([field_label])
         field_selection = ScalarFieldSelection(
             availability.key,

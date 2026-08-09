@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication
 from fem.io.inp import read
 from fem.application.results import (
     FieldPosition,
+    ResultFieldId,
     ResultVariable,
     ScalarFieldSelection,
     build_solve_result_bundle,
@@ -71,8 +72,10 @@ def _assert_current_ribbon_selection(
     assert provider is not None
     assert type(window.result_variable_combo.currentData()) is ResultVariable
     assert window.result_variable_combo.currentData() is variable
-    assert type(window.result_position_combo.currentData()) is FieldPosition
-    assert window.result_position_combo.currentData() is position
+    field_id = window.result_position_combo.currentData()
+    assert type(field_id) is ResultFieldId
+    assert field_id.variable is variable
+    assert field_id.position is position
     assert type(selection) is ScalarFieldSelection
     assert selection == window.result_selection
     assert selection.field_key.request.field_id.variable is variable

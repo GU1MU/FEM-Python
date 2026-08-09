@@ -52,6 +52,9 @@ from PySide6.QtWidgets import (
 
 from .dialogs import CompactDoubleSpinBox, configure_form_layout
 from .result_presentation import (
+    result_field_has_section_points,
+    result_field_is_beam_section,
+    result_field_position_label,
     result_field_is_visible,
     visible_result_fields,
 )
@@ -959,7 +962,7 @@ class TypedResultQueryDialog(QDialog):
             QTableWidget.SelectionBehavior.SelectRows
         )
         layout.addWidget(self.table, 1)
-        self._prepare_table()
+        self._prepare_table(include_section_points=False)
 
         default_availability = self._availability_for_key(
             self._catalog.default_selection.field_key
@@ -1115,15 +1118,44 @@ class TypedResultQueryDialog(QDialog):
         if result.query != expected_query:
             raise ValueError("query result must match the latest dialog query")
 
+        availability = self._availability_for_key(result.query.field_key)
+        include_section_points = result_field_has_section_points(
+            availability.descriptor.field_id
+        )
+        self._prepare_table(
+            include_section_points=include_section_points
+        )
         self.table.setRowCount(len(result.records))
         for row, record in enumerate(result.records):
             location = record.location
+            section_values = (
+                (
+                    _optional_identity_text(
+                        None
+                        if location.section_point is None
+                        else location.section_point.number
+                    ),
+                    _optional_number_text(
+                        None
+                        if location.section_point is None
+                        else location.section_point.local_y
+                    ),
+                    _optional_number_text(
+                        None
+                        if location.section_point is None
+                        else location.section_point.local_z
+                    ),
+                )
+                if include_section_points
+                else ()
+            )
             values = (
                 _typed_association_text(location.association),
                 _optional_identity_text(location.node_id),
                 _optional_identity_text(location.element_id),
                 _optional_identity_text(location.integration_point),
                 _optional_identity_text(location.local_node),
+                *section_values,
                 (
                     ""
                     if location.region_key is None
@@ -1287,13 +1319,19 @@ class TypedResultQueryDialog(QDialog):
                 return availability
         raise RuntimeError("field key is outside the dialog catalog")
 
-    def _prepare_table(self) -> None:
+    def _prepare_table(self, *, include_section_points: bool) -> None:
+        section_headers = (
+            ("截面点", "截面局部 Y", "截面局部 Z")
+            if include_section_points
+            else ()
+        )
         headers = (
             "关联",
             "节点",
             "单元",
             "积分点",
             "局部节点",
+            *section_headers,
             "区域",
             "平均状态",
             "X",
@@ -1401,6 +1439,11 @@ def _parse_typed_query_ids(
 def _typed_field_label(availability: FieldAvailability) -> str:
     if availability.state is FieldState.READY:
         descriptor = availability.descriptor
+        if result_field_is_beam_section(descriptor.field_id):
+            return (
+                "应力 S（"
+                f"{result_field_position_label(descriptor.field_id)}）"
+            )
         return _TYPED_RESULT_FIELD_LABELS.get(
             descriptor.label_key,
             descriptor.label_key,
@@ -1427,10 +1470,16 @@ def _typed_result_display_field_label(
     availability: FieldAvailability,
 ) -> str:
     descriptor = availability.descriptor
-    label = _TYPED_RESULT_FIELD_LABELS.get(
-        descriptor.label_key,
-        descriptor.label_key,
-    )
+    if result_field_is_beam_section(descriptor.field_id):
+        label = (
+            "应力 S（"
+            f"{result_field_position_label(descriptor.field_id)}）"
+        )
+    else:
+        label = _TYPED_RESULT_FIELD_LABELS.get(
+            descriptor.label_key,
+            descriptor.label_key,
+        )
     return (
         f"{label}"
         f"（{_TYPED_RESULT_FIELD_STATE_LABELS[availability.state]}）"
@@ -1509,6 +1558,10 @@ def _validate_typed_display_options(
 
 def _optional_identity_text(value: int | None) -> str:
     return "" if value is None else str(value)
+
+
+def _optional_number_text(value: float | None) -> str:
+    return "" if value is None else _number_text(value)
 
 
 def _averaged_text(value: bool | None) -> str:

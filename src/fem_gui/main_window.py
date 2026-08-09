@@ -89,6 +89,7 @@ from fem.application.results import (
     ResultQueryResult,
     ResultQueryValidationError,
     ResultExportSnapshot,
+    ResultFieldId,
     ResultFieldTopologyTemplate,
     ResultMaterializationPatch,
     ResultProvider,
@@ -251,7 +252,7 @@ from .postprocessing_dialogs import (
     TypedResultQueryDialog,
 )
 from .result_presentation import (
-    result_position_label,
+    result_field_position_label,
     result_variable_label,
     visible_result_fields,
 )
@@ -3765,14 +3766,14 @@ class FEMMainWindow(QMainWindow):
 
     def _sync_result_averaging_threshold_control(self) -> None:
         variable = self.result_variable_combo.currentData()
-        position = self.result_position_combo.currentData()
+        field_id = self.result_position_combo.currentData()
         visible = (
             variable is ResultVariable.S
-            and position is FieldPosition.RESOLVED_NODAL
+            and type(field_id) is ResultFieldId
+            and field_id.position is FieldPosition.RESOLVED_NODAL
         )
         enabled = (
             visible
-            and position is FieldPosition.RESOLVED_NODAL
             and self._current_result_provider() is not None
             and not self.busy
         )
@@ -3796,7 +3797,7 @@ class FEMMainWindow(QMainWindow):
             self.result_position_combo.blockSignals(False)
             return
 
-        positions: list[FieldPosition] = []
+        field_ids: list[ResultFieldId] = []
         for availability in visible_result_fields(
             provider.catalog().fields
         ):
@@ -3805,24 +3806,22 @@ class FEMMainWindow(QMainWindow):
             field_id = availability.descriptor.field_id
             if (
                 field_id.variable is variable
-                and field_id.position not in positions
+                and field_id not in field_ids
             ):
-                positions.append(field_id.position)
+                field_ids.append(field_id)
                 self.result_position_combo.addItem(
-                    result_position_label(field_id.position),
-                    field_id.position,
+                    result_field_position_label(field_id),
+                    field_id,
                 )
-        preferred_position = None
+        preferred_field_id = None
         if (
             type(preferred_selection) is ScalarFieldSelection
             and preferred_selection.field_key.request.field_id.variable
             is variable
         ):
-            preferred_position = (
-                preferred_selection.field_key.request.field_id.position
-            )
+            preferred_field_id = preferred_selection.field_key.request.field_id
         position_index = self.result_position_combo.findData(
-            preferred_position
+            preferred_field_id
         )
         self.result_position_combo.setCurrentIndex(
             position_index if position_index >= 0 else 0
@@ -3839,11 +3838,11 @@ class FEMMainWindow(QMainWindow):
         self.result_component_combo.clear()
         provider = self._current_result_provider()
         variable = self.result_variable_combo.currentData()
-        position = self.result_position_combo.currentData()
+        selected_field_id = self.result_position_combo.currentData()
         if (
             provider is None
             or type(variable) is not ResultVariable
-            or type(position) is not FieldPosition
+            or type(selected_field_id) is not ResultFieldId
         ):
             self.result_component_combo.addItem("—", None)
             self.result_component_combo.blockSignals(False)
@@ -3857,7 +3856,7 @@ class FEMMainWindow(QMainWindow):
             if (
                 availability.state is not FieldState.UNAVAILABLE
                 and availability.descriptor.field_id.variable is variable
-                and availability.descriptor.field_id.position is position
+                and availability.descriptor.field_id == selected_field_id
             )
         )
         component_counts: dict[str, int] = {}
@@ -12096,7 +12095,7 @@ class FEMMainWindow(QMainWindow):
         field_id = availability.descriptor.field_id
         result_name = (
             f"{field_id.variable.value} {selection.component}"
-            f"（{result_position_label(field_id.position)}）"
+            f"（{result_field_position_label(field_id)}）"
         )
         return f"{shape} / {result_name}"
 
@@ -12597,13 +12596,18 @@ class FEMMainWindow(QMainWindow):
             self._show_error(error_title, "当前结果字段尚未就绪")
             return None
         field_id = availability.descriptor.field_id
+        position_token = field_id.position.value
+        if field_id.position is FieldPosition.SECTION_POINT:
+            position_token = (
+                f"{position_token}_{field_id.section_point_number}"
+            )
         field_label = "_".join(
             (
                 field_id.variable.value,
                 (
                     "node"
                     if field_id.position is FieldPosition.ELEMENT_NODAL
-                    else field_id.position.value
+                    else position_token
                 ),
                 selection.component,
             )

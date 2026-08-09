@@ -15,9 +15,9 @@ from PySide6.QtWidgets import QApplication, QComboBox
 from fem.application.results import (
     FieldAvailability,
     FieldMaterializationKey,
-    FieldPosition,
     FieldState,
     ResultCatalog,
+    ResultFieldId,
     ResultProvider,
     ResultVariable,
     ScalarFieldSelection,
@@ -132,10 +132,10 @@ def _catalog_variables(
 def _catalog_positions(
     catalog: ResultCatalog,
     variable: ResultVariable,
-) -> tuple[FieldPosition, ...]:
+) -> tuple[ResultFieldId, ...]:
     return _ordered_unique(
         tuple(
-            availability.descriptor.field_id.position
+            availability.descriptor.field_id
             for availability in _selectable_fields(catalog)
             if availability.descriptor.field_id.variable is variable
         )
@@ -145,13 +145,13 @@ def _catalog_positions(
 def _catalog_selections(
     catalog: ResultCatalog,
     variable: ResultVariable,
-    position: FieldPosition,
+    field_id: ResultFieldId,
 ) -> tuple[ScalarFieldSelection, ...]:
     return tuple(
         ScalarFieldSelection(availability.key, component)
         for availability in _selectable_fields(catalog)
         if availability.descriptor.field_id.variable is variable
-        and availability.descriptor.field_id.position is position
+        and availability.descriptor.field_id == field_id
         for component in availability.descriptor.columns
     )
 
@@ -184,7 +184,7 @@ def _prepare_ribbon_selection(
     provider = window._current_result_provider()
     assert provider is not None
     variable = selection.field_key.request.field_id.variable
-    position = selection.field_key.request.field_id.position
+    field_id = selection.field_key.request.field_id
     original_submit = window.select_result_field
     window.select_result_field = _accepted_without_projection(provider)
     try:
@@ -193,7 +193,7 @@ def _prepare_ribbon_selection(
         window.result_variable_combo.setCurrentIndex(variable_index)
         window._result_variable_changed(variable_index)
 
-        position_index = window.result_position_combo.findData(position)
+        position_index = window.result_position_combo.findData(field_id)
         assert position_index >= 0
         window.result_position_combo.setCurrentIndex(position_index)
         window._result_position_changed(position_index)
@@ -248,19 +248,19 @@ def test_ribbon_preserves_catalog_variable_position_and_selection_order(
                 _catalog_positions(catalog, variable)
             )
             assert all(
-                type(value) is FieldPosition
+                type(value) is ResultFieldId
                 for value in _combo_data(window.result_position_combo)
             )
 
-            for position in _catalog_positions(catalog, variable):
+            for field_id in _catalog_positions(catalog, variable):
                 position_index = window.result_position_combo.findData(
-                    position
+                    field_id
                 )
                 window.result_position_combo.setCurrentIndex(position_index)
                 window._result_position_changed(position_index)
 
                 assert _combo_data(window.result_component_combo) == (
-                    _catalog_selections(catalog, variable, position)
+                    _catalog_selections(catalog, variable, field_id)
                 )
                 assert all(
                     type(value) is ScalarFieldSelection
@@ -318,16 +318,16 @@ def test_ribbon_keeps_complete_keys_distinct_for_one_request_and_position(
     try:
         window._refresh_result_controls()
         variable = base.descriptor.field_id.variable
-        position = base.descriptor.field_id.position
+        field_id = base.descriptor.field_id
         variable_index = window.result_variable_combo.findData(variable)
         window.result_variable_combo.setCurrentIndex(variable_index)
         window._result_variable_changed(variable_index)
-        position_index = window.result_position_combo.findData(position)
+        position_index = window.result_position_combo.findData(field_id)
         window.result_position_combo.setCurrentIndex(position_index)
         window._result_position_changed(position_index)
 
         selections = _combo_data(window.result_component_combo)
-        expected = _catalog_selections(augmented, variable, position)
+        expected = _catalog_selections(augmented, variable, field_id)
         assert selections == expected
         assert ScalarFieldSelection(
             base.key,

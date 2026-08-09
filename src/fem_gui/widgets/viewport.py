@@ -21,7 +21,12 @@ from PySide6.QtWidgets import (
 )
 
 from fem.application import MeshEntityRef, RegionRef
-from fem.application.results import FieldLocation, ResultCellKind, ResultValueLayout
+from fem.application.results import (
+    FieldLocation,
+    FieldPosition,
+    ResultCellKind,
+    ResultValueLayout,
+)
 from fem.boundary.step import boundary_for_step, get_step
 from fem.core._constraint_targets import (
     displacement_target_kind,
@@ -44,6 +49,7 @@ from fem.geometry import (
 from fem.selection import edges as mesh_edges
 from fem.selection import faces as mesh_faces
 from ..geometry_preview import FaceSketchBooleanDisplay, GeometryPreview
+from ..result_presentation import result_field_position_label
 from ..sketch_constraint_ui import SketchConstraintOverlay
 from ..wire_editor import (
     intersect_ray_with_work_plane,
@@ -6767,7 +6773,8 @@ class FEMViewport(QWidget):
         payload: ResultRenderPayload,
     ) -> dict[str, Any]:
         selection = payload.topology.selection
-        variable = selection.field_key.request.field_id.variable.value
+        field_id = selection.field_key.request.field_id
+        variable = field_id.variable.value
         vertical = self._contour["orientation"] == "vertical"
         font_family = {
             "Arial": "arial",
@@ -6775,8 +6782,14 @@ class FEMViewport(QWidget):
             "Courier New": "courier",
         }.get(str(self._contour["legend_font"]), "arial")
         font_size = int(self._contour["legend_font_size"])
+        title = f"{variable}, {selection.component}"
+        if field_id.position in {
+            FieldPosition.SECTION_POINT,
+            FieldPosition.SECTION_END,
+        }:
+            title += f"（{result_field_position_label(field_id)}）"
         options: dict[str, Any] = {
-            "title": f"{variable}, {selection.component}",
+            "title": title,
             "vertical": vertical,
             "n_labels": min(int(self._contour["levels"]) + 1, 7),
             "fmt": self._scalar_format(),
@@ -6947,6 +6960,13 @@ class FEMViewport(QWidget):
             values.append(f"积分点 {int(location.integration_point)}")
         if location.local_node is not None:
             values.append(f"局部节点 {int(location.local_node)}")
+        if location.section_point is not None:
+            values.append(f"截面点 {int(location.section_point.number)}")
+            values.append(
+                "截面坐标 "
+                f"({location.section_point.local_y:.6g}, "
+                f"{location.section_point.local_z:.6g})"
+            )
         return "，".join(values)
 
     def _refresh_geometry_dependent_layers(self, *, render: bool = True) -> None:

@@ -271,7 +271,7 @@ def test_csv_action_exports_dialog_selection_without_changing_viewport_field(
             dialog.variable_combo.findData(field_id.variable)
         )
         dialog.position_combo.setCurrentIndex(
-            dialog.position_combo.findData(field_id.position)
+            dialog.position_combo.findData(field_id)
         )
         assert selected in dialog._component_selections
         second = next(

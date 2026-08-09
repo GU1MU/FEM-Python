@@ -6,9 +6,9 @@ from pathlib import Path
 
 from fem.application.results import (
     FieldAvailability,
-    FieldPosition,
     FieldState,
     ResultCatalog,
+    ResultFieldId,
     ResultVariable,
     ScalarFieldSelection,
 )
@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 
 from .dialogs import configure_form_layout
 from .result_presentation import (
-    result_position_label,
+    result_field_position_label,
     result_variable_label,
     visible_result_fields,
 )
@@ -344,25 +344,25 @@ class ResultCsvExportDialog(QDialog):
         self.position_combo.blockSignals(True)
         self.position_combo.clear()
         variable = self.variable_combo.currentData()
-        positions: list[FieldPosition] = []
+        field_ids: list[ResultFieldId] = []
         for availability in self._fields:
             field_id = availability.descriptor.field_id
             if (
                 field_id.variable is variable
-                and field_id.position not in positions
+                and field_id not in field_ids
             ):
-                positions.append(field_id.position)
+                field_ids.append(field_id)
                 self.position_combo.addItem(
-                    result_position_label(field_id.position),
-                    field_id.position,
+                    result_field_position_label(field_id),
+                    field_id,
                 )
-        preferred_position = (
-            preferred.field_key.request.field_id.position
+        preferred_field_id = (
+            preferred.field_key.request.field_id
             if preferred is not None
             and preferred.field_key.request.field_id.variable is variable
             else None
         )
-        index = self.position_combo.findData(preferred_position)
+        index = self.position_combo.findData(preferred_field_id)
         self.position_combo.setCurrentIndex(index if index >= 0 else 0)
         self.position_combo.blockSignals(False)
 
@@ -427,13 +427,13 @@ class ResultCsvExportDialog(QDialog):
 
     def _matching_fields(self) -> tuple[FieldAvailability, ...]:
         variable = self.variable_combo.currentData()
-        position = self.position_combo.currentData()
+        field_id = self.position_combo.currentData()
         return tuple(
             availability
             for availability in self._fields
             if (
                 availability.descriptor.field_id.variable is variable
-                and availability.descriptor.field_id.position is position
+                and availability.descriptor.field_id == field_id
             )
         )
 
