@@ -5,6 +5,7 @@ from dataclasses import replace
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Event
 from time import monotonic
 from types import SimpleNamespace
 
@@ -754,9 +755,104 @@ def test_job_manager_shows_memory_log_and_history_actions(gui_inp_path):
         == Qt.AlignmentFlag.AlignCenter
         for column in range(manager.table.columnCount())
     )
-    assert manager.resubmit_button.isEnabled()
+    assert manager.terminate_button.text() == "终止求解"
+    assert not manager.terminate_button.isEnabled()
+    assert not hasattr(manager, "resubmit_button")
     assert manager.open_result_button.isEnabled()
     assert window.show_job_manager() is manager
+    manager.close()
+    window.close()
+
+
+def test_job_manager_terminate_button_tracks_selected_running_job():
+    _application()
+    started_at = datetime.now(timezone.utc)
+    running = AnalysisRun(
+        run_id="run-1",
+        name="Job-1",
+        step_name="Static-1",
+        artifact_id="artifact-1",
+        model_revision=1,
+        status=RunStatus.RUNNING,
+        started_at=started_at,
+    )
+    completed = replace(
+        running,
+        run_id="run-2",
+        name="Job-2",
+        status=RunStatus.SUCCEEDED,
+        finished_at=started_at,
+        result_id="result-2",
+    )
+    manager = JobManagerDialog((running, completed))
+    requested = []
+    manager.terminateRequested.connect(requested.append)
+
+    manager.table.selectRow(0)
+    assert manager.terminate_button.isEnabled()
+    manager.terminate_button.click()
+    assert requested == ["Job-1"]
+
+    manager.refresh((replace(running, cancellation_requested=True), completed))
+    assert manager.table.item(0, 2).text() == "终止中"
+    assert not manager.terminate_button.isEnabled()
+
+    manager.table.selectRow(1)
+    assert not manager.terminate_button.isEnabled()
+    assert manager.open_result_button.isEnabled()
+    manager.close()
+
+
+def test_job_manager_terminates_the_selected_active_solve(
+    monkeypatch,
+    gui_inp_path,
+):
+    _application()
+    window = FEMMainWindow()
+    model = read(gui_inp_path)
+    window._model_loaded(
+        gui_inp_path,
+        (model, build_model_geometry(model)),
+    )
+    assert window.check_current_model(show_success=False)
+    solve_entered = Event()
+    allow_solve_to_finish = Event()
+    original_solve = static_linear.solve
+
+    def paused_solve(*args, **kwargs):
+        solve_entered.set()
+        if not allow_solve_to_finish.wait(2.0):
+            raise RuntimeError("测试未能释放求解任务")
+        return original_solve(*args, **kwargs)
+
+    monkeypatch.setattr(static_linear, "solve", paused_solve)
+    manager = None
+    try:
+        started = window._submit_job("Job-1", "Static-1")
+        assert started is not None
+        assert solve_entered.wait(2.0)
+        manager = window.show_job_manager()
+        assert manager is not None
+        assert manager.selected_job_name() == "Job-1"
+        assert manager.terminate_button.isEnabled()
+
+        manager.terminate_button.click()
+
+        cancelling = window.session.find_run(started.run_id)
+        assert cancelling is not None and cancelling.cancellation_requested
+        assert window.task_controller.cancel_requested
+        assert manager.table.item(0, 2).text() == "终止中"
+        assert not manager.terminate_button.isEnabled()
+    finally:
+        allow_solve_to_finish.set()
+        if window.task_controller.busy:
+            _wait_for_task(window)
+
+    cancelled = window.session.find_run(started.run_id)
+    assert cancelled is not None and cancelled.status is RunStatus.CANCELLED
+    assert manager is not None
+    assert manager.table.item(0, 2).text() == "已取消"
+    assert "已取消" in window.status_panel.state_label.text()
     manager.close()
     window.close()
 

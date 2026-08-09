@@ -8,7 +8,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton
 
 from fem.application.results import (
     FieldAssociation,
@@ -134,6 +134,15 @@ def test_catalog_order_typed_association_and_descriptor_components_are_exact(
         type(key) is FieldMaterializationKey for key in actual_node_keys
     )
     assert dialog.current_selection() == catalog.default_selection
+    assert dialog.field_combo.currentText() == "位移 U"
+    assert "（就绪）" not in dialog.field_combo.currentText()
+    assert not hasattr(dialog, "availability_label")
+    assert "字段状态：" not in {
+        label.text() for label in dialog.findChildren(QLabel)
+    }
+    assert "关闭" not in {
+        button.text() for button in dialog.findChildren(QPushButton)
+    }
 
     default_availability = dialog.current_availability()
     assert tuple(
@@ -365,7 +374,6 @@ def test_typed_dialog_ast_has_no_legacy_query_dependencies_or_support_map() -> N
         "_typed_query_association_matches",
         "_parse_typed_query_ids",
         "_typed_field_label",
-        "_typed_availability_text",
         "_optional_identity_text",
         "_averaged_text",
         "_number_text",

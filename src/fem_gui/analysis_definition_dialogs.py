@@ -493,9 +493,6 @@ class LoadDialog(QDialog):
         self.form.addRow("Fx", self.x_spin)
         self.form.addRow("Fy", self.y_spin)
         self.form.addRow("Fz", self.z_spin)
-        self.kind_combo.currentIndexChanged.connect(self._refresh)
-        self.load_type_combo.currentIndexChanged.connect(self._refresh)
-        self.coordinate_system_combo.currentIndexChanged.connect(self._refresh)
         if preferred_kind:
             index = self.kind_combo.findData(preferred_kind)
             if index >= 0:
@@ -581,6 +578,9 @@ class LoadDialog(QDialog):
         self.step_combo.currentIndexChanged.connect(
             self._update_candidate_state
         )
+        self.kind_combo.currentIndexChanged.connect(self._refresh)
+        self.load_type_combo.currentIndexChanged.connect(self._refresh)
+        self.coordinate_system_combo.currentIndexChanged.connect(self._refresh)
         for spin in (self.x_spin, self.y_spin, self.z_spin):
             spin.valueChanged.connect(self._update_candidate_state)
         self._refresh()
@@ -1345,7 +1345,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
                 self._append_row(
                     (
                         {
-                            "field": "字段输出",
+                            "field": "输出",
                             "history": "历史输出",
                         }.get(output.kind, "输出请求"),
                         step.name,

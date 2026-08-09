@@ -359,6 +359,49 @@ def test_load_action_uses_the_same_dimension_filtered_regions_as_dialog():
     window.close()
 
 
+@pytest.mark.parametrize(
+    ("action_name", "dialog_name"),
+    (
+        ("boundary_create", "DisplacementDialog"),
+        ("load_create", "LoadDialog"),
+    ),
+)
+def test_analysis_create_actions_do_not_forward_qt_checked(
+    monkeypatch,
+    gui_inp_path,
+    action_name,
+    dialog_name,
+):
+    _application()
+    window = FEMMainWindow()
+    model = read(gui_inp_path)
+    window._model_loaded(
+        gui_inp_path,
+        (model, build_model_geometry(model)),
+    )
+    captured: dict[str, object] = {}
+
+    class Dialog:
+        def __init__(self, *_args, **kwargs):
+            captured.update(kwargs)
+
+        @staticmethod
+        def exec():
+            return False
+
+        @staticmethod
+        def requested_scope_kind():
+            return None
+
+    monkeypatch.setattr(main_window_module, dialog_name, Dialog)
+
+    assert window.actions[action_name].isEnabled()
+    window.actions[action_name].trigger()
+
+    assert captured["selected_region"] is None
+    window.close()
+
+
 def test_generated_model_uses_the_shared_install_path_without_enabling_reload(
     gui_inp_path,
 ):
@@ -482,6 +525,9 @@ def test_short_action_labels_fit_the_ribbon_vocabulary():
     assert window.actions["open"].text() == "打开 INP"
     assert window.actions["export_csv"].text() == "导出 CSV"
     assert window.actions["export_vtk"].text() == "导出 VTK"
+    assert window.actions["screenshot"].text() == "导出视口"
+    assert window.actions["load_create"].text() == "载荷边界条件"
+    assert window.actions["job_manager"].text() == "作业管理"
     assert "export" not in window.actions
     window.close()
 

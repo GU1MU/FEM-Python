@@ -325,6 +325,43 @@ def test_load_dialog_can_edit_an_existing_distributed_load():
     assert load.vector == (2.0, -3.0)
 
 
+def test_edge_load_editor_refreshes_only_after_dialog_construction(
+    monkeypatch,
+):
+    _application()
+    refresh_states = []
+    original_refresh = LoadDialog._refresh
+
+    def tracked_refresh(dialog):
+        refresh_states.append(
+            (
+                hasattr(dialog, "buttons"),
+                dialog.kind_combo.currentData(),
+            )
+        )
+        original_refresh(dialog)
+
+    monkeypatch.setattr(LoadDialog, "_refresh", tracked_refresh)
+
+    dialog = LoadDialog(
+        ["Load"],
+        [],
+        _regions("edge", "Loaded"),
+        [],
+        2,
+        current=EdgeLoad(
+            "Loaded",
+            (0.0, 0.0),
+            magnitude=-1.0,
+            load_type="pressure",
+        ),
+    )
+
+    assert refresh_states == [(True, "edge")]
+    assert dialog.windowTitle() == "编辑载荷"
+    dialog.close()
+
+
 def test_load_dialog_creates_global_gravity_without_a_named_region():
     _application()
     dialog = LoadDialog(
@@ -935,7 +972,7 @@ def test_analysis_manager_uses_readable_definition_summaries():
 
     assert manager.table.item(0, 3).text() == "线性静力"
     assert manager.table.item(1, 3).text() == "U1 = 0"
-    assert manager.table.item(2, 0).text() == "字段输出"
+    assert manager.table.item(2, 0).text() == "输出"
     assert manager.table.item(2, 2).text() == "节点"
 
 

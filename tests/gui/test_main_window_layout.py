@@ -5,7 +5,14 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPoint, QSize
-from PySide6.QtWidgets import QApplication, QLabel, QMenu, QToolBar, QToolButton
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QLabel,
+    QMenu,
+    QToolBar,
+    QToolButton,
+)
 
 from fem_gui.main_window import FEMMainWindow
 
@@ -166,10 +173,21 @@ def test_menu_ribbon_and_viewport_toolbar_reuse_actions():
     for name in ("export_csv", "export_vtk", "screenshot"):
         export_action = window.actions[name]
         assert export_action in result_menu.actions()
-        assert export_action in ribbon_actions
+    assert window.actions["export_csv"] in ribbon_actions
+    assert window.actions["screenshot"] in ribbon_actions
+    assert window.actions["export_vtk"] not in ribbon_actions
     assert window.actions["export_csv"] in project_actions
-    assert window.actions["export_vtk"] in project_actions
-    assert window.actions["screenshot"] not in project_actions
+    assert window.actions["screenshot"] in project_actions
+    assert window.actions["export_vtk"] not in project_actions
+    assert window.actions["model_info"] in project_actions
+    assert window.actions["submit_job"] not in project_actions
+    project_group_titles = {
+        label.text()
+        for label in window.ribbon.stack.widget(
+            tab_names.index("项目")
+        ).findChildren(QLabel, "ribbonGroupTitle")
+    }
+    assert project_group_titles == {"文件", "输出"}
     assert window.actions["export_csv"] in result_actions
     assert window.actions["screenshot"] in result_actions
     assert window.actions["export_vtk"] not in result_actions
@@ -301,6 +319,85 @@ def test_scope_group_is_available_in_mesh_model_and_analysis_pages():
             if button.defaultAction() is not None
         }
         assert group_actions == expected_actions
+
+    window.close()
+
+
+def test_analysis_page_uses_compact_workflow_groups():
+    application = _application()
+    window = FEMMainWindow()
+    window.show()
+    window.resize(1600, 700)
+    window.ribbon.set_current("分析")
+    application.processEvents()
+    page = window.ribbon.stack.currentWidget()
+    groups = {
+        label.text(): label.parentWidget()
+        for label in page.findChildren(QLabel, "ribbonGroupTitle")
+    }
+
+    assert tuple(groups) == ("分析步", "作用域", "边界条件", "作业")
+
+    def action_button(group_name, action_name):
+        return next(
+            button
+            for button in groups[group_name].findChildren(QToolButton)
+            if button.defaultAction() is window.actions[action_name]
+        )
+
+    def action_names(group_name):
+        return {
+            button.defaultAction().objectName().removeprefix("action_")
+            for button in groups[group_name].findChildren(QToolButton)
+            if button.defaultAction() is not None
+        }
+
+    step_create = action_button("分析步", "step_create")
+    step_info = action_button("分析步", "step_info")
+    output_create = action_button("分析步", "output_create")
+    step_combo = groups["分析步"].findChild(QComboBox, "stepCombo_分析")
+    assert step_combo is not None
+    step_create_pos = step_create.mapTo(groups["分析步"], QPoint(0, 0))
+    step_info_pos = step_info.mapTo(groups["分析步"], QPoint(0, 0))
+    step_combo_pos = step_combo.mapTo(groups["分析步"], QPoint(0, 0))
+    output_pos = output_create.mapTo(groups["分析步"], QPoint(0, 0))
+    assert step_create_pos.x() == step_info_pos.x()
+    assert step_create_pos.y() < step_info_pos.y()
+    assert step_create_pos.x() + step_create.width() < step_combo_pos.x()
+    assert step_combo_pos.x() + step_combo.width() < output_pos.x()
+    assert action_names("分析步") == {
+        "step_create",
+        "step_info",
+        "output_create",
+    }
+
+    boundary = action_button("边界条件", "boundary_create")
+    load = action_button("边界条件", "load_create")
+    boundary_pos = boundary.mapTo(groups["边界条件"], QPoint(0, 0))
+    load_pos = load.mapTo(groups["边界条件"], QPoint(0, 0))
+    assert boundary_pos.x() == load_pos.x()
+    assert boundary_pos.y() < load_pos.y()
+    assert action_names("边界条件") == {"boundary_create", "load_create"}
+
+    check = action_button("作业", "check_model")
+    submit = action_button("作业", "submit_job")
+    analysis_manager = action_button("作业", "analysis_manager")
+    job_manager = action_button("作业", "job_manager")
+    check_pos = check.mapTo(groups["作业"], QPoint(0, 0))
+    submit_pos = submit.mapTo(groups["作业"], QPoint(0, 0))
+    analysis_manager_pos = analysis_manager.mapTo(groups["作业"], QPoint(0, 0))
+    job_manager_pos = job_manager.mapTo(groups["作业"], QPoint(0, 0))
+    assert check_pos.x() == submit_pos.x()
+    assert check_pos.y() < submit_pos.y()
+    assert analysis_manager_pos.x() == job_manager_pos.x()
+    assert analysis_manager_pos.y() < job_manager_pos.y()
+    assert check_pos.x() < analysis_manager_pos.x()
+    assert action_names("作业") == {
+        "check_model",
+        "submit_job",
+        "analysis_manager",
+        "job_manager",
+    }
 
     window.close()
 

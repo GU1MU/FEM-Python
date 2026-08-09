@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from fem.core.model import FEMModel
+from fem.core.model import FEMModel, GravityLoad
 import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow, initial_display_policy
 from fem_gui.visualization.model_adapter import build_model_geometry
@@ -59,6 +59,27 @@ class _Plotter:
 
     def render(self) -> None:
         self.render_count += 1
+
+
+class _GravityActor:
+    def __init__(self) -> None:
+        self.pickable = True
+
+    def SetPickable(self, pickable: bool) -> None:
+        self.pickable = bool(pickable)
+
+
+class _GravityPlotter(_Plotter):
+    def __init__(self, camera=None) -> None:
+        super().__init__(camera)
+        self.arrow_calls = []
+        self.gravity_actor = _GravityActor()
+
+    def add_arrows(self, origins, vectors, **kwargs):
+        self.arrow_calls.append(
+            (np.asarray(origins), np.asarray(vectors), kwargs)
+        )
+        return self.gravity_actor
 
 
 class _ViewCamera:
@@ -161,6 +182,45 @@ def test_boundary_cache_reuses_step_and_is_cleared_by_new_model(monkeypatch):
     )
     assert viewport._boundary_cache == {}
     assert viewport._beam_frame_cache == {}
+
+
+def test_gravity_uses_one_centered_yellow_direction_arrow(monkeypatch):
+    _application()
+    model = make_static_pull_truss_model()
+    model.steps[0].gravity_loads = (GravityLoad((0.0, -9.81, 0.0)),)
+    geometry = build_model_geometry(model)
+    viewport = FEMViewport()
+    viewport.set_model(model, geometry, refresh_symbols=False, render=False)
+    plotter = _GravityPlotter(_Camera(scale=1.0))
+    viewport._plotter = plotter
+    monkeypatch.setattr(viewport_module, "_pyvista", object())
+    viewport.set_symbol_settings(
+        SymbolSettings(
+            step_name="pull",
+            show_constraints=False,
+            show_nodal_loads=False,
+            show_edge_loads=False,
+            show_surface_loads=False,
+            show_line_loads=False,
+        ),
+        refresh=False,
+    )
+
+    viewport.show_boundary_and_loads("pull", render=False)
+
+    assert len(plotter.arrow_calls) == 1
+    origins, directions, options = plotter.arrow_calls[0]
+    center = 0.5 * (
+        np.min(geometry.points, axis=0)
+        + np.max(geometry.points, axis=0)
+    )
+    assert directions[0] == pytest.approx((0.0, -1.0, 0.0))
+    assert origins[0] + 0.5 * options["mag"] * directions[0] == pytest.approx(
+        center
+    )
+    assert options["color"] == "#FFD400"
+    assert options["name"] == "gravity"
+    assert plotter.gravity_actor.pickable is False
 
 
 def test_symbol_sampling_density_override_is_explicit_and_reversible():

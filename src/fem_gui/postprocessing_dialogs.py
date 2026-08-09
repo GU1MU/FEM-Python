@@ -446,12 +446,17 @@ class DisplaySettingsDialog(QDialog):
             ("无边", CONTOUR_EDGE_NONE),
         ):
             self.edge_mode.addItem(label, key)
-        selected_edge_mode = options.get(
-            "edge_mode",
-            CONTOUR_EDGE_ALL if options.get("edges", False) else CONTOUR_EDGE_NONE,
-        )
-        if not options.get("edges", False):
-            selected_edge_mode = CONTOUR_EDGE_NONE
+        selected_edge_mode = options.get("edge_mode")
+        if selected_edge_mode is None:
+            selected_edge_mode = (
+                CONTOUR_EDGE_ALL
+                if options.get("edges")
+                else (
+                    CONTOUR_EDGE_NONE
+                    if "edges" in options
+                    else CONTOUR_EDGE_GEOMETRY
+                )
+            )
         self.edge_mode.setCurrentIndex(
             max(0, self.edge_mode.findData(selected_edge_mode))
         )
@@ -927,26 +932,21 @@ class TypedResultQueryDialog(QDialog):
         self.component_combo = QComboBox(self)
         self.ids_edit = QLineEdit(self)
         self.ids_edit.setPlaceholderText("留空查询全部；例如：1, 3, 5-8")
-        self.availability_label = QLabel(self)
         form.addRow("结果步：", self.step_combo)
         form.addRow("对象类型：", self.association_combo)
         form.addRow("场变量：", self.field_combo)
         form.addRow("分量：", self.component_combo)
         form.addRow("对象编号：", self.ids_edit)
-        form.addRow("字段状态：", self.availability_label)
         layout.addLayout(form)
 
         command_row = QHBoxLayout()
         self.query_button = QPushButton("查询", self)
         copy_button = QPushButton("复制", self)
-        close_button = QPushButton("关闭", self)
         self.query_button.clicked.connect(self.request_query)
         copy_button.clicked.connect(self.copy_table)
-        close_button.clicked.connect(self.close)
         command_row.addWidget(self.query_button)
         command_row.addWidget(copy_button)
         command_row.addStretch(1)
-        command_row.addWidget(close_button)
         layout.addLayout(command_row)
 
         self.result_summary = QLabel("尚未查询", self)
@@ -1262,12 +1262,8 @@ class TypedResultQueryDialog(QDialog):
         try:
             availability = self.current_availability()
         except RuntimeError:
-            self.availability_label.setText("没有适用于当前对象的字段")
             self.query_button.setEnabled(False)
             return
-        self.availability_label.setText(
-            _typed_availability_text(availability)
-        )
         self.query_button.setEnabled(
             not self._query_pending
             and availability.state is not FieldState.UNAVAILABLE
@@ -1403,6 +1399,12 @@ def _parse_typed_query_ids(
 
 
 def _typed_field_label(availability: FieldAvailability) -> str:
+    if availability.state is FieldState.READY:
+        descriptor = availability.descriptor
+        return _TYPED_RESULT_FIELD_LABELS.get(
+            descriptor.label_key,
+            descriptor.label_key,
+        )
     return _typed_result_display_field_label(availability)
 
 
@@ -1503,16 +1505,6 @@ def _validate_typed_display_options(
         raise TypeError("overlay_undeformed must be a boolean")
     if type(show_edges) is not bool:
         raise TypeError("show_edges must be a boolean")
-
-
-def _typed_availability_text(availability: FieldAvailability) -> str:
-    if availability.state is FieldState.READY:
-        return "已就绪"
-    if availability.state is FieldState.LAZY:
-        return "待物化；选择会交给外层命令"
-    if availability.diagnostics:
-        return availability.diagnostics[0].message
-    return "不可用"
 
 
 def _optional_identity_text(value: int | None) -> str:

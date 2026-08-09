@@ -294,6 +294,7 @@ from .wire_editor import WireDraftController, WireDraftValidationError
 from .visualization.colormaps import ABAQUS_RAINBOW
 from .visualization.contour_rendering import (
     CONTOUR_EDGE_ALL,
+    CONTOUR_EDGE_GEOMETRY,
     CONTOUR_EDGE_NONE,
     CONTOUR_RENDER_SHADED,
 )
@@ -713,14 +714,14 @@ class FEMMainWindow(QMainWindow):
             "levels": 12, "colormap": ABAQUS_RAINBOW,
             "style": "segmented", "legend": True,
             "render_mode": CONTOUR_RENDER_SHADED,
-            "edge_mode": CONTOUR_EDGE_NONE,
+            "edge_mode": CONTOUR_EDGE_GEOMETRY,
             "edge_style": "solid", "edge_width": 1.0,
             "number_format": "scientific", "decimals": 2,
             "orientation": "vertical", "show_minimum": False,
             "show_maximum": False, "show_ids": False,
             "legend_font": "Arial", "legend_font_size": 14,
             "show_coordinate_system": True,
-            "edges": False,
+            "edges": True,
             "averaging_threshold": 75.0,
         }
         self._result_visualization_provider_cache: (
@@ -3205,11 +3206,21 @@ class FEMMainWindow(QMainWindow):
             (),
         )
         self._add_ribbon_page("项目", (
-            ("文件", ("new_native", "open_project", "save_project", "open", "save_result", "open_result"), ("new_native", "open")),
-            ("信息", ("model_info",), ()),
-            ("分析", ("submit_job",), ("submit_job",)),
-            ("输出", ("export_csv", "export_vtk"), ()),
-        ), step_group="分析")
+            (
+                "文件",
+                (
+                    "new_native",
+                    "open_project",
+                    "save_project",
+                    "open",
+                    "save_result",
+                    "open_result",
+                    "model_info",
+                ),
+                ("new_native", "open"),
+            ),
+            ("输出", ("export_csv", "screenshot"), ()),
+        ))
         self._add_ribbon_page("几何", (
             (
                 "创建",
@@ -3266,14 +3277,7 @@ class FEMMainWindow(QMainWindow):
             ("显示", ("nodes", "edges", "node_labels", "element_labels"), ()),
             ("符号", ("symbols", "symbol_settings"), ()),
         ))
-        self._add_ribbon_page("分析", (
-            ("分析步", ("step_create", "step_info"), ("step_create",)),
-            scope_group,
-            ("边界与载荷", ("boundary_create", "load_create", "output_create"), ()),
-            ("检查", ("check_model",), ()),
-            ("作业", ("submit_job", "resubmit_job"), ("submit_job",)),
-            ("管理", ("analysis_manager", "job_manager"), ()),
-        ), step_group="分析步")
+        self._build_analysis_ribbon_page()
         self._build_result_ribbon_page()
         self._add_ribbon_page("视图", (
             ("视角", ("top", "bottom", "front", "back", "left", "right", "iso"),
@@ -3282,6 +3286,32 @@ class FEMMainWindow(QMainWindow):
             ("标注", ("nodes", "edges", "node_labels", "element_labels", "symbols"), ()),
         ))
         self.ribbon.moduleChanged.connect(self._on_module_changed)
+
+    def _build_analysis_ribbon_page(self) -> None:
+        page = self.ribbon.add_page("分析")
+
+        step_group = page.add_group("分析步")
+        for name in ("step_create", "step_info"):
+            step_group.add_action(self.actions[name])
+        step_group.add_widget(self._create_step_combo("分析"))
+        step_group.add_action(self.actions["output_create"], compact=True)
+
+        scope_group = page.add_group("作用域")
+        for name in ("geometry_region", "geometry_regions"):
+            scope_group.add_action(self.actions[name])
+
+        boundary_group = page.add_group("边界条件")
+        for name in ("boundary_create", "load_create"):
+            boundary_group.add_action(self.actions[name])
+
+        job_group = page.add_group("作业")
+        for name in (
+            "check_model",
+            "submit_job",
+            "analysis_manager",
+            "job_manager",
+        ):
+            job_group.add_action(self.actions[name])
 
     def _build_result_ribbon_page(self) -> None:
         page = self.ribbon.add_page("结果")
@@ -3414,7 +3444,7 @@ class FEMMainWindow(QMainWindow):
         self.result_scale_value = CompactDoubleSpinBox(scale_host)
         self.result_scale_value.setObjectName("resultScaleValue")
         self.result_scale_value.setRange(0.0, 1.0e12)
-        self.result_scale_value.setDecimals(5)
+        self.result_scale_value.setDecimals(2)
         self.result_scale_value.setValue(self._scale_value)
         self.result_scale_value.setFixedWidth(100)
         self.result_scale_value.setEnabled(False)
@@ -10537,7 +10567,7 @@ class FEMMainWindow(QMainWindow):
             return None
         if self._job_manager is None:
             dialog = JobManagerDialog(self.document.runs, self)
-            dialog.resubmitRequested.connect(self.resubmit_job)
+            dialog.terminateRequested.connect(self.terminate_job)
             dialog.openResultRequested.connect(self.open_job_result)
             self._fit_viewport_when_dialog_finishes(dialog)
             dialog.destroyed.connect(
@@ -10564,6 +10594,23 @@ class FEMMainWindow(QMainWindow):
     def _forget_job_manager(self, dialog: JobManagerDialog) -> None:
         if self._job_manager is dialog:
             self._job_manager = None
+
+    def terminate_job(self, name: str) -> bool:
+        """请求终止作业管理窗口中选定的当前求解。"""
+        job = self.session.find_run(name)
+        if (
+            job is None
+            or job.status is not RunStatus.RUNNING
+            or job.cancellation_requested
+            or self.document.active_job_name != job.name
+            or self.task_controller.current_task_name != f"作业 {job.name}"
+        ):
+            return False
+        requested = self.cancel_current_task()
+        self._refresh_job_manager()
+        if requested:
+            self.status_panel.set_state(f"正在终止求解：{job.name}")
+        return requested
 
     def open_job_result(self, name: str) -> None:
         """打开一个已完成作业的内存结果，不重新求解。"""

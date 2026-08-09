@@ -86,7 +86,7 @@ class JobSubmitDialog(QDialog):
 class JobManagerDialog(QDialog):
     """显示会话作业、选中作业日志及历史结果操作。"""
 
-    resubmitRequested = Signal(str)
+    terminateRequested = Signal(str)
     openResultRequested = Signal(str)
 
     def __init__(self, jobs: Iterable[AnalysisRun], parent=None) -> None:
@@ -113,13 +113,13 @@ class JobManagerDialog(QDialog):
         self._displayed_job_name: str | None = None
         layout.addWidget(self.log_view)
         buttons = QHBoxLayout()
-        self.resubmit_button = QPushButton("重新提交", self)
+        self.terminate_button = QPushButton("终止求解", self)
         self.open_result_button = QPushButton("打开结果", self)
         close = QPushButton("关闭", self)
-        self.resubmit_button.clicked.connect(self._emit_resubmit)
+        self.terminate_button.clicked.connect(self._emit_terminate)
         self.open_result_button.clicked.connect(self._emit_open_result)
         close.clicked.connect(self.close)
-        buttons.addWidget(self.resubmit_button)
+        buttons.addWidget(self.terminate_button)
         buttons.addWidget(self.open_result_button)
         buttons.addStretch(1)
         buttons.addWidget(close)
@@ -143,7 +143,12 @@ class JobManagerDialog(QDialog):
             entries = (
                 job.name,
                 job.step_name,
-                _STATUS_LABELS.get(job.status, str(job.status.value)),
+                (
+                    "终止中"
+                    if job.cancellation_requested
+                    and job.status is RunStatus.RUNNING
+                    else _STATUS_LABELS.get(job.status, str(job.status.value))
+                ),
                 job.started_at.strftime("%H:%M:%S") if job.started_at else "—",
                 _elapsed_text(job),
             )
@@ -180,17 +185,17 @@ class JobManagerDialog(QDialog):
             if same_job:
                 scroll_bar.setValue(scroll_bar.maximum() if was_at_bottom else scroll_value)
             self._displayed_job_name = job_name
-        self.resubmit_button.setEnabled(
+        self.terminate_button.setEnabled(
             job is not None
-            and job.status
-            in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED}
+            and job.status is RunStatus.RUNNING
+            and not job.cancellation_requested
         )
         self.open_result_button.setEnabled(job is not None and job.has_result)
 
-    def _emit_resubmit(self) -> None:
+    def _emit_terminate(self) -> None:
         name = self.selected_job_name()
         if name is not None:
-            self.resubmitRequested.emit(name)
+            self.terminateRequested.emit(name)
 
     def _emit_open_result(self) -> None:
         name = self.selected_job_name()

@@ -55,6 +55,7 @@ from ..visualization.colormaps import (
     resolve_contour_colormap,
 )
 from ..visualization.contour_rendering import (
+    CONTOUR_EDGE_GEOMETRY,
     CONTOUR_EDGE_NONE,
     CONTOUR_RENDER_SHADED,
     contour_surface_options,
@@ -93,6 +94,7 @@ BEAM_FRAME_CACHE_LIMIT = 256
 _TYPED_RESULT_GRID_NAME = "typed_result_grid"
 _LINE_ELEMENT_WIDTH = 5
 _LINE_NODE_POINT_SIZE = 11
+_GRAVITY_SYMBOL_COLOR = "#FFD400"
 
 
 class _SelectionRubberBand:
@@ -1335,9 +1337,9 @@ class FEMViewport(QWidget):
         self._contour = {
             "manual": False, "minimum": 0.0, "maximum": 1.0, "levels": 12,
             "colormap": ABAQUS_RAINBOW, "style": "segmented",
-            "legend": True, "edges": False,
+            "legend": True, "edges": True,
             "render_mode": CONTOUR_RENDER_SHADED,
-            "edge_mode": CONTOUR_EDGE_NONE,
+            "edge_mode": CONTOUR_EDGE_GEOMETRY,
             "edge_style": "solid", "edge_width": 1.0,
             "number_format": "scientific", "decimals": 2,
             "orientation": "vertical", "show_minimum": False,
@@ -5868,6 +5870,7 @@ class FEMViewport(QWidget):
             "constraints", "constraint_rotations",
             "constraint_labels", "loads", "load_moments", "load_moment_heads",
             "load_labels", "load_moment_labels", "load_regions", "load_region_edges",
+            "gravity",
         )
 
     def show_boundary_and_loads(
@@ -5906,6 +5909,19 @@ class FEMViewport(QWidget):
             np.min(self._geometry.points, axis=0)
             + np.max(self._geometry.points, axis=0)
         )
+        if selected_definition is not None and selected_definition.gravity_loads:
+            gravity_vector = np.zeros(3, dtype=float)
+            for gravity_load in selected_definition.gravity_loads:
+                acceleration = np.asarray(
+                    gravity_load.acceleration,
+                    dtype=float,
+                ).reshape(-1)
+                gravity_vector[:min(3, len(acceleration))] += acceleration[:3]
+            self._add_gravity_arrow(
+                model_center,
+                gravity_vector,
+                load_scale,
+            )
         is_3d = bool(self._model.mesh.nodes and hasattr(self._model.mesh.nodes[0], "z"))
         translation_count = 3 if is_3d else 2
         constraint_points: list[np.ndarray] = []
@@ -6370,6 +6386,29 @@ class FEMViewport(QWidget):
                     text_color=settings.load_color, name="load_labels",
                     reset_camera=False,
                 )
+
+    def _add_gravity_arrow(
+        self,
+        center: np.ndarray,
+        acceleration: np.ndarray,
+        glyph_scale: float,
+    ) -> None:
+        magnitude = float(np.linalg.norm(acceleration))
+        if magnitude <= 0.0 or self._plotter is None:
+            return
+        direction = np.asarray(acceleration, dtype=float) / magnitude
+        origin = np.asarray(center, dtype=float) - 0.5 * glyph_scale * direction
+        actor = self._plotter.add_arrows(
+            origin.reshape((1, 3)),
+            direction.reshape((1, 3)),
+            mag=glyph_scale,
+            color=_GRAVITY_SYMBOL_COLOR,
+            lighting=False,
+            name="gravity",
+            reset_camera=False,
+        )
+        actor.SetPickable(False)
+        self._actors["gravity"] = actor
 
     def closeEvent(self, event) -> None:
         self.shutdown_backend()

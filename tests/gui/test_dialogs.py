@@ -18,6 +18,7 @@ from fem_gui.visualization.colormaps import ABAQUS_RAINBOW
 from fem_gui.visualization.contour_rendering import (
     CONTOUR_EDGE_FEATURE,
     CONTOUR_EDGE_GEOMETRY,
+    CONTOUR_EDGE_NONE,
     CONTOUR_RENDER_FILLED,
 )
 from fem_gui.visualization.symbols import SymbolSettings
@@ -223,6 +224,23 @@ def test_contour_dialog_defaults_to_abaqus_rainbow():
     assert contour.settings()["colormap"] == ABAQUS_RAINBOW
     assert contour.auto_range.isChecked()
     assert contour.shaded_mode.isChecked()
+
+
+def test_display_settings_defaults_to_geometry_edges():
+    _application()
+    display = DisplaySettingsDialog({})
+
+    assert display.edge_mode.currentData() == CONTOUR_EDGE_GEOMETRY
+    assert display.settings()["edges"]
+
+    hidden = DisplaySettingsDialog(
+        {
+            "edge_mode": CONTOUR_EDGE_NONE,
+            "edges": False,
+        }
+    )
+    assert hidden.edge_mode.currentData() == CONTOUR_EDGE_NONE
+    assert not hidden.settings()["edges"]
 
 
 def test_contour_and_display_dialogs_split_render_and_edge_modes():

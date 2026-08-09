@@ -133,7 +133,8 @@ def test_analysis_uses_clean_deformed_displacement_contour_defaults(gui_inp_path
     assert window._contour_options["style"] == "segmented"
     assert window._contour_options["colormap"] == "abaqus_rainbow"
     assert window._contour_options["render_mode"] == "shaded"
-    assert window._contour_options["edge_mode"] == "none"
+    assert window._contour_options["edge_mode"] == "geometry"
+    assert window.viewport._contour["edge_mode"] == "geometry"
     assert window._contour_options["number_format"] == "scientific"
     assert window._contour_options["decimals"] == 2
     assert not window._contour_options["show_minimum"]
@@ -143,7 +144,7 @@ def test_analysis_uses_clean_deformed_displacement_contour_defaults(gui_inp_path
     assert not window.actions["symbols"].isChecked()
     assert not window.actions["node_labels"].isChecked()
     assert not window.actions["element_labels"].isChecked()
-    assert not window.actions["edges"].isChecked()
+    assert window.actions["edges"].isChecked()
     assert window.selection.node_id == 1
     assert window.viewport._selected_id == 1
     assert not window.viewport._selection_highlight_visible
@@ -222,7 +223,8 @@ def test_result_ribbon_selects_real_fields_and_deformation_scale(gui_inp_path):
         window.viewport._result_render_payload.topology.deformation_scale
     )
     assert not window.result_scale_value.isEnabled()
-    assert window.result_scale_value.value() == pytest.approx(automatic_scale)
+    assert window.result_scale_value.decimals() == 2
+    assert window.result_scale_value.text() == f"{automatic_scale:.2f}"
 
     window.result_scale_combo.setCurrentIndex(custom_index)
     window._result_scale_mode_changed(custom_index)
