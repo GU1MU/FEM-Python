@@ -10,7 +10,11 @@ from .beam_frame import (
     BeamFrameField,
     resolve_beam_frame_field,
 )
-from .beam_section import Beam2Section, parse_beam2_section
+from .beam_section import (
+    Beam2Section,
+    BeamSectionEndForces,
+    parse_beam2_section,
+)
 
 
 def _required_float_props(elem: Any, *names: str) -> tuple[float, ...]:
@@ -437,6 +441,30 @@ class Beam2Kernel:
         node_lookup: dict[int, Any] | None = None,
     ) -> np.ndarray:
         """Return tension-positive (N, My, Mz) at both Beam2 ends."""
+        section_forces = self.local_section_end_forces(
+            mesh,
+            elem,
+            U,
+            equivalent_local_load,
+            node_lookup,
+        )
+        return np.asarray(
+            [
+                (forces.axial_force, forces.moment_y, forces.moment_z)
+                for forces in section_forces
+            ],
+            dtype=float,
+        )
+
+    def local_section_end_forces(
+        self,
+        mesh: Any,
+        elem: Any,
+        U: np.ndarray,
+        equivalent_local_load: np.ndarray | None = None,
+        node_lookup: dict[int, Any] | None = None,
+    ) -> tuple[BeamSectionEndForces, BeamSectionEndForces]:
+        """Return tension-positive ``(N, My, Mz, T)`` at both Beam2 ends."""
         E, nu, section = _beam_properties(elem)
         field = resolve_beam_frame_field(mesh, elem, node_lookup)
         G = E / (2.0 * (1.0 + nu))
@@ -472,12 +500,19 @@ class Beam2Kernel:
             start_moment = field.start.rotation @ action[3:6]
             end_force = field.end.rotation @ action[6:9]
             end_moment = field.end.rotation @ action[9:12]
-            return np.array(
-                [
-                    [-start_force[0], -start_moment[1], -start_moment[2]],
-                    [end_force[0], end_moment[1], end_moment[2]],
-                ],
-                dtype=float,
+            return (
+                BeamSectionEndForces(
+                    -start_force[0],
+                    -start_moment[1],
+                    -start_moment[2],
+                    -start_moment[0],
+                ),
+                BeamSectionEndForces(
+                    end_force[0],
+                    end_moment[1],
+                    end_moment[2],
+                    end_moment[0],
+                ),
             )
         frame = field.as_constant_frame()
         local_stiffness = _beam2_local_stiffness(
@@ -502,12 +537,19 @@ class Beam2Kernel:
                 f"Beam2 element {elem.id} equivalent local load must have 12 finite values"
             )
         action = local_stiffness @ local_displacement - local_load
-        return np.array(
-            [
-                [-action[0], -action[4], -action[5]],
-                [action[6], action[10], action[11]],
-            ],
-            dtype=float,
+        return (
+            BeamSectionEndForces(
+                -action[0],
+                -action[4],
+                -action[5],
+                -action[3],
+            ),
+            BeamSectionEndForces(
+                action[6],
+                action[10],
+                action[11],
+                action[9],
+            ),
         )
 
 
