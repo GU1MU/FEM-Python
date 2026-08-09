@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from inspect import Parameter, signature
 from time import perf_counter
 
 import numpy as np
@@ -35,6 +36,52 @@ def test_static_linear_solver_public_surface():
         "prepare",
         "solve",
     ]
+
+
+def test_static_linear_solver_public_call_shapes():
+    def call_shape(callable_object):
+        return tuple(
+            (name, parameter.kind, parameter.default)
+            for name, parameter in signature(callable_object).parameters.items()
+        )
+
+    assert call_shape(static_linear.prepare) == (
+        ("model", Parameter.POSITIONAL_OR_KEYWORD, Parameter.empty),
+        ("copy_model", Parameter.KEYWORD_ONLY, True),
+        ("timings", Parameter.KEYWORD_ONLY, None),
+    )
+    assert call_shape(static_linear.solve) == (
+        ("model", Parameter.POSITIONAL_OR_KEYWORD, Parameter.empty),
+        ("step", Parameter.POSITIONAL_OR_KEYWORD, None),
+        ("name", Parameter.POSITIONAL_OR_KEYWORD, None),
+        ("steps", Parameter.KEYWORD_ONLY, None),
+        ("_validated_step", Parameter.KEYWORD_ONLY, ...),
+        ("_prepared_system", Parameter.KEYWORD_ONLY, None),
+        ("timings", Parameter.KEYWORD_ONLY, None),
+    )
+    assert call_shape(static_linear.PreparedSystem.clone) == (
+        ("self", Parameter.POSITIONAL_OR_KEYWORD, Parameter.empty),
+    )
+    assert call_shape(static_linear.PreparedSystem.solve) == (
+        ("self", Parameter.POSITIONAL_OR_KEYWORD, Parameter.empty),
+        ("step", Parameter.POSITIONAL_OR_KEYWORD, None),
+        ("name", Parameter.POSITIONAL_OR_KEYWORD, None),
+        ("steps", Parameter.KEYWORD_ONLY, None),
+        ("_validated_step", Parameter.KEYWORD_ONLY, ...),
+        ("timings", Parameter.KEYWORD_ONLY, None),
+    )
+    expected_validation_shape = (
+        ("self", Parameter.POSITIONAL_OR_KEYWORD, Parameter.empty),
+        ("step", Parameter.POSITIONAL_OR_KEYWORD, None),
+    )
+    assert (
+        call_shape(static_linear.PreparedSystem.validate_step)
+        == expected_validation_shape
+    )
+    assert (
+        call_shape(static_linear.PreparedSystem.validate_stiffness)
+        == expected_validation_shape
+    )
 
 
 def test_prepared_system_applies_sections_and_assembles_once_for_many_steps(
@@ -779,8 +826,28 @@ def test_static_linear_stiffness_preflight_detects_free_rigid_dofs():
     assert static_linear.validate_stiffness(model, "pull").name == "pull"
 
     model.steps[0].boundaries = model.steps[0].boundaries[:1]
-    with pytest.raises(ValueError, match="约束不足或刚度矩阵奇异"):
+    with pytest.raises(ValueError) as captured:
         static_linear.validate_stiffness(model, "pull")
+
+    assert str(captured.value) == (
+        "模型约束不足或刚度矩阵奇异；"
+        "请检查刚体位移、材料、截面和单元连接"
+    )
+    assert captured.value.__cause__ is not None
+
+
+def test_static_linear_solve_preserves_singular_error_summary_and_cause():
+    model = make_static_pull_truss_model()
+    model.steps[0].boundaries = model.steps[0].boundaries[:1]
+
+    with pytest.raises(RuntimeError) as captured:
+        static_linear.solve(model, "pull")
+
+    assert str(captured.value) == (
+        "sparse linear solve failed: stiffness matrix "
+        "is singular or under-constrained."
+    )
+    assert captured.value.__cause__ is not None
 
 
 def test_solve_uses_validate_problem(monkeypatch):
