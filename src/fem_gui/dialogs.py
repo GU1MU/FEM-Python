@@ -49,6 +49,12 @@ def configure_form_layout(form: QFormLayout) -> None:
     form.setVerticalSpacing(8)
 
 
+def normalize_dialog_message(value: object) -> str:
+    """Remove punctuation excluded by the shared dialog copy style."""
+
+    return str(value).replace("：", " ").replace("。", "；").rstrip("；")
+
+
 def show_information(
     parent: QWidget,
     title: str,
@@ -65,7 +71,7 @@ def show_information(
         label = QLabel(_format_value(value), dialog)
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         label.setWordWrap(True)
-        form.addRow(f"{name}：", label)
+        form.addRow(str(name), label)
     layout.addLayout(form)
     buttons = QDialogButtonBox(
         QDialogButtonBox.StandardButton.Close,

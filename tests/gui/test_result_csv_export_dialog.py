@@ -87,7 +87,8 @@ def test_dialog_selects_ready_fields_without_showing_field_status() -> None:
     assert "按需加载" not in visible_text
     assert "不可用" not in visible_text
     assert not hasattr(dialog, "availability_label")
-    assert "分量：" in visible_text
+    assert "分量" in visible_text
+    assert "：" not in visible_text
     assert "可多选" not in visible_text
     assert dialog.component_list.verticalScrollMode() == (
         QAbstractItemView.ScrollMode.ScrollPerPixel

@@ -211,10 +211,10 @@ class ResultCsvExportDialog(QDialog):
         path_layout.addWidget(self.path_edit, 1)
         path_layout.addWidget(self.browse_button)
 
-        form.addRow("场变量：", self.variable_combo)
-        form.addRow("结果位置：", self.position_combo)
-        form.addRow("分量：", self.component_list)
-        form.addRow("保存到：", path_host)
+        form.addRow("场变量", self.variable_combo)
+        form.addRow("结果位置", self.position_combo)
+        form.addRow("分量", self.component_list)
+        form.addRow("保存到", path_host)
         layout.addLayout(form)
 
         self.button_box = QDialogButtonBox(

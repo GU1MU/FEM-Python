@@ -210,7 +210,11 @@ from .commands import (
     ResultArchiveSaveSpec,
     ResultVtkExportSpec,
 )
-from .dialogs import CompactDoubleSpinBox, show_information
+from .dialogs import (
+    CompactDoubleSpinBox,
+    normalize_dialog_message,
+    show_information,
+)
 from .model_dialogs import (
     MaterialEditDialog,
     MaterialManagerDialog,
@@ -326,7 +330,7 @@ from .workers import TaskContext
 
 _IMPORTED_OUTPUT_REQUEST_WARNING = (
     "此修改只保留在当前 Session；"
-    "重新加载原 INP 后会恢复源文件中的输出请求。"
+    "重新加载原 INP 后会恢复源文件中的输出请求"
 )
 
 _RESULT_FIELD_STATE_LABELS = {
@@ -3213,8 +3217,8 @@ class FEMMainWindow(QMainWindow):
                     "open_project",
                     "save_project",
                     "open",
-                    "save_result",
                     "open_result",
+                    "save_result",
                     "model_info",
                 ),
                 ("new_native", "open"),
@@ -4168,17 +4172,17 @@ class FEMMainWindow(QMainWindow):
             f"有限元分析 — {name} [{source_label}]{dirty_marker}"
         )
 
-    def _set_action_available(self, name: str, available: bool, reason: str) -> None:
-        """Keep disabled workflow commands explainable instead of silently grey."""
+    def _set_action_available(
+        self,
+        name: str,
+        available: bool,
+        _reason: str,
+    ) -> None:
+        """Apply availability without adding state explanations to UI labels."""
         action = self.actions[name]
         action.setEnabled(bool(available))
-        if available:
-            action.setToolTip(action.text())
-            action.setStatusTip(action.text())
-            return
-        message = str(reason).strip() or "当前状态不可用"
-        action.setToolTip(f"{action.text()}（{message}）")
-        action.setStatusTip(message)
+        action.setToolTip(action.text())
+        action.setStatusTip(action.text())
 
     def start_wire_geometry(self) -> None:
         """Start a detached Wire draft from the Geometry ribbon."""
@@ -4201,7 +4205,7 @@ class FEMMainWindow(QMainWindow):
         part_name, accepted = QInputDialog.getText(
             self,
             "新建线体部件",
-            "部件名称：",
+            "部件名称",
             text=default_name,
         )
         if not accepted or not part_name.strip():
@@ -4915,7 +4919,7 @@ class FEMMainWindow(QMainWindow):
         part_name, accepted = QInputDialog.getText(
             self,
             "新建二维草图",
-            "部件名称：",
+            "部件名称",
             text=current_part_name,
         )
         if not accepted:
@@ -6727,7 +6731,7 @@ class FEMMainWindow(QMainWindow):
             name, accepted = QInputDialog.getText(
                 self,
                 "实体管理",
-                f"重命名 {body.name} [{body.id}]：",
+                f"重命名 {body.name} [{body.id}]",
                 text=body.name,
             )
             if accepted:
@@ -6916,9 +6920,9 @@ class FEMMainWindow(QMainWindow):
             )
             impact = (
                 f"\n将移除 {len(impacted_regions)} 个命名区域、"
-                f"{len(impacted_controls)} 个局部网格控制。"
+                f"{len(impacted_controls)} 个局部网格控制"
                 if impacted_regions or impacted_controls
-                else "\n当前没有直接引用此实体的命名区域或局部网格控制。"
+                else "\n当前没有直接引用此实体的命名区域或局部网格控制"
             )
             answer = QMessageBox.question(
                 self,
@@ -6941,7 +6945,7 @@ class FEMMainWindow(QMainWindow):
             self,
             "删除部件",
             f"确认删除 {active.name} [{active.id}]？"
-            "\n仅该部件命名空间内的集合和指派会受影响。",
+            "\n仅该部件命名空间内的集合和指派会受影响",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -8072,7 +8076,7 @@ class FEMMainWindow(QMainWindow):
         model_name, accepted = QInputDialog.getText(
             self,
             "新建模型",
-            "模型名称：",
+            "模型名称",
             text="模型-1",
         )
         if not accepted:
@@ -8643,14 +8647,14 @@ class FEMMainWindow(QMainWindow):
         box.setIcon(QMessageBox.Icon.Warning)
         messages: list[str] = []
         if self.document.dirty:
-            messages.append("当前模型包含尚未保存的修改。")
+            messages.append("当前模型包含尚未保存的修改")
         if unsaved_result_count:
             current_run = self.session.find_run(
                 self.document.displayed_result_run_id
             )
             job_name = getattr(current_run, "name", None) or "当前作业"
             messages.append(
-                f"有 {unsaved_result_count} 个未保存结果（当前作业：{job_name}）。"
+                f"有 {unsaved_result_count} 个未保存结果（当前作业 {job_name}）"
             )
         box.setText("\n".join(messages))
         save_button = None
@@ -9501,7 +9505,7 @@ class FEMMainWindow(QMainWindow):
         QMessageBox.warning(
             self,
             "输出请求",
-            _IMPORTED_OUTPUT_REQUEST_WARNING,
+            normalize_dialog_message(_IMPORTED_OUTPUT_REQUEST_WARNING),
         )
 
     @staticmethod
@@ -10852,7 +10856,12 @@ class FEMMainWindow(QMainWindow):
 
     def _show_error(self, title: str, message: str) -> None:
         self.status_panel.set_state("操作失败", 5000)
-        box = QMessageBox(QMessageBox.Icon.Critical, title, message, parent=self)
+        box = QMessageBox(
+            QMessageBox.Icon.Critical,
+            title,
+            normalize_dialog_message(message),
+            parent=self,
+        )
         box.setStandardButtons(QMessageBox.StandardButton.Close)
         box.button(QMessageBox.StandardButton.Close).setText("关闭")
         box.exec()
@@ -11201,7 +11210,10 @@ class FEMMainWindow(QMainWindow):
         self.viewport_panel.scope_creation_bar.set_selection_ready(
             bool(self._canonical_mesh_scope_selection())
         )
-        self.viewport.highlight_geometry_entities(references)
+        self.viewport.highlight_geometry_entities(
+            references,
+            scope_style=True,
+        )
         mode = f"geometry_{kind}"
         labels = {
             "point": "点",
@@ -12777,7 +12789,7 @@ class FEMMainWindow(QMainWindow):
         if kind == "model":
             current = str(self.document.model_name or "模型-1")
             title = "重命名模型"
-            prompt = "模型名称："
+            prompt = "模型名称"
             rename = self.session.rename_native_model
         elif kind == "part" and type(_key) is str:
             try:
@@ -12786,7 +12798,7 @@ class FEMMainWindow(QMainWindow):
                 return
             current = part.name
             title = "重命名部件"
-            prompt = "部件名称："
+            prompt = "部件名称"
             rename = None
         else:
             return
@@ -12899,28 +12911,50 @@ class FEMMainWindow(QMainWindow):
     def highlight_entity(self, kind: str, key: object) -> None:
         if self.inspection_service is None:
             return
-        if kind in {"surface", "edge", "surface_load", "edge_load"}:
-            region_kind = "surface" if kind in {"surface", "surface_load"} else "edge"
-            if kind in {"surface_load", "edge_load"}:
-                step_index, load_index = key
-                step = self.document.model.steps[step_index]
-                key = (
-                    step.surface_loads[load_index].surface
-                    if region_kind == "surface"
-                    else step.edge_loads[load_index].edge
-                )
+        if kind in {
+            "boundary",
+            "cload",
+            "surface_load",
+            "edge_load",
+            "line_load",
+            "body_load",
+            "gravity_load",
+        }:
+            scope = self.inspection_service.analysis_scope_for(kind, key)
+            self.viewport.highlight_analysis_scope(
+                scope.kind,
+                node_ids=scope.node_ids,
+                element_ids=scope.element_ids,
+                members=scope.members,
+            )
+            return
+        if kind in {"surface", "edge"}:
+            region_kind = kind
             members = (
                 self.document.model.surfaces[str(key)].faces
                 if region_kind == "surface"
                 else self.document.model.edges[str(key)].edges
             )
-            self.viewport.highlight_region(members, region_kind)
+            self.viewport.highlight_analysis_scope(
+                region_kind,
+                members=tuple(members),
+            )
+            return
+        if kind in {"node_set", "element_set"}:
+            selection = self.inspection_service.selection_for(kind, key)
+            self.viewport.highlight_analysis_scope(
+                "node" if kind == "node_set" else "element",
+                node_ids=selection.node_ids,
+                element_ids=selection.element_ids,
+            )
+            if kind == "element_set":
+                self.viewport.show_beam_frame_preview(
+                    RegionRef("element_set", str(key))
+                )
             return
         beam_frame_target: RegionRef | int | None = None
         if kind == "element":
             beam_frame_target = int(key)
-        elif kind == "element_set":
-            beam_frame_target = RegionRef("element_set", str(key))
         elif kind == "assignment":
             assignment = self.document.assignments[int(key)]
             beam_frame_target = RegionRef(

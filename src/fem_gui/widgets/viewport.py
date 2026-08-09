@@ -95,6 +95,12 @@ _TYPED_RESULT_GRID_NAME = "typed_result_grid"
 _LINE_ELEMENT_WIDTH = 5
 _LINE_NODE_POINT_SIZE = 11
 _GRAVITY_SYMBOL_COLOR = "#FFD400"
+_ANALYSIS_SCOPE_COLOR = "#EF4444"
+_ANALYSIS_SCOPE_ACTOR_NAMES = (
+    "analysis_scope_fill",
+    "analysis_scope_edges",
+    "analysis_scope_points",
+)
 
 
 class _SelectionRubberBand:
@@ -4013,6 +4019,7 @@ class FEMViewport(QWidget):
                 "geometry_edges",
                 "geometry_points",
                 "geometry_selection",
+                "geometry_scope_edges",
             ):
                 self._remove_actor(name)
         else:
@@ -4138,6 +4145,7 @@ class FEMViewport(QWidget):
             "geometry_edges",
             "geometry_points",
             "geometry_selection",
+            "geometry_scope_edges",
         )
         had_visible_overlay = any(
             name in self._actors for name in (*overlay_names, "preselection")
@@ -4336,12 +4344,33 @@ class FEMViewport(QWidget):
         }
         styles: dict[str, dict[str, Any]] = {
             "node": {
-                "point_size": 13,
+                "point_size": 14,
                 "render_points_as_spheres": True,
+                "show_edges": False,
             },
-            "element": {"style": "wireframe", "line_width": 3},
-            "edge": {"line_width": 5},
-            "face": {"opacity": 0.8},
+            "element": (
+                {
+                    "style": "wireframe",
+                    "line_width": 6,
+                    "render_lines_as_tubes": True,
+                    "show_edges": False,
+                }
+                if self._is_line_mesh()
+                else {
+                    "opacity": 0.20,
+                    "show_edges": False,
+                }
+            ),
+            "edge": {
+                "line_width": 6,
+                "render_lines_as_tubes": True,
+                "show_edges": False,
+            },
+            "face": {
+                "opacity": 0.20,
+                "show_edges": True,
+                "line_width": 4,
+            },
         }
         for kind, (dataset, association) in sources.items():
             if dataset is None:
@@ -4374,8 +4403,7 @@ class FEMViewport(QWidget):
             actor_name = f"mesh_scope_selection_{kind}"
             actor = self._plotter.add_mesh(
                 algorithm,
-                color="#f5a623",
-                show_edges=False,
+                color=_ANALYSIS_SCOPE_COLOR,
                 show_scalar_bar=False,
                 name=actor_name,
                 reset_camera=False,
@@ -4689,8 +4717,11 @@ class FEMViewport(QWidget):
     def clear_selection(self) -> None:
         visual_names = {
             "selection",
+            "set_highlight",
             "geometry_selection",
+            "geometry_scope_edges",
             "preselection",
+            *_ANALYSIS_SCOPE_ACTOR_NAMES,
         }
         had_mesh_scope_selection = any(
             pipeline.selected_indices
@@ -4705,7 +4736,10 @@ class FEMViewport(QWidget):
         self._selected_id = None
         self._selection_highlight_visible = True
         self._remove_actor("selection")
+        self._remove_actor("set_highlight")
         self._remove_actor("geometry_selection")
+        self._remove_actor("geometry_scope_edges")
+        self._clear_analysis_scope_highlight(render=False)
         self._clear_mesh_scope_highlight(schedule_render=False)
         self._clear_beam_frame_preview(render=False)
         self._clear_preselection(render=False)
@@ -4812,9 +4846,12 @@ class FEMViewport(QWidget):
     def highlight_geometry_entities(
         self,
         references: Iterable[LogicalEntityRef],
+        *,
+        scope_style: bool = False,
     ) -> None:
         """Map logical refs back to every matching preview display cell."""
         self._remove_actor("geometry_selection")
+        self._remove_actor("geometry_scope_edges")
         self._clear_beam_frame_preview(render=False)
         raw_references = tuple(references)
         if any(
@@ -4871,7 +4908,10 @@ class FEMViewport(QWidget):
                     dtype=float,
                 )[np.asarray(indices, dtype=np.int64)]
             )
-            kwargs = {"point_size": 13, "render_points_as_spheres": True}
+            kwargs = {
+                "point_size": 14 if scope_style else 13,
+                "render_points_as_spheres": True,
+            }
         elif kind == "geometry_edge" and self._geometry_preview_edges is not None:
             ids = np.asarray(
                 self._geometry_preview_edges.cell_data["geometry_pick_id"],
@@ -4881,7 +4921,14 @@ class FEMViewport(QWidget):
             if not len(cells):
                 return
             data = self._geometry_preview_edges.extract_cells(cells)
-            kwargs = {"line_width": 5}
+            kwargs = {
+                "line_width": 6 if scope_style else 5,
+                **(
+                    {"render_lines_as_tubes": True}
+                    if scope_style
+                    else {}
+                ),
+            }
         elif kind == "geometry_face" and self._geometry_preview_surface is not None:
             ids = np.asarray(
                 self._geometry_preview_surface.cell_data["geometry_pick_id"],
@@ -4891,7 +4938,7 @@ class FEMViewport(QWidget):
             if not len(cells):
                 return
             data = self._geometry_preview_surface.extract_cells(cells)
-            kwargs = {"opacity": 0.8}
+            kwargs = {"opacity": 0.20 if scope_style else 0.8}
         elif kind == "geometry_body":
             if self._geometry_preview_surface is not None:
                 if (
@@ -4910,7 +4957,7 @@ class FEMViewport(QWidget):
                     if not len(cells):
                         return
                     data = self._geometry_preview_surface.extract_cells(cells)
-                kwargs = {"opacity": 0.45}
+                kwargs = {"opacity": 0.12 if scope_style else 0.45}
             elif (
                 self._geometry_preview is not None
                 and self._geometry_preview.topological_dimension == 1
@@ -4926,19 +4973,58 @@ class FEMViewport(QWidget):
                 if not len(cells):
                     return
                 data = self._geometry_preview_edges.extract_cells(cells)
-                kwargs = {"line_width": 6}
+                kwargs = {
+                    "line_width": 6,
+                    **(
+                        {"render_lines_as_tubes": True}
+                        if scope_style
+                        else {}
+                    ),
+                }
         else:
             return
         self._actors["geometry_selection"] = self._plotter.add_mesh(
             data,
-            color="#f5a623",
+            color=(
+                _ANALYSIS_SCOPE_COLOR
+                if scope_style
+                else "#f5a623"
+            ),
             show_edges=False,
             show_scalar_bar=False,
+            pickable=False,
             name="geometry_selection",
             reset_camera=False,
             **kwargs,
         )
         self._offset_highlight_actor(self._actors["geometry_selection"])
+        if scope_style and kind in {"geometry_face", "geometry_body"}:
+            try:
+                scope_edges = data.extract_surface(
+                    algorithm="dataset_surface",
+                ).extract_feature_edges(
+                    boundary_edges=True,
+                    non_manifold_edges=True,
+                    feature_edges=kind == "geometry_body",
+                    manifold_edges=False,
+                    feature_angle=30.0,
+                )
+            except (AttributeError, TypeError, ValueError):
+                scope_edges = None
+            if int(getattr(scope_edges, "n_cells", 0)) > 0:
+                actor = self._plotter.add_mesh(
+                    scope_edges,
+                    color=_ANALYSIS_SCOPE_COLOR,
+                    line_width=4,
+                    render_lines_as_tubes=True,
+                    lighting=False,
+                    show_scalar_bar=False,
+                    pickable=False,
+                    name="geometry_scope_edges",
+                    reset_camera=False,
+                )
+                self._actors["geometry_scope_edges"] = actor
+                self._offset_highlight_actor(actor)
         self._update_pickable_actors()
         self._render()
 
@@ -4997,6 +5083,7 @@ class FEMViewport(QWidget):
     def highlight_node(self, node_id: int) -> None:
         if self._geometry is None or node_id not in self._geometry.node_id_to_point_index:
             return
+        self._clear_analysis_scope_highlight(render=False)
         index = self._geometry.node_id_to_point_index[node_id]
         self._selected_kind = "node"
         self._selected_id = int(node_id)
@@ -5021,6 +5108,7 @@ class FEMViewport(QWidget):
     def highlight_element(self, element_id: int) -> None:
         if self._geometry is None or element_id not in self._geometry.element_id_to_cell_index:
             return
+        self._clear_analysis_scope_highlight(render=False)
         index = self._geometry.element_id_to_cell_index[element_id]
         self._selected_kind = "element"
         self._selected_id = int(element_id)
@@ -5043,6 +5131,7 @@ class FEMViewport(QWidget):
         if self._geometry is None or _pyvista is None or self._plotter is None:
             return
         indices = [self._geometry.node_id_to_point_index[node_id] for node_id in node_ids if node_id in self._geometry.node_id_to_point_index]
+        self._clear_analysis_scope_highlight(render=False)
         self._remove_actor("set_highlight")
         self._clear_beam_frame_preview(render=False)
         if indices:
@@ -5069,6 +5158,7 @@ class FEMViewport(QWidget):
         if self._geometry is None or self._pick_grid is None or self._plotter is None:
             return
         indices = [self._geometry.element_id_to_cell_index[element_id] for element_id in element_ids if element_id in self._geometry.element_id_to_cell_index]
+        self._clear_analysis_scope_highlight(render=False)
         self._remove_actor("set_highlight")
         self._clear_beam_frame_preview(render=False)
         if indices:
@@ -5092,6 +5182,7 @@ class FEMViewport(QWidget):
         if self._geometry is None or _pyvista is None or self._plotter is None:
             return
         connectivity: list[int] = []
+        self._clear_analysis_scope_highlight(render=False)
         self._clear_beam_frame_preview(render=False)
         for member in members:
             indices = [
@@ -5117,6 +5208,219 @@ class FEMViewport(QWidget):
             **kwargs,
         )
         self._render()
+
+    def highlight_analysis_scope(
+        self,
+        kind: str,
+        *,
+        node_ids: tuple[int, ...] = (),
+        element_ids: tuple[int, ...] = (),
+        members: tuple[Any, ...] = (),
+    ) -> None:
+        """Highlight one boundary/load scope with a consistent red overlay."""
+
+        if kind not in {"node", "edge", "surface", "element", "model"}:
+            raise ValueError(f"unsupported analysis scope kind: {kind}")
+        self._clear_analysis_scope_highlight(render=False)
+        self._remove_actor("set_highlight")
+        self._clear_beam_frame_preview(render=False)
+        if (
+            self._geometry is None
+            or self._plotter is None
+            or _pyvista is None
+        ):
+            return
+        if kind == "node":
+            self._add_analysis_node_scope(node_ids)
+        elif kind in {"edge", "surface"}:
+            self._add_analysis_geometric_scope(kind, members)
+        else:
+            self._add_analysis_element_scope(
+                element_ids,
+                whole_model=kind == "model",
+            )
+        self._update_pickable_actors()
+        self._render()
+
+    def _clear_analysis_scope_highlight(self, *, render: bool) -> bool:
+        changed = any(name in self._actors for name in _ANALYSIS_SCOPE_ACTOR_NAMES)
+        for name in _ANALYSIS_SCOPE_ACTOR_NAMES:
+            self._remove_actor(name)
+        if changed and render:
+            self._render()
+        return changed
+
+    def _add_analysis_scope_actor(
+        self,
+        name: str,
+        dataset: Any,
+        **kwargs: Any,
+    ) -> None:
+        actor = self._plotter.add_mesh(
+            dataset,
+            color=_ANALYSIS_SCOPE_COLOR,
+            lighting=False,
+            pickable=False,
+            name=name,
+            reset_camera=False,
+            **kwargs,
+        )
+        self._actors[name] = actor
+        self._offset_highlight_actor(actor)
+
+    def _add_analysis_node_scope(self, node_ids: tuple[int, ...]) -> None:
+        indices = [
+            self._geometry.node_id_to_point_index[node_id]
+            for node_id in node_ids
+            if node_id in self._geometry.node_id_to_point_index
+        ]
+        if not indices:
+            return
+        result_points = self._typed_result_node_points(
+            tuple(
+                int(node_id)
+                for node_id in node_ids
+                if node_id in self._geometry.node_id_to_point_index
+            )
+        )
+        points = (
+            self._model_display_points()[indices]
+            if result_points is None
+            else result_points
+        )
+        self._add_analysis_scope_actor(
+            "analysis_scope_points",
+            _pyvista.PolyData(points),
+            point_size=14,
+            render_points_as_spheres=True,
+        )
+
+    def _add_analysis_geometric_scope(
+        self,
+        kind: str,
+        members: tuple[Any, ...],
+    ) -> None:
+        polygons: list[tuple[int, ...]] = []
+        for member in members:
+            indices = tuple(
+                self._geometry.node_id_to_point_index[int(node_id)]
+                for node_id in member.node_ids
+                if int(node_id) in self._geometry.node_id_to_point_index
+            )
+            if len(indices) >= (3 if kind == "surface" else 2):
+                polygons.append(indices)
+        if not polygons:
+            return
+        points = self._model_display_points()
+        if kind == "edge":
+            lines = np.asarray(
+                [value for indices in polygons for value in (len(indices), *indices)],
+                dtype=np.int64,
+            )
+            data = _pyvista.PolyData(points, lines=lines)
+            self._add_analysis_scope_actor(
+                "analysis_scope_edges",
+                data,
+                line_width=6,
+                render_lines_as_tubes=True,
+            )
+            return
+        faces = np.asarray(
+            [value for indices in polygons for value in (len(indices), *indices)],
+            dtype=np.int64,
+        )
+        region = _pyvista.PolyData(points, faces=faces)
+        self._add_analysis_scope_actor(
+            "analysis_scope_fill",
+            region,
+            opacity=0.20,
+            show_edges=False,
+        )
+        boundary = self._analysis_surface_boundary_lines(polygons)
+        if boundary:
+            edges = _pyvista.PolyData(
+                points,
+                lines=np.asarray(boundary, dtype=np.int64),
+            )
+            self._add_analysis_scope_actor(
+                "analysis_scope_edges",
+                edges,
+                line_width=4,
+                render_lines_as_tubes=True,
+            )
+
+    @staticmethod
+    def _analysis_surface_boundary_lines(
+        polygons: list[tuple[int, ...]],
+    ) -> list[int]:
+        counts: dict[tuple[int, int], int] = {}
+        directions: dict[tuple[int, int], tuple[int, int]] = {}
+        for polygon in polygons:
+            for start, end in zip(polygon, (*polygon[1:], polygon[0])):
+                key = (min(start, end), max(start, end))
+                counts[key] = counts.get(key, 0) + 1
+                directions[key] = (start, end)
+        lines: list[int] = []
+        for key, count in counts.items():
+            if count == 1:
+                lines.extend((2, *directions[key]))
+        return lines
+
+    def _add_analysis_element_scope(
+        self,
+        element_ids: tuple[int, ...],
+        *,
+        whole_model: bool,
+    ) -> None:
+        if self._pick_grid is None:
+            return
+        visible_ids = tuple(
+            int(element_id)
+            for element_id in element_ids
+            if element_id in self._geometry.element_id_to_cell_index
+        )
+        if not visible_ids:
+            return
+        selected = self._typed_result_element_cells(visible_ids)
+        if selected is None:
+            selected = self._pick_grid.extract_cells([
+                self._geometry.element_id_to_cell_index[element_id]
+                for element_id in visible_ids
+            ])
+        if self._is_line_mesh():
+            self._add_analysis_scope_actor(
+                "analysis_scope_edges",
+                selected,
+                style="wireframe",
+                line_width=6,
+                render_lines_as_tubes=True,
+            )
+            return
+        self._add_analysis_scope_actor(
+            "analysis_scope_fill",
+            selected,
+            opacity=0.12 if whole_model else 0.20,
+            show_edges=False,
+        )
+        try:
+            feature_edges = selected.extract_surface(
+                algorithm="dataset_surface",
+            ).extract_feature_edges(
+                boundary_edges=True,
+                non_manifold_edges=True,
+                feature_edges=True,
+                manifold_edges=False,
+                feature_angle=30.0,
+            )
+        except (AttributeError, TypeError, ValueError):
+            return
+        if int(getattr(feature_edges, "n_cells", 0)) > 0:
+            self._add_analysis_scope_actor(
+                "analysis_scope_edges",
+                feature_edges,
+                line_width=4,
+                render_lines_as_tubes=True,
+            )
 
     def _effective_beam_frame_report(
         self,
@@ -6612,6 +6916,7 @@ class FEMViewport(QWidget):
         self._pick_locators.clear()
         self._clear_preselection(render=False)
         self._remove_actor("set_highlight")
+        self._clear_analysis_scope_highlight(render=False)
         self._remove_actor("selection")
         base = self._actors.get("mesh_surface")
         if base is not None:
@@ -6952,6 +7257,7 @@ class FEMViewport(QWidget):
     def _refresh_geometry_dependent_layers(self, *, render: bool = True) -> None:
         self._remove_actor("element_edges")
         self._remove_actor("set_highlight")
+        self._clear_analysis_scope_highlight(render=False)
         if self._show_edges:
             self._add_element_edges_layer()
         self._refresh_node_layer(render=False)

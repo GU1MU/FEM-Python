@@ -325,6 +325,33 @@ def test_load_dialog_can_edit_an_existing_distributed_load():
     assert load.vector == (2.0, -3.0)
 
 
+def test_load_dialog_uses_the_shared_analysis_category_scope_form_order():
+    _application()
+    dialog = LoadDialog(
+        ["Load"],
+        _regions("node_set", "Nodes"),
+        _regions("edge", "Loaded"),
+        _regions("surface", "Surface"),
+        3,
+        line_regions=_regions("element_set", "Line"),
+        body_regions=_regions("element_set", "Body"),
+    )
+
+    assert dialog.form.getWidgetPosition(dialog.step_combo)[0] == 0
+    assert dialog.form.getWidgetPosition(dialog.kind_combo)[0] == 1
+    assert dialog.form.getWidgetPosition(dialog.region_widget)[0] == 2
+    assert dialog.form.getWidgetPosition(dialog.load_type_combo)[0] == 3
+    assert dialog.form.labelForField(dialog.step_combo).text() == "分析步"
+    assert dialog.form.labelForField(dialog.kind_combo).text() == "类别"
+    assert dialog.form.labelForField(dialog.region_widget).text() == "作用域"
+    assert dialog.form.labelForField(dialog.load_type_combo).text() == "形式"
+    for kind in ("node", "edge", "surface", "line", "body"):
+        dialog.kind_combo.setCurrentIndex(dialog.kind_combo.findData(kind))
+        assert dialog.form.isRowVisible(dialog.region_widget)
+    dialog.kind_combo.setCurrentIndex(dialog.kind_combo.findData("gravity"))
+    assert not dialog.form.isRowVisible(dialog.region_widget)
+
+
 def test_edge_load_editor_refreshes_only_after_dialog_construction(
     monkeypatch,
 ):
@@ -382,6 +409,22 @@ def test_load_dialog_creates_global_gravity_without_a_named_region():
 
     assert step_name == "Load"
     assert load == GravityLoad((0.0, 0.0, -9.81))
+
+
+def test_load_dialog_hides_scope_when_editing_targeted_legacy_gravity():
+    _application()
+    dialog = LoadDialog(
+        ["Load"],
+        [],
+        [],
+        [],
+        3,
+        spatial_dimensions=3,
+        current=GravityLoad((0.0, 0.0, -9.81), "Domain"),
+    )
+
+    assert dialog.kind_combo.currentData() == "gravity"
+    assert not dialog.form.isRowVisible(dialog.region_widget)
 
 
 def test_load_dialog_keeps_gravity_and_distributed_vectors_separate():

@@ -137,9 +137,9 @@ def test_catalog_order_typed_association_and_descriptor_components_are_exact(
     assert dialog.field_combo.currentText() == "位移 U"
     assert "（就绪）" not in dialog.field_combo.currentText()
     assert not hasattr(dialog, "availability_label")
-    assert "字段状态：" not in {
-        label.text() for label in dialog.findChildren(QLabel)
-    }
+    labels = {label.text() for label in dialog.findChildren(QLabel)}
+    assert "字段状态" not in labels
+    assert all("：" not in label for label in labels)
     assert "关闭" not in {
         button.text() for button in dialog.findChildren(QPushButton)
     }

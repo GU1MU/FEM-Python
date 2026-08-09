@@ -51,7 +51,11 @@ from fem.core.model import (
 )
 from fem.steps.factory import static
 
-from .dialogs import CompactDoubleSpinBox, configure_form_layout
+from .dialogs import (
+    CompactDoubleSpinBox,
+    configure_form_layout,
+    normalize_dialog_message,
+)
 
 
 def _value(parent: QDialog, value: float = 0.0) -> QDoubleSpinBox:
@@ -119,14 +123,16 @@ def _authoring_candidate_message(decision: AuthoringCapability) -> str:
         raise TypeError("candidate decision must be AuthoringCapability")
     diagnostics = decision.diagnostics
     if diagnostics:
-        return "\n".join(
-            (
-                f"[{getattr(item, 'code', 'authoring.unavailable')}] "
-                f"{getattr(item, 'message', str(item))}"
+        return normalize_dialog_message(
+            "\n".join(
+                (
+                    f"[{getattr(item, 'code', 'authoring.unavailable')}] "
+                    f"{getattr(item, 'message', str(item))}"
+                )
+                for item in diagnostics
             )
-            for item in diagnostics
         )
-    return f"当前候选状态为 {decision.status.value}；只有 ENABLED 才可保存。"
+    return f"当前候选状态为 {decision.status.value}；只有 ENABLED 才可保存"
 
 
 class StaticStepDialog(QDialog):
@@ -474,10 +480,10 @@ class LoadDialog(QDialog):
         self._active_vector_kind: str | None = None
         self.form = QFormLayout()
         configure_form_layout(self.form)
-        self.form.addRow("载荷类别", self.kind_combo)
-        self.form.addRow("选择作用域", self.region_widget)
         self.form.addRow("分析步", self.step_combo)
-        self.form.addRow("载荷形式", self.load_type_combo)
+        self.form.addRow("类别", self.kind_combo)
+        self.form.addRow("作用域", self.region_widget)
+        self.form.addRow("形式", self.load_type_combo)
         self.form.addRow("坐标系", self.coordinate_system_combo)
         self.local_axis_label = QLabel(
             "局部（Beam 已解析局部坐标）",
@@ -652,7 +658,7 @@ class LoadDialog(QDialog):
         pressure = self.load_type_combo.currentData() == "pressure"
         self.form.setRowVisible(
             self.region_widget,
-            not gravity or self._gravity_target is not None,
+            not gravity,
         )
         self.region_combo.setEnabled(not gravity)
         self.scope_pick_button.setVisible(not gravity)
@@ -768,7 +774,9 @@ class LoadDialog(QDialog):
             step_name, candidate = self.definition()
             decision = self.candidate_decision(candidate, step_name)
         except (KeyError, TypeError, ValueError) as error:
-            self.candidate_diagnostic_label.setText(str(error))
+            self.candidate_diagnostic_label.setText(
+                normalize_dialog_message(error)
+            )
             ok_button.setEnabled(False)
             return
         enabled = _authoring_candidate_enabled(decision)
@@ -783,7 +791,7 @@ class LoadDialog(QDialog):
         try:
             step_name, candidate = self.definition()
         except (TypeError, ValueError) as error:
-            QMessageBox.warning(self, "载荷", str(error))
+            QMessageBox.warning(self, "载荷", normalize_dialog_message(error))
             return
         if (
             isinstance(candidate, LineLoad)
@@ -794,7 +802,9 @@ class LoadDialog(QDialog):
                 QMessageBox.warning(
                     self,
                     "边力",
-                    _authoring_candidate_message(decision),
+                    normalize_dialog_message(
+                        _authoring_candidate_message(decision)
+                    ),
                 )
                 return
         super().accept()
@@ -1518,7 +1528,11 @@ class AnalysisDefinitionManagerDialog(QDialog):
             try:
                 updated = dialog.step()
             except ValueError as error:
-                QMessageBox.warning(self, "分析定义", str(error))
+                QMessageBox.warning(
+                    self,
+                    "分析定义",
+                    normalize_dialog_message(error),
+                )
                 return
             if any(
                 index != step_index
@@ -1528,7 +1542,9 @@ class AnalysisDefinitionManagerDialog(QDialog):
                 QMessageBox.warning(
                     self,
                     "分析定义",
-                    f"分析步名称已存在：{updated.name}",
+                    normalize_dialog_message(
+                        f"分析步名称已存在：{updated.name}"
+                    ),
                 )
                 return
             step.name = updated.name
@@ -1566,7 +1582,11 @@ class AnalysisDefinitionManagerDialog(QDialog):
             try:
                 target_step, values = dialog.definitions()
             except ValueError as error:
-                QMessageBox.warning(self, "分析定义", str(error))
+                QMessageBox.warning(
+                    self,
+                    "分析定义",
+                    normalize_dialog_message(error),
+                )
                 return
             if current.name is not None:
                 values = tuple(
@@ -1677,7 +1697,11 @@ class AnalysisDefinitionManagerDialog(QDialog):
             try:
                 target_step, value = dialog.definition()
             except ValueError as error:
-                QMessageBox.warning(self, "分析定义", str(error))
+                QMessageBox.warning(
+                    self,
+                    "分析定义",
+                    normalize_dialog_message(error),
+                )
                 return
             if getattr(current, "name", None) is not None:
                 value = replace(value, name=current.name)
@@ -1690,7 +1714,9 @@ class AnalysisDefinitionManagerDialog(QDialog):
                     QMessageBox.warning(
                         self,
                         "分析定义",
-                        _authoring_candidate_message(decision),
+                        normalize_dialog_message(
+                            _authoring_candidate_message(decision)
+                        ),
                     )
                     return
             setattr(

@@ -1068,7 +1068,7 @@ def test_main_window_commits_strict_sketch_only_on_finish(monkeypatch) -> None:
     window.start_sketch_geometry()
     controller = window._sketch_editor_controller
     assert controller is not None
-    assert prompts == [("新建二维草图", "部件名称：", "部件-1")]
+    assert prompts == [("新建二维草图", "部件名称", "部件-1")]
     assert window.document.geometry_recipe is None
     assert window.document.parts == ()
     assert window.sketch_editor_panel.isHidden() is False

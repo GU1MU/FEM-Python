@@ -973,6 +973,114 @@ def test_typed_highlight_uses_all_matches_or_falls_back_for_partial_batches(
     viewport.close()
 
 
+def test_analysis_surface_scope_uses_red_transparent_fill_and_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _application()
+    monkeypatch.setattr(viewport_module, "_pyvista", pyvista)
+    points = np.asarray(
+        (
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 1.0, 0.0),
+            (0.0, 1.0, 0.0),
+        )
+    )
+    viewport = FEMViewport()
+    plotter = _Plotter()
+    viewport._plotter = plotter
+    viewport._geometry = _geometry(
+        points=points,
+        cells=((0, 1, 2, 3),),
+        node_ids=(10, 20, 30, 40),
+        element_ids=(101,),
+    )
+
+    viewport.highlight_analysis_scope(
+        "surface",
+        members=(SimpleNamespace(node_ids=(10, 20, 30, 40)),),
+    )
+
+    assert set(viewport._actors) == {
+        "analysis_scope_fill",
+        "analysis_scope_edges",
+    }
+    fill_options = plotter.mesh_calls[-2][1]
+    edge_options = plotter.mesh_calls[-1][1]
+    assert fill_options["color"] == "#EF4444"
+    assert fill_options["opacity"] == 0.20
+    assert fill_options["show_edges"] is False
+    assert fill_options["pickable"] is False
+    assert edge_options["color"] == "#EF4444"
+    assert edge_options["line_width"] == 4
+    assert edge_options["render_lines_as_tubes"] is True
+    viewport.close()
+
+
+def test_analysis_scope_switches_cleanly_and_global_model_avoids_wireframe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _application()
+    monkeypatch.setattr(viewport_module, "_pyvista", pyvista)
+    points = np.asarray(
+        (
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 1.0),
+        )
+    )
+    cells = ((0, 1, 2, 3),)
+    viewport = FEMViewport()
+    plotter = _Plotter()
+    viewport._plotter = plotter
+    viewport._geometry = _geometry(
+        points=points,
+        cells=cells,
+        node_ids=(10, 20, 30, 40),
+        element_ids=(101,),
+    )
+    viewport._pick_grid = _model_grid(
+        points=points,
+        cells=cells,
+        cell_types=(10,),
+        node_ids=(10, 20, 30, 40),
+        element_ids=(101,),
+    )
+
+    viewport.highlight_analysis_scope("node", node_ids=(10, 20))
+    assert set(viewport._actors) == {"analysis_scope_points"}
+    assert plotter.mesh_calls[-1][1]["color"] == "#EF4444"
+
+    viewport.highlight_analysis_scope(
+        "edge",
+        members=(SimpleNamespace(node_ids=(10, 40)),),
+    )
+    assert set(viewport._actors) == {"analysis_scope_edges"}
+    assert plotter.mesh_calls[-1][1]["line_width"] == 6
+
+    viewport.highlight_analysis_scope(
+        "model",
+        element_ids=(101,),
+    )
+    assert "analysis_scope_points" not in viewport._actors
+    fill_call = next(
+        options
+        for _dataset, options in reversed(plotter.mesh_calls)
+        if options["name"] == "analysis_scope_fill"
+    )
+    assert fill_call["opacity"] == 0.12
+    assert fill_call["show_edges"] is False
+    assert "style" not in fill_call
+
+    viewport.clear_selection()
+    assert not any(
+        name.startswith("analysis_scope_")
+        for name in viewport._actors
+    )
+    viewport.close()
+
+
 def test_typed_payload_refresh_clears_batch_and_restores_persistent_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

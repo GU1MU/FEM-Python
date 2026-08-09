@@ -97,11 +97,11 @@ class ViewportImageExportDialog(QDialog):
         self.transparent_background_check.setChecked(False)
         self.transparent_background_check.setEnabled(False)
 
-        form.addRow("保存路径：", path_layout)
-        form.addRow("导出质量：", self.quality_combo)
-        form.addRow("宽度：", self.width_spin)
-        form.addRow("高度：", self.height_spin)
-        form.addRow("背景：", self.transparent_background_check)
+        form.addRow("保存路径", path_layout)
+        form.addRow("导出质量", self.quality_combo)
+        form.addRow("宽度", self.width_spin)
+        form.addRow("高度", self.height_spin)
+        form.addRow("背景", self.transparent_background_check)
         layout.addLayout(form)
 
         self.buttons = QDialogButtonBox(

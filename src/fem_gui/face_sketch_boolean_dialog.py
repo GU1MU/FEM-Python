@@ -71,9 +71,9 @@ class FaceSketchBooleanDialog(QDialog):
         self.distance_edit.setAccessibleName("拉伸距离")
 
         form = QFormLayout()
-        form.addRow("操作：", self.operation_combo)
-        form.addRow("方向：", self.direction_combo)
-        form.addRow("距离：", self.distance_edit)
+        form.addRow("操作", self.operation_combo)
+        form.addRow("方向", self.direction_combo)
+        form.addRow("距离", self.distance_edit)
 
         self.profile_tree = QTreeWidget(self)
         self.profile_tree.setObjectName("faceSketchBooleanProfiles")
@@ -108,7 +108,7 @@ class FaceSketchBooleanDialog(QDialog):
         layout.addWidget(QLabel("材料轮廓", self))
         layout.addWidget(self.profile_tree)
         status_row = QHBoxLayout()
-        status_row.addWidget(QLabel("预览状态：", self))
+        status_row.addWidget(QLabel("预览状态", self))
         status_row.addWidget(self.preview_status, 1)
         layout.addLayout(status_row)
         layout.addWidget(buttons)

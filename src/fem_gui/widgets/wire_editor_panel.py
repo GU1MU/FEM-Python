@@ -337,7 +337,7 @@ class WireEditorPanel(QWidget):
         controller = self._controller
         if controller is None:
             self.finish_button.setEnabled(False)
-            self.finish_button.setToolTip("当前没有可完成的线体草图")
+            self.finish_button.setToolTip("完成线体创建")
             return
         if selected_point is None and selected_member is None:
             selection = controller.selection
@@ -402,15 +402,8 @@ class WireEditorPanel(QWidget):
         controller = self._controller
         if controller is None:
             return
-        diagnostics = controller.finish_diagnostics()
         self.finish_button.setEnabled(controller.can_finish)
-        if diagnostics:
-            self.finish_button.setToolTip(
-                "请先处理以下问题：\n"
-                + "\n".join(item.message for item in diagnostics)
-            )
-        else:
-            self.finish_button.setToolTip("完成线体创建")
+        self.finish_button.setToolTip("完成线体创建")
 
     def _set_status(self, message: str) -> None:
         self.statusChanged.emit(str(message))

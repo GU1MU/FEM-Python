@@ -104,6 +104,16 @@ class EntitySelection:
     element_ids: tuple[int, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class AnalysisScopeHighlight:
+    """Preserve an analysis definition's original scope for visualization."""
+
+    kind: str
+    node_ids: tuple[int, ...] = ()
+    element_ids: tuple[int, ...] = ()
+    members: tuple[Any, ...] = ()
+
+
 class InspectionService:
     """为一个 FEMModel 建立一次只读反向索引。"""
 
@@ -370,6 +380,118 @@ class InspectionService:
                 element_ids=self.target_element_ids(target)
             )
         return EntitySelection()
+
+    def analysis_scope_for(
+        self,
+        kind: str,
+        key: object,
+    ) -> AnalysisScopeHighlight:
+        """Resolve one boundary/load without flattening geometric scopes."""
+
+        collection_names = {
+            "boundary": "boundaries",
+            "cload": "cloads",
+            "surface_load": "surface_loads",
+            "edge_load": "edge_loads",
+            "line_load": "line_loads",
+            "body_load": "body_loads",
+            "gravity_load": "gravity_loads",
+        }
+        collection_name = collection_names.get(kind)
+        if collection_name is None:
+            raise KeyError(f"unsupported analysis scope kind: {kind}")
+        step_index, item_index = self._analysis_definition_indices(
+            collection_name,
+            key,
+        )
+        definition = tuple(
+            getattr(self.model.steps[step_index], collection_name)
+        )[item_index]
+
+        if kind == "boundary":
+            target_kind = displacement_target_kind(definition)
+            if target_kind == "node_set":
+                return AnalysisScopeHighlight(
+                    "node",
+                    node_ids=resolve_displacement_node_ids(
+                        self.model,
+                        definition,
+                    ),
+                )
+            return self._geometric_analysis_scope(
+                target_kind,
+                str(definition.target),
+            )
+        if kind == "cload":
+            return AnalysisScopeHighlight(
+                "node",
+                node_ids=self.target_node_ids(definition.target),
+            )
+        if kind == "surface_load":
+            return self._geometric_analysis_scope(
+                "surface",
+                str(definition.surface),
+            )
+        if kind == "edge_load":
+            return self._geometric_analysis_scope(
+                "edge",
+                str(definition.edge),
+            )
+        if kind in {"line_load", "body_load"}:
+            return AnalysisScopeHighlight(
+                "element",
+                element_ids=self.target_element_ids(definition.target),
+            )
+        if definition.target is None:
+            return AnalysisScopeHighlight(
+                "model",
+                element_ids=tuple(sorted(self.elements)),
+            )
+        return AnalysisScopeHighlight(
+            "element",
+            element_ids=self.target_element_ids(definition.target),
+        )
+
+    def _analysis_definition_indices(
+        self,
+        collection_name: str,
+        key: object,
+    ) -> tuple[int, int]:
+        if not isinstance(key, (tuple, list)) or len(key) != 2:
+            raise KeyError("analysis definition key must contain two items")
+        step_key, item_key = key
+        if type(step_key) is str and type(item_key) is str:
+            for step_index, step in enumerate(self.model.steps):
+                if step.name != step_key:
+                    continue
+                for item_index, item in enumerate(
+                    tuple(getattr(step, collection_name))
+                ):
+                    if getattr(item, "name", None) == item_key:
+                        return step_index, item_index
+            raise KeyError(f"analysis definition does not exist: {key!r}")
+        try:
+            step_index = int(step_key)
+            item_index = int(item_key)
+            tuple(getattr(self.model.steps[step_index], collection_name))[
+                item_index
+            ]
+        except (IndexError, TypeError, ValueError) as exc:
+            raise KeyError(f"analysis definition does not exist: {key!r}") from exc
+        return step_index, item_index
+
+    def _geometric_analysis_scope(
+        self,
+        kind: str,
+        name: str,
+    ) -> AnalysisScopeHighlight:
+        if kind == "surface":
+            members = tuple(self.model.surfaces[name].faces)
+        elif kind == "edge":
+            members = tuple(self.model.edges[name].edges)
+        else:
+            raise ValueError(f"unsupported geometric analysis scope: {kind}")
+        return AnalysisScopeHighlight(kind, members=members)
 
     def target_element_ids(self, target: str | int) -> tuple[int, ...]:
         if isinstance(target, int):

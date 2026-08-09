@@ -72,6 +72,10 @@ def test_job_submit_dialog_uses_a_chinese_default_name_without_description():
     assert dialog.job_name == "作业-1"
     assert dialog.step_name == "分析步-1"
     assert dialog.findChild(QLabel, "jobSessionNotice") is None
+    assert all(
+        "：" not in label.text() and "。" not in label.text()
+        for label in dialog.findChildren(QLabel)
+    )
     dialog.close()
 
 

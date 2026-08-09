@@ -519,8 +519,9 @@ def test_phase0_result_actions_replace_reload_close_in_project_surfaces():
         "action_open_project",
         "action_save_project",
         "action_open",
-        "action_save_result",
         "action_open_result",
+        "action_save_result",
+        "action_model_info",
     ]
     window.close()
     application.processEvents()

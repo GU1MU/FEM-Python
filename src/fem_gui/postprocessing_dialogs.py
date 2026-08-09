@@ -50,7 +50,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .dialogs import CompactDoubleSpinBox, configure_form_layout
+from .dialogs import (
+    CompactDoubleSpinBox,
+    configure_form_layout,
+    normalize_dialog_message,
+)
 from .result_presentation import (
     result_field_is_visible,
     visible_result_fields,
@@ -163,12 +167,12 @@ class TypedResultDisplayDialog(QDialog):
         self.field_combo.setCurrentIndex(
             self.field_combo.findData(current_selection.field_key)
         )
-        form.addRow("结果步：", self.step_combo)
-        form.addRow("几何形状：", self.shape_combo)
+        form.addRow("结果步", self.step_combo)
+        form.addRow("几何形状", self.shape_combo)
         form.addRow(self.contour_checkbox)
-        form.addRow("场变量：", self.field_combo)
-        form.addRow("分量：", self.component_combo)
-        form.addRow("字段状态：", self.availability_label)
+        form.addRow("场变量", self.field_combo)
+        form.addRow("分量", self.component_combo)
+        form.addRow("字段状态", self.availability_label)
         layout.addLayout(form)
 
         self.scale_group = QGroupBox("变形比例", self)
@@ -336,7 +340,9 @@ class TypedResultDisplayDialog(QDialog):
     def _refresh_availability(self) -> None:
         availability = self.current_availability()
         self.availability_label.setText(
-            _typed_result_display_availability_text(availability)
+            normalize_dialog_message(
+                _typed_result_display_availability_text(availability)
+            )
         )
         can_submit = availability.state is not FieldState.UNAVAILABLE
         self.apply_button.setEnabled(can_submit)
@@ -867,7 +873,7 @@ class ContourSettingsDialog(QDialog):
 
     def apply(self) -> None:
         if self.manual_range.isChecked() and self.minimum.value() >= self.maximum.value():
-            QMessageBox.warning(self, "云图设置", "手动范围的最小值必须小于最大值。")
+            QMessageBox.warning(self, "云图设置", "手动范围的最小值必须小于最大值")
             return
         self.applyRequested.emit(self.settings())
 
@@ -931,12 +937,12 @@ class TypedResultQueryDialog(QDialog):
         self.field_combo = QComboBox(self)
         self.component_combo = QComboBox(self)
         self.ids_edit = QLineEdit(self)
-        self.ids_edit.setPlaceholderText("留空查询全部；例如：1, 3, 5-8")
-        form.addRow("结果步：", self.step_combo)
-        form.addRow("对象类型：", self.association_combo)
-        form.addRow("场变量：", self.field_combo)
-        form.addRow("分量：", self.component_combo)
-        form.addRow("对象编号：", self.ids_edit)
+        self.ids_edit.setPlaceholderText("留空查询全部；例如 1, 3, 5-8")
+        form.addRow("结果步", self.step_combo)
+        form.addRow("对象类型", self.association_combo)
+        form.addRow("场变量", self.field_combo)
+        form.addRow("分量", self.component_combo)
+        form.addRow("对象编号", self.ids_edit)
         layout.addLayout(form)
 
         command_row = QHBoxLayout()
@@ -1025,7 +1031,9 @@ class TypedResultQueryDialog(QDialog):
 
         if type(message) is not str:
             raise TypeError("message must be a string")
-        self.result_summary.setText(message.strip() or "结果查询未完成")
+        self.result_summary.setText(
+            normalize_dialog_message(message.strip() or "结果查询未完成")
+        )
 
     def current_availability(self) -> FieldAvailability:
         """返回当前字段的 typed catalog entry。"""
@@ -1053,7 +1061,7 @@ class TypedResultQueryDialog(QDialog):
 
         availability = self.current_availability()
         if availability.state is FieldState.UNAVAILABLE:
-            raise ValueError("当前字段不可查询。")
+            raise ValueError("当前字段不可查询")
         selection = self.current_selection()
         mode = self.association_combo.currentData()
         if type(mode) is not _TypedQueryMode:
@@ -1088,7 +1096,11 @@ class TypedResultQueryDialog(QDialog):
             selection = self.current_selection()
             query = self.current_query()
         except (RuntimeError, ValueError) as error:
-            QMessageBox.warning(self, "查询结果", str(error))
+            QMessageBox.warning(
+                self,
+                "查询结果",
+                normalize_dialog_message(error),
+            )
             return
         self._last_query = query
         self.selectionRequested.emit(selection)

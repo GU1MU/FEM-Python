@@ -825,9 +825,22 @@ def test_geometry_pick_overlay_keeps_pick_data_without_rendering_over_mesh(
     assert plotter.calls == []
     assert viewport._geometry_preview_surface is not None
     assert viewport._geometry_preview_edges is not None
+    face = next(
+        reference
+        for reference in viewport._geometry_ref_to_pick_ids
+        if reference.kind == "face"
+    )
+    viewport.highlight_geometry_entities((face,), scope_style=True)
+    calls_by_name = {call["name"]: call for call in plotter.calls}
+    assert calls_by_name["geometry_selection"]["color"] == "#EF4444"
+    assert calls_by_name["geometry_selection"]["opacity"] == 0.20
+    assert calls_by_name["geometry_scope_edges"]["color"] == "#EF4444"
+    assert calls_by_name["geometry_scope_edges"]["line_width"] == 4
     viewport.set_selection_mode("geometry_face")
     viewport.hide_geometry_selection_overlay()
-    assert plotter.render_count == 0
+    assert plotter.render_count == 1
+    assert "geometry_selection" not in viewport._actors
+    assert "geometry_scope_edges" not in viewport._actors
     viewport.close()
 
 

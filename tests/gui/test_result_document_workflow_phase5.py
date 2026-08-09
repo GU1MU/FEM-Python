@@ -143,8 +143,8 @@ def test_result_actions_have_canonical_descriptors_and_visible_layout(tmp_path: 
         "action_open_project",
         "action_save_project",
         "action_open",
-        "action_save_result",
         "action_open_result",
+        "action_save_result",
     ]
     _wait_idle(window)
     window.close()
@@ -178,7 +178,7 @@ def test_open_result_path_installs_read_only_document_and_result_module(tmp_path
     assert window.actions["open_result"].isEnabled()
     assert window.actions["close"].isEnabled()
     assert not window.actions["reload"].isEnabled()
-    assert "截图" in window.actions["screenshot"].toolTip()
+    assert window.actions["screenshot"].toolTip() == "导出视口"
     assert not window.actions["save_project"].isEnabled()
     assert not window.actions["submit_job"].isEnabled()
     _wait_idle(window)

@@ -30,7 +30,7 @@ from fem_gui.visualization.model_adapter import build_model_geometry
 
 _RELOAD_LOSS_MESSAGE = (
     "此修改只保留在当前 Session；"
-    "重新加载原 INP 后会恢复源文件中的输出请求。"
+    "重新加载原 INP 后会恢复源文件中的输出请求"
 )
 
 

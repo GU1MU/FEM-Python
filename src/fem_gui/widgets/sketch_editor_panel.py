@@ -1232,7 +1232,7 @@ class SketchEditorPanel(QWidget):
                     self,
                     "删除草图点" if len(entity_ids) == 1 else "删除多个草图点",
                     (
-                        f"删除点 {', '.join(entity_ids)} 将同时删除依赖曲线：\n"
+                        f"删除点 {', '.join(entity_ids)} 将同时删除依赖曲线\n"
                         + "\n".join(dependent_ids)
                         + "\n\n是否继续？"
                     ),
@@ -2232,11 +2232,7 @@ class SketchEditorPanel(QWidget):
                 else "草图已形成有效闭合轮廓"
             )
             self.finish_button.setEnabled(controller.can_finish)
-            self.finish_button.setToolTip(
-                "完成草图"
-                if controller.can_finish
-                else "请先处理草图诊断"
-            )
+            self.finish_button.setToolTip("完成草图")
             self.undo_button.setEnabled(controller.can_undo)
             self.redo_button.setEnabled(controller.can_redo)
             associated_selection = (

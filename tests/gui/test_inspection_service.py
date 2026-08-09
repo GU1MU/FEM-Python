@@ -33,12 +33,22 @@ from fem.application.results import (
 from fem.core.mesh import Element3D, Mesh3D, Node3D
 from fem.core.model import (
     AnalysisStep,
+    BodyForce,
+    DisplacementConstraint,
+    Edge,
+    EdgeLoad,
+    ElementEdge,
+    ElementFace,
     ElementSet,
     FEMModel,
     GravityLoad,
     LineLoad,
     MaterialDefinition,
+    NodalLoad,
+    NodeSet,
     SectionAssignment,
+    Surface,
+    SurfaceLoad,
 )
 from fem.post.averaging import NodalAveragingPolicy
 from fem_gui.inspection_service import InspectionService
@@ -589,3 +599,123 @@ def test_global_gravity_uses_the_common_inspection_and_selection(gui_inp_path):
         "gravity_load",
         (step_index, 0),
     ).element_ids == tuple(sorted(service.elements))
+
+
+def test_analysis_scope_preserves_every_boundary_and_load_target_kind():
+    mesh = Mesh3D(
+        [
+            Node3D(1, 0.0, 0.0, 0.0),
+            Node3D(2, 1.0, 0.0, 0.0),
+            Node3D(3, 1.0, 1.0, 0.0),
+            Node3D(4, 0.0, 1.0, 0.0),
+            Node3D(5, 2.0, 0.0, 0.0),
+            Node3D(6, 2.0, 1.0, 0.0),
+        ],
+        [
+            Element3D(10, (1, 2, 3, 4), "Quad4", {}),
+            Element3D(20, (2, 5, 6, 3), "Quad4", {}),
+        ],
+        dofs_per_node=3,
+    )
+    edge_member = ElementEdge(10, 1, (1, 4))
+    face_member = ElementFace(20, 1, (2, 5, 6, 3))
+    step = AnalysisStep(
+        "Load",
+        boundaries=(
+            DisplacementConstraint("FIXED", 1, 3, name="Fixed nodes"),
+            DisplacementConstraint(
+                "LEFT",
+                1,
+                2,
+                target_kind="edge",
+                name="Fixed edge",
+            ),
+            DisplacementConstraint(
+                "LOADED_FACE",
+                3,
+                3,
+                target_kind="surface",
+                name="Fixed face",
+            ),
+        ),
+        cloads=(NodalLoad("FORCE_NODES", 1, 5.0, "Node force"),),
+        surface_loads=(
+            SurfaceLoad("LOADED_FACE", (0.0, -2.0, 0.0), name="Pressure"),
+        ),
+        edge_loads=(EdgeLoad("LEFT", (1.0, 0.0, 0.0), name="Edge force"),),
+        line_loads=(LineLoad("DOMAIN", (0.0, -1.0, 0.0), name="Line force"),),
+        body_loads=(BodyForce("PART", (0.0, -3.0, 0.0), name="Body force"),),
+        gravity_loads=(
+            GravityLoad((0.0, -9.81, 0.0), name="Global gravity"),
+            GravityLoad((0.0, -9.81, 0.0), "PART", "Part gravity"),
+        ),
+    )
+    model = FEMModel(
+        mesh,
+        node_sets={
+            "FIXED": NodeSet("FIXED", (1, 4)),
+            "FORCE_NODES": NodeSet("FORCE_NODES", (5, 6)),
+        },
+        element_sets={
+            "DOMAIN": ElementSet("DOMAIN", (10, 20)),
+            "PART": ElementSet("PART", (20,)),
+        },
+        surfaces={"LOADED_FACE": Surface("LOADED_FACE", (face_member,))},
+        edges={"LEFT": Edge("LEFT", (edge_member,))},
+        steps=[step],
+    )
+    service = InspectionService(model)
+
+    fixed_nodes = service.analysis_scope_for(
+        "boundary",
+        ("Load", "Fixed nodes"),
+    )
+    fixed_edge = service.analysis_scope_for(
+        "boundary",
+        ("Load", "Fixed edge"),
+    )
+    fixed_face = service.analysis_scope_for(
+        "boundary",
+        ("Load", "Fixed face"),
+    )
+    node_force = service.analysis_scope_for(
+        "cload",
+        ("Load", "Node force"),
+    )
+
+    assert (fixed_nodes.kind, fixed_nodes.node_ids) == ("node", (1, 4))
+    assert (fixed_edge.kind, fixed_edge.members) == ("edge", (edge_member,))
+    assert (fixed_face.kind, fixed_face.members) == ("surface", (face_member,))
+    assert (node_force.kind, node_force.node_ids) == ("node", (5, 6))
+    assert service.analysis_scope_for(
+        "surface_load",
+        ("Load", "Pressure"),
+    ).members == (face_member,)
+    assert service.analysis_scope_for(
+        "edge_load",
+        ("Load", "Edge force"),
+    ).members == (edge_member,)
+    assert service.analysis_scope_for(
+        "line_load",
+        ("Load", "Line force"),
+    ).element_ids == (10, 20)
+    assert service.analysis_scope_for(
+        "body_load",
+        ("Load", "Body force"),
+    ).element_ids == (20,)
+    global_gravity = service.analysis_scope_for(
+        "gravity_load",
+        ("Load", "Global gravity"),
+    )
+    part_gravity = service.analysis_scope_for(
+        "gravity_load",
+        ("Load", "Part gravity"),
+    )
+    assert (global_gravity.kind, global_gravity.element_ids) == (
+        "model",
+        (10, 20),
+    )
+    assert (part_gravity.kind, part_gravity.element_ids) == (
+        "element",
+        (20,),
+    )

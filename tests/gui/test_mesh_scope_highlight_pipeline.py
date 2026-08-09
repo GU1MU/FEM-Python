@@ -30,10 +30,12 @@ class _Plotter:
     def __init__(self) -> None:
         self.inner = pyvista.Plotter(off_screen=True)
         self.mesh_calls: list[str] = []
+        self.mesh_options: dict[str, dict[str, object]] = {}
         self.render_count = 0
 
     def add_mesh(self, dataset, **kwargs):
         self.mesh_calls.append(kwargs["name"])
+        self.mesh_options[kwargs["name"]] = dict(kwargs)
         return self.inner.add_mesh(dataset, **kwargs)
 
     def render(self) -> None:
@@ -81,6 +83,25 @@ def test_four_mesh_scope_kinds_reuse_actor_and_threshold_pipeline() -> None:
             "face",
         }
         assert len(plotter.mesh_calls) == 4
+        assert all(
+            options["color"] == "#EF4444"
+            for options in plotter.mesh_options.values()
+        )
+        assert plotter.mesh_options["mesh_scope_selection_node"][
+            "point_size"
+        ] == 14
+        assert plotter.mesh_options["mesh_scope_selection_element"][
+            "opacity"
+        ] == 0.20
+        assert plotter.mesh_options["mesh_scope_selection_edge"][
+            "line_width"
+        ] == 6
+        assert plotter.mesh_options["mesh_scope_selection_face"][
+            "opacity"
+        ] == 0.20
+        assert plotter.mesh_options["mesh_scope_selection_face"][
+            "line_width"
+        ] == 4
         actor_ids = {
             kind: id(pipeline.actor)
             for kind, pipeline in viewport._mesh_scope_highlight_pipelines.items()

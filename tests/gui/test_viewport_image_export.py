@@ -47,12 +47,13 @@ def test_export_dialog_defaults_to_two_times_current_viewport() -> None:
     assert not dialog.height_spin.isEnabled()
 
     labels = {label.text() for label in dialog.findChildren(QLabel)}
-    assert "宽度：" in labels
-    assert "高度：" in labels
-    assert "当前视口：" not in labels
-    assert "自定义宽度：" not in labels
-    assert "自定义高度：" not in labels
-    assert "输出尺寸：" not in labels
+    assert "宽度" in labels
+    assert "高度" in labels
+    assert all("：" not in label for label in labels)
+    assert "当前视口" not in labels
+    assert "自定义宽度" not in labels
+    assert "自定义高度" not in labels
+    assert "输出尺寸" not in labels
 
 
 @pytest.mark.parametrize(

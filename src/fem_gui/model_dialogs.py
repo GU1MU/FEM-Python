@@ -41,7 +41,11 @@ from fem.materials import (
     section_type_for_preset,
 )
 
-from .dialogs import CompactDoubleSpinBox, configure_form_layout
+from .dialogs import (
+    CompactDoubleSpinBox,
+    configure_form_layout,
+    normalize_dialog_message,
+)
 
 
 def _number(parent: QDialog, value: float, *, minimum: float = 0.0) -> QDoubleSpinBox:
@@ -237,7 +241,7 @@ class MaterialEditDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(self.behavior_table)
         layout.addLayout(controls)
-        hint = QLabel("双击材料行为，或选中后点击“编辑参数”。", self)
+        hint = QLabel("双击材料行为，或选中后点击“编辑参数”", self)
         layout.addWidget(hint)
         layout.addWidget(buttons)
         self.resize(420, 300)
@@ -442,7 +446,11 @@ class MaterialManagerDialog(QDialog):
             try:
                 self._store(dialog.material())
             except ValueError as error:
-                QMessageBox.warning(self, "材料", str(error))
+                QMessageBox.warning(
+                    self,
+                    "材料",
+                    normalize_dialog_message(error),
+                )
 
     def _edit(self) -> None:
         row = self._selected_row()
@@ -453,7 +461,11 @@ class MaterialManagerDialog(QDialog):
             try:
                 self._store(dialog.material(), row)
             except ValueError as error:
-                QMessageBox.warning(self, "材料", str(error))
+                QMessageBox.warning(
+                    self,
+                    "材料",
+                    normalize_dialog_message(error),
+                )
 
     def _delete(self) -> None:
         row = self._selected_row()
@@ -761,12 +773,12 @@ class SectionEditDialog(QDialog):
             self.name_edit.setEnabled(False)
             self.material_combo.setEnabled(False)
             self.limitation_label.setText(
-                "该导入截面类型暂不支持编辑，保存时将原样保留。"
+                "该导入截面类型暂不支持编辑，保存时将原样保留"
             )
             self.form.setRowVisible(self.limitation_label, True)
         elif self._unsupported_new_section:
             self.limitation_label.setText(
-                "当前模型能力未提供可创建的截面预设。"
+                "当前模型能力未提供可创建的截面预设"
             )
             self.form.setRowVisible(self.limitation_label, True)
         else:
@@ -782,7 +794,7 @@ class SectionEditDialog(QDialog):
             <= self.inner_radius_spin.value()
         )
         if invalid_hollow:
-            self.validation_label.setText("外半径必须大于内半径。")
+            self.validation_label.setText("外半径必须大于内半径")
         else:
             self.validation_label.clear()
         self.form.setRowVisible(self.validation_label, invalid_hollow)
@@ -860,12 +872,7 @@ class SectionManagerDialog(QDialog):
         layout.addLayout(controls)
         layout.addWidget(buttons)
         self.add_button.setEnabled(self._can_create)
-        if not authoring_enabled:
-            self.add_button.setToolTip("当前模型策略不允许新建截面。")
-        elif not self.materials:
-            self.add_button.setToolTip("请先创建材料。")
-        elif not self.section_presets:
-            self.add_button.setToolTip("当前模型能力没有可用的截面预设。")
+        self.add_button.setToolTip("新建")
         self.resize(500, 320)
         self._refresh()
 
@@ -927,7 +934,11 @@ class SectionManagerDialog(QDialog):
             try:
                 self._store(dialog.section())
             except ValueError as error:
-                QMessageBox.warning(self, "截面", str(error))
+                QMessageBox.warning(
+                    self,
+                    "截面",
+                    normalize_dialog_message(error),
+                )
 
     def _edit(self) -> None:
         row = self.table.currentRow()
@@ -944,7 +955,11 @@ class SectionManagerDialog(QDialog):
             try:
                 self._store(dialog.section(), row)
             except ValueError as error:
-                QMessageBox.warning(self, "截面", str(error))
+                QMessageBox.warning(
+                    self,
+                    "截面",
+                    normalize_dialog_message(error),
+                )
 
     def _delete(self) -> None:
         row = self.table.currentRow()
@@ -1194,7 +1209,11 @@ class RegionAssignmentDialog(QDialog):
             candidate = self.assignment()
             decision = self.candidate_decision(candidate)
         except (TypeError, ValueError) as error:
-            QMessageBox.warning(self, "截面分配", str(error))
+            QMessageBox.warning(
+                self,
+                "截面分配",
+                normalize_dialog_message(error),
+            )
             return
         if not self._decision_enabled(decision):
             self.orientation_diagnostic_label.setText(
@@ -1317,7 +1336,7 @@ class RegionAssignmentDialog(QDialog):
                 return
         self._conversion_message = (
             "当前区域的 compatibility frame 无法无损转换为一个统一的显式参考"
-            "方向；切换可能改变截面方向，请输入并预览后提交。"
+            "方向；切换可能改变截面方向，请输入并预览后提交"
         )
 
     def _selected_section_is_beam(self) -> bool:
@@ -1363,8 +1382,10 @@ class RegionAssignmentDialog(QDialog):
         )
         if explicit and not reference_valid:
             self.orientation_diagnostic_label.setText(
-                self._conversion_message
-                or "显式参考方向必须是非零的三个有限分量。"
+                normalize_dialog_message(
+                    self._conversion_message
+                    or "显式参考方向必须是非零的三个有限分量"
+                )
             )
         else:
             self.orientation_diagnostic_label.clear()
@@ -1398,7 +1419,9 @@ class RegionAssignmentDialog(QDialog):
             ).strip()
             text = f"[{code}] {message}" if code else message
             if remediation:
-                text += f"\n建议：{remediation}"
+                text += f"\n建议 {remediation}"
             if text:
                 lines.append(text)
-        return "\n".join(lines) or "当前截面分配不能提交。"
+        return normalize_dialog_message(
+            "\n".join(lines) or "当前截面分配不能提交"
+        )

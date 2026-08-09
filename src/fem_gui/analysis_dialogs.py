@@ -60,9 +60,9 @@ class JobSubmitDialog(QDialog):
         index = self.step_combo.findData(current_step)
         self.step_combo.setCurrentIndex(index if index >= 0 else 0)
         solver_type = QLabel("线性静力", self)
-        form.addRow("作业名称：", self.name_edit)
-        form.addRow("分析步：", self.step_combo)
-        form.addRow("求解类型：", solver_type)
+        form.addRow("作业名称", self.name_edit)
+        form.addRow("分析步", self.step_combo)
+        form.addRow("求解类型", solver_type)
         layout.addLayout(form)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok,

@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QLabel
 
-from fem_gui.dialogs import CompactDoubleSpinBox
+from fem_gui.dialogs import CompactDoubleSpinBox, normalize_dialog_message
 from fem_gui.postprocessing_dialogs import (
     ContourSettingsDialog,
     DisplaySettingsDialog,
@@ -26,6 +26,11 @@ from fem_gui.visualization.symbols import SymbolSettings
 
 def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def test_dialog_message_style_removes_colons_and_sentence_periods():
+    assert normalize_dialog_message("结果步：LOAD。") == "结果步 LOAD"
+    assert normalize_dialog_message("第一句。第二句。") == "第一句；第二句"
 
 
 def test_compact_number_input_hides_only_insignificant_trailing_zeroes():
@@ -214,6 +219,10 @@ def test_contour_display_and_symbol_dialogs_round_trip_settings():
     assert symbols.settings().step_name == "Static-1"
     assert symbols.settings().show_values
     assert symbols.settings().scale == 1.5
+    assert all(
+        "：" not in label.text() and "。" not in label.text()
+        for label in symbols.findChildren(QLabel)
+    )
 
 
 def test_contour_dialog_defaults_to_abaqus_rainbow():
@@ -279,4 +288,8 @@ def test_viewport_background_dialog_supports_presets_and_live_preview():
     assert dialog.settings().bottom_color == "#ffffff"
     assert not dialog.settings().is_dark
     assert previews[-1].bottom_color == "#ffffff"
+    assert all(
+        "：" not in label.text() and "。" not in label.text()
+        for label in dialog.findChildren(QLabel)
+    )
     dialog.close()
