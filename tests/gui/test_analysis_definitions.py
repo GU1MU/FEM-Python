@@ -220,6 +220,9 @@ def test_analysis_dialogs_define_only_supported_kernel_objects():
         ["Load"],
         candidates=candidates,
     )
+    output_dialog.candidate_list.item(0).setCheckState(
+        Qt.CheckState.Checked
+    )
     step_name, output = output_dialog.definition()
     assert step_name == "Load"
     assert output == candidates[0].authoring_request
@@ -790,9 +793,9 @@ def test_output_request_uses_only_published_candidate_order_and_dto(
         for index in range(dialog.candidate_list.count())
     )
     displacement_item = dialog.candidate_list.item(0)
-    assert displacement_item.checkState() == Qt.CheckState.Checked
+    assert displacement_item.checkState() == Qt.CheckState.Unchecked
     displacement_item.setCheckState(Qt.CheckState.Unchecked)
-    assert displacement_item.checkState() == Qt.CheckState.Checked
+    assert displacement_item.checkState() == Qt.CheckState.Unchecked
     for index in range(dialog.candidate_list.count()):
         dialog.candidate_list.item(index).setCheckState(
             Qt.CheckState.Checked
@@ -887,7 +890,31 @@ def test_output_request_dialog_shows_existing_imported_requests_by_step():
         dialog.candidate_list.item(index).checkState()
         for index in range(dialog.candidate_list.count())
     ) == (
-        Qt.CheckState.Checked,
+        Qt.CheckState.Unchecked,
+        Qt.CheckState.Unchecked,
+        Qt.CheckState.Unchecked,
+    )
+
+
+def test_output_request_dialog_does_not_select_history_variables_as_fields():
+    _application()
+    candidates = _output_candidates(ResultModelFamily.PLANE_CONTINUUM)
+    dialog = OutputRequestDialog(
+        ["Load"],
+        candidates=candidates,
+        existing_requests_by_step={
+            "Load": (
+                OutputRequest("history", "node", ("U", "RF")),
+                OutputRequest("history", "element", ("S", "MISES")),
+            ),
+        },
+    )
+
+    assert tuple(
+        dialog.candidate_list.item(index).checkState()
+        for index in range(dialog.candidate_list.count())
+    ) == (
+        Qt.CheckState.Unchecked,
         Qt.CheckState.Unchecked,
         Qt.CheckState.Unchecked,
     )

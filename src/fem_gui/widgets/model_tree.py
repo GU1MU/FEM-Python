@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Mapping, Sequence
 from typing import Any
 
 from PySide6.QtCore import QPoint, Qt, Signal
@@ -194,6 +194,10 @@ class ModelTree(QTreeWidget):
         model_name: str | None = None,
         section_definitions: tuple[Any, ...] = (),
         region_assignments: tuple[Any, ...] = (),
+        output_request_projections_by_step: Mapping[
+            str,
+            Sequence[Any],
+        ] | None = None,
         scope_names: Collection[str] | None = None,
         native_parts: tuple[Any, ...] = (),
         active_part_id: str | None = None,
@@ -463,16 +467,36 @@ class ModelTree(QTreeWidget):
                         else (index, load_index)
                     ),
                 ))
+            output_entries = tuple(
+                (output_index, output)
+                for output_index, output in enumerate(step.outputs)
+            )
+            if output_request_projections_by_step is not None:
+                output_entries = tuple(
+                    (
+                        projection.request_index,
+                        projection.executable_authoring_request,
+                    )
+                    for projection in output_request_projections_by_step.get(
+                        step.name,
+                        (),
+                    )
+                    if projection.executable_authoring_request is not None
+                )
             output_count = sum(
                 max(1, len(output.variables))
-                for output in step.outputs
+                for _output_index, output in output_entries
             )
             output_root = self._category(
                 step_item,
                 "输出请求",
-                getattr(step, "summary_output_count", output_count),
+                (
+                    output_count
+                    if output_request_projections_by_step is not None
+                    else getattr(step, "summary_output_count", output_count)
+                ),
             )
-            for output_index, output in enumerate(step.outputs):
+            for output_index, output in output_entries:
                 identity = getattr(output, "name", None)
                 labels = tuple(output.variables) or ("输出请求",)
                 for variable in labels:

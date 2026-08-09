@@ -94,6 +94,7 @@ from .output_requests import (
     OutputVariableProjection,
     ResultCapabilityCatalog,
     project_output_request,
+    project_output_requests,
 )
 from .execution import (
     OutputExecutionOutcome,
@@ -191,6 +192,7 @@ __all__ = [
     "project_scalar_field_topology",
     "project_scalar_field_topology_from_template",
     "project_output_request",
+    "project_output_requests",
     "registry_entry_for",
     "restore_result_provider",
     "validate_result_query_filters",

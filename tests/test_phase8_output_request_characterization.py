@@ -16,6 +16,7 @@ from fem.application import (
     describe_model_capabilities,
     run_static_preflight,
 )
+from fem.application.results import project_output_requests
 from fem.core.model import AnalysisStep, OutputRequest
 from fem_gui.analysis_definition_dialogs import (
     AnalysisDefinitionManagerDialog,
@@ -205,6 +206,39 @@ def test_abaqus_parent_output_context_is_inherited_with_source_evidence(
     assert request.source_evidence.parent_flags == parent.flags
     assert request.source_evidence.child_parameters == ()
     assert request.source_evidence.child_flags == ()
+
+
+def test_executable_authoring_requests_exclude_history_and_unknown_variables(
+    tmp_path: Path,
+) -> None:
+    imported = _output_deck(
+        tmp_path,
+        "*Output",
+        "*Node Output",
+        "U, RF",
+        "*Element Output",
+        "S, MISES",
+    )
+    model = imported.model
+    catalog = describe_model_capabilities(model).output_request_catalog
+    assert catalog is not None
+
+    history = project_output_requests(tuple(model.steps[0].outputs), catalog)
+    assert tuple(
+        projection.executable_authoring_request for projection in history
+    ) == (None, None)
+
+    model.steps[0].outputs = (
+        OutputRequest("field", "node", ("U", "RF")),
+        OutputRequest("field", "element", ("S", "MISES")),
+    )
+    field = project_output_requests(tuple(model.steps[0].outputs), catalog)
+    assert tuple(
+        projection.executable_authoring_request for projection in field
+    ) == (
+        OutputRequest("field", "node", ("U", "RF")),
+        OutputRequest("field", "element", ("S",)),
+    )
 
 
 def test_abaqus_child_options_override_parent_and_preserve_variables_and_flags(

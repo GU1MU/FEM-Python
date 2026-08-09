@@ -944,16 +944,6 @@ class OutputRequestDialog(QDialog):
             QAbstractItemView.SelectionMode.NoSelection
         )
         self.candidate_list.setMinimumHeight(120)
-        self._required_candidate_index = next(
-            (
-                index
-                for index, candidate in enumerate(self._candidates)
-                if _is_required_displacement_output(
-                    candidate.authoring_request
-                )
-            ),
-            None,
-        )
         if self._current is None:
             for index, candidate in enumerate(self._candidates):
                 item = QListWidgetItem(
@@ -983,9 +973,6 @@ class OutputRequestDialog(QDialog):
         layout.addLayout(form)
         if self._current is None:
             layout.addWidget(_buttons(self))
-            self.candidate_list.itemChanged.connect(
-                self._keep_required_displacement_checked
-            )
             self.step_combo.currentTextChanged.connect(
                 lambda _text: self._sync_existing_selection()
             )
@@ -1028,34 +1015,24 @@ class OutputRequestDialog(QDialog):
             raise ValueError("当前选择包含多个输出请求，请使用 definitions()")
         return step_name, requests[0]
 
-    def _keep_required_displacement_checked(
-        self,
-        item: QListWidgetItem,
-    ) -> None:
-        if (
-            self.candidate_list.row(item)
-            == self._required_candidate_index
-            and item.checkState() != Qt.CheckState.Checked
-        ):
-            self.candidate_list.blockSignals(True)
-            item.setCheckState(Qt.CheckState.Checked)
-            self.candidate_list.blockSignals(False)
-
     def _sync_existing_selection(self) -> None:
-        existing_variables = {
-            variable.strip().casefold()
-            for request in self._existing_requests_by_step.get(
-                self.step_combo.currentText(),
-                (),
-            )
-            for variable in request.variables
-        }
+        existing_requests = self._existing_requests_by_step.get(
+            self.step_combo.currentText(),
+            (),
+        )
         self.candidate_list.blockSignals(True)
         for row, candidate in enumerate(self._candidates):
-            variable = candidate.authoring_request.variables[0]
-            checked = (
-                variable.casefold() in existing_variables
-                or row == self._required_candidate_index
+            candidate_request = candidate.authoring_request
+            variable = candidate_request.variables[0]
+            checked = any(
+                request.kind.casefold() == candidate_request.kind.casefold()
+                and request.target.casefold()
+                == candidate_request.target.casefold()
+                and any(
+                    existing.strip().casefold() == variable.casefold()
+                    for existing in request.variables
+                )
+                for request in existing_requests
             )
             self.candidate_list.item(row).setCheckState(
                 Qt.CheckState.Checked
@@ -1070,10 +1047,7 @@ class OutputRequestDialog(QDialog):
         selected: list[OutputRequestProjection] = []
         for row in range(self.candidate_list.count()):
             item = self.candidate_list.item(row)
-            if (
-                row != self._required_candidate_index
-                and item.checkState() != Qt.CheckState.Checked
-            ):
+            if item.checkState() != Qt.CheckState.Checked:
                 continue
             index = item.data(Qt.ItemDataRole.UserRole)
             if type(index) is not int or not 0 <= index < len(self._candidates):

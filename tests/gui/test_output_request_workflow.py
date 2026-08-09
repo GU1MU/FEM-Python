@@ -162,6 +162,77 @@ def test_imported_create_uses_catalog_candidate_and_reload_restores_source(
     window.close()
 
 
+def test_imported_history_variables_are_not_selected_and_are_replaced(
+    gui_inp_path,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _application()
+    invalid_path = tmp_path / "gui_plate_history_output.inp"
+    invalid_path.write_text(
+        gui_inp_path.read_text(encoding="utf-8").replace(
+            "*Output, field",
+            "*Output",
+        ),
+        encoding="utf-8",
+    )
+    window = FEMMainWindow()
+    _install_imported(window, invalid_path)
+
+    class AcceptedAllFieldsDialog:
+        observed_existing = None
+
+        def __init__(
+            self,
+            step_names,
+            _parent=None,
+            *,
+            candidates=(),
+            current=None,
+            existing_requests_by_step=None,
+        ) -> None:
+            assert current is None
+            type(self).observed_existing = existing_requests_by_step
+            self._step_name = step_names[0]
+            self._requests = tuple(
+                deepcopy(
+                    next(
+                        candidate.authoring_request
+                        for candidate in candidates
+                        if candidate.authoring_request.variables == (variable,)
+                    )
+                )
+                for variable in ("U", "RF", "S")
+            )
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def definitions(self):
+            return self._step_name, self._requests
+
+    monkeypatch.setattr(
+        main_window_module,
+        "OutputRequestDialog",
+        AcceptedAllFieldsDialog,
+    )
+    _capture_warnings(monkeypatch)
+
+    window.create_output_request()
+
+    assert AcceptedAllFieldsDialog.observed_existing == {"Static-1": ()}
+    outputs = tuple(_editable_step(window.document.steps).outputs)
+    assert tuple(
+        (request.kind, request.target, request.variables)
+        for request in outputs
+    ) == (
+        ("field", "node", ("U",)),
+        ("field", "node", ("RF",)),
+        ("field", "element", ("S",)),
+    )
+    window.close()
+
+
 def test_imported_delete_checks_capability_warns_and_reload_restores_source(
     gui_inp_path,
     monkeypatch,

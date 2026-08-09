@@ -359,6 +359,47 @@ class OutputRequestProjection:
 
         return self.executable_request is not None
 
+    @property
+    def executable_authoring_request(self) -> OutputRequest | None:
+        """Return the canonical field request represented by this projection."""
+
+        executable = self.executable_request
+        if executable is None:
+            return None
+        return OutputRequest(
+            executable.kind,
+            executable.target,
+            tuple(
+                variable.canonical_variable.value
+                for variable in executable.variables
+                if variable.canonical_variable is not None
+            ),
+        )
+
+
+def project_output_requests(
+    requests: tuple[OutputRequest, ...],
+    capabilities: ResultCapabilityCatalog,
+) -> tuple[OutputRequestProjection, ...]:
+    """Project an ordered request collection through one capability catalog."""
+
+    if type(requests) is not tuple:
+        raise TypeError("requests must be a tuple")
+    if any(type(request) is not OutputRequest for request in requests):
+        raise TypeError("requests must contain exact OutputRequest values")
+    if type(capabilities) is not ResultCapabilityCatalog:
+        raise TypeError(
+            "capabilities must be exactly ResultCapabilityCatalog"
+        )
+    return tuple(
+        project_output_request(
+            request,
+            capabilities,
+            request_index=request_index,
+        )
+        for request_index, request in enumerate(requests)
+    )
+
 
 def project_output_request(
     request: OutputRequest,
@@ -1105,4 +1146,5 @@ __all__ = [
     "OutputVariableProjection",
     "ResultCapabilityCatalog",
     "project_output_request",
+    "project_output_requests",
 ]

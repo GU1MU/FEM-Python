@@ -83,6 +83,8 @@ from fem.application.results import (
     FieldRequest,
     FieldState,
     NodalAveragingPolicy,
+    OutputRequestProjection,
+    ResultCapabilityCatalog,
     ResultQuery,
     ResultQueryResult,
     ResultQueryValidationError,
@@ -95,7 +97,9 @@ from fem.application.results import (
     ScalarFieldSelection,
     build_solve_result_bundle,
     build_result_field_topology_template,
+    classify_result_model,
     prepare_result_export_snapshot,
+    project_output_requests,
     project_scalar_field_topology,
     project_scalar_field_topology_from_template,
 )
@@ -352,12 +356,36 @@ def _native_model_save_filter() -> str:
     return f"FEM 自主项目 (*{MODEL_FILE_SUFFIX})"
 
 
+def _output_request_projections_by_step(
+    steps: Sequence[AnalysisStep],
+    catalog: ResultCapabilityCatalog | None,
+) -> dict[str, tuple[OutputRequestProjection, ...]]:
+    if catalog is None:
+        return {step.name: () for step in steps}
+    return {
+        step.name: project_output_requests(tuple(step.outputs), catalog)
+        for step in steps
+    }
+
+
+def _executable_output_requests(
+    projections: Sequence[OutputRequestProjection],
+) -> tuple[OutputRequest, ...]:
+    return tuple(
+        request
+        for projection in projections
+        if (request := projection.executable_authoring_request) is not None
+    )
+
+
 def _with_required_displacement_output(
     requests: tuple[OutputRequest, ...],
     candidates: Sequence[object],
 ) -> tuple[OutputRequest, ...]:
     if any(
-        variable.strip().casefold() == "u"
+        request.kind.casefold() == "field"
+        and request.target.casefold() == "node"
+        and variable.strip().casefold() == "u"
         for request in requests
         for variable in request.variables
     ):
@@ -379,20 +407,6 @@ def _replace_visible_output_requests(
     requests: tuple[OutputRequest, ...],
     existing: tuple[OutputRequest, ...],
 ) -> tuple[OutputRequest, ...]:
-    selected_variables = {
-        variable.strip().casefold()
-        for request in requests
-        for variable in request.variables
-    }
-    existing_variables = {
-        variable.strip().casefold()
-        for request in existing
-        for variable in request.variables
-        if variable.strip().casefold() in _VISIBLE_OUTPUT_VARIABLES
-    }
-    if selected_variables == existing_variables:
-        return existing
-
     preserved: list[OutputRequest] = []
     for request in existing:
         variables = tuple(
@@ -8383,6 +8397,13 @@ class FEMMainWindow(QMainWindow):
         )
 
     def _show_model_in_tree(self, model: object) -> None:
+        output_catalog = ResultCapabilityCatalog.from_profile(
+            classify_result_model(model)
+        )
+        output_projections = _output_request_projections_by_step(
+            tuple(self.document.steps),
+            output_catalog,
+        )
         definition_options = {
             "section_definitions": tuple(
                 self.document.sections
@@ -8390,6 +8411,7 @@ class FEMMainWindow(QMainWindow):
             "region_assignments": tuple(
                 self.document.assignments
             ),
+            "output_request_projections_by_step": output_projections,
         }
         if self.document.source_kind == "native" and self.document.parts:
             self.model_tree.set_model(
@@ -9363,14 +9385,19 @@ class FEMMainWindow(QMainWindow):
             for step in self.document.steps
             if step.name.strip().casefold() != "initial"
         ]
+        existing_projections = _output_request_projections_by_step(
+            tuple(self.document.steps),
+            catalog,
+        )
         dialog = OutputRequestDialog(
             step_names,
             self,
             candidates=candidates,
             existing_requests_by_step={
-                step.name: tuple(step.outputs)
-                for step in self.document.steps
-                if step.name.strip().casefold() != "initial"
+                step_name: _executable_output_requests(
+                    existing_projections[step_name]
+                )
+                for step_name in step_names
             },
         )
         if not self._exec_dialog(dialog):

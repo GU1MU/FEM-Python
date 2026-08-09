@@ -10,7 +10,12 @@ from PySide6.QtWidgets import QApplication
 
 import fem_gui.widgets.model_tree as model_tree_module
 from fem.io.inp import read
-from fem.application import RegionAssignment, SectionDefinition
+from fem.application import (
+    RegionAssignment,
+    SectionDefinition,
+    describe_model_capabilities,
+)
+from fem.application.results import project_output_requests
 from fem.core.model import AnalysisStep, GravityLoad, OutputRequest
 from fem.elements import BeamOrientation
 from fem_gui.widgets.model_tree import ModelTree, ROLE_KEY, ROLE_KIND
@@ -237,6 +242,38 @@ def test_output_request_tree_items_show_only_variables():
         if item.text(0) == "输出请求 (4)"
     )
     assert output_category.childCount() == 4
+
+
+def test_model_tree_hides_output_requests_without_executable_projection(
+    gui_inp_path,
+):
+    _application()
+    model = read(gui_inp_path)
+    step = model.steps[0]
+    step.outputs = (
+        OutputRequest("history", "node", ("U", "RF")),
+        OutputRequest("history", "element", ("S", "MISES")),
+    )
+    catalog = describe_model_capabilities(model).output_request_catalog
+    assert catalog is not None
+    projections = project_output_requests(tuple(step.outputs), catalog)
+    tree = ModelTree()
+
+    tree.set_model(
+        model,
+        output_request_projections_by_step={step.name: projections},
+    )
+
+    output_category = next(
+        item
+        for item in _items(tree)
+        if item.text(0) == "输出请求 (0)"
+    )
+    assert output_category.childCount() == 0
+    assert not any(
+        item.data(0, ROLE_KIND) == "output"
+        for item in _items(tree)
+    )
 
 
 def test_section_tree_uses_cae_labels_instead_of_backend_identifiers():
