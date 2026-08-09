@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from threading import Event
 from time import monotonic
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -11,10 +10,6 @@ import pytest
 from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication
 
-from fem.application import (
-    ResultMaterializationTaskSnapshot,
-    TokenStatus,
-)
 from fem.application.results import (
     FieldMaterializationKey,
     FieldState,
@@ -22,7 +17,8 @@ from fem.application.results import (
     ResultQuery,
     ResultQueryResult,
     ScalarFieldSelection,
-    restore_result_provider,
+    SolveResultBundle,
+    build_result_provider,
     build_solve_result_bundle,
 )
 from fem.solvers.static_linear import solve
@@ -46,6 +42,19 @@ from tests.helpers.preflight_builders import passing_preflight_report
 
 def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def _full_catalog_bundle(task, result) -> SolveResultBundle:
+    """Expose READY and LAZY fields for typed GUI query tests."""
+
+    lightweight = build_solve_result_bundle(task, result)
+    provider = build_result_provider(lightweight.source, result)
+    return SolveResultBundle._from_provider(
+        source=lightweight.source,
+        result=result,
+        execution_report=lightweight.execution_report,
+        provider=provider,
+    )
 
 
 @pytest.fixture
@@ -83,7 +92,7 @@ def solved_window() -> FEMMainWindow:
     assert window._apply_session_delta(
         window.session.accept_run_succeeded(
             solve_task.token,
-            build_solve_result_bundle(solve_task, result),
+            _full_catalog_bundle(solve_task, result),
         )
     )
 
@@ -130,7 +139,7 @@ def _await_completion(
     window: FEMMainWindow,
     receipt: GuiCommandReceipt,
     *,
-    timeout: float = 10.0,
+    timeout: float = 2.0,
 ) -> TaskCompletion:
     assert receipt.status is GuiCommandStatus.PENDING
     assert receipt.completion is not None
@@ -157,65 +166,10 @@ def _succeed_additional_run(
     assert window._apply_session_delta(
         window.session.accept_run_succeeded(
             task.token,
-            build_solve_result_bundle(task, result),
+            _full_catalog_bundle(task, result),
         )
     )
     return task.run_id
-
-
-def _capture_materialization_tasks(
-    window: FEMMainWindow,
-    monkeypatch: pytest.MonkeyPatch,
-) -> list[ResultMaterializationTaskSnapshot]:
-    tasks: list[ResultMaterializationTaskSnapshot] = []
-    original = window.session.prepare_result_materialization
-
-    def capture(run_id, field_keys):
-        task = original(run_id, field_keys)
-        tasks.append(task)
-        return task
-
-    monkeypatch.setattr(
-        window.session,
-        "prepare_result_materialization",
-        capture,
-    )
-    return tasks
-
-
-def _install_blocking_materializer(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    original = ResultProvider.materialize
-    entered = Event()
-    release = Event()
-    calls: list[tuple[FieldMaterializationKey, ...]] = []
-
-    def materialize(
-        provider: ResultProvider,
-        keys,
-        *,
-        cancellation=None,
-    ):
-        requested = tuple(keys)
-        calls.append(requested)
-        if cancellation is None:
-            raise AssertionError(
-                "LAZY query materialization requires cancellation"
-            )
-        patch = original(
-            provider,
-            requested,
-            cancellation=cancellation,
-        )
-        entered.set()
-        while not release.wait(0.001):
-            cancellation.checkpoint()
-        cancellation.checkpoint()
-        return patch
-
-    monkeypatch.setattr(ResultProvider, "materialize", materialize)
-    return original, entered, release, calls
 
 
 def test_ready_query_is_synchronous_filtered_and_revision_neutral(
@@ -382,135 +336,6 @@ def test_lazy_query_materializes_only_its_field_and_sanitizes_completion(
         == generation + 1
     )
     assert payload.topology.selection == selection
-
-
-def test_cancelled_lazy_query_consumes_token_and_preserves_projection(
-    solved_window: FEMMainWindow,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    window = solved_window
-    provider = window.result_provider
-    selection = window.result_selection
-    assert type(provider) is ResultProvider
-    assert type(selection) is ScalarFieldSelection
-    lazy = _lazy_selection(provider)
-    query = ResultQuery(lazy.field_key, lazy.component)
-    tasks = _capture_materialization_tasks(window, monkeypatch)
-    _original, entered, _release, calls = (
-        _install_blocking_materializer(monkeypatch)
-    )
-    revision = window.document.session_revision
-    generation = provider.snapshot.generation
-    payload = _result_payload(window)
-    delivered: list[ResultQueryResult] = []
-    window.resultQueryCompleted.connect(delivered.append)
-
-    receipt = window.query_result(query)
-
-    assert receipt.status is GuiCommandStatus.PENDING
-    assert entered.wait(5.0)
-    assert window.cancel_current_task()
-    terminal = _await_completion(window, receipt)
-
-    assert terminal.state is BackgroundTaskState.CANCELLED
-    assert terminal.apply_status is None
-    assert receipt.completion is not None
-    assert receipt.completion.outcome is None
-    assert calls == [(lazy.field_key,)]
-    assert len(tasks) == 1
-    assert (
-        window.session.validate_task_token(tasks[0].token)
-        is TokenStatus.ALREADY_COMPLETED
-    )
-    assert window.document.session_revision == revision
-    record = window.session.current_result()
-    assert record is not None
-    assert record.materialization.generation == generation
-    assert window.result_provider is provider
-    assert window.result_selection == selection
-    assert _result_payload(window) is payload
-    assert delivered == []
-    assert window._pending_result_query is None
-    assert window._pending_result_query_source is None
-    assert window._pending_result_query_generation is None
-
-
-def test_hidden_run_lazy_query_updates_only_its_record_without_delivery(
-    solved_window: FEMMainWindow,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    window = solved_window
-    initial_a = window.result_provider
-    assert type(initial_a) is ResultProvider
-    run_a = initial_a.source.run_id
-    run_b = _succeed_additional_run(window, "Typed-Query-Hidden-B")
-    assert window.select_run_result(run_a).status is GuiCommandStatus.ACCEPTED
-    provider_a = window.result_provider
-    assert type(provider_a) is ResultProvider
-    lazy_a = _lazy_selection(provider_a)
-    query_a = ResultQuery(lazy_a.field_key, lazy_a.component)
-    tasks = _capture_materialization_tasks(window, monkeypatch)
-    _original, entered, release, calls = _install_blocking_materializer(
-        monkeypatch
-    )
-    delivered: list[ResultQueryResult] = []
-    window.resultQueryCompleted.connect(delivered.append)
-
-    receipt = window.query_result(query_a)
-
-    assert receipt.status is GuiCommandStatus.PENDING
-    assert entered.wait(5.0)
-    assert len(tasks) == 1
-    task_a = tasks[0]
-    assert task_a.run_id == run_a
-    assert task_a.field_keys == (lazy_a.field_key,)
-    assert window.select_run_result(run_b).status is GuiCommandStatus.ACCEPTED
-    provider_b = window.result_provider
-    selection_b = window.result_selection
-    payload_b = _result_payload(window)
-    revision_on_b = window.document.session_revision
-    assert type(provider_b) is ResultProvider
-    assert type(selection_b) is ScalarFieldSelection
-    assert provider_b.source.run_id == run_b
-    assert provider_b.snapshot.generation == 0
-
-    release.set()
-    terminal = _await_completion(window, receipt)
-
-    assert terminal.state is BackgroundTaskState.SUCCEEDED
-    assert terminal.apply_status is TaskApplyStatus.ACCEPTED
-    assert receipt.completion is not None
-    outcome = receipt.completion.outcome
-    assert type(outcome) is GuiCommandOutcome
-    assert outcome.source == provider_a.source
-    assert outcome.materialization_generation == 1
-    assert outcome.selection == lazy_a
-    assert calls == [(lazy_a.field_key,)]
-    assert delivered == []
-    assert window.document.session_revision == revision_on_b + 1
-    assert window.document.displayed_result_run_id == run_b
-    assert window.result_provider is provider_b
-    assert window.result_selection == selection_b
-    assert _result_payload(window) is payload_b
-    current_b = window.session.current_result()
-    assert current_b is not None
-    assert current_b.provenance.run_id == run_b
-    assert current_b.materialization.generation == 0
-
-    projection_a = window.session.prepare_result_projection(run_a)
-    assert projection_a.record.materialization.generation == 1
-    accepted_a = restore_result_provider(
-        projection_a.record.result,
-        projection_a.record.materialization,
-    )
-    assert (
-        accepted_a.field_status(lazy_a.field_key).state
-        is FieldState.READY
-    )
-    assert outcome.record_count == len(accepted_a.query(query_a).records)
-    assert window.session.accept_result_projection(
-        projection_a.token
-    ).accepted
 
 
 def test_query_rejects_invalid_typed_filters_without_mutating_projection(

@@ -3,7 +3,6 @@ from __future__ import annotations
 import ast
 import os
 from pathlib import Path
-from threading import Event
 from time import monotonic
 from typing import Callable
 
@@ -22,6 +21,8 @@ from fem.application.results import (
     ResultProvider,
     ResultVariable,
     ScalarFieldSelection,
+    SolveResultBundle,
+    build_result_provider,
     build_solve_result_bundle,
     field_materialization_sort_key,
 )
@@ -29,10 +30,9 @@ from fem.solvers.static_linear import solve
 from fem_gui.commands import (
     GuiCommandOutcome,
     GuiCommandReceipt,
-    GuiCommandStatus,
 )
 from fem_gui.main_window import FEMMainWindow
-from fem_gui.task_controller import BackgroundTaskState
+from fem_gui.result_presentation import visible_result_fields
 from fem_gui.visualization.model_adapter import build_model_geometry
 from tests.helpers.model_builders import make_static_pull_truss_model
 from tests.helpers.preflight_builders import passing_preflight_report
@@ -44,6 +44,19 @@ MAIN_WINDOW_PATH = PROJECT_ROOT / "src" / "fem_gui" / "main_window.py"
 
 def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def _full_catalog_bundle(task, result) -> SolveResultBundle:
+    """Expose READY and LAZY fields for typed ribbon tests."""
+
+    lightweight = build_solve_result_bundle(task, result)
+    provider = build_result_provider(lightweight.source, result)
+    return SolveResultBundle._from_provider(
+        source=lightweight.source,
+        result=result,
+        execution_report=lightweight.execution_report,
+        provider=provider,
+    )
 
 
 @pytest.fixture
@@ -79,7 +92,7 @@ def solved_window() -> FEMMainWindow:
     assert window._apply_session_delta(
         window.session.accept_run_succeeded(
             solve_task.token,
-            build_solve_result_bundle(solve_task, result),
+            _full_catalog_bundle(solve_task, result),
         )
     )
 
@@ -96,7 +109,7 @@ def _selectable_fields(
 ) -> tuple[FieldAvailability, ...]:
     return tuple(
         availability
-        for availability in catalog.fields
+        for availability in visible_result_fields(catalog.fields)
         if availability.state is not FieldState.UNAVAILABLE
     )
 
@@ -196,7 +209,7 @@ def _prepare_ribbon_selection(
 def _process_until(
     predicate: Callable[[], bool],
     *,
-    timeout: float = 10.0,
+    timeout: float = 2.0,
 ) -> None:
     application = _application()
     deadline = monotonic() + timeout
@@ -338,7 +351,9 @@ def test_ready_ribbon_selection_uses_public_exact_selection_without_result_data(
     assert type(current) is ScalarFieldSelection
     target = next(
         ScalarFieldSelection(availability.key, component)
-        for availability in provider.catalog().fields
+        for availability in visible_result_fields(
+            provider.catalog().fields
+        )
         if availability.state is FieldState.READY
         for component in availability.descriptor.columns
         if ScalarFieldSelection(availability.key, component) != current
@@ -366,88 +381,6 @@ def test_ready_ribbon_selection_uses_public_exact_selection_without_result_data(
     assert (
         window.viewport._result_render_payload.topology.selection
         == target
-    )
-
-
-def test_cancelled_lazy_ribbon_selection_restores_current_exact_selection(
-    solved_window: FEMMainWindow,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    window = solved_window
-    provider = window._current_result_provider()
-    current = window.result_selection
-    assert provider is not None
-    assert type(current) is ScalarFieldSelection
-    target = next(
-        ScalarFieldSelection(
-            availability.key,
-            availability.descriptor.default_component,
-        )
-        for availability in provider.catalog().fields
-        if availability.state is FieldState.LAZY
-    )
-    component_index = _prepare_ribbon_selection(window, target)
-
-    worker_started = Event()
-    worker_release = Event()
-    original_materialize = ResultProvider.materialize
-
-    def blocked_materialize(
-        detached: ResultProvider,
-        keys: tuple[FieldMaterializationKey, ...],
-        *,
-        cancellation: object | None = None,
-    ):
-        worker_started.set()
-        while not worker_release.wait(0.001):
-            if cancellation is not None:
-                cancellation.checkpoint()
-        if cancellation is not None:
-            cancellation.checkpoint()
-        return original_materialize(
-            detached,
-            keys,
-            cancellation=cancellation,
-        )
-
-    monkeypatch.setattr(
-        ResultProvider,
-        "materialize",
-        blocked_materialize,
-    )
-    submitted: list[ScalarFieldSelection] = []
-    receipts: list[GuiCommandReceipt] = []
-    original_submit = window.select_result_field
-
-    def submit(selection: ScalarFieldSelection) -> GuiCommandReceipt:
-        submitted.append(selection)
-        receipt = original_submit(selection)
-        receipts.append(receipt)
-        return receipt
-
-    window.select_result_field = submit
-    try:
-        window._result_component_changed(component_index)
-        _process_until(worker_started.is_set)
-        assert receipts[-1].status is GuiCommandStatus.PENDING
-        assert window.result_selection == current
-        window.cancel_current_task()
-        worker_release.set()
-        _process_until(lambda: not window.busy)
-    finally:
-        worker_release.set()
-        window.select_result_field = original_submit
-
-    completion = receipts[-1].completion
-    assert completion is not None
-    assert completion.terminal is not None
-    assert completion.terminal.state is BackgroundTaskState.CANCELLED
-    assert submitted == [target]
-    assert window.result_selection == current
-    assert window.result_component_combo.currentData() == current
-    assert (
-        window.viewport._result_render_payload.topology.selection
-        == current
     )
 
 

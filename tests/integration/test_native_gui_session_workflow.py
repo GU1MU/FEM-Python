@@ -25,6 +25,7 @@ from fem.core.model import (
     DisplacementConstraint,
     MaterialDefinition,
     NodalLoad,
+    OutputRequest,
 )
 from fem.geometry.recipes import SketchGeometry, SketchRectangle
 from fem.mesh.settings import MeshSettings
@@ -60,7 +61,13 @@ def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def _install_native_authoring(window: FEMMainWindow) -> None:
+def _install_native_authoring(
+    window: FEMMainWindow,
+    *,
+    outputs: tuple[OutputRequest, ...] = (
+        OutputRequest("field", "node", ("U",)),
+    ),
+) -> None:
     recipe = SketchGeometry(
         "Plate",
         (
@@ -135,6 +142,7 @@ def _install_native_authoring(window: FEMMainWindow) -> None:
         "Load",
         boundaries=(DisplacementConstraint("Fixed", 1, 2, 0.0),),
         cloads=(NodalLoad("Loaded", 1, 10.0),),
+        outputs=outputs,
     )
     require_accepted(
         window.apply_definition_edit(
@@ -169,6 +177,7 @@ def _mesh_check_and_solve(
     window: FEMMainWindow,
     *,
     run_name: str,
+    expected_variable: ResultVariable = ResultVariable.U,
 ) -> str:
     if window.document.model is None:
         await_succeeded(window.generate_mesh())
@@ -197,7 +206,7 @@ def _mesh_check_and_solve(
     assert selection is not None
     assert payload is not None
     assert provider.source.run_id == run.run_id
-    assert selection.field_key.request.field_id.variable is ResultVariable.U
+    assert selection.field_key.request.field_id.variable is expected_variable
     assert provider.field(selection.field_key).key == selection.field_key
     assert payload.topology.source == provider.source
     assert window.actions["query"].isEnabled()
@@ -221,7 +230,7 @@ def test_native_public_workflow_saves_reopens_remeshes_and_resolves(
     assert window.actions["mesh_generate"].isEnabled()
     first_run_id = _mesh_check_and_solve(window, run_name="Job-1")
 
-    project_path = tmp_path / "plate-public.femproj"
+    project_path = tmp_path / "plate-public.fempy"
     await_succeeded(window.save_project_path(project_path))
     assert project_path.is_file()
     assert window.document.project_path == project_path
@@ -267,7 +276,7 @@ def test_native_output_request_survives_save_reopen_and_executes(
     require_accepted(
         window.new_native_project(NewNativeProjectCommand("Output Project"))
     )
-    _install_native_authoring(window)
+    _install_native_authoring(window, outputs=())
 
     snapshot = window.document
     authoring = describe_session_authoring(snapshot)
@@ -297,7 +306,7 @@ def test_native_output_request_survives_save_reopen_and_executes(
     )
     assert window.document.steps[0].outputs == (request,)
 
-    project_path = tmp_path / "output-request-public.femproj"
+    project_path = tmp_path / "output-request-public.fempy"
     await_succeeded(window.save_project_path(project_path))
     require_accepted(
         window.close_session(
@@ -305,9 +314,18 @@ def test_native_output_request_survives_save_reopen_and_executes(
         )
     )
     await_succeeded(window.open_project_path(project_path))
-    assert window.document.steps[0].outputs == (request,)
+    reopened_request = window.document.steps[0].outputs[0]
+    assert reopened_request.kind == request.kind
+    assert reopened_request.target == request.target
+    assert reopened_request.variables == request.variables
+    assert reopened_request.metadata == request.metadata
+    assert reopened_request.name == "结果请求-兼容-Load-输出-1"
 
-    _mesh_check_and_solve(window, run_name="Output-Reopened")
+    _mesh_check_and_solve(
+        window,
+        run_name="Output-Reopened",
+        expected_variable=ResultVariable.S,
+    )
     record = window.session.current_result()
     assert record is not None
     assert len(record.output_report.requests) == 1

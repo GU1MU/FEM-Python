@@ -54,8 +54,8 @@ def test_current_schema_preserves_a3_automatic_strict_mesh_intent() -> None:
     loaded = decode_project(payload)
     settings = loaded.snapshot.parts[0].mesh_settings
 
-    assert CURRENT_PROJECT_SCHEMA == 12
-    assert payload["schema"] == 12
+    assert CURRENT_PROJECT_SCHEMA == 13
+    assert payload["schema"] == 13
     assert payload["project"]["authoring"]["parts"][0]["mesh_settings"][
         "intent_mode"
     ] == "automatic"

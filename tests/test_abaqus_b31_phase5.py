@@ -17,6 +17,7 @@ from fem.core.model import (
 )
 from fem.core.result import ModelResult
 from fem.elements import (
+    BEAM_FRAME_FIELD_REFERENCE_KEY,
     BEAM_FRAME_FIELD_KEY,
     BEAM_LOCAL_Y_REFERENCE_KEY,
     BeamFrameField,
@@ -179,11 +180,15 @@ def test_field_is_canonical_when_a_legacy_reference_conflicts() -> None:
     field = BeamFrameField.from_rotations(2.0, np.eye(3), np.eye(3))
     mesh = _beam_mesh(field=field)
     mesh.elements[0].props[BEAM_LOCAL_Y_REFERENCE_KEY] = (0.0, 0.0, 1.0)
+    mesh.elements[0].props[BEAM_FRAME_FIELD_REFERENCE_KEY] = (0.0, 0.0, 1.0)
 
     frame = resolve_beam_frame(
         mesh,
         mesh.elements[0],
-        properties={BEAM_LOCAL_Y_REFERENCE_KEY: (0.0, 0.0, 1.0)},
+        properties={
+            BEAM_LOCAL_Y_REFERENCE_KEY: (0.0, 0.0, 1.0),
+            BEAM_FRAME_FIELD_REFERENCE_KEY: (0.0, 0.0, 1.0),
+        },
     )
     report = resolve_effective_beam_frames(
         FEMModel(mesh=mesh),

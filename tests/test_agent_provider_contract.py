@@ -1,3 +1,4 @@
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -419,7 +420,7 @@ def test_deepseek_enforces_an_outer_wall_clock_deadline():
     class BlockingCompletions:
         def create(self, **kwargs):
             started.set()
-            released.wait(5.0)
+            released.wait(2.0)
             return _response()
 
     client = SimpleNamespace(
@@ -448,7 +449,7 @@ def test_deepseek_stream_enforces_first_chunk_timeout():
         def create(self, **kwargs):
             def chunks():
                 started.set()
-                released.wait(5.0)
+                released.wait(2.0)
                 yield _stream_chunk(content="late")
 
             return chunks()
@@ -525,7 +526,7 @@ def test_deepseek_stream_enforces_idle_timeout_after_first_chunk():
 
             def chunks():
                 yield _stream_chunk(content="early")
-                released.wait(5.0)
+                released.wait(2.0)
                 yield _stream_chunk(content="late", finish_reason="stop")
 
             return chunks()
@@ -598,7 +599,7 @@ def test_deepseek_does_not_stack_requests_when_timed_out_thread_survives():
         def create(self, **kwargs):
             nonlocal attempts
             attempts += 1
-            released.wait(5.0)
+            released.wait(2.0)
             return _response()
 
     provider = DeepSeekProvider(
@@ -650,7 +651,19 @@ def test_deepseek_retry_backoff_is_interruptible():
     assert isinstance(failures[0], ProviderUnavailableError)
 
 
-def test_deepseek_does_not_forward_unknown_sdk_exception_text():
+def test_deepseek_does_not_forward_unknown_sdk_exception_text(monkeypatch):
+    sdk_error = type("SDKError", (Exception,), {})
+    monkeypatch.setitem(
+        sys.modules,
+        "openai",
+        SimpleNamespace(
+            AuthenticationError=sdk_error,
+            RateLimitError=sdk_error,
+            APITimeoutError=sdk_error,
+            APIConnectionError=sdk_error,
+            APIStatusError=sdk_error,
+        ),
+    )
     spy = _CompletionsSpy([RuntimeError("credential=do-not-display")])
     provider = DeepSeekProvider(
         ProviderConfig(max_retries=0),

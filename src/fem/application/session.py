@@ -298,23 +298,30 @@ class _PreparedImportedModel:
 
     model: Any | None
     definitions: ModelDefinitions | None
+    scope_mesh_snapshot: Any | None
     consumed: bool = False
 
-    def take(self) -> tuple[Any, ModelDefinitions]:
+    def take(self) -> tuple[Any, ModelDefinitions, Any]:
         if self.consumed:
             raise SessionStateError(
                 "prepared imported model has already been consumed"
             )
         model = self.model
         definitions = self.definitions
+        scope_mesh_snapshot = self.scope_mesh_snapshot
         if definitions is None:
             raise SessionStateError(
                 "prepared imported model has no owned definitions"
             )
+        if scope_mesh_snapshot is None:
+            raise SessionStateError(
+                "prepared imported model has no owned scope mesh snapshot"
+            )
         self.model = None
         self.definitions = None
+        self.scope_mesh_snapshot = None
         self.consumed = True
-        return model, definitions
+        return model, definitions, scope_mesh_snapshot
 
 
 @dataclass(slots=True)
@@ -2108,8 +2115,7 @@ class ModelSession:
             part_id = normalize_part_id(part_id_or_name)
             part_name = str(name).strip()
         legacy_projection = (
-            part_id not in self._part_revisions
-            and len(self._parts) == 1
+            len(self._parts) == 1
             and self._parts[0].geometry_recipe is None
             and self._geometry_recipe is not None
         )
@@ -4664,8 +4670,9 @@ class ModelSession:
             validate_beam_frame_fields(mesh)
         owned_model = deepcopy(model)
         return _PreparedImportedModel(
-            owned_model,
-            definitions_from_model(owned_model),
+            model=owned_model,
+            definitions=definitions_from_model(owned_model),
+            scope_mesh_snapshot=deepcopy(owned_model.mesh),
         )
 
     def accept_imported_model(
@@ -4704,7 +4711,7 @@ class ModelSession:
             mesh = getattr(prepared.model, "mesh", None)
             if mesh is not None:
                 validate_beam_frame_fields(mesh)
-        owned_model, definitions = prepared.take()
+        owned_model, definitions, scope_mesh_snapshot = prepared.take()
         source_path = Path(self._task_data[token.task_id])
 
         self._session_id = new_identity("session")
@@ -4718,6 +4725,8 @@ class ModelSession:
         self._steps = definitions.steps
         self._definitions_explicit = True
         self._increment_domain_revisions(project=True, mesh=True, model=True)
+        self._scope_mesh_snapshot = scope_mesh_snapshot
+        self._scope_mesh_snapshot_revision = self._mesh_input_revision
         self._artifact = self._new_artifact(owned_model, "imported")
         self._saved_project_revision = self._project_revision
         return self._emit(
@@ -7074,6 +7083,17 @@ class ModelSession:
                     "load_count": len(getattr(step, "cloads", ())),
                     "surface_load_count": len(
                         getattr(step, "surface_loads", ())
+                    ),
+                    "total_load_count": sum(
+                        len(getattr(step, field, ()))
+                        for field in (
+                            "cloads",
+                            "edge_loads",
+                            "surface_loads",
+                            "line_loads",
+                            "body_loads",
+                            "gravity_loads",
+                        )
                     ),
                     "output_count": len(getattr(step, "outputs", ())),
                 }

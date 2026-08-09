@@ -413,6 +413,47 @@ def test_schema_v1_rejects_unsupported_schema_and_preserves_target_on_failure(tm
         load_result_archive(source)
 
 
+def test_version_neutral_router_rejects_future_schema_before_array_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import fem.io.result_archive_v1 as codec
+
+    snapshot = _snapshot(make_truss_field_characterization_result, "future-router")
+    manifest, entries = _manifest_and_entries(encode_result_archive(snapshot))
+    manifest["schema"] = 2
+    manifest["future_contract"] = {"frames": 1}
+    encoded = _rewrite(_replace_manifest(manifest, entries))
+    original_read = codec._read_zip_entry_bounded
+    reads: list[str] = []
+
+    def tracking_read(archive, name: str, limit: int) -> bytes:
+        reads.append(name)
+        return original_read(archive, name, limit)
+
+    monkeypatch.setattr(codec, "_read_zip_entry_bounded", tracking_read)
+    with pytest.raises(UnsupportedResultArchiveSchemaError):
+        decode_result_archive(encoded)
+    assert reads == ["manifest.json"]
+
+    reads.clear()
+    source = tmp_path / "future.femres"
+    source.write_bytes(encoded)
+    with pytest.raises(UnsupportedResultArchiveSchemaError):
+        load_result_archive(source)
+    assert reads == ["manifest.json"]
+
+
+def test_schema_v1_wraps_manifest_numeric_overflow_as_typed_decode_error() -> None:
+    snapshot = _snapshot(make_truss_field_characterization_result, "overflow")
+    manifest, entries = _manifest_and_entries(encode_result_archive(snapshot))
+    manifest["run"]["timings"] = {"hostile": 10**400}
+    encoded = _rewrite(_replace_manifest(manifest, entries))
+
+    with pytest.raises(ResultArchiveDecodeError, match="finite real number"):
+        decode_result_archive(encoded)
+
+
 def test_snapshot_factory_detaches_an_accepted_result_record():
     from tests.characterization.test_phase0_result_contracts import _session_with_success
 

@@ -1360,6 +1360,7 @@ def test_fresh_base_only_process_writes_and_reads_with_optional_imports_blocked(
         check=False,
         capture_output=True,
         text=True,
+        timeout=15,
     )
 
     assert completed.returncode == 0, completed.stderr

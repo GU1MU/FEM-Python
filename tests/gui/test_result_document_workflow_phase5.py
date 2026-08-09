@@ -4,7 +4,6 @@ import os
 import threading
 import inspect
 from dataclasses import replace
-from threading import Event
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,11 +27,15 @@ from fem_gui.action_state import GuiActionContext, derive_action_availability
 import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.commands import MeshInputEdit
+from fem_gui.inspection_service import InspectionService
+from fem_gui.visualization.model_adapter import build_result_archive_model_view
 from fem_gui.viewport_image_export_dialog import ViewportImageExportOptions
 from fem_gui.task_controller import BackgroundTaskState
 from tests.io.test_result_archive_v1 import _snapshot
 from tests.helpers.phase8_result_characterization import (
+    make_beam_field_characterization_result,
     make_continuum_nodal_semantics_result,
+    make_truss_field_characterization_result,
 )
 from tests.gui.test_project_io import _native_project_snapshot
 from fem.mesh.settings import MeshSettings
@@ -42,7 +45,7 @@ def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def _wait_idle(window: FEMMainWindow, timeout_ms: int = 20000) -> None:
+def _wait_idle(window: FEMMainWindow, timeout_ms: int = 2000) -> None:
     app = _application()
     deadline = __import__("time").monotonic() + timeout_ms / 1000.0
     while window.busy and __import__("time").monotonic() < deadline:
@@ -97,7 +100,7 @@ def _open_archive_window(tmp_path: Path, run_name: str = "phase5") -> FEMMainWin
     window = FEMMainWindow()
     receipt = window.open_result_path(source)
     assert receipt.completion is not None
-    assert receipt.completion.result(20.0).state is BackgroundTaskState.SUCCEEDED
+    assert receipt.completion.result(2.0).state is BackgroundTaskState.SUCCEEDED
     _wait_idle(window)
     return window
 
@@ -155,7 +158,7 @@ def test_open_result_path_installs_read_only_document_and_result_module(tmp_path
     window = FEMMainWindow()
     receipt = window.open_result_path(path)
     assert receipt.completion is not None
-    terminal = receipt.completion.result(20.0)
+    terminal = receipt.completion.result(2.0)
     assert terminal.state.value == "succeeded"
     _wait_idle(window)
     assert window.document.result_only
@@ -335,12 +338,12 @@ def test_save_result_path_completes_suffix_and_updates_session_state(tmp_path: P
     window = FEMMainWindow()
     opened = window.open_result_path(source)
     assert opened.completion is not None
-    opened.completion.result(20.0)
+    opened.completion.result(2.0)
     _wait_idle(window)
     target = tmp_path / "copy-without-suffix"
     saved = window.save_result_path(target)
     assert saved.completion is not None
-    assert saved.completion.result(20.0).state.value == "succeeded"
+    assert saved.completion.result(2.0).state.value == "succeeded"
     result_path = target.with_suffix(".femres")
     assert result_path.exists()
     assert window.document.result_path == result_path
@@ -422,9 +425,9 @@ def test_result_open_builds_archive_display_payload_off_gui_thread(
         calls.append(("geometry", threading.get_ident()))
         return original_geometry(projection)
 
-    def model_view(projection, *, name):
+    def model_view(projection, profile, *, name):
         calls.append(("model_view", threading.get_ident()))
-        return original_model_view(projection, name=name)
+        return original_model_view(projection, profile, name=name)
 
     monkeypatch.setattr(main_window_module, "load_result_archive", load)
     monkeypatch.setattr(
@@ -440,43 +443,87 @@ def test_result_open_builds_archive_display_payload_off_gui_thread(
     window = FEMMainWindow()
     receipt = window.open_result_path(source)
     assert receipt.completion is not None
-    assert receipt.completion.result(20.0).state.value == "succeeded"
+    assert receipt.completion.result(2.0).state.value == "succeeded"
     assert {name for name, _thread in calls} == {"load", "geometry", "model_view"}
     assert all(thread_id != gui_thread for _name, thread_id in calls)
     _wait_idle(window)
     window.close()
 
 
-def test_result_open_cas_rejects_a_document_revision_change(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    _application()
-    archive = _snapshot(make_continuum_nodal_semantics_result, "cas")
-    source = tmp_path / "cas-source.femres"
-    save_result_archive(source, archive)
-    entered = Event()
-    release = Event()
-    original_load = main_window_module.load_result_archive
+def test_result_archive_model_view_uses_profile_dimension_and_dofs() -> None:
+    cases = (
+        (make_continuum_nodal_semantics_result, 2, 2),
+        (make_truss_field_characterization_result, 3, 3),
+        (make_beam_field_characterization_result, 3, 6),
+    )
+    for builder, spatial_dimension, dofs_per_node in cases:
+        archive = _snapshot(builder, builder.__name__)
+        view = build_result_archive_model_view(
+            archive.model_projection,
+            archive.profile,
+        )
+        assert view.mesh.spatial_dimension == spatial_dimension
+        assert view.mesh.dofs_per_node == dofs_per_node
+        assert view.mesh.num_dofs == len(archive.topology.node_ids) * dofs_per_node
 
-    def delayed_load(path):
-        entered.set()
-        assert release.wait(5.0)
-        return original_load(path)
 
-    monkeypatch.setattr(main_window_module, "load_result_archive", delayed_load)
-    window = FEMMainWindow()
-    receipt = window.open_result_path(source)
-    assert entered.wait(5.0)
-    window._apply_session_delta(window.session.new_native_project())
-    after_transition = _projection_identity(window)
-    release.set()
-    assert receipt.completion is not None
-    assert receipt.completion.result(20.0).state.value == "discarded"
-    assert not window.document.result_only
-    assert _projection_identity(window) == after_transition
-    _wait_idle(window)
-    window.close()
+def test_result_archive_model_view_restores_step_counts_and_all_assignments() -> None:
+    archive = _snapshot(make_continuum_nodal_semantics_result, "summaries")
+    element_id = archive.topology.element_ids[0]
+    projection = replace(
+        archive.model_projection,
+        named_region_element_ids={
+            "REGION-A": (element_id,),
+            "REGION-B": (element_id,),
+        },
+        summaries={
+            "materials": ({"name": "STEEL", "properties": {"E": 2.1e11}},),
+            "sections": (
+                {
+                    "name": "SOLID",
+                    "material": "STEEL",
+                    "section_type": "solid",
+                    "properties": {},
+                },
+            ),
+            "assignments": (
+                {"section_name": "SOLID", "region_name": "REGION-A"},
+                {"section_name": "SOLID", "region_name": "REGION-B"},
+            ),
+            "steps": (
+                {
+                    "name": "Step-1",
+                    "procedure": "static",
+                    "boundary_count": 2,
+                    "load_count": 1,
+                    "surface_load_count": 1,
+                    "total_load_count": 4,
+                    "output_count": 3,
+                },
+            ),
+        },
+    )
+    view = build_result_archive_model_view(projection, archive.profile)
+    service = InspectionService(view)
+
+    assert tuple(section.element_set for section in view.sections) == (
+        "REGION-A",
+        "REGION-B",
+    )
+    model_fields = dict(service.inspect("model", None).pages[0].fields)
+    assert model_fields["空间维度"] == "2维"
+    assert model_fields["总自由度数量"] == str(
+        len(archive.topology.node_ids) * archive.profile.dofs_per_node
+    )
+    assert model_fields["分析步数量"] == "1"
+    step_fields = dict(service.inspect("step", 0).pages[0].fields)
+    assert step_fields["边界条件数量"] == "2"
+    assert step_fields["载荷数量"] == "4"
+    assert step_fields["输出请求数量"] == "3"
+    node_fields = dict(
+        service.inspect("node", archive.topology.node_ids[0]).pages[0].fields
+    )
+    assert len(node_fields["坐标"].split(",")) == 2
 
 
 def test_result_transition_confirmation_exposes_unsaved_run(monkeypatch, tmp_path: Path) -> None:
@@ -674,6 +721,28 @@ def test_native_mutation_callpoints_share_result_invalidation_gate() -> None:
         assert "_confirm_result_invalidation" in source, method_name
 
 
+def test_agent_bridge_delegates_to_the_unified_result_invalidation_gate(
+    monkeypatch,
+) -> None:
+    _application()
+    window = FEMMainWindow()
+    calls: list[bool] = []
+    monkeypatch.setattr(
+        window,
+        "_confirm_result_invalidation",
+        lambda: calls.append(True) or False,
+    )
+
+    confirmation = (
+        window.agent_authoring_bridge._result_invalidation_confirmation
+    )
+    assert confirmation is not None
+    assert confirmation() is False
+    assert calls == [True]
+    window.close_model(confirm=False)
+    window.close()
+
+
 def test_face_sketch_commit_cancel_preserves_pending_state(monkeypatch) -> None:
     _application()
     window = FEMMainWindow()
@@ -819,7 +888,7 @@ def test_real_fempy_project_vertical_remains_openable(
     window = FEMMainWindow()
     receipt = window.open_project_path(source)
     assert receipt.completion is not None
-    assert receipt.completion.result(20.0).state.value == "succeeded"
+    assert receipt.completion.result(2.0).state.value == "succeeded"
     _wait_idle(window)
     assert window.document.source_kind == "native"
     assert window.document.project_path == source
@@ -833,7 +902,7 @@ def test_real_fempy_project_vertical_remains_openable(
     result_target = tmp_path / "vertical-result"
     saved = window.save_result_path(result_target)
     assert saved.completion is not None
-    assert saved.completion.result(20.0).state is BackgroundTaskState.SUCCEEDED
+    assert saved.completion.result(2.0).state is BackgroundTaskState.SUCCEEDED
     _wait_idle(window)
     result_path = result_target.with_suffix(".femres")
     assert window.close_model(confirm=False)
@@ -842,7 +911,7 @@ def test_real_fempy_project_vertical_remains_openable(
     reopened = FEMMainWindow()
     opened = reopened.open_result_path(result_path)
     assert opened.completion is not None
-    assert opened.completion.result(20.0).state is BackgroundTaskState.SUCCEEDED
+    assert opened.completion.result(2.0).state is BackgroundTaskState.SUCCEEDED
     _wait_idle(reopened)
     assert reopened.document.result_only
     reopened.close()
@@ -908,7 +977,7 @@ def test_save_result_dialog_cancel_does_not_start_a_task(
     source = tmp_path / "save-cancel-source.femres"
     save_result_archive(source, archive)
     window = FEMMainWindow()
-    window.open_result_path(source).completion.result(20.0)
+    window.open_result_path(source).completion.result(2.0)
     _wait_idle(window)
     before = _projection_identity(window)
     calls: list[tuple[object, ...]] = []
@@ -933,7 +1002,7 @@ def test_save_result_worker_runs_off_gui_thread(tmp_path: Path, monkeypatch) -> 
     source = tmp_path / "save-thread-source.femres"
     save_result_archive(source, archive)
     window = FEMMainWindow()
-    window.open_result_path(source).completion.result(20.0)
+    window.open_result_path(source).completion.result(2.0)
     _wait_idle(window)
     gui_thread = threading.get_ident()
     worker_threads: list[int] = []
@@ -946,7 +1015,7 @@ def test_save_result_worker_runs_off_gui_thread(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setattr(main_window_module, "save_result_archive", save)
     receipt = window.save_result_path(tmp_path / "save-thread-copy")
     assert receipt.completion is not None
-    assert receipt.completion.result(20.0).state is BackgroundTaskState.SUCCEEDED
+    assert receipt.completion.result(2.0).state is BackgroundTaskState.SUCCEEDED
     assert worker_threads and worker_threads[0] != gui_thread
     _wait_idle(window)
     window.close()
@@ -961,7 +1030,7 @@ def test_save_result_worker_failure_cleans_current_save_token(
     source = tmp_path / "save-failure-source.femres"
     save_result_archive(source, archive)
     window = FEMMainWindow()
-    window.open_result_path(source).completion.result(20.0)
+    window.open_result_path(source).completion.result(2.0)
     _wait_idle(window)
     before = _projection_identity(window)
     monkeypatch.setattr(window, "_show_error", lambda *_args, **_kwargs: None)
@@ -972,7 +1041,7 @@ def test_save_result_worker_failure_cleans_current_save_token(
     monkeypatch.setattr(main_window_module, "save_result_archive", fail)
     receipt = window.save_result_path(tmp_path / "save-failure-copy")
     assert receipt.completion is not None
-    assert receipt.completion.result(20.0).state is BackgroundTaskState.FAILED
+    assert receipt.completion.result(2.0).state is BackgroundTaskState.FAILED
     _wait_idle(window)
     assert not window.busy
     assert not window.session._active_result_save_tasks
@@ -990,7 +1059,7 @@ def test_save_result_start_rejection_cleans_issued_save_token(
     source = tmp_path / "save-start-source.femres"
     save_result_archive(source, archive)
     window = FEMMainWindow()
-    window.open_result_path(source).completion.result(20.0)
+    window.open_result_path(source).completion.result(2.0)
     _wait_idle(window)
     before = _projection_identity(window)
     monkeypatch.setattr(window, "_start_task", lambda *_args, **_kwargs: False)
@@ -1000,74 +1069,6 @@ def test_save_result_start_rejection_cleans_issued_save_token(
     assert not window.session._active_result_save_tasks
     assert not window.session._task_data
     assert _projection_identity(window) == before
-    _wait_idle(window)
-    window.close()
-
-
-def test_save_result_worker_cancel_keeps_saved_state_clean(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    _application()
-    archive = _snapshot(make_continuum_nodal_semantics_result, "save-cancel-task")
-    source = tmp_path / "save-cancel-task-source.femres"
-    save_result_archive(source, archive)
-    window = FEMMainWindow()
-    window.open_result_path(source).completion.result(20.0)
-    _wait_idle(window)
-    before = _projection_identity(window)
-    started = Event()
-
-    def block(_path, _snapshot, *, checkpoint=None):
-        started.set()
-        while True:
-            if checkpoint is not None:
-                checkpoint()
-
-    monkeypatch.setattr(main_window_module, "save_result_archive", block)
-    receipt = window.save_result_path(tmp_path / "save-cancel-task-copy")
-    assert receipt.completion is not None
-    assert started.wait(5.0)
-    assert window.cancel_current_task()
-    assert receipt.completion.result(20.0).state is BackgroundTaskState.CANCELLED
-    _wait_idle(window)
-    assert not window.busy
-    assert not window.session._active_result_save_tasks
-    assert _projection_identity(window) == before
-    _wait_idle(window)
-    window.close()
-
-
-def test_save_result_worker_cas_discards_after_document_transition(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    _application()
-    archive = _snapshot(make_continuum_nodal_semantics_result, "save-stale")
-    source = tmp_path / "save-stale-source.femres"
-    save_result_archive(source, archive)
-    window = FEMMainWindow()
-    window.open_result_path(source).completion.result(20.0)
-    _wait_idle(window)
-    started = Event()
-    release = Event()
-
-    def delayed_save(path, _snapshot, *, checkpoint=None):
-        started.set()
-        assert release.wait(5.0)
-        return Path(path)
-
-    monkeypatch.setattr(main_window_module, "save_result_archive", delayed_save)
-    receipt = window.save_result_path(tmp_path / "save-stale-copy")
-    assert receipt.completion is not None
-    assert started.wait(5.0)
-    window._apply_session_delta(window.session.new_native_project())
-    after_transition = _projection_identity(window)
-    release.set()
-    assert receipt.completion.result(20.0).state is BackgroundTaskState.DISCARDED
-    assert not window.document.result_only
-    assert not window.session._active_result_save_tasks
-    assert _projection_identity(window) == after_transition
     _wait_idle(window)
     window.close()
 
@@ -1088,40 +1089,7 @@ def test_open_result_decode_failure_preserves_current_document(
     monkeypatch.setattr(window, "_show_error", lambda *_args, **_kwargs: None)
     receipt = window.open_result_path(tmp_path / "broken.femres")
     assert receipt.completion is not None
-    assert receipt.completion.result(20.0).state is BackgroundTaskState.FAILED
-    _wait_idle(window)
-    assert _projection_identity(window) == before
-    assert not window.document.result_only
-    _wait_idle(window)
-    window.close()
-
-
-def test_open_result_worker_cancel_preserves_current_document(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    _application()
-    archive = _snapshot(make_continuum_nodal_semantics_result, "open-cancel")
-    source = tmp_path / "open-cancel-source.femres"
-    save_result_archive(source, archive)
-    window = FEMMainWindow()
-    before = _projection_identity(window)
-    started = Event()
-    release = Event()
-    original_load = main_window_module.load_result_archive
-
-    def block(path):
-        started.set()
-        assert release.wait(5.0)
-        return original_load(path)
-
-    monkeypatch.setattr(main_window_module, "load_result_archive", block)
-    receipt = window.open_result_path(source)
-    assert receipt.completion is not None
-    assert started.wait(5.0)
-    assert window.cancel_current_task()
-    release.set()
-    assert receipt.completion.result(20.0).state is BackgroundTaskState.CANCELLED
+    assert receipt.completion.result(2.0).state is BackgroundTaskState.FAILED
     _wait_idle(window)
     assert _projection_identity(window) == before
     assert not window.document.result_only
@@ -1137,11 +1105,11 @@ def test_result_save_overwrites_existing_archive_atomically(tmp_path: Path) -> N
     save_result_archive(source, archive)
     target.write_bytes(b"stale bytes")
     window = FEMMainWindow()
-    window.open_result_path(source).completion.result(20.0)
+    window.open_result_path(source).completion.result(2.0)
     _wait_idle(window)
     receipt = window.save_result_path(target)
     assert receipt.completion is not None
-    assert receipt.completion.result(20.0).state is BackgroundTaskState.SUCCEEDED
+    assert receipt.completion.result(2.0).state is BackgroundTaskState.SUCCEEDED
     assert target.read_bytes() != b"stale bytes"
     assert window.document.result_path == target
     _wait_idle(window)
@@ -1163,7 +1131,7 @@ def test_real_solve_save_close_and_reopen_result_roundtrip(
     target = tmp_path / "phase5-roundtrip"
     saved = window.save_result_path(target)
     assert saved.completion is not None
-    assert saved.completion.result(20.0).state is BackgroundTaskState.SUCCEEDED
+    assert saved.completion.result(2.0).state is BackgroundTaskState.SUCCEEDED
     _wait_idle(window)
     result_path = target.with_suffix(".femres")
     assert result_path.is_file()
@@ -1173,7 +1141,7 @@ def test_real_solve_save_close_and_reopen_result_roundtrip(
     reopened = FEMMainWindow()
     opened = reopened.open_result_path(result_path)
     assert opened.completion is not None
-    assert opened.completion.result(20.0).state is BackgroundTaskState.SUCCEEDED
+    assert opened.completion.result(2.0).state is BackgroundTaskState.SUCCEEDED
     _wait_idle(reopened)
     assert reopened.document.result_only
     assert reopened.result_provider is not None

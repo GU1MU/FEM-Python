@@ -153,7 +153,7 @@ def test_real_worker_boundary_runs_off_controller_thread() -> None:
         on_terminal=terminals.append,
     )
     assert task_id is not None
-    deadline = monotonic() + 3.0
+    deadline = monotonic() + 2.0
     while controller.busy and monotonic() < deadline:
         application.processEvents()
         QThread.msleep(1)

@@ -118,7 +118,17 @@ def test_every_static_test_skip_reason_has_a_stable_category_prefix():
     }
     offenders = []
     for path in sorted(TESTS_ROOT.rglob("test_*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        source = path.read_text(encoding="utf-8")
+        if not any(
+            token in source
+            for token in (
+                "pytest.skip",
+                "pytest.importorskip",
+                "pytest.mark.skip",
+            )
+        ):
+            continue
+        tree = ast.parse(source)
         for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
             call_name = _attribute_chain(call.func)
             if call_name not in skip_calls:

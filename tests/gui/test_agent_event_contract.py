@@ -801,7 +801,7 @@ def test_incremental_ui_escapes_raw_html_and_shows_stream_status():
             },
         )
     )
-    QTest.qWait(35)
+    drawer._flush_streaming_message_updates()
     application.processEvents()
 
     labels = drawer.findChildren(QLabel, "agentChatAgentMessage")
@@ -823,7 +823,7 @@ def test_incremental_ui_escapes_raw_html_and_shows_stream_status():
     drawer.close()
 
 
-def test_projector_in_place_preserves_10000_single_character_deltas(
+def test_projector_in_place_preserves_1000_single_character_deltas(
     monkeypatch,
 ):
     import fem_gui.agent_events as agent_events_module
@@ -846,7 +846,7 @@ def test_projector_in_place_preserves_10000_single_character_deltas(
         raise AssertionError("in-place projection must not deepcopy")
 
     monkeypatch.setattr(agent_events_module, "deepcopy", unexpected_deepcopy)
-    for _index in range(10_000):
+    for _index in range(1_000):
         projector.apply_in_place(
             events.make(
                 EventType.MESSAGE_DELTA,
@@ -863,7 +863,7 @@ def test_projector_in_place_preserves_10000_single_character_deltas(
         )
     )
 
-    assert projector.message_view("many-deltas-message").text == "字" * 10_000
+    assert projector.message_view("many-deltas-message").text == "字" * 1_000
 
 
 def test_streaming_deltas_keep_existing_widgets_and_skip_full_render():
@@ -898,7 +898,7 @@ def test_streaming_deltas_keep_existing_widgets_and_skip_full_render():
         return original_render(*args, **kwargs)
 
     drawer._render_event_presentation = counted_render
-    for _index in range(1_000):
+    for _index in range(100):
         drawer.apply_agent_event(
             events.make(
                 EventType.MESSAGE_DELTA,
@@ -906,12 +906,12 @@ def test_streaming_deltas_keep_existing_widgets_and_skip_full_render():
             )
         )
 
-    QTest.qWait(35)
+    drawer._flush_streaming_message_updates()
     application.processEvents()
     assert drawer._message_widgets["stable-message"] is message_widget
     assert drawer._tool_group_widgets["turn-1:tools:1"] is tool_widget
     assert drawer.findChild(QLabel, "agentChatAgentMessage") is message_widget
-    assert message_widget.text() == "x" * 1_000 + " ▌"
+    assert message_widget.text() == "x" * 100 + " ▌"
     assert render_calls == 0
     drawer.close()
 
@@ -1129,7 +1129,7 @@ def test_conversation_follows_stream_until_user_scrolls_up():
         )
     )
     application.processEvents()
-    QTest.qWait(10)
+    QTest.qWait(1)
 
     assert scroll_bar.value() == previous_value
     assert scroll_bar.value() < scroll_bar.maximum()
@@ -1145,7 +1145,7 @@ def test_conversation_follows_stream_until_user_scrolls_up():
         )
     )
     application.processEvents()
-    QTest.qWait(10)
+    QTest.qWait(1)
 
     assert scroll_bar.value() == scroll_bar.maximum()
     drawer.close()

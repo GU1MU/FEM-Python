@@ -70,6 +70,7 @@ from fem_agent.boolean_authoring import (
 from fem_agent.authoring_runtime import (
     AuthoringToolOutcome,
     AuthoringWorkflowController,
+    AuthoringWorkflowStage,
     provider_safe_authoring_payload,
 )
 from fem_agent.definition_authoring import (
@@ -2526,6 +2527,7 @@ class AgentAuthoringBridge:
         self._accepting_proposal_id: str | None = None
         self._gui_thread_id = threading.get_ident()
         self._patch_listener: Callable[[AppliedPatchRecord], None] | None = None
+        self._result_invalidation_confirmation: Callable[[], bool] | None = None
         self._lifecycle_listener: (
             Callable[[AgentProposal, ProposalState, str], None] | None
         ) = None
@@ -2557,6 +2559,16 @@ class AgentAuthoringBridge:
         if not callable(callback):
             raise TypeError("lifecycle listener must be callable")
         self._lifecycle_listener = callback
+
+    def set_result_invalidation_confirmation(
+        self,
+        callback: Callable[[], bool],
+    ) -> None:
+        """Install the GUI's canonical unsaved-result confirmation gate."""
+
+        if not callable(callback):
+            raise TypeError("result invalidation confirmation must be callable")
+        self._result_invalidation_confirmation = callback
 
     def bind_snapshot(
         self,
@@ -2761,6 +2773,13 @@ class AgentAuthoringBridge:
 
     def accept_from_gui_control(self, proposal_id: str) -> BridgeReceipt:
         self._require_gui_thread()
+        record = self._pending_record(proposal_id)
+        if record.proposal.invalidation_impact.get("results") is True:
+            confirmation = self._result_invalidation_confirmation
+            if confirmation is not None and not confirmation():
+                raise AuthoringAuthorizationError(
+                    "result-invalidating proposal was cancelled by the user"
+                )
         authorization = self._issue_gui_authorization(
             proposal_id,
             "accept",
@@ -5116,7 +5135,12 @@ __all__ = [
     "AgentMeshTaskRequest",
     "AgentSolveTaskRequest",
     "AgentAuthoringBridge",
+    "AgentProposal",
+    "AgentResultQueryBridge",
+    "AuthoringWorkflowController",
+    "AuthoringWorkflowStage",
     "BridgeReceipt",
+    "ProposalState",
     "SessionResultQueryPort",
     "SessionGeometryAuthoringPort",
     "authoring_context_from_snapshot",

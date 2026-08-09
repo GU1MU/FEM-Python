@@ -62,7 +62,17 @@ def test_editable_definition_contracts_are_frozen(value: object, field_name: str
 
 
 def test_definition_serialisation_shape_remains_compatible() -> None:
-    assert asdict(NativePart()) == {"name": "Part-1", "body_name": "Body-1"}
+    part = NativePart()
+    assert asdict(part) == {
+        "id": "P1",
+        "name": "Part-1",
+        "geometry_recipe": None,
+        "mesh_settings": None,
+        "suppressed": False,
+        "provenance": None,
+        "_legacy_body_name": "Body-1",
+    }
+    assert part.body_name == "Body-1"
     assert asdict(FeatureRecord("Sketch-1", "sketch")) == {
         "name": "Sketch-1",
         "kind": "sketch",

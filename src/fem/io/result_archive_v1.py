@@ -158,7 +158,7 @@ def _canonical_json(value: object) -> bytes:
             separators=(",", ":"),
             allow_nan=False,
         ).encode("utf-8", errors="strict")
-    except (TypeError, ValueError, UnicodeError) as error:
+    except (RecursionError, TypeError, ValueError, UnicodeError) as error:
         raise ResultArchiveEncodeError(f"manifest JSON encoding failed: {error}") from error
 
 
@@ -185,12 +185,53 @@ def _parse_manifest(data: bytes) -> dict[str, Any]:
         )
     except ResultArchiveDecodeError:
         raise
-    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        OverflowError,
+        RecursionError,
+        TypeError,
+        ValueError,
+    ) as error:
         raise ResultArchiveDecodeError(f"manifest is not strict UTF-8 JSON: {error}") from error
     if type(payload) is not dict:
         raise ResultArchiveDecodeError("manifest root must be a JSON object")
     _exact_keys(payload, _TOP_LEVEL_KEYS, label="manifest")
     return payload
+
+
+def _parse_manifest_header(data: bytes) -> tuple[str, int]:
+    """Read only the version-neutral fields required for codec dispatch."""
+
+    try:
+        text = data.decode("utf-8", errors="strict")
+        payload = json.loads(
+            text,
+            object_pairs_hook=_reject_duplicate_object,
+            parse_constant=_reject_json_constant,
+        )
+    except ResultArchiveDecodeError:
+        raise
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        OverflowError,
+        RecursionError,
+        TypeError,
+        ValueError,
+    ) as error:
+        raise ResultArchiveDecodeError(
+            f"manifest header is not strict UTF-8 JSON: {error}"
+        ) from error
+    if type(payload) is not dict:
+        raise ResultArchiveDecodeError("manifest root must be a JSON object")
+    format_name = payload.get("format")
+    schema = payload.get("schema")
+    if type(format_name) is not str or not format_name.strip():
+        raise ResultArchiveDecodeError("manifest.format must be a nonblank string")
+    if type(schema) is not int:
+        raise ResultArchiveDecodeError("manifest.schema must be a strict integer")
+    return format_name, schema
 
 
 def _exact_keys(value: object, expected: set[str] | frozenset[str], *, label: str) -> None:
@@ -228,7 +269,10 @@ def _strict_int(value: object, *, label: str, minimum: int | None = None) -> int
 def _strict_float(value: object, *, label: str, minimum: float | None = None) -> float:
     if type(value) not in {int, float}:
         raise ResultArchiveDecodeError(f"{label} must be a real number")
-    result = float(value)
+    try:
+        result = float(value)
+    except (OverflowError, ValueError) as error:
+        raise ResultArchiveDecodeError(f"{label} must be a finite real number") from error
     if not np.isfinite(result):
         raise ResultArchiveDecodeError(f"{label} must be finite")
     if minimum is not None and result < minimum:
@@ -1212,6 +1256,70 @@ def _open_archive_bytes(data: bytes) -> tuple[dict[str, Any], dict[str, bytes]]:
         archive.close()
 
 
+def _inspect_result_archive_header(
+    archive: zipfile.ZipFile,
+) -> tuple[str, int]:
+    infos = archive.infolist()
+    _validate_zip_infos(infos, error_type=ResultArchiveDecodeError)
+    names = [item.filename for item in infos]
+    if len(names) != len(set(names)):
+        raise ResultArchiveDecodeError("result archive contains duplicate entries")
+    if any(not _safe_entry_name(name) for name in names):
+        raise ResultArchiveDecodeError("result archive contains unsafe entry path")
+    if MANIFEST_NAME not in names:
+        raise ResultArchiveDecodeError("result archive is missing manifest.json")
+    manifest_info = archive.getinfo(MANIFEST_NAME)
+    _validate_manifest_bytes(
+        manifest_info.file_size,
+        error_type=ResultArchiveDecodeError,
+    )
+    manifest_bytes = _read_zip_entry_bounded(
+        archive,
+        MANIFEST_NAME,
+        _MAX_MANIFEST_BYTES,
+    )
+    return _parse_manifest_header(manifest_bytes)
+
+
+def inspect_result_archive_header_bytes(data: bytes) -> tuple[str, int]:
+    """Return ``(format, schema)`` without decoding archive arrays."""
+
+    if type(data) is not bytes:
+        raise TypeError("archive data must be bytes")
+    _validate_container_bytes(len(data), error_type=ResultArchiveDecodeError)
+    try:
+        with zipfile.ZipFile(BytesIO(data), "r") as archive:
+            return _inspect_result_archive_header(archive)
+    except ResultArchiveDecodeError:
+        raise
+    except (KeyError, OSError, RuntimeError, ValueError, zipfile.BadZipFile) as error:
+        raise ResultArchiveDecodeError(
+            f"result archive header could not be read: {error}"
+        ) from error
+
+
+def inspect_result_archive_header_path(
+    path: str | Path,
+) -> tuple[str, int]:
+    """Read a bounded archive header directly from a filesystem path."""
+
+    source = Path(path)
+    try:
+        declared_size = source.stat().st_size
+        _validate_container_bytes(
+            declared_size,
+            error_type=ResultArchiveDecodeError,
+        )
+        with zipfile.ZipFile(source, "r") as archive:
+            return _inspect_result_archive_header(archive)
+    except ResultArchiveDecodeError:
+        raise
+    except (KeyError, OSError, RuntimeError, TypeError, ValueError, zipfile.BadZipFile) as error:
+        raise ResultArchiveDecodeError(
+            f"result archive header could not be read: {error}"
+        ) from error
+
+
 def _read_zip_entry_bounded(
     archive: zipfile.ZipFile,
     name: str,
@@ -1270,7 +1378,7 @@ def _decode_origin(value: object) -> ResultArchiveOrigin:
             model_fingerprint=value["model_fingerprint"],
             provenance=value["provenance"],
         )
-    except (TypeError, ValueError) as error:
+    except (RecursionError, TypeError, ValueError) as error:
         raise ResultArchiveDecodeError(f"invalid manifest.origin: {error}") from error
 
 
@@ -1629,7 +1737,7 @@ def decode_result_archive_v1(data: bytes) -> ResultArchiveSnapshot:
             model_projection=projection,
             unit_context=_unit_from_json(manifest["unit_context"], label="manifest.unit_context"),
         )
-    except (TypeError, ValueError) as error:
+    except (OverflowError, RecursionError, TypeError, ValueError) as error:
         raise ResultArchiveDecodeError(f"invalid result archive snapshot: {error}") from error
     # Ensure all READY catalog fields have exactly one materialized field and
     # no materialized field is hidden from the catalog.
@@ -1781,6 +1889,8 @@ __all__ = [
     "decode_result_archive_v1",
     "dumps_result_archive_v1",
     "encode_result_archive_v1",
+    "inspect_result_archive_header_bytes",
+    "inspect_result_archive_header_path",
     "load_result_archive_v1",
     "loads_result_archive_v1",
     "read_result_archive_v1",

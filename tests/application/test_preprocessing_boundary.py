@@ -16,6 +16,7 @@ from fem.geometry import WireGeometry, WireMember, WirePoint
 from fem.mesh.settings import MeshSettings
 
 
+@pytest.mark.gmsh
 def test_native_1d_preprocessing_generates_a_truss_model() -> None:
     recipe = WireGeometry(
         "Wire",

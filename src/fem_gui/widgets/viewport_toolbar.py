@@ -18,9 +18,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fem_agent.authoring_runtime import AuthoringWorkflowController
-
-from ..agent_authoring import AgentAuthoringBridge
+from ..agent_authoring import (
+    AgentAuthoringBridge,
+    AuthoringWorkflowController,
+)
 from ..icons import icon
 from .agent_chat import ModelViewportOverlayHost
 

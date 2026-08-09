@@ -280,7 +280,7 @@ def test_native_1d_public_gui_workflow_persists_checks_solves_and_displays(
             )
         )
 
-    project_path = tmp_path / f"{formulation.casefold()}-native.femproj"
+    project_path = tmp_path / f"{formulation.casefold()}-native.fempy"
     await_succeeded(window.save_project_path(project_path))
     require_accepted(
         window.close_session(
@@ -291,7 +291,11 @@ def test_native_1d_public_gui_workflow_persists_checks_solves_and_displays(
     assert window.document.model is None
     assert window.document.assignments == (assignment,)
     if local_load is not None:
-        assert window.document.steps[0].line_loads == (local_load,)
+        reopened_load = window.document.steps[0].line_loads[0]
+        assert reopened_load.target == local_load.target
+        assert reopened_load.vector == local_load.vector
+        assert reopened_load.coordinate_system == local_load.coordinate_system
+        assert reopened_load.name == "载荷-兼容-Load-线-1"
 
     await_succeeded(window.generate_mesh())
     model = window.document.model

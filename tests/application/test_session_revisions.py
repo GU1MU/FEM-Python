@@ -43,7 +43,7 @@ def _native_session(*step_names: str) -> ModelSession:
     return session
 
 
-def test_can_save_requires_an_open_native_project_with_geometry() -> None:
+def test_can_save_requires_an_open_native_project() -> None:
     session = ModelSession()
 
     assert not session.can_save
@@ -59,8 +59,8 @@ def test_can_save_requires_an_open_native_project_with_geometry() -> None:
 
     session.close()
     session.new_native_project()
-    assert not session.can_save
-    assert not session.snapshot().can_save
+    assert session.can_save
+    assert session.snapshot().can_save
 
     session.replace_geometry(
         (NativePart(),), BoxGeometry("Box", 1.0, 1.0, 1.0)

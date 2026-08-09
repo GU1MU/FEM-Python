@@ -58,10 +58,12 @@ def test_prepare_result_archive_save_binds_exact_source_and_generation() -> None
         "materials",
         "sections",
         "assignments",
+        "steps",
     } <= set(summaries)
     assert summaries["mesh"]["node_count"] == len(
         payload.archive.materialization.topology.node_ids
     )
+    assert summaries["steps"][0]["total_load_count"] == 0
 
     def assert_json_safe(value):
         if isinstance(value, Mapping):

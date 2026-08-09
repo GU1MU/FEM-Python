@@ -11,6 +11,9 @@ from typing import Any, Callable
 
 from fem.core.model import MaterialDefinition, SectionAssignment
 from fem.elements import (
+    BEAM_ELEMENT_LOCAL_Y_REFERENCE_KEY,
+    BEAM_FRAME_FIELD_KEY,
+    BEAM_FRAME_FIELD_REFERENCE_KEY,
     BEAM_LOCAL_Y_REFERENCE_KEY,
     BeamOrientation,
     BeamOrientationError,
@@ -1223,6 +1226,12 @@ def compile_model_definitions(
         compiled.sections = compiled_sections
         compiled.steps = deepcopy(list(normalized.steps))
         if compiled_sections:
+            _invalidate_changed_beam_frame_fields(
+                base_model,
+                compiled,
+                normalized.assignments,
+                element_sets,
+            )
             target_diagnostics = _orientation_target_diagnostics(
                 compiled,
                 normalized,
@@ -1278,6 +1287,69 @@ def compile_model_definitions(
         model=compiled,
         diagnostics=(),
     )
+
+
+def _invalidate_changed_beam_frame_fields(
+    base_model: Any,
+    compiled_model: Any,
+    assignments: tuple[RegionAssignment, ...],
+    element_sets: Mapping[str, Any],
+) -> None:
+    """Drop imported frame fields when editable assignment orientation changes."""
+
+    base_orientations: dict[
+        str,
+        tuple[float, float, float] | None,
+    ] = {}
+    for section in tuple(getattr(base_model, "sections", ())):
+        properties = getattr(section, "properties", {})
+        raw_orientation = (
+            properties.get(BEAM_LOCAL_Y_REFERENCE_KEY)
+            if isinstance(properties, Mapping)
+            else None
+        )
+        orientation = (
+            None
+            if raw_orientation is None
+            else parse_beam_orientation(raw_orientation).local_y_reference
+        )
+        base_orientations[str(getattr(section, "element_set", ""))] = (
+            orientation
+        )
+
+    changed_regions = {
+        assignment.region_name
+        for assignment in assignments
+        if (
+            None
+            if assignment.beam_orientation is None
+            else assignment.beam_orientation.local_y_reference
+        )
+        != base_orientations.get(assignment.region_name)
+    }
+    if not changed_regions:
+        return
+
+    element_lookup = {
+        int(element.id): element
+        for element in tuple(
+            getattr(getattr(compiled_model, "mesh", None), "elements", ())
+        )
+    }
+    for region_name in changed_regions:
+        element_set = element_sets.get(region_name)
+        if element_set is None:
+            continue
+        for raw_element_id in tuple(
+            getattr(element_set, "element_ids", ())
+        ):
+            element = element_lookup.get(int(raw_element_id))
+            properties = getattr(element, "props", None)
+            if not isinstance(properties, dict):
+                continue
+            properties.pop(BEAM_FRAME_FIELD_KEY, None)
+            properties.pop(BEAM_FRAME_FIELD_REFERENCE_KEY, None)
+            properties.pop(BEAM_ELEMENT_LOCAL_Y_REFERENCE_KEY, None)
 
 
 def compiled_model_snapshot(

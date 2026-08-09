@@ -447,22 +447,24 @@ def test_phase0_project_router_dispatches_every_supported_schema(
     assert loaded.snapshot.source_path == source_path
 
 
-def test_phase0_reload_close_action_position_icon_and_state_projection():
+def test_phase0_result_actions_replace_reload_close_in_project_surfaces():
     descriptors = {item.key: item for item in ACTION_DESCRIPTORS}
-    assert tuple(item.key for item in ACTION_DESCRIPTORS[:6]) == (
+    assert tuple(item.key for item in ACTION_DESCRIPTORS[:8]) == (
         GuiActionKey.OPEN,
         GuiActionKey.NEW_NATIVE,
         GuiActionKey.OPEN_PROJECT,
         GuiActionKey.SAVE_PROJECT,
         GuiActionKey.RELOAD,
         GuiActionKey.CLOSE,
+        GuiActionKey.SAVE_RESULT,
+        GuiActionKey.OPEN_RESULT,
     )
-    assert descriptors[GuiActionKey.RELOAD].text == "重新加载"
-    assert descriptors[GuiActionKey.RELOAD].handler == "reload_model"
-    assert descriptors[GuiActionKey.RELOAD].icon_name == "reload"
-    assert descriptors[GuiActionKey.CLOSE].text == "关闭模型"
-    assert descriptors[GuiActionKey.CLOSE].handler == "close_model"
-    assert descriptors[GuiActionKey.CLOSE].icon_name == "close"
+    assert descriptors[GuiActionKey.SAVE_RESULT].text == "保存结果"
+    assert descriptors[GuiActionKey.SAVE_RESULT].handler == "save_current_result"
+    assert descriptors[GuiActionKey.SAVE_RESULT].icon_name == "reload"
+    assert descriptors[GuiActionKey.OPEN_RESULT].text == "打开结果"
+    assert descriptors[GuiActionKey.OPEN_RESULT].handler == "open_result_file"
+    assert descriptors[GuiActionKey.OPEN_RESULT].icon_name == "close"
 
     snapshot = ModelSession().snapshot()
     states = {
@@ -473,10 +475,9 @@ def test_phase0_reload_close_action_position_icon_and_state_projection():
             GuiActionContext(),
         )
     }
-    assert not states[GuiActionKey.RELOAD].enabled
-    assert "已打开的 INP" in states[GuiActionKey.RELOAD].reason
-    assert not states[GuiActionKey.CLOSE].enabled
-    assert "没有打开" in states[GuiActionKey.CLOSE].reason
+    assert not states[GuiActionKey.SAVE_RESULT].enabled
+    assert "没有可保存" in states[GuiActionKey.SAVE_RESULT].reason
+    assert states[GuiActionKey.OPEN_RESULT].enabled
 
     application = QApplication.instance() or QApplication([])
     window = FEMMainWindow()
@@ -489,13 +490,13 @@ def test_phase0_reload_close_action_position_icon_and_state_projection():
         "action_open_project",
         "action_save_project",
         "action_open",
-        "action_reload",
-        "action_close",
+        "action_save_result",
+        "action_open_result",
     ]
     assert file_menu.actions()[6].isSeparator()
     assert file_menu.actions()[7] is window.actions["exit"]
-    assert not window.actions["reload"].icon().isNull()
-    assert not window.actions["close"].icon().isNull()
+    assert not window.actions["save_result"].icon().isNull()
+    assert not window.actions["open_result"].icon().isNull()
 
     project_page = window.ribbon.stack.widget(
         [
@@ -517,9 +518,9 @@ def test_phase0_reload_close_action_position_icon_and_state_projection():
         "action_new_native",
         "action_open_project",
         "action_save_project",
-        "action_reload",
-        "action_close",
         "action_open",
+        "action_save_result",
+        "action_open_result",
     ]
     window.close()
     application.processEvents()

@@ -38,7 +38,7 @@ def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def _wait_for_task(window: FEMMainWindow, timeout: float = 10.0) -> None:
+def _wait_for_task(window: FEMMainWindow, timeout: float = 2.0) -> None:
     application = _application()
     deadline = monotonic() + timeout
     while window.busy and monotonic() < deadline:

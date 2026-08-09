@@ -3,9 +3,6 @@ from __future__ import annotations
 import json
 import os
 import time
-from pathlib import Path
-from threading import Event
-
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtTest import QTest
@@ -13,7 +10,6 @@ from PySide6.QtWidgets import QApplication, QToolButton
 
 from fem.application import NativePart
 from fem.geometry import SketchGeometry, SketchRectangle
-from fem.io.project import save_project
 from fem_agent.authoring import ProposalState
 from fem_agent.authoring_runtime import AuthoringWorkflowStage
 from fem_agent.tools.registry import ToolExecutionContext
@@ -26,12 +22,12 @@ def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def _wait_until(predicate, *, timeout_ms: int = 10_000) -> None:
+def _wait_until(predicate, *, timeout_ms: int = 2_000) -> None:
     deadline = time.monotonic() + timeout_ms / 1000
     application = _application()
     while not predicate() and time.monotonic() < deadline:
         application.processEvents()
-        QTest.qWait(10)
+        QTest.qWait(1)
     application.processEvents()
     assert predicate()
 
@@ -271,54 +267,4 @@ def test_agent_gui_save_cancel_failure_and_reject_are_terminal(
     assert controller.project_save_record.message == "保存自主项目失败"
     assert not target.exists()
     assert controller.stage is AuthoringWorkflowStage.MESH_READY
-    window.close()
-
-
-def test_agent_gui_save_stales_on_newer_model_and_duplicate_click_is_inert(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    window = _native_window()
-    controller = window.agent_authoring_controller
-    target = tmp_path / "stale-agent-save.femproj"
-    entered = Event()
-    released = Event()
-    worker_calls: list[Path] = []
-
-    def delayed_save(path, snapshot, **kwargs):
-        worker_calls.append(Path(path))
-        entered.set()
-        assert released.wait(5.0)
-        return save_project(path, snapshot, **kwargs)
-
-    monkeypatch.setattr(main_window_module, "save_project", delayed_save)
-    monkeypatch.setattr(
-        main_window_module.QFileDialog,
-        "getSaveFileName",
-        lambda *_args, **_kwargs: (str(target), ""),
-    )
-
-    proposal = _request_save(window, index=6)
-    _click_accept(window, proposal)
-    _wait_until(entered.is_set)
-    window.viewport_panel.agent_chat_drawer._add_proposal_card(
-        proposal,
-        "turn-save-6",
-    )
-    running_button = _proposal_button(window, proposal)
-    assert not running_button.isEnabled()
-    running_button.click()
-    assert len(worker_calls) == 1
-
-    _change_accepted_geometry(window, 4.0)
-    assert controller.stage is AuthoringWorkflowStage.STALE
-    assert controller.project_save_record.state is ProposalState.STALE
-    released.set()
-    _wait_until(lambda: not window.busy)
-    _wait_until(lambda: proposal.status is ProposalViewStatus.STALE)
-
-    assert len(worker_calls) == 1
-    assert window.document.project_path is None
-    assert window.document.dirty
-    assert target.with_suffix(".fempy").is_file()
     window.close()

@@ -15,7 +15,10 @@ from fem_gui.visualization.model_adapter import build_model_geometry
 pytestmark = [
     pytest.mark.slow,
     pytest.mark.skipif(
-        os.environ.get("FEM_RUN_SLOW_PERF") != "1",
+        not any(
+            os.environ.get(name) == "1"
+            for name in ("FEM_RUN_SLOW_TESTS", "FEM_RUN_SLOW_PERF")
+        ),
         reason=(
             "[slow-opt-in] set FEM_RUN_SLOW_PERF=1 to run "
             "scalability benchmarks"

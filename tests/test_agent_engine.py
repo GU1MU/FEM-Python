@@ -30,6 +30,9 @@ from fem_agent.worker import (
 from tests.helpers.abaqus_builders import write_perforated_plate_style_inp
 
 
+pytestmark = pytest.mark.integration
+
+
 def _tool_response(*calls):
     return ProviderResponse(
         AssistantMessage("assistant", tool_calls=tuple(calls)),
@@ -1367,7 +1370,7 @@ def test_event_subscriber_receives_worker_progress_before_operation_returns(
     unsubscribe = engine.subscribe(sink)
 
     def blocked_run(*args, **kwargs):
-        assert release_worker.wait(5.0)
+        assert release_worker.wait(2.0)
         record = engine.revisions.require_current(engine.session_id)
         return WorkerResponse(
             session_id=engine.session_id,
@@ -1385,10 +1388,10 @@ def test_event_subscriber_receives_worker_progress_before_operation_returns(
     thread = threading.Thread(target=engine.confirm_revision)
 
     thread.start()
-    assert progress_seen.wait(5.0)
+    assert progress_seen.wait(2.0)
     assert thread.is_alive()
     release_worker.set()
-    thread.join(5.0)
+    thread.join(2.0)
     unsubscribe()
 
     assert not thread.is_alive()
@@ -1409,7 +1412,7 @@ def test_cancel_during_confirmation_preflight_prevents_worker_launch(
 
     def blocked_summary(record):
         entered.set()
-        assert release.wait(5.0)
+        assert release.wait(2.0)
         return original(record)
 
     monkeypatch.setattr(engine.registry, "analysis_summary", blocked_summary)
@@ -1426,10 +1429,10 @@ def test_cancel_during_confirmation_preflight_prevents_worker_launch(
     )
 
     thread.start()
-    assert entered.wait(5.0)
+    assert entered.wait(2.0)
     cancelled = engine.cancel_active_operation()
     release.set()
-    thread.join(5.0)
+    thread.join(2.0)
 
     assert not thread.is_alive()
     assert cancelled[0].data["scope"] == "operation"
@@ -1458,7 +1461,7 @@ def test_cancelled_attachment_inspection_does_not_commit_a_revision(
     def blocked_inspection(*args, **kwargs):
         entered.set()
         cancel_event = kwargs["cancel_event"]
-        assert cancel_event.wait(5.0)
+        assert cancel_event.wait(2.0)
         raise InspectionWorkerError("cancelled")
 
     monkeypatch.setattr(
@@ -1474,9 +1477,9 @@ def test_cancelled_attachment_inspection_does_not_commit_a_revision(
     )
 
     thread.start()
-    assert entered.wait(5.0)
+    assert entered.wait(2.0)
     engine.cancel_active_operation()
-    thread.join(5.0)
+    thread.join(2.0)
 
     assert not thread.is_alive()
     assert engine.revisions.latest(engine.session_id) is None
@@ -1508,7 +1511,7 @@ def test_show_summary_can_be_cancelled_during_local_inspection(
 
     def blocked_summary(record):
         entered.set()
-        assert release.wait(5.0)
+        assert release.wait(2.0)
         return original(record)
 
     monkeypatch.setattr(engine.registry, "analysis_summary", blocked_summary)
@@ -1518,10 +1521,10 @@ def test_show_summary_can_be_cancelled_during_local_inspection(
     )
 
     thread.start()
-    assert entered.wait(5.0)
+    assert entered.wait(2.0)
     engine.cancel_active_operation()
     release.set()
-    thread.join(5.0)
+    thread.join(2.0)
 
     assert not thread.is_alive()
     assert any(
@@ -1546,7 +1549,7 @@ def test_session_switch_is_rejected_while_provider_operation_is_active(
 
     def complete(*args, **kwargs):
         entered.set()
-        assert release.wait(5.0)
+        assert release.wait(2.0)
         return _text_response("done")
 
     monkeypatch.setattr(provider, "complete", complete)
@@ -1554,10 +1557,10 @@ def test_session_switch_is_rejected_while_provider_operation_is_active(
     thread = threading.Thread(target=lambda: engine.send_message("hello"))
 
     thread.start()
-    assert entered.wait(5.0)
+    assert entered.wait(2.0)
     rejected = engine.create_session()
     release.set()
-    thread.join(5.0)
+    thread.join(2.0)
 
     assert not thread.is_alive()
     assert engine.session_id == original_session

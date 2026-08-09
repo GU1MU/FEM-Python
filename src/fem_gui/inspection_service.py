@@ -381,7 +381,14 @@ class InspectionService:
 
     def _inspect_model(self, _key: object) -> EntityInspection:
         mesh = self.model.mesh
-        dimension = "三维" if mesh.nodes and hasattr(mesh.nodes[0], "z") else "二维"
+        spatial_dimension = getattr(mesh, "spatial_dimension", None)
+        dimension = (
+            f"{spatial_dimension}维"
+            if spatial_dimension in {1, 2, 3}
+            else "三维"
+            if mesh.nodes and hasattr(mesh.nodes[0], "z")
+            else "二维"
+        )
         fields = (
             ("模型名称", str(self.model.name or "模型")), ("空间维度", dimension),
             ("节点数量", str(len(mesh.nodes))), ("单元数量", str(len(mesh.elements))),
@@ -399,7 +406,7 @@ class InspectionService:
         node_id = int(key)
         node = self.nodes[node_id]
         coords = [float(node.x), float(node.y)]
-        if hasattr(node, "z"):
+        if getattr(self.model.mesh, "spatial_dimension", None) != 2 and hasattr(node, "z"):
             coords.append(float(node.z))
         adjacent = tuple(
             (str(element_id), str(self.elements[element_id].type))
@@ -805,18 +812,30 @@ class InspectionService:
     def _inspect_step(self, key: object) -> EntityInspection:
         step_index = int(key)
         step = self.model.steps[step_index]
-        load_count = (
-            len(step.cloads)
-            + len(step.surface_loads)
-            + len(step.edge_loads)
-            + len(step.line_loads)
-            + len(step.body_loads)
-            + len(step.gravity_loads)
+        load_count = getattr(step, "summary_load_count", None)
+        if load_count is None:
+            load_count = (
+                len(step.cloads)
+                + len(step.surface_loads)
+                + len(step.edge_loads)
+                + len(step.line_loads)
+                + len(step.body_loads)
+                + len(step.gravity_loads)
+            )
+        boundary_count = getattr(
+            step,
+            "summary_boundary_count",
+            len(step.boundaries),
+        )
+        output_count = getattr(
+            step,
+            "summary_output_count",
+            len(step.outputs),
         )
         pages = [InspectionPage("概况", (
             ("分析步名称", step.name), ("分析类型", _procedure_label(step.procedure)),
-            ("边界条件数量", str(len(step.boundaries))), ("载荷数量", str(load_count)),
-            ("输出请求数量", str(len(step.outputs))),
+            ("边界条件数量", str(boundary_count)), ("载荷数量", str(load_count)),
+            ("输出请求数量", str(output_count)),
         ))]
         boundary_rows = tuple((str(index + 1), "位移边界条件", str(item.target),
                                _component_range(item.first_component, item.last_component), format_number(item.value))

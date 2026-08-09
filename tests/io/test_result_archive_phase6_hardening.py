@@ -45,10 +45,15 @@ def _expanded_location(location, copy_index: int):
 
 
 @pytest.fixture(scope="module")
-def large_result_archive():
+def result_archive():
+    return _snapshot(make_continuum_nodal_semantics_result, "phase6-small")
+
+
+@pytest.fixture(scope="module")
+def large_result_archive(result_archive):
     """Deterministic multi-field fixture with tens of thousands of records."""
 
-    base = _snapshot(make_continuum_nodal_semantics_result, "phase6-large")
+    base = result_archive
     repetitions = 2_048
     fields: list[FieldData] = []
     for field_index, field in enumerate(base.fields):
@@ -76,6 +81,7 @@ def large_result_archive():
     return replace(base, materialization=materialization)
 
 
+@pytest.mark.slow
 def test_large_archive_roundtrip_records_measurements_and_reuses_arrays(
     large_result_archive,
     tmp_path: Path,
@@ -140,10 +146,10 @@ def test_large_archive_roundtrip_records_measurements_and_reuses_arrays(
 
 
 def test_archive_rejects_declared_array_size_overflow(
-    large_result_archive,
+    result_archive,
     tmp_path: Path,
 ) -> None:
-    manifest, entries = _manifest_and_entries(encode_result_archive(large_result_archive))
+    manifest, entries = _manifest_and_entries(encode_result_archive(result_archive))
     metadata = manifest["arrays"]["topology/node_ids.npy"]
     metadata["shape"] = [2**60]
     metadata["nbytes"] = 2**60 * 8
@@ -154,21 +160,21 @@ def test_archive_rejects_declared_array_size_overflow(
 
 
 def test_archive_compression_ratio_guard_is_checked_before_read(
-    large_result_archive,
+    result_archive,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    encoded = encode_result_archive(large_result_archive)
+    encoded = encode_result_archive(result_archive)
     monkeypatch.setattr(archive_codec, "_MAX_ZIP_COMPRESSION_RATIO", 1)
     with pytest.raises(ResultArchiveDecodeError, match="compression-ratio"):
         decode_result_archive(encoded)
 
 
 def test_archive_container_limit_rejects_bytes_and_paths_before_zip_parse(
-    large_result_archive,
+    result_archive,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    encoded = encode_result_archive(large_result_archive)
+    encoded = encode_result_archive(result_archive)
     source = tmp_path / "container-limit.femres"
     source.write_bytes(encoded)
     monkeypatch.setattr(archive_codec, "_MAX_ZIP_CONTAINER_BYTES", len(encoded) - 1)
@@ -186,11 +192,11 @@ def test_archive_container_limit_rejects_bytes_and_paths_before_zip_parse(
 
 
 def test_archive_path_limit_checks_stat_before_open(
-    large_result_archive,
+    result_archive,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    encoded = encode_result_archive(large_result_archive)
+    encoded = encode_result_archive(result_archive)
     source = tmp_path / "container-stat-limit.femres"
     source.write_bytes(encoded)
     monkeypatch.setattr(archive_codec, "_MAX_ZIP_CONTAINER_BYTES", len(encoded) - 1)
@@ -250,10 +256,10 @@ def test_archive_path_limit_checks_stat_before_open(
 
 
 def test_archive_entry_count_and_manifest_limits_run_before_manifest_parse(
-    large_result_archive,
+    result_archive,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    encoded = encode_result_archive(large_result_archive)
+    encoded = encode_result_archive(result_archive)
     monkeypatch.setattr(archive_codec, "_MAX_ZIP_ENTRY_COUNT", 1)
     with pytest.raises(ResultArchiveDecodeError, match="too many ZIP entries"):
         decode_result_archive(encoded)
@@ -276,25 +282,25 @@ def test_archive_entry_count_and_manifest_limits_run_before_manifest_parse(
     ),
 )
 def test_archive_writer_rejects_limits_before_readback(
-    large_result_archive,
+    result_archive,
     monkeypatch: pytest.MonkeyPatch,
     limit_name: str,
 ) -> None:
     monkeypatch.setattr(archive_codec, limit_name, 1)
     with pytest.raises(ResultArchiveEncodeError):
-        encode_result_archive(large_result_archive)
+        encode_result_archive(result_archive)
 
 
 def test_archive_writer_checks_compression_ratio_like_reader(
-    large_result_archive,
+    result_archive,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    encoded = encode_result_archive(large_result_archive)
+    encoded = encode_result_archive(result_archive)
     decode_result_archive(encoded)
 
     monkeypatch.setattr(archive_codec, "_MAX_ZIP_COMPRESSION_RATIO", 1)
     with pytest.raises(ResultArchiveEncodeError, match="compression-ratio"):
-        encode_result_archive(large_result_archive)
+        encode_result_archive(result_archive)
 
 
 class _FailingStream:

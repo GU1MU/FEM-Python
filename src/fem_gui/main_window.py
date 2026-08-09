@@ -8,7 +8,7 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 import logging
 from pathlib import Path
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Any, Callable
 
 import numpy as np
@@ -166,8 +166,6 @@ from fem.io.result_archive import (
 from fem.mesh.quality import analyze_mesh
 from fem.mesh.settings import MeshSettings
 from fem.solvers import static_linear
-from fem_agent.authoring import ProposalState
-from fem_agent.result_authoring import AgentResultQueryBridge
 
 from .actions import build_actions
 from .action_state import GuiActionContext, derive_action_availability
@@ -176,7 +174,9 @@ from .agent_authoring import (
     AgentMeshTaskRequest,
     AgentPreflightState,
     AgentPreflightTaskRequest,
+    AgentResultQueryBridge,
     AgentSolveTaskRequest,
+    ProposalState,
     SessionGeometryAuthoringPort,
     SessionResultQueryPort,
     create_session_authoring_workflow_controller,
@@ -584,6 +584,9 @@ class FEMMainWindow(QMainWindow):
                 self._begin_agent_solve,
                 self._begin_agent_preflight,
             )
+        )
+        self.agent_authoring_bridge.set_result_invalidation_confirmation(
+            lambda: self._confirm_result_invalidation()
         )
         self.agent_authoring_bridge.bind_snapshot(self.document)
         self.agent_authoring_controller = (
@@ -1246,6 +1249,7 @@ class FEMMainWindow(QMainWindow):
                 started = perf_counter()
                 model_view = build_result_archive_model_view(
                     loaded.snapshot.model_projection,
+                    loaded.snapshot.profile,
                     name=str(loaded.snapshot.origin.model_name or "结果"),
                 )
                 geometry = build_result_archive_geometry(
@@ -7988,7 +7992,16 @@ class FEMMainWindow(QMainWindow):
             return False
         if not wait:
             return True
-        return completion.result().state is BackgroundTaskState.SUCCEEDED
+        terminal = completion.result()
+        deadline = perf_counter() + 5.0
+        while self.busy and perf_counter() < deadline:
+            QApplication.processEvents()
+            sleep(0.001)
+        QApplication.processEvents()
+        return (
+            terminal.state is BackgroundTaskState.SUCCEEDED
+            and not self.busy
+        )
 
     def open_result_file(self) -> None:
         """Show the result archive dialog and install only after confirmation."""
@@ -12924,4 +12937,5 @@ class FEMMainWindow(QMainWindow):
             if receipt.diagnostic is not None:
                 event.ignore()
                 return
+        self.viewport.shutdown_backend()
         event.accept()

@@ -68,7 +68,7 @@ def _application() -> QApplication:
 
 
 def _wait_for_task(window: FEMMainWindow) -> None:
-    deadline = monotonic() + 10.0
+    deadline = monotonic() + 2.0
     application = _application()
     while window.task_controller.busy and monotonic() < deadline:
         application.processEvents()

@@ -1574,7 +1574,8 @@ class _FakeGmsh:
             raise RuntimeError("fake session inspection failure")
         return self.initialized
 
-    def initialize(self) -> None:
+    def initialize(self, *, interruptible: bool = True) -> None:
+        del interruptible
         self.initialize_calls += 1
         self.initialized = True
         if self.fail_initialize_after_state:

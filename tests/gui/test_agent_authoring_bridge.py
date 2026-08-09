@@ -74,6 +74,7 @@ def _proposal(
     proposal_id: str = "proposal-1",
     *,
     tool_call_id: str = "call-1",
+    invalidates_results: bool = False,
 ) -> AgentProposal:
     return AgentProposal.create(
         proposal_id=proposal_id,
@@ -96,7 +97,10 @@ def _proposal(
         ),
         preconditions={"source_kind": "native"},
         expected_changes={"part_count_delta": 1},
-        invalidation_impact={"mesh": False},
+        invalidation_impact={
+            "mesh": False,
+            "results": invalidates_results,
+        },
         display_summary={
             "title": "加入偏心孔板",
             "summary": "A1 静态提案，不修改真实 ModelSession",
@@ -291,6 +295,35 @@ def test_bridge_gui_authorization_replay_stale_and_exception_paths() -> None:
     assert receipt.message == "fake port failure"
 
 
+def test_result_invalidating_proposal_uses_configured_unsaved_result_gate() -> None:
+    port = FakeAuthoringPort()
+    bridge = AgentAuthoringBridge(port)
+    bridge.bind_context(_context())
+    proposal = _proposal(
+        "proposal-result-invalidation",
+        tool_call_id="call-result-invalidation",
+        invalidates_results=True,
+    )
+    bridge.register_proposal(proposal)
+    allow = False
+    confirmations: list[bool] = []
+
+    def confirm() -> bool:
+        confirmations.append(allow)
+        return allow
+
+    bridge.set_result_invalidation_confirmation(confirm)
+    with pytest.raises(AuthoringAuthorizationError, match="cancelled"):
+        bridge.accept_from_gui_control(proposal.proposal_id)
+    assert bridge.state(proposal.proposal_id) is ProposalState.PENDING_CONFIRMATION
+    assert not [call for call in port.calls if call[0] == "accept"]
+
+    allow = True
+    accepted = bridge.accept_from_gui_control(proposal.proposal_id)
+    assert accepted.state is ProposalState.ACCEPTED
+    assert confirmations == [False, True]
+
+
 def test_requirement_review_confirmation_only_enters_through_gui_bridge() -> None:
     ledger = RequirementLedger()
     ledger.record(
@@ -334,8 +367,9 @@ def test_gui_authorization_rejects_a_background_caller() -> None:
 
     worker = threading.Thread(target=call_from_worker)
     worker.start()
-    worker.join()
+    worker.join(timeout=1.0)
 
+    assert not worker.is_alive()
     assert len(outcome) == 1
     assert isinstance(outcome[0], AuthoringAuthorizationError)
     assert bridge.state(proposal.proposal_id) is (

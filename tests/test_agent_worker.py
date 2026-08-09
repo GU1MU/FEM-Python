@@ -977,7 +977,7 @@ def test_cross_instance_claim_prevents_a_duplicate_worker_launch(
         _cancel_event,
     ):
         entered_launch.set()
-        if not release_launch.wait(timeout=5):
+        if not release_launch.wait(timeout=2):
             raise AssertionError("test did not release the held worker launch")
         return WorkerResponse(
             session_id=request.session_id,
@@ -1015,7 +1015,7 @@ def test_cross_instance_claim_prevents_a_duplicate_worker_launch(
 
     thread = threading.Thread(target=run_first)
     thread.start()
-    assert entered_launch.wait(timeout=5)
+    assert entered_launch.wait(timeout=2)
     try:
         with pytest.raises(WorkerRunInProgressError):
             second.run(
@@ -1027,7 +1027,7 @@ def test_cross_instance_claim_prevents_a_duplicate_worker_launch(
             )
     finally:
         release_launch.set()
-        thread.join(timeout=5)
+        thread.join(timeout=2)
 
     assert not thread.is_alive()
     assert not first_errors

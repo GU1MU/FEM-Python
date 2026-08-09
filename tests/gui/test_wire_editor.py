@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication, QDialogButtonBox, QLabel
 from fem.geometry import LogicalEntityRef, WireGeometry, WireMember, WirePoint
 from fem.mesh.settings import LocalMeshControl, MeshSettings
 from fem_gui.geometry_preview import build_geometry_preview
+import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.preprocessing_dialogs import MeshControlsDialog, MeshSettingsDialog
 from fem_gui.wire_editor import (
@@ -440,9 +441,14 @@ def test_truss_mesh_dialog_rejects_legacy_local_controls() -> None:
     ).isEnabled()
 
 
-def test_main_window_can_commit_a_wire_after_detached_edit() -> None:
+def test_main_window_can_commit_a_wire_after_detached_edit(monkeypatch) -> None:
     _application()
     window = FEMMainWindow()
+    monkeypatch.setattr(
+        main_window_module.QInputDialog,
+        "getText",
+        lambda *_args, **_kwargs: ("Wire-Part", True),
+    )
     window._create_native_model("Model-1")
     assert window.actions["geometry_wire"].isEnabled()
     assert window.actions["geometry_wire"].text() == "新建线体"
@@ -460,4 +466,5 @@ def test_main_window_can_commit_a_wire_after_detached_edit() -> None:
     assert isinstance(window.document.geometry_recipe, WireGeometry)
     assert window.document.geometry_recipe.members[0].start == "P1"
     assert window.viewport._geometry_preview.dimension == 1
+    window.close_model(confirm=False)
     window.close()

@@ -24,6 +24,7 @@ from fem.core.model import (
     DisplacementConstraint,
     MaterialDefinition,
     NodalLoad,
+    OutputRequest,
 )
 from fem.application.results import build_solve_result_bundle
 from fem.geometry import LogicalEntityRef
@@ -57,7 +58,7 @@ _RESULT_ACTIONS = (
 )
 
 
-def _wait_for_task(window: FEMMainWindow, timeout: float = 10.0) -> None:
+def _wait_for_task(window: FEMMainWindow, timeout: float = 2.0) -> None:
     application = QApplication.instance() or QApplication([])
     deadline = monotonic() + timeout
     while window.busy and monotonic() < deadline:
@@ -83,6 +84,10 @@ def _install_imported(
     path: str = "regression.inp",
 ) -> None:
     installed_model = model or make_static_pull_truss_model()
+    if model is None:
+        installed_model.steps[0].outputs = (
+            OutputRequest("field", "node", ("U",)),
+        )
     task = window.session.prepare_import(Path(path))
     assert window._apply_session_delta(
         window.session.accept_imported_model(task.token, installed_model),
@@ -159,8 +164,17 @@ def _assert_result_entries_disabled(window: FEMMainWindow) -> None:
     assert not window.result_scale_combo.isEnabled()
 
 
-def test_delete_and_recreate_geometry_remove_all_topology_references() -> None:
+def test_delete_and_recreate_geometry_remove_all_topology_references(
+    monkeypatch,
+) -> None:
     window = _new_window()
+    monkeypatch.setattr(
+        main_window_module.QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: (
+            main_window_module.QMessageBox.StandardButton.Yes
+        ),
+    )
     window._create_native_model("Model-1")
     window._set_native_geometry(
         RectangleGeometry("Plate", 2.0, 1.0),
@@ -171,15 +185,15 @@ def test_delete_and_recreate_geometry_remove_all_topology_references() -> None:
             (
                 NamedRegion(
                     "SolidDomain",
-                    (LogicalEntityRef("body:domain"),),
+                    (LogicalEntityRef("body:P1/domain"),),
                 ),
                 NamedRegion(
                     "Fixed",
-                    (LogicalEntityRef("edge:left"),),
+                    (LogicalEntityRef("edge:P1/left"),),
                 ),
                 NamedRegion(
                     "Loaded",
-                    (LogicalEntityRef("edge:right"),),
+                    (LogicalEntityRef("edge:P1/right"),),
                 ),
             )
         )
@@ -190,7 +204,7 @@ def test_delete_and_recreate_geometry_remove_all_topology_references() -> None:
                 0.5,
                 local_controls=(
                     LocalMeshControl(
-                        LogicalEntityRef("edge:right"),
+                        LogicalEntityRef("edge:P1/right"),
                         0.1,
                     ),
                 ),
@@ -220,8 +234,7 @@ def test_delete_and_recreate_geometry_remove_all_topology_references() -> None:
     assert not deleted.named_regions
     assert deleted.assignments == ()
     assert deleted.steps == ()
-    assert not hasattr(deleted.mesh_settings, "local_size")
-    assert deleted.mesh_settings.local_controls == ()
+    assert deleted.mesh_settings is None
     assert deleted.artifact is None
     assert window.geometry is None
     _assert_result_entries_disabled(window)
@@ -250,15 +263,15 @@ def test_named_region_change_invalidates_model_validation_runs_and_results() -> 
             (
                 NamedRegion(
                     "Old",
-                    (LogicalEntityRef("edge:bottom"),),
+                    (LogicalEntityRef("edge:P1/bottom"),),
                 ),
                 NamedRegion(
                     "FIXED",
-                    (LogicalEntityRef("edge:left"),),
+                    (LogicalEntityRef("edge:P1/left"),),
                 ),
                 NamedRegion(
                     "TIP",
-                    (LogicalEntityRef("edge:right"),),
+                    (LogicalEntityRef("edge:P1/right"),),
                 ),
             )
         )
@@ -292,15 +305,15 @@ def test_named_region_change_invalidates_model_validation_runs_and_results() -> 
             (
                 NamedRegion(
                     "Changed",
-                    (LogicalEntityRef("edge:right"),),
+                    (LogicalEntityRef("edge:P1/right"),),
                 ),
                 NamedRegion(
                     "FIXED",
-                    (LogicalEntityRef("edge:left"),),
+                    (LogicalEntityRef("edge:P1/left"),),
                 ),
                 NamedRegion(
                     "TIP",
-                    (LogicalEntityRef("edge:right"),),
+                    (LogicalEntityRef("edge:P1/right"),),
                 ),
             )
         )
@@ -622,9 +635,9 @@ def test_failed_project_open_preserves_session_tree_and_viewport(
         )
         save_project(corrupt, authoring.prepare_project_save())
         payload = json.loads(corrupt.read_text(encoding="utf-8"))
-        payload["project"]["authoring"]["logical_topology"][
-            "signature"
-        ]["entities"][0]["logical_id"] = "point:tampered"
+        payload["project"]["authoring"]["parts"][0][
+            "logical_topology"
+        ]["signature"]["entities"][0]["logical_id"] = "point:tampered"
         corrupt.write_text(
             json.dumps(payload, ensure_ascii=False),
             encoding="utf-8",

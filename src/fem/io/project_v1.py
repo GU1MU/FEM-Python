@@ -809,12 +809,22 @@ def _encode_mesh_settings(
             "cell_shape",
             "local_controls",
             "line_element_type",
+            "auto_level",
+            "strict_cell_shape",
         },
         path,
     )
     if settings.line_element_type is not None:
         raise ProjectV1EncodeError(
             f"{path}.line_element_type 无法由 v1 无损表示"
+        )
+    if settings.auto_level is not None:
+        raise ProjectV1EncodeError(
+            f"{path}.auto_level 无法由 v1 无损表示"
+        )
+    if settings.strict_cell_shape:
+        raise ProjectV1EncodeError(
+            f"{path}.strict_cell_shape 无法由 v1 无损表示"
         )
     size = _number(settings.size, f"{path}.size", ProjectV1EncodeError)
     if size <= 0:

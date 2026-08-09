@@ -510,8 +510,9 @@ def test_completion_waits_offline_and_drops_worker_payload_ownership() -> None:
     worker.start()
 
     terminal = handle.result(timeout=1.0)
-    worker.join()
+    worker.join(timeout=1.0)
 
+    assert not worker.is_alive()
     assert terminal.state is BackgroundTaskState.SUCCEEDED
     assert terminal.value is None
     assert handle.outcome is None

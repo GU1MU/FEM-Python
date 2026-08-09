@@ -910,6 +910,7 @@ def test_mesh_scope_ctrl_pick_toggles_selected_entity(monkeypatch) -> None:
     window.close()
 
 
+@pytest.mark.gmsh
 def test_former_builtin_region_name_can_be_created_as_a_mesh_scope(
     monkeypatch,
 ):

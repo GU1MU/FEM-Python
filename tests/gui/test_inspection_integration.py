@@ -87,16 +87,18 @@ def test_native_tree_keeps_model_name_and_supports_info_and_renames(
     window._apply_session_delta(
         window.session.new_native_project("Model-1")
     )
+    recipe = RectangleGeometry("Sketch-1", 2.0, 1.0)
     window._apply_session_delta(
         window.session.replace_native_geometry_inputs(
-            (NativePart(),),
-            RectangleGeometry("Sketch-1", 2.0, 1.0),
+            (NativePart(geometry_recipe=recipe),),
+            recipe,
         )
     )
 
     root = window.model_tree.topLevelItem(0)
     part = root.child(0)
     feature = part.child(0)
+    part_key = part.data(0, ROLE_KEY)
     assert root.text(0) == "Model-1"
     assert part.text(0) == "Part-1"
 
@@ -107,7 +109,7 @@ def test_native_tree_keeps_model_name_and_supports_info_and_renames(
         lambda title, rows: information.append((title, rows)),
     )
     window._show_entry_information("model", None)
-    window._show_entry_information("part", None)
+    window._show_entry_information("part", part_key)
     window._show_entry_information(
         "feature",
         feature.data(0, ROLE_KEY),
@@ -125,7 +127,7 @@ def test_native_tree_keeps_model_name_and_supports_info_and_renames(
         lambda *_args, **_kwargs: next(names),
     )
     window._rename_tree_entry("model", None)
-    window._rename_tree_entry("part", None)
+    window._rename_tree_entry("part", part_key)
 
     assert window.document.model_name == "Bracket"
     assert window.document.parts[0].name == "Mount"
@@ -159,6 +161,11 @@ def test_tree_double_click_edits_imported_material_and_invalidates_model(
         ),
     )
     _seed_current_result(window, "Static-1")
+    monkeypatch.setattr(
+        window,
+        "_confirm_result_invalidation",
+        lambda **_kwargs: True,
+    )
 
     window.model_tree._on_double_clicked(
         _find_kind(window.model_tree, "material")

@@ -16,7 +16,6 @@ from fem.application import (
     RegionAssignment,
     SectionDefinition,
 )
-from fem.application.results import ResultVariable
 from fem.core.model import DisplacementConstraint, MaterialDefinition, NodalLoad
 from fem.geometry import SketchGeometry, SketchRectangle
 from fem.mesh.settings import MeshSettings
@@ -30,7 +29,7 @@ def _application() -> QApplication:
 
 
 def _wait(window: FEMMainWindow) -> None:
-    deadline = monotonic() + 15.0
+    deadline = monotonic() + 2.0
     while window.busy and monotonic() < deadline:
         _application().processEvents()
         QThread.msleep(1)
@@ -131,11 +130,8 @@ def test_native_preprocess_check_job_result_workflow(monkeypatch):
         == window.document.model_revision
     )
     assert window.result_provider is not None
-    assert window.result_selection is not None
-    assert (
-        window.result_selection.field_key.request.field_id.variable
-        is ResultVariable.U
-    )
+    assert window.result_provider.catalog().fields == ()
+    assert window.result_selection is None
     window.close()
 
 

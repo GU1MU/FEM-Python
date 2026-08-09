@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 
-from fem.application.results import ResultArchiveModelProjection
+from fem.application.results import ElementResultProfile, ResultArchiveModelProjection
 from fem.core.model import (
     ElementSet,
     MaterialDefinition,
@@ -69,7 +69,8 @@ class ArchiveMeshView:
 
     nodes: tuple[ArchiveNodeView, ...]
     elements: tuple[ArchiveElementView, ...]
-    dofs_per_node: int = 3
+    dofs_per_node: int
+    spatial_dimension: int
 
     @property
     def num_nodes(self) -> int:
@@ -102,6 +103,34 @@ class ArchiveModelView:
     steps: tuple[object, ...]
     metadata: Mapping[str, object]
     edges: Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveStepView:
+    """Read-only analysis-step summary retained by a result archive."""
+
+    name: str
+    procedure: str
+    summary_boundary_count: int = 0
+    summary_load_count: int = 0
+    summary_output_count: int = 0
+    boundaries: tuple[object, ...] = ()
+    cloads: tuple[object, ...] = ()
+    surface_loads: tuple[object, ...] = ()
+    edge_loads: tuple[object, ...] = ()
+    line_loads: tuple[object, ...] = ()
+    body_loads: tuple[object, ...] = ()
+    gravity_loads: tuple[object, ...] = ()
+    outputs: tuple[object, ...] = ()
+
+
+def _profile_spatial_dimension(profile: ElementResultProfile) -> int:
+    return 2 if profile.family.value == "plane_continuum" else 3
+
+
+def _summary_count(value: Mapping[str, object], name: str) -> int:
+    count = value.get(name, 0)
+    return count if type(count) is int and count >= 0 else 0
 
 
 def build_model_geometry(model: Any) -> ModelGeometry:
@@ -196,6 +225,7 @@ def build_result_archive_geometry(
 
 def build_result_archive_model_view(
     projection: ResultArchiveModelProjection,
+    profile: ElementResultProfile,
     *,
     name: str = "结果",
 ) -> ArchiveModelView:
@@ -203,6 +233,10 @@ def build_result_archive_model_view(
 
     if type(projection) is not ResultArchiveModelProjection:
         raise TypeError("projection must be ResultArchiveModelProjection")
+    if type(profile) is not ElementResultProfile:
+        raise TypeError("profile must be ElementResultProfile")
+    if profile.dofs_per_node is None:
+        raise ValueError("result archive profile must define dofs_per_node")
     topology = projection.topology
     coordinates = topology._node_coordinates
     nodes = tuple(
@@ -223,7 +257,12 @@ def build_result_archive_model_view(
             strict=True,
         )
     )
-    mesh = ArchiveMeshView(nodes, elements)
+    mesh = ArchiveMeshView(
+        nodes,
+        elements,
+        dofs_per_node=profile.dofs_per_node,
+        spatial_dimension=_profile_spatial_dimension(profile),
+    )
     node_sets = {
         region_name: NodeSet(region_name, values)
         for region_name, values in projection.named_region_node_ids.items()
@@ -246,29 +285,40 @@ def build_result_archive_model_view(
         for item in summaries.get("assignments", ())
         if isinstance(item, Mapping)
     )
+    section_definitions = {
+        str(item["name"]): item
+        for item in summaries.get("sections", ())
+        if isinstance(item, Mapping) and str(item.get("name", "")).strip()
+    }
     sections = []
-    for item in summaries.get("sections", ()):
-        if not isinstance(item, Mapping) or not str(item.get("name", "")).strip():
+    for assignment in assignments:
+        section = section_definitions.get(str(assignment.get("section_name", "")))
+        region_name = str(assignment.get("region_name", ""))
+        if section is None or region_name not in element_sets:
             continue
-        assignment = next(
-            (
-                value
-                for value in assignments
-                if value.get("section_name") == item.get("name")
-            ),
-            None,
-        )
         sections.append(
             SectionAssignment(
-                element_set=str(
-                    (assignment or {}).get("region_name")
-                    or next(iter(element_sets), "__archive__")
-                ),
-                material=str(item.get("material") or ""),
-                section_type=str(item.get("section_type") or "solid"),
-                properties=dict(item.get("properties", {})),
+                element_set=region_name,
+                material=str(section.get("material") or ""),
+                section_type=str(section.get("section_type") or "solid"),
+                properties=dict(section.get("properties", {})),
             )
         )
+    steps = tuple(
+        ArchiveStepView(
+            name=str(item["name"]),
+            procedure=str(item.get("procedure") or "static"),
+            summary_boundary_count=_summary_count(item, "boundary_count"),
+            summary_load_count=(
+                _summary_count(item, "total_load_count")
+                or _summary_count(item, "load_count")
+                + _summary_count(item, "surface_load_count")
+            ),
+            summary_output_count=_summary_count(item, "output_count"),
+        )
+        for item in summaries.get("steps", ())
+        if isinstance(item, Mapping) and str(item.get("name", "")).strip()
+    )
     return ArchiveModelView(
         mesh=mesh,
         name=str(name or "结果"),
@@ -277,7 +327,7 @@ def build_result_archive_model_view(
         surfaces=MappingProxyType({}),
         materials=MappingProxyType(materials),
         sections=tuple(sections),
-        steps=(),
+        steps=steps,
         metadata=MappingProxyType({"result_archive_summaries": projection.summaries}),
         edges=MappingProxyType({}),
     )

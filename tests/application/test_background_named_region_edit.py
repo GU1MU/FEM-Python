@@ -232,6 +232,7 @@ def test_task_snapshot_is_detached_from_later_batch_container_changes(tmp_path) 
     assert copied == batch
 
 
+@pytest.mark.slow
 def test_large_scope_task_snapshot_does_not_expand_compact_references(
     tmp_path,
     monkeypatch,

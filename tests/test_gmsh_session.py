@@ -992,6 +992,7 @@ assert not bool(gmsh.isInitialized())
         capture_output=True,
         text=True,
         check=False,
+        timeout=15,
     )
 
     assert completed.returncode == 0, completed.stderr
@@ -1026,6 +1027,7 @@ assert not bool(gmsh.isInitialized())
         capture_output=True,
         text=True,
         check=False,
+        timeout=15,
     )
 
     assert completed.returncode == 0, completed.stderr
@@ -1059,6 +1061,7 @@ finally:
         capture_output=True,
         text=True,
         check=False,
+        timeout=15,
     )
 
     assert completed.returncode == 0, completed.stderr
@@ -1094,6 +1097,7 @@ finally:
         capture_output=True,
         text=True,
         check=False,
+        timeout=15,
     )
 
     assert completed.returncode == 0, completed.stderr

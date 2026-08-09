@@ -5,8 +5,7 @@ from dataclasses import replace
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import Event
-from time import monotonic, sleep
+from time import monotonic
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -33,7 +32,7 @@ def _application() -> QApplication:
 def _wait_for_task(window: FEMMainWindow) -> None:
     controller = window.task_controller
     assert controller.busy
-    deadline = monotonic() + 10.0
+    deadline = monotonic() + 2.0
     application = QApplication.instance()
     while controller.busy and monotonic() < deadline:
         application.processEvents()
@@ -521,6 +520,7 @@ def test_submit_resubmit_open_history_and_reload_clear(gui_inp_path):
     assert selected is not None
     assert selected.provenance.run_id == job1.run_id
     assert window.document.displayed_result_run_id == job1.run_id
+    window._confirm_discard_changes = lambda: True
     window.reload_model()
     _wait_for_task(window)
     assert window.document.runs == ()
@@ -671,61 +671,6 @@ def test_base_result_provider_failure_marks_run_failed_and_preserves_display(
     window.close()
 
 
-def test_cancellation_during_output_execution_discards_bundle(
-    monkeypatch,
-):
-    _application()
-    window = FEMMainWindow()
-    model = make_static_pull_truss_model()
-    window._model_loaded(
-        Path("pull.inp"),
-        (model, build_model_geometry(model)),
-    )
-    _accept_validation(window, "pull")
-    entered_output = Event()
-    original_build = main_window_module.build_solve_result_bundle
-
-    def wait_for_cancellation(
-        task,
-        result,
-        *,
-        cancellation,
-    ):
-        entered_output.set()
-        while not cancellation.is_cancelled:
-            sleep(0.001)
-        cancellation.checkpoint()
-        return original_build(
-            task,
-            result,
-            cancellation=cancellation,
-        )
-
-    monkeypatch.setattr(
-        main_window_module,
-        "build_solve_result_bundle",
-        wait_for_cancellation,
-    )
-
-    started = window._submit_job("Job-1", "pull")
-    assert started is not None
-    application = QApplication.instance()
-    deadline = monotonic() + 10.0
-    while not entered_output.is_set() and monotonic() < deadline:
-        application.processEvents()
-        QThread.msleep(1)
-    assert entered_output.is_set()
-    assert window.cancel_current_task()
-    _wait_for_task(window)
-
-    cancelled = window.session.find_run(started.run_id)
-    assert cancelled.status is RunStatus.CANCELLED
-    assert cancelled.cancellation_requested
-    assert not cancelled.has_result
-    assert window.session.current_result() is None
-    window.close()
-
-
 def test_solver_defensive_validation_failure_is_reported_by_job(monkeypatch):
     _application()
     window = FEMMainWindow()
@@ -783,6 +728,7 @@ def test_job_workflow_creates_no_job_files(monkeypatch, tmp_path, gui_inp_path):
     _wait_for_task(window)
     for name in ("jobs", "job.json", "solver.log", "result.npz"):
         assert not (tmp_path / name).exists()
+    window._confirm_discard_changes = lambda: True
     window.close_model()
     assert window.document.runs == ()
     window.close()

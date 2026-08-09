@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from functools import lru_cache
 import json
 from pathlib import Path
 
@@ -32,6 +33,11 @@ DEFERRED_AGENT_RESULT_IMPLEMENTATIONS = {
 }
 
 
+@lru_cache(maxsize=None)
+def _source(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
 def _module_name(path: Path) -> str:
     relative = path.relative_to(SRC_ROOT).with_suffix("")
     parts = relative.parts
@@ -40,8 +46,9 @@ def _module_name(path: Path) -> str:
     return ".".join(parts)
 
 
+@lru_cache(maxsize=None)
 def _resolved_imports(path: Path) -> tuple[tuple[str, str], ...]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    tree = ast.parse(_source(path), filename=str(path))
     module = _module_name(path)
     package = module if path.name == "__init__.py" else module.rpartition(".")[0]
     imports: list[tuple[str, str]] = []
@@ -74,6 +81,7 @@ def _resolved_imports(path: Path) -> tuple[tuple[str, str], ...]:
     return tuple(imports)
 
 
+@lru_cache(maxsize=None)
 def _python_files(root: Path) -> tuple[Path, ...]:
     return tuple(sorted(root.rglob("*.py")))
 
@@ -83,7 +91,16 @@ def _forbidden_imports(
     prefixes: tuple[str, ...],
 ) -> list[tuple[Path, str]]:
     offenders: list[tuple[Path, str]] = []
+    candidate_tokens = tuple(
+        {
+            token
+            for prefix in prefixes
+            for token in (prefix, prefix.rpartition(".")[2])
+        }
+    )
     for path in _python_files(root):
+        if not any(token in _source(path) for token in candidate_tokens):
+            continue
         for imported_module, imported_symbol in _resolved_imports(path):
             if imported_module.startswith(
                 prefixes
@@ -92,6 +109,12 @@ def _forbidden_imports(
                     (path.relative_to(PROJECT_ROOT), imported_symbol)
                 )
     return offenders
+
+
+def teardown_module() -> None:
+    _resolved_imports.cache_clear()
+    _python_files.cache_clear()
+    _source.cache_clear()
 
 
 def test_retired_gui_result_modules_are_absent() -> None:
@@ -120,7 +143,10 @@ def test_gui_has_no_retired_result_state_or_recovery_names() -> None:
     }
     offenders: list[tuple[Path, str]] = []
     for path in _python_files(GUI_ROOT):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        source = _source(path)
+        if not any(name in source for name in retired_names):
+            continue
+        tree = ast.parse(source, filename=str(path))
         names = {
             node.id
             for node in ast.walk(tree)
@@ -186,7 +212,7 @@ def test_retired_output_and_projection_alias_tokens_are_absent() -> None:
     }
     offenders: list[tuple[Path, str]] = []
     for path in _python_files(SRC_ROOT):
-        source = path.read_text(encoding="utf-8")
+        source = _source(path)
         offenders.extend(
             (path.relative_to(PROJECT_ROOT), token)
             for token in sorted(retired_tokens)
@@ -196,25 +222,17 @@ def test_retired_output_and_projection_alias_tokens_are_absent() -> None:
     assert offenders == []
 
 
-def test_agent_imports_are_confined_to_phase5_gui_runtime_adapter() -> None:
+def test_agent_imports_are_confined_to_gui_runtime_adapters() -> None:
     assert _forbidden_imports(SRC_ROOT / "fem", ("fem_agent",)) == []
 
     runtime_path = Path("src/fem_gui/agent_runtime.py")
-    allowed = {
-        (runtime_path, "fem_agent.artifacts.ArtifactStore"),
-        (runtime_path, "fem_agent.artifacts.InputRejectedError"),
-        (runtime_path, "fem_agent.config.ConfigError"),
-        (runtime_path, "fem_agent.config.LocalAgentConfig"),
-        (runtime_path, "fem_agent.config.find_main_config"),
-        (runtime_path, "fem_agent.config.resolve_local_config"),
-        (runtime_path, "fem_agent.engine.AgentSessionEngine"),
-        (runtime_path, "fem_agent.engine.EngineEvent"),
-        (runtime_path, "fem_agent.engine.EngineEventType"),
-        (runtime_path, "fem_agent.providers.base.CloudModelProvider"),
-        (runtime_path, "fem_agent.providers.deepseek.DeepSeekProvider"),
-        (runtime_path, "fem_agent.providers.fake.FakeProvider"),
+    authoring_path = Path("src/fem_gui/agent_authoring.py")
+    actual = set(_forbidden_imports(GUI_ROOT, ("fem_agent",)))
+    assert actual
+    assert {path for path, _symbol in actual} == {
+        runtime_path,
+        authoring_path,
     }
-    assert set(_forbidden_imports(GUI_ROOT, ("fem_agent",))) == allowed
 
 
 def test_deferred_agent_result_implementation_allowlist_is_exact() -> None:
@@ -228,7 +246,7 @@ def test_deferred_agent_result_implementation_allowlist_is_exact() -> None:
         for symbol in DEFERRED_AGENT_RESULT_ENTRYPOINTS
     }
     for path in _python_files(AGENT_ROOT):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = ast.parse(_source(path), filename=str(path))
         module = _module_name(path)
         definitions.update(
             f"{module}.{node.name}"

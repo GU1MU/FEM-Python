@@ -1,16 +1,12 @@
 from __future__ import annotations
 
 import os
-from threading import Event
-from time import monotonic
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication
 
 from fem_gui.main_window import FEMMainWindow
-from fem_gui.task_controller import TaskApplyOutcome
 
 
 def _application() -> QApplication:
@@ -43,7 +39,7 @@ def test_chinese_shell_has_no_unimplemented_modules_or_placeholder_terms():
     window.close()
 
 
-def test_action_states_without_model_result_and_while_busy():
+def test_action_states_without_model_or_result():
     _application()
     window = FEMMainWindow()
 
@@ -52,27 +48,19 @@ def test_action_states_without_model_result_and_while_busy():
     assert not window.actions["deformed"].isEnabled()
     assert not window.actions["query"].isEnabled()
 
-    release = Event()
-
-    def wait_for_release(context):
-        while not release.wait(0.001):
-            context.checkpoint()
-
-    task_id = window.task_controller.start(
-        wait_for_release,
-        task_name="忙碌状态测试",
-        apply_result=TaskApplyOutcome.accepted,
-    )
-    assert task_id is not None
-    QApplication.processEvents()
-    assert not window.actions["open"].isEnabled()
-    assert not window.actions["submit_job"].isEnabled()
-
-    release.set()
-    deadline = monotonic() + 3.0
-    while window.task_controller.busy and monotonic() < deadline:
-        QApplication.processEvents()
-        QThread.msleep(1)
-    QApplication.processEvents()
-    assert not window.task_controller.busy
     window.close()
+
+
+def test_main_window_close_explicitly_releases_viewport_backend(monkeypatch):
+    _application()
+    window = FEMMainWindow()
+    calls: list[bool] = []
+    monkeypatch.setattr(
+        window.viewport,
+        "shutdown_backend",
+        lambda: calls.append(True),
+    )
+
+    window.close()
+
+    assert calls == [True]

@@ -490,15 +490,15 @@ def test_main_window_filters_distributed_load_regions_by_model_dimension():
     planar_regions = (
         NamedRegion(
             "NodeSet",
-            (LogicalEntityRef("point:bottom-left"),),
+            (LogicalEntityRef("point:P1/bottom-left"),),
         ),
         NamedRegion(
             "EdgeSet",
-            (LogicalEntityRef("edge:bottom"),),
+            (LogicalEntityRef("edge:P1/bottom"),),
         ),
         NamedRegion(
             "Surface",
-            (LogicalEntityRef("face:domain"),),
+            (LogicalEntityRef("face:P1/domain"),),
         ),
     )
     window._set_native_geometry(rectangle, "矩形")
@@ -537,15 +537,15 @@ def test_main_window_filters_distributed_load_regions_by_model_dimension():
     solid_regions = (
         NamedRegion(
             "NodeSet",
-            (LogicalEntityRef("point:bottom/bottom-left"),),
+            (LogicalEntityRef("point:P1/bottom/bottom-left"),),
         ),
         NamedRegion(
             "EdgeSet",
-            (LogicalEntityRef("edge:bottom/bottom"),),
+            (LogicalEntityRef("edge:P1/bottom/bottom"),),
         ),
         NamedRegion(
             "Surface",
-            (LogicalEntityRef("face:bottom"),),
+            (LogicalEntityRef("face:P1/bottom"),),
         ),
     )
     assert window._apply_session_delta(

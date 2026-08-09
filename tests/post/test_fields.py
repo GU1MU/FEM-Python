@@ -244,6 +244,7 @@ def test_region_encoding_is_stable_in_a_fresh_python_process() -> None:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        timeout=15,
     )
 
     assert completed.stdout.rstrip("\r\n") == expected

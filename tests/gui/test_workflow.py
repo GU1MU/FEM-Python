@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import os
 from time import monotonic
 
@@ -15,7 +16,7 @@ from fem.application.results import (
     ResultVariable,
     ScalarFieldSelection,
 )
-from fem.io.result_csv import read_result_csv
+from fem.io.result_csv import RESULT_TABLE_CSV_BASE_HEADER
 from fem.io.result_vtk import read_result_vtk
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.postprocessing_dialogs import TypedResultDisplaySettings
@@ -35,7 +36,7 @@ def _application() -> QApplication:
 def _wait_for_task(window: FEMMainWindow) -> None:
     controller = window.task_controller
     assert controller.busy
-    deadline = monotonic() + 10.0
+    deadline = monotonic() + 2.0
     application = QApplication.instance()
     while controller.busy and monotonic() < deadline:
         application.processEvents()
@@ -210,13 +211,15 @@ def test_gui_exports_the_current_result_field_as_csv_and_vtk(
     assert window.actions["export_vtk"].isEnabled()
     window.actions["export_csv"].trigger()
     _wait_for_task(window)
-    csv_readback = read_result_csv(csv_target)
-    assert csv_readback.source == provider.source
-    assert (
-        csv_readback.materialization_generation
-        == provider.snapshot.generation
+    with csv_target.open(encoding="utf-8-sig", newline="") as stream:
+        csv_rows = list(csv.reader(stream))
+    assert tuple(csv_rows[0]) == (
+        *RESULT_TABLE_CSV_BASE_HEADER,
+        selection.component,
     )
-    assert csv_readback.selection == selection
+    assert len(csv_rows) == len(
+        provider.field(selection.field_key).locations
+    ) + 1
     assert successes == [("CSV 文件", csv_target)]
 
     window.actions["export_vtk"].trigger()

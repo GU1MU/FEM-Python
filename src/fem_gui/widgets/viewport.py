@@ -6359,12 +6359,25 @@ class FEMViewport(QWidget):
                 )
 
     def closeEvent(self, event) -> None:
-        if self._plotter is not None:
-            try:
-                self._plotter.close()
-            except Exception:
-                pass
+        self.shutdown_backend()
         super().closeEvent(event)
+
+    def shutdown_backend(self) -> None:
+        """Release the native render backend exactly once."""
+
+        plotter = self._plotter
+        if plotter is None:
+            return
+        self._plotter = None
+        self._stack.setCurrentWidget(self._message)
+        try:
+            self._stack.removeWidget(plotter)
+        except (RuntimeError, TypeError):
+            pass
+        try:
+            plotter.close()
+        except Exception:
+            pass
 
     def _ensure_plotter(self) -> bool:
         if self._plotter is not None:

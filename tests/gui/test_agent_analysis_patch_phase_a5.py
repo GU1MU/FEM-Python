@@ -89,7 +89,7 @@ def test_a5_model_tree_uses_named_stable_edit_identity() -> None:
         "分析步-静力",
         "载荷-拉伸",
     )
-    assert by_kind["output"].text(0) == "结果请求-位移"
+    assert by_kind["output"].text(0) == "U"
 
 
 def test_a5_manager_displays_name_separate_from_target_identity() -> None:

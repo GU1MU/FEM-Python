@@ -201,5 +201,6 @@ def test_pure_intersection_module_does_not_load_gui_or_meshing_dependencies() ->
         check=True,
         capture_output=True,
         text=True,
+        timeout=15,
     )
     assert check.stdout.strip() == "False"

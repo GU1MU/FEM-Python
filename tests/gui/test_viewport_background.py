@@ -82,3 +82,18 @@ def test_background_refresh_reuses_rendered_typed_payload(monkeypatch):
 
     assert calls == [rendered_payload]
     viewport.close()
+
+
+def test_viewport_shutdown_releases_native_backend_once() -> None:
+    _application()
+    viewport = FEMViewport()
+    closed: list[bool] = []
+    plotter = SimpleNamespace(close=lambda: closed.append(True))
+    viewport._plotter = plotter
+
+    viewport.shutdown_backend()
+    viewport.shutdown_backend()
+
+    assert viewport._plotter is None
+    assert closed == [True]
+    viewport.close()

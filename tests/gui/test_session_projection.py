@@ -16,6 +16,7 @@ import fem.application.session as session_module
 import fem_gui.main_window as main_window_module
 from fem.io.inp import read
 from fem.application import RegionAssignment, describe_session_authoring
+from fem.core.model import OutputRequest
 from fem.application.results import (
     FieldPosition,
     FieldRequest,
@@ -38,10 +39,17 @@ def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def _window_with_imported_model() -> FEMMainWindow:
+def _window_with_imported_model(
+    *,
+    with_displacement_output: bool = False,
+) -> FEMMainWindow:
     _application()
     window = FEMMainWindow()
     model = make_static_pull_truss_model()
+    if with_displacement_output:
+        model.steps[0].outputs = (
+            OutputRequest("field", "node", ("U",)),
+        )
     task = window.session.prepare_import(Path("projection.inp"))
     delta = window.session.accept_imported_model(task.token, model)
 
@@ -233,16 +241,15 @@ def test_one_delta_projects_result_to_every_gui_consumer() -> None:
         provider.source,
         provider.snapshot.generation,
     )
-    assert selection is not None
-    assert payload is not None
+    assert selection is None
+    assert payload is None
     assert provider.source.artifact_id == artifact_id
     assert provider.source.run_id == run_id
     assert provider.source.result_id == record.result_id
     assert provider.snapshot.generation == record.materialization.generation == 0
-    assert provider.catalog().default_selection == selection
+    assert provider.catalog().fields == ()
+    assert provider.catalog().default_selection is None
     assert window.viewport.artifact_id == artifact_id
-    assert payload.topology.source == provider.source
-    assert payload.topology.selection == selection
     assert window.inspection_service is not None
     assert provider.source == record.materialization.source
     assert (
@@ -252,13 +259,13 @@ def test_one_delta_projects_result_to_every_gui_consumer() -> None:
     assert not hasattr(window, "result_data")
     assert window.result_tree.topLevelItem(0).text(0) == "分析结果"
     assert window.result_tree.topLevelItem(0).child(0).text(0) == "pull"
-    assert window.actions["query"].isEnabled()
+    assert not window.actions["query"].isEnabled()
     assert window.result_variable_combo.isEnabled()
     window.close()
 
 
 def test_same_run_generation_rebuilds_projection_and_preserves_ready_fields() -> None:
-    window = _window_with_imported_model()
+    window = _window_with_imported_model(with_displacement_output=True)
     run_id = _install_successful_result(window)
     provider_before = window.result_provider
     selection_before = window.result_selection
@@ -322,7 +329,7 @@ def test_same_run_generation_rebuilds_projection_and_preserves_ready_fields() ->
 def test_hidden_run_materialization_does_not_replace_displayed_actor(
     monkeypatch,
 ) -> None:
-    window = _window_with_imported_model()
+    window = _window_with_imported_model(with_displacement_output=True)
     run_a = _install_successful_result(window, run_name="Job-A")
     record_a = window.session.current_result()
     assert record_a is not None

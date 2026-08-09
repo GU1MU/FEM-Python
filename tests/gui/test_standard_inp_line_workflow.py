@@ -20,7 +20,6 @@ from fem.application import (
     RegionRef,
     resolve_effective_beam_frames,
 )
-from fem.application.results import ResultVariable
 from fem.core.model import (
     ElementSet,
     LineLoad,
@@ -60,7 +59,7 @@ def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def _wait_for_task(window: FEMMainWindow, timeout: float = 20.0) -> None:
+def _wait_for_task(window: FEMMainWindow, timeout: float = 2.0) -> None:
     deadline = monotonic() + timeout
     application = _application()
     while window.busy and monotonic() < deadline:
@@ -146,7 +145,6 @@ def _open_check_solve(
         "_show_error",
         lambda title, message: errors.append((title, message)),
     )
-
     window.open_inp()
     _wait_for_task(window)
 
@@ -184,17 +182,14 @@ def _open_check_solve(
     selection = window.result_selection
     payload = window.viewport._result_render_payload
     assert provider is not None
-    assert selection is not None
-    assert payload is not None
+    assert selection is None
+    assert payload is None
     assert provider.source.run_id == run.run_id
     assert provider.source.artifact_id == current.provenance.artifact_id
-    assert selection.field_key.request.field_id.variable is ResultVariable.U
-    displacement = provider.field(selection.field_key)
-    assert np.isfinite(displacement.values).all()
-    assert np.max(np.abs(displacement.values)) > 0.0
-    assert payload.topology.source == provider.source
+    assert provider.catalog().fields == ()
+    assert provider.catalog().default_selection is None
     assert window.actions["deformed"].isEnabled()
-    assert window.actions["query"].isEnabled()
+    assert not window.actions["query"].isEnabled()
     assert window.result_tree.topLevelItem(0).text(0) != "尚无分析结果"
     return errors
 
@@ -385,7 +380,6 @@ def test_background_import_uses_report_and_installs_notice_after_accept(
         "_show_error",
         lambda title, message: errors.append((title, message)),
     )
-
     try:
         window._load_path(path)
         _wait_for_task(window)
@@ -422,6 +416,11 @@ def test_notices_survive_edit_check_solve_stale_and_failed_import(
         window,
         "_show_error",
         lambda title, message: errors.append((title, message)),
+    )
+    monkeypatch.setattr(
+        window,
+        "_confirm_result_invalidation",
+        lambda **_kwargs: True,
     )
 
     try:

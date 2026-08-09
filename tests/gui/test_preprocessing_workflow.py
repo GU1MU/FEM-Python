@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import os
 from time import monotonic
 
@@ -29,7 +30,6 @@ from fem.geometry import (
     ExtrudedGeometry,
     LogicalEntityRef,
     MovedGeometry,
-    MultiBodyGeometry,
     PlateWithHoleGeometry,
     RectangleGeometry,
     RotatedGeometry,
@@ -59,7 +59,7 @@ def _application() -> QApplication:
 
 
 def _wait_for_task(window: FEMMainWindow) -> None:
-    deadline = monotonic() + 10.0
+    deadline = monotonic() + 2.0
     application = _application()
     while window.busy and monotonic() < deadline:
         application.processEvents()
@@ -169,7 +169,10 @@ def test_scope_creation_starts_from_the_meshed_model() -> None:
     assert not window._scope_selection_overlay_active
 
     support = window.document.named_regions["Support"]
-    assert support.references == expected_mesh_edges
+    assert support.references == tuple(
+        replace(reference, part_id=window.document.active_part_id)
+        for reference in expected_mesh_edges
+    )
     rename_receipt = window.apply_named_region_edit(
         NamedRegionEditBatch(
             window.document.session_revision,
@@ -836,9 +839,9 @@ def test_selecting_a_solid_geometry_prepares_tetrahedral_settings_and_preview() 
     window._set_native_geometry(recipe, "长方体")
 
     geometry = window.document.geometry_recipe
-    assert isinstance(geometry, MultiBodyGeometry)
-    assert len(geometry.bodies) == 1
-    assert geometry.bodies[0].recipe == recipe
+    assert geometry == recipe
+    assert len(window.document.parts) == 1
+    assert window.document.active_part.geometry_recipe == recipe
     assert window.document.mesh_settings.cell_shape == "tetrahedron"
     assert window.viewport._geometry_preview is not None
     assert window.model_tree.topLevelItemCount() == 1
@@ -856,13 +859,19 @@ def test_renderer_failure_cannot_leave_valid_geometry_actions_disabled(monkeypat
     window = FEMMainWindow()
     render_preview = window.viewport.show_geometry_preview
     calls = 0
+    errors: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        window,
+        "_show_error",
+        lambda title, message: errors.append((title, message)),
+    )
 
-    def fail_preview(preview) -> None:
+    def fail_preview(preview, **kwargs) -> None:
         nonlocal calls
         calls += 1
         if calls == 1:
             raise RuntimeError("preview backend failed")
-        render_preview(preview)
+        render_preview(preview, **kwargs)
 
     monkeypatch.setattr(window.viewport, "show_geometry_preview", fail_preview)
     window._set_native_geometry(
@@ -870,8 +879,9 @@ def test_renderer_failure_cannot_leave_valid_geometry_actions_disabled(monkeypat
         "圆柱",
     )
 
-    assert calls == 2
-    window._on_geometry_entity_pick(LogicalEntityRef("body:B1"))
+    assert calls == 1
+    assert errors == [("编辑几何", "preview backend failed")]
+    window._on_geometry_entity_pick(LogicalEntityRef("body:P1/domain"))
     assert window.actions["geometry_move"].isEnabled()
     assert window.actions["geometry_select_face"].isEnabled()
     assert window.actions["mesh_settings"].isEnabled()

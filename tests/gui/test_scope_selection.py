@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import os
 from time import monotonic
 
@@ -31,7 +32,7 @@ def _application() -> QApplication:
 
 
 def _wait_for_task(window: FEMMainWindow) -> None:
-    deadline = monotonic() + 10.0
+    deadline = monotonic() + 2.0
     application = _application()
     while window.busy and monotonic() < deadline:
         application.processEvents()
@@ -406,6 +407,8 @@ def test_2d_section_scope_creation_uses_surface_bar_and_element_set(
 ) -> None:
     application = _application()
     window = FEMMainWindow()
+    window.show()
+    application.processEvents()
     recipe = RectangleGeometry("SectionSurfaceScope", 2.0, 1.0)
     _set_native_mesh_inputs(window, recipe, MeshSettings(0.2))
     window.generate_native_mesh()
@@ -457,7 +460,10 @@ def test_2d_section_scope_creation_uses_surface_bar_and_element_set(
 
     assert (
         window.document.named_regions["PlateSurface"].references
-        == topology.mesh_references[geometry_face]
+        == tuple(
+            replace(reference, part_id=window.document.active_part_id)
+            for reference in topology.mesh_references[geometry_face]
+        )
     )
     assert "PlateSurface" in window.document.model.element_sets
     assert len(resumed) == 1
@@ -466,4 +472,5 @@ def test_2d_section_scope_creation_uses_surface_bar_and_element_set(
         == "PlateSurface"
     )
     assert bar.isHidden()
+    window._confirm_discard_changes = lambda: True
     window.close()

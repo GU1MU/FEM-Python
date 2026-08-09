@@ -15,6 +15,7 @@ BEAM_LOCAL_Y_REFERENCE_KEY = "beam_local_y_reference"
 BEAM_ELEMENT_LOCAL_Y_REFERENCE_KEY = "beam_element_local_y_reference"
 BEAM_DEFAULT_LOCAL_Y_REFERENCE_KEY = "beam_default_local_y_reference"
 BEAM_FRAME_FIELD_KEY = "beam_frame_field"
+BEAM_FRAME_FIELD_REFERENCE_KEY = "beam_frame_field_reference"
 # The longer spelling is useful at adapter boundaries and is intentionally an
 # alias: the contract is still one generic Beam2 element property.
 BEAM_ELEMENT_FRAME_FIELD_KEY = BEAM_FRAME_FIELD_KEY
@@ -583,6 +584,12 @@ def resolve_beam_frame_field(
 
     length, tangent = line3d_geometry(mesh, elem, node_lookup)
     source_properties = _frame_properties(elem, properties)
+    authored_frame = _authored_assignment_frame(
+        source_properties,
+        length,
+        tangent,
+        elem,
+    )
     if BEAM_FRAME_FIELD_KEY not in source_properties:
         return BeamFrameField.constant(
             resolve_beam_frame(
@@ -598,12 +605,20 @@ def resolve_beam_frame_field(
             "Beam2 element frame field must be a BeamFrameField",
             element_id=_element_id(elem),
         )
-    return validate_beam_frame_field(
+    validated = validate_beam_frame_field(
         raw_field,
         length=length,
         tangent=tangent,
         element_id=_element_id(elem),
     )
+    if authored_frame is not None and not np.allclose(
+        validated.start.local_y,
+        authored_frame.local_y,
+        rtol=validated.comparison_tolerance,
+        atol=validated.comparison_tolerance,
+    ):
+        return BeamFrameField.constant(authored_frame)
+    return validated
 
 
 def validate_beam_frame_fields(mesh: Any) -> None:
@@ -664,19 +679,13 @@ def resolve_beam_frame(
 
     source_properties = _frame_properties(elem, properties)
     if BEAM_FRAME_FIELD_KEY in source_properties:
-        raw_field = source_properties[BEAM_FRAME_FIELD_KEY]
-        if type(raw_field) is not BeamFrameField:
-            raise BeamFrameFieldInvalidError(
-                "Beam2 element frame field must be a BeamFrameField",
-                element_id=_element_id(elem),
-            )
-        validate_beam_frame_field(
-            raw_field,
-            length=length,
-            tangent=local_x,
-            element_id=_element_id(elem),
+        effective_field = resolve_beam_frame_field(
+            mesh,
+            elem,
+            node_lookup,
+            properties=source_properties,
         )
-        if not raw_field.is_constant:
+        if not effective_field.is_constant:
             raise BeamFrameVariationError(
                 (
                     f"Beam2 element {_element_id(elem)!r} has a varying frame "
@@ -685,7 +694,11 @@ def resolve_beam_frame(
                 element_id=_element_id(elem),
                 tangent=tuple(float(value) for value in local_x),
             )
-        return _constant_field_frame(raw_field, source_properties, elem)
+        return _constant_field_frame(
+            effective_field,
+            source_properties,
+            elem,
+        )
     element_reference = source_properties.get(
         BEAM_ELEMENT_LOCAL_Y_REFERENCE_KEY,
         None,
@@ -733,6 +746,61 @@ def resolve_beam_frame(
         elem,
         source="explicit",
     )
+
+
+def _authored_assignment_frame(
+    properties: Mapping[str, Any],
+    length: float,
+    tangent: np.ndarray,
+    elem: Any,
+) -> BeamFrame | None:
+    """Resolve an assignment reference independently of an imported field."""
+
+    if (
+        BEAM_ELEMENT_LOCAL_Y_REFERENCE_KEY in properties
+        or BEAM_LOCAL_Y_REFERENCE_KEY not in properties
+    ):
+        return None
+    try:
+        orientation = parse_beam_orientation(
+            properties[BEAM_LOCAL_Y_REFERENCE_KEY]
+        )
+    except BeamOrientationInvalidError as error:
+        raise BeamOrientationInvalidError(
+            str(error),
+            element_id=_element_id(elem),
+            reference=error.reference,
+        ) from error
+    authored_frame = _reference_frame(
+        length,
+        np.asarray(tangent, dtype=float),
+        orientation,
+        elem,
+        source="explicit",
+    )
+    baseline_reference = properties.get(
+        BEAM_FRAME_FIELD_REFERENCE_KEY,
+    )
+    if baseline_reference is not None:
+        try:
+            baseline_orientation = parse_beam_orientation(
+                baseline_reference
+            )
+        except BeamOrientationInvalidError as error:
+            raise BeamFrameFieldInvalidError(
+                "Beam2 frame field reference must be a valid orientation",
+                element_id=_element_id(elem),
+            ) from error
+        if np.allclose(
+            authored_frame.local_y,
+            _normalized_reference(
+                baseline_orientation.local_y_reference
+            ),
+            rtol=BEAM_FRAME_COMPARISON_TOLERANCE,
+            atol=BEAM_FRAME_COMPARISON_TOLERANCE,
+        ):
+            return None
+    return authored_frame
 
 
 def _automatic_frame(length: float, local_x: np.ndarray) -> BeamFrame:
@@ -940,6 +1008,7 @@ __all__ = [
     "BEAM_ELEMENT_LOCAL_Y_REFERENCE_KEY",
     "BEAM_ELEMENT_FRAME_FIELD_KEY",
     "BEAM_FRAME_FIELD_KEY",
+    "BEAM_FRAME_FIELD_REFERENCE_KEY",
     "BEAM_FRAME_COMPARISON_TOLERANCE",
     "BEAM_FRAME_INTEGRATION_ORDER",
     "BEAM_FRAME_INTERPOLATION",

@@ -20,6 +20,9 @@ from tests.helpers.abaqus_builders import (
 )
 
 
+pytestmark = pytest.mark.integration
+
+
 def _tool_response(*calls):
     return ProviderResponse(
         AssistantMessage("assistant", tool_calls=tuple(calls)),

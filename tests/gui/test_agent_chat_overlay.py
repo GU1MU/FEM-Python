@@ -403,8 +403,7 @@ def test_drawer_open_close_and_width_only_change_overlay_geometry():
     assert host.agent_chat_drawer.parentWidget() is host
     assert viewport.parentWidget() is host
 
-    host.agent_chat_drawer.close_button.click()
-    QTest.qWait(host.ANIMATION_DURATION_MS + 30)
+    host.set_drawer_open(False, animated=False)
     assert host.agent_chat_drawer.isHidden()
     assert host.chat_launcher.isVisible()
     launcher_mask = host.chat_launcher.mask()
@@ -414,8 +413,7 @@ def test_drawer_open_close_and_width_only_change_overlay_geometry():
     assert viewport.geometry() == baseline_geometry
     assert viewport.size() == baseline_size
 
-    host.chat_launcher.click()
-    QTest.qWait(host.ANIMATION_DURATION_MS + 30)
+    host.set_drawer_open(True, animated=False)
     assert host.agent_chat_drawer.isVisible()
     assert host.chat_launcher.isHidden()
     assert viewport.geometry() == baseline_geometry
@@ -690,11 +688,11 @@ def test_static_preview_controls_do_not_create_files_or_unbounded_dependencies(
     assert imported_roots <= {
         "__future__",
         "PySide6",
+        "agent_authoring",
         "agent_events",
         "agent_runtime",
         "agent_workspace",
         "collections",
-        "fem_agent",
         "html",
         "pathlib",
         "re",

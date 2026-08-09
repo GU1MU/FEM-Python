@@ -374,7 +374,11 @@ class ModelTree(QTreeWidget):
             step_item = self._item(step.name, "step", index)
             if first_step_item is None and step.name.lower() != "initial":
                 first_step_item = step_item
-            bc_root = self._category(step_item, "边界条件", len(step.boundaries))
+            bc_root = self._category(
+                step_item,
+                "边界条件",
+                getattr(step, "summary_boundary_count", len(step.boundaries)),
+            )
             for bc_index, boundary in enumerate(step.boundaries):
                 identity = getattr(boundary, "name", None)
                 bc_root.addChild(
@@ -396,7 +400,11 @@ class ModelTree(QTreeWidget):
                 + len(getattr(step, "body_loads", ()))
                 + len(getattr(step, "gravity_loads", ()))
             )
-            load_root = self._category(step_item, "载荷", load_count)
+            load_root = self._category(
+                step_item,
+                "载荷",
+                getattr(step, "summary_load_count", load_count),
+            )
             for load_index, load in enumerate(step.cloads):
                 identity = getattr(load, "name", None)
                 load_root.addChild(self._item(
@@ -459,7 +467,11 @@ class ModelTree(QTreeWidget):
                 max(1, len(output.variables))
                 for output in step.outputs
             )
-            output_root = self._category(step_item, "输出请求", output_count)
+            output_root = self._category(
+                step_item,
+                "输出请求",
+                getattr(step, "summary_output_count", output_count),
+            )
             for output_index, output in enumerate(step.outputs):
                 identity = getattr(output, "name", None)
                 labels = tuple(output.variables) or ("输出请求",)

@@ -29,6 +29,7 @@ from ...elements import (
     BEAM_DEFAULT_LOCAL_Y_REFERENCE,
     BEAM_DEFAULT_LOCAL_Y_REFERENCE_KEY,
     BEAM_FRAME_FIELD_KEY,
+    BEAM_FRAME_FIELD_REFERENCE_KEY,
     BEAM_ELEMENT_LOCAL_Y_REFERENCE_KEY,
     BEAM_LOCAL_Y_REFERENCE_KEY,
     BeamFrameField,
@@ -244,15 +245,35 @@ def _install_b31_source_orientations(
                 },
             ) from exc
         mesh_element.props[BEAM_FRAME_FIELD_KEY] = frame_field
-        reference = field.constant_reference(element_id)
+        effective_reference = field.constant_reference(element_id)
+        baseline_reference = tuple(
+            float(value) for value in ordered[0].approximate_n1
+        )
+        if all(
+            math.isclose(
+                first,
+                float(second),
+                rel_tol=1e-10,
+                abs_tol=1e-10,
+            )
+            for first, second in zip(
+                baseline_reference,
+                ordered[1].approximate_n1,
+                strict=True,
+            )
+        ):
+            mesh_element.props[BEAM_FRAME_FIELD_REFERENCE_KEY] = tuple(
+                baseline_reference
+            )
         requires_override = any(
             entry.reference_source == "orientation-node"
-            or entry.normal_source != "generated-normal"
-            or entry.resolution_kind in {"averaged", "split-group"}
+            or entry.normal_source in {"element-normal", "node-normal"}
             for entry in entries
         )
-        if reference is not None and requires_override:
-            mesh_element.props[BEAM_ELEMENT_LOCAL_Y_REFERENCE_KEY] = reference
+        if effective_reference is not None and requires_override:
+            mesh_element.props[BEAM_ELEMENT_LOCAL_Y_REFERENCE_KEY] = (
+                effective_reference
+            )
 
 
 _LINE_KEYWORD_PARAMETERS: dict[str, frozenset[str]] = {

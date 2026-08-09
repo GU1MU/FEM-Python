@@ -18,6 +18,8 @@ from .result_archive_v1 import (
     decode_result_archive_v1,
     dumps_result_archive_v1,
     encode_result_archive_v1,
+    inspect_result_archive_header_bytes,
+    inspect_result_archive_header_path,
     load_result_archive_v1,
     loads_result_archive_v1,
     read_result_archive_v1,
@@ -31,6 +33,17 @@ CURRENT_RESULT_ARCHIVE_SCHEMA = SCHEMA_VERSION
 RESULT_ARCHIVE_SCHEMA_VERSION = SCHEMA_VERSION
 RESULT_FILE_SUFFIX = ".femres"
 RESULT_ARCHIVE_FILE_SUFFIX = RESULT_FILE_SUFFIX
+
+
+def _require_supported_schema(format_name: str, schema: int) -> None:
+    if format_name != FORMAT_NAME:
+        raise ResultArchiveDecodeError(
+            f"unsupported result archive format {format_name!r}"
+        )
+    if schema != SCHEMA_VERSION:
+        raise UnsupportedResultArchiveSchemaError(
+            f"unsupported result archive schema {schema!r}"
+        )
 
 
 def save_result_archive(
@@ -53,6 +66,7 @@ def save_result_archive(
 def load_result_archive(path: str | Path) -> LoadedResultArchive:
     """Route a result archive path through strict schema dispatch."""
 
+    _require_supported_schema(*inspect_result_archive_header_path(path))
     return load_result_archive_v1(path)
 
 
@@ -61,7 +75,7 @@ def encode_result_archive(snapshot: ResultArchiveSnapshot) -> bytes:
 
 
 def decode_result_archive(data: bytes | bytearray) -> ResultArchiveSnapshot:
-    return loads_result_archive_v1(data)
+    return loads_result_archive(data)
 
 
 def dumps_result_archive(snapshot: ResultArchiveSnapshot) -> bytes:
@@ -69,7 +83,11 @@ def dumps_result_archive(snapshot: ResultArchiveSnapshot) -> bytes:
 
 
 def loads_result_archive(data: bytes | bytearray) -> ResultArchiveSnapshot:
-    return loads_result_archive_v1(data)
+    if type(data) not in {bytes, bytearray}:
+        raise TypeError("archive data must be bytes or bytearray")
+    raw = bytes(data)
+    _require_supported_schema(*inspect_result_archive_header_bytes(raw))
+    return loads_result_archive_v1(raw)
 
 
 read_result_archive = load_result_archive

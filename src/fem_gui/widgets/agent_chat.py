@@ -53,11 +53,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fem_agent.authoring_runtime import (
+from ..agent_authoring import (
+    AgentProposal,
     AuthoringWorkflowController,
     AuthoringWorkflowStage,
+    ProposalState,
 )
-from fem_agent.authoring import AgentProposal, ProposalState
 
 from ..agent_events import (
     AgentEvent,
@@ -1304,6 +1305,11 @@ class AgentChatDrawer(_BoundaryFrame):
         self._conversation_scroll_suspended = False
         self._conversation_scroll_update_pending = False
         self._conversation_scroll_restore_value: int | None = None
+        self._conversation_scroll_timer = QTimer(self)
+        self._conversation_scroll_timer.setSingleShot(True)
+        self._conversation_scroll_timer.timeout.connect(
+            self._apply_queued_conversation_scroll
+        )
         self._live_activity_label: QLabel | None = None
         self._live_activity_base = ""
         self._live_activity_tick = 0
@@ -1522,7 +1528,7 @@ class AgentChatDrawer(_BoundaryFrame):
         if self._conversation_scroll_update_pending:
             return
         self._conversation_scroll_update_pending = True
-        QTimer.singleShot(0, self._apply_queued_conversation_scroll)
+        self._conversation_scroll_timer.start(0)
 
     def _apply_queued_conversation_scroll(self) -> None:
         self._conversation_scroll_update_pending = False
@@ -1550,6 +1556,8 @@ class AgentChatDrawer(_BoundaryFrame):
     ) -> None:
         """用完整事件日志替换当前展示并一次性重绘。"""
         self._stream_refresh_timer.stop()
+        self._conversation_scroll_timer.stop()
+        self._conversation_scroll_update_pending = False
         self._pending_message_refreshes.clear()
         self.event_projector = AgentEventProjector.replay(events)
         self.agent_runtime.synchronize_event_projection_from_gui(

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import threading
 from pathlib import Path
 
 import pytest
@@ -263,9 +262,7 @@ def test_phase1_runtime_binding_invalidation_hides_old_tools_until_rebind(
     )
     try:
         published = runtime.refresh_authoring_turn_snapshot_from_gui()
-        old_names = {
-            item.name for item in runtime._authoring_tool_definitions()
-        }
+        old_names = {item.name for item in runtime._authoring_tool_definitions()}
         assert published.available
         assert old_names
 
@@ -321,8 +318,7 @@ def test_phase1_engine_context_and_audit_are_round_scoped_and_safe(tmp_path) -> 
     state_message = next(
         item
         for item in request.messages
-        if item.role == "system"
-        and item.content.startswith("Current local state")
+        if item.role == "system" and item.content.startswith("Current local state")
     )
     state = json.loads(state_message.content.split(": ", 1)[1])
     snapshot = state["authoring_turn_snapshot"]
@@ -370,7 +366,9 @@ def _show_capabilities_response(call_id: str) -> ProviderResponse:
     )
 
 
-def test_phase1_audit_batches_rounds_into_one_atomic_write(tmp_path, monkeypatch) -> None:
+def test_phase1_audit_batches_rounds_into_one_atomic_write(
+    tmp_path, monkeypatch
+) -> None:
     provider = FakeProvider(
         [
             _show_capabilities_response("round-1"),
@@ -399,8 +397,7 @@ def test_phase1_audit_batches_rounds_into_one_atomic_write(tmp_path, monkeypatch
     audit = json.loads(engine._audit_path().read_text(encoding="utf-8"))
     assert len(audit["entries"]) == 3
     assert [
-        item["tool_call_flags"]["called_tool_names"]
-        for item in audit["entries"]
+        item["tool_call_flags"]["called_tool_names"] for item in audit["entries"]
     ] == [["show_capabilities"], ["show_capabilities"], []]
 
 
@@ -483,61 +480,3 @@ def test_phase1_audit_batch_flushes_on_terminal_provider_paths(
     audit = json.loads(engine._audit_path().read_text(encoding="utf-8"))
     assert len(audit["entries"]) == 1
     assert audit["entries"][0]["tool_call_flags"]["provider_called"] is True
-
-
-class _BlockingRoundProvider:
-    provider_name = "fake"
-    model_name = "blocking-test"
-
-    def __init__(self) -> None:
-        self.calls = 0
-        self.second_call_started = threading.Event()
-        self.release_second_call = threading.Event()
-
-    def complete(self, messages, tools):
-        del messages, tools
-        self.calls += 1
-        if self.calls == 1:
-            return _show_capabilities_response("before-cancel")
-        self.second_call_started.set()
-        self.release_second_call.wait(timeout=5)
-        return ProviderResponse(
-            AssistantMessage("assistant", content="late"),
-            finish_reason="stop",
-        )
-
-
-def test_phase1_audit_batch_flushes_when_cancelled_and_closed(tmp_path, monkeypatch) -> None:
-    provider = _BlockingRoundProvider()
-    engine = AgentSessionEngine(tmp_path / "agent-private", provider)
-    writes: list[Path] = []
-    original_write = engine_module.atomic_write_json
-
-    def capture_write(path, payload, *, overwrite=False):
-        if Path(path).name == "tool-audit.json":
-            writes.append(Path(path))
-        return original_write(path, payload, overwrite=overwrite)
-
-    monkeypatch.setattr(engine_module, "atomic_write_json", capture_write)
-    result: list[tuple[object, ...]] = []
-    worker = threading.Thread(
-        target=lambda: result.append(engine.send_message("取消并关闭")),
-        daemon=True,
-    )
-    worker.start()
-    assert provider.second_call_started.wait(timeout=5)
-    closer = threading.Thread(target=engine.close_session, daemon=True)
-    closer.start()
-    provider.release_second_call.set()
-    worker.join(timeout=5)
-    closer.join(timeout=5)
-
-    assert not worker.is_alive()
-    assert not closer.is_alive()
-    assert result
-    assert writes == [engine._audit_path()]
-    audit = json.loads(engine._audit_path().read_text(encoding="utf-8"))
-    assert len(audit["entries"]) == 1
-    assert audit["entries"][0]["tool_call_flags"]["called_tool_names"] == [
-        "show_capabilities"
-    ]

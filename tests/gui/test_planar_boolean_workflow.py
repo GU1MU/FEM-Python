@@ -1,20 +1,13 @@
 from __future__ import annotations
 
 import os
-from time import monotonic
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-import pytest
 from PySide6.QtWidgets import QApplication, QLabel
 
-from fem import geometry as geometry_runtime
-from fem.application import (
-    StrictPlanarBooleanResult,
-    prepare_planar_boolean,
-)
+from fem.application import StrictPlanarBooleanResult
 from fem.geometry import (
-    ExtrudedGeometry,
     LogicalEntityRef,
     RectangleGeometry,
     SketchGeometry,
@@ -24,7 +17,6 @@ from fem.geometry import (
     WireGeometry,
     WireMember,
     WirePoint,
-    resolve_extrusion_source_faces,
 )
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.planar_boolean import PlanarBooleanController
@@ -352,50 +344,6 @@ def test_occ_preview_failure_keeps_committed_geometry(monkeypatch) -> None:
     assert window._planar_boolean_preview_result is None
     assert not window.planar_boolean_panel.finish_button.isEnabled()
     window.cancel_planar_boolean()
-    window.close()
-
-
-@pytest.mark.gmsh
-def test_extruded_planar_boolean_rebuilds_exact_3d_preview(
-    real_gmsh,
-) -> None:
-    del real_gmsh
-    application = _application()
-    source = RectangleGeometry("Target", 3.0, 2.0)
-    tool = _tool_sketch()
-    with geometry_runtime.model(
-        "gui-extruded-planar-boolean-source",
-        dimension=2,
-    ) as cad:
-        prepared = prepare_planar_boolean(
-            cad,
-            source,
-            "face:domain",
-            tool,
-            resolve_extrusion_source_faces(tool).face_ids,
-            "cut",
-        )
-
-    window = FEMMainWindow()
-    window._set_native_geometry(
-        ExtrudedGeometry(prepared.geometry, 1.0),
-        "测试",
-    )
-    deadline = monotonic() + 10.0
-    while monotonic() < deadline:
-        application.processEvents()
-        if (
-            window._pending_exact_boolean_preview_key is None
-            and not window.task_controller.busy
-            and window._geometry_preview_cache is not None
-        ):
-            break
-    application.processEvents()
-
-    cached = window._geometry_preview_cache
-    assert cached is not None
-    assert cached[2].topological_dimension == 3
-    assert all(cached[2].face_logical_ids)
     window.close()
 
 

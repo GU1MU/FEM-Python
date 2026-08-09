@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+import re
 
 from fem.io import inp
 
@@ -27,6 +28,9 @@ EXPECTED_PUBLIC_API = [
     "read",
     "read_with_report",
 ]
+_FORBIDDEN_IMPORT_CANDIDATE = re.compile(
+    r"(?m)^[ \t]*(?:from|import)[^\n]*(?:abaqus|_inp)"
+)
 
 
 def _module_name(path: Path) -> str:
@@ -61,6 +65,9 @@ def _production_and_test_sources():
     for root in roots:
         for path in sorted(root.rglob("*.py")):
             if path == INP_FACADE or INP_IMPL_ROOT in path.parents:
+                continue
+            source = path.read_text(encoding="utf-8")
+            if _FORBIDDEN_IMPORT_CANDIDATE.search(source) is None:
                 continue
             yield path
 

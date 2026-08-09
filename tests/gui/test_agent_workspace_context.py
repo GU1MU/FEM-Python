@@ -176,13 +176,21 @@ def test_at_candidates_filter_all_extensions_and_insert_typed_reference(
     drawer.close()
 
 
-def test_preview_preserves_reference_ranges_in_emitted_text(tmp_path):
+def test_preview_preserves_reference_ranges_in_emitted_text(
+    tmp_path,
+    monkeypatch,
+):
     application = _application()
     workspace = tmp_path / "reference-ranges"
     workspace.mkdir()
     (workspace / "frame.inp").write_text("*Heading\n", encoding="utf-8")
     handler = _handler(workspace, [workspace])
     drawer = AgentChatDrawer(workspace_commands=handler)
+    monkeypatch.setattr(
+        drawer.agent_runtime,
+        "send_message",
+        lambda *_args, **_kwargs: True,
+    )
     drawer.show()
     drawer.workspace_action.trigger()
     drawer.input.setPlainText("  @frame")
