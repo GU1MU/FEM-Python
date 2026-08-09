@@ -93,7 +93,7 @@ def test_prepared_system_applies_sections_and_assembles_once_for_many_steps(
     calls = {"materials": 0, "stiffness": 0, "factor": 0}
     original_apply = static_linear.materials.apply_sections
     original_assemble = static_linear.assemble_global_stiffness_sparse
-    original_factor = static_linear.splu
+    original_factor = static_linear.factorize_spd
 
     def apply_sections(candidate):
         calls["materials"] += 1
@@ -117,7 +117,7 @@ def test_prepared_system_applies_sections_and_assembles_once_for_many_steps(
         "assemble_global_stiffness_sparse",
         assemble,
     )
-    monkeypatch.setattr(static_linear, "splu", factor)
+    monkeypatch.setattr(static_linear, "factorize_spd", factor)
 
     prepared = static_linear.prepare(model)
     results = prepared.solve(steps="all")
@@ -411,7 +411,7 @@ def test_plural_solve_prepares_once_and_runs_each_load_case_once(monkeypatch):
     original_boundary_for_step = static_linear._boundary_step.boundary_for_step
     original_assemble = static_linear.assemble_global_stiffness_sparse
     original_build_load = static_linear.build_load_vector
-    original_factor = static_linear.splu
+    original_factor = static_linear.factorize_spd
 
     def apply_sections(model):
         calls["materials"] += 1
@@ -444,7 +444,7 @@ def test_plural_solve_prepares_once_and_runs_each_load_case_once(monkeypatch):
     )
     monkeypatch.setattr(static_linear, "assemble_global_stiffness_sparse", assemble)
     monkeypatch.setattr(static_linear, "build_load_vector", build_load)
-    monkeypatch.setattr(static_linear, "splu", factor)
+    monkeypatch.setattr(static_linear, "factorize_spd", factor)
 
     results = static_linear.solve(model, steps="all")
 
@@ -528,14 +528,14 @@ def test_factor_key_ignores_load_and_prescribed_values(monkeypatch):
         cloads=[NodalLoad("TIP", 1, 75.0)],
     )
     factor_calls = 0
-    original_factor = static_linear.splu
+    original_factor = static_linear.factorize_spd
 
     def factor(stiffness):
         nonlocal factor_calls
         factor_calls += 1
         return original_factor(stiffness)
 
-    monkeypatch.setattr(static_linear, "splu", factor)
+    monkeypatch.setattr(static_linear, "factorize_spd", factor)
     prepared = static_linear.prepare(model)
 
     results = prepared._solve_owned(steps=(first, second))
@@ -551,14 +551,14 @@ def test_factor_cache_lru_is_bounded_and_refactors_evicted_pattern(
     stiffness = csr_matrix(np.diag(np.arange(1.0, 7.0)))
     cache = static_linear._FactorizationCache(stiffness)
     factor_calls = 0
-    original_factor = static_linear.splu
+    original_factor = static_linear.factorize_spd
 
     def factor(matrix):
         nonlocal factor_calls
         factor_calls += 1
         return original_factor(matrix)
 
-    monkeypatch.setattr(static_linear, "splu", factor)
+    monkeypatch.setattr(static_linear, "factorize_spd", factor)
     patterns = tuple((dof,) for dof in range(5))
     for pattern in patterns:
         cache.factor_for(pattern)
@@ -576,14 +576,14 @@ def test_factor_cache_serializes_concurrent_factor_creation(monkeypatch):
     stiffness = csr_matrix(np.diag(np.arange(1.0, 9.0)))
     cache = static_linear._FactorizationCache(stiffness)
     factor_calls = 0
-    original_factor = static_linear.splu
+    original_factor = static_linear.factorize_spd
 
     def factor(matrix):
         nonlocal factor_calls
         factor_calls += 1
         return original_factor(matrix)
 
-    monkeypatch.setattr(static_linear, "splu", factor)
+    monkeypatch.setattr(static_linear, "factorize_spd", factor)
 
     def solve(scale):
         displacement, _ = cache.solve(
@@ -610,14 +610,14 @@ def test_factor_cache_handles_fully_constrained_and_unconstrained_systems(
     stiffness = csr_matrix(np.diag([2.0, 3.0]))
     cache = static_linear._FactorizationCache(stiffness)
     factor_calls = 0
-    original_factor = static_linear.splu
+    original_factor = static_linear.factorize_spd
 
     def factor(matrix):
         nonlocal factor_calls
         factor_calls += 1
         return original_factor(matrix)
 
-    monkeypatch.setattr(static_linear, "splu", factor)
+    monkeypatch.setattr(static_linear, "factorize_spd", factor)
     displacement, free_dofs = cache.solve(
         np.array([10.0, 20.0]),
         (0, 1),
@@ -735,6 +735,66 @@ def test_factor_cache_normalizes_singular_direct_solve_error():
         np.array([0.0]),
     )
     np.testing.assert_allclose(displacement, [1.0, 0.0])
+
+
+@pytest.mark.parametrize("stage", ["factorization", "solve"])
+def test_factor_cache_preserves_pardiso_memory_failure(
+    monkeypatch,
+    stage,
+):
+    native_error = MemoryError("native allocation failed")
+
+    def raise_memory_error(message):
+        raise static_linear._PardisoSPDMemoryError(message) from native_error
+
+    class MemoryFailingFactor:
+        def solve(self, _rhs):
+            raise_memory_error("PARDISO SPD solve failed: insufficient memory")
+
+    def factorize(_matrix):
+        if stage == "factorization":
+            raise_memory_error(
+                "PARDISO SPD factorization failed: insufficient memory"
+            )
+        return MemoryFailingFactor()
+
+    monkeypatch.setattr(static_linear, "factorize_spd", factorize)
+    cache = static_linear._FactorizationCache(csr_matrix(np.eye(2)))
+
+    with pytest.raises(
+        RuntimeError,
+        match="PARDISO SPD solver failed: insufficient memory",
+    ) as caught:
+        cache.solve(np.ones(2), (), np.empty(0))
+
+    assert "singular" not in str(caught.value)
+    assert isinstance(
+        caught.value.__cause__,
+        static_linear._PardisoSPDMemoryError,
+    )
+    assert caught.value.__cause__.__cause__ is native_error
+
+
+def test_stiffness_preflight_preserves_pardiso_memory_failure(monkeypatch):
+    native_error = MemoryError("native allocation failed")
+
+    def factorize(_matrix):
+        raise static_linear._PardisoSPDMemoryError(
+            "PARDISO SPD factorization failed: insufficient memory"
+        ) from native_error
+
+    monkeypatch.setattr(static_linear, "factorize_spd", factorize)
+
+    with pytest.raises(
+        RuntimeError,
+        match="PARDISO SPD solver failed: insufficient memory",
+    ) as caught:
+        static_linear.validate_stiffness(
+            make_static_pull_truss_model(),
+            "pull",
+        )
+
+    assert caught.value.__cause__.__cause__ is native_error
 
 
 @pytest.mark.parametrize(

@@ -227,7 +227,7 @@ def test_preflight_and_repeated_runs_assemble_one_artifact_once(
     calls: list[tuple[str, bool]] = []
     original_apply = static_linear.materials.apply_sections
     original_assemble = static_linear.assemble_global_stiffness_sparse
-    original_factor = static_linear.splu
+    original_factor = static_linear.factorize_spd
 
     def apply_sections(candidate):
         calls.append(
@@ -266,7 +266,7 @@ def test_preflight_and_repeated_runs_assemble_one_artifact_once(
         "assemble_global_stiffness_sparse",
         assemble,
     )
-    monkeypatch.setattr(static_linear, "splu", factor)
+    monkeypatch.setattr(static_linear, "factorize_spd", factor)
 
     assert window.check_current_model(show_success=False)
     first = window._submit_job("Job-1", "Static-1")
@@ -324,7 +324,7 @@ def test_quick_preflight_defers_prepare_until_first_run_and_then_reuses_it(
     prepare_threads: list[bool] = []
     factor_threads: list[bool] = []
     original_prepare = static_linear.prepare
-    original_factor = static_linear.splu
+    original_factor = static_linear.factorize_spd
 
     def prepare(*args, **kwargs):
         prepare_threads.append(
@@ -344,7 +344,7 @@ def test_quick_preflight_defers_prepare_until_first_run_and_then_reuses_it(
         lambda _model: False,
     )
     monkeypatch.setattr(static_linear, "prepare", prepare)
-    monkeypatch.setattr(static_linear, "splu", factor)
+    monkeypatch.setattr(static_linear, "factorize_spd", factor)
 
     assert window.check_current_model(show_success=False)
     assert prepare_threads == []

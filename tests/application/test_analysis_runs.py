@@ -88,14 +88,14 @@ def test_cached_prepared_system_isolated_from_exposed_solve_task_model() -> None
 
 def test_first_solve_installs_unexposed_cache_clone(monkeypatch) -> None:
     factor_calls = 0
-    original_factor = static_linear.splu
+    original_factor = static_linear.factorize_spd
 
     def factor(stiffness):
         nonlocal factor_calls
         factor_calls += 1
         return original_factor(stiffness)
 
-    monkeypatch.setattr(static_linear, "splu", factor)
+    monkeypatch.setattr(static_linear, "factorize_spd", factor)
     session = ModelSession()
     imported = session.prepare_import("quick-cache.inp")
     session.accept_imported_model(
@@ -173,14 +173,14 @@ def test_stale_solve_completion_cannot_install_cache_candidate(
     monkeypatch,
 ) -> None:
     factor_calls = 0
-    original_factor = static_linear.splu
+    original_factor = static_linear.factorize_spd
 
     def factor(stiffness):
         nonlocal factor_calls
         factor_calls += 1
         return original_factor(stiffness)
 
-    monkeypatch.setattr(static_linear, "splu", factor)
+    monkeypatch.setattr(static_linear, "factorize_spd", factor)
     session = ModelSession()
     imported = session.prepare_import("old-solve.inp")
     session.accept_imported_model(

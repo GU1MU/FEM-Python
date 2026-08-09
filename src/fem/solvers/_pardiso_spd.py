@@ -15,6 +15,10 @@ class _PardisoSPDError(RuntimeError):
     """Stable internal error raised by the PARDISO SPD backend."""
 
 
+class _PardisoSPDMemoryError(_PardisoSPDError):
+    """Stable internal error for native PARDISO memory exhaustion."""
+
+
 class PardisoSPDFactor:
     """Owned wrapper around one factorized PARDISO SPD handle."""
 
@@ -31,7 +35,10 @@ class PardisoSPDFactor:
         try:
             result = np.asarray(self._solver.solve(prepared_rhs), dtype=np.float64)
         except Exception as exc:
-            raise _PardisoSPDError("PARDISO SPD solve failed") from exc
+            raise _classified_backend_error(
+                "PARDISO SPD solve failed",
+                exc,
+            ) from exc
 
         if result.shape != prepared_rhs.shape:
             raise _PardisoSPDError(
@@ -87,8 +94,23 @@ def _construct_solver(matrix: sparse.spmatrix) -> Any:
                 solver.release()
             except Exception:
                 pass
-        raise _PardisoSPDError("PARDISO SPD factorization failed") from exc
+        raise _classified_backend_error(
+            "PARDISO SPD factorization failed",
+            exc,
+        ) from exc
     return solver
+
+
+def _classified_backend_error(
+    message: str,
+    cause: Exception,
+) -> _PardisoSPDError:
+    if isinstance(cause, MemoryError) or any(
+        marker in str(cause).casefold()
+        for marker in ("insufficient memory", "not enough memory")
+    ):
+        return _PardisoSPDMemoryError(f"{message}: insufficient memory")
+    return _PardisoSPDError(message)
 
 
 def _prepare_upper_csr(matrix: sparse.spmatrix) -> sparse.spmatrix:

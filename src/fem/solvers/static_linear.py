@@ -10,8 +10,7 @@ from time import perf_counter
 from typing import Any, Literal, overload
 
 import numpy as np
-from scipy.sparse import diags
-from scipy.sparse.linalg import splu
+from scipy.sparse import diags, triu
 
 from .. import materials
 from ..assemble import assemble_global_stiffness_sparse
@@ -20,6 +19,11 @@ from ..boundary.loads import build_load_vector
 from ..core.model import AnalysisStep
 from ..core.result import ModelResult, ModelResults
 from ..core.validation import validate_analysis_step, validate_model_structure
+from ._pardiso_spd import (
+    _PardisoSPDError,
+    _PardisoSPDMemoryError,
+    factorize_spd,
+)
 
 
 __all__ = ["PreparedSystem", "prepare", "solve"]
@@ -27,6 +31,7 @@ __all__ = ["PreparedSystem", "prepare", "solve"]
 
 StepSelector = str | int | AnalysisStep
 _FACTOR_CACHE_MAX_ENTRIES = 4
+_PARDISO_MEMORY_FAILURE = "PARDISO SPD solver failed: insufficient memory"
 
 
 @dataclass(frozen=True)
@@ -96,6 +101,8 @@ class _FactorizationCache:
         with self._lock:
             try:
                 entry = self._factor_for_locked(constrained_pattern)
+            except _PardisoSPDMemoryError as exc:
+                raise RuntimeError(_PARDISO_MEMORY_FAILURE) from exc
             except (RuntimeError, ValueError) as exc:
                 raise RuntimeError(
                     "sparse linear solve failed: stiffness matrix "
@@ -222,6 +229,8 @@ class PreparedSystem:
         )
         try:
             self._factor_cache.factor_for(constrained_pattern)
+        except _PardisoSPDMemoryError as error:
+            raise RuntimeError(_PARDISO_MEMORY_FAILURE) from error
         except (RuntimeError, ValueError) as error:
             raise ValueError(
                 "模型约束不足或刚度矩阵奇异；"
@@ -626,7 +635,7 @@ def _build_reduced_factorization(
     base_stiffness: Any,
     constrained_pattern: tuple[int, ...],
 ) -> _ReducedFactorization:
-    """Build one diagonally scaled LU for the free-DOF submatrix."""
+    """Build one diagonally scaled SPD factor for the free-DOF submatrix."""
 
     num_dofs = base_stiffness.shape[0]
     constrained_dofs = np.fromiter(
@@ -659,14 +668,18 @@ def _build_reduced_factorization(
                 "stiffness matrix has an invalid diagonal scaling"
             )
         scaling = diags(inverse_scale)
-        scaled = (scaling @ free_stiffness @ scaling).tocsc()
+        scaled = scaling @ free_stiffness @ scaling
+        scaled_upper = triu(scaled, format="csr")
+        scaled_upper.sum_duplicates()
+        scaled_upper.sort_indices()
         try:
-            factor = splu(scaled)
-        except Exception as exc:
+            factor = factorize_spd(scaled_upper)
+        except _PardisoSPDMemoryError:
+            raise
+        except _PardisoSPDError as exc:
             raise ValueError(
                 "stiffness matrix is singular or under-constrained"
             ) from exc
-        _validate_factor_pivots(factor, free_stiffness.shape[0])
 
     for values in (constrained_dofs, free_dofs, inverse_scale):
         values.flags.writeable = False
@@ -676,24 +689,6 @@ def _build_reduced_factorization(
         inverse_scale=inverse_scale,
         factor=factor,
     )
-
-
-def _validate_factor_pivots(factor: Any, dimension: int) -> None:
-    """Apply one rank diagnostic to every cached scaled factor."""
-
-    pivots = np.abs(np.asarray(factor.U.diagonal(), dtype=float))
-    tolerance = (
-        np.finfo(float).eps
-        * max(dimension, 1)
-        * max(float(np.max(pivots)), 1.0)
-    )
-    if (
-        not np.all(np.isfinite(pivots))
-        or float(np.min(pivots)) <= tolerance
-    ):
-        raise ValueError("stiffness matrix is numerically rank deficient")
-
-
 def _solve_reduced_system(
     base_stiffness: Any,
     load: np.ndarray,
@@ -725,7 +720,9 @@ def _solve_reduced_system(
             factorization.factor.solve(scaled_load),
             dtype=float,
         )
-    except Exception as exc:
+    except _PardisoSPDMemoryError as exc:
+        raise RuntimeError(_PARDISO_MEMORY_FAILURE) from exc
+    except _PardisoSPDError as exc:
         raise RuntimeError(
             "sparse linear solve failed: "
             "stiffness matrix is singular or under-constrained."

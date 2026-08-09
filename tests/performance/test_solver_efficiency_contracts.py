@@ -23,7 +23,7 @@ def test_prepared_system_reuses_work_without_sharing_public_models(
     calls = {"sections": 0, "assembly": 0, "factor": 0}
     original_sections = static_linear.materials.apply_sections
     original_assembly = static_linear.assemble_global_stiffness_sparse
-    original_factor = static_linear.splu
+    original_factor = static_linear.factorize_spd
 
     def apply_sections(model):
         calls["sections"] += 1
@@ -47,7 +47,7 @@ def test_prepared_system_reuses_work_without_sharing_public_models(
         "assemble_global_stiffness_sparse",
         assemble,
     )
-    monkeypatch.setattr(static_linear, "splu", factor)
+    monkeypatch.setattr(static_linear, "factorize_spd", factor)
 
     prepared = static_linear.prepare(
         make_two_step_static_pull_truss_model()

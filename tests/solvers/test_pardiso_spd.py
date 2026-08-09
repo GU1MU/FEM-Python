@@ -264,6 +264,24 @@ def test_backend_solve_failure_has_a_stable_exception_chain(fake_backend):
     factor = _pardiso_spd.factorize_spd(_spd_upper())
     try:
         with pytest.raises(
+            _pardiso_spd._PardisoSPDMemoryError,
+            match="PARDISO SPD solve failed: insufficient memory",
+        ) as caught:
+            factor.solve(np.ones(3))
+    finally:
+        factor.close()
+
+    assert caught.value.__cause__ is native_error
+
+
+def test_backend_non_memory_solve_failure_keeps_the_generic_error_contract(
+    fake_backend,
+):
+    native_error = RuntimeError("zero pivot")
+    fake_backend.solve_error = native_error
+    factor = _pardiso_spd.factorize_spd(_spd_upper())
+    try:
+        with pytest.raises(
             _pardiso_spd._PardisoSPDError,
             match="PARDISO SPD solve failed",
         ) as caught:
@@ -271,7 +289,32 @@ def test_backend_solve_failure_has_a_stable_exception_chain(fake_backend):
     finally:
         factor.close()
 
+    assert not isinstance(caught.value, _pardiso_spd._PardisoSPDMemoryError)
     assert caught.value.__cause__ is native_error
+
+
+@pytest.mark.parametrize(
+    "native_error",
+    [
+        MemoryError("native allocation failed"),
+        RuntimeError("not enough memory for factorization"),
+        RuntimeError("insufficient memory in PARDISO"),
+    ],
+)
+def test_factorization_classifies_native_memory_failures(
+    fake_backend,
+    native_error,
+):
+    fake_backend.construction_error = native_error
+
+    with pytest.raises(
+        _pardiso_spd._PardisoSPDMemoryError,
+        match="PARDISO SPD factorization failed: insufficient memory",
+    ) as caught:
+        _pardiso_spd.factorize_spd(_spd_upper())
+
+    assert caught.value.__cause__ is native_error
+    assert fake_backend.instances[0].release_calls == 1
 
 
 @pytest.mark.parametrize(
