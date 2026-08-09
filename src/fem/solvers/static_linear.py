@@ -4,7 +4,7 @@ import operator
 from collections import OrderedDict
 from collections.abc import Iterable
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from threading import RLock
 from time import perf_counter
 from typing import Any, Literal, overload
@@ -30,7 +30,7 @@ __all__ = ["PreparedSystem", "prepare", "solve"]
 
 
 StepSelector = str | int | AnalysisStep
-_FACTOR_CACHE_MAX_ENTRIES = 4
+_FACTOR_CACHE_MAX_ENTRIES = 1
 _PARDISO_MEMORY_FAILURE = "PARDISO SPD solver failed: insufficient memory"
 
 
@@ -50,6 +50,21 @@ class _ReducedFactorization:
     free_dofs: np.ndarray
     inverse_scale: np.ndarray
     factor: Any | None
+    _closed: bool = field(
+        default=False,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def close(self) -> None:
+        """Release the owned native factor at most once."""
+
+        if self._closed:
+            return
+        object.__setattr__(self, "_closed", True)
+        if self.factor is not None:
+            self.factor.close()
 
 
 class _FactorizationCache:
@@ -58,6 +73,7 @@ class _FactorizationCache:
     __slots__ = (
         "_base_stiffness",
         "_entries",
+        "_closed",
         "_lock",
         "_max_entries",
     )
@@ -73,8 +89,27 @@ class _FactorizationCache:
             tuple[int, ...],
             _ReducedFactorization,
         ] = OrderedDict()
+        self._closed = False
         self._lock = RLock()
         self._max_entries = max_entries
+
+    def close(self) -> None:
+        """Idempotently release every factor still owned by this cache."""
+
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            entries = tuple(self._entries.values())
+            self._entries.clear()
+            for factorization in entries:
+                factorization.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def shares_base_stiffness(self, base_stiffness: Any) -> bool:
         """Return whether the cache is tied to the exact immutable K."""
@@ -119,19 +154,22 @@ class _FactorizationCache:
         self,
         constrained_pattern: tuple[int, ...],
     ) -> _ReducedFactorization:
+        if self._closed:
+            raise RuntimeError("factorization cache is closed")
         cached = self._entries.get(constrained_pattern)
         if cached is not None:
             self._entries.move_to_end(constrained_pattern)
             return cached
 
+        while len(self._entries) >= self._max_entries:
+            _, evicted = self._entries.popitem(last=False)
+            evicted.close()
         factorization = _build_reduced_factorization(
             self._base_stiffness,
             constrained_pattern,
         )
         self._entries[constrained_pattern] = factorization
         self._entries.move_to_end(constrained_pattern)
-        while len(self._entries) > self._max_entries:
-            self._entries.popitem(last=False)
         return factorization
 
 

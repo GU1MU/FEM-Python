@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gc
+
 import numpy as np
 import pytest
 
@@ -80,6 +82,52 @@ def test_prepared_system_reuses_work_without_sharing_public_models(
     np.testing.assert_allclose(repeated.U, first.U)
     with pytest.raises(ValueError):
         prepared._base_stiffness.data[0] = 0.0
+
+
+def test_prepared_system_clone_keeps_shared_factor_alive_until_last_owner(
+    monkeypatch,
+):
+    factors = []
+    original_factor = static_linear.factorize_spd
+
+    class TrackedFactor:
+        def __init__(self, factor):
+            self.factor = factor
+            self.close_calls = 0
+
+        def solve(self, rhs):
+            return self.factor.solve(rhs)
+
+        def close(self):
+            self.close_calls += 1
+            self.factor.close()
+
+    def factor(stiffness):
+        tracked = TrackedFactor(original_factor(stiffness))
+        factors.append(tracked)
+        return tracked
+
+    monkeypatch.setattr(static_linear, "factorize_spd", factor)
+    prepared = static_linear.prepare(
+        make_two_step_static_pull_truss_model()
+    )
+    prepared.validate_stiffness("pull1")
+    cloned = prepared.clone()
+
+    del prepared
+    gc.collect()
+    assert len(factors) == 1
+    assert factors[0].close_calls == 0
+
+    result = cloned.solve("pull2")
+    assert result.U[
+        result.model.mesh.global_dof(2, 0)
+    ] == pytest.approx(1.0)
+    assert factors[0].close_calls == 0
+
+    del cloned
+    gc.collect()
+    assert factors[0].close_calls == 1
 
 
 def test_sparse_assembly_plan_has_exact_flat_storage():

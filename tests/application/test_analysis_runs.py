@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
+import gc
+
 import pytest
 
 from fem.application import (
@@ -238,6 +240,70 @@ def test_stale_solve_completion_cannot_install_cache_candidate(
         _prepared_system=replacement_prepared,
     )
     assert factor_calls == 2
+
+
+def test_model_revision_discards_root_without_closing_issued_worker_cache(
+    monkeypatch,
+) -> None:
+    factors = []
+    original_factor = static_linear.factorize_spd
+
+    class TrackedFactor:
+        def __init__(self, factor):
+            self.factor = factor
+            self.close_calls = 0
+
+        def solve(self, rhs):
+            return self.factor.solve(rhs)
+
+        def close(self):
+            self.close_calls += 1
+            self.factor.close()
+
+    def factor(stiffness):
+        tracked = TrackedFactor(original_factor(stiffness))
+        factors.append(tracked)
+        return tracked
+
+    monkeypatch.setattr(static_linear, "factorize_spd", factor)
+    session = ModelSession()
+    imported = session.prepare_import("worker-cache.inp")
+    session.accept_imported_model(
+        imported.token,
+        make_static_pull_truss_model(),
+    )
+    validation = session.prepare_validation("pull")
+    prepared = static_linear.prepare(validation.model)
+    prepared.validate_stiffness("pull")
+    session.accept_validation_with_prepared_system(
+        validation.token,
+        passing_preflight_report(validation.token),
+        prepared,
+    )
+    solve = session.prepare_solve("pull", "Job-1")
+    del prepared
+
+    replacement = session.prepare_import("replacement.inp")
+    session.accept_imported_model(
+        replacement.token,
+        make_static_pull_truss_model(),
+    )
+    gc.collect()
+
+    assert session._current_prepared_system() is None
+    assert len(factors) == 1
+    assert factors[0].close_calls == 0
+    result = static_linear.solve(
+        solve.model,
+        solve.step_name,
+        _prepared_system=solve.prepared_system,
+    )
+    assert result.U[solve.model.mesh.global_dof(2, 0)] == pytest.approx(0.5)
+
+    del result
+    del solve
+    gc.collect()
+    assert factors[0].close_calls == 1
 
 
 def test_pending_running_succeeded_lifecycle_and_provenance() -> None:

@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from inspect import Parameter, signature
-from time import perf_counter
+from threading import Lock
+from time import perf_counter, sleep
 
 import numpy as np
 import pytest
@@ -545,43 +546,123 @@ def test_factor_key_ignores_load_and_prescribed_values(monkeypatch):
     assert results.results[1].U[0] == pytest.approx(-0.2)
 
 
-def test_factor_cache_lru_is_bounded_and_refactors_evicted_pattern(
+def test_factor_cache_lru_is_bounded_and_closes_evicted_pattern_once(
     monkeypatch,
 ):
     stiffness = csr_matrix(np.diag(np.arange(1.0, 7.0)))
     cache = static_linear._FactorizationCache(stiffness)
-    factor_calls = 0
+    factors = []
+    events = []
+    live_factors = 0
+    maximum_live_factors = 0
     original_factor = static_linear.factorize_spd
 
+    class TrackedFactor:
+        def __init__(self, factor, factor_id):
+            self.factor = factor
+            self.factor_id = factor_id
+            self.close_calls = 0
+
+        def solve(self, rhs):
+            return self.factor.solve(rhs)
+
+        def close(self):
+            nonlocal live_factors
+            self.close_calls += 1
+            self.factor.close()
+            live_factors -= 1
+            events.append(("close", self.factor_id))
+
     def factor(matrix):
-        nonlocal factor_calls
-        factor_calls += 1
-        return original_factor(matrix)
+        nonlocal live_factors, maximum_live_factors
+        factor_id = len(factors)
+        events.append(("create", factor_id))
+        assert live_factors == 0
+        tracked = TrackedFactor(original_factor(matrix), factor_id)
+        factors.append(tracked)
+        live_factors += 1
+        maximum_live_factors = max(maximum_live_factors, live_factors)
+        return tracked
 
     monkeypatch.setattr(static_linear, "factorize_spd", factor)
     patterns = tuple((dof,) for dof in range(5))
     for pattern in patterns:
         cache.factor_for(pattern)
 
-    assert factor_calls == 5
+    assert len(factors) == 5
+    assert static_linear._FACTOR_CACHE_MAX_ENTRIES == 1
     assert len(cache._entries) == static_linear._FACTOR_CACHE_MAX_ENTRIES
-    assert tuple(cache._entries) == patterns[-4:]
+    assert tuple(cache._entries) == patterns[-1:]
+    assert [factor.close_calls for factor in factors] == [1, 1, 1, 1, 0]
+    assert events == [
+        ("create", 0),
+        ("close", 0),
+        ("create", 1),
+        ("close", 1),
+        ("create", 2),
+        ("close", 2),
+        ("create", 3),
+        ("close", 3),
+        ("create", 4),
+    ]
+    assert maximum_live_factors == 1
 
+    def failing_factor(_matrix):
+        events.append(("fail", len(factors)))
+        assert live_factors == 0
+        raise ValueError("replacement factorization failed")
+
+    monkeypatch.setattr(static_linear, "factorize_spd", failing_factor)
+    with pytest.raises(ValueError, match="replacement factorization failed"):
+        cache.factor_for(patterns[0])
+    assert tuple(cache._entries) == ()
+    assert [factor.close_calls for factor in factors] == [1, 1, 1, 1, 1]
+
+    monkeypatch.setattr(static_linear, "factorize_spd", factor)
     cache.factor_for(patterns[0])
-    assert factor_calls == 6
-    assert tuple(cache._entries) == patterns[-3:] + patterns[:1]
+    assert len(factors) == 6
+    assert tuple(cache._entries) == patterns[:1]
+    assert [factor.close_calls for factor in factors] == [1, 1, 1, 1, 1, 0]
+
+    cache.close()
+    cache.close()
+    assert [factor.close_calls for factor in factors] == [1, 1, 1, 1, 1, 1]
+    assert live_factors == 0
 
 
 def test_factor_cache_serializes_concurrent_factor_creation(monkeypatch):
     stiffness = csr_matrix(np.diag(np.arange(1.0, 9.0)))
     cache = static_linear._FactorizationCache(stiffness)
     factor_calls = 0
-    original_factor = static_linear.factorize_spd
+    active_solves = 0
+    maximum_active_solves = 0
+    close_calls = 0
+    counter_lock = Lock()
 
-    def factor(matrix):
+    class IdentityFactor:
+        def solve(self, rhs):
+            nonlocal active_solves, maximum_active_solves
+            with counter_lock:
+                active_solves += 1
+                maximum_active_solves = max(
+                    maximum_active_solves,
+                    active_solves,
+                )
+            try:
+                sleep(0.01)
+                return np.asarray(rhs)
+            finally:
+                with counter_lock:
+                    active_solves -= 1
+
+        def close(self):
+            nonlocal close_calls
+            close_calls += 1
+
+    def factor(_matrix):
         nonlocal factor_calls
         factor_calls += 1
-        return original_factor(matrix)
+        return IdentityFactor()
 
     monkeypatch.setattr(static_linear, "factorize_spd", factor)
 
@@ -597,28 +678,39 @@ def test_factor_cache_serializes_concurrent_factor_creation(monkeypatch):
         results = tuple(executor.map(solve, range(1, 9)))
 
     assert factor_calls == 1
+    assert maximum_active_solves == 1
     for scale, displacement in enumerate(results, start=1):
         np.testing.assert_allclose(
             displacement[1:],
             scale / np.arange(2.0, 9.0),
         )
+    cache.close()
+    assert close_calls == 1
 
 
 def test_factor_cache_handles_fully_constrained_and_unconstrained_systems(
     monkeypatch,
 ):
     stiffness = csr_matrix(np.diag([2.0, 3.0]))
-    cache = static_linear._FactorizationCache(stiffness)
     factor_calls = 0
-    original_factor = static_linear.factorize_spd
+    close_calls = 0
 
-    def factor(matrix):
+    class IdentityFactor:
+        def solve(self, rhs):
+            return np.asarray(rhs)
+
+        def close(self):
+            nonlocal close_calls
+            close_calls += 1
+
+    def factor(_matrix):
         nonlocal factor_calls
         factor_calls += 1
-        return original_factor(matrix)
+        return IdentityFactor()
 
     monkeypatch.setattr(static_linear, "factorize_spd", factor)
-    displacement, free_dofs = cache.solve(
+    fully_constrained = static_linear._FactorizationCache(stiffness)
+    displacement, free_dofs = fully_constrained.solve(
         np.array([10.0, 20.0]),
         (0, 1),
         np.array([0.25, -0.5]),
@@ -627,8 +719,12 @@ def test_factor_cache_handles_fully_constrained_and_unconstrained_systems(
     np.testing.assert_allclose(displacement, [0.25, -0.5])
     assert free_dofs.size == 0
     assert factor_calls == 0
+    fully_constrained.close()
+    fully_constrained.close()
+    assert close_calls == 0
 
-    displacement, free_dofs = cache.solve(
+    unconstrained = static_linear._FactorizationCache(stiffness)
+    displacement, free_dofs = unconstrained.solve(
         np.array([4.0, 9.0]),
         (),
         np.empty(0),
@@ -636,6 +732,9 @@ def test_factor_cache_handles_fully_constrained_and_unconstrained_systems(
     np.testing.assert_allclose(displacement, [2.0, 3.0])
     np.testing.assert_array_equal(free_dofs, [0, 1])
     assert factor_calls == 1
+    unconstrained.close()
+    unconstrained.close()
+    assert close_calls == 1
 
 
 def test_repeated_reduced_solve_matches_full_system_oracle_and_records_cost(
