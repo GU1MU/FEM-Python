@@ -54,6 +54,7 @@ class FieldRecoveryKind(str, Enum):
     TRUSS_STRAIN = "truss_strain"
     TRUSS_STRESS = "truss_stress"
     BEAM_SECTION_END = "beam_section_end"
+    BEAM_SECTION_POINT = "beam_section_point"
     BEAM_NODE_ENVELOPE = "beam_node_envelope"
 
 
@@ -500,18 +501,41 @@ def _derived_entries(
             ),
         )
     if family is ResultModelFamily.BEAM:
-        return (
+        section_points = tuple(
+            _entry(
+                ResultVariable.S,
+                FieldPosition.SECTION_POINT,
+                FieldAssociation.ELEMENT_NODE,
+                PhysicalQuantity.STRESS,
+                ("S11", "S12"),
+                (
+                    "Mises",
+                    "MaxPrincipal",
+                    "MidPrincipal",
+                    "MinPrincipal",
+                ),
+                f"result.field.s.section_point.{number}",
+                "Mises",
+                19 + number,
+                FieldRecoveryKind.BEAM_SECTION_POINT,
+                recovery_contract=2,
+                section_point_number=number,
+            )
+            for number in range(1, 5)
+        )
+        return section_points + (
             _entry(
                 ResultVariable.S,
                 FieldPosition.SECTION_END,
                 FieldAssociation.ELEMENT_NODE,
                 PhysicalQuantity.STRESS,
                 ("S11Max", "S11Min"),
-                ("S11AbsMax",),
+                ("S11AbsMax", "S12AbsMax"),
                 "result.field.s.section_end",
                 "S11AbsMax",
-                20,
+                24,
                 FieldRecoveryKind.BEAM_SECTION_END,
+                recovery_contract=2,
             ),
             _entry(
                 ResultVariable.S,
@@ -522,7 +546,7 @@ def _derived_entries(
                 ("S11AbsMax",),
                 "result.field.s.section_node_envelope",
                 "S11AbsMax",
-                21,
+                25,
                 FieldRecoveryKind.BEAM_NODE_ENVELOPE,
             ),
         )
@@ -585,10 +609,16 @@ def _entry(
     recovery_kind: FieldRecoveryKind,
     *,
     averaging_policy: NodalAveragingPolicy | None = None,
+    recovery_contract: int = RECOVERY_CONTRACT,
+    section_point_number: int | None = None,
 ) -> FieldRegistryEntry:
     return FieldRegistryEntry(
         descriptor=FieldDescriptor(
-            field_id=ResultFieldId(variable, position),
+            field_id=ResultFieldId(
+                variable,
+                position,
+                section_point_number=section_point_number,
+            ),
             association=association,
             quantity=quantity,
             components=components,
@@ -599,6 +629,7 @@ def _entry(
             order=order,
         ),
         recovery_kind=recovery_kind,
+        recovery_contract=recovery_contract,
         default_averaging_policy=averaging_policy,
     )
 

@@ -273,20 +273,36 @@ def _materialize_beam(
 ) -> tuple[FieldData, ...]:
     allowed = {
         FieldRecoveryKind.BEAM_SECTION_END,
+        FieldRecoveryKind.BEAM_SECTION_POINT,
         FieldRecoveryKind.BEAM_NODE_ENVELOPE,
     }
     if any(entry.recovery_kind not in allowed for _key, entry in targets):
         raise ValueError("Beam materialization received a non-Beam target")
     check_cancellation(cancellation)
     checkpoint = _checkpoint_for_cancellation(cancellation)
-    section_end = beam.recover_section_end_stress(
+    recovered = beam.recover_section_stress(
         result,
         checkpoint=checkpoint,
     )
+    section_end = recovered.section_end
     check_cancellation(cancellation)
     envelope = None
     fields = []
     for key, entry in targets:
+        if entry.recovery_kind is FieldRecoveryKind.BEAM_SECTION_POINT:
+            point_number = key.request.field_id.section_point_number
+            assert point_number is not None
+            fields.append(
+                _simple_rows_field(
+                    source=source,
+                    key=key,
+                    descriptor=entry.descriptor,
+                    rows=recovered.point_field(point_number).rows,
+                    association=FieldAssociation.ELEMENT_NODE,
+                    cancellation=cancellation,
+                )
+            )
+            continue
         if entry.recovery_kind is FieldRecoveryKind.BEAM_SECTION_END:
             fields.append(
                 _simple_rows_field(
@@ -432,7 +448,12 @@ def _simple_rows_field(
     for index, row in enumerate(rows):
         if index % _CHECKPOINT_INTERVAL == 0:
             check_cancellation(cancellation)
-        row_values = row.values()
+        row_values = (
+            row.section_values()
+            if "S12AbsMax" in descriptor.columns
+            and callable(getattr(row, "section_values", None))
+            else row.values()
+        )
         values.append(
             tuple(float(row_values[column]) for column in descriptor.columns)
         )
@@ -466,6 +487,7 @@ def _simple_rows_field(
                     element_id=row.element_id,
                     local_node=row.local_node,
                     node_id=row.node_id,
+                    section_point=getattr(row, "section_point", None),
                 )
             )
         elif association is FieldAssociation.NODE:

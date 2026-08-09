@@ -261,7 +261,7 @@ def test_registry_order_is_contextual_stable_and_unique() -> None:
         (("Quad4",), 2, (0, 2, 20, 21, 22, 23, 24)),
         (("Hex8",), 3, (0, 2, 20, 21, 22, 23, 24)),
         (("Truss2",), 3, (0, 2, 10, 20)),
-        (("Beam2",), 6, (0, 1, 2, 3, 20, 21)),
+        (("Beam2",), 6, (0, 1, 2, 3, 20, 21, 22, 23, 24, 25)),
     )
 
     for element_types, dofs, expected in expectations:
@@ -380,10 +380,15 @@ def test_beam_registry_distinguishes_section_end_from_node_envelope() -> None:
     assert section_end.descriptor.association is FieldAssociation.ELEMENT_NODE
     assert envelope.recovery_kind is FieldRecoveryKind.BEAM_NODE_ENVELOPE
     assert envelope.descriptor.association is FieldAssociation.NODE
-    for entry in (section_end, envelope):
-        assert entry.descriptor.components == ("S11Max", "S11Min")
-        assert entry.descriptor.derived_components == ("S11AbsMax",)
-        assert entry.descriptor.default_component == "S11AbsMax"
+    assert section_end.descriptor.components == ("S11Max", "S11Min")
+    assert section_end.descriptor.derived_components == (
+        "S11AbsMax",
+        "S12AbsMax",
+    )
+    assert envelope.descriptor.components == ("S11Max", "S11Min")
+    assert envelope.descriptor.derived_components == ("S11AbsMax",)
+    assert section_end.descriptor.default_component == "S11AbsMax"
+    assert envelope.descriptor.default_component == "S11AbsMax"
 
 
 def test_continuum_registry_maps_every_position_to_typed_association() -> None:

@@ -91,6 +91,7 @@ def test_enum_members_are_the_canonical_wire_values() -> None:
         "element_nodal",
         "node_region",
         "resolved_nodal",
+        "section_point",
         "section_end",
         "section_node_envelope",
     )

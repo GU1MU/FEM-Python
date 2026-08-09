@@ -16,6 +16,8 @@ from typing import Any
 
 import numpy as np
 
+from fem.elements.beam_section import BeamSectionPoint
+
 from fem.application.results.archive import (
     LoadedResultArchive,
     ResultArchiveModelProjection,
@@ -136,6 +138,9 @@ _FIELD_ARRAY_ORDER = (
     "region_index",
     "averaged",
     "averaged_mask",
+    "section_point_number",
+    "section_point_local_y",
+    "section_point_local_z",
 )
 
 
@@ -323,18 +328,37 @@ def _source_from_json(value: object, *, label: str) -> ResultSourceKey:
         raise ResultArchiveDecodeError(f"invalid {label}: {error}") from error
 
 
-def _field_id_to_json(field_id: ResultFieldId) -> dict[str, str]:
-    return {"variable": field_id.variable.value, "position": field_id.position.value}
+def _field_id_to_json(field_id: ResultFieldId) -> dict[str, object]:
+    result: dict[str, object] = {
+        "variable": field_id.variable.value,
+        "position": field_id.position.value,
+    }
+    if field_id.section_point_number is not None:
+        result["section_point_number"] = field_id.section_point_number
+    return result
 
 
 def _field_id_from_json(value: object, *, label: str) -> ResultFieldId:
     if type(value) is not dict:
         raise ResultArchiveDecodeError(f"{label} must be an object")
-    _exact_keys(value, {"variable", "position"}, label=label)
+    keys = set(value)
+    if keys not in (
+        {"variable", "position"},
+        {"variable", "position", "section_point_number"},
+    ):
+        raise ResultArchiveDecodeError(f"{label} has unexpected object keys")
+    point_number = value.get("section_point_number")
+    if point_number is not None:
+        point_number = _strict_int(
+            point_number,
+            label=f"{label}.section_point_number",
+            minimum=1,
+        )
     try:
         return ResultFieldId(
             ResultVariable(_strict_string(value["variable"], label=f"{label}.variable")),
             FieldPosition(_strict_string(value["position"], label=f"{label}.position")),
+            section_point_number=point_number,
         )
     except (TypeError, ValueError) as error:
         raise ResultArchiveDecodeError(f"invalid {label}: {error}") from error
@@ -1058,6 +1082,28 @@ def _encode_arrays(snapshot: ResultArchiveSnapshot, builder: _ArchiveBuilder) ->
             "averaged": builder.add(f"{prefix}/locations-averaged.npy", averaged),
             "averaged_mask": builder.add(f"{prefix}/locations-averaged-mask.npy", averaged_mask),
         }
+        if any(location.section_point is not None for location in field_data.locations):
+            if any(location.section_point is None for location in field_data.locations):
+                raise ResultArchiveEncodeError(
+                    "section-point fields cannot mix point and non-point rows"
+                )
+            points = tuple(location.section_point for location in field_data.locations)
+            arrays.update(
+                {
+                    "section_point_number": builder.add(
+                        f"{prefix}/locations-section-point-numbers.npy",
+                        np.asarray([point.number for point in points], dtype="<i8"),
+                    ),
+                    "section_point_local_y": builder.add(
+                        f"{prefix}/locations-section-point-local-y.npy",
+                        np.asarray([point.local_y for point in points], dtype="<f8"),
+                    ),
+                    "section_point_local_z": builder.add(
+                        f"{prefix}/locations-section-point-local-z.npy",
+                        np.asarray([point.local_z for point in points], dtype="<f8"),
+                    ),
+                }
+            )
         field_entries.append({
             "id": field_id,
             "key": _key_to_json(field_data.key),
@@ -1229,7 +1275,11 @@ def _open_archive_bytes(data: bytes) -> tuple[dict[str, Any], dict[str, bytes]]:
             for key in _TOPOLOGY_ARRAY_ORDER
         )
         for field in manifest["fields"]:
-            expected_order.extend(field["arrays"][key] for key in _FIELD_ARRAY_ORDER)
+            expected_order.extend(
+                field["arrays"][key]
+                for key in _FIELD_ARRAY_ORDER
+                if key in field["arrays"]
+            )
         if names != expected_order:
             raise ResultArchiveDecodeError("ZIP entries are not in canonical order")
         for name in array_meta:
@@ -1525,7 +1575,12 @@ def _decode_field(
     entry = value["arrays"]
     if type(entry) is not dict:
         raise ResultArchiveDecodeError(f"field[{field_id}].arrays must be an object")
-    _exact_keys(entry, {"values", "coordinates", "displacement", "displacement_mask", "node_id", "element_id", "integration_point", "local_node", "region_index", "averaged", "averaged_mask"}, label=f"field[{field_id}].arrays")
+    base_array_keys = set(_FIELD_ARRAY_ORDER[:11])
+    point_array_keys = set(_FIELD_ARRAY_ORDER[11:])
+    if set(entry) not in (base_array_keys, base_array_keys | point_array_keys):
+        raise ResultArchiveDecodeError(
+            f"field[{field_id}].arrays has unexpected object keys"
+        )
     field_values = _array_from_manifest(arrays, manifest["arrays"], entry["values"], label=f"field[{field_id}].values", expected_dtype="<f8", expected_shape=(rows, len(descriptor.columns)), finite=True)
     coordinates = _array_from_manifest(arrays, manifest["arrays"], entry["coordinates"], label=f"field[{field_id}].coordinates", expected_dtype="<f8", expected_shape=(rows, 3), finite=True)
     displacement = _array_from_manifest(arrays, manifest["arrays"], entry["displacement"], label=f"field[{field_id}].displacement", expected_dtype="<f8", expected_shape=(rows, 3), finite=True)
@@ -1536,6 +1591,34 @@ def _decode_field(
     }
     averaged = _array_from_manifest(arrays, manifest["arrays"], entry["averaged"], label=f"field[{field_id}].averaged", expected_dtype="<u1", expected_shape=(rows,))
     averaged_mask = _array_from_manifest(arrays, manifest["arrays"], entry["averaged_mask"], label=f"field[{field_id}].averaged_mask", expected_dtype="<u1", expected_shape=(rows,))
+    point_numbers = point_local_y = point_local_z = None
+    if point_array_keys.issubset(entry):
+        point_numbers = _array_from_manifest(
+            arrays,
+            manifest["arrays"],
+            entry["section_point_number"],
+            label=f"field[{field_id}].section_point_number",
+            expected_dtype="<i8",
+            expected_shape=(rows,),
+        )
+        point_local_y = _array_from_manifest(
+            arrays,
+            manifest["arrays"],
+            entry["section_point_local_y"],
+            label=f"field[{field_id}].section_point_local_y",
+            expected_dtype="<f8",
+            expected_shape=(rows,),
+            finite=True,
+        )
+        point_local_z = _array_from_manifest(
+            arrays,
+            manifest["arrays"],
+            entry["section_point_local_z"],
+            label=f"field[{field_id}].section_point_local_z",
+            expected_dtype="<f8",
+            expected_shape=(rows,),
+            finite=True,
+        )
     for name, mask in (("displacement_mask", displacement_mask), ("averaged_mask", averaged_mask), ("averaged", averaged)):
         if np.any(mask > 1):
             raise ResultArchiveDecodeError(f"field[{field_id}].{name} contains invalid mask value")
@@ -1556,6 +1639,15 @@ def _decode_field(
                     local_node=_optional_positive_int(id_arrays["local_node"][row]),
                     region_key=None if region_index < 0 else regions[region_index],
                     averaged=(None if not averaged_mask[row] else bool(averaged[row])),
+                    section_point=(
+                        None
+                        if point_numbers is None
+                        else BeamSectionPoint(
+                            int(point_numbers[row]),
+                            float(point_local_y[row]),
+                            float(point_local_z[row]),
+                        )
+                    ),
                 )
             )
         except (TypeError, ValueError) as error:
@@ -1759,7 +1851,14 @@ def _validate_profile_bound_catalog(
             expected = registry_entry_for(profile, item.key.request.field_id)
         except (KeyError, TypeError, ValueError) as error:
             raise ResultArchiveDecodeError("catalog field is outside the profile registry") from error
-        if item.descriptor != expected.descriptor:
+        if (
+            item.descriptor != expected.descriptor
+            and not _is_legacy_beam_section_field(
+                profile,
+                item.key,
+                item.descriptor,
+            )
+        ):
             raise ResultArchiveDecodeError("catalog descriptor does not match profile registry")
 
 
@@ -1772,8 +1871,35 @@ def _validate_profile_bound_fields(
             expected = registry_entry_for(profile, field_data.key.request.field_id)
         except (KeyError, TypeError, ValueError) as error:
             raise ResultArchiveDecodeError("materialized field is outside the profile registry") from error
-        if field_data.descriptor != expected.descriptor:
+        if (
+            field_data.descriptor != expected.descriptor
+            and not _is_legacy_beam_section_field(
+                profile,
+                field_data.key,
+                field_data.descriptor,
+            )
+        ):
             raise ResultArchiveDecodeError("materialized descriptor does not match profile registry")
+
+
+def _is_legacy_beam_section_field(
+    profile: ElementResultProfile,
+    key: FieldMaterializationKey,
+    descriptor: FieldDescriptor,
+) -> bool:
+    """Recognize schema-v1 Beam extrema without inventing point rows."""
+
+    return (
+        profile.family is ResultModelFamily.BEAM
+        and key.recovery_contract == 1
+        and key.request.field_id
+        == ResultFieldId(ResultVariable.S, FieldPosition.SECTION_END)
+        and descriptor.field_id == key.request.field_id
+        and descriptor.association is FieldAssociation.ELEMENT_NODE
+        and descriptor.quantity is PhysicalQuantity.STRESS
+        and descriptor.components == ("S11Max", "S11Min")
+        and descriptor.derived_components == ("S11AbsMax",)
+    )
 
 
 def _decode_regions(topology: object) -> tuple[Any, ...]:

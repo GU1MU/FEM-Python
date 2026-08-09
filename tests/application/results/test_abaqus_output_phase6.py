@@ -4,6 +4,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from fem.application.results import (
+    FieldPosition,
     OutputExecutionStatus,
     ResultSourceKey,
     ResultVariable,
@@ -131,5 +132,10 @@ def test_b31_parent_child_output_projects_without_blocking_physics(
     assert tuple(
         field.key.request.field_id.variable
         for field in outcome.eager_patch.fields
-    ) == (ResultVariable.S,)
+    ) == (ResultVariable.S,) * 5
+    assert tuple(
+        field.key.request.field_id.section_point_number
+        for field in outcome.eager_patch.fields
+        if field.key.request.field_id.position is FieldPosition.SECTION_POINT
+    ) == (1, 2, 3, 4)
     assert requests == preserved_requests

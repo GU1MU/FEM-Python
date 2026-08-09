@@ -11,6 +11,7 @@ from numbers import Real
 from pathlib import Path
 from typing import Any
 
+from fem.elements.beam_section import BeamSectionPoint
 from fem.application.results.data import (
     FieldLocation,
     ResultExportSnapshot,
@@ -65,6 +66,9 @@ RESULT_CSV_HEADER = (
     "element_id",
     "integration_point",
     "local_node",
+    "section_point_number",
+    "section_point_local_y",
+    "section_point_local_z",
     "region",
     "averaged",
     "x",
@@ -86,6 +90,11 @@ RESULT_TABLE_CSV_BASE_HEADER = (
     "y",
     "z",
 )
+_SECTION_POINT_TABLE_HEADER = (
+    "section_point_number",
+    "section_point_local_y",
+    "section_point_local_z",
+)
 
 _UTF8_BOM = b"\xef\xbb\xbf"
 _EXPECTED_ASSOCIATION = {
@@ -96,6 +105,7 @@ _EXPECTED_ASSOCIATION = {
     FieldPosition.NODE_REGION: FieldAssociation.NODE_REGION,
     FieldPosition.RESOLVED_NODAL: FieldAssociation.RESOLVED_NODAL,
     FieldPosition.SECTION_END: FieldAssociation.ELEMENT_NODE,
+    FieldPosition.SECTION_POINT: FieldAssociation.ELEMENT_NODE,
     FieldPosition.SECTION_NODE_ENVELOPE: FieldAssociation.NODE,
 }
 _EXPECTED_QUANTITY = {
@@ -776,6 +786,21 @@ def _serialize_result_components_csv(
                 location.integration_point
             ),
             "local_node": _format_optional_int(location.local_node),
+            "section_point_number": _format_optional_int(
+                None
+                if location.section_point is None
+                else location.section_point.number
+            ),
+            "section_point_local_y": (
+                ""
+                if location.section_point is None
+                else _format_float(location.section_point.local_y)
+            ),
+            "section_point_local_z": (
+                ""
+                if location.section_point is None
+                else _format_float(location.section_point.local_z)
+            ),
             "region": (
                 ""
                 if location.region_key is None
@@ -826,7 +851,20 @@ def _serialize_result_table_csv(
         raise ResultCsvEncodeError(
             "component names conflict with result table identity columns"
         )
-    header = (*RESULT_TABLE_CSV_BASE_HEADER, *components)
+    has_section_points = any(
+        record.location.section_point is not None
+        for record in projected.records
+    )
+    identity_header = (
+        (
+            *RESULT_TABLE_CSV_BASE_HEADER[:3],
+            *_SECTION_POINT_TABLE_HEADER,
+            *RESULT_TABLE_CSV_BASE_HEADER[3:],
+        )
+        if has_section_points
+        else RESULT_TABLE_CSV_BASE_HEADER
+    )
+    header = (*identity_header, *components)
     output = io.StringIO(newline="")
     output.write("\ufeff")
     writer = csv.writer(
@@ -843,6 +881,16 @@ def _serialize_result_table_csv(
                 _format_optional_int(location.node_id),
                 _format_optional_int(location.element_id),
                 _format_optional_int(location.local_node),
+                *(
+                    (
+                        _format_optional_int(location.section_point.number),
+                        _format_float(location.section_point.local_y),
+                        _format_float(location.section_point.local_z),
+                    )
+                    if has_section_points
+                    and location.section_point is not None
+                    else ()
+                ),
                 _format_float(location.coordinates[0]),
                 _format_float(location.coordinates[1]),
                 _format_float(location.coordinates[2]),
@@ -998,6 +1046,21 @@ def _serialize_result_csv(
                 location.integration_point
             ),
             "local_node": _format_optional_int(location.local_node),
+            "section_point_number": _format_optional_int(
+                None
+                if location.section_point is None
+                else location.section_point.number
+            ),
+            "section_point_local_y": (
+                ""
+                if location.section_point is None
+                else _format_float(location.section_point.local_y)
+            ),
+            "section_point_local_z": (
+                ""
+                if location.section_point is None
+                else _format_float(location.section_point.local_z)
+            ),
             "region": (
                 ""
                 if location.region_key is None
@@ -1088,6 +1151,11 @@ def _encode_field_metadata(
         "recovery_contract": str(key.recovery_contract),
         "quantity": quantity.value,
         "association": association.value,
+        "section_point_number": _format_optional_int(
+            field_id.section_point_number
+        ),
+        "section_point_local_y": "",
+        "section_point_local_z": "",
         "unit": "" if unit_label is None else unit_label,
     }
 
@@ -1115,6 +1183,11 @@ def _decode_row(
     field_id = ResultFieldId(
         variable=ResultVariable(values["field_variable"]),
         position=FieldPosition(values["field_position"]),
+        section_point_number=_parse_optional_integer(
+            values["section_point_number"],
+            label="section_point_number",
+            minimum=1,
+        ),
     )
     threshold_text = values["averaging_threshold_percent"]
     preserve_text = values["averaging_preserve_region_boundaries"]
@@ -1203,6 +1276,25 @@ def _decode_row(
             values["averaged"],
             label="averaged",
         ),
+        section_point=(
+            None
+            if not values["section_point_number"]
+            else BeamSectionPoint(
+                _parse_integer(
+                    values["section_point_number"],
+                    label="section_point_number",
+                    minimum=1,
+                ),
+                _parse_float(
+                    values["section_point_local_y"],
+                    label="section_point_local_y",
+                ),
+                _parse_float(
+                    values["section_point_local_z"],
+                    label="section_point_local_z",
+                ),
+            )
+        ),
     )
     metadata = _ResultCsvMetadata(
         source=source,
@@ -1233,6 +1325,7 @@ def _csv_location(location: FieldLocation) -> FieldLocation:
         local_node=location.local_node,
         region_key=location.region_key,
         averaged=location.averaged,
+        section_point=location.section_point,
     )
 
 
@@ -1250,6 +1343,7 @@ def _location_identity(location: FieldLocation) -> tuple[object, ...]:
             location.element_id,
             location.local_node,
             location.node_id,
+            location.section_point,
         )
     if association is FieldAssociation.NODE_REGION:
         return association, location.node_id, location.region_key

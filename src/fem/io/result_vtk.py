@@ -9,6 +9,7 @@ from numbers import Real
 from pathlib import Path
 from typing import Any
 
+from fem.elements.beam_section import BeamSectionPoint
 from fem.application.results.data import (
     FieldLocation,
     ResultExportSnapshot,
@@ -84,6 +85,13 @@ _IDENTITY_NAMES = (
     "region_index_valid",
     "averaged_state",
 )
+_SECTION_POINT_METADATA_NAMES = ("section_point_number",)
+_SECTION_POINT_IDENTITY_NAMES = (
+    "section_point_number",
+    "section_point_valid",
+    "section_point_local_y",
+    "section_point_local_z",
+)
 _EXPECTED_ASSOCIATION = {
     FieldPosition.NODE: FieldAssociation.NODE,
     FieldPosition.INTEGRATION_POINT: FieldAssociation.INTEGRATION_POINT,
@@ -92,6 +100,7 @@ _EXPECTED_ASSOCIATION = {
     FieldPosition.NODE_REGION: FieldAssociation.NODE_REGION,
     FieldPosition.RESOLVED_NODAL: FieldAssociation.RESOLVED_NODAL,
     FieldPosition.SECTION_END: FieldAssociation.ELEMENT_NODE,
+    FieldPosition.SECTION_POINT: FieldAssociation.ELEMENT_NODE,
     FieldPosition.SECTION_NODE_ENVELOPE: FieldAssociation.NODE,
 }
 _EXPECTED_QUANTITY = {
@@ -142,6 +151,7 @@ class ResultVtkLocationIdentity:
     local_node: int | None = None
     region_key: ResultRegionKey | None = None
     averaged: bool | None = None
+    section_point: BeamSectionPoint | None = None
 
     def __post_init__(self) -> None:
         for label in (
@@ -161,6 +171,8 @@ class ResultVtkLocationIdentity:
             raise TypeError("region_key must be ResultRegionKey or None")
         if self.averaged is not None and type(self.averaged) is not bool:
             raise TypeError("averaged must be bool or None")
+        if self.section_point is not None and type(self.section_point) is not BeamSectionPoint:
+            raise TypeError("section_point must be BeamSectionPoint or None")
 
     @classmethod
     def from_location(
@@ -178,6 +190,7 @@ class ResultVtkLocationIdentity:
             local_node=location.local_node,
             region_key=location.region_key,
             averaged=location.averaged,
+            section_point=location.section_point,
         )
 
 
@@ -659,6 +672,17 @@ def _metadata_arrays(
             len(projected.region_table),
         ),
     )
+    point_arrays = (
+        ()
+        if field_id.section_point_number is None
+        else (
+            _scalar_array(
+                "section_point_number",
+                "long",
+                field_id.section_point_number,
+            ),
+        )
+    )
     region_arrays = tuple(
         _utf8_array(
             f"region_{index}_utf8",
@@ -666,7 +690,7 @@ def _metadata_arrays(
         )
         for index, region_key in enumerate(projected.region_table)
     )
-    return arrays + region_arrays
+    return arrays + point_arrays + region_arrays
 
 
 def _identity_arrays(
@@ -691,6 +715,28 @@ def _identity_arrays(
     local_values, local_validity = _optional_identity_values(
         locations,
         "local_node",
+    )
+    point_validity = tuple(
+        int(location is not None and location.section_point is not None)
+        for location in locations
+    )
+    point_numbers = tuple(
+        0
+        if location is None or location.section_point is None
+        else location.section_point.number
+        for location in locations
+    )
+    point_local_y = tuple(
+        0.0
+        if location is None or location.section_point is None
+        else location.section_point.local_y
+        for location in locations
+    )
+    point_local_z = tuple(
+        0.0
+        if location is None or location.section_point is None
+        else location.section_point.local_z
+        for location in locations
     )
     region_values = tuple(
         (
@@ -751,6 +797,33 @@ def _identity_arrays(
             "unsigned_char",
             local_validity,
             count,
+        ),
+        *(
+            (
+                _vector_array(
+                    "section_point_number", "long", point_numbers, count
+                ),
+                _vector_array(
+                    "section_point_valid",
+                    "unsigned_char",
+                    point_validity,
+                    count,
+                ),
+                _vector_array(
+                    "section_point_local_y",
+                    "double",
+                    point_local_y,
+                    count,
+                ),
+                _vector_array(
+                    "section_point_local_z",
+                    "double",
+                    point_local_z,
+                    count,
+                ),
+            )
+            if any(point_validity)
+            else ()
         ),
         _vector_array("region_index", "long", region_values, count),
         _vector_array(
@@ -998,7 +1071,13 @@ def _decode_metadata(
         data_type="long",
         minimum=0,
     )
-    expected_names = _METADATA_NAMES + tuple(
+    point_names = (
+        _SECTION_POINT_METADATA_NAMES
+        if len(arrays) > len(_METADATA_NAMES)
+        and arrays[len(_METADATA_NAMES)].name == "section_point_number"
+        else ()
+    )
+    expected_names = _METADATA_NAMES + point_names + tuple(
         f"region_{index}_utf8" for index in range(region_count)
     )
     if tuple(array.name for array in arrays) != expected_names:
@@ -1024,6 +1103,15 @@ def _decode_metadata(
         )
         variable = ResultVariable(_decode_utf8(by_name["field_variable_utf8"]))
         position = FieldPosition(_decode_utf8(by_name["field_position_utf8"]))
+        section_point_number = (
+            _decode_scalar_int(
+                by_name["section_point_number"],
+                data_type="long",
+                minimum=1,
+            )
+            if point_names
+            else None
+        )
         policy_present = _decode_flag(by_name["averaging_policy_present"])
         threshold = _decode_scalar_float(by_name["averaging_threshold_percent"])
         preserve = _decode_flag(by_name["averaging_preserve_region_boundaries"])
@@ -1050,7 +1138,11 @@ def _decode_metadata(
         if gauss_present and gauss_order == 0:
             raise ValueError("present gauss order must be positive")
         request = FieldRequest(
-            field_id=ResultFieldId(variable, position),
+            field_id=ResultFieldId(
+                variable,
+                position,
+                section_point_number=section_point_number,
+            ),
             averaging_policy=policy,
             gauss_order=gauss_order if gauss_present else None,
         )
@@ -1188,24 +1280,48 @@ def _decode_identity_arrays(
     count: int,
     region_table: tuple[ResultRegionKey, ...],
 ) -> tuple[ResultVtkLocationIdentity | None, ...]:
-    if tuple(array.name for array in arrays) != _IDENTITY_NAMES:
+    point_offset = _IDENTITY_NAMES.index("region_index")
+    expanded_names = (
+        _IDENTITY_NAMES[:point_offset]
+        + _SECTION_POINT_IDENTITY_NAMES
+        + _IDENTITY_NAMES[point_offset:]
+    )
+    actual_names = tuple(array.name for array in arrays)
+    if actual_names not in {_IDENTITY_NAMES, expanded_names}:
         raise ResultVtkDecodeError(
             "result VTK identity arrays do not match canonical order"
         )
+    has_section_points = actual_names == expanded_names
     by_name = {array.name: array for array in arrays}
+    integer_names = tuple(
+        name
+        for name in actual_names
+        if name not in {"section_point_local_y", "section_point_local_z"}
+    )
     values = {
         name: _decode_vector_int(
             by_name[name],
             data_type=(
                 "unsigned_char"
-                if name.endswith("_valid") or name == "averaged_state"
+                if name.endswith("_valid")
+                or name in {"averaged_state", "section_point_valid"}
                 else "long"
             ),
             count=count,
             minimum=0,
         )
-        for name in _IDENTITY_NAMES
+        for name in integer_names
     }
+    point_local_y = (
+        _decode_vector_float(by_name["section_point_local_y"], count=count)
+        if has_section_points
+        else (0.0,) * count
+    )
+    point_local_z = (
+        _decode_vector_float(by_name["section_point_local_z"], count=count)
+        if has_section_points
+        else (0.0,) * count
+    )
     result = []
     for index in range(count):
         node_id = _decode_optional_identity(
@@ -1228,6 +1344,30 @@ def _decode_identity_arrays(
             values["local_node_valid"][index],
             label="local_node",
         )
+        point_number = (
+            _decode_optional_identity(
+                values["section_point_number"][index],
+                values["section_point_valid"][index],
+                label="section_point_number",
+            )
+            if has_section_points
+            else None
+        )
+        if point_number is None and (
+            point_local_y[index] != 0.0 or point_local_z[index] != 0.0
+        ):
+            raise ResultVtkDecodeError(
+                "absent section point must use zero coordinate placeholders"
+            )
+        section_point = (
+            None
+            if point_number is None
+            else BeamSectionPoint(
+                point_number,
+                point_local_y[index],
+                point_local_z[index],
+            )
+        )
         region_index = _decode_optional_index(
             values["region_index"][index],
             values["region_index_valid"][index],
@@ -1245,6 +1385,7 @@ def _decode_identity_arrays(
             and local_node is None
             and region_key is None
             and averaged is None
+            and section_point is None
         ):
             result.append(None)
             continue
@@ -1257,6 +1398,7 @@ def _decode_identity_arrays(
                     local_node=local_node,
                     region_key=region_key,
                     averaged=averaged,
+                    section_point=section_point,
                 )
             )
         except (TypeError, ValueError) as error:
@@ -1299,17 +1441,25 @@ def _scalar_array(
 def _vector_array(
     name: str,
     data_type: str,
-    values: tuple[int, ...],
+    values: tuple[int | float, ...],
     count: int,
 ) -> _FieldArray:
-    if len(values) != count or any(type(value) is not int for value in values):
-        raise ResultVtkEncodeError(f"{name} must contain one integer per identity row")
+    if len(values) != count:
+        raise ResultVtkEncodeError(f"{name} must contain one value per identity row")
+    if data_type == "double":
+        encoded = tuple(_format_float(value) for value in values)
+    else:
+        if any(type(value) is not int for value in values):
+            raise ResultVtkEncodeError(
+                f"{name} must contain one integer per identity row"
+            )
+        encoded = tuple(str(value) for value in values)
     return _FieldArray(
         name,
         1,
         count,
         data_type,
-        tuple(str(value) for value in values),
+        encoded,
     )
 
 
@@ -1389,6 +1539,18 @@ def _decode_vector_int(
             label=f"{array.name} value",
             minimum=minimum,
         )
+        for value in array.values
+    )
+
+
+def _decode_vector_float(
+    array: _FieldArray,
+    *,
+    count: int,
+) -> tuple[float, ...]:
+    _require_array_shape(array, data_type="double", tuples=count)
+    return tuple(
+        _parse_float(value, label=f"{array.name} value")
         for value in array.values
     )
 
@@ -1614,6 +1776,7 @@ def _validate_location_tuple(
                 local_node=identity.local_node,
                 region_key=identity.region_key,
                 averaged=identity.averaged,
+                section_point=identity.section_point,
             )
         except (TypeError, ValueError) as error:
             raise ValueError(

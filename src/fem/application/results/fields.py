@@ -50,6 +50,7 @@ class FieldPosition(str, Enum):
     ELEMENT_NODAL = "element_nodal"
     NODE_REGION = "node_region"
     RESOLVED_NODAL = "resolved_nodal"
+    SECTION_POINT = "section_point"
     SECTION_END = "section_end"
     SECTION_NODE_ENVELOPE = "section_node_envelope"
 
@@ -67,6 +68,7 @@ _VARIABLE_POSITIONS = {
             FieldPosition.NODE_REGION,
             FieldPosition.RESOLVED_NODAL,
             FieldPosition.SECTION_END,
+            FieldPosition.SECTION_POINT,
             FieldPosition.SECTION_NODE_ENVELOPE,
         }
     ),
@@ -102,6 +104,7 @@ class ResultFieldId:
 
     variable: ResultVariable
     position: FieldPosition
+    section_point_number: int | None = None
 
     def __post_init__(self) -> None:
         if type(self.variable) is not ResultVariable:
@@ -112,6 +115,17 @@ class ResultFieldId:
             raise ValueError(
                 f"{self.variable.value} is not available at "
                 f"{self.position.value}"
+            )
+        if self.position is FieldPosition.SECTION_POINT:
+            if type(self.section_point_number) is not int:
+                raise TypeError(
+                    "section_point fields require an integer point number"
+                )
+            if self.section_point_number <= 0:
+                raise ValueError("section point number must be positive")
+        elif self.section_point_number is not None:
+            raise ValueError(
+                "section_point_number is only valid at section_point position"
             )
 
 
@@ -215,7 +229,7 @@ class ResultSourceKey:
 
 def field_materialization_sort_key(
     key: FieldMaterializationKey,
-) -> tuple[int, int, int, float, int, int, int, int]:
+) -> tuple[int, int, int, int, float, int, int, int, int]:
     """Return the sole deterministic ordering key for materialized fields."""
 
     if type(key) is not FieldMaterializationKey:
@@ -237,6 +251,7 @@ def field_materialization_sort_key(
     return (
         _FIELD_VARIABLE_SORT_ORDER[request.field_id.variable],
         _POSITION_ORDER[request.field_id.position],
+        request.field_id.section_point_number or 0,
         *policy_key,
         *gauss_key,
         key.recovery_contract,

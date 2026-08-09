@@ -57,7 +57,9 @@ _EXECUTABLE_STRESS_POSITIONS = {
         }
     ),
     ResultModelFamily.TRUSS: frozenset({FieldPosition.CENTROID}),
-    ResultModelFamily.BEAM: frozenset({FieldPosition.SECTION_END}),
+    ResultModelFamily.BEAM: frozenset(
+        {FieldPosition.SECTION_POINT, FieldPosition.SECTION_END}
+    ),
 }
 _DEFAULT_STRESS_POSITION = {
     ResultModelFamily.PLANE_CONTINUUM: FieldPosition.ELEMENT_NODAL,
@@ -746,6 +748,31 @@ def _project_stress_variable(
         ResultModelFamily.SOLID_CONTINUUM,
     }:
         position = FieldPosition.ELEMENT_NODAL
+
+    if family is ResultModelFamily.BEAM:
+        beam_entries = tuple(
+            entry
+            for entry in sorted(
+                capabilities.entries,
+                key=lambda value: (
+                    value.descriptor.field_id.position
+                    is FieldPosition.SECTION_POINT,
+                    value.descriptor.field_id.section_point_number or 0,
+                ),
+            )
+            if entry.descriptor.field_id.variable is ResultVariable.S
+            and entry.descriptor.field_id.position
+            in {FieldPosition.SECTION_POINT, FieldPosition.SECTION_END}
+        )
+        if not beam_entries:
+            return (), (
+                _model_family_diagnostic(
+                    group,
+                    capabilities=capabilities,
+                    request_index=request_index,
+                ),
+            )
+        return tuple(entry.default_request() for entry in beam_entries), ()
 
     field_id = ResultFieldId(ResultVariable.S, position)
     entry = capabilities.entry_for(field_id)

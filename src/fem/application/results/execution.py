@@ -30,7 +30,7 @@ from .output_requests import (
     project_output_request,
 )
 from .provider import ResultProvider
-from .registry import ElementResultProfile
+from .registry import ElementResultProfile, ResultModelFamily
 
 
 class OutputExecutionStatus(str, Enum):
@@ -515,6 +515,33 @@ def execute_output_requests(
             )
 
     recovered: dict[FieldMaterializationKey, FieldData] = {}
+    if profile.family is ResultModelFamily.BEAM and len(pending_keys) > 1:
+        check_cancellation(cancellation)
+        probe = _CancellationProbe(cancellation)
+        try:
+            patch = provider.materialize(
+                tuple(pending_keys),
+                cancellation=(None if cancellation is None else probe),
+            )
+            if type(patch) is not ResultMaterializationPatch:
+                raise TypeError(
+                    "provider.materialize() must return ResultMaterializationPatch"
+                )
+            if patch.source != source or patch.diagnostics:
+                raise RuntimeError("beam materialization returned an invalid patch")
+            by_key = {field_data.key: field_data for field_data in patch.fields}
+            if len(by_key) != len(pending_keys) or set(by_key) != set(pending_keys):
+                raise RuntimeError(
+                    "beam materialization must return every requested field"
+                )
+            recovered.update(by_key)
+        except Exception as error:
+            if probe.cancelled_error is not None:
+                raise
+            check_cancellation(cancellation)
+            failures.update((key, error) for key in pending_keys)
+        check_cancellation(cancellation)
+        pending_keys = []
     for key in pending_keys:
         check_cancellation(cancellation)
         probe = _CancellationProbe(cancellation)

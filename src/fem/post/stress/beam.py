@@ -12,7 +12,11 @@ import numpy as np
 from ...boundary.step import boundary_for_step
 from ...core.result import ModelResult
 from ...elements import canonical_element_type, get_element_kernel
-from ...elements.beam_section import axial_stress_extrema, parse_beam2_section
+from ...elements.beam_section import (
+    BeamSectionPoint,
+    recover_section_point_stress,
+    parse_beam2_section,
+)
 from .._paths import prepare_output_path
 
 
@@ -49,9 +53,11 @@ class BeamSectionEndStress:
     axial_force: float
     moment_y: float
     moment_z: float
+    torque: float
     s11_max: float
     s11_min: float
     s11_abs_max: float
+    s12_abs_max: float
 
     def __post_init__(self) -> None:
         for name in ("element_id", "local_node", "node_id"):
@@ -76,9 +82,11 @@ class BeamSectionEndStress:
             "axial_force",
             "moment_y",
             "moment_z",
+            "torque",
             "s11_max",
             "s11_min",
             "s11_abs_max",
+            "s12_abs_max",
         ):
             value = float(getattr(self, name))
             if not math.isfinite(value):
@@ -98,12 +106,76 @@ class BeamSectionEndStress:
             )
 
     def values(self) -> dict[str, float]:
-        """Return canonical section-stress components."""
+        """Return the legacy longitudinal section-stress components."""
 
         return {
             "S11Max": self.s11_max,
             "S11Min": self.s11_min,
             "S11AbsMax": self.s11_abs_max,
+        }
+
+    def section_values(self) -> dict[str, float]:
+        """Return the complete canonical section result components."""
+
+        return {
+            **self.values(),
+            "S12AbsMax": self.s12_abs_max,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class BeamSectionPointEndStress:
+    """One Beam2 end stress row at an explicit section point."""
+
+    element_id: int
+    local_node: int
+    node_id: int
+    coordinates: tuple[float, float, float]
+    displacement: tuple[float, float, float]
+    section_point: BeamSectionPoint
+    s11: float
+    s12: float
+    mises: float
+    max_principal: float
+    mid_principal: float
+    min_principal: float
+
+    def __post_init__(self) -> None:
+        for name in ("element_id", "local_node", "node_id"):
+            object.__setattr__(self, name, _integer_id(name, getattr(self, name)))
+        if self.local_node not in {1, 2}:
+            raise ValueError("local_node must be 1 or 2 for Beam2")
+        object.__setattr__(
+            self, "coordinates", _finite_triplet("coordinates", self.coordinates)
+        )
+        object.__setattr__(
+            self,
+            "displacement",
+            _finite_triplet("displacement", self.displacement),
+        )
+        if type(self.section_point) is not BeamSectionPoint:
+            raise TypeError("section_point must be BeamSectionPoint")
+        for name in (
+            "s11",
+            "s12",
+            "mises",
+            "max_principal",
+            "mid_principal",
+            "min_principal",
+        ):
+            value = float(getattr(self, name))
+            if not math.isfinite(value):
+                raise ValueError(f"{name} must be finite")
+            object.__setattr__(self, name, value)
+
+    def values(self) -> dict[str, float]:
+        return {
+            "S11": self.s11,
+            "S12": self.s12,
+            "Mises": self.mises,
+            "MaxPrincipal": self.max_principal,
+            "MidPrincipal": self.mid_principal,
+            "MinPrincipal": self.min_principal,
         }
 
 
@@ -137,6 +209,69 @@ class BeamEndStressField:
             raise ValueError("Beam section-end identities must be unique")
         object.__setattr__(self, "node_order", node_order)
         object.__setattr__(self, "rows", rows)
+
+
+@dataclass(frozen=True, slots=True)
+class BeamSectionPointField:
+    """Rows for one canonical Beam2 section-point number."""
+
+    point_number: int
+    rows: tuple[BeamSectionPointEndStress, ...]
+
+    position: ClassVar[str] = "section_point"
+    component_names: ClassVar[tuple[str, ...]] = (
+        "S11",
+        "S12",
+        "Mises",
+        "MaxPrincipal",
+        "MidPrincipal",
+        "MinPrincipal",
+    )
+
+    def __post_init__(self) -> None:
+        point_number = _integer_id("point_number", self.point_number)
+        if point_number <= 0:
+            raise ValueError("point_number must be positive")
+        rows = tuple(self.rows)
+        if any(type(row) is not BeamSectionPointEndStress for row in rows):
+            raise TypeError(
+                "rows must contain only BeamSectionPointEndStress values"
+            )
+        if any(row.section_point.number != point_number for row in rows):
+            raise ValueError("every row must match point_number")
+        identities = [(row.element_id, row.local_node) for row in rows]
+        if len(set(identities)) != len(identities):
+            raise ValueError("section-point row identities must be unique")
+        object.__setattr__(self, "point_number", point_number)
+        object.__setattr__(self, "rows", rows)
+
+
+@dataclass(frozen=True, slots=True)
+class BeamSectionStressRecovery:
+    """Shared Beam2 recovery behind point and section result fields."""
+
+    section_end: BeamEndStressField
+    section_points: tuple[BeamSectionPointField, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.section_end) is not BeamEndStressField:
+            raise TypeError("section_end must be BeamEndStressField")
+        if type(self.section_points) is not tuple or any(
+            type(value) is not BeamSectionPointField
+            for value in self.section_points
+        ):
+            raise TypeError(
+                "section_points must contain BeamSectionPointField values"
+            )
+        numbers = tuple(value.point_number for value in self.section_points)
+        if len(numbers) != len(set(numbers)):
+            raise ValueError("section point field numbers must be unique")
+
+    def point_field(self, number: int) -> BeamSectionPointField:
+        for field in self.section_points:
+            if field.point_number == number:
+                return field
+        raise KeyError(number)
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,12 +351,12 @@ class BeamNodeEnvelopeField:
         object.__setattr__(self, "rows", rows)
 
 
-def recover_section_end_stress(
+def recover_section_stress(
     result: ModelResult,
     *,
     checkpoint: Callable[[], None] | None = None,
-) -> BeamEndStressField:
-    """Recover canonical Beam2 section-end rows from one complete result."""
+) -> BeamSectionStressRecovery:
+    """Recover point and section Beam2 stresses in one numerical pass."""
 
     _validate_checkpoint(checkpoint)
     if not isinstance(result, ModelResult):
@@ -241,6 +376,7 @@ def recover_section_end_stress(
         line_loads_by_element.setdefault(load_element_id, []).append(load)
 
     rows: list[BeamSectionEndStress] = []
+    point_rows: dict[int, list[BeamSectionPointEndStress]] = {}
     for elem in mesh.elements:
         _run_checkpoint(checkpoint)
         element_id = _integer_id("element id", elem.id)
@@ -289,60 +425,86 @@ def recover_section_end_stress(
                 load.coordinate_system,
                 lookup,
             )
-        end_actions = np.asarray(
-            kernel.local_end_actions(
-                mesh,
-                elem,
-                result.U,
-                local_load,
-                lookup,
-            ),
-            dtype=float,
+        end_forces = kernel.local_section_end_forces(
+            mesh,
+            elem,
+            result.U,
+            local_load,
+            lookup,
         )
         _run_checkpoint(checkpoint)
-        if end_actions.shape != (2, 3) or not np.all(np.isfinite(end_actions)):
+        if len(end_forces) != 2:
             raise ValueError(
-                f"Beam2 element {element_id} end actions must have shape "
-                "(2, 3) with finite values"
+                f"Beam2 element {element_id} section forces require two ends"
             )
         section = parse_beam2_section(elem.props)
-        for local_node, (
-            node_id,
-            (axial_force, moment_y, moment_z),
-        ) in enumerate(zip(
+        for local_node, (node_id, forces) in enumerate(zip(
             node_ids,
-            end_actions,
+            end_forces,
             strict=True,
         ), start=1):
-            maximum, minimum, absolute = axial_stress_extrema(
-                section,
-                axial_force,
-                moment_y,
-                moment_z,
-            )
+            recovered = recover_section_point_stress(section, forces)
             node = lookup[int(node_id)]
+            coordinates = _node_coordinates(node)
+            displacement = _node_displacement(mesh, result.U, node_id)
             rows.append(
                 BeamSectionEndStress(
                     element_id=element_id,
                     local_node=local_node,
                     node_id=node_id,
-                    coordinates=_node_coordinates(node),
-                    displacement=_node_displacement(mesh, result.U, node_id),
-                    axial_force=float(axial_force),
-                    moment_y=float(moment_y),
-                    moment_z=float(moment_z),
-                    s11_max=float(maximum),
-                    s11_min=float(minimum),
-                    s11_abs_max=float(absolute),
+                    coordinates=coordinates,
+                    displacement=displacement,
+                    axial_force=forces.axial_force,
+                    moment_y=forces.moment_y,
+                    moment_z=forces.moment_z,
+                    torque=forces.torque,
+                    s11_max=recovered.s11_max,
+                    s11_min=recovered.s11_min,
+                    s11_abs_max=recovered.s11_abs_max,
+                    s12_abs_max=recovered.s12_abs_max,
                 )
             )
-    return BeamEndStressField(
+            for point_stress in recovered.point_stresses:
+                point_rows.setdefault(point_stress.point.number, []).append(
+                    BeamSectionPointEndStress(
+                        element_id=element_id,
+                        local_node=local_node,
+                        node_id=node_id,
+                        coordinates=coordinates,
+                        displacement=displacement,
+                        section_point=point_stress.point,
+                        s11=point_stress.s11,
+                        s12=point_stress.s12,
+                        mises=point_stress.mises,
+                        max_principal=point_stress.max_principal,
+                        mid_principal=point_stress.mid_principal,
+                        min_principal=point_stress.min_principal,
+                    )
+                )
+    section_end = BeamEndStressField(
         node_order=tuple(
             _integer_id("mesh node id", node_id)
             for node_id in mesh.node_ids
         ),
         rows=tuple(rows),
     )
+    return BeamSectionStressRecovery(
+        section_end=section_end,
+        section_points=tuple(
+            BeamSectionPointField(number, tuple(point_rows[number]))
+            for number in sorted(point_rows)
+        ),
+    )
+
+
+def recover_section_end_stress(
+    result: ModelResult,
+    *,
+    checkpoint: Callable[[], None] | None = None,
+) -> BeamEndStressField:
+    """Compatibility wrapper for the legacy section-extrema entry point."""
+
+    return recover_section_stress(result, checkpoint=checkpoint).section_end
 
 
 def section_node_envelope(

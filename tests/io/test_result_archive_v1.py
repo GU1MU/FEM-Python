@@ -13,6 +13,9 @@ import numpy as np
 import pytest
 
 from fem.application.results import (
+    FieldData,
+    FieldMaterializationKey,
+    FieldPosition,
     FieldState,
     ResultArchiveModelProjection,
     ResultArchiveOrigin,
@@ -153,6 +156,108 @@ def test_schema_v1_roundtrip_preserves_result_contract(name, builder):
         assert left.locations == right.locations
         np.testing.assert_array_equal(left.values, right.values)
         assert left.values.flags.writeable is False
+
+
+def test_beam_section_point_archive_roundtrip_preserves_point_identity() -> None:
+    expected = _snapshot(make_beam_field_characterization_result, "beam-points")
+
+    encoded = encode_result_archive(expected)
+    manifest, _entries_value = _manifest_and_entries(encoded)
+    point_entries = tuple(
+        field
+        for field in manifest["fields"]
+        if field["key"]["request"]["field_id"].get("section_point_number")
+        is not None
+    )
+    assert len(point_entries) == 4
+    assert all(
+        {
+            "section_point_number",
+            "section_point_local_y",
+            "section_point_local_z",
+        }
+        <= set(field["arrays"])
+        for field in point_entries
+    )
+
+    actual = decode_result_archive(encoded)
+    point_fields = tuple(
+        field
+        for field in actual.fields
+        if field.key.request.field_id.position is FieldPosition.SECTION_POINT
+    )
+
+    assert tuple(
+        field.key.request.field_id.section_point_number
+        for field in point_fields
+    ) == (1, 2, 3, 4)
+    assert all(
+        location.section_point is not None
+        and location.section_point.number
+        == field.key.request.field_id.section_point_number
+        for field in point_fields
+        for location in field.locations
+    )
+
+
+def test_legacy_beam_archive_remains_readable_without_fabricated_points() -> None:
+    current = _snapshot(make_beam_field_characterization_result, "legacy-beam")
+    section = next(
+        field
+        for field in current.fields
+        if field.key.request.field_id.position is FieldPosition.SECTION_END
+    )
+    legacy_key = FieldMaterializationKey(section.key.request, 1)
+    legacy_descriptor = replace(
+        section.descriptor,
+        derived_components=("S11AbsMax",),
+    )
+    legacy_section = FieldData(
+        descriptor=legacy_descriptor,
+        source=section.source,
+        key=legacy_key,
+        locations=section.locations,
+        values=section.values[:, :3],
+    )
+    legacy_fields = tuple(
+        legacy_section if field is section else field
+        for field in current.fields
+        if field.key.request.field_id.position is not FieldPosition.SECTION_POINT
+    )
+    legacy_catalog_fields = tuple(
+        (
+            replace(
+                availability,
+                key=legacy_key,
+                descriptor=legacy_descriptor,
+            )
+            if availability.key == section.key
+            else availability
+        )
+        for availability in current.catalog.fields
+        if availability.key.request.field_id.position
+        is not FieldPosition.SECTION_POINT
+    )
+    legacy = replace(
+        current,
+        catalog=replace(current.catalog, fields=legacy_catalog_fields),
+        materialization=replace(
+            current.materialization,
+            fields=legacy_fields,
+        ),
+    )
+
+    loaded = decode_result_archive(encode_result_archive(legacy))
+
+    assert all(
+        field.key.request.field_id.position is not FieldPosition.SECTION_POINT
+        for field in loaded.fields
+    )
+    assert all(
+        location.section_point is None
+        for field in loaded.fields
+        for location in field.locations
+    )
 
 
 def test_schema_v1_entry_order_is_deterministic(tmp_path: Path):

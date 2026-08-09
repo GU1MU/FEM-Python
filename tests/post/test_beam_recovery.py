@@ -138,7 +138,7 @@ def test_section_end_recovery_cancels_after_one_element_and_retries(
 ) -> None:
     result = _chain_result(with_isolated_node=False)
     kernel_type = type(get_element_kernel("Beam2"))
-    original = kernel_type.local_end_actions
+    original = kernel_type.local_section_end_forces
     completed_elements: list[int] = []
 
     def counted(
@@ -164,7 +164,7 @@ def test_section_end_recovery_cancels_after_one_element_and_retries(
         if completed_elements:
             raise _RecoveryCancelled("cancelled after one Beam2 element")
 
-    monkeypatch.setattr(kernel_type, "local_end_actions", counted)
+    monkeypatch.setattr(kernel_type, "local_section_end_forces", counted)
 
     with pytest.raises(_RecoveryCancelled, match="one Beam2 element"):
         beam.recover_section_end_stress(
@@ -425,8 +425,8 @@ def test_section_end_recovery_rejects_invalid_section_and_end_action_shape(
     kernel_type = type(get_element_kernel("Beam2"))
     monkeypatch.setattr(
         kernel_type,
-        "local_end_actions",
-        lambda *args, **kwargs: np.zeros((1, 3)),
+        "local_section_end_forces",
+        lambda *args, **kwargs: (),
     )
-    with pytest.raises(ValueError, match=r"shape \(2, 3\)"):
+    with pytest.raises(ValueError, match="require two ends"):
         beam.recover_section_end_stress(result)

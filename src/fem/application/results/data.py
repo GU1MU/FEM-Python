@@ -11,6 +11,7 @@ from typing import Any
 
 import numpy as np
 
+from fem.elements.beam_section import BeamSectionPoint
 from fem.post.fields import ResultRegionKey
 
 from .fields import (
@@ -41,6 +42,7 @@ _POSITION_ASSOCIATIONS = {
     FieldPosition.NODE_REGION: FieldAssociation.NODE_REGION,
     FieldPosition.RESOLVED_NODAL: FieldAssociation.RESOLVED_NODAL,
     FieldPosition.SECTION_END: FieldAssociation.ELEMENT_NODE,
+    FieldPosition.SECTION_POINT: FieldAssociation.ELEMENT_NODE,
     FieldPosition.SECTION_NODE_ENVELOPE: FieldAssociation.NODE,
 }
 
@@ -172,6 +174,7 @@ class FieldLocation:
     local_node: int | None = None
     region_key: ResultRegionKey | None = None
     averaged: bool | None = None
+    section_point: BeamSectionPoint | None = None
 
     def __post_init__(self) -> None:
         if type(self.association) is not FieldAssociation:
@@ -448,6 +451,19 @@ class FieldData:
             if location.association is not descriptor.association:
                 raise ValueError(
                     "location association must match descriptor association"
+                )
+            point_number = descriptor.field_id.section_point_number
+            if point_number is None:
+                if location.section_point is not None:
+                    raise ValueError(
+                        "non-section-point fields cannot contain section points"
+                    )
+            elif (
+                location.section_point is None
+                or location.section_point.number != point_number
+            ):
+                raise ValueError(
+                    "section-point field locations must match the field point number"
                 )
             identity = _field_location_identity_key(location)
             if identity in identities:
@@ -872,6 +888,13 @@ def _validate_location_identity(location: FieldLocation) -> None:
             raise TypeError("region_key must be ResultRegionKey or None")
     if location.averaged is not None and type(location.averaged) is not bool:
         raise TypeError("averaged must be a bool or None")
+    if location.section_point is not None:
+        if type(location.section_point) is not BeamSectionPoint:
+            raise TypeError("section_point must be BeamSectionPoint or None")
+        if association is not FieldAssociation.ELEMENT_NODE:
+            raise ValueError(
+                "section_point is only valid for element-node locations"
+            )
 
 
 def _field_location_identity_key(
@@ -893,6 +916,7 @@ def _field_location_identity_key(
             location.element_id,
             location.local_node,
             location.node_id,
+            location.section_point,
         )
     if location.association is FieldAssociation.NODE_REGION:
         return location.association, location.node_id, location.region_key

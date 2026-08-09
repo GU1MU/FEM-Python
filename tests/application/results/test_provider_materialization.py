@@ -702,7 +702,7 @@ def test_beam_one_section_recovery_materializes_end_and_envelope(
         ResultVariable.S,
         FieldPosition.SECTION_NODE_ENVELOPE,
     )
-    original = _materializers.beam.recover_section_end_stress
+    original = _materializers.beam.recover_section_stress
     calls = []
 
     def counted_recover(result, *, checkpoint=None):
@@ -711,7 +711,7 @@ def test_beam_one_section_recovery_materializes_end_and_envelope(
 
     monkeypatch.setattr(
         _materializers.beam,
-        "recover_section_end_stress",
+        "recover_section_stress",
         counted_recover,
     )
 
@@ -731,6 +731,7 @@ def test_beam_one_section_recovery_materializes_end_and_envelope(
         "S11Max",
         "S11Min",
         "S11AbsMax",
+        "S12AbsMax",
     )
     assert [item.node_id for item in envelope.locations] == [10, 20]
     assert envelope.descriptor.association is FieldAssociation.NODE
@@ -944,7 +945,7 @@ def test_beam_element_loop_cancellation_returns_no_patch_and_retries(
     before = provider.snapshot
     cancellation = _CancellationSwitch()
     kernel_type = type(get_element_kernel("Beam2"))
-    original = kernel_type.local_end_actions
+    original = kernel_type.local_section_end_forces
     completed_elements: list[int] = []
     arm_once = True
 
@@ -971,7 +972,7 @@ def test_beam_element_loop_cancellation_returns_no_patch_and_retries(
             arm_once = False
         return values
 
-    monkeypatch.setattr(kernel_type, "local_end_actions", counted)
+    monkeypatch.setattr(kernel_type, "local_section_end_forces", counted)
 
     with pytest.raises(_Cancelled, match="cancelled"):
         provider.materialize(keys, cancellation=cancellation)

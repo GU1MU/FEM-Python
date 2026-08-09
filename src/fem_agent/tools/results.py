@@ -94,6 +94,7 @@ def query_results(
 
     scalars: list[ScalarResult] = []
     diagnostics: list[Diagnostic] = []
+    recovery_cache: dict[str, Any] = {}
     for query in requested:
         if not isinstance(query, ResultQuery):
             diagnostics.append(
@@ -113,6 +114,7 @@ def query_results(
                     run_id=run_id,
                     step_name=step_name,
                     units=unit_context,
+                    recovery_cache=recovery_cache,
                 )
             )
         except Exception as error:
@@ -134,6 +136,7 @@ def _evaluate_query(
     run_id: str,
     step_name: str,
     units: UnitContext,
+    recovery_cache: dict[str, Any],
 ) -> tuple[ScalarResult, ...]:
     kind = query.kind
     if kind == ResultQueryKind.DISPLACEMENT_COMPONENT:
@@ -239,6 +242,7 @@ def _evaluate_query(
             run_id=run_id,
             step_name=step_name,
             stress_unit=units.stress,
+            recovery_cache=recovery_cache,
         )
     raise ValueError(f"Unsupported result query kind {kind.value!r}")
 
@@ -384,13 +388,18 @@ def _stress_extrema(
     run_id: str,
     step_name: str,
     stress_unit: str,
+    recovery_cache: dict[str, Any],
 ) -> tuple[ScalarResult, ScalarResult]:
     element_ids = _query_element_ids(result.model, query.element_set)
     type_keys = dispatch.resolve_type_keys(result.model.mesh, None)
     if type_keys == ("beam2",):
         if element_ids is not None:
             raise ValueError("Beam2 stress queries do not support element_set filtering")
-        values = _beam_stress_values(result, query.measure)
+        values = _beam_stress_values(
+            result,
+            query.measure,
+            recovery_cache=recovery_cache,
+        )
     else:
         values = _continuum_stress_values(result, query.measure, element_ids)
     if not values:
@@ -475,9 +484,14 @@ def _continuum_stress_values(
 def _beam_stress_values(
     result: Any,
     measure: str | None,
+    *,
+    recovery_cache: dict[str, Any],
 ) -> list[tuple[float, int, int | None]]:
     canonical = _canonical_stress_measure(measure)
-    rows = beam.nodal_envelope(result)
+    rows = recovery_cache.get("beam_nodal_envelope")
+    if rows is None:
+        rows = beam.nodal_envelope(result)
+        recovery_cache["beam_nodal_envelope"] = rows
     if canonical in {"von_mises", "axial_stress_abs_max"}:
         selector = attrgetter("absolute_maximum")
     elif canonical == "axial_stress_max":

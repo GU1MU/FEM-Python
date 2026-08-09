@@ -12,7 +12,7 @@ from fem.core.model import (
     Surface,
 )
 from fem.core.result import ModelResult
-from fem.post.stress import field, invariants
+from fem.post.stress import beam, field, invariants
 
 from fem_agent.diagnostics import DiagnosticCode
 from fem_agent.schemas import (
@@ -23,6 +23,9 @@ from fem_agent.schemas import (
 from fem_agent.tools.results import MAX_PROVIDER_SCALARS, query_results
 from tests.helpers.mesh_builders import make_tri3_stiffness_mesh
 from tests.helpers.model_builders import make_simple_truss_mesh
+from tests.helpers.phase8_result_characterization import (
+    make_beam_field_characterization_result,
+)
 
 
 UNITS = UnitContext(
@@ -243,6 +246,40 @@ def test_query_results_returns_diagnostic_for_unavailable_truss_stress():
     assert summary.scalars == ()
     assert summary.diagnostics[0].code == DiagnosticCode.RESULT_QUERY_FAILED.value
     assert "stress" in summary.diagnostics[0].message.casefold()
+
+
+def test_beam_stress_queries_reuse_one_canonical_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = make_beam_field_characterization_result()
+    original = beam.nodal_envelope
+    calls: list[object] = []
+
+    def counted(value):
+        calls.append(value)
+        return original(value)
+
+    monkeypatch.setattr(beam, "nodal_envelope", counted)
+
+    summary = query_results(
+        result,
+        (
+            ResultQuery(
+                ResultQueryKind.STRESS_EXTREMA,
+                measure="axial_stress_max",
+            ),
+            ResultQuery(
+                ResultQueryKind.STRESS_EXTREMA,
+                measure="axial_stress_min",
+            ),
+        ),
+        run_id="run-beam",
+        unit_context=UNITS,
+    )
+
+    assert summary.diagnostics == ()
+    assert len(summary.scalars) == 4
+    assert calls == [result]
 
 
 def test_stress_extrema_match_existing_nodal_stress_postprocessing():
