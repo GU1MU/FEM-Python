@@ -61,7 +61,7 @@ def encode_result_archive(snapshot: ResultArchiveSnapshot) -> bytes:
 
 
 def decode_result_archive(data: bytes | bytearray) -> ResultArchiveSnapshot:
-    return decode_result_archive_v1(bytes(data))
+    return loads_result_archive_v1(data)
 
 
 def dumps_result_archive(snapshot: ResultArchiveSnapshot) -> bytes:

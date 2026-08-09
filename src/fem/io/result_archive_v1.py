@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from io import BytesIO
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import zipfile
@@ -78,6 +79,18 @@ RESULT_ARCHIVE_SCHEMA_VERSION = SCHEMA_VERSION
 RESULT_FILE_SUFFIX = ".femres"
 RESULT_ARCHIVE_FILE_SUFFIX = RESULT_FILE_SUFFIX
 MANIFEST_NAME = "manifest.json"
+
+# Archive inputs are untrusted.  Keep these limits deliberately generous for
+# ordinary solver output while bounding decompression and NumPy metadata work
+# before any array is materialized.  The limits are part of the decoder's
+# safety policy, not the schema's numerical contract.
+_MAX_ZIP_ENTRY_BYTES = 512 * 1024 * 1024
+_MAX_ZIP_TOTAL_BYTES = 1024 * 1024 * 1024
+_MAX_ZIP_COMPRESSION_RATIO = 10_000
+_MAX_ZIP_CONTAINER_BYTES = 1024 * 1024 * 1024
+_MAX_ZIP_ENTRY_COUNT = 4096
+_MAX_MANIFEST_BYTES = 8 * 1024 * 1024
+_MAX_ARRAY_BYTES = 512 * 1024 * 1024
 
 _TOP_LEVEL_KEYS = frozenset(
     {
@@ -775,6 +788,18 @@ def _checked_array_meta(value: object, *, label: str) -> dict[str, object]:
     if type(shape) is not list or any(type(item) is not int or item < 0 for item in shape):
         raise ResultArchiveDecodeError(f"{label}.shape must be nonnegative integer array")
     nbytes = _strict_int(value["nbytes"], label=f"{label}.nbytes", minimum=0)
+    try:
+        declared_nbytes = math.prod(shape, start=1) * parsed.itemsize
+    except (OverflowError, ValueError) as error:
+        raise ResultArchiveDecodeError(f"{label}.shape is too large") from error
+    if declared_nbytes > _MAX_ARRAY_BYTES:
+        raise ResultArchiveDecodeError(
+            f"{label} declared byte size exceeds archive safety limit"
+        )
+    if nbytes != declared_nbytes:
+        raise ResultArchiveDecodeError(
+            f"{label} declared byte size does not match dtype/shape"
+        )
     sha = _strict_string(value["sha256"], label=f"{label}.sha256")
     if not re.fullmatch(r"[0-9a-f]{64}", sha):
         raise ResultArchiveDecodeError(f"{label}.sha256 must be lowercase hexadecimal")
@@ -827,6 +852,7 @@ def _checked_array(
 class _ArchiveBuilder:
     def __init__(self) -> None:
         self.arrays: OrderedDict[str, tuple[dict[str, object], bytes]] = OrderedDict()
+        self.expanded_bytes = 0
 
     def add(self, name: str, array: np.ndarray) -> str:
         if not _safe_entry_name(name):
@@ -834,8 +860,25 @@ class _ArchiveBuilder:
         if name in self.arrays:
             raise ResultArchiveEncodeError(f"duplicate archive entry {name!r}")
         owned = np.ascontiguousarray(array)
+        if owned.nbytes > _MAX_ARRAY_BYTES:
+            raise ResultArchiveEncodeError(
+                f"archive array {name!r} exceeds the array size safety limit"
+            )
         raw = _array_bytes(owned)
+        if len(raw) > _MAX_ZIP_ENTRY_BYTES:
+            raise ResultArchiveEncodeError(
+                f"archive entry {name!r} exceeds the size safety limit"
+            )
+        _validate_entry_count(
+            len(self.arrays) + 2,
+            error_type=ResultArchiveEncodeError,
+        )
+        if self.expanded_bytes + len(raw) > _MAX_ZIP_TOTAL_BYTES:
+            raise ResultArchiveEncodeError(
+                "result archive exceeds the total size safety limit"
+            )
         self.arrays[name] = (_array_meta(raw, owned), raw)
+        self.expanded_bytes += len(raw)
         return name
 
 
@@ -844,6 +887,66 @@ def _safe_entry_name(name: str) -> bool:
         return False
     parts = name.split("/")
     return all(part not in {"", ".", ".."} for part in parts)
+
+
+def _validate_container_bytes(
+    size: int,
+    *,
+    error_type: type[Exception],
+) -> None:
+    if size > _MAX_ZIP_CONTAINER_BYTES:
+        raise error_type(
+            "result archive container exceeds the size safety limit"
+        )
+
+
+def _validate_entry_count(
+    count: int,
+    *,
+    error_type: type[Exception],
+) -> None:
+    if count > _MAX_ZIP_ENTRY_COUNT:
+        raise error_type("result archive contains too many ZIP entries")
+
+
+def _validate_manifest_bytes(
+    size: int,
+    *,
+    error_type: type[Exception],
+) -> None:
+    if size > _MAX_MANIFEST_BYTES:
+        raise error_type("result archive manifest exceeds the size safety limit")
+
+
+def _validate_zip_infos(
+    infos: list[zipfile.ZipInfo],
+    *,
+    error_type: type[Exception],
+) -> int:
+    """Validate central-directory size/count/ratio limits and return total raw bytes."""
+
+    _validate_entry_count(len(infos), error_type=error_type)
+    total_size = 0
+    for info in infos:
+        if info.file_size < 0 or info.file_size > _MAX_ZIP_ENTRY_BYTES:
+            raise error_type(
+                f"ZIP entry {info.filename!r} exceeds the size safety limit"
+            )
+        total_size += info.file_size
+        if total_size > _MAX_ZIP_TOTAL_BYTES:
+            raise error_type("result archive exceeds the total size safety limit")
+        if info.file_size and info.compress_size <= 0:
+            raise error_type(
+                f"ZIP entry {info.filename!r} has an invalid compression size"
+            )
+        if (
+            info.compress_size
+            and info.file_size / info.compress_size > _MAX_ZIP_COMPRESSION_RATIO
+        ):
+            raise error_type(
+                f"ZIP entry {info.filename!r} exceeds the compression-ratio safety limit"
+            )
+    return total_size
 
 
 def _encode_arrays(snapshot: ResultArchiveSnapshot, builder: _ArchiveBuilder) -> tuple[dict[str, object], dict[str, object], list[object]]:
@@ -990,16 +1093,38 @@ def encode_result_archive_v1(snapshot: ResultArchiveSnapshot) -> bytes:
         builder = _ArchiveBuilder()
         manifest = _manifest_for_snapshot(snapshot, builder)
         manifest_bytes = _canonical_json(manifest)
+        _validate_manifest_bytes(
+            len(manifest_bytes),
+            error_type=ResultArchiveEncodeError,
+        )
+        _validate_entry_count(
+            len(builder.arrays) + 1,
+            error_type=ResultArchiveEncodeError,
+        )
+        expanded_size = len(manifest_bytes) + builder.expanded_bytes
+        if expanded_size > _MAX_ZIP_TOTAL_BYTES:
+            raise ResultArchiveEncodeError(
+                "result archive exceeds the total size safety limit"
+            )
         output = BytesIO()
         with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6, strict_timestamps=True) as archive:
             _writestr_deterministic(archive, MANIFEST_NAME, manifest_bytes)
             for name, (_meta, raw) in builder.arrays.items():
                 _writestr_deterministic(archive, name, raw)
+            _validate_zip_infos(
+                archive.infolist(),
+                error_type=ResultArchiveEncodeError,
+            )
+        serialized = output.getvalue()
+        _validate_container_bytes(
+            len(serialized),
+            error_type=ResultArchiveEncodeError,
+        )
+        return serialized
     except ResultArchiveEncodeError:
         raise
     except (OSError, TypeError, ValueError, zipfile.BadZipFile) as error:
         raise ResultArchiveEncodeError(f"result archive ZIP encoding failed: {error}") from error
-    return output.getvalue()
 
 
 def _writestr_deterministic(archive: zipfile.ZipFile, name: str, data: bytes) -> None:
@@ -1013,12 +1138,14 @@ def _writestr_deterministic(archive: zipfile.ZipFile, name: str, data: bytes) ->
 def _open_archive_bytes(data: bytes) -> tuple[dict[str, Any], dict[str, bytes]]:
     if type(data) is not bytes:
         raise TypeError("archive data must be bytes")
+    _validate_container_bytes(len(data), error_type=ResultArchiveDecodeError)
     try:
         archive = zipfile.ZipFile(BytesIO(data), "r")
     except (zipfile.BadZipFile, OSError, ValueError) as error:
         raise ResultArchiveDecodeError(f"result archive is not a valid ZIP: {error}") from error
     try:
         infos = archive.infolist()
+        _validate_zip_infos(infos, error_type=ResultArchiveDecodeError)
         names = [item.filename for item in infos]
         if len(names) != len(set(names)):
             raise ResultArchiveDecodeError("result archive contains duplicate entries")
@@ -1026,7 +1153,22 @@ def _open_archive_bytes(data: bytes) -> tuple[dict[str, Any], dict[str, bytes]]:
             raise ResultArchiveDecodeError("result archive contains unsafe entry path")
         if MANIFEST_NAME not in names:
             raise ResultArchiveDecodeError("result archive is missing manifest.json")
-        manifest = _parse_manifest(archive.read(MANIFEST_NAME))
+        manifest_info = archive.getinfo(MANIFEST_NAME)
+        _validate_manifest_bytes(
+            manifest_info.file_size,
+            error_type=ResultArchiveDecodeError,
+        )
+        manifest_bytes = _read_zip_entry_bounded(
+            archive,
+            MANIFEST_NAME,
+            _MAX_MANIFEST_BYTES,
+        )
+        total_read = len(manifest_bytes)
+        if total_read > _MAX_ZIP_TOTAL_BYTES:
+            raise ResultArchiveDecodeError(
+                "result archive exceeds the total size safety limit"
+            )
+        manifest = _parse_manifest(manifest_bytes)
         _validate_array_entry_names(manifest)
         array_meta = manifest["arrays"]
         if type(array_meta) is not dict:
@@ -1050,7 +1192,17 @@ def _open_archive_bytes(data: bytes) -> tuple[dict[str, Any], dict[str, bytes]]:
             if not _safe_entry_name(name) or name == MANIFEST_NAME:
                 raise ResultArchiveDecodeError(f"manifest declares unsafe array entry {name!r}")
             _checked_array_meta(array_meta[name], label=f"manifest.arrays[{name!r}]")
-            arrays[name] = archive.read(name)
+            raw = _read_zip_entry_bounded(
+                archive,
+                name,
+                _MAX_ZIP_ENTRY_BYTES,
+            )
+            total_read += len(raw)
+            if total_read > _MAX_ZIP_TOTAL_BYTES:
+                raise ResultArchiveDecodeError(
+                    "result archive exceeds the total size safety limit"
+                )
+            arrays[name] = raw
         return manifest, arrays
     except ResultArchiveDecodeError:
         raise
@@ -1058,6 +1210,30 @@ def _open_archive_bytes(data: bytes) -> tuple[dict[str, Any], dict[str, bytes]]:
         raise ResultArchiveDecodeError(f"result archive read failed: {error}") from error
     finally:
         archive.close()
+
+
+def _read_zip_entry_bounded(
+    archive: zipfile.ZipFile,
+    name: str,
+    limit: int,
+) -> bytes:
+    try:
+        declared_size = archive.getinfo(name).file_size
+        if declared_size > limit:
+            raise ResultArchiveDecodeError(
+                f"result archive entry {name!r} exceeds the size safety limit"
+            )
+        with archive.open(name, "r") as stream:
+            data = stream.read(declared_size + 1)
+    except (KeyError, OSError, RuntimeError, zipfile.BadZipFile) as error:
+        raise ResultArchiveDecodeError(
+            f"result archive entry {name!r} could not be read: {error}"
+        ) from error
+    if len(data) != declared_size:
+        raise ResultArchiveDecodeError(
+            f"result archive entry {name!r} size changed during read"
+        )
+    return data
 
 
 def _array_from_manifest(
@@ -1379,6 +1555,9 @@ def _optional_positive_int(value: object) -> int | None:
 def decode_result_archive_v1(data: bytes) -> ResultArchiveSnapshot:
     """Decode and strictly validate one schema-v1 archive byte sequence."""
 
+    if type(data) is not bytes:
+        raise TypeError("archive data must be bytes")
+    _validate_container_bytes(len(data), error_type=ResultArchiveDecodeError)
     manifest, arrays = _open_archive_bytes(data)
     if manifest["format"] != FORMAT_NAME:
         raise ResultArchiveDecodeError("manifest.format is not fem-python-result")
@@ -1509,6 +1688,12 @@ def dumps_result_archive_v1(snapshot: ResultArchiveSnapshot) -> bytes:
 
 
 def loads_result_archive_v1(data: bytes | bytearray) -> ResultArchiveSnapshot:
+    if type(data) not in {bytes, bytearray}:
+        raise TypeError("archive data must be bytes or bytearray")
+    if len(data) > _MAX_ZIP_CONTAINER_BYTES:
+        raise ResultArchiveDecodeError(
+            "result archive container exceeds the size safety limit"
+        )
     return decode_result_archive_v1(bytes(data))
 
 
@@ -1529,7 +1714,9 @@ def save_result_archive_v1(
     expected = hashlib.sha256(serialized).hexdigest()
 
     def verifier(temporary: Path) -> ResultArchiveSnapshot:
-        return decode_result_archive_v1(temporary.read_bytes())
+        return decode_result_archive_v1(
+            _read_path_bounded(temporary, _MAX_ZIP_CONTAINER_BYTES)
+        )
 
     def semantic(snapshot_value: ResultArchiveSnapshot) -> str:
         return hashlib.sha256(encode_result_archive_v1(snapshot_value)).hexdigest()
@@ -1554,12 +1741,29 @@ def save_result_archive_v1(
 def load_result_archive_v1(path: str | Path) -> LoadedResultArchive:
     source = Path(path)
     try:
-        snapshot = decode_result_archive_v1(source.read_bytes())
+        snapshot = decode_result_archive_v1(
+            _read_path_bounded(source, _MAX_ZIP_CONTAINER_BYTES)
+        )
     except ResultArchiveDecodeError:
         raise
     except (OSError, ValueError, TypeError) as error:
         raise ResultArchiveDecodeError(f"result archive load failed: {error}") from error
     return LoadedResultArchive(snapshot=snapshot, path=source, source_schema=SCHEMA_VERSION)
+
+
+def _read_path_bounded(path: Path, limit: int) -> bytes:
+    declared_size = path.stat().st_size
+    if declared_size > limit:
+        raise ResultArchiveDecodeError(
+            "result archive container exceeds the size safety limit"
+        )
+    with path.open("rb") as stream:
+        data = stream.read(declared_size + 1)
+    if len(data) != declared_size:
+        raise ResultArchiveDecodeError(
+            "result archive container size changed during read"
+        )
+    return data
 
 
 read_result_archive_v1 = load_result_archive_v1
