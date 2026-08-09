@@ -32,6 +32,7 @@ from fem_gui.widgets.viewport import (
     _geometry_edge_polydata,
     _geometry_point_polydata,
     _geometry_surface_polydata,
+    _line_only_polydata,
     _wire_coordinate_label,
 )
 
@@ -61,6 +62,23 @@ def _rendered_viewport() -> tuple[FEMViewport, object]:
         devicePixelRatioF=lambda: 1.0,
     )
     return viewport, plotter
+
+
+def test_line_only_polydata_does_not_create_vertex_cells() -> None:
+    points = np.asarray(
+        (
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 1.0, 0.0),
+        )
+    )
+
+    dataset = _line_only_polydata(pv, points, (2, 0, 1, 2, 1, 2))
+
+    assert dataset.n_points == 3
+    assert dataset.n_verts == 0
+    assert dataset.n_lines == 2
+    assert dataset.n_cells == 2
 
 
 def test_qt_to_vtk_position_has_no_high_dpi_one_pixel_offset() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QPoint, Qt, Signal
@@ -15,6 +16,57 @@ ROLE_KIND = int(Qt.ItemDataRole.UserRole)
 ROLE_KEY = ROLE_KIND + 1
 
 _ACTIVE_PART_BACKGROUND = QColor("#d9ecff")
+_ICON_ROOT = Path(__file__).resolve().parents[1] / "resources" / "icons"
+_SCROLL_UP_ARROW = (_ICON_ROOT / "agent_chat_scroll_up.svg").as_posix()
+_SCROLL_DOWN_ARROW = (_ICON_ROOT / "agent_chat_scroll_down.svg").as_posix()
+
+_MODEL_TREE_STYLESHEET = f"""
+QTreeWidget#modelTree::item:selected {{
+    background-color: #d9ecff;
+    color: #202020;
+}}
+QTreeWidget#modelTree QScrollBar:vertical {{
+    background: transparent;
+    width: 10px;
+    margin: 12px 0 12px 0;
+}}
+QTreeWidget#modelTree QScrollBar::handle:vertical {{
+    background: rgba(76, 88, 98, 92);
+    min-height: 34px;
+    border-radius: 4px;
+    margin: 1px 2px;
+}}
+QTreeWidget#modelTree QScrollBar::handle:vertical:hover {{
+    background: rgba(76, 88, 98, 138);
+}}
+QTreeWidget#modelTree QScrollBar::add-line:vertical,
+QTreeWidget#modelTree QScrollBar::sub-line:vertical {{
+    background: transparent;
+    border: none;
+    height: 12px;
+    subcontrol-origin: margin;
+}}
+QTreeWidget#modelTree QScrollBar::sub-line:vertical {{
+    subcontrol-position: top;
+}}
+QTreeWidget#modelTree QScrollBar::add-line:vertical {{
+    subcontrol-position: bottom;
+}}
+QTreeWidget#modelTree QScrollBar::up-arrow:vertical {{
+    image: url("{_SCROLL_UP_ARROW}");
+    width: 8px;
+    height: 6px;
+}}
+QTreeWidget#modelTree QScrollBar::down-arrow:vertical {{
+    image: url("{_SCROLL_DOWN_ARROW}");
+    width: 8px;
+    height: 6px;
+}}
+QTreeWidget#modelTree QScrollBar::add-page:vertical,
+QTreeWidget#modelTree QScrollBar::sub-page:vertical {{
+    background: transparent;
+}}
+"""
 
 _TREE_ICONS = {
     "model": "model",
@@ -163,12 +215,7 @@ class ModelTree(QTreeWidget):
         self.setObjectName("modelTree")
         self.setHeaderHidden(True)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.setStyleSheet(
-            "QTreeWidget::item:selected {"
-            " background-color: #d9ecff;"
-            " color: #202020;"
-            "}"
-        )
+        self.setStyleSheet(_MODEL_TREE_STYLESHEET)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.itemClicked.connect(self._on_clicked)
         self.itemDoubleClicked.connect(self._on_double_clicked)

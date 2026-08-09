@@ -36,6 +36,19 @@ def _items(tree: ModelTree):
     return values
 
 
+def test_model_tree_uses_agent_chat_scrollbar_style():
+    _application()
+    tree = ModelTree()
+
+    stylesheet = tree.styleSheet()
+
+    assert "QTreeWidget#modelTree QScrollBar:vertical" in stylesheet
+    assert "background: transparent" in stylesheet
+    assert "border-radius: 4px" in stylesheet
+    assert "agent_chat_scroll_up.svg" in stylesheet
+    assert "agent_chat_scroll_down.svg" in stylesheet
+
+
 def test_model_tree_is_compact_and_keeps_real_engineering_objects(gui_inp_path):
     _application()
     model = read(gui_inp_path)

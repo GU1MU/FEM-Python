@@ -3504,7 +3504,9 @@ class FEMMainWindow(QMainWindow):
         splitter.addWidget(self.sketch_editor_panel)
         splitter.addWidget(self.boolean_feature_panel)
         splitter.addWidget(self.planar_boolean_panel)
-        splitter.setOpaqueResize(False)
+        # A non-opaque QSplitter uses a rubber-band preview that can leave a
+        # stale line over the native VTK surface after the mouse is released.
+        splitter.setOpaqueResize(True)
         splitter.splitterMoved.connect(
             lambda _position, _index: QTimer.singleShot(0, self.viewport.render)
         )

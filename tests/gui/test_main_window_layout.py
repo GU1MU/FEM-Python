@@ -18,7 +18,7 @@ def test_main_window_has_modules_navigation_and_viewport_toolbar():
     _application()
     window = FEMMainWindow()
 
-    assert not window.main_splitter.opaqueResize()
+    assert window.main_splitter.opaqueResize()
     assert [window.ribbon.tab_bar.tabText(i) for i in range(window.ribbon.tab_bar.count())] == [
         "项目", "几何", "网格", "模型", "分析", "结果", "视图",
     ]
@@ -71,7 +71,7 @@ def test_main_window_has_modules_navigation_and_viewport_toolbar():
     window.close()
 
 
-def test_splitter_release_queues_viewport_render_after_preview_line_is_hidden():
+def test_splitter_resize_avoids_preview_line_and_queues_viewport_render():
     application = _application()
     window = FEMMainWindow()
     render_calls = []

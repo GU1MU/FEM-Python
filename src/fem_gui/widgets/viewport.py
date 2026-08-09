@@ -345,6 +345,16 @@ def _mesh_edge_polydata(
     return dataset, cells
 
 
+def _line_only_polydata(pyvista, points: np.ndarray, lines: Iterable[int]):
+    """Build line cells without PyVista's implicit vertex cells."""
+
+    dataset = pyvista.PolyData()
+    dataset.points = points
+    dataset.lines = np.asarray(tuple(lines), dtype=np.int64)
+    dataset.set_active_scalars(None)
+    return dataset
+
+
 def _mesh_face_polydata(
     pyvista,
     geometry: ModelGeometry,
@@ -6196,8 +6206,11 @@ class FEMViewport(QWidget):
                 lighting=False, name="load_regions", reset_camera=False,
             )
         if edge_lines:
-            region_edges = _pyvista.PolyData(self._current_points())
-            region_edges.lines = np.asarray(edge_lines, dtype=np.int64)
+            region_edges = _line_only_polydata(
+                _pyvista,
+                self._current_points(),
+                edge_lines,
+            )
             self._actors["load_region_edges"] = self._plotter.add_mesh(
                 region_edges, color=settings.load_color, line_width=3,
                 lighting=False, name="load_region_edges", reset_camera=False,
