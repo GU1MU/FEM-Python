@@ -11,6 +11,7 @@ from typing import Any, Literal, overload
 
 import numpy as np
 from scipy.sparse import diags, triu
+from scipy.sparse.linalg import eigsh
 
 from .. import materials
 from ..assemble import assemble_global_stiffness_sparse
@@ -266,7 +267,13 @@ class PreparedSystem:
             self._base_stiffness.shape[0],
         )
         try:
-            self._factor_cache.factor_for(constrained_pattern)
+            factorization = self._factor_cache.factor_for(
+                constrained_pattern
+            )
+            _validate_reduced_stiffness_rank(
+                self._base_stiffness,
+                factorization,
+            )
         except _PardisoSPDMemoryError as error:
             raise RuntimeError(_PARDISO_MEMORY_FAILURE) from error
         except (RuntimeError, ValueError) as error:
@@ -727,6 +734,48 @@ def _build_reduced_factorization(
         inverse_scale=inverse_scale,
         factor=factor,
     )
+
+
+def _validate_reduced_stiffness_rank(
+    base_stiffness: Any,
+    factorization: _ReducedFactorization,
+) -> None:
+    """Reject numerically null modes that a direct factor may perturb."""
+
+    free_dofs = factorization.free_dofs
+    if free_dofs.size == 0:
+        return
+    free_stiffness = base_stiffness[free_dofs][:, free_dofs]
+    scaling = diags(factorization.inverse_scale)
+    scaled = scaling @ free_stiffness @ scaling
+    dimension = scaled.shape[0]
+    if dimension <= 128:
+        minimum_eigenvalue = float(
+            np.linalg.eigvalsh(scaled.toarray())[0]
+        )
+    else:
+        minimum_eigenvalue = float(
+            eigsh(
+                scaled,
+                k=1,
+                which="SA",
+                return_eigenvectors=False,
+            )[0]
+        )
+    matrix_norm = float(
+        np.max(np.asarray(np.abs(scaled).sum(axis=1)).ravel())
+    )
+    tolerance = (
+        np.finfo(float).eps
+        * max(1, dimension)
+        * max(1.0, matrix_norm)
+    )
+    if minimum_eigenvalue <= tolerance:
+        raise ValueError(
+            "stiffness matrix has a numerically null free mode"
+        )
+
+
 def _solve_reduced_system(
     base_stiffness: Any,
     load: np.ndarray,

@@ -995,6 +995,32 @@ def test_static_linear_stiffness_preflight_detects_free_rigid_dofs():
     assert captured.value.__cause__ is not None
 
 
+def test_static_linear_stiffness_preflight_rejects_near_null_mode(
+    monkeypatch,
+):
+    model = make_static_pull_truss_model()
+    model.steps[0].boundaries = model.steps[0].boundaries[:1]
+    stiffness = np.eye(6)
+    stiffness[3:5, 3:5] = (
+        (1.0, 1.0 - 1.0e-15),
+        (1.0 - 1.0e-15, 1.0),
+    )
+    monkeypatch.setattr(
+        static_linear,
+        "assemble_global_stiffness_sparse",
+        lambda _mesh: csr_matrix(stiffness),
+    )
+
+    with pytest.raises(ValueError) as captured:
+        static_linear.validate_stiffness(model, "pull")
+
+    assert str(captured.value) == (
+        "模型约束不足或刚度矩阵奇异；"
+        "请检查刚体位移、材料、截面和单元连接"
+    )
+    assert "numerically null free mode" in str(captured.value.__cause__)
+
+
 def test_static_linear_solve_preserves_singular_error_summary_and_cause():
     model = make_static_pull_truss_model()
     model.steps[0].boundaries = model.steps[0].boundaries[:1]
